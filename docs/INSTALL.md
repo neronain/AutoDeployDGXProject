@@ -151,11 +151,24 @@ lmds config set-key openai            # วาง API key แล้ว Enter (�
 lmds config set-provider gemini
 lmds config set-key gemini
 
-# แบบ C: ใช้โมเดล local ในองค์กรเป็นสมอง (endpoint แบบ OpenAI-compatible)
-lmds config set-provider openai-compat --base-url http://10.100.152.1:8000/v1 --model qwen3-coder
-lmds config set-key openai-compat
+# แบบ C: ใช้ Local AI ในองค์กรเป็นสมอง — vLLM, Ollama หรือ endpoint OpenAI-compatible ใดก็ได้
+#   ไม่มี key ก็ใช้ได้เลย (ระบบจะไม่ส่ง Authorization header) — set-key เฉพาะเมื่อ endpoint บังคับ
 
-# แบบ D: ไม่มี key เลย — ไม่ต้องตั้งอะไร แล้วเติม --no-llm ทุกครั้งที่ deploy (rule-based mode)
+#   C1: server ที่รันด้วย vLLM (รวมถึง bundle ที่ LMDS สร้างเอง!)
+lmds config set-provider openai-compat --base-url http://10.10.10.1:8000/v1 --model qwen3-coder
+
+#   C2: Ollama (endpoint OpenAI-compatible ของ Ollama อยู่ที่ /v1, port default 11434)
+lmds config set-provider openai-compat --base-url http://10.10.10.1:11434/v1 --model gpt-oss:20b
+
+#   (ถ้า endpoint ตั้ง API key ไว้ ค่อยรัน: lmds config set-key openai-compat)
+
+# แบบ D: ไม่มี LLM เลย — ไม่ต้องตั้งอะไร แล้วเติม --no-llm ทุกครั้งที่ deploy (rule-based mode)
+```
+
+> **หมายเหตุ**: ถ้า provider ที่ตั้งไว้ใช้ไม่ได้ตอน deploy (เช่น quota หมด / เครือข่ายล่ม)
+> ระบบจะ**สลับเป็น rule-based mode ให้อัตโนมัติ**พร้อมแจ้งสาเหตุ — งานไม่สะดุด
+
+```bash
 ```
 
 ### 3.3 (ทางเลือก) HF token — เฉพาะเมื่อใช้โมเดล gated

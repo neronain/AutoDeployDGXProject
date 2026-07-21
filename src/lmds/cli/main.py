@@ -69,6 +69,19 @@ def inspect(
     _render_fits(fit_reports)
 
 
+def _build_plan_safe(report, fit, provider):
+    """เรียก LLM วางแผน — ถ้า provider ล้ม (quota/เครือข่าย/schema) สลับเป็น rule-based พร้อมแจ้งชัด"""
+    from lmds.brain import PlanError, ProviderError, build_plan
+
+    if provider is not None:
+        try:
+            return build_plan(report, fit, provider)
+        except (PlanError, ProviderError) as exc:
+            err_console.print(f"[yellow]LLM ใช้ไม่ได้: {exc}[/yellow]")
+            err_console.print("[yellow]→ สลับเป็น rule-based mode อัตโนมัติ (plan จะไม่มีการวิเคราะห์เชิงลึก)[/yellow]")
+    return build_plan(report, fit, None)
+
+
 def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bool):
     """flow ร่วมของ inspect/plan/deploy: parse source → inspect → จัดการ gated repo + token"""
     import sys
@@ -246,11 +259,7 @@ def plan(
             except MissingKey as exc:
                 err_console.print(f"[yellow]{exc} — ใช้ rule-based mode[/yellow]")
 
-    try:
-        deployment_plan = build_plan(report, fit, provider)
-    except (PlanError, ProviderError) as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=5)
+    deployment_plan = _build_plan_safe(report, fit, provider)
 
     if as_json:
         print(deployment_plan.model_dump_json(indent=2))
@@ -344,11 +353,7 @@ def generate(
         else:
             err_console.print("[yellow]ยังไม่ได้ตั้งค่า provider — ใช้ rule-based mode[/yellow]")
 
-    try:
-        deployment_plan = build_plan(report, fit, provider)
-    except (PlanError, ProviderError) as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=5)
+    deployment_plan = _build_plan_safe(report, fit, provider)
 
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_plan(deployment_plan, fit)
@@ -447,11 +452,7 @@ def deploy(
         else:
             err_console.print("[yellow]ยังไม่ได้ตั้งค่า provider — ใช้ rule-based mode[/yellow]")
 
-    try:
-        deployment_plan = build_plan(report, fit, provider)
-    except (PlanError, ProviderError) as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=5)
+    deployment_plan = _build_plan_safe(report, fit, provider)
 
     _render_plan(deployment_plan, fit)
 
@@ -526,7 +527,12 @@ def hardware() -> None:
     table.add_row("Arch", report.arch)
     if report.gpus:
         for i, gpu in enumerate(report.gpus):
-            vram = f"{gpu.vram_mib / 1024:.0f} GB" if gpu.vram_mib else "?"
+            if gpu.vram_mib:
+                vram = f"{gpu.vram_mib / 1024:.0f} GB"
+            elif gpu.known is not None:
+                vram = f"{gpu.known.vram_gb:.0f} GB ({'unified' if gpu.known.memory_model.value == 'unified' else 'spec'})"
+            else:
+                vram = "?"
             cc = f"SM{gpu.compute_capability.replace('.', '')}" if gpu.compute_capability else "?"
             tested = "✅ tested" if gpu.tested else "⚠️ conservative"
             table.add_row(f"GPU {i}", f"{gpu.name} ({vram}, {cc}) {tested}")

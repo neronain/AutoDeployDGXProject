@@ -41,18 +41,19 @@ class LlmProvider(ABC):
 class OpenAiCompatProvider(LlmProvider):
     """ใช้ได้ทั้ง api.openai.com และทุก endpoint ที่พูด /chat/completions"""
 
-    def __init__(self, name: str, model: str, api_key: str, base_url: str | None = None,
+    def __init__(self, name: str, model: str, api_key: str | None, base_url: str | None = None,
                  client: httpx.Client | None = None):
         self.name = name
         self.model = model
-        self._key = api_key
+        self._key = api_key or ""  # endpoint local (Ollama/vLLM) มักไม่ต้องใช้ key
         self._base = (base_url or OPENAI_BASE).rstrip("/")
         self._client = client or httpx.Client(timeout=120.0)
 
     def complete_json(self, system: str, user: str) -> str:
+        headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
         resp = self._client.post(
             f"{self._base}/chat/completions",
-            headers={"Authorization": f"Bearer {self._key}"},
+            headers=headers,
             json={
                 "model": self.model,
                 "messages": [
@@ -98,12 +99,18 @@ class GeminiProvider(LlmProvider):
 
 def make_provider(config: ProviderConfig, api_key: str | None,
                   client: httpx.Client | None = None) -> LlmProvider:
-    """สร้าง provider จาก config + key — MissingKey ถ้าไม่มี key"""
+    """สร้าง provider จาก config + key
+
+    openai-compat (Ollama/vLLM/endpoint local) ใช้ได้โดยไม่มี key — provider อื่นต้องมี
+    """
+    if config.name is ProviderName.OPENAI_COMPAT:
+        return OpenAiCompatProvider(
+            config.name.value, config.model, api_key, base_url=config.base_url, client=client
+        )
     if not api_key:
         raise MissingKey(config.name.value)
     if config.name is ProviderName.GEMINI:
         return GeminiProvider(config.model, api_key, client=client)
     if config.name is ProviderName.ANTHROPIC:
         raise ProviderError("Anthropic adapter อยู่ใน roadmap เฟส 2 — ใช้ openai/gemini/openai-compat ก่อน")
-    base_url = config.base_url if config.name is ProviderName.OPENAI_COMPAT else None
-    return OpenAiCompatProvider(config.name.value, config.model, api_key, base_url=base_url, client=client)
+    return OpenAiCompatProvider(config.name.value, config.model, api_key, client=client)

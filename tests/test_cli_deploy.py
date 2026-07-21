@@ -53,6 +53,56 @@ def test_deploy_non_tty_skips_confirmation(isolated_config, tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
 
 
+def test_deploy_falls_back_to_rule_based_on_provider_error(isolated_config, tmp_path, monkeypatch):
+    """เคสจริงจากเครื่อง gigabyte02: Gemini 429 → ต้องสลับ rule-based ไม่ใช่หยุดทำงาน"""
+    from lmds.brain import ProviderError
+    from lmds.config import ProviderName, Settings
+
+    class QuotaExceededProvider:
+        name = "gemini"
+        model = "gemini-2.5-pro"
+
+        def complete_json(self, system, user):
+            raise ProviderError("gemini ตอบ HTTP 429: quota exceeded")
+
+    settings = Settings.load()
+    settings.set_provider(ProviderName.GEMINI)
+    settings.save()
+    monkeypatch.setattr("lmds.brain.make_provider", lambda c, k, client=None: QuotaExceededProvider())
+    monkeypatch.setattr("lmds.secrets.store.get_secret", lambda n: "AIzaFakeKey123" if n == "gemini" else None)
+    monkeypatch.setattr("lmds.cli.main.get_secret", lambda n: "AIzaFakeKey123" if n == "gemini" else None)
+    _patch_inspect(monkeypatch, gguf_report())
+
+    result = runner.invoke(
+        app,
+        ["deploy", "unsloth/Qwen3-8B-GGUF", "--target", "dgx-spark-single",
+         "--output", str(tmp_path), "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "rule-based" in result.output
+    assert "429" in result.output  # แจ้งสาเหตุที่สลับ
+
+
+def test_spark_unified_memory_from_allowlist_when_smi_reports_none(isolated_config):
+    """GB10 บนเครื่องจริง: nvidia-smi ไม่รายงาน memory.total → ใช้สเปก 128GB จาก allowlist"""
+    from lmds.fit import from_hardware_report
+    from lmds.hardware import MemoryModel
+    from lmds.hardware.profiler import DetectedGpu, HardwareReport
+    from lmds.hardware.profiles import TargetProfile, lookup_gpu
+
+    report = HardwareReport(
+        arch="aarch64",
+        gpus=[DetectedGpu("NVIDIA GB10", None, "12.1", lookup_gpu("NVIDIA GB10"))],
+        ram_gb=121.7,
+        profile=TargetProfile.DGX_SPARK_SINGLE,
+    )
+    spec = from_hardware_report(report)
+    assert spec is not None
+    assert spec.memory_gb == 128.0
+    assert spec.memory_model is MemoryModel.UNIFIED
+    assert spec.tested is True
+
+
 def test_apply_flag_approvals_moves_flag(isolated_config):
     report = safetensors_report()
     fit = analyze(report, PRESETS["dgx-spark-single"])

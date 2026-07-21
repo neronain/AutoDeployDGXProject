@@ -42,8 +42,15 @@ def from_hardware_report(report: HardwareReport) -> TargetSpec | None:
     """สร้าง TargetSpec จากเครื่องที่ตรวจพบจริง — คืน None ถ้าไม่พบ GPU"""
     if not report.gpus:
         return None
-    vram_values = [g.vram_mib for g in report.gpus if g.vram_mib]
-    if not vram_values:
+    # nvidia-smi บนเครื่อง unified memory (DGX Spark GB10) มักรายงาน memory.total ไม่ได้ —
+    # fallback ไปใช้สเปกจาก GPU allowlist
+    memory_values: list[float] = []
+    for gpu in report.gpus:
+        if gpu.vram_mib:
+            memory_values.append(gpu.vram_mib / 1024)
+        elif gpu.known is not None:
+            memory_values.append(gpu.known.vram_gb)
+    if not memory_values:
         return None
     memory_model = (
         MemoryModel.UNIFIED
@@ -53,7 +60,7 @@ def from_hardware_report(report: HardwareReport) -> TargetSpec | None:
     return TargetSpec(
         name="this-machine",
         memory_model=memory_model,
-        memory_gb=round(min(vram_values) / 1024, 1),
+        memory_gb=round(min(memory_values), 1),
         gpu_count=len(report.gpus),
         system_ram_gb=report.ram_gb,
         tested=all(g.tested for g in report.gpus),

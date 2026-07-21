@@ -99,6 +99,27 @@ def test_make_provider_dispatch():
     assert isinstance(compat, OpenAiCompatProvider)
 
 
+def test_openai_compat_keyless_local_endpoint():
+    """Ollama/vLLM local ไม่มี key — ต้องใช้ได้และไม่ส่ง Authorization header"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    config = ProviderConfig(
+        name=ProviderName.OPENAI_COMPAT, model="gpt-oss:20b", base_url="http://10.10.10.1:11434/v1"
+    )
+    provider = make_provider(config, api_key=None, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    provider.complete_json("s", "u")
+    assert seen["auth"] is None  # ไม่มี key → ไม่ส่ง header
+
+
+def test_openai_real_still_requires_key():
+    with pytest.raises(MissingKey):
+        make_provider(ProviderConfig(name=ProviderName.OPENAI, model="gpt-4.1"), api_key=None)
+
+
 def test_make_provider_anthropic_phase2():
     config = ProviderConfig(name=ProviderName.ANTHROPIC, model="claude-sonnet-5")
     with pytest.raises(ProviderError, match="เฟส 2"):
