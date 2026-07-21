@@ -9,23 +9,27 @@
 
 ## สถานะโปรเจกต์
 
-🚧 **เฟส 1 — CLI MVP (กำลังพัฒนา)** — ดู [ROADMAP.md](docs/ROADMAP.md)
+🟢 **เฟส 1 — CLI MVP: โค้ดครบทุกคำสั่งแล้ว (M1–M7a)** — เหลือ hardware validation บนเครื่องจริง (M7b)
+ดู [ROADMAP.md](docs/ROADMAP.md) | ติดตั้ง: [docs/INSTALL.md](docs/INSTALL.md)
 
 ## หลักการออกแบบสำคัญ
 
 > **Deterministic core + LLM assist** — LLM ไม่เขียน Bash เอง ทุกสคริปต์ render จาก template ที่ผ่านการตรวจแล้ว LLM ทำหน้าที่แค่วิจัยโมเดลและเลือกค่าใน Deployment Plan (JSON schema ตายตัว) ส่วนการคำนวณ memory fit / token budget ทำด้วยโค้ด 100% และทุก bundle ต้องผ่าน quality gates (`bash -n`, audit rules, SHA-256) ก่อนถึงมือผู้ใช้
 
-## ตัวอย่างการใช้งาน (เป้าหมายเฟส 1)
+## ตัวอย่างการใช้งาน
 
 ```bash
-# ตั้งค่า provider ครั้งเดียว
-lmds config set-provider openai
+./install.sh                          # ติดตั้ง (Ubuntu, python3 >= 3.10)
+lmds config set-provider openai       # ตั้ง LLM provider ครั้งเดียว (หรือใช้ --no-llm)
+lmds config set-key openai
 
-# สร้าง deployment bundle จากลิงก์โมเดล
-lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target rtx-single
+lmds hardware                         # ตรวจเครื่อง + จำแนก target profile
+lmds inspect Qwen/Qwen3-32B --target rtx-pro-4000-dual    # วิเคราะห์ + fit โดยไม่ generate
+lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
+# → วิเคราะห์ → วางแผน → ยืนยัน (อนุมัติ flag/แก้ context ได้) → bundle + ZIP ที่ผ่าน 7 quality gates
 
-# โมเดล gated → ระบบถาม HF token อัตโนมัติ (ข้ามได้)
-lmds deploy https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
+# โมเดล gated → ระบบถาม HF token อัตโนมัติ (กด Enter ข้ามได้)
+lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 ```
 
 ผลลัพธ์: โฟลเดอร์ bundle + ZIP ประกอบด้วย controller script (มาตรฐาน v3.0.0), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md`, `PACKAGE_SHA256SUMS`

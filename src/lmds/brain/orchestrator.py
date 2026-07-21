@@ -80,6 +80,20 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     return plan
 
 
+def apply_flag_approvals(plan: DeploymentPlan, approved: list[str]) -> DeploymentPlan:
+    """ย้าย flag ที่ผู้ใช้อนุมัติแบบ explicit จาก flags_needing_approval → extra_flags
+
+    เรียกได้จากขั้นยืนยันของ deploy เท่านั้น — การอนุมัติเป็นการตัดสินใจของผู้ใช้ ไม่ใช่ LLM
+    """
+    for flag in approved:
+        if flag in plan.flags_needing_approval:
+            plan.flags_needing_approval.remove(flag)
+            if flag not in plan.serving.extra_flags:
+                plan.serving.extra_flags.append(flag)
+            plan.warnings.append(f"ผู้ใช้อนุมัติ flag: {flag}")
+    return plan
+
+
 def build_plan(
     report: ModelReport,
     fit: FitReport,

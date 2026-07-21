@@ -1,5 +1,5 @@
 from .allowlists import split_flags
-from .orchestrator import build_plan, harden_plan
+from .orchestrator import apply_flag_approvals, build_plan, harden_plan
 from .plan_schema import (
     Confidence,
     DeploymentPlan,
@@ -27,6 +27,7 @@ __all__ = [
     "RuntimeChoice",
     "Serving",
     "Topology",
+    "apply_flag_approvals",
     "build_plan",
     "harden_plan",
     "make_provider",

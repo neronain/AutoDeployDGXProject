@@ -350,6 +350,17 @@ def generate(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=5)
 
+    bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
+    _render_plan(deployment_plan, fit)
+    _render_gates(results)
+    _render_delivery(bundle, delivered)
+
+
+def _render_and_package(deployment_plan, report, fit, output: str):
+    """render → gates → checksums → zip — ใช้ร่วมกันระหว่าง generate และ deploy"""
+    from pathlib import Path
+
+    from lmds.generator import render_bundle
     from lmds.packager import make_zip, write_checksums
     from lmds.validator import all_passed, run_gates
 
@@ -367,12 +378,13 @@ def generate(
 
     checksums_path = write_checksums(bundle.directory)
     zip_path = make_zip(bundle.directory)
+    return bundle, results, [*bundle.files, checksums_path, zip_path]
 
-    _render_plan(deployment_plan, fit)
-    _render_gates(results)
+
+def _render_delivery(bundle, delivered) -> None:
     table = Table(title="Bundle (static-validated ✅)")
     table.add_column("ไฟล์")
-    for file_path in [*bundle.files, checksums_path, zip_path]:
+    for file_path in delivered:
         table.add_row(str(file_path))
     console.print(table)
     console.print(f"\nเริ่มใช้งาน: cd {bundle.directory} && ./{bundle.controller.name} download")
@@ -386,6 +398,95 @@ def _render_gates(results) -> None:
     for result in results:
         table.add_row(result.name, "✅" if result.passed else "❌", result.detail or "-")
     console.print(table)
+
+
+@app.command()
+def deploy(
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    revision: Optional[str] = typer.Option(None, "--revision"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single"),
+    output: str = typer.Option("./bundles", "--output"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
+    concurrency: int = typer.Option(1, "--concurrency"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
+) -> None:
+    """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
+
+    Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก, 2 ไม่ผ่าน gates, 3 ไม่ fit, 4 ต้องการ token, 5 provider
+    """
+    import sys
+
+    from lmds.brain import (
+        MissingKey,
+        PlanError,
+        ProviderError,
+        apply_flag_approvals,
+        build_plan,
+        make_provider,
+    )
+    from lmds.config import Settings
+    from lmds.fit import Verdict
+
+    report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
+    fit = _compute_fits(report, [target] if target else [], concurrency)[0]
+
+    if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
+        err_console.print(f"[red]โมเดลไม่ fit กับ target {fit.target_name} ({fit.verdict.value})[/red]")
+        for alt in fit.alternatives:
+            err_console.print(f"[yellow]→ {alt}[/yellow]")
+        raise typer.Exit(code=3)
+
+    provider = None
+    if not no_llm:
+        settings = Settings.load()
+        if settings.provider is not None:
+            try:
+                provider = make_provider(settings.provider, get_secret(settings.provider.name.value))
+            except MissingKey as exc:
+                err_console.print(f"[yellow]{exc} — ใช้ rule-based mode[/yellow]")
+        else:
+            err_console.print("[yellow]ยังไม่ได้ตั้งค่า provider — ใช้ rule-based mode[/yellow]")
+
+    try:
+        deployment_plan = build_plan(report, fit, provider)
+    except (PlanError, ProviderError) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=5)
+
+    _render_plan(deployment_plan, fit)
+
+    interactive = sys.stdin.isatty() and not yes
+    if interactive:
+        # อนุมัติ flag นอก allowlist รายตัว — การอนุมัติเป็นสิทธิ์ของผู้ใช้เท่านั้น
+        approved: list[str] = []
+        for flag in list(deployment_plan.flags_needing_approval):
+            if typer.confirm(f"อนุมัติ flag นอก allowlist: {flag} ?", default=False):
+                approved.append(flag)
+        if approved:
+            apply_flag_approvals(deployment_plan, approved)
+
+        context_input = typer.prompt(
+            "context (Enter = ใช้ค่าตามแผน)", default=str(deployment_plan.serving.context)
+        ).strip()
+        if context_input.isdigit() and int(context_input) > 0:
+            requested = int(context_input)
+            ceiling = fit.max_safe_context or deployment_plan.serving.context
+            if requested > ceiling:
+                err_console.print(f"[yellow]เกินเพดานที่ปลอดภัย — ใช้ {ceiling:,} แทน[/yellow]")
+                requested = ceiling
+            deployment_plan.serving.context = requested
+
+        if not typer.confirm("สร้าง bundle ตามแผนนี้?", default=True):
+            console.print("ยกเลิกโดยผู้ใช้")
+            raise typer.Exit(code=1)
+
+    bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
+    _render_gates(results)
+    _render_delivery(bundle, delivered)
+    console.print(
+        "\n[dim]สถานะ: static-validated — รัน acceptance บนเครื่องจริง: "
+        f"download → verify-files → start → status → test-text[/dim]"
+    )
 
 
 @app.command()
