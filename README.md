@@ -41,6 +41,22 @@ lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
 lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 ```
 
+## จัดการหลายโมเดลในเครื่องเดียว (Fleet)
+
+รันกี่โมเดลก็ได้ (คนละ port) แล้วคุมทั้งหมดจาก `lmds` — ไม่ต้องจำว่า bundle ไหนอยู่ที่ไหน:
+
+```bash
+lmds ps                  # ใครรันอยู่บ้าง: ชื่อ, โมเดล, engine, port, สถานะ ● running / ◐ loading / ○ stopped
+lmds stop <ชื่อ>          # หยุดตามชื่อจาก lmds ps — ไม่ต้อง cd ไปหา ./xxx.sh stop
+lmds stop --all          # หยุดทุกโมเดลที่รันอยู่ในคำสั่งเดียว
+lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
+lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
+lmds list                # bundle ทั้งหมดที่รู้จักในเครื่อง + ตรวจว่า controller ยังอยู่ครบ
+```
+
+ทุก controller ลงทะเบียนตัวเองอัตโนมัติตอน `start` — ต่อให้ bundle ถูกลบไปแล้ว `lmds stop` ก็ยัง
+fallback หยุดโมเดลค้างให้ได้ (kill pid / docker rm) · รายละเอียด: [docs/USAGE.md §4](docs/USAGE.md)
+
 ผลลัพธ์: โฟลเดอร์ bundle + ZIP ประกอบด้วย controller script (มาตรฐาน v3.0.0), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md`, `PACKAGE_SHA256SUMS`
 
 ## เอกสารทั้งหมด
