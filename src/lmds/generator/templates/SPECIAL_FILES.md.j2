@@ -1,0 +1,29 @@
+# Special Files — {{ plan.model_id }}
+
+ไฟล์ใน repo ที่มีผลต่อความถูกต้อง/ความปลอดภัย ตาม special-files checklist ของมาตรฐาน v3.0.0
+
+{% if report.trust_remote_code_files %}## Remote code (ต้อง review ก่อนใช้)
+
+| ไฟล์ | ความเสี่ยง |
+|---|---|
+{% for f in report.trust_remote_code_files %}| `{{ f }}` | รันเป็น Python ใน runtime เมื่อเปิด `--trust-remote-code` — อ่านโค้ดก่อนอนุมัติ |
+{% endfor %}
+การเปิด `--trust-remote-code` ไม่ได้ใส่ให้อัตโนมัติ — ผู้ใช้ต้องเพิ่มเองหลัง review
+{% endif %}
+{% if plan.selected_gguf %}## GGUF
+
+| รายการ | ค่า |
+|---|---|
+| ไฟล์ | `{{ plan.selected_gguf }}` |
+| ขนาด (exact) | {{ gguf_size or "ไม่ทราบ" }} bytes |
+| SHA-256 | `{{ gguf_sha256 or "ไม่มีจาก Hub — ตรวจด้วยขนาด + magic แทน" }}` |
+| Chat template ฝังในไฟล์ | {{ "มี — ใช้ --jinja" if has_chat_template else "ไม่พบ — ต้องระบุ template เอง" }} |
+{% endif %}
+{% if plan.multimodal.projector_files %}## Multimodal projector
+
+{% for f in plan.multimodal.projector_files %}- `{{ f }}` — ต้องดาวน์โหลดคู่กับโมเดลหลัก (mmproj)
+{% endfor %}{% endif %}
+{% if plan.special_files %}## ไฟล์อื่นที่ระบุโดยขั้นวางแผน
+
+{% for f in plan.special_files %}- `{{ f }}`
+{% endfor %}{% endif %}

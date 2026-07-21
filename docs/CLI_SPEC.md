@@ -10,6 +10,8 @@ lmds deploy <MODEL_URL_OR_ID> [options]    # flow หลัก: วิเคร�
 lmds inspect <MODEL_URL_OR_ID>             # วิเคราะห์อย่างเดียว ไม่ generate (fit report + ข้อเสนอ runtime)
 lmds plan <MODEL_URL_OR_ID>                # สร้าง Deployment Plan (ขั้นวางแผนของ deploy) โดยไม่ generate สคริปต์
                                            #   --no-llm = rule-based, --target <preset>, --json
+lmds generate <MODEL_URL_OR_ID>            # plan → render bundle (controller/README/MODEL_PROFILE/SPECIAL_FILES)
+                                           #   --output DIR, --target, --no-llm — validate+zip อยู่ใน M6
 lmds hardware [--probe-ssh user@host]      # ตรวจ/แสดง hardware profile ของเครื่อง
 lmds validate <BUNDLE_DIR>                 # รัน static quality gates กับ bundle ที่มีอยู่
 lmds repair <BUNDLE_DIR> --log <FILE|->    # repair workflow จาก log ความล้มเหลว (เฟส 2 — สำรอง interface ไว้)

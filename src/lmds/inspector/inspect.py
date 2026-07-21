@@ -19,8 +19,8 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     revision_sha = info.get("sha") or (source.revision or "main")
 
     files = _sibling_files(info)
-    safetensor_files = [f for f in files if f[0].endswith(".safetensors")]
-    gguf_files = [f for f in files if f[0].endswith(".gguf")]
+    safetensor_files = [(n, s) for n, s, _ in files if n.endswith(".safetensors")]
+    gguf_files = [(n, s, sha) for n, s, sha in files if n.endswith(".gguf")]
 
     artifact = _classify(bool(safetensor_files), bool(gguf_files))
     report = ModelReport(
@@ -35,7 +35,7 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         tags=[t for t in info.get("tags", []) if isinstance(t, str)],
         file_count=len(files),
         trust_remote_code_files=sorted(
-            name for name, _ in files
+            name for name, _, _ in files
             if name.endswith(".py") and name.startswith(("configuration_", "modeling_", "processing_", "tokenization_"))
         ),
     )
@@ -52,15 +52,16 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     return report
 
 
-def _sibling_files(info: dict[str, Any]) -> list[tuple[str, int | None]]:
-    out: list[tuple[str, int | None]] = []
+def _sibling_files(info: dict[str, Any]) -> list[tuple[str, int | None, str | None]]:
+    out: list[tuple[str, int | None, str | None]] = []
     for sibling in info.get("siblings", []) or []:
         name = sibling.get("rfilename")
         if not name:
             continue
         size = sibling.get("size")
         lfs = sibling.get("lfs") or {}
-        out.append((name, size if size is not None else lfs.get("size")))
+        sha = lfs.get("oid") if isinstance(lfs.get("oid"), str) else None
+        out.append((name, size if size is not None else lfs.get("size"), sha))
     return out
 
 
@@ -203,15 +204,16 @@ def _inspect_gguf(
     source: ModelSource,
     client: HfClient,
     revision: str,
-    gguf_files: list[tuple[str, int | None]],
+    gguf_files: list[tuple[str, int | None, str | None]],
 ) -> None:
     report.gguf_variants = [
         GgufVariant(
             filename=name,
             size_bytes=size,
+            sha256=sha,
             is_mmproj=name.rsplit("/", 1)[-1].lower().startswith("mmproj"),
         )
-        for name, size in sorted(gguf_files)
+        for name, size, sha in sorted(gguf_files)
     ]
     weight_variants = [v for v in report.gguf_variants if not v.is_mmproj]
     if not weight_variants:

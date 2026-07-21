@@ -305,6 +305,67 @@ def _render_plan(deployment_plan, fit) -> None:
 
 
 @app.command()
+def generate(
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    revision: Optional[str] = typer.Option(None, "--revision"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single"),
+    output: str = typer.Option("./bundles", "--output", help="โฟลเดอร์ output ของ bundle"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
+    concurrency: int = typer.Option(1, "--concurrency"),
+) -> None:
+    """สร้าง deployment bundle: plan → render controller/README/MODEL_PROFILE (ยังไม่ validate/zip — M6)
+
+    Exit codes: 0 สำเร็จ, 1 input ผิด, 3 โมเดลไม่ fit, 4 ต้องการ token, 5 ปัญหา provider
+    """
+    from pathlib import Path
+
+    from lmds.brain import MissingKey, PlanError, ProviderError, build_plan, make_provider
+    from lmds.config import Settings
+    from lmds.fit import Verdict
+    from lmds.generator import render_bundle
+
+    report = _resolve_and_inspect(model, revision, interactive_ok=True)
+    fit = _compute_fits(report, [target] if target else [], concurrency)[0]
+
+    if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
+        err_console.print(f"[red]โมเดลไม่ fit กับ target {fit.target_name} ({fit.verdict.value})[/red]")
+        for alt in fit.alternatives:
+            err_console.print(f"[yellow]→ {alt}[/yellow]")
+        raise typer.Exit(code=3)
+
+    provider = None
+    if not no_llm:
+        settings = Settings.load()
+        if settings.provider is not None:
+            try:
+                provider = make_provider(settings.provider, get_secret(settings.provider.name.value))
+            except MissingKey as exc:
+                err_console.print(f"[yellow]{exc} — ใช้ rule-based mode[/yellow]")
+        else:
+            err_console.print("[yellow]ยังไม่ได้ตั้งค่า provider — ใช้ rule-based mode[/yellow]")
+
+    try:
+        deployment_plan = build_plan(report, fit, provider)
+    except (PlanError, ProviderError) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=5)
+
+    try:
+        bundle = render_bundle(deployment_plan, report, fit, Path(output))
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    _render_plan(deployment_plan, fit)
+    table = Table(title="Bundle")
+    table.add_column("ไฟล์")
+    for file_path in bundle.files:
+        table.add_row(str(file_path))
+    console.print(table)
+    console.print(f"\nเริ่มใช้งาน: cd {bundle.directory} && ./{bundle.controller.name} download")
+
+
+@app.command()
 def hardware() -> None:
     """ตรวจฮาร์ดแวร์ของเครื่องนี้และแสดง target profile"""
     from lmds.hardware import probe

@@ -1,0 +1,99 @@
+# {{ plan.model_id }} — Deployment Bundle
+
+สร้างโดย LMDS {{ lmds_version }} ({{ plan.generator }}) | มาตรฐาน controller v3.0.0
+สถานะการตรวจสอบ: **{{ validation_status }}**
+
+| | |
+|---|---|
+| Model | `{{ plan.model_id }}` |
+| Revision (pinned) | `{{ plan.revision }}` |
+| Runtime | {{ plan.runtime.engine.value }} — `{{ plan.runtime.image_ref }}` |
+| Topology | {{ plan.topology.value }} (target: {{ fit.target_name }}) |
+{% if plan.selected_gguf %}| GGUF file | `{{ plan.selected_gguf }}` |
+{% endif %}| Context เริ่มต้น | {{ "{:,}".format(plan.serving.context) }} tokens |
+| Client budget | input {{ "{:,}".format(client_input) }} / output {{ "{:,}".format(plan.serving.max_output_tokens) }} tokens |
+| License | {{ report.license or "ไม่ระบุ — ตรวจก่อนใช้เชิงพาณิชย์" }} |
+
+{% if plan.runtime.rationale %}> เหตุผลการเลือก runtime: {{ plan.runtime.rationale }}
+{% endif %}
+
+## Requirements
+
+- Ubuntu 22.04/24.04 + NVIDIA driver, Docker, NVIDIA Container Toolkit
+- พื้นที่ดิสก์ว่างอย่างน้อย {{ disk_gb }} GB (โมเดล + image)
+{% if report.gated %}- **โมเดลนี้เป็น gated repo** — ต้องมี `HF_TOKEN` (env) ที่ได้รับสิทธิ์แล้วตอน download
+{% endif %}
+
+## Persistent paths
+
+{% if plan.runtime.engine.value == "vllm" %}- โมเดลเก็บใน HF cache: `${HF_HOME:-~/.cache/huggingface}` (symlink-based, resume ได้)
+{% else %}- โมเดลเก็บใน: `${MODEL_DIR:-~/models/{{ slug }}}`
+{% endif %}- แก้ path ได้ผ่าน env โดยไม่ต้องแก้สคริปต์
+
+## Runtime pin
+
+- Image: `{{ plan.runtime.image_ref }}`{% if plan.runtime.image_pin %} @ `{{ plan.runtime.image_pin }}`{% else %}
+- ⚠ ยังไม่ pin digest — ก่อนใช้ production รัน `docker inspect --format='{{ "{{" }}index .RepoDigests 0{{ "}}" }}'` แล้วบันทึกลงสคริปต์{% endif %}
+- Model revision pin: `{{ plan.revision }}`
+
+## First-run
+
+```bash
+chmod +x {{ controller_name }}
+./{{ controller_name }} download
+./{{ controller_name }} verify-files
+./{{ controller_name }} start
+./{{ controller_name }} status
+./{{ controller_name }} test-text
+./{{ controller_name }} client-config
+```
+
+## Conflict shutdown
+
+ก่อน start ถ้ามี service อื่นใช้ port {{ '${API_PORT:-8000}' }} อยู่:
+
+```bash
+docker ps                          # หา container ที่ชน port
+docker rm -f <ชื่อ-container>       # หยุดตัวที่ชน
+```
+
+## Start after reboot
+
+controller นี้**ไม่ตั้ง autostart** (ตามมาตรฐานทีม) — หลัง reboot รัน:
+
+```bash
+./{{ controller_name }} start
+```
+
+## Status & logs
+
+```bash
+./{{ controller_name }} status
+./{{ controller_name }} logs 500
+./{{ controller_name }} network-info
+```
+
+## Context tuning
+
+- ค่าเริ่มต้น {{ "{:,}".format(plan.serving.context) }} มาจาก fit analysis ของ target `{{ fit.target_name }}`
+- เพิ่ม/ลดชั่วคราว: `./{{ controller_name }} start --context 16384` หรือ env `{{ context_env }}`
+- เพิ่มทีละขั้น (16k → 32k → 65k) แล้วรัน test ซ้ำทุกครั้ง — memory พอไม่ได้แปลว่า TTFT ยอมรับได้
+
+## Security
+
+- อย่า hard-code token/API key ในสคริปต์ — ใช้ env (`HF_TOKEN`, `API_KEY`)
+- เปิด `API_KEY` เสมอเมื่อ bind ออก network ที่แชร์กับคนอื่น
+{% if report.trust_remote_code_files %}- ⚠ repo มีไฟล์ remote code: {{ report.trust_remote_code_files | join(", ") }} — review ก่อนเปิด `--trust-remote-code` (ดู SPECIAL_FILES.md)
+{% endif %}{% if plan.flags_needing_approval %}- ⚠ flag ที่ผู้วางแผนเสนอแต่ต้องอนุมัติเอง (ไม่ได้ใส่ในสคริปต์): {{ plan.flags_needing_approval | join(", ") }}
+{% endif %}
+
+## Validation scope
+
+- **{{ validation_status }}**
+- static validation: `bash -n` + LMDS quality gates ผ่านแล้ว
+- hardware validation: {{ "ผ่านแล้ว" if hardware_validated else "ยังไม่ได้รันบนเครื่องจริง — สถานะจะอัปเดตเมื่อรัน acceptance tests" }}
+
+{% if plan.warnings %}## Warnings จากขั้นวางแผน
+
+{% for w in plan.warnings %}- {{ w }}
+{% endfor %}{% endif %}

@@ -21,6 +21,7 @@ class ArtifactType(str, Enum):
 class GgufVariant(BaseModel):
     filename: str
     size_bytes: Optional[int] = None
+    sha256: Optional[str] = None  # จาก lfs.oid ของ Hub — ใช้ทำ exact hash check ใน controller
     is_mmproj: bool = False
 
 
