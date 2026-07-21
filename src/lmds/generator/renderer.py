@@ -105,6 +105,9 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
     weights_gb = fit.weights_gb or (report.weight_bytes or 0) / 1024**3
     disk_gb = int(weights_gb * 1.2 + 20)  # โมเดล + image + เผื่อ
 
+    # health timeout สเกลตามขนาดโมเดลจริง (~30s/GB สำหรับ cold load + ฐาน 300s), ขั้นต่ำ 600 เพดาน 7200
+    health_timeout = min(max(600, int(weights_gb * 30) + 300), 7200)
+
     # offload: ถ้า fit บอก fits-with-offload ให้เริ่มที่ค่ากลาง ปรับเองตาม log ได้
     n_gpu_layers = 999
     if fit.verdict.value == "fits-with-offload":
@@ -133,6 +136,7 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "client_input": _client_input(plan),
         "context_env": "MAX_MODEL_LEN" if not is_gguf else "CTX_SIZE",
         "disk_gb": disk_gb,
+        "health_timeout": health_timeout,
         "validation_status": "static-validated",
         "hardware_validated": False,
     }

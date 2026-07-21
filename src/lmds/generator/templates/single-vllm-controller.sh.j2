@@ -30,7 +30,7 @@ CLIENT_INPUT="${CLIENT_INPUT:-auto}"
 TEMPLATE_OVERHEAD_TOKENS="2048"
 
 HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-900}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # ========================================================================
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -195,7 +195,13 @@ wait_health() {
     local running
     running="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
     [[ -n "$running" ]] || die "container หยุดก่อน health ผ่าน — ดู: $0 logs"
-    (( waited < HEALTH_TIMEOUT )) || die "health timeout ${HEALTH_TIMEOUT}s — ดู: $0 logs"
+    if (( waited >= HEALTH_TIMEOUT )); then
+      echo "ยังไม่ health ภายใน ${HEALTH_TIMEOUT}s — container ยังโหลดต่ออยู่ ไม่ได้ถูกหยุด" >&2
+      echo "รอต่อ:      $0 wait-health" >&2
+      echo "ดูคืบหน้า:   $0 logs 100" >&2
+      echo "รอบหน้ารอนานขึ้น: HEALTH_TIMEOUT=3600 $0 start" >&2
+      exit 1
+    fi
     sleep 5
     waited=$(( waited + 5 ))
   done
@@ -264,6 +270,7 @@ Commands:
   client-config   พิมพ์ค่าตั้ง client (JSON) พร้อม token budget
   network-info    bind/endpoint ปัจจุบัน
   test-text       ทดสอบ chat completion หนึ่งครั้ง
+  wait-health      รอ /health ต่อ (ใช้เมื่อ start เคย timeout แต่โมเดลยังโหลดอยู่)
 EOF
 }
 
@@ -281,5 +288,6 @@ case "${1:-help}" in
   client-config) client_config ;;
   network-info) network_info ;;
   test-text)    test_text ;;
+  wait-health)  wait_health ;;
   *)            usage ;;
 esac

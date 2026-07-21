@@ -294,6 +294,20 @@ def test_split_gguf_all_parts_in_controller(isolated_config, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_health_timeout_scales_with_model_size(isolated_config, tmp_path):
+    """โมเดลใหญ่ต้องได้ timeout นานขึ้นอัตโนมัติ + มีคำสั่ง wait-health สำหรับตามต่อ"""
+    small, _, _ = make_bundle(gguf_report(weight_bytes=5 * GIB), tmp_path=tmp_path / "s")
+    big, _, _ = make_bundle(gguf_report(weight_bytes=100 * GIB), target="dgx-spark-single", tmp_path=tmp_path / "b")
+
+    small_text = small.controller.read_text(encoding="utf-8")
+    big_text = big.controller.read_text(encoding="utf-8")
+    assert 'HEALTH_TIMEOUT:-600}' in small_text  # 5GB → ขั้นต่ำ 600
+    assert 'HEALTH_TIMEOUT:-3300}' in big_text  # 100GB → 100×30+300
+    for text in (small_text, big_text):
+        assert "wait-health)" in text
+        assert "ไม่ได้ถูกหยุด" in text  # timeout ต้องบอกว่าเซิร์ฟเวอร์ยังโหลดต่อ
+
+
 def test_gated_repo_noted_in_readme(isolated_config, tmp_path):
     bundle, _, _ = make_bundle(safetensors_report(gated=True), tmp_path=tmp_path)
     readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
