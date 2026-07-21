@@ -10,7 +10,14 @@
 ## สถานะโปรเจกต์
 
 🟢 **เฟส 1 — CLI MVP: โค้ดครบทุกคำสั่งแล้ว (M1–M7a)** — เหลือ hardware validation บนเครื่องจริง (M7b)
-ดู [ROADMAP.md](docs/ROADMAP.md) | ติดตั้ง: [docs/INSTALL.md](docs/INSTALL.md)
+
+## 📖 เริ่มที่นี่
+
+| ผู้อ่าน | เอกสาร |
+|---|---|
+| **ผู้ติดตั้ง/ทีมงาน/ลูกค้า** — ติดตั้งครั้งแรก | **[docs/INSTALL.md](docs/INSTALL.md)** — เตรียมเครื่อง (Docker, NVIDIA toolkit), ติดตั้ง, ตั้งค่า ทีละขั้น |
+| **ผู้ใช้งาน** — deploy โมเดล | **[docs/USAGE.md](docs/USAGE.md)** — คู่มือใช้งานละเอียด + ตาราง troubleshooting |
+| ผู้พัฒนา/ผู้ตัดสินใจ | [docs/PRD.md](docs/PRD.md), [docs/CLI_SPEC.md](docs/CLI_SPEC.md), [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 ## หลักการออกแบบสำคัญ
 
@@ -34,10 +41,12 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 
 ผลลัพธ์: โฟลเดอร์ bundle + ZIP ประกอบด้วย controller script (มาตรฐาน v3.0.0), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md`, `PACKAGE_SHA256SUMS`
 
-## เอกสาร
+## เอกสารทั้งหมด
 
 | เอกสาร | เนื้อหา |
 |---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | **คู่มือติดตั้งละเอียด** — prerequisites (Docker/NVIDIA toolkit พร้อมคำสั่งครบ), ติดตั้ง, ตั้งค่า provider/token, อัปเดต/ถอนการติดตั้ง |
+| [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว, target presets, ย้าย bundle ข้ามเครื่อง, troubleshooting 12 อาการ |
 | [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | แผนพัฒนา 3 เฟส + work breakdown ของเฟส 1 |
