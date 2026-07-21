@@ -41,6 +41,10 @@ def version() -> None:
 def inspect(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision", help="branch/tag/commit ที่ต้องการ"),
+    targets: list[str] = typer.Option(
+        [], "--target", help="ประเมิน fit กับ target ที่ระบุ (ซ้ำได้) เช่น rtx-pro-4000 — ค่าว่าง = เครื่องนี้ + dgx-spark-single"
+    ),
+    concurrency: int = typer.Option(1, "--concurrency", help="จำนวน request พร้อมกันที่ใช้คำนวณ KV cache"),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON (สำหรับ scripting)"),
 ) -> None:
     """วิเคราะห์โมเดลจากลิงก์ — ดึงเฉพาะ metadata ไม่ดาวน์โหลด weight
@@ -88,11 +92,86 @@ def inspect(
         err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")
         raise typer.Exit(code=5)
 
+    fit_reports = _compute_fits(report, targets, concurrency)
+
     if as_json:
-        print(report.model_dump_json(indent=2))
+        import json as json_module
+
+        payload = {
+            "model": report.model_dump(mode="json"),
+            "fit": [f.model_dump(mode="json") for f in fit_reports],
+        }
+        print(json_module.dumps(payload, indent=2, ensure_ascii=False))
         return
 
     _render_report(report)
+    _render_fits(fit_reports)
+
+
+def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
+    from lmds.fit import PRESETS, analyze, from_hardware_report
+
+    specs = []
+    if target_names:
+        for name in target_names:
+            spec = PRESETS.get(name)
+            if spec is None:
+                err_console.print(
+                    f"[red]ไม่รู้จัก target: {name}[/red] — มีให้เลือก: {', '.join(sorted(PRESETS))}"
+                )
+                raise typer.Exit(code=1)
+            specs.append(spec)
+    else:
+        from lmds.hardware import probe
+
+        detected = from_hardware_report(probe())
+        if detected is not None:
+            specs.append(detected)
+        if not any(s.name.startswith("dgx-spark") for s in specs):
+            specs.append(PRESETS["dgx-spark-single"])
+
+    return [analyze(report, spec, concurrency=concurrency) for spec in specs]
+
+
+def _render_fits(fit_reports: list) -> None:
+    from lmds.fit import Verdict
+
+    if not fit_reports:
+        return
+    icons = {
+        Verdict.FITS: "✅",
+        Verdict.FITS_REDUCED_CONTEXT: "✅",
+        Verdict.FITS_WITH_OFFLOAD: "🟡",
+        Verdict.NEEDS_SMALLER_QUANT: "❌",
+        Verdict.NO_FIT: "❌",
+        Verdict.UNKNOWN: "❓",
+    }
+    table = Table(title="Fit Analysis")
+    table.add_column("Target")
+    table.add_column("ผล")
+    table.add_column("รายละเอียด")
+    for fit in fit_reports:
+        details: list[str] = []
+        if fit.weights_gb is not None:
+            details.append(f"weights {fit.weights_gb} / budget {fit.budget_gb} GB")
+        if fit.recommended_context:
+            details.append(f"context แนะนำ {fit.recommended_context:,}")
+        if fit.client_input_budget:
+            details.append(f"client input {fit.client_input_budget:,} tokens")
+        fitting = [v for v in fit.variant_fits if v.fits]
+        if fit.variant_fits and not fit.weights_gb:
+            details.append(f"variant ผ่าน {len(fitting)}/{len(fit.variant_fits)}")
+        table.add_row(
+            f"{fit.target_name} ({fit.engine_assumed})",
+            f"{icons[fit.verdict]} {fit.verdict.value}",
+            "\n".join(details) or "-",
+        )
+    console.print(table)
+    for fit in fit_reports:
+        for note in fit.notes:
+            err_console.print(f"[dim]• {fit.target_name}: {note}[/dim]")
+        for alt in fit.alternatives:
+            err_console.print(f"[yellow]→ {fit.target_name}: {alt}[/yellow]")
 
 
 def _render_report(report) -> None:

@@ -24,6 +24,19 @@ class GgufVariant(BaseModel):
     is_mmproj: bool = False
 
 
+class KvDims(BaseModel):
+    """มิติสำหรับคำนวณ KV cache — จาก config.json หรือ GGUF metadata เท่านั้น (ไม่เดา)"""
+
+    layers: int
+    kv_heads: int
+    head_dim: int
+
+    @property
+    def bytes_per_token_fp16(self) -> int:
+        # K + V ต่อ layer ต่อ token: 2 × kv_heads × head_dim × 2 bytes (fp16)
+        return 2 * self.layers * self.kv_heads * self.head_dim * 2
+
+
 class ModelReport(BaseModel):
     repo_id: str
     revision_requested: Optional[str] = None
@@ -43,6 +56,7 @@ class ModelReport(BaseModel):
     model_type: Optional[str] = None
     context_length: Optional[int] = None
     quantization: Optional[str] = None
+    kv_dims: Optional[KvDims] = None
     has_chat_template: Optional[bool] = None
     trust_remote_code_files: list[str] = Field(default_factory=list)  # configuration_*.py, modeling_*.py
 

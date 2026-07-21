@@ -7,9 +7,9 @@ from typing import Any
 
 from lmds.resolver import ModelSource
 
-from .gguf import GgufParseError, parse_gguf
+from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import BudgetExceeded, HfClient
-from .report import ArtifactType, GgufVariant, ModelReport
+from .report import ArtifactType, GgufVariant, KvDims, ModelReport
 
 _SAFETENSORS_INDEX = "model.safetensors.index.json"
 
@@ -147,6 +147,7 @@ def _inspect_safetensors(
         quant = config.get("quantization_config")
         if isinstance(quant, dict):
             report.quantization = str(quant.get("quant_method") or quant.get("quant_algo") or "quantized")
+        report.kv_dims = _kv_dims_from_config(config)
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
 
@@ -161,6 +162,40 @@ def _inspect_safetensors(
     else:
         template = client.fetch_small_file(source.repo_id, revision, "chat_template.jinja")
         report.has_chat_template = template is not None if tokenizer_config is not None else None
+
+
+def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
+    """อ่านมิติ KV จาก config.json — รองรับ text_config ซ้อน (โมเดล multimodal)"""
+    scope = config
+    if not config.get("num_hidden_layers") and isinstance(config.get("text_config"), dict):
+        scope = config["text_config"]
+
+    layers = scope.get("num_hidden_layers")
+    heads = scope.get("num_attention_heads")
+    kv_heads = scope.get("num_key_value_heads") or heads
+    head_dim = scope.get("head_dim")
+    if head_dim is None and isinstance(scope.get("hidden_size"), int) and isinstance(heads, int) and heads:
+        head_dim = scope["hidden_size"] // heads
+    if all(isinstance(v, int) and v > 0 for v in (layers, kv_heads, head_dim)):
+        return KvDims(layers=layers, kv_heads=kv_heads, head_dim=head_dim)
+    return None
+
+
+def _kv_dims_from_gguf(gguf: GgufInfo) -> KvDims | None:
+    arch = gguf.architecture
+    if not arch:
+        return None
+    meta = gguf.metadata
+    layers = meta.get(f"{arch}.block_count")
+    heads = meta.get(f"{arch}.attention.head_count")
+    kv_heads = meta.get(f"{arch}.attention.head_count_kv") or heads
+    head_dim = meta.get(f"{arch}.attention.key_length")
+    embedding = meta.get(f"{arch}.embedding_length")
+    if head_dim is None and isinstance(embedding, int) and isinstance(heads, int) and heads:
+        head_dim = embedding // heads
+    if all(isinstance(v, int) and v > 0 for v in (layers, kv_heads, head_dim)):
+        return KvDims(layers=layers, kv_heads=kv_heads, head_dim=head_dim)
+    return None
 
 
 def _inspect_gguf(
@@ -208,6 +243,7 @@ def _inspect_gguf(
         return
     report.architecture = report.architecture or gguf.architecture
     report.context_length = report.context_length or gguf.context_length
+    report.kv_dims = report.kv_dims or _kv_dims_from_gguf(gguf)
     if report.has_chat_template is None:
         report.has_chat_template = gguf.chat_template is not None
     if gguf.file_type is not None and not report.quantization:
