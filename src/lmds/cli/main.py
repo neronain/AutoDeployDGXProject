@@ -592,11 +592,44 @@ def validate(
     console.print("[green]ผ่านทุก gate — static-validated[/green]")
 
 
+def _ram_bar(used: float, total: float, width: int = 18) -> str:
+    filled = min(width, round(width * used / total)) if total else 0
+    percent = used / total * 100 if total else 0
+    color = "green" if percent < 70 else ("yellow" if percent < 90 else "red")
+    return f"[{color}]{'▰' * filled}[/{color}]{'▱' * (width - filled)} {percent:.0f}%"
+
+
+def _render_host_panel() -> None:
+    from lmds.hardware import host_summary
+
+    host = host_summary()
+    parts = [f"[bold]{host.hostname}[/bold]", host.ip, host.arch, f"profile: {host.profile.value}"]
+    console.print("🖥  " + " · ".join(parts))
+    if host.gpus:
+        gpu_bits = []
+        for gpu in host.gpus:
+            if gpu.vram_mib:
+                mem = f"{gpu.vram_mib / 1024:.0f}GB"
+            elif gpu.known is not None:
+                mem = f"{gpu.known.vram_gb:.0f}GB {'unified' if gpu.known.memory_model.value == 'unified' else ''}".strip()
+            else:
+                mem = "?"
+            gpu_bits.append(f"{gpu.name} ({mem})")
+        console.print("🎮 GPU: " + " | ".join(gpu_bits))
+    if host.ram_total_gb and host.ram_used_gb is not None:
+        console.print(
+            f"📊 RAM: {_ram_bar(host.ram_used_gb, host.ram_total_gb)}  "
+            f"ใช้ไป {host.ram_used_gb} / {host.ram_total_gb} GB (เหลือ {host.ram_available_gb} GB)"
+        )
+    console.print()
+
+
 @app.command()
 def ps() -> None:
-    """แสดงทุกโมเดลที่ deploy ในเครื่องนี้ พร้อมสถานะจริง (running/health/endpoint)"""
+    """แสดงเครื่อง + ทุกโมเดลที่ deploy ในเครื่องนี้ พร้อมสถานะจริง (running/health/endpoint)"""
     from lmds.fleet import discover
 
+    _render_host_panel()
     servers = discover()
     if not servers:
         console.print("ยังไม่มีโมเดลที่เคย start ในเครื่องนี้ — deploy ก่อน: lmds deploy <model-url>")
@@ -755,7 +788,15 @@ def hardware() -> None:
             table.add_row(f"GPU {i}", f"{gpu.name} ({vram}, {cc}) {tested}")
     else:
         table.add_row("GPU", "ไม่พบ")
-    table.add_row("RAM", f"{report.ram_gb} GB" if report.ram_gb else "ตรวจไม่ได้")
+    from lmds.hardware.profiler import detect_mem, primary_ip
+
+    total_gb, available_gb = detect_mem()
+    if total_gb and available_gb is not None:
+        used_gb = round(total_gb - available_gb, 1)
+        table.add_row("RAM", f"ใช้ไป {used_gb} / {total_gb} GB (เหลือ {available_gb} GB)")
+    else:
+        table.add_row("RAM", f"{report.ram_gb} GB" if report.ram_gb else "ตรวจไม่ได้")
+    table.add_row("IP", primary_ip())
     table.add_row("Docker", "✅" if report.docker else "❌")
     table.add_row("NVIDIA Container Toolkit", "✅" if report.nvidia_container_toolkit else "❌")
     table.add_row("Profile", report.profile.value)

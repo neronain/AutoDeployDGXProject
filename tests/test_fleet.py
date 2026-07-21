@@ -208,6 +208,58 @@ def test_cli_ps_marks_unregistered(tmp_path, monkeypatch, isolated_config):
     assert "regenerate" in result.output
 
 
+def test_host_summary_fields(monkeypatch):
+    from lmds.hardware import host_summary
+    from lmds.hardware.profiler import DetectedGpu
+    from lmds.hardware.profiles import lookup_gpu
+
+    monkeypatch.setattr(
+        "lmds.hardware.profiler.detect_gpus",
+        lambda: ([DetectedGpu("NVIDIA GB10", None, "12.1", lookup_gpu("NVIDIA GB10"))], []),
+    )
+    monkeypatch.setattr("lmds.hardware.profiler.detect_mem", lambda: (121.7, 76.5))
+    monkeypatch.setattr("lmds.hardware.profiler.primary_ip", lambda: "10.2.1.138")
+    monkeypatch.setattr("platform.node", lambda: "gigabyte02")
+
+    host = host_summary()
+    assert host.hostname == "gigabyte02"
+    assert host.ip == "10.2.1.138"
+    assert host.profile.value == "dgx-spark-single"
+    assert host.ram_used_gb == 45.2  # 121.7 - 76.5
+
+
+def test_cli_ps_shows_host_panel(tmp_path, monkeypatch, isolated_config):
+    from lmds.hardware.profiler import HostSummary
+    from lmds.hardware.profiles import TargetProfile
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    make_meta(tmp_path, "model-a", pid=os.getpid(), port=8000)
+    monkeypatch.setattr(
+        "lmds.hardware.host_summary",
+        lambda: HostSummary(
+            hostname="gigabyte02", ip="10.2.1.138", arch="aarch64",
+            profile=TargetProfile.DGX_SPARK_SINGLE,
+            ram_total_gb=121.7, ram_available_gb=40.0,
+        ),
+    )
+    result = runner.invoke(app, ["ps"])
+    assert result.exit_code == 0
+    assert "gigabyte02" in result.output
+    assert "10.2.1.138" in result.output
+    assert "dgx-spark-single" in result.output
+    assert "81.7" in result.output  # RAM ใช้ไป
+    assert "▰" in result.output  # แถบ RAM
+
+
+def test_ram_bar_colors():
+    from lmds.cli.main import _ram_bar
+
+    assert "green" in _ram_bar(10, 100)
+    assert "yellow" in _ram_bar(80, 100)
+    assert "red" in _ram_bar(95, 100)
+    assert "100%" in _ram_bar(100, 100)
+
+
 def test_generated_controller_writes_meta(isolated_config, tmp_path):
     from tests.test_generator import gguf_report, make_bundle
 

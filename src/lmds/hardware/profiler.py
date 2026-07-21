@@ -75,14 +75,69 @@ def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
 
 
 def detect_ram_gb() -> float | None:
+    total, _ = detect_mem()
+    return total
+
+
+def detect_mem() -> tuple[float | None, float | None]:
+    """คืน (RAM รวม GB, RAM ที่ว่างใช้ได้ GB) — None เมื่ออ่านไม่ได้ (เช่น ไม่ใช่ Linux)"""
+    total = available = None
     try:
         with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
-                    return round(int(line.split()[1]) / (1024 * 1024), 1)
+                    total = round(int(line.split()[1]) / (1024 * 1024), 1)
+                elif line.startswith("MemAvailable:"):
+                    available = round(int(line.split()[1]) / (1024 * 1024), 1)
     except OSError:
         pass
-    return None
+    return total, available
+
+
+def primary_ip() -> str:
+    """IP หลักของเครื่อง (เส้นทางออก default) — ไม่มีการส่งข้อมูลจริง"""
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
+
+
+@dataclass
+class HostSummary:
+    hostname: str
+    ip: str
+    arch: str
+    profile: TargetProfile
+    gpus: list[DetectedGpu] = field(default_factory=list)
+    ram_total_gb: float | None = None
+    ram_available_gb: float | None = None
+
+    @property
+    def ram_used_gb(self) -> float | None:
+        if self.ram_total_gb is None or self.ram_available_gb is None:
+            return None
+        return round(self.ram_total_gb - self.ram_available_gb, 1)
+
+
+def host_summary() -> HostSummary:
+    """ข้อมูลเครื่องแบบเบา (ไม่แตะ docker) — ใช้กับ lmds ps"""
+    gpus, _ = detect_gpus()
+    total, available = detect_mem()
+    return HostSummary(
+        hostname=platform.node(),
+        ip=primary_ip(),
+        arch=platform.machine(),
+        profile=classify([g.name for g in gpus]),
+        gpus=gpus,
+        ram_total_gb=total,
+        ram_available_gb=available,
+    )
 
 
 def detect_docker() -> tuple[bool, bool]:
