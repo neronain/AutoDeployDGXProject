@@ -14,6 +14,7 @@ from .paths import config_file, ensure_config_dir
 class ProviderName(str, Enum):
     OPENAI = "openai"
     GEMINI = "gemini"
+    MINIMAX = "minimax"
     ANTHROPIC = "anthropic"
     OPENAI_COMPAT = "openai-compat"
 
@@ -21,6 +22,7 @@ class ProviderName(str, Enum):
 DEFAULT_MODELS: dict[ProviderName, str] = {
     ProviderName.OPENAI: "gpt-4.1",
     ProviderName.GEMINI: "gemini-2.5-pro",
+    ProviderName.MINIMAX: "MiniMax-M2",
     ProviderName.ANTHROPIC: "claude-sonnet-5",
     ProviderName.OPENAI_COMPAT: "",  # ผู้ใช้ต้องระบุเองคู่กับ base_url
 }

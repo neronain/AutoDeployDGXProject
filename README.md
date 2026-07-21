@@ -1,5 +1,7 @@
 # AutoDeployDGXProject — Local Model Deploy Studio (LMDS)
 
+> ⚡ สร้างและดูแลโดย **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
+
 โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล** (Hugging Face / Ollama / NGC / URL ตรง) แล้วใช้ **LLM API** (OpenAI, Gemini, Claude หรือ OpenAI-compatible endpoint) เป็นสมองในการวิเคราะห์และ**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
 
 - **NVIDIA DGX Spark** — เครื่องเดี่ยว หรือ stacked หลายเครื่อง
@@ -55,7 +57,7 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 
 - Ubuntu 22.04 / 24.04 (ARM64 หรือ x86_64) — พัฒนาบน macOS ได้
 - Python 3.10+
-- LLM API key อย่างน้อย 1 provider (OpenAI / Gemini / OpenAI-compatible) — มี degraded mode สำหรับโมเดลตระกูลที่รู้จักเมื่อไม่มี key
+- LLM provider อย่างน้อย 1 ทาง: OpenAI / Gemini / MiniMax / OpenAI-compatible (Ollama, vLLM local — ไม่ต้องมี key) — หรือไม่มีเลยก็ใช้ `--no-llm` (rule-based mode)
 - Docker + NVIDIA Container Toolkit บนเครื่องเป้าหมาย (สำหรับรัน bundle ที่ generate)
 
 ## License

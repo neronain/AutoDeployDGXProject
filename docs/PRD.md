@@ -34,7 +34,7 @@
 
 ### เป้าหมาย (Goals)
 - **G1** — รับลิงก์โมเดลจาก Hugging Face, Ollama, NGC, GitHub release หรือ URL ไฟล์ GGUF ตรง แล้วสร้าง deployment bundle ที่รันได้จริง
-- **G2** — รองรับ LLM provider อย่างน้อย: OpenAI, Google Gemini, Anthropic Claude และ endpoint แบบ OpenAI-compatible (รวมถึงโมเดล local เป็นสมองเองได้)
+- **G2** — รองรับ LLM provider อย่างน้อย: OpenAI, Google Gemini, MiniMax, Anthropic Claude และ endpoint แบบ OpenAI-compatible (Ollama/vLLM — โมเดล local เป็นสมองเองได้โดยไม่ต้องมี key)
 - **G3** — ถาม HF token แบบ **optional** เฉพาะเมื่อจำเป็น (ตรวจ gated repo อัตโนมัติ) — ไม่ใส่ก็ดาวน์โหลด repo สาธารณะได้ตามปกติ
 - **G4** — รองรับฮาร์ดแวร์ 3 กลุ่ม: DGX Spark เดี่ยว, DGX Spark stacked (2+ เครื่อง), และ Ubuntu + RTX (single/multi-GPU, x86_64)
 - **G5** — ทุก bundle ที่ส่งออกผ่าน quality gates เดียวกับ v3.0.0 (`bash -n`, audit rules, SHA-256 manifest) โดยอัตโนมัติ

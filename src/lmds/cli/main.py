@@ -30,11 +30,22 @@ console = Console()
 err_console = Console(stderr=True)
 
 
+@app.callback()
+def _entry() -> None:
+    """Local Model Deploy Studio — โดย neronain (fb.com/neronain.minidev)"""
+    from .banner import show_banner
+
+    show_banner(err_console)
+
+
 @app.command()
 def version() -> None:
     """แสดงเวอร์ชันโปรแกรมและมาตรฐาน template"""
+    from .banner import CREDIT
+
     console.print(f"lmds {lmds.__version__}")
     console.print(f"template standard: {lmds.TEMPLATE_STANDARD}")
+    console.print(f"[dim]{CREDIT}[/dim]")
 
 
 @app.command()
@@ -613,7 +624,7 @@ def hardware() -> None:
 
 @config_app.command("set-provider")
 def set_provider(
-    name: ProviderName = typer.Argument(..., help="openai | gemini | anthropic | openai-compat"),
+    name: ProviderName = typer.Argument(..., help="openai | gemini | minimax | anthropic | openai-compat"),
     model: str = typer.Option("", "--model", help="ชื่อโมเดล (ว่าง = ใช้ default ของ provider)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="จำเป็นสำหรับ openai-compat"),
 ) -> None:

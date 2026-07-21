@@ -10,7 +10,15 @@ from .plan_schema import (
     Serving,
     Topology,
 )
-from .providers import GeminiProvider, LlmProvider, MissingKey, OpenAiCompatProvider, ProviderError, make_provider
+from .providers import (
+    GeminiProvider,
+    LlmProvider,
+    MiniMaxProvider,
+    MissingKey,
+    OpenAiCompatProvider,
+    ProviderError,
+    make_provider,
+)
 from .rulebased import rule_based_plan, slugify
 
 __all__ = [
@@ -20,6 +28,7 @@ __all__ = [
     "Fact",
     "GeminiProvider",
     "LlmProvider",
+    "MiniMaxProvider",
     "MissingKey",
     "OpenAiCompatProvider",
     "PlanError",

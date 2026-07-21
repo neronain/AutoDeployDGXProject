@@ -3,7 +3,14 @@ import json
 import httpx
 import pytest
 
-from lmds.brain import GeminiProvider, MissingKey, OpenAiCompatProvider, ProviderError, make_provider
+from lmds.brain import (
+    GeminiProvider,
+    MiniMaxProvider,
+    MissingKey,
+    OpenAiCompatProvider,
+    ProviderError,
+    make_provider,
+)
 from lmds.config.settings import ProviderConfig, ProviderName
 
 
@@ -78,6 +85,51 @@ def test_gemini_request_shape_and_parse():
     assert seen["key"].startswith("AIza")
     assert seen["body"]["generationConfig"]["responseMimeType"] == "application/json"
     assert seen["body"]["systemInstruction"]["parts"][0]["text"] == "SYS"
+
+
+def test_minimax_request_shape_and_parse():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("Authorization")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "choices": [{"message": {"role": "assistant", "content": '{"plan": true}'}}],
+        })
+
+    provider = MiniMaxProvider(
+        "MiniMax-M2", "mmkey-1234567890abcdef",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    out = provider.complete_json("SYS", "USR")
+    assert out == '{"plan": true}'
+    assert seen["url"] == "https://api.minimax.io/v1/text/chatcompletion_v2"
+    assert seen["auth"] == "Bearer mmkey-1234567890abcdef"
+    assert seen["body"]["model"] == "MiniMax-M2"
+    assert seen["body"]["messages"][0]["role"] == "system"
+
+
+def test_minimax_base_resp_error_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "base_resp": {"status_code": 1004, "status_msg": "invalid api key"},
+        })
+
+    provider = MiniMaxProvider(
+        "MiniMax-M2", "badkey-123456789012",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ProviderError, match="invalid api key"):
+        provider.complete_json("s", "u")
+
+
+def test_make_provider_minimax_dispatch():
+    provider = make_provider(ProviderConfig(name=ProviderName.MINIMAX, model="MiniMax-M2"), "k-1234")
+    assert isinstance(provider, MiniMaxProvider)
+    with pytest.raises(MissingKey, match="set-key minimax"):
+        make_provider(ProviderConfig(name=ProviderName.MINIMAX, model="MiniMax-M2"), None)
 
 
 def test_make_provider_missing_key():

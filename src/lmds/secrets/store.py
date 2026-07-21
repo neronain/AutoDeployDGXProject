@@ -23,6 +23,7 @@ SECRET_ENV_VARS: dict[str, list[str]] = {
     "openai": ["LMDS_OPENAI_API_KEY", "OPENAI_API_KEY"],
     "gemini": ["LMDS_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
     "anthropic": ["LMDS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"],
+    "minimax": ["LMDS_MINIMAX_API_KEY", "MINIMAX_API_KEY"],
     "openai-compat": ["LMDS_OPENAI_COMPAT_API_KEY"],
     "hf": ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"],
 }

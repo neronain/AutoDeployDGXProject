@@ -162,7 +162,11 @@ lmds config set-provider openai-compat --base-url http://10.10.10.1:11434/v1 --m
 
 #   (ถ้า endpoint ตั้ง API key ไว้ ค่อยรัน: lmds config set-key openai-compat)
 
-# แบบ D: ไม่มี LLM เลย — ไม่ต้องตั้งอะไร แล้วเติม --no-llm ทุกครั้งที่ deploy (rule-based mode)
+# แบบ D: MiniMax (คลาวด์ — default model: MiniMax-M2)
+lmds config set-provider minimax
+lmds config set-key minimax
+
+# แบบ E: ไม่มี LLM เลย — ไม่ต้องตั้งอะไร แล้วเติม --no-llm ทุกครั้งที่ deploy (rule-based mode)
 ```
 
 > **หมายเหตุ**: ถ้า provider ที่ตั้งไว้ใช้ไม่ได้ตอน deploy (เช่น quota หมด / เครือข่ายล่ม)
