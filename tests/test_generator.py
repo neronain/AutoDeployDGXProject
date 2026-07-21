@@ -132,8 +132,8 @@ def test_vllm_controller_pins_revision(isolated_config, tmp_path):
 def test_llamacpp_controller_exact_verification(isolated_config, tmp_path):
     bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
-    assert f'EXPECTED_SIZE_BYTES="{5 * GIB}"' in text
-    assert f'EXPECTED_SHA256="{"a" * 64}"' in text
+    assert f'"{5 * GIB}"' in text  # exact size ใน EXPECTED_SIZES
+    assert f'"{"a" * 64}"' in text  # SHA-256 ใน EXPECTED_SHAS
     assert 'magic="$(head -c 4' in text
     assert "--jinja" in text  # chat template ฝังใน GGUF
 
@@ -220,6 +220,50 @@ def test_multi_gpu_target_gets_tensor_parallel(isolated_config, tmp_path):
     text = bundle.controller.read_text(encoding="utf-8")
     assert "TENSOR_PARALLEL_SIZE" in text
     assert "--tensor-parallel-size" in text
+
+
+def test_llamacpp_spark_uses_native_build_mode(isolated_config, tmp_path):
+    """Spark (unified): ไม่มี docker image ทางการ → native source build + prepare-runtime"""
+    bundle, _, _ = make_bundle(gguf_report(), target="dgx-spark-single", tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert 'RUNTIME_MODE:-native' in text
+    assert "prepare-runtime" in text
+    assert "121a-real" in text
+    assert "cmake" in text
+
+
+def test_llamacpp_rtx_uses_docker_mode(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(gguf_report(weight_bytes=5 * GIB), target="rtx-pro-4000", tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert 'RUNTIME_MODE:-docker' in text
+    assert "ghcr.io/ggml-org/llama.cpp" in text
+
+
+def test_split_gguf_all_parts_in_controller(isolated_config, tmp_path):
+    from lmds.inspector.report import GgufPart
+
+    report = gguf_report(
+        selected_gguf="BF16/m-BF16-00001-of-00002.gguf",
+        weight_bytes=62 * GIB,
+        gguf_variants=[
+            GgufVariant(
+                filename="BF16/m-BF16-00001-of-00002.gguf",
+                size_bytes=62 * GIB,
+                parts=[
+                    GgufPart(filename="BF16/m-BF16-00001-of-00002.gguf", size_bytes=50 * GIB, sha256="a" * 64),
+                    GgufPart(filename="BF16/m-BF16-00002-of-00002.gguf", size_bytes=12 * GIB, sha256="b" * 64),
+                ],
+            )
+        ],
+    )
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "m-BF16-00001-of-00002.gguf" in text
+    assert "m-BF16-00002-of-00002.gguf" in text  # ทุก part ถูก download/verify
+    assert f'"{50 * GIB}"' in text and f'"{12 * GIB}"' in text
+    assert ("a" * 64) in text and ("b" * 64) in text
+    result = subprocess.run(["bash", "-n", str(bundle.controller)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_gated_repo_noted_in_readme(isolated_config, tmp_path):

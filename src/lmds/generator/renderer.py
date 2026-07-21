@@ -61,12 +61,37 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
 
     gguf_size = None
     gguf_sha = None
+    gguf_parts: list[dict] = []
     if plan.selected_gguf:
-        for variant in report.gguf_variants:
-            if variant.filename == plan.selected_gguf:
-                gguf_size = variant.size_bytes
-                gguf_sha = variant.sha256
-                break
+        selected_variant = next(
+            (
+                v for v in report.gguf_variants
+                if v.filename == plan.selected_gguf
+                or any(p.filename == plan.selected_gguf for p in v.parts)
+            ),
+            None,
+        )
+        if selected_variant is not None:
+            gguf_size = selected_variant.size_bytes
+            gguf_sha = selected_variant.sha256
+            gguf_parts = [
+                {
+                    "filename": part.filename,
+                    "basename": part.filename.rsplit("/", 1)[-1],
+                    "size_bytes": part.size_bytes,
+                    "sha256": part.sha256,
+                }
+                for part in selected_variant.all_parts
+            ]
+        else:
+            gguf_parts = [
+                {
+                    "filename": plan.selected_gguf,
+                    "basename": plan.selected_gguf.rsplit("/", 1)[-1],
+                    "size_bytes": None,
+                    "sha256": None,
+                }
+            ]
 
     required = list(BASE_REQUIRED_FILES)
     if report.shard_count and report.shard_count > 1:
@@ -98,6 +123,10 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "gguf_basename": (plan.selected_gguf or "").rsplit("/", 1)[-1],
         "gguf_size": gguf_size,
         "gguf_sha256": gguf_sha,
+        "gguf_parts": gguf_parts,
+        # llama.cpp บน DGX Spark (unified/ARM64) ไม่มี docker image ทางการ — ใช้ native source build
+        "runtime_mode": "native" if fit.memory_model.value == "unified" else "docker",
+        "cuda_architectures": "121a-real" if fit.memory_model.value == "unified" else "native",
         "has_chat_template": bool(report.has_chat_template),
         "n_gpu_layers": n_gpu_layers,
         "client_input": _client_input(plan),

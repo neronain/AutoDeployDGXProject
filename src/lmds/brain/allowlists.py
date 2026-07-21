@@ -44,6 +44,26 @@ LLAMACPP_FLAGS = {
 
 _BY_ENGINE = {Engine.VLLM: VLLM_FLAGS, Engine.LLAMACPP: LLAMACPP_FLAGS}
 
+# registry/repo ของ runtime image ที่ยอมรับ (เทียบส่วนก่อน :tag/@digest)
+# LLM เสนอ image นอกรายการนี้ไม่ได้ — เคยเกิดจริง: มโน ghcr.io/lmds/llamacpp-ubuntu-rtx จน start พัง
+KNOWN_IMAGE_REPOS: dict[Engine, set[str]] = {
+    Engine.VLLM: {"vllm/vllm-openai", "nvcr.io/nvidia/vllm", "docker.io/vllm/vllm-openai"},
+    Engine.LLAMACPP: {"ghcr.io/ggml-org/llama.cpp", "ghcr.io/ggerganov/llama.cpp"},
+}
+
+
+def image_repo(image_ref: str) -> str:
+    """'ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:x' → 'ghcr.io/ggml-org/llama.cpp'"""
+    without_digest = image_ref.split("@", 1)[0]
+    head, _, tail = without_digest.rpartition(":")
+    if head and "/" not in tail:  # ':' ตัวท้ายเป็น tag ไม่ใช่ port ของ registry
+        return head
+    return without_digest
+
+
+def is_known_image(engine: Engine, image_ref: str) -> bool:
+    return image_repo(image_ref) in KNOWN_IMAGE_REPOS[engine]
+
 
 def flag_name(flag: str) -> str:
     """'--kv-cache-dtype=fp8' หรือ '--kv-cache-dtype fp8' → '--kv-cache-dtype'"""

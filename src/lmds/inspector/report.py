@@ -18,11 +18,24 @@ class ArtifactType(str, Enum):
     UNKNOWN = "unknown"
 
 
-class GgufVariant(BaseModel):
+class GgufPart(BaseModel):
     filename: str
     size_bytes: Optional[int] = None
+    sha256: Optional[str] = None
+
+
+class GgufVariant(BaseModel):
+    filename: str  # ไฟล์เดียว หรือ part แรก (-00001-of-N) ของ split GGUF
+    size_bytes: Optional[int] = None  # split: ขนาดรวมทุก part
     sha256: Optional[str] = None  # จาก lfs.oid ของ Hub — ใช้ทำ exact hash check ใน controller
     is_mmproj: bool = False
+    parts: list[GgufPart] = []  # ว่าง = ไฟล์เดียว; split = ทุก part เรียงลำดับ
+
+    @property
+    def all_parts(self) -> list[GgufPart]:
+        if self.parts:
+            return self.parts
+        return [GgufPart(filename=self.filename, size_bytes=self.size_bytes, sha256=self.sha256)]
 
 
 class KvDims(BaseModel):

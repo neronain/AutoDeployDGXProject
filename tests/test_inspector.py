@@ -167,6 +167,48 @@ def test_token_sent_as_bearer_header():
     assert seen["auth"] == "Bearer hf_secret123456789012"
 
 
+def test_split_gguf_grouped_as_one_variant():
+    """BF16-00001-of-00002 + 00002 → variant เดียว ขนาดรวม, เลือกด้วย part ไหนก็ได้"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/models/"):
+            return httpx.Response(200, json=hub_response([
+                {"rfilename": "BF16/m-BF16-00001-of-00002.gguf", "lfs": {"size": 50, "oid": "a" * 64}},
+                {"rfilename": "BF16/m-BF16-00002-of-00002.gguf", "lfs": {"size": 12, "oid": "b" * 64}},
+                {"rfilename": "m-Q4_K_M.gguf", "lfs": {"size": 18}},
+            ]))
+        return httpx.Response(404)
+
+    report = inspect_model(parse_source("org/split-GGUF"), make_client(handler))
+    variants = {v.filename: v for v in report.gguf_variants}
+    assert len(variants) == 2  # กลุ่ม BF16 รวมเป็นหนึ่ง + Q4 เดี่ยว
+    split = variants["BF16/m-BF16-00001-of-00002.gguf"]
+    assert split.size_bytes == 62  # ขนาดรวมทุก part
+    assert [p.filename for p in split.parts] == [
+        "BF16/m-BF16-00001-of-00002.gguf",
+        "BF16/m-BF16-00002-of-00002.gguf",
+    ]
+    assert variants["m-Q4_K_M.gguf"].parts == []
+
+
+def test_direct_link_to_split_part_selects_group():
+    gguf_bytes = build_gguf([_kv_string("general.architecture", "llama")])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/models/"):
+            return httpx.Response(200, json=hub_response([
+                {"rfilename": "m-BF16-00001-of-00002.gguf", "lfs": {"size": 50}},
+                {"rfilename": "m-BF16-00002-of-00002.gguf", "lfs": {"size": 12}},
+            ]))
+        if request.headers.get("Range"):
+            return httpx.Response(206, content=gguf_bytes)
+        return httpx.Response(404)
+
+    source = parse_source("https://huggingface.co/org/split/blob/main/m-BF16-00002-of-00002.gguf")
+    report = inspect_model(source, make_client(handler))
+    assert report.selected_gguf == "m-BF16-00001-of-00002.gguf"  # ชี้ part ไหนก็ได้ กลุ่มถูกเลือก
+    assert report.weight_bytes == 62
+
+
 def test_trust_remote_code_files_warned():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.startswith("/api/models/"):

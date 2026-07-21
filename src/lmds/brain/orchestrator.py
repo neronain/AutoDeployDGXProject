@@ -18,7 +18,7 @@ from lmds.fit import FitReport
 from lmds.inspector.report import ArtifactType, ModelReport
 from lmds.secrets import redact
 
-from .allowlists import split_flags
+from .allowlists import is_known_image, split_flags
 from .plan_schema import DeploymentPlan, Engine, PlanError
 from .prompts import build_system_prompt, build_user_prompt
 from .providers import LlmProvider
@@ -57,6 +57,16 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
             f"แก้ engine จาก {plan.runtime.engine.value} เป็น {expected_engine.value} ตาม artifact จริง"
         )
         plan.runtime.engine = expected_engine
+
+    if not is_known_image(plan.runtime.engine, plan.runtime.image_ref):
+        from .rulebased import DEFAULT_IMAGES
+
+        plan.warnings.append(
+            f"image ที่แผนเสนอ ({plan.runtime.image_ref}) ไม่อยู่ใน registry ที่ยอมรับ — "
+            f"เปลี่ยนเป็น {DEFAULT_IMAGES[plan.runtime.engine]}"
+        )
+        plan.runtime.image_ref = DEFAULT_IMAGES[plan.runtime.engine]
+        plan.runtime.image_pin = None
 
     if fit.recommended_context and plan.serving.context > fit.recommended_context:
         plan.warnings.append(

@@ -7,9 +7,13 @@ from typing import Any
 
 from lmds.resolver import ModelSource
 
+import re
+
 from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import BudgetExceeded, HfClient
-from .report import ArtifactType, GgufVariant, KvDims, ModelReport
+from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport
+
+_SPLIT_GGUF_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 
 _SAFETENSORS_INDEX = "model.safetensors.index.json"
 
@@ -165,6 +169,41 @@ def _inspect_safetensors(
         report.has_chat_template = template is not None if tokenizer_config is not None else None
 
 
+def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -> list[GgufVariant]:
+    """รวม split GGUF (-00001-of-N) เป็น variant เดียว — ขนาดรวมทุก part, download/verify ครบชุด"""
+    singles: list[GgufVariant] = []
+    groups: dict[str, list[tuple[int, GgufPart]]] = {}
+
+    for name, size, sha in sorted(gguf_files):
+        base = name.rsplit("/", 1)[-1]
+        match = _SPLIT_GGUF_RE.match(base)
+        part = GgufPart(filename=name, size_bytes=size, sha256=sha)
+        if match:
+            key = name[: len(name) - len(base)] + match.group("base")
+            groups.setdefault(key, []).append((int(match.group("idx")), part))
+        else:
+            singles.append(
+                GgufVariant(
+                    filename=name, size_bytes=size, sha256=sha,
+                    is_mmproj=base.lower().startswith("mmproj"),
+                )
+            )
+
+    for parts_list in groups.values():
+        parts_list.sort(key=lambda item: item[0])
+        parts = [p for _, p in parts_list]
+        sizes = [p.size_bytes for p in parts if p.size_bytes is not None]
+        singles.append(
+            GgufVariant(
+                filename=parts[0].filename,
+                size_bytes=sum(sizes) if len(sizes) == len(parts) else None,
+                sha256=parts[0].sha256,
+                parts=parts,
+            )
+        )
+    return sorted(singles, key=lambda v: v.filename)
+
+
 def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
     """อ่านมิติ KV จาก config.json — รองรับ text_config ซ้อน (โมเดล multimodal)"""
     scope = config
@@ -206,22 +245,21 @@ def _inspect_gguf(
     revision: str,
     gguf_files: list[tuple[str, int | None, str | None]],
 ) -> None:
-    report.gguf_variants = [
-        GgufVariant(
-            filename=name,
-            size_bytes=size,
-            sha256=sha,
-            is_mmproj=name.rsplit("/", 1)[-1].lower().startswith("mmproj"),
-        )
-        for name, size, sha in sorted(gguf_files)
-    ]
+    report.gguf_variants = _group_gguf_variants(gguf_files)
     weight_variants = [v for v in report.gguf_variants if not v.is_mmproj]
     if not weight_variants:
         report.warnings.append("พบเฉพาะไฟล์ mmproj — ไม่มี GGUF ของตัวโมเดล")
         return
 
     if source.filename:
-        selected = next((v for v in weight_variants if v.filename == source.filename), None)
+        selected = next(
+            (
+                v for v in weight_variants
+                if v.filename == source.filename
+                or any(p.filename == source.filename for p in v.parts)
+            ),
+            None,
+        )
         if selected is None:
             report.warnings.append(f"ไม่พบไฟล์ {source.filename} ใน repo — ต้องเลือก variant ใหม่")
     elif len(weight_variants) == 1:

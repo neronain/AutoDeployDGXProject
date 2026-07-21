@@ -149,6 +149,30 @@ def test_harden_forces_parallel_tools_off(isolated_config):
     assert hardened.tool_calling.parallel is False
 
 
+def test_harden_replaces_hallucinated_image(isolated_config):
+    """เคสจริงจาก gigabyte02: LLM มโน ghcr.io/lmds/llamacpp-ubuntu-rtx → ต้องแทนด้วย image จริง"""
+    report = qwen_report(artifact_type=ArtifactType.GGUF, weight_bytes=36 * GIB,
+                         selected_gguf="m-Q8.gguf", kv_dims=None)
+    plan = DeploymentPlan.model_validate(
+        valid_plan_dict(
+            artifact_type="gguf",
+            runtime={"engine": "llamacpp", "image_ref": "ghcr.io/lmds/llamacpp-ubuntu-rtx", "rationale": "x"},
+        )
+    )
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert hardened.runtime.image_ref == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    assert any("registry" in w for w in hardened.warnings)
+
+
+def test_harden_keeps_known_image_with_tag(isolated_config):
+    report = qwen_report()
+    plan = DeploymentPlan.model_validate(
+        valid_plan_dict(runtime={"engine": "vllm", "image_ref": "vllm/vllm-openai:v0.9.2", "rationale": "x"})
+    )
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert hardened.runtime.image_ref == "vllm/vllm-openai:v0.9.2"  # tag ใดก็ได้ ขอแค่ repo อยู่ใน allowlist
+
+
 # ---------- build_plan / orchestrator ----------
 
 def test_build_plan_without_provider_uses_rule_based(isolated_config):
