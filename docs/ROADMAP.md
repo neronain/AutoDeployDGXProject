@@ -8,7 +8,7 @@
 
 | # | Milestone | ส่งมอบ | เกณฑ์ผ่าน |
 |---|---|---|---|
-| M1 | โครงโปรเจกต์ + config/secrets | `lmds config`, keyring/0600 store, redaction filter | set/show provider + HF token ได้, secret ไม่โผล่ใน log |
+| M1 ✅ | โครงโปรเจกต์ + config/secrets (เสร็จ 2026-07-21) | `lmds config`, keyring/0600 store, redaction filter, `lmds hardware` (โครง), GPU allowlist ตามเครื่องทดสอบจริง | set/show provider + HF token ได้, secret ไม่โผล่ใน log — 27 unit tests ผ่าน |
 | M2 | Resolver + Inspector (HF) | `lmds inspect` สำหรับ HF repo (safetensors + GGUF) | ดึง metadata โดยไม่โหลด weight, ตรวจ gated → prompt token, pin revision |
 | M3 | Hardware Profiler + Fit Analyzer | `lmds hardware`, fit report ต่อ profile (spark-single, rtx-single) | ตัวเลข fit ตรงกับเครื่องจริงของทีม (Spark 128GB) ± headroom ที่กำหนด |
 | M4 | Brain (LLM Orchestrator) | adapters OpenAI/Gemini/OpenAI-compat, Deployment Plan schema + validation, `--no-llm` degraded mode | plan ผ่าน schema 100%, facts มี tag verified/inferred/unverified |

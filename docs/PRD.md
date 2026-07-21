@@ -307,6 +307,7 @@ validation_notes: [...]
 | 2026-07-21 | **เฟสแรกเป็น CLI ล้วน** | เจ้าของโปรเจกต์อนุมัติตามข้อเสนอ — Web UI และเฟสถัดไปจะทบทวนอีกครั้งเมื่อ CLI เสร็จ ≥98% หรือรันใช้งานจริงได้ |
 | 2026-07-21 | **Repository** | พัฒนาใน https://github.com/neronain/AutoDeployDGXProject |
 | 2026-07-21 | **แนวทางที่เหลือของเฟส 1** | ดำเนินตามข้อเสนอใน PRD นี้ (provider เริ่มที่ OpenAI + Gemini + OpenAI-compatible, template vLLM/llama.cpp ก่อน) |
+| 2026-07-21 | **เครื่องทดสอบ RTX** | Ubuntu ทั้งหมด: RTX PRO 4000 Blackwell 24GB ×2 ใบ (multi-GPU) และ RTX 4070 Super 16GB แบบใบเดียว — ใช้เป็น GPU allowlist เริ่มต้น (`tested=true`) ร่วมกับ DGX Spark |
 
 ### คำถามเปิด (ยังรอคำตอบ — ไม่ block เฟส 1)
 

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lmds"
+version = "0.1.0"
+description = "Local Model Deploy Studio - generate validated model deployment bundles for DGX Spark and RTX servers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=24.0"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0"]
+
+[project.scripts]
+lmds = "lmds.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lmds"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
