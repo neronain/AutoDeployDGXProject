@@ -46,6 +46,8 @@ _SECRET_PATTERNS = [
 
 _NUMERIC_UNDERSCORE = re.compile(r"\(\(\s*[^)]*\b\d+_\d+")
 _PIPE_GREP_Q = re.compile(r"\|\s*grep\s+-q")
+# `\` ปิดบรรทัดแล้วตามด้วยบรรทัดว่าง = คำสั่งขาดตอนกลางทาง (bash -n จับไม่ได้ — เจอจริงบน gigabyte02)
+_BROKEN_CONTINUATION = re.compile(r"\\\n[ \t]*\n")
 
 _PROFILE_REQUIRED_PATHS = [
     ("model", "id"),
@@ -100,6 +102,19 @@ def gate_pipefail_safe(bundle_dir: Path) -> GateResult:
         if "set -Eeuo pipefail" not in text and "set -euo pipefail" not in text:
             return GateResult("pipefail-safe", False, f"{script.name}: ไม่มี set -Eeuo pipefail")
     return GateResult("pipefail-safe", True)
+
+
+def gate_line_continuation(bundle_dir: Path) -> GateResult:
+    for script in _controllers(bundle_dir):
+        text = script.read_text(encoding="utf-8")
+        match = _BROKEN_CONTINUATION.search(text)
+        if match:
+            line_no = text[: match.start()].count("\n") + 1
+            return GateResult(
+                "line-continuation", False,
+                f"{script.name}:{line_no}: บรรทัดต่อด้วย \\ แล้วตามด้วยบรรทัดว่าง — คำสั่งขาดตอน",
+            )
+    return GateResult("line-continuation", True)
 
 
 def gate_contract(bundle_dir: Path) -> GateResult:
@@ -192,6 +207,7 @@ ALL_GATES = [
     gate_bash_syntax,
     gate_numeric_underscore,
     gate_pipefail_safe,
+    gate_line_continuation,
     gate_contract,
     gate_profile_schema,
     gate_secret_scan,

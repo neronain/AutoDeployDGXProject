@@ -212,6 +212,20 @@ def test_no_secrets_in_bundle(isolated_config, tmp_path, monkeypatch):
     assert 'HF_TOKEN:+' in text
 
 
+@pytest.mark.parametrize("target", ["dgx-spark-single", "rtx-pro-4000-dual"])
+def test_no_broken_line_continuation_in_vllm_controller(isolated_config, tmp_path, target):
+    """regression เคส gigabyte02: jinja block ทิ้งบรรทัดว่างกลาง docker run ที่ต่อด้วย backslash"""
+    import re
+
+    report = safetensors_report(weight_bytes=30 * GIB)
+    fit = analyze(report, PRESETS[target])
+    plan = build_plan(report, fit, provider=None)
+    bundle = render_bundle(plan, report, fit, tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert re.search(r"\\\n[ \t]*\n", text) is None
+    assert '"${serve_args[@]}"' in text  # args array ไม่ใช่ line continuation
+
+
 def test_multi_gpu_target_gets_tensor_parallel(isolated_config, tmp_path):
     report = safetensors_report(weight_bytes=30 * GIB)
     fit = analyze(report, PRESETS["rtx-pro-4000-dual"])

@@ -62,6 +62,19 @@ def test_pipe_grep_q_gate_catches(bundle_dir):
     assert results["pipefail-safe"].passed is False
 
 
+def test_line_continuation_gate_catches_broken_command(bundle_dir):
+    """เคสจริงจาก gigabyte02: '--host: command not found' — \\ ตามด้วยบรรทัดว่างกลางคำสั่ง docker run"""
+    script = next(bundle_dir.glob("*.sh"))
+    script.write_text(
+        script.read_text(encoding="utf-8")
+        + '\nbroken() {\n  docker run -d \\\n\n    --host "$API_HOST"\n}\n',
+        encoding="utf-8",
+    )
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["line-continuation"].passed is False
+    assert results["bash-syntax"].passed is True  # พิสูจน์ว่า bash -n จับเคสนี้ไม่ได้ — ต้องมี gate แยก
+
+
 def test_contract_gate_catches_missing_flag(bundle_dir):
     script = next(bundle_dir.glob("*.sh"))
     text = script.read_text(encoding="utf-8").replace("--client-input)", "--client-in)")

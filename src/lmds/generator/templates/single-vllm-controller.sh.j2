@@ -145,38 +145,43 @@ start() {
   check_gpu >/dev/null
   verify_files
 
-  local extra_args=()
+  # สร้าง argument เป็น array ทั้งหมด — ห้ามใช้ line continuation คร่อม template block
+  local serve_args=(
+    serve "$MODEL_ID"
+    --revision "$MODEL_REVISION"
+    --served-model-name "$SERVED_MODEL_NAME"
+    --max-model-len "$MAX_MODEL_LEN"
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
+    --max-num-seqs "$MAX_NUM_SEQS"
+    --host "$API_HOST"
+    --port "$API_PORT"
+  )
+{% if tensor_parallel > 1 %}
+  serve_args+=(--tensor-parallel-size "$TENSOR_PARALLEL_SIZE")
+{% endif %}
 {% for flag in extra_flag_pairs %}
-  extra_args+=({{ flag }})
+  serve_args+=({{ flag }})
 {% endfor %}
 {% if plan.serving.kv_cache_dtype != "auto" %}
-  extra_args+=(--kv-cache-dtype "{{ plan.serving.kv_cache_dtype }}")
+  serve_args+=(--kv-cache-dtype "{{ plan.serving.kv_cache_dtype }}")
 {% endif %}
 {% if plan.tool_calling.enabled and plan.tool_calling.parser %}
-  extra_args+=(--enable-auto-tool-choice --tool-call-parser "{{ plan.tool_calling.parser }}")
+  serve_args+=(--enable-auto-tool-choice --tool-call-parser "{{ plan.tool_calling.parser }}")
 {% endif %}
 {% if plan.reasoning.enabled and plan.reasoning.parser %}
-  extra_args+=(--reasoning-parser "{{ plan.reasoning.parser }}")
+  serve_args+=(--reasoning-parser "{{ plan.reasoning.parser }}")
 {% endif %}
 
-  docker run -d --name "$CONTAINER_NAME" \
-    --network host --ipc host --gpus all \
-    -v "${HF_HOME}:/root/.cache/huggingface" \
-    ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
-    ${API_KEY:+-e VLLM_API_KEY="$API_KEY"} \
-    --entrypoint vllm "$VLLM_IMAGE" \
-    serve "$MODEL_ID" \
-    --revision "$MODEL_REVISION" \
-    --served-model-name "$SERVED_MODEL_NAME" \
-    --max-model-len "$MAX_MODEL_LEN" \
-    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
-    --max-num-seqs "$MAX_NUM_SEQS" \
-{% if tensor_parallel > 1 %}
-    --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
-{% endif %}
-    --host "$API_HOST" \
-    --port "$API_PORT" \
-    ${extra_args[@]+"${extra_args[@]}"}
+  local docker_args=(
+    run -d --name "$CONTAINER_NAME"
+    --network host --ipc host --gpus all
+    -v "${HF_HOME}:/root/.cache/huggingface"
+  )
+  if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e "HF_TOKEN=${HF_TOKEN}"); fi
+  if [[ -n "$API_KEY" ]]; then docker_args+=(-e "VLLM_API_KEY=${API_KEY}"); fi
+  docker_args+=(--entrypoint vllm "$VLLM_IMAGE")
+
+  docker "${docker_args[@]}" "${serve_args[@]}"
 
   wait_health
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
