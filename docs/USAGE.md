@@ -174,7 +174,32 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 
 ---
 
-## 4. คำสั่งอื่นที่ควรรู้
+## 4. จัดการหลายโมเดลในเครื่องเดียว (Fleet)
+
+รันหลายโมเดลพร้อมกันได้ (คนละ port) — ไม่ต้องจำว่า bundle ไหนอยู่ที่ไหน ใช้ `lmds` เป็นศูนย์กลาง:
+
+```bash
+lmds ps               # ใครรันอยู่บ้าง: ชื่อ, โมเดล, port, สถานะ (● running / ◐ loading / ○ stopped)
+lmds stop qwen3-coder-30b-a3b-instruct-gguf    # หยุดตามชื่อ — ไม่ต้อง cd ไปหา .sh
+lmds stop --all       # หยุดทุกตัวที่รันอยู่
+lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
+lmds start <ชื่อ>          # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
+lmds list             # bundle ทั้งหมดที่รู้จักในเครื่อง + controller ยังอยู่ครบไหม
+```
+
+ตัวอย่างรัน 2 โมเดลพร้อมกัน:
+
+```bash
+cd bundles/model-a && ./model-a-single.sh start                # port 8000
+cd ../model-b && ./model-b-single.sh start --port 8001         # port 8001
+lmds ps                                                        # เห็นทั้งคู่
+lmds stop --all                                                # ปิดทั้งคู่จบในคำสั่งเดียว
+```
+
+> ระบบรู้จักเซิร์ฟเวอร์จากไฟล์ทะเบียนที่ controller เขียนเองตอน `start` (ใต้ `~/.lmds/run/`)
+> — ถ้า controller ถูกลบ/ย้าย `lmds stop` ยัง fallback หยุดตรง ๆ ให้ได้ (kill pid / docker rm)
+
+## 5. คำสั่งอื่นที่ควรรู้
 
 ```bash
 lmds plan Qwen/Qwen3-32B --target dgx-spark-single   # ดูแผนอย่างเดียว ไม่สร้างไฟล์ (มี --json)
@@ -185,7 +210,7 @@ lmds hardware                                        # ตรวจเครื�
 lmds config show                                     # ดู config (key ถูก mask)
 ```
 
-## 5. เอา bundle ไปใช้เครื่องอื่น
+## 6. เอา bundle ไปใช้เครื่องอื่น
 
 Bundle เป็นไฟล์ธรรมดา ไม่ผูกกับเครื่องที่สร้าง:
 
@@ -200,7 +225,7 @@ unzip qwen3-32b.zip && cd qwen3-32b
 
 ---
 
-## 6. แก้ปัญหาที่พบบ่อย (Troubleshooting)
+## 7. แก้ปัญหาที่พบบ่อย (Troubleshooting)
 
 | อาการ | สาเหตุ | วิธีแก้ |
 |---|---|---|
@@ -227,7 +252,7 @@ lmds hardware
 # + คำสั่งเต็มที่รันแล้วพัง + ข้อความ error ทั้งหมด
 ```
 
-## 7. ความปลอดภัย — ข้อควรปฏิบัติ
+## 8. ความปลอดภัย — ข้อควรปฏิบัติ
 
 - API key / HF token ใส่ผ่าน `lmds config set-key` หรือ env เท่านั้น — **ห้าม**เขียนลงไฟล์/สคริปต์เอง
 - เซิร์ฟเวอร์ที่เปิดใน network ที่มีคนอื่นใช้ร่วม ให้ตั้ง `API_KEY=xxx ./xxx-single.sh start` เสมอ

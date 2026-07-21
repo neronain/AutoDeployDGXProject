@@ -30,6 +30,7 @@ CLIENT_INPUT="${CLIENT_INPUT:-auto}"
 TEMPLATE_OVERHEAD_TOKENS="2048"
 
 HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
+RUN_DIR="${RUN_DIR:-${HOME}/.lmds/run/{{ slug }}}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # ========================================================================
 
@@ -137,6 +138,25 @@ port_in_use() {
   [[ -n "$out" ]]
 }
 
+write_meta() {
+  # ลงทะเบียนกับ lmds fleet (~/.lmds/run) — ให้ lmds ps/stop/logs เห็นเซิร์ฟเวอร์ตัวนี้
+  mkdir -p "$RUN_DIR"
+  local script_path
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  cat > "${RUN_DIR}/server.meta" <<EOF
+slug={{ slug }}
+model=${SERVED_MODEL_NAME}
+model_id=${MODEL_ID}
+engine=vllm
+mode=docker
+port=${API_PORT}
+container=${CONTAINER_NAME}
+pid_file=
+controller=${script_path}
+started_at=$(date +%Y-%m-%dT%H:%M:%S)
+EOF
+}
+
 start() {
   need docker
   local existing
@@ -183,6 +203,7 @@ start() {
 
   docker "${docker_args[@]}" "${serve_args[@]}"
 
+  write_meta
   wait_health
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
   network_info

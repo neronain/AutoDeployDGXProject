@@ -593,6 +593,141 @@ def validate(
 
 
 @app.command()
+def ps() -> None:
+    """แสดงทุกโมเดลที่ deploy ในเครื่องนี้ พร้อมสถานะจริง (running/health/endpoint)"""
+    from lmds.fleet import discover
+
+    servers = discover()
+    if not servers:
+        console.print("ยังไม่มีโมเดลที่เคย start ในเครื่องนี้ — deploy ก่อน: lmds deploy <model-url>")
+        return
+    table = Table(title="LMDS Fleet")
+    table.add_column("ชื่อ (slug)")
+    table.add_column("โมเดล")
+    table.add_column("engine")
+    table.add_column("port")
+    table.add_column("สถานะ")
+    for server in servers:
+        if server.healthy:
+            status = "[green]● running[/green]"
+        elif server.running:
+            status = "[yellow]◐ loading/ไม่ตอบ health[/yellow]"
+        else:
+            status = "[dim]○ stopped[/dim]"
+        table.add_row(server.slug, server.model or server.model_id, f"{server.engine} ({server.mode})",
+                      str(server.port or "-"), status)
+    console.print(table)
+    running = [s for s in servers if s.running]
+    if running:
+        console.print(
+            f"\n[dim]หยุดตัวเดียว: lmds stop <ชื่อ> | หยุดทั้งหมด: lmds stop --all | ดู log: lmds logs <ชื่อ>[/dim]"
+        )
+
+
+@app.command()
+def stop(
+    slug: Optional[str] = typer.Argument(None, help="ชื่อ (slug) จาก lmds ps"),
+    all_servers: bool = typer.Option(False, "--all", help="หยุดทุกตัวที่รันอยู่"),
+) -> None:
+    """หยุดโมเดล — ระบุชื่อ หรือ --all"""
+    from lmds.fleet import FleetError, discover, find, stop_server
+
+    if all_servers:
+        running = [s for s in discover() if s.running]
+        if not running:
+            console.print("ไม่มีโมเดลรันอยู่")
+            return
+        for server in running:
+            try:
+                method = stop_server(server)
+                console.print(f"หยุด {server.slug} แล้ว ({method})")
+            except FleetError as exc:
+                err_console.print(f"[red]{exc}[/red]")
+        return
+
+    if not slug:
+        err_console.print("[red]ระบุชื่อ (lmds ps ดูรายชื่อ) หรือใช้ --all[/red]")
+        raise typer.Exit(code=1)
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps")
+        raise typer.Exit(code=1)
+    if not server.running:
+        console.print(f"{slug} ไม่ได้รันอยู่")
+        return
+    try:
+        method = stop_server(server)
+        console.print(f"หยุด {slug} แล้ว ({method})")
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def logs(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps"),
+    lines: int = typer.Option(200, "-n", "--lines"),
+) -> None:
+    """ดู log ของโมเดลตามชื่อ — ไม่ต้องจำ path ของ bundle"""
+    from lmds.fleet import FleetError, find, logs_server
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps")
+        raise typer.Exit(code=1)
+    try:
+        raise typer.Exit(code=logs_server(server, lines))
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def start(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+) -> None:
+    """รันโมเดลที่เคย deploy ไว้แล้วตามชื่อ — ไม่ต้อง cd ไปหา bundle"""
+    from lmds.fleet import FleetError, find, start_server
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list")
+        raise typer.Exit(code=1)
+    if server.running:
+        console.print(f"{slug} รันอยู่แล้ว (port {server.port})")
+        return
+    try:
+        raise typer.Exit(code=start_server(server))
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command("list")
+def list_bundles() -> None:
+    """แสดง bundle ทั้งหมดที่รู้จักในเครื่อง (เคย start อย่างน้อยหนึ่งครั้ง)"""
+    from lmds.fleet import discover
+
+    servers = discover()
+    if not servers:
+        console.print("ยังไม่มี bundle ที่รู้จัก — deploy แล้ว start อย่างน้อยหนึ่งครั้งก่อน")
+        return
+    table = Table(title="Bundles ในเครื่องนี้")
+    table.add_column("ชื่อ (slug)")
+    table.add_column("โมเดล")
+    table.add_column("controller")
+    table.add_column("สถานะไฟล์")
+    for server in servers:
+        table.add_row(
+            server.slug,
+            server.model_id or server.model,
+            server.controller or "-",
+            "✅" if server.controller_exists else "[red]หาย (ถูกย้าย/ลบ)[/red]",
+        )
+    console.print(table)
+
+
+@app.command()
 def hardware() -> None:
     """ตรวจฮาร์ดแวร์ของเครื่องนี้และแสดง target profile"""
     from lmds.hardware import probe

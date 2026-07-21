@@ -250,6 +250,25 @@ server_args() {
 {% endif %}
 }
 
+write_meta() {
+  # ลงทะเบียนกับ lmds fleet (~/.lmds/run) — ให้ lmds ps/stop/logs เห็นเซิร์ฟเวอร์ตัวนี้
+  mkdir -p "$RUN_DIR"
+  local script_path
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  cat > "${RUN_DIR}/server.meta" <<EOF
+slug={{ slug }}
+model=${SERVED_MODEL_NAME}
+model_id=${MODEL_ID}
+engine=llamacpp
+mode=${RUNTIME_MODE}
+port=${API_PORT}
+container=${CONTAINER_NAME}
+pid_file=${PID_FILE}
+controller=${script_path}
+started_at=$(date +%Y-%m-%dT%H:%M:%S)
+EOF
+}
+
 start() {
   verify_files
   mkdir -p "$RUN_DIR"
@@ -279,6 +298,7 @@ start() {
       "${SERVER_ARGS[@]}"
   fi
 
+  write_meta
   wait_health
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
   network_info
