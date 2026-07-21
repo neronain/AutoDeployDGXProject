@@ -156,8 +156,32 @@ verify_files() {
   echo "verify-files: OK ({{ '${#MODEL_FILES[@]}' }} ไฟล์ใน ${MODEL_DIR})"
 }
 
+install_build_dependencies() {
+  # ติดตั้ง build deps ให้อัตโนมัติ — ผู้ใช้ไม่ต้องรู้ล่วงหน้าว่าต้องลงอะไร
+  local missing=()
+  command -v git   >/dev/null 2>&1 || missing+=(git)
+  command -v cmake >/dev/null 2>&1 || missing+=(cmake)
+  command -v ninja >/dev/null 2>&1 || missing+=(ninja-build)
+  command -v gcc   >/dev/null 2>&1 || missing+=(build-essential)
+  command -v curl  >/dev/null 2>&1 || missing+=(curl)
+
+  if [[ {{ '${#missing[@]}' }} -gt 0 ]]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      echo "ติดตั้ง build dependencies ที่ขาด: ${missing[*]} (ต้องใส่รหัส sudo)"
+      sudo apt-get update -y
+      sudo apt-get install -y "${missing[@]}"
+    else
+      die "ขาด dependencies: ${missing[*]} — ระบบไม่มี apt-get ต้องติดตั้งเอง"
+    fi
+  fi
+
+  command -v nvcc >/dev/null 2>&1 ||
+    echo "คำเตือน: ไม่พบ nvcc (CUDA Toolkit) — ถ้า build ล้มเหลว ติดตั้ง CUDA Toolkit ก่อน (DGX OS มีมาให้แล้ว)"
+}
+
 prepare_runtime() {
   # build llama.cpp จาก source — จำเป็นบน DGX Spark (ARM64/SM121 ไม่มี image ทางการ)
+  install_build_dependencies
   need git; need cmake; need nvidia-smi
   mkdir -p "$(dirname "$LLAMA_CPP_DIR")" "$RUN_DIR"
 
@@ -315,13 +339,16 @@ logs() {
 }
 
 client_config() {
-  local input_budget
+  # llama.cpp แบ่ง --ctx-size เท่า ๆ กันให้ทุก slot (--parallel) — budget ต้องคิดจาก context ต่อ slot จริง
+  local slot_context input_budget
+  slot_context=$(( CTX_SIZE / PARALLEL_SEQS ))
   if [[ "$CLIENT_INPUT" == "auto" ]]; then
-    input_budget=$(( CTX_SIZE - CLIENT_OUTPUT - TEMPLATE_OVERHEAD_TOKENS ))
+    input_budget=$(( slot_context - CLIENT_OUTPUT - TEMPLATE_OVERHEAD_TOKENS ))
   else
     input_budget="$CLIENT_INPUT"
   fi
-  (( input_budget > 0 )) || die "context เล็กเกิน: input budget = ${input_budget}"
+  (( input_budget > 0 )) ||
+    die "context ต่อ slot เล็กเกิน (${slot_context} = ${CTX_SIZE}/${PARALLEL_SEQS}) — เพิ่ม --context หรือลด PARALLEL_SEQS"
   cat <<EOF
 {
   "base_url": "http://$(detect_advertise_ip):${API_PORT}/v1",
@@ -329,7 +356,9 @@ client_config() {
   "api_key": "${API_KEY:-not-required}",
   "max_input_tokens": ${input_budget},
   "max_output_tokens": ${CLIENT_OUTPUT},
-  "server_context": ${CTX_SIZE}
+  "server_context_total": ${CTX_SIZE},
+  "context_per_slot": ${slot_context},
+  "parallel_slots": ${PARALLEL_SEQS}
 }
 EOF
 }

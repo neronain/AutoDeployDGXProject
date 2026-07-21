@@ -127,6 +127,7 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         # llama.cpp บน DGX Spark (unified/ARM64) ไม่มี docker image ทางการ — ใช้ native source build
         "runtime_mode": "native" if fit.memory_model.value == "unified" else "docker",
         "cuda_architectures": "121a-real" if fit.memory_model.value == "unified" else "native",
+        "native_llamacpp": is_gguf and fit.memory_model.value == "unified",
         "has_chat_template": bool(report.has_chat_template),
         "n_gpu_layers": n_gpu_layers,
         "client_input": _client_input(plan),

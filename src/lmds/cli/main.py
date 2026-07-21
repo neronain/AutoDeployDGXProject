@@ -413,7 +413,7 @@ def generate(
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_plan(deployment_plan, fit)
     _render_gates(results)
-    _render_delivery(bundle, delivered)
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit))
 
 
 def _render_and_package(deployment_plan, report, fit, output: str):
@@ -441,13 +441,24 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     return bundle, results, [*bundle.files, checksums_path, zip_path]
 
 
-def _render_delivery(bundle, delivered) -> None:
+def _render_delivery(bundle, delivered, native_prepare: bool = False) -> None:
     table = Table(title="Bundle (static-validated ✅)")
     table.add_column("ไฟล์")
     for file_path in delivered:
         table.add_row(str(file_path))
     console.print(table)
-    console.print(f"\nเริ่มใช้งาน: cd {bundle.directory} && ./{bundle.controller.name} download")
+    steps = ["download", "verify-files"]
+    if native_prepare:
+        steps.append("prepare-runtime")  # ติดตั้ง deps + build llama.cpp อัตโนมัติ (ครั้งแรกครั้งเดียว)
+    steps += ["start", "test-text"]
+    chain = " && ".join(f"./{bundle.controller.name} {s}" for s in steps)
+    console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory}\n  {chain}")
+    if native_prepare:
+        console.print("[dim]prepare-runtime จะติดตั้ง build dependencies (git/cmake/ninja) ให้เองผ่าน apt — ใช้ sudo ครั้งเดียว[/dim]")
+
+
+def _is_native_prepare(deployment_plan, fit) -> bool:
+    return deployment_plan.runtime.engine.value == "llamacpp" and fit.memory_model.value == "unified"
 
 
 def _render_gates(results) -> None:
@@ -539,11 +550,8 @@ def deploy(
 
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_gates(results)
-    _render_delivery(bundle, delivered)
-    console.print(
-        "\n[dim]สถานะ: static-validated — รัน acceptance บนเครื่องจริง: "
-        f"download → verify-files → start → status → test-text[/dim]"
-    )
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit))
+    console.print("\n[dim]สถานะ: static-validated — รัน acceptance ตามลำดับด้านบนเพื่อยืนยันบนเครื่องจริง[/dim]")
 
 
 @app.command()

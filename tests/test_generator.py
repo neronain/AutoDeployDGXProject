@@ -230,6 +230,20 @@ def test_llamacpp_spark_uses_native_build_mode(isolated_config, tmp_path):
     assert "prepare-runtime" in text
     assert "121a-real" in text
     assert "cmake" in text
+    # ติดตั้ง build deps อัตโนมัติ — ผู้ใช้ไม่ต้อง apt install เอง
+    assert "install_build_dependencies" in text
+    assert "apt-get install -y" in text
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    assert "prepare-runtime" in readme  # first-run ต้องบอกขั้นนี้ตั้งแต่แรก
+    assert "ติดตั้งให้อัตโนมัติ" in readme
+
+
+def test_llamacpp_client_budget_accounts_parallel_slots(isolated_config, tmp_path):
+    """llama.cpp แบ่ง ctx ให้ทุก slot — client budget ต้องคิดจาก context ต่อ slot"""
+    bundle, _, _ = make_bundle(gguf_report(), target="dgx-spark-single", tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "CTX_SIZE / PARALLEL_SEQS" in text
+    assert "context_per_slot" in text
 
 
 def test_llamacpp_rtx_uses_docker_mode(isolated_config, tmp_path):
