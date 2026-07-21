@@ -52,7 +52,7 @@ def inspect(
     ถ้าเป็น gated repo และยังไม่มี token จะถาม (กด Enter เพื่อข้ามได้)
     Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหาเครือข่าย/Hub
     """
-    report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
+    _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
     fit_reports = _compute_fits(report, targets, concurrency)
 
     if as_json:
@@ -102,7 +102,7 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
     token = get_secret("hf")
     try:
         try:
-            return inspect_model(source, HfClient(token=token))
+            return source, inspect_model(source, HfClient(token=token))
         except AuthRequired as exc:
             interactive = sys.stdin.isatty() and interactive_ok
             if not interactive or exc.had_token:
@@ -117,13 +117,67 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
                 raise typer.Exit(code=4)
             report = inspect_model(source, HfClient(token=entered))
             console.print("[dim]hint: เก็บ token ถาวรด้วย lmds config set-hf-token[/dim]")
-            return report
+            return source, report
     except RepoNotFound as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     except HfError as exc:
         err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")
         raise typer.Exit(code=5)
+
+
+def _ensure_gguf_selected(source, report, interactive: bool):
+    """repo GGUF หลาย variant ที่ยังไม่เลือกไฟล์ — ให้เลือกตั้งแต่ต้น flow ไม่ใช่ไปพังตอนท้าย
+
+    interactive: แสดงรายการให้เลือกหมายเลข แล้ว inspect ซ้ำด้วยไฟล์ที่เลือก (ได้ header/kv dims จริง)
+    non-interactive: จบพร้อมวิธีระบุไฟล์ตรง
+    """
+    from lmds.inspector import ArtifactType
+
+    weight_variants = [v for v in report.gguf_variants if not v.is_mmproj]
+    if report.artifact_type is not ArtifactType.GGUF or report.selected_gguf or len(weight_variants) <= 1:
+        return report
+
+    variants = sorted(weight_variants, key=lambda v: v.size_bytes or 0)
+    if not interactive:
+        err_console.print(
+            f"[red]repo นี้มี GGUF {len(variants)} variant — ต้องระบุไฟล์ (โหมด non-interactive)[/red]"
+        )
+        for variant in variants[:8]:
+            size = f"{variant.size_bytes / 1e9:.1f} GB" if variant.size_bytes else "?"
+            err_console.print(f"  • {variant.filename} ({size})")
+        err_console.print(
+            f'\nระบุไฟล์ด้วยลิงก์ตรง เช่น:\n  lmds deploy "https://huggingface.co/{report.repo_id}/blob/main/{variants[0].filename}"'
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"เลือกไฟล์ GGUF ({report.repo_id})")
+    table.add_column("#")
+    table.add_column("ไฟล์")
+    table.add_column("ขนาด")
+    for i, variant in enumerate(variants, 1):
+        size = f"{variant.size_bytes / 1e9:.1f} GB" if variant.size_bytes else "?"
+        table.add_row(str(i), variant.filename, size)
+    console.print(table)
+
+    choice = typer.prompt("เลือกหมายเลขไฟล์", type=int)
+    if not 1 <= choice <= len(variants):
+        err_console.print("[red]หมายเลขไม่ถูกต้อง[/red]")
+        raise typer.Exit(code=1)
+    chosen = variants[choice - 1]
+
+    # inspect ซ้ำด้วยไฟล์ที่เลือก → ได้ GGUF header (architecture/context/kv dims) มาคำนวณ fit จริง
+    from dataclasses import replace as dc_replace
+
+    from lmds.inspector import HfClient, HfError, inspect_model
+
+    try:
+        return inspect_model(dc_replace(source, filename=chosen.filename), HfClient(token=get_secret("hf")))
+    except HfError as exc:
+        err_console.print(f"[yellow]อ่าน header ของไฟล์ที่เลือกไม่ได้ ({exc}) — ใช้ขนาดไฟล์อย่างเดียว[/yellow]")
+        report.selected_gguf = chosen.filename
+        report.weight_bytes = chosen.size_bytes
+        return report
 
 
 def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
@@ -242,7 +296,7 @@ def plan(
     from lmds.brain import MissingKey, PlanError, ProviderError, build_plan, make_provider
     from lmds.config import Settings
 
-    report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
+    _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
     fits = _compute_fits(report, [target] if target else [], concurrency)
     fit = fits[0]
 
@@ -333,7 +387,8 @@ def generate(
     from lmds.fit import Verdict
     from lmds.generator import render_bundle
 
-    report = _resolve_and_inspect(model, revision, interactive_ok=True)
+    source, report = _resolve_and_inspect(model, revision, interactive_ok=True)
+    report = _ensure_gguf_selected(source, report, interactive=False)
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
@@ -432,7 +487,9 @@ def deploy(
     from lmds.config import Settings
     from lmds.fit import Verdict
 
-    report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
+    interactive = sys.stdin.isatty() and not yes
+    source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
+    report = _ensure_gguf_selected(source, report, interactive=interactive)
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
@@ -456,7 +513,6 @@ def deploy(
 
     _render_plan(deployment_plan, fit)
 
-    interactive = sys.stdin.isatty() and not yes
     if interactive:
         # อนุมัติ flag นอก allowlist รายตัว — การอนุมัติเป็นสิทธิ์ของผู้ใช้เท่านั้น
         approved: list[str] = []

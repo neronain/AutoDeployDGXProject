@@ -103,6 +103,70 @@ def test_spark_unified_memory_from_allowlist_when_smi_reports_none(isolated_conf
     assert spec.tested is True
 
 
+def test_deploy_multi_variant_gguf_fails_early_with_guidance(isolated_config, tmp_path, monkeypatch):
+    """เคสจริงจาก gigabyte02: repo หลาย variant ต้องแจ้งตั้งแต่ต้น flow ไม่ใช่หลังยืนยันแผน"""
+    from lmds.inspector.report import GgufVariant
+
+    report = gguf_report(
+        selected_gguf=None,
+        weight_bytes=None,
+        gguf_variants=[
+            GgufVariant(filename="m-Q4_K_M.gguf", size_bytes=18 * GIB),
+            GgufVariant(filename="m-Q8_0.gguf", size_bytes=32 * GIB),
+        ],
+    )
+    _patch_inspect(monkeypatch, report)
+    result = runner.invoke(
+        app,
+        ["deploy", "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", "--no-llm",
+         "--target", "dgx-spark-single", "--output", str(tmp_path), "--yes"],
+    )
+    assert result.exit_code == 1
+    assert "m-Q4_K_M.gguf" in result.output       # แสดงรายการ variant
+    assert "blob/main" in result.output           # บอกวิธีระบุไฟล์ตรง
+    assert "ยืนยัน" not in result.output           # ต้องจบก่อนถึงขั้นยืนยัน
+
+
+def test_ensure_gguf_selected_interactive_reinspects(isolated_config, monkeypatch):
+    """โหมด interactive: เลือกหมายเลขแล้วต้อง inspect ซ้ำด้วยไฟล์ที่เลือก"""
+    import typer
+
+    from lmds.cli.main import _ensure_gguf_selected
+    from lmds.inspector.report import GgufVariant
+    from lmds.resolver import parse_source
+
+    report = gguf_report(
+        selected_gguf=None,
+        weight_bytes=None,
+        gguf_variants=[
+            GgufVariant(filename="m-Q4_K_M.gguf", size_bytes=18 * GIB),
+            GgufVariant(filename="m-Q8_0.gguf", size_bytes=32 * GIB),
+        ],
+    )
+    seen = {}
+
+    def fake_inspect(source, client):
+        seen["filename"] = source.filename
+        return gguf_report(selected_gguf=source.filename, weight_bytes=18 * GIB)
+
+    monkeypatch.setattr("lmds.inspector.inspect_model", fake_inspect)
+    monkeypatch.setattr(typer, "prompt", lambda *a, **k: 1)  # เลือกข้อ 1 (เรียงจากเล็กไปใหญ่)
+
+    source = parse_source("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF")
+    out = _ensure_gguf_selected(source, report, interactive=True)
+    assert seen["filename"] == "m-Q4_K_M.gguf"
+    assert out.selected_gguf == "m-Q4_K_M.gguf"
+
+
+def test_ensure_gguf_selected_passthrough_when_selected(isolated_config):
+    from lmds.cli.main import _ensure_gguf_selected
+    from lmds.resolver import parse_source
+
+    report = gguf_report()  # selected_gguf ตั้งแล้ว
+    out = _ensure_gguf_selected(parse_source("unsloth/Qwen3-8B-GGUF"), report, interactive=False)
+    assert out is report
+
+
 def test_apply_flag_approvals_moves_flag(isolated_config):
     report = safetensors_report()
     fit = analyze(report, PRESETS["dgx-spark-single"])
