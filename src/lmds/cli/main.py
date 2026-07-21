@@ -52,6 +52,25 @@ def inspect(
     ถ้าเป็น gated repo และยังไม่มี token จะถาม (กด Enter เพื่อข้ามได้)
     Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหาเครือข่าย/Hub
     """
+    report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
+    fit_reports = _compute_fits(report, targets, concurrency)
+
+    if as_json:
+        import json as json_module
+
+        payload = {
+            "model": report.model_dump(mode="json"),
+            "fit": [f.model_dump(mode="json") for f in fit_reports],
+        }
+        print(json_module.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    _render_report(report)
+    _render_fits(fit_reports)
+
+
+def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bool):
+    """flow ร่วมของ inspect/plan/deploy: parse source → inspect → จัดการ gated repo + token"""
     import sys
 
     from lmds.inspector import AuthRequired, HfClient, HfError, RepoNotFound, inspect_model
@@ -70,9 +89,9 @@ def inspect(
     token = get_secret("hf")
     try:
         try:
-            report = inspect_model(source, HfClient(token=token))
+            return inspect_model(source, HfClient(token=token))
         except AuthRequired as exc:
-            interactive = sys.stdin.isatty() and not as_json
+            interactive = sys.stdin.isatty() and interactive_ok
             if not interactive or exc.had_token:
                 err_console.print(f"[red]{exc}[/red]")
                 if not exc.had_token:
@@ -85,27 +104,13 @@ def inspect(
                 raise typer.Exit(code=4)
             report = inspect_model(source, HfClient(token=entered))
             console.print("[dim]hint: เก็บ token ถาวรด้วย lmds config set-hf-token[/dim]")
+            return report
     except RepoNotFound as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     except HfError as exc:
         err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")
         raise typer.Exit(code=5)
-
-    fit_reports = _compute_fits(report, targets, concurrency)
-
-    if as_json:
-        import json as json_module
-
-        payload = {
-            "model": report.model_dump(mode="json"),
-            "fit": [f.model_dump(mode="json") for f in fit_reports],
-        }
-        print(json_module.dumps(payload, indent=2, ensure_ascii=False))
-        return
-
-    _render_report(report)
-    _render_fits(fit_reports)
 
 
 def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
@@ -204,6 +209,99 @@ def _render_report(report) -> None:
     console.print(table)
     for warning in report.warnings:
         err_console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+
+@app.command()
+def plan(
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    revision: Optional[str] = typer.Option(None, "--revision"),
+    target: Optional[str] = typer.Option(
+        None, "--target", help="target preset (เช่น dgx-spark-single) — ว่าง = เครื่องนี้ หรือ dgx-spark-single"
+    ),
+    no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
+    concurrency: int = typer.Option(1, "--concurrency"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """สร้าง Deployment Plan (ขั้นวางแผนของ deploy) — ยังไม่ generate สคริปต์
+
+    Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหา provider/เครือข่าย
+    """
+    from lmds.brain import MissingKey, PlanError, ProviderError, build_plan, make_provider
+    from lmds.config import Settings
+
+    report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
+    fits = _compute_fits(report, [target] if target else [], concurrency)
+    fit = fits[0]
+
+    provider = None
+    if not no_llm:
+        settings = Settings.load()
+        if settings.provider is None:
+            err_console.print(
+                "[yellow]ยังไม่ได้ตั้งค่า LLM provider (lmds config set-provider ...) — ใช้ rule-based mode[/yellow]"
+            )
+        else:
+            try:
+                provider = make_provider(settings.provider, get_secret(settings.provider.name.value))
+            except MissingKey as exc:
+                err_console.print(f"[yellow]{exc} — ใช้ rule-based mode[/yellow]")
+
+    try:
+        deployment_plan = build_plan(report, fit, provider)
+    except (PlanError, ProviderError) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=5)
+
+    if as_json:
+        print(deployment_plan.model_dump_json(indent=2))
+        return
+    _render_plan(deployment_plan, fit)
+
+
+def _render_plan(deployment_plan, fit) -> None:
+    from lmds.brain import Confidence
+
+    table = Table(title=f"Deployment Plan: {deployment_plan.model_id}", show_header=False)
+    table.add_row("Generator", deployment_plan.generator)
+    table.add_row("Revision (pinned)", deployment_plan.revision)
+    table.add_row("Runtime", f"{deployment_plan.runtime.engine.value} — {deployment_plan.runtime.image_ref}")
+    table.add_row("Topology", deployment_plan.topology.value + f"  (target: {fit.target_name})")
+    table.add_row("Served name", deployment_plan.served_model_name)
+    if deployment_plan.selected_gguf:
+        table.add_row("GGUF file", deployment_plan.selected_gguf)
+    table.add_row(
+        "Serving",
+        f"context {deployment_plan.serving.context:,} | max output {deployment_plan.serving.max_output_tokens:,} "
+        f"| util {deployment_plan.serving.gpu_memory_utilization} | seqs {deployment_plan.serving.max_num_seqs}",
+    )
+    features = []
+    if deployment_plan.tool_calling.enabled:
+        features.append(f"tools ({deployment_plan.tool_calling.parser})")
+    if deployment_plan.reasoning.enabled:
+        features.append(f"reasoning ({deployment_plan.reasoning.parser})")
+    if deployment_plan.multimodal.modalities:
+        features.append("multimodal: " + ",".join(deployment_plan.multimodal.modalities))
+    table.add_row("Features", ", ".join(features) or "ไม่เปิด (ยังไม่มีหลักฐานยืนยัน parser)")
+    if deployment_plan.serving.extra_flags:
+        table.add_row("Extra flags", " ".join(deployment_plan.serving.extra_flags))
+    counts = {c: 0 for c in Confidence}
+    for fact in deployment_plan.facts:
+        counts[fact.confidence] += 1
+    table.add_row(
+        "Facts",
+        f"verified {counts[Confidence.VERIFIED]} | inferred {counts[Confidence.INFERRED]} "
+        f"| unverified {counts[Confidence.UNVERIFIED]}",
+    )
+    console.print(table)
+
+    if deployment_plan.runtime.rationale:
+        console.print(f"[dim]เหตุผล: {deployment_plan.runtime.rationale}[/dim]")
+    for warning in deployment_plan.warnings:
+        err_console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if deployment_plan.flags_needing_approval:
+        err_console.print(
+            "[red]ต้องอนุมัติก่อนใช้:[/red] " + ", ".join(deployment_plan.flags_needing_approval)
+        )
 
 
 @app.command()
