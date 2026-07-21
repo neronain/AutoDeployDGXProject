@@ -38,6 +38,96 @@ def version() -> None:
 
 
 @app.command()
+def inspect(
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    revision: Optional[str] = typer.Option(None, "--revision", help="branch/tag/commit ที่ต้องการ"),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON (สำหรับ scripting)"),
+) -> None:
+    """วิเคราะห์โมเดลจากลิงก์ — ดึงเฉพาะ metadata ไม่ดาวน์โหลด weight
+
+    ถ้าเป็น gated repo และยังไม่มี token จะถาม (กด Enter เพื่อข้ามได้)
+    Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหาเครือข่าย/Hub
+    """
+    import sys
+
+    from lmds.inspector import AuthRequired, HfClient, HfError, RepoNotFound, inspect_model
+    from lmds.resolver import SourceError, parse_source
+
+    try:
+        source = parse_source(model)
+    except SourceError as exc:
+        err_console.print(f"[red]ผิดพลาด:[/red] {exc}")
+        raise typer.Exit(code=1)
+    if revision:
+        from dataclasses import replace
+
+        source = replace(source, revision=revision)
+
+    token = get_secret("hf")
+    try:
+        try:
+            report = inspect_model(source, HfClient(token=token))
+        except AuthRequired as exc:
+            interactive = sys.stdin.isatty() and not as_json
+            if not interactive or exc.had_token:
+                err_console.print(f"[red]{exc}[/red]")
+                if not exc.had_token:
+                    err_console.print("ตั้ง token ด้วย: lmds config set-hf-token หรือ env HF_TOKEN")
+                raise typer.Exit(code=4)
+            err_console.print(f"[yellow]{source.repo_id} เป็น gated repo[/yellow]")
+            entered = typer.prompt("Hugging Face token (Enter เพื่อข้าม)", hide_input=True, default="").strip()
+            if not entered:
+                err_console.print("ข้าม token — ไม่สามารถ inspect repo นี้ได้")
+                raise typer.Exit(code=4)
+            report = inspect_model(source, HfClient(token=entered))
+            console.print("[dim]hint: เก็บ token ถาวรด้วย lmds config set-hf-token[/dim]")
+    except RepoNotFound as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    except HfError as exc:
+        err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")
+        raise typer.Exit(code=5)
+
+    if as_json:
+        print(report.model_dump_json(indent=2))
+        return
+
+    _render_report(report)
+
+
+def _render_report(report) -> None:
+    from lmds.inspector import ArtifactType
+
+    table = Table(title=f"Inspect: {report.repo_id}", show_header=False)
+    table.add_row("Revision (pinned)", report.revision_sha)
+    table.add_row("Artifact", report.artifact_type.value + ("  🔒 gated" if report.gated else ""))
+    table.add_row("License", report.license or "ไม่ระบุ")
+    if report.params_total:
+        table.add_row("Parameters", f"{report.params_total / 1e9:.1f}B")
+    if report.weight_bytes:
+        table.add_row("Weight size", f"{report.weight_bytes / 1e9:.1f} GB")
+    if report.shard_count:
+        table.add_row("Shards", str(report.shard_count))
+    if report.architecture or report.model_type:
+        table.add_row("Architecture", report.architecture or report.model_type)
+    if report.context_length:
+        table.add_row("Native context", f"{report.context_length:,}")
+    if report.quantization:
+        table.add_row("Quantization", report.quantization)
+    if report.has_chat_template is not None:
+        table.add_row("Chat template", "✅ มี" if report.has_chat_template else "❌ ไม่พบ")
+    if report.artifact_type in (ArtifactType.GGUF, ArtifactType.MIXED) and report.gguf_variants:
+        variants = [v for v in report.gguf_variants if not v.is_mmproj]
+        mmproj = [v for v in report.gguf_variants if v.is_mmproj]
+        table.add_row("GGUF variants", str(len(variants)) + (f" (+mmproj {len(mmproj)})" if mmproj else ""))
+        if report.selected_gguf:
+            table.add_row("Selected GGUF", report.selected_gguf)
+    console.print(table)
+    for warning in report.warnings:
+        err_console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+
+@app.command()
 def hardware() -> None:
     """ตรวจฮาร์ดแวร์ของเครื่องนี้และแสดง target profile"""
     from lmds.hardware import probe

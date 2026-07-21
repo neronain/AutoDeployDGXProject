@@ -1,0 +1,222 @@
+"""Orchestrator ของการ inspect: Hub API → จำแนก artifact → ไฟล์ metadata → ModelReport"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from lmds.resolver import ModelSource
+
+from .gguf import GgufParseError, parse_gguf
+from .hf_api import BudgetExceeded, HfClient
+from .report import ArtifactType, GgufVariant, ModelReport
+
+_SAFETENSORS_INDEX = "model.safetensors.index.json"
+
+
+def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
+    info = client.model_info(source.repo_id, source.revision)
+    revision_sha = info.get("sha") or (source.revision or "main")
+
+    files = _sibling_files(info)
+    safetensor_files = [f for f in files if f[0].endswith(".safetensors")]
+    gguf_files = [f for f in files if f[0].endswith(".gguf")]
+
+    artifact = _classify(bool(safetensor_files), bool(gguf_files))
+    report = ModelReport(
+        repo_id=source.repo_id,
+        revision_requested=source.revision,
+        revision_sha=revision_sha,
+        gated=bool(info.get("gated")),
+        private=bool(info.get("private")),
+        license=_license_of(info),
+        artifact_type=artifact,
+        params_total=_params_of(info),
+        tags=[t for t in info.get("tags", []) if isinstance(t, str)],
+        file_count=len(files),
+        trust_remote_code_files=sorted(
+            name for name, _ in files
+            if name.endswith(".py") and name.startswith(("configuration_", "modeling_", "processing_", "tokenization_"))
+        ),
+    )
+    if report.trust_remote_code_files:
+        report.warnings.append(
+            "repo มีไฟล์ Python (trust_remote_code) — ต้อง review ก่อน deploy: "
+            + ", ".join(report.trust_remote_code_files)
+        )
+
+    if artifact in (ArtifactType.SAFETENSORS, ArtifactType.MIXED):
+        _inspect_safetensors(report, source, client, revision_sha, safetensor_files)
+    if artifact in (ArtifactType.GGUF, ArtifactType.MIXED):
+        _inspect_gguf(report, source, client, revision_sha, gguf_files)
+    return report
+
+
+def _sibling_files(info: dict[str, Any]) -> list[tuple[str, int | None]]:
+    out: list[tuple[str, int | None]] = []
+    for sibling in info.get("siblings", []) or []:
+        name = sibling.get("rfilename")
+        if not name:
+            continue
+        size = sibling.get("size")
+        lfs = sibling.get("lfs") or {}
+        out.append((name, size if size is not None else lfs.get("size")))
+    return out
+
+
+def _classify(has_safetensors: bool, has_gguf: bool) -> ArtifactType:
+    if has_safetensors and has_gguf:
+        return ArtifactType.MIXED
+    if has_safetensors:
+        return ArtifactType.SAFETENSORS
+    if has_gguf:
+        return ArtifactType.GGUF
+    return ArtifactType.UNKNOWN
+
+
+def _license_of(info: dict[str, Any]) -> str | None:
+    card = info.get("cardData") or {}
+    license_value = card.get("license")
+    if isinstance(license_value, list):
+        license_value = ", ".join(str(v) for v in license_value)
+    if license_value:
+        return str(license_value)
+    for tag in info.get("tags", []) or []:
+        if isinstance(tag, str) and tag.startswith("license:"):
+            return tag.removeprefix("license:")
+    return None
+
+
+def _params_of(info: dict[str, Any]) -> int | None:
+    st = info.get("safetensors") or {}
+    total = st.get("total")
+    return int(total) if isinstance(total, (int, float)) and total > 0 else None
+
+
+def _fetch_json(client: HfClient, repo_id: str, revision: str, filename: str) -> dict[str, Any] | None:
+    raw = client.fetch_small_file(repo_id, revision, filename)
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _inspect_safetensors(
+    report: ModelReport,
+    source: ModelSource,
+    client: HfClient,
+    revision: str,
+    safetensor_files: list[tuple[str, int | None]],
+) -> None:
+    sizes = [size for _, size in safetensor_files if size is not None]
+    if len(sizes) == len(safetensor_files):
+        report.weight_bytes = sum(sizes)
+    else:
+        report.warnings.append("Hub ไม่รายงานขนาดไฟล์ครบ — weight_bytes อาจไม่ครบถ้วน")
+        report.weight_bytes = sum(sizes) if sizes else None
+
+    index = _fetch_json(client, source.repo_id, revision, _SAFETENSORS_INDEX)
+    if index is not None:
+        weight_map = index.get("weight_map") or {}
+        shards = {v for v in weight_map.values() if isinstance(v, str)}
+        report.shard_count = len(shards) or None
+        listed = {name for name, _ in safetensor_files}
+        missing = sorted(shards - listed)
+        if missing:
+            report.warnings.append(f"index อ้าง shard ที่ไม่อยู่ใน repo: {', '.join(missing[:5])}")
+        total = (index.get("metadata") or {}).get("total_size")
+        if isinstance(total, int) and total > 0:
+            report.weight_bytes = report.weight_bytes or total
+    else:
+        report.shard_count = len(safetensor_files)
+
+    config = _fetch_json(client, source.repo_id, revision, "config.json")
+    if config is not None:
+        architectures = config.get("architectures")
+        if isinstance(architectures, list) and architectures:
+            report.architecture = str(architectures[0])
+        report.model_type = config.get("model_type") or report.model_type
+        for key in ("max_position_embeddings", "max_sequence_length", "n_positions"):
+            value = config.get(key)
+            if isinstance(value, int) and value > 0:
+                report.context_length = value
+                break
+        quant = config.get("quantization_config")
+        if isinstance(quant, dict):
+            report.quantization = str(quant.get("quant_method") or quant.get("quant_algo") or "quantized")
+    else:
+        report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
+
+    hf_quant = _fetch_json(client, source.repo_id, revision, "hf_quant_config.json")
+    if hf_quant is not None and not report.quantization:
+        quant_cfg = hf_quant.get("quantization") or {}
+        report.quantization = str(quant_cfg.get("quant_algo") or "modelopt")
+
+    tokenizer_config = _fetch_json(client, source.repo_id, revision, "tokenizer_config.json")
+    if tokenizer_config is not None and tokenizer_config.get("chat_template"):
+        report.has_chat_template = True
+    else:
+        template = client.fetch_small_file(source.repo_id, revision, "chat_template.jinja")
+        report.has_chat_template = template is not None if tokenizer_config is not None else None
+
+
+def _inspect_gguf(
+    report: ModelReport,
+    source: ModelSource,
+    client: HfClient,
+    revision: str,
+    gguf_files: list[tuple[str, int | None]],
+) -> None:
+    report.gguf_variants = [
+        GgufVariant(
+            filename=name,
+            size_bytes=size,
+            is_mmproj=name.rsplit("/", 1)[-1].lower().startswith("mmproj"),
+        )
+        for name, size in sorted(gguf_files)
+    ]
+    weight_variants = [v for v in report.gguf_variants if not v.is_mmproj]
+    if not weight_variants:
+        report.warnings.append("พบเฉพาะไฟล์ mmproj — ไม่มี GGUF ของตัวโมเดล")
+        return
+
+    if source.filename:
+        selected = next((v for v in weight_variants if v.filename == source.filename), None)
+        if selected is None:
+            report.warnings.append(f"ไม่พบไฟล์ {source.filename} ใน repo — ต้องเลือก variant ใหม่")
+    elif len(weight_variants) == 1:
+        selected = weight_variants[0]
+    else:
+        selected = None
+        report.warnings.append(
+            f"repo มี GGUF {len(weight_variants)} variant — ต้องเลือกไฟล์ตอน deploy (ยังไม่อ่าน header)"
+        )
+
+    if selected is None:
+        return
+    report.selected_gguf = selected.filename
+    if report.artifact_type is ArtifactType.GGUF:
+        report.weight_bytes = selected.size_bytes
+
+    try:
+        gguf = parse_gguf(client.range_source(source.repo_id, revision, selected.filename))
+    except (GgufParseError, BudgetExceeded, EOFError) as exc:
+        report.warnings.append(f"อ่าน GGUF header ไม่สำเร็จ: {exc}")
+        return
+    report.architecture = report.architecture or gguf.architecture
+    report.context_length = report.context_length or gguf.context_length
+    if report.has_chat_template is None:
+        report.has_chat_template = gguf.chat_template is not None
+    if gguf.file_type is not None and not report.quantization:
+        report.quantization = f"gguf-file-type-{gguf.file_type}"
+    name_upper = selected.filename.upper()
+    for marker in ("Q2", "Q3", "Q4", "Q5", "Q6", "Q8", "F16", "BF16", "IQ1", "IQ2", "IQ3", "IQ4"):
+        if f"-{marker}" in name_upper or f".{marker}" in name_upper or f"_{marker}" in name_upper:
+            suffix = name_upper.split(marker, 1)[1].split(".GGUF", 1)[0]
+            report.quantization = (marker + suffix).strip("-_.")
+            break
+    if gguf.partial:
+        report.warnings.append("GGUF metadata อ่านได้บางส่วน (ชน budget) — ข้อมูลอาจไม่ครบ")
