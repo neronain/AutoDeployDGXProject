@@ -29,11 +29,13 @@ class ServerInfo:
     port: int = 0
     container: str = ""
     pid_file: str = ""
+    pid: int = 0  # ใช้กับ process ที่ตรวจเจอโดยไม่มีทะเบียน
     controller: str = ""
     started_at: str = ""
     run_dir: Path = field(default_factory=Path)
     running: bool = False
     healthy: bool = False
+    registered: bool = True  # False = ตรวจเจอแต่ไม่มี server.meta (bundle รุ่นเก่า)
 
     @property
     def endpoint(self) -> str:
@@ -84,13 +86,81 @@ def _health_ok(port: int) -> bool:
         return False
 
 
+def _pgrep_llama() -> list[tuple[int, str]]:
+    """หา process llama-server ทั้งหมด — คืน [(pid, cmdline)]"""
+    if shutil.which("pgrep") is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-a", "-f", "llama-server"], capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    out: list[tuple[int, str]] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[0].isdigit() and "llama-server" in parts[1]:
+            out.append((int(parts[0]), parts[1]))
+    return out
+
+
+def _cmdline_value(cmdline: str, flag: str) -> str:
+    tokens = cmdline.split()
+    for i, token in enumerate(tokens[:-1]):
+        if token == flag:
+            return tokens[i + 1]
+    return ""
+
+
+def _orphan_native(known_pids: set[int]) -> list[ServerInfo]:
+    """llama-server ที่รันอยู่แต่ไม่มีทะเบียน (เช่น start จาก bundle รุ่นเก่า)"""
+    orphans: list[ServerInfo] = []
+    for pid, cmdline in _pgrep_llama():
+        if pid in known_pids:
+            continue
+        alias = _cmdline_value(cmdline, "--alias")
+        model_path = _cmdline_value(cmdline, "-m")
+        port = _cmdline_value(cmdline, "--port")
+        slug = alias or (Path(model_path).stem if model_path else f"pid-{pid}")
+        orphans.append(ServerInfo(
+            slug=slug, model=alias, engine="llamacpp", mode="native",
+            port=int(port) if port.isdigit() else 0,
+            pid=pid, running=True, registered=False,
+        ))
+    return orphans
+
+
+def _orphan_docker(known_containers: set[str]) -> list[ServerInfo]:
+    """container ชื่อ lmds-* ที่รันอยู่แต่ไม่มีทะเบียน"""
+    if shutil.which("docker") is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["docker", "ps", "--filter", "name=lmds-", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    orphans: list[ServerInfo] = []
+    for name in proc.stdout.split():
+        if name in known_containers:
+            continue
+        orphans.append(ServerInfo(
+            slug=name.removeprefix("lmds-"), engine="?", mode="docker",
+            container=name, running=True, registered=False,
+        ))
+    return orphans
+
+
 def discover() -> list[ServerInfo]:
-    """สแกนทุก server ที่เคย start ในเครื่องนี้ พร้อมสถานะปัจจุบัน"""
+    """สแกนทุก server: ทั้งที่ลงทะเบียน (server.meta) และที่รันอยู่โดยไม่มีทะเบียน (bundle รุ่นเก่า)"""
     servers: list[ServerInfo] = []
     root = run_root()
     if not root.is_dir():
-        return servers
-    for meta_path in sorted(root.glob("*/server.meta")):
+        root_metas: list[Path] = []
+    else:
+        root_metas = sorted(root.glob("*/server.meta"))
+    for meta_path in root_metas:
         try:
             meta = _parse_meta(meta_path)
         except OSError:
@@ -114,6 +184,19 @@ def discover() -> list[ServerInfo]:
             info.running = _container_running(info.container)
         info.healthy = info.running and _health_ok(info.port)
         servers.append(info)
+
+    # เก็บตกโมเดลที่รันอยู่โดยไม่มีทะเบียน (start จาก bundle รุ่นเก่า/เครื่องอื่น)
+    known_pids: set[int] = set()
+    for server in servers:
+        if server.pid_file:
+            try:
+                known_pids.add(int(Path(server.pid_file).read_text(encoding="utf-8").strip()))
+            except (OSError, ValueError):
+                pass
+    known_containers = {s.container for s in servers if s.container}
+    for orphan in [*_orphan_native(known_pids), *_orphan_docker(known_containers)]:
+        orphan.healthy = orphan.running and _health_ok(orphan.port)
+        servers.append(orphan)
     return servers
 
 
@@ -136,12 +219,14 @@ def _run_controller(info: ServerInfo, command: str, extra: list[str] | None = No
 
 
 def stop_server(info: ServerInfo) -> str:
-    """หยุดผ่าน controller; ถ้า controller หาย ใช้ fallback (docker rm / kill pid) — คืนวิธีที่ใช้"""
+    """หยุดผ่าน controller; ถ้า controller หาย/ไม่ลงทะเบียน ใช้ fallback (kill pid / docker rm)"""
     if info.controller_exists:
         _run_controller(info, "stop")
         return "controller"
     if info.mode == "native":
-        if info.pid_file and _pid_alive(info.pid_file):
+        if info.pid:
+            os.kill(info.pid, 15)
+        elif info.pid_file and _pid_alive(info.pid_file):
             pid = int(Path(info.pid_file).read_text(encoding="utf-8").strip())
             os.kill(pid, 15)
             Path(info.pid_file).unlink(missing_ok=True)

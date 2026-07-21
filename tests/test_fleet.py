@@ -1,12 +1,20 @@
 import os
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from lmds.cli.main import app
 from lmds.fleet import discover, find, stop_server
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def no_orphan_scan(monkeypatch):
+    """ปิดการสแกน process/container จริงของเครื่อง dev — เทสที่ต้องการ orphan override เอง"""
+    monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
+    monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
 
 
 def make_meta(root: Path, slug: str, mode: str = "native", pid: int | None = None,
@@ -128,6 +136,76 @@ def test_cli_list_shows_missing_controller(tmp_path, monkeypatch, isolated_confi
     result = runner.invoke(app, ["list"])
     assert result.exit_code == 0
     assert "หาย" in result.output
+
+
+def test_orphan_native_detected(tmp_path, monkeypatch):
+    """เคสจริงจาก gigabyte02: โมเดลที่ start จาก bundle รุ่นเก่า (ไม่มี meta) ต้องโผล่ใน ps"""
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    make_meta(tmp_path, "model-registered", pid=os.getpid(), port=8000)
+    monkeypatch.setattr(
+        "lmds.fleet.manager._pgrep_llama",
+        lambda: [
+            (os.getpid(), "llama-server -m /x.gguf --port 8000"),  # pid ตรง meta → ไม่ซ้ำ
+            (424242, "/home/u/src/llama.cpp/build/bin/llama-server -m /home/u/models/q/Qwen3-old.gguf "
+                     "--alias Qwen3-Coder-Old --port 8001"),
+        ],
+    )
+
+    servers = {s.slug: s for s in discover()}
+    assert "model-registered" in servers
+    orphan = servers["Qwen3-Coder-Old"]
+    assert orphan.registered is False
+    assert orphan.running is True
+    assert orphan.port == 8001
+    assert orphan.pid == 424242
+    assert len(servers) == 2  # pid ที่ลงทะเบียนแล้วต้องไม่ถูกนับซ้ำ
+
+
+def test_orphan_docker_detected(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    from lmds.fleet.manager import ServerInfo
+
+    monkeypatch.setattr(
+        "lmds.fleet.manager._orphan_docker",
+        lambda known: [ServerInfo(slug="old-nvfp4", engine="?", mode="docker",
+                                  container="lmds-old-nvfp4", running=True, registered=False)],
+    )
+    servers = {s.slug: s for s in discover()}
+    assert servers["old-nvfp4"].registered is False
+
+
+def test_stop_orphan_native_by_pid(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "lmds.fleet.manager._pgrep_llama",
+        lambda: [(424242, "llama-server -m /m.gguf --alias orphan-model --port 8001")],
+    )
+    killed = {}
+    real_kill = os.kill
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return real_kill(pid, 0)
+        killed["pid"] = pid
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+    server = find("orphan-model")
+    assert server is not None
+    assert stop_server(server) == "kill"
+    assert killed["pid"] == 424242
+
+
+def test_cli_ps_marks_unregistered(tmp_path, monkeypatch, isolated_config):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "lmds.fleet.manager._pgrep_llama",
+        lambda: [(424242, "llama-server -m /m.gguf --alias old-model --port 8001")],
+    )
+    result = runner.invoke(app, ["ps"])
+    assert result.exit_code == 0
+    assert "old-model" in result.output
+    assert "ไม่ลงทะเบียน" in result.output
+    assert "regenerate" in result.output
 
 
 def test_generated_controller_writes_meta(isolated_config, tmp_path):

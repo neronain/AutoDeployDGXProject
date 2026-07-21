@@ -614,6 +614,8 @@ def ps() -> None:
             status = "[yellow]◐ loading/ไม่ตอบ health[/yellow]"
         else:
             status = "[dim]○ stopped[/dim]"
+        if not server.registered:
+            status += " [yellow]⚠ ไม่ลงทะเบียน[/yellow]"
         table.add_row(server.slug, server.model or server.model_id, f"{server.engine} ({server.mode})",
                       str(server.port or "-"), status)
     console.print(table)
@@ -621,6 +623,11 @@ def ps() -> None:
     if running:
         console.print(
             f"\n[dim]หยุดตัวเดียว: lmds stop <ชื่อ> | หยุดทั้งหมด: lmds stop --all | ดู log: lmds logs <ชื่อ>[/dim]"
+        )
+    if any(not s.registered for s in servers):
+        err_console.print(
+            "[yellow]⚠ ตัวที่ 'ไม่ลงทะเบียน' มาจาก bundle รุ่นเก่า — lmds stop ใช้ได้ (fallback) "
+            "แต่แนะนำ regenerate bundle (lmds deploy ลิงก์เดิม) เพื่อเข้าระบบเต็มรูป[/yellow]"
         )
 
 
