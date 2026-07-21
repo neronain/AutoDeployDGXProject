@@ -1,0 +1,208 @@
+"""Quality gates ของ bundle — สืบทอด audit-controllers.py + quality-gates.md ของ v3.0.0
+
+ทุก bundle ต้องผ่านทุก gate ก่อนถึงมือผู้ใช้ (PRD §10) — gate เขียนให้ตรวจได้ทั้ง
+bundle ที่ LMDS generate เองและ bundle เดิม/แก้มือ (`lmds validate <dir>`)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+CHECKSUM_FILE = "PACKAGE_SHA256SUMS"
+
+REQUIRED_FLAGS = [
+    "--context",
+    "--port",
+    "--bind",
+    "--advertise-ip",
+    "--interface",
+    "--client-input",
+    "--client-output",
+]
+REQUIRED_COMMANDS = [
+    "download",
+    "verify-files",
+    "start",
+    "stop",
+    "restart",
+    "status",
+    "logs",
+    "client-config",
+    "network-info",
+]
+
+# pattern secret ที่ห้ามอยู่ใน bundle (สอดคล้อง redaction filter)
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"hf_[A-Za-z0-9]{16,}"),
+    re.compile(r"AIza[0-9A-Za-z_\-]{30,}"),
+]
+
+_NUMERIC_UNDERSCORE = re.compile(r"\(\(\s*[^)]*\b\d+_\d+")
+_PIPE_GREP_Q = re.compile(r"\|\s*grep\s+-q")
+
+_PROFILE_REQUIRED_PATHS = [
+    ("model", "id"),
+    ("model", "revision"),
+    ("runtime", "engine"),
+    ("serving", "context"),
+    ("validation",),
+]
+
+
+@dataclass
+class GateResult:
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+def _controllers(bundle_dir: Path) -> list[Path]:
+    return sorted(bundle_dir.glob("*.sh"))
+
+
+def _text_files(bundle_dir: Path) -> list[Path]:
+    return [
+        p for p in sorted(bundle_dir.rglob("*"))
+        if p.is_file() and p.suffix not in {".zip", ".gguf", ".safetensors"}
+    ]
+
+
+def gate_bash_syntax(bundle_dir: Path) -> GateResult:
+    scripts = _controllers(bundle_dir)
+    if not scripts:
+        return GateResult("bash-syntax", False, "ไม่พบสคริปต์ .sh ใน bundle")
+    for script in scripts:
+        proc = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+        if proc.returncode != 0:
+            return GateResult("bash-syntax", False, f"{script.name}: {proc.stderr.strip()[:200]}")
+    return GateResult("bash-syntax", True, f"{len(scripts)} สคริปต์")
+
+
+def gate_numeric_underscore(bundle_dir: Path) -> GateResult:
+    for script in _controllers(bundle_dir):
+        if _NUMERIC_UNDERSCORE.search(script.read_text(encoding="utf-8")):
+            return GateResult("numeric-underscore", False, f"{script.name}: numeric underscore ใน arithmetic")
+    return GateResult("numeric-underscore", True)
+
+
+def gate_pipefail_safe(bundle_dir: Path) -> GateResult:
+    for script in _controllers(bundle_dir):
+        text = script.read_text(encoding="utf-8")
+        if _PIPE_GREP_Q.search(text):
+            return GateResult("pipefail-safe", False, f"{script.name}: พบ '| grep -q'")
+        if "set -Eeuo pipefail" not in text and "set -euo pipefail" not in text:
+            return GateResult("pipefail-safe", False, f"{script.name}: ไม่มี set -Eeuo pipefail")
+    return GateResult("pipefail-safe", True)
+
+
+def gate_contract(bundle_dir: Path) -> GateResult:
+    missing: list[str] = []
+    for script in _controllers(bundle_dir):
+        text = script.read_text(encoding="utf-8")
+        for flag in REQUIRED_FLAGS:
+            if flag + ")" not in text:
+                missing.append(f"{script.name}: {flag}")
+        for command in REQUIRED_COMMANDS:
+            if f"{command})" not in text:
+                missing.append(f"{script.name}: คำสั่ง {command}")
+    if missing:
+        return GateResult("controller-contract", False, "; ".join(missing[:5]))
+    return GateResult("controller-contract", True)
+
+
+def gate_profile_schema(bundle_dir: Path) -> GateResult:
+    path = bundle_dir / "MODEL_PROFILE.yaml"
+    if not path.exists():
+        return GateResult("profile-schema", False, "ไม่พบ MODEL_PROFILE.yaml")
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        return GateResult("profile-schema", False, f"YAML ไม่ถูกต้อง: {exc}")
+    if not isinstance(data, dict):
+        return GateResult("profile-schema", False, "MODEL_PROFILE.yaml ไม่ใช่ mapping")
+    for key_path in _PROFILE_REQUIRED_PATHS:
+        node = data
+        for key in key_path:
+            if not isinstance(node, dict) or key not in node:
+                return GateResult("profile-schema", False, f"ขาด field: {'.'.join(key_path)}")
+            node = node[key]
+    revision = data["model"]["revision"]
+    if not revision or revision in {"main", "latest"}:
+        return GateResult("profile-schema", False, f"revision ไม่ได้ pin: {revision!r}")
+    return GateResult("profile-schema", True)
+
+
+def gate_secret_scan(bundle_dir: Path) -> GateResult:
+    for file_path in _text_files(bundle_dir):
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for pattern in _SECRET_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                return GateResult(
+                    "secret-scan", False,
+                    f"{file_path.name}: พบ pattern secret ({match.group()[:8]}…)",
+                )
+    return GateResult("secret-scan", True)
+
+
+def compute_checksums(bundle_dir: Path) -> dict[str, str]:
+    sums: dict[str, str] = {}
+    for file_path in sorted(bundle_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(bundle_dir).as_posix()
+        if rel == CHECKSUM_FILE or rel.endswith(".zip"):
+            continue
+        sums[rel] = hashlib.sha256(file_path.read_bytes()).hexdigest()
+    return sums
+
+
+def gate_checksums(bundle_dir: Path) -> GateResult:
+    path = bundle_dir / CHECKSUM_FILE
+    if not path.exists():
+        return GateResult("checksums", False, f"ไม่พบ {CHECKSUM_FILE} — รัน lmds validate --fix")
+    recorded: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            recorded[parts[1].strip()] = parts[0].strip()
+    actual = compute_checksums(bundle_dir)
+    if recorded != actual:
+        changed = sorted(set(recorded) ^ set(actual)) or sorted(
+            k for k in actual if recorded.get(k) != actual[k]
+        )
+        return GateResult("checksums", False, f"ไม่ตรง: {', '.join(changed[:3])}")
+    return GateResult("checksums", True, f"{len(actual)} ไฟล์")
+
+
+ALL_GATES = [
+    gate_bash_syntax,
+    gate_numeric_underscore,
+    gate_pipefail_safe,
+    gate_contract,
+    gate_profile_schema,
+    gate_secret_scan,
+    gate_checksums,
+]
+
+
+def run_gates(bundle_dir: Path, include_checksums: bool = True) -> list[GateResult]:
+    gates = ALL_GATES if include_checksums else ALL_GATES[:-1]
+    return [gate(bundle_dir) for gate in gates]
+
+
+def all_passed(results: list[GateResult]) -> bool:
+    return all(r.passed for r in results)

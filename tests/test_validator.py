@@ -1,0 +1,120 @@
+"""เทส Validator + Packager — ใช้ bundle จริงที่ generate จาก M5 เป็น fixture"""
+
+from __future__ import annotations
+
+import zipfile
+
+import pytest
+
+from lmds.packager import make_zip, write_checksums
+from lmds.validator import CHECKSUM_FILE, all_passed, compute_checksums, run_gates
+from tests.test_generator import gguf_report, make_bundle, safetensors_report
+
+
+@pytest.fixture
+def bundle_dir(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    return bundle.directory
+
+
+def test_generated_bundle_passes_all_gates_before_checksums(bundle_dir):
+    results = run_gates(bundle_dir, include_checksums=False)
+    assert all_passed(results), [f"{r.name}: {r.detail}" for r in results if not r.passed]
+
+
+def test_checksums_roundtrip(bundle_dir):
+    write_checksums(bundle_dir)
+    results = run_gates(bundle_dir, include_checksums=True)
+    assert all_passed(results)
+
+
+def test_checksum_detects_tampering(bundle_dir):
+    write_checksums(bundle_dir)
+    readme = bundle_dir / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\nแก้ทีหลัง", encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=True)}
+    assert results["checksums"].passed is False
+
+
+def test_missing_checksums_fails_with_hint(bundle_dir):
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=True)}
+    assert results["checksums"].passed is False
+    assert "--fix" in results["checksums"].detail
+
+
+def test_numeric_underscore_gate_catches(bundle_dir):
+    script = next(bundle_dir.glob("*.sh"))
+    script.write_text(
+        script.read_text(encoding="utf-8") + '\ncheck() { (( 1 > 25_000_000 )) || true; }\n',
+        encoding="utf-8",
+    )
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["numeric-underscore"].passed is False
+
+
+def test_pipe_grep_q_gate_catches(bundle_dir):
+    script = next(bundle_dir.glob("*.sh"))
+    script.write_text(
+        script.read_text(encoding="utf-8") + '\ncheck2() { docker info | grep -q nvidia; }\n',
+        encoding="utf-8",
+    )
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["pipefail-safe"].passed is False
+
+
+def test_contract_gate_catches_missing_flag(bundle_dir):
+    script = next(bundle_dir.glob("*.sh"))
+    text = script.read_text(encoding="utf-8").replace("--client-input)", "--client-in)")
+    script.write_text(text, encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["controller-contract"].passed is False
+    assert "--client-input" in results["controller-contract"].detail
+
+
+def test_secret_scan_catches_leaked_token(bundle_dir):
+    (bundle_dir / "README.md").write_text(
+        "token: hf_ABCDEFGHIJKLMNOPQRSTUV", encoding="utf-8"
+    )
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["secret-scan"].passed is False
+
+
+def test_profile_schema_gate_catches_unpinned_revision(bundle_dir):
+    profile = bundle_dir / "MODEL_PROFILE.yaml"
+    text = profile.read_text(encoding="utf-8").replace("sha-gguf-456", "main")
+    profile.write_text(text, encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["profile-schema"].passed is False
+    assert "pin" in results["profile-schema"].detail
+
+
+def test_bash_syntax_gate_catches_broken_script(bundle_dir):
+    script = next(bundle_dir.glob("*.sh"))
+    script.write_text(script.read_text(encoding="utf-8") + "\nif [ x; then\n", encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["bash-syntax"].passed is False
+
+
+def test_zip_contains_all_files_under_slug(bundle_dir):
+    write_checksums(bundle_dir)
+    zip_path = make_zip(bundle_dir)
+    assert zip_path.name == f"{bundle_dir.name}.zip"
+    with zipfile.ZipFile(zip_path) as archive:
+        names = archive.namelist()
+    assert f"{bundle_dir.name}/README.md" in names
+    assert f"{bundle_dir.name}/{CHECKSUM_FILE}" in names
+    assert any(n.endswith("-single.sh") for n in names)
+
+
+def test_zip_excluded_from_checksums(bundle_dir):
+    write_checksums(bundle_dir)
+    make_zip(bundle_dir)
+    sums = compute_checksums(bundle_dir)
+    assert not any(name.endswith(".zip") for name in sums)
+    assert CHECKSUM_FILE not in sums
+
+
+def test_vllm_bundle_also_passes(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    write_checksums(bundle.directory)
+    assert all_passed(run_gates(bundle.directory, include_checksums=True))

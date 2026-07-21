@@ -350,19 +350,69 @@ def generate(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=5)
 
+    from lmds.packager import make_zip, write_checksums
+    from lmds.validator import all_passed, run_gates
+
     try:
         bundle = render_bundle(deployment_plan, report, fit, Path(output))
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
+    results = run_gates(bundle.directory, include_checksums=False)
+    if not all_passed(results):
+        _render_gates(results)
+        err_console.print("[red]bundle ไม่ผ่าน quality gates — ไม่สร้าง ZIP[/red]")
+        raise typer.Exit(code=2)
+
+    checksums_path = write_checksums(bundle.directory)
+    zip_path = make_zip(bundle.directory)
+
     _render_plan(deployment_plan, fit)
-    table = Table(title="Bundle")
+    _render_gates(results)
+    table = Table(title="Bundle (static-validated ✅)")
     table.add_column("ไฟล์")
-    for file_path in bundle.files:
+    for file_path in [*bundle.files, checksums_path, zip_path]:
         table.add_row(str(file_path))
     console.print(table)
     console.print(f"\nเริ่มใช้งาน: cd {bundle.directory} && ./{bundle.controller.name} download")
+
+
+def _render_gates(results) -> None:
+    table = Table(title="Quality Gates")
+    table.add_column("Gate")
+    table.add_column("ผล")
+    table.add_column("รายละเอียด")
+    for result in results:
+        table.add_row(result.name, "✅" if result.passed else "❌", result.detail or "-")
+    console.print(table)
+
+
+@app.command()
+def validate(
+    bundle_dir: str = typer.Argument(..., help="โฟลเดอร์ bundle ที่จะตรวจ"),
+    fix: bool = typer.Option(False, "--fix", help="regenerate PACKAGE_SHA256SUMS ก่อนตรวจ"),
+) -> None:
+    """รัน quality gates กับ bundle ใด ๆ (รวม bundle ที่แก้มือ) — exit 0 ผ่าน, 2 ไม่ผ่าน"""
+    from pathlib import Path
+
+    from lmds.packager import write_checksums
+    from lmds.validator import all_passed, run_gates
+
+    directory = Path(bundle_dir)
+    if not directory.is_dir():
+        err_console.print(f"[red]ไม่พบโฟลเดอร์: {bundle_dir}[/red]")
+        raise typer.Exit(code=1)
+
+    if fix:
+        write_checksums(directory)
+        console.print("regenerate PACKAGE_SHA256SUMS แล้ว")
+
+    results = run_gates(directory, include_checksums=True)
+    _render_gates(results)
+    if not all_passed(results):
+        raise typer.Exit(code=2)
+    console.print("[green]ผ่านทุก gate — static-validated[/green]")
 
 
 @app.command()
