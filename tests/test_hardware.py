@@ -36,3 +36,49 @@ def test_classify_profiles():
 def test_unknown_gpu_flagged_conservative():
     gpu = DetectedGpu(name="NVIDIA TITAN FUTURE 999", vram_mib=99999, compute_capability="15.0", known=lookup_gpu("TITAN FUTURE"))
     assert gpu.tested is False
+
+
+def test_full_rtx_lineup_recognized():
+    """RTX 30/40/50 series ที่เพิ่มเข้ามาต้องอยู่ใน allowlist (ยังไม่ tested → conservative)"""
+    for smi_name in [
+        "NVIDIA GeForce RTX 5090",
+        "NVIDIA GeForce RTX 5080",
+        "NVIDIA GeForce RTX 5070 Ti",
+        "NVIDIA GeForce RTX 4080 SUPER",
+        "NVIDIA GeForce RTX 4060 Ti",
+        "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 3060 Ti",
+        "NVIDIA GeForce RTX 3050",
+    ]:
+        gpu = lookup_gpu(smi_name)
+        assert gpu is not None, f"{smi_name} ควรอยู่ใน allowlist"
+        assert gpu.memory_model is MemoryModel.DISCRETE
+        assert gpu.tested is False
+
+
+def test_ti_variants_not_shadowed_by_base():
+    """'<รุ่น> Ti' ต้อง match แถว Ti ไม่ถูกแถวฐาน (ตัวเลข VRAM ต่างกัน) จับก่อน"""
+    # 5070 Ti (16GB) ต้องไม่ตกไปที่ 5070 (12GB)
+    assert lookup_gpu("NVIDIA GeForce RTX 5070 Ti").vram_gb == 16.0
+    assert lookup_gpu("NVIDIA GeForce RTX 5070").vram_gb == 12.0
+    # 3080 Ti (12GB) ต้องไม่ตกไปที่ 3080 (10GB)
+    assert lookup_gpu("NVIDIA GeForce RTX 3080 Ti").vram_gb == 12.0
+    assert lookup_gpu("NVIDIA GeForce RTX 3080").vram_gb == 10.0
+    # 3090 Ti / 3090 แยกแถวกัน (VRAM เท่ากันแต่ต้องไม่บังกัน)
+    assert lookup_gpu("NVIDIA GeForce RTX 3090 Ti") is not None
+    assert lookup_gpu("NVIDIA GeForce RTX 3090").name_pattern == "rtx 3090"
+
+
+def test_compute_capability_by_architecture():
+    """compute capability คงที่ตามสถาปัตยกรรมทั้งไลน์"""
+    assert lookup_gpu("NVIDIA GeForce RTX 3070").compute_capability == "8.6"   # Ampere
+    assert lookup_gpu("NVIDIA GeForce RTX 4070").compute_capability == "8.9"   # Ada
+    assert lookup_gpu("NVIDIA GeForce RTX 5070").compute_capability == "12.0"  # Blackwell
+
+
+def test_classify_new_rtx_single_and_multi():
+    assert classify(["NVIDIA GeForce RTX 5090"]) is TargetProfile.RTX_SINGLE
+    assert (
+        classify(["NVIDIA GeForce RTX 3090", "NVIDIA GeForce RTX 3090"])
+        is TargetProfile.RTX_MULTI_GPU
+    )

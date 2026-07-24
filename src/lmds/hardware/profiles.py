@@ -24,16 +24,56 @@ class KnownGpu:
     tested: bool
 
 
-# เรียงจาก pattern เฉพาะเจาะจงมาก → น้อย เพราะจับแบบ substring ตัวแรกที่เจอ
+# เรียงจาก pattern เฉพาะเจาะจงมาก → น้อย เพราะ lookup_gpu จับแบบ substring ตัวแรกที่เจอ
+# กฎเงาทับ (shadowing): ถ้าชื่อรุ่นยาวมี pattern สั้นเป็นสับสตริง ต้องวางตัวยาวไว้ "ก่อน"
+#   เช่น "rtx 4070 ti super" ต้องมาก่อน "rtx 4070 ti" ต้องมาก่อน "rtx 4070"
+#        "rtx 3060 ti" ต้องมาก่อน "rtx 3060" ฯลฯ
+#
+# compute capability ตามสถาปัตยกรรม (คงที่ทั้งไลน์):
+#   Ampere consumer (GA10x) = 8.6 · Ada Lovelace (AD10x) = 8.9 · Blackwell consumer (GB20x) = 12.0
+#
+# vram_gb = ค่า fallback/แสดงผลเมื่อ nvidia-smi อ่าน memory.total ไม่ได้ (บน discrete มักอ่านได้อยู่แล้ว)
+# รุ่นที่มีหลายสเปก VRAM ใช้ค่าที่พบบ่อยสุด และหมายเหตุ variant ไว้ท้ายบรรทัด
 KNOWN_GPUS: list[KnownGpu] = [
-    # เครื่องทดสอบจริงของทีม (2026-07)
+    # ── เครื่องทดสอบจริงของทีม (2026-07) — tested=True ──
     KnownGpu("gb10", 128.0, "12.1", MemoryModel.UNIFIED, tested=True),          # DGX Spark
     KnownGpu("rtx pro 4000 blackwell", 24.0, "12.0", MemoryModel.DISCRETE, tested=True),
     KnownGpu("rtx 4070 ti super", 16.0, "8.9", MemoryModel.DISCRETE, tested=True),
     KnownGpu("rtx 4070 super", 12.0, "8.9", MemoryModel.DISCRETE, tested=True),
-    # รุ่นที่รู้จักแต่ยังไม่มีเครื่องทดสอบ — โหมด conservative
+
+    # ── รุ่นที่รู้จักแต่ยังไม่มีเครื่องทดสอบ — โหมด conservative (tested=False) ──
+
+    # RTX 50 series (Blackwell, cc 12.0)  — ต้องเรียง ti/super ก่อนตัวฐาน
     KnownGpu("rtx 5090", 32.0, "12.0", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 5080", 16.0, "12.0", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 5070 ti", 16.0, "12.0", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 5070", 12.0, "12.0", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 5060 ti", 16.0, "12.0", MemoryModel.DISCRETE, tested=False),  # มี variant 8GB ด้วย
+    KnownGpu("rtx 5060", 8.0, "12.0", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 5050", 8.0, "12.0", MemoryModel.DISCRETE, tested=False),
+
+    # RTX 40 series (Ada Lovelace, cc 8.9)
     KnownGpu("rtx 4090", 24.0, "8.9", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 4080 super", 16.0, "8.9", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 4080", 16.0, "8.9", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 4070 ti", 12.0, "8.9", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 4070", 12.0, "8.9", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 4060 ti", 8.0, "8.9", MemoryModel.DISCRETE, tested=False),   # มี variant 16GB ด้วย
+    KnownGpu("rtx 4060", 8.0, "8.9", MemoryModel.DISCRETE, tested=False),
+
+    # RTX 30 series (Ampere, cc 8.6)
+    KnownGpu("rtx 3090 ti", 24.0, "8.6", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 3090", 24.0, "8.6", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 3080 ti", 12.0, "8.6", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 3080", 10.0, "8.6", MemoryModel.DISCRETE, tested=False),     # มี variant 12GB ด้วย
+    KnownGpu("rtx 3070 ti", 8.0, "8.6", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 3070", 8.0, "8.6", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 3060 ti", 8.0, "8.6", MemoryModel.DISCRETE, tested=False),
+    KnownGpu("rtx 3060", 12.0, "8.6", MemoryModel.DISCRETE, tested=False),     # มี variant 8GB ด้วย
+    KnownGpu("rtx 3050", 8.0, "8.6", MemoryModel.DISCRETE, tested=False),      # มี variant 6GB ด้วย
+
+    # ── Workstation / Data-center ──
+    KnownGpu("rtx pro 6000 blackwell", 96.0, "12.0", MemoryModel.DISCRETE, tested=False),
     KnownGpu("rtx 6000 ada", 48.0, "8.9", MemoryModel.DISCRETE, tested=False),
     KnownGpu("a100", 80.0, "8.0", MemoryModel.DISCRETE, tested=False),
     KnownGpu("h100", 80.0, "9.0", MemoryModel.DISCRETE, tested=False),

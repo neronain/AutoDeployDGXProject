@@ -33,8 +33,25 @@ PRESETS: dict[str, TargetSpec] = {
     "rtx-pro-4000-dual": TargetSpec("rtx-pro-4000-dual", MemoryModel.DISCRETE, 24.0, 2, tested=True),
     "rtx-4070-super": TargetSpec("rtx-4070-super", MemoryModel.DISCRETE, 12.0, 1, tested=True),
     "rtx-4070-ti-super": TargetSpec("rtx-4070-ti-super", MemoryModel.DISCRETE, 16.0, 1, tested=True),
-    "rtx-4090": TargetSpec("rtx-4090", MemoryModel.DISCRETE, 24.0, 1, tested=False),
+    # ── รุ่นอ้างอิงยอดนิยม (ยังไม่ทดสอบจริง → conservative) ──
+    # RTX 50 series (Blackwell)
     "rtx-5090": TargetSpec("rtx-5090", MemoryModel.DISCRETE, 32.0, 1, tested=False),
+    "rtx-5080": TargetSpec("rtx-5080", MemoryModel.DISCRETE, 16.0, 1, tested=False),
+    "rtx-5070-ti": TargetSpec("rtx-5070-ti", MemoryModel.DISCRETE, 16.0, 1, tested=False),
+    "rtx-5070": TargetSpec("rtx-5070", MemoryModel.DISCRETE, 12.0, 1, tested=False),
+    "rtx-5060-ti": TargetSpec("rtx-5060-ti", MemoryModel.DISCRETE, 16.0, 1, tested=False),
+    # RTX 40 series (Ada Lovelace)
+    "rtx-4090": TargetSpec("rtx-4090", MemoryModel.DISCRETE, 24.0, 1, tested=False),
+    "rtx-4080-super": TargetSpec("rtx-4080-super", MemoryModel.DISCRETE, 16.0, 1, tested=False),
+    "rtx-4080": TargetSpec("rtx-4080", MemoryModel.DISCRETE, 16.0, 1, tested=False),
+    "rtx-4070-ti": TargetSpec("rtx-4070-ti", MemoryModel.DISCRETE, 12.0, 1, tested=False),
+    "rtx-4060-ti": TargetSpec("rtx-4060-ti", MemoryModel.DISCRETE, 16.0, 1, tested=False),
+    # RTX 30 series (Ampere)
+    "rtx-3090-ti": TargetSpec("rtx-3090-ti", MemoryModel.DISCRETE, 24.0, 1, tested=False),
+    "rtx-3090": TargetSpec("rtx-3090", MemoryModel.DISCRETE, 24.0, 1, tested=False),
+    "rtx-3080-ti": TargetSpec("rtx-3080-ti", MemoryModel.DISCRETE, 12.0, 1, tested=False),
+    "rtx-3080": TargetSpec("rtx-3080", MemoryModel.DISCRETE, 10.0, 1, tested=False),
+    "rtx-3060": TargetSpec("rtx-3060", MemoryModel.DISCRETE, 12.0, 1, tested=False),
 }
 
 
