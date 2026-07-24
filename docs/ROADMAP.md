@@ -16,6 +16,7 @@
 | M6 ✅ | Validator + Packager (เสร็จ 2026-07-21) | 7 quality gates (bash-syntax, numeric-underscore, pipefail-safe, controller-contract, profile-schema + pinned revision, secret-scan, checksums), `lmds validate [--fix]`, PACKAGE_SHA256SUMS + ZIP, generate → gates → package อัตโนมัติ (ไม่ผ่าน = ไม่มี ZIP, exit 2) | ทุก gate จับเคสพังได้จริง (มีเทส negative ครบ), tamper detection ผ่าน E2E — 125 tests; เทียบ controllers v3.0.0 เดิมยกไป M7 |
 | M7a ✅ | End-to-end + เอกสาร (เสร็จ 2026-07-21) | `lmds deploy` ครบ flow: inspect → fit → plan → ขั้นยืนยัน interactive (อนุมัติ flag รายตัว + แก้ context ภายในเพดานปลอดภัย) → render → 7 gates → ZIP, `--yes` สำหรับ scripting, `install.sh` + docs/INSTALL.md | 130 tests + E2E จริงจาก Hub |
 | M7b 🔄 | Hardware validation (คืบหน้า) | **2026-07-21: hardware-validated ตัวแรกสำเร็จ** — Qwen3-Coder-30B-A3B UD-Q8_K_XL บน DGX Spark (gigabyte02): สมอง Local AI (gemma-4-26b openai-compat) → native build llama.cpp (121a-real, pinned 76f46ad29) → start → test-text ตอบถูก ~60 tok/s; แก้ตามผลจริง: image allowlist, variant picker, auto-install build deps, client budget ต่อ slot | เหลือ: RTX PRO 4000 ×2 + 4070, โมเดลอ้างอิงอีก 4 ตระกูล (safetensors/NVFP4/MoE-vLLM/gated), regression เทียบ controllers v3.0.0 |
+| M8 ✅ | Stacked (multi-node) generation (เสร็จ 2026-07-24) | template `stacked-vllm-controller.sh.j2` port จาก reference v8.2 (DeepSeek-V4-Flash 2×DGX Spark ที่ hardware-validated 2026-07-22) แบบ generic: worker-first startup, image-ID lock 2 node, FlashInfer cache versioning ต่อ image, NCCL/RoCE, sync-worker/verify-worker; planner emit STACKED + harden บังคับ topology จาก target; gate `stacked-contract` ปิดช่องโหว่ single-node ปลอม; เลือกผ่าน `--target dgx-spark-stacked` | bash -n + 8 gates ผ่านกับ bundle stacked, worker.sh/serve-args ตรง reference, GGUF+stacked ถูกปฏิเสธ — 191 tests (รวม test_stacked 12 ตัว); เหลือ hardware regression บนคลัสเตอร์จริง |
 
 ### เกณฑ์สำเร็จ MVP
 
@@ -24,13 +25,14 @@
 
 ### นอกขอบเขตเฟส 1 (ตัดออกชัดเจน)
 
-- Web UI, stacked controller generation (template มีแล้วแต่ยังไม่เปิดใน CLI), repair workflow, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
+- Web UI, repair workflow, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
+- ~~stacked controller generation~~ → **ทำเสร็จแล้ว (M8, 2026-07-24)** เลือกผ่าน `--target dgx-spark-stacked`
 
 ## เฟส 2 — ข้อเสนอ (เลือก/จัดลำดับหลัง CLI เสร็จ)
 
 เรียงตามที่แนะนำ:
 
-1. **Stacked controller ใน CLI** (`--topology stacked|both`) — template พร้อมแล้ว เหลือ orchestration ของ sync/verify-worker
+1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · งานต่อยอด: hardware regression บนคลัสเตอร์จริง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
 2. **Repair workflow** (`lmds repair`) — มูลค่าสูงกับลูกค้าจริง เพราะปัญหาหลัง deploy คืองานหลัก
 3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
 4. **Web UI หน้าเดียว** (FastAPI) — reuse core ทั้งหมด, สำหรับลูกค้าที่ไม่ถนัด CLI

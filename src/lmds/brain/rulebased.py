@@ -33,6 +33,21 @@ def slugify(repo_id: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name).strip("-") or "model"
 
 
+def topology_for_target(target_name: str) -> Topology:
+    """topology เป็นสมบัติของ *target* (กี่ node/GPU) ไม่ใช่การตัดสินใจของ LLM
+
+    - ชื่อ target มี 'stacked' → STACKED (multi-node เช่น dgx-spark-stacked)
+    - มี 'dual'/'multi'       → MULTI_GPU (หลาย GPU ในเครื่องเดียว เช่น rtx-*-dual)
+    - นอกนั้น                  → SINGLE
+    """
+    name = target_name.lower()
+    if "stacked" in name:
+        return Topology.STACKED
+    if "dual" in name or "multi" in name:
+        return Topology.MULTI_GPU
+    return Topology.SINGLE
+
+
 def build_facts(report: ModelReport) -> list[Fact]:
     facts = [
         Fact(claim=f"artifact เป็น {report.artifact_type.value}", source="hub-api", confidence=Confidence.VERIFIED),
@@ -60,7 +75,7 @@ def build_facts(report: ModelReport) -> list[Fact]:
 
 def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
     engine = Engine.LLAMACPP if report.artifact_type is ArtifactType.GGUF else Engine.VLLM
-    topology = Topology.MULTI_GPU if "dual" in fit.target_name or "multi" in fit.target_name else Topology.SINGLE
+    topology = topology_for_target(fit.target_name)
 
     context = fit.recommended_context or 8192
     plan = DeploymentPlan(

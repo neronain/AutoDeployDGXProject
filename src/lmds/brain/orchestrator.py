@@ -74,6 +74,16 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         )
         plan.serving.context = fit.recommended_context
 
+    # topology เป็นสมบัติของ target (กี่ node/GPU) — บังคับจาก target เสมอ ไม่ให้ LLM เลือกเอง
+    from .rulebased import topology_for_target
+
+    expected_topology = topology_for_target(fit.target_name)
+    if plan.topology is not expected_topology:
+        plan.warnings.append(
+            f"แก้ topology จาก {plan.topology.value} เป็น {expected_topology.value} ตาม target {fit.target_name!r}"
+        )
+        plan.topology = expected_topology
+
     if plan.tool_calling.parallel:
         plan.tool_calling.parallel = False
         plan.warnings.append("บังคับ parallel_tool_calls=false ตามมาตรฐาน v3.0.0 (ต้องผ่านเทสก่อนเปิด)")

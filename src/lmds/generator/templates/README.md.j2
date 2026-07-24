@@ -19,10 +19,14 @@
 
 ## Requirements
 
-{% if native_llamacpp %}- Ubuntu 22.04/24.04 (ARM64/x86_64) + NVIDIA driver + CUDA Toolkit (DGX OS มีมาให้แล้ว)
+{% if is_stacked %}- **{{ node_count }}× DGX Spark (multi-node)** + NVIDIA driver, Docker, NVIDIA Container Toolkit ทุก node
+- fabric ระหว่าง node (แนะนำ 200 Gb/s RoCE/QSFP) — ตั้ง `NCCL_SOCKET_IFNAME` + `NCCL_IB_HCA` ให้ตรง interface จริง
+- **passwordless SSH** จาก master → worker (controller ใช้ SSH สั่งงาน worker)
+- รัน controller จาก **master node ในฐานะ user ปกติ** เท่านั้น (ห้าม sudo)
+{% elif native_llamacpp %}- Ubuntu 22.04/24.04 (ARM64/x86_64) + NVIDIA driver + CUDA Toolkit (DGX OS มีมาให้แล้ว)
 - Build dependencies: git, cmake, ninja-build, build-essential — **`prepare-runtime` ติดตั้งให้อัตโนมัติ** (ใช้ sudo)
 {% else %}- Ubuntu 22.04/24.04 + NVIDIA driver, Docker, NVIDIA Container Toolkit
-{% endif %}- พื้นที่ดิสก์ว่างอย่างน้อย {{ disk_gb }} GB (โมเดล + runtime)
+{% endif %}- พื้นที่ดิสก์ว่างอย่างน้อย {{ disk_gb }} GB (โมเดล + runtime){% if is_stacked %} — **ต่อ node** (โมเดลต้องมีครบทั้งสอง){% endif %}
 {% if report.gated %}- **โมเดลนี้เป็น gated repo** — ต้องมี `HF_TOKEN` (env) ที่ได้รับสิทธิ์แล้วตอน download
 {% endif %}
 
@@ -39,7 +43,21 @@
 - Model revision pin: `{{ plan.revision }}`
 
 ## First-run
+{% if is_stacked %}
+> ก่อนเริ่ม: แก้ค่าใน CONFIG ด้านบนของสคริปต์ (หรือ export env) — `MASTER_IP`, `WORKER_IP`, `SSH_USER`, `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA`
 
+```bash
+chmod +x {{ controller_name }}
+./{{ controller_name }} prepare-runtime   # pull + lock image ให้ตรงกันทั้งสอง node
+./{{ controller_name }} download          # ดาวน์โหลดโมเดลลง master
+./{{ controller_name }} verify-files      # ตรวจ shard + config บน master
+./{{ controller_name }} sync-worker       # rsync โมเดล → worker (~{{ total_size_gb }} GB ครั้งแรก)
+./{{ controller_name }} verify-worker     # ตรวจ shard บน worker
+./{{ controller_name }} start             # worker-first → head → รอ /health
+./{{ controller_name }} status
+./{{ controller_name }} test-text
+```
+{% else %}
 ```bash
 chmod +x {{ controller_name }}
 ./{{ controller_name }} download
@@ -50,6 +68,7 @@ chmod +x {{ controller_name }}
 ./{{ controller_name }} test-text
 ./{{ controller_name }} client-config
 ```
+{% endif %}
 
 ## Conflict shutdown
 

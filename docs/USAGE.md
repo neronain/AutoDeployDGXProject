@@ -144,12 +144,37 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 ต้องกดยอมรับเงื่อนไขของโมเดลบนเว็บ huggingface.co ด้วย account เดียวกับ token ก่อน ไม่งั้น token ก็เข้าไม่ได้
 ตอน `download` บนเครื่อง ให้ตั้ง `export HF_TOKEN=hf_xxx` ไว้ใน shell (สคริปต์อ่านจาก env — ไม่ฝังในไฟล์)
 
+### 3.3b Deploy แบบ stacked (โมเดลใหญ่เกิน 1 เครื่อง → 2× DGX Spark)
+
+โมเดลที่ใหญ่เกิน unified memory ของ Spark เครื่องเดียว (เช่น DeepSeek-V4-Flash ~168GB) ให้ใช้ target `dgx-spark-stacked` — lmds จะสร้าง controller แบบ **multi-node** (worker-first startup, TP ข้าม node, mp backend) แทนแบบเดี่ยวอัตโนมัติ
+
+```bash
+lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
+# → ได้ bundle: <slug>-stacked.sh (ไม่ใช่ -single.sh)
+```
+
+controller ที่ได้มีคำสั่งครบวงจร multi-node — รันจาก **master node ในฐานะ user ปกติ (ห้าม sudo)**:
+
+```bash
+cd bundles/<slug>
+# แก้ CONFIG ต้นไฟล์ก่อน: MASTER_IP, WORKER_IP, SSH_USER, NCCL_SOCKET_IFNAME, NCCL_IB_HCA
+./<slug>-stacked.sh prepare-runtime   # pull + lock image ให้ image-ID ตรงกันทั้งสอง node
+./<slug>-stacked.sh download          # ดาวน์โหลดโมเดลลง master
+./<slug>-stacked.sh verify-files      # ตรวจ shard + config
+./<slug>-stacked.sh sync-worker       # rsync โมเดล → worker
+./<slug>-stacked.sh verify-worker     # ตรวจ shard บน worker
+./<slug>-stacked.sh start             # เปิด worker (rank 1) ก่อน แล้ว head (rank 0) + รอ /health
+./<slug>-stacked.sh status
+```
+
+ข้อกำหนด: 2× DGX Spark + fabric ระหว่าง node (แนะนำ 200 Gb/s RoCE) + passwordless SSH (master→worker) · `lmds ps`/`lmds stop`/`lmds logs` เห็น/สั่งงานตัวนี้ได้เหมือน deploy เดี่ยว (stop จะหยุดทั้งสอง node ให้) · stacked รองรับเฉพาะ vLLM (GGUF ยังไม่มี reference ที่ทดสอบแล้ว)
+
 ### 3.4 Target presets ที่มีให้เลือก
 
 | preset | เครื่อง | หน่วยความจำ |
 |---|---|---|
 | `dgx-spark-single` | DGX Spark 1 เครื่อง | unified 128GB |
-| `dgx-spark-stacked` | DGX Spark 2 เครื่อง | unified 256GB (ประมาณ) |
+| `dgx-spark-stacked` | DGX Spark 2 เครื่อง | unified 256GB (ประมาณ) — สร้าง controller multi-node (ดู 3.3b) |
 | `rtx-pro-4000` / `rtx-pro-4000-dual` | RTX PRO 4000 Blackwell ×1/×2 | 24GB / 48GB |
 | `rtx-4070-super` / `rtx-4070-ti-super` | RTX 4070 Super / Ti Super | 12GB / 16GB |
 | `rtx-4090` / `rtx-5090` | (ยังไม่ tested — โหมด conservative) | 24GB / 32GB |

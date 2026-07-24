@@ -382,7 +382,7 @@ def _render_plan(deployment_plan, fit) -> None:
 def generate(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
-    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)"),
     output: str = typer.Option("./bundles", "--output", help="โฟลเดอร์ output ของ bundle"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
@@ -424,7 +424,7 @@ def generate(
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_plan(deployment_plan, fit)
     _render_gates(results)
-    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit))
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit), stacked=deployment_plan.topology.value == "stacked")
 
 
 def _render_and_package(deployment_plan, report, fit, output: str):
@@ -452,18 +452,26 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     return bundle, results, [*bundle.files, checksums_path, zip_path]
 
 
-def _render_delivery(bundle, delivered, native_prepare: bool = False) -> None:
+def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: bool = False) -> None:
     table = Table(title="Bundle (static-validated ✅)")
     table.add_column("ไฟล์")
     for file_path in delivered:
         table.add_row(str(file_path))
     console.print(table)
-    steps = ["download", "verify-files"]
-    if native_prepare:
-        steps.append("prepare-runtime")  # ติดตั้ง deps + build llama.cpp อัตโนมัติ (ครั้งแรกครั้งเดียว)
-    steps += ["start", "test-text"]
+    if stacked:
+        steps = ["prepare-runtime", "download", "verify-files", "sync-worker", "verify-worker", "start"]
+    else:
+        steps = ["download", "verify-files"]
+        if native_prepare:
+            steps.append("prepare-runtime")  # ติดตั้ง deps + build llama.cpp อัตโนมัติ (ครั้งแรกครั้งเดียว)
+        steps += ["start", "test-text"]
     chain = " && ".join(f"./{bundle.controller.name} {s}" for s in steps)
     console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory}\n  {chain}")
+    if stacked:
+        console.print(
+            "[yellow]stacked (multi-node): แก้ MASTER_IP/WORKER_IP/SSH_USER/NCCL_SOCKET_IFNAME/NCCL_IB_HCA "
+            "ใน CONFIG ของสคริปต์ก่อน + ตั้ง passwordless SSH master→worker[/yellow]"
+        )
     if native_prepare:
         console.print("[dim]prepare-runtime จะติดตั้ง build dependencies (git/cmake/ninja) ให้เองผ่าน apt — ใช้ sudo ครั้งเดียว[/dim]")
 
@@ -486,7 +494,7 @@ def _render_gates(results) -> None:
 def deploy(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
-    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)"),
     output: str = typer.Option("./bundles", "--output"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
@@ -561,7 +569,7 @@ def deploy(
 
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_gates(results)
-    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit))
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit), stacked=deployment_plan.topology.value == "stacked")
     console.print("\n[dim]สถานะ: static-validated — รัน acceptance ตามลำดับด้านบนเพื่อยืนยันบนเครื่องจริง[/dim]")
 
 

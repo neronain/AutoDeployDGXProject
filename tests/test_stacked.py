@@ -1,0 +1,181 @@
+"""เทส stacked (multi-node) deployment — port จาก reference v8.2 ที่ผ่านการทดสอบจริง
+
+ครอบคลุม: planner emit STACKED, harden บังคับ topology จาก target, render controller
+multi-node ที่ผ่าน bash -n + quality gates ครบ, กัน GGUF+stacked, และ gate ปิดช่องโหว่
+"stacked profile แต่ controller เป็น single-node"
+"""
+
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from lmds.brain import build_plan
+from lmds.brain.orchestrator import harden_plan
+from lmds.brain.plan_schema import Topology
+from lmds.brain.rulebased import rule_based_plan, topology_for_target
+from lmds.fit import PRESETS, analyze
+from lmds.fit.analyzer import GIB
+from lmds.generator import render_bundle
+from lmds.inspector.report import ArtifactType, KvDims, ModelReport
+from lmds.validator import all_passed, run_gates
+from lmds.validator.gates import gate_stacked_contract
+
+REQUIRED_FLAGS = ["--context", "--port", "--bind", "--advertise-ip", "--interface",
+                  "--client-input", "--client-output"]
+REQUIRED_COMMANDS = ["download", "verify-files", "start", "stop", "restart", "status",
+                     "logs", "client-config", "network-info"]
+MULTINODE_MARKERS = ["--nnodes", "--node-rank", "--headless", "--distributed-executor-backend",
+                     "sync-worker)", "verify-worker)", "prepare-runtime)", "ssh_worker"]
+
+
+def big_safetensors(**overrides) -> ModelReport:
+    base = dict(
+        repo_id="nvidia/DeepSeek-V4-Flash-NVFP4",
+        revision_sha="sha-stacked-abc",
+        artifact_type=ArtifactType.SAFETENSORS,
+        weight_bytes=168 * GIB,
+        shard_count=46,
+        context_length=131072,
+        kv_dims=KvDims(layers=61, kv_heads=128, head_dim=128),
+        license="mit",
+        has_chat_template=True,
+    )
+    base.update(overrides)
+    return ModelReport(**base)
+
+
+def gguf_report(**overrides) -> ModelReport:
+    base = dict(
+        repo_id="unsloth/Qwen3-8B-GGUF",
+        revision_sha="sha-gguf",
+        artifact_type=ArtifactType.GGUF,
+        weight_bytes=5 * GIB,
+        selected_gguf="Qwen3-8B-Q4_K_M.gguf",
+        has_chat_template=True,
+    )
+    base.update(overrides)
+    return ModelReport(**base)
+
+
+def _stacked_bundle(tmp_path, report=None):
+    report = report or big_safetensors()
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = build_plan(report, fit, provider=None)
+    return render_bundle(plan, report, fit, tmp_path), plan, fit
+
+
+# ── topology mapping ────────────────────────────────────────────────
+def test_topology_for_target_maps_correctly():
+    assert topology_for_target("dgx-spark-stacked") is Topology.STACKED
+    assert topology_for_target("rtx-pro-4000-dual") is Topology.MULTI_GPU
+    assert topology_for_target("this-machine-multi") is Topology.MULTI_GPU
+    assert topology_for_target("dgx-spark-single") is Topology.SINGLE
+    assert topology_for_target("rtx-5090") is Topology.SINGLE
+
+
+def test_rule_based_emits_stacked_for_stacked_target():
+    report = big_safetensors()
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = rule_based_plan(report, fit)
+    assert plan.topology is Topology.STACKED
+
+
+def test_harden_forces_topology_from_target_over_llm():
+    """LLM ตอบ topology ผิด → harden ต้องบังคับกลับตาม target เสมอ"""
+    report = big_safetensors()
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = rule_based_plan(report, fit)
+    plan.topology = Topology.SINGLE  # จำลอง LLM ตอบผิด
+    hardened = harden_plan(plan, report, fit)
+    assert hardened.topology is Topology.STACKED
+    assert any("topology" in w for w in hardened.warnings)
+
+
+# ── rendering ───────────────────────────────────────────────────────
+def test_stacked_controller_name_and_bash_syntax(tmp_path):
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    assert bundle.controller.name.endswith("-stacked.sh")
+    result = subprocess.run(["bash", "-n", str(bundle.controller)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_stacked_controller_has_multinode_machinery(tmp_path):
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    for marker in MULTINODE_MARKERS:
+        assert marker in text, f"ขาด marker multi-node: {marker}"
+    # worker-first: --headless (worker) + --node-rank 0/1
+    assert "--node-rank 1" in text and "--node-rank 0" in text
+
+
+def test_stacked_controller_satisfies_single_contract(tmp_path):
+    """ต้องผ่าน controller contract เดิม (7 flags + 9 commands) เพื่อให้ lmds validate ทำงานเหมือนกัน"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    for flag in REQUIRED_FLAGS:
+        assert flag + ")" in text, f"ขาด flag {flag}"
+    for command in REQUIRED_COMMANDS:
+        assert f"{command})" in text, f"ขาดคำสั่ง {command}"
+    assert "set -Eeuo pipefail" in text
+
+
+def test_stacked_bundle_passes_all_gates(tmp_path):
+    from lmds.packager import write_checksums
+
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    write_checksums(bundle.directory)
+    results = run_gates(bundle.directory, include_checksums=True)
+    failed = [f"{r.name}: {r.detail}" for r in results if not r.passed]
+    assert all_passed(results), "gates ล้มเหลว: " + "; ".join(failed)
+
+
+def test_stacked_shard_count_and_container_naming(tmp_path):
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert 'SHARD_COUNT:-46' in text  # จาก report.shard_count
+    assert "lmds-" in text and "-head" in text and "-worker" in text  # container ตามแบบ fleet
+
+
+def test_stacked_readme_first_run_order(tmp_path):
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    assert "sync-worker" in readme and "verify-worker" in readme
+    assert "prepare-runtime" in readme
+    assert "passwordless SSH" in readme
+    # ลำดับถูก: prepare-runtime มาก่อน sync-worker
+    assert readme.index("prepare-runtime") < readme.index("sync-worker")
+
+
+# ── guards ──────────────────────────────────────────────────────────
+def test_gguf_stacked_rejected(tmp_path):
+    report = gguf_report()
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = build_plan(report, fit, provider=None)
+    assert plan.topology is Topology.STACKED
+    with pytest.raises(ValueError, match="stacked"):
+        render_bundle(plan, report, fit, tmp_path)
+
+
+def test_gate_catches_stacked_profile_with_single_node_controller(tmp_path):
+    """ปิดช่องโหว่ 'validated ปลอม': profile บอก stacked แต่ controller เป็น single-node"""
+    d = tmp_path / "fake"
+    d.mkdir()
+    (d / "MODEL_PROFILE.yaml").write_text("topology: stacked\nmodel:\n  id: x\n", encoding="utf-8")
+    # single-node script — ไม่มี nnodes/node-rank/sync-worker
+    (d / "ctl.sh").write_text(
+        "#!/usr/bin/env bash\nset -Eeuo pipefail\ncase \"$1\" in start) echo hi;; esac\n",
+        encoding="utf-8",
+    )
+    result = gate_stacked_contract(d)
+    assert not result.passed
+    assert "multi-node" in result.detail
+
+
+def test_gate_passes_for_nonstacked_profile(tmp_path):
+    d = tmp_path / "single"
+    d.mkdir()
+    (d / "MODEL_PROFILE.yaml").write_text("topology: single\n", encoding="utf-8")
+    (d / "ctl.sh").write_text("#!/usr/bin/env bash\nset -Eeuo pipefail\n", encoding="utf-8")
+    assert gate_stacked_contract(d).passed

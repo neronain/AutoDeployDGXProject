@@ -35,10 +35,13 @@ lmds config set-key openai
 lmds hardware                         # ตรวจเครื่อง + จำแนก target profile
 lmds inspect Qwen/Qwen3-32B --target rtx-pro-4000-dual    # วิเคราะห์ + fit โดยไม่ generate
 lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
-# → วิเคราะห์ → วางแผน → ยืนยัน (อนุมัติ flag/แก้ context ได้) → bundle + ZIP ที่ผ่าน 7 quality gates
+# → วิเคราะห์ → วางแผน → ยืนยัน (อนุมัติ flag/แก้ context ได้) → bundle + ZIP ที่ผ่าน quality gates ทุกด่าน
 
 # โมเดล gated → ระบบถาม HF token อัตโนมัติ (กด Enter ข้ามได้)
 lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
+
+# โมเดลใหญ่เกิน 1 เครื่อง → stacked (2× DGX Spark, multi-node controller: worker-first + sync-worker)
+lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
 ```
 
 ## จัดการหลายโมเดลในเครื่องเดียว (Fleet)

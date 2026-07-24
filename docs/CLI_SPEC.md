@@ -28,12 +28,12 @@ Arguments:
   MODEL_URL_OR_ID   ลิงก์ HF เต็ม | org/model | ลิงก์ไฟล์ .gguf ตรง | ลิงก์ ollama.com | (เฟส 2: NGC, GitHub)
 
 Options:
-  --target PROFILE        dgx-spark-single | dgx-spark-stacked | rtx-single | auto (default: auto = ตรวจเครื่องปัจจุบัน)
+  --target PROFILE        dgx-spark-single | dgx-spark-stacked | rtx-* | auto (default: auto = ตรวจเครื่องปัจจุบัน)
+                          ** dgx-spark-stacked → สร้าง controller แบบ multi-node (worker-first) อัตโนมัติ **
   --runtime ENGINE        vllm | llamacpp | auto (default: auto — ตาม decision matrix + LLM plan)
   --revision REV          pin revision/commit เอง (default: ล่าสุด ณ เวลา inspect แล้ว pin)
   --context TOKENS        override context เริ่มต้นที่คำนวณให้
   --output DIR            โฟลเดอร์ output (default: ./bundles/<model-slug>/)
-  --topology TOPO         single | stacked | both (default: ตาม target)
   --yes / -y              ข้ามขั้นยืนยันแผน (ใช้ค่า plan ทั้งหมด) — สำหรับ scripting
   --no-llm                degraded mode: rule-based เท่านั้น (โมเดลตระกูลที่รู้จัก)
   --dry-run               แสดงแผน + รายการไฟล์ที่จะสร้าง โดยไม่เขียนไฟล์
@@ -49,6 +49,7 @@ Options:
 2. **ขั้นยืนยันแผน** — แสดงตารางสรุป (model/revision, runtime+image digest, topology, context, VRAM/memory budget, feature ที่เปิด, คำเตือน, facts ที่เป็น `unverified`) ให้ผู้ใช้ ยืนยัน / แก้ค่า / ยกเลิก
 3. **Extra flags จาก LLM ที่อยู่นอก allowlist** — แสดงเป็นรายการแยกสีเตือน ต้องกดยืนยันรายตัว
 4. **Exit codes**: `0` สำเร็จ, `2` validation ไม่ผ่านหลังวนแก้ครบ N รอบ, `3` โมเดลไม่ fit กับ target, `4` ต้องการ token/สิทธิ์, `5` provider/network error
+5. **Topology มาจาก target (ไม่มี flag แยก)** — เป็นสมบัติของเครื่องเป้าหมาย ไม่ใช่การตัดสินใจของ LLM · `dgx-spark-stacked` → `stacked` (multi-node controller: worker-first + sync/verify-worker), `rtx-*-dual`/`*-multi` → `multi-gpu` (tensor parallel ในเครื่อง), นอกนั้น → `single` · harden จะบังคับ topology กลับตาม target เสมอ · stacked ต้องใช้ vLLM (GGUF+stacked ถูกปฏิเสธ) · **`--topology both` (สร้าง single+stacked พร้อมกัน) = งานเฟสถัดไป**
 
 ## `lmds inspect`
 

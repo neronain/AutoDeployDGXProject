@@ -13,7 +13,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import lmds
-from lmds.brain.plan_schema import DeploymentPlan, Engine
+from lmds.brain.plan_schema import DeploymentPlan, Engine, Topology
 from lmds.fit import FitReport
 from lmds.inspector.report import ModelReport
 
@@ -98,9 +98,13 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         required.append("model.safetensors.index.json")
     required += [f for f in plan.special_files if "/" not in f]
 
+    is_stacked = plan.topology.value == "stacked"
     tensor_parallel = 1
     if plan.topology.value == "multi-gpu":
         tensor_parallel = 2  # ค่าตั้งต้น dual-GPU — override ได้ผ่าน env ใน controller
+    elif is_stacked:
+        tensor_parallel = 2  # 2 node × 1 GPU = TP2/nnodes2 (ค่าตั้งต้น 2×DGX Spark)
+    node_count = 2 if is_stacked else 1
 
     weights_gb = fit.weights_gb or (report.weight_bytes or 0) / 1024**3
     disk_gb = int(weights_gb * 1.2 + 20)  # โมเดล + image + เผื่อ
@@ -119,7 +123,11 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "fit": fit,
         "slug": slug,
         "lmds_version": lmds.__version__,
-        "controller_name": f"{slug}-single.sh",
+        "controller_name": f"{slug}-stacked.sh" if is_stacked else f"{slug}-single.sh",
+        "is_stacked": is_stacked,
+        "node_count": node_count,
+        "shard_count": report.shard_count or 0,
+        "total_size_gb": int(round(weights_gb)) if weights_gb else 0,
         "required_files": " ".join(shlex.quote(f) for f in required),
         "extra_flag_pairs": [_quote_flag(f) for f in plan.serving.extra_flags],
         "tensor_parallel": tensor_parallel,
@@ -204,6 +212,13 @@ def render_bundle(
     if plan.runtime.engine is Engine.LLAMACPP and not plan.selected_gguf:
         raise ValueError("llama.cpp bundle ต้องเลือกไฟล์ GGUF ก่อน (ใช้ลิงก์ไฟล์ตรง หรือระบุ variant)")
 
+    is_stacked = plan.topology is Topology.STACKED
+    if is_stacked and plan.runtime.engine is Engine.LLAMACPP:
+        raise ValueError(
+            "topology stacked (multi-node) รองรับเฉพาะ vLLM — GGUF/llama.cpp ยังไม่มี reference ที่ผ่านการทดสอบ "
+            "(ใช้ single/multi-gpu กับ GGUF แทน)"
+        )
+
     env = _environment()
     context = _context(plan, report, fit)
     slug = context["slug"]
@@ -211,11 +226,12 @@ def render_bundle(
     directory = output_root / slug
     directory.mkdir(parents=True, exist_ok=True)
 
-    template_name = (
-        "single-llamacpp-controller.sh.j2"
-        if plan.runtime.engine is Engine.LLAMACPP
-        else "single-vllm-controller.sh.j2"
-    )
+    if is_stacked:
+        template_name = "stacked-vllm-controller.sh.j2"
+    elif plan.runtime.engine is Engine.LLAMACPP:
+        template_name = "single-llamacpp-controller.sh.j2"
+    else:
+        template_name = "single-vllm-controller.sh.j2"
     controller_path = directory / context["controller_name"]
     controller_path.write_text(env.get_template(template_name).render(context), encoding="utf-8")
     controller_path.chmod(0o755)

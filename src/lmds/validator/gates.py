@@ -132,6 +132,45 @@ def gate_contract(bundle_dir: Path) -> GateResult:
     return GateResult("controller-contract", True)
 
 
+# marker ที่ controller stacked (multi-node) ต้องมีจริง — กัน bundle ที่ตั้งใจ stacked
+# แต่ถูก render เป็น single-node (จะ "ผ่าน" contract เดี่ยวแต่รันจริงไม่ได้)
+_STACKED_FLAG_MARKERS = ["--nnodes", "--node-rank", "--headless", "--distributed-executor-backend"]
+_STACKED_COMMAND_MARKERS = ["prepare-runtime", "sync-worker", "verify-worker"]
+
+
+def gate_stacked_contract(bundle_dir: Path) -> GateResult:
+    """ถ้า MODEL_PROFILE.yaml ระบุ topology: stacked — controller ต้องมี multi-node machinery จริง"""
+    profile_path = bundle_dir / "MODEL_PROFILE.yaml"
+    if not profile_path.exists():
+        return GateResult("stacked-contract", True, "n/a (ไม่มี profile)")
+    try:
+        data = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return GateResult("stacked-contract", True, "n/a (profile อ่านไม่ได้ — ปล่อยให้ gate อื่นจับ)")
+    if not isinstance(data, dict) or data.get("topology") != "stacked":
+        return GateResult("stacked-contract", True, "n/a (ไม่ใช่ stacked)")
+
+    scripts = _controllers(bundle_dir)
+    if not scripts:
+        return GateResult("stacked-contract", False, "topology stacked แต่ไม่พบสคริปต์ controller")
+    missing: list[str] = []
+    combined = "\n".join(s.read_text(encoding="utf-8") for s in scripts)
+    for flag in _STACKED_FLAG_MARKERS:
+        if flag not in combined:
+            missing.append(flag)
+    for command in _STACKED_COMMAND_MARKERS:
+        if f"{command})" not in combined:
+            missing.append(f"คำสั่ง {command}")
+    if "ssh" not in combined:
+        missing.append("SSH orchestration (worker)")
+    if missing:
+        return GateResult(
+            "stacked-contract", False,
+            "topology stacked แต่ controller ขาด multi-node machinery: " + ", ".join(missing[:6]),
+        )
+    return GateResult("stacked-contract", True, "multi-node machinery ครบ")
+
+
 def gate_profile_schema(bundle_dir: Path) -> GateResult:
     path = bundle_dir / "MODEL_PROFILE.yaml"
     if not path.exists():
@@ -209,6 +248,7 @@ ALL_GATES = [
     gate_pipefail_safe,
     gate_line_continuation,
     gate_contract,
+    gate_stacked_contract,
     gate_profile_schema,
     gate_secret_scan,
     gate_checksums,

@@ -102,7 +102,7 @@
 ### FR-5 Script Generator
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
-| FR-5.1 | Render ผ่าน template engine (Jinja2) จาก template ที่สืบทอด v3.0.0: `single-vllm`, `stacked-vllm`, `single-llamacpp` + เพิ่มใหม่ `single-rtx-vllm`, `single-rtx-llamacpp`, `ollama-controller`, `docker-compose` | P0 |
+| FR-5.1 | Render ผ่าน template engine (Jinja2) จาก template ที่สืบทอด v3.0.0: `single-vllm` ✅, `stacked-vllm` ✅ (M8, 2026-07-24), `single-llamacpp` ✅ + เพิ่มใหม่ `single-rtx-vllm`, `single-rtx-llamacpp`, `ollama-controller`, `docker-compose` | P0 |
 | FR-5.2 | ทุก controller ต้องมีครบตาม controller contract: config block บนสุด, คำสั่งขั้นต่ำ (`download/verify-files/start/stop/restart/status/logs/client-config/network-info`), flags `--context/--port/--bind/--advertise-ip/--interface/--client-input/--client-output` + env equivalents | P0 |
 | FR-5.3 | บังคับกฎ portability v3.0.0: ห้าม numeric underscore literal, แยก bind/advertise/cluster address, pipefail-safe checks, pinned revision + runtime image digest | P0 |
 | FR-5.4 | Bundle output ตาม delivery contract: `<slug>/` มี controller(.sh), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md` (เมื่อจำเป็น), `PACKAGE_SHA256SUMS`, + ZIP | P0 |
@@ -308,6 +308,7 @@ validation_notes: [...]
 | 2026-07-21 | **Repository** | พัฒนาใน https://github.com/neronain/AutoDeployDGXProject |
 | 2026-07-21 | **แนวทางที่เหลือของเฟส 1** | ดำเนินตามข้อเสนอใน PRD นี้ (provider เริ่มที่ OpenAI + Gemini + OpenAI-compatible, template vLLM/llama.cpp ก่อน) |
 | 2026-07-21 | **เครื่องทดสอบ RTX** | Ubuntu ทั้งหมด: RTX PRO 4000 Blackwell 24GB ×2 ใบ (multi-GPU) และ RTX 4070 Super 16GB แบบใบเดียว — ใช้เป็น GPU allowlist เริ่มต้น (`tested=true`) ร่วมกับ DGX Spark |
+| 2026-07-24 | **Stacked (multi-node) generation** | เปิดใช้ใน CLI ผ่าน `--target dgx-spark-stacked` — template `stacked-vllm-controller.sh.j2` port จาก reference v8.2 (DeepSeek-V4-Flash 2×DGX Spark, hardware-validated 2026-07-22) แบบ generic driven-by-env · topology เป็นสมบัติของ target (harden บังคับเสมอ ไม่ให้ LLM เลือก) · gate `stacked-contract` กัน bundle single-node ปลอม · **ยังไม่เพิ่ม flag `--topology` แยก** (topology มาจาก target) — `--topology both` เลื่อนเป็นงานต่อยอด |
 
 ### คำถามเปิด (ยังรอคำตอบ — ไม่ block เฟส 1)
 
