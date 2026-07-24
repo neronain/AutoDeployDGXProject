@@ -44,6 +44,22 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
 ```
 
+## อัปเดตเวอร์ชัน (เครื่องที่ `git clone` ไว้แล้ว)
+
+```bash
+cd ~/AutoDeployDGXProject && git pull && ./install.sh
+```
+
+> ⚠️ **`git pull` อย่างเดียวไม่พอ** — ต้องรัน `./install.sh` ซ้ำด้วย เพราะติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds` เลยยังเป็นโค้ดเก่าจนกว่าจะติดตั้งใหม่ทับ · config/key เดิมอยู่ครบ ไม่ต้องตั้งใหม่
+
+ตรวจว่าอัปเดตแล้ว (ควรเห็นบรรทัด `dgx-spark-stacked`):
+
+```bash
+lmds deploy --help | grep -i stacked
+```
+
+ถ้า `git pull` ฟ้อง local changes: `git stash && git pull && ./install.sh` (การแก้ PATH ครั้งก่อนอยู่ใน `~/.bashrc` ไม่ใช่ในโปรเจกต์ จึงไม่กระทบ) · รายละเอียด/ถอนการติดตั้ง: [docs/INSTALL.md](docs/INSTALL.md)
+
 ## จัดการหลายโมเดลในเครื่องเดียว (Fleet)
 
 รันกี่โมเดลก็ได้ (คนละ port) แล้วคุมทั้งหมดจาก `lmds` — ไม่ต้องจำว่า bundle ไหนอยู่ที่ไหน:
