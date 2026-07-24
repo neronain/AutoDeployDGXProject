@@ -794,7 +794,13 @@ def disable(
 @app.command("list")
 def list_bundles() -> None:
     """แสดง bundle ทั้งหมดที่รู้จักในเครื่อง (เคย start อย่างน้อยหนึ่งครั้ง)"""
-    from lmds.fleet import autostart_status, discover
+    from lmds.fleet import (
+        autostart_status,
+        bundle_profile,
+        discover,
+        feature_summary,
+        profile_context,
+    )
 
     servers = discover()
     if not servers:
@@ -809,20 +815,33 @@ def list_bundles() -> None:
     table = Table(title="Bundles ในเครื่องนี้")
     table.add_column("ชื่อ (slug)")
     table.add_column("โมเดล")
-    table.add_column("controller")
-    table.add_column("สถานะไฟล์")
+    table.add_column("engine")
+    table.add_column("port", justify="right")
+    table.add_column("context", justify="right")
+    table.add_column("รองรับ (support)")
     table.add_column("autostart")
+    table.add_column("ไฟล์")
     for server in servers:
+        profile = bundle_profile(server.controller) if server.controller_exists else None
+        engine = ((profile or {}).get("runtime") or {}).get("engine") or server.engine or "-"
+        context = profile_context(profile)
+        context_str = f"{context:,}" if context else "-"
+        support = feature_summary(profile) if profile else "-"
         status = autostart_status(server.slug) if server.controller_exists else "absent"
         table.add_row(
             server.slug,
             server.model_id or server.model,
-            server.controller or "-",
-            "✅" if server.controller_exists else "[red]หาย (ถูกย้าย/ลบ)[/red]",
+            engine,
+            str(server.port) if server.port else "-",
+            context_str,
+            support,
             astat.get(status, status),
+            "✅" if server.controller_exists else "[red]หาย[/red]",
         )
     console.print(table)
-    console.print("[dim]ให้โมเดลกลับมาเองหลัง reboot: lmds enable <ชื่อ> | ยกเลิก: lmds disable <ชื่อ>[/dim]")
+    console.print(
+        "[dim]รายละเอียดเต็ม/endpoint: lmds ps · autostart: lmds enable <ชื่อ> / lmds disable <ชื่อ>[/dim]"
+    )
 
 
 @app.command()

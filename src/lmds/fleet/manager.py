@@ -333,6 +333,41 @@ def find(slug: str) -> ServerInfo | None:
     return next((s for s in discover() if s.slug == slug), None)
 
 
+def bundle_profile(controller: str) -> dict | None:
+    """อ่าน MODEL_PROFILE.yaml ที่อยู่ข้าง controller — คืน None ถ้าไม่มี/อ่านไม่ได้"""
+    if not controller:
+        return None
+    path = Path(controller).parent / "MODEL_PROFILE.yaml"
+    if not path.is_file():
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def profile_context(profile: dict | None) -> int | None:
+    """context (max_model_len) จาก profile"""
+    ctx = ((profile or {}).get("serving") or {}).get("context")
+    return ctx if isinstance(ctx, int) else None
+
+
+def feature_summary(profile: dict | None) -> str:
+    """สรุปฟีเจอร์ที่โมเดลนี้รองรับจาก profile → เช่น 'tools, reasoning, image' หรือ 'text'"""
+    feats = (profile or {}).get("features") or {}
+    labels: list[str] = []
+    if (feats.get("tool_calling") or {}).get("enabled"):
+        labels.append("tools")
+    if (feats.get("reasoning") or {}).get("enabled"):
+        labels.append("reasoning")
+    modalities = (feats.get("multimodal") or {}).get("modalities") or []
+    labels.extend(m for m in modalities if isinstance(m, str))
+    return ", ".join(labels) if labels else "text"
+
+
 class FleetError(Exception):
     pass
 

@@ -253,7 +253,7 @@ lmds stop --all       # หยุดทุกตัวที่รันอย�
 lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
 lmds start <ชื่อ>          # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
 lmds enable <ชื่อ>         # ตั้งให้กลับมาเองหลัง reboot (systemd) · lmds disable <ชื่อ> = ยกเลิก
-lmds list             # bundle ทั้งหมดที่รู้จักในเครื่อง + controller ยังอยู่ครบไหม + สถานะ autostart
+lmds list             # bundle ทั้งหมด + engine/port/context/ฟีเจอร์ที่รองรับ (tools/reasoning/vision) + autostart
 ```
 
 ตัวอย่างรัน 2 โมเดลพร้อมกัน:
