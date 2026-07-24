@@ -88,7 +88,16 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         plan.tool_calling.parallel = False
         plan.warnings.append("บังคับ parallel_tool_calls=false ตามมาตรฐาน v3.0.0 (ต้องผ่านเทสก่อนเปิด)")
 
-    allowed, needs_approval = split_flags(plan.runtime.engine, plan.serving.extra_flags)
+    # รวม flag+ค่าที่ LLM แยก item มา ('--threads','4' → '--threads 4') ก่อนตรวจ allowlist
+    from .allowlists import coalesce_flag_tokens
+
+    coalesced = coalesce_flag_tokens(plan.serving.extra_flags)
+    allowed, needs_approval = split_flags(plan.runtime.engine, coalesced)
+    if plan.runtime.engine is Engine.LLAMACPP:
+        # llama.cpp ใหม่: --flash-attn ต้องมีค่า — เติม 'on' ให้ flag ที่ LLM ใส่มาแบบ bare
+        from .allowlists import normalize_llamacpp_flags
+
+        allowed = normalize_llamacpp_flags(allowed)
     plan.serving.extra_flags = allowed
     if needs_approval:
         plan.flags_needing_approval = sorted(set(plan.flags_needing_approval + needs_approval))
