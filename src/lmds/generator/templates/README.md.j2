@@ -81,10 +81,17 @@ docker rm -f <ชื่อ-container>       # หยุดตัวที่ช�
 
 ## Start after reboot
 
-controller นี้**ไม่ตั้ง autostart** (ตามมาตรฐานทีม) — หลัง reboot รัน:
+หลัง reboot รันเอง:
 
 ```bash
 ./{{ controller_name }} start
+```
+
+หรือให้**กลับมาเองอัตโนมัติหลังเปิด-ปิดเครื่อง** (systemd autostart — ใช้ sudo ตั้งครั้งเดียว):
+
+```bash
+lmds enable {{ slug }}          # ตั้ง autostart · ดูสถานะ: lmds list
+lmds disable {{ slug }}         # ยกเลิก
 ```
 
 ## Status & logs

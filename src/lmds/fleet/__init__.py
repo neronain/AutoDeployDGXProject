@@ -1,21 +1,31 @@
 from .manager import (
     FleetError,
     ServerInfo,
+    autostart_status,
+    disable_autostart,
     discover,
+    enable_autostart,
     find,
     logs_server,
+    render_unit,
     run_root,
     start_server,
     stop_server,
+    unit_name,
 )
 
 __all__ = [
     "FleetError",
     "ServerInfo",
+    "autostart_status",
+    "disable_autostart",
     "discover",
+    "enable_autostart",
     "find",
     "logs_server",
+    "render_unit",
     "run_root",
     "start_server",
     "stop_server",
+    "unit_name",
 ]

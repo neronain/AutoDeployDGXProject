@@ -87,6 +87,22 @@ Docker: 27.x ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-sin
 
 `--probe-ssh user@host` สำหรับตรวจเครื่องเป้าหมายระยะไกล (เฟส 1.5)
 
+## `lmds` fleet (จัดการโมเดลในเครื่อง)
+
+```text
+lmds ps                       # โมเดลที่รัน/เคยรัน + สถานะจริง (running/loading/stopped) + endpoint
+lmds list                     # bundle ทั้งหมดที่รู้จัก + controller ยังอยู่ไหม + สถานะ autostart
+lmds start <slug>             # start ตามชื่อ (ไม่ต้อง cd ไป bundle)
+lmds stop <slug> | --all      # stop ตามชื่อ หรือทุกตัว
+lmds logs <slug> [-n N]       # ดู log ตามชื่อ
+lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
+lmds disable <slug>           # ยกเลิก autostart
+```
+
+- **autostart** = สร้าง systemd system unit `lmds-<slug>.service` (Type=oneshot + RemainAfterExit, `User=<เจ้าของ bundle>`, `ExecStartPre=stop` เคลียร์ container ค้าง, `WantedBy=multi-user.target`) → โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง โดยไม่ต้อง login
+- `--now` = start ทันทีด้วย · `--timeout` = เวลารอ health ตอน boot (โมเดลใหญ่ควรเพิ่ม) · ต้องมี `systemd`
+- ทุก controller ลงทะเบียนตัวเองใต้ `~/.lmds/run/<slug>/server.meta` ตอน `start` — fleet อ่านจากตรงนี้ (ไม่มี daemon)
+
 ## `lmds validate`
 
 รัน quality gates กับ bundle ใด ๆ (รวม bundle ที่แก้มือ):

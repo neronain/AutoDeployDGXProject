@@ -751,28 +751,78 @@ def start(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def enable(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+    now: bool = typer.Option(False, "--now", help="สั่ง start ทันทีด้วย (ไม่รอ reboot)"),
+    timeout: int = typer.Option(1800, "--timeout", help="วินาทีที่รอตอน start ใน service (โมเดลใหญ่ควรเพิ่ม)"),
+) -> None:
+    """ตั้งให้โมเดลกลับมาทำงานเองหลังเปิด-ปิดเครื่อง (systemd autostart) — ใช้ sudo"""
+    from lmds.fleet import FleetError, enable_autostart, find, unit_name
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list")
+        raise typer.Exit(code=1)
+    console.print(f"ติดตั้ง autostart สำหรับ [bold]{slug}[/bold] (จะขอ sudo เพื่อเขียน systemd unit)…")
+    try:
+        name = enable_autostart(server, timeout=timeout, start_now=now)
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✅ เปิด autostart แล้ว[/green] ({name}) — โมเดลจะกลับมาเองหลัง reboot")
+    console.print(f"[dim]เช็ก: systemctl status {name} | ปิด: lmds disable {slug}[/dim]")
+    if not now:
+        console.print(f"[dim]start เดี๋ยวนี้เลย: lmds start {slug}  (หรือ lmds enable {slug} --now)[/dim]")
+
+
+@app.command()
+def disable(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+) -> None:
+    """ยกเลิก autostart (systemd) ของโมเดล — ใช้ sudo · ไม่ได้หยุดตัวที่รันอยู่ตอนนี้"""
+    from lmds.fleet import FleetError, disable_autostart
+
+    try:
+        name = disable_autostart(slug)
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]ปิด autostart แล้ว[/green] ({name}) — ตัวที่รันอยู่ตอนนี้ยังไม่หยุด (ใช้ lmds stop {slug} ถ้าต้องการ)")
+
+
 @app.command("list")
 def list_bundles() -> None:
     """แสดง bundle ทั้งหมดที่รู้จักในเครื่อง (เคย start อย่างน้อยหนึ่งครั้ง)"""
-    from lmds.fleet import discover
+    from lmds.fleet import autostart_status, discover
 
     servers = discover()
     if not servers:
         console.print("ยังไม่มี bundle ที่รู้จัก — deploy แล้ว start อย่างน้อยหนึ่งครั้งก่อน")
         return
+    astat = {
+        "enabled": "[green]● เปิด[/green]",
+        "disabled": "[dim]○ ปิด[/dim]",
+        "absent": "[dim]—[/dim]",
+        "n/a": "[dim]n/a[/dim]",
+    }
     table = Table(title="Bundles ในเครื่องนี้")
     table.add_column("ชื่อ (slug)")
     table.add_column("โมเดล")
     table.add_column("controller")
     table.add_column("สถานะไฟล์")
+    table.add_column("autostart")
     for server in servers:
+        status = autostart_status(server.slug) if server.controller_exists else "absent"
         table.add_row(
             server.slug,
             server.model_id or server.model,
             server.controller or "-",
             "✅" if server.controller_exists else "[red]หาย (ถูกย้าย/ลบ)[/red]",
+            astat.get(status, status),
         )
     console.print(table)
+    console.print("[dim]ให้โมเดลกลับมาเองหลัง reboot: lmds enable <ชื่อ> | ยกเลิก: lmds disable <ชื่อ>[/dim]")
 
 
 @app.command()

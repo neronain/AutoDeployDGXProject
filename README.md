@@ -70,7 +70,8 @@ lmds stop <ชื่อ>          # หยุดตามชื่อจาก l
 lmds stop --all          # หยุดทุกโมเดลที่รันอยู่ในคำสั่งเดียว
 lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
 lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
-lmds list                # bundle ทั้งหมดที่รู้จักในเครื่อง + ตรวจว่า controller ยังอยู่ครบ
+lmds enable <ชื่อ>        # ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (systemd autostart) · disable = ยกเลิก
+lmds list                # bundle ทั้งหมดที่รู้จักในเครื่อง + controller ยังอยู่ครบ + สถานะ autostart
 ```
 
 ทุก controller ลงทะเบียนตัวเองอัตโนมัติตอน `start` — ต่อให้ bundle ถูกลบไปแล้ว `lmds stop` ก็ยัง

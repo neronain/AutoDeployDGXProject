@@ -6,6 +6,7 @@ lmds อ่าน meta ทั้งหมด + เช็คสถานะจร
 
 from __future__ import annotations
 
+import getpass
 import os
 import shutil
 import subprocess
@@ -17,6 +18,134 @@ import httpx
 
 def run_root() -> Path:
     return Path(os.environ.get("LMDS_RUN_ROOT", Path.home() / ".lmds" / "run"))
+
+
+# ── Autostart (systemd) ────────────────────────────────────────────────────────
+# ให้โมเดลกลับมาทำงานเองหลัง reboot — สร้าง system service ที่เรียก controller start
+def systemd_dir() -> Path:
+    return Path(os.environ.get("LMDS_SYSTEMD_DIR", "/etc/systemd/system"))
+
+
+def unit_name(slug: str) -> str:
+    return f"lmds-{slug}.service"
+
+
+def have_systemctl() -> bool:
+    return shutil.which("systemctl") is not None
+
+
+def _controller_owner(controller: str) -> str:
+    """คืนชื่อ user เจ้าของไฟล์ controller (เจ้าของ bundle) — fallback เป็น user ปัจจุบัน"""
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.stat(controller).st_uid).pw_name
+    except (KeyError, OSError, ImportError):
+        return getpass.getuser()
+
+
+def render_unit(info: "ServerInfo", timeout: int = 1800) -> str:
+    """สร้างเนื้อ systemd unit (system service) สำหรับ autostart ของ bundle นี้
+
+    - Type=oneshot + RemainAfterExit: controller start เปิด container/process แบบ detach
+      แล้ว return เมื่อ health ผ่าน (unit คง active หลัง exec จบ)
+    - ExecStartPre=stop: เคลียร์ container/process ค้างจากก่อน reboot ก่อน start ใหม่
+    - User=<เจ้าของ bundle>: รันเป็น user ปกติ (docker/HF cache/สิทธิ์ตรงกับตอน deploy)
+    """
+    controller = info.controller
+    workdir = str(Path(controller).parent)
+    user = _controller_owner(controller)
+    home = str(Path.home())
+    model = info.model or info.model_id or info.slug
+    return "\n".join([
+        "[Unit]",
+        f"Description=LMDS model: {info.slug} ({model})",
+        "After=network-online.target docker.service",
+        "Wants=network-online.target docker.service",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "RemainAfterExit=yes",
+        f"User={user}",
+        f"Environment=HOME={home}",
+        f"WorkingDirectory={workdir}",
+        f"ExecStartPre=-{controller} stop",
+        f"ExecStart={controller} start",
+        f"ExecStop={controller} stop",
+        f"TimeoutStartSec={timeout}",
+        "Restart=no",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+        "",
+    ])
+
+
+def autostart_status(slug: str) -> str:
+    """คืน 'enabled' | 'disabled' | 'absent' (ไม่มี unit) | 'n/a' (ไม่มี systemd)"""
+    if not have_systemctl():
+        return "n/a"
+    if not (systemd_dir() / unit_name(slug)).exists():
+        return "absent"
+    try:
+        proc = subprocess.run(
+            ["systemctl", "is-enabled", unit_name(slug)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "absent"
+    out = proc.stdout.strip()
+    return out if out in {"enabled", "disabled"} else ("enabled" if proc.returncode == 0 else "disabled")
+
+
+def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = False) -> str:
+    """ติดตั้ง + enable systemd unit (ต้องใช้ sudo) — คืนชื่อ unit ที่ติดตั้ง
+
+    เขียนไฟล์ unit ลง bundle dir ก่อน (ไม่ใช้ sudo) แล้ว sudo ติดตั้งเข้า /etc/systemd/system
+    ถ้า sudo/systemctl ล้มเหลว → FleetError พร้อมคำสั่งให้รันมือ
+    """
+    if not have_systemctl():
+        raise FleetError("เครื่องนี้ไม่มี systemd (systemctl) — autostart รองรับเฉพาะระบบ systemd")
+    if not info.controller_exists:
+        raise FleetError(f"ไม่พบ controller ของ {info.slug} — ต้องมี bundle ก่อนตั้ง autostart")
+
+    name = unit_name(info.slug)
+    staged = Path(info.controller).parent / name
+    staged.write_text(render_unit(info, timeout), encoding="utf-8")
+
+    steps = [
+        ["sudo", "install", "-m", "644", str(staged), str(systemd_dir() / name)],
+        ["sudo", "systemctl", "daemon-reload"],
+        ["sudo", "systemctl", "enable", name],
+    ]
+    if start_now:
+        steps.append(["sudo", "systemctl", "start", name])
+    for cmd in steps:
+        proc = subprocess.run(cmd)
+        if proc.returncode != 0:
+            manual = "\n  ".join(" ".join(c) for c in steps)
+            raise FleetError(
+                f"ติดตั้ง autostart ไม่สำเร็จ (คำสั่ง `{' '.join(cmd)}` ล้มเหลว)\n"
+                f"ลองรันมือ:\n  {manual}"
+            )
+    return name
+
+
+def disable_autostart(info_or_slug) -> str:
+    """disable + ลบ systemd unit (ต้องใช้ sudo) — รับ ServerInfo หรือ slug"""
+    slug = info_or_slug.slug if isinstance(info_or_slug, ServerInfo) else info_or_slug
+    if not have_systemctl():
+        raise FleetError("เครื่องนี้ไม่มี systemd (systemctl)")
+    name = unit_name(slug)
+    steps = [
+        ["sudo", "systemctl", "disable", "--now", name],
+        ["sudo", "rm", "-f", str(systemd_dir() / name)],
+        ["sudo", "systemctl", "daemon-reload"],
+    ]
+    for cmd in steps:
+        # disable อาจ error ถ้า unit ไม่ได้ enable — ไม่ถือว่า fatal
+        subprocess.run(cmd)
+    return name
 
 
 @dataclass

@@ -252,7 +252,8 @@ lmds stop qwen3-coder-30b-a3b-instruct-gguf    # หยุดตามชื่�
 lmds stop --all       # หยุดทุกตัวที่รันอยู่
 lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
 lmds start <ชื่อ>          # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
-lmds list             # bundle ทั้งหมดที่รู้จักในเครื่อง + controller ยังอยู่ครบไหม
+lmds enable <ชื่อ>         # ตั้งให้กลับมาเองหลัง reboot (systemd) · lmds disable <ชื่อ> = ยกเลิก
+lmds list             # bundle ทั้งหมดที่รู้จักในเครื่อง + controller ยังอยู่ครบไหม + สถานะ autostart
 ```
 
 ตัวอย่างรัน 2 โมเดลพร้อมกัน:
@@ -266,6 +267,23 @@ lmds stop --all                                                # ปิดทั
 
 > ระบบรู้จักเซิร์ฟเวอร์จากไฟล์ทะเบียนที่ controller เขียนเองตอน `start` (ใต้ `~/.lmds/run/`)
 > — ถ้า controller ถูกลบ/ย้าย `lmds stop` ยัง fallback หยุดตรง ๆ ให้ได้ (kill pid / docker rm)
+
+### ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (autostart)
+
+ปกติหลัง reboot โมเดลจะไม่ขึ้นเอง ต้อง `lmds start <ชื่อ>` เอง — ถ้าอยากให้**กลับมาทำงานอัตโนมัติ**
+(เหมาะกับเครื่องลูกค้า/ทีมที่เปิดทิ้งไว้เป็น server) ใช้ systemd autostart:
+
+```bash
+lmds enable gemma-4-26b-a4b-it-gguf          # ตั้ง autostart (ขอ sudo เขียน systemd unit)
+lmds enable gemma-4-26b-a4b-it-gguf --now    # ตั้ง + start เดี๋ยวนี้เลย
+lmds list                                    # ดูคอลัมน์ autostart: ● เปิด / ○ ปิด
+lmds disable gemma-4-26b-a4b-it-gguf         # ยกเลิก autostart
+```
+
+- ทำงานผ่าน **systemd system service** (`lmds-<ชื่อ>.service`) — รันเป็น user เจ้าของ bundle, เปิดหลัง `docker.service` พร้อม, เคลียร์ container ค้างก่อน start เสมอ
+- โมเดลใหญ่ที่โหลดนาน เพิ่มเวลา: `lmds enable <ชื่อ> --timeout 3600`
+- เช็ก/ดู log ของ service: `systemctl status lmds-<ชื่อ>` · `journalctl -u lmds-<ชื่อ> -f`
+- ต้องมี `systemd` (DGX OS/Ubuntu มีอยู่แล้ว) · **stacked (2 เครื่อง):** master ตั้ง autostart ได้ แต่ตอน boot worker ต้องเปิดอยู่ + SSH ถึงได้ ไม่งั้น start จะรอ/ล้ม
 
 ## 5. คำสั่งอื่นที่ควรรู้
 
