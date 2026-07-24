@@ -7,11 +7,52 @@
 LMDS รับ**ลิงก์โมเดล** (Hugging Face) → วิเคราะห์ + คำนวณว่า fit กับเครื่องไหม → สร้าง **bundle**
 (โฟลเดอร์ + ZIP) ที่ข้างในมีสคริปต์ controller สำหรับ download / start / ทดสอบโมเดลนั้นบนเครื่องจริง
 
-ทุก bundle ผ่าน quality gates 7 ด่านโดยอัตโนมัติ — ถ้าไม่ผ่านจะไม่มีไฟล์ออกมาให้ใช้เลย
+ทุก bundle ผ่าน quality gates ทุกด่านโดยอัตโนมัติ — ถ้าไม่ผ่านจะไม่มีไฟล์ออกมาให้ใช้เลย
 
 ```text
 ลิงก์โมเดล ──lmds deploy──▶ bundle/ ──./xxx-single.sh──▶ โมเดลรันเป็น API ที่ :8000/v1
 ```
+
+---
+
+## รูปแบบคำสั่ง (อ่านก่อน)
+
+ทุกครั้ง**ต้องมีคำสั่ง (subcommand) เสมอ** — ใส่ลิงก์โมเดลเฉย ๆ ไม่ได้:
+
+```text
+lmds <คำสั่ง> <ลิงก์โมเดล> [ตัวเลือก]
+```
+
+```bash
+# ❌ ผิด — ไม่มีคำสั่ง → No such command 'https://...'
+lmds https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF
+
+# ✅ ถูก — มีคำสั่ง deploy
+lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-spark-single
+```
+
+คำสั่งหลัก (ดูทั้งหมด: `lmds --help`):
+
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `lmds inspect <โมเดล>` | วิเคราะห์ + เช็ก fit อย่างเดียว — ไม่สร้างไฟล์ ไม่เสีย token |
+| `lmds plan <โมเดล>` | ดู Deployment Plan (แผน) — ไม่สร้างไฟล์ |
+| `lmds deploy <โมเดล>` | flow เต็ม: วิเคราะห์ → วางแผน → **ยืนยัน** → สร้าง bundle + ZIP |
+| `lmds generate <โมเดล>` | เหมือน deploy แต่**ข้ามขั้นยืนยัน** |
+| `lmds ps` / `stop` / `logs` / `start` / `list` | จัดการโมเดลที่ deploy/รันอยู่ (ดู §4) |
+| `lmds validate <โฟลเดอร์>` | ตรวจ bundle ย้อนหลัง |
+| `lmds hardware` | ตรวจเครื่อง + จำแนก target profile |
+| `lmds config ...` | ตั้ง provider / key / HF token |
+
+**ช่อง `<โมเดล>` ใส่ได้ 3 แบบ:**
+
+| แบบ | ตัวอย่าง | พฤติกรรม |
+|---|---|---|
+| `org/model` | `Qwen/Qwen3-32B` | repo บน Hugging Face |
+| ลิงก์ repo เต็ม | `https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF` | ถ้าเป็น **GGUF หลาย quant → ระบบให้เลือกไฟล์ (พิมพ์หมายเลข)** |
+| ลิงก์ไฟล์ตรง | `.../blob/main/gemma-4-...-Q4_K_M.gguf` | ใช้ไฟล์นั้นเลย ไม่ต้องเลือก |
+
+> ยังไม่ได้ตั้ง LLM provider? เติม `--no-llm` ท้ายคำสั่ง (rule-based mode — ฟรี ไม่ต้องมี key)
 
 ---
 
@@ -132,6 +173,8 @@ lmds inspect Qwen/Qwen3-32B --target dgx-spark-single --target rtx-pro-4000-dual
 lmds deploy Qwen/Qwen3-32B --target dgx-spark-single
 lmds deploy "https://huggingface.co/unsloth/Qwen3-32B-GGUF/blob/main/Qwen3-32B-Q4_K_M.gguf" --target rtx-pro-4000
 ```
+
+> **repo GGUF ที่มีหลาย quant** (ให้ลิงก์ repo ไม่ใช่ลิงก์ไฟล์) — ระบบจะแสดงรายการ variant พร้อมขนาด ให้**พิมพ์หมายเลขเลือก** ก่อน เช่น `lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-spark-single` แล้วเลือก Q4_K_M/Q5_K_M/… ตามที่พอกับเครื่อง · ถ้ารู้ไฟล์อยู่แล้ว ใส่ลิงก์ไฟล์ตรง (`.../blob/main/xxx.gguf`) เพื่อข้ามการเลือก
 
 ### 3.3 โมเดล gated (เช่น Llama)
 
