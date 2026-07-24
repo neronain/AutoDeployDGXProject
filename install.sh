@@ -28,14 +28,36 @@ ln -sf "${INSTALL_DIR}/venv/bin/lmds" "${BIN_DIR}/lmds"
 
 echo "ติดตั้งเสร็จ: $("${BIN_DIR}/lmds" version | head -1)"
 
-case ":${PATH}:" in
-  *":${BIN_DIR}:"*) ;;
-  *)
+# เติม BIN_DIR ลง PATH ให้อัตโนมัติ (เขียนลง shell rc ที่เหมาะกับ shell ปัจจุบัน)
+ensure_path() {
+  case ":${PATH}:" in
+    *":${BIN_DIR}:"*) return 0 ;;  # อยู่ใน PATH แล้ว ไม่ต้องทำอะไร
+  esac
+
+  local export_line='export PATH="${HOME}/.local/bin:${PATH}"'
+  # เลือกไฟล์ rc ตาม shell: zsh → ~/.zshrc, อื่น ๆ → ~/.bashrc (สร้างถ้ายังไม่มี)
+  local rc_file="${HOME}/.bashrc"
+  case "${SHELL:-}" in
+    */zsh) rc_file="${HOME}/.zshrc" ;;
+  esac
+
+  if [ -f "$rc_file" ] && grep -qF "$export_line" "$rc_file"; then
+    :  # มีบรรทัดนี้อยู่แล้ว
+  else
+    {
+      echo ""
+      echo "# เพิ่มโดย LMDS installer — ให้เรียกคำสั่ง lmds ได้"
+      echo "$export_line"
+    } >> "$rc_file"
     echo ""
-    echo "หมายเหตุ: ${BIN_DIR} ยังไม่อยู่ใน PATH — เพิ่มบรรทัดนี้ใน ~/.bashrc:"
-    echo "  export PATH=\"\${HOME}/.local/bin:\${PATH}\""
-    ;;
-esac
+    echo "✅ เพิ่ม ${BIN_DIR} ลง PATH ใน ${rc_file} แล้ว"
+  fi
+
+  # หมายเหตุ: installer รันเป็น subprocess — จะให้ shell ปัจจุบันเห็น PATH ใหม่
+  # ต้องเปิด terminal ใหม่ หรือ source ไฟล์ rc เอง
+  echo "   ใช้งานได้เลยด้วย:  source ${rc_file}   (หรือเปิด terminal ใหม่)"
+}
+ensure_path
 
 echo ""
 echo "เริ่มต้นใช้งาน:"
