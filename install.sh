@@ -164,6 +164,42 @@ setup_provider() {
 }
 setup_provider
 
+# -- Tab completion ---------------------------------------------------------
+# เติมชื่อคำสั่ง (depl<TAB> -> deploy) และชื่อ slug/target ให้ - ชื่อ bundle ยาวและพิมพ์ผิดง่าย
+setup_completion() {
+  case "${SHELL:-}" in
+    */bash) comp_rc="${HOME}/.bashrc" ;;
+    */zsh)  comp_rc="${HOME}/.zshrc" ;;
+    */fish) comp_rc="fish" ;;
+    *)      echo "ข้าม tab completion (ไม่รู้จัก shell: ${SHELL:-ไม่ระบุ})"; return 0 ;;
+  esac
+
+  # typer เขียน marker _LMDS_COMPLETE ไว้ใน rc ของ shell ตอนติดตั้งสำเร็จ
+  if [ "$comp_rc" != "fish" ] && [ -f "$comp_rc" ] && grep -q "_LMDS_COMPLETE" "$comp_rc" 2>/dev/null; then
+    echo "OK tab completion ติดตั้งไว้แล้ว"
+    return 0
+  fi
+
+  if [ ! -t 0 ]; then
+    echo "ติดตั้ง tab completion ภายหลังได้ด้วย: lmds --install-completion"
+    return 0
+  fi
+
+  printf "ติดตั้ง tab completion ของคำสั่ง lmds ไหม? (เติมชื่อคำสั่ง/bundle ด้วย TAB) [Y/n]: "
+  read -r want_comp
+  case "${want_comp:-y}" in
+    [Nn]*) echo "ติดตั้งภายหลังได้ด้วย: lmds --install-completion" ;;
+    *)
+      if "$LMDS" --install-completion >/dev/null 2>&1; then
+        echo "OK ติดตั้ง tab completion แล้ว - เปิด terminal ใหม่ (หรือ source ${comp_rc}) จึงจะใช้ได้"
+      else
+        echo "ติดตั้ง tab completion ไม่สำเร็จ - ลองรันเอง: lmds --install-completion"
+      fi
+      ;;
+  esac
+}
+setup_completion
+
 echo ""
 if [ "$missing_prereq" -eq 1 ]; then
   echo "⚠️  ยังมีข้อที่ต้องแก้ก่อนรันโมเดลได้จริง (ดูรายการ ⚠️ ด้านบน + docs/INSTALL.md ส่วนที่ 1)"

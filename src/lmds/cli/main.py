@@ -38,6 +38,40 @@ def _entry() -> None:
     show_banner(err_console)
 
 
+# ── Shell completion ───────────────────────────────────────────────────────────
+# ต้องเร็วและห้าม crash: shell เรียกทุกครั้งที่กด TAB — ห้ามยิง docker/health check
+def _complete_slug(incomplete: str) -> list[str]:
+    """เติมชื่อ slug จากทะเบียน ~/.lmds/run/ + โฟลเดอร์ bundle ในไดเรกทอรีปัจจุบัน"""
+    names: set[str] = set()
+    try:
+        from lmds.fleet import run_root
+
+        root = run_root()
+        if root.is_dir():
+            names.update(d.name for d in root.iterdir() if d.is_dir())
+    except Exception:
+        pass
+    try:
+        from pathlib import Path as _Path
+
+        bundles = _Path("./bundles")
+        if bundles.is_dir():
+            names.update(d.name for d in bundles.iterdir() if d.is_dir())
+    except Exception:
+        pass
+    return sorted(n for n in names if n.startswith(incomplete))
+
+
+def _complete_target(incomplete: str) -> list[str]:
+    """เติมชื่อ target preset (dgx-spark-single, rtx-4090, ...)"""
+    try:
+        from lmds.fit.targets import PRESETS
+
+        return sorted(name for name in PRESETS if name.startswith(incomplete))
+    except Exception:
+        return []
+
+
 @app.command()
 def version() -> None:
     """แสดงเวอร์ชันโปรแกรมและมาตรฐาน template"""
@@ -53,7 +87,8 @@ def inspect(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision", help="branch/tag/commit ที่ต้องการ"),
     targets: list[str] = typer.Option(
-        [], "--target", help="ประเมิน fit กับ target ที่ระบุ (ซ้ำได้) เช่น rtx-pro-4000 — ค่าว่าง = เครื่องนี้ + dgx-spark-single"
+        [], "--target", help="ประเมิน fit กับ target ที่ระบุ (ซ้ำได้) เช่น rtx-pro-4000 — ค่าว่าง = เครื่องนี้ + dgx-spark-single",
+        autocompletion=_complete_target,
     ),
     concurrency: int = typer.Option(1, "--concurrency", help="จำนวน request พร้อมกันที่ใช้คำนวณ KV cache"),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON (สำหรับ scripting)"),
@@ -309,7 +344,8 @@ def plan(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
     target: Optional[str] = typer.Option(
-        None, "--target", help="target preset (เช่น dgx-spark-single) — ว่าง = เครื่องนี้ หรือ dgx-spark-single"
+        None, "--target", help="target preset (เช่น dgx-spark-single) — ว่าง = เครื่องนี้ หรือ dgx-spark-single",
+        autocompletion=_complete_target,
     ),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
@@ -405,7 +441,7 @@ def _render_plan(deployment_plan, fit) -> None:
 def generate(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
-    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)", autocompletion=_complete_target),
     output: str = typer.Option("./bundles", "--output", help="โฟลเดอร์ output ของ bundle"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
@@ -520,7 +556,7 @@ def _render_gates(results) -> None:
 def deploy(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
-    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)", autocompletion=_complete_target),
     output: str = typer.Option("./bundles", "--output"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
@@ -740,7 +776,7 @@ def ps() -> None:
 
 @app.command()
 def stop(
-    slug: Optional[str] = typer.Argument(None, help="ชื่อ (slug) จาก lmds ps"),
+    slug: Optional[str] = typer.Argument(None, help="ชื่อ (slug) จาก lmds ps", autocompletion=_complete_slug),
     all_servers: bool = typer.Option(False, "--all", help="หยุดทุกตัวที่รันอยู่"),
 ) -> None:
     """หยุดโมเดล — ระบุชื่อ หรือ --all"""
@@ -779,7 +815,7 @@ def stop(
 
 @app.command()
 def logs(
-    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps"),
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps", autocompletion=_complete_slug),
     lines: int = typer.Option(200, "-n", "--lines"),
     follow: bool = typer.Option(False, "-f", "--follow", help="ตาม log แบบ realtime (Ctrl-C เพื่อออก)"),
 ) -> None:
@@ -803,7 +839,7 @@ def logs(
 
 @app.command()
 def restart(
-    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
 ) -> None:
     """restart โมเดลตามชื่อ — ใช้ได้กับ container ที่ไม่ได้มาจาก lmds ด้วย"""
     from lmds.fleet import FleetError, find, restart_server
@@ -822,7 +858,7 @@ def restart(
 
 @app.command()
 def start(
-    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
 ) -> None:
     """รันโมเดลที่เคย deploy ไว้แล้วตามชื่อ — ไม่ต้อง cd ไปหา bundle"""
     from lmds.fleet import FleetError, find, start_server
@@ -843,7 +879,7 @@ def start(
 
 @app.command()
 def enable(
-    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
     now: bool = typer.Option(False, "--now", help="สั่ง start ทันทีด้วย (ไม่รอ reboot)"),
     timeout: int = typer.Option(1800, "--timeout", help="วินาทีที่รอตอน start ใน service (โมเดลใหญ่ควรเพิ่ม)"),
 ) -> None:
@@ -868,7 +904,7 @@ def enable(
 
 @app.command()
 def disable(
-    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
 ) -> None:
     """ยกเลิก autostart (systemd) ของโมเดล — ใช้ sudo · ไม่ได้หยุดตัวที่รันอยู่ตอนนี้"""
     from lmds.fleet import FleetError, disable_autostart

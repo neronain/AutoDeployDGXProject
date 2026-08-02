@@ -59,3 +59,41 @@ def test_hardware_command_runs_anywhere(isolated_config):
     result = runner.invoke(app, ["hardware"])
     assert result.exit_code == 0
     assert "Profile" in result.output or "profile" in result.output
+
+
+def test_completion_options_available():
+    """lmds ต้องมี --install-completion ให้ผู้ใช้เปิด tab completion ได้"""
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "--install-completion" in result.output
+
+
+def test_complete_slug_from_run_registry(tmp_path, monkeypatch):
+    """TAB บน lmds stop/logs/... ต้องเติมชื่อ slug ที่มีอยู่จริง และต้องไม่ยิง docker"""
+    from lmds.cli.main import _complete_slug
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    (tmp_path / "qwen3-32b").mkdir()
+    (tmp_path / "qwen3-0-6b-gguf").mkdir()
+    (tmp_path / "gemma-4-26b").mkdir()
+
+    assert _complete_slug("qwen") == ["qwen3-0-6b-gguf", "qwen3-32b"]
+    assert _complete_slug("") == ["gemma-4-26b", "qwen3-0-6b-gguf", "qwen3-32b"]
+    assert _complete_slug("zzz") == []
+
+
+def test_complete_slug_never_raises(monkeypatch):
+    """shell เรียกทุกครั้งที่กด TAB — พังไม่ได้เด็ดขาด"""
+    from lmds.cli import main as cli_main
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", "/ไม่มีจริง/path")
+    assert cli_main._complete_slug("a") == []
+
+
+def test_complete_target_presets():
+    from lmds.cli.main import _complete_target
+
+    assert "dgx-spark-single" in _complete_target("dgx")
+    assert "dgx-spark-stacked" in _complete_target("dgx")
+    assert all(name.startswith("rtx-40") for name in _complete_target("rtx-40"))
+    assert _complete_target("zzz") == []
