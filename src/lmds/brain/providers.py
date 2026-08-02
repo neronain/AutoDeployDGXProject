@@ -89,6 +89,18 @@ class MissingKey(ProviderError):
         )
 
 
+def _mentions_response_format(response: httpx.Response) -> bool:
+    """400 ที่บ่นถึง response_format/json_object เท่านั้นถึงจะ retry แบบตัด field ออก
+
+    ไม่ใช่ 400 ทุกตัว — 400 จากสาเหตุอื่น (model ไม่มี, payload ผิด) ยิงซ้ำก็เหมือนเดิม
+    """
+    try:
+        body = response.text[:2000].lower()
+    except Exception:
+        return False
+    return "response_format" in body or "json_object" in body or "json mode" in body
+
+
 class LlmProvider(ABC):
     name: str = ""
     model: str = ""
@@ -111,21 +123,29 @@ class OpenAiCompatProvider(LlmProvider):
 
     def complete_json(self, system: str, user: str) -> str:
         headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
+        url = f"{self._base}/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
         resp = _post_with_retry(
-            self._client,
-            f"{self._base}/chat/completions",
-            headers=headers,
-            payload={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.2,
-                "response_format": {"type": "json_object"},
-            },
-            provider_name=self.name,
+            self._client, url, headers=headers, payload=payload, provider_name=self.name
         )
+
+        # engine local รุ่นเก่า (vLLM/llama.cpp server/LM Studio บางเวอร์ชัน) ไม่รู้จัก
+        # response_format แล้วตอบ 400 ทั้งคำขอ — ลองใหม่โดยตัด field นี้ออก
+        # prompt บังคับ JSON อยู่แล้ว และ orchestrator validate ด้วย schema + retry อีกชั้น
+        if resp.status_code == 400 and _mentions_response_format(resp):
+            payload.pop("response_format", None)
+            resp = _post_with_retry(
+                self._client, url, headers=headers, payload=payload, provider_name=self.name
+            )
+
         if resp.status_code != 200:
             raise ProviderError(f"{self.name} ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
         try:

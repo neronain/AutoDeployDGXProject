@@ -78,7 +78,7 @@
 ### FR-2 Hardware Profiler
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
-| FR-2.1 | ตรวจเครื่องเป้าหมายอัตโนมัติ: arch (ARM64/x86_64), GPU (nvidia-smi: รุ่น, VRAM, compute capability), RAM, Docker + NVIDIA container toolkit — **⚠️ ส่วน "disk ว่าง" ยังไม่ทำ** | P0 |
+| FR-2.1 | ตรวจเครื่องเป้าหมายอัตโนมัติ: arch (ARM64/x86_64), GPU (nvidia-smi: รุ่น, VRAM, compute capability), RAM, disk ว่าง, Docker + NVIDIA container toolkit — ✅ | P0 |
 | FR-2.2 | จำแนก hardware profile: `dgx-spark-single` (unified 128GB, SM121), `dgx-spark-stacked`, `rtx-single`, `rtx-multi-gpu`, `remote` (ป้อนสเปกมือ/ผ่าน SSH probe) | P0 |
 | FR-2.3 | โหมด remote: สร้าง bundle ให้เครื่องอื่นโดยระบุสเปกเอง หรือ probe ผ่าน SSH | P1 |
 

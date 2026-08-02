@@ -214,16 +214,16 @@ lmds hardware
 Arch        x86_64
 GPU 0       NVIDIA RTX PRO 4000 Blackwell (24 GB, SM120) ✅ tested
 GPU 1       NVIDIA RTX PRO 4000 Blackwell (24 GB, SM120) ✅ tested
-RAM         ใช้ไป 12.4 / 128.0 GB (เหลือ 115.6 GB)
-IP          192.168.1.50
-Docker      ✅
+RAM          ใช้ไป 12.4 / 128.0 GB (เหลือ 115.6 GB)
+Disk ($HOME) ใช้ไป 210.5 / 1800.0 GB (เหลือ 1589.5 GB)
+IP           192.168.1.50
+Docker       ✅
 NVIDIA Container Toolkit  ✅
-Profile     rtx-multi-gpu
+Profile      rtx-multi-gpu
 ```
 
-เช็ค 3 จุด: (1) เห็น GPU ครบทุกใบ (2) Docker ✅ ทั้งสองบรรทัด (3) Profile ตรงกับเครื่องจริง
-
-> คำสั่งนี้**ไม่ได้**ตรวจพื้นที่ดิสก์ให้ — ต้องเช็กเองด้วย `df -h ~` ตาม §1.6
+เช็ค 4 จุด: (1) เห็น GPU ครบทุกใบ (2) Docker ✅ ทั้งสองบรรทัด (3) Profile ตรงกับเครื่องจริง
+(4) Disk เหลือพอตามสูตรใน §1.6 — ถ้าเหลือน้อยกว่า 50 GB ระบบจะขึ้น ⚠️ เตือนให้เอง
 
 ### 3.2 ตั้ง LLM provider (สมองของระบบ)
 

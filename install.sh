@@ -24,6 +24,14 @@ python3 -m venv "${INSTALL_DIR}/venv"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install --quiet "$REPO_DIR"
 
+# keyring เป็น optional extra — ถ้าลงได้ key จะไปอยู่ใน keyring ของ OS แทนไฟล์ 0600
+# เครื่อง server ที่ไม่มี desktop session มักไม่มี backend ที่ใช้ได้ → ข้ามไปเงียบ ๆ ไม่ให้ติดตั้งพัง
+if "${INSTALL_DIR}/venv/bin/pip" install --quiet 'keyring>=24.0' 2>/dev/null; then
+  echo "เก็บ key ผ่าน OS keyring ได้ (ถ้าเครื่องมี backend รองรับ)"
+else
+  echo "ไม่ได้ติดตั้ง keyring — key จะเก็บที่ ~/.config/lmds/credentials (สิทธิ์ 0600)"
+fi
+
 ln -sf "${INSTALL_DIR}/venv/bin/lmds" "${BIN_DIR}/lmds"
 
 echo "ติดตั้งเสร็จ: $("${BIN_DIR}/lmds" version | head -1)"

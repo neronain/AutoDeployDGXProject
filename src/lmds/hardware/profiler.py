@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .profiles import KnownGpu, TargetProfile, classify, lookup_gpu
 
@@ -32,6 +33,8 @@ class HardwareReport:
     arch: str
     gpus: list[DetectedGpu] = field(default_factory=list)
     ram_gb: float | None = None
+    disk_free_gb: float | None = None
+    disk_total_gb: float | None = None
     docker: bool = False
     nvidia_container_toolkit: bool = False
     profile: TargetProfile = TargetProfile.UNKNOWN
@@ -94,6 +97,20 @@ def detect_mem() -> tuple[float | None, float | None]:
     return total, available
 
 
+def detect_disk_gb(path: str | None = None) -> tuple[float | None, float | None]:
+    """คืน (พื้นที่ว่าง GB, พื้นที่ทั้งหมด GB) ของดิสก์ที่เก็บโมเดล
+
+    ดูที่ $HOME เพราะ weight ลงที่ ~/.cache/huggingface (vLLM) หรือ ~/models (GGUF)
+    ซึ่งเป็นสาเหตุ deploy ล้มที่พบบ่อยสุดกับโมเดลใหญ่
+    """
+    target = path or str(Path.home())
+    try:
+        usage = shutil.disk_usage(target)
+    except OSError:
+        return None, None
+    return round(usage.free / (1024**3), 1), round(usage.total / (1024**3), 1)
+
+
 def primary_ip() -> str:
     """IP หลักของเครื่อง (เส้นทางออก default) — ไม่มีการส่งข้อมูลจริง"""
     import socket
@@ -152,10 +169,13 @@ def detect_docker() -> tuple[bool, bool]:
 def probe() -> HardwareReport:
     gpus, notes = detect_gpus()
     docker, toolkit = detect_docker()
+    disk_free, disk_total = detect_disk_gb()
     report = HardwareReport(
         arch=platform.machine(),
         gpus=gpus,
         ram_gb=detect_ram_gb(),
+        disk_free_gb=disk_free,
+        disk_total_gb=disk_total,
         docker=docker,
         nvidia_container_toolkit=toolkit,
         profile=classify([g.name for g in gpus]),
@@ -163,4 +183,9 @@ def probe() -> HardwareReport:
     )
     if docker and not toolkit and gpus:
         report.notes.append("Docker ใช้ได้แต่ไม่พบ nvidia runtime — ติดตั้ง NVIDIA Container Toolkit ก่อนรัน bundle")
+    if disk_free is not None and disk_free < 50:
+        report.notes.append(
+            f"ดิสก์เหลือ {disk_free} GB — โมเดลขนาดกลางขึ้นไปอาจโหลดไม่ลง "
+            "(runtime image ~10-20 GB + weight) ย้ายที่เก็บด้วย HF_HOME/MODEL_DIR ได้"
+        )
     return report

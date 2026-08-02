@@ -82,3 +82,31 @@ def test_classify_new_rtx_single_and_multi():
         classify(["NVIDIA GeForce RTX 3090", "NVIDIA GeForce RTX 3090"])
         is TargetProfile.RTX_MULTI_GPU
     )
+
+
+def test_detect_disk_reports_free_and_total(tmp_path):
+    """FR-2.1: ต้องรายงานพื้นที่ดิสก์ — ดิสก์เต็มคือสาเหตุ deploy ล้มที่พบบ่อยสุด"""
+    from lmds.hardware.profiler import detect_disk_gb
+
+    free, total = detect_disk_gb(str(tmp_path))
+    assert free is not None and total is not None
+    assert 0 < free <= total
+
+
+def test_detect_disk_unreadable_path_is_none():
+    from lmds.hardware.profiler import detect_disk_gb
+
+    assert detect_disk_gb("/ไม่มีจริง/path/นี้") == (None, None)
+
+
+def test_probe_warns_when_disk_low(monkeypatch):
+    from lmds.hardware import profiler
+
+    monkeypatch.setattr(profiler, "detect_gpus", lambda: ([], []))
+    monkeypatch.setattr(profiler, "detect_docker", lambda: (True, True))
+    monkeypatch.setattr(profiler, "detect_ram_gb", lambda: 128.0)
+    monkeypatch.setattr(profiler, "detect_disk_gb", lambda: (12.0, 500.0))
+
+    report = profiler.probe()
+    assert report.disk_free_gb == 12.0
+    assert any("ดิสก์เหลือ" in note for note in report.notes)

@@ -97,11 +97,12 @@ env อื่นของตัวโปรแกรม: `LMDS_CONFIG_DIR` (ย�
 ตรวจและแสดง hardware profile:
 
 ```text
-Arch: x86_64 | GPU: NVIDIA RTX 4090 (24 GB, SM89) ×1 | RAM: ใช้ไป 12 / 128 GB | IP: 192.168.1.50
+Arch: x86_64 | GPU: NVIDIA RTX 4090 (24 GB, SM89) ×1 | RAM: ใช้ไป 12 / 128 GB
+Disk ($HOME): เหลือ 1589.5 / 1800.0 GB | IP: 192.168.1.50
 Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 ```
 
-- ❌ **ยังไม่ตรวจพื้นที่ดิสก์** (PRD FR-2.1 กำหนดไว้) — ผู้ใช้ต้องเช็ก `df -h ~` เอง
+- ดิสก์ดูที่ `$HOME` (ที่เก็บ weight จริง) — เหลือ < 50 GB จะขึ้นคำเตือนใน notes
 - ❌ `--probe-ssh user@host` สำหรับตรวจเครื่องเป้าหมายระยะไกล — ยังไม่ implement (เฟส 1.5)
 
 ## `lmds` fleet (จัดการโมเดลในเครื่อง)

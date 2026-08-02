@@ -349,7 +349,7 @@ lmds inspect Qwen/Qwen3-32B --json                   # ผลวิเครา�
 lmds generate ...                                    # เหมือน deploy แต่ไม่มีขั้นยืนยัน
 lmds validate bundles/qwen3-32b                      # ตรวจ bundle ย้อนหลัง (เช็คว่าไม่มีใครแก้ไฟล์)
 lmds validate bundles/qwen3-32b --fix                # regenerate checksum หลังตั้งใจแก้ไฟล์เอง
-lmds hardware                                        # ตรวจเครื่อง (ไม่รวมพื้นที่ดิสก์ — เช็คเองด้วย df -h ~)
+lmds hardware                                        # ตรวจเครื่อง (GPU/RAM/ดิสก์/Docker/profile)
 lmds config show                                     # ดู config (key ถูก mask)
 lmds config defaults                                 # ดู default model ของแต่ละ provider
 ```

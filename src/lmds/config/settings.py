@@ -62,6 +62,13 @@ class Settings(BaseModel):
         path.chmod(0o600)
 
     def set_provider(self, name: ProviderName, model: str = "", base_url: str | None = None) -> ProviderConfig:
+        # ปฏิเสธตั้งแต่ตอนตั้งค่า ดีกว่าปล่อยให้ผ่านแล้วไปพังตอน deploy จริง
+        if name is ProviderName.ANTHROPIC:
+            raise ValueError(
+                "Anthropic adapter อยู่ใน roadmap เฟส 2 — ยังใช้เป็นสมองไม่ได้ · "
+                "ใช้ openai / gemini / minimax / openai-compat แทน "
+                "(Claude ผ่าน gateway ที่เป็น OpenAI-compatible ก็ใช้ openai-compat ได้)"
+            )
         resolved_model = model or DEFAULT_MODELS[name]
         if name is ProviderName.OPENAI_COMPAT and not base_url:
             raise ValueError("provider แบบ openai-compat ต้องระบุ --base-url")

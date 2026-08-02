@@ -888,6 +888,15 @@ def hardware() -> None:
         table.add_row("RAM", f"ใช้ไป {used_gb} / {total_gb} GB (เหลือ {available_gb} GB)")
     else:
         table.add_row("RAM", f"{report.ram_gb} GB" if report.ram_gb else "ตรวจไม่ได้")
+    if report.disk_free_gb is not None and report.disk_total_gb:
+        used_disk = round(report.disk_total_gb - report.disk_free_gb, 1)
+        warn = " ⚠️" if report.disk_free_gb < 50 else ""
+        table.add_row(
+            "Disk ($HOME)",
+            f"ใช้ไป {used_disk} / {report.disk_total_gb} GB (เหลือ {report.disk_free_gb} GB){warn}",
+        )
+    else:
+        table.add_row("Disk ($HOME)", "ตรวจไม่ได้")
     table.add_row("IP", primary_ip())
     table.add_row("Docker", "✅" if report.docker else "❌")
     table.add_row("NVIDIA Container Toolkit", "✅" if report.nvidia_container_toolkit else "❌")

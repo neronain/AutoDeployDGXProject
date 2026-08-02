@@ -144,6 +144,44 @@ def test_retry_on_transport_error_then_raises(no_sleep):
     assert len(calls) == providers.MAX_HTTP_ATTEMPTS
 
 
+def test_response_format_fallback_for_old_local_engine(no_sleep):
+    """engine local รุ่นเก่าไม่รู้จัก response_format → ตัด field ออกแล้วลองใหม่"""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, text="unrecognized request argument: response_format")
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    provider = OpenAiCompatProvider(
+        "openai-compat", "gemma-4-26b", None, base_url="http://10.0.0.5:8000/v1",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert provider.complete_json("s", "u") == '{"ok": 1}'
+    assert len(bodies) == 2
+    assert "response_format" in bodies[0] and "response_format" not in bodies[1]
+    assert no_sleep == []  # 400 ไม่ใช่ error ชั่วคราว — ไม่ต้อง backoff
+
+
+def test_unrelated_400_not_retried(no_sleep):
+    """400 จากสาเหตุอื่น (เช่น model ไม่มี) ยิงซ้ำก็เหมือนเดิม — ต้องเด้งทันที"""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(400, text="model 'typo-model' does not exist")
+
+    provider = OpenAiCompatProvider(
+        "openai-compat", "typo-model", None, base_url="http://10.0.0.5:8000/v1",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ProviderError, match="400"):
+        provider.complete_json("s", "u")
+    assert len(calls) == 1
+
+
 def test_gemini_request_shape_and_parse():
     seen = {}
 

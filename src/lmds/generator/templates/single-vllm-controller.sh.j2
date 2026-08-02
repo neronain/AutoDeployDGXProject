@@ -206,7 +206,16 @@ start() {
   write_meta
   wait_health
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
+  warn_open_endpoint
   network_info
+}
+
+warn_open_endpoint() {
+  # bind 0.0.0.0 + ไม่มี key = ใครก็ตามในวง network ยิง API ได้โดยไม่ต้องยืนยันตัวตน
+  [[ "$API_HOST" == "0.0.0.0" && -z "$API_KEY" ]] || return 0
+  echo "คำเตือน: เปิดให้ทั้งวง network เข้าถึงได้โดยไม่มี API key" >&2
+  echo "         ใช้เฉพาะในเครื่อง: $0 restart --bind 127.0.0.1" >&2
+  echo "         หรือบังคับ token:  API_KEY=\$(openssl rand -hex 24) $0 restart" >&2
 }
 
 wait_health() {
