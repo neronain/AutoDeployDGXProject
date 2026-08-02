@@ -270,3 +270,15 @@ def test_apply_asset_approvals_moves_only_approved(isolated_config):
     apply_asset_approvals(plan, ["a.py"])
     assert [a.filename for a in plan.runtime_assets] == ["a.py"]
     assert [a.filename for a in plan.assets_needing_approval] == ["b.py"]
+
+
+def test_system_prompt_documents_runtime_assets():
+    """LLM ต้องรู้ว่ามีช่อง runtime_assets และรู้กติกา (host allowlist / mount point)"""
+    from lmds.brain.plan_schema import DeploymentPlan
+    from lmds.brain.prompts import build_system_prompt
+
+    prompt = build_system_prompt(DeploymentPlan.model_json_schema())
+    assert "runtime_assets" in prompt
+    assert "/opt/lmds/plugins" in prompt          # mount point ที่ flag ต้องชี้ไป
+    assert "raw.githubusercontent.com" in prompt  # host allowlist
+    assert "must approve" in prompt               # บอกว่าผู้ใช้ต้องอนุมัติ

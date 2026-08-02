@@ -158,6 +158,10 @@ cd AutoDeployDGXProject
 3. ติดตั้ง lmds ลง venv นั้น
 4. symlink คำสั่ง `lmds` ไปที่ `~/.local/bin/lmds`
 5. เติม `~/.local/bin` ลง PATH ใน `~/.bashrc` (หรือ `~/.zshrc`) ให้อัตโนมัติถ้ายังไม่มี
+6. **ตรวจความพร้อมของเครื่อง** — NVIDIA driver, Docker (เรียกได้โดยไม่ต้อง sudo), Docker เห็น GPU จริงไหม,
+   ดิสก์ว่าง → สรุปเป็น ✅ / ⚠️ พร้อมคำสั่งแก้ · ไม่ครบก็ติดตั้งต่อได้ (สร้าง bundle ได้ แต่ start จะยังไม่ผ่าน)
+7. **ถามตั้งค่า LLM provider + API key** (ดู §3.2) — ข้ามได้
+8. **ถามติดตั้ง tab completion** — กด TAB เติมชื่อคำสั่ง/bundle/target ให้ (ดู §5.1)
 
 หลังติดตั้งเสร็จ ให้ `source ~/.bashrc` หรือเปิด terminal ใหม่ (PATH ที่เพิ่งเติมยังไม่มีผลกับ shell เดิม)
 
@@ -189,8 +193,9 @@ source ~/.bashrc
 
 ### (ทางเลือก) เก็บ API key ใน OS keyring แทนไฟล์
 
-ถ้าไม่ติดตั้งอะไรเพิ่ม LMDS จะเก็บ key ลงไฟล์ `~/.config/lmds/credentials` (สิทธิ์ `0600`)
-อยากให้เก็บใน keyring ของระบบแทน ให้ติดตั้ง extra นี้เพิ่ม **ก่อน**ตั้ง key:
+`install.sh` พยายามติดตั้ง `keyring` ให้อยู่แล้ว (จะบอกในผลลัพธ์ว่าได้หรือไม่ได้) —
+ถ้าไม่ได้ LMDS จะเก็บ key ลงไฟล์ `~/.config/lmds/credentials` (สิทธิ์ `0600`) แทน
+ติดตั้งเองภายหลังได้ด้วย:
 
 ```bash
 ~/.local/share/lmds/venv/bin/pip install 'keyring>=24.0'
@@ -518,4 +523,23 @@ docker rmi vllm/vllm-openai:latest ghcr.io/ggml-org/llama.cpp:server-cuda
 
 ---
 
+### 5.1 Tab completion
+
+`install.sh` ถามให้แล้ว — ถ้าข้ามไปหรืออยากติดตั้งทีหลัง:
+
+```bash
+lmds --install-completion
+```
+
+แล้ว**เปิด terminal ใหม่** (หรือ `source ~/.bashrc`) · รองรับ bash / zsh / fish
+
+```text
+lmds depl<TAB>                       → lmds deploy
+lmds stop qwen<TAB>                  → เติมชื่อ bundle ให้
+lmds deploy <url> --target dgx<TAB>  → dgx-spark-single / dgx-spark-stacked
+```
+
+---
+
 ติดตั้งเสร็จแล้ว → ไปต่อที่ **[USAGE.md](USAGE.md)** เพื่อ deploy โมเดลตัวแรก
+· ความปลอดภัย/ข้อมูลที่ออกนอกเครื่อง: **[SECURITY.md](../SECURITY.md)**

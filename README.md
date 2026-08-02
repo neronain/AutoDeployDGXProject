@@ -1,6 +1,8 @@
 # AutoDeployDGXProject — Local Model Deploy Studio (LMDS)
 
 > ⚡ สร้างและดูแลโดย **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
+>
+> 🇬🇧 English summary: [README.en.md](README.en.md)
 
 โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล Hugging Face** (repo, ลิงก์ไฟล์ `.gguf` ตรง) แล้วใช้ **LLM API** (OpenAI, Gemini, MiniMax หรือ OpenAI-compatible endpoint — รวมถึงโมเดล local ของคุณเอง) เป็นสมองในการวิเคราะห์และ**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
 
@@ -99,6 +101,9 @@ fallback หยุดโมเดลค้างให้ได้ (kill pid / d
 | [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | แผนพัฒนา 3 เฟส + work breakdown ของเฟส 1 |
+| [SECURITY.md](SECURITY.md) | ข้อมูลอะไรออกนอกเครื่องบ้าง, secret เก็บที่ไหน, จุดที่ต้องอนุมัติเอง, แจ้งช่องโหว่ |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | ตั้ง dev env, กฎที่ห้ามละเมิด, วิธีเพิ่ม target preset / provider / gate |
+| [CHANGELOG.md](CHANGELOG.md) | ประวัติการเปลี่ยนแปลง |
 
 ## Requirements (ตัวโปรแกรม)
 
@@ -111,10 +116,10 @@ fallback หยุดโมเดลค้างให้ได้ (kill pid / d
 ## สำหรับผู้พัฒนา
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e '.[dev]'
-pytest
+python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pytest
 ```
+
+รายละเอียด (กฎที่ห้ามละเมิด, วิธีเพิ่ม preset/provider/gate): [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 

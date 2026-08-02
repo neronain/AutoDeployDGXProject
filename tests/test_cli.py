@@ -68,10 +68,24 @@ def test_completion_options_available():
     assert "--install-completion" in result.output
 
 
+def test_complete_slug_includes_local_bundles(tmp_path, monkeypatch):
+    """เติมชื่อจากโฟลเดอร์ ./bundles ของ cwd ด้วย (bundle ที่เพิ่ง deploy แต่ยังไม่เคย start)"""
+    from lmds.cli.main import _complete_slug
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    (tmp_path / "bundles" / "brand-new-model").mkdir(parents=True)
+
+    assert _complete_slug("brand") == ["brand-new-model"]
+
+
 def test_complete_slug_from_run_registry(tmp_path, monkeypatch):
     """TAB บน lmds stop/logs/... ต้องเติมชื่อ slug ที่มีอยู่จริง และต้องไม่ยิง docker"""
     from lmds.cli.main import _complete_slug
 
+    # _complete_slug อ่าน ./bundles/ ของ cwd ด้วย — ต้อง chdir ออกจาก repo จริง
+    # ไม่งั้นเทสจะเห็น bundle ที่ผู้ใช้ deploy ไว้จริงปนเข้ามา
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     (tmp_path / "qwen3-32b").mkdir()
     (tmp_path / "qwen3-0-6b-gguf").mkdir()
@@ -82,10 +96,11 @@ def test_complete_slug_from_run_registry(tmp_path, monkeypatch):
     assert _complete_slug("zzz") == []
 
 
-def test_complete_slug_never_raises(monkeypatch):
+def test_complete_slug_never_raises(tmp_path, monkeypatch):
     """shell เรียกทุกครั้งที่กด TAB — พังไม่ได้เด็ดขาด"""
     from lmds.cli import main as cli_main
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LMDS_RUN_ROOT", "/ไม่มีจริง/path")
     assert cli_main._complete_slug("a") == []
 
