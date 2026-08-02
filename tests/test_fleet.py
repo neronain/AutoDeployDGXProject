@@ -345,3 +345,77 @@ def test_adopted_container_autostart_unit_uses_docker_start():
     assert "ExecStart=/usr/bin/docker start my-vllm" in unit
     assert "ExecStop=/usr/bin/docker stop my-vllm" in unit
     assert "WantedBy=multi-user.target" in unit
+
+
+def _bundle_like(tmp_path, slug="demo"):
+    """สร้างโครงไฟล์เหมือน bundle จริง + ทะเบียน + weight ปลอม"""
+    bundle_dir = tmp_path / "bundles" / slug
+    bundle_dir.mkdir(parents=True)
+    controller = bundle_dir / f"{slug}-single.sh"
+    controller.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (bundle_dir / "README.md").write_text("x" * 100, encoding="utf-8")
+    (tmp_path / "bundles" / f"{slug}.zip").write_text("y" * 50, encoding="utf-8")
+
+    run_dir = tmp_path / "run" / slug
+    run_dir.mkdir(parents=True)
+    (run_dir / "server.log").write_text("z" * 10, encoding="utf-8")
+    return bundle_dir, controller, run_dir
+
+
+def test_removal_plan_lists_bundle_zip_and_registry(tmp_path, monkeypatch):
+    from lmds.fleet import manager
+
+    bundle_dir, controller, run_dir = _bundle_like(tmp_path)
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    info = manager.ServerInfo(slug="demo", controller=str(controller), engine="vllm", mode="docker")
+
+    labels = {i.label: i.path for i in manager.removal_plan(info)}
+    assert labels["bundle"] == bundle_dir
+    assert labels["zip"] == tmp_path / "bundles" / "demo.zip"
+    assert labels["ทะเบียน/log"] == run_dir
+
+
+def test_remove_deletes_everything_and_keep_weights_skips_them(tmp_path, monkeypatch):
+    from lmds.fleet import manager
+
+    bundle_dir, controller, run_dir = _bundle_like(tmp_path)
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "model.safetensors").write_text("w" * 1000, encoding="utf-8")
+    monkeypatch.setattr(manager, "weights_path", lambda info: weights)
+    monkeypatch.setattr(manager, "have_systemctl", lambda: False)
+
+    info = manager.ServerInfo(slug="demo", controller=str(controller), engine="vllm", mode="docker")
+
+    # --keep-weights: ลบ bundle แต่ weight ต้องอยู่ครบ
+    manager.remove_server(info, include_weights=False)
+    assert not bundle_dir.exists() and not run_dir.exists()
+    assert weights.is_dir()
+
+    # รอบเต็ม: weight ต้องหายด้วย
+    _bundle_like(tmp_path)
+    manager.remove_server(info, include_weights=True)
+    assert not weights.exists()
+
+
+def test_repair_without_controller_explains_how_to_rebuild(tmp_path, monkeypatch):
+    from lmds.fleet import FleetError, manager
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    info = manager.ServerInfo(slug="gone", controller="/no/such/ctl.sh")
+    with pytest.raises(FleetError, match="lmds deploy"):
+        manager.repair_server(info)
+
+
+def test_repair_runs_download_then_verify(tmp_path, monkeypatch):
+    from lmds.fleet import manager
+
+    _, controller, _ = _bundle_like(tmp_path, "demo2")
+    calls = []
+    monkeypatch.setattr(manager, "_run_controller",
+                        lambda info, cmd, extra=None: calls.append(cmd) or 0)
+    info = manager.ServerInfo(slug="demo2", controller=str(controller))
+
+    assert manager.repair_server(info) == 0
+    assert calls == ["download", "verify-files"]

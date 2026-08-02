@@ -536,3 +536,113 @@ def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int
         f"ตาม log ของ {info.slug} แบบ realtime ไม่ได้ — ไม่พบ container หรือไฟล์ log "
         f"({log_file or 'ไม่ระบุ'}) · ใช้แบบไม่ follow แทน: lmds logs {info.slug}"
     )
+
+
+# ── Remove / repair ────────────────────────────────────────────────────────────
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    try:
+        for item in path.rglob("*"):
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+    except OSError:
+        pass
+    return total
+
+
+def weights_path(info: ServerInfo) -> Path | None:
+    """ที่เก็บ weight ของโมเดลนี้ — vLLM ใช้ HF cache, llama.cpp ใช้ MODEL_DIR
+
+    คืน None เมื่อเดาไม่ได้ (ไม่มี profile) — ดีกว่าเดามั่วแล้วลบผิดโฟลเดอร์
+    """
+    profile = bundle_profile(info.controller) if info.controller_exists else None
+    engine = ((profile or {}).get("runtime") or {}).get("engine") or info.engine
+    model_id = ((profile or {}).get("model") or {}).get("id") or info.model_id
+    if engine == "llamacpp":
+        candidate = Path(os.environ.get("MODEL_DIR", Path.home() / "models" / info.slug))
+        return candidate if candidate.is_dir() else None
+    if not model_id or "/" not in model_id:
+        return None
+    hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    candidate = hf_home / "hub" / f"models--{model_id.replace('/', '--')}"
+    return candidate if candidate.is_dir() else None
+
+
+@dataclass
+class RemovalItem:
+    label: str
+    path: Path
+    size_bytes: int
+    is_weights: bool = False
+
+
+def removal_plan(info: ServerInfo, include_weights: bool = True) -> list[RemovalItem]:
+    """รายการไฟล์ทั้งหมดที่เกี่ยวกับโมเดลนี้ — ให้ผู้ใช้ดูก่อนยืนยันลบ"""
+    items: list[RemovalItem] = []
+
+    if info.controller_exists:
+        bundle_dir = Path(info.controller).parent
+        items.append(RemovalItem("bundle", bundle_dir, _dir_size_bytes(bundle_dir)))
+        zip_path = bundle_dir.with_suffix(".zip")
+        if zip_path.is_file():
+            items.append(RemovalItem("zip", zip_path, zip_path.stat().st_size))
+
+    run_dir = run_root() / info.slug
+    if run_dir.is_dir():
+        items.append(RemovalItem("ทะเบียน/log", run_dir, _dir_size_bytes(run_dir)))
+
+    plugin_dir = Path.home() / ".lmds" / "plugins" / info.slug
+    if plugin_dir.is_dir():
+        items.append(RemovalItem("runtime files", plugin_dir, _dir_size_bytes(plugin_dir)))
+
+    if include_weights:
+        weights = weights_path(info)
+        if weights is not None:
+            items.append(RemovalItem("weight ของโมเดล", weights, _dir_size_bytes(weights), is_weights=True))
+    return items
+
+
+def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
+    """หยุด → ยกเลิก autostart → ลบไฟล์ทั้งหมด — คืนรายการสิ่งที่ทำจริง
+
+    ลำดับสำคัญ: ต้องหยุด/ยกเลิก autostart ก่อนลบ ไม่งั้นเหลือ container ค้าง
+    หรือ systemd unit ที่ชี้ไปไฟล์ที่ไม่มีแล้ว
+    """
+    import shutil as _shutil
+
+    done: list[str] = []
+    if info.running:
+        try:
+            done.append(f"หยุดเซิร์ฟเวอร์ ({stop_server(info)})")
+        except (FleetError, OSError) as exc:
+            done.append(f"หยุดไม่สำเร็จ: {exc}")
+    if have_systemctl() and autostart_status(info.slug) in {"enabled", "disabled"}:
+        try:
+            disable_autostart(info)
+            done.append("ยกเลิก autostart")
+        except FleetError as exc:
+            done.append(f"ยกเลิก autostart ไม่สำเร็จ: {exc}")
+
+    for item in removal_plan(info, include_weights=include_weights):
+        try:
+            if item.path.is_dir():
+                _shutil.rmtree(item.path)
+            else:
+                item.path.unlink(missing_ok=True)
+            done.append(f"ลบ {item.label}: {item.path}")
+        except OSError as exc:
+            done.append(f"ลบ {item.path} ไม่ได้: {exc}")
+    return done
+
+
+def repair_server(info: ServerInfo) -> int:
+    """ดาวน์โหลดไฟล์ที่ขาด/เสียใหม่ แล้วตรวจซ้ำ — download ของทุก controller resume ได้"""
+    if not info.controller_exists:
+        raise FleetError(
+            f"ไม่พบ controller ของ {info.slug} — bundle ถูกลบไปแล้ว ซ่อมไม่ได้\n"
+            f"สร้างใหม่ด้วย: lmds deploy <ลิงก์โมเดลเดิม>  (weight ที่โหลดไว้ยังใช้ต่อได้ ไม่ต้องโหลดซ้ำ)"
+        )
+    code = _run_controller(info, "download")
+    if code != 0:
+        return code
+    return _run_controller(info, "verify-files")

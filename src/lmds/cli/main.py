@@ -957,7 +957,9 @@ def list_bundles() -> None:
         support = feature_summary(profile) if profile else "-"
         status = autostart_status(server.slug) if server.controller_exists else "absent"
         # controller หาย = สั่ง start/restart ไม่ได้ — ใช้สัญลักษณ์เตือนแทนคอลัมน์แยก
-        state = "[red]⚠[/red]" if not server.controller_exists else _status_symbol(server)
+        state = _status_symbol(server)
+        if not server.controller_exists and not server.running:
+            state = "[red]⚠[/red]"
         table.add_row(
             server.slug,
             state,
@@ -978,6 +980,81 @@ def list_bundles() -> None:
         f"  lmds logs {first} -f   [dim]# realtime[/dim]   ·   lmds enable {first}   [dim]# autostart[/dim]\n"
         "[dim]endpoint + สถานะ health เต็ม ๆ: lmds ps[/dim]"
     )
+
+
+@app.command()
+def remove(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
+    keep_weights: bool = typer.Option(False, "--keep-weights", help="ไม่ลบ weight (เก็บไว้ deploy ใหม่โดยไม่ต้องโหลดซ้ำ)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ต้องถามยืนยัน"),
+) -> None:
+    """ลบโมเดลออกจากเครื่อง: หยุด → ยกเลิก autostart → ลบ bundle/ทะเบียน/log/weight"""
+    from lmds.fleet import find, remove_server, removal_plan
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds list")
+        raise typer.Exit(code=1)
+
+    items = removal_plan(server, include_weights=not keep_weights)
+    if not items:
+        console.print(f"ไม่พบไฟล์ของ {slug} ที่ต้องลบ")
+    else:
+        table = Table(title=f"จะลบทั้งหมดนี้ ({slug})")
+        table.add_column("รายการ")
+        table.add_column("path")
+        table.add_column("ขนาด", justify="right")
+        total = 0
+        for item in items:
+            total += item.size_bytes
+            table.add_row(item.label, str(item.path), _human_size(item.size_bytes))
+        console.print(table)
+        console.print(f"รวม [bold]{_human_size(total)}[/bold]")
+    if server.running:
+        err_console.print("[yellow]โมเดลนี้กำลังรันอยู่ — จะถูกหยุดก่อนลบ[/yellow]")
+    if keep_weights:
+        console.print("[dim]--keep-weights: weight จะไม่ถูกลบ (deploy ใหม่แล้วใช้ต่อได้เลย)[/dim]")
+
+    if not yes and not typer.confirm("ยืนยันลบ? (กู้คืนไม่ได้)", default=False):
+        console.print("ยกเลิก")
+        raise typer.Exit(code=1)
+
+    for line in remove_server(server, include_weights=not keep_weights):
+        console.print(f"  {line}")
+    console.print(f"[green]ลบ {slug} เรียบร้อย[/green]")
+
+
+@app.command()
+def repair(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
+) -> None:
+    """ซ่อมไฟล์โมเดลที่ขาด/เสีย — โหลดเฉพาะส่วนที่หายแล้วตรวจซ้ำ (resume ได้)"""
+    from lmds.fleet import FleetError, find, repair_server
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds list")
+        raise typer.Exit(code=1)
+    console.print(f"ซ่อม {slug}: download (resume) → verify-files")
+    try:
+        code = repair_server(server)
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    if code == 0:
+        console.print(f"[green]{slug} ไฟล์ครบและถูกต้องแล้ว[/green]")
+    else:
+        err_console.print(f"[red]ยังไม่ผ่าน — ดูข้อความด้านบน (exit {code})[/red]")
+    raise typer.Exit(code=code)
+
+
+def _human_size(num_bytes: int) -> str:
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
 @app.command()
