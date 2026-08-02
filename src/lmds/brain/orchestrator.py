@@ -104,9 +104,46 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         plan.warnings.append(
             "flag นอก allowlist ต้องได้รับอนุมัติจากผู้ใช้ก่อนใช้จริง: " + ", ".join(needs_approval)
         )
+    _harden_runtime_assets(plan)
+
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+def _harden_runtime_assets(plan: DeploymentPlan) -> None:
+    """ไฟล์ runtime ภายนอกเป็นโค้ดที่รันจริงใน container — ไม่มีทางเข้า bundle เองได้
+
+    ทุกตัวถูกย้ายไปรออนุมัติเสมอ (แม้ LLM จะใส่มาใน runtime_assets ตรง ๆ) และตัวที่
+    URL/ชื่อไฟล์ไม่ผ่าน allowlist ถูกทิ้งพร้อมเหตุผล
+    """
+    from .allowlists import is_allowed_asset_url, is_safe_asset_filename
+
+    candidates = list(plan.runtime_assets) + list(plan.assets_needing_approval)
+    plan.runtime_assets = []
+
+    kept: list = []
+    seen: set[str] = set()
+    for asset in candidates:
+        if asset.filename in seen:
+            continue
+        seen.add(asset.filename)
+        if not is_safe_asset_filename(asset.filename):
+            plan.warnings.append(f"ตัดไฟล์ runtime ที่ชื่อไม่ปลอดภัย: {asset.filename!r}")
+            continue
+        if not is_allowed_asset_url(asset.url):
+            plan.warnings.append(
+                f"ตัดไฟล์ runtime {asset.filename} — URL ไม่อยู่ใน allowlist ({asset.url})"
+            )
+            continue
+        kept.append(asset)
+
+    plan.assets_needing_approval = kept
+    if kept:
+        plan.warnings.append(
+            "ไฟล์ runtime ภายนอกต้องได้รับอนุมัติจากผู้ใช้ก่อนใช้จริง: "
+            + ", ".join(a.filename for a in kept)
+        )
 
 
 def apply_flag_approvals(plan: DeploymentPlan, approved: list[str]) -> DeploymentPlan:
@@ -120,6 +157,20 @@ def apply_flag_approvals(plan: DeploymentPlan, approved: list[str]) -> Deploymen
             if flag not in plan.serving.extra_flags:
                 plan.serving.extra_flags.append(flag)
             plan.warnings.append(f"ผู้ใช้อนุมัติ flag: {flag}")
+    return plan
+
+
+def apply_asset_approvals(plan: DeploymentPlan, approved_filenames: list[str]) -> DeploymentPlan:
+    """ย้ายไฟล์ runtime ที่ผู้ใช้อนุมัติ → runtime_assets (ตัวที่ไม่อนุมัติถูกทิ้งไปเลย)"""
+    approved = set(approved_filenames)
+    still_pending = []
+    for asset in plan.assets_needing_approval:
+        if asset.filename in approved:
+            plan.runtime_assets.append(asset)
+            plan.warnings.append(f"ผู้ใช้อนุมัติไฟล์ runtime: {asset.filename} ({asset.url})")
+        else:
+            still_pending.append(asset)
+    plan.assets_needing_approval = still_pending
     return plan
 
 

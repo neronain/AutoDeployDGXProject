@@ -52,6 +52,36 @@ KNOWN_IMAGE_REPOS: dict[Engine, set[str]] = {
 }
 
 
+# โฮสต์ที่ยอมให้ดึงไฟล์ runtime ภายนอก (parser plugin ฯลฯ) — ไฟล์พวกนี้เป็นโค้ดที่รันจริง
+# ใน container จึงต้องจำกัดให้แคบ: แหล่งที่ทีมโมเดลเผยแพร่เองเท่านั้น
+ALLOWED_ASSET_HOSTS = {
+    "huggingface.co",
+    "hf.co",
+    "raw.githubusercontent.com",
+    "github.com",
+    "gitlab.com",
+}
+
+
+def is_allowed_asset_url(url: str) -> bool:
+    """รับเฉพาะ https จากโฮสต์ใน allowlist — กัน LLM สั่งดึงไฟล์จากที่ไหนก็ได้"""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in ALLOWED_ASSET_HOSTS
+
+
+def is_safe_asset_filename(name: str) -> bool:
+    """basename ล้วนเท่านั้น — กัน path traversal ตอนเขียนไฟล์ลง host"""
+    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+
+
 def image_repo(image_ref: str) -> str:
     """'ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:x' → 'ghcr.io/ggml-org/llama.cpp'"""
     without_digest = image_ref.split("@", 1)[0]

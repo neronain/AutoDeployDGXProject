@@ -51,6 +51,11 @@ class KvDims(BaseModel):
         return 2 * self.layers * self.kv_heads * self.head_dim * 2
 
 
+class ShardFile(BaseModel):
+    filename: str
+    size_bytes: Optional[int] = None  # None = Hub ไม่รายงานขนาด → ข้ามการเทียบขนาด
+
+
 class ModelReport(BaseModel):
     repo_id: str
     revision_requested: Optional[str] = None
@@ -64,6 +69,9 @@ class ModelReport(BaseModel):
     params_total: Optional[int] = None  # จาก Hub safetensors metadata
     weight_bytes: Optional[int] = None  # safetensors: รวมทุก shard / gguf: ไฟล์ที่เลือก
     shard_count: Optional[int] = None
+    # ไฟล์ .safetensors ทุก shard พร้อมขนาดจาก Hub — ใช้ให้ controller ตรวจ download ครบจริง
+    safetensor_shards: list["ShardFile"] = Field(default_factory=list)
+    tokenizer_files: list[str] = Field(default_factory=list)
 
     # จาก config.json / GGUF metadata
     architecture: Optional[str] = None

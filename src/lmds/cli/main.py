@@ -373,6 +373,14 @@ def _render_plan(deployment_plan, fit) -> None:
     table.add_row("Features", ", ".join(features) or "ไม่เปิด (ยังไม่มีหลักฐานยืนยัน parser)")
     if deployment_plan.serving.extra_flags:
         table.add_row("Extra flags", " ".join(deployment_plan.serving.extra_flags))
+    if deployment_plan.runtime_assets:
+        table.add_row(
+            "Runtime files", ", ".join(a.filename for a in deployment_plan.runtime_assets) + " (อนุมัติแล้ว)"
+        )
+    if deployment_plan.assets_needing_approval:
+        table.add_row(
+            "รออนุมัติ", ", ".join(a.filename for a in deployment_plan.assets_needing_approval)
+        )
     counts = {c: 0 for c in Confidence}
     for fact in deployment_plan.facts:
         counts[fact.confidence] += 1
@@ -439,7 +447,9 @@ def generate(
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_plan(deployment_plan, fit)
     _render_gates(results)
-    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit), stacked=deployment_plan.topology.value == "stacked")
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit),
+                     stacked=deployment_plan.topology.value == "stacked",
+                     assets=bool(deployment_plan.runtime_assets))
 
 
 def _render_and_package(deployment_plan, report, fit, output: str):
@@ -467,7 +477,8 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     return bundle, results, [*bundle.files, checksums_path, zip_path]
 
 
-def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: bool = False) -> None:
+def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: bool = False,
+                     assets: bool = False) -> None:
     table = Table(title="Bundle (static-validated ✅)")
     table.add_column("ไฟล์")
     for file_path in delivered:
@@ -477,8 +488,8 @@ def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: b
         steps = ["prepare-runtime", "download", "verify-files", "sync-worker", "verify-worker", "start"]
     else:
         steps = ["download", "verify-files"]
-        if native_prepare:
-            steps.append("prepare-runtime")  # ติดตั้ง deps + build llama.cpp อัตโนมัติ (ครั้งแรกครั้งเดียว)
+        if native_prepare or assets:
+            steps.append("prepare-runtime")  # build llama.cpp / ดึงไฟล์ runtime ภายนอก (ครั้งแรกครั้งเดียว)
         steps += ["start", "test-text"]
     chain = " && ".join(f"./{bundle.controller.name} {s}" for s in steps)
     console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory}\n  {chain}")
@@ -525,6 +536,7 @@ def deploy(
         MissingKey,
         PlanError,
         ProviderError,
+        apply_asset_approvals,
         apply_flag_approvals,
         build_plan,
         make_provider,
@@ -567,6 +579,19 @@ def deploy(
         if approved:
             apply_flag_approvals(deployment_plan, approved)
 
+        # ไฟล์ runtime ภายนอก = โค้ดที่จะรันใน container — แสดง URL ให้เห็นเต็ม ๆ ก่อนถาม
+        approved_assets: list[str] = []
+        for asset in list(deployment_plan.assets_needing_approval):
+            err_console.print(f"[yellow]ไฟล์ runtime ภายนอก:[/yellow] {asset.filename}")
+            err_console.print(f"  จาก: {asset.url}")
+            if asset.purpose:
+                err_console.print(f"  ใช้ทำ: {asset.purpose}")
+            err_console.print("  [dim]ไฟล์นี้จะถูก mount เข้า container และรันจริง — review ก่อนอนุมัติ[/dim]")
+            if typer.confirm(f"อนุมัติดึง {asset.filename} ?", default=False):
+                approved_assets.append(asset.filename)
+        if approved_assets:
+            apply_asset_approvals(deployment_plan, approved_assets)
+
         context_input = typer.prompt(
             "context (Enter = ใช้ค่าตามแผน)", default=str(deployment_plan.serving.context)
         ).strip()
@@ -584,7 +609,9 @@ def deploy(
 
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_gates(results)
-    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit), stacked=deployment_plan.topology.value == "stacked")
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit),
+                     stacked=deployment_plan.topology.value == "stacked",
+                     assets=bool(deployment_plan.runtime_assets))
     console.print("\n[dim]สถานะ: static-validated — รัน acceptance ตามลำดับด้านบนเพื่อยืนยันบนเครื่องจริง[/dim]")
 
 

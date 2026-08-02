@@ -31,6 +31,20 @@ TEMPLATE_OVERHEAD_TOKENS="2048"
 
 HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 RUN_DIR="${RUN_DIR:-${HOME}/.lmds/run/{{ slug }}}"
+{% if runtime_assets -%}
+# ไฟล์ runtime ภายนอกที่ผู้ใช้อนุมัติแล้ว — mount เข้า container ที่ /opt/lmds/plugins (read-only)
+PLUGIN_DIR="${PLUGIN_DIR:-${HOME}/.lmds/plugins/{{ slug }}}"
+PLUGIN_MOUNT="/opt/lmds/plugins"
+ASSET_FILES=(
+{% for asset in runtime_assets %}  "{{ asset.filename }}"
+{% endfor %})
+ASSET_URLS=(
+{% for asset in runtime_assets %}  "{{ asset.url }}"
+{% endfor %})
+ASSET_SHAS=(
+{% for asset in runtime_assets %}  "{{ asset.sha256 }}"
+{% endfor %})
+{% endif -%}
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # ========================================================================
 
@@ -118,6 +132,16 @@ print('download complete')
 "
 }
 
+{% if shard_files -%}
+# shard ที่ต้องมีครบ พร้อมขนาดจาก Hub (ว่าง = Hub ไม่รายงานขนาด → ข้ามการเทียบ)
+SHARD_FILES=(
+{% for shard in shard_files %}  "{{ shard.filename }}"
+{% endfor %})
+SHARD_SIZES=(
+{% for shard in shard_files %}  "{{ shard.size }}"
+{% endfor %})
+{% endif -%}
+
 verify_files() {
   local snap
   snap="$(snapshot_dir)"
@@ -126,11 +150,59 @@ verify_files() {
   for f in {{ required_files }}; do
     [[ -e "${snap}/${f}" ]] || die "ไฟล์จำเป็นหายไป: ${f}"
   done
+{% if shard_files %}
+  # ตรวจ shard ครบ + ขนาดตรงกับที่ Hub รายงาน — download ที่ขาดจะถูกจับตรงนี้
+  # ไม่ใช่ไปพังตอน start ซึ่งไล่หาสาเหตุยากกว่ามาก
+  local i path actual_size
+  for i in "${!SHARD_FILES[@]}"; do
+    path="${snap}/${SHARD_FILES[$i]}"
+    [[ -e "$path" ]] || die "shard หายไป: ${SHARD_FILES[$i]} — รัน: $0 download (resume ต่อได้)"
+    if [[ -n "${SHARD_SIZES[$i]}" ]]; then
+      actual_size="$(stat -Lc %s "$path" 2>/dev/null || stat -Lf %z "$path")"
+      [[ "$actual_size" == "${SHARD_SIZES[$i]}" ]] ||
+        die "${SHARD_FILES[$i]}: ขนาดไม่ตรง (ได้ ${actual_size} ต้องการ ${SHARD_SIZES[$i]} — download ไม่ครบ?)"
+    fi
+  done
+  echo "shard ครบ {{ '${#SHARD_FILES[@]}' }} ไฟล์ (ขนาดตรงกับ Hub)"
+{% endif %}
   local broken
   broken="$(find -L "$snap" -type l 2>/dev/null || true)"
   [[ -z "$broken" ]] || die "พบ symlink เสียใน cache: $broken"
+{% if runtime_assets %}
+  verify_assets
+{% endif %}
   echo "verify-files: OK (${snap})"
 }
+{% if runtime_assets %}
+prepare_runtime() {
+  # ดึงไฟล์ runtime ภายนอกที่ผู้ใช้อนุมัติตอน deploy — ไม่มีอันไหนถูกดึงโดยไม่ได้อนุมัติ
+  need curl
+  mkdir -p "$PLUGIN_DIR"
+  local i
+  for i in "${!ASSET_FILES[@]}"; do
+    echo "ดึง ${ASSET_FILES[$i]} จาก ${ASSET_URLS[$i]}"
+    curl -fL --retry 3 --retry-delay 2 \
+      -o "${PLUGIN_DIR}/${ASSET_FILES[$i]}" "${ASSET_URLS[$i]}" ||
+      die "ดึง ${ASSET_FILES[$i]} ไม่สำเร็จ"
+  done
+  verify_assets
+  echo "prepare-runtime: OK (${PLUGIN_DIR})"
+}
+
+verify_assets() {
+  local i path actual_sha
+  for i in "${!ASSET_FILES[@]}"; do
+    path="${PLUGIN_DIR}/${ASSET_FILES[$i]}"
+    [[ -f "$path" ]] || die "ไม่พบไฟล์ runtime: ${ASSET_FILES[$i]} — รัน: $0 prepare-runtime"
+    if [[ -n "${ASSET_SHAS[$i]}" ]]; then
+      need sha256sum
+      actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+      [[ "$actual_sha" == "${ASSET_SHAS[$i]}" ]] ||
+        die "${ASSET_FILES[$i]}: SHA-256 ไม่ตรง (ได้ ${actual_sha}) — ไฟล์ถูกแก้หรือดึงมาไม่ครบ"
+    fi
+  done
+}
+{% endif %}
 
 port_in_use() {
   local out
@@ -199,6 +271,10 @@ start() {
   )
   if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e "HF_TOKEN=${HF_TOKEN}"); fi
   if [[ -n "$API_KEY" ]]; then docker_args+=(-e "VLLM_API_KEY=${API_KEY}"); fi
+{% if runtime_assets -%}
+  verify_assets
+  docker_args+=(-v "${PLUGIN_DIR}:${PLUGIN_MOUNT}:ro")
+{% endif -%}
   docker_args+=(--entrypoint vllm "$VLLM_IMAGE")
 
   docker "${docker_args[@]}" "${serve_args[@]}"
@@ -292,7 +368,10 @@ Usage: $0 <command> [--context N] [--port N] [--bind ADDR] [--advertise-ip ADDR]
 
 Commands:
   download        ดาวน์โหลดโมเดล (resume ได้, pin revision)
-  verify-files    ตรวจไฟล์จำเป็น + symlink
+  verify-files    ตรวจไฟล์จำเป็น + shard ครบ/ขนาดตรง + symlink
+{% if runtime_assets -%}
+  prepare-runtime ดึงไฟล์ runtime ภายนอกที่อนุมัติแล้ว (จำเป็นครั้งแรกก่อน start)
+{% endif -%}
   start           ตรวจ GPU/ไฟล์ แล้วเปิดเซิร์ฟเวอร์ (รอ /health)
   stop | restart  หยุด / restart
   status          สถานะ container + API
@@ -310,6 +389,9 @@ set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 case "${1:-help}" in
   download)     download ;;
   verify-files) verify_files ;;
+{% if runtime_assets -%}
+  prepare-runtime) prepare_runtime ;;
+{% endif -%}
   start)        start ;;
   stop)         stop ;;
   restart)      stop; start ;;

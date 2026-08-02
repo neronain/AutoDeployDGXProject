@@ -96,6 +96,7 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
     required = list(BASE_REQUIRED_FILES)
     if report.shard_count and report.shard_count > 1:
         required.append("model.safetensors.index.json")
+    required += list(report.tokenizer_files)
     required += [f for f in plan.special_files if "/" not in f]
 
     is_stacked = plan.topology.value == "stacked"
@@ -128,7 +129,16 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "node_count": node_count,
         "shard_count": report.shard_count or 0,
         "total_size_gb": int(round(weights_gb)) if weights_gb else 0,
-        "required_files": " ".join(shlex.quote(f) for f in required),
+        "required_files": " ".join(shlex.quote(f) for f in dict.fromkeys(required)),
+        # shard + ขนาดจาก Hub — ให้ verify-files จับ download ที่ไม่ครบได้เหมือนฝั่ง GGUF
+        "shard_files": [
+            {"filename": s.filename, "size": s.size_bytes or ""}
+            for s in report.safetensor_shards
+        ],
+        "runtime_assets": [
+            {"filename": a.filename, "url": a.url, "sha256": a.sha256 or ""}
+            for a in plan.runtime_assets
+        ],
         "extra_flag_pairs": [_quote_flag(f) for f in plan.serving.extra_flags],
         "tensor_parallel": tensor_parallel,
         "gguf_basename": (plan.selected_gguf or "").rsplit("/", 1)[-1],

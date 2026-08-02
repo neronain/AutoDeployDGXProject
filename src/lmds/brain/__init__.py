@@ -1,11 +1,17 @@
 from .allowlists import split_flags
-from .orchestrator import apply_flag_approvals, build_plan, harden_plan
+from .orchestrator import (
+    apply_asset_approvals,
+    apply_flag_approvals,
+    build_plan,
+    harden_plan,
+)
 from .plan_schema import (
     Confidence,
     DeploymentPlan,
     Engine,
     Fact,
     PlanError,
+    RuntimeAsset,
     RuntimeChoice,
     Serving,
     Topology,
@@ -33,9 +39,11 @@ __all__ = [
     "OpenAiCompatProvider",
     "PlanError",
     "ProviderError",
+    "RuntimeAsset",
     "RuntimeChoice",
     "Serving",
     "Topology",
+    "apply_asset_approvals",
     "apply_flag_approvals",
     "build_plan",
     "harden_plan",

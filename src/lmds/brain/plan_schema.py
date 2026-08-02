@@ -61,6 +61,22 @@ class Multimodal(BaseModel):
     projector_files: list[str] = Field(default_factory=list)
 
 
+class RuntimeAsset(BaseModel):
+    """ไฟล์ที่ engine ต้องใช้แต่ **ไม่ได้อยู่ใน repo ของโมเดล**
+
+    เคสจริง: Nemotron-3-Super ต้องมี `super_v3_reasoning_parser.py` วางบน host แล้ว
+    bind-mount เข้า container คู่กับ flag `--reasoning-parser`
+
+    ไฟล์พวกนี้เป็นโค้ดที่รันจริงใน container — ต้องผ่าน host allowlist และผู้ใช้ต้อง
+    อนุมัติรายตัวเสมอ (เหมือน flag นอก allowlist) ห้าม inject อัตโนมัติเด็ดขาด
+    """
+
+    filename: str  # ชื่อไฟล์ปลายทาง (basename เท่านั้น — ห้ามมี path)
+    url: str
+    sha256: Optional[str] = None  # ถ้ามี controller จะตรวจให้ตอน prepare-runtime
+    purpose: str = ""  # อธิบายให้ผู้ใช้ตัดสินใจตอนอนุมัติ
+
+
 class Serving(BaseModel):
     context: int = Field(gt=0)
     max_output_tokens: int = Field(default=8192, gt=0)
@@ -90,6 +106,9 @@ class DeploymentPlan(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     # flag ที่อยู่นอก allowlist — ห้าม inject อัตโนมัติ ผู้ใช้ต้องอนุมัติรายตัว (PRD §9.3)
     flags_needing_approval: list[str] = Field(default_factory=list)
+    # ไฟล์ runtime ภายนอกที่ผู้ใช้อนุมัติแล้วเท่านั้น — harden ย้ายทุกตัวไปรออนุมัติก่อนเสมอ
+    runtime_assets: list[RuntimeAsset] = Field(default_factory=list)
+    assets_needing_approval: list[RuntimeAsset] = Field(default_factory=list)
     generator: str = ""  # "llm:<provider>/<model>" หรือ "rule-based"
 
 

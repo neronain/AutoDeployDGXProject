@@ -222,3 +222,51 @@ def test_session_log_written(isolated_config):
     payload = json.loads(logs[0].read_text(encoding="utf-8"))
     assert payload["outcome"] == "ok"
     assert payload["plan"]["generator"] == "rule-based"
+
+
+def _asset(**kw):
+    from lmds.brain.plan_schema import RuntimeAsset
+
+    base = dict(filename="parser.py", url="https://raw.githubusercontent.com/o/r/main/parser.py")
+    base.update(kw)
+    return RuntimeAsset(**base)
+
+
+def test_runtime_assets_always_need_approval(isolated_config):
+    """LLM ใส่ runtime_assets มาตรง ๆ ก็ห้ามเข้า bundle เอง — ต้องรออนุมัติเสมอ"""
+    report = qwen_report()
+    plan = DeploymentPlan.model_validate(valid_plan_dict())
+    plan.runtime_assets = [_asset()]
+
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert hardened.runtime_assets == []
+    assert [a.filename for a in hardened.assets_needing_approval] == ["parser.py"]
+
+
+def test_runtime_asset_from_bad_source_dropped(isolated_config):
+    """URL นอก allowlist / ชื่อไฟล์มี path / ไม่ใช่ https → ทิ้งทั้งหมด"""
+    report = qwen_report()
+    plan = DeploymentPlan.model_validate(valid_plan_dict())
+    plan.assets_needing_approval = [
+        _asset(filename="evil.py", url="https://evil.example.com/evil.py"),
+        _asset(filename="../escape.py", url="https://raw.githubusercontent.com/o/r/main/x.py"),
+        _asset(filename="plain.py", url="http://raw.githubusercontent.com/o/r/main/x.py"),
+    ]
+
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert hardened.assets_needing_approval == []
+    assert hardened.runtime_assets == []
+    assert sum("ตัดไฟล์ runtime" in w for w in hardened.warnings) == 3
+
+
+def test_apply_asset_approvals_moves_only_approved(isolated_config):
+    from lmds.brain import apply_asset_approvals
+
+    report = qwen_report()
+    plan = DeploymentPlan.model_validate(valid_plan_dict())
+    plan.assets_needing_approval = [_asset(filename="a.py"), _asset(filename="b.py")]
+    plan = harden_plan(plan, report, spark_fit(report))
+
+    apply_asset_approvals(plan, ["a.py"])
+    assert [a.filename for a in plan.runtime_assets] == ["a.py"]
+    assert [a.filename for a in plan.assets_needing_approval] == ["b.py"]

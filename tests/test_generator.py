@@ -313,3 +313,60 @@ def test_gated_repo_noted_in_readme(isolated_config, tmp_path):
     readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
     assert "HF_TOKEN" in readme
     assert "gated" in readme
+
+
+def test_verify_files_checks_shards_and_sizes(tmp_path):
+    """download ที่ขาด shard ต้องถูกจับตอน verify-files ไม่ใช่ไปพังตอน start"""
+    from lmds.inspector.report import ShardFile
+
+    report = safetensors_report(
+        shard_count=2,
+        safetensor_shards=[
+            ShardFile(filename="model-00001-of-00002.safetensors", size_bytes=32_500_000_000),
+            ShardFile(filename="model-00002-of-00002.safetensors", size_bytes=32_400_000_000),
+        ],
+        tokenizer_files=["tokenizer.json", "tokenizer_config.json"],
+    )
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "SHARD_FILES=(" in script
+    assert "model-00001-of-00002.safetensors" in script
+    assert "32500000000" in script
+    assert "ขนาดไม่ตรง" in script
+    assert "tokenizer.json" in script  # tokenizer ที่ repo มีจริง ต้องอยู่ในไฟล์จำเป็นด้วย
+
+
+def test_runtime_asset_fetched_and_mounted(tmp_path):
+    """ไฟล์ runtime ที่อนุมัติแล้วต้องมี prepare-runtime + bind-mount + ตรวจ sha"""
+    from lmds.brain.plan_schema import RuntimeAsset
+
+    report = safetensors_report()
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None)
+    plan.runtime_assets = [
+        RuntimeAsset(
+            filename="super_v3_reasoning_parser.py",
+            url="https://raw.githubusercontent.com/example/repo/main/super_v3_reasoning_parser.py",
+            sha256="a" * 64,
+            purpose="reasoning parser plugin",
+        )
+    ]
+    bundle = render_bundle(plan, report, fit, tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "prepare_runtime()" in script
+    assert "prepare-runtime) prepare_runtime" in script
+    assert "super_v3_reasoning_parser.py" in script
+    assert "${PLUGIN_MOUNT}:ro" in script
+    assert "a" * 64 in script
+    assert not audit_script(script)
+
+
+def test_no_runtime_assets_keeps_script_clean(tmp_path):
+    """bundle ปกติต้องไม่มีโค้ด plugin ปนเข้ามา"""
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "PLUGIN_DIR" not in script
+    assert "prepare-runtime" not in script

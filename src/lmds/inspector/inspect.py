@@ -11,11 +11,13 @@ import re
 
 from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
-from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport
+from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport, ShardFile
 
 _SPLIT_GGUF_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 
 _SAFETENSORS_INDEX = "model.safetensors.index.json"
+# ไฟล์ tokenizer ที่ vLLM ต้องใช้จริงตอน serve — ถ้า repo มี ต้องโหลดมาครบด้วย
+_TOKENIZER_FILES = {"tokenizer.json", "tokenizer_config.json", "tokenizer.model", "vocab.json", "merges.txt"}
 
 
 def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
@@ -41,6 +43,10 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         trust_remote_code_files=sorted(
             name for name, _, _ in files
             if name.endswith(".py") and name.startswith(("configuration_", "modeling_", "processing_", "tokenization_"))
+        ),
+        tokenizer_files=sorted(
+            name for name, _, _ in files
+            if name in _TOKENIZER_FILES
         ),
     )
     if report.trust_remote_code_files:
@@ -118,6 +124,9 @@ def _inspect_safetensors(
     revision: str,
     safetensor_files: list[tuple[str, int | None]],
 ) -> None:
+    report.safetensor_shards = [
+        ShardFile(filename=name, size_bytes=size) for name, size in sorted(safetensor_files)
+    ]
     sizes = [size for _, size in safetensor_files if size is not None]
     if len(sizes) == len(safetensor_files):
         report.weight_bytes = sum(sizes)
