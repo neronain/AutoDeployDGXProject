@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: ติดตั้ง package + dev deps
+        run: pip install -e '.[dev]'
+
+      - name: รัน unit tests
+        run: pytest
+
+  shell:
+    name: bash syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # controller ที่ generate ออกมาถูกตรวจด้วย quality gates ในเทสอยู่แล้ว
+      # ด่านนี้ตรวจสคริปต์ที่อยู่ในรีโปตรง ๆ (installer)
+      - name: bash -n สคริปต์ในรีโป
+        run: |
+          shopt -s nullglob
+          for script in *.sh scripts/*.sh; do
+            echo "checking ${script}"
+            bash -n "${script}"
+          done
+
+      - name: shellcheck (ไม่บล็อก merge)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shopt -s nullglob
+          for script in *.sh scripts/*.sh; do
+            shellcheck -S warning "${script}" || true
+          done
+
+  secret-scan:
+    name: secret leak scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # กฎเดียวกับ gate `secret-scan` ของ bundle — กันคีย์จริงหลุดเข้ารีโปเอง
+      # ข้าม tests/ เพราะมี key ปลอมที่จงใจใส่ไว้ให้หน้าตาเหมือนของจริง
+      - name: หา pattern ของ API key ที่ commit เข้ามา
+        run: |
+          if grep -rInE '(sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|hf_[A-Za-z0-9]{30,}|ghp_[A-Za-z0-9]{30,})' \
+              --exclude-dir=.git --exclude-dir=.github --exclude-dir=tests . ; then
+            echo "::error::พบ pattern ที่อาจเป็น secret จริงในรีโป"
+            exit 1
+          fi
+          echo "ไม่พบ secret"

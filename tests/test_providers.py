@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+from lmds.brain import providers
 from lmds.brain import (
     GeminiProvider,
     MiniMaxProvider,
@@ -52,8 +53,19 @@ def test_openai_compat_custom_base_url():
     assert seen["url"] == "http://10.100.152.1:8000/v1/chat/completions"
 
 
-def test_openai_compat_http_error_raises():
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """เก็บเวลาที่ควรจะ sleep ไว้ตรวจ แต่ไม่รอจริงตอนเทส"""
+    slept: list[float] = []
+    monkeypatch.setattr(providers, "_backoff_sleep", slept.append)
+    return slept
+
+
+def test_openai_compat_http_error_raises_after_retries(no_sleep):
+    calls = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
         return httpx.Response(429, text="rate limited")
 
     provider = OpenAiCompatProvider(
@@ -62,6 +74,74 @@ def test_openai_compat_http_error_raises():
     )
     with pytest.raises(ProviderError, match="429"):
         provider.complete_json("s", "u")
+    assert len(calls) == providers.MAX_HTTP_ATTEMPTS  # 429 = ชั่วคราว → ต้อง retry ก่อนยอมแพ้
+    assert no_sleep == [2.0, 4.0]                     # exponential backoff
+
+
+def test_retry_recovers_from_transient_503(no_sleep):
+    """503 ครั้งเดียวไม่ควรทำให้ทั้ง flow ตกไป rule-based"""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(503, text="upstream busy")
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}]})
+
+    provider = OpenAiCompatProvider(
+        "openai", "gpt-4.1", "sk-x123456789012",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert provider.complete_json("s", "u") == '{"ok": 1}'
+    assert len(calls) == 2
+
+
+def test_retry_honours_retry_after_header(no_sleep):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="slow down", headers={"Retry-After": "7"})
+
+    provider = OpenAiCompatProvider(
+        "openai", "gpt-4.1", "sk-x123456789012",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ProviderError):
+        provider.complete_json("s", "u")
+    assert no_sleep == [7.0, 7.0]
+
+
+def test_no_retry_on_permanent_error(no_sleep):
+    """401 = key ผิด — retry ไปก็เหมือนเดิม ต้องเด้งทันที"""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(401, text="invalid api key")
+
+    provider = OpenAiCompatProvider(
+        "openai", "gpt-4.1", "sk-bad12345678901",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ProviderError, match="401"):
+        provider.complete_json("s", "u")
+    assert len(calls) == 1
+    assert no_sleep == []
+
+
+def test_retry_on_transport_error_then_raises(no_sleep):
+    """เน็ตหลุดทุกครั้ง → ProviderError ที่บอกว่าลองไปกี่ครั้ง"""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        raise httpx.ConnectError("connection refused")
+
+    provider = OpenAiCompatProvider(
+        "openai-compat", "qwen3", None, base_url="http://10.0.0.9:8000/v1",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ProviderError, match="เชื่อมต่อไม่ได้"):
+        provider.complete_json("s", "u")
+    assert len(calls) == providers.MAX_HTTP_ATTEMPTS
 
 
 def test_gemini_request_shape_and_parse():

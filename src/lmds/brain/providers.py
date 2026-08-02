@@ -6,6 +6,7 @@ Gemini ใช้ REST ของ Google โดยตรง — Anthropic เต�
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 
 import httpx
@@ -16,9 +17,67 @@ OPENAI_BASE = "https://api.openai.com/v1"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MINIMAX_BASE = "https://api.minimax.io/v1"
 
+# error ชั่วคราว: rate limit / ฝั่ง provider ล่มชั่วคราว — retry คุ้ม
+# ไม่รวม 400/401/403/404 (ผิดที่ config ของเรา retry ไปก็เหมือนเดิม)
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+MAX_HTTP_ATTEMPTS = 3
+BACKOFF_BASE_SECONDS = 2.0
+MAX_RETRY_AFTER_SECONDS = 30.0
+
 
 class ProviderError(Exception):
     pass
+
+
+def _backoff_sleep(seconds: float) -> None:
+    """แยกออกมาเป็นฟังก์ชันเพื่อให้เทส monkeypatch ได้โดยไม่ต้องรอจริง"""
+    time.sleep(seconds)
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+    """เคารพ Retry-After ถ้า provider บอกมา ไม่งั้น exponential backoff"""
+    if response is not None:
+        retry_after = (response.headers.get("Retry-After") or "").strip()
+        if retry_after.isdigit():
+            return min(float(retry_after), MAX_RETRY_AFTER_SECONDS)
+    return BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+
+
+def _post_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict,
+    provider_name: str,
+    max_attempts: int = MAX_HTTP_ATTEMPTS,
+) -> httpx.Response:
+    """POST พร้อม backoff สำหรับ error ชั่วคราว
+
+    เน็ตกระตุกหรือโดน 429 ครั้งเดียวไม่ควรทำให้ทั้ง flow ตกไป rule-based —
+    คืน response ตัวสุดท้ายให้ผู้เรียกตัดสิน (ผู้เรียกเป็นคนแปลง status เป็น ProviderError)
+    """
+    last_transport_error: str | None = None
+    for attempt in range(1, max_attempts + 1):
+        response: httpx.Response | None = None
+        try:
+            response = client.post(url, headers=headers, json=payload)
+        except httpx.TransportError as exc:
+            last_transport_error = f"{type(exc).__name__}: {exc}"
+        else:
+            if response.status_code not in RETRYABLE_STATUSES:
+                return response
+            last_transport_error = None
+
+        if attempt == max_attempts:
+            break
+        _backoff_sleep(_retry_delay(response, attempt))
+
+    if response is not None:
+        return response
+    raise ProviderError(
+        f"{provider_name} เชื่อมต่อไม่ได้หลังลอง {max_attempts} ครั้ง — {last_transport_error}"
+    )
 
 
 class MissingKey(ProviderError):
@@ -52,10 +111,11 @@ class OpenAiCompatProvider(LlmProvider):
 
     def complete_json(self, system: str, user: str) -> str:
         headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
-        resp = self._client.post(
+        resp = _post_with_retry(
+            self._client,
             f"{self._base}/chat/completions",
             headers=headers,
-            json={
+            payload={
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system},
@@ -64,6 +124,7 @@ class OpenAiCompatProvider(LlmProvider):
                 "temperature": 0.2,
                 "response_format": {"type": "json_object"},
             },
+            provider_name=self.name,
         )
         if resp.status_code != 200:
             raise ProviderError(f"{self.name} ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
@@ -81,14 +142,16 @@ class GeminiProvider(LlmProvider):
         self._client = client or httpx.Client(timeout=120.0)
 
     def complete_json(self, system: str, user: str) -> str:
-        resp = self._client.post(
+        resp = _post_with_retry(
+            self._client,
             f"{GEMINI_BASE}/models/{self.model}:generateContent",
             headers={"x-goog-api-key": self._key},
-            json={
+            payload={
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
                 "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
             },
+            provider_name=self.name,
         )
         if resp.status_code != 200:
             raise ProviderError(f"gemini ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
@@ -110,10 +173,11 @@ class MiniMaxProvider(LlmProvider):
         self._client = client or httpx.Client(timeout=120.0)
 
     def complete_json(self, system: str, user: str) -> str:
-        resp = self._client.post(
+        resp = _post_with_retry(
+            self._client,
             f"{self._base}/text/chatcompletion_v2",
             headers={"Authorization": f"Bearer {self._key}"},
-            json={
+            payload={
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system},
@@ -121,6 +185,7 @@ class MiniMaxProvider(LlmProvider):
                 ],
                 "temperature": 0.2,
             },
+            provider_name=self.name,
         )
         if resp.status_code != 200:
             raise ProviderError(f"minimax ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
