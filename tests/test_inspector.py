@@ -73,19 +73,21 @@ def test_large_moe_index_over_small_file_cap():
 
     เคสจริง: w341e/Qwen3.5-122B-A10B-abliterated-NVFP4 เคยพังด้วย BudgetExceeded
     """
+    # NVFP4 มี weight + weight_scale + input_scale ต่อ projection → entry บานเป็นแสน
     weight_map = {
-        f"model.layers.{layer}.mlp.experts.{expert}.w{proj}.weight_scale": (
+        f"model.layers.{layer}.mlp.experts.{expert}.w{proj}.{kind}": (
             f"model-{layer % 9 + 1:05d}-of-00009.safetensors"
         )
         for layer in range(64)
         for expert in range(128)
         for proj in (1, 2, 3)
+        for kind in ("weight", "weight_scale", "input_scale")
     }
-    index = {"metadata": {"total_size": 61_000_000_000}, "weight_map": weight_map}
-    assert len(json.dumps(index).encode()) > 4 * 1024 * 1024  # ต้องใหญ่กว่าเพดานเดิมจริง
+    index_json = json.dumps({"metadata": {"total_size": 61_000_000_000}, "weight_map": weight_map})
+    assert len(index_json.encode()) > 4 * 1024 * 1024  # ต้องใหญ่กว่าเพดานเดิมจริง
 
     files = {
-        "model.safetensors.index.json": json.dumps(index),
+        "model.safetensors.index.json": index_json,
         "config.json": json.dumps({"architectures": ["Qwen3MoeForCausalLM"], "model_type": "qwen3_moe"}),
     }
 
@@ -102,8 +104,9 @@ def test_large_moe_index_over_small_file_cap():
 
     report = inspect_model(parse_source("w341e/Qwen3.5-122B-A10B-abliterated-NVFP4"), make_client(handler))
     assert report.artifact_type is ArtifactType.SAFETENSORS
-    assert report.weight_bytes == 61_000_000_000
+    assert report.weight_bytes == 9 * 6_800_000_000  # จากขนาดไฟล์จริงที่ Hub รายงาน
     assert report.shard_count == 9
+    assert report.architecture == "Qwen3MoeForCausalLM"
 
 
 def test_oversized_metadata_still_rejected():
