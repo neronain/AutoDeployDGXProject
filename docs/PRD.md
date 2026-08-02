@@ -69,7 +69,7 @@
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
 | FR-1.1 | รับ URL/ID จาก Hugging Face (`org/model`, ลิงก์เต็ม, ลิงก์ไฟล์ GGUF ตรง) | P0 |
-| FR-1.2 | รับลิงก์ Ollama (`ollama.com/library/<model>:<tag>`) — resolve ผ่าน registry manifest API เพื่อหา GGUF digest/ขนาด | P0 |
+| FR-1.2 | รับลิงก์ Ollama (`ollama.com/library/<model>:<tag>`) — resolve ผ่าน registry manifest API เพื่อหา GGUF digest/ขนาด — **❌ ยังไม่ทำ (เลื่อนไปเฟส 2; resolver แจ้ง UnsupportedSource พร้อมแนะทางเลี่ยง)** | P0→P1 |
 | FR-1.3 | รับลิงก์ NVIDIA NGC และ GitHub release | P1 |
 | FR-1.4 | ตรวจชนิด artifact อัตโนมัติ: safetensors (+index), GGUF (+mmproj), quant config (NVFP4/FP8/AWQ/GPTQ) | P0 |
 | FR-1.5 | ตรวจ gated/private repo (HTTP 401/403) → ถาม HF token แบบ optional; ไม่ใส่ → แจ้งข้อจำกัดและดำเนินการเท่าที่ metadata สาธารณะเปิดให้ | P0 |
@@ -78,7 +78,7 @@
 ### FR-2 Hardware Profiler
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
-| FR-2.1 | ตรวจเครื่องเป้าหมายอัตโนมัติ: arch (ARM64/x86_64), GPU (nvidia-smi: รุ่น, VRAM, compute capability), RAM, disk ว่าง, Docker + NVIDIA container toolkit | P0 |
+| FR-2.1 | ตรวจเครื่องเป้าหมายอัตโนมัติ: arch (ARM64/x86_64), GPU (nvidia-smi: รุ่น, VRAM, compute capability), RAM, Docker + NVIDIA container toolkit — **⚠️ ส่วน "disk ว่าง" ยังไม่ทำ** | P0 |
 | FR-2.2 | จำแนก hardware profile: `dgx-spark-single` (unified 128GB, SM121), `dgx-spark-stacked`, `rtx-single`, `rtx-multi-gpu`, `remote` (ป้อนสเปกมือ/ผ่าน SSH probe) | P0 |
 | FR-2.3 | โหมด remote: สร้าง bundle ให้เครื่องอื่นโดยระบุสเปกเอง หรือ probe ผ่าน SSH | P1 |
 
@@ -93,11 +93,11 @@
 ### FR-4 LLM Orchestrator ("สมอง")
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
-| FR-4.1 | Provider abstraction: OpenAI, Gemini, Anthropic, OpenAI-compatible URL (ใช้โมเดล local เป็นสมองได้) — เลือก + สลับได้ | P0 |
+| FR-4.1 | Provider abstraction: OpenAI ✅, Gemini ✅, MiniMax ✅, OpenAI-compatible URL ✅ (ใช้โมเดล local เป็นสมองได้) — เลือก + สลับได้ · **Anthropic ❌ ยังไม่ทำ (เฟส 2)** | P0 |
 | FR-4.2 | LLM ใช้ใน 3 งานเท่านั้น: (a) สรุป/สกัดข้อเท็จจริงจาก model card + configs (b) เลือกค่าใน **Deployment Plan (JSON schema ตายตัว, validate ด้วย schema ก่อนใช้)** (c) เขียนเนื้อหา README/คำอธิบาย | P0 |
 | FR-4.3 | ทุก fact ที่ LLM สกัด ต้อง tag ที่มา: `verified` (จากไฟล์จริง) / `inferred` / `unverified` — ตาม operating principle ข้อ 4 ของ SKILL.md | P0 |
 | FR-4.4 | มี fallback แบบ degraded: ถ้าไม่มี API key เลย ระบบยังทำงานได้กับโมเดลที่เข้า rule-based matrix ได้ (โมเดลตระกูลที่รู้จัก) โดยไม่มีคำอธิบาย/การวิเคราะห์เชิงลึก | P1 |
-| FR-4.5 | แสดงประมาณการ token usage/ค่าใช้จ่ายต่อการ generate หนึ่งครั้ง | P2 |
+| FR-4.5 | แสดงประมาณการ token usage/ค่าใช้จ่ายต่อการ generate หนึ่งครั้ง — **❌ ยังไม่ทำ** | P2 |
 
 ### FR-5 Script Generator
 | ID | ข้อกำหนด | Priority |

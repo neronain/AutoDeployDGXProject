@@ -2,16 +2,18 @@
 
 > ⚡ สร้างและดูแลโดย **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
 
-โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล** (Hugging Face / Ollama / NGC / URL ตรง) แล้วใช้ **LLM API** (OpenAI, Gemini, Claude หรือ OpenAI-compatible endpoint) เป็นสมองในการวิเคราะห์และ**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
+โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล Hugging Face** (repo, ลิงก์ไฟล์ `.gguf` ตรง) แล้วใช้ **LLM API** (OpenAI, Gemini, MiniMax หรือ OpenAI-compatible endpoint — รวมถึงโมเดล local ของคุณเอง) เป็นสมองในการวิเคราะห์และ**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
 
 - **NVIDIA DGX Spark** — เครื่องเดี่ยว หรือ stacked หลายเครื่อง
 - **Ubuntu + RTX GPU** — local AI server ทั่วไป (x86_64)
 
 สืบทอดมาตรฐานจาก [dgx-spark-all-controllers v3.0.0](https://github.com/neronain/dgx-spark-all-controllers) และ skill pack `dgx-spark-model-deployer-team-pack-v3.0.0` ซึ่งมี controller ที่รันจริงแล้วกว่า 12 โมเดล
 
+> **แหล่งโมเดลที่รองรับตอนนี้: Hugging Face เท่านั้น** — ลิงก์ Ollama (`ollama.com/...`) และ NVIDIA NGC อยู่ใน roadmap เฟส 2 (ใส่แล้วระบบจะแจ้งว่ายังไม่รองรับ พร้อมแนะให้ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน) · provider `anthropic` ตั้งค่าได้แล้วแต่ adapter ยังอยู่ในเฟส 2
+
 ## สถานะโปรเจกต์
 
-🟢 **เฟส 1 — CLI MVP: โค้ดครบทุกคำสั่งแล้ว (M1–M7a)** — เหลือ hardware validation บนเครื่องจริง (M7b)
+🟢 **เฟส 1 — CLI MVP: โค้ดครบทุกคำสั่งแล้ว (M1–M7a) + stacked multi-node (M8)** — เหลือ hardware validation บนเครื่องจริงให้ครบทุกโปรไฟล์ (M7b) · ดู [ROADMAP.md](docs/ROADMAP.md)
 
 ## 📖 เริ่มที่นี่
 
@@ -95,7 +97,17 @@ fallback หยุดโมเดลค้างให้ได้ (kill pid / d
 - Python 3.10+
 - LLM provider อย่างน้อย 1 ทาง: OpenAI / Gemini / MiniMax / OpenAI-compatible (Ollama, vLLM local — ไม่ต้องมี key) — หรือไม่มีเลยก็ใช้ `--no-llm` (rule-based mode)
 - Docker + NVIDIA Container Toolkit บนเครื่องเป้าหมาย (สำหรับรัน bundle ที่ generate)
+- ดิสก์ว่างบนเครื่องเป้าหมาย ≈ *(ขนาดโมเดล × 1.2) + 25 GB* — runtime image ของ vLLM อย่างเดียว ~10–20 GB ([INSTALL §1.6](docs/INSTALL.md))
+
+## สำหรับผู้พัฒนา
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e '.[dev]'
+pytest
+```
 
 ## License
 
-TBD — ดู Decision Log ใน [PRD §13](docs/PRD.md)
+**ยังไม่สรุป** — `pyproject.toml` ระบุ `Proprietary` ไว้ชั่วคราว และยังไม่มีไฟล์ `LICENSE` ในรีโป
+ต้องตัดสินใจก่อนส่งมอบลูกค้ารายแรก · ดู Decision Log ใน [PRD §13](docs/PRD.md)

@@ -125,6 +125,7 @@ cd bundles/qwen3-0-6b-gguf
 |---|---|
 | `download` | ดาวน์โหลดโมเดล (pin revision, resume ได้) |
 | `verify-files` | ตรวจความครบถ้วน/ความถูกต้องของไฟล์ |
+| `prepare-runtime` | เตรียม engine — **จำเป็นเฉพาะบางกรณี ดูด้านล่าง** |
 | `start` / `stop` / `restart` | เปิด-ปิดเซิร์ฟเวอร์ (ตรวจ GPU + ไฟล์ก่อน start เสมอ) |
 | `status` | สถานะ container + API health |
 | `logs [N]` | log ล่าสุด N บรรทัด (default 300) |
@@ -132,16 +133,47 @@ cd bundles/qwen3-0-6b-gguf
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
 
+> **`prepare-runtime` ต้องรันเมื่อไหร่?** ตอน deploy เสร็จ ระบบจะพิมพ์ลำดับคำสั่งที่ถูกต้องของ bundle นั้นให้เสมอ — ทำตามนั้นได้เลย
+> - **GGUF บน DGX Spark (ARM64)** — จำเป็น ✅ เพราะไม่มี Docker image ทางการ ต้อง build llama.cpp จาก source (ครั้งแรกครั้งเดียว ~10–30 นาที, ขอ sudo ติดตั้ง build deps)
+> - **stacked (2 เครื่อง)** — จำเป็น ✅ เพื่อ pull + ล็อค image-ID ให้ตรงกันทั้งสอง node
+> - **GGUF/safetensors บน x86_64 (RTX)** — ไม่ต้อง ใช้ image ทางการได้เลย
+>
+> รายละเอียดว่าเกิดอะไรขึ้นเบื้องหลัง: [INSTALL.md §4](INSTALL.md)
+
 ### options ที่ทุก controller รองรับ (ใส่ท้ายคำสั่งใดก็ได้)
 
 ```bash
 ./xxx-single.sh start --port 8001                  # เปลี่ยน port
 ./xxx-single.sh start --context 16384              # ลด context (ประหยัด memory)
+./xxx-single.sh start --bind 127.0.0.1             # ให้เข้าถึงได้เฉพาะในเครื่อง (default คือ 0.0.0.0)
 ./xxx-single.sh start --advertise-ip 10.0.0.5      # IP ที่ประกาศให้ client (ไม่ใช่ bind)
+./xxx-single.sh start --interface eth1             # เลือก interface ที่ใช้ประกาศ IP
 ./xxx-single.sh client-config --client-output 4096 # ปรับ token budget
 ```
 
-หรือใช้ env: `API_PORT=8001 ./xxx-single.sh start`
+### env ที่ควรรู้ (ใส่นำหน้าคำสั่ง หรือ export ไว้ก่อน)
+
+ทุก flag ด้านบนมี env คู่กัน และมีอีกหลายตัวที่ตั้งได้เฉพาะทาง env:
+
+| env | ค่า default | ใช้ทำอะไร |
+|---|---|---|
+| `API_PORT` / `API_HOST` | `8000` / `0.0.0.0` | port และ bind address |
+| `API_KEY` | *(ว่าง)* | บังคับ Bearer token — **ควรตั้งเสมอถ้าเปิดออก network** |
+| `MAX_MODEL_LEN` | ตามแผน | context (เท่ากับ `--context`) |
+| `HF_HOME` | `~/.cache/huggingface` | ที่เก็บ weight ของ **vLLM** — ย้ายลงดิสก์ใหญ่ได้ |
+| `MODEL_DIR` | `~/models/<slug>` | ที่เก็บไฟล์ **GGUF** ของ llama.cpp |
+| `RUNTIME_MODE` | ตามเครื่อง | `docker` หรือ `native` (llama.cpp เท่านั้น) |
+| `HF_TOKEN` | *(ว่าง)* | ใช้ตอน `download` repo gated |
+| `HEALTH_TIMEOUT` | ตามขนาดโมเดล | วินาทีที่รอ `/health` ตอน start |
+| `GPU_MEMORY_UTILIZATION` | ตามแผน | สัดส่วน VRAM ที่ vLLM จองได้ (ลดถ้าแชร์ GPU กับงานอื่น) |
+| `MAX_NUM_SEQS` | ตามแผน | จำนวน request พร้อมกันสูงสุด |
+| `CONTAINER_NAME` | `lmds-<slug>` | ชื่อ container |
+| `RUN_DIR` | `~/.lmds/run/<slug>` | ทะเบียน + log ที่ `lmds ps`/`lmds logs` อ่าน |
+
+```bash
+API_PORT=8001 API_KEY=secret123 ./xxx-single.sh start
+HF_HOME=/data/hf-cache ./xxx-single.sh download     # ต้องใส่ตอน start ด้วยเสมอ
+```
 
 ---
 
@@ -214,14 +246,32 @@ cd bundles/<slug>
 
 ### 3.4 Target presets ที่มีให้เลือก
 
+**ทดสอบบนเครื่องจริงแล้ว** (✅ tested — ใช้สูตรคำนวณปกติ):
+
 | preset | เครื่อง | หน่วยความจำ |
 |---|---|---|
 | `dgx-spark-single` | DGX Spark 1 เครื่อง | unified 128GB |
-| `dgx-spark-stacked` | DGX Spark 2 เครื่อง | unified 256GB (ประมาณ) — สร้าง controller multi-node (ดู 3.3b) |
-| `rtx-pro-4000` / `rtx-pro-4000-dual` | RTX PRO 4000 Blackwell ×1/×2 | 24GB / 48GB |
+| `dgx-spark-stacked` | DGX Spark 2 เครื่อง | unified 128GB × 2 — สร้าง controller multi-node (ดู 3.3b) |
+| `rtx-pro-4000` / `rtx-pro-4000-dual` | RTX PRO 4000 Blackwell ×1/×2 | 24GB / 24GB×2 |
 | `rtx-4070-super` / `rtx-4070-ti-super` | RTX 4070 Super / Ti Super | 12GB / 16GB |
-| `rtx-4090` / `rtx-5090` | (ยังไม่ tested — โหมด conservative) | 24GB / 32GB |
-| *(ไม่ระบุ)* | ใช้เครื่องที่รันคำสั่งอยู่ | ตรวจอัตโนมัติ |
+
+**ยังไม่ได้ทดสอบจริง** (ระบบลด budget ให้อัตโนมัติแบบ conservative):
+
+| preset | VRAM | | preset | VRAM |
+|---|---|---|---|---|
+| `rtx-5090` | 32GB | | `rtx-4090` | 24GB |
+| `rtx-5080` | 16GB | | `rtx-4080-super` / `rtx-4080` | 16GB |
+| `rtx-5070-ti` | 16GB | | `rtx-4070-ti` | 12GB |
+| `rtx-5070` | 12GB | | `rtx-4060-ti` | 16GB |
+| `rtx-5060-ti` | 16GB | | `rtx-3090-ti` / `rtx-3090` | 24GB |
+| | | | `rtx-3080-ti` / `rtx-3080` | 12GB / 10GB |
+| | | | `rtx-3060` | 12GB |
+
+| preset | เครื่อง |
+|---|---|
+| *(ไม่ระบุ `--target`)* | ใช้เครื่องที่รันคำสั่งอยู่ — ตรวจอัตโนมัติด้วย `lmds hardware` |
+
+> ระบุได้หลาย target พร้อมกันเฉพาะกับ `lmds inspect` (เทียบให้เห็นภาพ) ส่วน `deploy`/`generate` รับได้ทีละอัน
 
 ### 3.5 โหมดและ options ของ `lmds deploy`
 
@@ -230,8 +280,13 @@ cd bundles/<slug>
 --yes / -y          # ข้ามขั้นยืนยันทั้งหมด (สำหรับ script/CI) — flag ค้างอนุมัติจะไม่ถูกใส่
 --output DIR        # เปลี่ยนที่เก็บ bundle (default: ./bundles)
 --revision SHA      # ล็อค revision เอง (default: ล่าสุด ณ ตอนนั้น แล้ว pin ให้)
+--target PRESET     # เครื่องเป้าหมาย (ดู 3.4) — ว่าง = เครื่องที่รันคำสั่งอยู่
 --concurrency N     # จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1)
 ```
+
+> **`--concurrency` มีผลกับ memory โดยตรง** — KV cache โตตามจำนวน request ที่รันพร้อมกัน
+> ใส่ `--concurrency 4` แปลว่า "กันหน่วยความจำเผื่อ 4 คนใช้พร้อมกัน" ผลคือ context ที่แนะนำจะลดลง
+> ตั้งให้ตรงกับการใช้งานจริง: เดโม่/คนเดียว = 1 · ทีมเล็ก = 2–4 · ตั้งสูงเกินจริงจะได้ context สั้นโดยไม่จำเป็น
 
 ### 3.6 ขั้นยืนยัน — จุดที่ต้องอ่านก่อนกด
 
@@ -288,13 +343,27 @@ lmds disable gemma-4-26b-a4b-it-gguf         # ยกเลิก autostart
 ## 5. คำสั่งอื่นที่ควรรู้
 
 ```bash
-lmds plan Qwen/Qwen3-32B --target dgx-spark-single   # ดูแผนอย่างเดียว ไม่สร้างไฟล์ (มี --json)
+lmds plan Qwen/Qwen3-32B --target dgx-spark-single   # ดูแผนอย่างเดียว ไม่สร้างไฟล์
+lmds plan Qwen/Qwen3-32B --json                      # แผนเป็น JSON (สำหรับ script)
+lmds inspect Qwen/Qwen3-32B --json                   # ผลวิเคราะห์เป็น JSON
 lmds generate ...                                    # เหมือน deploy แต่ไม่มีขั้นยืนยัน
 lmds validate bundles/qwen3-32b                      # ตรวจ bundle ย้อนหลัง (เช็คว่าไม่มีใครแก้ไฟล์)
 lmds validate bundles/qwen3-32b --fix                # regenerate checksum หลังตั้งใจแก้ไฟล์เอง
-lmds hardware                                        # ตรวจเครื่อง
+lmds hardware                                        # ตรวจเครื่อง (ไม่รวมพื้นที่ดิสก์ — เช็คเองด้วย df -h ~)
 lmds config show                                     # ดู config (key ถูก mask)
+lmds config defaults                                 # ดู default model ของแต่ละ provider
 ```
+
+ตั้ง key แบบไม่ต้องพิมพ์มือ (สำหรับ script/automation):
+
+```bash
+echo "$MY_KEY" | lmds config set-key openai --stdin
+echo "$HF_TOKEN" | lmds config set-hf-token --stdin
+```
+
+**exit code ที่ใช้เช็คใน script**: `0` สำเร็จ · `1` input ผิด/ยกเลิก · `2` ไม่ผ่าน quality gates · `3` โมเดลไม่ fit · `4` ต้องการ token/สิทธิ์ · `5` ปัญหา provider
+
+`lmds` พิมพ์ banner ออก stderr และเงียบเองเมื่อถูก pipe — ปิดถาวรด้วย `export LMDS_NO_BANNER=1`
 
 ## 6. เอา bundle ไปใช้เครื่องอื่น
 
@@ -327,7 +396,13 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | port ชน | มี service อื่นใช้ :8000 | `--port 8001` หรือหยุด service เดิม (`docker ps` ดูว่าตัวไหน) |
 | `permission denied ... docker.sock` | user ไม่อยู่ใน group docker | INSTALL.md ส่วน 1.3 + logout/login |
 | `HTTP 429 ... quota` จาก provider | โควตา LLM หมด | ระบบสลับ rule-based ให้อัตโนมัติ — งานเดินต่อได้; ระยะยาว: เติมโควตา หรือสลับไปใช้ Local AI (`set-provider openai-compat`) |
-| อยากใช้ Ollama/vLLM local เป็นสมอง | — | `lmds config set-provider openai-compat --base-url http://<ip>:11434/v1 --model gpt-oss:20b` (Ollama) หรือ `--base-url http://<ip>:8000/v1` (vLLM) — ไม่มี key ก็ใช้ได้ |
+| อยากใช้ Ollama/vLLM local เป็นสมอง | — | `lmds config set-provider openai-compat --base-url http://<ip>:11434/v1 --model gpt-oss:20b` (Ollama) หรือ `--base-url http://<ip>:8000/v1` (vLLM) — ไม่มี key ก็ใช้ได้ · ตั้งไม่ติดดู [INSTALL §3.2.1](INSTALL.md) |
+| `download` พังกลางคัน / `No space left on device` | ดิสก์เต็ม | `df -h ~` · ย้ายที่เก็บ: `HF_HOME=/data/hf-cache` (vLLM) หรือ `MODEL_DIR=/data/models` (GGUF) แล้ว download ใหม่ (resume ต่อได้) |
+| `start` ครั้งแรกค้างนานผิดปกติ ยังไม่ขึ้น log อะไร | Docker กำลัง pull image (~10–20 GB) | ปกติ — ดูความคืบหน้าด้วย `docker pull vllm/vllm-openai:latest` แยกอีก terminal · ดึงล่วงหน้าได้ตาม [INSTALL §1.7](INSTALL.md) |
+| `docker pull` ล้ม / `TLS handshake timeout` | เครื่องอยู่หลัง proxy หรือโดน rate limit | ตั้ง proxy ให้ **docker daemon** ด้วย ไม่ใช่แค่ shell ([INSTALL §1.7](INSTALL.md)) |
+| `prepare-runtime` build ล้มบน DGX Spark | ขาด CUDA Toolkit หรือ CUDA arch ไม่ตรง | ดูบรรทัดเตือน `ไม่พบ nvcc` · override ได้: `CUDA_ARCHITECTURES=121 ./xxx-single.sh prepare-runtime` |
+| `ยังไม่มี llama-server — รัน: ... prepare-runtime` | ข้ามขั้น prepare-runtime บนเครื่อง ARM64 | รัน `./xxx-single.sh prepare-runtime` ก่อน start (ดู §2) |
+| ลิงก์ `ollama.com/...` ใช้ไม่ได้ | ยังรองรับเฉพาะ Hugging Face | ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน (roadmap เฟส 2) |
 
 ### ถ้าแก้เองไม่ได้ — ข้อมูลที่ต้องเก็บส่งทีมพัฒนา
 
@@ -340,7 +415,19 @@ lmds hardware
 
 ## 8. ความปลอดภัย — ข้อควรปฏิบัติ
 
+> ⚠️ **ค่า default คือเปิดออกทั้งวง LAN** — controller bind ที่ `0.0.0.0` และ**ไม่มี** API key
+> ใครก็ตามที่เข้าถึงเครือข่ายเดียวกันยิง `http://<ip>:8000/v1` ได้ทันทีโดยไม่ต้องยืนยันตัวตน
+> เครื่องที่ไม่ได้อยู่ในวงปิดจริง ๆ ให้ทำอย่างน้อยหนึ่งอย่างเสมอ:
+>
+> ```bash
+> ./xxx-single.sh start --bind 127.0.0.1        # ใช้เฉพาะในเครื่อง (ปลอดภัยสุด)
+> API_KEY=$(openssl rand -hex 24) ./xxx-single.sh start   # หรือบังคับ Bearer token
+> ```
+
 - API key / HF token ใส่ผ่าน `lmds config set-key` หรือ env เท่านั้น — **ห้าม**เขียนลงไฟล์/สคริปต์เอง
 - เซิร์ฟเวอร์ที่เปิดใน network ที่มีคนอื่นใช้ร่วม ให้ตั้ง `API_KEY=xxx ./xxx-single.sh start` เสมอ
+- `API_KEY` ถูกส่งเข้า container ผ่าน env — ผู้ที่ใช้ `docker` บนเครื่องเดียวกันอ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก แต่ไม่ควรใช้ key เดียวกับระบบอื่น)
+- **ข้อมูลที่ออกจากเครื่อง**: ตอนวางแผน ระบบส่ง metadata ของโมเดล (model card, `config.json`, รายชื่อไฟล์) ไปยัง LLM provider ที่ตั้งไว้ — ไม่ส่ง weight, ไม่ส่ง key, ไม่ส่งข้อมูลผู้ใช้ · องค์กรที่ห้ามข้อมูลออก ให้ใช้ `--no-llm` หรือตั้ง provider เป็น Local AI ([INSTALL §3.2.1](INSTALL.md))
+- สำเนา prompt/คำตอบของทุกครั้งที่เรียก LLM ถูกเก็บไว้ที่ `~/.config/lmds/sessions/` (redact secret แล้ว) — ลบได้ถ้าไม่ต้องการเก็บประวัติ
 - flag `--trust-remote-code` อนุมัติเฉพาะหลัง review ไฟล์ Python ใน repo แล้วเท่านั้น (รายชื่ออยู่ใน SPECIAL_FILES.md)
 - bundle ที่รับมาจากคนอื่น ตรวจก่อนใช้: `lmds validate <โฟลเดอร์>`

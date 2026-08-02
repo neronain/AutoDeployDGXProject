@@ -3,6 +3,9 @@
 สเปกคำสั่งของ `lmds` (ชื่อ command ชั่วคราว เปลี่ยนภายหลังได้โดยไม่กระทบโครงสร้าง)
 เขียนด้วย Python 3.10+, `typer` + `rich`
 
+> **เอกสารนี้คือ *สเปก* ไม่ใช่คู่มือใช้งาน** — บางส่วนยังไม่ได้ implement และทำเครื่องหมาย ❌ ไว้
+> สิ่งที่ใช้ได้จริงวันนี้ ดู [USAGE.md](USAGE.md) หรือ `lmds --help`
+
 ## ภาพรวมคำสั่ง
 
 ```text
@@ -12,11 +15,13 @@ lmds plan <MODEL_URL_OR_ID>                # สร้าง Deployment Plan (�
                                            #   --no-llm = rule-based, --target <preset>, --json
 lmds generate <MODEL_URL_OR_ID>            # plan → render bundle (controller/README/MODEL_PROFILE/SPECIAL_FILES)
                                            #   --output DIR, --target, --no-llm — validate+zip อยู่ใน M6
-lmds hardware [--probe-ssh user@host]      # ตรวจ/แสดง hardware profile ของเครื่อง
-lmds validate <BUNDLE_DIR>                 # รัน static quality gates กับ bundle ที่มีอยู่
-lmds repair <BUNDLE_DIR> --log <FILE|->    # repair workflow จาก log ความล้มเหลว (เฟส 2 — สำรอง interface ไว้)
-lmds config <subcommand>                   # จัดการ provider, credentials, site profile
+lmds hardware                              # ตรวจ/แสดง hardware profile ของเครื่อง
+lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
+lmds ps | list | start | stop | logs | enable | disable   # fleet: จัดการโมเดลในเครื่อง (ดูหัวข้อ fleet)
+lmds config <subcommand>                   # จัดการ provider, credentials
 lmds version                               # เวอร์ชันโปรแกรม + เวอร์ชัน template registry
+
+lmds repair <BUNDLE_DIR> --log <FILE|->  ❌ # repair workflow จาก log ความล้มเหลว (เฟส 2 — สำรอง interface ไว้)
 ```
 
 ## `lmds deploy`
@@ -30,13 +35,16 @@ Arguments:
 Options:
   --target PROFILE        dgx-spark-single | dgx-spark-stacked | rtx-* | auto (default: auto = ตรวจเครื่องปัจจุบัน)
                           ** dgx-spark-stacked → สร้าง controller แบบ multi-node (worker-first) อัตโนมัติ **
-  --runtime ENGINE        vllm | llamacpp | auto (default: auto — ตาม decision matrix + LLM plan)
   --revision REV          pin revision/commit เอง (default: ล่าสุด ณ เวลา inspect แล้ว pin)
-  --context TOKENS        override context เริ่มต้นที่คำนวณให้
   --output DIR            โฟลเดอร์ output (default: ./bundles/<model-slug>/)
+  --concurrency N         จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1)
   --yes / -y              ข้ามขั้นยืนยันแผน (ใช้ค่า plan ทั้งหมด) — สำหรับ scripting
   --no-llm                degraded mode: rule-based เท่านั้น (โมเดลตระกูลที่รู้จัก)
-  --dry-run               แสดงแผน + รายการไฟล์ที่จะสร้าง โดยไม่เขียนไฟล์
+
+ยังไม่ implement:
+  --runtime ENGINE   ❌  ตอนนี้ engine มาจาก decision matrix เสมอ (GGUF→llama.cpp, safetensors→vLLM)
+  --context TOKENS   ❌  ใช้ขั้นยืนยัน interactive แทน (พิมพ์ค่า context ตอน deploy ถาม)
+  --dry-run          ❌
 ```
 
 ### พฤติกรรมสำคัญ
@@ -67,25 +75,34 @@ Special files: chat_template.jinja, tool parser: hermes
 ## `lmds config`
 
 ```text
-lmds config set-provider <openai|gemini|anthropic|openai-compat> [--base-url URL] [--model NAME]
-lmds config set-key <provider>          # prompt แบบซ่อน input → เก็บ keyring หรือ ~/.config/lmds/credentials (0600)
-lmds config set-hf-token                # เก็บ HF token (optional)
-lmds config show                        # แสดง config ปัจจุบัน (redact ทุก secret)
-lmds config profile edit                # เปิด site profile (~/.config/lmds/profile.yaml — สืบทอด team-profile.yaml เดิม)
+lmds config set-provider <openai|gemini|minimax|anthropic|openai-compat> [--base-url URL] [--model NAME]
+                                        # anthropic: ตั้งค่าได้แต่ adapter ยังไม่ทำ (เฟส 2) — จะ error ตอนใช้จริง
+lmds config set-key <provider> [--stdin]   # prompt แบบซ่อน input → เก็บ keyring หรือ ~/.config/lmds/credentials (0600)
+lmds config set-hf-token [--stdin]      # เก็บ HF token (optional)
+lmds config show                        # แสดง config ปัจจุบัน (redact ทุก secret) + ที่มาของ secret แต่ละตัว
+lmds config defaults                    # แสดง default model ของแต่ละ provider
+lmds config profile edit           ❌   # ยังไม่ implement (มี path ~/.config/lmds/profile.yaml เตรียมไว้แล้ว)
 ```
 
-ลำดับความสำคัญ credentials: CLI flag > env var (`LMDS_<PROVIDER>_API_KEY`, `HF_TOKEN`) > keyring > credentials file
+ลำดับความสำคัญ credentials: env var > keyring > credentials file
+env ที่รองรับ: `LMDS_OPENAI_API_KEY`/`OPENAI_API_KEY`, `LMDS_GEMINI_API_KEY`/`GEMINI_API_KEY`/`GOOGLE_API_KEY`,
+`LMDS_MINIMAX_API_KEY`/`MINIMAX_API_KEY`, `LMDS_ANTHROPIC_API_KEY`/`ANTHROPIC_API_KEY`,
+`LMDS_OPENAI_COMPAT_API_KEY`, `HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`
+
+env อื่นของตัวโปรแกรม: `LMDS_CONFIG_DIR` (ย้าย config dir), `LMDS_NO_BANNER` (ปิด banner),
+`LMDS_INSTALL_DIR`/`LMDS_BIN_DIR` (ใช้ตอนรัน `install.sh`)
 
 ## `lmds hardware`
 
-ตรวจและ cache hardware profile:
+ตรวจและแสดง hardware profile:
 
 ```text
-Arch: x86_64 | GPU: NVIDIA RTX 4090 (24 GB, SM89) ×1 | RAM: 128 GB | Disk ว่าง: 1.2 TB
-Docker: 27.x ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
+Arch: x86_64 | GPU: NVIDIA RTX 4090 (24 GB, SM89) ×1 | RAM: ใช้ไป 12 / 128 GB | IP: 192.168.1.50
+Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 ```
 
-`--probe-ssh user@host` สำหรับตรวจเครื่องเป้าหมายระยะไกล (เฟส 1.5)
+- ❌ **ยังไม่ตรวจพื้นที่ดิสก์** (PRD FR-2.1 กำหนดไว้) — ผู้ใช้ต้องเช็ก `df -h ~` เอง
+- ❌ `--probe-ssh user@host` สำหรับตรวจเครื่องเป้าหมายระยะไกล — ยังไม่ implement (เฟส 1.5)
 
 ## `lmds` fleet (จัดการโมเดลในเครื่อง)
 
@@ -125,21 +142,24 @@ Output: ตาราง pass/fail ต่อ gate + exit code `0/2`
 └── sessions/            # audit log ต่อการ generate (prompt/response/decisions) — redacted
 ```
 
-## โครงสร้าง source (เป้าหมายเฟส 1)
+## โครงสร้าง source (ของจริง ณ ปัจจุบัน)
 
 ```text
 src/lmds/
-├── cli/                 # typer commands
-├── resolver/            # hf.py, ollama.py, direct_url.py
-├── inspector/           # metadata fetch, gguf_header.py, safetensors_index.py
-├── hardware/            # profiler.py, profiles.py
-├── fit/                 # memory model ต่อ hardware class
-├── brain/               # provider adapters, prompts/, plan_schema.py (pydantic)
-├── generator/           # jinja templates/, renderer.py, allowlists.py
-├── validator/           # bash_check.py, audit_rules.py, secret_scan.py
-├── packager/            # bundle.py, zip + sha256
-└── secrets/             # keyring/file/env resolution + redaction filter
-tests/
-├── fixtures/            # metadata snapshots ของโมเดลอ้างอิง + controllers v3.0.0 (regression)
-└── ...
+├── cli/                 # main.py (typer commands ทั้งหมด), banner.py
+├── config/              # settings.py (config.yaml + provider), paths.py
+├── resolver/            # parse.py — HF เท่านั้น (Ollama/NGC โยน UnsupportedSource)
+├── inspector/           # inspect.py, hf_api.py, gguf.py (header ผ่าน HTTP Range), report.py
+├── hardware/            # profiler.py (nvidia-smi/docker), profiles.py (GPU allowlist)
+├── fit/                 # analyzer.py (memory/KV cache), targets.py (target presets)
+├── brain/               # providers.py, orchestrator.py, plan_schema.py, prompts.py,
+│                        #   rulebased.py, allowlists.py (flag/image allowlist)
+├── generator/           # renderer.py + templates/*.j2 (single-vllm, single-llamacpp, stacked-vllm)
+├── validator/           # gates.py — quality gates ทั้ง 8 ด่านรวมอยู่ไฟล์เดียว
+├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
+└── secrets/             # store.py (env/keyring/file), redact.py
+tests/                   # ~22 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/
 ```
+
+> ยังไม่มี: `.github/workflows` (CI), `tests/fixtures/` สำหรับ regression เทียบ controllers v3.0.0,
+> template registry แบบไฟล์ data (image digest ยัง hardcode ในโค้ด)

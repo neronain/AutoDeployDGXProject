@@ -49,5 +49,6 @@
 ## หลักการคุมคุณภาพตลอดทุกเฟส
 
 - ทุก PR ต้องผ่าน: unit tests + regression เทียบ controllers v3.0.0 + secret-leak scan
+  - ⚠️ **ยังไม่มี CI บังคับ** — รีโปยังไม่มี `.github/workflows/` กฎข้อนี้จึงต้องรันมือ (`pytest`) ก่อน push · งานที่ค้าง: workflow รัน pytest (3.10–3.12) + `bash -n` กับ bundle ที่ render ทุก template
 - Template registry แยกเป็น data (อัปเดต image digest/runtime pin ได้โดยไม่ release โปรแกรมใหม่)
 - ห้ามอ้าง `hardware-validated` โดยไม่ได้รันจริง — สถานะ validation ติดไปกับ bundle เสมอ
