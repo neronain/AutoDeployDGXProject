@@ -15,7 +15,7 @@
 | M5 ✅ | Generator + Templates (เสร็จ 2026-07-21) | Jinja2 templates: single-vllm + single-llamacpp ตาม contract v3.0.0 (flags/env ครบ, bind/advertise แยก, pipefail-safe, exact GGUF size+SHA-256 จาก Hub lfs.oid, tensor parallel เมื่อ multi-GPU), README ตาม delivery contract, MODEL_PROFILE.yaml, SPECIAL_FILES.md, `lmds generate` | bash -n + audit rules ผ่านกับ bundle ที่ generate ทุกแบบ, flag ไม่อนุมัติไม่โผล่ในสคริปต์, ไม่มี secret รั่ว — 108 tests; หมายเหตุ: regression เทียบ 12 controllers เดิมยกไปทำตอน M7 คู่กับ hardware validation |
 | M6 ✅ | Validator + Packager (เสร็จ 2026-07-21) | 7 quality gates (bash-syntax, numeric-underscore, pipefail-safe, controller-contract, profile-schema + pinned revision, secret-scan, checksums), `lmds validate [--fix]`, PACKAGE_SHA256SUMS + ZIP, generate → gates → package อัตโนมัติ (ไม่ผ่าน = ไม่มี ZIP, exit 2) | ทุก gate จับเคสพังได้จริง (มีเทส negative ครบ), tamper detection ผ่าน E2E — 125 tests; เทียบ controllers v3.0.0 เดิมยกไป M7 |
 | M7a ✅ | End-to-end + เอกสาร (เสร็จ 2026-07-21) | `lmds deploy` ครบ flow: inspect → fit → plan → ขั้นยืนยัน interactive (อนุมัติ flag รายตัว + แก้ context ภายในเพดานปลอดภัย) → render → 7 gates → ZIP, `--yes` สำหรับ scripting, `install.sh` + docs/INSTALL.md | 130 tests + E2E จริงจาก Hub |
-| M7b 🔄 | Hardware validation (คืบหน้า) | **2026-07-21: hardware-validated ตัวแรกสำเร็จ** — Qwen3-Coder-30B-A3B UD-Q8_K_XL บน DGX Spark (gigabyte02): สมอง Local AI (gemma-4-26b openai-compat) → native build llama.cpp (121a-real, pinned 76f46ad29) → start → test-text ตอบถูก ~60 tok/s; แก้ตามผลจริง: image allowlist, variant picker, auto-install build deps, client budget ต่อ slot | เหลือ: RTX PRO 4000 ×2 + 4070, โมเดลอ้างอิงอีก 4 ตระกูล (safetensors/NVFP4/MoE-vLLM/gated), regression เทียบ controllers v3.0.0 |
+| M7b 🔄 | Hardware validation (คืบหน้า) | **2026-07-21: hardware-validated ตัวแรกสำเร็จ** — Qwen3-Coder-30B-A3B UD-Q8_K_XL บน DGX Spark (gigabyte02): สมอง Local AI (gemma-4-26b openai-compat) → native build llama.cpp (121a-real, pinned 76f46ad29) → start → test-text ตอบถูก ~60 tok/s; แก้ตามผลจริง: image allowlist, variant picker, auto-install build deps, client budget ต่อ slot | **2026-08-02: hardware-validated ตัวที่สอง** — Qwen3.5-122B-A10B-abliterated-NVFP4 (safetensors + NVFP4 + MoE) บน DGX Spark เครื่องเดียว: สมอง Local AI (openai-compat) → vLLM 0.26.0 docker (FLASHINFER_CUTLASS NvFp4 MoE) → start → /health ผ่าน ที่ context 65,536 · แก้ตามผลจริง: เพดาน index.json (MoE/NVFP4 เกิน 4MB), verify shard+ขนาด, คำเตือน endpoint ไม่มี API key · เหลือ: RTX PRO 4000 ×2 + 4070, gated repo, regression เทียบ controllers v3.0.0 |
 | M8 ✅ | Stacked (multi-node) generation (เสร็จ 2026-07-24) | template `stacked-vllm-controller.sh.j2` port จาก reference v8.2 (DeepSeek-V4-Flash 2×DGX Spark ที่ hardware-validated 2026-07-22) แบบ generic: worker-first startup, image-ID lock 2 node, FlashInfer cache versioning ต่อ image, NCCL/RoCE, sync-worker/verify-worker; planner emit STACKED + harden บังคับ topology จาก target; gate `stacked-contract` ปิดช่องโหว่ single-node ปลอม; เลือกผ่าน `--target dgx-spark-stacked` | bash -n + 8 gates ผ่านกับ bundle stacked, worker.sh/serve-args ตรง reference, GGUF+stacked ถูกปฏิเสธ — 191 tests (รวม test_stacked 12 ตัว); เหลือ hardware regression บนคลัสเตอร์จริง |
 
 ### เกณฑ์สำเร็จ MVP
@@ -25,7 +25,8 @@
 
 ### นอกขอบเขตเฟส 1 (ตัดออกชัดเจน)
 
-- Web UI, repair workflow, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
+- Web UI, repair แบบวิเคราะห์ log, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
+- ~~ไม่มี CI~~ → **มี CI แล้ว (2026-08-02)** · ~~จัดการ container ที่ไม่ได้มาจาก lmds / remove / repair ไฟล์~~ → **ทำแล้ว (2026-08-02)** ตามที่เจอจากการใช้งานจริง
 - ~~stacked controller generation~~ → **ทำเสร็จแล้ว (M8, 2026-07-24)** เลือกผ่าน `--target dgx-spark-stacked`
 
 ## เฟส 2 — ข้อเสนอ (เลือก/จัดลำดับหลัง CLI เสร็จ)
@@ -33,7 +34,8 @@
 เรียงตามที่แนะนำ:
 
 1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · งานต่อยอด: hardware regression บนคลัสเตอร์จริง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
-2. **Repair workflow** (`lmds repair`) — มูลค่าสูงกับลูกค้าจริง เพราะปัญหาหลัง deploy คืองานหลัก
+2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
+   verify-files, 2026-08-02) · ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้
 3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
 4. **Web UI หน้าเดียว** (FastAPI) — reuse core ทั้งหมด, สำหรับลูกค้าที่ไม่ถนัด CLI
 5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
@@ -49,6 +51,8 @@
 ## หลักการคุมคุณภาพตลอดทุกเฟส
 
 - ทุก PR ต้องผ่าน: unit tests + regression เทียบ controllers v3.0.0 + secret-leak scan
-  - ⚠️ **ยังไม่มี CI บังคับ** — รีโปยังไม่มี `.github/workflows/` กฎข้อนี้จึงต้องรันมือ (`pytest`) ก่อน push · งานที่ค้าง: workflow รัน pytest (3.10–3.12) + `bash -n` กับ bundle ที่ render ทุก template
+  - ✅ มี CI แล้ว (`.github/workflows/ci.yml`, 2026-08-02): pytest บน Python 3.10/3.11/3.12 +
+    `bash -n`/shellcheck สคริปต์ในรีโป + secret scan · ยังค้าง: regression เทียบ controllers v3.0.0
+    (ต้องมี `tests/fixtures/` ก่อน)
 - Template registry แยกเป็น data (อัปเดต image digest/runtime pin ได้โดยไม่ release โปรแกรมใหม่)
 - ห้ามอ้าง `hardware-validated` โดยไม่ได้รันจริง — สถานะ validation ติดไปกับ bundle เสมอ

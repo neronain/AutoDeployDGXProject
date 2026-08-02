@@ -17,11 +17,14 @@ lmds generate <MODEL_URL_OR_ID>            # plan → render bundle (controller/
                                            #   --output DIR, --target, --no-llm — validate+zip อยู่ใน M6
 lmds hardware                              # ตรวจ/แสดง hardware profile ของเครื่อง
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
-lmds ps | list | start | stop | logs | enable | disable   # fleet: จัดการโมเดลในเครื่อง (ดูหัวข้อ fleet)
+lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
+lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
+lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
 lmds config <subcommand>                   # จัดการ provider, credentials
 lmds version                               # เวอร์ชันโปรแกรม + เวอร์ชัน template registry
 
-lmds repair <BUNDLE_DIR> --log <FILE|->  ❌ # repair workflow จาก log ความล้มเหลว (เฟส 2 — สำรอง interface ไว้)
+lmds repair <BUNDLE_DIR> --log <FILE|->  ❌ # repair จาก log ความล้มเหลว (คนละอย่างกับ lmds repair ข้างบน
+                                           #   ที่ทำแค่เรื่องไฟล์ — ตัววิเคราะห์ log ยังเป็นเฟส 2)
 ```
 
 ## `lmds deploy`
@@ -30,7 +33,8 @@ lmds repair <BUNDLE_DIR> --log <FILE|->  ❌ # repair workflow จาก log ค
 lmds deploy <MODEL_URL_OR_ID> [OPTIONS]
 
 Arguments:
-  MODEL_URL_OR_ID   ลิงก์ HF เต็ม | org/model | ลิงก์ไฟล์ .gguf ตรง | ลิงก์ ollama.com | (เฟส 2: NGC, GitHub)
+  MODEL_URL_OR_ID   ลิงก์ HF เต็ม | org/model | ลิงก์ไฟล์ .gguf ตรง
+                    (❌ ollama.com / NGC / GitHub release = เฟส 2 — ตอนนี้แจ้ง UnsupportedSource)
 
 Options:
   --target PROFILE        dgx-spark-single | dgx-spark-stacked | rtx-* | auto (default: auto = ตรวจเครื่องปัจจุบัน)
@@ -90,7 +94,20 @@ env ที่รองรับ: `LMDS_OPENAI_API_KEY`/`OPENAI_API_KEY`, `LMDS_G
 `LMDS_OPENAI_COMPAT_API_KEY`, `HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`
 
 env อื่นของตัวโปรแกรม: `LMDS_CONFIG_DIR` (ย้าย config dir), `LMDS_NO_BANNER` (ปิด banner),
+`LMDS_RUN_ROOT` (ย้ายทะเบียน fleet), `LMDS_SYSTEMD_DIR` (ที่เก็บ unit — ใช้ในเทส),
 `LMDS_INSTALL_DIR`/`LMDS_BIN_DIR` (ใช้ตอนรัน `install.sh`)
+
+## Shell completion
+
+```text
+lmds --install-completion    # ติดตั้งลง rc ของ shell (bash/zsh/fish)
+lmds --show-completion       # แสดงสคริปต์เฉย ๆ ไม่เขียนไฟล์
+```
+
+`--install-completion` มากับ typer · เพิ่ม dynamic completion เอง 2 ตัว:
+`_complete_slug` (stop/start/restart/logs/enable/disable/repair/remove — อ่านจาก `~/.lmds/run/` + `./bundles/`)
+และ `_complete_target` (`--target` ทุกคำสั่ง — จาก `PRESETS`)
+ทั้งคู่ห้ามยิง subprocess/network เพราะ shell เรียกทุกครั้งที่กด TAB
 
 ## `lmds hardware`
 
@@ -108,14 +125,24 @@ Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 ## `lmds` fleet (จัดการโมเดลในเครื่อง)
 
 ```text
-lmds ps                       # โมเดลที่รัน/เคยรัน + สถานะจริง (running/loading/stopped) + endpoint
-lmds list                     # bundle ทั้งหมดที่รู้จัก + controller ยังอยู่ไหม + สถานะ autostart
+lmds ps                       # เครื่อง + โมเดลที่รัน/เคยรัน + สถานะจริง + endpoint
+lmds list                     # bundle ทั้งหมด + สถานะ (●/◐/○/⚠) + engine/port/context/feature + autostart
 lmds start <slug>             # start ตามชื่อ (ไม่ต้อง cd ไป bundle)
 lmds stop <slug> | --all      # stop ตามชื่อ หรือทุกตัว
-lmds logs <slug> [-n N]       # ดู log ตามชื่อ
+lmds restart <slug>           # restart (controller ถ้ามี ไม่งั้น docker restart)
+lmds logs <slug> [-n N] [-f]  # ดู log · -f = ตาม realtime (docker logs -f / tail -f)
 lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
 lmds disable <slug>           # ยกเลิก autostart
+lmds repair <slug>            # download (resume) → verify-files
+lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างที่เกี่ยวข้อง (แสดงรายการ+ขนาดก่อนถามยืนยัน)
 ```
+
+- **container ที่ไม่ได้มาจาก lmds**: `discover()` สแกน `docker ps` แล้วรับเฉพาะตัวที่ image ตรงกับ
+  engine ที่รู้จัก (vLLM/llama.cpp/Ollama/TGI) ทำเครื่องหมาย `external=True` ·
+  `stop` ของกลุ่มนี้ใช้ `docker stop` (ไม่ `docker rm -f`) · `enable` สร้าง unit แบบ `docker start <container>`
+- **remove**: หยุด → disable autostart → ลบ bundle+ZIP, `~/.lmds/run/<slug>`,
+  `~/.lmds/plugins/<slug>`, และ weight (vLLM → HF cache, llama.cpp → `MODEL_DIR`)
+  · หา weight ไม่เจอ = ไม่ลบ (ไม่เดา)
 
 - **autostart** = สร้าง systemd system unit `lmds-<slug>.service` (Type=oneshot + RemainAfterExit, `User=<เจ้าของ bundle>`, `ExecStartPre=stop` เคลียร์ container ค้าง, `WantedBy=multi-user.target`) → โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง โดยไม่ต้อง login
 - `--now` = start ทันทีด้วย · `--timeout` = เวลารอ health ตอน boot (โมเดลใหญ่ควรเพิ่ม) · ต้องมี `systemd`
@@ -157,6 +184,7 @@ src/lmds/
 │                        #   rulebased.py, allowlists.py (flag/image allowlist)
 ├── generator/           # renderer.py + templates/*.j2 (single-vllm, single-llamacpp, stacked-vllm)
 ├── validator/           # gates.py — quality gates ทั้ง 8 ด่านรวมอยู่ไฟล์เดียว
+├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 └── secrets/             # store.py (env/keyring/file), redact.py
 tests/                   # ~22 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/

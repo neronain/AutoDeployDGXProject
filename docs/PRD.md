@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **เวอร์ชันเอกสาร** | 1.1 |
-| **วันที่** | 21 กรกฎาคม 2026 |
+| **เวอร์ชันเอกสาร** | 1.2 |
+| **วันที่** | 21 กรกฎาคม 2026 (ปรับสถานะ FR ตามโค้ดจริง 2 สิงหาคม 2026) |
 | **สถานะ** | อนุมัติทิศทางแล้ว — เริ่มเฟส 1 (CLI-first) |
 | **Repository** | https://github.com/neronain/AutoDeployDGXProject |
 | **แหล่งข้อมูลอ้างอิง** | `dgx-spark-model-deployer-team-pack-v3.0.0` (skill pack), [neronain/dgx-spark-all-controllers](https://github.com/neronain/dgx-spark-all-controllers), [neronain/Auto-Create-Script-for-DGX-Spark-loading-model](https://github.com/neronain/Auto-Create-Script-for-DGX-Spark-loading-model) |
@@ -12,7 +12,7 @@
 
 ## 1. บทสรุปผู้บริหาร (Executive Summary)
 
-**Local Model Deploy Studio (LMDS)** คือโปรแกรมสำหรับรันบน Ubuntu ที่รับ **ลิงก์โมเดล** (Hugging Face, Ollama, NGC, GitHub หรือ URL ตรง) แล้วใช้ **LLM API ภายนอก** (OpenAI / Gemini / Claude / OpenAI-compatible endpoint) เป็น "สมอง" ในการวิเคราะห์โมเดล เลือก runtime และ**สร้างชุดสคริปต์ deploy (deployment bundle) ที่ผ่านการ validate แล้ว** สำหรับเครื่องเป้าหมาย ตั้งแต่ **NVIDIA DGX Spark** (เดี่ยวหรือ stacked) ไปจนถึง **เครื่อง Ubuntu ทั่วไปที่ใช้ GPU RTX**
+**Local Model Deploy Studio (LMDS)** คือโปรแกรมสำหรับรันบน Ubuntu ที่รับ **ลิงก์โมเดล** (เป้าหมาย: Hugging Face, Ollama, NGC, GitHub หรือ URL ตรง — **ปัจจุบันรองรับ Hugging Face เท่านั้น** ที่เหลืออยู่เฟส 2) แล้วใช้ **LLM API ภายนอก** (OpenAI / Gemini / MiniMax / OpenAI-compatible endpoint — Claude อยู่เฟส 2) เป็น "สมอง" ในการวิเคราะห์โมเดล เลือก runtime และ**สร้างชุดสคริปต์ deploy (deployment bundle) ที่ผ่านการ validate แล้ว** สำหรับเครื่องเป้าหมาย ตั้งแต่ **NVIDIA DGX Spark** (เดี่ยวหรือ stacked) ไปจนถึง **เครื่อง Ubuntu ทั่วไปที่ใช้ GPU RTX**
 
 จุดแข็งของระบบคือไม่ได้เริ่มจากศูนย์ — เรามี **controller standard v3.0.0** ที่รันจริงแล้วกับโมเดลกว่า 12 ตัว (Gemma, GPT-OSS-120B, Llama 3.3 70B NVFP4, Nemotron, Qwen3, MiniMax ฯลฯ) พร้อม contract, template, quality gates และ audit tools ที่พิสูจน์แล้ว LMDS คือการยกกระบวนการนี้จาก "skill ที่ต้องรันผ่าน Claude Code" มาเป็น **โปรแกรม standalone ที่ลูกค้าใช้เองได้** โดยใช้ LLM API key ของลูกค้าเอง
 
@@ -33,8 +33,8 @@
 ## 3. เป้าหมาย / ไม่ใช่เป้าหมาย
 
 ### เป้าหมาย (Goals)
-- **G1** — รับลิงก์โมเดลจาก Hugging Face, Ollama, NGC, GitHub release หรือ URL ไฟล์ GGUF ตรง แล้วสร้าง deployment bundle ที่รันได้จริง
-- **G2** — รองรับ LLM provider อย่างน้อย: OpenAI, Google Gemini, MiniMax, Anthropic Claude และ endpoint แบบ OpenAI-compatible (Ollama/vLLM — โมเดล local เป็นสมองเองได้โดยไม่ต้องมี key)
+- **G1** — รับลิงก์โมเดลจาก Hugging Face ✅ (repo / ลิงก์ไฟล์ GGUF ตรง) แล้วสร้าง deployment bundle ที่รันได้จริง · Ollama / NGC / GitHub release ❌ เฟส 2
+- **G2** — รองรับ LLM provider อย่างน้อย: OpenAI ✅, Google Gemini ✅, MiniMax ✅ และ endpoint แบบ OpenAI-compatible ✅ (Ollama/vLLM — โมเดล local เป็นสมองเองได้โดยไม่ต้องมี key) · Anthropic Claude ❌ เฟส 2
 - **G3** — ถาม HF token แบบ **optional** เฉพาะเมื่อจำเป็น (ตรวจ gated repo อัตโนมัติ) — ไม่ใส่ก็ดาวน์โหลด repo สาธารณะได้ตามปกติ
 - **G4** — รองรับฮาร์ดแวร์ 3 กลุ่ม: DGX Spark เดี่ยว, DGX Spark stacked (2+ เครื่อง), และ Ubuntu + RTX (single/multi-GPU, x86_64)
 - **G5** — ทุก bundle ที่ส่งออกผ่าน quality gates เดียวกับ v3.0.0 (`bash -n`, audit rules, SHA-256 manifest) โดยอัตโนมัติ
@@ -58,9 +58,9 @@
 
 - **US1**: ผู้ใช้วางลิงก์ `https://huggingface.co/Qwen/Qwen3-32B` → ระบบวิเคราะห์ → ถามยืนยัน topology/runtime → สร้าง bundle + ZIP พร้อม README ภายในไม่กี่นาที
 - **US2**: ผู้ใช้วางลิงก์โมเดล gated (เช่น Llama) → ระบบตรวจพบ 401/403 → ถาม HF token (ข้ามได้) → ถ้าใส่ ใช้ token ทั้งตอน inspect และฝังวิธีใช้ token ใน controller (ผ่าน env ไม่ hard-code)
-- **US3**: ผู้ใช้วางลิงก์ `https://ollama.com/library/qwen3:32b` → ระบบ resolve manifest → เสนอทางเลือก: (a) controller แบบ Ollama หรือ (b) ดึง GGUF ไปรันด้วย llama.cpp controller มาตรฐาน
+- **US3** (❌ เฟส 2): ผู้ใช้วางลิงก์ `https://ollama.com/library/qwen3:32b` → ระบบ resolve manifest → เสนอทางเลือก: (a) controller แบบ Ollama หรือ (b) ดึง GGUF ไปรันด้วย llama.cpp controller มาตรฐาน
 - **US4**: ผู้ใช้รันบนเครื่อง RTX 4090 24GB → ระบบ profile ฮาร์ดแวร์ → เตือนว่าโมเดล FP16 70B ไม่พอ → เสนอ quant ที่พอ (เช่น GGUF Q4) พร้อมเหตุผลตัวเลข
-- **US5**: ผู้ใช้เอา log ที่รันพังมาวาง → ระบบเข้าสู่ repair workflow → วิเคราะห์ → แก้ controller ทีละตัวแปร → ออก bundle เวอร์ชันใหม่
+- **US5** (บางส่วน — `lmds repair` ซ่อมไฟล์ที่ขาดได้แล้ว ส่วนวิเคราะห์ log ยังเป็นเฟส 2): ผู้ใช้เอา log ที่รันพังมาวาง → ระบบเข้าสู่ repair workflow → วิเคราะห์ → แก้ controller ทีละตัวแปร → ออก bundle เวอร์ชันใหม่
 - **US6**: ผู้ใช้ตั้งค่า provider ครั้งเดียว (`lmds config set-provider openai`) → ใช้ได้ทุกครั้งโดย key เก็บใน OS keyring หรือไฟล์ `0600`
 
 ## 6. ขอบเขตฟังก์ชัน (Functional Requirements)
@@ -107,7 +107,7 @@
 | FR-5.3 | บังคับกฎ portability v3.0.0: ห้าม numeric underscore literal, แยก bind/advertise/cluster address, pipefail-safe checks, pinned revision + runtime image digest | P0 |
 | FR-5.4 | Bundle output ตาม delivery contract: `<slug>/` มี controller(.sh), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md` (เมื่อจำเป็น), `PACKAGE_SHA256SUMS`, + ZIP | P0 |
 | FR-5.5 | สร้าง client-config ตัวอย่าง (OpenAI-compatible base URL, ตัวอย่าง curl/Python, ค่า token budget) | P0 |
-| FR-5.6 | Optional: systemd unit (ไม่ enable อัตโนมัติ — ตาม `no_autostart: true`) | P1 |
+| FR-5.6 | Optional: systemd unit (ไม่ enable อัตโนมัติ) — ✅ ทำแล้วผ่าน `lmds enable/disable` (รวม container ที่ไม่ได้มาจาก lmds) | P1 |
 
 ### FR-6 Validator & Quality Gates
 | ID | ข้อกำหนด | Priority |

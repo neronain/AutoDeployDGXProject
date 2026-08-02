@@ -39,7 +39,11 @@ lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-
 | `lmds plan <โมเดล>` | ดู Deployment Plan (แผน) — ไม่สร้างไฟล์ |
 | `lmds deploy <โมเดล>` | flow เต็ม: วิเคราะห์ → วางแผน → **ยืนยัน** → สร้าง bundle + ZIP |
 | `lmds generate <โมเดล>` | เหมือน deploy แต่**ข้ามขั้นยืนยัน** |
-| `lmds ps` / `stop` / `logs` / `start` / `list` | จัดการโมเดลที่ deploy/รันอยู่ (ดู §4) |
+| `lmds ps` / `list` | ดูว่ามีอะไรอยู่บ้าง + สถานะจริง (ดู §4) |
+| `lmds start` / `stop` / `restart` / `logs` | สั่งงานโมเดลตามชื่อ (ดู §4) |
+| `lmds enable` / `disable` | autostart หลัง reboot (ดู §4) |
+| `lmds repair <ชื่อ>` | โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ (ดู §4.3) |
+| `lmds remove <ชื่อ>` | ลบโมเดลออกจากเครื่องทั้งหมด (ดู §4.3) |
 | `lmds validate <โฟลเดอร์>` | ตรวจ bundle ย้อนหลัง |
 | `lmds hardware` | ตรวจเครื่อง + จำแนก target profile |
 | `lmds config ...` | ตั้ง provider / key / HF token |
@@ -132,6 +136,10 @@ cd bundles/qwen3-0-6b-gguf
 | `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
+| `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
+
+> **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
+> `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด
 
 > **`prepare-runtime` ต้องรันเมื่อไหร่?** ตอน deploy เสร็จ ระบบจะพิมพ์ลำดับคำสั่งที่ถูกต้องของ bundle นั้นให้เสมอ — ทำตามนั้นได้เลย
 > - **GGUF บน DGX Spark (ARM64)** — จำเป็น ✅ เพราะไม่มี Docker image ทางการ ต้อง build llama.cpp จาก source (ครั้งแรกครั้งเดียว ~10–30 นาที, ขอ sudo ติดตั้ง build deps)
@@ -302,14 +310,20 @@ cd bundles/<slug>
 รันหลายโมเดลพร้อมกันได้ (คนละ port) — ไม่ต้องจำว่า bundle ไหนอยู่ที่ไหน ใช้ `lmds` เป็นศูนย์กลาง:
 
 ```bash
-lmds ps               # ใครรันอยู่บ้าง: ชื่อ, โมเดล, port, สถานะ (● running / ◐ loading / ○ stopped)
-lmds stop qwen3-coder-30b-a3b-instruct-gguf    # หยุดตามชื่อ — ไม่ต้อง cd ไปหา .sh
-lmds stop --all       # หยุดทุกตัวที่รันอยู่
-lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
-lmds start <ชื่อ>          # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
-lmds enable <ชื่อ>         # ตั้งให้กลับมาเองหลัง reboot (systemd) · lmds disable <ชื่อ> = ยกเลิก
-lmds list             # bundle ทั้งหมด + engine/port/context/ฟีเจอร์ที่รองรับ (tools/reasoning/vision) + autostart
+lmds ps                  # เครื่อง + ใครรันอยู่บ้าง: สถานะ ● running / ◐ loading / ○ stopped + endpoint
+lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context/ฟีเจอร์ + autostart
+lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ (เช่น หลัง reboot)
+lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม่ต้อง cd ไปหา .sh
+lmds stop --all          # หยุดทุกตัวที่รันอยู่
+lmds restart <ชื่อ>       # restart (ใช้ตอนอยากเปลี่ยน option เช่นเพิ่ม API_KEY)
+lmds logs <ชื่อ> -n 500   # ดู log ย้อนหลัง
+lmds logs <ชื่อ> -f       # ตาม log แบบ realtime (Ctrl-C ออก — ไม่หยุดโมเดล)
+lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาดกลับมา + ตรวจซ้ำ
+lmds remove <ชื่อ>        # ลบทิ้งทั้งหมด (ถามยืนยันก่อน)
 ```
+
+**ชื่อ (slug) เอามาจากคอลัมน์แรกของ `lmds ps` / `lmds list`** — ทั้งสองคำสั่งจะพิมพ์ตัวอย่าง
+คำสั่งพร้อมชื่อจริงให้ copy ไปใช้ได้เลย · พิมพ์ไม่ครบก็กด TAB ได้ (ดู §4.4)
 
 ตัวอย่างรัน 2 โมเดลพร้อมกัน:
 
@@ -322,6 +336,67 @@ lmds stop --all                                                # ปิดทั
 
 > ระบบรู้จักเซิร์ฟเวอร์จากไฟล์ทะเบียนที่ controller เขียนเองตอน `start` (ใต้ `~/.lmds/run/`)
 > — ถ้า controller ถูกลบ/ย้าย `lmds stop` ยัง fallback หยุดตรง ๆ ให้ได้ (kill pid / docker rm)
+
+### 4.1 อ่านสถานะใน `lmds list`
+
+| สัญลักษณ์ | หมายถึง |
+|---|---|
+| ● | รันอยู่และ API ตอบ health |
+| ◐ | รันอยู่แต่ยังไม่ตอบ health (กำลังโหลดโมเดล) |
+| ○ | หยุดอยู่ |
+| ⚠ | หยุดอยู่ **และหาไฟล์ controller ไม่เจอ** — `start`/`restart` ใช้ไม่ได้ ต้อง deploy ใหม่ |
+
+### 4.2 container ที่ไม่ได้ deploy ผ่าน LMDS
+
+`lmds ps` สแกน `docker ps` ด้วย และรับ container ที่ image ตรงกับ engine ที่รู้จัก
+(vLLM / llama.cpp / Ollama / TGI) เข้ามาในตาราง ทำเครื่องหมาย **⚙ ไม่ได้มาจาก lmds**
+— container อื่นในเครื่อง (ฐานข้อมูล ฯลฯ) ไม่ถูกดึงเข้ามา
+
+สั่งงานได้เหมือนกัน: `lmds stop` / `restart` / `logs` / `enable`
+
+> **`stop` ของตัวภายนอกใช้ `docker stop` ไม่ใช่ `docker rm -f`** — ไม่ลบ container ของคุณทิ้ง
+> `enable` ก็ทำได้ แต่ unit ที่ได้จะเป็นแค่ `docker start <container>` (ไม่ได้สร้าง container ใหม่)
+> ถ้าลบ container นั้นทิ้ง unit จะล้ม ต้อง enable ใหม่
+
+### 4.3 ซ่อม / ลบโมเดล
+
+```bash
+lmds repair <ชื่อ>                    # download (resume) → verify-files
+```
+
+ใช้เมื่อไฟล์หายหรือขนาดไม่ตรง (เช่น download ค้างกลางคัน, เผลอลบไฟล์ใน cache) —
+โหลดเฉพาะส่วนที่ขาด ไม่โหลดใหม่ทั้งก้อน · ถ้า **controller หายไปแล้ว** ซ่อมไม่ได้
+ต้อง `lmds deploy` ลิงก์เดิม (weight ที่โหลดไว้ยังใช้ต่อได้ ไม่ต้องโหลดซ้ำ)
+
+```bash
+lmds remove <ชื่อ>                    # ลบทั้งหมด
+lmds remove <ชื่อ> --keep-weights     # ลบ bundle แต่เก็บ weight ไว้
+lmds remove <ชื่อ> -y                 # ไม่ถามยืนยัน (สำหรับ script)
+```
+
+`remove` จะ **แสดงรายการไฟล์ + ขนาดให้ดูก่อนเสมอ** แล้วค่อยถามยืนยัน (default = ไม่ลบ)
+สิ่งที่ทำตามลำดับ: หยุดเซิร์ฟเวอร์ → ยกเลิก autostart → ลบ bundle + ZIP + ทะเบียน/log +
+runtime files + weight ของโมเดล
+
+- **`--keep-weights` คุ้มมากกับโมเดลใหญ่** — ลบ bundle ทิ้งแล้ว deploy ใหม่ได้โดยไม่ต้องโหลดซ้ำหลายสิบ GB
+- weight หาจาก `MODEL_PROFILE.yaml` (vLLM → HF cache, llama.cpp → `MODEL_DIR`) —
+  ถ้าหาไม่เจอระบบจะ**ไม่เดา** (ไม่ลบอะไรที่ไม่แน่ใจ) ต้องลบเองถ้าต้องการ
+
+### 4.4 Tab completion (กด TAB เติมให้)
+
+ติดตั้งครั้งเดียวต่อเครื่อง — `install.sh` ถามให้อยู่แล้ว หรือรันเอง:
+
+```bash
+lmds --install-completion
+```
+
+แล้ว**เปิด terminal ใหม่** (หรือ `source ~/.bashrc`) · รองรับ bash / zsh / fish
+
+```text
+lmds depl<TAB>                       → lmds deploy
+lmds stop qwen<TAB>                  → เติมชื่อ bundle ให้
+lmds deploy <url> --target dgx<TAB>  → dgx-spark-single / dgx-spark-stacked
+```
 
 ### ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (autostart)
 
@@ -352,6 +427,9 @@ lmds validate bundles/qwen3-32b --fix                # regenerate checksum ห�
 lmds hardware                                        # ตรวจเครื่อง (GPU/RAM/ดิสก์/Docker/profile)
 lmds config show                                     # ดู config (key ถูก mask)
 lmds config defaults                                 # ดู default model ของแต่ละ provider
+lmds repair <ชื่อ>                                    # ซ่อมไฟล์ที่ขาด (ดู §4.3)
+lmds remove <ชื่อ> --keep-weights                     # ลบ bundle แต่เก็บ weight (ดู §4.3)
+lmds --install-completion                            # เปิด tab completion (ดู §4.4)
 ```
 
 ตั้ง key แบบไม่ต้องพิมพ์มือ (สำหรับ script/automation):
@@ -403,6 +481,9 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | `prepare-runtime` build ล้มบน DGX Spark | ขาด CUDA Toolkit หรือ CUDA arch ไม่ตรง | ดูบรรทัดเตือน `ไม่พบ nvcc` · override ได้: `CUDA_ARCHITECTURES=121 ./xxx-single.sh prepare-runtime` |
 | `ยังไม่มี llama-server — รัน: ... prepare-runtime` | ข้ามขั้น prepare-runtime บนเครื่อง ARM64 | รัน `./xxx-single.sh prepare-runtime` ก่อน start (ดู §2) |
 | ลิงก์ `ollama.com/...` ใช้ไม่ได้ | ยังรองรับเฉพาะ Hugging Face | ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน (roadmap เฟส 2) |
+| `verify-files` แจ้ง shard หาย / ขนาดไม่ตรง | download ไม่ครบ หรือไฟล์ใน cache ถูกลบ | `lmds repair <ชื่อ>` (โหลดเฉพาะส่วนที่ขาด) |
+| `lmds list` ขึ้น ⚠ (ไฟล์ controller หาย) | โฟลเดอร์ bundle ถูกลบ/ย้าย | `lmds deploy` ลิงก์เดิมเพื่อสร้าง bundle ใหม่ — weight เดิมใช้ต่อได้ · หรือ `lmds remove <ชื่อ>` ถ้าไม่ใช้แล้ว |
+| มีแถวขยะค้างใน `lmds ps` / `lmds list` | process/ทะเบียนเก่าค้างจากรอบก่อน | `lmds remove <ชื่อ>` เก็บกวาดให้ครบทุกที่ |
 
 ### ถ้าแก้เองไม่ได้ — ข้อมูลที่ต้องเก็บส่งทีมพัฒนา
 
@@ -424,6 +505,7 @@ lmds hardware
 > API_KEY=$(openssl rand -hex 24) ./xxx-single.sh start   # หรือบังคับ Bearer token
 > ```
 
+- วิธีตั้ง API token ของ endpoint อย่างละเอียด (พร้อมตัวอย่าง curl) อยู่ในหัวข้อ **API TOKEN** ของ `./xxx-single.sh help`
 - API key / HF token ใส่ผ่าน `lmds config set-key` หรือ env เท่านั้น — **ห้าม**เขียนลงไฟล์/สคริปต์เอง
 - เซิร์ฟเวอร์ที่เปิดใน network ที่มีคนอื่นใช้ร่วม ให้ตั้ง `API_KEY=xxx ./xxx-single.sh start` เสมอ
 - `API_KEY` ถูกส่งเข้า container ผ่าน env — ผู้ที่ใช้ `docker` บนเครื่องเดียวกันอ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก แต่ไม่ควรใช้ key เดียวกับระบบอื่น)

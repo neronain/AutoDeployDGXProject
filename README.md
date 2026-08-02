@@ -54,10 +54,10 @@ cd ~/AutoDeployDGXProject && git pull && ./install.sh
 
 > ⚠️ **`git pull` อย่างเดียวไม่พอ** — ต้องรัน `./install.sh` ซ้ำด้วย เพราะติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds` เลยยังเป็นโค้ดเก่าจนกว่าจะติดตั้งใหม่ทับ · config/key เดิมอยู่ครบ ไม่ต้องตั้งใหม่
 
-ตรวจว่าอัปเดตแล้ว (ควรเห็นบรรทัด `dgx-spark-stacked`):
+ตรวจว่าอัปเดตแล้ว (ควรเห็นคำสั่ง `repair` / `remove` / `restart`):
 
 ```bash
-lmds deploy --help | grep -i stacked
+lmds --help
 ```
 
 ถ้า `git pull` ฟ้อง local changes: `git stash && git pull && ./install.sh` (การแก้ PATH ครั้งก่อนอยู่ใน `~/.bashrc` ไม่ใช่ในโปรเจกต์ จึงไม่กระทบ) · รายละเอียด/ถอนการติดตั้ง: [docs/INSTALL.md](docs/INSTALL.md)
@@ -68,16 +68,25 @@ lmds deploy --help | grep -i stacked
 
 ```bash
 lmds ps                  # ใครรันอยู่บ้าง: ชื่อ, โมเดล, engine, port, สถานะ ● running / ◐ loading / ○ stopped
-lmds stop <ชื่อ>          # หยุดตามชื่อจาก lmds ps — ไม่ต้อง cd ไปหา ./xxx.sh stop
-lmds stop --all          # หยุดทุกโมเดลที่รันอยู่ในคำสั่งเดียว
-lmds logs <ชื่อ> -n 500   # ดู log ตามชื่อ
+lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context/ฟีเจอร์ + autostart
 lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
+lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม่ต้อง cd ไปหา ./xxx.sh stop · stop --all = หยุดทุกตัว
+lmds restart <ชื่อ>       # restart (ใช้ตอนเปลี่ยน option เช่นเพิ่ม API_KEY)
+lmds logs <ชื่อ> -f       # ตาม log แบบ realtime (-n 500 = ย้อนหลัง)
 lmds enable <ชื่อ>        # ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (systemd autostart) · disable = ยกเลิก
-lmds list                # bundle ทั้งหมด + engine/port/context/ฟีเจอร์ที่รองรับ + สถานะ autostart
+lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
+lmds remove <ชื่อ>        # ลบออกจากเครื่องทั้งหมด (--keep-weights = เก็บ weight ไว้)
 ```
+
+`lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
+— stop/restart/logs/enable ได้เหมือนกัน โดย stop ของกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง
+
+กด TAB เติมชื่อคำสั่ง/bundle ได้ (`install.sh` ถามให้ หรือรัน `lmds --install-completion`)
 
 ทุก controller ลงทะเบียนตัวเองอัตโนมัติตอน `start` — ต่อให้ bundle ถูกลบไปแล้ว `lmds stop` ก็ยัง
 fallback หยุดโมเดลค้างให้ได้ (kill pid / docker rm) · รายละเอียด: [docs/USAGE.md §4](docs/USAGE.md)
+
+`./install.sh` ตรวจความพร้อมของเครื่องให้ (driver / Docker / Docker เห็น GPU / ดิสก์) แล้วถามตั้ง provider + API key + tab completion ให้ตั้งแต่ตอนติดตั้ง — ข้ามได้ทุกขั้น
 
 ผลลัพธ์: โฟลเดอร์ bundle + ZIP ประกอบด้วย controller script (มาตรฐาน v3.0.0), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md`, `PACKAGE_SHA256SUMS`
 
@@ -85,8 +94,8 @@ fallback หยุดโมเดลค้างให้ได้ (kill pid / d
 
 | เอกสาร | เนื้อหา |
 |---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | **คู่มือติดตั้งละเอียด** — prerequisites (Docker/NVIDIA toolkit พร้อมคำสั่งครบ), ติดตั้ง, ตั้งค่า provider/token, อัปเดต/ถอนการติดตั้ง |
-| [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว, target presets, ย้าย bundle ข้ามเครื่อง, troubleshooting 12 อาการ |
+| [docs/INSTALL.md](docs/INSTALL.md) | **คู่มือติดตั้งละเอียด** — prerequisites, ดิสก์/ที่เก็บไฟล์, proxy/air-gapped, ตั้ง provider (รวม Local AI), โมเดลถูกดึงมาและรันยังไง, smoke test, ถอนการติดตั้ง |
+| [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว + env, fleet (ps/list/restart/logs -f/repair/remove/completion), target presets ครบ 20 ตัว, troubleshooting |
 | [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | แผนพัฒนา 3 เฟส + work breakdown ของเฟส 1 |
