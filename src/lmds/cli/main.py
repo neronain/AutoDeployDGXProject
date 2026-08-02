@@ -97,7 +97,14 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
     """flow ร่วมของ inspect/plan/deploy: parse source → inspect → จัดการ gated repo + token"""
     import sys
 
-    from lmds.inspector import AuthRequired, HfClient, HfError, RepoNotFound, inspect_model
+    from lmds.inspector import (
+        AuthRequired,
+        BudgetExceeded,
+        HfClient,
+        HfError,
+        RepoNotFound,
+        inspect_model,
+    )
     from lmds.resolver import SourceError, parse_source
 
     try:
@@ -132,6 +139,14 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
     except RepoNotFound as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
+    except BudgetExceeded as exc:
+        # ไม่ใช่ปัญหาเครือข่าย — ไฟล์ metadata ใหญ่เกินเพดานที่ตั้งไว้
+        err_console.print(f"[red]ไฟล์ metadata ใหญ่ผิดปกติ:[/red] {exc}")
+        err_console.print(
+            "[yellow]ถ้าเป็นโมเดล MoE/quant ละเอียดที่ index ยาวจริง แจ้งทีมพัฒนาให้ปรับเพดาน "
+            "(INDEX_FILE_CAP ใน inspector/hf_api.py)[/yellow]"
+        )
+        raise typer.Exit(code=5)
     except HfError as exc:
         err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")
         raise typer.Exit(code=5)

@@ -68,6 +68,55 @@ def test_inspect_safetensors_repo():
     assert report.warnings == []
 
 
+def test_large_moe_index_over_small_file_cap():
+    """regression: MoE + NVFP4 มี tensor เป็นแสน → index.json เกิน 4MB แต่เป็น metadata ปกติ
+
+    เคสจริง: w341e/Qwen3.5-122B-A10B-abliterated-NVFP4 เคยพังด้วย BudgetExceeded
+    """
+    weight_map = {
+        f"model.layers.{layer}.mlp.experts.{expert}.w{proj}.weight_scale": (
+            f"model-{layer % 9 + 1:05d}-of-00009.safetensors"
+        )
+        for layer in range(64)
+        for expert in range(128)
+        for proj in (1, 2, 3)
+    }
+    index = {"metadata": {"total_size": 61_000_000_000}, "weight_map": weight_map}
+    assert len(json.dumps(index).encode()) > 4 * 1024 * 1024  # ต้องใหญ่กว่าเพดานเดิมจริง
+
+    files = {
+        "model.safetensors.index.json": json.dumps(index),
+        "config.json": json.dumps({"architectures": ["Qwen3MoeForCausalLM"], "model_type": "qwen3_moe"}),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/models/"):
+            return httpx.Response(200, json=hub_response([
+                {"rfilename": f"model-{i:05d}-of-00009.safetensors", "lfs": {"size": 6_800_000_000}}
+                for i in range(1, 10)
+            ]))
+        name = request.url.path.split(f"/{SHA}/")[-1]
+        if name in files:
+            return httpx.Response(200, content=files[name].encode())
+        return httpx.Response(404)
+
+    report = inspect_model(parse_source("w341e/Qwen3.5-122B-A10B-abliterated-NVFP4"), make_client(handler))
+    assert report.artifact_type is ArtifactType.SAFETENSORS
+    assert report.weight_bytes == 61_000_000_000
+    assert report.shard_count == 9
+
+
+def test_oversized_metadata_still_rejected():
+    """config.json ยักษ์ = ผิดปกติจริง ต้องยังกันอยู่ (เพดานเล็กไม่ได้ถูกยกเลิก)"""
+    from lmds.inspector import BudgetExceeded
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * (5 * 1024 * 1024))
+
+    with pytest.raises(BudgetExceeded, match="เกินเพดาน"):
+        make_client(handler).fetch_small_file("org/model", SHA, "config.json")
+
+
 def test_inspect_gguf_repo_single_variant():
     gguf_bytes = build_gguf([
         _kv_string("general.architecture", "llama"),

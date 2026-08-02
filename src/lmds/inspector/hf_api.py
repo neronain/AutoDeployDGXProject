@@ -12,7 +12,12 @@ from typing import Any, Callable
 import httpx
 
 HF_BASE = "https://huggingface.co"
-SMALL_FILE_CAP = 4 * 1024 * 1024  # 4MB — config/tokenizer_config/index ควรเล็กกว่านี้มาก
+SMALL_FILE_CAP = 4 * 1024 * 1024  # 4MB — config.json/tokenizer_config/chat_template ควรเล็กกว่านี้มาก
+
+# model.safetensors.index.json โตตาม *จำนวน tensor* ไม่ใช่ขนาดโมเดล:
+# MoE ตัวใหญ่ + quant ละเอียด (NVFP4/FP8 ที่มี scale ต่อ block) มีได้หลายแสน entry
+# เช่น Qwen3.5-122B-A10B NVFP4 → index เกิน 4MB ทั้งที่เป็น metadata ปกติ
+INDEX_FILE_CAP = 64 * 1024 * 1024
 
 
 class HfError(Exception):
@@ -83,7 +88,10 @@ class HfClient:
         if resp.status_code != 200:
             raise HfError(f"ดึง {filename} ไม่สำเร็จ (HTTP {resp.status_code})")
         if len(resp.content) > cap:
-            raise BudgetExceeded(f"{filename} ใหญ่เกิน {cap} bytes — ไม่ใช่ไฟล์ metadata ปกติ")
+            raise BudgetExceeded(
+                f"{filename} ใหญ่ {len(resp.content):,} bytes เกินเพดาน {cap:,} bytes — "
+                "ไม่ใช่ไฟล์ metadata ปกติ"
+            )
         return resp.content
 
     def range_source(self, repo_id: str, revision: str, filename: str, budget: int = 64 * 1024 * 1024):

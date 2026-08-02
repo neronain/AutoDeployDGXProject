@@ -10,7 +10,7 @@ from lmds.resolver import ModelSource
 import re
 
 from .gguf import GgufInfo, GgufParseError, parse_gguf
-from .hf_api import BudgetExceeded, HfClient
+from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
 from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport
 
 _SPLIT_GGUF_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -98,8 +98,10 @@ def _params_of(info: dict[str, Any]) -> int | None:
     return int(total) if isinstance(total, (int, float)) and total > 0 else None
 
 
-def _fetch_json(client: HfClient, repo_id: str, revision: str, filename: str) -> dict[str, Any] | None:
-    raw = client.fetch_small_file(repo_id, revision, filename)
+def _fetch_json(
+    client: HfClient, repo_id: str, revision: str, filename: str, cap: int = SMALL_FILE_CAP
+) -> dict[str, Any] | None:
+    raw = client.fetch_small_file(repo_id, revision, filename, cap=cap)
     if raw is None:
         return None
     try:
@@ -123,7 +125,7 @@ def _inspect_safetensors(
         report.warnings.append("Hub ไม่รายงานขนาดไฟล์ครบ — weight_bytes อาจไม่ครบถ้วน")
         report.weight_bytes = sum(sizes) if sizes else None
 
-    index = _fetch_json(client, source.repo_id, revision, _SAFETENSORS_INDEX)
+    index = _fetch_json(client, source.repo_id, revision, _SAFETENSORS_INDEX, cap=INDEX_FILE_CAP)
     if index is not None:
         weight_map = index.get("weight_map") or {}
         shards = {v for v in weight_map.values() if isinstance(v, str)}
