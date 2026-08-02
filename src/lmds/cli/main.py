@@ -674,6 +674,24 @@ def _render_host_panel() -> None:
     console.print()
 
 
+def _status_symbol(server) -> str:
+    """สัญลักษณ์สั้นสำหรับตารางแคบ (lmds list) — คำอธิบายอยู่ใต้ตาราง"""
+    if server.healthy:
+        return "[green]●[/green]"
+    if server.running:
+        return "[yellow]◐[/yellow]"
+    return "[dim]○[/dim]"
+
+
+def _status_label(server) -> str:
+    """ป้ายสถานะที่ใช้ร่วมกันระหว่าง lmds ps และ lmds list — จะได้ไม่อ่านคนละภาษา"""
+    if server.healthy:
+        return "[green]● running[/green]"
+    if server.running:
+        return "[yellow]◐ loading[/yellow]"
+    return "[dim]○ stopped[/dim]"
+
+
 @app.command()
 def ps() -> None:
     """แสดงเครื่อง + ทุกโมเดลที่ deploy ในเครื่องนี้ พร้อมสถานะจริง (running/health/endpoint)"""
@@ -691,12 +709,7 @@ def ps() -> None:
     table.add_column("port")
     table.add_column("สถานะ")
     for server in servers:
-        if server.healthy:
-            status = "[green]● running[/green]"
-        elif server.running:
-            status = "[yellow]◐ loading/ไม่ตอบ health[/yellow]"
-        else:
-            status = "[dim]○ stopped[/dim]"
+        status = _status_label(server)
         if server.external:
             status += " [cyan]⚙ ไม่ได้มาจาก lmds[/cyan]"
         elif not server.registered:
@@ -891,13 +904,15 @@ def list_bundles() -> None:
     }
     table = Table(title="Bundles ในเครื่องนี้")
     table.add_column("ชื่อ (slug)")
-    table.add_column("โมเดล")
+    # สถานะเป็นสัญลักษณ์ตัวเดียว — ตารางนี้มี 7 คอลัมน์อยู่แล้ว ใส่คำเต็มจะเบียดจนหัวตารางหาย
+    # บนจอแคบ (มีคำอธิบายสัญลักษณ์ใต้ตาราง) · รายละเอียดเต็ม + endpoint ดูที่ lmds ps
+    table.add_column("", no_wrap=True)
+    table.add_column("โมเดล", max_width=32, overflow="fold")
     table.add_column("engine")
     table.add_column("port", justify="right")
     table.add_column("context", justify="right")
     table.add_column("รองรับ (support)")
     table.add_column("autostart")
-    table.add_column("ไฟล์")
     for server in servers:
         profile = bundle_profile(server.controller) if server.controller_exists else None
         engine = ((profile or {}).get("runtime") or {}).get("engine") or server.engine or "-"
@@ -905,23 +920,27 @@ def list_bundles() -> None:
         context_str = f"{context:,}" if context else "-"
         support = feature_summary(profile) if profile else "-"
         status = autostart_status(server.slug) if server.controller_exists else "absent"
+        # controller หาย = สั่ง start/restart ไม่ได้ — ใช้สัญลักษณ์เตือนแทนคอลัมน์แยก
+        state = "[red]⚠[/red]" if not server.controller_exists else _status_symbol(server)
         table.add_row(
             server.slug,
+            state,
             server.model_id or server.model,
             engine,
             str(server.port) if server.port else "-",
             context_str,
             support,
             astat.get(status, status),
-            "✅" if server.controller_exists else "[red]หาย[/red]",
         )
     console.print(table)
     first = servers[0].slug if servers else "<ชื่อ>"
     console.print(
-        "\n[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง เช่น:[/dim]\n"
+        "\n[dim]สถานะ:[/dim] [green]●[/green] [dim]running ·[/dim] [yellow]◐[/yellow] [dim]loading ·[/dim] "
+        "○ [dim]stopped ·[/dim] [red]⚠[/red] [dim]ไฟล์ controller หาย (start/restart ไม่ได้)[/dim]\n"
+        "[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง เช่น:[/dim]\n"
         f"  lmds start {first}   ·   lmds stop {first}   ·   lmds restart {first}\n"
         f"  lmds logs {first} -f   [dim]# realtime[/dim]   ·   lmds enable {first}   [dim]# autostart[/dim]\n"
-        "[dim]สถานะว่าตัวไหนรันอยู่จริง: lmds ps[/dim]"
+        "[dim]endpoint + สถานะ health เต็ม ๆ: lmds ps[/dim]"
     )
 
 

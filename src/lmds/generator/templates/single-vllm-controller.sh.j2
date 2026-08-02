@@ -363,23 +363,77 @@ test_text() {
 
 usage() {
   cat <<EOF
-Usage: $0 <command> [--context N] [--port N] [--bind ADDR] [--advertise-ip ADDR]
-          [--interface NAME] [--client-input N|auto] [--client-output N]
+{{ slug }} — vLLM controller  (model: ${MODEL_ID})
 
-Commands:
-  download        ดาวน์โหลดโมเดล (resume ได้, pin revision)
-  verify-files    ตรวจไฟล์จำเป็น + shard ครบ/ขนาดตรง + symlink
+USAGE
+  $0 <command> [options]
+
+COMMANDS
+  download          Download model weights into the HF cache (resumable, revision pinned)
+  verify-files      Check required files, every shard present, sizes match the Hub
 {% if runtime_assets -%}
-  prepare-runtime ดึงไฟล์ runtime ภายนอกที่อนุมัติแล้ว (จำเป็นครั้งแรกก่อน start)
+  prepare-runtime   Fetch approved external runtime files (REQUIRED once before first start)
 {% endif -%}
-  start           ตรวจ GPU/ไฟล์ แล้วเปิดเซิร์ฟเวอร์ (รอ /health)
-  stop | restart  หยุด / restart
-  status          สถานะ container + API
-  logs [N]        log ล่าสุด N บรรทัด
-  client-config   พิมพ์ค่าตั้ง client (JSON) พร้อม token budget
-  network-info    bind/endpoint ปัจจุบัน
-  test-text       ทดสอบ chat completion หนึ่งครั้ง
-  wait-health      รอ /health ต่อ (ใช้เมื่อ start เคย timeout แต่โมเดลยังโหลดอยู่)
+  start             Verify GPU + files, then start the server and wait for /health
+  stop              Stop and remove the container
+  restart           stop + start (use this to apply new options)
+  status            Container state + API health + loaded model list
+  logs [N]          Show last N log lines (default 300).  Live tail: lmds logs {{ slug }} -f
+  wait-health       Keep waiting for /health (use if start timed out but the model is still loading)
+  client-config     Print client settings as JSON (base_url, model name, token budget)
+  network-info      Show current bind address and the endpoint advertised to clients
+  test-text         Send one chat completion request to verify the model answers
+
+OPTIONS  (can be placed after any command; equals form also works: --port=8001)
+  --port N              Port to serve on                          [default: ${API_PORT}]
+  --context N           Max context length in tokens              [default: ${MAX_MODEL_LEN}]
+                        Lower this first if the server runs out of memory.
+  --bind ADDR           Address the server listens on             [default: ${API_HOST}]
+                        0.0.0.0 = reachable from the whole network
+                        127.0.0.1 = this machine only (safest)
+  --advertise-ip ADDR   IP printed for clients. Does NOT change what the server binds to.
+                        Use when the machine has several NICs or sits behind NAT.
+  --interface NAME      Pick the advertised IP from this interface (e.g. eth0) instead of auto-detect
+  --client-input N|auto Input token budget written into client-config   [default: ${CLIENT_INPUT}]
+  --client-output N     Output token budget written into client-config  [default: ${CLIENT_OUTPUT}]
+
+API TOKEN (authentication)
+  There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
+  Set one with the API_KEY environment variable — it is passed to vLLM as VLLM_API_KEY:
+
+    API_KEY=my-secret-token $0 restart          # start the server with authentication on
+    API_KEY=\$(openssl rand -hex 24) $0 restart  # or generate a random one
+
+  Clients then send it as a bearer token:
+
+    curl http://<ip>:${API_PORT}/v1/chat/completions \\
+      -H "Authorization: Bearer my-secret-token" \\
+      -H 'Content-Type: application/json' \\
+      -d '{"model":"${SERVED_MODEL_NAME}","messages":[{"role":"user","content":"hi"}]}'
+
+  The token is NOT stored in this script — you must pass API_KEY on every start/restart
+  (put it in your shell profile or a systemd drop-in to make it permanent).
+  Without a token, prefer:  $0 restart --bind 127.0.0.1
+
+ENVIRONMENT VARIABLES
+  API_KEY                 Bearer token required from clients        [default: none]
+  API_PORT / API_HOST     Same as --port / --bind
+  MAX_MODEL_LEN           Same as --context
+  HF_TOKEN                Hugging Face token, needed for gated repos during 'download'
+  HF_HOME                 Where model weights live  [default: \${HOME}/.cache/huggingface]
+  GPU_MEMORY_UTILIZATION  Fraction of GPU memory vLLM may reserve   [default: ${GPU_MEMORY_UTILIZATION}]
+                          Lower it when sharing the GPU with other workloads.
+  MAX_NUM_SEQS            Max concurrent sequences                  [default: ${MAX_NUM_SEQS}]
+  HEALTH_TIMEOUT          Seconds to wait for /health on start      [default: ${HEALTH_TIMEOUT}]
+  CONTAINER_NAME          Docker container name                     [default: ${CONTAINER_NAME}]
+  RUN_DIR                 Runtime state read by 'lmds ps'           [default: ${RUN_DIR}]
+
+EXAMPLES
+  $0 start --port 8001 --context 32768        # different port, smaller context
+  $0 restart --bind 127.0.0.1                 # lock the endpoint to this machine
+  API_KEY=secret123 $0 restart                # require a bearer token
+  HF_TOKEN=hf_xxx $0 download                 # gated repository
+  GPU_MEMORY_UTILIZATION=0.70 $0 restart      # leave room for another process on the GPU
 EOF
 }
 

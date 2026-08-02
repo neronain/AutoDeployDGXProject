@@ -370,3 +370,20 @@ def test_no_runtime_assets_keeps_script_clean(tmp_path):
 
     assert "PLUGIN_DIR" not in script
     assert "prepare-runtime" not in script
+
+
+def test_usage_documents_options_and_api_token(tmp_path):
+    """help ของ controller ต้องอธิบาย port/context/bind และวิธีตั้ง API token ให้ครบ"""
+    for report in (safetensors_report(), gguf_report()):
+        bundle, _, _ = make_bundle(report, tmp_path=tmp_path / report.artifact_type.value)
+        script = bundle.controller.read_text(encoding="utf-8")
+
+        assert "API TOKEN (authentication)" in script
+        assert "API_KEY=my-secret-token" in script
+        assert "Authorization: Bearer" in script
+        assert "ENVIRONMENT VARIABLES" in script
+        assert "EXAMPLES" in script
+        for opt in ("--port N", "--context N", "--bind ADDR", "--advertise-ip ADDR"):
+            assert opt in script, f"{opt} ไม่มีใน usage ของ {report.artifact_type.value}"
+        # เตือนเรื่อง endpoint เปิดโล่งต้องอยู่ใน help ด้วย ไม่ใช่แค่ตอน start
+        assert "127.0.0.1" in script
