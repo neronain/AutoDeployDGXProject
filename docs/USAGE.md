@@ -250,6 +250,10 @@ cd bundles/<slug>
 ./<slug>-stacked.sh status
 ```
 
+> **สถานะ**: bundle stacked ที่ LMDS สร้างยังเป็น `static-validated` — ยังไม่เคยรันจริงบนคลัสเตอร์
+> (template port มาจาก reference ที่ hardware-validated แล้ว แต่ตัวที่ generate เองยังไม่ได้พิสูจน์)
+> · `runtime_assets` (parser plugin) ยังไม่รองรับในโหมด stacked
+
 ข้อกำหนด: 2× DGX Spark + fabric ระหว่าง node (แนะนำ 200 Gb/s RoCE) + passwordless SSH (master→worker) · `lmds ps`/`lmds stop`/`lmds logs` เห็น/สั่งงานตัวนี้ได้เหมือน deploy เดี่ยว (stop จะหยุดทั้งสอง node ให้) · stacked รองรับเฉพาะ vLLM (GGUF ยังไม่มี reference ที่ทดสอบแล้ว)
 
 ### 3.4 Target presets ที่มีให้เลือก

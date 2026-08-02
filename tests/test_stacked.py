@@ -179,3 +179,26 @@ def test_gate_passes_for_nonstacked_profile(tmp_path):
     (d / "MODEL_PROFILE.yaml").write_text("topology: single\n", encoding="utf-8")
     (d / "ctl.sh").write_text("#!/usr/bin/env bash\nset -Eeuo pipefail\n", encoding="utf-8")
     assert gate_stacked_contract(d).passed
+
+
+def test_stacked_has_shard_size_check_and_security_warning(tmp_path):
+    """stacked ต้องตรวจ shard เท่าฝั่ง single — มีขั้น rsync ข้ามเครื่องเพิ่มอีกจุดที่ไฟล์ขาดได้"""
+    from lmds.inspector.report import ShardFile
+
+    report = big_safetensors()
+    report.safetensor_shards = [
+        ShardFile(filename="model-00001-of-00002.safetensors", size_bytes=80_000_000_000),
+        ShardFile(filename="model-00002-of-00002.safetensors", size_bytes=79_000_000_000),
+    ]
+    bundle, _, _ = _stacked_bundle(tmp_path, report=report)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "SHARD_FILES=(" in script
+    assert "80000000000" in script
+    assert "ขนาดไม่ตรง" in script
+    assert "warn_open_endpoint" in script
+    assert "API TOKEN (authentication)" in script
+    assert "Authorization: Bearer" in script
+
+    result = subprocess.run(["bash", "-n", str(bundle.controller)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

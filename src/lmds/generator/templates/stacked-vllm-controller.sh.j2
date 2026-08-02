@@ -76,6 +76,14 @@ TEMPLATE_OVERHEAD_TOKENS="2048"
 
 # ── Model shard verification (0 = ไม่บังคับจำนวน) ──
 SHARD_COUNT="${SHARD_COUNT:-{{ shard_count }}}"
+{% if shard_files -%}
+SHARD_FILES=(
+{% for shard in shard_files %}  "{{ shard.filename }}"
+{% endfor %})
+SHARD_SIZES=(
+{% for shard in shard_files %}  "{{ shard.size }}"
+{% endfor %})
+{% endif -%}
 TOTAL_SIZE_APPROX_GB="${TOTAL_SIZE_APPROX_GB:-{{ total_size_gb }}}"
 
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-{{ health_timeout }}}"
@@ -249,6 +257,14 @@ PYEOF
 }
 
 # ─────────────────────────── verify-files ───────────────────────────
+warn_open_endpoint() {
+  # bind 0.0.0.0 + ไม่มี key = ใครก็ตามในวง network ยิง API ได้โดยไม่ต้องยืนยันตัวตน
+  [[ "$API_HOST" == "0.0.0.0" && -z "$API_KEY" ]] || return 0
+  echo "คำเตือน: เปิดให้ทั้งวง network เข้าถึงได้โดยไม่มี API key" >&2
+  echo "         ใช้เฉพาะในเครื่อง: $0 restart --bind 127.0.0.1" >&2
+  echo "         หรือบังคับ token:  API_KEY=\$(openssl rand -hex 24) $0 restart" >&2
+}
+
 verify_files() {
   local snap; snap="$(_snapshot_path "$HF_HOME")"
   [[ -d "$snap" ]] || die "ยังไม่ได้ download (ไม่พบ $snap) — รัน: $0 download"
@@ -262,6 +278,21 @@ verify_files() {
   if (( SHARD_COUNT > 0 )) && (( n != SHARD_COUNT )); then
     die "shard ไม่ครบ: คาด ${SHARD_COUNT} พบ ${n} ใน ${snap}"
   fi
+{% if shard_files %}
+  # ตรวจทีละไฟล์ + ขนาดตรงกับที่ Hub รายงาน — นับจำนวนอย่างเดียวจับไฟล์ที่โหลดไม่ครบไม่ได้
+  # สำคัญกว่าฝั่ง single เพราะ stacked มีขั้น rsync ข้ามเครื่องเพิ่มมาอีกจุดที่ไฟล์ขาดได้
+  local i path actual_size
+  for i in "${!SHARD_FILES[@]}"; do
+    path="${snap}/${SHARD_FILES[$i]}"
+    [[ -e "$path" ]] || die "shard หายไป: ${SHARD_FILES[$i]} — รัน: $0 download (resume ต่อได้)"
+    if [[ -n "${SHARD_SIZES[$i]}" ]]; then
+      actual_size="$(stat -Lc %s "$path" 2>/dev/null || stat -Lf %z "$path")"
+      [[ "$actual_size" == "${SHARD_SIZES[$i]}" ]] ||
+        die "${SHARD_FILES[$i]}: ขนาดไม่ตรง (ได้ ${actual_size} ต้องการ ${SHARD_SIZES[$i]} — download ไม่ครบ?)"
+    fi
+  done
+  echo "shard ครบ {{ '${#SHARD_FILES[@]}' }} ไฟล์ (ขนาดตรงกับ Hub)"
+{% endif %}
   echo "verify-files: OK (${n} shards @ ${snap})"
 }
 
@@ -489,6 +520,7 @@ WSCRIPT
     if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
       log "Server พร้อม"
       echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
+      warn_open_endpoint
       network_info
       return 0
     fi
@@ -613,10 +645,17 @@ test_text() {
 
 usage() {
   cat <<EOF
-Usage: $0 <command> [--context N] [--port N] [--bind ADDR] [--advertise-ip ADDR]
-          [--interface NAME] [--client-input N|auto] [--client-output N]
+{{ slug }} — vLLM stacked (multi-node) controller  (model: ${MODEL_ID})
 
-Stacked (multi-node) commands — รันจาก MASTER เท่านั้น ในฐานะ user ปกติ (ห้าม sudo):
+USAGE
+  $0 <command> [options]
+
+Run every command from the MASTER node as a normal user (never sudo).
+Before the first start you MUST set MASTER_IP / WORKER_IP / SSH_USER /
+NCCL_SOCKET_IFNAME / NCCL_IB_HCA in the CONFIG block at the top of this file,
+and set up passwordless SSH from master to worker.
+
+COMMANDS (Thai descriptions kept — same wording as the run output):
   prepare-runtime  pull + lock image ให้ตรงกันทั้งสอง node
   runtime-info     แสดง image / lock id
   download         ดาวน์โหลดโมเดลลง head (resume ได้, pin revision)
@@ -632,7 +671,50 @@ Stacked (multi-node) commands — รันจาก MASTER เท่านั�
   network-info     IP/fabric/endpoint
   test-text        ทดสอบ chat completion
 
-ก่อน start ต้อง: ตั้ง MASTER_IP/WORKER_IP/SSH_USER + passwordless SSH + NCCL_SOCKET_IFNAME/NCCL_IB_HCA
+OPTIONS  (can be placed after any command; equals form also works: --port=8001)
+  --port N              Port the head node serves on             [default: ${API_PORT}]
+  --context N           Max context length in tokens             [default: ${MAX_MODEL_LEN}]
+  --bind ADDR           Address the head node listens on         [default: ${API_HOST}]
+                        0.0.0.0 = whole network · 127.0.0.1 = this machine only
+  --advertise-ip ADDR   IP printed for clients (does NOT change the bind address)
+  --interface NAME      Pick the advertised IP from this interface instead of auto-detect
+  --client-input N|auto Input token budget written into client-config
+  --client-output N     Output token budget written into client-config
+
+API TOKEN (authentication)
+  There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
+  Set one with the API_KEY environment variable — it is passed to vLLM as VLLM_API_KEY on the head node:
+
+    API_KEY=my-secret-token $0 restart          # restart both nodes with authentication on
+    API_KEY=\$(openssl rand -hex 24) $0 restart  # or generate a random one
+
+  Clients then send it as a bearer token:
+
+    curl http://<master-ip>:${API_PORT}/v1/chat/completions \
+      -H "Authorization: Bearer my-secret-token" \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"${SERVED_MODEL_NAME}","messages":[{"role":"user","content":"hi"}]}'
+
+  The token is NOT stored in this script — pass API_KEY on every start/restart.
+  Only the head node serves the API; the worker never exposes one.
+  Without a token, prefer:  $0 restart --bind 127.0.0.1
+
+ENVIRONMENT VARIABLES
+  API_KEY               Bearer token required from clients        [default: none]
+  API_PORT / API_HOST   Same as --port / --bind
+  MAX_MODEL_LEN         Same as --context
+  HF_TOKEN              Hugging Face token, needed for gated repos during 'download'
+  HF_HOME               Where model weights live on BOTH nodes    [default: \${HOME}/.cache/huggingface]
+  SHARD_COUNT           Expected shard count (0 = do not enforce) [default: ${SHARD_COUNT}]
+  STARTUP_TIMEOUT       Seconds to wait for /health on start      [default: ${STARTUP_TIMEOUT}]
+
+EXAMPLES
+  $0 prepare-runtime && $0 download && $0 verify-files    # first run, on master
+  $0 sync-worker && $0 verify-worker                      # copy weights to the worker and check
+  $0 start                                                # worker first, then head
+  API_KEY=secret123 $0 restart                            # require a bearer token
+  $0 logs worker 200                                      # worker-side logs
+  $0 doctor                                               # image / GPU / vLLM consistency across nodes
 EOF
 }
 
