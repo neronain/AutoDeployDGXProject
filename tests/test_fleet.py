@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -269,3 +270,78 @@ def test_generated_controller_writes_meta(isolated_config, tmp_path):
     assert "write_meta" in text
     for key in ["slug=", "engine=", "port=", "controller="]:
         assert key in text
+
+
+_TAB = chr(9)
+_NL = chr(10)
+DOCKER_PS_SAMPLE = _NL.join([
+    _TAB.join(["my-vllm", "vllm/vllm-openai:latest", "0.0.0.0:9000->8000/tcp"]),
+    _TAB.join(["lmds-qwen3", "vllm/vllm-openai:latest", "0.0.0.0:8000->8000/tcp"]),
+    _TAB.join(["postgres", "postgres:16", "5432/tcp"]),
+]) + _NL
+
+
+def test_docker_ps_adopts_model_servers_only():
+    """container ที่คนอื่นรันไว้ต้องมองเห็นได้ แต่ container อื่น (db ฯลฯ) ต้องไม่ปนเข้ามา"""
+    from lmds.fleet import manager
+
+    found = manager._parse_docker_ps(DOCKER_PS_SAMPLE, set())
+    by_slug = {s.slug: s for s in found}
+
+    assert set(by_slug) == {"my-vllm", "qwen3"}  # postgres ไม่ใช่ model server
+    assert by_slug["my-vllm"].external is True
+    assert by_slug["my-vllm"].engine == "vllm"
+    assert by_slug["my-vllm"].port == 9000
+    assert by_slug["qwen3"].external is False  # ชื่อ lmds-* = ของเรา
+    assert by_slug["qwen3"].container == "lmds-qwen3"
+
+
+def test_docker_ps_skips_known_containers():
+    from lmds.fleet import manager
+
+    found = manager._parse_docker_ps(DOCKER_PS_SAMPLE, {"lmds-qwen3"})
+    assert [s.slug for s in found] == ["my-vllm"]
+
+
+def test_stop_external_container_uses_docker_stop(monkeypatch):
+    """ของคนอื่น: หยุดอย่างเดียว ห้าม docker rm -f ทิ้ง"""
+    from lmds.fleet import manager
+
+    calls = []
+    monkeypatch.setattr(
+        manager.subprocess, "run",
+        lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0, stdout=""),
+    )
+    external = manager.ServerInfo(
+        slug="my-vllm", mode="docker", container="my-vllm", running=True,
+        registered=False, external=True,
+    )
+    assert manager.stop_server(external) == "docker-stop"
+    assert ["docker", "stop", "my-vllm"] in calls
+    assert not any(c[:3] == ["docker", "rm", "-f"] for c in calls)
+
+
+def test_stop_lmds_container_still_removes(monkeypatch):
+    from lmds.fleet import manager
+
+    calls = []
+    monkeypatch.setattr(
+        manager.subprocess, "run",
+        lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0, stdout=""),
+    )
+    ours = manager.ServerInfo(slug="qwen3", mode="docker", container="lmds-qwen3", running=True)
+    assert manager.stop_server(ours) == "docker-rm"
+    assert ["docker", "rm", "-f", "lmds-qwen3"] in calls
+
+
+def test_adopted_container_autostart_unit_uses_docker_start():
+    from lmds.fleet import manager
+
+    info = manager.ServerInfo(
+        slug="my-vllm", mode="docker", container="my-vllm", running=True,
+        registered=False, external=True,
+    )
+    unit = manager.render_unit(info)
+    assert "ExecStart=/usr/bin/docker start my-vllm" in unit
+    assert "ExecStop=/usr/bin/docker stop my-vllm" in unit
+    assert "WantedBy=multi-user.target" in unit

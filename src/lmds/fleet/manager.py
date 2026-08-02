@@ -52,6 +52,9 @@ def render_unit(info: "ServerInfo", timeout: int = 1800) -> str:
     - ExecStartPre=stop: เคลียร์ container/process ค้างจากก่อน reboot ก่อน start ใหม่
     - User=<เจ้าของ bundle>: รันเป็น user ปกติ (docker/HF cache/สิทธิ์ตรงกับตอน deploy)
     """
+    if not info.controller_exists and info.mode == "docker" and info.container:
+        return _render_docker_unit(info)
+
     controller = info.controller
     workdir = str(Path(controller).parent)
     user = _controller_owner(controller)
@@ -98,6 +101,34 @@ def autostart_status(slug: str) -> str:
     return out if out in {"enabled", "disabled"} else ("enabled" if proc.returncode == 0 else "disabled")
 
 
+def _render_docker_unit(info: "ServerInfo") -> str:
+    """unit สำหรับ container ที่ไม่ได้มาจาก lmds — แค่ start container เดิมกลับมาหลัง reboot
+
+    ไม่มี controller ให้เรียก จึงทำได้แค่ `docker start` (ไม่ได้สร้าง container ใหม่)
+    ถ้า container ถูกลบไป unit นี้จะล้ม — ต้อง enable ใหม่หลังสร้าง container ใหม่
+    """
+    import getpass
+
+    return "\n".join([
+        "[Unit]",
+        f"Description=LMDS (adopted container): {info.container}",
+        "After=network-online.target docker.service",
+        "Wants=network-online.target docker.service",
+        "Requires=docker.service",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "RemainAfterExit=yes",
+        f"User={getpass.getuser()}",
+        f"ExecStart=/usr/bin/docker start {info.container}",
+        f"ExecStop=/usr/bin/docker stop {info.container}",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+        "",
+    ])
+
+
 def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = False) -> str:
     """ติดตั้ง + enable systemd unit (ต้องใช้ sudo) — คืนชื่อ unit ที่ติดตั้ง
 
@@ -106,11 +137,20 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
     """
     if not have_systemctl():
         raise FleetError("เครื่องนี้ไม่มี systemd (systemctl) — autostart รองรับเฉพาะระบบ systemd")
-    if not info.controller_exists:
-        raise FleetError(f"ไม่พบ controller ของ {info.slug} — ต้องมี bundle ก่อนตั้ง autostart")
+    adopted = not info.controller_exists and info.mode == "docker" and bool(info.container)
+    if not info.controller_exists and not adopted:
+        raise FleetError(
+            f"ไม่พบ controller ของ {info.slug} — ต้องมี bundle หรือเป็น container ที่รันอยู่ก่อนตั้ง autostart"
+        )
 
     name = unit_name(info.slug)
-    staged = Path(info.controller).parent / name
+    if adopted:
+        # container ที่ไม่ได้มาจาก lmds ไม่มี bundle dir ให้ stage — ใช้ run dir ของ fleet แทน
+        stage_dir = run_root() / info.slug
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        staged = stage_dir / name
+    else:
+        staged = Path(info.controller).parent / name
     staged.write_text(render_unit(info, timeout), encoding="utf-8")
 
     steps = [
@@ -165,6 +205,7 @@ class ServerInfo:
     running: bool = False
     healthy: bool = False
     registered: bool = True  # False = ตรวจเจอแต่ไม่มี server.meta (bundle รุ่นเก่า)
+    external: bool = False  # container ที่ไม่ได้มาจาก lmds — จัดการได้แต่ต้องระวังกว่า
 
     @property
     def endpoint(self) -> str:
@@ -259,24 +300,77 @@ def _orphan_native(known_pids: set[int]) -> list[ServerInfo]:
     return orphans
 
 
+# image ของ engine ที่เรารู้จัก — ใช้เดาว่า container ที่ไม่ได้มาจาก lmds เป็น model server
+_ENGINE_IMAGE_HINTS = {
+    "vllm": ("vllm/vllm-openai", "nvcr.io/nvidia/vllm", "vllm"),
+    "llamacpp": ("llama.cpp", "llamacpp"),
+    "ollama": ("ollama/ollama",),
+    "tgi": ("text-generation-inference",),
+}
+
+
+def _engine_from_image(image: str) -> str:
+    low = image.lower()
+    for engine, hints in _ENGINE_IMAGE_HINTS.items():
+        if any(hint in low for hint in hints):
+            return engine
+    return ""
+
+
+def _first_published_port(ports: str) -> int:
+    """'0.0.0.0:8001->8000/tcp, ...' → 8001 (พอร์ตฝั่ง host ตัวแรก)"""
+    for chunk in ports.split(","):
+        host_side = chunk.strip().split("->")[0]
+        tail = host_side.rsplit(":", 1)[-1]
+        if tail.isdigit():
+            return int(tail)
+    return 0
+
+
 def _orphan_docker(known_containers: set[str]) -> list[ServerInfo]:
-    """container ชื่อ lmds-* ที่รันอยู่แต่ไม่มีทะเบียน"""
+    """container ที่รันอยู่แต่ไม่มีทะเบียน — ทั้งชื่อ lmds-* และของที่คนอื่นรันไว้เอง
+
+    ของที่ไม่ได้มาจาก lmds ถูกจับเฉพาะเมื่อ image ตรงกับ engine ที่รู้จัก (vLLM/llama.cpp/
+    Ollama/TGI) เพื่อไม่ให้ container อื่นในเครื่อง (ฐานข้อมูล ฯลฯ) โผล่มาปนใน fleet
+    """
     if shutil.which("docker") is None:
         return []
     try:
         proc = subprocess.run(
-            ["docker", "ps", "--filter", "name=lmds-", "--format", "{{.Names}}"],
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}"],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
+    return _parse_docker_ps(proc.stdout, known_containers)
+
+
+def _parse_docker_ps(output: str, known_containers: set[str]) -> list[ServerInfo]:
+    """แปลงผล `docker ps` → ServerInfo (แยกออกมาเป็นฟังก์ชันล้วนเพื่อเทสได้ตรง ๆ)"""
     orphans: list[ServerInfo] = []
-    for name in proc.stdout.split():
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0]:
+            continue
+        name = parts[0]
+        image = parts[1] if len(parts) > 1 else ""
+        ports = parts[2] if len(parts) > 2 else ""
         if name in known_containers:
             continue
+        is_lmds = name.startswith("lmds-")
+        engine = _engine_from_image(image)
+        if not is_lmds and not engine:
+            continue  # ไม่ใช่ model server — ไม่เอาเข้ามาใน fleet
         orphans.append(ServerInfo(
-            slug=name.removeprefix("lmds-"), engine="?", mode="docker",
-            container=name, running=True, registered=False,
+            slug=name.removeprefix("lmds-") if is_lmds else name,
+            model_id=image,
+            engine=engine or "?",
+            mode="docker",
+            container=name,
+            port=_first_published_port(ports),
+            running=True,
+            registered=False,
+            external=not is_lmds,
         ))
     return orphans
 
@@ -395,13 +489,50 @@ def stop_server(info: ServerInfo) -> str:
             os.kill(pid, 15)
             Path(info.pid_file).unlink(missing_ok=True)
         return "kill"
+    if info.external:
+        # ของคนอื่น — หยุดอย่างเดียว ห้ามลบ container ทิ้ง
+        subprocess.run(["docker", "stop", info.container], capture_output=True)
+        return "docker-stop"
     subprocess.run(["docker", "rm", "-f", info.container], capture_output=True)
     return "docker-rm"
+
+
+def restart_server(info: ServerInfo) -> str:
+    """restart — controller ถ้ามี, ไม่งั้น docker restart (ใช้ได้กับ container ภายนอกด้วย)"""
+    if info.controller_exists:
+        _run_controller(info, "restart")
+        return "controller"
+    if info.mode == "docker" and info.container:
+        proc = subprocess.run(["docker", "restart", info.container], capture_output=True)
+        if proc.returncode != 0:
+            raise FleetError(f"docker restart {info.container} ล้มเหลว")
+        return "docker-restart"
+    raise FleetError(
+        f"restart {info.slug} ไม่ได้ — ไม่มี controller และไม่ใช่ container "
+        "(หยุดด้วย lmds stop แล้ว start ใหม่เอง)"
+    )
 
 
 def start_server(info: ServerInfo) -> int:
     return _run_controller(info, "start")
 
 
-def logs_server(info: ServerInfo, lines: int = 200) -> int:
-    return _run_controller(info, "logs", [str(lines)])
+def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int:
+    """ดู log — follow=True ตามแบบ realtime (Ctrl-C เพื่อออก)
+
+    controller ไม่มีโหมด follow จึงต่อตรงที่แหล่ง log: docker logs -f / tail -f
+    """
+    if not follow:
+        return _run_controller(info, "logs", [str(lines)])
+
+    if info.mode == "docker" and info.container:
+        return subprocess.run(
+            ["docker", "logs", "-f", "--tail", str(lines), info.container]
+        ).returncode
+    log_file = info.run_dir / "server.log" if info.run_dir else None
+    if log_file and log_file.is_file():
+        return subprocess.run(["tail", "-n", str(lines), "-f", str(log_file)]).returncode
+    raise FleetError(
+        f"ตาม log ของ {info.slug} แบบ realtime ไม่ได้ — ไม่พบ container หรือไฟล์ log "
+        f"({log_file or 'ไม่ระบุ'}) · ใช้แบบไม่ follow แทน: lmds logs {info.slug}"
+    )

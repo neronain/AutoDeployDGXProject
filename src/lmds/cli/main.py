@@ -697,17 +697,28 @@ def ps() -> None:
             status = "[yellow]◐ loading/ไม่ตอบ health[/yellow]"
         else:
             status = "[dim]○ stopped[/dim]"
-        if not server.registered:
+        if server.external:
+            status += " [cyan]⚙ ไม่ได้มาจาก lmds[/cyan]"
+        elif not server.registered:
             status += " [yellow]⚠ ไม่ลงทะเบียน[/yellow]"
         table.add_row(server.slug, server.model or server.model_id, f"{server.engine} ({server.mode})",
                       str(server.port or "-"), status)
     console.print(table)
     running = [s for s in servers if s.running]
     if running:
+        example = running[0].slug
         console.print(
-            f"\n[dim]หยุดตัวเดียว: lmds stop <ชื่อ> | หยุดทั้งหมด: lmds stop --all | ดู log: lmds logs <ชื่อ>[/dim]"
+            "\n[dim]ใช้ชื่อจากคอลัมน์แรกกับทุกคำสั่ง เช่น:[/dim]\n"
+            f"  lmds logs {example} -f      [dim]# ดู log realtime (Ctrl-C ออก ไม่หยุดโมเดล)[/dim]\n"
+            f"  lmds restart {example}\n"
+            f"  lmds stop {example}         [dim]# หรือ lmds stop --all[/dim]"
         )
-    if any(not s.registered for s in servers):
+    if any(s.external for s in servers):
+        console.print(
+            "[cyan]⚙ ตัวที่ 'ไม่ได้มาจาก lmds' คือ container ที่คุณรันเอง — "
+            "lmds stop/restart/logs/enable ใช้ได้ (stop = docker stop ไม่ลบ container ทิ้ง)[/cyan]"
+        )
+    if any(not s.registered and not s.external for s in servers):
         err_console.print(
             "[yellow]⚠ ตัวที่ 'ไม่ลงทะเบียน' มาจาก bundle รุ่นเก่า — lmds stop ใช้ได้ (fallback) "
             "แต่แนะนำ regenerate bundle (lmds deploy ลิงก์เดิม) เพื่อเข้าระบบเต็มรูป[/yellow]"
@@ -757,6 +768,7 @@ def stop(
 def logs(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps"),
     lines: int = typer.Option(200, "-n", "--lines"),
+    follow: bool = typer.Option(False, "-f", "--follow", help="ตาม log แบบ realtime (Ctrl-C เพื่อออก)"),
 ) -> None:
     """ดู log ของโมเดลตามชื่อ — ไม่ต้องจำ path ของ bundle"""
     from lmds.fleet import FleetError, find, logs_server
@@ -765,11 +777,34 @@ def logs(
     if server is None:
         err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps")
         raise typer.Exit(code=1)
+    if follow:
+        err_console.print(f"[dim]ตาม log ของ {slug} แบบ realtime — Ctrl-C เพื่อออก (ไม่หยุดโมเดล)[/dim]")
     try:
-        raise typer.Exit(code=logs_server(server, lines))
+        raise typer.Exit(code=logs_server(server, lines, follow=follow))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        raise typer.Exit(code=0)
+
+
+@app.command()
+def restart(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list"),
+) -> None:
+    """restart โมเดลตามชื่อ — ใช้ได้กับ container ที่ไม่ได้มาจาก lmds ด้วย"""
+    from lmds.fleet import FleetError, find, restart_server
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps")
+        raise typer.Exit(code=1)
+    try:
+        method = restart_server(server)
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"restart {slug} แล้ว ({method})")
 
 
 @app.command()
@@ -881,8 +916,12 @@ def list_bundles() -> None:
             "✅" if server.controller_exists else "[red]หาย[/red]",
         )
     console.print(table)
+    first = servers[0].slug if servers else "<ชื่อ>"
     console.print(
-        "[dim]รายละเอียดเต็ม/endpoint: lmds ps · autostart: lmds enable <ชื่อ> / lmds disable <ชื่อ>[/dim]"
+        "\n[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง เช่น:[/dim]\n"
+        f"  lmds start {first}   ·   lmds stop {first}   ·   lmds restart {first}\n"
+        f"  lmds logs {first} -f   [dim]# realtime[/dim]   ·   lmds enable {first}   [dim]# autostart[/dim]\n"
+        "[dim]สถานะว่าตัวไหนรันอยู่จริง: lmds ps[/dim]"
     )
 
 
