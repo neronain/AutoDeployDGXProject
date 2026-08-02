@@ -90,3 +90,24 @@ def test_list_shows_port_context_support(tmp_path, monkeypatch):
     assert "8000" in out            # port
     assert "32,768" in out          # context (มี comma)
     assert "tools" in out and "reasoning" in out  # support
+
+
+def test_list_hint_shows_one_command_per_line_including_repair_remove(tmp_path, monkeypatch):
+    """คำใบ้ต้องอ่านง่าย: หนึ่งคำสั่งต่อบรรทัด และต้องมี repair/remove ด้วย
+
+    เดิมเอาหลายคำสั่งมาต่อกันด้วย · ในบรรทัดเดียว ผู้ใช้อ่านแล้วเข้าใจผิดว่าต้องพิมพ์ทั้งบรรทัด
+    """
+    bundle = _render(tmp_path)
+    run_root = tmp_path / "run"
+    slug = bundle.controller.parent.name
+    _write_meta(run_root, slug, bundle.controller, 8000)
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(run_root))
+
+    out = CliRunner().invoke(app, ["list"]).stdout
+    for command in ("start", "stop", "restart", "logs", "enable", "repair", "remove"):
+        assert f"lmds {command} {slug}" in out or f"lmds {command} {slug} -f" in out, command
+
+    # แต่ละคำสั่งต้องอยู่คนละบรรทัด ไม่ใช่ต่อกันด้วย ·
+    command_lines = [ln for ln in out.splitlines() if ln.strip().startswith("lmds ")]
+    assert len(command_lines) >= 7
+    assert all("·" not in ln for ln in command_lines)

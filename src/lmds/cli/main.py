@@ -757,10 +757,13 @@ def ps() -> None:
     if running:
         example = running[0].slug
         console.print(
-            "\n[dim]ใช้ชื่อจากคอลัมน์แรกกับทุกคำสั่ง เช่น:[/dim]\n"
-            f"  lmds logs {example} -f      [dim]# ดู log realtime (Ctrl-C ออก ไม่หยุดโมเดล)[/dim]\n"
+            "\n[dim]ใช้ชื่อจากคอลัมน์แรกกับทุกคำสั่ง — copy ไปใช้ได้เลย:[/dim]\n"
+            f"  lmds logs {example} -f\n"
             f"  lmds restart {example}\n"
-            f"  lmds stop {example}         [dim]# หรือ lmds stop --all[/dim]"
+            f"  lmds stop {example}\n"
+            "\n"
+            "[dim]logs -f[/dim] ดู log สด (Ctrl-C ออก ไม่หยุดโมเดล) · "
+            "[dim]stop --all[/dim] หยุดทุกตัว · [dim]lmds list[/dim] ดู bundle ทั้งหมด + repair/remove"
         )
     if any(s.external for s in servers):
         console.print(
@@ -975,9 +978,20 @@ def list_bundles() -> None:
     console.print(
         "\n[dim]สถานะ:[/dim] [green]●[/green] [dim]running ·[/dim] [yellow]◐[/yellow] [dim]loading ·[/dim] "
         "○ [dim]stopped ·[/dim] [red]⚠[/red] [dim]ไฟล์ controller หาย (start/restart ไม่ได้)[/dim]\n"
-        "[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง เช่น:[/dim]\n"
-        f"  lmds start {first}   ·   lmds stop {first}   ·   lmds restart {first}\n"
-        f"  lmds logs {first} -f   [dim]# realtime[/dim]   ·   lmds enable {first}   [dim]# autostart[/dim]\n"
+        "[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง — copy ไปใช้ได้เลย:[/dim]\n"
+        f"  lmds start {first}\n"
+        f"  lmds stop {first}\n"
+        f"  lmds restart {first}\n"
+        f"  lmds logs {first} -f\n"
+        f"  lmds enable {first}\n"
+        f"  lmds repair {first}\n"
+        f"  lmds remove {first}\n"
+        "\n"
+        "[dim]start[/dim] เปิดโมเดล · [dim]stop[/dim] หยุด · [dim]restart[/dim] เปิดใหม่ (ใช้ตอนเปลี่ยน option)\n"
+        "[dim]logs -f[/dim] ดู log สด (Ctrl-C ออก ไม่หยุดโมเดล) · [dim]enable[/dim] ให้กลับมาเองหลัง reboot\n"
+        "[dim]repair[/dim] โหลดไฟล์ที่ขาดกลับมา · [dim]remove[/dim] ลบทิ้งทั้งหมด "
+        "([dim]--keep-weights[/dim] = เก็บ weight ไว้)\n"
+        "\n"
         "[dim]endpoint + สถานะ health เต็ม ๆ: lmds ps[/dim]"
     )
 
