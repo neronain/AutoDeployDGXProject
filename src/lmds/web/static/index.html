@@ -1,13 +1,13 @@
 <!doctype html>
-<html lang="th">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LMDS</title>
 <style>
-/* ไม่มี CDN ทั้งหน้า — เครื่องลูกค้าอาจอยู่หลัง proxy หรือ air-gapped */
+/* No CDN anywhere on this page — target machines may sit behind a proxy or be air-gapped */
 :root {
-  --bg: #f7f7f5; --card: #fff; --line: #e3e2dd; --line2: #cfceC8;
+  --bg: #f7f7f5; --card: #fff; --line: #e3e2dd; --line2: #cfcec8;
   --fg: #23231f; --fg2: #61605a; --fg3: #8b8a83;
   --ok: #3b6d11; --warn: #854f0b; --bad: #a32d2d; --accent: #185fa5;
   --ok-bg: #eaf3de; --warn-bg: #faeeda; --bad-bg: #fcebeb; --accent-bg: #e6f1fb;
@@ -23,8 +23,8 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px 20px 48px; background: var(--bg); color: var(--fg);
-  font: 400 15px/1.6 system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; }
-.wrap { max-width: 940px; margin: 0 auto; }
+  font: 400 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 980px; margin: 0 auto; }
 h1 { font: 500 15px/1 var(--mono); letter-spacing: .08em; margin: 0; }
 .row { display: flex; align-items: center; gap: 12px; }
 .between { justify-content: space-between; }
@@ -38,8 +38,6 @@ h1 { font: 500 15px/1 var(--mono); letter-spacing: .08em; margin: 0; }
 .bar { height: 20px; display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-top: 8px; }
 .bar i { display: flex; align-items: center; justify-content: center; font-size: 11px; font-style: normal; }
 .seg-a { background: #7f77dd; color: #eeedfe; }
-.seg-b { background: #5dcaa5; color: #04342c; }
-.seg-free { background: transparent; }
 .item { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .item:first-child { border-top: 0; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--line2); }
@@ -55,25 +53,24 @@ button { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 7px; 
   background: transparent; color: var(--fg); border: 1px solid var(--line2); }
 button:hover:not(:disabled) { background: var(--bg); }
 button:disabled { opacity: .45; cursor: default; }
-button.busy { opacity: .5; }
 pre { margin: 0; padding: 12px 16px; background: var(--bg); border-top: 1px solid var(--line);
   font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap;
-  word-break: break-word; max-height: 340px; overflow: auto; border-radius: 0 0 11px 11px; }
+  word-break: break-word; max-height: 340px; overflow: auto; }
 .find { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; font-size: 13px; }
 .find span:first-child { width: 16px; flex: none; }
-.find b { width: 104px; flex: none; font-weight: 400; color: var(--fg2); }
+.find b { width: 108px; flex: none; font-weight: 400; color: var(--fg2); }
 code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 3px 8px; border-radius: 6px; }
 .empty { padding: 40px 16px; text-align: center; color: var(--fg2); }
+.sec { margin: 26px 0 10px; font-size: 13px; color: var(--fg3); letter-spacing: .05em; }
 .field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 input, select { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 7px;
   background: var(--bg); color: var(--fg); border: 1px solid var(--line2); }
-input { flex: 1; min-width: 220px; }
+input { flex: 1; min-width: 200px; }
 label { font-size: 13px; color: var(--fg2); }
 .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 13px; margin: 10px 0; }
 .kv span:first-child { color: var(--fg2); }
 .warn-line { font-size: 13px; color: var(--warn); padding: 3px 0; }
 .pad { padding: 16px; }
-.sec { margin: 26px 0 10px; font-size: 13px; color: var(--fg3); letter-spacing: .05em; }
 </style>
 </head>
 <body>
@@ -84,17 +81,16 @@ label { font-size: 13px; color: var(--fg2); }
       <span class="muted" id="host">…</span>
     </div>
     <div class="row">
-      <button id="new">+ deploy โมเดล</button>
+      <button id="new">+ Deploy model</button>
       <span class="dim" id="ver"></span>
     </div>
   </div>
 
+  <div class="stats" id="stats"></div>
   <div class="card" id="wiz" hidden></div>
 
-  <div class="stats" id="stats"></div>
-
-  <div class="sec">โมเดลในเครื่องนี้</div>
-  <div class="card" id="fleet"><div class="empty">กำลังโหลด…</div></div>
+  <div class="sec">Models on this machine</div>
+  <div class="card" id="fleet"><div class="empty">Loading…</div></div>
 </div>
 
 <script>
@@ -105,8 +101,9 @@ const gb = v => v == null ? "—" : Math.round(v) + " GB";
 const open = new Set();
 let busy = null;
 
-function statCard(label, value, sub) {
-  return `<div class="stat"><span class="muted">${esc(label)}</span><b>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
+function statCard(label, value, sub, colour) {
+  return `<div class="stat"><span class="muted">${esc(label)}</span>
+    <b${colour ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
 }
 
 function renderHost(h) {
@@ -115,42 +112,40 @@ function renderHost(h) {
   const unified = h.memory_model === "unified";
   const cards = [];
 
-  if (gpu) {
-    cards.push(statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
-      `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`));
-  } else {
-    cards.push(statCard("GPU", "ไม่พบ", "ตรวจ nvidia-smi"));
-  }
+  cards.push(gpu
+    ? statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
+        `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`)
+    : statCard("GPU", "not found", "check nvidia-smi"));
 
-  // unified (Spark) รวม CPU+GPU ก้อนเดียว จึงต้องอธิบายต่างจาก VRAM แยกของ RTX
+  // Unified memory (DGX Spark) is one CPU+GPU pool — not the same thing as a discrete card's VRAM
   const used = h.ram_used_gb, total = h.ram_total_gb;
   const pct = used != null && total ? Math.round(used / total * 100) : 0;
   cards.push(`<div class="stat"><span class="muted">${unified ? "Unified memory" : "RAM"}</span>
     <b>${used != null ? Math.round(used) : "—"} / ${gb(total)}</b>
-    <div class="bar"><i class="seg-a" style="width:${pct}%"></i><i class="seg-free" style="width:${100 - pct}%"></i></div>
-    ${unified ? '<span class="dim">CPU + GPU ใช้ร่วมกัน</span>' : ""}</div>`);
+    <div class="bar"><i class="seg-a" style="width:${pct}%"></i><i style="width:${100 - pct}%"></i></div>
+    ${unified ? '<span class="dim">shared by CPU and GPU</span>' : ""}</div>`);
 
-  cards.push(statCard("ดิสก์", gb(h.disk_free_gb), "ว่าง"));
+  cards.push(statCard("Disk", gb(h.disk_free_gb), "free"));
   const ready = h.docker && h.toolkit;
-  cards.push(`<div class="stat"><span class="muted">Docker + GPU</span>
-    <b style="color:${ready ? "var(--ok)" : "var(--bad)"}">${ready ? "พร้อม" : h.docker ? "ไม่เห็น GPU" : "ไม่พร้อม"}</b>
-    <span class="dim">${esc(h.profile)} · ${esc(h.arch)}</span></div>`);
+  cards.push(statCard("Docker + GPU", ready ? "ready" : h.docker ? "no GPU access" : "not ready",
+    `${esc(h.profile)} · ${esc(h.arch)}`, ready ? "var(--ok)" : "var(--bad)"));
 
   document.getElementById("stats").innerHTML = cards.join("");
 }
 
-// อัปเดตเฉพาะส่วนที่เปลี่ยน — ห้ามสร้าง DOM ใหม่ทุกรอบ ไม่งั้น panel ที่เปิดอยู่กระพริบ
-// และปุ่มที่ผู้ใช้กำลังจะกดหายไปใต้เมาส์
+// Update only what changed. Rebuilding the whole list every poll makes open panels
+// flicker and yanks buttons out from under the pointer mid-click.
 const rows = new Map();
 const models_by_slug = new Map();
+const has = (m, command) => (m.commands || []).includes(command);
 
 function rowMarkup(m) {
   const tags = [];
   if (m.topology === "stacked") tags.push(`<span class="tag">stacked</span>`);
-  if (m.features && m.features.includes("image")) tags.push(`<span class="tag">image</span>`);
-  if (m.external) tags.push(`<span class="tag warn">ไม่ได้มาจาก lmds</span>`);
-  if (!m.controller_exists) tags.push(`<span class="tag bad">controller หาย</span>`);
-  else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">ยังไม่โหลดไฟล์</span>`);
+  if (m.features && m.features.includes("image")) tags.push(`<span class="tag">vision</span>`);
+  if (m.external) tags.push(`<span class="tag warn">not deployed by lmds</span>`);
+  if (!m.controller_exists) tags.push(`<span class="tag bad">controller missing</span>`);
+  else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">not downloaded</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
     <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>`;
 }
@@ -162,85 +157,91 @@ function actionsMarkup(m) {
        <button data-act="restart" data-slug="${esc(m.slug)}">restart</button>`;
   }
   if (!m.controller_exists) return `<button disabled>start</button>`;
-  // ยังไม่โหลด weight = start ไปก็ล้มแน่ ๆ — พาไป download ก่อน
+  // Starting without weights always fails — send the user to download first
   return m.downloaded
     ? `<button data-act="start" data-slug="${esc(m.slug)}">start</button>`
     : `<button data-act="job:download" data-slug="${esc(m.slug)}">download</button>`;
 }
 
-// ตัวเลือกต่อโมเดล — เทียบเท่า --port / API_KEY / --context ของ CLI
-// เก็บใน localStorage ของเบราว์เซอร์ ไม่ส่งไปเก็บบนเครื่อง (API key เป็นความลับของผู้ใช้)
+// Per-model options, stored in the browser. The API key never reaches the server's disk.
 function opts(slug) {
   try { return JSON.parse(localStorage.getItem("lmds:" + slug) || "{}"); } catch { return {}; }
 }
 function setOpts(slug, o) { localStorage.setItem("lmds:" + slug, JSON.stringify(o)); }
 
-function optionsMarkup(m) {
+function testsMarkup(m) {
+  // Buttons follow what this controller actually supports — older bundles lack the newer
+  // commands, and a button that always fails is worse than no button.
+  const btn = (command, hint) =>
+    has(m, command)
+      ? `<button data-act="job:${command}" data-slug="${esc(m.slug)}" title="${esc(hint)}">${command}</button>`
+      : "";
+  return `<div class="pad" style="border-top:1px solid var(--line)">
+    <div class="field">
+      ${btn("test-text", "Ask a short question and check the model replies")}
+      ${btn("test-vision", "Send a generated red image and check the model really sees it")}
+      ${btn("test-reasoning", "Check the reasoning parser separates chain-of-thought")}
+      ${btn("test-tools", "Check the tool-call parser produces tool_calls")}
+    </div>
+    <div class="field">
+      ${btn("bench", "Single-stream throughput")}
+      ${btn("stress", "Several concurrent requests")}
+      ${btn("client-config", "Settings clients need: base URL and token budget")}
+      ${btn("network-info", "Bind address and advertised endpoint")}
+      ${btn("status", "Container/process state and API health")}
+    </div>
+    ${m.running ? "" : `<div class="warn-line">Model is not running — most tests need it started first.</div>`}
+    ${has(m, "test-vision") ? "" : (m.features || "").includes("image")
+      ? `<div class="dim">This bundle predates <code>test-vision</code> — re-deploy the model to get it.</div>` : ""}
+  </div>`;
+}
+
+function manageMarkup(m) {
   const o = opts(m.slug);
-  const stacked = m.topology === "stacked";
   const auto = m.autostart;
   const btn = (act, label, style = "") =>
     `<button data-act="${act}" data-slug="${esc(m.slug)}" style="${style}">${label}</button>`;
+  const job = command =>
+    has(m, command) ? `<button data-act="job:${command}" data-slug="${esc(m.slug)}">${command}</button>` : "";
 
   return `<div class="pad" style="border-top:1px solid var(--line)">
-    <div class="dim" style="margin-bottom:8px">ตัวเลือกตอน start — เทียบเท่า <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
+    <div class="dim" style="margin-bottom:8px">Applied on start — same as
+      <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
     <div class="field">
       <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
       <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px">
-      <label>slots</label><input type="number" class="o-slots" value="${o.slots || m.max_num_seqs || 4}" style="flex:none;width:90px" title="จำนวนคำขอพร้อมกัน — llama.cpp แบ่ง context เท่า ๆ กันให้ทุก slot">
+      <label>slots</label><input type="number" class="o-slots" value="${o.slots || m.max_num_seqs || 4}" style="flex:none;width:90px"
+        title="Concurrent requests. llama.cpp splits the context evenly across slots.">
       <label>bind</label>
       <select class="o-bind" style="flex:none">
-        <option value="0.0.0.0"${(o.bind || "0.0.0.0") === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (ทั้งวง)</option>
-        <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (เครื่องนี้)</option>
+        <option value="0.0.0.0"${(o.bind || "0.0.0.0") === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (whole network)</option>
+        <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (this machine)</option>
       </select>
     </div>
     <div class="field">
       <label>API key</label>
-      <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="ว่าง = ไม่ต้องยืนยันตัวตน">
-      ${btn("genkey", "สุ่มให้")}${btn("saveopts", "บันทึก")}
+      <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="empty = no authentication">
+      ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
     </div>
 
-    <div class="sec" style="margin:16px 0 6px">autostart หลัง reboot</div>
+    <div class="sec" style="margin:16px 0 6px">Autostart after reboot</div>
     <div class="field">
-      <span class="muted">สถานะ: ${esc(auto || "—")}</span>
-      ${auto === "enabled" ? btn("auto:off", "ยกเลิก autostart") : btn("auto:on", "เปิด autostart")}
-      <span class="dim">ต้องใช้ sudo — ถ้าเว็บทำไม่ได้จะบอกคำสั่งให้รันเอง</span>
+      <span class="muted">status: ${esc(auto || "—")}</span>
+      ${auto === "enabled" ? btn("auto:off", "Disable autostart") : btn("auto:on", "Enable autostart")}
+      <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>
     </div>
 
-    ${stacked ? `<div class="sec" style="margin:16px 0 6px">stacked (2 node)</div>
+    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px">Stacked (2 nodes)</div>
     <div class="field">
-      ${btn("job:prepare-runtime", "prepare-runtime")}${btn("job:sync-worker", "sync-worker")}
-      ${btn("job:verify-worker", "verify-worker")}${btn("job:clear-fi-cache", "clear-fi-cache")}
+      ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
 
-    <div class="sec" style="margin:16px 0 6px">ซ่อม / ลบ</div>
+    <div class="sec" style="margin:16px 0 6px">Repair / remove</div>
     <div class="field">
       ${btn("job:repair", "repair")}
-      ${btn("removeask", "ลบออกจากเครื่อง", "border-color:var(--bad);color:var(--bad)")}
+      ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
     </div>
     <div id="rm-${esc(m.slug)}"></div>
-  </div>`;
-}
-
-function testsMarkup(m) {
-  const btn = (act, label, hint = "") =>
-    `<button data-act="${act}" data-slug="${esc(m.slug)}" title="${esc(hint)}">${label}</button>`;
-  const vision = m.features && m.features.includes("image");
-  return `<div class="pad" style="border-top:1px solid var(--line)">
-    <div class="field">
-      ${btn("job:test-text", "test-text", "ถามคำถามสั้น ๆ ดูว่าตอบกลับไหม")}
-      ${vision ? btn("job:test-vision", "test-vision", "สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj ทำงานจริง") : ""}
-      ${m.features && m.features.includes("reasoning") ? btn("job:test-reasoning", "test-reasoning") : ""}
-      ${m.features && m.features.includes("tool") ? btn("job:test-tools", "test-tools") : ""}
-    </div>
-    <div class="field">
-      ${btn("job:bench", "bench", "วัด throughput สตรีมเดียว")}
-      ${btn("job:stress", "stress", "ยิงพร้อมกันหลายคำขอ")}
-      ${btn("job:client-config", "client-config", "ค่าที่ client ต้องใช้ (base_url / token budget)")}
-      ${btn("job:network-info", "network-info")}
-      ${btn("job:status", "status")}
-    </div>
-    ${m.running ? "" : `<div class="warn-line">โมเดลยังไม่ได้รัน — เทสส่วนใหญ่ต้อง start ก่อน</div>`}
   </div>`;
 }
 
@@ -248,7 +249,7 @@ function renderFleet(models) {
   const el = document.getElementById("fleet");
   if (!models.length) {
     rows.clear();
-    el.innerHTML = `<div class="empty">ยังไม่มีโมเดล — deploy ด้วย <code>lmds deploy &lt;model-url&gt;</code></div>`;
+    el.innerHTML = `<div class="empty">No models yet — deploy one with the button above, or <code>lmds deploy &lt;model-url&gt;</code></div>`;
     return;
   }
   if (!rows.size) el.innerHTML = "";
@@ -265,8 +266,8 @@ function renderFleet(models) {
           <div class="grow"></div>
           <span class="mono muted port"></span>
           <span class="acts"></span>
-          <button data-act="tests" data-slug="${esc(m.slug)}">ทดสอบ</button>
-          <button data-act="opts" data-slug="${esc(m.slug)}">จัดการ</button>
+          <button data-act="tests" data-slug="${esc(m.slug)}">tests</button>
+          <button data-act="opts" data-slug="${esc(m.slug)}">manage</button>
           <button data-act="doctor" data-slug="${esc(m.slug)}">doctor</button>
           <button data-act="logs" data-slug="${esc(m.slug)}">logs</button>
         </div>
@@ -286,7 +287,7 @@ function renderFleet(models) {
     if (m.job && !watching.has(m.slug)) followJob(m.slug, m.job.id);
     row.info.innerHTML = rowMarkup(m);
     row.port.textContent = ":" + (m.port || "—");
-    // ต้องนับทุกอย่างที่เปลี่ยนหน้าตาปุ่ม ไม่งั้นโหลดเสร็จแล้วปุ่มไม่เปลี่ยนจนกว่าจะ F5
+    // Every field that changes the buttons must be in this key, or they stay stale until a reload
     const state = `${m.running}|${m.controller_exists}|${m.downloaded}|${m.job ? m.job.command : ""}`;
     if (row.state !== state) { row.acts.innerHTML = actionsMarkup(m); row.state = state; }
   }
@@ -296,7 +297,9 @@ function renderFleet(models) {
 }
 
 function findRow(f) {
-  const icon = { ok: `<span style="color:var(--ok)">✓</span>`, warn: `<span style="color:var(--warn)">!</span>`, fail: `<span style="color:var(--bad)">✕</span>` }[f.status];
+  const icon = { ok: `<span style="color:var(--ok)">✓</span>`,
+                 warn: `<span style="color:var(--warn)">!</span>`,
+                 fail: `<span style="color:var(--bad)">✕</span>` }[f.status];
   return `<div class="find">${icon}<b>${esc(f.name)}</b><span>${esc(f.detail)}</span></div>`;
 }
 
@@ -306,42 +309,153 @@ async function load(slug, kind) {
   if (kind === "logs") {
     const r = await api(`/api/models/${encodeURIComponent(slug)}/logs?lines=300`);
     const d = await r.json();
-    panel.innerHTML = `<pre>${esc(r.ok ? (d.text || "(ว่าง)") : d.detail)}</pre>`;
+    panel.innerHTML = `<pre>${esc(r.ok ? (d.text || "(empty)") : d.detail)}</pre>`;
     return;
   }
   const r = await api(`/api/models/${encodeURIComponent(slug)}/doctor`);
   const d = await r.json();
   const fixes = d.findings.filter(f => f.fix && f.status !== "ok");
-  panel.innerHTML = `<div style="padding:12px 16px;border-top:1px solid var(--line)">
+  panel.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)">
     ${d.findings.map(findRow).join("")}
     ${fixes.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
       ${fixes.map(f => `<div class="find"><b>${esc(f.name)}</b><code>${esc(f.fix)}</code></div>`).join("")}
-    </div>` : `<div class="dim" style="margin-top:8px">ไม่พบปัญหาที่บล็อกการรัน</div>`}
+    </div>` : `<div class="dim" style="margin-top:8px">Nothing blocking the model from running.</div>`}
   </div>`;
 }
 
+// ── deploy wizard ────────────────────────────────────────────────────────
+const wiz = document.getElementById("wiz");
+let sess = null, analyzing = false;
+// Remember what was typed: every follow-up question (pick a GGUF, enter a token) rebuilds
+// the form, and silently losing the target changes the result without the user noticing.
+const draft = { model: "", target: "", no_llm: false };
+
+function wizForm(msg = "", extra = "") {
+  wiz.hidden = false;
+  wiz.innerHTML = `<div class="pad">
+    <div class="field">
+      <input id="w-model" placeholder="Hugging Face link or org/model" autocomplete="off">
+      <select id="w-target"><option value="">This machine (auto-detect)</option></select>
+      <button id="w-go">Analyse</button>
+      <button id="w-close">Close</button>
+    </div>
+    <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> Skip the LLM (rule-based plan)</label>
+    ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
+    ${extra}
+  </div>`;
+  document.getElementById("w-model").value = draft.model;
+  document.getElementById("w-nollm").checked = draft.no_llm;
+  api("/api/targets").then(r => r.json()).then(d => {
+    const sel = document.getElementById("w-target");
+    if (!sel) return;
+    d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
+      `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (untested)"}</option>`));
+    sel.value = draft.target;
+  });
+}
+
+function wizBusy(text) { wiz.innerHTML = `<div class="pad"><div class="muted">${esc(text)}</div></div>`; }
+
+function planView(d) {
+  const p = d.plan, f = p.fit;
+  const head = Math.max(f.max_safe_context || 0, p.context);
+  sess = d.id;
+  wiz.innerHTML = `<div class="pad">
+    <div class="name">${esc(p.model_id)}</div>
+    <div class="kv">
+      <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}</span>
+      <span>revision</span><span class="mono">${esc(p.revision)}</span>
+      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${f.budget_gb} GB</span>
+      ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
+      <span>planner</span><span>${esc(p.generator)}</span>
+    </div>
+    ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
+    <div class="field" style="margin-top:12px">
+      <label>context</label>
+      <input id="w-ctx" type="number" value="${p.context}" max="${head}" style="flex:none;width:140px">
+      ${f.max_safe_context && f.max_safe_context > p.context
+        ? `<span class="dim">This machine can hold ${f.max_safe_context.toLocaleString()} — the suggested value is the v3.0.0 default, not a limit</span>` : ""}
+    </div>
+    ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
+      <div class="muted">Flags that need your approval</div>
+      ${p.flags_needing_approval.map(fl => `<label style="display:block;padding:3px 0">
+        <input type="checkbox" class="w-flag" value="${esc(fl)}" style="min-width:auto;flex:none"> <code>${esc(fl)}</code></label>`).join("")}
+    </div>` : ""}
+    <div class="field" style="margin-top:14px">
+      <button id="w-make">Build bundle</button>
+      <button id="w-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function resultView(r) {
+  sess = null;
+  wiz.innerHTML = `<div class="pad">
+    <div class="name">${esc(r.slug)} <span class="tag ok">passed ${r.gates.length} gates</span></div>
+    <div class="kv"><span>context</span><span>${r.context.toLocaleString()} tok</span>
+      <span>ZIP</span><span class="mono">${esc(r.zip)}</span></div>
+    <div class="dim">Next: press download on the row below — it downloads and verifies, then start becomes available.</div>
+    <div class="field" style="margin-top:12px"><button id="w-close">Close</button></div>
+  </div>`;
+  refresh();
+}
+
+async function analyzeNow(overrides = {}) {
+  if (analyzing) return;
+  const el = id => document.getElementById(id);
+  const model = (el("w-model") || {}).value || draft.model;
+  const target = el("w-target") ? el("w-target").value : draft.target;
+  const noLlm = el("w-nollm") ? el("w-nollm").checked : draft.no_llm;
+  if (!model) return;
+  Object.assign(draft, { model, target, no_llm: noLlm });
+  analyzing = true;
+  wizBusy("Analysing… (fetching metadata, computing fit, planning — this can take a moment)");
+  try {
+    const r = await api("/api/deploy/analyze", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, target, no_llm: noLlm, ...overrides }),
+    });
+    const d = await r.json();
+    if (r.ok) { planView(d); return; }
+    const det = d.detail || {};
+    if (det.kind === "choose-gguf") {
+      wizForm(det.message, `<div style="margin-top:10px">${det.variants.map(v =>
+        `<label style="display:block;padding:3px 0"><input type="radio" name="gguf" value="${esc(v.filename)}" style="min-width:auto;flex:none">
+         <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? v.size_gb + " GB" : ""}</span></label>`).join("")}
+        <button id="w-gguf" style="margin-top:8px">Use this file</button></div>`);
+    } else if (det.kind === "gated") {
+      wizForm(det.message, `<div class="field" style="margin-top:10px">
+        <input id="w-token" type="password" placeholder="Hugging Face token">
+        <button id="w-retry">Try again</button></div>`);
+    } else if (det.kind === "no-fit") {
+      wizForm(det.message, `<div style="margin-top:8px">${(det.alternatives || []).map(a =>
+        `<div class="warn-line">→ ${esc(a)}</div>`).join("")}</div>`);
+    } else {
+      wizForm(det.message || "Analysis failed");
+    }
+  } finally { analyzing = false; }
+}
+
+// ── long-running jobs ────────────────────────────────────────────────────
 const watching = new Map();
 
 async function followJob(slug, jobId) {
-  const panel = document.getElementById("panel-" + slug);
-  if (panel) { open.add(slug + " job"); }
   const tick = async () => {
     const r = await api(`/api/jobs/${jobId}`);
     if (!r.ok) { watching.delete(slug); return; }
     const d = await r.json();
     const el = document.getElementById("panel-" + slug);
     if (el) {
-      el.innerHTML = `<pre id="jobout-${esc(slug)}">${esc(d.output || "กำลังเริ่ม…")}</pre>`;
+      el.innerHTML = `<pre id="jobout-${esc(slug)}">${esc(d.output || "starting…")}</pre>`;
       const out = document.getElementById("jobout-" + slug);
       if (out) out.scrollTop = out.scrollHeight;
     }
     if (d.running) { setTimeout(tick, 1200); return; }
     watching.delete(slug);
-    open.delete(slug + " job");
     if (d.exit_code !== 0) {
-      // controller พิมพ์เหตุผลไว้แล้ว — เอามาโชว์ตรง ๆ ดีกว่าให้ผู้ใช้ไปไล่หาเอง
+      // The controller already explained itself — show that instead of a bare exit code
       const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
-      alert(`${d.command} ${slug} ล้มเหลว (exit ${d.exit_code})\n\n${reason || "ไม่มีข้อความจาก controller"}`);
+      alert(`${d.command} ${slug} failed (exit ${d.exit_code})\n\n${reason || "no output from the controller"}`);
     }
     refresh();
   };
@@ -349,51 +463,87 @@ async function followJob(slug, jobId) {
   tick();
 }
 
+function togglePanel(slug, key, render) {
+  ["doctor", "logs", "tests", "opts"].filter(k => k !== key).forEach(k => open.delete(slug + " " + k));
+  const panel = document.getElementById("panel-" + slug);
+  const full = slug + " " + key;
+  if (open.has(full)) { open.delete(full); panel.innerHTML = ""; return false; }
+  open.add(full);
+  if (render) panel.innerHTML = render();
+  return true;
+}
+
 document.addEventListener("click", async e => {
+  const id = e.target.id;
+  if (id === "new") { wizForm(); return; }
+  if (id === "w-close" || id === "w-cancel") {
+    wiz.hidden = true; wiz.innerHTML = ""; sess = null;
+    Object.assign(draft, { model: "", target: "", no_llm: false });
+    return;
+  }
+  if (id === "w-go") { analyzeNow(); return; }
+  if (id === "w-gguf") {
+    const picked = document.querySelector('input[name="gguf"]:checked');
+    if (picked) analyzeNow({ selected_gguf: picked.value });
+    return;
+  }
+  if (id === "w-retry") { analyzeNow({ hf_token: (document.getElementById("w-token") || {}).value || "" }); return; }
+  if (id === "w-make") {
+    const ctx = parseInt((document.getElementById("w-ctx") || {}).value, 10);
+    const flags = [...document.querySelectorAll(".w-flag:checked")].map(c => c.value);
+    wizBusy("Rendering bundle → running quality gates → packaging ZIP…");
+    const r = await api(`/api/deploy/${sess}/generate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ context: ctx || null, approved_flags: flags }),
+    });
+    const d = await r.json();
+    if (r.ok) resultView(d);
+    else {
+      const det = d.detail || {};
+      wizForm(det.message || "Could not build the bundle",
+        (det.gates || []).filter(g => !g.passed).map(g => `<div class="warn-line">${esc(g.name)}: ${esc(g.detail)}</div>`).join(""));
+    }
+    return;
+  }
+
   const btn = e.target.closest("button[data-act]");
   if (!btn || busy) return;
   const { act, slug } = btn.dataset;
+  const model = models_by_slug.get(slug) || { slug };
 
-  if (act === "tests") {
-    const key = slug + " tests";
-    ["doctor", "logs", "opts"].forEach(k => open.delete(slug + " " + k));
-    const panel = document.getElementById("panel-" + slug);
-    if (open.has(key)) { open.delete(key); panel.innerHTML = ""; }
-    else { open.add(key); panel.innerHTML = testsMarkup(models_by_slug.get(slug) || { slug }); }
+  if (act === "tests") { togglePanel(slug, "tests", () => testsMarkup(model)); return; }
+  if (act === "opts") { togglePanel(slug, "opts", () => manageMarkup(model)); return; }
+  if (act === "doctor" || act === "logs") {
+    if (togglePanel(slug, act)) await load(slug, act);
     return;
   }
-  if (act === "opts") {
-    const key = slug + " opts";
-    ["doctor", "logs", "tests"].forEach(k => open.delete(slug + " " + k));
-    const panel = document.getElementById("panel-" + slug);
-    if (open.has(key)) { open.delete(key); panel.innerHTML = ""; }
-    else { open.add(key); panel.innerHTML = optionsMarkup(models_by_slug.get(slug) || { slug }); }
-    return;
-  }
+
   if (act === "genkey") {
-    const inp = document.querySelector(`#panel-${CSS.escape(slug)} .o-key`);
-    if (inp) { inp.type = "text"; inp.value = [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, "0")).join(""); }
+    const input = document.querySelector(`#panel-${CSS.escape(slug)} .o-key`);
+    if (input) {
+      input.type = "text";
+      input.value = [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, "0")).join("");
+    }
     return;
   }
   if (act === "saveopts") {
     const panel = document.getElementById("panel-" + slug);
-    const val = c => (panel.querySelector(c) || {}).value || "";
+    const val = sel => (panel.querySelector(sel) || {}).value || "";
     setOpts(slug, { port: +val(".o-port") || null, context: +val(".o-ctx") || null,
                     slots: +val(".o-slots") || null, bind: val(".o-bind"), api_key: val(".o-key") });
-    btn.textContent = "บันทึกแล้ว";
-    setTimeout(() => { btn.textContent = "บันทึก"; }, 1500);
+    btn.textContent = "Saved";
+    setTimeout(() => { btn.textContent = "Save"; }, 1500);
     return;
   }
 
   if (act.startsWith("auto:")) {
-    const enabled = act === "auto:on";
     btn.disabled = true;
     const r = await api(`/api/models/${encodeURIComponent(slug)}/autostart`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled: act === "auto:on" }),
     });
     const d = await r.json();
-    if (!r.ok) alert(`ตั้ง autostart ไม่สำเร็จ\n\n${d.detail || ""}`);
+    if (!r.ok) alert(`Could not change autostart\n\n${d.detail || ""}`);
     btn.disabled = false;
     refresh();
     return;
@@ -401,29 +551,27 @@ document.addEventListener("click", async e => {
 
   if (act === "removeask") {
     const box = document.getElementById("rm-" + slug);
-    const r = await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`);
-    const d = await r.json();
-    const gb = b => (b / 1024 ** 3).toFixed(1);
-    box.innerHTML = `<div style="border:1px solid var(--bad);border-radius:var(--radius);padding:12px;margin-top:10px">
-      <div class="warn-line" style="color:var(--bad)">จะลบทั้งหมด ${gb(d.total_bytes)} GB — กู้คืนไม่ได้</div>
-      ${d.items.map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${gb(i.bytes)} GB</div>`).join("")}
+    const d = await (await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`)).json();
+    const size = b => (b / 1024 ** 3).toFixed(1);
+    box.innerHTML = `<div style="border:1px solid var(--bad);border-radius:7px;padding:12px;margin-top:10px">
+      <div class="warn-line" style="color:var(--bad)">Deletes ${size(d.total_bytes)} GB — cannot be undone</div>
+      ${d.items.map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
       <div class="field" style="margin-top:10px">
-        <label><input type="checkbox" id="keep-${esc(slug)}" style="min-width:auto;flex:none" checked> เก็บ weight ไว้ (deploy ใหม่ไม่ต้องโหลดซ้ำ)</label>
-        <button data-act="removego" data-slug="${esc(slug)}" style="border-color:var(--bad);color:var(--bad)">ยืนยันลบ</button>
-        <button data-act="removecancel" data-slug="${esc(slug)}">ยกเลิก</button>
+        <label><input type="checkbox" id="keep-${esc(slug)}" style="min-width:auto;flex:none" checked> Keep the weights (re-deploy without downloading again)</label>
+        <button data-act="removego" data-slug="${esc(slug)}" style="border-color:var(--bad);color:var(--bad)">Confirm removal</button>
+        <button data-act="removecancel" data-slug="${esc(slug)}">Cancel</button>
       </div></div>`;
     return;
   }
   if (act === "removecancel") { document.getElementById("rm-" + slug).innerHTML = ""; return; }
   if (act === "removego") {
     const keep = (document.getElementById("keep-" + slug) || {}).checked;
-    btn.disabled = true; btn.textContent = "กำลังลบ…";
+    btn.disabled = true; btn.textContent = "Removing…";
     const r = await api(`/api/models/${encodeURIComponent(slug)}/remove`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ keep_weights: keep }),
     });
-    const d = await r.json();
-    if (!r.ok) alert(d.detail || "ลบไม่สำเร็จ");
+    if (!r.ok) alert((await r.json()).detail || "Could not remove");
     rows.delete(slug);
     document.getElementById("fleet").innerHTML = "";
     refresh();
@@ -438,24 +586,15 @@ document.addEventListener("click", async e => {
       body: JSON.stringify(opts(slug)),
     });
     const d = await r.json();
-    if (!r.ok) { alert(d.detail || "เริ่มงานไม่สำเร็จ"); btn.disabled = false; return; }
+    if (!r.ok) { alert(d.detail || "Could not start the job"); btn.disabled = false; return; }
     followJob(slug, d.id);
     return;
   }
 
-  if (act === "doctor" || act === "logs") {
-    const key = slug + " " + act;
-    const other = slug + " " + (act === "doctor" ? "logs" : "doctor");
-    open.delete(other);
-    if (open.has(key)) { open.delete(key); document.getElementById("panel-" + slug).innerHTML = ""; }
-    else { open.add(key); await load(slug, act); }
-    return;
-  }
-
-  // start/stop/restart ใช้เวลานาน (โหลดโมเดลเป็นนาที) — ล็อกปุ่มไว้ อย่าให้กดซ้ำ
+  // start / stop / restart take a while (loading a model is minutes) — lock the button
   busy = slug;
-  btn.classList.add("busy");
-  btn.textContent = { start: "กำลังเปิด…", stop: "กำลังหยุด…", restart: "กำลัง restart…" }[act];
+  btn.disabled = true;
+  btn.textContent = { start: "starting…", stop: "stopping…", restart: "restarting…" }[act] || act;
   try {
     const r = await api(`/api/models/${encodeURIComponent(slug)}/${act}`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -463,7 +602,7 @@ document.addEventListener("click", async e => {
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      alert(`${act} ${slug} ไม่สำเร็จ\n\n${d.detail || "ดู log เพื่อดูสาเหตุ"}`);
+      alert(`${act} ${slug} failed\n\n${d.detail || "check the logs for details"}`);
     }
   } finally {
     busy = null;
@@ -471,160 +610,17 @@ document.addEventListener("click", async e => {
   }
 });
 
-
-// ── deploy wizard ────────────────────────────────────────────────────────
-const wiz = document.getElementById("wiz");
-let sess = null, analyzing = false;
-// จำค่าที่กรอกไว้ — ทุกครั้งที่ต้องถามเพิ่ม (เลือกไฟล์ GGUF / ขอ token) ฟอร์มถูกสร้างใหม่
-// ถ้าไม่จำ ผู้ใช้ต้องเลือก target ซ้ำทุกรอบแล้วงงว่าทำไมผลเปลี่ยน
-const draft = { model: "", target: "", no_llm: false };
-
-function wizForm(msg = "", extra = "") {
-  wiz.hidden = false;
-  wiz.innerHTML = `<div class="pad">
-    <div class="field">
-      <input id="w-model" placeholder="ลิงก์ Hugging Face หรือ org/model" autocomplete="off">
-      <select id="w-target"><option value="">เครื่องนี้ (ตรวจอัตโนมัติ)</option></select>
-      <button id="w-go">วิเคราะห์</button>
-      <button id="w-close">ปิด</button>
-    </div>
-    <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> ไม่ใช้ LLM (rule-based)</label>
-    ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
-    ${extra}
-  </div>`;
-  document.getElementById("w-model").value = draft.model;
-  document.getElementById("w-nollm").checked = draft.no_llm;
-  api("/api/targets").then(r => r.json()).then(d => {
-    const sel = document.getElementById("w-target");
-    if (!sel) return;
-    d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
-      `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (ยังไม่ทดสอบ)"}</option>`));
-    sel.value = draft.target;
-  });
-}
-
-function wizBusy(text) {
-  wiz.innerHTML = `<div class="pad"><div class="muted">${esc(text)}</div></div>`;
-}
-
-function planView(d) {
-  const p = d.plan, f = p.fit;
-  const head = Math.max(f.max_safe_context || 0, p.context);
-  sess = d.id;
-  wiz.innerHTML = `<div class="pad">
-    <div class="name">${esc(p.model_id)}</div>
-    <div class="kv">
-      <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}</span>
-      <span>revision</span><span class="mono">${esc(p.revision)}</span>
-      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${f.budget_gb} GB</span>
-      ${p.selected_gguf ? `<span>ไฟล์ GGUF</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
-      <span>generator</span><span>${esc(p.generator)}</span>
-    </div>
-    ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
-    <div class="field" style="margin-top:12px">
-      <label>context</label>
-      <input id="w-ctx" type="number" value="${p.context}" max="${head}" style="flex:none;width:140px">
-      ${f.max_safe_context && f.max_safe_context > p.context
-        ? `<span class="dim">เครื่องรับได้ถึง ${f.max_safe_context.toLocaleString()} — ค่าที่เสนอเป็นค่าเริ่มต้นมาตรฐาน</span>` : ""}
-    </div>
-    ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
-      <div class="muted">flag ที่ต้องอนุมัติเอง</div>
-      ${p.flags_needing_approval.map(fl => `<label style="display:block;padding:3px 0">
-        <input type="checkbox" class="w-flag" value="${esc(fl)}" style="min-width:auto;flex:none"> <code>${esc(fl)}</code></label>`).join("")}
-    </div>` : ""}
-    <div class="field" style="margin-top:14px">
-      <button id="w-make">สร้าง bundle</button>
-      <button id="w-cancel">ยกเลิก</button>
-    </div>
-  </div>`;
-}
-
-function resultView(r) {
-  sess = null;
-  wiz.innerHTML = `<div class="pad">
-    <div class="name">${esc(r.slug)} <span class="tag ok">ผ่าน ${r.gates.length} gates</span></div>
-    <div class="kv"><span>context</span><span>${r.context.toLocaleString()} tok</span>
-      <span>ZIP</span><span class="mono">${esc(r.zip)}</span></div>
-    <div class="dim">ขั้นต่อไป: download → verify-files → start (ปุ่ม start ในรายการด้านล่างเมื่อ start ครั้งแรกแล้ว)</div>
-    <div class="field" style="margin-top:12px"><button id="w-close">ปิด</button></div>
-  </div>`;
-  refresh();
-}
-
-async function analyzeNow(overrides = {}) {
-  if (analyzing) return;
-  const el = id => document.getElementById(id);
-  const model = (el("w-model") || {}).value || draft.model;
-  const target = el("w-target") ? el("w-target").value : draft.target;
-  const noLlm = el("w-nollm") ? el("w-nollm").checked : draft.no_llm;
-  if (!model) return;
-  Object.assign(draft, { model, target, no_llm: noLlm });
-  analyzing = true;
-  wizBusy("กำลังวิเคราะห์… (ดึง metadata + คำนวณ fit + วางแผน — อาจใช้เวลาสักครู่)");
-  try {
-    const r = await api("/api/deploy/analyze", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, target, no_llm: noLlm, ...overrides }),
-    });
-    const d = await r.json();
-    if (r.ok) { planView(d); return; }
-    const det = d.detail || {};
-    if (det.kind === "choose-gguf") {
-      wizForm(det.message, `<div style="margin-top:10px">${det.variants.map(v =>
-        `<label style="display:block;padding:3px 0"><input type="radio" name="gguf" value="${esc(v.filename)}" style="min-width:auto;flex:none">
-         <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? v.size_gb + " GB" : ""}</span></label>`).join("")}
-        <button id="w-gguf" style="margin-top:8px">ใช้ไฟล์นี้</button></div>`);
-    } else if (det.kind === "gated") {
-      wizForm(det.message, `<div class="field" style="margin-top:10px">
-        <input id="w-token" type="password" placeholder="Hugging Face token">
-        <button id="w-retry">ลองใหม่</button></div>`);
-    } else if (det.kind === "no-fit") {
-      wizForm(det.message, `<div style="margin-top:8px">${(det.alternatives || []).map(a =>
-        `<div class="warn-line">→ ${esc(a)}</div>`).join("")}</div>`);
-    } else {
-      wizForm(det.message || det || "วิเคราะห์ไม่สำเร็จ");
-    }
-  } finally { analyzing = false; }
-}
-
-document.addEventListener("click", async e => {
-  const id = e.target.id;
-  if (id === "new") { wizForm(); return; }
-  if (id === "w-close" || id === "w-cancel") { wiz.hidden = true; wiz.innerHTML = ""; sess = null; Object.assign(draft, { model: "", target: "", no_llm: false }); return; }
-  if (id === "w-go") { analyzeNow(); return; }
-  if (id === "w-gguf") {
-    const picked = document.querySelector('input[name="gguf"]:checked');
-    if (picked) analyzeNow({ selected_gguf: picked.value });
-    return;
-  }
-  if (id === "w-retry") { analyzeNow({ hf_token: (document.getElementById("w-token") || {}).value || "" }); return; }
-  if (id === "w-make") {
-    const ctx = parseInt((document.getElementById("w-ctx") || {}).value, 10);
-    const flags = [...document.querySelectorAll(".w-flag:checked")].map(c => c.value);
-    wizBusy("กำลังสร้าง bundle → ตรวจ quality gates → ZIP…");
-    const r = await api(`/api/deploy/${sess}/generate`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ context: ctx || null, approved_flags: flags }),
-    });
-    const d = await r.json();
-    if (r.ok) resultView(d);
-    else {
-      const det = d.detail || {};
-      wizForm(det.message || "สร้าง bundle ไม่สำเร็จ",
-        (det.gates || []).filter(g => !g.passed).map(g => `<div class="warn-line">${esc(g.name)}: ${esc(g.detail)}</div>`).join(""));
-    }
-    return;
-  }
-});
-
 async function refresh() {
   try {
     const [h, m] = await Promise.all([api("/api/host"), api("/api/models")]);
-    if (h.status === 401) { document.body.innerHTML = '<p style="text-align:center;margin-top:60px">ต้องมี token — เปิดด้วยลิงก์ที่ lmds web พิมพ์ให้</p>'; return; }
+    if (h.status === 401) {
+      document.body.innerHTML = '<p style="text-align:center;margin-top:60px">A token is required — open the link that <code>lmds web</code> printed.</p>';
+      return;
+    }
     renderHost(await h.json());
     renderFleet((await m.json()).models);
-  } catch (err) {
-    document.getElementById("fleet").innerHTML = `<div class="empty">ต่อ LMDS ไม่ได้ — เซิร์ฟเวอร์ยังรันอยู่ไหม?</div>`;
+  } catch {
+    document.getElementById("fleet").innerHTML = `<div class="empty">Cannot reach LMDS — is the server still running?</div>`;
   }
 }
 

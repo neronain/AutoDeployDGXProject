@@ -70,9 +70,20 @@ lmds web                              # http://127.0.0.1:8600 — this machine o
 lmds web --bind 0.0.0.0               # reachable on the LAN; a token is generated for you
 ```
 
-One page: host status, every model, start/stop/restart, doctor and logs. It can start and stop
-models, so it binds to localhost by default and requires a token whenever you expose it. The page
-loads nothing from the internet — it works behind a proxy or fully air-gapped.
+```bash
+lmds web --background                 # run detached; the terminal stays free for the CLI
+lmds web --stop
+```
+
+One English-language page covering the whole workflow: host status, deploy wizard, download
+(which verifies afterwards), start/stop/restart, per-model port/context/slots/API key, the test
+commands (`test-text`, `test-vision`, `bench`, `stress`, …), autostart, stacked commands, repair
+and remove. Buttons follow what each controller actually supports, read from the script itself —
+an older bundle simply won't show a command it doesn't have.
+
+It can start, stop and delete models, so it binds to localhost by default and generates a token
+whenever you expose it. The page loads nothing from the internet — it works behind a proxy or
+fully air-gapped. Still CLI-only: `lmds config` and `lmds hardware`.
 
 Tab completion covers commands, bundle names and target presets: `lmds --install-completion`.
 

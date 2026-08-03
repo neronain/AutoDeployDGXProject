@@ -44,6 +44,8 @@ lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-
 | `lmds enable` / `disable` | autostart หลัง reboot (ดู §4) |
 | `lmds repair <ชื่อ>` | โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ (ดู §4.3) |
 | `lmds remove <ชื่อ>` | ลบโมเดลออกจากเครื่องทั้งหมด (ดู §4.3) |
+| `lmds doctor <ชื่อ>` | ตรวจว่าทำไม download/start ไม่ผ่าน + คำสั่งแก้ (ดู §4.4) |
+| `lmds web` | หน้าเว็บคุมทุกอย่าง — UI ภาษาอังกฤษ (ดู §5) |
 | `lmds validate <โฟลเดอร์>` | ตรวจ bundle ย้อนหลัง |
 | `lmds hardware` | ตรวจเครื่อง + จำแนก target profile |
 | `lmds config ...` | ตั้ง provider / key / HF token |
@@ -136,6 +138,7 @@ cd bundles/qwen3-0-6b-gguf
 | `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
+| `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
@@ -420,7 +423,53 @@ lmds disable gemma-4-26b-a4b-it-gguf         # ยกเลิก autostart
 - เช็ก/ดู log ของ service: `systemctl status lmds-<ชื่อ>` · `journalctl -u lmds-<ชื่อ> -f`
 - ต้องมี `systemd` (DGX OS/Ubuntu มีอยู่แล้ว) · **stacked (2 เครื่อง):** master ตั้ง autostart ได้ แต่ตอน boot worker ต้องเปิดอยู่ + SSH ถึงได้ ไม่งั้น start จะรอ/ล้ม
 
-## 5. คำสั่งอื่นที่ควรรู้
+## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
+
+สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**
+(ตัว CLI ยังเป็นไทย)
+
+```bash
+lmds web                          # http://127.0.0.1:8600 — เครื่องนี้เท่านั้น
+lmds web --bind 0.0.0.0           # ให้ทั้งวง network เข้าได้ — สุ่ม token ให้อัตโนมัติ
+lmds web --background             # รันเบื้องหลัง terminal ว่างใช้ CLI ต่อได้
+lmds web --stop                   # หยุดตัวที่รันเบื้องหลัง
+```
+
+หน้าเว็บพิมพ์ IP จริงของเครื่องให้ (ไม่ใช่ `0.0.0.0` ซึ่งเปิดในเบราว์เซอร์ไม่ได้) · เครื่องที่มีหลายวง
+เช่น Tailscale/VPN ใช้ IP ของวงนั้นแทนได้ พอร์ตกับ token เดียวกัน
+
+### ทำอะไรได้บ้าง
+
+| แถวโมเดล | รายละเอียด |
+|---|---|
+| **download** | โหลด weight แล้ว **รัน `verify-files` ต่อให้อัตโนมัติ** พร้อม log สด — ปุ่มเปลี่ยนเป็น `start` เองเมื่อครบ |
+| **start / stop / restart** | ใช้ตัวเลือกที่ตั้งไว้ในแท็บ manage |
+| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `bench` · `stress` · `client-config` · `network-info` · `status` |
+| **manage** | port / context / slots / bind / API key · autostart · คำสั่ง stacked · repair · remove |
+| **doctor** | ผลเดียวกับ `lmds doctor` พร้อมคำสั่งแก้ |
+| **logs** | log ล่าสุด 300 บรรทัด |
+
+> **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง
+> bundle ที่สร้างก่อนมีคำสั่งใหม่ (เช่น `test-vision`) จะไม่มีปุ่มนั้น พร้อมบอกว่าต้อง deploy ใหม่
+
+ปุ่ม **+ Deploy model** ทำ wizard ครบ flow: วางลิงก์ → เลือก target → วิเคราะห์ → เลือกไฟล์ GGUF /
+ใส่ HF token ถ้าจำเป็น → ดูแผน + ปรับ context / อนุมัติ flag → สร้าง bundle ผ่าน quality gates → ZIP
+
+### ความปลอดภัย
+
+หน้านี้**สั่ง start/stop/ลบโมเดลได้** จึง:
+
+- bind `127.0.0.1` เป็นค่าเริ่มต้น — ต้องตั้งใจเปิดออก network เอง
+- `--bind 0.0.0.0` โดยไม่ตั้ง `--token` → **สุ่ม token ให้เอง** แล้วพิมพ์ลิงก์พร้อม token
+- API key ของโมเดลเก็บใน localStorage ของเบราว์เซอร์ ไม่ขึ้นไปอยู่บนเครื่อง
+- หน้าเว็บไม่ดึงอะไรจากอินเทอร์เน็ตเลย ใช้บนเครื่องหลัง proxy / air-gapped ได้
+
+### ยังต้องใช้ CLI สำหรับ
+
+`lmds config` (ตั้ง provider / API key) · `lmds hardware` · และ `enable`/`disable` autostart ในเครื่อง
+ที่ `sudo` ต้องกรอกรหัส (หน้าเว็บไม่มี tty — จะบอกคำสั่งให้ไปรันเอง)
+
+## 6. คำสั่งอื่นที่ควรรู้
 
 ```bash
 lmds plan Qwen/Qwen3-32B --target dgx-spark-single   # ดูแผนอย่างเดียว ไม่สร้างไฟล์
@@ -448,7 +497,7 @@ echo "$HF_TOKEN" | lmds config set-hf-token --stdin
 
 `lmds` พิมพ์ banner ออก stderr และเงียบเองเมื่อถูก pipe — ปิดถาวรด้วย `export LMDS_NO_BANNER=1`
 
-## 6. เอา bundle ไปใช้เครื่องอื่น
+## 7. เอา bundle ไปใช้เครื่องอื่น
 
 Bundle เป็นไฟล์ธรรมดา ไม่ผูกกับเครื่องที่สร้าง:
 
@@ -463,7 +512,7 @@ unzip qwen3-32b.zip && cd qwen3-32b
 
 ---
 
-## 7. แก้ปัญหาที่พบบ่อย (Troubleshooting)
+## 8. แก้ปัญหาที่พบบ่อย (Troubleshooting)
 
 | อาการ | สาเหตุ | วิธีแก้ |
 |---|---|---|
@@ -499,7 +548,7 @@ lmds hardware
 # + คำสั่งเต็มที่รันแล้วพัง + ข้อความ error ทั้งหมด
 ```
 
-## 8. ความปลอดภัย — ข้อควรปฏิบัติ
+## 9. ความปลอดภัย — ข้อควรปฏิบัติ
 
 > ภาพรวมเต็ม (ข้อมูลอะไรออกนอกเครื่อง, secret เก็บที่ไหน, prompt injection): **[SECURITY.md](../SECURITY.md)**
 

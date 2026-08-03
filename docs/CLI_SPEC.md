@@ -148,6 +148,28 @@ lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างท
 - `--now` = start ทันทีด้วย · `--timeout` = เวลารอ health ตอน boot (โมเดลใหญ่ควรเพิ่ม) · ต้องมี `systemd`
 - ทุก controller ลงทะเบียนตัวเองใต้ `~/.lmds/run/<slug>/server.meta` ตอน `start` — fleet อ่านจากตรงนี้ (ไม่มี daemon)
 
+## `lmds doctor <slug>`
+
+ตรวจว่าทำไมโมเดลยัง download/start ไม่ผ่าน แล้วบอกคำสั่งแก้ — คำนวณล้วน ไม่ใช้ LLM
+
+ตรวจ: `bundle` · `hf-token` (gated แต่ไม่มี `HF_TOKEN`) · `weights` (รวม mmproj และไฟล์ 0 ไบต์) ·
+`permissions` · `disk` · `docker` · `runtime-image` · `port` (บอกชื่อโมเดลที่ยึดอยู่) · `server`
+
+Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มีข้อที่ต้องแก้
+
+## `lmds web`
+
+| ตัวเลือก | ค่าเริ่มต้น | ความหมาย |
+|---|---|---|
+| `--port` | 8600 | พอร์ตของหน้าเว็บ |
+| `--bind` | `127.0.0.1` | `0.0.0.0` = ทั้งวง network (จะสุ่ม token ให้ถ้าไม่ตั้ง `--token`) |
+| `--token` | ว่าง | บังคับ token เอง |
+| `--background` / `-b` | ปิด | รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้ |
+| `--stop` | — | หยุดตัวที่รันเบื้องหลัง |
+
+UI เป็นภาษาอังกฤษ · ต้องมี extra `web` (`pip install 'lmds[web]'` — `install.sh` ลงให้เอง)
+รายละเอียดการใช้งาน: [USAGE.md §5](USAGE.md)
+
 ## `lmds validate`
 
 รัน quality gates กับ bundle ใด ๆ (รวม bundle ที่แก้มือ):

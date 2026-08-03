@@ -520,3 +520,45 @@ def test_vision_test_is_allowed(runnable):
     from lmds.web import jobs
 
     assert "test-vision" in jobs.ALLOWED
+
+
+# ── ปุ่มต้องตรงกับสิ่งที่ controller ทำได้จริง ─────────────────────────────────
+
+def test_commands_are_read_from_the_controller_itself(tmp_path, monkeypatch):
+    """bundle เก่าไม่มีคำสั่งใหม่ ๆ — เดาจาก profile ทำให้ปุ่มขึ้นแล้วกดล้ม
+    (เจอจริง: test-vision ไม่โผล่ให้ผู้ใช้เพราะ bundle สร้างก่อนมีคำสั่งนี้)
+    """
+    from lmds.fleet import register_bundle
+    from lmds.web.api import _controller_commands
+    from tests.test_generator import gguf_report, make_bundle, mmproj_gguf_report
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    vision, _, _ = make_bundle(mmproj_gguf_report(), tmp_path=tmp_path / "mm")
+    plain, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path / "plain")
+
+    assert "test-vision" in _controller_commands(str(vision.controller))
+    assert "test-vision" not in _controller_commands(str(plain.controller))
+    # คำสั่งพื้นฐานต้องเจอครบทั้งคู่
+    for command in ("download", "verify-files", "start", "stop", "logs", "test-text"):
+        assert command in _controller_commands(str(plain.controller)), command
+
+
+def test_unknown_commands_are_not_reported(tmp_path):
+    """dispatch table มี help|--help|-h ปนอยู่ — ต้องไม่หลุดออกมาเป็นปุ่ม"""
+    from lmds.web.api import _controller_commands
+
+    script = tmp_path / "x-single.sh"
+    script.write_text("#!/usr/bin/env bash\ncase \"$1\" in\n  start) start ;;\n"
+                      "  rm-rf) danger ;;\n  help|--help) usage ;;\nesac\n", encoding="utf-8")
+    assert _controller_commands(str(script)) == ["start"]
+
+
+def test_missing_controller_reports_no_commands():
+    from lmds.web.api import _controller_commands
+
+    assert _controller_commands("/ไม่มี/ที่นี่.sh") == []
+
+
+def test_model_payload_exposes_commands(runnable):
+    model = TestClient(create_app()).get("/api/models").json()["models"][0]
+    assert isinstance(model["commands"], list)

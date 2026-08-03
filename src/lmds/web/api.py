@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from pathlib import Path
 from typing import Optional
@@ -68,6 +69,27 @@ def _weights_present(server, profile) -> bool:
     return all((directory / name).exists() for name in wanted)
 
 
+_COMMAND_RE = re.compile(r"(?m)^\s{2}([a-z][a-z-]*)\)")
+
+
+def _controller_commands(controller: str) -> list[str]:
+    """คำสั่งที่ controller ตัวนี้รองรับจริง — อ่านจาก dispatch table ของสคริปต์เอง
+
+    bundle เก่าไม่มีคำสั่งใหม่ ๆ (เช่น test-vision) การเดาจาก profile ทำให้ปุ่มขึ้นแล้วกดล้ม
+    """
+    try:
+        text = Path(controller).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    known = {
+        "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "status",
+        "logs", "client-config", "network-info", "test-text", "test-vision", "test-reasoning",
+        "test-tools", "bench", "stress", "props", "info", "wait-health", "doctor",
+        "sync-worker", "verify-worker", "clear-fi-cache", "repair",
+    }
+    return sorted({m for m in _COMMAND_RE.findall(text) if m in known})
+
+
 def _active_job(slug: str) -> dict | None:
     from . import jobs
 
@@ -96,6 +118,7 @@ def _model_payload(server) -> dict:
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),
         "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
+        "commands": _controller_commands(server.controller) if server.controller_exists else [],
         "started_at": server.started_at,
         "downloaded": _weights_present(server, profile),
         "job": _active_job(server.slug),
