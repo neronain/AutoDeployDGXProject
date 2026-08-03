@@ -95,6 +95,7 @@ def _model_payload(server) -> dict:
         "features": feature_summary(profile),
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),
+        "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
         "started_at": server.started_at,
         "downloaded": _weights_present(server, profile),
         "job": _active_job(server.slug),

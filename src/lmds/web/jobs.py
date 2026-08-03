@@ -21,7 +21,7 @@ ALLOWED = {
     # stacked (multi-node)
     "sync-worker", "verify-worker", "clear-fi-cache",
     # ทดสอบว่าโมเดลตอบจริง — CLI มีมาตลอด เว็บเพิ่งได้
-    "test-text", "test-reasoning", "test-tools", "bench", "stress",
+    "test-text", "test-vision", "test-reasoning", "test-tools", "bench", "stress",
     "props", "info", "network-info", "client-config", "status", "wait-health", "doctor",
 }
 
@@ -97,6 +97,9 @@ def controller_env(options: dict | None) -> dict:
         env["CTX_SIZE"] = env["MAX_MODEL_LEN"] = str(int(options["context"]))
     if options.get("api_key"):
         env["API_KEY"] = str(options["api_key"])
+    if options.get("slots"):
+        # llama.cpp แบ่ง context เท่า ๆ กันให้ทุก slot — ตัวนี้คือ knob ที่ client-config บ่นถึง
+        env["PARALLEL_SEQS"] = env["MAX_NUM_SEQS"] = str(int(options["slots"]))
     return env
 
 

@@ -577,3 +577,23 @@ def test_features_off_keeps_controller_clean(tmp_path):
     assert "test_reasoning" not in script
     assert "test_tools" not in script
     assert not audit_script(script)
+
+
+def test_multimodal_bundle_can_prove_vision_works(tmp_path):
+    """mmproj มาครบไม่ได้แปลว่า vision ทำงาน — ต้องมีคำสั่งพิสูจน์ได้เอง
+    (เดิมต้องให้คนเขียน curl + base64 เอง ซึ่งไม่มีใครทำ)
+    """
+    bundle, _, _ = make_bundle(mmproj_gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "test_vision()" in script
+    assert "test-vision)" in script
+    assert "test-vision       Send a generated red image" in script
+    # สร้างภาพเองด้วย stdlib — ไม่ต้องมีรูปในเครื่อง ไม่ต้องต่อเน็ต
+    assert "import base64, json, struct, sys, urllib.error, urllib.request, zlib" in script
+    assert not audit_script(script)
+
+
+def test_text_only_bundle_has_no_vision_test(tmp_path):
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    assert "test_vision" not in bundle.controller.read_text(encoding="utf-8")

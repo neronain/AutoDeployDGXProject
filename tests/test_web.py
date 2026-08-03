@@ -506,3 +506,17 @@ def test_remove_and_autostart_are_token_guarded(runnable):
     assert client.get(f"/api/models/{runnable}/removal-plan").status_code == 401
     assert client.post(f"/api/models/{runnable}/remove", json={}).status_code == 401
     assert client.post(f"/api/models/{runnable}/autostart", json={"enabled": True}).status_code == 401
+
+
+def test_slots_option_reaches_the_controller(runnable):
+    """client-config บ่นว่า context ต่อ slot เล็กเกิน — knob ที่มันบอกให้ปรับต้องปรับได้จากเว็บ"""
+    from lmds.web import jobs
+
+    env = jobs.controller_env({"slots": 2})
+    assert env == {"PARALLEL_SEQS": "2", "MAX_NUM_SEQS": "2"}
+
+
+def test_vision_test_is_allowed(runnable):
+    from lmds.web import jobs
+
+    assert "test-vision" in jobs.ALLOWED
