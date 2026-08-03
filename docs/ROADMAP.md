@@ -29,13 +29,21 @@
 |---|---|
 | GGUF | ✅ Qwen3-Coder-30B (Spark) · gemma-4-12b-it (RTX, multimodal) |
 | NVFP4 | ✅ Qwen3.5-122B (Spark) |
-| MoE | ✅ ทั้งสองตัวข้างบนเป็น MoE |
-| dense safetensors | ❌ ยังไม่เคยรันจริง |
-| gated repo | ❌ ยังไม่เคยรันจริง |
+| MoE | ✅ สองตัวแรกเป็น MoE |
+| dense safetensors | ✅ Qwen3-8B (RTX, vLLM 0.26.0, ctx 32,768) |
+| gated repo | ❌ ยังไม่เคยรันจริง — เหลือข้อเดียว |
 | **รันจริงบน DGX Spark ≥1 เครื่อง** | ✅ 3 ครั้ง |
-| **รันจริงบนเครื่อง RTX ≥1 เครื่อง** | ✅ RTX 5090 (2026-08-03) |
+| **รันจริงบนเครื่อง RTX ≥1 เครื่อง** | ✅ RTX 5090 — 2 ครั้ง (llama.cpp + vLLM) |
 
-→ เงื่อนไข **ฮาร์ดแวร์** ครบแล้วทั้งสองฝั่ง เหลือความครอบคลุมของ **ตระกูลโมเดล** อีก 2 แบบ
+→ เงื่อนไข **ฮาร์ดแวร์** ครบทั้งสองฝั่ง · ตระกูลโมเดลเหลือ **gated repo** อย่างเดียว
+(`meta-llama/Llama-3.1-8B-Instruct` — ต้องมี HF token ที่ได้รับอนุมัติสิทธิ์แล้ว)
+
+เส้นทาง engine × สถาปัตยกรรมที่พิสูจน์แล้ว:
+
+| | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
+|---|---|---|
+| llama.cpp | ✅ native build | ✅ docker (+ multimodal) |
+| vLLM | ✅ docker | ✅ docker |
 
 ### นอกขอบเขตเฟส 1 (ตัดออกชัดเจน)
 

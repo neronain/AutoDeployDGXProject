@@ -108,10 +108,12 @@
   2026-08-03) — process ใน container มองเห็นได้จาก process table ของ host ด้วย `_orphan_native`
   จึงเก็บมันมาเป็น "orphan" อีกแถว โดยใช้ค่า `--alias` เป็น slug ทำให้ดูเหมือนคนละโมเดล และ
   สั่ง `stop`/`logs` ตามชื่อนั้นไม่ได้ · กรองด้วย `/proc/<pid>/cgroup` + กันซ้ำด้วยพอร์ตอีกชั้น
-- **`test-text` ดูเหมือนพังกับโมเดลสาย reasoning** — `max_tokens: 64` ถูก `reasoning_content`
-  กินหมดก่อนจะได้ตอบ ผู้ใช้เห็น `content: ""` กับ `finish_reason: "length"` แล้วนึกว่าโมเดลเสีย
-  (เคสจริง gemma-4-12b-it) · เพิ่มเป็น 512 และสรุปผลเป็นภาษาคนต่อท้าย โดยแยก "ยังคิดไม่จบ"
-  ออกจาก "ตอบว่างจริง ๆ"
+- **`test-text` ดูเหมือนพังกับโมเดลสาย reasoning — ทั้ง 3 template** — `max_tokens: 64` ถูก
+  chain-of-thought กินหมดก่อนจะได้ตอบ ผู้ใช้เห็นคำตอบว่างกับ `finish_reason: "length"`
+  แล้วนึกว่าโมเดลเสีย · เจอสองรอบวันเดียวกัน: gemma-4-12b-it ฝั่ง llama.cpp (`reasoning_content`
+  แยก field) แล้ว Qwen3-8B ฝั่ง vLLM (`<think>` อยู่ใน `content`) — รอบแรกแก้เฉพาะ llama.cpp
+  ทั้งที่บั๊กเดียวกันอยู่ใน vLLM ทั้ง single และ stacked ด้วย · เพิ่มเป็น 512 ทุกตัวและสรุปผลเป็น
+  ภาษาคนต่อท้าย โดยแยก "ยังคิดไม่จบ" ออกจาก "ตอบว่างจริง ๆ" · เทสคุมทั้ง 3 template แล้ว
 - **`install.sh` จบเงียบกลางคันบนระบบที่ `df` ไม่รองรับ `--output`** — บรรทัดตรวจดิสก์เป็นคำสั่ง
   สุดท้ายของ branch และเจอ `pipefail` เข้าไปด้วย ทำให้ `set -e` ฆ่าสคริปต์ทิ้งก่อนถึงขั้นตั้ง
   provider/completion โดยไม่มี error ให้เห็น (เจอตอนทดสอบ installer นอก GNU coreutils)
@@ -130,6 +132,12 @@
 - **hardware-validated ตัวที่สอง**: `Qwen3.5-122B-A10B-abliterated-NVFP4` (safetensors + NVFP4 + MoE)
   บน DGX Spark เครื่องเดียว — vLLM 0.26.0, FLASHINFER_CUTLASS NvFp4 MoE backend, context 65,536,
   `/health` ผ่าน (ตัวแรกคือ Qwen3-Coder-30B-A3B GGUF native build, 2026-07-21)
+- **hardware-validated ตัวที่ห้า — ปิดตระกูล *dense safetensors* และเส้นทาง *vLLM บน x86_64***:
+  `Qwen/Qwen3-8B` (dense safetensors, BF16 ~16 GB) บน **RTX 5090** — vLLM 0.26.0 docker,
+  `/health` ผ่านที่ context 32,768, `test-text` ตอบได้ · ก่อนหน้านี้ vLLM เคยรันแต่บน ARM64/unified
+  ของ DGX Spark เท่านั้น สูตร discrete VRAM ของ vLLM จึงไม่เคยถูกพิสูจน์เลย
+  · **ผลที่ขัดกับที่คาดไว้**: `gpu-memory-utilization 0.85` ผ่านได้ทั้งที่จอต่ออยู่การ์ดใบเดียวกัน
+  (Xorg + gnome ใช้ ~640 MiB) — ไม่ต้องลดค่าลงอย่างที่กลัว
 - **hardware-validated ตัวที่สี่ — และเป็น *เครื่อง RTX เครื่องแรก* ของโปรเจกต์**:
   `unsloth/gemma-4-12b-it-GGUF` UD-Q8_K_XL (GGUF + multimodal) บน **RTX 5090** (x86_64,
   Blackwell SM120, VRAM 32 GB แบบ discrete) — docker `ghcr.io/ggml-org/llama.cpp:server-cuda`,

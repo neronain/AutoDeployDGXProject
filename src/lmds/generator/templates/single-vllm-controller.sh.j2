@@ -350,15 +350,41 @@ EOF
 }
 
 test_text() {
-  curl -fsS "http://127.0.0.1:${API_PORT}/v1/chat/completions" \
+  # 512 ไม่ใช่ 64: โมเดลสาย reasoning (Qwen3, DeepSeek-R1 ฯลฯ) ใช้ budget ไปกับ <think> ก่อน
+  # ถ้าให้น้อยจะได้ finish_reason "length" โดยยังไม่ทันตอบ ซึ่งดูเหมือนโมเดลพัง
+  local response
+  response="$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/chat/completions" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
     -H "Content-Type: application/json" \
     -d "{
       \"model\": \"${SERVED_MODEL_NAME}\",
       \"messages\": [{\"role\": \"user\", \"content\": \"ตอบสั้น ๆ: 2+2 เท่ากับเท่าไร\"}],
-      \"max_tokens\": 64
-    }"
+      \"max_tokens\": 512
+    }")" || die "เรียก /v1/chat/completions ไม่สำเร็จ — ดู log: $0 logs 200"
+
+  echo "$response"
   echo ""
+
+  # สรุปให้อ่านออกโดยไม่ต้องเพ่ง JSON — และแยก "ตอบว่าง" ออกจาก "ตอบได้"
+  if command -v python3 >/dev/null 2>&1; then
+    printf "%s" "$response" | python3 -c '
+import json, re, sys
+try:
+    msg = json.load(sys.stdin)["choices"][0]["message"]
+except (ValueError, KeyError, IndexError):
+    sys.exit(0)
+raw = msg.get("content") or ""
+# vLLM ใส่ chain-of-thought ไว้ใน content ตรง ๆ (<think>…</think>) ต่างจาก llama.cpp ที่แยก field
+answer = re.sub(r"(?s)^.*?</think>", "", raw).strip()
+if answer:
+    print("test-text: OK — " + answer[:200])
+elif raw.strip() or (msg.get("reasoning_content") or "").strip():
+    print("test-text: โมเดลตอบแต่ยังคิดไม่จบใน 512 tokens (reasoning model)")
+    print("           ไม่ใช่ความผิดพลาด — เซิร์ฟเวอร์รับงานและตอบกลับได้ปกติ")
+else:
+    print("test-text: เซิร์ฟเวอร์ตอบกลับแต่ไม่มีข้อความ — ดู log: logs 200")
+' || true
+  fi
 }
 
 usage() {
