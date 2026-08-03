@@ -1077,11 +1077,20 @@ def web(
         token = _secrets.token_urlsafe(24)
         err_console.print("[yellow]bind ออก network — สุ่ม token ให้แล้ว (ใช้ --token ตั้งเองได้)[/yellow]")
 
-    shown_host = bind if exposed else "127.0.0.1"
-    url = f"http://{shown_host}:{port}/" + (f"?token={token}" if token else "")
-    console.print(f"เปิดที่: [bold]{url}[/bold]")
-    if exposed:
+    query = f"?token={token}" if token else ""
+    if not exposed:
+        console.print(f"เปิดที่: [bold]http://127.0.0.1:{port}/{query}[/bold]")
+    else:
+        # 0.0.0.0 เป็นที่อยู่สำหรับ bind ไม่ใช่ที่อยู่ที่เปิดในเบราว์เซอร์ได้ —
+        # พิมพ์ IP จริงของเครื่องให้ ไม่งั้นผู้ใช้ต้องไปหา IP เอง
+        from lmds.hardware.profiler import primary_ip
+
+        hosts = [h for h in (primary_ip(), "127.0.0.1") if h]
+        console.print("เปิดที่:")
+        for h in dict.fromkeys(hosts):
+            console.print(f"  [bold]http://{h}:{port}/{query}[/bold]")
         console.print("[dim]ทุกคนที่เข้าถึงเครื่องนี้ในวง network เปิดลิงก์นี้ได้ — อย่าแชร์ token ออกนอกทีม[/dim]")
+        console.print("[dim]เครื่องที่มีหลายวง (เช่น Tailscale/VPN) ใช้ IP ของวงนั้นแทนได้ พอร์ตและ token เดียวกัน[/dim]")
     console.print("[dim]หยุดด้วย Ctrl-C[/dim]")
     try:
         serve(host=bind, port=port, token=token)

@@ -64,6 +64,15 @@ pre { margin: 0; padding: 12px 16px; background: var(--bg); border-top: 1px soli
 .find b { width: 104px; flex: none; font-weight: 400; color: var(--fg2); }
 code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 3px 8px; border-radius: 6px; }
 .empty { padding: 40px 16px; text-align: center; color: var(--fg2); }
+.field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+input, select { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 7px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line2); }
+input { flex: 1; min-width: 220px; }
+label { font-size: 13px; color: var(--fg2); }
+.kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 13px; margin: 10px 0; }
+.kv span:first-child { color: var(--fg2); }
+.warn-line { font-size: 13px; color: var(--warn); padding: 3px 0; }
+.pad { padding: 16px; }
 .sec { margin: 26px 0 10px; font-size: 13px; color: var(--fg3); letter-spacing: .05em; }
 </style>
 </head>
@@ -74,8 +83,13 @@ code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding
       <h1>LMDS</h1>
       <span class="muted" id="host">…</span>
     </div>
-    <span class="dim" id="ver"></span>
+    <div class="row">
+      <button id="new">+ deploy โมเดล</button>
+      <span class="dim" id="ver"></span>
+    </div>
   </div>
+
+  <div class="card" id="wiz" hidden></div>
 
   <div class="stats" id="stats"></div>
 
@@ -244,6 +258,152 @@ document.addEventListener("click", async e => {
   } finally {
     busy = null;
     refresh();
+  }
+});
+
+
+// ── deploy wizard ────────────────────────────────────────────────────────
+const wiz = document.getElementById("wiz");
+let sess = null, analyzing = false;
+// จำค่าที่กรอกไว้ — ทุกครั้งที่ต้องถามเพิ่ม (เลือกไฟล์ GGUF / ขอ token) ฟอร์มถูกสร้างใหม่
+// ถ้าไม่จำ ผู้ใช้ต้องเลือก target ซ้ำทุกรอบแล้วงงว่าทำไมผลเปลี่ยน
+const draft = { model: "", target: "", no_llm: false };
+
+function wizForm(msg = "", extra = "") {
+  wiz.hidden = false;
+  wiz.innerHTML = `<div class="pad">
+    <div class="field">
+      <input id="w-model" placeholder="ลิงก์ Hugging Face หรือ org/model" autocomplete="off">
+      <select id="w-target"><option value="">เครื่องนี้ (ตรวจอัตโนมัติ)</option></select>
+      <button id="w-go">วิเคราะห์</button>
+      <button id="w-close">ปิด</button>
+    </div>
+    <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> ไม่ใช้ LLM (rule-based)</label>
+    ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
+    ${extra}
+  </div>`;
+  document.getElementById("w-model").value = draft.model;
+  document.getElementById("w-nollm").checked = draft.no_llm;
+  api("/api/targets").then(r => r.json()).then(d => {
+    const sel = document.getElementById("w-target");
+    if (!sel) return;
+    d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
+      `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (ยังไม่ทดสอบ)"}</option>`));
+    sel.value = draft.target;
+  });
+}
+
+function wizBusy(text) {
+  wiz.innerHTML = `<div class="pad"><div class="muted">${esc(text)}</div></div>`;
+}
+
+function planView(d) {
+  const p = d.plan, f = p.fit;
+  const head = Math.max(f.max_safe_context || 0, p.context);
+  sess = d.id;
+  wiz.innerHTML = `<div class="pad">
+    <div class="name">${esc(p.model_id)}</div>
+    <div class="kv">
+      <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}</span>
+      <span>revision</span><span class="mono">${esc(p.revision)}</span>
+      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${f.budget_gb} GB</span>
+      ${p.selected_gguf ? `<span>ไฟล์ GGUF</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
+      <span>generator</span><span>${esc(p.generator)}</span>
+    </div>
+    ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
+    <div class="field" style="margin-top:12px">
+      <label>context</label>
+      <input id="w-ctx" type="number" value="${p.context}" max="${head}" style="flex:none;width:140px">
+      ${f.max_safe_context && f.max_safe_context > p.context
+        ? `<span class="dim">เครื่องรับได้ถึง ${f.max_safe_context.toLocaleString()} — ค่าที่เสนอเป็นค่าเริ่มต้นมาตรฐาน</span>` : ""}
+    </div>
+    ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
+      <div class="muted">flag ที่ต้องอนุมัติเอง</div>
+      ${p.flags_needing_approval.map(fl => `<label style="display:block;padding:3px 0">
+        <input type="checkbox" class="w-flag" value="${esc(fl)}" style="min-width:auto;flex:none"> <code>${esc(fl)}</code></label>`).join("")}
+    </div>` : ""}
+    <div class="field" style="margin-top:14px">
+      <button id="w-make">สร้าง bundle</button>
+      <button id="w-cancel">ยกเลิก</button>
+    </div>
+  </div>`;
+}
+
+function resultView(r) {
+  sess = null;
+  wiz.innerHTML = `<div class="pad">
+    <div class="name">${esc(r.slug)} <span class="tag ok">ผ่าน ${r.gates.length} gates</span></div>
+    <div class="kv"><span>context</span><span>${r.context.toLocaleString()} tok</span>
+      <span>ZIP</span><span class="mono">${esc(r.zip)}</span></div>
+    <div class="dim">ขั้นต่อไป: download → verify-files → start (ปุ่ม start ในรายการด้านล่างเมื่อ start ครั้งแรกแล้ว)</div>
+    <div class="field" style="margin-top:12px"><button id="w-close">ปิด</button></div>
+  </div>`;
+  refresh();
+}
+
+async function analyzeNow(overrides = {}) {
+  if (analyzing) return;
+  const el = id => document.getElementById(id);
+  const model = (el("w-model") || {}).value || draft.model;
+  const target = el("w-target") ? el("w-target").value : draft.target;
+  const noLlm = el("w-nollm") ? el("w-nollm").checked : draft.no_llm;
+  if (!model) return;
+  Object.assign(draft, { model, target, no_llm: noLlm });
+  analyzing = true;
+  wizBusy("กำลังวิเคราะห์… (ดึง metadata + คำนวณ fit + วางแผน — อาจใช้เวลาสักครู่)");
+  try {
+    const r = await api("/api/deploy/analyze", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, target, no_llm: noLlm, ...overrides }),
+    });
+    const d = await r.json();
+    if (r.ok) { planView(d); return; }
+    const det = d.detail || {};
+    if (det.kind === "choose-gguf") {
+      wizForm(det.message, `<div style="margin-top:10px">${det.variants.map(v =>
+        `<label style="display:block;padding:3px 0"><input type="radio" name="gguf" value="${esc(v.filename)}" style="min-width:auto;flex:none">
+         <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? v.size_gb + " GB" : ""}</span></label>`).join("")}
+        <button id="w-gguf" style="margin-top:8px">ใช้ไฟล์นี้</button></div>`);
+    } else if (det.kind === "gated") {
+      wizForm(det.message, `<div class="field" style="margin-top:10px">
+        <input id="w-token" type="password" placeholder="Hugging Face token">
+        <button id="w-retry">ลองใหม่</button></div>`);
+    } else if (det.kind === "no-fit") {
+      wizForm(det.message, `<div style="margin-top:8px">${(det.alternatives || []).map(a =>
+        `<div class="warn-line">→ ${esc(a)}</div>`).join("")}</div>`);
+    } else {
+      wizForm(det.message || det || "วิเคราะห์ไม่สำเร็จ");
+    }
+  } finally { analyzing = false; }
+}
+
+document.addEventListener("click", async e => {
+  const id = e.target.id;
+  if (id === "new") { wizForm(); return; }
+  if (id === "w-close" || id === "w-cancel") { wiz.hidden = true; wiz.innerHTML = ""; sess = null; Object.assign(draft, { model: "", target: "", no_llm: false }); return; }
+  if (id === "w-go") { analyzeNow(); return; }
+  if (id === "w-gguf") {
+    const picked = document.querySelector('input[name="gguf"]:checked');
+    if (picked) analyzeNow({ selected_gguf: picked.value });
+    return;
+  }
+  if (id === "w-retry") { analyzeNow({ hf_token: (document.getElementById("w-token") || {}).value || "" }); return; }
+  if (id === "w-make") {
+    const ctx = parseInt((document.getElementById("w-ctx") || {}).value, 10);
+    const flags = [...document.querySelectorAll(".w-flag:checked")].map(c => c.value);
+    wizBusy("กำลังสร้าง bundle → ตรวจ quality gates → ZIP…");
+    const r = await api(`/api/deploy/${sess}/generate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ context: ctx || null, approved_flags: flags }),
+    });
+    const d = await r.json();
+    if (r.ok) resultView(d);
+    else {
+      const det = d.detail || {};
+      wizForm(det.message || "สร้าง bundle ไม่สำเร็จ",
+        (det.gates || []).filter(g => !g.passed).map(g => `<div class="warn-line">${esc(g.name)}: ${esc(g.detail)}</div>`).join(""));
+    }
+    return;
   }
 });
 

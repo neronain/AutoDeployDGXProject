@@ -167,6 +167,51 @@ def create_app(token: str = "") -> FastAPI:
     def restart(slug: str) -> JSONResponse:
         return _action(slug, "restart")
 
+    # ── deploy wizard ──────────────────────────────────────────────────────
+    @app.get("/api/targets", dependencies=guarded)
+    def targets_list() -> dict:
+        from .deploy import targets
+
+        return {"targets": targets()}
+
+    def _deploy_error(exc) -> HTTPException:
+        # kind บอก UI ว่าให้ทำอะไรต่อ (ขอ token / ให้เลือกไฟล์ / แสดงทางเลือกอื่น)
+        return HTTPException(status_code=422, detail={"kind": exc.kind, "message": exc.message, **exc.extra})
+
+    @app.post("/api/deploy/analyze", dependencies=guarded)
+    def deploy_analyze(body: dict) -> dict:
+        from .deploy import DeployError, analyze
+
+        model = (body.get("model") or "").strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="ต้องระบุลิงก์โมเดล")
+        try:
+            return analyze(
+                model,
+                target=body.get("target") or None,
+                revision=body.get("revision") or None,
+                no_llm=bool(body.get("no_llm")),
+                hf_token=body.get("hf_token") or "",
+                selected_gguf=body.get("selected_gguf") or "",
+            )
+        except DeployError as exc:
+            raise _deploy_error(exc) from exc
+
+    @app.post("/api/deploy/{session_id}/generate", dependencies=guarded)
+    def deploy_generate(session_id: str, body: dict) -> dict:
+        from .deploy import DeployError, generate
+
+        try:
+            return generate(
+                session_id,
+                context=body.get("context"),
+                approved_flags=body.get("approved_flags") or [],
+                approved_assets=body.get("approved_assets") or [],
+                output=body.get("output") or "./bundles",
+            )
+        except DeployError as exc:
+            raise _deploy_error(exc) from exc
+
     return app
 
 

@@ -152,3 +152,112 @@ def test_static_page_ships_with_the_package():
     from lmds.web import api
 
     assert (Path(api.STATIC) / "index.html").is_file()
+
+
+# ── deploy wizard ─────────────────────────────────────────────────────────────
+
+def test_targets_endpoint_lists_presets():
+    from lmds.fit import PRESETS
+
+    data = TestClient(create_app()).get("/api/targets").json()
+    assert {t["name"] for t in data["targets"]} == set(PRESETS)
+    rtx = next(t for t in data["targets"] if t["name"] == "rtx-5090")
+    assert rtx["tested"] is True  # validated 2026-08-03
+
+
+def test_multi_variant_gguf_asks_before_guessing(monkeypatch):
+    """repo GGUF หลาย variant ต้องให้ผู้ใช้เลือก ไม่ใช่เดาให้ — เดาผิดคือโหลดผิดไฟล์หลาย GB"""
+    from tests.test_generator import gguf_report
+    from lmds.inspector.report import GgufVariant
+    from lmds.web import deploy as dep
+
+    report = gguf_report(selected_gguf=None, gguf_variants=[
+        GgufVariant(filename="demo-Q4.gguf", size_bytes=4 * 1024**3),
+        GgufVariant(filename="demo-Q8.gguf", size_bytes=8 * 1024**3),
+        GgufVariant(filename="mmproj-BF16.gguf", size_bytes=1024**3, is_mmproj=True),
+    ])
+    monkeypatch.setattr("lmds.inspector.inspect_model", lambda source, client: report)
+
+    with pytest.raises(dep.DeployError) as err:
+        dep.analyze("unsloth/demo-GGUF", target="rtx-5090")
+    assert err.value.kind == "choose-gguf"
+    names = [v["filename"] for v in err.value.extra["variants"]]
+    assert names == ["demo-Q4.gguf", "demo-Q8.gguf"]  # เรียงจากเล็กไปใหญ่ ไม่มี mmproj ปน
+
+
+def test_single_variant_gguf_needs_no_question(monkeypatch):
+    from tests.test_generator import gguf_report
+    from lmds.web import deploy as dep
+
+    report = gguf_report(selected_gguf=None)
+    monkeypatch.setattr("lmds.inspector.inspect_model", lambda source, client: report)
+    result = dep.analyze("unsloth/demo-GGUF", target="dgx-spark-single", no_llm=True)
+    assert result["plan"]["selected_gguf"] == "Qwen3-8B-Q4_K_M.gguf"
+
+
+def test_no_fit_returns_alternatives(monkeypatch):
+    """โมเดลใหญ่เกินเครื่อง — ต้องบอกทางเลือก ไม่ใช่ปล่อยให้ผู้ใช้เดา"""
+    from tests.test_generator import safetensors_report
+    from lmds.fit.analyzer import GIB
+    from lmds.web import deploy as dep
+
+    monkeypatch.setattr("lmds.inspector.inspect_model",
+                        lambda source, client: safetensors_report(weight_bytes=400 * GIB))
+    with pytest.raises(dep.DeployError) as err:
+        dep.analyze("Qwen/Huge", target="rtx-5090", no_llm=True)
+    assert err.value.kind == "no-fit"
+    assert err.value.extra["alternatives"]
+
+
+def test_generate_produces_a_validated_bundle(tmp_path, monkeypatch):
+    """เว็บต้องได้ bundle คุณภาพเดียวกับ CLI — ผ่าน gates ครบและมี ZIP"""
+    from tests.test_generator import safetensors_report
+    from lmds.web import deploy as dep
+
+    monkeypatch.setattr("lmds.inspector.inspect_model", lambda source, client: safetensors_report())
+    analyzed = dep.analyze("Qwen/Qwen3-32B", target="dgx-spark-single", no_llm=True)
+
+    result = dep.generate(analyzed["id"], context=16384, output=str(tmp_path))
+    assert result["context"] == 16384
+    assert all(g["passed"] for g in result["gates"])
+    assert Path(result["zip"]).is_file()
+    assert (Path(result["directory"]) / "MODEL_PROFILE.yaml").is_file()
+
+
+def test_context_cannot_exceed_the_safe_ceiling(tmp_path, monkeypatch):
+    """ผู้ใช้พิมพ์ context เกินเพดานได้ในช่อง input — ฝั่ง server ต้องตัดให้ ไม่เชื่อค่าจากหน้าเว็บ"""
+    from tests.test_generator import safetensors_report
+    from lmds.web import deploy as dep
+
+    monkeypatch.setattr("lmds.inspector.inspect_model", lambda source, client: safetensors_report())
+    analyzed = dep.analyze("Qwen/Qwen3-32B", target="dgx-spark-single", no_llm=True)
+    ceiling = analyzed["plan"]["fit"]["max_safe_context"] or analyzed["plan"]["context"]
+
+    result = dep.generate(analyzed["id"], context=9_000_000, output=str(tmp_path))
+    assert result["context"] == ceiling
+
+
+def test_session_is_single_use(tmp_path, monkeypatch):
+    """generate แล้ว session ต้องหมดอายุ — กันกด 'สร้าง bundle' ซ้ำแล้วได้ของซ้อนกัน"""
+    from tests.test_generator import safetensors_report
+    from lmds.web import deploy as dep
+
+    monkeypatch.setattr("lmds.inspector.inspect_model", lambda source, client: safetensors_report())
+    analyzed = dep.analyze("Qwen/Qwen3-32B", target="dgx-spark-single", no_llm=True)
+    dep.generate(analyzed["id"], output=str(tmp_path))
+
+    with pytest.raises(dep.DeployError) as err:
+        dep.generate(analyzed["id"], output=str(tmp_path))
+    assert err.value.kind == "expired"
+
+
+def test_analyze_endpoint_requires_a_model():
+    r = TestClient(create_app()).post("/api/deploy/analyze", json={"model": "  "})
+    assert r.status_code == 400
+
+
+def test_deploy_endpoints_are_token_guarded(fleet):
+    client = TestClient(create_app(token="s3cret"))
+    assert client.get("/api/targets").status_code == 401
+    assert client.post("/api/deploy/analyze", json={"model": "x"}).status_code == 401
+    assert client.post("/api/deploy/abc/generate", json={}).status_code == 401
