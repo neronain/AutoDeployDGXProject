@@ -232,7 +232,15 @@ runtime_info() {
 # ───────────────────────────── download ─────────────────────────────
 download() {
   need docker
-  mkdir -p "$HF_HOME"
+{% if report.gated %}  # gated repo: ไม่มี token = ดาวน์โหลดล้มด้วย 401 ที่อ่านยาก — ตรวจตั้งแต่ต้นดีกว่า
+  if [[ -z "${HF_TOKEN:-}" ]]; then
+    die "${MODEL_ID} เป็น gated repo — ต้องมี HF_TOKEN ก่อน download
+  1) ขอสิทธิ์ที่ https://huggingface.co/${MODEL_ID} (ต้องขึ้น ACCEPTED)
+  2) สร้าง token ที่ https://huggingface.co/settings/tokens
+  3) export HF_TOKEN=hf_xxx   แล้วรันใหม่: $0 download
+หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
+  fi
+{% endif %}  mkdir -p "$HF_HOME"
   log "Downloading ${MODEL_ID} @ ${MODEL_REVISION} (resume-safe) …"
   local dl_args=(
     run --rm -i --network host
@@ -242,8 +250,12 @@ download() {
     -v "${HF_HOME}:/cache"
   )
   [[ -n "${HF_TOKEN:-}" ]] && dl_args+=(-e "HF_TOKEN=${HF_TOKEN}")
+  # Xet เป็น backend ใหม่ของ Hub ที่บาง repo (เช่นตระกูล Llama) ยังพังด้วย
+  # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
+  [[ -n "${HF_HUB_DISABLE_XET:-}" ]] && dl_args+=(-e "HF_HUB_DISABLE_XET=1")
   dl_args+=(--entrypoint python3 "$VLLM_IMAGE" -)
-  docker "${dl_args[@]}" <<'PYEOF'
+
+  if ! docker "${dl_args[@]}" <<'PYEOF'
 import os
 from huggingface_hub import snapshot_download
 path = snapshot_download(
@@ -253,6 +265,12 @@ path = snapshot_download(
 )
 print("download complete:", path, flush=True)
 PYEOF
+  then
+    [[ -z "${HF_HUB_DISABLE_XET:-}" ]] || die "download ล้มเหลวแม้ปิด Xet แล้ว — ดูข้อความด้านบน"
+    log "download ล้มเหลว — ลองใหม่โดยปิด Xet transfer (ไฟล์ที่โหลดแล้วยังอยู่ โหลดต่อจากเดิม)"
+    HF_HUB_DISABLE_XET=1 download
+    return
+  fi
   log "Download complete."
 }
 

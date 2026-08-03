@@ -104,6 +104,19 @@
     controller (native/docker คนละที่)
   - **gate ใหม่ `multimodal-assets`** (รวมเป็น 9 ด่าน) — profile ประกาศ mmproj แต่ controller ไม่โหลด
     หรือไม่ส่ง `--mmproj` = ไม่ผ่าน ไม่มี ZIP · bundle ที่มีบั๊กนี้เคยผ่าน gates ครบทุกด่าน
+- **gated repo: `download` โยน traceback ของ Python 60 บรรทัดแทนที่จะบอกว่า "ยังไม่ได้ตั้ง token"**
+  (เคสจริง `meta-llama/Llama-3.1-8B-Instruct` บน RTX 5090, 2026-08-03) — controller ตรวจ `HF_TOKEN`
+  ก่อน download แล้ว die พร้อมขั้นตอนแก้ 3 ข้อ · เปิดเฉพาะ repo ที่ `gated` จริงตาม Hub API
+- **token ที่พิมพ์ตอน `lmds deploy` ใช้ได้แค่ขั้นวิเคราะห์ แต่ไม่มีใครบอก** — ผู้ใช้พิมพ์ token ถูก
+  ต้อง bundle ออกมาสวยงาม แล้วไปเจอ 401 ตอน `download` เพราะ controller อ่านจาก env `HF_TOKEN`
+  เท่านั้น (เจตนา: ไม่ฝัง secret ลง bundle) · ตอนนี้บอกทันทีหลัง inspect พร้อมสองทางเลือก
+  (`lmds config set-hf-token` หรือ `export HF_TOKEN=`)
+- **`download` ล้มเมื่อ Hub ใช้ Xet backend** — `RuntimeError: Unable to parse string as hex hash value`
+  กับ repo ตระกูล Llama · download รันในคอนเทนเนอร์ env บน host จึงไม่ถึงข้างใน — ส่ง
+  `HF_HUB_DISABLE_XET` เข้าไปให้ และ**ลองซ้ำอัตโนมัติ**เมื่อรอบแรกล้ม (ไฟล์ที่โหลดแล้วยังอยู่ resume ต่อ)
+- **help ของ controller vLLM: บรรทัด `start` หลุดการย่อหน้าไปชิดขอบ** — `{% raw %}{% endif -%}{% endraw %}` ของ Jinja
+  กิน whitespace ของบรรทัดถัดไป · กระทบ 3 จุด (help, case dispatch, `docker_args+=(--entrypoint …)`)
+  · เทสใหม่ไล่ตรวจการย่อหน้าในบล็อก COMMANDS ทุก template
 - **โมเดล llama.cpp โหมด docker ถูกนับสองครั้งใน `lmds ps` / `lmds list`** (เจอจริงบน RTX 5090,
   2026-08-03) — process ใน container มองเห็นได้จาก process table ของ host ด้วย `_orphan_native`
   จึงเก็บมันมาเป็น "orphan" อีกแถว โดยใช้ค่า `--alias` เป็น slug ทำให้ดูเหมือนคนละโมเดล และ

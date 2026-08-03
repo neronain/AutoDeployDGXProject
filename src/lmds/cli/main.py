@@ -169,7 +169,16 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
                 err_console.print("ข้าม token — ไม่สามารถ inspect repo นี้ได้")
                 raise typer.Exit(code=4)
             report = inspect_model(source, HfClient(token=entered))
-            console.print("[dim]hint: เก็บ token ถาวรด้วย lmds config set-hf-token[/dim]")
+            # token ที่พิมพ์ตรงนี้ใช้ได้แค่รอบนี้ — controller อ่านจาก env HF_TOKEN เสมอ
+            # (ไม่ฝัง secret ลง bundle) ถ้าไม่บอกให้ชัด ผู้ใช้จะไปเจอ 401 ตอน download
+            err_console.print(
+                "[yellow]โมเดลนี้เป็น gated — ตอน download ต้องมี token ด้วย "
+                "(ค่าที่เพิ่งพิมพ์ใช้แค่ขั้นวิเคราะห์)[/yellow]"
+            )
+            err_console.print(
+                "  เก็บถาวร:  [bold]lmds config set-hf-token[/bold]\n"
+                "  หรือชั่วคราว:  [bold]export HF_TOKEN=hf_xxx[/bold]  ก่อนรัน ./<controller>.sh download"
+            )
             return source, report
     except RepoNotFound as exc:
         err_console.print(f"[red]{exc}[/red]")

@@ -462,3 +462,57 @@ def test_stacked_test_text_also_handles_reasoning(tmp_path):
     text = (renderer.TEMPLATES_DIR / "stacked-vllm-controller.sh.j2").read_text(encoding="utf-8")
     assert '\\"max_tokens\\": 512' in text
     assert "test-text: OK" in text
+
+
+def test_gated_repo_controller_checks_token_before_download(tmp_path):
+    """เคสจริง Llama-3.1-8B (2026-08-03): ไม่มี HF_TOKEN → huggingface_hub โยน traceback
+    60 บรรทัดใส่หน้าผู้ใช้ ทั้งที่สาเหตุคือ "ยังไม่ได้ตั้ง token" ประโยคเดียว
+    """
+    bundle, _, _ = make_bundle(
+        safetensors_report(repo_id="meta-llama/Llama-3.1-8B-Instruct", gated=True),
+        tmp_path=tmp_path,
+    )
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "gated repo" in script
+    assert 'if [[ -z "${HF_TOKEN:-}" ]]; then' in script
+    assert "settings/tokens" in script
+    assert not audit_script(script)
+
+
+def test_public_repo_has_no_token_gate(tmp_path):
+    """repo สาธารณะต้องไม่ถูกบังคับให้มี token (ข้อความ help เรื่อง HF_TOKEN ยังอยู่ได้)"""
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert 'if [[ -z "${HF_TOKEN:-}" ]]; then' not in script
+    assert "settings/tokens" not in script
+
+
+def test_download_falls_back_when_xet_transfer_fails(tmp_path):
+    """Xet backend ของ Hub พังกับบาง repo ('Unable to parse string as hex hash value')
+
+    env บน host ไม่ถึงคอนเทนเนอร์เอง — ต้องส่ง HF_HUB_DISABLE_XET เข้าไปและลองซ้ำให้อัตโนมัติ
+    """
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "HF_HUB_DISABLE_XET" in script
+    assert "-e HF_HUB_DISABLE_XET=1" in script
+
+
+def test_usage_block_keeps_indentation(tmp_path):
+    """`{% endif -%}` ของ Jinja กิน whitespace ของบรรทัดถัดไป — help เคยพิมพ์ `start` ชิดขอบ
+    ทั้งที่คำสั่งอื่นย่อหน้า 2 ช่อง (เห็นในผลรันจริงบน RTX 5090)
+    """
+    for report in (safetensors_report(), gguf_report()):
+        bundle, _, _ = make_bundle(report, tmp_path=tmp_path / report.artifact_type.value)
+        script = bundle.controller.read_text(encoding="utf-8")
+        in_commands = False
+        for line in script.splitlines():
+            if line == "COMMANDS":
+                in_commands = True
+                continue
+            if in_commands:
+                if not line.strip():
+                    break
+                assert line.startswith("  "), f"บรรทัด help หลุดการย่อหน้า: {line!r}"

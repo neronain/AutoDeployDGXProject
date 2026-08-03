@@ -119,17 +119,44 @@ check_gpu() {
 
 download() {
   need docker
-  mkdir -p "$HF_HOME"
-  docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp -e HF_HOME=/cache \
-    ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
-    -v "${HF_HOME}:/cache" \
-    --entrypoint python3 "$VLLM_IMAGE" -c "
+{% if report.gated %}  # gated repo: ไม่มี token = huggingface_hub โยน traceback ยาวเหยียดที่อ่านไม่รู้เรื่อง
+  # ตรวจตั้งแต่ต้นแล้วบอกให้ตรง ๆ ดีกว่า
+  if [[ -z "${HF_TOKEN:-}" ]]; then
+    die "${MODEL_ID} เป็น gated repo — ต้องมี HF_TOKEN ก่อน download
+  1) ขอสิทธิ์ที่ https://huggingface.co/${MODEL_ID} (ต้องขึ้น ACCEPTED)
+  2) สร้าง token ที่ https://huggingface.co/settings/tokens
+  3) export HF_TOKEN=hf_xxx   แล้วรันใหม่: $0 download
+หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
+  fi
+{% endif %}  mkdir -p "$HF_HOME"
+
+  # download รันในคอนเทนเนอร์ — env ที่ตั้งบน host ไม่ถึงข้างในเอง ต้องส่งต่อให้
+  _snapshot_download() {
+    local disable_xet="$1"
+    docker run --rm \
+      --user "$(id -u):$(id -g)" \
+      -e HOME=/tmp -e HF_HOME=/cache \
+      ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
+      ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
+      -v "${HF_HOME}:/cache" \
+      --entrypoint python3 "$VLLM_IMAGE" -c "
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id='${MODEL_ID}', revision='${MODEL_REVISION}', cache_dir=None)
 print('download complete')
 "
+  }
+
+  # Xet เป็น backend ใหม่ของ Hub ที่บาง repo (เช่นตระกูล Llama) ยังพังด้วย
+  # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
+  # แทนที่จะโยน traceback ของ Python ใส่หน้าผู้ใช้แล้วจบ
+  if [[ -n "${HF_HUB_DISABLE_XET:-}" ]]; then
+    _snapshot_download 1
+  elif ! _snapshot_download ""; then
+    echo "" >&2
+    echo "download ล้มเหลว — ลองใหม่โดยปิด Xet transfer (HF_HUB_DISABLE_XET=1)" >&2
+    echo "ไฟล์ที่โหลดมาแล้วยังอยู่ ระบบจะโหลดต่อจากเดิม ไม่เริ่มใหม่ทั้งหมด" >&2
+    _snapshot_download 1
+  fi
 }
 
 {% if shard_files -%}
@@ -274,8 +301,7 @@ start() {
 {% if runtime_assets -%}
   verify_assets
   docker_args+=(-v "${PLUGIN_DIR}:${PLUGIN_MOUNT}:ro")
-{% endif -%}
-  docker_args+=(--entrypoint vllm "$VLLM_IMAGE")
+{% endif %}  docker_args+=(--entrypoint vllm "$VLLM_IMAGE")
 
   docker "${docker_args[@]}" "${serve_args[@]}"
 
@@ -399,8 +425,7 @@ COMMANDS
   verify-files      Check required files, every shard present, sizes match the Hub
 {% if runtime_assets -%}
   prepare-runtime   Fetch approved external runtime files (REQUIRED once before first start)
-{% endif -%}
-  start             Verify GPU + files, then start the server and wait for /health
+{% endif %}  start             Verify GPU + files, then start the server and wait for /health
   stop              Stop and remove the container
   restart           stop + start (use this to apply new options)
   status            Container state + API health + loaded model list
@@ -471,8 +496,7 @@ case "${1:-help}" in
   verify-files) verify_files ;;
 {% if runtime_assets -%}
   prepare-runtime) prepare_runtime ;;
-{% endif -%}
-  start)        start ;;
+{% endif %}  start)        start ;;
   stop)         stop ;;
   restart)      stop; start ;;
   status)       status ;;

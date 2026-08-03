@@ -122,7 +122,15 @@ network_info() {
 
 download() {
   need curl
-  mkdir -p "$MODEL_DIR"
+{% if report.gated %}  # gated repo: ไม่มี token = ดาวน์โหลดล้มด้วย 401 ที่อ่านยาก — ตรวจตั้งแต่ต้นดีกว่า
+  if [[ -z "${HF_TOKEN:-}" ]]; then
+    die "${MODEL_ID} เป็น gated repo — ต้องมี HF_TOKEN ก่อน download
+  1) ขอสิทธิ์ที่ https://huggingface.co/${MODEL_ID} (ต้องขึ้น ACCEPTED)
+  2) สร้าง token ที่ https://huggingface.co/settings/tokens
+  3) export HF_TOKEN=hf_xxx   แล้วรันใหม่: $0 download
+หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
+  fi
+{% endif %}  mkdir -p "$MODEL_DIR"
   local i
   for i in "${!MODEL_FILES[@]}"; do
     echo "download [$(( i + 1 ))/{{ '${#MODEL_FILES[@]}' }}]: ${MODEL_URLS[$i]}"
