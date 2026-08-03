@@ -20,6 +20,14 @@
 
 ## ส่วนที่ 1 — เตรียมเครื่อง (Prerequisites)
 
+> **ทางลัด: ข้ามส่วนนี้ไปที่ [ส่วนที่ 2](#ส่วนที่-2--ติดตั้ง-lmds) ได้เลย**
+> `install.sh` ตรวจและ**ติดตั้งของที่ขาดให้** — Docker, กลุ่ม `docker` ของ user, NVIDIA Container
+> Toolkit, โมดูล `python3-venv` — โดยถามยืนยันก่อนทุกขั้นที่ใช้ `sudo` และแสดงคำสั่งจริงให้เห็นก่อนรัน
+> ส่วนนี้เก็บไว้สำหรับคนที่อยากทำเอง เครื่องที่ติดตั้งแบบไม่มี prompt หรือเครื่อง air-gapped
+>
+> ข้อเดียวที่ `install.sh` **ไม่ทำให้** คือ NVIDIA driver (§1.2) เพราะต้อง reboot และบางเครื่องมี
+> driver ใช้งานได้อยู่แล้วแต่ `ubuntu-drivers install` ชน dependency จนพัง
+
 ### 1.1 ตรวจ Python
 
 ```bash
@@ -49,6 +57,8 @@ sudo ubuntu-drivers install    # แล้ว reboot
 
 ### 1.3 ติดตั้ง Docker (ถ้ายังไม่มี)
 
+> `install.sh` ทำขั้นนี้ให้ได้ (ถามก่อน) — ทำเองก็ได้ตามนี้
+
 ```bash
 docker --version || curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker $USER     # ให้ user ปัจจุบันใช้ docker ได้โดยไม่ต้อง sudo
@@ -57,6 +67,8 @@ sudo usermod -aG docker $USER     # ให้ user ปัจจุบันใ�
 **สำคัญ**: หลัง `usermod` ต้อง **logout/login ใหม่** (หรือ `newgrp docker`) จึงจะมีผล
 
 ### 1.4 ติดตั้ง NVIDIA Container Toolkit (ให้ Docker เห็น GPU)
+
+> `install.sh` ทำทั้ง 5 ขั้นนี้ให้ได้ (ถามก่อน) — ทำเองก็ได้ตามนี้
 
 ```bash
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
@@ -153,17 +165,48 @@ cd AutoDeployDGXProject
 ```
 
 สคริปต์จะ:
-1. ตรวจ Python ≥ 3.10 และโมดูล venv (แจ้ง error พร้อมวิธีแก้ถ้าขาด)
+1. ตรวจ Python ≥ 3.10 · ถ้าขาดโมดูล `venv` **ถามติดตั้งให้** (`sudo apt install python3-venv`)
 2. สร้าง virtualenv ที่ `~/.local/share/lmds/venv` (ไม่ยุ่งกับ Python ระบบ)
 3. ติดตั้ง lmds ลง venv นั้น
 4. symlink คำสั่ง `lmds` ไปที่ `~/.local/bin/lmds`
 5. เติม `~/.local/bin` ลง PATH ใน `~/.bashrc` (หรือ `~/.zshrc`) ให้อัตโนมัติถ้ายังไม่มี
-6. **ตรวจความพร้อมของเครื่อง** — NVIDIA driver, Docker (เรียกได้โดยไม่ต้อง sudo), Docker เห็น GPU จริงไหม,
-   ดิสก์ว่าง → สรุปเป็น ✅ / ⚠️ พร้อมคำสั่งแก้ · ไม่ครบก็ติดตั้งต่อได้ (สร้าง bundle ได้ แต่ start จะยังไม่ผ่าน)
+6. **ตรวจความพร้อมของเครื่อง แล้วติดตั้งของที่ขาดให้** — ดูตารางข้างล่าง
 7. **ถามตั้งค่า LLM provider + API key** (ดู §3.2) — ข้ามได้
 8. **ถามติดตั้ง tab completion** — กด TAB เติมชื่อคำสั่ง/bundle/target ให้ (ดู §5.1)
+9. สรุปท้ายสุดว่า **ต้องพิมพ์อะไรต่อ** เป็นข้อ ๆ (รวมคำสั่งเปิดใช้งาน PATH / กลุ่ม docker ถ้าจำเป็น)
 
-หลังติดตั้งเสร็จ ให้ `source ~/.bashrc` หรือเปิด terminal ใหม่ (PATH ที่เพิ่งเติมยังไม่มีผลกับ shell เดิม)
+### ข้อ 6 ทำอะไรให้บ้าง
+
+| ตรวจ | ถ้าขาด |
+|---|---|
+| NVIDIA driver (`nvidia-smi`) | ⚠️ แจ้งอย่างเดียว — **ไม่ติดตั้งให้** เพราะต้อง reboot (ทำเอง: `sudo ubuntu-drivers install`) |
+| Docker | ถามติดตั้งด้วยสคริปต์ทางการ `https://get.docker.com` แล้ว `systemctl enable --now docker` |
+| docker daemon ไม่ทำงาน | ถามสั่ง `sudo systemctl enable --now docker` |
+| user ไม่อยู่ในกลุ่ม `docker` | ถามรัน `sudo usermod -aG docker $USER` แล้วบอกให้ `newgrp docker` ตอนท้าย |
+| NVIDIA Container Toolkit | ถามติดตั้งครบทั้ง 5 ขั้น (keyring → apt source → install → `nvidia-ctk runtime configure` → restart docker) |
+| Docker เห็น GPU จริงไหม | ทดสอบด้วย `docker run --rm --gpus all --entrypoint true nvidia/cuda:12.4.1-base-ubuntu22.04` (ครั้งแรกดึง image ~250 MB) |
+| ดิสก์ `$HOME` | ⚠️ เตือนเมื่อเหลือ < 50 GB |
+
+**ทุกขั้นที่ใช้ `sudo` จะถามยืนยันก่อนเสมอ และพิมพ์คำสั่งจริงให้เห็นก่อนรัน** — ตอบ `n` ได้ทุกข้อ
+สคริปต์จะบอกคำสั่งให้ไปทำเองแทน · ของที่ขาดไม่ได้ทำให้ติดตั้ง LMDS ล้มเหลว (สร้าง bundle ได้ แต่ `start` จะยังไม่ผ่าน)
+
+### env สำหรับติดตั้งแบบอัตโนมัติ / ในสคริปต์
+
+| env | ผล |
+|---|---|
+| `LMDS_ASSUME_YES=1` | ตอบ Y ทุกคำถาม — ติดตั้งของที่ขาดให้เลยโดยไม่ถาม (ต้องรันได้ `sudo` โดยไม่ถามรหัส) |
+| `LMDS_SKIP_PREREQ=1` | ข้ามการติดตั้ง Docker/toolkit ทั้งหมด — ตรวจแล้วรายงานอย่างเดียว |
+| `LMDS_INSTALL_DIR` / `LMDS_BIN_DIR` | เปลี่ยนที่ติดตั้ง |
+
+```bash
+sudo -v && LMDS_ASSUME_YES=1 ./install.sh     # ติดตั้งรวดเดียวไม่ต้องนั่งตอบ
+```
+
+> เมื่อไม่ได้รันบน terminal จริง (CI, `curl | bash`, pipe) สคริปต์จะ**ไม่แตะเครื่องเลย** —
+> ตรวจแล้วรายงานอย่างเดียว เว้นแต่ตั้ง `LMDS_ASSUME_YES=1`
+
+หลังติดตั้งเสร็จ สคริปต์จะบอกเองที่บรรทัดสุดท้ายว่าต้อง `source ~/.bashrc` (และ `newgrp docker` ถ้าเพิ่งถูกเพิ่มเข้ากลุ่ม)
+— PATH กับกลุ่มที่เพิ่งเติมยังไม่มีผลกับ shell เดิม จะเปิด terminal ใหม่แทนก็ได้
 
 ### ตรวจว่าติดตั้งสำเร็จ
 

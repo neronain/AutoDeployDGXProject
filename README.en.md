@@ -27,7 +27,8 @@ model) as its "brain" to analyse the model and produce a **validated deployment 
 
 ```bash
 git clone https://github.com/neronain/AutoDeployDGXProject
-cd AutoDeployDGXProject && ./install.sh     # checks the machine, offers to configure provider + completion
+cd AutoDeployDGXProject && ./install.sh     # installs whatever is missing, then configures provider
+source ~/.bashrc                            # the installer prints exactly what to run at the end
 
 lmds hardware                               # GPU / RAM / disk / Docker / target profile
 lmds inspect Qwen/Qwen3-32B                 # analyse + fit check, no files written
@@ -71,6 +72,20 @@ Tab completion covers commands, bundle names and target presets: `lmds --install
   no key needed) — or none at all with `--no-llm` (rule-based mode)
 - Docker + NVIDIA Container Toolkit on the machine that will serve the model
 - Free disk ≈ *(model size × 1.2) + 25 GB* — the vLLM runtime image alone is ~10–20 GB
+
+`install.sh` sets up the Docker prerequisites for you. It asks before every `sudo` step and prints the
+exact command first: Docker itself, adding your user to the `docker` group, the NVIDIA Container
+Toolkit (all five steps), and `python3-venv` — then verifies Docker really sees the GPU. Answer `n` to
+skip any of them and it tells you the command to run yourself instead.
+
+```bash
+sudo -v && LMDS_ASSUME_YES=1 ./install.sh    # unattended: accept every prompt
+LMDS_SKIP_PREREQ=1 ./install.sh              # install LMDS only, never touch Docker
+```
+
+The NVIDIA **driver** is the one thing it will not install — that needs a reboot, and on machines with
+a working driver `ubuntu-drivers install` can break package dependencies. When not attached to a real
+terminal (CI, piped input) the installer changes nothing on the machine.
 
 ## Security notes
 

@@ -32,9 +32,8 @@
 ## ตัวอย่างการใช้งาน
 
 ```bash
-./install.sh                          # ติดตั้ง (Ubuntu, python3 >= 3.10)
-lmds config set-provider openai       # ตั้ง LLM provider ครั้งเดียว (หรือใช้ --no-llm)
-lmds config set-key openai
+./install.sh                          # ติดตั้ง — ลง Docker/NVIDIA toolkit ที่ขาดให้ด้วย (ถามก่อนทุกขั้น)
+source ~/.bashrc                      # สคริปต์บอกเองตอนจบว่าต้องรันอะไร
 
 lmds hardware                         # ตรวจเครื่อง + จำแนก target profile
 lmds inspect Qwen/Qwen3-32B --target rtx-pro-4000-dual    # วิเคราะห์ + fit โดยไม่ generate
@@ -88,7 +87,21 @@ lmds remove <ชื่อ>        # ลบออกจากเครื่อ�
 ทุก controller ลงทะเบียนตัวเองอัตโนมัติตอน `start` — ต่อให้ bundle ถูกลบไปแล้ว `lmds stop` ก็ยัง
 fallback หยุดโมเดลค้างให้ได้ (kill pid / docker rm) · รายละเอียด: [docs/USAGE.md §4](docs/USAGE.md)
 
-`./install.sh` ตรวจความพร้อมของเครื่องให้ (driver / Docker / Docker เห็น GPU / ดิสก์) แล้วถามตั้ง provider + API key + tab completion ให้ตั้งแต่ตอนติดตั้ง — ข้ามได้ทุกขั้น
+## การติดตั้งเตรียมเครื่องให้เอง
+
+`./install.sh` ไม่ได้แค่ตรวจ — **ติดตั้งของที่ขาดให้เลย** โดยถามยืนยันก่อนทุกขั้นที่ใช้ `sudo`
+และพิมพ์คำสั่งจริงให้เห็นก่อนรัน: Docker, กลุ่ม `docker` ของ user, NVIDIA Container Toolkit (ครบ 5 ขั้น),
+โมดูล `python3-venv` แล้วทดสอบว่า Docker เห็น GPU จริง · ต่อด้วยถามตั้ง LLM provider + API key +
+tab completion · ตอบ `n` ข้ามได้ทุกข้อ แล้วสรุปตอนจบว่าเหลืออะไรต้องทำเอง
+
+```bash
+sudo -v && LMDS_ASSUME_YES=1 ./install.sh    # ติดตั้งรวดเดียวไม่ต้องนั่งตอบ
+LMDS_SKIP_PREREQ=1 ./install.sh              # ลง LMDS อย่างเดียว ไม่แตะ Docker/toolkit
+```
+
+ข้อเดียวที่ไม่ทำให้คือ **NVIDIA driver** — ต้อง reboot และบางเครื่องมี driver ใช้ได้อยู่แล้วแต่
+`ubuntu-drivers install` ชน dependency จนพัง · เมื่อไม่ได้รันบน terminal จริง (CI, pipe) จะไม่แตะเครื่องเลย
+· รายละเอียด: [docs/INSTALL.md §2](docs/INSTALL.md)
 
 ผลลัพธ์: โฟลเดอร์ bundle + ZIP ประกอบด้วย controller script (มาตรฐาน v3.0.0), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md`, `PACKAGE_SHA256SUMS`
 
