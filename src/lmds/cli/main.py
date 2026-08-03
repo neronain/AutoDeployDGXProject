@@ -1055,6 +1055,40 @@ def remove(
 
 
 @app.command()
+def doctor(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
+) -> None:
+    """ตรวจว่าทำไมโมเดลนี้ยัง download/start ไม่ผ่าน — บอกสาเหตุพร้อมคำสั่งแก้
+
+    ตรวจด้วยข้อเท็จจริงบนเครื่องล้วน ไม่ใช้ LLM · exit 0 ผ่าน, 2 มีข้อที่ต้องแก้
+    """
+    from lmds.doctor import Status, diagnose
+
+    result = diagnose(slug)
+    icon = {Status.OK: "[green]✅[/green]", Status.WARN: "[yellow]⚠️ [/yellow]", Status.FAIL: "[red]❌[/red]"}
+
+    table = Table(title=f"Doctor: {slug}", show_header=True)
+    table.add_column("")
+    table.add_column("ตรวจ")
+    table.add_column("ผล")
+    for finding in result.findings:
+        table.add_row(icon[finding.status], finding.name, finding.detail)
+    console.print(table)
+
+    todo = result.failed + result.warnings
+    if todo:
+        console.print("\n[bold]วิธีแก้[/bold]")
+        for finding in todo:
+            if finding.fix:
+                console.print(f"  {finding.name}: [cyan]{finding.fix}[/cyan]")
+
+    if result.failed:
+        err_console.print(f"\n[red]พบ {len(result.failed)} ข้อที่ต้องแก้ก่อนถึงจะรันได้[/red]")
+        raise typer.Exit(code=2)
+    console.print("\n[green]ไม่พบปัญหาที่บล็อกการรัน[/green]")
+
+
+@app.command()
 def repair(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
 ) -> None:

@@ -27,6 +27,16 @@
   plugin ซึ่งไม่ได้อยู่ใน repo ของโมเดล · คุมด้วย host allowlist (HTTPS จาก huggingface.co /
   raw.githubusercontent.com / github.com / gitlab.com) + **ผู้ใช้ต้องอนุมัติรายตัวเสมอ**
   · controller ได้คำสั่ง `prepare-runtime` ไปดึงไฟล์ + ตรวจ SHA-256 แล้ว mount แบบ read-only
+- **`lmds doctor <slug>`** — ตรวจว่าทำไมโมเดลยัง download/start ไม่ผ่าน แล้วบอก**คำสั่งแก้ตรง ๆ**
+  · ทุกข้อที่ตรวจมาจาก failure ที่เจอจริงตอน hardware validation 2026-08-03 ไม่ได้เดาว่าน่าจะพังตรงไหน:
+  - **hf-token** — profile บอก gated แต่ไม่มี `HF_TOKEN` ใน env (เคสจริง: ผู้ใช้พิมพ์ token ตอน deploy
+    แล้วเข้าใจว่าใช้ได้ตลอด ที่จริง controller อ่านจาก env เท่านั้น → 401 พร้อม traceback 60 บรรทัด)
+  - **weights** — ไฟล์ที่ profile ประกาศไว้หายไป รวม **mmproj** (เคสที่ทำให้ multimodal กลายเป็น
+    text-only เงียบ ๆ) และไฟล์ขนาด 0 ไบต์จาก download ที่ค้างกลางคัน
+  - **permissions** — cache dir เขียนไม่ได้เพราะ container เคยสร้างเป็น root (จาก reference v8.2)
+  - **port** — ถูกโปรเซสอื่นยึด (บอกด้วยว่าตัวไหน) · **disk** · **docker** · **runtime-image** · **server/health**
+  · คำนวณล้วน ไม่ส่งอะไรให้ LLM ตีความ (PRD §8) · exit 2 เมื่อมีข้อที่บล็อกการรัน ใช้ใน script ได้
+  · เป็นฐานของ `lmds repair` ขั้นวิเคราะห์ log (PRD FR-8) ต่อไป
 - **ไล่ช่องว่าง stacked เทียบ reference v8.2 ตัวที่รันจริง** (`deepseek-v4-flash-nvfp4-stacked-v8.2`)
   — template ของเรา port มาจากรุ่นก่อนหน้า จึงขาดสิ่งที่ v8.2 เพิ่มจากการเจอหน้างาน:
   - **ซ่อมสิทธิ์ cache อัตโนมัติ** (`_ensure_local_owned_dir` / `_ensure_worker_owned_dir`) — คือที่มา

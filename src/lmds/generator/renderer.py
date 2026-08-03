@@ -218,6 +218,8 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "served_name": plan.served_model_name,
             "artifact_type": plan.artifact_type.value,
             "selected_gguf": plan.selected_gguf,
+            # lmds doctor ใช้ตรวจว่าต้องมี HF_TOKEN ตอน download ไหม
+            "gated": report.gated,
             "license": report.license,
             "architecture": report.architecture,
             "params_total": report.params_total,

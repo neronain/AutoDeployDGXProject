@@ -55,6 +55,7 @@ lmds list                # every bundle + status + engine/port/context/features 
 lmds start|stop|restart <name>
 lmds logs <name> -f      # live tail
 lmds enable <name>       # systemd autostart after reboot
+lmds doctor <name>       # why won't it download/start? checks + exact fix commands
 lmds repair <name>       # re-fetch missing/corrupt files, then verify
 lmds remove <name>       # delete everything (--keep-weights to keep the download)
 ```

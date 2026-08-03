@@ -85,6 +85,7 @@ lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม
 lmds restart <ชื่อ>       # restart (ใช้ตอนเปลี่ยน option เช่นเพิ่ม API_KEY)
 lmds logs <ชื่อ> -f       # ตาม log แบบ realtime (-n 500 = ย้อนหลัง)
 lmds enable <ชื่อ>        # ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (systemd autostart) · disable = ยกเลิก
+lmds doctor <ชื่อ>       # ตรวจว่าทำไมยัง download/start ไม่ผ่าน + คำสั่งแก้
 lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
 lmds remove <ชื่อ>        # ลบออกจากเครื่องทั้งหมด (--keep-weights = เก็บ weight ไว้)
 ```
