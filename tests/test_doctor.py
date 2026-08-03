@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from lmds.cli.main import app
 from lmds.doctor import Status, diagnose
+from lmds.fleet import ServerInfo
 
 runner = CliRunner()
 
@@ -162,3 +163,18 @@ def test_cli_exit_zero_when_healthy(tmp_path, monkeypatch):
     slug = _setup(tmp_path, monkeypatch)
     result = runner.invoke(app, ["doctor", slug])
     assert result.exit_code == 0, result.output
+
+
+def test_port_conflict_names_the_other_lmds_model(tmp_path, monkeypatch):
+    """เคสจริงบน RTX 5090: ทุก bundle ตั้งต้น port 8000 เหมือนกัน ตัวที่ยึดอยู่มักเป็น
+    โมเดล LMDS อีกตัว — บอกชื่อไปเลยดีกว่าให้ผู้ใช้ไปไล่อ่าน output ของ ss เอง
+    """
+    slug = _setup(tmp_path, monkeypatch)
+    rival = ServerInfo(slug="llama-3-1-8b-instruct", port=8000, running=True)
+    monkeypatch.setattr("lmds.doctor.checks.discover", lambda: [rival])
+    monkeypatch.setattr("lmds.doctor.checks._listening_on", lambda port: "LISTEN 0 2048 0.0.0.0:8000")
+
+    port = next(f for f in diagnose(slug).findings if f.name == "port")
+    assert port.status is Status.FAIL
+    assert "llama-3-1-8b-instruct" in port.detail
+    assert "lmds stop llama-3-1-8b-instruct" in port.fix

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from lmds.fleet import ServerInfo, bundle_profile, find
+from lmds.fleet import ServerInfo, bundle_profile, discover, find
 
 
 class Status(str, Enum):
@@ -204,8 +204,19 @@ def _check_port(server: ServerInfo) -> list[Finding]:
         return [Finding("port", Status.WARN, f"container ขึ้นแต่ยังไม่มีใครฟัง port {server.port}",
                         f"โมเดลอาจกำลังโหลดอยู่ — ดู: lmds logs {server.slug} -f")]
     if holder:
+        # ส่วนใหญ่ตัวที่ยึด port คือโมเดล LMDS อีกตัวที่ยังรันอยู่ (ทุก bundle default 8000 เหมือนกัน)
+        # บอกชื่อไปเลยดีกว่าให้ผู้ใช้ไปไล่หาเองจาก output ของ ss
+        rival = next(
+            (s.slug for s in discover()
+             if s.slug != server.slug and s.running and s.port == server.port),
+            "",
+        )
+        if rival:
+            return [Finding("port", Status.FAIL,
+                            f"port {server.port} ถูก {rival} ใช้อยู่ (ทุก bundle ตั้งต้นที่ 8000 เหมือนกัน)",
+                            f"lmds stop {rival}   หรือรันคู่กันคนละ port: lmds start {server.slug} --port 8001")]
         return [Finding("port", Status.FAIL, f"port {server.port} ถูกใช้โดยโปรเซสอื่น: {holder[:100]}",
-                        f"หยุดตัวที่ชน หรือย้าย port: ./{server.slug}-single.sh start --port 8001")]
+                        f"หยุดตัวที่ชน หรือย้าย port: lmds start {server.slug} --port 8001")]
     return [Finding("port", Status.OK, f"{server.port} ว่าง")]
 
 
