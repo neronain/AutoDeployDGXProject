@@ -546,3 +546,34 @@ def test_readme_surfaces_context_headroom(tmp_path):
     assert fit.max_safe_context > plan.serving.context
     assert "262,144" in readme
     assert profile["target"]["max_safe_context"] == fit.max_safe_context
+
+
+def _vllm_with_features(tmp_path):
+    report = safetensors_report()
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None)
+    plan.tool_calling.enabled = True
+    plan.tool_calling.parser = "hermes"
+    plan.reasoning.enabled = True
+    plan.reasoning.parser = "deepseek_r1"
+    return render_bundle(plan, report, fit, tmp_path).controller.read_text(encoding="utf-8")
+
+
+def test_enabled_parsers_get_an_acceptance_test(tmp_path):
+    """เรา emit --tool-call-parser / --reasoning-parser ให้ vLLM แต่ไม่เคยมีทางพิสูจน์ว่าใช้ได้จริง
+    parser ผิดตัวจะเงียบจนกว่าลูกค้าจะเจอเอง (ช่องว่างเทียบ reference v8.2)
+    """
+    script = _vllm_with_features(tmp_path)
+    assert "test-reasoning)" in script and "test_reasoning()" in script
+    assert "test-tools)" in script and "test_tools()" in script
+    assert "1591" in script  # 37×43 — ตรวจว่าคิดเลขถูกจริง ไม่ใช่แค่ตอบอะไรมา
+    assert "tool_calls" in script
+
+
+def test_features_off_keeps_controller_clean(tmp_path):
+    """โมเดลที่ไม่เปิด parser ต้องไม่มีคำสั่งทดสอบที่ใช้ไม่ได้ติดมา"""
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert "test_reasoning" not in script
+    assert "test_tools" not in script
+    assert not audit_script(script)

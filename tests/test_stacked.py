@@ -202,3 +202,45 @@ def test_stacked_has_shard_size_check_and_security_warning(tmp_path):
 
     result = subprocess.run(["bash", "-n", str(bundle.controller)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_stacked_repairs_cache_permissions(tmp_path):
+    """เทียบ reference v8.2 ("permission-safe"): docker เคยสร้าง cache เป็น root มาก่อน
+    รอบถัดไป user เขียนไม่ได้ แล้ว start ล้มแบบไล่สาเหตุยาก — ต้องซ่อมให้เอง
+    """
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert "_ensure_local_owned_dir()" in script
+    assert "_ensure_worker_owned_dir()" in script
+    assert "chown -R" in script
+    # ต้องถูกเรียกจริงกับ cache ทุกก้อน ไม่ใช่ประกาศทิ้งไว้
+    for target in ('"$FLASHINFER_CACHE"', '"$head_fi"', '"$VLLM_CACHE"'):
+        assert f"_ensure_local_owned_dir {target}" in script
+    assert '_ensure_worker_owned_dir "$worker_fi"' in script
+
+
+def test_stacked_releases_shared_memory_on_stop(tmp_path):
+    """mp backend ทิ้ง /dev/shm ไว้ — ไม่เก็บกวาด start รอบหน้าชนของเก่า (มาจาก v8.2)"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert "/dev/shm/psm_*" in script
+    assert "/dev/shm/sem.mp-*" in script
+
+
+def test_stacked_port_check_works_with_host_networking(tmp_path):
+    """container ใช้ --network host จึงไม่ publish port — `docker ps --filter publish=`
+    จับไม่เจอเลย ต้องดู listening socket จริง
+    """
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert "ss -tln" in script
+    assert 'docker ps --filter "publish=' not in script
+
+
+def test_stacked_can_recover_from_stale_flashinfer_cache(tmp_path):
+    """cache JIT ค้างจาก image เก่า = start พังโดยไม่มีทางกู้ถ้าไม่มีคำสั่งนี้"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert "clear_fi_cache()" in script
+    assert "clear-fi-cache)" in script
+    assert "props)" in script

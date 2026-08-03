@@ -27,6 +27,21 @@
   plugin ซึ่งไม่ได้อยู่ใน repo ของโมเดล · คุมด้วย host allowlist (HTTPS จาก huggingface.co /
   raw.githubusercontent.com / github.com / gitlab.com) + **ผู้ใช้ต้องอนุมัติรายตัวเสมอ**
   · controller ได้คำสั่ง `prepare-runtime` ไปดึงไฟล์ + ตรวจ SHA-256 แล้ว mount แบบ read-only
+- **ไล่ช่องว่าง stacked เทียบ reference v8.2 ตัวที่รันจริง** (`deepseek-v4-flash-nvfp4-stacked-v8.2`)
+  — template ของเรา port มาจากรุ่นก่อนหน้า จึงขาดสิ่งที่ v8.2 เพิ่มจากการเจอหน้างาน:
+  - **ซ่อมสิทธิ์ cache อัตโนมัติ** (`_ensure_local_owned_dir` / `_ensure_worker_owned_dir`) — คือที่มา
+    ของคำว่า "permission-safe" ในชื่อไฟล์ v8.2 · docker เคยสร้าง cache เป็น root รอบถัดไป user
+    เขียนไม่ได้แล้ว `start` ล้มแบบไล่สาเหตุยาก · ซ่อมด้วย container ตัวเดิม ไม่ต้องพึ่ง sudo บน host
+  - **คืน shared memory ตอน `stop`** (`/dev/shm/psm_*`, `/dev/shm/sem.mp-*`) — mp backend ทิ้งไว้
+    ไม่เก็บกวาดแล้ว `start` รอบหน้าชนของเก่า
+  - **`clear-fi-cache`** — FlashInfer JIT cache ค้างจาก image เก่าทำให้โหลด TVM-FFI module
+    คนละ signature แล้วพังตอน start · เดิมไม่มีคำสั่งกู้เลย ผู้ใช้ติดตาย
+  - **`props`** — เรียก `/v1/models`
+  - **แก้ port check ที่ใช้ไม่ได้จริง** — container รันด้วย `--network host` จึงไม่ publish port
+    ตัวกรอง `docker ps --filter publish=` จับไม่เจอเลย · เปลี่ยนไปดู listening socket (`ss`/`netstat`)
+- **`test-reasoning` / `test-tools` ตามฟีเจอร์ที่แผนเปิดจริง** (vLLM single + stacked) — เรา emit
+  `--reasoning-parser` / `--tool-call-parser` ให้ vLLM มาตลอดแต่ไม่เคยมีทางพิสูจน์ว่า parser ตรงกับ
+  โมเดลไหม · parser ผิดตัวจะเงียบจนลูกค้าเจอเอง · โมเดลที่ไม่เปิดฟีเจอร์จะไม่มีคำสั่งพวกนี้ติดมา
 - **regression เทียบ controllers v3.0.0** (`tests/test_v3_regression.py`) — ROADMAP ประกาศกฎนี้ไว้
   ตั้งแต่ต้นว่า "ทุก PR ต้องผ่าน" แต่ไม่เคยมีอะไรบังคับ · port กฎทั้งชุดจาก `audit-controllers.py`
   ของ repo เดิม (13 ข้อ) มาเป็นเทส แทนการ vendor controller อ้างอิง 21 ไฟล์ (~400 KB) เข้ารีโป

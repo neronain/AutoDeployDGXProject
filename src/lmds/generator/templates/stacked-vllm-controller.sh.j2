@@ -463,6 +463,53 @@ prompt_cluster_config() {
   printf '\n'
 }
 
+# ─────────────── ซ่อมสิทธิ์ cache dir ───────────────
+# docker เคยสร้าง cache เป็น root มาก่อน → รอบถัดไป user เขียนไม่ได้ แล้ว start ล้มแบบไล่ยาก
+# ซ่อมด้วย container ตัวเดิม (ไม่ต้องพึ่ง sudo บน host) — เคสจริงจาก reference v8.2 "permission-safe"
+_ensure_local_owned_dir() {
+  local dir="$1" uid gid
+  uid="$(id -u)"; gid="$(id -g)"
+  mkdir -p "$(dirname "$dir")" || die "สร้าง parent ของ $dir ไม่ได้"
+  if [[ -e "$dir" && ! -w "$dir" ]]; then
+    log "ซ่อมสิทธิ์ cache บน head: $dir"
+    docker run --rm -v "$dir:/repair" --entrypoint sh "$VLLM_IMAGE" \
+      -c "chown -R ${uid}:${gid} /repair" ||
+      die "ซ่อม $dir ไม่ได้ — รันเอง: sudo chown -R ${uid}:${gid} '$dir'"
+  fi
+  mkdir -p "$dir" || die "สร้าง $dir ไม่ได้"
+  [[ -w "$dir" ]] || die "เขียน $dir ไม่ได้ — รันเอง: sudo chown -R ${uid}:${gid} '$dir'"
+}
+
+_ensure_worker_owned_dir() {
+  local dir="$1" ruid rgid
+  ruid="$(ssh_worker "id -u")" || die "อ่าน UID ของ worker ผ่าน SSH ไม่ได้"
+  rgid="$(ssh_worker "id -g")" || die "อ่าน GID ของ worker ผ่าน SSH ไม่ได้"
+  ssh_worker "mkdir -p '$(dirname "$dir")'" || die "สร้าง parent บน worker ไม่ได้: $dir"
+  if ssh_worker "test -e '$dir'" 2>/dev/null && ! ssh_worker "test -w '$dir'" 2>/dev/null; then
+    log "ซ่อมสิทธิ์ cache บน worker: $dir"
+    ssh_worker "docker run --rm -v '$dir:/repair' --entrypoint sh '$VLLM_IMAGE' -c 'chown -R ${ruid}:${rgid} /repair'" ||
+      die "ซ่อม $dir บน worker ไม่ได้ — บน worker รัน: sudo chown -R ${ruid}:${rgid} '$dir'"
+  fi
+  ssh_worker "mkdir -p '$dir' && test -w '$dir'" || die "เขียน $dir บน worker ไม่ได้"
+}
+
+# FlashInfer JIT cache ที่ค้างจาก image เก่าทำให้โหลด TVM-FFI module คนละ signature แล้วพังตอน start
+# เป็นทางกู้เดียวเมื่อเจออาการนี้ — ไม่มีคำสั่งนี้ผู้ใช้ติดตาย
+clear_fi_cache() {
+  _require_non_root
+  log "หยุด deployment ก่อนล้าง FlashInfer cache …"
+  stop
+  _ensure_local_owned_dir "$FLASHINFER_CACHE"
+  log "ล้าง FlashInfer cache บน head: ${FLASHINFER_CACHE}"
+  find "$FLASHINFER_CACHE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
+  log "ล้าง FlashInfer cache บน worker: ${WORKER_FLASHINFER_CACHE}"
+  ssh_worker "find '${WORKER_FLASHINFER_CACHE}' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+  log "ล้างครบทั้งสอง node แล้ว"
+}
+
+props() { curl -fsS "http://127.0.0.1:${API_PORT}/v1/models" | python3 -m json.tool; }
+
 start() {
   _require_non_root
   need docker; need curl
@@ -471,9 +518,16 @@ start() {
   local head_fi="${FLASHINFER_CACHE}/${cache_key}"
   local worker_fi="${WORKER_FLASHINFER_CACHE}/${cache_key}"
 
-  # port ว่างบน head?
-  if docker ps --filter "publish=${API_PORT}" --format '{{.Names}}' 2>/dev/null | grep . >/dev/null; then
-    die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน"
+  # port ว่างบน head? — container รันด้วย --network host จึงไม่ "publish" port
+  # ตัวกรอง docker publish= จับไม่เจอเลย ต้องดู listening socket จริง
+  local listening=""
+  if command -v ss >/dev/null 2>&1; then
+    listening="$(ss -tln 2>/dev/null || true)"
+  elif command -v netstat >/dev/null 2>&1; then
+    listening="$(netstat -tln 2>/dev/null || true)"
+  fi
+  if [[ "$listening" == *":${API_PORT} "* ]]; then
+    die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน (ดู: ss -tlnp | grep ${API_PORT})"
   fi
 
   # ลบ container ค้าง
@@ -481,10 +535,13 @@ start() {
   ssh_worker "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
 
   verify_files
-  mkdir -p "$FLASHINFER_CACHE" "$head_fi" "$VLLM_CACHE"
+  _ensure_local_owned_dir "$FLASHINFER_CACHE"
+  _ensure_local_owned_dir "$head_fi"
+  _ensure_local_owned_dir "$VLLM_CACHE"
   local worker_hf="${WORKER_HF_HOME}"
-  ssh_worker "mkdir -p '${worker_hf}' '${WORKER_VLLM_CACHE}' '${worker_fi}'" ||
-    die "เตรียม dir บน worker ไม่ได้"
+  ssh_worker "mkdir -p '${worker_hf}' '${WORKER_VLLM_CACHE}'" || die "เตรียม dir บน worker ไม่ได้"
+  _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
+  _ensure_worker_owned_dir "$worker_fi"
 
   build_common_args
   local quoted_common; quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
@@ -592,6 +649,9 @@ stop() {
   docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
   log "Stopping worker on ${WORKER_IP} …"
   ssh_worker "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
+  # mp backend ทิ้ง shared memory ไว้ — ไม่เก็บกวาด start รอบหน้าจะชนของเก่า
+  sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true
+  ssh_worker "sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true" || true
   echo "stopped ${MASTER_CONTAINER} + ${WORKER_CONTAINER}"
 }
 
@@ -729,6 +789,9 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
   logs [head|worker] [N]   log (หรือ logs N = head N บรรทัด)
   client-config    ค่าตั้ง client (JSON) พร้อม token budget
   network-info     IP/fabric/endpoint
+  props            รายการโมเดลจาก /v1/models
+  clear-fi-cache   หยุดแล้วล้าง FlashInfer JIT cache ทั้งสอง node
+                   ใช้เมื่อ start พังหลังเปลี่ยน image (cache เก่าคนละ signature)
   test-text        ทดสอบ chat completion
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
@@ -832,6 +895,8 @@ case "${1:-help}" in
   status)          status ;;
   logs)            logs "${2:-head}" "${3:-200}" ;;
   client-config)   client_config ;;
+  clear-fi-cache)  clear_fi_cache ;;
+  props)           props ;;
   info|banner) info ;;
   network-info)    network_info ;;
   test-text)       test_text ;;

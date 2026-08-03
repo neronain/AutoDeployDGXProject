@@ -425,6 +425,71 @@ else:
   fi
 }
 
+{% if plan.reasoning.enabled %}
+# controller ส่ง --reasoning-parser {{ plan.reasoning.parser }} ให้ vLLM — ต้องมีทางพิสูจน์ว่าใช้ได้จริง
+# ไม่งั้น parser ผิดตัวจะเงียบจนกว่าลูกค้าจะเจอเอง
+test_reasoning() {
+  need curl
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" <<'PYEOF'
+import json, sys, urllib.request
+
+port, model = int(sys.argv[1]), sys.argv[2]
+payload = json.dumps({
+    "model": model,
+    "messages": [{"role": "user", "content": "What is 37 multiplied by 43? Show your work."}],
+    "max_tokens": 512,
+}).encode()
+req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                             data=payload, headers={"Content-Type": "application/json"})
+msg = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]["message"]
+think = msg.get("reasoning_content") or ""
+answer = msg.get("content") or ""
+if "1591" not in (think + answer):
+    print("FAIL: ไม่พบคำตอบ 1591")
+    print("  reasoning:", think[:200])
+    print("  content  :", answer[:200])
+    sys.exit(1)
+if not think:
+    print("WARN: ตอบถูกแต่ reasoning_content ว่าง — parser อาจไม่ได้แยก chain-of-thought ออกมา")
+    sys.exit(0)
+print(f"PASS: 1591 ถูกต้อง · reasoning {len(think)} ตัวอักษร · answer {len(answer)} ตัวอักษร")
+PYEOF
+}
+{% endif %}{% if plan.tool_calling.enabled %}
+# controller ส่ง --tool-call-parser {{ plan.tool_calling.parser }} + --enable-auto-tool-choice
+test_tools() {
+  need curl
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${1:-required}" <<'PYEOF'
+import json, sys, urllib.request
+
+port, model, mode = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+tools = [{"type": "function", "function": {
+    "name": "get_weather", "description": "Get current weather for a location",
+    "parameters": {"type": "object",
+                   "properties": {"location": {"type": "string"}},
+                   "required": ["location"]}}}]
+payload = json.dumps({
+    "model": model,
+    "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
+    "tools": tools, "tool_choice": mode, "max_tokens": 256,
+}).encode()
+req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                             data=payload, headers={"Content-Type": "application/json"})
+choice = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]
+calls = choice["message"].get("tool_calls") or []
+if calls:
+    fn = calls[0]["function"]
+    print(f"PASS: {fn['name']}({fn['arguments'][:80]})")
+elif mode == "required":
+    print("FAIL: โหมด required แต่ไม่มี tool_calls — parser น่าจะไม่ตรงกับโมเดล")
+    print(json.dumps(choice, indent=2)[:400])
+    sys.exit(1)
+else:
+    print("WARN(auto): โมเดลตอบเป็นข้อความแทนการเรียก tool:",
+          (choice["message"].get("content") or "")[:120])
+PYEOF
+}
+{% endif %}
 usage() {
   cat <<EOF
 {{ slug }} — vLLM controller  (model: ${MODEL_ID})
@@ -446,7 +511,9 @@ COMMANDS
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
   test-text         Send one chat completion request to verify the model answers
-
+{% if plan.reasoning.enabled %}  test-reasoning   ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
+{% endif %}{% if plan.tool_calling.enabled %}  test-tools [required|auto]  ตรวจว่า --tool-call-parser แปลงเป็น tool_calls ได้จริง
+{% endif %}
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port to serve on                          [default: ${API_PORT}]
   --context N           Max context length in tokens              [default: ${MAX_MODEL_LEN}]
@@ -548,7 +615,9 @@ case "${1:-help}" in
   restart)      stop; start ;;
   status)       status ;;
   logs)         logs "${2:-300}" ;;
-  client-config) client_config ;;
+{% if plan.reasoning.enabled %}  test-reasoning)  test_reasoning ;;
+{% endif %}{% if plan.tool_calling.enabled %}  test-tools)      test_tools "${2:-required}" ;;
+{% endif %}  client-config) client_config ;;
   info|banner) info ;;
   network-info) network_info ;;
   test-text)    test_text ;;
