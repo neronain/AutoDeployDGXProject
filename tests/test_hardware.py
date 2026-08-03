@@ -41,7 +41,6 @@ def test_unknown_gpu_flagged_conservative():
 def test_full_rtx_lineup_recognized():
     """RTX 30/40/50 series ที่เพิ่มเข้ามาต้องอยู่ใน allowlist (ยังไม่ tested → conservative)"""
     for smi_name in [
-        "NVIDIA GeForce RTX 5090",
         "NVIDIA GeForce RTX 5080",
         "NVIDIA GeForce RTX 5070 Ti",
         "NVIDIA GeForce RTX 4080 SUPER",
@@ -54,6 +53,23 @@ def test_full_rtx_lineup_recognized():
         assert gpu is not None, f"{smi_name} ควรอยู่ใน allowlist"
         assert gpu.memory_model is MemoryModel.DISCRETE
         assert gpu.tested is False
+
+
+def test_hardware_validated_gpus_are_not_conservative():
+    """GPU ที่รันจริงแล้วต้องไม่โดนหัก budget — ห้ามพลิกกลับโดยไม่ตั้งใจ
+
+    RTX 5090: hardware-validated 2026-08-03 (gemma-4-12b-it UD-Q8_K_XL + vision)
+    """
+    for smi_name in [
+        "NVIDIA GB10",
+        "NVIDIA RTX PRO 4000 Blackwell",
+        "NVIDIA GeForce RTX 4070 Ti SUPER",
+        "NVIDIA GeForce RTX 4070 SUPER",
+        "NVIDIA GeForce RTX 5090",
+    ]:
+        gpu = lookup_gpu(smi_name)
+        assert gpu is not None, f"{smi_name} ควรอยู่ใน allowlist"
+        assert gpu.tested is True, f"{smi_name} เคยรันจริงแล้ว ไม่ควรกลับไปโหมด conservative"
 
 
 def test_ti_variants_not_shadowed_by_base():

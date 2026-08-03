@@ -130,6 +130,15 @@
 - **hardware-validated ตัวที่สอง**: `Qwen3.5-122B-A10B-abliterated-NVFP4` (safetensors + NVFP4 + MoE)
   บน DGX Spark เครื่องเดียว — vLLM 0.26.0, FLASHINFER_CUTLASS NvFp4 MoE backend, context 65,536,
   `/health` ผ่าน (ตัวแรกคือ Qwen3-Coder-30B-A3B GGUF native build, 2026-07-21)
+- **hardware-validated ตัวที่สี่ — และเป็น *เครื่อง RTX เครื่องแรก* ของโปรเจกต์**:
+  `unsloth/gemma-4-12b-it-GGUF` UD-Q8_K_XL (GGUF + multimodal) บน **RTX 5090** (x86_64,
+  Blackwell SM120, VRAM 32 GB แบบ discrete) — docker `ghcr.io/ggml-org/llama.cpp:server-cuda`,
+  `/health` ผ่านที่ context 16,384, `test-text` ~96 tok/s และ **ยืนยัน vision ด้วยภาพจริง**
+  (ส่ง PNG สีแดง → ตอบ "สีแดงเข้ม" ถูกต้อง) · ปิดช่องว่างที่ค้างมาตลอด: เดิม hardware validation
+  ทั้งหมดอยู่บน DGX Spark เครื่องเดียว สูตร discrete VRAM + เส้นทาง x86_64 ไม่เคยเจอเครื่องจริงเลย
+  · `rtx-5090` เปลี่ยนจาก `tested=False` เป็น `True` แล้ว (ไม่ถูกหัก budget แบบ conservative อีก)
+  · การรันครั้งนี้ทำให้เจอบั๊ก 4 ตัวที่แก้ไปแล้วในรอบนี้ (mmproj, นับซ้ำใน `lmds ps`,
+  `test-text` กับโมเดล reasoning, `install.sh` ไม่ติดตั้ง prerequisites)
 - **hardware-validated ตัวที่สาม**: `Qwen3-Coder-30B-A3B-Instruct` UD-Q8_K_XL (GGUF, MoE) บน DGX Spark
   ที่ **context 262,144** — 4 เท่าของที่แผนแนะนำ, native build llama.cpp b10227, `test-text` ตอบถูก
   ~58 tok/s · ยืนยันว่าสูตร unified memory ของ Fit Analyzer คำนวณถูกแม้ที่ context สูงมาก

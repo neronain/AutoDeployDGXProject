@@ -15,13 +15,27 @@
 | M5 ✅ | Generator + Templates (เสร็จ 2026-07-21) | Jinja2 templates: single-vllm + single-llamacpp ตาม contract v3.0.0 (flags/env ครบ, bind/advertise แยก, pipefail-safe, exact GGUF size+SHA-256 จาก Hub lfs.oid, tensor parallel เมื่อ multi-GPU), README ตาม delivery contract, MODEL_PROFILE.yaml, SPECIAL_FILES.md, `lmds generate` | bash -n + audit rules ผ่านกับ bundle ที่ generate ทุกแบบ, flag ไม่อนุมัติไม่โผล่ในสคริปต์, ไม่มี secret รั่ว — 108 tests; หมายเหตุ: regression เทียบ 12 controllers เดิมยกไปทำตอน M7 คู่กับ hardware validation |
 | M6 ✅ | Validator + Packager (เสร็จ 2026-07-21) | 7 quality gates (bash-syntax, numeric-underscore, pipefail-safe, controller-contract, profile-schema + pinned revision, secret-scan, checksums), `lmds validate [--fix]`, PACKAGE_SHA256SUMS + ZIP, generate → gates → package อัตโนมัติ (ไม่ผ่าน = ไม่มี ZIP, exit 2) | ทุก gate จับเคสพังได้จริง (มีเทส negative ครบ), tamper detection ผ่าน E2E — 125 tests; เทียบ controllers v3.0.0 เดิมยกไป M7 |
 | M7a ✅ | End-to-end + เอกสาร (เสร็จ 2026-07-21) | `lmds deploy` ครบ flow: inspect → fit → plan → ขั้นยืนยัน interactive (อนุมัติ flag รายตัว + แก้ context ภายในเพดานปลอดภัย) → render → 7 gates → ZIP, `--yes` สำหรับ scripting, `install.sh` + docs/INSTALL.md | 130 tests + E2E จริงจาก Hub |
-| M7b 🔄 | Hardware validation (คืบหน้า) | **2026-07-21: hardware-validated ตัวแรกสำเร็จ** — Qwen3-Coder-30B-A3B UD-Q8_K_XL บน DGX Spark (gigabyte02): สมอง Local AI (gemma-4-26b openai-compat) → native build llama.cpp (121a-real, pinned 76f46ad29) → start → test-text ตอบถูก ~60 tok/s; แก้ตามผลจริง: image allowlist, variant picker, auto-install build deps, client budget ต่อ slot | **2026-08-02: hardware-validated ตัวที่สอง** — Qwen3.5-122B-A10B-abliterated-NVFP4 (safetensors + NVFP4 + MoE) บน DGX Spark เครื่องเดียว: สมอง Local AI (openai-compat) → vLLM 0.26.0 docker (FLASHINFER_CUTLASS NvFp4 MoE) → start → /health ผ่าน ที่ context 65,536 · แก้ตามผลจริง: เพดาน index.json (MoE/NVFP4 เกิน 4MB), verify shard+ขนาด, คำเตือน endpoint ไม่มี API key · **2026-08-02: ตัวที่สาม** — Qwen3-Coder-30B-A3B-Instruct UD-Q8_K_XL (GGUF, MoE) บน DGX Spark ที่ context **262,144** (4 เท่าของที่แผนแนะนำ) ผ่าน native build llama.cpp b10227 → test-text ตอบถูก ~58 tok/s · ยืนยันว่าสูตร unified memory คำนวณถูกแม้ที่ context สูงมาก · เหลือ: RTX PRO 4000 ×2 + 4070, gated repo, regression เทียบ controllers v3.0.0 |
+| M7b 🔄 | Hardware validation (คืบหน้า) | **2026-07-21: hardware-validated ตัวแรกสำเร็จ** — Qwen3-Coder-30B-A3B UD-Q8_K_XL บน DGX Spark (gigabyte02): สมอง Local AI (gemma-4-26b openai-compat) → native build llama.cpp (121a-real, pinned 76f46ad29) → start → test-text ตอบถูก ~60 tok/s; แก้ตามผลจริง: image allowlist, variant picker, auto-install build deps, client budget ต่อ slot | **2026-08-02: hardware-validated ตัวที่สอง** — Qwen3.5-122B-A10B-abliterated-NVFP4 (safetensors + NVFP4 + MoE) บน DGX Spark เครื่องเดียว: สมอง Local AI (openai-compat) → vLLM 0.26.0 docker (FLASHINFER_CUTLASS NvFp4 MoE) → start → /health ผ่าน ที่ context 65,536 · แก้ตามผลจริง: เพดาน index.json (MoE/NVFP4 เกิน 4MB), verify shard+ขนาด, คำเตือน endpoint ไม่มี API key · **2026-08-02: ตัวที่สาม** — Qwen3-Coder-30B-A3B-Instruct UD-Q8_K_XL (GGUF, MoE) บน DGX Spark ที่ context **262,144** (4 เท่าของที่แผนแนะนำ) ผ่าน native build llama.cpp b10227 → test-text ตอบถูก ~58 tok/s · ยืนยันว่าสูตร unified memory คำนวณถูกแม้ที่ context สูงมาก · **2026-08-03: ตัวที่สี่ และเป็นเครื่อง RTX เครื่องแรก** — `unsloth/gemma-4-12b-it-GGUF` UD-Q8_K_XL (GGUF + **multimodal**) บน **RTX 5090** (x86_64, Blackwell SM120, VRAM 32GB แบบ discrete): docker `ghcr.io/ggml-org/llama.cpp:server-cuda` → `/health` ผ่านที่ context 16,384 → `test-text` ~96 tok/s → **ยืนยัน vision ด้วยภาพจริง** (ตอบสีถูก) · แก้ตามผลจริง: mmproj ไม่เคยถูกโหลดเลย (โมเดล multimodal GGUF ทุกตัวเป็น text-only เงียบ ๆ), llama.cpp โหมด docker ถูกนับซ้ำใน `lmds ps`, `test-text` budget น้อยเกินสำหรับโมเดล reasoning, `install.sh` ไม่ติดตั้ง prerequisites ให้ · `rtx-5090` เปลี่ยนเป็น `tested=True` แล้ว · เหลือ: **dense safetensors**, **gated repo**, regression เทียบ controllers v3.0.0 |
 | M8 ✅ | Stacked (multi-node) generation (เสร็จ 2026-07-24) | template `stacked-vllm-controller.sh.j2` port จาก reference v8.2 (DeepSeek-V4-Flash 2×DGX Spark ที่ hardware-validated 2026-07-22) แบบ generic: worker-first startup, image-ID lock 2 node, FlashInfer cache versioning ต่อ image, NCCL/RoCE, sync-worker/verify-worker; planner emit STACKED + harden บังคับ topology จาก target; gate `stacked-contract` ปิดช่องโหว่ single-node ปลอม; เลือกผ่าน `--target dgx-spark-stacked` | bash -n + 8 gates ผ่านกับ bundle stacked, worker.sh/serve-args ตรง reference, GGUF+stacked ถูกปฏิเสธ — 191 tests (รวม test_stacked 12 ตัว); เหลือ hardware regression บนคลัสเตอร์จริง |
 
 ### เกณฑ์สำเร็จ MVP
 
 โมเดลอ้างอิง 5 ตัว ครอบคลุม: dense safetensors, GGUF, NVFP4, MoE, gated repo —
 ทุกตัวได้ bundle ที่ `static-validated` และอย่างน้อย 2 ตัวรันจริง (`hardware-validated`) บน DGX Spark 1 เครื่อง + เครื่อง RTX 1 เครื่อง
+
+ความคืบหน้า (2026-08-03):
+
+| เกณฑ์ | สถานะ |
+|---|---|
+| GGUF | ✅ Qwen3-Coder-30B (Spark) · gemma-4-12b-it (RTX, multimodal) |
+| NVFP4 | ✅ Qwen3.5-122B (Spark) |
+| MoE | ✅ ทั้งสองตัวข้างบนเป็น MoE |
+| dense safetensors | ❌ ยังไม่เคยรันจริง |
+| gated repo | ❌ ยังไม่เคยรันจริง |
+| **รันจริงบน DGX Spark ≥1 เครื่อง** | ✅ 3 ครั้ง |
+| **รันจริงบนเครื่อง RTX ≥1 เครื่อง** | ✅ RTX 5090 (2026-08-03) |
+
+→ เงื่อนไข **ฮาร์ดแวร์** ครบแล้วทั้งสองฝั่ง เหลือความครอบคลุมของ **ตระกูลโมเดล** อีก 2 แบบ
 
 ### นอกขอบเขตเฟส 1 (ตัดออกชัดเจน)
 

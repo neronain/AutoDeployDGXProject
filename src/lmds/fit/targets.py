@@ -33,9 +33,10 @@ PRESETS: dict[str, TargetSpec] = {
     "rtx-pro-4000-dual": TargetSpec("rtx-pro-4000-dual", MemoryModel.DISCRETE, 24.0, 2, tested=True),
     "rtx-4070-super": TargetSpec("rtx-4070-super", MemoryModel.DISCRETE, 12.0, 1, tested=True),
     "rtx-4070-ti-super": TargetSpec("rtx-4070-ti-super", MemoryModel.DISCRETE, 16.0, 1, tested=True),
+    # hardware-validated 2026-08-03: gemma-4-12b-it UD-Q8_K_XL (GGUF + vision) ที่ context 16,384
+    "rtx-5090": TargetSpec("rtx-5090", MemoryModel.DISCRETE, 32.0, 1, tested=True),
     # ── รุ่นอ้างอิงยอดนิยม (ยังไม่ทดสอบจริง → conservative) ──
-    # RTX 50 series (Blackwell)
-    "rtx-5090": TargetSpec("rtx-5090", MemoryModel.DISCRETE, 32.0, 1, tested=False),
+    # RTX 50 series (Blackwell) — 5090 ย้ายขึ้นไปกลุ่มที่ทดสอบจริงแล้ว
     "rtx-5080": TargetSpec("rtx-5080", MemoryModel.DISCRETE, 16.0, 1, tested=False),
     "rtx-5070-ti": TargetSpec("rtx-5070-ti", MemoryModel.DISCRETE, 16.0, 1, tested=False),
     "rtx-5070": TargetSpec("rtx-5070", MemoryModel.DISCRETE, 12.0, 1, tested=False),

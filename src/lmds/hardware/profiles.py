@@ -40,11 +40,12 @@ KNOWN_GPUS: list[KnownGpu] = [
     KnownGpu("rtx pro 4000 blackwell", 24.0, "12.0", MemoryModel.DISCRETE, tested=True),
     KnownGpu("rtx 4070 ti super", 16.0, "8.9", MemoryModel.DISCRETE, tested=True),
     KnownGpu("rtx 4070 super", 12.0, "8.9", MemoryModel.DISCRETE, tested=True),
+    # RTX 5090 (giant-GIGABYTE-ARL997): gemma-4-12b-it UD-Q8_K_XL + mmproj รันจริง 2026-08-03
+    KnownGpu("rtx 5090", 32.0, "12.0", MemoryModel.DISCRETE, tested=True),
 
     # ── รุ่นที่รู้จักแต่ยังไม่มีเครื่องทดสอบ — โหมด conservative (tested=False) ──
 
-    # RTX 50 series (Blackwell, cc 12.0)  — ต้องเรียง ti/super ก่อนตัวฐาน
-    KnownGpu("rtx 5090", 32.0, "12.0", MemoryModel.DISCRETE, tested=False),
+    # RTX 50 series (Blackwell, cc 12.0)  — ต้องเรียง ti/super ก่อนตัวฐาน · 5090 ย้ายขึ้นไปกลุ่ม tested แล้ว
     KnownGpu("rtx 5080", 16.0, "12.0", MemoryModel.DISCRETE, tested=False),
     KnownGpu("rtx 5070 ti", 16.0, "12.0", MemoryModel.DISCRETE, tested=False),
     KnownGpu("rtx 5070", 12.0, "12.0", MemoryModel.DISCRETE, tested=False),

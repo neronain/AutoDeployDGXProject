@@ -266,16 +266,17 @@ cd bundles/<slug>
 | `dgx-spark-stacked` | DGX Spark 2 เครื่อง | unified 128GB × 2 — สร้าง controller multi-node (ดู 3.3b) |
 | `rtx-pro-4000` / `rtx-pro-4000-dual` | RTX PRO 4000 Blackwell ×1/×2 | 24GB / 24GB×2 |
 | `rtx-4070-super` / `rtx-4070-ti-super` | RTX 4070 Super / Ti Super | 12GB / 16GB |
+| `rtx-5090` | RTX 5090 (Blackwell SM120) | 32GB — validated 2026-08-03 (gemma-4-12b-it GGUF + vision) |
 
 **ยังไม่ได้ทดสอบจริง** (ระบบลด budget ให้อัตโนมัติแบบ conservative):
 
 | preset | VRAM | | preset | VRAM |
 |---|---|---|---|---|
-| `rtx-5090` | 32GB | | `rtx-4090` | 24GB |
-| `rtx-5080` | 16GB | | `rtx-4080-super` / `rtx-4080` | 16GB |
-| `rtx-5070-ti` | 16GB | | `rtx-4070-ti` | 12GB |
-| `rtx-5070` | 12GB | | `rtx-4060-ti` | 16GB |
-| `rtx-5060-ti` | 16GB | | `rtx-3090-ti` / `rtx-3090` | 24GB |
+| `rtx-5080` | 16GB | | `rtx-4090` | 24GB |
+| `rtx-5070-ti` | 16GB | | `rtx-4080-super` / `rtx-4080` | 16GB |
+| `rtx-5070` | 12GB | | `rtx-4070-ti` | 12GB |
+| `rtx-5060-ti` | 16GB | | `rtx-4060-ti` | 16GB |
+| | | | `rtx-3090-ti` / `rtx-3090` | 24GB |
 | | | | `rtx-3080-ti` / `rtx-3080` | 12GB / 10GB |
 | | | | `rtx-3060` | 12GB |
 
