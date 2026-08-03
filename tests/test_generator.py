@@ -372,6 +372,55 @@ def test_no_runtime_assets_keeps_script_clean(tmp_path):
     assert "prepare-runtime" not in script
 
 
+def mmproj_gguf_report(**overrides) -> ModelReport:
+    """repo GGUF ที่มีไฟล์ mmproj แยก — เคสจริง unsloth/gemma-4-12b-it-GGUF"""
+    return gguf_report(
+        repo_id="unsloth/gemma-4-12b-it-GGUF",
+        selected_gguf="gemma-4-12b-it-UD-Q8_K_XL.gguf",
+        gguf_variants=[
+            GgufVariant(
+                filename="gemma-4-12b-it-UD-Q8_K_XL.gguf", size_bytes=13 * GIB, sha256="a" * 64
+            ),
+            GgufVariant(filename="mmproj-F32.gguf", size_bytes=3 * GIB, sha256="c" * 64, is_mmproj=True),
+            GgufVariant(filename="mmproj-BF16.gguf", size_bytes=1 * GIB, sha256="b" * 64, is_mmproj=True),
+        ],
+        **overrides,
+    )
+
+
+def test_multimodal_gguf_downloads_and_loads_projector(tmp_path):
+    """เคสจริง 2026-08-03: profile บอกว่าต้องมี mmproj แต่ controller ไม่มีคำว่า mmproj เลย
+    → download ได้ไฟล์เดียว, start ผ่าน, /health เขียว แต่โมเดลรับแต่ข้อความ ไม่มี error ให้เห็น
+    """
+    report = mmproj_gguf_report()
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    # เล็กสุดในกลุ่ม mmproj — BF16 (1 GB) ไม่ใช่ F32 (3 GB)
+    assert plan.multimodal.projector_files == ["mmproj-BF16.gguf"]
+
+    assert "mmproj-BF16.gguf" in script, "controller ต้องดาวน์โหลดไฟล์ projector ด้วย"
+    assert "b" * 64 in script, "projector ต้องถูก verify ด้วย SHA-256 เหมือน weight"
+    assert "--mmproj" in script, "ไม่ส่ง --mmproj = โมเดลกลายเป็น text-only แบบเงียบ"
+    # MODEL_FILE (ตัวที่ส่งเป็น -m) ต้องยังเป็น weight ไม่ใช่ projector
+    assert 'MODEL_FILE="${MODEL_FILES[0]}"' in script
+    assert script.index("gemma-4-12b-it-UD-Q8_K_XL.gguf") < script.index("mmproj-BF16.gguf")
+    assert not audit_script(script)
+
+    profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+    assert profile["features"]["multimodal"]["projector_files"] == ["mmproj-BF16.gguf"]
+
+
+def test_text_only_gguf_has_no_projector_flag(tmp_path):
+    """repo ที่ไม่มี mmproj ต้องไม่มี --mmproj โผล่มา (ค่าว่างจะทำให้ llama-server ล้ม)"""
+    bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert plan.multimodal.projector_files == []
+    assert "mmproj" not in script.lower()
+    assert not audit_script(script)
+
+
 def test_usage_documents_options_and_api_token(tmp_path):
     """help ของ controller ต้องอธิบาย port/context/bind และวิธีตั้ง API token ให้ครบ"""
     for report in (safetensors_report(), gguf_report()):

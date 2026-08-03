@@ -171,6 +171,48 @@ def gate_stacked_contract(bundle_dir: Path) -> GateResult:
     return GateResult("stacked-contract", True, "multi-node machinery ครบ")
 
 
+def gate_multimodal_assets(bundle_dir: Path) -> GateResult:
+    """profile ประกาศ mmproj ไว้ → controller ต้องโหลดไฟล์นั้นและส่ง --mmproj จริง
+
+    เคสจริง (gemma-4-12b-it-GGUF, 2026-08-03): MODEL_PROFILE + SPECIAL_FILES บอกว่าต้องมี
+    mmproj-BF16.gguf แต่ controller ไม่มีคำว่า mmproj เลย — download มาไฟล์เดียว, start ผ่าน,
+    /health เขียว แต่โมเดลรับแต่ข้อความ ไม่มี error ให้เห็นเลยสักจุด
+    """
+    profile_path = bundle_dir / "MODEL_PROFILE.yaml"
+    if not profile_path.exists():
+        return GateResult("multimodal-assets", True, "n/a (ไม่มี profile)")
+    try:
+        data = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return GateResult("multimodal-assets", True, "n/a (profile อ่านไม่ได้)")
+    if not isinstance(data, dict):
+        return GateResult("multimodal-assets", True, "n/a")
+
+    features = data.get("features") or {}
+    multimodal = features.get("multimodal") or {}
+    projectors = multimodal.get("projector_files") or []
+    if not projectors:
+        return GateResult("multimodal-assets", True, "n/a (ไม่ใช่ multimodal)")
+    if (data.get("runtime") or {}).get("engine") != "llamacpp":
+        # vLLM โหลด vision tower มาจาก safetensors ของ repo อยู่แล้ว ไม่มีไฟล์ mmproj แยก
+        return GateResult("multimodal-assets", True, "n/a (ไม่ใช่ llama.cpp)")
+
+    scripts = _controllers(bundle_dir)
+    if not scripts:
+        return GateResult("multimodal-assets", False, "ประกาศ mmproj แต่ไม่พบสคริปต์ controller")
+    combined = "\n".join(s.read_text(encoding="utf-8") for s in scripts)
+
+    missing: list[str] = []
+    if "--mmproj" not in combined:
+        missing.append("ไม่ส่ง --mmproj ให้ llama-server (โมเดลจะกลายเป็น text-only)")
+    for name in projectors:
+        if name.rsplit("/", 1)[-1] not in combined:
+            missing.append(f"ไม่ได้ดาวน์โหลด {name}")
+    if missing:
+        return GateResult("multimodal-assets", False, "; ".join(missing[:4]))
+    return GateResult("multimodal-assets", True, f"mmproj ครบ {len(projectors)} ไฟล์")
+
+
 def gate_profile_schema(bundle_dir: Path) -> GateResult:
     path = bundle_dir / "MODEL_PROFILE.yaml"
     if not path.exists():
@@ -249,6 +291,7 @@ ALL_GATES = [
     gate_line_continuation,
     gate_contract,
     gate_stacked_contract,
+    gate_multimodal_assets,
     gate_profile_schema,
     gate_secret_scan,
     gate_checksums,

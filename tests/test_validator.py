@@ -131,3 +131,34 @@ def test_vllm_bundle_also_passes(isolated_config, tmp_path):
     bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
     write_checksums(bundle.directory)
     assert all_passed(run_gates(bundle.directory, include_checksums=True))
+
+
+def test_multimodal_gate_catches_controller_without_projector(isolated_config, tmp_path):
+    """bundle ที่ประกาศ mmproj ใน profile แต่ controller ไม่โหลด/ไม่ส่ง --mmproj ต้องไม่ผ่าน
+
+    นี่คือ bundle ที่หลุดถึงมือผู้ใช้จริง (gemma-4-12b-it-GGUF, 2026-08-03): gates เดิมเขียว
+    ครบทุกด่านทั้งที่โมเดลเสิร์ฟภาพไม่ได้
+    """
+    from tests.test_generator import mmproj_gguf_report
+
+    bundle, _, _ = make_bundle(mmproj_gguf_report(), tmp_path=tmp_path)
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["multimodal-assets"].passed is True
+
+    # ย้อน controller กลับไปเป็นเวอร์ชันที่มีบั๊ก: ลบทุกร่องรอยของ mmproj ออก
+    controller = bundle.controller
+    stripped = "\n".join(
+        line for line in controller.read_text(encoding="utf-8").splitlines()
+        if "mmproj" not in line.lower() and "MMPROJ" not in line
+    )
+    controller.write_text(stripped, encoding="utf-8")
+
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["multimodal-assets"].passed is False
+    assert "--mmproj" in results["multimodal-assets"].detail
+
+
+def test_multimodal_gate_skips_text_only_bundles(bundle_dir):
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["multimodal-assets"].passed is True
+    assert "ไม่ใช่ multimodal" in results["multimodal-assets"].detail

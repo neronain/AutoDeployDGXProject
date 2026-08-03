@@ -36,7 +36,7 @@ lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
 ```
 
 `deploy` walks through: analyse → plan → **confirm** (approve flags, adjust context) → render →
-8 quality gates → bundle + ZIP. Then on the target machine:
+9 quality gates → bundle + ZIP. Then on the target machine:
 
 ```bash
 cd bundles/<slug>

@@ -105,10 +105,58 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
             "flag นอก allowlist ต้องได้รับอนุมัติจากผู้ใช้ก่อนใช้จริง: " + ", ".join(needs_approval)
         )
     _harden_runtime_assets(plan)
+    _harden_projector(plan, report)
 
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:
+    """ไฟล์ mmproj เป็นข้อเท็จจริงจาก repo ไม่ใช่การตัดสินใจ — บังคับให้ตรงของจริงเสมอ
+
+    ครอบคลุมสองทางที่พังได้:
+    - LLM ไม่ประกาศ (หรือใช้ --no-llm) ทั้งที่ repo มี mmproj → โมเดล multimodal กลายเป็น
+      text-only เงียบ ๆ เพราะ controller ไม่รู้ว่าต้องโหลดอะไร
+    - LLM เดาชื่อไฟล์ที่ไม่มีจริง → URL ดาวน์โหลด 404 ตอนผู้ใช้รัน download
+    """
+    available = [v for v in report.gguf_variants if v.is_mmproj]
+    declared = list(plan.multimodal.projector_files)
+
+    if plan.runtime.engine is not Engine.LLAMACPP:
+        # vLLM โหลด vision tower จาก safetensors ของ repo อยู่แล้ว ไม่มีไฟล์ projector แยก
+        if declared:
+            plan.warnings.append("ตัด projector_files ออก — ใช้ได้เฉพาะ engine llama.cpp")
+            plan.multimodal.projector_files = []
+        return
+
+    if not available:
+        if declared:
+            plan.warnings.append(
+                "ตัด projector_files ออก — ไม่พบไฟล์ mmproj ใน repo จริง: " + ", ".join(declared)
+            )
+            plan.multimodal.projector_files = []
+        return
+
+    by_basename = {v.filename.rsplit("/", 1)[-1]: v for v in available}
+    kept = [n for n in declared if n.rsplit("/", 1)[-1] in by_basename]
+
+    if declared and not kept:
+        plan.warnings.append(
+            f"projector_files ที่แผนเสนอไม่มีอยู่จริง ({', '.join(declared)}) — ใช้ไฟล์จาก repo แทน"
+        )
+    if not kept:
+        # เล็กสุดก่อน: mmproj ใหญ่กว่าไม่ได้ให้คุณภาพต่างพอจะคุ้มหน่วยความจำ (BF16 < F16 < F32)
+        smallest = min(available, key=lambda v: (v.size_bytes is None, v.size_bytes or 0))
+        kept = [smallest.filename]
+        if not declared:
+            plan.warnings.append(
+                f"repo มีไฟล์ mmproj — เปิดโหมด multimodal ให้อัตโนมัติด้วย {kept[0]}"
+            )
+
+    plan.multimodal.projector_files = kept[:1]  # llama-server รับ --mmproj ได้ไฟล์เดียว
+    if not plan.multimodal.modalities:
+        plan.multimodal.modalities = ["image", "text"]
 
 
 def _harden_runtime_assets(plan: DeploymentPlan) -> None:

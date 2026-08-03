@@ -41,6 +41,10 @@ EXPECTED_SHAS=(
 {% for part in gguf_parts %}  "{{ part.sha256 or '' }}"
 {% endfor %})
 MODEL_FILE="${MODEL_FILES[0]}"
+{% if mmproj_basename %}# multimodal projector — อยู่ท้าย MODEL_FILES แล้ว (download/verify จึงครอบคลุมให้)
+# ตั้งเป็นค่าว่างเพื่อเสิร์ฟโมเดลนี้แบบข้อความล้วน
+MMPROJ_FILE="${MMPROJ_FILE:-{{ mmproj_basename }}}"
+{% endif %}
 
 CTX_SIZE="${CTX_SIZE:-{{ plan.serving.context }}}"
 API_HOST="${API_HOST:-0.0.0.0}"
@@ -242,6 +246,11 @@ server_args() {
     --port "$API_PORT"
   )
   if [[ -n "$API_KEY" ]]; then SERVER_ARGS+=(--api-key "$API_KEY"); fi
+{% if mmproj_basename %}  # ไม่มีบรรทัดนี้ = llama-server รับแต่ข้อความ ทั้งที่โมเดลมองภาพได้ (พังเงียบ ไม่มี error)
+  if [[ -n "$MMPROJ_FILE" ]]; then
+    SERVER_ARGS+=(--mmproj "${MODEL_MOUNT_DIR}/${MMPROJ_FILE}")
+  fi
+{% endif %}
 {% for flag in extra_flag_pairs %}
   SERVER_ARGS+=({{ flag }})
 {% endfor %}
@@ -470,7 +479,9 @@ ENVIRONMENT VARIABLES
   CTX_SIZE            Same as --context
   RUNTIME_MODE        docker | native                            [default: ${RUNTIME_MODE}]
   MODEL_DIR           Where GGUF files are stored                [default: ${MODEL_DIR}]
-  HF_TOKEN            Hugging Face token, needed for gated repos during 'download'
+{% if mmproj_basename %}  MMPROJ_FILE         Vision projector passed as --mmproj         [default: ${MMPROJ_FILE}]
+                      Set to empty to serve this model as text-only.
+{% endif %}  HF_TOKEN            Hugging Face token, needed for gated repos during 'download'
   N_GPU_LAYERS        Layers offloaded to GPU (fewer = less VRAM, slower)
   HEALTH_TIMEOUT      Seconds to wait for /health on start        [default: ${HEALTH_TIMEOUT}]
   LLAMA_CPP_DIR       llama.cpp source/build dir (native mode)    [default: ${LLAMA_CPP_DIR}]

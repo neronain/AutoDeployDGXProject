@@ -183,7 +183,7 @@ src/lmds/
 ├── brain/               # providers.py, orchestrator.py, plan_schema.py, prompts.py,
 │                        #   rulebased.py, allowlists.py (flag/image allowlist)
 ├── generator/           # renderer.py + templates/*.j2 (single-vllm, single-llamacpp, stacked-vllm)
-├── validator/           # gates.py — quality gates ทั้ง 8 ด่านรวมอยู่ไฟล์เดียว
+├── validator/           # gates.py — quality gates ทั้ง 9 ด่านรวมอยู่ไฟล์เดียว
 ├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 └── secrets/             # store.py (env/keyring/file), redact.py

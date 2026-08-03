@@ -93,6 +93,29 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
                 }
             ]
 
+    # mmproj (multimodal projector) ของ llama.cpp อยู่คนละไฟล์กับ weight และ **ไม่ได้อยู่ใน
+    # variant ที่ผู้ใช้เลือก** — ถ้าไม่ผนวกเข้า MODEL_FILES ตรงนี้ controller จะไม่โหลด ไม่ verify
+    # และไม่ส่ง --mmproj ทำให้โมเดล multimodal กลายเป็น text-only เงียบ ๆ (เจอจริงกับ gemma-4-12b-it)
+    mmproj_parts: list[dict] = []
+    if is_gguf:
+        for name in plan.multimodal.projector_files:
+            base = name.rsplit("/", 1)[-1]
+            variant = next(
+                (v for v in report.gguf_variants if v.is_mmproj and v.filename.rsplit("/", 1)[-1] == base),
+                None,
+            )
+            mmproj_parts.append(
+                {
+                    "filename": variant.filename if variant is not None else name,
+                    "basename": base,
+                    "size_bytes": variant.size_bytes if variant is not None else None,
+                    "sha256": variant.sha256 if variant is not None else None,
+                }
+            )
+    # ต่อท้ายเสมอ — MODEL_FILE ของ controller คือ MODEL_FILES[0] ซึ่งต้องเป็น weight ไม่ใช่ mmproj
+    gguf_parts = gguf_parts + mmproj_parts
+    mmproj_basename = mmproj_parts[0]["basename"] if mmproj_parts else ""
+
     required = list(BASE_REQUIRED_FILES)
     if report.shard_count and report.shard_count > 1:
         required.append("model.safetensors.index.json")
@@ -139,12 +162,17 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
             {"filename": a.filename, "url": a.url, "sha256": a.sha256 or ""}
             for a in plan.runtime_assets
         ],
-        "extra_flag_pairs": [_quote_flag(f) for f in plan.serving.extra_flags],
+        # --mmproj ถูกตัดออกจาก extra_flags เสมอ: path ของไฟล์เป็นของ controller (MODEL_DIR ต่างกัน
+        # ระหว่าง native/docker) ค่าที่ LLM เดามาจะชี้ผิดที่ ส่วนตัวจริง emit จาก mmproj_basename
+        "extra_flag_pairs": [
+            _quote_flag(f) for f in plan.serving.extra_flags if not f.startswith("--mmproj")
+        ],
         "tensor_parallel": tensor_parallel,
         "gguf_basename": (plan.selected_gguf or "").rsplit("/", 1)[-1],
         "gguf_size": gguf_size,
         "gguf_sha256": gguf_sha,
         "gguf_parts": gguf_parts,
+        "mmproj_basename": mmproj_basename,
         # llama.cpp บน DGX Spark (unified/ARM64) ไม่มี docker image ทางการ — ใช้ native source build
         "runtime_mode": "native" if fit.memory_model.value == "unified" else "docker",
         "cuda_architectures": "121a-real" if fit.memory_model.value == "unified" else "native",

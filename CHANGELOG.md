@@ -88,6 +88,22 @@
 
 ### Fixed
 
+- **โมเดล multimodal GGUF ถูกเสิร์ฟเป็น text-only แบบเงียบ ๆ ทุกตัว** (เคสจริง:
+  `unsloth/gemma-4-12b-it-GGUF` บน RTX 5090, 2026-08-03) — `plan.multimodal.projector_files`
+  ไปถึงแค่ `SPECIAL_FILES.md` เท่านั้น controller ไม่เคยเห็นค่านี้เลย ผลคือ `download` โหลดไฟล์เดียว,
+  `verify-files` ผ่าน, `start` ผ่าน, `/health` เขียว — แต่ `llama-server` ไม่ได้รับ `--mmproj`
+  จึงรับแต่ข้อความ **ไม่มี error ให้เห็นสักจุด** · กระทบทั้ง DGX Spark (native) และ RTX (docker)
+  เพราะใช้ template llama.cpp ตัวเดียวกัน — ที่ไม่เคยเจอเพราะโมเดลที่ hardware-validated ทั้งสามตัว
+  เป็น text-only หรือเป็น vLLM (vision tower อยู่ใน safetensors อยู่แล้ว จึงไม่กระทบ)
+  - ไฟล์ mmproj ถูกผนวกท้าย `MODEL_FILES` → `download`/`verify-files` (ขนาด + SHA-256) ครอบคลุมเอง
+    · `MODEL_FILE` ยังเป็น weight เพราะ mmproj ต่อท้ายเสมอ
+  - `server_args` ส่ง `--mmproj` จริง · env `MMPROJ_FILE` ตั้งว่างได้ถ้าอยากเสิร์ฟแบบข้อความล้วน
+  - `harden_plan` บังคับ mmproj ให้ตรงไฟล์ที่มีจริงใน repo — ครอบคลุมทั้งกรณี LLM เดาชื่อผิด (เคยทำให้
+    URL 404) และกรณี `--no-llm` ที่ไม่มีใครประกาศ (เปิด multimodal ให้เองเมื่อ repo มี mmproj,
+    เลือกไฟล์เล็กสุด BF16 < F16 < F32) · `--mmproj` ถูกตัดจาก `extra_flags` เสมอ เพราะ path เป็นของ
+    controller (native/docker คนละที่)
+  - **gate ใหม่ `multimodal-assets`** (รวมเป็น 9 ด่าน) — profile ประกาศ mmproj แต่ controller ไม่โหลด
+    หรือไม่ส่ง `--mmproj` = ไม่ผ่าน ไม่มี ZIP · bundle ที่มีบั๊กนี้เคยผ่าน gates ครบทุกด่าน
 - **`install.sh` จบเงียบกลางคันบนระบบที่ `df` ไม่รองรับ `--output`** — บรรทัดตรวจดิสก์เป็นคำสั่ง
   สุดท้ายของ branch และเจอ `pipefail` เข้าไปด้วย ทำให้ `set -e` ฆ่าสคริปต์ทิ้งก่อนถึงขั้นตั้ง
   provider/completion โดยไม่มี error ให้เห็น (เจอตอนทดสอบ installer นอก GNU coreutils)
