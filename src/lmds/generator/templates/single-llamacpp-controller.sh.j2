@@ -358,15 +358,23 @@ wait_health() {
 }
 
 stop() {
+  # รายงานตามความจริง — เดิมพิมพ์ "stopped" เสมอแม้ไม่มีอะไรรันอยู่เลย
+  # ซึ่งอันตรายเงียบ ๆ: ถ้า PID/ชื่อ container เพี้ยน ผู้ใช้จะเชื่อว่าหยุดแล้วทั้งที่ยังรันอยู่
+  local stopped=0
   if [[ "$RUNTIME_MODE" == "native" ]]; then
-    if [[ -f "$PID_FILE" ]]; then
-      kill "$(cat "$PID_FILE")" 2>/dev/null || true
-      rm -f "$PID_FILE"
+    if [[ -f "$PID_FILE" ]] && kill "$(cat "$PID_FILE")" 2>/dev/null; then
+      stopped=1
     fi
-  else
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    rm -f "$PID_FILE"
+  elif docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1; then
+    stopped=1
   fi
-  echo "stopped ${SERVED_MODEL_NAME}"
+
+  if (( stopped )); then
+    echo "stopped ${SERVED_MODEL_NAME}"
+  else
+    echo "ไม่มีอะไรให้หยุด (${SERVED_MODEL_NAME} ไม่ได้รันอยู่)"
+  fi
 }
 
 status() {

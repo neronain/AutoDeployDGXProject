@@ -163,6 +163,13 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1) -> Fi
 
     fit.max_safe_context = safe
     fit.recommended_context = min(safe, DEFAULT_CONTEXT_CAP)
+    if safe > fit.recommended_context:
+        # การ cap ที่ DEFAULT_CONTEXT_CAP เป็นค่าเริ่มต้นมาตรฐาน ไม่ใช่ขีดจำกัดของเครื่อง —
+        # ต้องบอกให้เห็น ไม่งั้นผู้ใช้เสีย context ไปฟรี ๆ (เคสจริง: เสนอ 65,536 แต่รันได้ 262,144)
+        fit.notes.append(
+            f"หน่วยความจำรองรับได้ถึง {safe:,} tokens — ค่าที่แนะนำ ({fit.recommended_context:,}) "
+            f"เป็นค่าเริ่มต้นมาตรฐาน ปรับขึ้นได้ด้วย --context"
+        )
     if native and max_context_raw < native:
         fit.verdict = Verdict.FITS_REDUCED_CONTEXT
         fit.notes.append(f"native context {native:,} แต่หน่วยความจำพอที่ ~{int(max_context_raw):,}")

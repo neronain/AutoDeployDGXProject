@@ -217,6 +217,9 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "memory_model": fit.memory_model.value,
             "budget_gb": fit.budget_gb,
             "verdict": fit.verdict.value,
+            # เพดานจริงของเครื่อง — ต่างจาก serving.context ที่เป็นค่าเริ่มต้นมาตรฐาน
+            "max_safe_context": fit.max_safe_context,
+            "fit_notes": fit.notes,
         },
         "serving": {
             "context": plan.serving.context,

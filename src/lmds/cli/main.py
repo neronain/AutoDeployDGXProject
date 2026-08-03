@@ -637,12 +637,19 @@ def deploy(
         if approved_assets:
             apply_asset_approvals(deployment_plan, approved_assets)
 
+        # เพดานจริงจาก fit มักสูงกว่าค่าที่แผนเสนอมาก (แผนถูก cap ไว้ที่ค่ามาตรฐาน v3.0.0)
+        # ถ้าไม่บอก ผู้ใช้จะไม่มีทางรู้ว่าเครื่องรับได้อีกเยอะ — เคสจริง: เสนอ 65,536 แต่รันได้ 262,144
+        ceiling = fit.max_safe_context or deployment_plan.serving.context
+        if ceiling > deployment_plan.serving.context:
+            console.print(
+                f"[dim]หน่วยความจำรองรับได้ถึง {ceiling:,} tokens "
+                f"(แผนเสนอ {deployment_plan.serving.context:,} ตามค่าเริ่มต้นมาตรฐาน) — พิมพ์ตัวเลขเองเพื่อใช้เพิ่ม[/dim]"
+            )
         context_input = typer.prompt(
             "context (Enter = ใช้ค่าตามแผน)", default=str(deployment_plan.serving.context)
         ).strip()
         if context_input.isdigit() and int(context_input) > 0:
             requested = int(context_input)
-            ceiling = fit.max_safe_context or deployment_plan.serving.context
             if requested > ceiling:
                 err_console.print(f"[yellow]เกินเพดานที่ปลอดภัย — ใช้ {ceiling:,} แทน[/yellow]")
                 requested = ceiling

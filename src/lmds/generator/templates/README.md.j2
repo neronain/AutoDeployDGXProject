@@ -105,7 +105,8 @@ lmds disable {{ slug }}         # ยกเลิก
 ## Context tuning
 
 - ค่าเริ่มต้น {{ "{:,}".format(plan.serving.context) }} มาจาก fit analysis ของ target `{{ fit.target_name }}`
-- เพิ่ม/ลดชั่วคราว: `./{{ controller_name }} start --context 16384` หรือ env `{{ context_env }}`
+{% if fit.max_safe_context and fit.max_safe_context > plan.serving.context %}- **หน่วยความจำของเครื่องนี้รองรับได้ถึง {{ "{:,}".format(fit.max_safe_context) }} tokens** — ค่าเริ่มต้นข้างบนเป็นค่ามาตรฐาน v3.0.0 ไม่ใช่ขีดจำกัดของเครื่อง
+{% endif %}- เพิ่ม/ลดชั่วคราว: `./{{ controller_name }} start --context 16384` หรือ env `{{ context_env }}`
 - เพิ่มทีละขั้น (16k → 32k → 65k) แล้วรัน test ซ้ำทุกครั้ง — memory พอไม่ได้แปลว่า TTFT ยอมรับได้
 
 ## Security

@@ -516,3 +516,33 @@ def test_usage_block_keeps_indentation(tmp_path):
                 if not line.strip():
                     break
                 assert line.startswith("  "), f"บรรทัด help หลุดการย่อหน้า: {line!r}"
+
+
+def test_stop_reports_truthfully(tmp_path):
+    """`stop` เคยพิมพ์ "stopped" เสมอแม้ไม่มีอะไรรันอยู่ — ถ้าชื่อ container/PID เพี้ยน
+    ผู้ใช้จะเชื่อว่าหยุดแล้วทั้งที่ยังรันอยู่ (เห็นในผลรันจริงบน RTX 5090)
+    """
+    for report in (safetensors_report(), gguf_report()):
+        bundle, _, _ = make_bundle(report, tmp_path=tmp_path / report.artifact_type.value)
+        script = bundle.controller.read_text(encoding="utf-8")
+        assert "ไม่มีอะไรให้หยุด" in script
+        assert not audit_script(script)
+
+
+def test_readme_surfaces_context_headroom(tmp_path):
+    """คนที่รับ bundle ต่อ (SI → ลูกค้า) ต้องเห็นว่าเครื่องรับ context ได้มากกว่าค่าเริ่มต้น"""
+    from lmds.fit.analyzer import GIB
+    from lmds.inspector.report import KvDims
+
+    report = gguf_report(
+        weight_bytes=int(32.5 * GIB),
+        context_length=262144,
+        kv_dims=KvDims(layers=48, kv_heads=4, head_dim=128),
+    )
+    bundle, plan, fit = make_bundle(report, tmp_path=tmp_path)
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+
+    assert fit.max_safe_context > plan.serving.context
+    assert "262,144" in readme
+    assert profile["target"]["max_safe_context"] == fit.max_safe_context

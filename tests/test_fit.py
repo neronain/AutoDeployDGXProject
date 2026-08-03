@@ -163,3 +163,35 @@ def test_no_gpu_returns_none():
     from lmds.hardware.profiler import HardwareReport
 
     assert from_hardware_report(HardwareReport(arch="arm64")) is None
+
+
+def test_context_cap_is_reported_not_hidden():
+    """เคสจริง Qwen3-Coder-30B บน DGX Spark (2026-08-02): แผนเสนอ 65,536 แต่รันได้จริง 262,144
+
+    สูตรคำนวณถูกอยู่แล้ว (max_safe_context = 262,144) — ที่ผิดคือค่านั้นไม่เคยถูกแสดง
+    ผู้ใช้จึงเสีย context ไป 4 เท่าโดยไม่รู้ตัว
+    """
+    from lmds.fit.analyzer import GIB
+    from lmds.inspector.report import ArtifactType, KvDims, ModelReport
+
+    report = ModelReport(
+        repo_id="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        revision_sha="sha",
+        artifact_type=ArtifactType.GGUF,
+        weight_bytes=int(32.5 * GIB),
+        selected_gguf="UD-Q8_K_XL.gguf",
+        context_length=262144,
+        kv_dims=KvDims(layers=48, kv_heads=4, head_dim=128),
+    )
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+
+    assert fit.max_safe_context == 262144, "สูตรเดิมคำนวณถูก — อย่าไปแก้สูตร"
+    assert fit.recommended_context == 65536  # ค่าเริ่มต้นมาตรฐาน v3.0.0
+    assert any("262,144" in n for n in fit.notes), "ต้องบอกผู้ใช้ว่าเครื่องรับได้มากกว่านี้"
+
+
+def test_no_headroom_note_when_cap_not_binding():
+    """โมเดลที่ max_safe เท่ากับค่าที่แนะนำอยู่แล้วต้องไม่มี note รกขึ้นมา"""
+    fit = analyze(qwen32b(), PRESETS["dgx-spark-single"])
+    assert fit.max_safe_context == fit.recommended_context
+    assert not any("รองรับได้ถึง" in n for n in fit.notes)

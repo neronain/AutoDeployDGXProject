@@ -339,7 +339,15 @@ wait_health() {
   done
 }
 
-stop() { docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true; echo "stopped ${CONTAINER_NAME}"; }
+stop() {
+  # รายงานตามความจริง — เดิมพิมพ์ "stopped" เสมอแม้ไม่มี container อยู่เลย
+  # ซึ่งอันตรายเงียบ ๆ: ถ้าชื่อ container เพี้ยน ผู้ใช้จะเชื่อว่าหยุดแล้วทั้งที่ยังรันอยู่
+  if docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1; then
+    echo "stopped ${CONTAINER_NAME}"
+  else
+    echo "ไม่มีอะไรให้หยุด (ไม่พบ container ${CONTAINER_NAME})"
+  fi
+}
 
 status() {
   docker ps -a --filter "name=^${CONTAINER_NAME}$"
