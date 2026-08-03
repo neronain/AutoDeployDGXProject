@@ -145,6 +145,13 @@
 - **hardware-validated ตัวที่สอง**: `Qwen3.5-122B-A10B-abliterated-NVFP4` (safetensors + NVFP4 + MoE)
   บน DGX Spark เครื่องเดียว — vLLM 0.26.0, FLASHINFER_CUTLASS NvFp4 MoE backend, context 65,536,
   `/health` ผ่าน (ตัวแรกคือ Qwen3-Coder-30B-A3B GGUF native build, 2026-07-21)
+- 🎉 **hardware-validated ตัวที่หก — เกณฑ์ MVP ของเฟส 1 ครบทุกข้อ**:
+  `meta-llama/Llama-3.1-8B-Instruct` (**gated repo** — ข้อสุดท้ายที่เหลือ) บน RTX 5090 —
+  vLLM 0.26.0, `/health` ผ่านที่ context 65,536, `test-text` ตอบถูก (`2+2 เท่ากับ 4`)
+  · ระหว่างทาง `verify-files` จับ download ที่ค้างจาก Xet ได้เอง (`ไฟล์จำเป็นหายไป: tokenizer.json`)
+  ก่อนจะหลุดไปพังตอน `start` — ด่านนี้ทำงานตามที่ออกแบบไว้
+  · รวม hardware-validated **6 ครั้ง บน 2 เครื่อง** ครบทั้ง 4 ช่องของเมทริกซ์ engine × สถาปัตยกรรม
+  (llama.cpp/vLLM × ARM64-unified/x86_64-discrete)
 - **hardware-validated ตัวที่ห้า — ปิดตระกูล *dense safetensors* และเส้นทาง *vLLM บน x86_64***:
   `Qwen/Qwen3-8B` (dense safetensors, BF16 ~16 GB) บน **RTX 5090** — vLLM 0.26.0 docker,
   `/health` ผ่านที่ context 32,768, `test-text` ตอบได้ · ก่อนหน้านี้ vLLM เคยรันแต่บน ARM64/unified

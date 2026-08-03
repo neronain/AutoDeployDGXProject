@@ -15,7 +15,17 @@
 
 ## สถานะโปรเจกต์
 
-🟢 **เฟส 1 — CLI MVP: โค้ดครบทุกคำสั่งแล้ว (M1–M7a) + stacked multi-node (M8)** — เหลือ hardware validation บนเครื่องจริงให้ครบทุกโปรไฟล์ (M7b) · ดู [ROADMAP.md](docs/ROADMAP.md)
+✅ **เฟส 1 — CLI MVP ผ่านเกณฑ์ครบทุกข้อแล้ว (3 ส.ค. 2569)**
+
+hardware-validated **6 ครั้ง บน 2 เครื่อง** (DGX Spark + RTX 5090) ครอบคลุมครบทั้ง 5 ตระกูลโมเดล —
+GGUF, NVFP4, MoE, dense safetensors, gated repo — และครบทั้ง 4 ช่องของเมทริกซ์ engine × สถาปัตยกรรม:
+
+| | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
+|---|---|---|
+| llama.cpp | ✅ native build | ✅ docker (+ multimodal) |
+| vLLM | ✅ docker | ✅ docker |
+
+รายละเอียดต่อโมเดล: [ROADMAP.md](docs/ROADMAP.md) · สิ่งที่แก้จากการรันจริง: [CHANGELOG.md](CHANGELOG.md)
 
 ## 📖 เริ่มที่นี่
 
