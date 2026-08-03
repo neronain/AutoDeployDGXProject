@@ -440,6 +440,12 @@ def discover() -> list[ServerInfo]:
     for orphan in [*_orphan_native(known_pids, busy_ports), *_orphan_docker(known_containers)]:
         orphan.healthy = orphan.running and _health_ok(orphan.port)
         servers.append(orphan)
+
+    # bundle ที่อยู่บนดิสก์แต่ยังไม่เคย start — ต้องเห็นด้วย ไม่งั้น deploy เสร็จแล้วไปต่อไม่ถูก
+    known = {s.slug for s in servers}
+    for bundle in _scan_bundles(known):
+        bundle.healthy = False
+        servers.append(bundle)
     return servers
 
 
@@ -558,6 +564,63 @@ def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int
     )
 
 
+
+
+
+def bundle_roots() -> list[Path]:
+    """ที่ที่ bundle มักอยู่ — `lmds deploy` เขียนลง ./bundles ของโฟลเดอร์ที่รันคำสั่ง
+    ซึ่งต่างกันไปตามว่าผู้ใช้ยืนอยู่ตรงไหนตอน deploy
+
+    เพิ่มที่อื่นเองได้ด้วย LMDS_BUNDLE_DIRS (คั่นด้วย :)
+    """
+    roots: list[Path] = []
+    extra = os.environ.get("LMDS_BUNDLE_DIRS", "")
+    roots += [Path(p).expanduser() for p in extra.split(":") if p.strip()]
+    roots.append(Path.cwd() / "bundles")
+    home = Path.home()
+    roots.append(home / "bundles")
+    try:
+        # โฟลเดอร์โปรเจกต์ที่ clone ไว้ เช่น ~/AutoDeployDGXProject/bundles
+        roots += [d / "bundles" for d in home.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    except OSError:
+        pass
+    return [r for r in dict.fromkeys(roots) if r.is_dir()]
+
+
+def _scan_bundles(known_slugs: set[str]) -> list[ServerInfo]:
+    """bundle ที่อยู่บนดิสก์แต่ยังไม่มีทะเบียน (สร้างก่อนมี register_bundle หรือ copy มาจากเครื่องอื่น)
+
+    ไม่งั้นผู้ใช้สร้าง bundle เสร็จแล้วมองไม่เห็นใน `lmds list`/หน้าเว็บ เลยไปต่อไม่ถูก
+    """
+    found: list[ServerInfo] = []
+    for root in bundle_roots():
+        # `<root>/<slug>/` เป็นรูปแบบปกติ · เผื่ออีกชั้นสำหรับคนที่ deploy ซ้อนโฟลเดอร์ bundles
+        for pattern in ("*/MODEL_PROFILE.yaml", "*/*/MODEL_PROFILE.yaml"):
+            for profile_path in sorted(root.glob(pattern)):
+                directory = profile_path.parent
+                slug = directory.name
+                if slug in known_slugs:
+                    continue
+                controller = next(iter(sorted(directory.glob("*-single.sh")) +
+                                       sorted(directory.glob("*-stacked.sh"))), None)
+                if controller is None:
+                    continue
+                known_slugs.add(slug)
+                profile = bundle_profile(str(controller)) or {}
+                model = profile.get("model") or {}
+                runtime = profile.get("runtime") or {}
+                found.append(ServerInfo(
+                    slug=slug,
+                    model=model.get("served_name", slug),
+                    model_id=model.get("id", ""),
+                    engine=runtime.get("engine", ""),
+                    mode="docker",
+                    port=int((profile.get("serving") or {}).get("port") or 8000),
+                    container=f"lmds-{slug}",
+                    controller=str(controller),
+                    registered=False,
+                ))
+    return found
 
 
 def register_bundle(controller: Path | str) -> Path:

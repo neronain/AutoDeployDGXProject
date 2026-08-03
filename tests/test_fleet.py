@@ -464,3 +464,79 @@ def test_real_native_orphan_on_another_port_still_shows(tmp_path, monkeypatch):
 
     slugs = {s.slug for s in discover()}
     assert slugs == {"registered", "other-model"}
+
+
+def _make_bundle(directory, slug, model_id="org/demo", engine="llamacpp"):
+    import yaml
+
+    directory.mkdir(parents=True, exist_ok=True)
+    controller = directory / f"{slug}-single.sh"
+    controller.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    controller.chmod(0o755)
+    (directory / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump({
+        "model": {"id": model_id, "revision": "sha", "served_name": slug},
+        "runtime": {"engine": engine}, "serving": {"context": 16384}, "topology": "single",
+    }), encoding="utf-8")
+    return controller
+
+
+def test_bundles_on_disk_are_found_without_a_registry(tmp_path, monkeypatch):
+    """รายงานจากผู้ใช้: deploy เสร็จแล้ว `lmds list`/หน้าเว็บไม่เห็นอะไรเลย ไปต่อไม่ถูก
+
+    ทะเบียนถูกเขียนโดย controller ตอน start เท่านั้น — bundle ที่ยังไม่เคย start จึงหายไป
+    """
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.chdir(tmp_path)
+    _make_bundle(tmp_path / "bundles" / "demo-a", "demo-a")
+    # เคสจริงบนเครื่องผู้ใช้: deploy จากในโฟลเดอร์ bundles เลยได้ bundles/bundles/
+    _make_bundle(tmp_path / "bundles" / "bundles" / "demo-b", "demo-b")
+
+    slugs = {s.slug for s in discover()}
+    assert {"demo-a", "demo-b"} <= slugs
+
+
+def test_scanned_bundle_is_marked_unregistered(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.chdir(tmp_path)
+    _make_bundle(tmp_path / "bundles" / "demo", "demo", model_id="unsloth/demo-GGUF")
+
+    found = next(s for s in discover() if s.slug == "demo")
+    assert found.registered is False
+    assert found.model_id == "unsloth/demo-GGUF"
+    assert found.controller_exists is True
+
+
+def test_registry_wins_over_disk_scan(tmp_path, monkeypatch):
+    """เคย start แล้ว = ทะเบียนของ controller ละเอียดกว่า ห้ามถูกของที่สแกนมาทับ"""
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.chdir(tmp_path)
+    controller = _make_bundle(tmp_path / "bundles" / "demo", "demo")
+    make_meta(tmp_path / "run", "demo", mode="docker", port=8123, controller=str(controller))
+
+    matches = [s for s in discover() if s.slug == "demo"]
+    assert len(matches) == 1
+    assert matches[0].registered is True
+    assert matches[0].port == 8123
+
+
+def test_register_bundle_does_not_overwrite_controller_registry(tmp_path, monkeypatch):
+    from lmds.fleet import register_bundle
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    controller = _make_bundle(tmp_path / "bundles" / "demo", "demo")
+    make_meta(tmp_path / "run", "demo", port=9999, controller=str(controller))
+
+    register_bundle(controller)
+    assert "port=9999" in (tmp_path / "run" / "demo" / "server.meta").read_text(encoding="utf-8")
+
+
+def test_extra_bundle_dirs_from_env(tmp_path, monkeypatch):
+    """bundle ที่ย้ายไปไว้ที่อื่น (เช่นดิสก์ลูกอื่น) ต้องบอก LMDS ได้"""
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.chdir(tmp_path)
+    elsewhere = tmp_path / "data" / "my-bundles"
+    _make_bundle(elsewhere / "far-away", "far-away")
+
+    assert "far-away" not in {s.slug for s in discover()}
+    monkeypatch.setenv("LMDS_BUNDLE_DIRS", str(elsewhere))
+    assert "far-away" in {s.slug for s in discover()}
