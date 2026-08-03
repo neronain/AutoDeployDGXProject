@@ -95,6 +95,63 @@ _CHIP_BRAIN = Banner([r"""
         ╚══════╡ ⚡ ╞══════╝
 """])
 
+# ---------- ลาย RTX (เครื่อง Ubuntu + GeForce/RTX PRO) ----------
+
+_RTX_BIG = Banner([r"""
+   ██████  ████████ ██   ██
+   ██   ██    ██     ██ ██       L · M · D · S
+   ██████     ██      ███        ──────────────────────────────
+   ██   ██    ██     ██ ██       RTX · Ada · Blackwell · x86_64
+   ██   ██    ██    ██   ██      VRAM-aware fit, verified bundles
+"""])
+
+_RTX_CARD = Banner([r"""
+   ╔═══════════════════════════════════════════╗
+   ║  ╭─────╮   ╭─────╮   R T X   S E R I E S  ║
+   ║  │  ╳  │   │  ╳  │   ─────────────────    ║
+   ║  ╰─────╯   ╰─────╯   one link ─▶ bundle   ║
+   ╚═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═══════════════════════╝
+      ▀ ▀ ▀ ▀ ▀   L M D S — it fits, or it says why
+"""])
+
+
+def _fan_frame(blade: str) -> str:
+    """การ์ด RTX พัดลมสองตัวหมุน — ใบพัดหมุน │ ╱ ─ ╲ ให้ความรู้สึกว่าเครื่องกำลังทำงาน"""
+    return f"""
+   ┌──────────────────────────────────────────┐
+   │   ╭─────╮      ╭─────╮   R T X · L M D S │
+   │   │  {blade}  │      │  {blade}  │   spinning up…    │
+   │   ╰─────╯      ╰─────╯                   │
+   └──╤═╤═╤═╤═╤═╤═╤═╤═════════════════════════┘
+"""
+
+
+_RTX_FAN = Banner(
+    frames=[_fan_frame(b) for b in ("│", "╱", "─", "╲", "│", "╱", "─", "╲")],
+    interval=0.10,
+)
+
+
+def _vram_frame(step: int, total: int = 8) -> str:
+    """VRAM ค่อย ๆ เต็ม — สื่อว่า fit analyzer คำนวณ weights + KV ก่อนจะบอกว่าลงไหม"""
+    bar = "▰" * step + "▱" * (total - step)
+    used = 32.0 * step / total
+    label = "computing fit…" if step < total else "weights + KV cache fit ✓"
+    return f"""
+   ██████  ████████ ██   ██
+   ██   ██    ██     ██ ██
+   ██████     ██      ███        L M D S
+   ██   ██    ██     ██ ██       ─────────────────────────
+   ██   ██    ██    ██   ██      RTX VRAM [{bar}] {used:4.1f} / 32 GB
+                                 {label}
+"""
+
+
+_RTX_VRAM = Banner(
+    frames=[_vram_frame(i) for i in range(9)],
+    interval=0.09,
+)
+
 # ---------- แบบเคลื่อนไหว ----------
 
 def _pulse_frame(active: int) -> str:
@@ -143,6 +200,10 @@ BANNERS: list[Banner] = [
     _CHIP_BRAIN,
     _NEURAL_PULSE,
     _LOADING_BAR,
+    _RTX_BIG,
+    _RTX_CARD,
+    _RTX_FAN,
+    _RTX_VRAM,
 ]
 
 _shown = False

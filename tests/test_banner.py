@@ -11,7 +11,7 @@ def _fresh(monkeypatch):
 
 
 def test_banner_art_is_reasonable_width():
-    assert len(BANNERS) >= 9
+    assert len(BANNERS) >= 13
     for banner in BANNERS:
         assert banner.frames
         for frame in banner.frames:
@@ -22,10 +22,25 @@ def test_banner_art_is_reasonable_width():
 
 def test_has_animated_banners():
     animated = [b for b in BANNERS if len(b.frames) > 1]
-    assert len(animated) >= 2
+    assert len(animated) >= 4
     for banner in animated:
         assert banner.interval <= 0.15  # animation รวมต้องจบเร็ว ไม่หน่วงผู้ใช้
         assert len(banner.frames) * banner.interval <= 1.5
+
+
+def test_animation_frames_keep_a_stable_shape():
+    """ทุก frame ของ animation เดียวกันต้องสูง/กว้างเท่ากัน ไม่งั้นภาพจะกระตุกตอน Live redraw"""
+    for banner in [b for b in BANNERS if len(b.frames) > 1]:
+        heights = {len(f.splitlines()) for f in banner.frames}
+        assert len(heights) == 1, f"จำนวนบรรทัดไม่คงที่ระหว่าง frame: {heights}"
+        widths = {max(len(line) for line in f.splitlines()) for f in banner.frames}
+        assert len(widths) == 1, f"ความกว้างไม่คงที่ระหว่าง frame: {widths}"
+
+
+def test_has_rtx_flavoured_banners():
+    """เครื่องเป้าหมายครึ่งหนึ่งเป็น Ubuntu + RTX — ต้องมีลายที่พูดถึง RTX ไม่ใช่ DGX Spark ล้วน"""
+    rtx = [b for b in BANNERS if any("RTX" in f or "R T X" in f for f in b.frames)]
+    assert len(rtx) >= 4
 
 
 def test_all_banners_render_without_error():
