@@ -559,6 +559,43 @@ def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int
 
 
 
+
+def register_bundle(controller: Path | str) -> Path:
+    """ลงทะเบียน bundle ที่เพิ่ง generate ให้ fleet เห็นทันที (ยังไม่เคย start)
+
+    ปกติ controller เขียน server.meta เองตอน start — ก่อนหน้านั้น `lmds list`/หน้าเว็บจึงมองไม่เห็น
+    bundle ที่เพิ่งสร้าง ผู้ใช้เลยไม่รู้ว่าต้องไปต่อยังไง (เจอจริงจากการใช้หน้าเว็บ)
+    ทะเบียนนี้เก็บแค่ว่า bundle อยู่ที่ไหน — สถานะจริง (running/health) ยังตรวจสดทุกครั้งเหมือนเดิม
+    """
+    controller = Path(controller)
+    slug = controller.parent.name
+    profile = bundle_profile(str(controller)) or {}
+    model = profile.get("model") or {}
+    runtime = profile.get("runtime") or {}
+    serving = profile.get("serving") or {}
+
+    run_dir = run_root() / slug
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta = run_dir / "server.meta"
+    if meta.exists():
+        return meta  # เคย start แล้ว — ของจริงจาก controller ละเอียดกว่า อย่าเขียนทับ
+
+    meta.write_text(
+        f"slug={slug}\n"
+        f"model={model.get('served_name', slug)}\n"
+        f"model_id={model.get('id', '')}\n"
+        f"engine={runtime.get('engine', '')}\n"
+        f"mode={'native' if runtime.get('native_build') else 'docker'}\n"
+        f"port={serving.get('port', 8000)}\n"
+        f"container=lmds-{slug}\n"
+        "pid_file=\n"
+        f"controller={controller}\n"
+        "started_at=\n",
+        encoding="utf-8",
+    )
+    return meta
+
+
 def logs_text(info: ServerInfo, lines: int = 200) -> str:
     """เหมือน logs_server แต่คืนข้อความแทนพิมพ์ออกจอ — ใช้กับ Web UI/สคริปต์
 

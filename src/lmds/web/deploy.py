@@ -237,6 +237,10 @@ def generate(
 
     checksums = write_checksums(bundle.directory)
     zip_path = make_zip(bundle.directory)
+    # ลงทะเบียนทันที ไม่งั้น bundle ที่เพิ่งสร้างจะไม่โผล่ในรายการ แล้วผู้ใช้ไปต่อไม่ถูก
+    from lmds.fleet import register_bundle
+
+    register_bundle(bundle.controller)
     _SESSIONS.pop(session_id, None)
     return {
         "slug": bundle.directory.name,

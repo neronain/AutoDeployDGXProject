@@ -149,15 +149,22 @@ function rowMarkup(m) {
   if (m.features && m.features.includes("image")) tags.push(`<span class="tag">image</span>`);
   if (m.external) tags.push(`<span class="tag warn">ไม่ได้มาจาก lmds</span>`);
   if (!m.controller_exists) tags.push(`<span class="tag bad">controller หาย</span>`);
+  else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">ยังไม่โหลดไฟล์</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
     <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>`;
 }
 
 function actionsMarkup(m) {
-  return m.running
-    ? `<button data-act="stop" data-slug="${esc(m.slug)}">stop</button>
-       <button data-act="restart" data-slug="${esc(m.slug)}">restart</button>`
-    : `<button data-act="start" data-slug="${esc(m.slug)}" ${m.controller_exists ? "" : "disabled"}>start</button>`;
+  if (m.job) return `<span class="tag warn">${esc(m.job.command)}…</span>`;
+  if (m.running) {
+    return `<button data-act="stop" data-slug="${esc(m.slug)}">stop</button>
+       <button data-act="restart" data-slug="${esc(m.slug)}">restart</button>`;
+  }
+  if (!m.controller_exists) return `<button disabled>start</button>`;
+  // ยังไม่โหลด weight = start ไปก็ล้มแน่ ๆ — พาไป download ก่อน
+  return m.downloaded
+    ? `<button data-act="start" data-slug="${esc(m.slug)}">start</button>`
+    : `<button data-act="job:download" data-slug="${esc(m.slug)}">download</button>`;
 }
 
 function renderFleet(models) {
@@ -195,7 +202,8 @@ function renderFleet(models) {
       };
       rows.set(m.slug, row);
     }
-    row.dot.className = "dot " + (m.running ? (m.healthy ? "on" : "load") : "");
+    row.dot.className = "dot " + (m.running ? (m.healthy ? "on" : "load") : (m.job ? "load" : ""));
+    if (m.job && !watching.has(m.slug)) followJob(m.slug, m.job.id);
     row.info.innerHTML = rowMarkup(m);
     row.port.textContent = ":" + (m.port || "—");
     const state = `${m.running}|${m.controller_exists}`;
@@ -231,10 +239,45 @@ async function load(slug, kind) {
   </div>`;
 }
 
+const watching = new Map();
+
+async function followJob(slug, jobId) {
+  const panel = document.getElementById("panel-" + slug);
+  if (panel) { open.add(slug + " job"); }
+  const tick = async () => {
+    const r = await api(`/api/jobs/${jobId}`);
+    if (!r.ok) { watching.delete(slug); return; }
+    const d = await r.json();
+    const el = document.getElementById("panel-" + slug);
+    if (el) {
+      el.innerHTML = `<pre id="jobout-${esc(slug)}">${esc(d.output || "กำลังเริ่ม…")}</pre>`;
+      const out = document.getElementById("jobout-" + slug);
+      if (out) out.scrollTop = out.scrollHeight;
+    }
+    if (d.running) { setTimeout(tick, 1200); return; }
+    watching.delete(slug);
+    open.delete(slug + " job");
+    if (d.exit_code !== 0) alert(`${d.command} ${slug} ล้มเหลว (exit ${d.exit_code})\n\nดูรายละเอียดในหน้าต่างที่กางอยู่`);
+    refresh();
+  };
+  watching.set(slug, jobId);
+  tick();
+}
+
 document.addEventListener("click", async e => {
   const btn = e.target.closest("button[data-act]");
   if (!btn || busy) return;
   const { act, slug } = btn.dataset;
+
+  if (act.startsWith("job:")) {
+    const command = act.slice(4);
+    btn.disabled = true;
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/run/${command}`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) { alert(d.detail || "เริ่มงานไม่สำเร็จ"); btn.disabled = false; return; }
+    followJob(slug, d.id);
+    return;
+  }
 
   if (act === "doctor" || act === "logs") {
     const key = slug + " " + act;

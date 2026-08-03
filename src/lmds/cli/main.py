@@ -519,6 +519,10 @@ def _render_and_package(deployment_plan, report, fit, output: str):
 
     checksums_path = write_checksums(bundle.directory)
     zip_path = make_zip(bundle.directory)
+    # ลงทะเบียนกับ fleet ทันที — เดิม lmds list ไม่เห็น bundle จนกว่าจะ start สำเร็จครั้งแรก
+    from lmds.fleet import register_bundle
+
+    register_bundle(bundle.controller)
     return bundle, results, [*bundle.files, checksums_path, zip_path]
 
 

@@ -56,6 +56,25 @@ def _host_payload() -> dict:
     }
 
 
+def _weights_present(server, profile) -> bool:
+    """โหลด weight มาแล้วหรือยัง — ใช้ตัวตรวจชุดเดียวกับ lmds doctor ไม่คำนวณซ้ำคนละทาง"""
+    from lmds.doctor.checks import _weight_paths
+
+    if not profile:
+        return False
+    directory, wanted = _weight_paths(profile, server.slug)
+    if not directory.is_dir():
+        return False
+    return all((directory / name).exists() for name in wanted)
+
+
+def _active_job(slug: str) -> dict | None:
+    from . import jobs
+
+    job = jobs.active_for(slug)
+    return {"id": job.id, "command": job.command} if job else None
+
+
 def _model_payload(server) -> dict:
     from lmds.fleet import autostart_status, bundle_profile, feature_summary, profile_context
 
@@ -77,6 +96,8 @@ def _model_payload(server) -> dict:
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),
         "started_at": server.started_at,
+        "downloaded": _weights_present(server, profile),
+        "job": _active_job(server.slug),
     }
 
 
@@ -211,6 +232,30 @@ def create_app(token: str = "") -> FastAPI:
             )
         except DeployError as exc:
             raise _deploy_error(exc) from exc
+
+    # ── งานที่ใช้เวลานาน: download / start / verify ────────────────────────
+    @app.post("/api/models/{slug}/run/{command}", dependencies=guarded)
+    def run_command(slug: str, command: str) -> dict:
+        from lmds.fleet import find
+
+        from . import jobs
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        try:
+            return jobs.start(slug, command, server.controller).payload()
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/jobs/{job_id}", dependencies=guarded)
+    def job_status(job_id: str) -> dict:
+        from . import jobs
+
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="ไม่พบงานนี้")
+        return job.payload()
 
     return app
 

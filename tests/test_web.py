@@ -261,3 +261,103 @@ def test_deploy_endpoints_are_token_guarded(fleet):
     assert client.get("/api/targets").status_code == 401
     assert client.post("/api/deploy/analyze", json={"model": "x"}).status_code == 401
     assert client.post("/api/deploy/abc/generate", json={}).status_code == 401
+
+
+# ── งานที่ใช้เวลานาน (download / start) ───────────────────────────────────────
+
+@pytest.fixture
+def runnable(tmp_path, monkeypatch):
+    """bundle ที่ controller รันได้จริง — download แล้วสร้างไฟล์ weight ให้"""
+    from lmds.fleet import register_bundle
+
+    slug = "demo"
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    model_dir = tmp_path / "models" / slug
+    monkeypatch.setenv("MODEL_DIR", str(model_dir))
+
+    bundle = tmp_path / "bundles" / slug
+    bundle.mkdir(parents=True)
+    controller = bundle / f"{slug}-single.sh"
+    controller.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1" in\n'
+        f'  download) echo "โหลดอยู่"; mkdir -p "{model_dir}"; echo x > "{model_dir}/demo-Q8.gguf";;\n'
+        '  fail) echo "พัง"; exit 3;;\n'
+        '  *) echo "cmd $1";;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    controller.chmod(0o755)
+    (bundle / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump({
+        "model": {"id": "org/demo", "revision": "sha", "selected_gguf": "demo-Q8.gguf", "served_name": slug},
+        "runtime": {"engine": "llamacpp"}, "serving": {"context": 8192}, "topology": "single",
+    }), encoding="utf-8")
+    register_bundle(controller)
+    return slug
+
+
+def _wait(client, job_id, tries=60):
+    import time
+
+    for _ in range(tries):
+        data = client.get(f"/api/jobs/{job_id}").json()
+        if not data["running"]:
+            return data
+        time.sleep(0.1)
+    raise AssertionError("งานไม่จบในเวลาที่กำหนด")
+
+
+def test_generated_bundle_appears_before_first_start(runnable):
+    """เคสจริงจากหน้าเว็บ: สร้าง bundle เสร็จแล้วไปต่อไม่ถูก เพราะ fleet เห็นเฉพาะตัวที่เคย start"""
+    models = TestClient(create_app()).get("/api/models").json()["models"]
+    assert [m["slug"] for m in models] == [runnable]
+    assert models[0]["running"] is False
+
+
+def test_download_button_shows_until_weights_exist(runnable):
+    client = TestClient(create_app())
+    assert client.get("/api/models").json()["models"][0]["downloaded"] is False
+
+    job = client.post(f"/api/models/{runnable}/run/download").json()
+    assert _wait(client, job["id"])["exit_code"] == 0
+
+    assert client.get("/api/models").json()["models"][0]["downloaded"] is True
+
+
+def test_job_output_is_streamed_back(runnable):
+    client = TestClient(create_app())
+    job = client.post(f"/api/models/{runnable}/run/download").json()
+    assert "โหลดอยู่" in _wait(client, job["id"])["output"]
+
+
+def test_failed_job_reports_exit_code(runnable, monkeypatch):
+    from lmds.web import jobs
+
+    monkeypatch.setattr(jobs, "ALLOWED", jobs.ALLOWED | {"fail"})
+    client = TestClient(create_app())
+    job = client.post(f"/api/models/{runnable}/run/fail").json()
+    done = _wait(client, job["id"])
+    assert done["exit_code"] == 3
+    assert "พัง" in done["output"]
+
+
+def test_only_one_job_per_model(runnable):
+    """download ซ้อน start = ไฟล์พัง — ต้องกันไว้ ไม่ใช่หวังว่าผู้ใช้จะไม่กดซ้ำ"""
+    client = TestClient(create_app())
+    client.post(f"/api/models/{runnable}/run/download")
+    second = client.post(f"/api/models/{runnable}/run/download")
+    assert second.status_code == 409
+    assert "กำลังรัน" in second.json()["detail"]
+
+
+def test_only_allowlisted_commands_can_run(runnable):
+    """ชื่อคำสั่งมาจาก URL — ห้ามส่งต่อไปให้ shell ตรง ๆ"""
+    client = TestClient(create_app())
+    for bad in ("rm-rf", "help;whoami", "../../etc/passwd"):
+        assert client.post(f"/api/models/{runnable}/run/{bad}").status_code in (404, 409)
+
+
+def test_job_routes_are_token_guarded(runnable):
+    client = TestClient(create_app(token="s3cret"))
+    assert client.post(f"/api/models/{runnable}/run/download").status_code == 401
+    assert client.get("/api/jobs/whatever").status_code == 401
