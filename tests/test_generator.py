@@ -436,3 +436,18 @@ def test_usage_documents_options_and_api_token(tmp_path):
             assert opt in script, f"{opt} ไม่มีใน usage ของ {report.artifact_type.value}"
         # เตือนเรื่อง endpoint เปิดโล่งต้องอยู่ใน help ด้วย ไม่ใช่แค่ตอน start
         assert "127.0.0.1" in script
+
+
+def test_test_text_survives_reasoning_models(tmp_path):
+    """max_tokens 64 ทำให้โมเดลสาย reasoning คืน content ว่าง + finish_reason length
+
+    เจอจริงกับ gemma-4-12b-it (2026-08-03): reasoning_content กิน budget หมดก่อนจะได้ตอบ
+    ผู้ใช้เห็นแล้วนึกว่าโมเดลพัง
+    """
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert '\\"max_tokens\\": 512' in script
+    assert "reasoning_content" in script, "ต้องแยก 'ยังคิดไม่จบ' ออกจาก 'ตอบว่าง' ให้ผู้ใช้"
+    assert "test-text: OK" in script
+    assert not audit_script(script)

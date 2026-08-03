@@ -282,11 +282,30 @@ def _cmdline_value(cmdline: str, flag: str) -> str:
     return ""
 
 
-def _orphan_native(known_pids: set[int]) -> list[ServerInfo]:
+def _in_container(pid: int) -> bool:
+    """process ใน container มองเห็นได้จาก process table ของ host ด้วย
+
+    ถ้าไม่กรองออก โมเดล llama.cpp ที่รันโหมด docker จะถูกนับซ้ำเป็น "native orphan" อีกตัว —
+    เจอจริงบน RTX 5090 (2026-08-03): `lmds list` ขึ้นสองแถวสำหรับเซิร์ฟเวอร์ตัวเดียว
+    แถวปลอมใช้ค่า --alias เป็น slug จึงดูเหมือนคนละโมเดล
+    """
+    try:
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return any(marker in cgroup for marker in ("docker", "containerd", "kubepods", "libpod"))
+
+
+def _orphan_native(known_pids: set[int], busy_ports: set[int] | None = None) -> list[ServerInfo]:
     """llama-server ที่รันอยู่แต่ไม่มีทะเบียน (เช่น start จาก bundle รุ่นเก่า)"""
     orphans: list[ServerInfo] = []
+    busy_ports = busy_ports or set()
     for pid, cmdline in _pgrep_llama():
-        if pid in known_pids:
+        if pid in known_pids or _in_container(pid):
+            continue
+        port_value = _cmdline_value(cmdline, "--port")
+        # กันซ้ำอีกชั้นเผื่ออ่าน cgroup ไม่ได้: พอร์ตเดียวกันย่อมเป็นเซิร์ฟเวอร์ตัวเดียวกัน
+        if port_value.isdigit() and int(port_value) in busy_ports:
             continue
         alias = _cmdline_value(cmdline, "--alias")
         model_path = _cmdline_value(cmdline, "-m")
@@ -417,7 +436,8 @@ def discover() -> list[ServerInfo]:
             except (OSError, ValueError):
                 pass
     known_containers = {s.container for s in servers if s.container}
-    for orphan in [*_orphan_native(known_pids), *_orphan_docker(known_containers)]:
+    busy_ports = {s.port for s in servers if s.running and s.port}
+    for orphan in [*_orphan_native(known_pids, busy_ports), *_orphan_docker(known_containers)]:
         orphan.healthy = orphan.running and _health_ok(orphan.port)
         servers.append(orphan)
     return servers

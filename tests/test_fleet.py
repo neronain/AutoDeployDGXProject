@@ -419,3 +419,48 @@ def test_repair_runs_download_then_verify(tmp_path, monkeypatch):
 
     assert manager.repair_server(info) == 0
     assert calls == ["download", "verify-files"]
+
+
+def _docker_server_with_host_visible_process(tmp_path, monkeypatch, in_container: bool):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    make_meta(tmp_path, "gemma-4-12b-it-gguf", mode="docker", port=8000)
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda container: True)
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port: False)
+    monkeypatch.setattr(
+        "lmds.fleet.manager._pgrep_llama",
+        lambda: [(4242, "llama-server --alias gemma-4-12b-it-ud-q8_k-xl --port 8000")],
+    )
+    monkeypatch.setattr("lmds.fleet.manager._in_container", lambda pid: in_container)
+    return discover()
+
+
+def test_docker_llamacpp_server_is_not_listed_twice(tmp_path, monkeypatch):
+    """เคสจริง RTX 5090 (2026-08-03): llama.cpp โหมด docker โผล่ใน pgrep ของ host ด้วย
+
+    ผลคือ `lmds list` ขึ้นสองแถวสำหรับเซิร์ฟเวอร์ตัวเดียว — แถวปลอมใช้ค่า --alias เป็น slug
+    จึงดูเหมือนคนละโมเดล และสั่ง stop ตามชื่อนั้นไม่ได้
+    """
+    servers = _docker_server_with_host_visible_process(tmp_path, monkeypatch, in_container=True)
+    assert [s.slug for s in servers] == ["gemma-4-12b-it-gguf"]
+
+
+def test_same_port_never_counted_as_two_servers(tmp_path, monkeypatch):
+    """กันชั้นที่สอง เผื่ออ่าน /proc/<pid>/cgroup ไม่ได้ (เช่น rootless/แพลตฟอร์มอื่น)"""
+    servers = _docker_server_with_host_visible_process(tmp_path, monkeypatch, in_container=False)
+    assert [s.slug for s in servers] == ["gemma-4-12b-it-gguf"]
+
+
+def test_real_native_orphan_on_another_port_still_shows(tmp_path, monkeypatch):
+    """ของจริงที่ต้องเก็บตกต้องไม่หายไปกับการกันซ้ำ"""
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    make_meta(tmp_path, "registered", mode="docker", port=8000)
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda container: True)
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port: False)
+    monkeypatch.setattr(
+        "lmds.fleet.manager._pgrep_llama",
+        lambda: [(777, "llama-server --alias other-model --port 8001")],
+    )
+    monkeypatch.setattr("lmds.fleet.manager._in_container", lambda pid: False)
+
+    slugs = {s.slug for s in discover()}
+    assert slugs == {"registered", "other-model"}

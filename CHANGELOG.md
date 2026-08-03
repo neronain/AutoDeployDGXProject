@@ -104,6 +104,14 @@
     controller (native/docker คนละที่)
   - **gate ใหม่ `multimodal-assets`** (รวมเป็น 9 ด่าน) — profile ประกาศ mmproj แต่ controller ไม่โหลด
     หรือไม่ส่ง `--mmproj` = ไม่ผ่าน ไม่มี ZIP · bundle ที่มีบั๊กนี้เคยผ่าน gates ครบทุกด่าน
+- **โมเดล llama.cpp โหมด docker ถูกนับสองครั้งใน `lmds ps` / `lmds list`** (เจอจริงบน RTX 5090,
+  2026-08-03) — process ใน container มองเห็นได้จาก process table ของ host ด้วย `_orphan_native`
+  จึงเก็บมันมาเป็น "orphan" อีกแถว โดยใช้ค่า `--alias` เป็น slug ทำให้ดูเหมือนคนละโมเดล และ
+  สั่ง `stop`/`logs` ตามชื่อนั้นไม่ได้ · กรองด้วย `/proc/<pid>/cgroup` + กันซ้ำด้วยพอร์ตอีกชั้น
+- **`test-text` ดูเหมือนพังกับโมเดลสาย reasoning** — `max_tokens: 64` ถูก `reasoning_content`
+  กินหมดก่อนจะได้ตอบ ผู้ใช้เห็น `content: ""` กับ `finish_reason: "length"` แล้วนึกว่าโมเดลเสีย
+  (เคสจริง gemma-4-12b-it) · เพิ่มเป็น 512 และสรุปผลเป็นภาษาคนต่อท้าย โดยแยก "ยังคิดไม่จบ"
+  ออกจาก "ตอบว่างจริง ๆ"
 - **`install.sh` จบเงียบกลางคันบนระบบที่ `df` ไม่รองรับ `--output`** — บรรทัดตรวจดิสก์เป็นคำสั่ง
   สุดท้ายของ branch และเจอ `pipefail` เข้าไปด้วย ทำให้ `set -e` ฆ่าสคริปต์ทิ้งก่อนถึงขั้นตั้ง
   provider/completion โดยไม่มี error ให้เห็น (เจอตอนทดสอบ installer นอก GNU coreutils)
