@@ -20,7 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 keyring = ["keyring>=24.0"]
-dev = ["pytest>=8.0", "pytest-cov>=4.0"]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0", "fastapi>=0.110", "uvicorn>=0.27"]
 
 [project.scripts]
 lmds = "lmds.cli.main:app"

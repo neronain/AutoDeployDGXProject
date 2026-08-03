@@ -558,6 +558,30 @@ def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int
     )
 
 
+
+def logs_text(info: ServerInfo, lines: int = 200) -> str:
+    """เหมือน logs_server แต่คืนข้อความแทนพิมพ์ออกจอ — ใช้กับ Web UI/สคริปต์
+
+    controller พิมพ์ตรงไป stdout ของ terminal จึง capture ไม่ได้ผ่าน logs_server
+    """
+    if info.controller_exists:
+        proc = subprocess.run(
+            [info.controller, "logs", str(lines)], capture_output=True, text=True
+        )
+        return (proc.stdout or "") + (proc.stderr or "")
+    if info.mode == "docker" and info.container:
+        proc = subprocess.run(
+            ["docker", "logs", "--tail", str(lines), info.container],
+            capture_output=True, text=True,
+        )
+        return (proc.stdout or "") + (proc.stderr or "")
+    log_file = info.run_dir / "server.log" if info.run_dir else None
+    if log_file and log_file.is_file():
+        content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(content[-lines:])
+    raise FleetError(f"ไม่พบแหล่ง log ของ {info.slug}")
+
+
 # ── Remove / repair ────────────────────────────────────────────────────────────
 def _dir_size_bytes(path: Path) -> int:
     total = 0

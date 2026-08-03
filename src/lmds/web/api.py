@@ -1,0 +1,176 @@
+"""Web UI — หน้าเดียวสำหรับคุม fleet + doctor (เฟส 2)
+
+ชั้นนี้ไม่มี logic ของตัวเอง: เรียก core เดิมทั้งหมด (hardware / fleet / doctor)
+แล้วแปลงเป็น JSON เท่านั้น — อะไรที่ CLI ทำได้ เว็บต้องได้ผลเหมือนกันเป๊ะ
+
+ความปลอดภัย (ตาม PRD §9): หน้านี้สั่ง start/stop โมเดลได้ จึง
+- bind 127.0.0.1 เป็นค่าเริ่มต้น — ต้องตั้งใจเปิดออก network เอง
+- ตั้ง token ได้ และถ้า bind ออก network โดยไม่มี token จะเตือนเสียงดัง
+"""
+
+from __future__ import annotations
+
+import secrets
+from pathlib import Path
+from typing import Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+
+import lmds
+
+STATIC = Path(__file__).parent / "static"
+
+
+def _host_payload() -> dict:
+    from lmds.fit.targets import from_hardware_report
+    from lmds.hardware import probe
+    from lmds.hardware.profiler import host_summary
+
+    report = probe()
+    summary = host_summary()
+    target = from_hardware_report(report)
+    return {
+        "hostname": summary.hostname,
+        "ip": summary.ip,
+        "arch": report.arch,
+        "profile": report.profile.value,
+        "ram_used_gb": summary.ram_used_gb,
+        "ram_total_gb": summary.ram_total_gb,
+        "disk_free_gb": report.disk_free_gb,
+        "disk_total_gb": report.disk_total_gb,
+        "docker": report.docker,
+        "toolkit": report.nvidia_container_toolkit,
+        # unified (Spark) ต้องแสดง memory คนละแบบกับ discrete (RTX) — ดู mockup
+        "memory_model": target.memory_model.value if target else None,
+        "gpus": [
+            {
+                "name": gpu.name,
+                "vram_gb": round(gpu.vram_mib / 1024, 1) if gpu.vram_mib
+                else (gpu.known.vram_gb if gpu.known else None),
+                "compute": gpu.compute_capability,
+                "tested": gpu.tested,
+            }
+            for gpu in report.gpus
+        ],
+    }
+
+
+def _model_payload(server) -> dict:
+    from lmds.fleet import autostart_status, bundle_profile, feature_summary, profile_context
+
+    profile = bundle_profile(server.controller)
+    return {
+        "slug": server.slug,
+        "model_id": server.model_id or server.model,
+        "engine": server.engine,
+        "mode": server.mode,
+        "port": server.port,
+        "running": server.running,
+        "healthy": server.healthy,
+        "registered": server.registered,
+        "external": server.external,
+        "controller_exists": server.controller_exists,
+        "endpoint": server.endpoint,
+        "context": profile_context(profile),
+        "features": feature_summary(profile),
+        "autostart": autostart_status(server.slug),
+        "topology": (profile or {}).get("topology"),
+        "started_at": server.started_at,
+    }
+
+
+def create_app(token: str = "") -> FastAPI:
+    app = FastAPI(title="LMDS", docs_url=None, redoc_url=None, openapi_url=None)
+
+    def require_token(request: Request) -> None:
+        if not token:
+            return
+        supplied = request.headers.get("x-lmds-token") or request.query_params.get("token", "")
+        # compare_digest กัน timing attack — เทียบสตริงตรง ๆ รั่วความยาวและ prefix
+        if not secrets.compare_digest(supplied, token):
+            raise HTTPException(status_code=401, detail="token ไม่ถูกต้อง")
+
+    guarded = [Depends(require_token)]
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> HTMLResponse:
+        return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
+
+    @app.get("/api/version", dependencies=guarded)
+    def version() -> dict:
+        return {"version": lmds.__version__}
+
+    @app.get("/api/host", dependencies=guarded)
+    def host() -> dict:
+        return _host_payload()
+
+    @app.get("/api/models", dependencies=guarded)
+    def models() -> dict:
+        from lmds.fleet import discover
+
+        return {"models": [_model_payload(s) for s in discover()]}
+
+    @app.get("/api/models/{slug}/doctor", dependencies=guarded)
+    def doctor(slug: str) -> dict:
+        from lmds.doctor import diagnose
+
+        result = diagnose(slug)
+        return {
+            "slug": result.slug,
+            "healthy": result.healthy,
+            "findings": [
+                {"name": f.name, "status": f.status.value, "detail": f.detail, "fix": f.fix}
+                for f in result.findings
+            ],
+        }
+
+    @app.get("/api/models/{slug}/logs", dependencies=guarded)
+    def logs(slug: str, lines: int = Query(200, ge=1, le=2000)) -> dict:
+        from lmds.fleet import FleetError, find, logs_text
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        try:
+            return {"slug": slug, "text": logs_text(server, lines)}
+        except FleetError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    def _action(slug: str, verb: str) -> JSONResponse:
+        from lmds.fleet import FleetError, find, restart_server, start_server, stop_server
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        runner = {"start": start_server, "stop": stop_server, "restart": restart_server}[verb]
+        try:
+            outcome = runner(server)
+        except FleetError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # start คืน exit code (int) ส่วน stop/restart คืนวิธีที่ใช้ (str)
+        ok = outcome == 0 if isinstance(outcome, int) else True
+        return JSONResponse(
+            {"slug": slug, "action": verb, "ok": ok, "outcome": outcome},
+            status_code=200 if ok else 500,
+        )
+
+    @app.post("/api/models/{slug}/start", dependencies=guarded)
+    def start(slug: str) -> JSONResponse:
+        return _action(slug, "start")
+
+    @app.post("/api/models/{slug}/stop", dependencies=guarded)
+    def stop(slug: str) -> JSONResponse:
+        return _action(slug, "stop")
+
+    @app.post("/api/models/{slug}/restart", dependencies=guarded)
+    def restart(slug: str) -> JSONResponse:
+        return _action(slug, "restart")
+
+    return app
+
+
+def serve(host: str = "127.0.0.1", port: int = 8600, token: Optional[str] = None) -> None:
+    import uvicorn
+
+    uvicorn.run(create_app(token or ""), host=host, port=port, log_level="warning")

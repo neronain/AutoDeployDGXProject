@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LMDS</title>
+<style>
+/* ไม่มี CDN ทั้งหน้า — เครื่องลูกค้าอาจอยู่หลัง proxy หรือ air-gapped */
+:root {
+  --bg: #f7f7f5; --card: #fff; --line: #e3e2dd; --line2: #cfceC8;
+  --fg: #23231f; --fg2: #61605a; --fg3: #8b8a83;
+  --ok: #3b6d11; --warn: #854f0b; --bad: #a32d2d; --accent: #185fa5;
+  --ok-bg: #eaf3de; --warn-bg: #faeeda; --bad-bg: #fcebeb; --accent-bg: #e6f1fb;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14140f; --card: #1d1d18; --line: #33322c; --line2: #4a4941;
+    --fg: #ecebe4; --fg2: #a8a79f; --fg3: #7a7972;
+    --ok: #97c459; --warn: #efa027; --bad: #f09595; --accent: #85b7eb;
+    --ok-bg: #27300a; --warn-bg: #3a2a06; --bad-bg: #3a1616; --accent-bg: #10243a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px 20px 48px; background: var(--bg); color: var(--fg);
+  font: 400 15px/1.6 system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; }
+.wrap { max-width: 940px; margin: 0 auto; }
+h1 { font: 500 15px/1 var(--mono); letter-spacing: .08em; margin: 0; }
+.row { display: flex; align-items: center; gap: 12px; }
+.between { justify-content: space-between; }
+.muted { color: var(--fg2); font-size: 13px; }
+.dim { color: var(--fg3); font-size: 12px; }
+.mono { font-family: var(--mono); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 22px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.stat b { display: block; font-weight: 500; font-size: 16px; margin-top: 3px; }
+.bar { height: 20px; display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-top: 8px; }
+.bar i { display: flex; align-items: center; justify-content: center; font-size: 11px; font-style: normal; }
+.seg-a { background: #7f77dd; color: #eeedfe; }
+.seg-b { background: #5dcaa5; color: #04342c; }
+.seg-free { background: transparent; }
+.item { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.item:first-child { border-top: 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--line2); }
+.dot.on { background: var(--ok); }
+.dot.load { background: var(--warn); }
+.grow { flex: 1; min-width: 200px; }
+.name { font-weight: 500; font-size: 15px; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--accent-bg); color: var(--accent); }
+.tag.bad { background: var(--bad-bg); color: var(--bad); }
+.tag.ok { background: var(--ok-bg); color: var(--ok); }
+.tag.warn { background: var(--warn-bg); color: var(--warn); }
+button { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--fg); border: 1px solid var(--line2); }
+button:hover:not(:disabled) { background: var(--bg); }
+button:disabled { opacity: .45; cursor: default; }
+button.busy { opacity: .5; }
+pre { margin: 0; padding: 12px 16px; background: var(--bg); border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap;
+  word-break: break-word; max-height: 340px; overflow: auto; border-radius: 0 0 11px 11px; }
+.find { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; font-size: 13px; }
+.find span:first-child { width: 16px; flex: none; }
+.find b { width: 104px; flex: none; font-weight: 400; color: var(--fg2); }
+code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 3px 8px; border-radius: 6px; }
+.empty { padding: 40px 16px; text-align: center; color: var(--fg2); }
+.sec { margin: 26px 0 10px; font-size: 13px; color: var(--fg3); letter-spacing: .05em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row between">
+    <div class="row">
+      <h1>LMDS</h1>
+      <span class="muted" id="host">…</span>
+    </div>
+    <span class="dim" id="ver"></span>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="sec">โมเดลในเครื่องนี้</div>
+  <div class="card" id="fleet"><div class="empty">กำลังโหลด…</div></div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+const api = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), ...(token ? { "x-lmds-token": token } : {}) } });
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const gb = v => v == null ? "—" : Math.round(v) + " GB";
+const open = new Set();
+let busy = null;
+
+function statCard(label, value, sub) {
+  return `<div class="stat"><span class="muted">${esc(label)}</span><b>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
+}
+
+function renderHost(h) {
+  document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
+  const gpu = h.gpus[0];
+  const unified = h.memory_model === "unified";
+  const cards = [];
+
+  if (gpu) {
+    cards.push(statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
+      `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`));
+  } else {
+    cards.push(statCard("GPU", "ไม่พบ", "ตรวจ nvidia-smi"));
+  }
+
+  // unified (Spark) รวม CPU+GPU ก้อนเดียว จึงต้องอธิบายต่างจาก VRAM แยกของ RTX
+  const used = h.ram_used_gb, total = h.ram_total_gb;
+  const pct = used != null && total ? Math.round(used / total * 100) : 0;
+  cards.push(`<div class="stat"><span class="muted">${unified ? "Unified memory" : "RAM"}</span>
+    <b>${used != null ? Math.round(used) : "—"} / ${gb(total)}</b>
+    <div class="bar"><i class="seg-a" style="width:${pct}%"></i><i class="seg-free" style="width:${100 - pct}%"></i></div>
+    ${unified ? '<span class="dim">CPU + GPU ใช้ร่วมกัน</span>' : ""}</div>`);
+
+  cards.push(statCard("ดิสก์", gb(h.disk_free_gb), "ว่าง"));
+  const ready = h.docker && h.toolkit;
+  cards.push(`<div class="stat"><span class="muted">Docker + GPU</span>
+    <b style="color:${ready ? "var(--ok)" : "var(--bad)"}">${ready ? "พร้อม" : h.docker ? "ไม่เห็น GPU" : "ไม่พร้อม"}</b>
+    <span class="dim">${esc(h.profile)} · ${esc(h.arch)}</span></div>`);
+
+  document.getElementById("stats").innerHTML = cards.join("");
+}
+
+// อัปเดตเฉพาะส่วนที่เปลี่ยน — ห้ามสร้าง DOM ใหม่ทุกรอบ ไม่งั้น panel ที่เปิดอยู่กระพริบ
+// และปุ่มที่ผู้ใช้กำลังจะกดหายไปใต้เมาส์
+const rows = new Map();
+
+function rowMarkup(m) {
+  const tags = [];
+  if (m.topology === "stacked") tags.push(`<span class="tag">stacked</span>`);
+  if (m.features && m.features.includes("image")) tags.push(`<span class="tag">image</span>`);
+  if (m.external) tags.push(`<span class="tag warn">ไม่ได้มาจาก lmds</span>`);
+  if (!m.controller_exists) tags.push(`<span class="tag bad">controller หาย</span>`);
+  return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
+    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>`;
+}
+
+function actionsMarkup(m) {
+  return m.running
+    ? `<button data-act="stop" data-slug="${esc(m.slug)}">stop</button>
+       <button data-act="restart" data-slug="${esc(m.slug)}">restart</button>`
+    : `<button data-act="start" data-slug="${esc(m.slug)}" ${m.controller_exists ? "" : "disabled"}>start</button>`;
+}
+
+function renderFleet(models) {
+  const el = document.getElementById("fleet");
+  if (!models.length) {
+    rows.clear();
+    el.innerHTML = `<div class="empty">ยังไม่มีโมเดล — deploy ด้วย <code>lmds deploy &lt;model-url&gt;</code></div>`;
+    return;
+  }
+  if (!rows.size) el.innerHTML = "";
+
+  const seen = new Set();
+  for (const m of models) {
+    seen.add(m.slug);
+    let row = rows.get(m.slug);
+    if (!row) {
+      const block = document.createElement("div");
+      block.innerHTML = `<div class="item">
+          <span class="dot"></span>
+          <div class="grow"></div>
+          <span class="mono muted port"></span>
+          <span class="acts"></span>
+          <button data-act="doctor" data-slug="${esc(m.slug)}">doctor</button>
+          <button data-act="logs" data-slug="${esc(m.slug)}">logs</button>
+        </div>
+        <div id="panel-${esc(m.slug)}"></div>`;
+      el.appendChild(block);
+      row = {
+        block,
+        dot: block.querySelector(".dot"),
+        info: block.querySelector(".grow"),
+        port: block.querySelector(".port"),
+        acts: block.querySelector(".acts"),
+        state: null,
+      };
+      rows.set(m.slug, row);
+    }
+    row.dot.className = "dot " + (m.running ? (m.healthy ? "on" : "load") : "");
+    row.info.innerHTML = rowMarkup(m);
+    row.port.textContent = ":" + (m.port || "—");
+    const state = `${m.running}|${m.controller_exists}`;
+    if (row.state !== state) { row.acts.innerHTML = actionsMarkup(m); row.state = state; }
+  }
+  for (const [slug, row] of rows) {
+    if (!seen.has(slug)) { row.block.remove(); rows.delete(slug); }
+  }
+}
+
+function findRow(f) {
+  const icon = { ok: `<span style="color:var(--ok)">✓</span>`, warn: `<span style="color:var(--warn)">!</span>`, fail: `<span style="color:var(--bad)">✕</span>` }[f.status];
+  return `<div class="find">${icon}<b>${esc(f.name)}</b><span>${esc(f.detail)}</span></div>`;
+}
+
+async function load(slug, kind) {
+  const panel = document.getElementById("panel-" + slug);
+  if (!panel) return;
+  if (kind === "logs") {
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/logs?lines=300`);
+    const d = await r.json();
+    panel.innerHTML = `<pre>${esc(r.ok ? (d.text || "(ว่าง)") : d.detail)}</pre>`;
+    return;
+  }
+  const r = await api(`/api/models/${encodeURIComponent(slug)}/doctor`);
+  const d = await r.json();
+  const fixes = d.findings.filter(f => f.fix && f.status !== "ok");
+  panel.innerHTML = `<div style="padding:12px 16px;border-top:1px solid var(--line)">
+    ${d.findings.map(findRow).join("")}
+    ${fixes.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+      ${fixes.map(f => `<div class="find"><b>${esc(f.name)}</b><code>${esc(f.fix)}</code></div>`).join("")}
+    </div>` : `<div class="dim" style="margin-top:8px">ไม่พบปัญหาที่บล็อกการรัน</div>`}
+  </div>`;
+}
+
+document.addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn || busy) return;
+  const { act, slug } = btn.dataset;
+
+  if (act === "doctor" || act === "logs") {
+    const key = slug + " " + act;
+    const other = slug + " " + (act === "doctor" ? "logs" : "doctor");
+    open.delete(other);
+    if (open.has(key)) { open.delete(key); document.getElementById("panel-" + slug).innerHTML = ""; }
+    else { open.add(key); await load(slug, act); }
+    return;
+  }
+
+  // start/stop/restart ใช้เวลานาน (โหลดโมเดลเป็นนาที) — ล็อกปุ่มไว้ อย่าให้กดซ้ำ
+  busy = slug;
+  btn.classList.add("busy");
+  btn.textContent = { start: "กำลังเปิด…", stop: "กำลังหยุด…", restart: "กำลัง restart…" }[act];
+  try {
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/${act}`, { method: "POST" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(`${act} ${slug} ไม่สำเร็จ\n\n${d.detail || "ดู log เพื่อดูสาเหตุ"}`);
+    }
+  } finally {
+    busy = null;
+    refresh();
+  }
+});
+
+async function refresh() {
+  try {
+    const [h, m] = await Promise.all([api("/api/host"), api("/api/models")]);
+    if (h.status === 401) { document.body.innerHTML = '<p style="text-align:center;margin-top:60px">ต้องมี token — เปิดด้วยลิงก์ที่ lmds web พิมพ์ให้</p>'; return; }
+    renderHost(await h.json());
+    renderFleet((await m.json()).models);
+  } catch (err) {
+    document.getElementById("fleet").innerHTML = `<div class="empty">ต่อ LMDS ไม่ได้ — เซิร์ฟเวอร์ยังรันอยู่ไหม?</div>`;
+  }
+}
+
+api("/api/version").then(r => r.json()).then(d => document.getElementById("ver").textContent = "v" + d.version).catch(() => {});
+refresh();
+setInterval(() => { if (!busy) refresh(); }, 5000);
+</script>
+</body>
+</html>

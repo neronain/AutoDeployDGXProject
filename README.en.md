@@ -63,6 +63,17 @@ lmds remove <name>       # delete everything (--keep-weights to keep the downloa
 `lmds ps` also adopts **containers you started yourself** (vLLM / llama.cpp / Ollama / TGI) — they can
 be stopped, restarted, tailed and enabled too. Stopping those uses `docker stop`, never `docker rm -f`.
 
+## Web UI (optional)
+
+```bash
+lmds web                              # http://127.0.0.1:8600 — this machine only
+lmds web --bind 0.0.0.0               # reachable on the LAN; a token is generated for you
+```
+
+One page: host status, every model, start/stop/restart, doctor and logs. It can start and stop
+models, so it binds to localhost by default and requires a token whenever you expose it. The page
+loads nothing from the internet — it works behind a proxy or fully air-gapped.
+
 Tab completion covers commands, bundle names and target presets: `lmds --install-completion`.
 
 ## Requirements

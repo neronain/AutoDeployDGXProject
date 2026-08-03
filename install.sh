@@ -79,6 +79,13 @@ else
   echo "ไม่ได้ติดตั้ง keyring — key จะเก็บที่ ~/.config/lmds/credentials (สิทธิ์ 0600)"
 fi
 
+# ส่วนเว็บ (lmds web) เป็น optional extra — ลงให้ถ้าลงได้ ไม่ได้ก็ไม่กระทบ CLI
+if "${INSTALL_DIR}/venv/bin/pip" install --quiet 'fastapi>=0.110' 'uvicorn>=0.27' 2>/dev/null; then
+  echo "ติดตั้งหน้าเว็บด้วย — เปิดด้วย: lmds web"
+else
+  echo "ข้ามหน้าเว็บ (ติดตั้ง fastapi/uvicorn ไม่สำเร็จ) — CLI ใช้ได้ตามปกติ"
+fi
+
 ln -sf "${INSTALL_DIR}/venv/bin/lmds" "${BIN_DIR}/lmds"
 LMDS="${BIN_DIR}/lmds"
 

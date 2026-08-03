@@ -27,6 +27,19 @@
   plugin ซึ่งไม่ได้อยู่ใน repo ของโมเดล · คุมด้วย host allowlist (HTTPS จาก huggingface.co /
   raw.githubusercontent.com / github.com / gitlab.com) + **ผู้ใช้ต้องอนุมัติรายตัวเสมอ**
   · controller ได้คำสั่ง `prepare-runtime` ไปดึงไฟล์ + ตรวจ SHA-256 แล้ว mount แบบ read-only
+- **`lmds web` — หน้าเว็บคุมโมเดล (เฟส 2 เริ่มแล้ว)** · หน้าเดียว: สถานะเครื่อง (unified memory
+  ของ Spark แสดงคนละแบบกับ VRAM แยกของ RTX), รายการโมเดลพร้อมสถานะ, start/stop/restart,
+  doctor และ logs แบบกางในแถวเดียวกัน
+  - **ไม่ดึงอะไรจากอินเทอร์เน็ตเลย** — ไม่มี CDN/ฟอนต์/ไอคอนภายนอก ใช้ได้บนเครื่องหลัง proxy
+    หรือ air-gapped · เทสบังคับข้อนี้ไว้แล้ว
+  - **ความปลอดภัยตั้งแต่แรก** (PRD §9): หน้านี้สั่ง start/stop ได้ จึง bind `127.0.0.1` เป็นค่าเริ่มต้น
+    · `--bind 0.0.0.0` เมื่อไม่ได้ตั้ง `--token` จะ**สุ่ม token ให้เอง**แล้วพิมพ์ลิงก์พร้อม token มาให้
+    · เทียบ token ด้วย `compare_digest` และคุมทุกเส้นทาง API ไม่ใช่แค่บางอัน
+  - ชั้นเว็บไม่มี logic ของตัวเอง เรียก core เดิมทั้งหมด — เทสเทียบผล doctor ของเว็บกับ CLI ว่าตรงกัน
+  - อัปเดตหน้าแบบ**เฉพาะส่วนที่เปลี่ยน** ไม่ re-render ทั้ง DOM ทุกรอบ (ไม่งั้น panel ที่เปิดอยู่กระพริบ
+    และปุ่มหายไปใต้เมาส์ระหว่างที่ผู้ใช้กำลังจะกด)
+  - ติดตั้ง: `install.sh` ลง `fastapi`/`uvicorn` ให้เอง (ล้มเหลวก็ไม่กระทบ CLI) · extra ชื่อ `web`
+- **`lmds fleet.logs_text()`** — คืน log เป็นข้อความแทนพิมพ์ออกจอ (`logs_server` capture ไม่ได้)
 - **`lmds doctor <slug>`** — ตรวจว่าทำไมโมเดลยัง download/start ไม่ผ่าน แล้วบอก**คำสั่งแก้ตรง ๆ**
   · ทุกข้อที่ตรวจมาจาก failure ที่เจอจริงตอน hardware validation 2026-08-03 ไม่ได้เดาว่าน่าจะพังตรงไหน:
   - **hf-token** — profile บอก gated แต่ไม่มี `HF_TOKEN` ใน env (เคสจริง: ผู้ใช้พิมพ์ token ตอน deploy

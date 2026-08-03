@@ -1055,6 +1055,41 @@ def remove(
 
 
 @app.command()
+def web(
+    port: int = typer.Option(8600, "--port", help="พอร์ตของหน้าเว็บ"),
+    bind: str = typer.Option("127.0.0.1", "--bind", help="127.0.0.1 = เครื่องนี้เท่านั้น · 0.0.0.0 = ทั้งวง network"),
+    token: str = typer.Option("", "--token", help="บังคับ token (ว่าง = สุ่มให้เมื่อ bind ออก network)"),
+) -> None:
+    """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
+    try:
+        from lmds.web import serve
+    except ImportError:
+        err_console.print("[red]ยังไม่ได้ติดตั้งส่วนเว็บ[/red] — ติดตั้ง: "
+                          "[bold]~/.local/share/lmds/venv/bin/pip install 'fastapi>=0.110' 'uvicorn>=0.27'[/bold]")
+        raise typer.Exit(code=1)
+
+    # หน้านี้สั่ง start/stop โมเดลได้ — เปิดออก network โดยไม่มี token = ใครในวงก็สั่งได้
+    # จึงสุ่ม token ให้เองแทนที่จะปล่อยโล่ง (ผู้ใช้ตั้งเองได้ด้วย --token)
+    exposed = bind not in {"127.0.0.1", "localhost", "::1"}
+    if exposed and not token:
+        import secrets as _secrets
+
+        token = _secrets.token_urlsafe(24)
+        err_console.print("[yellow]bind ออก network — สุ่ม token ให้แล้ว (ใช้ --token ตั้งเองได้)[/yellow]")
+
+    shown_host = bind if exposed else "127.0.0.1"
+    url = f"http://{shown_host}:{port}/" + (f"?token={token}" if token else "")
+    console.print(f"เปิดที่: [bold]{url}[/bold]")
+    if exposed:
+        console.print("[dim]ทุกคนที่เข้าถึงเครื่องนี้ในวง network เปิดลิงก์นี้ได้ — อย่าแชร์ token ออกนอกทีม[/dim]")
+    console.print("[dim]หยุดด้วย Ctrl-C[/dim]")
+    try:
+        serve(host=bind, port=port, token=token)
+    except KeyboardInterrupt:
+        console.print("ปิดหน้าเว็บแล้ว")
+
+
+@app.command()
 def doctor(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
 ) -> None:
