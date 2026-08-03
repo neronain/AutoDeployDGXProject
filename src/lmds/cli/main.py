@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import os
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -1063,8 +1065,24 @@ def web(
     port: int = typer.Option(8600, "--port", help="พอร์ตของหน้าเว็บ"),
     bind: str = typer.Option("127.0.0.1", "--bind", help="127.0.0.1 = เครื่องนี้เท่านั้น · 0.0.0.0 = ทั้งวง network"),
     token: str = typer.Option("", "--token", help="บังคับ token (ว่าง = สุ่มให้เมื่อ bind ออก network)"),
+    background: bool = typer.Option(False, "--background", "-b", help="รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้"),
+    stop_web: bool = typer.Option(False, "--stop", help="หยุดตัวที่รันเบื้องหลังอยู่"),
 ) -> None:
     """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
+    from lmds.fleet import run_root
+
+    pid_file = run_root() / "web.pid"
+    if stop_web:
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            os.kill(pid, 15)
+            pid_file.unlink(missing_ok=True)
+            console.print(f"หยุดหน้าเว็บแล้ว (PID {pid})")
+        except (OSError, ValueError):
+            err_console.print("ไม่พบหน้าเว็บที่รันเบื้องหลังอยู่")
+            raise typer.Exit(code=1)
+        return
+
     try:
         from lmds.web import serve
     except ImportError:
@@ -1095,7 +1113,25 @@ def web(
             console.print(f"  [bold]http://{h}:{port}/{query}[/bold]")
         console.print("[dim]ทุกคนที่เข้าถึงเครื่องนี้ในวง network เปิดลิงก์นี้ได้ — อย่าแชร์ token ออกนอกทีม[/dim]")
         console.print("[dim]เครื่องที่มีหลายวง (เช่น Tailscale/VPN) ใช้ IP ของวงนั้นแทนได้ พอร์ตและ token เดียวกัน[/dim]")
-    console.print("[dim]หยุดด้วย Ctrl-C[/dim]")
+    if background:
+        # หน้าเว็บกับ CLI ต้องใช้พร้อมกันได้ — รันค้าง terminal ไว้ทำให้เลือกได้อย่างเดียว
+        import subprocess
+        import sys
+
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file = pid_file.parent / "web.log"
+        with open(log_file, "ab") as log:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "lmds.cli.main", "web",
+                 "--port", str(port), "--bind", bind, *(["--token", token] if token else [])],
+                stdout=log, stderr=log, start_new_session=True,
+            )
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        console.print(f"[dim]รันเบื้องหลัง (PID {proc.pid}) · log: {log_file}[/dim]")
+        console.print("[dim]หยุดด้วย: lmds web --stop[/dim]")
+        return
+
+    console.print("[dim]หยุดด้วย Ctrl-C · หรือรันเบื้องหลังด้วย: lmds web --background[/dim]")
     try:
         serve(host=bind, port=port, token=token)
     except KeyboardInterrupt:

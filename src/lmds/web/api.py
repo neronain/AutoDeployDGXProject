@@ -158,17 +158,30 @@ def create_app(token: str = "") -> FastAPI:
         except FleetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    def _action(slug: str, verb: str) -> JSONResponse:
+    def _action(slug: str, verb: str, options: dict | None = None) -> JSONResponse:
+        import os
+
         from lmds.fleet import FleetError, find, restart_server, start_server, stop_server
+
+        from . import jobs
 
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         runner = {"start": start_server, "stop": stop_server, "restart": restart_server}[verb]
+        # ตัวเลือก port/API key/context ส่งผ่าน env เหมือนที่ผู้ใช้พิมพ์หน้าคำสั่งบน CLI
+        saved = {k: os.environ.get(k) for k in jobs.controller_env(options)}
+        os.environ.update(jobs.controller_env(options))
         try:
             outcome = runner(server)
         except FleetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
         # start คืน exit code (int) ส่วน stop/restart คืนวิธีที่ใช้ (str)
         ok = outcome == 0 if isinstance(outcome, int) else True
         return JSONResponse(
@@ -177,16 +190,16 @@ def create_app(token: str = "") -> FastAPI:
         )
 
     @app.post("/api/models/{slug}/start", dependencies=guarded)
-    def start(slug: str) -> JSONResponse:
-        return _action(slug, "start")
+    def start(slug: str, body: dict | None = None) -> JSONResponse:
+        return _action(slug, "start", body)
 
     @app.post("/api/models/{slug}/stop", dependencies=guarded)
-    def stop(slug: str) -> JSONResponse:
-        return _action(slug, "stop")
+    def stop(slug: str, body: dict | None = None) -> JSONResponse:
+        return _action(slug, "stop", body)
 
     @app.post("/api/models/{slug}/restart", dependencies=guarded)
-    def restart(slug: str) -> JSONResponse:
-        return _action(slug, "restart")
+    def restart(slug: str, body: dict | None = None) -> JSONResponse:
+        return _action(slug, "restart", body)
 
     # ── deploy wizard ──────────────────────────────────────────────────────
     @app.get("/api/targets", dependencies=guarded)
@@ -235,7 +248,7 @@ def create_app(token: str = "") -> FastAPI:
 
     # ── งานที่ใช้เวลานาน: download / start / verify ────────────────────────
     @app.post("/api/models/{slug}/run/{command}", dependencies=guarded)
-    def run_command(slug: str, command: str) -> dict:
+    def run_command(slug: str, command: str, body: dict | None = None) -> dict:
         from lmds.fleet import find
 
         from . import jobs
@@ -244,7 +257,7 @@ def create_app(token: str = "") -> FastAPI:
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         try:
-            return jobs.start(slug, command, server.controller).payload()
+            return jobs.start(slug, command, server.controller, body).payload()
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

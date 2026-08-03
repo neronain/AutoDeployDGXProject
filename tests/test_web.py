@@ -19,6 +19,21 @@ from lmds.web import create_app  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def fresh_jobs():
+    """งานค้างจากเทสก่อนทำให้เทสถัดไปได้ 409 — ล้างทะเบียนงานทุกครั้ง"""
+    from lmds.web import jobs
+
+    jobs._JOBS.clear()
+    jobs._ACTIVE.clear()
+    yield
+    for job in jobs._JOBS.values():
+        if job.process and job.running:
+            job.process.kill()
+    jobs._JOBS.clear()
+    jobs._ACTIVE.clear()
+
+
+@pytest.fixture(autouse=True)
 def no_host_scan(monkeypatch):
     monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
     monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
@@ -361,3 +376,61 @@ def test_job_routes_are_token_guarded(runnable):
     client = TestClient(create_app(token="s3cret"))
     assert client.post(f"/api/models/{runnable}/run/download").status_code == 401
     assert client.get("/api/jobs/whatever").status_code == 401
+
+
+def test_download_always_verifies_afterwards(runnable):
+    """"กด download แล้วชัวร์ไหมว่าไฟล์มาครบ" — CLI ให้รัน verify-files ต่อเสมอ
+    เว็บจึงต้องต่อให้ ไม่งั้นผู้ใช้ไม่มีทางรู้
+    """
+    client = TestClient(create_app())
+    job = client.post(f"/api/models/{runnable}/run/download").json()
+    assert job["steps"] == ["download", "verify-files"]
+    done = _wait(client, job["id"])
+    assert done["exit_code"] == 0
+    assert "cmd verify-files" in done["output"]
+
+
+def test_chain_stops_when_the_first_step_fails(runnable, monkeypatch):
+    """download ล้ม = ไม่ต้อง verify ต่อ (verify ไฟล์ที่โหลดไม่จบไม่มีประโยชน์)"""
+    from lmds.web import jobs
+
+    monkeypatch.setitem(jobs.CHAINS, "download", ["fail", "verify-files"])
+    monkeypatch.setattr(jobs, "ALLOWED", jobs.ALLOWED | {"fail"})
+    client = TestClient(create_app())
+    done = _wait(client, client.post(f"/api/models/{runnable}/run/download").json()["id"])
+    assert done["exit_code"] == 3
+    assert "cmd verify-files" not in done["output"]
+
+
+def test_options_reach_the_controller_as_env(runnable, tmp_path):
+    """เทียบเท่า `API_KEY=… ./x.sh start --port … --context …` ของ CLI"""
+    from lmds.web import jobs
+
+    env = jobs.controller_env({"port": 8001, "api_key": "s3cret", "context": 4096, "bind": "127.0.0.1"})
+    assert env == {"API_PORT": "8001", "API_HOST": "127.0.0.1",
+                   "CTX_SIZE": "4096", "MAX_MODEL_LEN": "4096", "API_KEY": "s3cret"}
+
+
+def test_empty_options_change_nothing(runnable):
+    """ไม่ได้ตั้งอะไร = ใช้ค่า default ของ controller ไม่ใช่ยัดค่าว่างทับ"""
+    from lmds.web import jobs
+
+    assert jobs.controller_env({}) == {}
+    assert jobs.controller_env({"port": None, "api_key": "", "context": 0}) == {}
+
+
+def test_start_passes_options_through(runnable, monkeypatch):
+    import os
+
+    seen = {}
+
+    def fake_start(info):
+        seen.update({k: os.environ.get(k) for k in ("API_PORT", "API_KEY")})
+        return 0
+
+    monkeypatch.setattr("lmds.fleet.start_server", fake_start)
+    TestClient(create_app()).post(f"/api/models/{runnable}/start",
+                                  json={"port": 8123, "api_key": "abc"})
+    assert seen == {"API_PORT": "8123", "API_KEY": "abc"}
+    # ต้องคืน environment ให้เหมือนเดิม ไม่ทิ้งค่าไว้กระทบคำสั่งถัดไป
+    assert os.environ.get("API_PORT") is None

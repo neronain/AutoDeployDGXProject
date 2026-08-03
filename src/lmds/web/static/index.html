@@ -142,6 +142,7 @@ function renderHost(h) {
 // อัปเดตเฉพาะส่วนที่เปลี่ยน — ห้ามสร้าง DOM ใหม่ทุกรอบ ไม่งั้น panel ที่เปิดอยู่กระพริบ
 // และปุ่มที่ผู้ใช้กำลังจะกดหายไปใต้เมาส์
 const rows = new Map();
+const models_by_slug = new Map();
 
 function rowMarkup(m) {
   const tags = [];
@@ -167,6 +168,36 @@ function actionsMarkup(m) {
     : `<button data-act="job:download" data-slug="${esc(m.slug)}">download</button>`;
 }
 
+// ตัวเลือกต่อโมเดล — เทียบเท่า --port / API_KEY / --context ของ CLI
+// เก็บใน localStorage ของเบราว์เซอร์ ไม่ส่งไปเก็บบนเครื่อง (API key เป็นความลับของผู้ใช้)
+function opts(slug) {
+  try { return JSON.parse(localStorage.getItem("lmds:" + slug) || "{}"); } catch { return {}; }
+}
+function setOpts(slug, o) { localStorage.setItem("lmds:" + slug, JSON.stringify(o)); }
+
+function optionsMarkup(m) {
+  const o = opts(m.slug);
+  return `<div class="pad" style="border-top:1px solid var(--line)">
+    <div class="field">
+      <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
+      <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px">
+      <label>bind</label>
+      <select class="o-bind" style="flex:none">
+        <option value="0.0.0.0"${(o.bind || "0.0.0.0") === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (ทั้งวง)</option>
+        <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (เครื่องนี้)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>API key</label>
+      <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="ว่าง = ไม่ต้องยืนยันตัวตน">
+      <button data-act="genkey" data-slug="${esc(m.slug)}">สุ่มให้</button>
+      <button data-act="saveopts" data-slug="${esc(m.slug)}">บันทึก</button>
+    </div>
+    <div class="dim">ค่าเหล่านี้ถูกส่งให้ controller ตอน start/restart — เทียบเท่า
+      <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
+  </div>`;
+}
+
 function renderFleet(models) {
   const el = document.getElementById("fleet");
   if (!models.length) {
@@ -179,6 +210,7 @@ function renderFleet(models) {
   const seen = new Set();
   for (const m of models) {
     seen.add(m.slug);
+    models_by_slug.set(m.slug, m);
     let row = rows.get(m.slug);
     if (!row) {
       const block = document.createElement("div");
@@ -187,6 +219,7 @@ function renderFleet(models) {
           <div class="grow"></div>
           <span class="mono muted port"></span>
           <span class="acts"></span>
+          <button data-act="opts" data-slug="${esc(m.slug)}">ตั้งค่า</button>
           <button data-act="doctor" data-slug="${esc(m.slug)}">doctor</button>
           <button data-act="logs" data-slug="${esc(m.slug)}">logs</button>
         </div>
@@ -206,7 +239,8 @@ function renderFleet(models) {
     if (m.job && !watching.has(m.slug)) followJob(m.slug, m.job.id);
     row.info.innerHTML = rowMarkup(m);
     row.port.textContent = ":" + (m.port || "—");
-    const state = `${m.running}|${m.controller_exists}`;
+    // ต้องนับทุกอย่างที่เปลี่ยนหน้าตาปุ่ม ไม่งั้นโหลดเสร็จแล้วปุ่มไม่เปลี่ยนจนกว่าจะ F5
+    const state = `${m.running}|${m.controller_exists}|${m.downloaded}|${m.job ? m.job.command : ""}`;
     if (row.state !== state) { row.acts.innerHTML = actionsMarkup(m); row.state = state; }
   }
   for (const [slug, row] of rows) {
@@ -269,10 +303,36 @@ document.addEventListener("click", async e => {
   if (!btn || busy) return;
   const { act, slug } = btn.dataset;
 
+  if (act === "opts") {
+    const key = slug + " opts";
+    ["doctor", "logs"].forEach(k => open.delete(slug + " " + k));
+    const panel = document.getElementById("panel-" + slug);
+    if (open.has(key)) { open.delete(key); panel.innerHTML = ""; }
+    else { open.add(key); panel.innerHTML = optionsMarkup(models_by_slug.get(slug) || { slug }); }
+    return;
+  }
+  if (act === "genkey") {
+    const inp = document.querySelector(`#panel-${CSS.escape(slug)} .o-key`);
+    if (inp) { inp.type = "text"; inp.value = [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, "0")).join(""); }
+    return;
+  }
+  if (act === "saveopts") {
+    const panel = document.getElementById("panel-" + slug);
+    const val = c => (panel.querySelector(c) || {}).value || "";
+    setOpts(slug, { port: +val(".o-port") || null, context: +val(".o-ctx") || null,
+                    bind: val(".o-bind"), api_key: val(".o-key") });
+    btn.textContent = "บันทึกแล้ว";
+    setTimeout(() => { btn.textContent = "บันทึก"; }, 1500);
+    return;
+  }
+
   if (act.startsWith("job:")) {
     const command = act.slice(4);
     btn.disabled = true;
-    const r = await api(`/api/models/${encodeURIComponent(slug)}/run/${command}`, { method: "POST" });
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/run/${command}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(opts(slug)),
+    });
     const d = await r.json();
     if (!r.ok) { alert(d.detail || "เริ่มงานไม่สำเร็จ"); btn.disabled = false; return; }
     followJob(slug, d.id);
@@ -293,7 +353,10 @@ document.addEventListener("click", async e => {
   btn.classList.add("busy");
   btn.textContent = { start: "กำลังเปิด…", stop: "กำลังหยุด…", restart: "กำลัง restart…" }[act];
   try {
-    const r = await api(`/api/models/${encodeURIComponent(slug)}/${act}`, { method: "POST" });
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/${act}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(opts(slug)),
+    });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       alert(`${act} ${slug} ไม่สำเร็จ\n\n${d.detail || "ดู log เพื่อดูสาเหตุ"}`);

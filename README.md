@@ -100,9 +100,19 @@ lmds web                                  # เปิดที่ http://127.0.0
 lmds web --bind 0.0.0.0 --port 8600       # ให้ทั้งวง network เข้าได้ — สุ่ม token ให้อัตโนมัติ
 ```
 
+```bash
+lmds web --background                     # รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้ทันที
+lmds web --stop                           # หยุดตัวที่รันเบื้องหลัง
+```
+
 > 🔒 หน้านี้**สั่ง start/stop โมเดลได้** จึง bind `127.0.0.1` เป็นค่าเริ่มต้น · ถ้าเปิดออก network
 > ระบบจะสุ่ม token ให้เองแล้วพิมพ์ลิงก์พร้อม token มาให้ (ตั้งเองด้วย `--token` ได้)
 > · หน้าเว็บไม่ดึงอะไรจากอินเทอร์เน็ตเลย ใช้ได้บนเครื่องหลัง proxy/air-gapped
+
+**CLI ยังเป็นตัวหลัก** — หน้าเว็บทำได้: ดูสถานะ, deploy, download (+verify อัตโนมัติ), start/stop/restart,
+ตั้ง port/context/API key/bind ต่อโมเดล, doctor, logs · **ยังไม่มีบนเว็บ**: `repair`, `remove`,
+`enable`/`disable` (autostart), stacked (`sync-worker`/`verify-worker`), `test-text`/`bench`
+— ใช้ CLI สำหรับงานเหล่านี้ ทั้งสองทางใช้พร้อมกันได้
 
 `lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
 — stop/restart/logs/enable ได้เหมือนกัน โดย stop ของกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง

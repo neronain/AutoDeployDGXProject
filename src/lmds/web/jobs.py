@@ -17,6 +17,13 @@ from pathlib import Path
 
 # คำสั่งที่ยอมให้หน้าเว็บสั่งได้ — ไม่รับชื่อคำสั่งจาก client ตรง ๆ
 ALLOWED = {"prepare-runtime", "download", "verify-files", "start", "stop", "restart", "repair"}
+
+# download อย่างเดียวไม่พอที่จะบอกว่า "ไฟล์มาครบ" — CLI ให้รัน verify-files ต่อเสมอ
+# หน้าเว็บจึงต่อให้เลย ไม่งั้นผู้ใช้ไม่มีทางรู้ว่าโหลดครบจริงไหม
+CHAINS = {
+    "download": ["download", "verify-files"],
+    "repair": ["repair"],
+}
 _TAIL_LINES = 400
 
 
@@ -25,6 +32,8 @@ class Job:
     id: str
     slug: str
     command: str
+    steps: list = field(default_factory=list)
+    step_index: int = 0
     lines: deque = field(default_factory=lambda: deque(maxlen=_TAIL_LINES))
     exit_code: int | None = None
     process: subprocess.Popen | None = None
@@ -38,6 +47,8 @@ class Job:
             "id": self.id,
             "slug": self.slug,
             "command": self.command,
+            "steps": self.steps,
+            "step": self.steps[self.step_index] if self.step_index < len(self.steps) else "",
             "running": self.running,
             "exit_code": self.exit_code,
             "output": "".join(self.lines),
@@ -63,40 +74,70 @@ def get(job_id: str) -> Job | None:
     return _JOBS.get(job_id)
 
 
-def start(slug: str, command: str, controller: str) -> Job:
+def controller_env(options: dict | None) -> dict:
+    """แปลงตัวเลือกจากหน้าเว็บเป็น env ที่ controller อ่าน — ชุดเดียวกับที่ CLI ใช้
+
+    ตั้งทั้ง CTX_SIZE และ MAX_MODEL_LEN เพราะ llama.cpp กับ vLLM อ่านคนละชื่อ
+    (แต่ละสคริปต์อ่านแค่ของตัวเอง ตัวที่เกินมาไม่มีผล)
+    """
+    options = options or {}
+    env: dict[str, str] = {}
+    if options.get("port"):
+        env["API_PORT"] = str(int(options["port"]))
+    if options.get("bind"):
+        env["API_HOST"] = str(options["bind"])
+    if options.get("context"):
+        env["CTX_SIZE"] = env["MAX_MODEL_LEN"] = str(int(options["context"]))
+    if options.get("api_key"):
+        env["API_KEY"] = str(options["api_key"])
+    return env
+
+
+def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:
     if command not in ALLOWED:
         raise JobError(f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
     path = Path(controller)
     if not path.is_file():
         raise JobError(f"ไม่พบ controller ของ {slug}")
 
+    steps = CHAINS.get(command, [command])
+    extra_env = controller_env(options)
+
     with _LOCK:
         current = _JOBS.get(_ACTIVE.get(slug, ""))
         if current and current.running:
             raise JobError(f"{slug} กำลังรัน '{current.command}' อยู่ — รอให้จบก่อน")
-        job = Job(id=uuid.uuid4().hex, slug=slug, command=command)
+        job = Job(id=uuid.uuid4().hex, slug=slug, command=command, steps=steps)
         _JOBS[job.id] = job
         _ACTIVE[slug] = job.id
 
     def run() -> None:
-        try:
-            proc = subprocess.Popen(
-                [str(path), command],
-                cwd=str(path.parent),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-        except OSError as exc:
-            job.lines.append(f"เรียก controller ไม่ได้: {exc}\n")
-            job.exit_code = 127
-            return
-        job.process = proc
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            job.lines.append(line)
-        job.exit_code = proc.wait()
+        import os
+
+        env = {**os.environ, **extra_env}
+        for index, step in enumerate(steps):
+            job.step_index = index
+            if len(steps) > 1:
+                job.lines.append(f"\n── {step} ({index + 1}/{len(steps)}) ──\n")
+            try:
+                proc = subprocess.Popen(
+                    [str(path), step], cwd=str(path.parent), env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                )
+            except OSError as exc:
+                job.lines.append(f"เรียก controller ไม่ได้: {exc}\n")
+                job.exit_code = 127
+                return
+            job.process = proc
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                job.lines.append(line)
+            code = proc.wait()
+            if code != 0:
+                # ขั้นแรกล้ม = ไม่ต้องทำขั้นถัดไป (verify ไฟล์ที่โหลดไม่จบไม่มีประโยชน์)
+                job.exit_code = code
+                return
+        job.exit_code = 0
 
     threading.Thread(target=run, daemon=True).start()
     return job
