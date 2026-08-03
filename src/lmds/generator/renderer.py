@@ -5,6 +5,7 @@ LLM ไม่มีสิทธิ์แตะขั้นนี้: ทุก�
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -141,12 +142,29 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
     if fit.verdict.value == "fits-with-offload":
         n_gpu_layers = 32
 
+    # ── metadata สำหรับ banner()/info() ตาม controller contract v3.0.0 ──
+    # audit-controllers.py บังคับ SCRIPT_VERSION เป็น X.Y.Z เป๊ะ — ตัด suffix ของ dev build ออก
+    version_match = re.match(r"\d+\.\d+\.\d+", lmds.__version__)
+    features: list[str] = []
+    if plan.tool_calling.enabled:
+        features.append("tool-calling")
+    if plan.reasoning.enabled:
+        features.append("reasoning")
+    if plan.multimodal.modalities:
+        features.append("+".join(plan.multimodal.modalities))
+    engine_name = "vLLM" if plan.runtime.engine is Engine.VLLM else "llama.cpp"
+    native_build = is_gguf and fit.memory_model.value == "unified"
+
     return {
         "plan": plan,
         "report": report,
         "fit": fit,
         "slug": slug,
         "lmds_version": lmds.__version__,
+        "controller_version": version_match.group(0) if version_match else "0.0.0",
+        "model_label": plan.model_id,
+        "runtime_label": f"{engine_name} ({'native build' if native_build else 'Docker'})",
+        "model_features": ", ".join(features) or "text",
         "controller_name": f"{slug}-stacked.sh" if is_stacked else f"{slug}-single.sh",
         "is_stacked": is_stacked,
         "node_count": node_count,

@@ -27,6 +27,17 @@
   plugin ซึ่งไม่ได้อยู่ใน repo ของโมเดล · คุมด้วย host allowlist (HTTPS จาก huggingface.co /
   raw.githubusercontent.com / github.com / gitlab.com) + **ผู้ใช้ต้องอนุมัติรายตัวเสมอ**
   · controller ได้คำสั่ง `prepare-runtime` ไปดึงไฟล์ + ตรวจ SHA-256 แล้ว mount แบบ read-only
+- **regression เทียบ controllers v3.0.0** (`tests/test_v3_regression.py`) — ROADMAP ประกาศกฎนี้ไว้
+  ตั้งแต่ต้นว่า "ทุก PR ต้องผ่าน" แต่ไม่เคยมีอะไรบังคับ · port กฎทั้งชุดจาก `audit-controllers.py`
+  ของ repo เดิม (13 ข้อ) มาเป็นเทส แทนการ vendor controller อ้างอิง 21 ไฟล์ (~400 KB) เข้ารีโป
+  เพราะสิ่งที่ต้องคงไว้คือ *กฎ* ไม่ใช่ไฟล์ · รันกับ bundle ทุกแบบ (vLLM/llama.cpp × Spark/RTX + stacked)
+  - **ทำให้ output ผ่านมาตรฐานจริง ๆ**: เดิมขาด 3 ข้อ — `SCRIPT_VERSION="${SCRIPT_VERSION:-X.Y.Z}"`,
+    `banner()`/`info()` + dispatch `info|banner)`, และ `prompt_cluster_config()` ของ stacked
+    · ตอนนี้ audit ให้ผล **0 error 0 warning เท่ากับ controller อ้างอิงทั้ง 21 ตัว**
+  - `controller-contract` gate ตรวจ SCRIPT_VERSION/banner/info เพิ่ม · `stacked-contract` ตรวจ
+    `prompt_cluster_config()` — bundle ที่ขาดจะไม่มี ZIP ออกมา
+  - `info`/`banner` เป็นคำสั่งใหม่ของ controller: `./<slug>-single.sh info` บอกโมเดล/runtime/
+    feature/context/endpoint/สถานะในหน้าจอเดียว
 - **CI** (`.github/workflows/ci.yml`) — pytest บน Python 3.10/3.11/3.12, `bash -n` + shellcheck,
   secret scan · ก่อนหน้านี้ ROADMAP ประกาศกฎ "ทุก PR ต้องผ่านเทส" ไว้แต่ไม่มีอะไรบังคับ
 - **`install.sh` ติดตั้ง prerequisites ให้เอง ไม่ใช่แค่ตรวจแล้วบอกให้ไปพิมพ์เอง**

@@ -14,6 +14,10 @@ set -Eeuo pipefail
 
 # ============================ CONFIG (แก้ได้ผ่าน env) ============================
 SLUG="{{ slug }}"
+SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
+MODEL_LABEL="${MODEL_LABEL:-{{ model_label }}}"
+RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
+MODEL_FEATURES="${MODEL_FEATURES:-{{ model_features }}}"
 MODEL_ID="{{ plan.model_id }}"
 MODEL_REVISION="{{ plan.revision }}"
 SERVED_MODEL_NAME="{{ plan.served_model_name }}"
@@ -445,6 +449,20 @@ _nccl_env_pairs() {
 }
 
 # ─────────────────────────── start ───────────────────────────
+# ถาม IP/user ของคลัสเตอร์ก่อน start — ค่า default ในไฟล์เป็นแค่ตัวอย่าง เครื่องจริงแทบไม่เคยตรง
+# (ข้อบังคับของ controller contract v3.0.0 สำหรับ stacked)
+prompt_cluster_config() {
+  [[ -t 0 ]] || return 0
+  local ans
+  printf '\n== Cluster configuration (กด Enter เพื่อใช้ค่าเดิม) ==\n'
+  read -rp "  Head (master) node IP [${MASTER_IP}]: " ans || true; [[ -z "$ans" ]] || MASTER_IP="$ans"
+  read -rp "  Worker node IP        [${WORKER_IP}]: " ans || true; [[ -z "$ans" ]] || WORKER_IP="$ans"
+  read -rp "  SSH user for nodes    [${SSH_USER}]: " ans || true; [[ -z "$ans" ]] || SSH_USER="$ans"
+  TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
+  TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
+  printf '\n'
+}
+
 start() {
   _require_non_root
   need docker; need curl
@@ -763,6 +781,43 @@ EOF
 parse_options "$@"
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 
+
+banner() {
+  cat <<'ART'
+
+  _     __  __ ____  ____
+ | |   |  \/  |  _ \/ ___|
+ | |   | |\/| | | | \___ \
+ | |___| |  | | |_| |___) |
+ |_____|_|  |_|____/|____/
+ART
+  printf '       =[ LMDS controller · v%s ]\n' "${SCRIPT_VERSION}"
+  printf '+ -- --=[ %s ]\n' "${MODEL_LABEL}"
+  printf '+ -- --=[ %s · %s ]\n' "${RUNTIME_LABEL}" "${MODEL_FEATURES}"
+  printf '+ -- --=[ Designed by neronain · fb.com/neronain.minidev ]\n\n'
+}
+
+# สรุปว่า controller นี้เสิร์ฟโมเดลอะไร ที่พอร์ตไหน และตอนนี้ขึ้นหรือยัง
+info() {
+  banner
+  local ip url state
+  ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
+  url="http://${ip}:${API_PORT}/v1"
+  state="stopped"
+  if curl -fsS -m 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+    state="RUNNING"
+  fi
+  printf '  Model     : %s\n'            "${MODEL_LABEL}"
+  printf '  Model ID  : %s\n'            "${MODEL_ID}"
+  printf '  Runtime   : %s\n'            "${RUNTIME_LABEL}"
+  printf '  Features  : %s\n'            "${MODEL_FEATURES}"
+  printf '  Context   : %s tokens\n'     "${MAX_MODEL_LEN:-${CTX_SIZE:-n/a}}"
+  printf '  API (v1)  : %s\n'            "${url}"
+  printf '  State     : %s  (port %s)\n\n' "${state}" "${API_PORT}"
+}
+
+case "${1:-}" in start|restart) prompt_cluster_config ;; esac
+
 case "${1:-help}" in
   prepare-runtime) prepare_runtime ;;
   runtime-info)    runtime_info ;;
@@ -777,6 +832,7 @@ case "${1:-help}" in
   status)          status ;;
   logs)            logs "${2:-head}" "${3:-200}" ;;
   client-config)   client_config ;;
+  info|banner) info ;;
   network-info)    network_info ;;
   test-text)       test_text ;;
   *)               usage ;;

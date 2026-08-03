@@ -6,6 +6,10 @@
 set -Eeuo pipefail
 
 # ============================ CONFIG (แก้ได้) ============================
+SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
+MODEL_LABEL="${MODEL_LABEL:-{{ model_label }}}"
+RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
+MODEL_FEATURES="${MODEL_FEATURES:-{{ model_features }}}"
 MODEL_ID="{{ plan.model_id }}"
 MODEL_REVISION="{{ plan.revision }}"
 SERVED_MODEL_NAME="{{ plan.served_model_name }}"
@@ -499,6 +503,41 @@ EOF
 parse_options "$@"
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 
+
+banner() {
+  cat <<'ART'
+
+  _     __  __ ____  ____
+ | |   |  \/  |  _ \/ ___|
+ | |   | |\/| | | | \___ \
+ | |___| |  | | |_| |___) |
+ |_____|_|  |_|____/|____/
+ART
+  printf '       =[ LMDS controller · v%s ]\n' "${SCRIPT_VERSION}"
+  printf '+ -- --=[ %s ]\n' "${MODEL_LABEL}"
+  printf '+ -- --=[ %s · %s ]\n' "${RUNTIME_LABEL}" "${MODEL_FEATURES}"
+  printf '+ -- --=[ Designed by neronain · fb.com/neronain.minidev ]\n\n'
+}
+
+# สรุปว่า controller นี้เสิร์ฟโมเดลอะไร ที่พอร์ตไหน และตอนนี้ขึ้นหรือยัง
+info() {
+  banner
+  local ip url state
+  ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
+  url="http://${ip}:${API_PORT}/v1"
+  state="stopped"
+  if curl -fsS -m 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+    state="RUNNING"
+  fi
+  printf '  Model     : %s\n'            "${MODEL_LABEL}"
+  printf '  Model ID  : %s\n'            "${MODEL_ID}"
+  printf '  Runtime   : %s\n'            "${RUNTIME_LABEL}"
+  printf '  Features  : %s\n'            "${MODEL_FEATURES}"
+  printf '  Context   : %s tokens\n'     "${MAX_MODEL_LEN:-${CTX_SIZE:-n/a}}"
+  printf '  API (v1)  : %s\n'            "${url}"
+  printf '  State     : %s  (port %s)\n\n' "${state}" "${API_PORT}"
+}
+
 case "${1:-help}" in
   download)     download ;;
   verify-files) verify_files ;;
@@ -510,6 +549,7 @@ case "${1:-help}" in
   status)       status ;;
   logs)         logs "${2:-300}" ;;
   client-config) client_config ;;
+  info|banner) info ;;
   network-info) network_info ;;
   test-text)    test_text ;;
   wait-health)  wait_health ;;

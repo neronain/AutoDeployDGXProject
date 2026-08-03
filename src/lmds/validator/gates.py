@@ -117,6 +117,13 @@ def gate_line_continuation(bundle_dir: Path) -> GateResult:
     return GateResult("line-continuation", True)
 
 
+# marker ที่ audit-controllers.py ของ v3.0.0 บังคับ — ไม่ใช่แค่ flag/คำสั่ง
+_VERSION_DECL = re.compile(r'(?m)^SCRIPT_VERSION="\$\{SCRIPT_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}"')
+_BANNER_DEF = re.compile(r"(?m)^banner\(\) \{")
+_INFO_DEF = re.compile(r"(?m)^info\(\) \{")
+_INFO_DISPATCH = re.compile(r"(?m)^\s*info\|banner\)")
+
+
 def gate_contract(bundle_dir: Path) -> GateResult:
     missing: list[str] = []
     for script in _controllers(bundle_dir):
@@ -127,6 +134,10 @@ def gate_contract(bundle_dir: Path) -> GateResult:
         for command in REQUIRED_COMMANDS:
             if f"{command})" not in text:
                 missing.append(f"{script.name}: คำสั่ง {command}")
+        if not _VERSION_DECL.search(text):
+            missing.append(f'{script.name}: SCRIPT_VERSION="${{SCRIPT_VERSION:-X.Y.Z}}"')
+        if not (_BANNER_DEF.search(text) and _INFO_DEF.search(text) and _INFO_DISPATCH.search(text)):
+            missing.append(f"{script.name}: banner()/info() + dispatch info|banner)")
     if missing:
         return GateResult("controller-contract", False, "; ".join(missing[:5]))
     return GateResult("controller-contract", True)
@@ -136,6 +147,8 @@ def gate_contract(bundle_dir: Path) -> GateResult:
 # แต่ถูก render เป็น single-node (จะ "ผ่าน" contract เดี่ยวแต่รันจริงไม่ได้)
 _STACKED_FLAG_MARKERS = ["--nnodes", "--node-rank", "--headless", "--distributed-executor-backend"]
 _STACKED_COMMAND_MARKERS = ["prepare-runtime", "sync-worker", "verify-worker"]
+# stacked ต้องถาม IP/user ของคลัสเตอร์ก่อน start — ค่า default ในไฟล์เป็นแค่ตัวอย่าง
+_STACKED_CLUSTER_PROMPT = re.compile(r"(?m)^prompt_cluster_config\(\) \{")
 
 
 def gate_stacked_contract(bundle_dir: Path) -> GateResult:
@@ -163,6 +176,8 @@ def gate_stacked_contract(bundle_dir: Path) -> GateResult:
             missing.append(f"คำสั่ง {command}")
     if "ssh" not in combined:
         missing.append("SSH orchestration (worker)")
+    if not _STACKED_CLUSTER_PROMPT.search(combined):
+        missing.append("prompt_cluster_config()")
     if missing:
         return GateResult(
             "stacked-contract", False,

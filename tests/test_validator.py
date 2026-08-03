@@ -162,3 +162,44 @@ def test_multimodal_gate_skips_text_only_bundles(bundle_dir):
     results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
     assert results["multimodal-assets"].passed is True
     assert "ไม่ใช่ multimodal" in results["multimodal-assets"].detail
+
+
+def test_contract_gate_catches_missing_v3_banner(isolated_config, tmp_path):
+    """ตัด banner()/info() ออก = ไม่ผ่าน controller-contract (กฎของ audit-controllers.py v3.0.0)"""
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    assert run_gates(bundle.directory, include_checksums=False)
+
+    controller = bundle.controller
+    text = controller.read_text(encoding="utf-8")
+    controller.write_text(text.replace("banner() {", "_disabled_banner() {"), encoding="utf-8")
+
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["controller-contract"].passed is False
+    assert "banner()" in results["controller-contract"].detail
+
+
+def test_contract_gate_catches_missing_script_version(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    controller = bundle.controller
+    text = controller.read_text(encoding="utf-8")
+    controller.write_text(
+        text.replace('SCRIPT_VERSION="${SCRIPT_VERSION:-', 'SCRIPT_VERSION="', 1), encoding="utf-8"
+    )
+
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["controller-contract"].passed is False
+    assert "SCRIPT_VERSION" in results["controller-contract"].detail
+
+
+def test_stacked_gate_requires_cluster_prompt(isolated_config, tmp_path):
+    """stacked ที่ไม่ถาม IP คลัสเตอร์ = ผู้ใช้ start ด้วย IP ตัวอย่างแล้วงงว่าทำไมต่อ worker ไม่ได้"""
+    bundle, _, _ = make_bundle(safetensors_report(), target="dgx-spark-stacked", tmp_path=tmp_path)
+    controller = bundle.controller
+    text = controller.read_text(encoding="utf-8")
+    controller.write_text(
+        text.replace("prompt_cluster_config() {", "_disabled_prompt() {"), encoding="utf-8"
+    )
+
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["stacked-contract"].passed is False
+    assert "prompt_cluster_config" in results["stacked-contract"].detail
