@@ -57,6 +57,11 @@
     ชุดเดียวกับที่ controller อ่านอยู่แล้ว · API key เก็บใน localStorage ของเบราว์เซอร์ ไม่ขึ้นเครื่อง
   - **`download` รัน `verify-files` ต่อให้อัตโนมัติ** — download อย่างเดียวไม่ตอบคำถาม
     "ไฟล์มาครบไหม" (CLI ให้รันต่อเสมอ) · ขั้นแรกล้ม = ไม่ทำขั้นถัดไป
+  - **ปิดช่องว่างเทียบ CLI จนครบ** (รายงานจากผู้ใช้: "ถ้า feature ไม่ครบเหมือน CLI จะมี GUI ไปทำไม")
+    — เพิ่มในแผง "จัดการ" ต่อโมเดล: `test-text`/`test-reasoning`/`test-tools`/`bench`/`stress`,
+    `repair`, **`remove` พร้อมแสดงรายการ+ขนาดก่อนยืนยัน** (เลือกเก็บ weight ได้), autostart
+    เปิด/ปิด, และคำสั่ง stacked ครบชุด (`prepare-runtime`/`sync-worker`/`verify-worker`/`clear-fi-cache`)
+    · autostart ต้องใช้ sudo ซึ่งเว็บไม่มี tty — ล้มเหลวแล้วส่งคำสั่งกลับไปให้รันเอง ไม่ใช่ 500 เปล่า
   - ติดตั้ง: `install.sh` ลง `fastapi`/`uvicorn` ให้เอง (ล้มเหลวก็ไม่กระทบ CLI) · extra ชื่อ `web`
 - **`lmds list` / หน้าเว็บ เห็น bundle ทุกตัวบนดิสก์ ไม่ต้องรอ start ครั้งแรก** — เดิม controller
   เขียนทะเบียนเองตอน `start` เท่านั้น bundle ที่เพิ่งสร้างจึงหายไปจากรายการ ผู้ใช้ไม่รู้ว่าต้องไปต่อยังไง

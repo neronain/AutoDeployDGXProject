@@ -109,10 +109,12 @@ lmds web --stop                           # หยุดตัวที่รั
 > ระบบจะสุ่ม token ให้เองแล้วพิมพ์ลิงก์พร้อม token มาให้ (ตั้งเองด้วย `--token` ได้)
 > · หน้าเว็บไม่ดึงอะไรจากอินเทอร์เน็ตเลย ใช้ได้บนเครื่องหลัง proxy/air-gapped
 
-**CLI ยังเป็นตัวหลัก** — หน้าเว็บทำได้: ดูสถานะ, deploy, download (+verify อัตโนมัติ), start/stop/restart,
-ตั้ง port/context/API key/bind ต่อโมเดล, doctor, logs · **ยังไม่มีบนเว็บ**: `repair`, `remove`,
-`enable`/`disable` (autostart), stacked (`sync-worker`/`verify-worker`), `test-text`/`bench`
-— ใช้ CLI สำหรับงานเหล่านี้ ทั้งสองทางใช้พร้อมกันได้
+หน้าเว็บทำได้เทียบเท่า CLI แล้ว — deploy, download (+verify อัตโนมัติ), start/stop/restart,
+ตั้ง port/context/API key/bind, doctor, logs, test-text/bench/stress, repair, remove (แสดงรายการ
++ ขนาดก่อนยืนยัน), autostart, และคำสั่ง stacked (prepare-runtime/sync-worker/verify-worker/clear-fi-cache)
+
+> `enable`/`disable` autostart ต้องใช้ `sudo` ซึ่งหน้าเว็บไม่มี tty ให้กรอกรหัส — ถ้าทำไม่ได้
+> จะบอกคำสั่งให้ไปรันเอง · งานที่ยังต้องใช้ CLI: `lmds config` (ตั้ง provider/key) และ `lmds hardware`
 
 `lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
 — stop/restart/logs/enable ได้เหมือนกัน โดย stop ของกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง

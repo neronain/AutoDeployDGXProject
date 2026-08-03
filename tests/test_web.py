@@ -434,3 +434,75 @@ def test_start_passes_options_through(runnable, monkeypatch):
     assert seen == {"API_PORT": "8123", "API_KEY": "abc"}
     # ต้องคืน environment ให้เหมือนเดิม ไม่ทิ้งค่าไว้กระทบคำสั่งถัดไป
     assert os.environ.get("API_PORT") is None
+
+
+# ── ปิดช่องว่างเทียบ CLI: remove / autostart / test / stacked ────────────────
+
+def test_removal_plan_shows_what_will_be_deleted(runnable):
+    """ลบแล้วกู้ไม่ได้ — ต้องเห็นรายการกับขนาดก่อนยืนยัน เหมือนที่ CLI ทำ"""
+    data = TestClient(create_app()).get(f"/api/models/{runnable}/removal-plan").json()
+    labels = {i["label"] for i in data["items"]}
+    assert "bundle" in labels
+    assert data["total_bytes"] > 0
+
+
+def test_removal_plan_respects_keep_weights(runnable):
+    client = TestClient(create_app())
+    client.post(f"/api/models/{runnable}/run/download")
+    _wait(client, client.get("/api/models").json()["models"][0]["job"]["id"]) \
+        if client.get("/api/models").json()["models"][0].get("job") else None
+
+    withw = client.get(f"/api/models/{runnable}/removal-plan").json()
+    keep = client.get(f"/api/models/{runnable}/removal-plan?keep_weights=true").json()
+    assert not any(i["is_weights"] for i in keep["items"])
+    assert keep["total_bytes"] <= withw["total_bytes"]
+
+
+def test_remove_deletes_and_model_disappears(runnable, tmp_path):
+    client = TestClient(create_app())
+    assert client.post(f"/api/models/{runnable}/remove", json={"keep_weights": True}).status_code == 200
+    assert [m["slug"] for m in client.get("/api/models").json()["models"]] == []
+
+
+def test_autostart_failure_tells_you_the_manual_commands(runnable, monkeypatch):
+    """เว็บไม่มี tty ให้กรอกรหัส sudo — ต้องส่งคำสั่งกลับไปให้ผู้ใช้รันเอง ไม่ใช่ 500 เปล่า ๆ"""
+    from lmds.fleet import FleetError
+
+    def boom(info, timeout=1800, start_now=False):
+        raise FleetError("ติดตั้ง autostart ไม่สำเร็จ\nลองรันมือ:\n  sudo systemctl enable lmds-demo")
+
+    monkeypatch.setattr("lmds.fleet.enable_autostart", boom)
+    r = TestClient(create_app()).post(f"/api/models/{runnable}/autostart", json={"enabled": True})
+    assert r.status_code == 409
+    assert "sudo systemctl enable" in r.json()["detail"]
+
+
+def test_test_text_runs_from_the_web(runnable, monkeypatch):
+    """CLI มี test-text มาตลอด — เว็บต้องเรียกได้ด้วย ไม่งั้นต้องสลับกลับไป terminal"""
+    from lmds.web import jobs
+
+    assert "test-text" in jobs.ALLOWED
+    client = TestClient(create_app())
+    done = _wait(client, client.post(f"/api/models/{runnable}/run/test-text").json()["id"])
+    assert done["exit_code"] == 0
+    assert "cmd test-text" in done["output"]
+
+
+def test_stacked_commands_are_allowed(runnable):
+    """stacked ต้องสั่ง sync-worker / verify-worker ได้ ไม่งั้นใช้เว็บกับ 2 node ไม่ได้เลย"""
+    from lmds.web import jobs
+
+    assert {"sync-worker", "verify-worker", "prepare-runtime", "clear-fi-cache"} <= jobs.ALLOWED
+
+
+def test_repair_re_downloads_then_verifies(runnable):
+    from lmds.web import jobs
+
+    assert jobs.CHAINS["repair"] == ["download", "verify-files"]
+
+
+def test_remove_and_autostart_are_token_guarded(runnable):
+    client = TestClient(create_app(token="s3cret"))
+    assert client.get(f"/api/models/{runnable}/removal-plan").status_code == 401
+    assert client.post(f"/api/models/{runnable}/remove", json={}).status_code == 401
+    assert client.post(f"/api/models/{runnable}/autostart", json={"enabled": True}).status_code == 401

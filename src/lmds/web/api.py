@@ -270,6 +270,47 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail="ไม่พบงานนี้")
         return job.payload()
 
+    # ── ลบ / autostart — ทำผ่าน fleet ตรง ๆ ไม่ใช่ job เพราะไม่ใช่คำสั่งของ controller ──
+    @app.get("/api/models/{slug}/removal-plan", dependencies=guarded)
+    def removal_preview(slug: str, keep_weights: bool = False) -> dict:
+        from lmds.fleet import find, removal_plan
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        items = removal_plan(server, include_weights=not keep_weights)
+        return {
+            "slug": slug,
+            "items": [{"label": i.label, "path": str(i.path), "bytes": i.size_bytes,
+                       "is_weights": i.is_weights} for i in items],
+            "total_bytes": sum(i.size_bytes for i in items),
+        }
+
+    @app.post("/api/models/{slug}/remove", dependencies=guarded)
+    def remove(slug: str, body: dict | None = None) -> dict:
+        from lmds.fleet import find, remove_server
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        keep = bool((body or {}).get("keep_weights"))
+        return {"slug": slug, "done": remove_server(server, include_weights=not keep)}
+
+    @app.post("/api/models/{slug}/autostart", dependencies=guarded)
+    def autostart(slug: str, body: dict | None = None) -> dict:
+        from lmds.fleet import FleetError, disable_autostart, enable_autostart, find
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        enabled = bool((body or {}).get("enabled"))
+        try:
+            # ต้องใช้ sudo — เว็บไม่มี tty ให้กรอกรหัส ถ้าไม่ผ่าน FleetError จะบอกคำสั่งให้รันเอง
+            name = enable_autostart(server) if enabled else disable_autostart(server)
+        except FleetError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"slug": slug, "unit": name, "enabled": enabled}
+
     return app
 
 

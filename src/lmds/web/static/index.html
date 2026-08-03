@@ -177,7 +177,13 @@ function setOpts(slug, o) { localStorage.setItem("lmds:" + slug, JSON.stringify(
 
 function optionsMarkup(m) {
   const o = opts(m.slug);
+  const stacked = m.topology === "stacked";
+  const auto = m.autostart;
+  const btn = (act, label, style = "") =>
+    `<button data-act="${act}" data-slug="${esc(m.slug)}" style="${style}">${label}</button>`;
+
   return `<div class="pad" style="border-top:1px solid var(--line)">
+    <div class="dim" style="margin-bottom:8px">ตัวเลือกตอน start — เทียบเท่า <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
     <div class="field">
       <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
       <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px">
@@ -190,11 +196,37 @@ function optionsMarkup(m) {
     <div class="field">
       <label>API key</label>
       <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="ว่าง = ไม่ต้องยืนยันตัวตน">
-      <button data-act="genkey" data-slug="${esc(m.slug)}">สุ่มให้</button>
-      <button data-act="saveopts" data-slug="${esc(m.slug)}">บันทึก</button>
+      ${btn("genkey", "สุ่มให้")}${btn("saveopts", "บันทึก")}
     </div>
-    <div class="dim">ค่าเหล่านี้ถูกส่งให้ controller ตอน start/restart — เทียบเท่า
-      <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
+
+    <div class="sec" style="margin:16px 0 6px">ทดสอบ</div>
+    <div class="field">
+      ${btn("job:test-text", "test-text")}
+      ${m.features && m.features.includes("reasoning") ? btn("job:test-reasoning", "test-reasoning") : ""}
+      ${m.features && m.features.includes("tool") ? btn("job:test-tools", "test-tools") : ""}
+      ${btn("job:bench", "bench")}${btn("job:stress", "stress")}
+      ${btn("job:client-config", "client-config")}${btn("job:network-info", "network-info")}
+    </div>
+
+    <div class="sec" style="margin:16px 0 6px">autostart หลัง reboot</div>
+    <div class="field">
+      <span class="muted">สถานะ: ${esc(auto || "—")}</span>
+      ${auto === "enabled" ? btn("auto:off", "ยกเลิก autostart") : btn("auto:on", "เปิด autostart")}
+      <span class="dim">ต้องใช้ sudo — ถ้าเว็บทำไม่ได้จะบอกคำสั่งให้รันเอง</span>
+    </div>
+
+    ${stacked ? `<div class="sec" style="margin:16px 0 6px">stacked (2 node)</div>
+    <div class="field">
+      ${btn("job:prepare-runtime", "prepare-runtime")}${btn("job:sync-worker", "sync-worker")}
+      ${btn("job:verify-worker", "verify-worker")}${btn("job:clear-fi-cache", "clear-fi-cache")}
+    </div>` : ""}
+
+    <div class="sec" style="margin:16px 0 6px">ซ่อม / ลบ</div>
+    <div class="field">
+      ${btn("job:repair", "repair")}
+      ${btn("removeask", "ลบออกจากเครื่อง", "border-color:var(--bad);color:var(--bad)")}
+    </div>
+    <div id="rm-${esc(m.slug)}"></div>
   </div>`;
 }
 
@@ -219,7 +251,7 @@ function renderFleet(models) {
           <div class="grow"></div>
           <span class="mono muted port"></span>
           <span class="acts"></span>
-          <button data-act="opts" data-slug="${esc(m.slug)}">ตั้งค่า</button>
+          <button data-act="opts" data-slug="${esc(m.slug)}">จัดการ</button>
           <button data-act="doctor" data-slug="${esc(m.slug)}">doctor</button>
           <button data-act="logs" data-slug="${esc(m.slug)}">logs</button>
         </div>
@@ -323,6 +355,51 @@ document.addEventListener("click", async e => {
                     bind: val(".o-bind"), api_key: val(".o-key") });
     btn.textContent = "บันทึกแล้ว";
     setTimeout(() => { btn.textContent = "บันทึก"; }, 1500);
+    return;
+  }
+
+  if (act.startsWith("auto:")) {
+    const enabled = act === "auto:on";
+    btn.disabled = true;
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/autostart`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    const d = await r.json();
+    if (!r.ok) alert(`ตั้ง autostart ไม่สำเร็จ\n\n${d.detail || ""}`);
+    btn.disabled = false;
+    refresh();
+    return;
+  }
+
+  if (act === "removeask") {
+    const box = document.getElementById("rm-" + slug);
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`);
+    const d = await r.json();
+    const gb = b => (b / 1024 ** 3).toFixed(1);
+    box.innerHTML = `<div style="border:1px solid var(--bad);border-radius:var(--radius);padding:12px;margin-top:10px">
+      <div class="warn-line" style="color:var(--bad)">จะลบทั้งหมด ${gb(d.total_bytes)} GB — กู้คืนไม่ได้</div>
+      ${d.items.map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${gb(i.bytes)} GB</div>`).join("")}
+      <div class="field" style="margin-top:10px">
+        <label><input type="checkbox" id="keep-${esc(slug)}" style="min-width:auto;flex:none" checked> เก็บ weight ไว้ (deploy ใหม่ไม่ต้องโหลดซ้ำ)</label>
+        <button data-act="removego" data-slug="${esc(slug)}" style="border-color:var(--bad);color:var(--bad)">ยืนยันลบ</button>
+        <button data-act="removecancel" data-slug="${esc(slug)}">ยกเลิก</button>
+      </div></div>`;
+    return;
+  }
+  if (act === "removecancel") { document.getElementById("rm-" + slug).innerHTML = ""; return; }
+  if (act === "removego") {
+    const keep = (document.getElementById("keep-" + slug) || {}).checked;
+    btn.disabled = true; btn.textContent = "กำลังลบ…";
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/remove`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keep_weights: keep }),
+    });
+    const d = await r.json();
+    if (!r.ok) alert(d.detail || "ลบไม่สำเร็จ");
+    rows.delete(slug);
+    document.getElementById("fleet").innerHTML = "";
+    refresh();
     return;
   }
 

@@ -16,13 +16,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # คำสั่งที่ยอมให้หน้าเว็บสั่งได้ — ไม่รับชื่อคำสั่งจาก client ตรง ๆ
-ALLOWED = {"prepare-runtime", "download", "verify-files", "start", "stop", "restart", "repair"}
+ALLOWED = {
+    "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "repair",
+    # stacked (multi-node)
+    "sync-worker", "verify-worker", "clear-fi-cache",
+    # ทดสอบว่าโมเดลตอบจริง — CLI มีมาตลอด เว็บเพิ่งได้
+    "test-text", "test-reasoning", "test-tools", "bench", "stress",
+    "props", "info", "network-info", "client-config", "status", "wait-health", "doctor",
+}
 
 # download อย่างเดียวไม่พอที่จะบอกว่า "ไฟล์มาครบ" — CLI ให้รัน verify-files ต่อเสมอ
 # หน้าเว็บจึงต่อให้เลย ไม่งั้นผู้ใช้ไม่มีทางรู้ว่าโหลดครบจริงไหม
 CHAINS = {
     "download": ["download", "verify-files"],
-    "repair": ["repair"],
+    "repair": ["download", "verify-files"],  # repair = โหลดที่ขาด (resume) แล้วตรวจซ้ำ
 }
 _TAIL_LINES = 400
 
