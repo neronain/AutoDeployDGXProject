@@ -568,12 +568,15 @@ def node_ctl(
 
     # หา bundle บนเครื่องนั้นเอง — path ต่างกันไปตามที่ผู้ใช้ deploy ไว้
     quoted = " ".join(shlex.quote(c) for c in command)
+    # cd เข้า bundle ก่อนแล้วค่อยหา controller — เดิมคำนวณ path ก่อน cd แล้วใช้หลัง cd
+    # ซึ่ง path แบบ relative จะชี้ผิดที่ทันที
     script = (
         f"dir=\"$(ls -d ~/bundles/{slug} ~/*/bundles/{slug} ./bundles/{slug} 2>/dev/null | head -1)\"; "
         f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug} บน {name}' >&2; exit 1; }}; "
-        f"ctl=\"$(ls \"$dir\"/*-single.sh \"$dir\"/*-stacked.sh 2>/dev/null | head -1)\"; "
-        f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller ใน '\"$dir\" >&2; exit 1; }}; "
-        f"cd \"$dir\" && \"$ctl\" {quoted}"
+        f"cd \"$dir\" || exit 1; "
+        f"ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
+        f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller ใน '\"$PWD\" >&2; exit 1; }}; "
+        f"\"$ctl\" {quoted}"
     )
     try:
         # ขั้นอย่าง download/start ใช้เวลาเป็นสิบนาที — ต้องรอ ไม่ใช่ตัดจบที่ timeout สั้น ๆ
