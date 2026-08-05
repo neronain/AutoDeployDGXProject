@@ -161,6 +161,14 @@ def test_cli_exit_code_signals_blocking_problems(tmp_path, monkeypatch):
 
 def test_cli_exit_zero_when_healthy(tmp_path, monkeypatch):
     slug = _setup(tmp_path, monkeypatch)
+    # ดิสก์เป็นสมบัติของ "เครื่องที่รันเทส" ไม่ใช่ของสิ่งที่กำลังทดสอบ — เครื่อง CI/VM
+    # ที่ดิสก์เล็กจะทำให้เทสนี้แดงทั้งที่โค้ดถูก (เจอจริงบน VM ที่เหลือ 9 GB)
+    import shutil as _shutil
+
+    monkeypatch.setattr(
+        "lmds.doctor.checks.shutil.disk_usage",
+        lambda path: _shutil._ntuple_diskusage(2_000 * 1024**3, 1_000 * 1024**3, 1_000 * 1024**3),
+    )
     result = runner.invoke(app, ["doctor", slug])
     assert result.exit_code == 0, result.output
 

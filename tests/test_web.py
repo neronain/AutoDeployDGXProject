@@ -449,8 +449,11 @@ def test_removal_plan_shows_what_will_be_deleted(runnable):
 def test_removal_plan_respects_keep_weights(runnable):
     client = TestClient(create_app())
     client.post(f"/api/models/{runnable}/run/download")
-    _wait(client, client.get("/api/models").json()["models"][0]["job"]["id"]) \
-        if client.get("/api/models").json()["models"][0].get("job") else None
+    # อ่านครั้งเดียวแล้วใช้ค่านั้น — เดิมเรียก API สองรอบแล้วสมมติว่าผลเหมือนเดิม
+    # งานอาจจบระหว่างสองรอบจน job กลายเป็น None (Linux เร็วกว่าจึงแพ้ race ประจำ)
+    job = client.get("/api/models").json()["models"][0].get("job")
+    if job:
+        _wait(client, job["id"])
 
     withw = client.get(f"/api/models/{runnable}/removal-plan").json()
     keep = client.get(f"/api/models/{runnable}/removal-plan?keep_weights=true").json()
