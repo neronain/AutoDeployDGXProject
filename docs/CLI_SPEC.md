@@ -254,6 +254,13 @@ gguf  gemma-4-26B-A4B-it-UD-Q8.gguf     25.7 GB    —   ~/models/…
 
 Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มีข้อที่ต้องแก้
 
+- **`weights` ตรวจเฉพาะไฟล์ที่ขาดไม่ได้** — weight หลัก (GGUF ที่เลือก / snapshot ของ HF repo)
+- **`multimodal` เป็น WARN ไม่ใช่ FAIL** — `mmproj` ขาดแปลว่าเสีย vision กลายเป็น text-only
+  แต่โมเดล**ยังรันได้** จึงไม่บล็อก · repo มักมี mmproj หลาย precision (BF16/F16/F32) ให้เลือก
+  แต่ `llama-server` รับ `--mmproj` ได้ไฟล์เดียว — **มีตัวใดตัวหนึ่งก็ผ่าน**
+  · เดิมบังคับครบทุกตัว ทำให้โมเดลที่โหลดครบขึ้นว่า "ยังไม่ download" ตลอดกาล
+  และปุ่ม start บนหน้าเว็บไม่ขึ้น (เจอจริงกับ gemma-4-31b-it-gguf บน dgx-veerasiam)
+
 ## `lmds web`
 
 | ตัวเลือก | ค่าเริ่มต้น | ความหมาย |
@@ -275,7 +282,9 @@ Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มี
 
 REST ที่หน้าเว็บใช้ (token เดียวกับหน้าเว็บ): `/api/host` `/api/models` `/api/nodes`
 `/api/nodes/{name}/inventory` `/api/cluster` — `PATCH /api/nodes/{name}` แก้ cluster IP ·
-คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor`
+คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor logs enable disable`
+(`logs` ถูกบังคับ `-n 300`) — **`remove` ไม่อยู่ในนั้นโดยตั้งใจ** เพราะต้องใช้ `-y` ซึ่งข้ามหน้ายืนยัน
+ที่แสดงรายการ+ขนาดก่อนลบ weight หลายสิบ GB · มีเทสกันไม่ให้หลุดเข้ามา
 
 UI เป็นภาษาอังกฤษ · ต้องมี extra `web` (`pip install 'lmds[web]'` — `install.sh` ลงให้เอง)
 รายละเอียดการใช้งาน: [USAGE.md §5](USAGE.md)

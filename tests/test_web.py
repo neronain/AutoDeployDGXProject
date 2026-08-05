@@ -860,3 +860,23 @@ def test_manual_refresh_bypasses_the_cache():
     """กด refresh แล้วต้องได้ของสด ไม่ใช่ค่าเดิมจากแคชที่เพิ่งอ่านมา"""
     body = TestClient(create_app()).get("/").text
     assert "/inventory?refresh=true" in body
+
+
+def test_page_javascript_parses():
+    """JS พังหนึ่งตัวอักษร = หน้าเว็บขาวทั้งหน้า ไม่มี error ให้เห็นนอกจากเปิด console
+
+    เทสอื่นเรียก API ได้หมดโดยที่หน้าเว็บใช้ไม่ได้เลย — gate นี้จึงเป็นตัวเดียวที่จับได้
+    """
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("ไม่มี node บนเครื่องนี้")
+    html = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    blocks = re.findall(r"<script>(.*?)</script>", html, re.S)
+    assert blocks, "หน้าเว็บต้องมี <script> — ถ้าไม่มีแปลว่าโครงหน้าเปลี่ยนไปแล้ว"
+    for i, block in enumerate(blocks):
+        result = subprocess.run([node, "--check", "-"], input=block, capture_output=True, text=True)
+        assert result.returncode == 0, f"script block {i} พัง:\n{result.stderr[:800]}"
