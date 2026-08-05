@@ -147,7 +147,7 @@ def test_documented_structured_values_are_accepted():
     env = {
         "CUDA_VISIBLE_DEVICES": "GPU-8932f937,0,-1",
         "TORCH_CUDA_ARCH_LIST": "8.0 8.6+PTX",
-        "NCCL_IB_HCA": "=mlx5_0:1,^mlx5_1:2",
+        "NCCL_IB_HCA": "=mlx5_0:1,mlx5_1:2",
     }
     allowed, rejected = split_env(Engine.VLLM, env)
     assert allowed == env
@@ -161,7 +161,9 @@ def test_documented_structured_values_are_accepted():
     ("VLLM_NVFP4_GEMM_BACKEND", "../../evil"),
     ("VLLM_NVFP4_GEMM_BACKEND", "not-a-real-backend"),
     ("CUDA_VISIBLE_DEVICES", "0; touch /tmp/pwn"),
+    ("CUDA_VISIBLE_DEVICES", "MIG-GPU-8932f937/1/2,0"),
     ("TORCH_CUDA_ARCH_LIST", "8.0; touch /tmp/pwn"),
+    ("NCCL_IB_HCA", "=mlx5_0:1,^mlx5_1:2"),
 ])
 def test_invalid_values_are_rejected(name, value):
     allowed, rejected = split_env(Engine.VLLM, {name: value})

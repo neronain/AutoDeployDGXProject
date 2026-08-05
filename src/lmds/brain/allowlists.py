@@ -99,11 +99,11 @@ _NVFP4_GEMM_BACKENDS = {
 }
 
 _CUDA_DEVICE_LIST = re.compile(
-    r"(?:-?\d+|GPU-[A-Fa-f0-9-]+|MIG-GPU-[A-Fa-f0-9-]+/\d+/\d+)"
-    r"(?:,(?:-?\d+|GPU-[A-Fa-f0-9-]+|MIG-GPU-[A-Fa-f0-9-]+/\d+/\d+))*"
+    r"(?:MIG-GPU-[A-Fa-f0-9-]+/\d+/\d+|"
+    r"(?:-?\d+|GPU-[A-Fa-f0-9-]+)(?:,(?:-?\d+|GPU-[A-Fa-f0-9-]+))*)"
 )
 _TORCH_ARCH_LIST = re.compile(r"\d+(?:\.\d+)?[a-z]?(?:\+PTX)?(?:[ ;]+\d+(?:\.\d+)?[a-z]?(?:\+PTX)?)*")
-_SAFE_HCA_LIST = re.compile(r"^[A-Za-z0-9_=^,.:+-]+$")
+_SAFE_HCA_LIST = re.compile(r"^\^?=?[A-Za-z0-9_.+-]+(?::\d+)?(?:,[A-Za-z0-9_.+-]+(?::\d+)?)*$")
 
 
 def is_allowed_env(engine: Engine, name: str) -> bool:
