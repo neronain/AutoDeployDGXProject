@@ -247,11 +247,43 @@ pre {
 .cgroup.ok { border-left-color: var(--ok); }
 .ipedit { width: 150px; flex: none; font-family: var(--mono); font-size: 12.5px; }
 
-@media (max-width: 640px) {
-  body { padding: 0 14px 48px; }
-  .topbar { margin: 0 -14px 4px; padding: 12px 14px; }
-  .item { padding: 12px 14px; }
-  .pad { padding: 14px; }
+/* ── จอแคบ ────────────────────────────────────────────────────────────
+   หน้านี้ถูกเปิดจากมือถือบ่อยกว่าที่คิด (ยืนอยู่หน้าเครื่องแล้วอยากสั่ง start/stop)
+   สิ่งที่พังก่อนเพื่อนคือแถวปุ่มที่เบียดจนกดผิด กับตารางที่ดันหน้าให้เลื่อนแนวนอนทั้งหน้า */
+@media (max-width: 720px) {
+  body { padding: 0 12px 48px; }
+  .topbar { margin: 0 -12px 4px; padding: 11px 12px; }
+  .topbar .wrap { gap: 9px; flex-wrap: wrap; }
+  /* ชื่อโฮสต์ยาวกว่าจอเสมอ — ตัดให้จบบรรทัดแทนที่จะดันปุ่ม Deploy ตกขอบ */
+  #host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #ver { display: none; }
+
+  .item { padding: 11px 12px; gap: 9px; }
+  .pad { padding: 12px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 9px; }
+  .kv { grid-template-columns: 108px 1fr; }
+  .find b { width: 88px; }
+
+  /* ปุ่มบนจอสัมผัสต้องกดถูกตัวโดยไม่ต้องเล็ง — 36px คือขั้นต่ำที่ยังไม่เทอะทะ */
+  button { min-height: 36px; padding: 8px 12px; }
+  input, select { min-height: 38px; font-size: 16px; }   /* 16px = iOS ไม่ซูมเข้าตอนโฟกัส */
+  input { min-width: 0; }
+  .ipedit { width: 100%; }
+
+  /* เมนูคำสั่งของโมเดลบนเครื่องอื่น เยื้อง 22px แล้วเหลือที่ให้ปุ่มไม่พอ */
+  .submenu { margin-left: 0; }
+  .submenu .dim { margin-left: 0; width: 100%; }
+
+  /* ของที่กว้างเกินจอต้องเลื่อนในกล่องตัวเอง ไม่ใช่ดันทั้งหน้า */
+  pre { padding: 12px; font-size: 11.5px; max-height: 260px; }
+  .npills { gap: 5px; }
+}
+
+/* จอแคบมาก (มือถือแนวตั้ง) — ปุ่มกลุ่มท้ายแถวย้ายลงบรรทัดใหม่เต็มความกว้าง */
+@media (max-width: 420px) {
+  h1 { padding-right: 10px; }
+  .item .grow { flex-basis: 100%; }
+  .gauges { grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); }
 }
 </style>
 </head>
@@ -678,6 +710,19 @@ async function followJob(slug, jobId) {
   tick();
 }
 
+// รอ job ที่ไม่ได้ผูกกับ panel ของโมเดล (งานระดับเครื่อง เช่น install)
+// followJob() เขียนลง #panel-<slug> ซึ่งงานแบบนี้ไม่มี
+async function waitForJob(jobId, onTick) {
+  for (;;) {
+    const r = await api(`/api/jobs/${jobId}`);
+    if (!r.ok) return { exit_code: 1, output: "job หายไประหว่างทาง" };
+    const d = await r.json();
+    if (onTick) onTick(d);
+    if (!d.running) return d;
+    await new Promise(done => setTimeout(done, 1500));
+  }
+}
+
 function togglePanel(slug, key, render) {
   ["doctor", "logs", "tests", "opts"].filter(k => k !== key).forEach(k => open.delete(slug + " " + k));
   const panel = document.getElementById("panel-" + slug);
@@ -925,6 +970,7 @@ function readNodeOpts(node, slug) {
 const openModelMenus = new Set();
 // payload ล่าสุดของแต่ละเครื่อง — ใช้วาดใหม่ตอนพับ/กางเมนูโดยไม่ต้องยิง SSH ซ้ำ
 const lastNodeData = new Map();
+const nodeHosts = new Map();   // ชื่อเครื่อง → alt_hosts ที่ตั้งไว้ (เติมค่าเดิมตอนแก้)
 
 function nodeAddForm() {
   const box = document.getElementById("nodes");
@@ -959,6 +1005,10 @@ function nodeCard(node) {
       </div>
       <span class="mono muted nver"></span>
       <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
+      <button data-nact="install" data-node="${esc(node.name)}"
+        title="Install or update LMDS on that machine over SSH">install</button>
+      <button data-nact="hosts" data-node="${esc(node.name)}"
+        title="Other addresses to try when the main one is unreachable">addresses</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
     </div>
     <div class="nbody"></div>`;
@@ -1030,7 +1080,11 @@ function nodeModelsMarkup(name, data) {
     return `<div class="pad" style="border-top:1px solid var(--line)">
       <div class="warn-line" style="color:var(--bad)">Unreachable — ${esc((data.error || "").split("\n")[0])}</div>
       <div class="dim">The hub reaches nodes over SSH only. Check the machine is on and
-        <code>lmds</code> is on its PATH.</div></div>`;
+        <code>lmds</code> is on its PATH.</div>
+      <div class="field" style="margin-top:10px">
+        <button data-nact="install" data-node="${esc(name)}">Install LMDS over SSH</button>
+        <span class="dim">git clone + install.sh on that machine — takes a few minutes</span>
+      </div></div>`;
   }
   const models = data.models || [];
   const host = data.host || {};
@@ -1136,6 +1190,7 @@ async function refreshNodes() {
   const seen = new Set();
   for (const node of nodes) {
     seen.add(node.name);
+    nodeHosts.set(node.name, node.alt_hosts || []);
     if (!nodeRows.has(node.name)) {
       const block = nodeCard(node);
       box.appendChild(block);
@@ -1200,6 +1255,47 @@ document.addEventListener("click", async e => {
   }
   if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
+  if (nact === "install") {
+    if (!confirm(`Install or update LMDS on ${node}?
+
+`
+      + `It clones the repo and runs install.sh over SSH. Docker and the NVIDIA toolkit are `
+      + `skipped because they need sudo, which there is no terminal here to answer.`)) return;
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = "installing…";
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/install`,
+                        { method: "POST", headers: { "content-type": "application/json" },
+                          body: JSON.stringify({ with_prereq: false }) });
+    const d = await r.json();
+    if (!r.ok) { btn.disabled = false; btn.textContent = original; alert(d.detail || "Could not start"); return; }
+    // ใช้เวลาหลายนาที — ตามผลเหมือน job อื่นแล้วค่อยรีเฟรชเครื่องนั้น
+    const done = await waitForJob(d.id, line => { btn.textContent = "installing…"; });
+    btn.disabled = false;
+    btn.textContent = original;
+    showNodeOutput(node, `install${done.exit_code === 0 ? "" : " (failed)"}`, done.output || "");
+    if (done.exit_code === 0) refreshNodes();
+    return;
+  }
+  if (nact === "hosts") {
+    const current = (nodeHosts.get(node) || []).join(", ");
+    const answer = prompt(
+      `Other addresses for ${node}, comma separated.
+
+`
+      + `The hub tries the main address first, then these — useful when the same machine is `
+      + `reachable on the LAN at the office and over a VPN from outside.`, current);
+    if (answer === null) return;
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ alt_hosts: answer }),
+    });
+    const d = await r.json();
+    if (!r.ok) { alert(d.detail || "Could not save"); return; }
+    nodeHosts.set(node, d.alt_hosts || []);
+    refreshNodes();
+    return;
+  }
   if (nact === "forget") {
     if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
     await api(`/api/nodes/${encodeURIComponent(node)}`, { method: "DELETE" });

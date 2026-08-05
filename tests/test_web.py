@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -962,3 +964,132 @@ def test_autostart_badge_is_not_shown_for_every_model():
     assert 'm.autostart ? `<span class="tag">autostart</span>`' not in page
     assert 'auto === "enabled"' in page, "ต้องเทียบค่ากับ enabled ตรง ๆ"
     assert 'auto === "n/a"' in page, "เครื่องที่ไม่มี systemd ต้องไม่มีปุ่มที่กดแล้วล้มแน่ ๆ"
+
+
+# ── ติดตั้ง LMDS บนเครื่องอื่นจากหน้าเว็บ ─────────────────────────────────────
+def _wait_job(client, job_id, tries=200):
+    for _ in range(tries):
+        data = client.get(f"/api/jobs/{job_id}").json()
+        if not data["running"]:
+            return data
+        time.sleep(0.02)
+    raise AssertionError("job ไม่จบสักที")
+
+
+def test_web_can_install_lmds_on_a_node(registered, monkeypatch):
+    """เครื่องที่ยังไม่มี lmds ขึ้นว่าติดต่อไม่ได้ตลอด — คนใช้หน้าเว็บอย่างเดียวเคยไม่มีทางออก
+
+    hub ไม่ได้ส่ง agent ไปรัน แต่เรียก `lmds agent info` บนเครื่องนั้น เครื่องที่ยังไม่ได้ลง
+    จึงต้องมีคน ssh เข้าไปลงเองก่อน ซึ่งขัดกับที่หน้าเว็บมีไว้เพื่อไม่ต้อง ssh
+    """
+    from lmds.nodes.ssh import Result
+
+    calls = []
+
+    def fake_install(node, timeout=1800, with_prereq=False):
+        calls.append((node.name, with_prereq))
+        return Result(0, "Cloning...\nlmds 0.1.0\n", "")
+
+    monkeypatch.setattr("lmds.nodes.install_lmds", fake_install)
+
+    client = TestClient(create_app())
+    job = client.post("/api/nodes/spark2/install", json={}).json()
+    done = _wait_job(client, job["id"])
+
+    assert done["exit_code"] == 0
+    assert calls == [("spark2", False)]
+    assert "lmds 0.1.0" in done["output"]
+    assert "พร้อมแล้ว" in done["output"]
+
+
+def test_install_defaults_to_skipping_sudo_steps(registered, monkeypatch):
+    """--with-prereq ต้องใช้ sudo แบบไม่ถามรหัส — หน้าเว็บไม่มี tty ให้กรอก ค้างแล้ว timeout"""
+    from lmds.nodes.ssh import Result
+
+    seen = {}
+    monkeypatch.setattr(
+        "lmds.nodes.install_lmds",
+        lambda node, timeout=1800, with_prereq=False: (
+            seen.update(with_prereq=with_prereq) or Result(0, "ok", "")
+        ),
+    )
+    client = TestClient(create_app())
+    _wait_job(client, client.post("/api/nodes/spark2/install", json={}).json()["id"])
+    assert seen["with_prereq"] is False
+
+
+def test_failed_install_reports_the_real_output(registered, monkeypatch):
+    """exit code เปล่า ๆ ไม่ช่วยอะไร — ต้องเห็นว่า install.sh บ่นอะไร"""
+    from lmds.nodes.ssh import Result
+
+    monkeypatch.setattr(
+        "lmds.nodes.install_lmds",
+        lambda node, timeout=1800, with_prereq=False: Result(1, "", "git: command not found"),
+    )
+    client = TestClient(create_app())
+    done = _wait_job(client, client.post("/api/nodes/spark2/install", json={}).json()["id"])
+    assert done["exit_code"] == 1
+    assert "git: command not found" in done["output"]
+
+
+def test_install_on_an_unknown_node_is_404(registered):
+    assert TestClient(create_app()).post("/api/nodes/nope/install", json={}).status_code == 404
+
+
+def test_two_installs_on_the_same_node_do_not_overlap(registered, monkeypatch):
+    """git pull ซ้อน git pull บนเครื่องเดียวกัน = repo พัง"""
+    from lmds.nodes.ssh import Result
+
+    release = threading.Event()
+    monkeypatch.setattr(
+        "lmds.nodes.install_lmds",
+        lambda node, timeout=1800, with_prereq=False: (release.wait(5), Result(0, "ok", ""))[1],
+    )
+    client = TestClient(create_app())
+    first = client.post("/api/nodes/spark2/install", json={})
+    assert first.status_code == 200
+    second = client.post("/api/nodes/spark2/install", json={})
+    assert second.status_code == 409
+    release.set()
+    _wait_job(client, first.json()["id"])
+
+
+def test_node_job_key_does_not_collide_with_a_model_slug(registered, monkeypatch):
+    """งานของเครื่องใช้ key คนละ namespace กับ slug ของโมเดล ไม่งั้นบล็อกกันเอง"""
+    from lmds.nodes.ssh import Result
+
+    monkeypatch.setattr(
+        "lmds.nodes.install_lmds",
+        lambda node, timeout=1800, with_prereq=False: Result(0, "ok", ""),
+    )
+    client = TestClient(create_app())
+    done = _wait_job(client, client.post("/api/nodes/spark2/install", json={}).json()["id"])
+    assert done["slug"] == "node:spark2"
+
+
+# ── ที่อยู่สำรอง (alt_hosts) ──────────────────────────────────────────────────
+def test_alt_hosts_can_be_set_from_the_web(registered):
+    """เครื่องเดียวกันเข้าได้หลายทาง (LAN ที่ออฟฟิศ, VPN ตอนออกนอก) — เดิมมีแต่ `lmds node set`"""
+    client = TestClient(create_app())
+    data = client.patch("/api/nodes/spark2", json={"alt_hosts": "100.64.0.6, spark2.local"}).json()
+    assert data["alt_hosts"] == ["100.64.0.6", "spark2.local"]
+    assert client.get("/api/nodes").json()["nodes"][0]["alt_hosts"] == ["100.64.0.6", "spark2.local"]
+
+
+def test_alt_hosts_accepts_a_list_too(registered):
+    client = TestClient(create_app())
+    data = client.patch("/api/nodes/spark2", json={"alt_hosts": ["a.local", "b.local"]}).json()
+    assert data["alt_hosts"] == ["a.local", "b.local"]
+
+
+def test_alt_hosts_can_be_cleared(registered):
+    client = TestClient(create_app())
+    client.patch("/api/nodes/spark2", json={"alt_hosts": "x.local"})
+    assert client.patch("/api/nodes/spark2", json={"alt_hosts": ""}).json()["alt_hosts"] == []
+
+
+def test_blank_entries_are_dropped(registered):
+    """พิมพ์จุลภาคเกินมาไม่ควรกลายเป็นที่อยู่ว่างที่ ssh พยายามต่อ"""
+    client = TestClient(create_app())
+    data = client.patch("/api/nodes/spark2", json={"alt_hosts": "a.local, , ,b.local,"}).json()
+    assert data["alt_hosts"] == ["a.local", "b.local"]

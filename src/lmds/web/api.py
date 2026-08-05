@@ -319,7 +319,9 @@ def create_app(token: str = "") -> FastAPI:
         return {"nodes": [
             {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
              "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
-             "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface}
+             "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface,
+             # ที่อยู่สำรอง — หน้าเว็บต้องเติมค่าเดิมให้ตอนแก้ ไม่ให้พิมพ์ใหม่ทั้งหมด
+             "alt_hosts": n.alt_hosts}
             for n in load()
         ]}
 
@@ -435,6 +437,12 @@ def create_app(token: str = "") -> FastAPI:
         if find(name) is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
         changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note") if k in body}
+        if "alt_hosts" in body:
+            # เครื่องเดียวกันเข้าได้หลายทาง (LAN ตอนอยู่ออฟฟิศ, Tailscale ตอนออกนอก)
+            # รับได้ทั้ง list และสตริงคั่นจุลภาค เพราะช่องกรอกบนหน้าเว็บเป็นบรรทัดเดียว
+            raw = body["alt_hosts"]
+            items = raw if isinstance(raw, list) else str(raw).split(",")
+            changes["alt_hosts"] = [str(h).strip() for h in items if str(h).strip()]
         if not changes:
             raise HTTPException(status_code=400, detail="ไม่มีฟิลด์ที่แก้ได้ในคำขอนี้")
         try:
@@ -442,7 +450,48 @@ def create_app(token: str = "") -> FastAPI:
         except NodeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"name": node.name, "cluster_ip": node.cluster_ip,
-                "cluster_iface": node.cluster_iface, "note": node.note}
+                "cluster_iface": node.cluster_iface, "note": node.note,
+                "alt_hosts": node.alt_hosts}
+
+    @app.post("/api/nodes/{name}/install", dependencies=guarded)
+    def node_install(name: str, body: dict | None = None) -> dict:
+        """ติดตั้ง/อัปเดต LMDS บนเครื่องนั้นผ่าน SSH — เดิมทำได้แต่ทาง CLI
+
+        ทุกเครื่องที่ hub คุมต้องมี `lmds` อยู่บนเครื่อง (hub ไม่ได้ส่ง agent ไปรัน แต่เรียก
+        `lmds agent info` ผ่าน SSH) · เครื่องที่ยังไม่ได้ลงจึงขึ้นว่าติดต่อไม่ได้ตลอด
+        และคนใช้หน้าเว็บอย่างเดียวก็ติดตรงนี้โดยไม่มีทางออก
+
+        ใช้เวลาหลายนาที (git clone + pip install) จึงเป็น job ไม่ใช่ request ที่รอจนจบ
+        """
+        from lmds.nodes import NodeError, find, install_lmds, probe, update
+
+        from . import jobs
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        # --with-prereq ต้องใช้ sudo แบบไม่ถามรหัสผ่าน ซึ่งหน้าเว็บไม่มี tty ให้กรอก
+        # เปิดให้เลือกได้แต่บอกไว้ชัด ๆ ว่าเครื่องที่ sudo ถามรหัสจะค้างแล้ว timeout
+        with_prereq = bool((body or {}).get("with_prereq"))
+
+        def work() -> tuple[int, str]:
+            result = install_lmds(node, with_prereq=with_prereq)
+            output = (result.stdout or "") + (result.stderr or "")
+            if not result.ok:
+                return result.exit_code or 1, output
+            try:
+                info = probe(node)
+            except NodeError as exc:
+                return 1, f"{output}\nติดตั้งแล้วแต่ยังอ่านสถานะไม่ได้: {exc}\n"
+            version = (info.get("host") or {}).get("lmds_version", "")
+            update(name, lmds_version=version, last_error="")
+            return 0, f"{output}\nพร้อมแล้ว — {name} รัน lmds {version}\n"
+
+        try:
+            job = jobs.start_task(f"node:{name}", "install", work)
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return job.payload()
 
     @app.post("/api/nodes", dependencies=guarded)
     def node_add(body: dict) -> dict:

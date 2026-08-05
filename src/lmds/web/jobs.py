@@ -115,6 +115,38 @@ def controller_env(options: dict | None) -> dict:
     return env
 
 
+def start_task(key: str, command: str, work) -> Job:
+    """งานยาวที่ไม่ใช่ controller — เช่นติดตั้ง LMDS บนเครื่องอื่นผ่าน SSH
+
+    `work()` คืน `(exit_code, output)` · ไม่ stream ทีละบรรทัดเพราะ ssh ฝั่งนี้รอผลทีเดียว
+    (CLI ก็บล็อกแล้วพิมพ์ทีเดียวเหมือนกัน) — สิ่งที่ได้จากการเป็น job คือหน้าเว็บไม่ค้าง
+    และมีที่ให้กันไม่ให้สั่งซ้อนกับงานเดิมของ key เดียวกัน
+
+    key ต้องไม่ชนกับ slug ของโมเดล — ผู้เรียกใส่ prefix เอง (เช่น "node:spark2")
+    """
+    with _LOCK:
+        current = _JOBS.get(_ACTIVE.get(key, ""))
+        if current and current.running:
+            raise JobError(f"{key} กำลังรัน '{current.command}' อยู่ — รอให้จบก่อน")
+        job = Job(id=uuid.uuid4().hex, slug=key, command=command, steps=[command])
+        _JOBS[job.id] = job
+        _ACTIVE[key] = job.id
+
+    def run() -> None:
+        try:
+            code, output = work()
+        except Exception as exc:                     # noqa: BLE001 — งานเบื้องหลังต้องไม่ทำให้เว็บล้ม
+            job.lines.append(f"{type(exc).__name__}: {exc}\n")
+            job.exit_code = 1
+            return
+        for line in (output or "").splitlines(keepends=True):
+            job.lines.append(line)
+        job.exit_code = code
+
+    threading.Thread(target=run, daemon=True).start()
+    return job
+
+
 def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:
     if command not in ALLOWED:
         raise JobError(f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
