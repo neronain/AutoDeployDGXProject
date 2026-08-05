@@ -57,10 +57,9 @@ def _dir_size(path: Path, limit_files: int = 20000) -> int:
         if seen > limit_files:
             break
         try:
+            # HF cache เก็บไฟล์จริงใน blobs/ แล้ว snapshots/ เป็น symlink ชี้มา — นับทั้งสองอย่าง
+            # จะได้ขนาดเป็นเท่าตัว ซึ่งทำให้วางแผนพื้นที่ผิด · นับเฉพาะไฟล์จริง
             if entry.is_file() and not entry.is_symlink():
-                total += entry.stat().st_size
-            elif entry.is_symlink():
-                # HF cache ใช้ symlink ชี้ไป blobs/ — ขนาดจริงอยู่ปลายทาง
                 total += entry.stat().st_size
         except OSError:
             continue

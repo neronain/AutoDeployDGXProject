@@ -105,6 +105,20 @@ label { font-size: 13px; color: var(--fg2); }
   <div class="card" id="nodes"><div class="empty">Loading…</div></div>
 
   <div class="sec row between" style="align-items:baseline">
+    <span>Weights already on disk</span>
+    <button id="scan-run" style="font-size:12px">Scan</button>
+  </div>
+  <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
+    <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
+
+  <div class="sec row between" style="align-items:baseline">
+    <span>Proven recipes</span>
+    <button id="recipes-load" style="font-size:12px">Show</button>
+  </div>
+  <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
+    <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
+
+  <div class="sec row between" style="align-items:baseline">
     <span>Cluster fabric</span>
     <button id="cluster-check" style="font-size:12px">Check now</button>
   </div>
@@ -935,8 +949,10 @@ function clusterGroupRow(g) {
       "duplicate-ip": "The same cluster IP is set on more than one machine: ",
       "split-fabric": "These cluster IPs are on different subnets and cannot reach each other: ",
     }[b.kind] + b.names.join(", "))}</div>`).join("")}
-    ${g.ready ? `<div class="dim" style="margin-top:6px">Deploy across these with a stacked bundle:
-      <code>lmds deploy --topology stacked</code></div>` : ""}
+    ${g.ready ? `<div class="dim" style="margin-top:6px">Deploy across these:
+      <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> on
+      <b style="font-weight:500">${esc(g.members[0].name)}</b>, then
+      <code>lmds node cluster --write &lt;slug&gt; --on ${esc(g.members[0].name)}</code></div>` : ""}
   </div>`;
 }
 
@@ -980,6 +996,49 @@ document.addEventListener("click", async e => {
     return;
   }
   loadCluster();
+});
+
+
+// ── weights already on disk / proven recipes ─────────────────────────────
+// ทั้งสองส่วนเป็น read-only — ปุ่มที่เปลี่ยนสถานะเครื่องอยู่ที่อื่นทั้งหมด
+async function loadScan() {
+  const box = document.getElementById("scan");
+  box.innerHTML = `<div class="empty">Scanning…</div>`;
+  const d = await (await api("/api/scan?all_nodes=true")).json();
+  const blocks = Object.entries(d).map(([where, models]) => {
+    if (!models.length) return `<div class="dim">${esc(where)}: nothing found (or unreachable)</div>`;
+    return `<div style="margin-bottom:10px"><b style="font-weight:500">${esc(where)}</b>
+      ${models.map(m => `<div class="field" style="margin:4px 0">
+        <span class="npill">${esc(m.kind)}</span>
+        <span class="grow">${esc(m.name)}${m.layout === "root"
+          ? ' <span class="dim">(legacy cache layout — HF_HUB_CACHE is set for you)</span>' : ""}</span>
+        <span class="mono muted">${m.size_gb} GB${m.shards ? " · " + m.shards + " shards" : ""}</span>
+      </div>`).join("")}</div>`;
+  });
+  box.innerHTML = `<div class="pad">${blocks.join("")}</div>`;
+}
+
+async function loadRecipes() {
+  const box = document.getElementById("recipes");
+  box.innerHTML = `<div class="empty">Loading…</div>`;
+  const { recipes } = await (await api("/api/recipes")).json();
+  box.innerHTML = `<div class="pad">${recipes.map(r => {
+    const sets = [r.image ? "image" : "", ...Object.keys(r.serving || {}),
+                  r.tools ? "tools:" + r.tools : "", r.reasoning ? "reasoning:" + r.reasoning : ""]
+                 .filter(Boolean);
+    return `<div style="margin-bottom:12px">
+      <div class="row between"><b style="font-weight:500">${esc(r.label || r.match)}</b>
+        <span class="dim">${esc(r.engine)}</span></div>
+      <div class="npills" style="margin:4px 0">${sets.map(s => `<span class="npill">${esc(s)}</span>`).join("")}</div>
+      <div class="dim">verified on ${esc(r.validated_on || "—")} ·
+        <a href="${esc(r.source)}" target="_blank" rel="noopener">source</a></div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+document.addEventListener("click", e => {
+  if (e.target.id === "scan-run") loadScan();
+  if (e.target.id === "recipes-load") loadRecipes();
 });
 
 async function refresh() {

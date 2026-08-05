@@ -310,3 +310,21 @@ def test_failover_happens_on_timeout(monkeypatch):
     monkeypatch.setattr(ssh, "_run_ssh", fake)
     result = ssh.run(make(host="a", alt_hosts=["b"]), "true")
     assert tried == ["ops@a", "ops@b"] and result.stdout == "ok"
+
+
+def test_scanner_does_not_double_count_hf_symlinks(tmp_path, monkeypatch):
+    """HF cache เก็บไฟล์จริงใน blobs/ แล้ว snapshots/ เป็น symlink ชี้มา —
+    นับทั้งสองอย่างได้ขนาดเป็นเท่าตัว แล้ววางแผนพื้นที่ผิด"""
+    from lmds import scanner
+
+    root = tmp_path / "hub" / "models--org--model"
+    (root / "blobs").mkdir(parents=True)
+    (root / "snapshots" / "abc").mkdir(parents=True)
+    blob = root / "blobs" / "deadbeef"
+    blob.write_bytes(b"x" * 4096)
+    (root / "snapshots" / "abc" / "model.safetensors").symlink_to(blob)
+
+    monkeypatch.setattr(scanner, "candidate_roots", lambda extra=None: [tmp_path])
+    found = [m for m in scanner.scan() if m.kind == "hf"]
+    assert len(found) == 1
+    assert found[0].size_bytes == 4096, "นับ symlink ซ้ำกับ blob"

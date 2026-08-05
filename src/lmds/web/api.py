@@ -287,6 +287,43 @@ def create_app(token: str = "") -> FastAPI:
         update(name, last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
         return {"name": name, "reachable": True, "error": "", **info}
 
+    @app.get("/api/scan", dependencies=guarded)
+    def scan_weights(all_nodes: bool = False) -> dict:
+        """weight ที่มีอยู่แล้วบนเครื่อง — อ่านอย่างเดียว ไม่ย้ายไม่ลบ"""
+        import json as json_module
+
+        from lmds.scanner import scan
+
+        def rows(models) -> list[dict]:
+            return [{"kind": m.kind, "name": m.name, "path": m.path, "size_gb": m.size_gb,
+                     "shards": m.shard_count, "layout": m.layout} for m in models]
+
+        payload = {"host": rows(scan())}
+        if all_nodes:
+            from lmds.nodes import NodeError, load, run as run_remote
+
+            for node in load():
+                try:
+                    result = run_remote(node, "lmds scan --json", timeout=300)
+                    payload[node.name] = json_module.loads(result.stdout).get("host", []) \
+                        if result.ok else []
+                except (NodeError, json_module.JSONDecodeError, ValueError):
+                    payload[node.name] = []
+        return payload
+
+    @app.get("/api/recipes", dependencies=guarded)
+    def recipes_list() -> dict:
+        """สูตรที่รันผ่านจริง — สิ่งที่ใช้แทน LLM เมื่อเครื่องไม่มี provider"""
+        from lmds.recipes import load_catalog
+
+        return {"recipes": [
+            {"match": r.match, "label": r.label, "engine": r.engine, "image": r.image,
+             "serving": r.serving, "tools": r.tool_calling.get("parser"),
+             "reasoning": r.reasoning.get("parser"), "notes": r.notes,
+             "source": r.source, "validated_on": r.validated_on}
+            for r in load_catalog()
+        ]}
+
     @app.get("/api/cluster", dependencies=guarded)
     def cluster_view() -> dict:
         """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริง จึงช้ากว่าหน้าอื่น

@@ -660,3 +660,21 @@ def test_node_command_allowlist_blocks_anything_else(registered, monkeypatch):
     """ปุ่มบนหน้าเว็บสั่งข้ามเครื่องได้ — ต้องจำกัดคำสั่งไว้เท่าที่จำเป็น"""
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/rm-rf")
     assert r.status_code == 400
+
+
+def test_page_only_suggests_commands_that_exist():
+    """หน้าเว็บเคยแนะนำ `lmds deploy --topology stacked` ซึ่งไม่มีอยู่จริง —
+    คนที่เชื่อหน้าเว็บจะพิมพ์แล้วเจอ error ทันที"""
+    import re
+
+    from typer.main import get_command
+
+    from lmds.cli.main import app
+
+    body = TestClient(create_app()).get("/").text
+    known = set(get_command(app).commands)
+    for match in re.finditer(r"lmds ([a-z-]+)((?: --?[a-z-]+)*)", body):
+        command, flags = match.group(1), match.group(2)
+        assert command in known, f"หน้าเว็บแนะนำคำสั่งที่ไม่มี: lmds {command}"
+        if command == "deploy":
+            assert "--topology" not in flags, "ไม่มี --topology — topology มาจาก --target"
