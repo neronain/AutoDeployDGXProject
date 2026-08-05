@@ -228,14 +228,15 @@
 ### Fixed
 
 - **`prepare-runtime` ของ llama.cpp แบบ native หา `nvcc` ไม่เจอเมื่อไม่ได้รันจาก login shell**
-  · `/usr/local/cuda/bin` ถูกใส่ PATH ให้เฉพาะ login shell (DGX OS ทำผ่าน `/etc/profile.d`)
-  งานที่รันจาก**หน้าเว็บ, systemd หรือ ssh แบบสั่งคำสั่งตรง ๆ** จึงหาไม่เจอทั้งที่ไฟล์อยู่ตรงนั้น
+  · งานที่รันจาก**หน้าเว็บ, systemd หรือ ssh แบบสั่งคำสั่งตรง ๆ** อาจไม่ได้ PATH
+  ชุดเดียวกับ login shell จึงหา `nvcc` ไม่เจอทั้งที่ไฟล์อยู่ใน CUDA Toolkit
   แล้วไปตายลึก ๆ ที่ cmake ด้วย `No CMAKE_CUDA_COMPILER could be found` ซึ่งไม่ได้บอกว่าต้องทำอะไร
   · ตอนนี้เคารพ `CUDACXX`, `CUDA_HOME`, `CUDA_PATH` ก่อน แล้วค่อยหาเองใน
-  `/usr/local/cuda/bin` และ `/usr/local/cuda-*/bin` พร้อมเติม PATH ให้
+  PATH, `/usr/local/cuda/bin` และ `/usr/local/cuda-*/bin` ตามลำดับพร้อมเติม PATH ให้
+  ถ้าพบ toolkit แบบระบุเวอร์ชันหลายตัวแต่ไม่มี symlink หลักจะให้ผู้ใช้เลือก ไม่เดาเวอร์ชัน
   ถ้าไม่มีจริงจึงหยุดพร้อมคำสั่งแก้ (เดิมแค่เตือนแล้วปล่อยให้ build ล้มทีหลัง)
-  · เคสจริง: DGX Spark ที่มี `/usr/local/cuda/bin/nvcc` (CUDA 13.0) อยู่แล้ว แต่ `lmds up`
-  ล้มที่ขั้นนี้ทุกครั้งเพราะรันผ่าน subprocess ที่ไม่ใช่ login shell
+  · เคสที่รายงาน: DGX Spark มี `/usr/local/cuda/bin/nvcc` อยู่แล้ว แต่ `lmds up`
+  ที่รันผ่าน subprocess หา compiler ไม่พบ
 
 ### Changed
 

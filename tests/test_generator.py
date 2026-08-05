@@ -272,13 +272,55 @@ def test_llamacpp_prepare_finds_nvcc_outside_login_shell(isolated_config, tmp_pa
     assert "/usr/local/cuda/bin" in text
     assert 'export PATH="${cuda_bin}:${PATH}"' in text
     assert '"${CUDACXX:-}"' in text
-    assert '"${CUDA_HOME:-}/bin/nvcc"' in text
-    assert '"${CUDA_PATH:-}/bin/nvcc"' in text
+    assert '"${CUDA_HOME%/}/bin/nvcc"' in text
+    assert '"${CUDA_PATH%/}/bin/nvcc"' in text
     assert 'export CUDACXX="$nvcc_candidate"' in text
     # ต้องตาย ไม่ใช่แค่เตือน — template นี้ build ด้วย -DGGML_CUDA=ON เสมอ
     assert "ไม่พบ nvcc" in text
     nvcc_die = next(ln for ln in text.splitlines() if "ไม่พบ nvcc" in ln)
     assert "die" in nvcc_die, nvcc_die
+
+
+def test_llamacpp_nvcc_selection_honors_explicit_precedence(isolated_config, tmp_path):
+    """CUDA_HOME ต้องชนะ nvcc ใน PATH และ invalid CUDACXX ต้องไม่ fallback เงียบ."""
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    start = text.index("install_build_dependencies() {")
+    end = text.index("\n}\n\nprepare_runtime()", start) + 2
+    function = text[start:end]
+
+    path_bin = tmp_path / "path-bin"
+    cuda_home = tmp_path / "chosen-cuda"
+    path_bin.mkdir()
+    (cuda_home / "bin").mkdir(parents=True)
+    for compiler in (path_bin / "nvcc", cuda_home / "bin" / "nvcc"):
+        compiler.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        compiler.chmod(0o755)
+
+    probe = (
+        "set -Eeuo pipefail\n"
+        "die() { printf 'DIE:%s\\n' \"$*\" >&2; exit 97; }\n"
+        f"{function}\n"
+        "install_build_dependencies\n"
+        "printf 'SELECTED=%s\\n' \"$CUDACXX\"\n"
+    )
+    env = {
+        "PATH": f"{path_bin}:/usr/local/bin:/usr/bin:/bin",
+        "CUDA_HOME": str(cuda_home),
+    }
+    selected = subprocess.run(
+        ["bash", "-c", probe], env=env, text=True, capture_output=True, check=False,
+    )
+    assert selected.returncode == 0, selected.stderr
+    assert f"SELECTED={cuda_home}/bin/nvcc" in selected.stdout
+
+    invalid = subprocess.run(
+        ["bash", "-c", probe],
+        env={"PATH": env["PATH"], "CUDACXX": str(tmp_path / "missing-nvcc")},
+        text=True, capture_output=True, check=False,
+    )
+    assert invalid.returncode == 97
+    assert "CUDACXX ชี้คอมไพเลอร์ที่รันไม่ได้" in invalid.stderr
 
 
 def test_llamacpp_rtx_uses_docker_mode(isolated_config, tmp_path):
