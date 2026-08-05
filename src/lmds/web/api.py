@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import secrets
 import shlex
@@ -17,11 +19,16 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 import lmds
+from lmds.web import state
 
 STATIC = Path(__file__).parent / "static"
+
+# ถี่แค่ไหนถึงจะเช็คว่ามีอะไรเปลี่ยน — แค่เทียบ int ในหน่วยความจำ ไม่แตะ SSH
+_EVENT_TICK = 0.5
+_EVENT_KEEPALIVE = 15.0
 
 
 def _timestamp() -> str:
@@ -62,6 +69,9 @@ def create_app(token: str = "") -> FastAPI:
 
     guarded = [Depends(require_token)]
 
+    # ตัวเดียวที่คุยกับ node จริง — endpoint ทุกตัวอ่านจากแคชที่มันเติมให้ จึงตอบทันทีเสมอ
+    state.start_refresher()
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
@@ -72,13 +82,49 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.get("/api/host", dependencies=guarded)
     def host() -> dict:
-        return _host_payload()
+        # อ่านจากแคช — แต่ครั้งแรกยังไม่มีข้อมูล ต้องคำนวณสด ไม่งั้นหน้าเว็บว่างเปล่าตอนเปิด
+        cached = (state.STORE.snapshot()["host"] or {}).get("data")
+        return cached["host"] if cached else _host_payload()
 
     @app.get("/api/models", dependencies=guarded)
     def models() -> dict:
         from lmds.fleet import discover
 
+        cached = (state.STORE.snapshot()["host"] or {}).get("data")
+        if cached:
+            return {"models": cached["models"]}
         return {"models": [_model_payload(s) for s in discover()]}
+
+    @app.get("/api/events", dependencies=guarded)
+    async def events(request: Request) -> StreamingResponse:
+        """สตรีมสถานะแทนการให้เบราว์เซอร์ถามซ้ำ ๆ
+
+        เดิม poll ทุก 5 วิ = SSH ไปทุกเครื่องทุกรอบ · ผ่าน relay 150ms ต่อเครื่องแล้วกระตุก
+        ตอนนี้ refresher เบื้องหลังคุยกับ node ตัวเดียว แล้ว push ให้ทุกหน้าที่เปิดอยู่
+
+        เป็น async และเช็ก is_disconnected() เพราะ generator แบบ blocking จะค้างอยู่หลัง
+        ผู้ใช้ปิดแท็บไปแล้ว — เปิดหน้าเว็บทิ้งไว้ทั้งวันจะสะสม thread ค้างเรื่อย ๆ
+        """
+
+        async def stream():
+            last = -1
+            idle = 0.0
+            while not await request.is_disconnected():
+                snapshot = state.STORE.snapshot()
+                if snapshot["version"] != last:
+                    last, idle = snapshot["version"], 0.0
+                    yield f"data: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
+                else:
+                    idle += _EVENT_TICK
+                    if idle >= _EVENT_KEEPALIVE:
+                        idle = 0.0
+                        yield ": keepalive\n\n"   # กัน proxy ปิด connection ที่เงียบนานเกิน
+                # เทียบเลขเวอร์ชันในหน่วยความจำ ไม่ได้แตะ SSH — ถูกมากพอที่จะเช็คถี่ ๆ ได้
+                await asyncio.sleep(_EVENT_TICK)
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
 
     @app.get("/api/models/{slug}/doctor", dependencies=guarded)
     def doctor(slug: str) -> dict:
@@ -139,14 +185,17 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/start", dependencies=guarded)
     def start(slug: str, body: dict | None = None) -> JSONResponse:
+        state.STORE.invalidate_local()
         return _action(slug, "start", body)
 
     @app.post("/api/models/{slug}/stop", dependencies=guarded)
     def stop(slug: str, body: dict | None = None) -> JSONResponse:
+        state.STORE.invalidate_local()
         return _action(slug, "stop", body)
 
     @app.post("/api/models/{slug}/restart", dependencies=guarded)
     def restart(slug: str, body: dict | None = None) -> JSONResponse:
+        state.STORE.invalidate_local()
         return _action(slug, "restart", body)
 
     # ── deploy wizard ──────────────────────────────────────────────────────
@@ -197,6 +246,7 @@ def create_app(token: str = "") -> FastAPI:
     # ── งานที่ใช้เวลานาน: download / start / verify ────────────────────────
     @app.post("/api/models/{slug}/run/{command}", dependencies=guarded)
     def run_command(slug: str, command: str, body: dict | None = None) -> dict:
+        state.STORE.invalidate_local()
         from lmds.fleet import find
 
         from . import jobs
@@ -236,6 +286,7 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/remove", dependencies=guarded)
     def remove(slug: str, body: dict | None = None) -> dict:
+        state.STORE.invalidate_local()
         from lmds.fleet import find, remove_server
 
         server = find(slug)
@@ -246,6 +297,7 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/autostart", dependencies=guarded)
     def autostart(slug: str, body: dict | None = None) -> dict:
+        state.STORE.invalidate_local()
         from lmds.fleet import FleetError, disable_autostart, enable_autostart, find
 
         server = find(slug)
@@ -272,13 +324,24 @@ def create_app(token: str = "") -> FastAPI:
         ]}
 
     @app.get("/api/nodes/{name}/inventory", dependencies=guarded)
-    def node_inventory(name: str) -> dict:
+    def node_inventory(name: str, refresh: bool = False) -> dict:
         """สถานะของ node หนึ่งเครื่อง — เครื่องล่มต้องไม่ทำให้ทั้งหน้าพัง จึงคืน reachable=false"""
         from lmds.nodes import NodeError, find, probe, update
 
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+
+        # ปกติอ่านจากแคช (ตอบทันทีแม้เครื่องนั้นอยู่ไกล) · refresh=true = ผู้ใช้กดเอง
+        if not refresh:
+            cached = state.STORE.snapshot()["nodes"].get(name)
+            if cached and not cached["stale"]:
+                if cached["data"]:
+                    return {"name": name, "reachable": True, "error": "",
+                            "age_seconds": cached["age_seconds"], **cached["data"]}
+                return {"name": name, "reachable": False, "error": cached["error"],
+                        "age_seconds": cached["age_seconds"], "host": None, "models": []}
+        state.STORE.mark_refreshing(name)
         try:
             info = probe(node)
         except NodeError as exc:
@@ -449,6 +512,7 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
         try:
             result = run(node, f"lmds {command} {shlex.quote(slug)}", timeout=1800)
+            state.STORE.force(name)   # สถานะเพิ่งเปลี่ยน — อย่าให้ผู้ใช้เห็นของเก่าอีก 15 วิ
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "slug": slug, "command": command,

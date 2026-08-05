@@ -1213,9 +1213,52 @@ async function refresh() {
 }
 
 api("/api/version").then(r => r.json()).then(d => document.getElementById("ver").textContent = "v" + d.version).catch(() => {});
+
+// ── live updates ────────────────────────────────────────────────────────
+// เดิม poll ทุก 5 วิ = SSH ไปทุกเครื่องทุกรอบ · ผ่าน relay 150ms ต่อเครื่องแล้วกระตุก
+// ตอนนี้ server มี refresher ตัวเดียวที่คุยกับ node แล้ว push มาให้ทุกหน้าที่เปิดอยู่
+let stream = null;
+let pollTimer = null;
+
+function applySnapshot(snap) {
+  const local = snap.host && snap.host.data;
+  if (local) {
+    renderHost(local.host, local.models);
+    renderFleet(local.models);
+  }
+  for (const [name, entry] of Object.entries(snap.nodes || {})) {
+    const row = nodeRows.get(name);
+    if (!row) continue;
+    const payload = entry.data
+      ? { name, reachable: true, error: "", age_seconds: entry.age_seconds, ...entry.data }
+      : { name, reachable: false, error: entry.error, age_seconds: entry.age_seconds,
+          host: null, models: [] };
+    // อย่าเขียนทับตอนผู้ใช้กำลังกดปุ่มอยู่ — ปุ่มจะกระโดดหนีมือ
+    if (busy) continue;
+    row.dot.className = "dot " + (entry.data ? "on" : "");
+    row.version.textContent = entry.data && entry.data.host
+      ? "v" + (entry.data.host.lmds_version || "") : "offline";
+    row.body.innerHTML = nodeModelsMarkup(name, payload);
+  }
+}
+
+function startStream() {
+  if (stream) stream.close();
+  const url = "/api/events" + (token ? "?token=" + encodeURIComponent(token) : "");
+  stream = new EventSource(url);
+  stream.onmessage = e => {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    try { applySnapshot(JSON.parse(e.data)); } catch { /* frame เสีย ข้ามไป */ }
+  };
+  // เบราว์เซอร์หรือ proxy บางตัวปิด SSE — ถอยไป poll แทนดีกว่าหน้าค้าง
+  stream.onerror = () => {
+    if (!pollTimer) pollTimer = setInterval(() => { if (!busy) refresh(); }, 5000);
+  };
+}
+
 refresh();
 refreshNodes();
-setInterval(() => { if (!busy) refresh(); }, 5000);
+startStream();
 </script>
 </body>
 </html>

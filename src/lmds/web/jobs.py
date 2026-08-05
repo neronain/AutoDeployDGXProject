@@ -45,6 +45,18 @@ class Job:
     exit_code: int | None = None
     process: subprocess.Popen | None = None
 
+    def __setattr__(self, name: str, value) -> None:
+        """งานจบ = สถานะบนดิสก์เปลี่ยนแล้ว (weight โหลดเสร็จ, server ขึ้น) — ทิ้งแคชทันที
+
+        ผูกไว้กับการตั้ง exit_code แทนที่จะทำหลัง thread จบ เพราะ "จบ" ในสายตาคนอื่นคือ
+        ตอน exit_code ไม่ใช่ None · ทำทีหลังจะมีช่วงที่หน้าเว็บเห็นว่างานจบแล้วแต่ยังได้ค่าเก่า
+        """
+        super().__setattr__(name, value)
+        if name == "exit_code" and value is not None:
+            from lmds.web.state import STORE
+
+            STORE.invalidate_local()
+
     @property
     def running(self) -> bool:
         return self.exit_code is None

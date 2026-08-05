@@ -717,3 +717,75 @@ def test_destructive_button_is_quiet_until_hovered():
     body = TestClient(create_app()).get("/").text
     assert "button.danger { color: var(--fg2)" in body
     assert 'class="danger">forget</button>' in body
+
+
+def test_events_endpoint_exists_as_a_stream():
+    """หน้าเว็บต้องไม่ poll — server push ให้แทน · เดิม poll ทุก 5 วิ = SSH ทุกเครื่องทุกรอบ
+
+    ไม่เปิดสตรีมจริงในเทส เพราะ TestClient จะค้างรอ generator ที่ออกแบบให้ไม่จบเอง
+    (มันจบเมื่อ "ลูกค้าตัดสาย" ซึ่ง TestClient ไม่ทำ) — ตรวจว่า route มีจริงและเป็น async
+    ส่วนตรรกะจริงอยู่ใน state.Store ซึ่งเทสแยกไว้แล้ว
+    """
+    import inspect
+
+    app = create_app()
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/api/events")
+    assert inspect.iscoroutinefunction(route.endpoint), \
+        "ต้องเป็น async ไม่งั้น thread ค้างหลังผู้ใช้ปิดแท็บ"
+
+
+def test_store_notifies_only_when_something_changes():
+    """SSE ส่งเฉพาะตอนมีของเปลี่ยนจริง — ไม่งั้นก็แค่ poll ที่ย้ายไปอยู่ฝั่ง server"""
+    from lmds.web.state import Store
+
+    store = Store()
+    first = store.version
+    store.set_local({"host": {}, "models": []})
+    assert store.version != first
+
+    after = store.version
+    assert store.wait_for_change(first, timeout=0.1) is True     # เปลี่ยนไปแล้ว รู้ทันที
+    assert store.wait_for_change(after, timeout=0.1) is False    # ยังไม่มีอะไรใหม่
+
+
+def test_unreachable_node_backs_off():
+    """เครื่องที่ปิดอยู่ต้องไม่ถูกยิง SSH ทุก 15 วิไปเรื่อย ๆ — ถอยห่างขึ้นเรื่อย ๆ
+    แล้วกลับมาถี่ปกติทันทีที่ต่อได้"""
+    from lmds.web.state import NODE_INTERVAL, Store
+
+    store = Store()
+    store.set_node("down", None, "หมดเวลา")
+    first = store._nodes["down"].interval
+    store.set_node("down", None, "หมดเวลา")
+    assert store._nodes["down"].interval > first
+
+    store.set_node("down", {"host": {}, "models": []})
+    assert store._nodes["down"].interval == NODE_INTERVAL
+
+
+def test_endpoints_never_block_on_a_slow_node(monkeypatch):
+    """เครื่องหนึ่งช้าหรือล่มต้องไม่ทำให้ทั้งหน้าเว็บรอ — endpoint อ่านจากแคชเสมอ"""
+    import time
+
+    from lmds.nodes import Node, add
+    from lmds.web import state
+
+    add(Node(name="slowpoke", host="10.0.0.9", user="ops"))
+    state.STORE.set_node("slowpoke", None, "หมดเวลา 60s")
+
+    started = time.monotonic()
+    data = TestClient(create_app()).get("/api/nodes/slowpoke/inventory").json()
+    assert time.monotonic() - started < 2.0, "endpoint ไปรอ SSH แทนที่จะอ่านแคช"
+    assert data["reachable"] is False
+
+
+def test_cache_is_dropped_after_a_state_change(fleet):
+    """กด stop แล้วต้องเห็นผลทันที ไม่ใช่รอ refresher รอบถัดไปอีก 15 วิ"""
+    from lmds.web import state
+
+    client = TestClient(create_app())
+    client.get("/api/models")
+    state.STORE.set_local({"host": {}, "models": [{"slug": "ของเก่า"}]})
+    client.post(f"/api/models/{fleet}/stop")
+    slugs = [m["slug"] for m in client.get("/api/models").json()["models"]]
+    assert "ของเก่า" not in slugs
