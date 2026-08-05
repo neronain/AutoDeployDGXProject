@@ -270,6 +270,7 @@ install_build_dependencies() {
 
   cuda_bin="${nvcc_candidate%/*}"
   export PATH="${cuda_bin}:${PATH}"
+  export LMDS_NVCC_COMPILER="$nvcc_candidate"
   echo "ใช้ CUDA compiler: ${CUDACXX} — เพิ่ม ${cuda_bin} เข้า PATH ของ shell นี้"
 }
 
@@ -297,6 +298,21 @@ prepare_runtime() {
     commit="$(git -C "$LLAMA_CPP_DIR" rev-parse HEAD)"
   fi
   git -C "$LLAMA_CPP_DIR" checkout --quiet "$commit"
+
+  # CMake ใช้ CUDACXX แค่ configure ครั้งแรก จากนั้น CMakeCache.txt จะ pin compiler ไว้
+  # ห้ามรายงานว่าเลือก toolkit ใหม่สำเร็จทั้งที่ build tree ยังชี้ compiler เก่า
+  local cache_key cached_nvcc=""
+  if [[ -f "${LLAMA_CPP_DIR}/build/CMakeCache.txt" ]]; then
+    while IFS='=' read -r cache_key cached_nvcc; do
+      [[ "$cache_key" == CMAKE_CUDA_COMPILER:* ]] && break
+      cached_nvcc=""
+    done < "${LLAMA_CPP_DIR}/build/CMakeCache.txt"
+    if [[ -n "$cached_nvcc" && ! "$cached_nvcc" -ef "$LMDS_NVCC_COMPILER" ]]; then
+      die "build tree เดิม pin CUDA compiler คนละตัว: ${cached_nvcc}
+  ตัวที่เลือกครั้งนี้: ${LMDS_NVCC_COMPILER}
+  ย้ายหรือลบ ${LLAMA_CPP_DIR}/build แล้วสั่ง prepare-runtime ใหม่"
+    fi
+  fi
 
   echo "build (CUDA arch: ${CUDA_ARCHITECTURES}) — ใช้เวลาหลายนาที..."
   cmake -S "$LLAMA_CPP_DIR" -B "${LLAMA_CPP_DIR}/build" \

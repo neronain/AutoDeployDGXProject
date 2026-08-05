@@ -275,6 +275,9 @@ def test_llamacpp_prepare_finds_nvcc_outside_login_shell(isolated_config, tmp_pa
     assert '"${CUDA_HOME%/}/bin/nvcc"' in text
     assert '"${CUDA_PATH%/}/bin/nvcc"' in text
     assert 'export CUDACXX="$nvcc_candidate"' in text
+    assert 'export LMDS_NVCC_COMPILER="$nvcc_candidate"' in text
+    assert "CMAKE_CUDA_COMPILER:" in text
+    assert '"$cached_nvcc" -ef "$LMDS_NVCC_COMPILER"' in text
     # ต้องตาย ไม่ใช่แค่เตือน — template นี้ build ด้วย -DGGML_CUDA=ON เสมอ
     assert "ไม่พบ nvcc" in text
     nvcc_die = next(ln for ln in text.splitlines() if "ไม่พบ nvcc" in ln)
@@ -321,6 +324,36 @@ def test_llamacpp_nvcc_selection_honors_explicit_precedence(isolated_config, tmp
     )
     assert invalid.returncode == 97
     assert "CUDACXX ชี้คอมไพเลอร์ที่รันไม่ได้" in invalid.stderr
+
+    cache_start = text.index('  local cache_key cached_nvcc=""')
+    cache_end = text.index('\n  echo "build (CUDA arch:', cache_start)
+    cache_guard = text[cache_start:cache_end]
+    old_nvcc = tmp_path / "old-nvcc"
+    old_nvcc.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    old_nvcc.chmod(0o755)
+    build = tmp_path / "llama.cpp" / "build"
+    build.mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text(
+        f"CMAKE_CUDA_COMPILER:FILEPATH={old_nvcc}\n", encoding="utf-8",
+    )
+    cache_probe = (
+        "set -Eeuo pipefail\n"
+        "die() { printf 'DIE:%s\\n' \"$*\" >&2; exit 97; }\n"
+        "check_cache() {\n"
+        f"{cache_guard}\n"
+        "}\ncheck_cache\n"
+    )
+    mismatch = subprocess.run(
+        ["bash", "-c", cache_probe],
+        env={
+            "PATH": env["PATH"],
+            "LLAMA_CPP_DIR": str(tmp_path / "llama.cpp"),
+            "LMDS_NVCC_COMPILER": str(cuda_home / "bin" / "nvcc"),
+        },
+        text=True, capture_output=True, check=False,
+    )
+    assert mismatch.returncode == 97
+    assert "build tree เดิม pin CUDA compiler คนละตัว" in mismatch.stderr
 
 
 def test_llamacpp_rtx_uses_docker_mode(isolated_config, tmp_path):
