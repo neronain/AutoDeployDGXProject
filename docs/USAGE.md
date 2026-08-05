@@ -507,6 +507,34 @@ stacked controller จะ source ไฟล์นี้**ก่อน default ท
 
 รายละเอียดทั้งหมด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
 
+## 4.6 เครื่องที่มีโมเดลอยู่ก่อนแล้ว — `lmds scan`
+
+เครื่องลูกค้าที่ใช้งานมาก่อนติดตั้ง LMDS มักมี weight กระจายอยู่หลายที่และไม่ได้จัดระเบียบแบบเรา
+— HF cache มีสองเลย์เอาต์, บางคนตั้ง `HF_HUB_CACHE` ไปดิสก์อื่น, ไฟล์ GGUF วางเป็นโฟลเดอร์ธรรมดา
+
+```bash
+lmds scan                    # เครื่องนี้
+lmds scan --all              # ทุกเครื่องในทะเบียน
+lmds scan --root /mnt/nvme   # เพิ่มที่ค้นเอง
+```
+
+ตัวอย่างจากเครื่องจริง:
+
+```text
+hf    nvidia/DeepSeek-V4-Flash-NVFP4    157.0 GB   46 shards   ~/.cache/huggingface/models--…
+                                                               (เลย์เอาต์เก่า — ต้องตั้ง HF_HUB_CACHE)
+hf    meta-llama/Llama-3.3-70B-Instruct 263.0 GB   30 shards   ~/.cache/huggingface/hub/models--…
+gguf  gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf 25.7 GB               ~/models/gemma4-26b-a4b-q8xl/…
+```
+
+- **อ่านอย่างเดียว** — ไม่ย้าย ไม่ลบ ไม่แก้อะไรเลย
+- ใช้ตอบว่า "ต้องโหลดใหม่ไหม" ก่อนจะเสียเวลาโหลดซ้ำหลายสิบ GB
+- โมเดลที่อยู่**เลย์เอาต์เก่า** (`$HF_HOME/models--X` ไม่มี `hub/`) ยังใช้ได้ปกติ —
+  stacked controller ตั้ง `HF_HUB_CACHE` ให้ตรงเองตอน start **ไม่ต้องย้ายไฟล์**
+
+> ถ้าไม่ตั้งให้ตรง vLLM ในคอนเทนเนอร์จะฟ้อง `LocalEntryNotFoundError` ทั้งที่ `verify-files`
+> เพิ่งบอกว่าไฟล์ครบ — เป็นอาการที่ไล่สาเหตุยากมากถ้าไม่รู้ว่ามีสองเลย์เอาต์
+
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
 สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**
@@ -563,6 +591,8 @@ lmds generate ...                                    # เหมือน deploy
 lmds validate bundles/qwen3-32b                      # ตรวจ bundle ย้อนหลัง (เช็คว่าไม่มีใครแก้ไฟล์)
 lmds validate bundles/qwen3-32b --fix                # regenerate checksum หลังตั้งใจแก้ไฟล์เอง
 lmds hardware                                        # ตรวจเครื่อง (GPU/RAM/ดิสก์/Docker/profile)
+lmds scan                                            # โมเดลที่มีอยู่แล้วบนเครื่อง (ทุกที่เก็บ)
+lmds scan --all                                      # ค้นทุกเครื่องในทะเบียนด้วย
 lmds config show                                     # ดู config (key ถูก mask)
 lmds config defaults                                 # ดู default model ของแต่ละ provider
 lmds repair <ชื่อ>                                    # ซ่อมไฟล์ที่ขาด (ดู §4.3)

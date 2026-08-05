@@ -101,6 +101,7 @@ lmds node list --check                   # เครื่องไหนยั�
 lmds ps --all                            # โมเดลของทุกเครื่องในตารางเดียว
 lmds node run spark2 doctor my-model     # สั่งคำสั่ง lmds อะไรก็ได้ข้ามเครื่อง
 lmds node cluster                        # เครื่องไหนมี ConnectX/200G และจับคู่ stacked กันได้
+lmds scan --all                          # โมเดลที่มีอยู่แล้วบนทุกเครื่อง (ไม่ต้องโหลดซ้ำ)
 ```
 
 - เครื่องปลายทาง **ไม่ต้องรัน daemon** และไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 — hub เรียก `lmds agent info` ผ่าน SSH
@@ -174,6 +175,7 @@ LMDS_SKIP_PREREQ=1 ./install.sh              # ลง LMDS อย่างเด
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | **คู่มือติดตั้งละเอียด** — prerequisites, ดิสก์/ที่เก็บไฟล์, proxy/air-gapped, ตั้ง provider (รวม Local AI), โมเดลถูกดึงมาและรันยังไง, smoke test, ถอนการติดตั้ง |
 | [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว + env, fleet (ps/list/restart/logs -f/repair/remove/completion), target presets ครบ 20 ตัว, troubleshooting |
+| [docs/RUNBOOK-STACKED-2NODE.md](docs/RUNBOOK-STACKED-2NODE.md) | **ลำดับคำสั่งรันข้าม 2 เครื่องที่ผ่านการรันจริง** — ตั้งแต่ `node add` ถึง `test-text` พร้อมตัวเลขหน่วยความจำ/KV cache จริง เวลาที่ใช้แต่ละขั้น และอาการเสียที่พบบ่อย |
 | [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | **คุมหลายเครื่องจากเครื่องเดียว** — เพิ่มเครื่องด้วย ip/user/รหัสผ่านครั้งเดียว, ดู CPU/RAM/VRAM/ดิสก์/โมเดลที่รันของทุกเครื่อง, ตรวจ ConnectX/200G และจับคู่เครื่องที่ stacked ด้วยกันได้ |
 | [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |

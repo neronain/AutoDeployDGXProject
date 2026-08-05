@@ -16,6 +16,7 @@ lmds plan <MODEL_URL_OR_ID>                # สร้าง Deployment Plan (�
 lmds generate <MODEL_URL_OR_ID>            # plan → render bundle (controller/README/MODEL_PROFILE/SPECIAL_FILES)
                                            #   --output DIR, --target, --no-llm — validate+zip อยู่ใน M6
 lmds hardware                              # ตรวจ/แสดง hardware profile ของเครื่อง
+lmds scan [--root DIR] [--all] [--json]    # หา weight ที่มีอยู่แล้วบนเครื่อง (อ่านอย่างเดียว)
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
 lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
@@ -179,6 +180,28 @@ lmds ps --all                     # โมเดลของทุกเคร�
   → stacked controller source ไฟล์นี้ก่อน default แล้วไม่ถาม IP ตอน start
 
 รายละเอียด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
+
+## `lmds scan`
+
+หา weight ที่มีอยู่แล้วบนเครื่อง **ไม่ว่าจะถูกเก็บไว้แบบไหน** — เครื่องลูกค้ามักมีโมเดลอยู่ก่อน
+ติดตั้ง LMDS และไม่ได้จัดระเบียบแบบเดียวกับเรา
+
+ที่ค้น: `HF_HOME` · `HF_HUB_CACHE` · `TRANSFORMERS_CACHE` · `MODEL_DIR` · `LLAMA_CACHE` (จาก env)
+· `~/.cache/huggingface[/hub]` · `~/models` · `~/data/models` · `/models` · `/opt/models`
+· `/srv/models` · `/data/models` · `/mnt/models` · เพิ่มเองด้วย `--root`
+
+รายงาน: ชนิด (hf/gguf) · ชื่อ · ขนาด · จำนวน shard · path จริง · **เลย์เอาต์ของ HF cache**
+
+```text
+hf    nvidia/DeepSeek-V4-Flash-NVFP4   157.0 GB   46   ~/.cache/huggingface/models--…
+                                                       (เลย์เอาต์เก่า — ต้องตั้ง HF_HUB_CACHE)
+gguf  gemma-4-26B-A4B-it-UD-Q8.gguf     25.7 GB    —   ~/models/…
+```
+
+- **อ่านอย่างเดียว ไม่ย้ายไม่ลบอะไรทั้งสิ้น** — weight เป็นของผู้ใช้ และการย้าย 150 GB เงียบ ๆ ยอมรับไม่ได้
+- `--all` ค้นทุกเครื่องในทะเบียนด้วย (เรียก `lmds scan --json` บน node ผ่าน SSH)
+- เลย์เอาต์ `root` (`$HF_HOME/models--X` ไม่มี `hub/`) ไลบรารีของ HF จะมองไม่เห็นถ้าไม่ตั้ง
+  `HF_HUB_CACHE` ให้ตรง — **stacked controller ตั้งให้เองตอน start แล้ว ไม่ต้องย้ายไฟล์**
 
 ## `lmds doctor <slug>`
 

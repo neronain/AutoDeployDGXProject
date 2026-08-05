@@ -75,6 +75,7 @@ lmds node list --check                   # which machines still answer
 lmds ps --all                            # every model on every machine, one table
 lmds node run spark2 doctor my-model     # run any lmds command on that machine
 lmds node cluster                        # who has ConnectX/200G, and which pairs can be stacked
+lmds scan --all                          # models already on each machine, wherever they were put
 ```
 
 Nodes run **no daemon** and need no port open beyond 22 — the hub calls `lmds agent info` over SSH.
@@ -158,6 +159,7 @@ machine. Full details: [SECURITY.md](SECURITY.md).
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Prerequisites, disk layout, proxy/air-gapped, provider setup (incl. local AI), how models are fetched and run, smoke test |
 | [docs/USAGE.md](docs/USAGE.md) | Full usage guide: deploy, controller commands + env, fleet management, target presets, troubleshooting |
+| [docs/RUNBOOK-STACKED-2NODE.md](docs/RUNBOOK-STACKED-2NODE.md) | Two-node runbook proven on real hardware: every command from `node add` to `test-text`, measured memory/KV figures, and the failures worth knowing |
 | [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Controlling several machines from one hub: registration, live resources, ConnectX/200G detection, cluster IPs |
 | [docs/PRD.md](docs/PRD.md) | Product requirements, architecture, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | CLI specification (unimplemented parts marked ❌) |

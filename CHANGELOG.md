@@ -36,6 +36,15 @@
   (RTX dual) ออกจาก "หลายเครื่องเครื่องละใบ" (Spark stacked) ซึ่งเดิมปนกันอยู่ที่ `gpu_count`
   · `lmds node cluster` เตือนเมื่อจำนวนเครื่องไม่เข้ากับ tensor parallel (3 เครื่อง = TP=3 หาร
   attention head ไม่ลง ต้องใช้ TP=2 + pipeline)
+- **`lmds scan` — หา weight ที่มีอยู่แล้วบนเครื่อง ไม่ว่าจะเก็บไว้แบบไหน** · เครื่องลูกค้ามักมีโมเดล
+  อยู่ก่อนติดตั้ง LMDS และไม่ได้จัดระเบียบแบบเดียวกับเรา · ค้นจาก env (`HF_HOME`, `HF_HUB_CACHE`,
+  `TRANSFORMERS_CACHE`, `MODEL_DIR`, `LLAMA_CACHE`) + ที่ที่นิยมวางกัน (`~/.cache/huggingface[/hub]`,
+  `~/models`, `/models`, `/opt/models`, …) · รายงานชนิด/ขนาด/shard/path/**เลย์เอาต์ของ HF cache**
+  · `--all` ค้นทุกเครื่องในทะเบียน · **อ่านอย่างเดียว ไม่ย้ายไม่ลบ** — weight เป็นของผู้ใช้
+- **`--gpu-util` ปรับได้จากบรรทัดคำสั่ง** (vLLM ทั้ง single และ stacked) — unified memory ชน OOM
+  ง่ายกว่าการ์ดแยกเพราะ CPU/GPU ใช้ pool เดียวกัน · ตรวจค่านอกช่วง 0.3–0.98 ด้วย `awk`
+  เพราะ bash เทียบทศนิยมไม่ได้ (`(( ))` จะตัด `0.80` เป็น `0` เงียบ ๆ)
+  · วัดจริง: 0.85 → ใช้ 109/121 GB (KV 221,056 tokens) · 0.80 → 103 GB (KV 184,080 tokens)
 - **`lmds agent info`** — พิมพ์สถานะเครื่องเป็น JSON ให้ hub อ่าน (ปกติไม่ได้พิมพ์เอง)
 - **`lmds node install <ชื่อ>` / `node add --install`** — ติดตั้งหรืออัปเดต LMDS บนเครื่องปลายทาง
   จาก hub (clone/pull จาก GitHub → `install.sh` บนเครื่องนั้น) · ข้ามขั้น Docker/toolkit เป็นค่าเริ่มต้น
@@ -245,6 +254,17 @@
 
 ### Fixed
 
+- **stacked หา weight ไม่เจอเมื่อ HF cache เป็นเลย์เอาต์เก่า** — `$HF_HOME/models--X` (ไม่มี `hub/`)
+  · controller ตรวจเจอทั้งสองแบบอยู่แล้ว แต่ vLLM ในคอนเทนเนอร์มองแค่ `hub/` จึงตาย
+  `LocalEntryNotFoundError` ทั้งที่ `verify-files` เพิ่งบอกว่า 46 shards ครบ · ตั้ง `HF_HUB_CACHE`
+  ให้ตรงกับของจริงทั้ง head และ worker — **ไม่ต้องย้ายไฟล์ของผู้ใช้**
+- **DeepSeek V4 ตายตอน load_model** — สถาปัตยกรรมนี้ใช้ attention layout `fp8_ds_mla`
+  ที่บังคับ kv-cache เป็น fp8 (`AssertionError: only supports fp8 kv-cache, got auto`)
+  · เพิ่มตาราง `ARCH_REQUIREMENTS` ใน rule-based สำหรับข้อบังคับระดับสถาปัตยกรรมที่ไม่มี LLM ไปค้นให้
+- **ล็อก runtime image ใช้ร่วมกันทั้งเครื่อง** (`$HF_HOME/.lmds-stacked-image-id`) — เครื่องเดียว
+  รัน stacked หลายตัวที่ใช้คนละ image ไม่ได้ ตัวที่สองตายด้วย "image ต่างจากที่ lock ไว้"
+  · แยกเป็นล็อกต่อ bundle
+- **`lmds node run` กลืน flag ของคำสั่งปลายทาง** — `node run x logs y -n 100` ตอบ `No such option: -n`
 - **Jinja หลุดเข้าไฟล์ผลลัพธ์ของ stacked controller** — `{% if report.gated %}` และ
   `{% if shard_files %}` ถูกวางไว้ใน `{% raw %}` จึงไม่เคยถูกแปลง สคริปต์ที่ส่งให้ผู้ใช้จึงมีบรรทัด
   `{%: command not found` และ **ไม่มีการตรวจ shard รายไฟล์เลย** · `bash -n` จับไม่ได้เพราะเป็น
