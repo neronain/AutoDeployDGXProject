@@ -302,20 +302,23 @@ def gate_checksums(bundle_dir: Path) -> GateResult:
 
 # Jinja ที่หลุดออกมาเป็น bash ที่ syntax ถูกต้อง — `bash -n` ผ่าน แล้วไปตายตอนรันจริง
 # เคสจริง: {% if shard_files %} ถูกวางไว้ใน {% raw %} จึงไม่เคยถูกแปลง และหลุดไปกับ bundle
-# expression tag ก็หลุดได้เหมือนกัน: {{ slug }} ใน usage() ของ stacked controller อยู่ใน {% raw %}
-# แยกจาก Go template ของ docker --format ได้เพราะ Go ขึ้นต้นด้วยจุดเสมอ ({{.Id}}) ส่วน Jinja ขึ้นต้นด้วยชื่อตัวแปร
+# expression/comment/statement tag หลุดได้เหมือนกัน: rendered controller ไม่ควรมี Jinja
+# opener เหลือเลย · ยกเว้นเฉพาะ Docker Go-template รูป field selector ที่ controller ใช้จริง
+# (`{{.Id}}`, `{{ .Names }}`); Go-template แบบ function ที่เพิ่มในอนาคตต้องเพิ่ม allow case พร้อม test
 _TEMPLATE_LEFTOVER = re.compile(
-    r"(?m)^\s*\{%"
-    r"|\{%\s*(if|for|endif|endfor|raw|endraw)\b"
-    r"|\{\{-?\s*[A-Za-z_][A-Za-z0-9_.]*"
+    r"\{%"
+    # `${#array[@]}` เป็น Bash length expansion ไม่ใช่ Jinja comment
+    r"|(?<!\$)\{#"
+    r"|\{\{(?!-?\s*\.)"
 )
 
 
 def gate_template_rendered(bundle_dir: Path) -> GateResult:
     for script in _controllers(bundle_dir):
-        match = _TEMPLATE_LEFTOVER.search(script.read_text(encoding="utf-8"))
+        text = script.read_text(encoding="utf-8")
+        match = _TEMPLATE_LEFTOVER.search(text)
         if match:
-            line = script.read_text(encoding="utf-8")[: match.start()].count("\n") + 1
+            line = text[: match.start()].count("\n") + 1
             return GateResult(
                 "template-rendered", False,
                 f"{script.name}:{line}: มี Jinja tag เหลืออยู่ในไฟล์ผลลัพธ์ ({match.group(0).strip()})",

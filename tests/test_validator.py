@@ -236,6 +236,25 @@ def test_template_rendered_gate_catches_leftover_expression(tmp_path):
     assert ":4:" in result.detail
 
 
+@pytest.mark.parametrize("leftover", [
+    "{% set x = 1 %}",
+    "{# forgotten template comment #}",
+    '{{ "literal expression" }}',
+    "{{- helper() }}",
+])
+def test_template_rendered_gate_catches_every_jinja_opener(tmp_path, leftover):
+    """statement/comment/expression รูปอื่นก็ห้ามหลุด แม้ bash จะมองเป็นข้อความธรรมดา"""
+    from lmds.validator.gates import gate_template_rendered
+
+    bundle = tmp_path / "all-openers"
+    bundle.mkdir()
+    (bundle / "x-single.sh").write_text(
+        f"#!/usr/bin/env bash\ncat <<'EOF'\n{leftover}\nEOF\n",
+        encoding="utf-8",
+    )
+    assert not gate_template_rendered(bundle).passed
+
+
 def test_template_rendered_gate_allows_docker_format_strings(tmp_path):
     """docker --format '{{.Names}}' ไม่ใช่ Jinja — ห้ามจับผิด"""
     from lmds.validator.gates import gate_template_rendered
@@ -243,6 +262,6 @@ def test_template_rendered_gate_allows_docker_format_strings(tmp_path):
     bundle = tmp_path / "b2"
     bundle.mkdir()
     (bundle / "x-single.sh").write_text(
-        "#!/usr/bin/env bash\ndocker ps --format '{{.Names}}\\t{{.Status}}'\n"
-        'echo "${VAR:-default}"\n', encoding="utf-8")
+        "#!/usr/bin/env bash\ndocker ps --format '{{.Names}}\\t{{ .Status }}'\n"
+        'echo "${VAR:-default}" "${#ITEMS[@]}"\n', encoding="utf-8")
     assert gate_template_rendered(bundle).passed
