@@ -110,7 +110,7 @@ recipes:
     source: https://github.com/neronain/Gemma-4-31B-it-on-DGX-Spark-128G-with-vLLM
     validated_on: DGX Spark (GB10) 128 GB เครื่องเดียว
 
-  - match: nvidia/Nemotron-3-Super
+  - match: nvidia/NVIDIA-Nemotron-3-Super
     label: Nemotron-3-Super (120B)
     engine: vllm
     image: vllm/vllm-openai:v0.20.0

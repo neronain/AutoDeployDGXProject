@@ -635,3 +635,11 @@ def test_deepseek_v4_forces_fp8_kv_cache():
     other = report_for("meta-llama/Llama-3.3-70B-Instruct")
     plan2 = rule_based_plan(other, analyze(other, PRESETS["dgx-spark-stacked"]))
     assert plan2.serving.kv_cache_dtype == "auto"
+
+
+def test_metadata_cap_fits_real_moe_quant_configs():
+    """config.json ของ MoE + NVFP4 โตตามจำนวนชั้น — Nemotron-3-Super-120B = 7.4MB
+    เพดาน 4MB เดิมทำให้ inspect โมเดลกลุ่มนี้ไม่ผ่านเลย"""
+    from lmds.inspector.hf_api import SMALL_FILE_CAP
+
+    assert SMALL_FILE_CAP >= 8 * 1024 * 1024

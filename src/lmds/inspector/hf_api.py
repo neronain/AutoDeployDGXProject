@@ -12,7 +12,10 @@ from typing import Any, Callable
 import httpx
 
 HF_BASE = "https://huggingface.co"
-SMALL_FILE_CAP = 4 * 1024 * 1024  # 4MB — config.json/tokenizer_config/chat_template ควรเล็กกว่านี้มาก
+# 16MB — เหตุผลเดียวกับ INDEX_FILE_CAP: quant config ต่อชั้นของ MoE ตัวใหญ่ทำให้ config.json
+# โตกว่าที่คาดมาก เคสจริง Nemotron-3-Super-120B NVFP4 = 7.4MB ซึ่งเป็น metadata ปกติ
+# ยังคงเพดานไว้เพื่อกันไฟล์ผิดปกติ แต่ 4MB แคบเกินไปสำหรับโมเดลรุ่นใหม่
+SMALL_FILE_CAP = 16 * 1024 * 1024
 
 # model.safetensors.index.json โตตาม *จำนวน tensor* ไม่ใช่ขนาดโมเดล:
 # MoE ตัวใหญ่ + quant ละเอียด (NVFP4/FP8 ที่มี scale ต่อ block) มีได้หลายแสน entry

@@ -110,11 +110,15 @@ def test_large_moe_index_over_small_file_cap():
 
 
 def test_oversized_metadata_still_rejected():
-    """config.json ยักษ์ = ผิดปกติจริง ต้องยังกันอยู่ (เพดานเล็กไม่ได้ถูกยกเลิก)"""
+    """config.json ยักษ์ = ผิดปกติจริง ต้องยังกันอยู่ (เพดานถูกขยาย ไม่ได้ถูกยกเลิก)
+
+    เพดานขยายเป็น 16MB เพราะ MoE + NVFP4 ของจริงมี config.json ถึง 7.4MB
+    (Nemotron-3-Super-120B) — แต่ที่ใหญ่กว่านั้นยังถือว่าผิดปกติอยู่
+    """
     from lmds.inspector import BudgetExceeded
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"x" * (5 * 1024 * 1024))
+        return httpx.Response(200, content=b"x" * (20 * 1024 * 1024))
 
     with pytest.raises(BudgetExceeded, match="เกินเพดาน"):
         make_client(handler).fetch_small_file("org/model", SHA, "config.json")
