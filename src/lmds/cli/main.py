@@ -1878,8 +1878,9 @@ def web(
     token: str = typer.Option("", "--token", help="บังคับ token (ว่าง = สุ่มให้เมื่อ bind ออก network)"),
     background: bool = typer.Option(False, "--background", "-b", help="รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้"),
     stop_web: bool = typer.Option(False, "--stop", help="หยุดตัวที่รันเบื้องหลังอยู่"),
-    restart_web: bool = typer.Option(False, "--restart", help="หยุดตัวที่รันอยู่แล้วเปิดใหม่ (token ใหม่)"),
+    restart_web: bool = typer.Option(False, "--restart", help="หยุดตัวที่รันอยู่แล้วเปิดใหม่ (ลิงก์เดิมใช้ได้ต่อ)"),
     status_only: bool = typer.Option(False, "--status", help="บอกว่ามีตัวไหนรันอยู่ + ลิงก์ของมัน"),
+    new_token: bool = typer.Option(False, "--new-token", help="สุ่ม token ใหม่ (ลิงก์เดิมใช้ไม่ได้ทันที)"),
 ) -> None:
     """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
     from lmds.web import daemon
@@ -1931,8 +1932,9 @@ def web(
     existing = daemon.running()
     if existing is not None:
         show_running(existing, "[yellow]มีหน้าเว็บรันอยู่แล้ว[/yellow] — ใช้ลิงก์นี้")
-        console.print("[dim]อยากได้ token ใหม่หรือเปลี่ยนพอร์ต: [bold]lmds web --restart -b[/bold] · "
-                      "หยุด: [bold]lmds web --stop[/bold][/dim]")
+        console.print("[dim]เปิดใหม่/เปลี่ยนพอร์ต: [bold]lmds web --restart -b[/bold] · "
+                      "หยุด: [bold]lmds web --stop[/bold] · "
+                      "เปลี่ยน token: [bold]lmds web --restart -b --new-token[/bold][/dim]")
         return
     if daemon.port_busy(bind, port):
         err_console.print(f"[red]พอร์ต {port} ไม่ว่าง[/red] — มีโปรแกรมอื่นยึดอยู่ (ไม่ใช่ของ lmds)")
@@ -1943,11 +1945,21 @@ def web(
     # หน้านี้สั่ง start/stop โมเดลได้ — เปิดออก network โดยไม่มี token = ใครในวงก็สั่งได้
     # จึงสุ่ม token ให้เองแทนที่จะปล่อยโล่ง (ผู้ใช้ตั้งเองได้ด้วย --token)
     exposed = bind not in {"127.0.0.1", "localhost", "::1"}
+    if new_token:
+        daemon.forget_token()
     if exposed and not token:
         import secrets as _secrets
 
-        token = _secrets.token_urlsafe(24)
-        err_console.print("[yellow]bind ออก network — สุ่ม token ให้แล้ว (ใช้ --token ตั้งเองได้)[/yellow]")
+        # ใช้ token เดิมของเครื่องนี้ถ้ามี — ลิงก์ที่ bookmark ไว้จะได้ไม่ตายทุกครั้งที่ restart
+        token = daemon.remembered_token()
+        if token:
+            err_console.print("[dim]ใช้ token เดิมของเครื่องนี้ (ลิงก์เดิมยังใช้ได้) · "
+                              "เปลี่ยนใหม่: --new-token[/dim]")
+        else:
+            token = _secrets.token_urlsafe(24)
+            daemon.remember_token(token)
+            err_console.print("[yellow]bind ออก network — สุ่ม token ให้แล้ว "
+                              "(ใช้ซ้ำได้ทุกครั้งที่เปิด · ตั้งเอง: --token)[/yellow]")
 
     query = f"?token={token}" if token else ""
     if not exposed:

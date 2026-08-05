@@ -29,6 +29,39 @@ from pathlib import Path
 _CMDLINE_MARK = "lmds.cli.main"
 
 
+def token_file() -> Path:
+    """token ที่ใช้ซ้ำได้ข้ามการ start/stop — อยู่ใน config ไม่ใช่ run/ เพราะต้องอยู่ยาว"""
+    from lmds.config import config_dir
+
+    return config_dir() / "web-token"
+
+
+def remembered_token() -> str:
+    """token เดิมของเครื่องนี้ — ว่างถ้ายังไม่เคยมี
+
+    ทำไมต้องจำ: token ที่สุ่มใหม่ทุกครั้งแปลว่าลิงก์ที่ bookmark ไว้ตายทุกครั้งที่ restart
+    ผู้ใช้ต้องกลับไปหา terminal ทุกรอบ ซึ่งขัดกับเหตุผลที่มีหน้าเว็บตั้งแต่แรก
+    """
+    try:
+        return token_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def remember_token(token: str) -> None:
+    path = token_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def forget_token() -> None:
+    token_file().unlink(missing_ok=True)
+
+
 def state_file() -> Path:
     from lmds.fleet import run_root
 

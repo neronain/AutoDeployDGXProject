@@ -226,3 +226,64 @@ def test_web_restart_waits_for_the_port_to_be_released(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert waited, "ต้องรอให้พอร์ตว่างก่อนสตาร์ตใหม่"
     assert daemon.read_state()["pid"] == 556
+
+
+def test_web_reuses_the_same_token_across_restarts(tmp_path, monkeypatch):
+    """ลิงก์ที่ bookmark ไว้ต้องไม่ตายทุกครั้งที่เปิดใหม่ — ผู้ใช้จะต้องกลับไปหา terminal ทุกรอบ
+    ซึ่งขัดกับเหตุผลที่มีหน้าเว็บตั้งแต่แรก
+    """
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+
+    class Proc:
+        pid = 900
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    first = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"])
+    token = daemon.read_state()["token"]
+    assert token and token in first.output
+
+    daemon.clear_state()
+    second = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"])
+    assert daemon.read_state()["token"] == token, "token ต้องเป็นตัวเดิม"
+    assert token in second.output
+
+
+def test_web_new_token_rotates_it(tmp_path, monkeypatch):
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    daemon.remember_token("token-เก่า")
+
+    class Proc:
+        pid = 901
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0", "--new-token"])
+    assert result.exit_code == 0, result.output
+    assert daemon.remembered_token() not in ("", "token-เก่า")
+
+
+def test_web_token_file_is_not_world_readable(tmp_path, monkeypatch):
+    """token = สิทธิ์สั่ง start/stop โมเดลทุกเครื่องในทะเบียน — ผู้ใช้อื่นบนเครื่องเดียวกัน
+    ไม่ควรอ่านได้ เพราะมันอยู่ยาวข้ามการ restart แล้ว
+    """
+    import stat
+
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    daemon.remember_token("s3cret")
+    mode = daemon.token_file().stat().st_mode
+    assert not mode & (stat.S_IRGRP | stat.S_IROTH)

@@ -1407,6 +1407,20 @@ api("/api/version").then(r => r.json()).then(d => document.getElementById("ver")
 let stream = null;
 let pollTimer = null;
 
+// แถวนี้กำลังถูกใช้อยู่ไหม — กางเมนูค้างไว้ หรือเคอร์เซอร์อยู่ในช่องกรอกของแถวนี้
+function nodeIsInUse(name) {
+  for (const key of openModelMenus) if (key.startsWith(name + "/")) return true;
+  const row = nodeRows.get(name);
+  return !!(row && row.body.contains(document.activeElement) && document.activeElement !== document.body);
+}
+
+// หยุดวาดทับแล้วต้องบอกด้วยว่าตัวเลขที่เห็นเริ่มเก่า — เงียบ ๆ ไปเฉย ๆ คือโกหกผู้ใช้
+function markStale(row, entry) {
+  if (!row || !row.version) return;
+  const age = Math.round(entry.age_seconds || 0);
+  row.version.textContent = age > 20 ? `paused · ${age}s ago` : row.version.textContent;
+}
+
 function applySnapshot(snap) {
   const local = snap.host && snap.host.data;
   if (local) {
@@ -1422,7 +1436,12 @@ function applySnapshot(snap) {
           host: null, models: [] };
     // อย่าเขียนทับตอนผู้ใช้กำลังกดปุ่มอยู่ — ปุ่มจะกระโดดหนีมือ
     // และอย่าลบผลลัพธ์ที่ผู้ใช้เพิ่งขอดู (doctor/logs) — SSE ส่งทุก 1-3 วิ ผลจะหายก่อนอ่านจบ
-    if (busy || pinnedOutput.has(name)) continue;
+    // และห้ามวาดทับตอนผู้ใช้กำลังกรอก port/context อยู่ — ตัวเลขที่พิมพ์ไปแล้วจะหายทุก 1 วิ
+    // จนกรอกไม่ทัน (เจอจริง) · เมนูที่กางอยู่ = กำลังใช้งานแถวนั้น ปล่อยไว้จนกว่าจะปิดเอง
+    if (busy || pinnedOutput.has(name) || nodeIsInUse(name)) {
+      markStale(row, entry);
+      continue;
+    }
     lastNodeData.set(name, payload);
     row.dot.className = "dot " + (entry.data ? "on" : "");
     row.version.textContent = entry.data && entry.data.host

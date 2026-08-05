@@ -851,7 +851,7 @@ def test_command_output_is_not_wiped_by_live_updates():
     (เจอจริงหลังเปลี่ยนมาใช้ SSE: กด doctor แล้วเหมือนไม่มีอะไรเกิดขึ้น)"""
     body = TestClient(create_app()).get("/").text
     assert "pinnedOutput" in body
-    assert "if (busy || pinnedOutput.has(name)) continue;" in body
+    assert "busy || pinnedOutput.has(name)" in body
     # ต้องมีทางปิดกลับไปหน้าปกติ ไม่งั้นค้างอยู่กับผลเก่า
     assert 'data-nact="close-output"' in body
 
@@ -917,3 +917,17 @@ def test_node_options_are_rejected_for_commands_that_ignore_them(registered, mon
                         lambda *a, **k: SimpleNamespace(exit_code=0, stdout="", stderr=""))
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/doctor", json={"port": 8001})
     assert r.status_code == 400
+
+
+def test_live_updates_pause_while_a_node_row_is_in_use():
+    """SSE ส่ง snapshot ทุก ~1 วิ แล้ววาดทับ body ของแถวเครื่อง — ตัวเลข port/context
+    ที่ผู้ใช้เพิ่งพิมพ์จะหายทุกวินาทีจนกรอกไม่ทัน (ผู้ใช้เจอจริง)
+
+    เทสนี้ตรวจว่า guard ยังอยู่ครบ · JS จริงต้องรันในเบราว์เซอร์ถึงจะทดสอบได้ แต่การลบ
+    เงื่อนไขทิ้งโดยไม่ตั้งใจคือสิ่งที่จับได้ที่นี่
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "nodeIsInUse(name)" in page, "applySnapshot ต้องข้ามแถวที่ผู้ใช้กำลังใช้อยู่"
+    assert "openModelMenus" in page and "document.activeElement" in page, \
+        "ต้องเช็กทั้งเมนูที่กางอยู่และช่องกรอกที่โฟกัสอยู่"
+    assert "markStale" in page, "หยุดอัปเดตแล้วต้องบอกผู้ใช้ว่าตัวเลขเริ่มเก่า"
