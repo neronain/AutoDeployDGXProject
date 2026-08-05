@@ -19,12 +19,16 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def fresh_web_state():
+def fresh_web_state(monkeypatch):
     """ล้างแคชของหน้าเว็บทุกเทส — STORE เป็น global ค้างข้ามเทสได้
 
     เทสที่รันทีหลังจะได้ snapshot ของเทสก่อน แล้วเห็นโมเดลที่ไม่ใช่ของตัวเอง
     (อาการเดียวกับที่ผู้ใช้เจอบนเครื่อง controller เป๊ะ) · หยุด refresher ด้วย
     ไม่งั้น thread เบื้องหลังจะไปยิง SSH ระหว่างเทส
+
+    ล้างแคชอย่างเดียวไม่พอ: create_app() สตาร์ท refresher ใหม่ทุกครั้ง แล้ว thread นั้น
+    เขียน STORE ต่อได้หลังเราล้างไปแล้ว เทสจึงล้มสลับตัวไปมาแล้วแต่จังหวะ · ไม่ให้สตาร์ทเลย
+    ตรงกว่าไล่หยุดทีหลัง — endpoint คำนวณสดเมื่อแคชว่าง ซึ่งเป็นสิ่งที่เทสตรวจอยู่แล้ว
     """
     try:
         from lmds.web import state
@@ -32,6 +36,7 @@ def fresh_web_state():
         yield
         return
     state.stop_refresher()
+    monkeypatch.setattr(state, "start_refresher", lambda: None)
     state.STORE.__init__()
     yield
     state.stop_refresher()

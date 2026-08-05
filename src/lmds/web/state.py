@@ -215,5 +215,13 @@ def start_refresher() -> None:
     _thread.start()
 
 
-def stop_refresher() -> None:
+def stop_refresher(timeout: float = 5.0) -> None:
+    """สั่งหยุดแล้ว**รอให้จบจริง** — แค่ set event ยังไม่พอ
+
+    รอบที่กำลังวิ่งอยู่ยังเขียน STORE ได้อีกครั้งหลัง set() ซึ่งกลายเป็นข้อมูลของ
+    สภาพแวดล้อมเก่าโผล่มาหลังหยุดไปแล้ว · loop ใช้ stop.wait(1.0) จึงออกภายในราว 1 วิ
+    """
     _stop.set()
+    thread = _thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)

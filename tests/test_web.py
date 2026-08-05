@@ -291,13 +291,15 @@ def runnable(tmp_path, monkeypatch):
     model_dir = tmp_path / "models" / slug
     monkeypatch.setenv("MODEL_DIR", str(model_dir))
 
+    # stub หน่วงไว้ครึ่งวินาที — ของจริงใช้เวลาเป็นนาที ถ้าจบทันทีเทสที่ตรวจว่า
+    # "กันสั่งซ้อน" จะแข่งกับตัวเองแล้วล้มเป็นครั้งคราว
     bundle = tmp_path / "bundles" / slug
     bundle.mkdir(parents=True)
     controller = bundle / f"{slug}-single.sh"
     controller.write_text(
         "#!/usr/bin/env bash\n"
         'case "$1" in\n'
-        f'  download) echo "โหลดอยู่"; mkdir -p "{model_dir}"; echo x > "{model_dir}/demo-Q8.gguf";;\n'
+        f'  download) echo "โหลดอยู่"; sleep 0.5; mkdir -p "{model_dir}"; echo x > "{model_dir}/demo-Q8.gguf";;\n'
         '  fail) echo "พัง"; exit 3;;\n'
         '  *) echo "cmd $1";;\n'
         "esac\n",
