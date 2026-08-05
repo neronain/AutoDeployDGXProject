@@ -128,7 +128,21 @@ def _weight_paths(profile: dict, slug: str) -> tuple[Path, list[str]]:
         return _model_dir(slug), wanted
     repo = (model.get("id") or "").replace("/", "--")
     revision = model.get("revision") or "main"
-    return _hf_home() / "hub" / f"models--{repo}" / "snapshots" / revision, []
+    # HF cache มีสองเลย์เอาต์: $HF_HOME/hub/models--X (ปัจจุบัน) และ $HF_HOME/models--X (เก่า)
+    # controller รองรับทั้งคู่แล้ว แต่ตรงนี้เคยดูแค่ hub/ — โมเดลที่โหลดด้วย HF รุ่นเก่าจึงขึ้นว่า
+    # "ยังไม่ download" ทั้งที่ไฟล์ครบทุกไฟล์ (เจอจริงกับ DeepSeek V4 บน spark-head)
+    home = _hf_home()
+    for base in (home / "hub", home):
+        candidate = base / f"models--{repo}" / "snapshots" / revision
+        if candidate.is_dir():
+            return candidate, []
+        # revision อาจถูกเก็บเป็น ref ไม่ใช่ชื่อโฟลเดอร์ — ยอมรับ snapshot ที่มีอยู่จริงตัวใดก็ได้
+        snapshots = base / f"models--{repo}" / "snapshots"
+        if snapshots.is_dir():
+            existing = sorted(p for p in snapshots.iterdir() if p.is_dir())
+            if existing:
+                return existing[-1], []
+    return home / "hub" / f"models--{repo}" / "snapshots" / revision, []
 
 
 def _check_weights(profile: dict, slug: str) -> list[Finding]:

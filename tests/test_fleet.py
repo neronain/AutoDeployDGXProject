@@ -641,3 +641,23 @@ def test_tests_never_touch_the_real_run_root():
     real = Path.home() / ".lmds" / "run"
     assert os.environ.get("LMDS_RUN_ROOT"), "conftest ต้องแยก LMDS_RUN_ROOT ทุกเทส"
     assert run_root() != real
+
+
+def test_start_passes_unknown_flags_to_the_controller(tmp_path, monkeypatch, isolated_config):
+    """`lmds start x --port 8001` เคยตอบ "No such option: --port" ทั้งที่ controller รองรับ
+    — คนอ่านคำแนะนำจาก lmds list แล้วพิมพ์ตามจะเจอ error ทันที (เจอจริงบน dgx-msi)"""
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("#!/bin/bash\necho \"$@\"\n", encoding="utf-8")
+    controller.chmod(0o755)
+    make_meta(tmp_path, "m", controller=str(controller))
+
+    seen = {}
+    monkeypatch.setattr("lmds.fleet.manager._run_controller",
+                        lambda info, command, extra=None: seen.update(cmd=command, extra=extra) or 0)
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    result = runner.invoke(app, ["start", "m", "--port", "8001", "--gpu-util", "0.8"])
+    assert result.exit_code == 0, result.output
+    assert seen["cmd"] == "start"
+    assert seen["extra"] == ["--port", "8001", "--gpu-util", "0.8"]

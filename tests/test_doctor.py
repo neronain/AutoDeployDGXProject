@@ -186,3 +186,30 @@ def test_port_conflict_names_the_other_lmds_model(tmp_path, monkeypatch):
     assert port.status is Status.FAIL
     assert "llama-3-1-8b-instruct" in port.detail
     assert "lmds stop llama-3-1-8b-instruct" in port.fix
+
+
+def test_weights_found_in_the_legacy_cache_layout(tmp_path, monkeypatch):
+    """HF cache มีสองเลย์เอาต์ — โมเดลที่โหลดด้วย HF รุ่นเก่าอยู่ที่ $HF_HOME/models--X
+    เดิมดูแค่ hub/ จึงขึ้นว่า "ยังไม่ download" ทั้งที่ไฟล์ครบ (เจอจริงกับ DeepSeek V4)"""
+    from lmds.doctor.checks import _weight_paths
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    profile = {"model": {"id": "nvidia/DeepSeek-V4-Flash-NVFP4", "revision": "abc123"},
+               "runtime": {"engine": "vllm"}}
+
+    legacy = tmp_path / "models--nvidia--DeepSeek-V4-Flash-NVFP4" / "snapshots" / "abc123"
+    legacy.mkdir(parents=True)
+    directory, _ = _weight_paths(profile, "deepseek")
+    assert directory == legacy
+
+
+def test_weights_accept_a_snapshot_under_another_revision(tmp_path, monkeypatch):
+    """revision ที่ pin ไว้อาจถูกเก็บเป็น ref — snapshot ที่มีอยู่จริงยังใช้ได้"""
+    from lmds.doctor.checks import _weight_paths
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    profile = {"model": {"id": "org/model", "revision": "wanted"}, "runtime": {"engine": "vllm"}}
+    actual = tmp_path / "hub" / "models--org--model" / "snapshots" / "realsha"
+    actual.mkdir(parents=True)
+    directory, _ = _weight_paths(profile, "m")
+    assert directory == actual

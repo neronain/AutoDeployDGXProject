@@ -805,3 +805,19 @@ def test_temperature_is_colour_coded():
     body = TestClient(create_app()).get("/").text
     assert "function tempColour(" in body
     assert "var(--bad)" in body.split("function tempColour(")[1][:200]
+
+
+def test_command_output_is_not_wiped_by_live_updates():
+    """SSE ส่งสถานะทุก 1-3 วิ — ถ้าเขียนทับทั้งแถว ผลของ doctor จะหายก่อนผู้ใช้อ่านจบ
+    (เจอจริงหลังเปลี่ยนมาใช้ SSE: กด doctor แล้วเหมือนไม่มีอะไรเกิดขึ้น)"""
+    body = TestClient(create_app()).get("/").text
+    assert "pinnedOutput" in body
+    assert "if (busy || pinnedOutput.has(name)) continue;" in body
+    # ต้องมีทางปิดกลับไปหน้าปกติ ไม่งั้นค้างอยู่กับผลเก่า
+    assert 'data-nact="close-output"' in body
+
+
+def test_manual_refresh_bypasses_the_cache():
+    """กด refresh แล้วต้องได้ของสด ไม่ใช่ค่าเดิมจากแคชที่เพิ่งอ่านมา"""
+    body = TestClient(create_app()).get("/").text
+    assert "/inventory?refresh=true" in body

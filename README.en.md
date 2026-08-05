@@ -52,7 +52,7 @@ and how to set an API token — it is generated with that bundle's real defaults
 ```bash
 lmds ps                  # host + every model: status, port, endpoint
 lmds list                # every bundle + status + engine/port/context/features + autostart
-lmds start|stop|restart <name>
+lmds start|stop|restart <name>          # extra flags (--port, --gpu-util) pass through to the controller
 lmds logs <name> -f      # live tail
 lmds enable <name>       # systemd autostart after reboot
 lmds doctor <name>       # why won't it download/start? checks + exact fix commands

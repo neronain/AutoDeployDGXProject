@@ -1579,6 +1579,7 @@ def ps(
             f"  lmds logs {example} -f\n"
             f"  lmds restart {example}\n"
             f"  lmds stop {example}\n"
+            f"  lmds restart {example} --port 8001   [dim]# flag ของ controller ส่งต่อได้เลย[/dim]\n"
             "\n"
             "[dim]logs -f[/dim] ดู log สด (Ctrl-C ออก ไม่หยุดโมเดล) · "
             "[dim]stop --all[/dim] หยุดทุกตัว · [dim]lmds list[/dim] ดู bundle ทั้งหมด + repair/remove"
@@ -1658,11 +1659,15 @@ def logs(
         raise typer.Exit(code=0)
 
 
-@app.command()
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def restart(
+    ctx: typer.Context,
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
 ) -> None:
-    """restart โมเดลตามชื่อ — ใช้ได้กับ container ที่ไม่ได้มาจาก lmds ด้วย"""
+    """restart โมเดลตามชื่อ — ใช้ได้กับ container ที่ไม่ได้มาจาก lmds ด้วย
+
+    flag ที่ไม่ใช่ของ lmds ถูกส่งต่อให้ controller: lmds restart x --port 8001
+    """
     from lmds.fleet import FleetError, find, restart_server
 
     server = find(slug)
@@ -1677,11 +1682,20 @@ def restart(
     console.print(f"restart {slug} แล้ว ({method})")
 
 
-@app.command()
+# flag ที่ lmds ไม่รู้จักถูกส่งต่อให้ controller — มันเป็นเจ้าของ flag พวกนั้นและตรวจค่าเอง
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def start(
+    ctx: typer.Context,
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
 ) -> None:
-    """รันโมเดลที่เคย deploy ไว้แล้วตามชื่อ — ไม่ต้อง cd ไปหา bundle"""
+    """รันโมเดลที่เคย deploy ไว้แล้วตามชื่อ — ไม่ต้อง cd ไปหา bundle
+
+    flag ที่ไม่ใช่ของ lmds จะถูกส่งต่อให้ controller ตรง ๆ:
+
+        lmds start my-model --port 8001 --context 32768 --gpu-util 0.8
+
+    controller เป็นเจ้าของ flag พวกนี้และตรวจค่าเอง (แต่ละ engine มีไม่เท่ากัน)
+    """
     from lmds.fleet import FleetError, find, start_server
 
     server = find(slug)
@@ -1692,7 +1706,7 @@ def start(
         console.print(f"{slug} รันอยู่แล้ว (port {server.port})")
         return
     try:
-        raise typer.Exit(code=start_server(server))
+        raise typer.Exit(code=start_server(server, list(ctx.args)))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
@@ -1798,6 +1812,7 @@ def list_bundles() -> None:
         "○ [dim]stopped ·[/dim] [red]⚠[/red] [dim]ไฟล์ controller หาย (start/restart ไม่ได้)[/dim]\n"
         "[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง — copy ไปใช้ได้เลย:[/dim]\n"
         f"  lmds start {first}\n"
+        f"  lmds start {first} --port 8001   [dim]# flag ของ controller ส่งต่อได้เลย[/dim]\n"
         f"  lmds stop {first}\n"
         f"  lmds restart {first}\n"
         f"  lmds logs {first} -f\n"

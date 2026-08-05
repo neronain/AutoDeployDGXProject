@@ -16,3 +16,23 @@ def isolated_config(tmp_path, monkeypatch):
     # บังคับ path แบบไฟล์: ทำให้ import keyring ล้มเหลวในเทส
     monkeypatch.setitem(sys.modules, "keyring", None)
     yield tmp_path / "lmds-config"
+
+
+@pytest.fixture(autouse=True)
+def fresh_web_state():
+    """ล้างแคชของหน้าเว็บทุกเทส — STORE เป็น global ค้างข้ามเทสได้
+
+    เทสที่รันทีหลังจะได้ snapshot ของเทสก่อน แล้วเห็นโมเดลที่ไม่ใช่ของตัวเอง
+    (อาการเดียวกับที่ผู้ใช้เจอบนเครื่อง controller เป๊ะ) · หยุด refresher ด้วย
+    ไม่งั้น thread เบื้องหลังจะไปยิง SSH ระหว่างเทส
+    """
+    try:
+        from lmds.web import state
+    except ImportError:      # ยังไม่ได้ติดตั้ง extra ของเว็บ
+        yield
+        return
+    state.stop_refresher()
+    state.STORE.__init__()
+    yield
+    state.stop_refresher()
+    state.STORE.__init__()

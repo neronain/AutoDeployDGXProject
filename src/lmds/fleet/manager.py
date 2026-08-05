@@ -545,10 +545,10 @@ def stop_server(info: ServerInfo) -> str:
     return "docker-rm"
 
 
-def restart_server(info: ServerInfo) -> str:
+def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
     """restart — controller ถ้ามี, ไม่งั้น docker restart (ใช้ได้กับ container ภายนอกด้วย)"""
     if info.controller_exists:
-        _run_controller(info, "restart")
+        _run_controller(info, "restart", options)
         return "controller"
     if info.mode == "docker" and info.container:
         proc = subprocess.run(["docker", "restart", info.container], capture_output=True)
@@ -561,8 +561,13 @@ def restart_server(info: ServerInfo) -> str:
     )
 
 
-def start_server(info: ServerInfo) -> int:
-    return _run_controller(info, "start")
+def start_server(info: ServerInfo, options: list[str] | None = None) -> int:
+    """options = flag ของ controller เช่น ["--port", "8001"] — ส่งผ่านไปตรง ๆ
+
+    controller เป็นเจ้าของ flag พวกนี้ (แต่ละ engine มีไม่เท่ากัน) LMDS จึงไม่พยายาม
+    รู้จักทุกตัว แค่ส่งต่อและปล่อยให้ controller ตรวจค่าเอง — มันตรวจอยู่แล้ว
+    """
+    return _run_controller(info, "start", options)
 
 
 def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int:

@@ -81,6 +81,7 @@ lmds --help
 lmds ps                  # ใครรันอยู่บ้าง: ชื่อ, โมเดล, engine, port, สถานะ ● running / ◐ loading / ○ stopped
 lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context/ฟีเจอร์ + autostart
 lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
+lmds start <ชื่อ> --port 8001   # flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller เลย
 lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม่ต้อง cd ไปหา ./xxx.sh stop · stop --all = หยุดทุกตัว
 lmds restart <ชื่อ>       # restart (ใช้ตอนเปลี่ยน option เช่นเพิ่ม API_KEY)
 lmds logs <ชื่อ> -f       # ตาม log แบบ realtime (-n 500 = ย้อนหลัง)

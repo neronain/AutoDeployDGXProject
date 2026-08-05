@@ -913,6 +913,8 @@ function tempColour(c) {
 // degrade to one row saying so — never hang or blank the whole page.
 const nodeRows = new Map();
 const collapsedNodes = new Set();
+// เครื่องที่กำลังโชว์ผลคำสั่งอยู่ — ห้าม live update ทับจนกว่าผู้ใช้จะปิดเอง
+const pinnedOutput = new Set();
 
 function nodeAddForm() {
   const box = document.getElementById("nodes");
@@ -1034,7 +1036,7 @@ async function loadNode(name) {
   const row = nodeRows.get(name);
   if (!row) return;
   row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><span class="muted">Contacting ${esc(name)}…</span></div>`;
-  const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory`)).json();
+  const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`)).json();
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   row.version.textContent = d.reachable ? (d.host && d.host.lmds_version ? "v" + d.host.lmds_version : "") : "offline";
   row.body.innerHTML = nodeModelsMarkup(name, d);
@@ -1109,7 +1111,8 @@ document.addEventListener("click", async e => {
   if (!btn) return;
   const { nact, node, slug } = btn.dataset;
 
-  if (nact === "refresh") { loadNode(node); return; }
+  if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
+  if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "forget") {
     if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
     await api(`/api/nodes/${encodeURIComponent(node)}`, { method: "DELETE" });
@@ -1127,10 +1130,16 @@ document.addEventListener("click", async e => {
     const d = await r.json();
     btn.disabled = false;
     btn.textContent = original;
-    if (!r.ok) alert(d.detail || "Command failed");
-    else if (command === "doctor" || d.exit_code !== 0) {
+    if (!r.ok) { alert(d.detail || "Command failed"); return; }
+    if (command === "doctor" || d.exit_code !== 0) {
       const row = nodeRows.get(node);
-      if (row) row.body.innerHTML = `<pre>${esc(d.output || "(no output)")}</pre>`;
+      if (row) {
+        pinnedOutput.add(node);
+        row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
+            <b style="font-weight:500">${esc(command)} · ${esc(slug)}</b>
+            <button data-nact="close-output" data-node="${esc(node)}">close</button>
+          </div><pre>${esc(d.output || "(no output)")}</pre>`;
+      }
       return;
     }
     loadNode(node);
@@ -1324,7 +1333,8 @@ function applySnapshot(snap) {
       : { name, reachable: false, error: entry.error, age_seconds: entry.age_seconds,
           host: null, models: [] };
     // อย่าเขียนทับตอนผู้ใช้กำลังกดปุ่มอยู่ — ปุ่มจะกระโดดหนีมือ
-    if (busy) continue;
+    // และอย่าลบผลลัพธ์ที่ผู้ใช้เพิ่งขอดู (doctor/logs) — SSE ส่งทุก 1-3 วิ ผลจะหายก่อนอ่านจบ
+    if (busy || pinnedOutput.has(name)) continue;
     row.dot.className = "dot " + (entry.data ? "on" : "");
     row.version.textContent = entry.data && entry.data.host
       ? "v" + (entry.data.host.lmds_version || "") : "offline";

@@ -132,9 +132,9 @@ Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 ```text
 lmds ps                       # เครื่อง + โมเดลที่รัน/เคยรัน + สถานะจริง + endpoint
 lmds list                     # bundle ทั้งหมด + สถานะ (●/◐/○/⚠) + engine/port/context/feature + autostart
-lmds start <slug>             # start ตามชื่อ (ไม่ต้อง cd ไป bundle)
+lmds start <slug> [flag...]   # start ตามชื่อ (ไม่ต้อง cd ไป bundle) · flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller
 lmds stop <slug> | --all      # stop ตามชื่อ หรือทุกตัว
-lmds restart <slug>           # restart (controller ถ้ามี ไม่งั้น docker restart)
+lmds restart <slug> [flag...] # restart (controller ถ้ามี ไม่งั้น docker restart) · ส่ง flag ต่อได้เหมือน start
 lmds logs <slug> [-n N] [-f]  # ดู log · -f = ตาม realtime (docker logs -f / tail -f)
 lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
 lmds disable <slug>           # ยกเลิก autostart
@@ -142,6 +142,9 @@ lmds repair <slug>            # download (resume) → verify-files
 lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างที่เกี่ยวข้อง (แสดงรายการ+ขนาดก่อนถามยืนยัน)
 ```
 
+- **flag ของ controller ส่งผ่านได้ตรง ๆ**: `lmds start <slug> --port 8001 --gpu-util 0.8` — LMDS ไม่พยายาม
+  รู้จัก flag ทุกตัว (แต่ละ engine มีไม่เท่ากันและเปลี่ยนตามเวอร์ชัน) แค่ส่งต่อให้ controller ตรวจค่าเอง
+  ซึ่งมันตรวจอยู่แล้ว · ก่อนหน้านี้ `--port` ตอบ `No such option` ทั้งที่ controller รองรับ
 - **container ที่ไม่ได้มาจาก lmds**: `discover()` สแกน `docker ps` แล้วรับเฉพาะตัวที่ image ตรงกับ
   engine ที่รู้จัก (vLLM/llama.cpp/Ollama/TGI) ทำเครื่องหมาย `external=True` ·
   `stop` ของกลุ่มนี้ใช้ `docker stop` (ไม่ `docker rm -f`) · `enable` สร้าง unit แบบ `docker start <container>`
