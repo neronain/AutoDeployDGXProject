@@ -1260,6 +1260,41 @@ function ipHint(m) {
   return "";
 }
 
+// Cabling problems that still "work" — the hardest kind to track down, so the web
+// says exactly what the CLI says (same codes from lmds.nodes.fabric_warnings)
+function fabricWarningText(w) {
+  const ifaces = (w.ifaces || []).join(", ");
+  switch (w.kind) {
+    case "link-without-ip":
+      return `${ifaces} is up but has no IP address — NCCL cannot use it even though the cable is in`;
+    case "shared-subnet":
+      return `${ifaces} share one subnet (${(w.networks || []).join(", ")}) — `
+        + `routing gets confused and packets leave through the wrong port. Put them on separate /24s`;
+    case "no-rdma-device":
+      return `${ifaces} has no matching RoCE device — NCCL_IB_HCA cannot be set, so it falls back to TCP`;
+    case "mesh-without-oob":
+      return "Wired as a mesh but there is no out-of-band link (10G RJ-45) that every node can see — "
+        + "NCCL bootstrap will not complete";
+    case "mesh-oob-wireless":
+      return `The mesh out-of-band link is Wi-Fi (${ifaces}) — it works, but it is not recommended`;
+    default:
+      return w.kind;
+  }
+}
+
+function fabricNotes(m) {
+  const rows = [];
+  if (m.mesh) {
+    rows.push(`<div class="dim" style="margin:-2px 0 4px 22px">Wired as a mesh (both ports) — `
+      + `usable for 3 nodes without a switch · NCCL_IB_HCA=<span class="mono">`
+      + `${esc(m.nccl_ib_hca || "—")}</span></div>`);
+  }
+  for (const w of m.warnings || []) {
+    rows.push(`<div style="margin:-2px 0 4px 22px;color:var(--warn)">⚠ ${esc(fabricWarningText(w))}</div>`);
+  }
+  return rows.join("");
+}
+
 function clusterMachineRow(m) {
   const fab = m.fabric || {};
   const link = !m.reachable ? "unreachable"
@@ -1278,7 +1313,8 @@ function clusterMachineRow(m) {
          <button data-cact="save-ip" data-node="${esc(m.name)}">save</button>`
       : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>`}
   </div>
-  ${hint ? `<div class="dim" style="margin:-2px 0 8px 22px">${esc(hint)}</div>` : ""}`;
+  ${hint ? `<div class="dim" style="margin:-2px 0 8px 22px">${esc(hint)}</div>` : ""}
+  ${fabricNotes(m)}`;
 }
 
 function clusterGroupRow(g) {

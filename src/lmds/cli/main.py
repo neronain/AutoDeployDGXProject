@@ -591,6 +591,43 @@ def node_ctl(
         err_console.print(result.stderr.rstrip())
     raise typer.Exit(code=result.exit_code)
 
+def _render_fabric_warnings(name: str, host: dict) -> None:
+    """เตือนเรื่องการเดินสาย/ตั้งค่าที่ทำให้ stacked ช้าลงหรือต่อไม่ติดโดยไม่มีอะไรฟ้อง
+
+    ทุกข้อ "ก็รันได้" จึงไม่มีใครไปไล่หา — ต้องบอกให้เห็นตั้งแต่ตอนตรวจเครื่อง
+    """
+    from lmds.nodes import fabric_warnings, is_mesh, nccl_ib_hca
+
+    warnings = fabric_warnings(host)
+    if not warnings and not is_mesh(host):
+        return
+
+    if is_mesh(host):
+        hca = nccl_ib_hca(host)
+        console.print(
+            f"  [cyan]{name}: เดินสายแบบ mesh (ต่อสองพอร์ต)[/cyan] — "
+            f"ใช้กับ 3 เครื่องแบบไม่ต้องมีสวิตช์ · NCCL_IB_HCA={hca or '—'}"
+        )
+
+    for warning in warnings:
+        ifaces = ", ".join(warning.get("ifaces") or [])
+        text = {
+            "link-without-ip":
+                f"{ifaces} ลิงก์ขึ้นแล้วแต่ยังไม่มี IP — NCCL ใช้เส้นนี้ไม่ได้ทั้งที่สายเสียบอยู่",
+            "shared-subnet":
+                f"{ifaces} อยู่วงเดียวกัน ({', '.join(warning.get('networks') or [])}) — "
+                "routing สับสน แพ็กเก็ตออกผิดเส้น · แยกคนละ /24",
+            "no-rdma-device":
+                f"{ifaces} ไม่มี RoCE device คู่กัน — ตั้ง NCCL_IB_HCA ไม่ได้ จะตกไปใช้ TCP",
+            "mesh-without-oob":
+                "เดินสาย mesh แต่ไม่มีเส้น out-of-band (RJ-45 10G) ที่ทุกเครื่องเห็นกัน — "
+                "NCCL bootstrap ไม่ผ่าน",
+            "mesh-oob-wireless":
+                f"เส้น out-of-band ของ mesh เป็น wifi ({ifaces}) — ใช้ได้แต่ไม่แนะนำ",
+        }.get(warning["kind"], warning["kind"])
+        console.print(f"    [yellow]⚠ {text}[/yellow]")
+
+
 @node_app.command("cluster")
 def node_cluster(
     write: Optional[str] = typer.Option(
@@ -611,8 +648,8 @@ def node_cluster(
     """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริงจึงช้ากว่า node list"""
     from lmds.inventory import host_payload
     from lmds.nodes import (
-        NodeError, check_cluster_ip, cluster_groups, cluster_note, load, probe,
-        stack_ready, suggest_cluster_ip,
+        NodeError, check_cluster_ip, cluster_groups, cluster_note, fabric_warnings,
+        is_mesh, load, probe, stack_ready, suggest_cluster_ip,
     )
 
     local = host_payload()
@@ -650,6 +687,13 @@ def node_cluster(
         add_row(node.name, host, node.cluster_ip)
 
     console.print(table)
+
+    # เตือนก่อนเรื่องกลุ่ม — สายที่ตั้งผิดทำให้กลุ่มที่ "พร้อม" ยังต่อกันไม่ติดจริง
+    fabric_notes = [(m["name"], m["host"]) for m in machines]
+    if any(fabric_warnings(host) or is_mesh(host) for _, host in fabric_notes):
+        console.print("\n[bold]สายและการตั้งค่าของแต่ละเครื่อง[/bold]")
+        for name, host in fabric_notes:
+            _render_fabric_warnings(name, host)
 
     groups = cluster_groups(machines)
     if not groups:
@@ -2152,6 +2196,11 @@ def hardware() -> None:
     console.print(table)
     for note in report.notes:
         err_console.print(f"[yellow]• {note}[/yellow]")
+
+    # สายความเร็วสูงที่ตั้งค่าไม่ครบเป็นปัญหาที่เห็นได้เฉพาะตอนรัน stacked — บอกตั้งแต่ตรวจเครื่อง
+    from lmds.inventory import host_payload
+
+    _render_fabric_warnings("เครื่องนี้", host_payload())
 
 
 @config_app.command("set-provider")

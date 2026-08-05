@@ -225,6 +225,23 @@
   (ไม่งั้นภาพกระตุกตอน `Live` วาดทับ)
 - **`LICENSE`**, **`SECURITY.md`**, **`CONTRIBUTING.md`**, **`CHANGELOG.md`**, **`README.en.md`**
 
+### Added
+
+- **ตรวจการเดินสาย ConnectX แล้วเตือนกับดักที่พังเงียบ** — `lmds node cluster`, `lmds hardware`
+  และหน้าเว็บ (Cluster fabric) ใช้ชุดกติกาเดียวกัน · ทุกข้อคือเคสที่ **"ก็ยังรันได้"**
+  จึงไม่มีใครไปไล่หา จนกว่าจะสงสัยว่าทำไม stacked ช้ากว่าที่ควร
+  · **ลิงก์ขึ้นแต่ยังไม่มี IP** — NCCL ใช้เส้นนั้นไม่ได้เลยทั้งที่สายเสียบอยู่ (ของเดิมกรองทิ้งเงียบ ๆ)
+  · **คู่แฝดสองเส้นอยู่วง subnet เดียวกัน** — routing สับสน แพ็กเก็ตออกผิดเส้น
+  · **ลิงก์ขึ้นแต่ไม่มี RoCE device คู่กัน** — ตั้ง `NCCL_IB_HCA` ไม่ได้ → ตกไปใช้ TCP
+- **รองรับการเดินสายแบบ mesh (3 เครื่องไม่ต้องมีสวิตช์)** — RoCE ขึ้นครบสี่ตัว = ต่อสองพอร์ต
+  · controller ตรวจเองแล้วใส่ `NCCL_NET_PLUGIN=none` + `NCCL_IB_SUBNET_AWARE_ROUTING=1` +
+  `NCCL_IB_MERGE_NICS=0` ให้ตอน `start` (ไม่ตั้งชุดนี้ NCCL พยายาม merge NIC ข้ามวงแล้ว hang ตอน init)
+  · เตือนเมื่อ mesh ไม่มีสาย out-of-band ที่ทุกเครื่องเห็นกัน (RJ-45 10G) ซึ่ง NCCL/Ray ต้องใช้ bootstrap
+  · ที่มาของค่าและผังการเดินสาย: [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT)
+- **payload ของเครื่องมีชื่อ RoCE device ต่อ NIC แล้ว** (`rdma_device`) — อ่านจาก sysfs ตรง ๆ
+  ได้ข้อมูลเดียวกับ `ibdev2netdev` โดยไม่ต้องมี mlnx-tools · hub จึงบอกค่า `NCCL_IB_HCA`
+  ของแต่ละเครื่องได้ล่วงหน้า ไม่ต้องรอถึงตอน start
+
 ### Fixed
 
 - **stacked ใช้สาย 200G แค่เส้นเดียวจากสองเส้นที่ต่ออยู่** — `NCCL_IB_HCA` ถูกตั้งจาก HCA

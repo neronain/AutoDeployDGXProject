@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+import sys
 
 import pytest
 
@@ -298,7 +299,8 @@ def test_controller_derives_the_roce_hca(tmp_path):
     text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
 
     assert "detect_hca_for_interface()" in text
-    assert "/sys/class/infiniband/" in text
+    # ค่าเริ่มต้นต้องเป็น sysfs ของจริง — ตัวแปรมีไว้ให้เทสชี้ไป tree ปลอมเท่านั้น
+    assert 'INFINIBAND_ROOT="${INFINIBAND_ROOT:-/sys/class/infiniband}"' in text
     assert '[[ -n "$NCCL_IB_HCA" ]] && return 0' in text
 
 
@@ -408,3 +410,103 @@ def test_stacked_hca_detection_joins_devices_with_commas(tmp_path):
     body = text.split("detect_active_hcas()", 1)[1].split("\n_resolve_hca", 1)[0]
     assert "local IFS=," in body
     assert '${found[*]}' in body
+
+
+# ── การเดินสายแบบต่าง ๆ: รันฟังก์ชันในสคริปต์จริง ไม่ใช่ grep ข้อความ ────────────
+def _fake_infiniband(root, devices):
+    """สร้าง /sys/class/infiniband ปลอม: {ชื่อ RoCE: (ชื่อ netdev, operstate, speed)}"""
+    for name, (netdev, state, speed) in devices.items():
+        target = root / name / "device" / "net" / netdev
+        target.mkdir(parents=True)
+        (target / "operstate").write_text(state + "\n", encoding="utf-8")
+        (target / "speed").write_text(f"{speed}\n", encoding="utf-8")
+    return root
+
+
+def _call_controller_fn(controller, fn: str, ib_root) -> subprocess.CompletedProcess:
+    """source สคริปต์ controller แล้วเรียกฟังก์ชันเดียว — ไม่ให้ dispatch ท้ายไฟล์ทำงาน
+
+    ต้องรันของจริง ไม่ใช่ grep เพราะเคสที่พังคือ *ตรรกะ* ของการเลือก HCA
+    (ข้อความอยู่ครบแต่เลือกผิดตัวก็ยังผ่าน grep)
+    """
+    script = (
+        f'INFINIBAND_ROOT={ib_root} '
+        f'bash -c \'set -e; source "{controller}" >/dev/null 2>&1 || true; {fn}\''
+    )
+    return subprocess.run(script, shell=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
+def test_single_cable_reports_both_twins(tmp_path):
+    """สายเส้นเดียว = RoCE คู่แฝดสองตัว — บอก NCCL ตัวเดียวคือได้แบนด์วิดท์ครึ่งเดียว
+
+    ผังของจริงจาก spark1: f0 ทั้งคู่ขึ้น (สายเสียบพอร์ตเดียว) ส่วน f1 ทั้งคู่ลง
+    """
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    ib_root = _fake_infiniband(tmp_path / "ib-one-cable", {
+        "rocep1s0f0": ("enp1s0f0np0", "up", 200000),
+        "roceP2p1s0f0": ("enP2p1s0f0np0", "up", 200000),
+        "rocep1s0f1": ("enp1s0f1np1", "down", -1),
+        "roceP2p1s0f1": ("enP2p1s0f1np1", "down", -1),
+    })
+    result = _call_controller_fn(bundle.controller, "detect_active_hcas", ib_root)
+    assert sorted(result.stdout.strip().split(",")) == ["roceP2p1s0f0", "rocep1s0f0"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
+def test_two_cables_is_detected_as_mesh(tmp_path):
+    """ต่อสองพอร์ต = RoCE ขึ้นครบสี่ = mesh 3 เครื่องแบบไม่ใช้สวิตช์
+
+    mesh ต้องใช้ค่า NCCL คนละชุด ไม่ตั้งแล้ว NCCL พยายาม merge NIC ข้ามวงจน hang ตอน init
+    """
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    ib_root = _fake_infiniband(tmp_path / "ib-mesh", {
+        "rocep1s0f0": ("enp1s0f0np0", "up", 200000),
+        "roceP2p1s0f0": ("enP2p1s0f0np0", "up", 200000),
+        "rocep1s0f1": ("enp1s0f1np1", "up", 200000),
+        "roceP2p1s0f1": ("enP2p1s0f1np1", "up", 200000),
+    })
+    assert _call_controller_fn(bundle.controller, "is_mesh_fabric", ib_root).returncode == 0
+
+    env = _call_controller_fn(bundle.controller, "_nccl_env_pairs eth0", ib_root).stdout
+    assert "NCCL_NET_PLUGIN=none" in env
+    assert "NCCL_IB_SUBNET_AWARE_ROUTING=1" in env
+    assert "NCCL_IB_MERGE_NICS=0" in env
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
+def test_single_cable_does_not_get_mesh_settings(tmp_path):
+    """ค่าของ mesh ใส่ให้คลัสเตอร์ปกติไม่ได้ — NCCL_NET_PLUGIN=none ปิด plugin ที่ควรใช้"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    ib_root = _fake_infiniband(tmp_path / "ib-normal", {
+        "rocep1s0f0": ("enp1s0f0np0", "up", 200000),
+        "roceP2p1s0f0": ("enP2p1s0f0np0", "up", 200000),
+    })
+    assert _call_controller_fn(bundle.controller, "is_mesh_fabric", ib_root).returncode != 0
+
+    env = _call_controller_fn(bundle.controller, "_nccl_env_pairs eth0", ib_root).stdout
+    assert "NCCL_NET_PLUGIN" not in env
+    assert "NCCL_IB_MERGE_NICS" not in env
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
+def test_links_that_are_down_are_never_offered_to_nccl(tmp_path):
+    """สายที่ไม่ได้เสียบยังโผล่ใน sysfs ครบ — ใส่ให้ NCCL แล้วมันไปลองเส้นที่ตาย"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    ib_root = _fake_infiniband(tmp_path / "ib-down", {
+        "rocep1s0f0": ("enp1s0f0np0", "down", -1),
+        "roceP2p1s0f0": ("enP2p1s0f0np0", "down", -1),
+    })
+    assert _call_controller_fn(bundle.controller, "detect_active_hcas", ib_root).stdout.strip() == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
+def test_slow_links_are_skipped(tmp_path):
+    """การ์ด 1G ที่บังเอิญมี RoCE ไม่ควรถูกเลือก — NCCL จะวิ่งช้าที่สุดตามเส้นที่ช้าที่สุด"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    ib_root = _fake_infiniband(tmp_path / "ib-slow", {
+        "rocep1s0f0": ("enp1s0f0np0", "up", 200000),
+        "rocesomething": ("eth9", "up", 1000),
+    })
+    assert _call_controller_fn(bundle.controller, "detect_active_hcas", ib_root).stdout.strip() \
+        == "rocep1s0f0"

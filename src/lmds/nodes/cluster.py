@@ -16,6 +16,25 @@ from typing import Iterable
 # ต่ำกว่านี้ stacked จะช้ากว่ารันแยกเครื่องจนไม่คุ้ม (activation/KV วิ่งข้ามเครื่องทุก token)
 MIN_STACK_GBPS = 25
 
+# หมายเหตุ MTU: คู่มือ setup ของ DGX Spark ทุกฉบับสั่งตั้ง mtu 9000 แต่**วัดบนเครื่องจริง
+# แล้วไม่ต่างเลย** (2 × DGX Spark GB10, perftest ผ่าน RoCE):
+#   netdev 1500 (RoCE MTU 1024) → 111.71 Gb/s · latency 1.98 µs
+#   netdev 9000 (RoCE MTU 4096) → 111.71 Gb/s · latency 1.98 µs
+# คอขวดคือ PCIe 5.0 x4 ต่อ RoCE device (~112 Gb/s) ไม่ใช่ขนาดเฟรม · จึงจงใจ**ไม่**เตือน
+# เรื่อง MTU — คำเตือนที่ไม่มีผลจริงทำให้คำเตือนข้ออื่นถูกมองข้ามไปด้วย
+
+# DGX Spark: ConnectX ใบเดียว สายเส้นเดียว = RoCE คู่แฝดสองตัว (PCIe 5.0 x4 ต่อตัว)
+# ต่อสองพอร์ต (mesh 3 เครื่องแบบไม่ใช้สวิตช์) = สี่ตัวขึ้นพร้อมกัน
+MESH_ACTIVE_LINKS = 4
+
+# ค่าที่ mesh 3 เครื่องต้องใช้ ต่างจากคลัสเตอร์ผ่านสวิตช์/สองเครื่อง
+# ที่มา: eugr/spark-vllm-docker (MIT) docs/NETWORKING.md — ผ่าน NCCL all_gather บน mesh จริง
+MESH_NCCL_ENV = {
+    "NCCL_NET_PLUGIN": "none",
+    "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
+    "NCCL_IB_MERGE_NICS": "0",
+}
+
 
 def machine_signature(host: dict) -> tuple:
     """ลายเซ็นฮาร์ดแวร์ที่ต้องตรงกันทุก rank"""
@@ -56,6 +75,109 @@ def fabric_links(host: dict) -> list[dict]:
         if link.get("ip") and not _is_link_local(link["ip"])
         and (link.get("speed_gbps") or 0) >= MIN_STACK_GBPS
     ]
+
+
+def active_fabric_links(host: dict) -> list[dict]:
+    """ลิงก์ ConnectX ที่ **ลิงก์ขึ้นจริง** — ไม่สนว่าตั้ง IP แล้วหรือยัง
+
+    ต่างจาก fabric_links() ที่กรองเอาเฉพาะเส้นที่พร้อมใช้ · ตรงนี้ต้องเห็นเส้นที่ขึ้นแต่
+    ยังไม่ได้ตั้งค่าด้วย เพราะนั่นคือ "อาการ" ที่ต้องเตือน ไม่ใช่สิ่งที่ควรกรองทิ้งเงียบ ๆ
+    """
+    links = (host.get("fabric") or {}).get("links") or []
+    return [
+        link for link in links
+        if link.get("connectx") and link.get("state") == "up"
+        and (link.get("speed_gbps") or 0) >= MIN_STACK_GBPS
+    ]
+
+
+def is_mesh(host: dict) -> bool:
+    """เครื่องนี้เดินสายแบบ mesh (ต่อสองพอร์ต) หรือแบบปกติ (พอร์ตเดียว)
+
+    ConnectX ของ DGX Spark: หนึ่งพอร์ต QSFP = RoCE คู่แฝดสองตัว เพราะ SoC ให้ PCIe 5.0
+    ได้แค่ x4 ต่อ device จึงต้องใช้สอง device ต่อสายหนึ่งเส้นถึงจะได้ 200G
+    ขึ้นครบสี่ = ต่อสองพอร์ต = mesh 3 เครื่องแบบไม่ใช้สวิตช์
+    """
+    return len(active_fabric_links(host)) >= MESH_ACTIVE_LINKS
+
+
+def nccl_ib_hca(host: dict) -> str:
+    """ค่าที่ต้องใส่ให้ NCCL_IB_HCA — RoCE ทุกตัวที่ลิงก์ขึ้น คั่นด้วยจุลภาค
+
+    บอก NCCL แค่ตัวเดียวเท่ากับใช้สายเส้นเดียวจากสองเส้นที่ต่ออยู่ = ได้แบนด์วิดท์ครึ่งเดียว
+    โดยไม่มีอะไรฟ้อง เพราะงานก็ยังรันได้ (controller ตรวจเองตอน start อยู่แล้ว —
+    ตรงนี้ทำให้ hub บอกล่วงหน้าได้โดยไม่ต้องรอถึงตอนรัน)
+    """
+    devices = [link.get("rdma_device") or "" for link in active_fabric_links(host)]
+    return ",".join(dict.fromkeys(d for d in devices if d))
+
+
+def oob_link(host: dict) -> dict | None:
+    """สายที่ใช้คุยกันนอกเหนือจาก RoCE (out-of-band) — mesh บังคับว่าต้องไม่ใช่ QSFP
+
+    mesh 3 เครื่องต่อกันเป็นวงแหวน แต่ละคู่เห็นกันตรง ๆ แค่คู่ที่มีสายถึงกัน · NCCL/Ray
+    ต้องมีเส้นที่ **ทุกเครื่องเห็นกันหมด** ไว้คุยกันตอน bootstrap ซึ่งคือพอร์ต RJ-45 10G
+    (หรือ wifi ถ้าไม่มีจริง ๆ) ไม่ใช่ QSFP
+    """
+    links = (host.get("fabric") or {}).get("links") or []
+    candidates = [
+        link for link in links
+        if not link.get("connectx") and link.get("state") == "up"
+        and link.get("ip") and not _is_link_local(link["ip"])
+    ]
+    if not candidates:
+        return None
+    # มีสายจริงชนะ wifi เสมอ แล้วค่อยเรียงตามความเร็ว
+    return max(candidates, key=lambda link: (not _is_wireless(link), link.get("speed_gbps") or 0))
+
+
+def _is_wireless(link: dict) -> bool:
+    name = link.get("iface") or ""
+    return name.startswith(("wl", "wlan", "wlp", "wlP"))
+
+
+def fabric_warnings(host: dict) -> list[dict]:
+    """ปัญหาการเดินสาย/ตั้งค่าที่ทำให้ stacked ช้าลงหรือต่อไม่ติด **โดยไม่มีอะไรฟ้อง**
+
+    ทุกข้อคือเคสที่ "ก็รันได้" จึงไม่มีใครไปไล่หา — เป็นกลุ่มที่ไล่สาเหตุยากที่สุด
+    คืนรหัส ไม่ใช่ประโยค · CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเอง
+    """
+    warnings: list[dict] = []
+    active = active_fabric_links(host)
+
+    # 1. ลิงก์ขึ้นแล้วแต่ไม่มี IP — NCCL ใช้เส้นนี้ไม่ได้เลย ทั้งที่สายเสียบอยู่
+    no_ip = [link["iface"] for link in active if not link.get("ip")]
+    if no_ip:
+        warnings.append({"kind": "link-without-ip", "ifaces": no_ip})
+
+    # 2. สองเส้นอยู่วงเดียวกัน — routing สับสน แพ็กเก็ตออกผิดเส้น
+    #    ที่มา: eugr/spark-vllm-docker docs/NETWORKING.md ("DO NOT use the same subnet on both twins")
+    by_network: dict[str, list[str]] = {}
+    for link in active:
+        network = link_network(link)
+        if network:
+            by_network.setdefault(network, []).append(link["iface"])
+    duplicates = {net: ifaces for net, ifaces in by_network.items() if len(ifaces) > 1}
+    if duplicates:
+        warnings.append({
+            "kind": "shared-subnet",
+            "networks": sorted(duplicates),
+            "ifaces": sorted(i for ifaces in duplicates.values() for i in ifaces),
+        })
+
+    # 3. ลิงก์ขึ้นแต่ไม่มี RoCE device คู่กัน — NCCL_IB_HCA ตั้งไม่ได้ → ตกไปใช้ TCP
+    no_hca = [link["iface"] for link in active if not link.get("rdma_device")]
+    if no_hca:
+        warnings.append({"kind": "no-rdma-device", "ifaces": no_hca})
+
+    # 4. mesh ต้องมีเส้น out-of-band ที่ทุกเครื่องเห็นกัน
+    if is_mesh(host):
+        oob = oob_link(host)
+        if oob is None:
+            warnings.append({"kind": "mesh-without-oob"})
+        elif _is_wireless(oob):
+            warnings.append({"kind": "mesh-oob-wireless", "ifaces": [oob["iface"]]})
+    return warnings
 
 
 def suggest_cluster_ip(host: dict) -> str:

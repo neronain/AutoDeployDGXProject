@@ -125,6 +125,9 @@ Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 ```
 
 - ดิสก์ดูที่ `$HOME` (ที่เก็บ weight จริง) — เหลือ < 50 GB จะขึ้นคำเตือนใน notes
+- **เตือนเรื่องการเดินสาย ConnectX ด้วย** (ชุดเดียวกับ `lmds node cluster`): ลิงก์ขึ้นแต่ไม่มี IP ·
+  คู่แฝดอยู่วง subnet เดียวกัน · ไม่มี RoCE device คู่กัน · mesh ที่ไม่มีสาย out-of-band
+  — ทุกข้อคือเคสที่ "ก็ยังรันได้" จึงไม่มีใครไปไล่หา (ดู [FLEET-MULTI-NODE.md §5](FLEET-MULTI-NODE.md))
 - ❌ `--probe-ssh user@host` สำหรับตรวจเครื่องเป้าหมายระยะไกล — ยังไม่ implement (เฟส 1.5)
 
 ## `lmds` fleet (จัดการโมเดลในเครื่อง)

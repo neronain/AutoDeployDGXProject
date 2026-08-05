@@ -262,6 +262,26 @@ def _iface_addresses() -> dict[str, str]:
     return addresses
 
 
+def _rdma_device_by_iface() -> dict[str, str]:
+    """netdev → ชื่อ RoCE device (เช่น enp1s0f0np0 → rocep1s0f0)
+
+    เป็นข้อมูลเดียวกับที่ `ibdev2netdev` พิมพ์ แต่อ่านจาก sysfs ตรง ๆ จึงไม่ต้องมี
+    แพ็กเกจ mlnx-tools ติดตั้งอยู่ · ค่านี้คือสิ่งที่ต้องใส่ให้ `NCCL_IB_HCA` — ไม่ตั้งแล้ว
+    NCCL ตกไปใช้ TCP แล้วสาย 200G ทำงานเท่าอีเทอร์เน็ตธรรมดา โดยไม่มีอะไรฟ้อง
+    """
+    root = Path("/sys/class/infiniband")
+    if not root.is_dir():
+        return {}
+    mapping: dict[str, str] = {}
+    for device in sorted(root.glob("*")):
+        try:
+            for netdev in (device / "device" / "net").iterdir():
+                mapping.setdefault(netdev.name, device.name)
+        except OSError:
+            continue
+    return mapping
+
+
 def detect_fabric() -> dict:
     """การ์ดเครือข่ายความเร็วสูง + RDMA ของเครื่องนี้
 
@@ -275,6 +295,7 @@ def detect_fabric() -> dict:
 
     rdma_devices = sorted(p.name for p in Path("/sys/class/infiniband").glob("*")) \
         if Path("/sys/class/infiniband").is_dir() else []
+    hca_by_iface = _rdma_device_by_iface()
 
     addresses = _iface_addresses()
     links = []
@@ -307,6 +328,8 @@ def detect_fabric() -> dict:
             # 169.254.x.x = ที่อยู่ที่เครื่องตั้งเองเพราะไม่มี DHCP/config — ลิงก์ขึ้นแต่ยังไม่ได้ตั้งค่า
             "link_local": address.startswith("169.254."),
             "speed_gbps": gbps,
+            # ชื่อที่ต้องใส่ให้ NCCL_IB_HCA (ว่าง = การ์ดนี้ไม่มี RoCE device คู่กัน)
+            "rdma_device": hca_by_iface.get(name, ""),
             "driver": driver,
             "state": state,
             "connectx": vendor == _MELLANOX_VENDOR or driver.startswith("mlx"),

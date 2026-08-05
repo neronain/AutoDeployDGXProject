@@ -493,7 +493,7 @@ detect_worker_interface() {
 detect_hca_for_interface() {
   local want="$1" dev
   [[ -n "$want" ]] || return 0
-  for dev in /sys/class/infiniband/*; do
+  for dev in "$INFINIBAND_ROOT"/*; do
     [[ -e "$dev/device/net/$want" ]] || continue
     basename "$dev"
     return 0
@@ -505,10 +505,12 @@ detect_hca_for_interface() {
 # บอก NCCL แค่ตัวเดียวเท่ากับใช้สายเส้นเดียว — ได้ครึ่งเดียวของที่มี โดยไม่มีอะไรฟ้อง
 # เพราะงาน "ก็รันได้" · เอาเฉพาะตัวที่ลิงก์ขึ้นจริงและเร็วพอ ไม่งั้น NCCL ไปลองเส้นที่ตาย
 NCCL_HCA_MIN_SPEED_MBPS="${NCCL_HCA_MIN_SPEED_MBPS:-25000}"
+# ราก sysfs ของ RoCE — ตั้งใหม่ได้เพื่อทดสอบการเดินสายแบบต่าง ๆ โดยไม่ต้องรื้อสายจริง
+INFINIBAND_ROOT="${INFINIBAND_ROOT:-/sys/class/infiniband}"
 
 detect_active_hcas() {
   local dev name netdev speed found=()
-  for dev in /sys/class/infiniband/*; do
+  for dev in "$INFINIBAND_ROOT"/*; do
     [[ -d "$dev" ]] || continue
     name="$(basename "$dev")"
     for netdev in "$dev"/device/net/*; do
@@ -537,6 +539,19 @@ _resolve_hca() {
   NCCL_IB_HCA="$(detect_hca_for_interface "$NCCL_SOCKET_IFNAME")"
   [[ -n "$NCCL_IB_HCA" ]] && log "พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME}: ${NCCL_IB_HCA}"
   return 0
+}
+
+# ConnectX ของ DGX Spark: หนึ่งพอร์ต QSFP = RoCE คู่แฝดสองตัว (SoC ให้ PCIe 5.0 ได้แค่ x4
+# ต่อ device) · ขึ้นครบสี่ตัว = ต่อสองพอร์ต = เดินสายแบบ mesh สำหรับ 3 เครื่องโดยไม่ใช้สวิตช์
+# ซึ่งต้องใช้ค่า NCCL คนละชุดกับคลัสเตอร์ปกติ ไม่งั้น NCCL หา route ข้ามวงไม่เจอ
+# ที่มา: eugr/spark-vllm-docker (MIT) docs/NETWORKING.md — ผ่าน all_gather บน mesh จริง
+MESH_ACTIVE_HCAS=4
+
+is_mesh_fabric() {
+  local hcas
+  hcas="$(detect_active_hcas)"
+  [[ -n "$hcas" ]] || return 1
+  (( $(awk -F, '{print NF}' <<<"$hcas") >= MESH_ACTIVE_HCAS ))
 }
 
 _resolve_ifname() {
@@ -569,6 +584,13 @@ _nccl_env_pairs() {
   else
     echo "NCCL_IB_DISABLE=1"
     echo "WARN: ไม่พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME:-<ไม่รู้ interface>} — fallback TCP (ช้าลง)" >&2
+  fi
+  if is_mesh_fabric; then
+    # mesh: แต่ละคู่เครื่องอยู่คนละ subnet — ปิด plugin/merge แล้วให้ NCCL เลือก route
+    # ตาม subnet เอง · ไม่ตั้งชุดนี้ NCCL จะพยายาม merge NIC ข้ามวงแล้ว hang ตอน init
+    echo "NCCL_NET_PLUGIN=none"
+    echo "NCCL_IB_SUBNET_AWARE_ROUTING=1"
+    echo "NCCL_IB_MERGE_NICS=0"
   fi
 }
 

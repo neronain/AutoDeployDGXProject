@@ -445,8 +445,8 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.inventory import host_payload
         from lmds.nodes import (
-            NodeError, check_cluster_ip, cluster_groups, load, probe, stack_ready,
-            suggest_cluster_ip,
+            NodeError, check_cluster_ip, cluster_groups, fabric_warnings, is_mesh, load,
+            nccl_ib_hca, probe, stack_ready, suggest_cluster_ip,
         )
 
         def row(name, host, cluster_ip, is_self):
@@ -457,6 +457,10 @@ def create_app(token: str = "") -> FastAPI:
                 "fabric": host.get("fabric"), "cluster_ip": cluster_ip,
                 "suggested_ip": suggest_cluster_ip(host),
                 "ip": check_cluster_ip(host, cluster_ip),
+                # ชุดเดียวกับที่ CLI ใช้ — หน้าเว็บกับ lmds node cluster ต้องบอกเรื่องเดียวกัน
+                "mesh": is_mesh(host),
+                "nccl_ib_hca": nccl_ib_hca(host),
+                "warnings": fabric_warnings(host),
             }
 
         local = host_payload()
@@ -471,6 +475,7 @@ def create_app(token: str = "") -> FastAPI:
                 rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
                              "has_gpu": False, "error": str(exc)[:200], "fabric": None,
                              "cluster_ip": node.cluster_ip, "suggested_ip": "",
+                             "mesh": False, "nccl_ib_hca": "", "warnings": [],
                              "ip": {"state": "unset", "iface": "", "speed_gbps": None}})
                 continue
             machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})

@@ -5,12 +5,19 @@ node ล่มหนึ่งเครื่องไม่กระทบเค
 """
 
 from .cluster import (
+    MESH_ACTIVE_LINKS,
+    MESH_NCCL_ENV,
     MIN_STACK_GBPS,
+    active_fabric_links,
     check_cluster_ip,
     cluster_groups,
     cluster_note,
     fabric_links,
+    fabric_warnings,
+    is_mesh,
     link_network,
+    nccl_ib_hca,
+    oob_link,
     parallelism_note,
     shared_fabric,
     stack_ready,
@@ -41,6 +48,7 @@ from .ssh import (
 )
 
 __all__ = [
+    "active_fabric_links",
     "add",
     "check_cluster_ip",
     "check_login",
@@ -48,7 +56,13 @@ __all__ = [
     "cluster_note",
     "ensure_key",
     "fabric_links",
+    "fabric_warnings",
+    "is_mesh",
     "link_network",
+    "MESH_ACTIVE_LINKS",
+    "MESH_NCCL_ENV",
+    "nccl_ib_hca",
+    "oob_link",
     "parallelism_note",
     "shared_fabric",
     "tensor_parallel_fits",
