@@ -245,3 +245,24 @@ def test_other_secrets_never_read_the_hf_file(tmp_path, monkeypatch):
     monkeypatch.setattr(store.Path, "home", classmethod(lambda cls: home))
 
     assert store.get_secret("openai") is None
+
+
+def test_node_run_passes_flags_through(monkeypatch):
+    """`node run x logs y -n 100` — flag ต้องไปถึงคำสั่งปลายทาง ไม่ใช่โดน typer กินเอง"""
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+    from lmds.nodes.ssh import Result
+
+    add(make(name="n1"))
+    seen = {}
+
+    def fake_run(node, command, timeout=60):
+        seen["cmd"] = command
+        return Result(0, "", "")
+
+    monkeypatch.setattr("lmds.nodes.run", fake_run)
+
+    result = CliRunner().invoke(app, ["node", "run", "n1", "logs", "my-model", "-n", "100"])
+    assert result.exit_code == 0, result.output
+    assert seen["cmd"] == "lmds logs my-model -n 100"

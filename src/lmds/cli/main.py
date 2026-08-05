@@ -560,7 +560,12 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
                   f"{' · NCCL ' + iface if iface else ''}[/dim]")
     console.print(f"[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
 
-@node_app.command("run")
+# flag ของคำสั่งปลายทางต้องผ่านไปทั้งดุ้น — ไม่งั้น `node run x logs y -n 100`
+# จะโดน typer กินไปเป็น option ของ node run เอง
+@node_app.command(
+    "run",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def node_run(
     name: str = typer.Argument(..., autocompletion=_complete_node),
     command: list[str] = typer.Argument(..., help="คำสั่ง lmds ที่จะรันบนเครื่องนั้น เช่น: ps"),
