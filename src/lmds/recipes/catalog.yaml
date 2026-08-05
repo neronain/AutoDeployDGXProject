@@ -30,6 +30,11 @@ recipes:
       block_size: 256
       max_cudagraph_capture_size: 24
       generation_config: vllm
+      # FULL cudagraph ทำให้ kernel init ของ DeepGEMM/tilelang เรียกคนละ signature
+      # ("Expected 7 but got 8 arguments") — สคริปต์ที่รันผ่านจริงบังคับ PIECEWISE ไว้
+      compilation_config: '{"cudagraph_mode":"PIECEWISE"}'
+      async_scheduling: true
+      max_num_batched_tokens: 8192
     env:
       # ตัวที่ทำให้ start ไม่ผ่านถ้าไม่ตั้ง: profiler ของ CUDA graph ไปเรียก TVM-FFI คนละ signature
       # แล้วตายที่ determine_available_memory ด้วย "Expected 7 but got 8 arguments"
