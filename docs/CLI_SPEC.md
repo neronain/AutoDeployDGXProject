@@ -282,6 +282,10 @@ Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มี
 
 REST ที่หน้าเว็บใช้ (token เดียวกับหน้าเว็บ): `/api/host` `/api/models` `/api/nodes`
 `/api/nodes/{name}/inventory` `/api/cluster` — `PATCH /api/nodes/{name}` แก้ cluster IP ·
+`POST /api/nodes/{name}/models/{slug}/start|restart` รับ body `{"port","context","gpu_util"}` —
+ตรวจชนิดและช่วงที่ server (port 1–65535 · context 256–10M · gpu_util 0.3–0.98) แล้วแปลงเป็น
+flag ของ controller · คำสั่งอื่นส่ง option มาด้วย = 400
+
 คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor logs enable disable`
 (`logs` ถูกบังคับ `-n 300`) — **`remove` ไม่อยู่ในนั้นโดยตั้งใจ** เพราะต้องใช้ `-y` ซึ่งข้ามหน้ายืนยัน
 ที่แสดงรายการ+ขนาดก่อนลบ weight หลายสิบ GB · มีเทสกันไม่ให้หลุดเข้ามา
