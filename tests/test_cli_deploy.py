@@ -240,7 +240,8 @@ def test_up_runs_controller_steps_in_the_only_order_that_works(
     # prepare-runtime แทรกเฉพาะ bundle ที่ build เอง (llama.cpp บน ARM64 ไม่มี image ทางการ)
     assert fake.calls == ["download", "verify-files", "prepare-runtime", "start", "test-text"]
     assert "พร้อมใช้งานแล้ว" in result.output
-    assert "lmds connect qwen3-8b-gguf" in result.output
+    assert "client-config" in result.output
+    assert "lmds connect" not in result.output
 
 
 def test_up_stops_at_the_failing_step_and_says_where_to_look(
@@ -281,7 +282,7 @@ def test_up_does_not_pretend_to_handle_stacked(isolated_config, tmp_path, monkey
         monkeypatch, tmp_path, big_safetensors(), "dgx-spark-stacked",
         "nvidia/DeepSeek-V4-Flash-NVFP4",
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert fake.calls == []
     assert "stacked" in result.output
     assert "README" in result.output

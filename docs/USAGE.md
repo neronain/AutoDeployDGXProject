@@ -130,7 +130,8 @@ cd bundles/qwen3-0-6b-gguf
 > **ไม่อยากพิมพ์ทีละคำสั่ง?** `lmds up <ลิงก์>` เดินให้ทั้งชุดตามลำดับที่ถูกต้อง
 > (deploy → download → verify-files → prepare-runtime ถ้าจำเป็น → start → test-text)
 > แล้วบอกวิธีต่อ client ให้ · ล้มขั้นไหนหยุดตรงนั้นพร้อมบอกว่าดูต่อที่ไหน
-> · stacked ยังต้องใช้ `lmds deploy` แล้วทำตาม README ของ bundle
+> · stacked จะสร้าง bundle แล้วหยุดด้วย exit 1 เพราะยังเดินขั้น multi-node ให้ครบไม่ได้ —
+> ใช้ `lmds deploy` โดยตรงหรือทำตาม README ของ bundle ที่สร้างไว้
 
 | คำสั่ง | หน้าที่ |
 |---|---|

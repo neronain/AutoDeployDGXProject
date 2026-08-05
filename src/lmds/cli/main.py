@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import os
@@ -15,6 +16,7 @@ from rich.table import Table
 
 import lmds
 from lmds.config import DEFAULT_MODELS, ProviderName, Settings, config_dir
+from lmds.generator import Bundle
 from lmds.secrets import (
     check_credentials_permissions,
     get_secret,
@@ -1391,7 +1393,7 @@ def deploy(
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
-) -> None:
+) -> Bundle:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
 
     Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก, 2 ไม่ผ่าน gates, 3 ไม่ fit, 4 ต้องการ token, 5 provider
@@ -1509,7 +1511,11 @@ def _run_step(controller: str, command: str, index: int, total: int, label: str)
     import subprocess
 
     console.print(f"\n[bold cyan][{index}/{total}] {label}[/bold cyan]  [dim]({command})[/dim]")
-    return subprocess.run([controller, command]).returncode
+    controller_path = Path(controller).resolve()
+    return subprocess.run(
+        [str(controller_path), command],
+        cwd=str(controller_path.parent),
+    ).returncode
 
 
 @app.command()
@@ -1549,11 +1555,12 @@ def up(
     slug = bundle.controller.parent.name
 
     if slug.endswith("-stacked") or "-stacked.sh" in controller:
-        console.print(
+        err_console.print(
             "\n[yellow]bundle นี้เป็น stacked (หลายเครื่อง)[/yellow] — ขั้น sync-worker/verify-worker "
-            "ต้องตัดสินใจเรื่องเครื่องปลายทางเอง · ทำตาม README ของ bundle ต่อ"
+            "ต้องตัดสินใจเรื่องเครื่องปลายทางเอง · สร้าง bundle ให้แล้ว แต่ `lmds up` "
+            "ยังทำงานให้ครบตามสัญญาไม่ได้ — ทำตาม README ของ bundle ต่อ"
         )
-        return
+        raise typer.Exit(code=1)
 
     steps = list(_UP_STEPS)
     # llama.cpp บน ARM64 ไม่มี image ทางการ ต้อง build เองก่อนหนึ่งครั้ง
@@ -1576,7 +1583,6 @@ def up(
 
     console.print(f"\n[green]พร้อมใช้งานแล้ว[/green] — {slug}")
     console.print(f"  ค่าต่อ client:        [cyan]{controller} client-config[/cyan]")
-    console.print(f"  ต่อ Claude Code:     [cyan]lmds connect {slug}[/cyan]")
     console.print(f"  ดูสถานะ/หยุด:        [cyan]lmds ps[/cyan] · [cyan]lmds stop {slug}[/cyan]")
 
 
