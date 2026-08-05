@@ -9,6 +9,8 @@ import sys
 
 import shlex
 
+from contextlib import contextmanager
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -39,6 +41,25 @@ app.add_typer(agent_app, name="agent")
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+@contextmanager
+def _working(label: str):
+    """บอกว่ากำลังทำอะไรอยู่ระหว่างรอ
+
+    ขั้นตอนพวกนี้เงียบได้ตั้งแต่ 3 วินาทีถึงเป็นนาที (อ่าน metadata จาก Hub, เรียก LLM,
+    รัน gates) ผู้ใช้แยกไม่ออกว่าค้างหรือกำลังทำงาน — เคสจริงคือ inspect โมเดลใหญ่
+    เงียบ 11 วินาทีแล้วมีคน Ctrl-C ทิ้ง
+
+    ออก stderr และเงียบสนิทเมื่อไม่ได้ต่อ terminal — `lmds plan --json` ต้อง pipe ต่อได้
+    โดยไม่มีอะไรปน และบาง shell/CI รวม stderr เข้า stdout ให้เอง การเงียบจึงปลอดภัยกว่า
+    การหวังว่าปลายทางจะแยกสองสายให้ถูก
+    """
+    if not err_console.is_terminal:
+        yield
+        return
+    with err_console.status(f"[cyan]{label}…[/cyan]", spinner="dots"):
+        yield
 
 
 @app.callback()
@@ -869,11 +890,13 @@ def _build_plan_safe(report, fit, provider):
 
     if provider is not None:
         try:
-            return build_plan(report, fit, provider)
+            with _working(f"ให้ {provider.name} ({provider.model}) วางแผน — รอบละหลายสิบวินาที"):
+                return build_plan(report, fit, provider)
         except (PlanError, ProviderError) as exc:
             err_console.print(f"[yellow]LLM ใช้ไม่ได้: {exc}[/yellow]")
             err_console.print("[yellow]→ สลับเป็น rule-based mode อัตโนมัติ (plan จะไม่มีการวิเคราะห์เชิงลึก)[/yellow]")
-    return build_plan(report, fit, None)
+    with _working("วางแผนจากสูตรที่รันผ่านจริง (rule-based)"):
+        return build_plan(report, fit, None)
 
 
 def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bool):
@@ -903,7 +926,9 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
     token = get_secret("hf")
     try:
         try:
-            return source, inspect_model(source, HfClient(token=token))
+            with _working(f"อ่านข้อมูล {source.repo_id} จาก Hugging Face"):
+                report = inspect_model(source, HfClient(token=token))
+            return source, report
         except AuthRequired as exc:
             interactive = sys.stdin.isatty() and interactive_ok
             if not interactive or exc.had_token:
@@ -916,7 +941,8 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
             if not entered:
                 err_console.print("ข้าม token — ไม่สามารถ inspect repo นี้ได้")
                 raise typer.Exit(code=4)
-            report = inspect_model(source, HfClient(token=entered))
+            with _working(f"อ่านข้อมูล {source.repo_id} ด้วย token ที่ใส่มา"):
+                report = inspect_model(source, HfClient(token=entered))
             # token ที่พิมพ์ตรงนี้ใช้ได้แค่รอบนี้ — controller อ่านจาก env HF_TOKEN เสมอ
             # (ไม่ฝัง secret ลง bundle) ถ้าไม่บอกให้ชัด ผู้ใช้จะไปเจอ 401 ตอน download
             err_console.print(
@@ -1254,12 +1280,14 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     from lmds.validator import all_passed, run_gates
 
     try:
-        bundle = render_bundle(deployment_plan, report, fit, Path(output))
+        with _working("สร้างสคริปต์จาก template"):
+            bundle = render_bundle(deployment_plan, report, fit, Path(output))
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
-    results = run_gates(bundle.directory, include_checksums=False)
+    with _working("ตรวจ quality gates"):
+        results = run_gates(bundle.directory, include_checksums=False)
     if not all_passed(results):
         _render_gates(results)
         err_console.print("[red]bundle ไม่ผ่าน quality gates — ไม่สร้าง ZIP[/red]")
@@ -1515,9 +1543,11 @@ def _render_all_nodes() -> None:
     table.add_column("port")
     table.add_column("สถานะ")
 
-    for node in nodes:
+    for index, node in enumerate(nodes, start=1):
         try:
-            info = probe(node)
+            # ถาม SSH ทีละเครื่อง เครื่องที่ต่อไม่ได้ต้องรอ timeout — บอกว่าถึงเครื่องไหนแล้ว
+            with _working(f"ถาม {node.name} ({index}/{len(nodes)})"):
+                info = probe(node)
         except NodeError as exc:
             table.add_row(f"[bold]{node.name}[/bold]", "—", "—", "—",
                           f"[red]ติดต่อไม่ได้[/red] {str(exc).splitlines()[0][:60]}")

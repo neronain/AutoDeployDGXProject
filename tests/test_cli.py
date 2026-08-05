@@ -290,3 +290,42 @@ def test_web_token_file_is_not_world_readable(tmp_path, monkeypatch):
     daemon.remember_token("s3cret")
     mode = daemon.token_file().stat().st_mode
     assert not mode & (stat.S_IRGRP | stat.S_IROTH)
+
+
+# ── ตัวบอกความคืบหน้า ────────────────────────────────────────────────
+
+
+def test_working_is_silent_when_output_is_piped():
+    """`lmds plan --json | jq` ต้องไม่มีอะไรปน — บาง shell/CI รวม stderr เข้า stdout ให้เอง"""
+    from lmds.cli.main import _working, err_console
+
+    assert err_console.is_terminal is False  # pytest ไม่ใช่ terminal
+    with err_console.capture() as captured:
+        with _working("ไม่ควรเห็นบรรทัดนี้"):
+            pass
+    assert captured.get() == ""
+
+
+def test_working_shows_label_on_a_real_terminal(monkeypatch):
+    """บนหน้าจอจริงต้องบอกว่ากำลังทำอะไร ไม่ใช่ค้างเงียบ ๆ"""
+    from rich.console import Console
+
+    from lmds.cli import main as cli_main
+
+    fake = Console(force_terminal=True, width=100)
+    monkeypatch.setattr(cli_main, "err_console", fake)
+    with fake.capture() as captured:
+        with cli_main._working("อ่านข้อมูลจาก Hugging Face"):
+            pass
+    assert "อ่านข้อมูลจาก Hugging Face" in captured.get()
+
+
+def test_working_lets_errors_through():
+    """สปินเนอร์ต้องไม่กลืน exception — ไม่งั้น error หายไปเฉย ๆ"""
+    import pytest as _pytest
+
+    from lmds.cli.main import _working
+
+    with _pytest.raises(ValueError):
+        with _working("งานที่จะพัง"):
+            raise ValueError("พัง")
