@@ -137,9 +137,16 @@ cd bundles/qwen3-0-6b-gguf
 | `logs [N]` | log ล่าสุด N บรรทัด (default 300) |
 | `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
-| `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
+| `test-text` | ทดสอบ chat completion หนึ่งครั้ง (ผิว OpenAI) |
+| `test-anthropic` | ทดสอบผ่าน `/v1/messages` (ผิว Anthropic — สำหรับ Claude Code / Anthropic SDK) |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
+
+**endpoint เดียวเสิร์ฟสองผิว** — `/v1/chat/completions` (OpenAI SDK, LangChain, Open WebUI)
+และ `/v1/messages` (Anthropic SDK, Claude Code) ใช้พอร์ตเดียวกันและ `API_KEY` ตัวเดียวกัน
+· `client-config` คืนทั้ง `base_url` (ลงท้าย `/v1`) และ `anthropic_base_url` (ไม่มี `/v1` —
+client สาย Anthropic เติม `/v1/messages` ให้เอง) · สูตรต่อ Claude Code แบบเต็มอยู่ใน
+README ของ bundle หัวข้อ "ต่อ client" — **ไม่ต้องมี proxy** เพราะ engine พูด Messages API เอง
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
 > `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด
@@ -667,7 +674,7 @@ lmds web -b --new-token           # เปลี่ยน token (ลิงก์
 |---|---|
 | **download** | โหลด weight แล้ว **รัน `verify-files` ต่อให้อัตโนมัติ** พร้อม log สด — ปุ่มเปลี่ยนเป็น `start` เองเมื่อครบ |
 | **start / stop / restart** | ใช้ตัวเลือกที่ตั้งไว้ในแท็บ manage |
-| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `bench` · `stress` · `client-config` · `network-info` · `status` |
+| **tests** | `test-text` · `test-anthropic` · `test-vision` · `test-reasoning` · `test-tools` · `bench` · `stress` · `client-config` · `network-info` · `status` |
 | **manage** | port / context / slots / bind / API key · autostart · คำสั่ง stacked · repair · remove |
 | **doctor** | ผลเดียวกับ `lmds doctor` พร้อมคำสั่งแก้ |
 | **logs** | log ล่าสุด 300 บรรทัด |
