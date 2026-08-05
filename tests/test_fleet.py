@@ -691,7 +691,10 @@ def test_logs_explains_a_model_that_never_ran(tmp_path, monkeypatch, isolated_co
     controller = tmp_path / "ctl.sh"
     controller.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
     controller.chmod(0o755)
-    make_meta(tmp_path, "m", controller=str(controller))
+    # ไม่มี meta เลย — เหมือน bundle ที่ deploy ไว้แต่ยังไม่เคย start (เคสจริงบน dgx-veerasiam)
+    meta = make_meta(tmp_path, "m", controller=str(controller)) / "server.meta"
+    meta.write_text(meta.read_text(encoding="utf-8").replace(
+        "started_at=2026-07-21T12:00:00", "started_at="), encoding="utf-8")
     monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
 
     called = []

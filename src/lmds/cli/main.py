@@ -1653,10 +1653,12 @@ def logs(
         err_console.print(f"[dim]ตาม log ของ {slug} แบบ realtime — Ctrl-C เพื่อออก (ไม่หยุดโมเดล)[/dim]")
     # โมเดลที่ยังไม่เคยรันไม่มีไฟล์ log — เดิมปล่อย "tail: cannot open ..." ดิบ ๆ ออกไป
     # ซึ่งอ่านเหมือนระบบพัง ทั้งที่แค่ยังไม่เคยสตาร์ต
-    # native = controller tail ไฟล์ตรง ๆ · docker = docker logs ซึ่งอ่านของ container ที่หยุดแล้วได้
-    # จึงเตือนเฉพาะเคส native ที่ไม่มีไฟล์จริง ไม่ใช่เดาจากชื่อ container ที่จดไว้ในทะเบียน
-    never_ran = (server.mode != "docker" and server.run_dir
-                 and not (server.run_dir / "server.log").exists())
+    # bundle ที่ยังไม่เคย start ไม่มีทั้ง log และ container — `mode` ของมันเป็นค่าเดา
+    # (ออกมาเป็น "docker" เสมอ) จึงใช้ตัดสินไม่ได้ · เกณฑ์ที่เชื่อได้คือ "ไม่มีบันทึกว่าเคยรัน":
+    # ไม่ได้รันอยู่ + ไม่มี started_at ในทะเบียน + ไม่มีไฟล์ log
+    log_file = (server.run_dir / "server.log") if server.run_dir else None
+    never_ran = (not server.running and not server.started_at
+                 and not (log_file and log_file.exists()))
     if never_ran:
         err_console.print(f"[yellow]ยังไม่มี log ของ {slug}[/yellow] — โมเดลนี้ยังไม่เคยรันบนเครื่องนี้")
         err_console.print(f"[dim]เริ่มด้วย: [bold]lmds start {slug}[/bold] แล้วค่อยดู log[/dim]")
