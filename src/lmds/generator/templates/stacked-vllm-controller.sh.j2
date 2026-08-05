@@ -449,6 +449,26 @@ detect_worker_interface() {
     '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true
 }
 
+# RoCE HCA ที่คู่กับ NIC หาได้จาก sysfs — ไม่ตั้งแล้ว NCCL ตกไปใช้ TCP
+# สาย 200G จะทำงานได้เท่าอีเทอร์เน็ตธรรมดา ซึ่งเป็นเคสที่ไล่ยากมากเพราะ "ก็รันได้"
+detect_hca_for_interface() {
+  local want="$1" dev
+  [[ -n "$want" ]] || return 0
+  for dev in /sys/class/infiniband/*; do
+    [[ -e "$dev/device/net/$want" ]] || continue
+    basename "$dev"
+    return 0
+  done
+  return 0
+}
+
+_resolve_hca() {
+  [[ -n "$NCCL_IB_HCA" ]] && return 0
+  NCCL_IB_HCA="$(detect_hca_for_interface "$NCCL_SOCKET_IFNAME")"
+  [[ -n "$NCCL_IB_HCA" ]] && log "พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME}: ${NCCL_IB_HCA}"
+  return 0
+}
+
 _resolve_ifname() {
   # ค่าที่ตั้งมาเองชนะเสมอ ไม่มีค่อยหาให้จาก IP
   [[ -n "$NCCL_SOCKET_IFNAME" ]] && return 0
@@ -478,7 +498,7 @@ _nccl_env_pairs() {
     echo "NCCL_IB_DISABLE=0"
   else
     echo "NCCL_IB_DISABLE=1"
-    echo "WARN: NCCL_IB_HCA ไม่ได้ตั้ง — fallback TCP (ช้าลง)" >&2
+    echo "WARN: ไม่พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME:-<ไม่รู้ interface>} — fallback TCP (ช้าลง)" >&2
   fi
 }
 
@@ -563,6 +583,7 @@ start() {
   need docker; need curl
   check_running_on_master
   _resolve_ifname
+  _resolve_hca
   local WORKER_IFNAME="$NCCL_SOCKET_IFNAME"
   local detected_worker; detected_worker="$(detect_worker_interface)"
   if [[ -n "$detected_worker" ]]; then

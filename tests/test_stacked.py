@@ -288,3 +288,13 @@ def test_fabric_env_covers_ucx_and_ompi(tmp_path):
     for key in ("NCCL_SOCKET_IFNAME=", "GLOO_SOCKET_IFNAME=", "TP_SOCKET_IFNAME=",
                 "UCX_NET_DEVICES=", "OMPI_MCA_btl_tcp_if_include="):
         assert key in text, key
+
+
+def test_controller_derives_the_roce_hca(tmp_path):
+    """ไม่ตั้ง NCCL_IB_HCA แล้ว NCCL ตกไปใช้ TCP — สาย 200G ทำงานเท่าอีเทอร์เน็ตธรรมดาแบบเงียบ ๆ"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert "detect_hca_for_interface()" in text
+    assert "/sys/class/infiniband/" in text
+    assert '[[ -n "$NCCL_IB_HCA" ]] && return 0' in text

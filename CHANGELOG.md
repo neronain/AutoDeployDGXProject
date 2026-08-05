@@ -40,6 +40,9 @@
 - **stacked controller: หา NCCL interface เองจาก cluster IP** (ทั้ง head และ worker) — ชื่อพอร์ตบน
   DGX Spark ยาวและไม่เหมือนกันทุกเส้น (`enp1s0f1np1` vs `enP2p1s0f1np1` คนละ fabric บนเครื่องเดียวกัน)
   ให้คนพิมพ์เองแล้วผิดจะเงียบ ๆ ตกไปใช้เส้นช้า · ค่าที่ตั้งเองยังชนะเสมอ
+- **stacked controller: หา RoCE HCA เองจาก interface** (`/sys/class/infiniband/*/device/net/`)
+  — ไม่ตั้ง `NCCL_IB_HCA` แล้ว NCCL ตกไปใช้ TCP ทำให้สาย 200G ทำงานได้เท่าอีเทอร์เน็ตธรรมดา
+  ยืนยันบนเครื่องจริง: `10.100.152.1` → `enp1s0f1np1` → `rocep1s0f1`
 - **stacked controller: ตรวจว่ารันบนเครื่อง head จริง** ก่อนเริ่ม — รันผิดเครื่องตายทันทีพร้อมเหตุผล
   แทนที่จะไปตายตอน NCCL init · เพิ่ม `UCX_NET_DEVICES` / `OMPI_MCA_btl_tcp_if_include`
   (สองตัวนี้เลือกเส้นเองแยกจาก NCCL ไม่บอกด้วยจะหลุดไปใช้ management NIC)
