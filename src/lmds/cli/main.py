@@ -331,6 +331,57 @@ def list_recipes(
     console.print(table)
     console.print("[dim]ใช้อัตโนมัติตอน deploy เมื่อไม่มี LLM provider · ดูรายตัว: lmds recipes <model>[/dim]")
 
+
+@app.command("prune")
+def prune_registrations(
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้วและไม่ได้รันอยู่
+
+    เครื่องที่ใช้ "จัดการ" อย่างเดียว (เช่นโน้ตบุ๊กที่ใช้สร้าง bundle ให้เครื่องอื่น) จะสะสมทะเบียน
+    ของ bundle ที่ย้าย/ลบไปแล้ว ทำให้หน้าจอเต็มไปด้วยรายการที่กดอะไรก็ไม่ได้ และเสี่ยงสั่งผิดเครื่อง
+
+    **ลบเฉพาะไฟล์ทะเบียน** ไม่แตะ weight, bundle หรือ container ใด ๆ
+    """
+    from pathlib import Path as _Path
+
+    from lmds.fleet import discover, run_root
+
+    dead = []
+    for server in discover():
+        if server.running or not server.controller:
+            continue
+        if not _Path(server.controller).exists():
+            dead.append(server)
+
+    if not dead:
+        console.print("ไม่มีทะเบียนค้าง — ทุกตัวชี้ไป bundle ที่มีอยู่จริง")
+        return
+
+    table = Table(title="ทะเบียนที่ชี้ไปของที่ไม่มีแล้ว")
+    table.add_column("ชื่อ")
+    table.add_column("controller ที่หายไป")
+    for server in dead:
+        table.add_row(server.slug, server.controller)
+    console.print(table)
+    console.print("[dim]ลบเฉพาะไฟล์ทะเบียน — weight, bundle และ container ไม่ถูกแตะ[/dim]")
+
+    if not yes and not typer.confirm(f"ล้าง {len(dead)} รายการ?", default=True):
+        raise typer.Exit(code=1)
+
+    root = run_root()
+    removed = 0
+    for server in dead:
+        meta = root / server.slug / "server.meta"
+        try:
+            meta.unlink()
+            if not any(meta.parent.iterdir()):
+                meta.parent.rmdir()
+            removed += 1
+        except OSError as exc:
+            err_console.print(f"[yellow]ลบ {meta} ไม่ได้: {exc}[/yellow]")
+    console.print(f"[green]ล้าง {removed} รายการแล้ว[/green]")
+
 @app.command("scan")
 def scan_models(
     root: list[str] = typer.Option([], "--root", help="ที่ค้นเพิ่มเติม (ระบุซ้ำได้)"),

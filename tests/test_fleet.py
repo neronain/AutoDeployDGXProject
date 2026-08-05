@@ -540,3 +540,92 @@ def test_extra_bundle_dirs_from_env(tmp_path, monkeypatch):
     assert "far-away" not in {s.slug for s in discover()}
     monkeypatch.setenv("LMDS_BUNDLE_DIRS", str(elsewhere))
     assert "far-away" in {s.slug for s in discover()}
+
+
+def test_dead_registration_is_dropped(tmp_path, monkeypatch):
+    """ทะเบียนที่ชี้ไป controller ที่ไม่มีแล้วและไม่ได้รันอยู่ = ทำอะไรกับมันไม่ได้เลย
+    เกิดตอน generate bundle ไว้ที่อื่นแล้วลบทิ้ง — ปล่อยไว้จะเต็มหน้าจอด้วยรายการปลอม"""
+    from lmds.fleet import discover
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+    monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
+    monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
+    monkeypatch.setattr("lmds.fleet.manager._scan_bundles", lambda known: [])
+
+    # ไม่มี started_at = ไม่เคยถูก start มาก่อน (generate อย่างเดียว)
+    run_dir = tmp_path / "run" / "ghost"
+    run_dir.mkdir(parents=True)
+    (run_dir / "server.meta").write_text(
+        "slug=ghost\nengine=vllm\nmode=docker\nport=8000\ncontroller=/ไม่มี/ที่นี่.sh\n",
+        encoding="utf-8")
+
+    assert [s.slug for s in discover()] == []
+    assert not run_dir.exists(), "ทะเบียนที่ตายแล้วต้องถูกเก็บกวาด"
+
+
+def test_running_server_survives_even_without_its_controller(tmp_path, monkeypatch):
+    """ยังรันอยู่ = ต้องเห็นและสั่ง stop ได้ ถึงไฟล์ controller จะหายไปแล้วก็ตาม"""
+    from lmds.fleet import discover
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run2"))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: True)
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port: False)
+    monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
+    monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
+    monkeypatch.setattr("lmds.fleet.manager._scan_bundles", lambda known: [])
+
+    run_dir = tmp_path / "run2" / "alive"
+    run_dir.mkdir(parents=True)
+    (run_dir / "server.meta").write_text(
+        "slug=alive\nengine=vllm\nmode=docker\nport=8000\ncontainer=c\ncontroller=/ไม่มี.sh\n",
+        encoding="utf-8")
+
+    assert [s.slug for s in discover()] == ["alive"]
+
+
+def test_previously_started_model_keeps_its_warning(tmp_path, monkeypatch):
+    """เคยรันจริงแล้ว controller หายไป = เรื่องที่ผู้ใช้ต้องรู้ ไม่ใช่เก็บกวาดเงียบ ๆ
+    (ต่างจาก bundle ที่แค่ generate ไว้แล้วลบทิ้ง)"""
+    from lmds.fleet import discover
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run3"))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+    monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
+    monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
+    monkeypatch.setattr("lmds.fleet.manager._scan_bundles", lambda known: [])
+
+    run_dir = tmp_path / "run3" / "was-running"
+    run_dir.mkdir(parents=True)
+    (run_dir / "server.meta").write_text(
+        "slug=was-running\nengine=vllm\nmode=docker\nport=8000\ncontroller=/ไม่มี.sh\n"
+        "started_at=2026-08-01T10:00:00\n", encoding="utf-8")
+
+    found = discover()
+    assert [s.slug for s in found] == ["was-running"]
+    assert not found[0].controller_exists
+
+
+def test_prune_removes_only_dead_registrations(tmp_path, monkeypatch, isolated_config):
+    """เครื่องที่ใช้จัดการอย่างเดียวจะสะสมทะเบียนของ bundle ที่ย้าย/ลบไปแล้ว
+    ล้างได้ต้องลบเฉพาะไฟล์ทะเบียน ไม่แตะของที่ยังใช้ได้"""
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+    monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
+    monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
+    monkeypatch.setattr("lmds.fleet.manager._scan_bundles", lambda known: [])
+
+    live = tmp_path / "ctl.sh"
+    live.write_text("#!/bin/bash\n", encoding="utf-8")
+    for slug, controller in (("dead", "/ไม่มี.sh"), ("alive", str(live))):
+        run_dir = tmp_path / "run" / slug
+        run_dir.mkdir(parents=True)
+        (run_dir / "server.meta").write_text(
+            f"slug={slug}\nengine=vllm\nmode=docker\nport=8000\ncontroller={controller}\n"
+            "started_at=2026-08-01T10:00:00\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["prune", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / "run" / "dead").exists()
+    assert (tmp_path / "run" / "alive" / "server.meta").exists()
+    assert live.exists(), "prune ต้องไม่แตะไฟล์ controller"

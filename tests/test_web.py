@@ -678,3 +678,12 @@ def test_page_only_suggests_commands_that_exist():
         assert command in known, f"หน้าเว็บแนะนำคำสั่งที่ไม่มี: lmds {command}"
         if command == "deploy":
             assert "--topology" not in flags, "ไม่มี --topology — topology มาจาก --target"
+
+
+def test_node_cards_can_be_collapsed():
+    """เครื่องที่มีโมเดลเยอะทำให้หน้าจอยาวจนหาของไม่เจอ — ต้องย่อได้และจำสถานะไว้
+    ไม่งั้น poll ทุก 5 วินาทีจะกางกลับเอง"""
+    body = TestClient(create_app()).get("/").text
+    assert 'class="ntoggle"' in body
+    assert ".nbody.collapsed { display: none; }" in body
+    assert "collapsedNodes" in body

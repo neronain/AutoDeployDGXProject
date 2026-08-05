@@ -394,6 +394,18 @@ def _parse_docker_ps(output: str, known_containers: set[str]) -> list[ServerInfo
     return orphans
 
 
+
+def _drop_dead_registration(meta_path: Path) -> None:
+    """เอาทะเบียนที่ชี้ไปของที่ไม่มีแล้วออก — self-healing ถ้า bundle กลับมาก็ลงทะเบียนใหม่เอง"""
+    try:
+        meta_path.unlink()
+        parent = meta_path.parent
+        if not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
+
+
 def discover() -> list[ServerInfo]:
     """สแกนทุก server: ทั้งที่ลงทะเบียน (server.meta) และที่รันอยู่โดยไม่มีทะเบียน (bundle รุ่นเก่า)"""
     servers: list[ServerInfo] = []
@@ -425,6 +437,16 @@ def discover() -> list[ServerInfo]:
         else:
             info.running = _container_running(info.container)
         info.healthy = info.running and _health_ok(info.port)
+
+        # ทะเบียนของ bundle ที่ "ไม่เคยถูก start" และ controller ก็ไม่อยู่แล้ว = ตายสนิท
+        # เกิดตอน generate ไว้ที่อื่นแล้วลบทิ้ง (เครื่อง hub ที่ใช้สร้างอย่างเดียวจะเต็มไปด้วยรายการปลอม)
+        # ต่างจากตัวที่ "เคยรันจริง" แล้ว controller หายไป — อันนั้นต้องเตือน ไม่ใช่เก็บกวาดเงียบ ๆ
+        # ลบเฉพาะไฟล์ทะเบียน ไม่แตะ weight หรือ bundle · bundle กลับมาก็ลงทะเบียนใหม่เอง
+        never_started = not info.started_at
+        if never_started and not info.running and info.controller \
+                and not Path(info.controller).exists():
+            _drop_dead_registration(meta_path)
+            continue
         servers.append(info)
 
     # เก็บตกโมเดลที่รันอยู่โดยไม่มีทะเบียน (start จาก bundle รุ่นเก่า/เครื่องอื่น)

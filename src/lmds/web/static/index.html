@@ -61,6 +61,9 @@ pre { margin: 0; padding: 12px 16px; background: var(--bg); border-top: 1px soli
 .find b { width: 108px; flex: none; font-weight: 400; color: var(--fg2); }
 code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 3px 8px; border-radius: 6px; }
 .empty { padding: 40px 16px; text-align: center; color: var(--fg2); }
+.ntoggle { font-family: ui-monospace, monospace; width: 24px; padding: 2px 0; line-height: 1;
+  flex: none; }
+.nbody.collapsed { display: none; }
 .npills { display: flex; flex-wrap: wrap; gap: 6px; }
 .npill { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
   padding: 3px 8px; font-size: 12px; white-space: nowrap; }
@@ -680,6 +683,7 @@ document.addEventListener("click", async e => {
 // The hub talks to each node over SSH (`lmds agent info`). A node being down must
 // degrade to one row saying so — never hang or blank the whole page.
 const nodeRows = new Map();
+const collapsedNodes = new Set();
 
 function nodeAddForm() {
   const box = document.getElementById("nodes");
@@ -705,6 +709,7 @@ function nodeAddForm() {
 function nodeCard(node) {
   const block = document.createElement("div");
   block.innerHTML = `<div class="item">
+      <button class="ntoggle" title="ย่อ/ขยาย">−</button>
       <span class="dot"></span>
       <div class="grow">
         <div class="name">${esc(node.name)}</div>
@@ -820,11 +825,20 @@ async function refreshNodes() {
     if (!nodeRows.has(node.name)) {
       const block = nodeCard(node);
       box.appendChild(block);
+      const body = block.querySelector(".nbody");
+      const toggle = block.querySelector(".ntoggle");
+      if (collapsedNodes.has(node.name)) { body.classList.add("collapsed"); toggle.textContent = "+"; }
+      toggle.addEventListener("click", () => {
+        const hidden = body.classList.toggle("collapsed");
+        toggle.textContent = hidden ? "+" : "−";
+        // จำไว้ ไม่งั้น refresh รอบถัดไปกางกลับเองทุก 5 วินาที
+        if (hidden) collapsedNodes.add(node.name); else collapsedNodes.delete(node.name);
+      });
       nodeRows.set(node.name, {
         block,
         dot: block.querySelector(".dot"),
         version: block.querySelector(".nver"),
-        body: block.querySelector(".nbody"),
+        body,
       });
       loadNode(node.name);
     }
