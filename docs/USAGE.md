@@ -463,10 +463,23 @@ lmds node add 192.168.10.21 --user ops
 lmds node list                      # ทะเบียนทั้งหมด (เร็ว — อ่านไฟล์)
 lmds node list --check              # ต่อจริง ดูว่าเครื่องไหนยังตอบ
 lmds ps --all                       # โมเดลของทุกเครื่องในตารางเดียว
-lmds node run spark2 doctor my-model  # รันคำสั่ง lmds อะไรก็ได้บนเครื่องนั้น
-lmds node run spark2 logs my-model -n 200
 lmds node remove spark2             # ออกจากทะเบียน (ไม่แตะเครื่องนั้น)
 ```
+
+### สองคำสั่งที่ต้องแยกให้ออก
+
+```bash
+lmds node run spark2 doctor my-model          # สั่ง "คำสั่งของ lmds" บนเครื่องนั้น
+lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต์ controller" ในตัว bundle
+```
+
+| | ใช้กับ |
+|---|---|
+| `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` |
+| `node ctl` | `prepare-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `network-info` `client-config` `bench` `clear-fi-cache` |
+
+ขั้นตอนของ stacked (`sync-worker`, `verify-worker`) มีเฉพาะใน controller — ต้องใช้ `node ctl`
+· ลำดับเต็มดูที่ [RUNBOOK-MULTI-NODE.md](RUNBOOK-MULTI-NODE.md)
 
 - เครื่องปลายทาง**ไม่ต้องรัน daemon** — hub เรียก `lmds agent info` ผ่าน SSH เอาสถานะเป็น JSON
 - เครื่องหนึ่งล่ม เครื่องอื่นและหน้าเว็บไม่กระทบ (แถวนั้นขึ้นว่าติดต่อไม่ได้)
@@ -530,6 +543,18 @@ lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked --no-llm -
 - สูตร **ไม่แตะ context** — ค่านั้นยังมาจากการวิเคราะห์หน่วยความจำของเครื่องคุณเอง
 - image ที่ทดสอบบน DGX Spark จะไม่ถูกนำไปใช้กับ RTX เงียบ ๆ (จะเตือนแล้วใช้ค่าตั้งต้น)
 - โมเดลที่ยังไม่มีสูตร ทำงานเหมือนเดิมทุกอย่าง
+
+## 4.5.2 เครื่องจัดการโชว์โมเดลที่ไม่ใช่ของตัวเอง — `lmds prune`
+
+เครื่องที่ใช้ **สร้าง bundle ให้เครื่องอื่น** จะสะสมทะเบียนของ bundle ที่ย้าย/ลบไปแล้ว
+ทำให้เห็นรายการที่กดอะไรก็ไม่ได้ และ**เสี่ยงสั่งการผิดเครื่อง**
+
+```bash
+lmds prune          # แสดงรายการที่ตายแล้วให้ดูก่อน แล้วถามยืนยัน
+```
+
+**ลบเฉพาะไฟล์ทะเบียน** ไม่แตะ weight, bundle หรือ container · ตัวที่ไม่เคยถูก start เลย
+ระบบเก็บกวาดให้อัตโนมัติอยู่แล้ว
 
 ## 4.6 เครื่องที่มีโมเดลอยู่ก่อนแล้ว — `lmds scan`
 
@@ -618,6 +643,7 @@ lmds hardware                                        # ตรวจเครื�
 lmds scan                                            # โมเดลที่มีอยู่แล้วบนเครื่อง (ทุกที่เก็บ)
 lmds scan --all                                      # ค้นทุกเครื่องในทะเบียนด้วย
 lmds recipes                                         # สูตรที่รันผ่านจริง (ใช้เองเมื่อไม่มี LLM)
+lmds prune                                           # ล้างทะเบียนค้างของ bundle ที่ลบไปแล้ว
 lmds config show                                     # ดู config (key ถูก mask)
 lmds config defaults                                 # ดู default model ของแต่ละ provider
 lmds repair <ชื่อ>                                    # ซ่อมไฟล์ที่ขาด (ดู §4.3)

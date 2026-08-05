@@ -63,6 +63,20 @@ lmds remove <name>       # delete everything (--keep-weights to keep the downloa
 `lmds ps` also adopts **containers you started yourself** (vLLM / llama.cpp / Ollama / TGI) — they can
 be stopped, restarted, tailed and enabled too. Stopping those uses `docker stop`, never `docker rm -f`.
 
+## One machine, or several?
+
+**Stacking is not about speed — it is about a model not fitting in one machine.** Anything that
+fits on one machine runs *faster* there, because nothing crosses the wire per token.
+
+| | Single machine | Stacked (several machines, one model) |
+|---|---|---|
+| Engine | vLLM **or** llama.cpp | **vLLM only** |
+| Artifact | safetensors or **GGUF** | **safetensors only** — GGUF cannot be stacked |
+| Fast fabric | not needed | **required**, ≥25G (in practice 200G RoCE) |
+| Target | `dgx-spark-single`, `rtx-5090`, … | `dgx-spark-stacked`, `dgx-spark-stacked-4` |
+
+Full command sequence: **[docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md)**
+
 ## Controlling several machines from one
 
 A site with more than one machine does not need one SSH session per box. Register a machine once
@@ -76,6 +90,8 @@ lmds ps --all                            # every model on every machine, one tab
 lmds node run spark2 doctor my-model     # run any lmds command on that machine
 lmds node cluster                        # who has ConnectX/200G, and which pairs can be stacked
 lmds scan --all                          # models already on each machine, wherever they were put
+lmds node ctl spark1 <slug> start        # run a controller step on that machine
+lmds prune                               # clear registrations pointing at bundles that are gone
 lmds recipes                             # configurations proven on hardware — used when no LLM key is set
 ```
 
@@ -160,7 +176,7 @@ machine. Full details: [SECURITY.md](SECURITY.md).
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Prerequisites, disk layout, proxy/air-gapped, provider setup (incl. local AI), how models are fetched and run, smoke test |
 | [docs/USAGE.md](docs/USAGE.md) | Full usage guide: deploy, controller commands + env, fleet management, target presets, troubleshooting |
-| [docs/RUNBOOK-STACKED-2NODE.md](docs/RUNBOOK-STACKED-2NODE.md) | Two-node runbook proven on real hardware: every command from `node add` to `test-text`, measured memory/KV figures, and the failures worth knowing |
+| [docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | Two-node runbook proven on real hardware: every command from `node add` to `test-text`, measured memory/KV figures, and the failures worth knowing |
 | [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Controlling several machines from one hub: registration, live resources, ConnectX/200G detection, cluster IPs |
 | [docs/PRD.md](docs/PRD.md) | Product requirements, architecture, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | CLI specification (unimplemented parts marked ❌) |

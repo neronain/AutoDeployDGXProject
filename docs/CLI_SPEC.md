@@ -18,6 +18,7 @@ lmds generate <MODEL_URL_OR_ID>            # plan → render bundle (controller/
 lmds hardware                              # ตรวจ/แสดง hardware profile ของเครื่อง
 lmds scan [--root DIR] [--all] [--json]    # หา weight ที่มีอยู่แล้วบนเครื่อง (อ่านอย่างเดียว)
 lmds recipes [MODEL]                       # สูตรที่รันผ่านจริง — ใช้แทน LLM เมื่อไม่มี API key
+lmds prune [-y]                            # ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้ว
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
 lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
@@ -161,7 +162,9 @@ lmds node install <name>          # ติดตั้ง/อัปเดต LMD
 lmds node list [--check]          # ทะเบียน · --check = ต่อจริงเพื่อดูว่ายังตอบไหม
 lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / --note (ไม่มีอาร์กิวเมนต์ = ดูค่าปัจจุบัน)
 lmds node remove <name> [-y]      # ออกจากทะเบียนอย่างเดียว ไม่แตะเครื่องนั้น
-lmds node run <name> <cmd...>     # รันคำสั่ง lmds บนเครื่องนั้น
+lmds node run <name> <cmd...>          # รันคำสั่ง *ของ lmds* บนเครื่องนั้น (ps/start/stop/logs/deploy)
+lmds node ctl <name> <slug> <cmd...>   # รัน *สคริปต์ controller* ในตัว bundle บนเครื่องนั้น
+                                       #   (prepare-runtime, download, sync-worker, test-text …)
 lmds node cluster [--write SLUG] [--worker NAME]   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
 lmds ps --all                     # โมเดลของทุกเครื่องรวมกัน
 ```
@@ -177,10 +180,23 @@ lmds ps --all                     # โมเดลของทุกเคร�
   (ที่อยู่เปลี่ยน = คนละเครื่อง → remove แล้ว add ใหม่)
 - `node cluster` ตรวจ ConnectX/RDMA/ความเร็วลิงก์จาก `/sys` แล้วจับกลุ่มเครื่องที่ stacked ด้วยกันได้
   (ต้องตรง: arch, profile, รุ่น GPU, จำนวน GPU และมีสาย ≥ 25G ทั้งคู่)
+- **`node run` กับ `node ctl` ต่างกัน**: อันแรกสั่งโปรแกรม `lmds` อันหลังสั่งสคริปต์ controller
+  ในตัว bundle · ขั้นตอนของ stacked (`sync-worker`, `verify-worker`) มีเฉพาะใน controller
 - `--write <slug>` เขียน `cluster.env` ลง bundle (MASTER_IP/WORKER_IP/SSH_USER/TRANSPORT_IP_*/NCCL_SOCKET_IFNAME)
   → stacked controller source ไฟล์นี้ก่อน default แล้วไม่ถาม IP ตอน start
 
 รายละเอียด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
+
+## `lmds prune`
+
+ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้วและไม่ได้รันอยู่
+
+เครื่องที่ใช้ **จัดการ** อย่างเดียว (โน้ตบุ๊กที่สร้าง bundle ให้เครื่องอื่น) จะสะสมทะเบียนของ bundle
+ที่ย้าย/ลบไปแล้ว — หน้าจอเต็มไปด้วยรายการที่กดอะไรก็ไม่ได้ และ**เสี่ยงสั่งการผิดเครื่อง**
+
+- ทะเบียนที่ **ไม่เคยถูก start** และ controller หายไปแล้ว → เก็บกวาดอัตโนมัติตอน `ps`/`list`
+- ทะเบียนที่ **เคยรันจริง** แล้ว controller หาย → ยังแสดงพร้อมคำเตือน (ผู้ใช้ต้องรู้) ล้างด้วย `prune`
+- **ลบเฉพาะไฟล์ทะเบียน** ไม่แตะ weight, bundle หรือ container
 
 ## `lmds recipes [MODEL]`
 
