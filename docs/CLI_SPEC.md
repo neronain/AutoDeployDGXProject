@@ -154,7 +154,8 @@ lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างท
 
 ```text
 lmds node add <host> --user <u>   # ติดตั้ง SSH key (ถามรหัสผ่านครั้งเดียว) + เพิ่มเข้าทะเบียน
-                                  #   --name --port --note --cluster-ip --cluster-iface
+                                  #   --name --port --note --cluster-ip --cluster-iface --install
+lmds node install <name>          # ติดตั้ง/อัปเดต LMDS บนเครื่องนั้น (--with-prereq = ลง Docker ด้วย)
 lmds node list [--check]          # ทะเบียน · --check = ต่อจริงเพื่อดูว่ายังตอบไหม
 lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / --note (ไม่มีอาร์กิวเมนต์ = ดูค่าปัจจุบัน)
 lmds node remove <name> [-y]      # ออกจากทะเบียนอย่างเดียว ไม่แตะเครื่องนั้น
@@ -164,6 +165,10 @@ lmds ps --all                     # โมเดลของทุกเคร�
 ```
 
 - **ไม่มี daemon บน node** — hub เรียก `lmds agent info` ผ่าน SSH (`BatchMode=yes`) node เปิดแค่พอร์ต 22
+- **แต่ทุก node ต้องมี `lmds` ติดตั้งอยู่** — "agent" คือตัวคำสั่งเอง ไม่ใช่โปรเซสที่รันค้าง
+  · hub ติดตั้งให้ได้ด้วย `lmds node install` (ข้ามขั้น sudo/Docker เป็นค่าเริ่มต้น)
+- คำสั่งที่ยิงผ่าน SSH ถูกห่อด้วย `bash -lc` — ไม่งั้นจะไม่เจอ `~/.local/bin/lmds`
+  (shell แบบ non-interactive ไม่อ่าน `.profile`/`.bashrc`)
 - **ไม่เก็บรหัสผ่าน** — ใช้ครั้งเดียวติดตั้ง key (`~/.config/lmds/id_lmds`, ed25519, comment `lmds-hub`)
   แล้วทิ้ง · `Node` dataclass ไม่มีฟิลด์รหัสผ่านและมีเทสกันไว้
 - ทะเบียนอยู่ที่ `~/.config/lmds/nodes.yaml` (0600) · แก้ host/user/port ผ่าน `set` ไม่ได้โดยตั้งใจ

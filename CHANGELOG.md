@@ -30,6 +30,13 @@
   (`MASTER_IP`/`WORKER_IP`/`SSH_USER`/`TRANSPORT_IP_*`/`NCCL_SOCKET_IFNAME`) → stacked controller
   source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วข้ามการถาม IP ตอน `start` (env ภายนอกยังชนะไฟล์นี้เสมอ)
 - **`lmds agent info`** — พิมพ์สถานะเครื่องเป็น JSON ให้ hub อ่าน (ปกติไม่ได้พิมพ์เอง)
+- **`lmds node install <ชื่อ>` / `node add --install`** — ติดตั้งหรืออัปเดต LMDS บนเครื่องปลายทาง
+  จาก hub (clone/pull จาก GitHub → `install.sh` บนเครื่องนั้น) · ข้ามขั้น Docker/toolkit เป็นค่าเริ่มต้น
+  เพราะขั้นนั้นต้องใช้ sudo ที่ไม่มีคนกรอกรหัสผ่านผ่าน SSH (`--with-prereq` ถ้า sudo ผ่านโดยไม่ถาม)
+  · เอกสารทุกฉบับระบุชัดแล้วว่า **ทุกเครื่องต้องมี `lmds` ติดตั้งอยู่** — "agent" คือตัวคำสั่งเอง
+- **เสนอ cluster IP จาก fabric ที่ทุกเครื่องมีขาร่วมกัน** — DGX Spark มี fabric มากกว่าหนึ่งวง
+  (`10.100.152.0/24` และ `10.100.153.0/24` บนเครื่องจริง) ปล่อยให้แต่ละเครื่องเลือกเองอาจได้คนละวง
+  · เพิ่ม blocker `split-fabric` เมื่อ IP ที่ตั้งไว้อยู่คนละวง — ต่อกันไม่ติดทั้งที่แต่ละเครื่องดูถูกหมด
 - **stacked controller: หา NCCL interface เองจาก cluster IP** (ทั้ง head และ worker) — ชื่อพอร์ตบน
   DGX Spark ยาวและไม่เหมือนกันทุกเส้น (`enp1s0f1np1` vs `enP2p1s0f1np1` คนละ fabric บนเครื่องเดียวกัน)
   ให้คนพิมพ์เองแล้วผิดจะเงียบ ๆ ตกไปใช้เส้นช้า · ค่าที่ตั้งเองยังชนะเสมอ
@@ -227,6 +234,11 @@
 - **`wait-health` ยังไม่มีใน stacked** — ฝั่ง stacked มี `STARTUP_TIMEOUT` ยาวกว่าอยู่แล้ว ความจำเป็นน้อยกว่า
 
 ### Fixed
+
+- **`install.sh` ล้มเมื่อรันซ้ำเพื่ออัปเดต** (`ensurepip ... returned non-zero exit status 1`)
+  — venv เดิมอาจถูกสร้างด้วย python คนละตัว (เช่นเครื่องที่มี conda) การรัน `python3 -m venv`
+  ทับของเดิมจึงพัง · ใช้ `--clear` เสมอและตายพร้อมบอกวิธีแก้ถ้าสร้างไม่ได้
+  — พบตอนอัปเดต DGX Spark จริงสองเครื่อง ซึ่งเป็นทางอัปเดตที่เอกสารบอกไว้เอง
 
 - **โมเดล multimodal GGUF ถูกเสิร์ฟเป็น text-only แบบเงียบ ๆ ทุกตัว** (เคสจริง:
   `unsloth/gemma-4-12b-it-GGUF` บน RTX 5090, 2026-08-03) — `plan.multimodal.projector_files`

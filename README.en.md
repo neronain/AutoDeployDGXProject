@@ -70,7 +70,7 @@ with its ip/user/password — LMDS installs its own SSH key and discards the pas
 (the registry has no password field, on purpose).
 
 ```bash
-lmds node add 192.168.10.21 --user ops   # asks for the password once, installs the key
+lmds node add 192.168.10.21 --user ops --install   # password once → installs the key and LMDS
 lmds node list --check                   # which machines still answer
 lmds ps --all                            # every model on every machine, one table
 lmds node run spark2 doctor my-model     # run any lmds command on that machine
@@ -78,6 +78,9 @@ lmds node cluster                        # who has ConnectX/200G, and which pair
 ```
 
 Nodes run **no daemon** and need no port open beyond 22 — the hub calls `lmds agent info` over SSH.
+That does mean **every machine needs LMDS installed on it** — the "agent" is the `lmds` command
+itself, not a resident process. The hub can do that for you: `lmds node install <name>` clones and
+runs `install.sh` there (skipping the sudo/Docker step, which no one can answer over SSH).
 Root is not required; a user in the `docker` group is enough. Each machine reports live CPU, RAM
 (or unified memory), VRAM, disk, link speed and **how many models are running** — llama.cpp can
 serve several at once.
