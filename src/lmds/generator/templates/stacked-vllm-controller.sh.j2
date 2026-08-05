@@ -42,13 +42,17 @@ WORKER_IPS="${WORKER_IPS:-{% if node_count > 2 %}{% for i in range(2, node_count
 # fabric/transport IP สำหรับ NCCL — ถ้าใช้ QSFP แยก interface ให้ override สองตัวนี้
 TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
 TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
+# มากกว่าสอง node ให้ใส่ fabric IP ของ worker เรียงตรงกับ WORKER_IPS; ว่าง = ใช้
+# TRANSPORT_IP_WORKER สำหรับ worker เดียว หรือใช้ WORKER_IPS สำหรับหลาย worker
+TRANSPORT_IP_WORKERS="${TRANSPORT_IP_WORKERS:-}"
 MASTER_PORT="${MASTER_PORT:-25000}"
 
 # ── NCCL / RoCE (ต้องตั้งชื่อ interface จริงบนเครื่อง; ว่าง = fallback TCP ช้าลง) ──
 # หา interface: ip -br link | grep -Ei '200|roce|mlx' ; ibdev2netdev 2>/dev/null
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-}"
-NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
+# NCCL 2.21+ เลือก RoCE GID เอง; ตั้งเฉพาะเมื่อ runtime เก่าหรือ fabric admin ระบุมา
+NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-}"
 
 # ── Paths ──
 HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
@@ -504,26 +508,21 @@ detect_interface() {
     awk -v want="$target" '$4 ~ ("^" want "/") {print $2; exit}'
 }
 
-# RoCE HCA ที่คู่กับ NIC หาได้จาก sysfs — ไม่ตั้งแล้ว NCCL ตกไปใช้ TCP
-# สาย 200G จะทำงานได้เท่าอีเทอร์เน็ตธรรมดา ซึ่งเป็นเคสที่ไล่ยากมากเพราะ "ก็รันได้"
+# RoCE HCA ที่คู่กับ NIC หาได้จาก sysfs — ใช้เป็น fallback เมื่อ driver ไม่รายงาน speed
 detect_hca_for_interface() {
   local want="$1" dev
   [[ -n "$want" ]] || return 0
   for dev in /sys/class/infiniband/*; do
     [[ -e "$dev/device/net/$want" ]] || continue
-    basename "$dev"
+    printf '=%s\n' "$(basename "$dev")"
     return 0
   done
   return 0
 }
 
-# DGX Spark มี RoCE หลายตัว และ ConnectX ใบเดียวมีสองพอร์ตที่ต่อสายจริงได้พร้อมกัน
-# บอก NCCL แค่ตัวเดียวเท่ากับใช้สายเส้นเดียว — ได้ครึ่งเดียวของที่มี โดยไม่มีอะไรฟ้อง
-# เพราะงาน "ก็รันได้" · เอาเฉพาะตัวที่ลิงก์ขึ้นจริงและเร็วพอ ไม่งั้น NCCL ไปลองเส้นที่ตาย
-NCCL_HCA_MIN_SPEED_MBPS="${NCCL_HCA_MIN_SPEED_MBPS:-25000}"
-
 detect_active_hcas() {
-  local dev name netdev speed found=()
+  local dev name netdev speed max_speed=0 item
+  local -a found=() selected=()
   for dev in /sys/class/infiniband/*; do
     [[ -d "$dev" ]] || continue
     name="$(basename "$dev")"
@@ -532,24 +531,29 @@ detect_active_hcas() {
       [[ "$(cat "$netdev/operstate" 2>/dev/null)" == "up" ]] || continue
       speed="$(cat "$netdev/speed" 2>/dev/null || echo 0)"
       [[ "$speed" =~ ^[0-9]+$ ]] || continue
-      (( speed >= NCCL_HCA_MIN_SPEED_MBPS )) || continue
-      found+=("$name")
+      (( speed > 0 )) || continue
+      (( speed > max_speed )) && max_speed="$speed"
+      found+=("${name}:${speed}")
       break
     done
   done
   (( ${#found[@]} )) || return 0
+  # เลือกทุก rail ที่เร็วเท่าค่าสูงสุด แทน threshold ตัวเลขคงที่ที่ไม่มีใน NCCL spec
+  for item in "${found[@]}"; do
+    [[ "${item##*:}" -eq "$max_speed" ]] && selected+=("${item%:*}")
+  done
   local IFS=,
-  echo "${found[*]}"
+  echo "=${selected[*]}"
 }
 
 detect_worker_hcas() {
   local host="$1" want="$2" remote_cmd
   # HCA เป็นอุปกรณ์ local ของแต่ละ node — ห้ามเอารายชื่อจาก head ไปใช้กับ worker
   # เพราะ PCI topology/ชื่อ interface อาจต่างกันแม้เป็นเครื่องรุ่นเดียวกัน
-  printf -v remote_cmd 'bash -s -- %q %q' "$want" "$NCCL_HCA_MIN_SPEED_MBPS"
+  printf -v remote_cmd 'bash -s -- %q' "$want"
   ssh_at "$host" "$remote_cmd" <<'HCAEOF'
 set -u
-want="$1"; min_speed="$2"; found=()
+want="$1"; max_speed=0; found=(); selected=()
 for dev in /sys/class/infiniband/*; do
   [[ -d "$dev" ]] || continue
   name="${dev##*/}"
@@ -558,19 +562,23 @@ for dev in /sys/class/infiniband/*; do
     [[ "$(cat "$netdev/operstate" 2>/dev/null)" == "up" ]] || continue
     speed="$(cat "$netdev/speed" 2>/dev/null || echo 0)"
     [[ "$speed" =~ ^[0-9]+$ ]] || continue
-    (( speed >= min_speed )) || continue
-    found+=("$name")
+    (( speed > 0 )) || continue
+    (( speed > max_speed )) && max_speed="$speed"
+    found+=("${name}:${speed}")
     break
   done
 done
 if (( ${#found[@]} )); then
-  IFS=,; echo "${found[*]}"; exit 0
+  for item in "${found[@]}"; do
+    [[ "${item##*:}" -eq "$max_speed" ]] && selected+=("${item%:*}")
+  done
+  IFS=,; echo "=${selected[*]}"; exit 0
 fi
 # driver บางรุ่นไม่รายงาน speed — ถอยไปใช้ HCA ที่ผูกกับ transport interface
 if [[ -n "$want" ]]; then
   for dev in /sys/class/infiniband/*; do
     [[ -e "$dev/device/net/$want" ]] || continue
-    basename "$dev"; exit 0
+    printf '=%s\n' "$(basename "$dev")"; exit 0
   done
 fi
 HCAEOF
@@ -578,8 +586,6 @@ HCAEOF
 
 _resolve_hca() {
   [[ -n "$NCCL_IB_HCA" ]] && return 0
-  [[ "$NCCL_HCA_MIN_SPEED_MBPS" =~ ^[0-9]+$ ]] ||
-    die "NCCL_HCA_MIN_SPEED_MBPS ต้องเป็นจำนวนเต็ม Mbps: ${NCCL_HCA_MIN_SPEED_MBPS}"
   NCCL_IB_HCA="$(detect_active_hcas)"
   if [[ -n "$NCCL_IB_HCA" ]]; then
     log "RoCE HCA ที่ลิงก์ขึ้นและใช้ได้: ${NCCL_IB_HCA}"
@@ -604,7 +610,7 @@ _nccl_env_pairs() {
   # พิมพ์ทีละบรรทัด KEY=VALUE — ใช้ทั้ง head (docker -e) และ worker (export)
   local ifname="${1:-$NCCL_SOCKET_IFNAME}" hca="${2-$NCCL_IB_HCA}"
   echo "NCCL_IGNORE_CPU_AFFINITY=1"
-  echo "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX}"
+  [[ -n "$NCCL_IB_GID_INDEX" ]] && echo "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX}"
   if [[ -n "$ifname" ]]; then
     echo "NCCL_SOCKET_IFNAME=${ifname}"
     echo "GLOO_SOCKET_IFNAME=${ifname}"
@@ -622,6 +628,13 @@ _nccl_env_pairs() {
     echo "NCCL_IB_DISABLE=1"
     echo "WARN: ไม่พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME:-<ไม่รู้ interface>} — fallback TCP (ช้าลง)" >&2
   fi
+}
+
+_hca_count() {
+  local value="$1"; local -a devices=()
+  [[ -n "$value" ]] || { echo 0; return 0; }
+  IFS=, read -r -a devices <<< "$value"
+  echo "${#devices[@]}"
 }
 
 # ─────────────────────────── start ───────────────────────────
@@ -736,22 +749,43 @@ start() {
 
   # preflight network ของ worker ทุกตัวก่อนเริ่ม container ใด ๆ — ถ้า node หลัง ๆ
   # ตรวจไม่ผ่าน จะได้ไม่ทิ้ง node ก่อนหน้ารันค้างครึ่งคลัสเตอร์
-  local auto_hca=0 fabric_ready=1 wip wifname whca
+  local auto_hca=0 fabric_ready=1 transport_ready=1 wip wifname whca wtransport index
   [[ -z "$configured_hca" && -n "$NCCL_IB_HCA" ]] && auto_hca=1
-  local -A worker_ifnames=() worker_hcas=()
-  for wip in $WORKER_IPS; do
-    wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wip}' \
+  local -a worker_nodes=() transport_nodes=() bad_transport=()
+  read -r -a worker_nodes <<< "$WORKER_IPS"
+  if [[ -n "$TRANSPORT_IP_WORKERS" ]]; then
+    read -r -a transport_nodes <<< "$TRANSPORT_IP_WORKERS"
+  elif [[ ${#worker_nodes[@]} -eq 1 ]]; then
+    transport_nodes=("$TRANSPORT_IP_WORKER")
+  else
+    transport_nodes=("${worker_nodes[@]}")
+  fi
+  [[ ${#worker_nodes[@]} -eq ${#transport_nodes[@]} ]] ||
+    die "TRANSPORT_IP_WORKERS ต้องมี IP เท่าจำนวน WORKER_IPS และเรียง node ตรงกัน"
+
+  local head_hca_count; head_hca_count="$(_hca_count "$NCCL_IB_HCA")"
+  local -A worker_ifnames=() worker_hcas=() worker_transport_ips=()
+  for index in "${!worker_nodes[@]}"; do
+    wip="${worker_nodes[$index]}"
+    wtransport="${transport_nodes[$index]}"
+    worker_transport_ips["$wip"]="$wtransport"
+    wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wtransport}' \
       '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true)"
-    [[ -n "$wifname" ]] || wifname="$NCCL_SOCKET_IFNAME"
+    if [[ -z "$wifname" ]]; then
+      transport_ready=0
+      bad_transport+=("${wip}:${wtransport}")
+    fi
     worker_ifnames["$wip"]="$wifname"
     if (( auto_hca )); then
       whca="$(detect_worker_hcas "$wip" "$wifname" 2>/dev/null || true)"
       worker_hcas["$wip"]="$whca"
-      [[ -n "$whca" ]] || fabric_ready=0
+      [[ -n "$whca" && "$(_hca_count "$whca")" -eq "$head_hca_count" ]] || fabric_ready=0
     else
       worker_hcas["$wip"]="$NCCL_IB_HCA"
     fi
   done
+  (( transport_ready )) || die "หา fabric IP บน worker ไม่พบ (ssh-node:fabric-ip): ${bad_transport[*]}
+  ตรวจ TRANSPORT_IP_WORKER/TRANSPORT_IP_WORKERS และ IP ที่ตั้งบนแต่ละเครื่อง"
   if (( auto_hca && ! fabric_ready )); then
     log "WARN: บาง worker ไม่มี HCA ที่ยืนยันได้ — ปิด RoCE ทั้งคลัสเตอร์แล้ว fallback TCP เพื่อไม่ให้ transport ต่างกัน"
     NCCL_IB_HCA=""
@@ -809,11 +843,12 @@ start() {
   for wip in $WORKER_IPS; do
     rank=$(( rank + 1 ))
     wifname="${worker_ifnames[$wip]}"
-    log "Starting worker rank ${rank} (headless) on ${wip} [${wifname:-auto}] …"
+    wtransport="${worker_transport_ips[$wip]}"
+    log "Starting worker rank ${rank} (headless) on ${wip} [fabric ${wtransport} via ${wifname:-auto}] …"
     worker_script="$(cat <<WSCRIPT
 #!/bin/bash
 set -e
-export VLLM_HOST_IP=${wip}
+export VLLM_HOST_IP=${wtransport}
 export HF_HOME=/cache
 export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")
 export HF_HUB_OFFLINE=1

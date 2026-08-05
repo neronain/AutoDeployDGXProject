@@ -227,17 +227,16 @@
 
 ### Fixed
 
-- **stacked ใช้สาย 200G แค่เส้นเดียวจากสองเส้นที่ต่ออยู่** — `NCCL_IB_HCA` ถูกตั้งจาก HCA
-  ที่คู่กับ `NCCL_SOCKET_IFNAME` ตัวเดียวแล้ว `return` ทันที · ConnectX ใบเดียวบน DGX Spark
-  มีสองพอร์ตที่ต่อสายพร้อมกันได้ บอก NCCL ตัวเดียวเท่ากับใช้แบนด์วิดท์ครึ่งเดียว **โดยไม่มี
-  อะไรฟ้อง** เพราะงานก็ยังรันได้ (เคสที่ไล่ยากที่สุดประเภทหนึ่ง)
-  · ตอนนี้เอา RoCE ทุกตัวที่ **ลิงก์ขึ้นจริง** (`operstate=up`) และเร็วพอ
-  (`NCCL_HCA_MIN_SPEED_MBPS`, default 25000) มาคั่นจุลภาค · ถ้า driver ไม่เขียน `speed`
-  จะถอยไปใช้พฤติกรรมเดิม · ตรวจรายชื่อ HCA แยกบนทุก worker เพราะชื่ออุปกรณ์เป็น local
-  ต่อเครื่อง; ถ้า node ใดยืนยัน HCA ไม่ได้ จะ fallback TCP ทั้งคลัสเตอร์แทนการปล่อย transport
-  คนละแบบซึ่งเสี่ยงค้างระหว่าง init
-  · ยืนยันบน DGX Spark จริง: เดิมได้ `rocep1s0f0` ตัวเดียว ตอนนี้ได้
-  `rocep1s0f0,roceP2p1s0f0` ตรงกับสาย 200 Gb/s ที่ขึ้นสองเส้น
+- **stacked มองเห็น RoCE rail ที่พร้อมใช้เพียงตัวเดียวทั้งที่มีหลายตัว** — `NCCL_IB_HCA`
+  เคยถูกตั้งจาก HCA ที่คู่กับ `NCCL_SOCKET_IFNAME` ตัวเดียวแล้ว `return` ทันที ทำให้ NCCL
+  ไม่มีโอกาสเลือก rail อื่นที่เครื่องมีอยู่; ผลต่อ throughput จริงขึ้นกับ topology และต้องวัด
+  ด้วย collective benchmark ไม่สรุปเป็นสัดส่วนจากจำนวนสายอย่างเดียว
+  · auto mode ตอนนี้เลือก HCA ที่ `operstate=up` และมี link speed สูงสุดทุกตัว คั่นด้วยจุลภาค
+  แบบ exact-name (`=`) · ถ้า driver ไม่เขียน `speed` จะถอยไปใช้ HCA ที่ผูกกับ transport NIC
+  · ตรวจ transport IP/interface/HCA แยกทุก worker และต้องได้จำนวน rail เท่ากับ head;
+  ถ้ายืนยันไม่ได้จะ fallback TCP ทั้งคลัสเตอร์แทน transport คนละแบบ
+  · `TRANSPORT_IP_WORKERS` รองรับ fabric IP แยกจาก SSH/management IP และต้องเรียงตรงกับ
+  `WORKER_IPS`; `NCCL_IB_GID_INDEX` ไม่ถูกเดาเป็นค่าคงที่อีก ผู้ดูแล fabric ยัง override ได้
 
 ### Changed
 
