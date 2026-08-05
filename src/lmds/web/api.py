@@ -60,12 +60,29 @@ def create_app(token: str = "") -> FastAPI:
     app = FastAPI(title="LMDS", docs_url=None, redoc_url=None, openapi_url=None)
 
     def require_token(request: Request) -> None:
-        if not token:
-            return
-        supplied = request.headers.get("x-lmds-token") or request.query_params.get("token", "")
-        # compare_digest กัน timing attack — เทียบสตริงตรง ๆ รั่วความยาวและ prefix
-        if not secrets.compare_digest(supplied, token):
-            raise HTTPException(status_code=401, detail="token ไม่ถูกต้อง")
+        if token:
+            supplied = request.headers.get("x-lmds-token") or request.query_params.get("token", "")
+            # compare_digest กัน timing attack — เทียบสตริงตรง ๆ รั่วความยาวและ prefix
+            if not secrets.compare_digest(supplied, token):
+                raise HTTPException(status_code=401, detail="token ไม่ถูกต้อง")
+        elif request.url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            # โหมดไม่มี token มีไว้ให้ loopback เท่านั้น ต้องตรวจ Host ด้วย ไม่ใช่แค่เชื่อว่า
+            # uvicorn bind loopback: DNS rebinding ทำให้ origin ของผู้โจมตี resolve มาที่ 127.0.0.1
+            # แล้วส่ง Host ของตัวเองเข้ามาได้ ซึ่ง Origin comparison อย่างเดียวจะมองว่า same-origin
+            raise HTTPException(status_code=421, detail="โหมดไม่มี token รับเฉพาะ localhost")
+
+        # token ป้องกันคนที่ไม่รู้ secret แต่ค่าเริ่มต้นบน loopback จงใจไม่มี token — ถ้าไม่
+        # กัน CSRF เว็บไซต์ใด ๆ ที่ผู้ใช้เปิดอยู่สามารถ submit form มาที่ 127.0.0.1 แล้วสั่ง
+        # stop/remove/install ได้ ถึงอ่าน response ไม่ได้ก็เปลี่ยนสถานะสำเร็จแล้ว
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            fetch_site = request.headers.get("sec-fetch-site", "").lower()
+            if fetch_site == "cross-site":
+                raise HTTPException(status_code=403, detail="ไม่รับคำสั่งข้าม origin")
+            origin = request.headers.get("origin", "").rstrip("/")
+            if origin:
+                expected = f"{request.url.scheme}://{request.headers.get('host', '')}".rstrip("/")
+                if not secrets.compare_digest(origin, expected):
+                    raise HTTPException(status_code=403, detail="origin ไม่ตรงกับหน้าเว็บ")
 
     guarded = [Depends(require_token)]
 
@@ -74,7 +91,26 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
-        return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
+        nonce = secrets.token_urlsafe(18)
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        html = html.replace("<script>", f'<script nonce="{nonce}">')
+        return HTMLResponse(html, headers={
+            # script มีตัวเดียวและได้ nonce ใหม่ทุก response — HTML ที่หลุดเข้า innerHTML
+            # จึงเรียก <script>/onerror/javascript: ไม่ได้ แม้ sink ใหม่จะเผลอหลุดมาในอนาคต
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                f"script-src 'nonce-{nonce}'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            ),
+            # token อยู่ใน query string เพื่อให้ EventSource/bookmark ใช้ได้ — ห้ามส่ง URL นั้น
+            # เป็น Referer ตอนกด source link ออกไปข้างนอก
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "Cache-Control": "no-store",
+        })
 
     @app.get("/api/version", dependencies=guarded)
     def version() -> dict:
@@ -153,8 +189,6 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def _action(slug: str, verb: str, options: dict | None = None) -> JSONResponse:
-        import os
-
         from lmds.fleet import FleetError, find, restart_server, start_server, stop_server
 
         from . import jobs
@@ -163,19 +197,17 @@ def create_app(token: str = "") -> FastAPI:
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         runner = {"start": start_server, "stop": stop_server, "restart": restart_server}[verb]
-        # ตัวเลือก port/API key/context ส่งผ่าน env เหมือนที่ผู้ใช้พิมพ์หน้าคำสั่งบน CLI
-        saved = {k: os.environ.get(k) for k in jobs.controller_env(options)}
-        os.environ.update(jobs.controller_env(options))
         try:
-            outcome = runner(server)
+            if verb == "stop" and options:
+                raise jobs.JobError("stop ไม่รับตัวเลือก start/restart")
+            # ส่ง env ให้ subprocess โดยตรง ห้ามแก้ os.environ ของ process เว็บ: FastAPI รัน
+            # sync handlers พร้อมกันหลาย thread และ API_KEY/port ของ request หนึ่งจะไหลไปอีกตัวได้
+            extra_env = jobs.controller_env(options)
+            outcome = runner(server) if verb == "stop" or not extra_env else runner(server, env=extra_env)
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FleetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
         # start คืน exit code (int) ส่วน stop/restart คืนวิธีที่ใช้ (str)
         ok = outcome == 0 if isinstance(outcome, int) else True
         return JSONResponse(
@@ -292,7 +324,14 @@ def create_app(token: str = "") -> FastAPI:
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
-        keep = bool((body or {}).get("keep_weights"))
+        unknown = sorted(set(body or {}) - {"confirm", "keep_weights"})
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
+        if (body or {}).get("confirm") != slug:
+            raise HTTPException(status_code=400, detail="ต้องยืนยันด้วยชื่อโมเดลที่จะลบ")
+        keep = (body or {}).get("keep_weights", False)
+        if not isinstance(keep, bool):
+            raise HTTPException(status_code=400, detail="keep_weights ต้องเป็น true หรือ false")
         return {"slug": slug, "done": remove_server(server, include_weights=not keep)}
 
     @app.post("/api/models/{slug}/autostart", dependencies=guarded)
@@ -303,7 +342,12 @@ def create_app(token: str = "") -> FastAPI:
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
-        enabled = bool((body or {}).get("enabled"))
+        unknown = sorted(set(body or {}) - {"enabled"})
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
+        enabled = (body or {}).get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled ต้องเป็น true หรือ false")
         try:
             # ต้องใช้ sudo — เว็บไม่มี tty ให้กรอกรหัส ถ้าไม่ผ่าน FleetError จะบอกคำสั่งให้รันเอง
             name = enable_autostart(server) if enabled else disable_autostart(server)
@@ -439,17 +483,35 @@ def create_app(token: str = "") -> FastAPI:
     @app.patch("/api/nodes/{name}", dependencies=guarded)
     def node_patch(name: str, body: dict) -> dict:
         """แก้ค่าที่แก้ได้ของเครื่อง — ตอนนี้คือ cluster IP/interface และโน้ต"""
-        from lmds.nodes import NodeError, find, update
+        from lmds.nodes import NodeError, find, update, validate_ssh_target
 
-        if find(name) is None:
+        node = find(name)
+        if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        allowed = {"cluster_ip", "cluster_iface", "note", "alt_hosts"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ฟิลด์ที่แก้ไม่ได้: {', '.join(unknown)}")
+        for key in ("cluster_ip", "cluster_iface", "note"):
+            if key in body and not isinstance(body[key], str):
+                raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นข้อความ")
         changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note") if k in body}
         if "alt_hosts" in body:
             # เครื่องเดียวกันเข้าได้หลายทาง (LAN ตอนอยู่ออฟฟิศ, Tailscale ตอนออกนอก)
             # รับได้ทั้ง list และสตริงคั่นจุลภาค เพราะช่องกรอกบนหน้าเว็บเป็นบรรทัดเดียว
             raw = body["alt_hosts"]
-            items = raw if isinstance(raw, list) else str(raw).split(",")
-            changes["alt_hosts"] = [str(h).strip() for h in items if str(h).strip()]
+            if not isinstance(raw, (str, list)) or (
+                isinstance(raw, list) and not all(isinstance(item, str) for item in raw)
+            ):
+                raise HTTPException(status_code=400, detail="alt_hosts ต้องเป็นข้อความหรือรายการข้อความ")
+            items = raw if isinstance(raw, list) else raw.split(",")
+            hosts = [h.strip() for h in items if h.strip()]
+            try:
+                for host in hosts:
+                    validate_ssh_target(host, node.user, node.port)
+            except NodeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            changes["alt_hosts"] = hosts
         if not changes:
             raise HTTPException(status_code=400, detail="ไม่มีฟิลด์ที่แก้ได้ในคำขอนี้")
         try:
@@ -477,6 +539,11 @@ def create_app(token: str = "") -> FastAPI:
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        unknown = sorted(set(body or {}) - {"with_prereq"})
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
+        if "with_prereq" in (body or {}) and not isinstance(body["with_prereq"], bool):
+            raise HTTPException(status_code=400, detail="with_prereq ต้องเป็น true หรือ false")
         # --with-prereq ต้องใช้ sudo แบบไม่ถามรหัสผ่าน ซึ่งหน้าเว็บไม่มี tty ให้กรอก
         # เปิดให้เลือกได้แต่บอกไว้ชัด ๆ ว่าเครื่องที่ sudo ถามรหัสจะค้างแล้ว timeout
         with_prereq = bool((body or {}).get("with_prereq"))
@@ -505,18 +572,38 @@ def create_app(token: str = "") -> FastAPI:
         """เพิ่มเครื่อง — รหัสผ่านใช้ครั้งเดียวเพื่อติดตั้ง key แล้วทิ้ง ไม่เขียนลงดิสก์"""
         from lmds.nodes import (
             Node, NodeError, add, check_login, ensure_key, install_key, load, probe, suggest_name,
+            validate_node_name, validate_ssh_target,
         )
 
+        allowed = {"host", "user", "name", "port", "password", "note"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ฟิลด์ที่ไม่รู้จัก: {', '.join(unknown)}")
+        for key in ("host", "user", "name", "password", "note"):
+            if key in body and not isinstance(body[key], str):
+                raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นข้อความ")
         host = (body.get("host") or "").strip()
         user = (body.get("user") or "").strip()
         if not host or not user:
             raise HTTPException(status_code=400, detail="ต้องระบุทั้ง host และ user")
-        port = int(body.get("port") or 22)
+        raw_port = body.get("port")
+        if raw_port in (None, ""):
+            raw_port = 22
+        if isinstance(raw_port, bool):
+            raise HTTPException(status_code=400, detail="port ต้องเป็นจำนวนเต็ม 1–65535")
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="port ต้องเป็นจำนวนเต็ม 1–65535") from None
+        if not 1 <= port <= 65535:
+            raise HTTPException(status_code=400, detail="port ต้องเป็นจำนวนเต็ม 1–65535")
         password = body.get("password") or ""
 
         try:
-            ensure_key()
+            host, user, port = validate_ssh_target(host, user, port)
             name = (body.get("name") or "").strip() or suggest_name(host, {n.name for n in load()})
+            name = validate_node_name(name)
+            ensure_key()
             node = Node(name=name, host=host, user=user, port=port, note=body.get("note") or "")
             if not check_login(host, user, port):
                 if not password:
@@ -546,9 +633,14 @@ def create_app(token: str = "") -> FastAPI:
         return {"name": node.name, "reachable": reachable, "error": node.last_error, **info}
 
     @app.delete("/api/nodes/{name}", dependencies=guarded)
-    def node_remove(name: str) -> dict:
+    def node_remove(name: str, body: dict | None = None) -> dict:
         from lmds.nodes import NodeError, remove
 
+        unknown = sorted(set(body or {}) - {"confirm"})
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
+        if (body or {}).get("confirm") != name:
+            raise HTTPException(status_code=400, detail="ต้องยืนยันด้วยชื่อเครื่องที่จะเอาออก")
         try:
             node = remove(name)
         except NodeError as exc:
@@ -564,18 +656,28 @@ def create_app(token: str = "") -> FastAPI:
         if not body:
             return []
         if command == "remove":
+            unknown = sorted(set(body) - {"confirm"})
+            if unknown:
+                raise HTTPException(status_code=400, detail=f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
             return []   # remove รับแค่ confirm ซึ่งจัดการแยกไปแล้ว
         if command not in {"start", "restart"}:
             raise HTTPException(status_code=400, detail=f"'{command}' ไม่รับ option (รับเฉพาะ start/restart)")
+        unknown = sorted(set(body) - {"port", "context", "gpu_util"})
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
 
         def number(key: str, low: float, high: float, integer: bool = True):
             raw = body.get(key)
             if raw in (None, ""):
                 return None
+            if isinstance(raw, bool):
+                raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นตัวเลข")
             try:
                 value = int(raw) if integer else float(raw)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นตัวเลข") from None
+            if integer and isinstance(raw, float) and not raw.is_integer():
+                raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นจำนวนเต็ม")
             if not low <= value <= high:
                 raise HTTPException(status_code=400, detail=f"{key} ต้องอยู่ระหว่าง {low} ถึง {high}")
             return value

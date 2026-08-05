@@ -228,6 +228,19 @@ def test_shared_fabric_is_stable_across_calls():
     assert picks == {"10.100.152.0/24"}
 
 
+def test_shared_fabric_does_not_crash_on_ipv6_telemetry():
+    """agent อาจรายงาน IPv6 แม้ cluster.env ยังรับ IPv4; หน้าคลัสเตอร์ต้องไม่ล้มทั้ง endpoint"""
+    members = [
+        {"name": "a", "host": host(ip="2001:db8:1::1")},
+        {"name": "b", "host": host(ip="2001:db8:1::2")},
+    ]
+    for member in members:
+        member["host"]["fabric"]["links"][0]["prefix"] = 64
+    network, addresses = cl.shared_fabric(members)
+    assert network == "2001:db8:1::/64"
+    assert addresses == {"a": "2001:db8:1::1", "b": "2001:db8:1::2"}
+
+
 # ── ขยายเป็น 3–4 เครื่อง ────────────────────────────────────────────────────
 def test_four_machines_form_one_group():
     machines = [

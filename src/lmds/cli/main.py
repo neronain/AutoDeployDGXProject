@@ -143,13 +143,19 @@ def node_add(
         public_key_path,
         suggest_cluster_ip,
         suggest_name,
+        validate_cluster_ip,
+        validate_node_name,
+        validate_ssh_target,
     )
 
     try:
-        ensure_key()
+        host, user, port = validate_ssh_target(host, user, port)
         chosen = name or suggest_name(host, {n.name for n in load()})
+        chosen = validate_node_name(chosen)
+        cluster_ip = validate_cluster_ip(cluster_ip)
+        ensure_key()
         node = Node(name=chosen, host=host, user=user, port=port, note=note,
-                    cluster_ip=cluster_ip.strip(), cluster_iface=cluster_iface.strip())
+                    cluster_ip=cluster_ip, cluster_iface=cluster_iface.strip())
 
         if check_login(host, user, port):
             console.print("[green]key ใช้ได้อยู่แล้ว[/green] — ข้ามการถามรหัสผ่าน")

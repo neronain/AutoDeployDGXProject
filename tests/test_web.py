@@ -19,9 +19,15 @@ import yaml
 
 pytest.importorskip("fastapi", reason="ส่วนเว็บเป็น optional extra")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient as _TestClient  # noqa: E402
 
 from lmds.web import create_app  # noqa: E402
+
+
+def TestClient(app, *args, **kwargs):
+    """production no-token mode accepts loopback Host only; keep every test on that real origin."""
+    kwargs.setdefault("base_url", "http://127.0.0.1")
+    return _TestClient(app, *args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -136,6 +142,80 @@ def test_wrong_token_rejected(fleet):
     assert client.get("/api/models", headers={"x-lmds-token": "s3cretX"}).status_code == 401
 
 
+def test_token_guard_covers_every_api_route():
+    """เพิ่ม endpoint ใหม่แล้วลืม dependency = สิทธิ์หลุดทันที; ตรวจ route table ทั้งก้อน"""
+    app = create_app(token="s3cret")
+    client = TestClient(app)
+    replacements = {
+        "{slug}": "missing", "{session_id}": "missing", "{command}": "missing",
+        "{job_id}": "missing", "{name}": "missing",
+    }
+    checked = []
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/"):
+            continue
+        for marker, value in replacements.items():
+            path = path.replace(marker, value)
+        for method in sorted((getattr(route, "methods", set()) or set()) - {"HEAD", "OPTIONS"}):
+            response = client.request(method, path, json={} if method != "GET" else None)
+            assert response.status_code == 401, f"{method} {path} ไม่ถูก token guard"
+            checked.append((method, path))
+    assert checked
+
+
+def test_cross_site_state_changes_are_rejected_without_breaking_cli_calls(fleet):
+    """loopback ไม่มี token โดยตั้งใจ แต่เว็บอื่นต้อง submit POST มาหยุดโมเดลไม่ได้"""
+    client = TestClient(create_app())
+    path = f"/api/models/{fleet}/stop"
+    assert client.post(path, headers={
+        "origin": "https://evil.example", "sec-fetch-site": "cross-site",
+    }).status_code == 403
+    assert client.post(path, headers={"origin": "https://evil.example"}).status_code == 403
+
+    # same-origin browser และ client/CLI ที่ไม่มี browser metadata ยังใช้ API ได้
+    assert client.post(path, headers={"origin": "http://127.0.0.1"}).status_code == 200
+    assert client.post(path).status_code == 200
+
+
+def test_no_token_mode_rejects_dns_rebinding_hostnames():
+    client = _TestClient(create_app(), base_url="http://attacker.example")
+    assert client.get("/api/models").status_code == 421
+
+
+def test_csrf_guard_covers_every_mutating_api_route():
+    app = create_app()
+    client = TestClient(app)
+    replacements = {
+        "{slug}": "missing", "{session_id}": "missing", "{command}": "missing",
+        "{job_id}": "missing", "{name}": "missing",
+    }
+    checked = []
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/"):
+            continue
+        for marker, value in replacements.items():
+            path = path.replace(marker, value)
+        for method in sorted((getattr(route, "methods", set()) or set()) - {"GET", "HEAD", "OPTIONS"}):
+            response = client.request(method, path, json={}, headers={
+                "origin": "https://evil.example", "sec-fetch-site": "cross-site",
+            })
+            assert response.status_code == 403, f"{method} {path} ไม่ถูก CSRF guard"
+            checked.append((method, path))
+    assert checked
+
+
+def test_index_sets_browser_security_headers():
+    response = TestClient(create_app()).get("/")
+    csp = response.headers["content-security-policy"]
+    assert "script-src 'nonce-" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert '<script nonce="' in response.text
+
+
 def test_no_token_configured_means_open(fleet):
     """bind 127.0.0.1 (ค่าเริ่มต้น) ไม่ต้องมี token — เข้าถึงได้เฉพาะเครื่องนี้อยู่แล้ว"""
     assert TestClient(create_app()).get("/api/models").status_code == 200
@@ -143,7 +223,7 @@ def test_no_token_configured_means_open(fleet):
 
 def test_actions_call_fleet_and_report_failure(fleet, monkeypatch):
     calls = []
-    monkeypatch.setattr("lmds.fleet.start_server", lambda info: calls.append("start") or 0)
+    monkeypatch.setattr("lmds.fleet.start_server", lambda info, **kwargs: calls.append("start") or 0)
     monkeypatch.setattr("lmds.fleet.stop_server", lambda info: calls.append("stop") or "controller")
     client = TestClient(create_app())
 
@@ -151,7 +231,7 @@ def test_actions_call_fleet_and_report_failure(fleet, monkeypatch):
     assert client.post(f"/api/models/{fleet}/stop").json()["ok"] is True
     assert calls == ["start", "stop"]
 
-    monkeypatch.setattr("lmds.fleet.start_server", lambda info: 1)
+    monkeypatch.setattr("lmds.fleet.start_server", lambda info, **kwargs: 1)
     failed = client.post(f"/api/models/{fleet}/start")
     assert failed.status_code == 500
     assert failed.json()["ok"] is False
@@ -160,7 +240,7 @@ def test_actions_call_fleet_and_report_failure(fleet, monkeypatch):
 def test_fleet_error_becomes_409(fleet, monkeypatch):
     from lmds.fleet import FleetError
 
-    def boom(info):
+    def boom(info, **kwargs):
         raise FleetError("ไม่พบ controller")
 
     monkeypatch.setattr("lmds.fleet.restart_server", boom)
@@ -384,6 +464,53 @@ def test_job_routes_are_token_guarded(runnable):
     assert client.get("/api/jobs/whatever").status_code == 401
 
 
+def test_finished_job_history_is_bounded(monkeypatch):
+    """เว็บรันเป็น daemon หลายวันได้; ผลงานเก่าห้ามสะสมใน memory ตลอดอายุ process"""
+    from lmds.web import jobs
+
+    monkeypatch.setattr(jobs, "_MAX_FINISHED_JOBS", 2)
+    for index in range(4):
+        job = jobs.Job(id=f"done-{index}", slug=f"model-{index}", command="status",
+                       exit_code=0)
+        jobs._JOBS[job.id] = job
+        jobs._ACTIVE[job.slug] = job.id
+    running = jobs.Job(id="live", slug="live-model", command="download")
+    jobs._JOBS[running.id] = running
+    jobs._ACTIVE[running.slug] = running.id
+
+    with jobs._LOCK:
+        jobs._prune_finished_locked()
+
+    assert list(jobs._JOBS) == ["done-2", "done-3", "live"]
+    assert set(jobs._ACTIVE) == {"model-2", "model-3", "live-model"}
+
+
+def test_job_payload_can_be_read_while_output_is_appended():
+    """worker เขียน log พร้อม HTTP thread อ่าน payload; snapshot ต้องไม่ขว้าง mutation error"""
+    from lmds.web import jobs
+
+    job = jobs.Job(id="race", slug="demo", command="download")
+    writer_done = threading.Event()
+    errors = []
+
+    def write() -> None:
+        try:
+            for index in range(5_000):
+                job.append(f"line {index}\n")
+        except Exception as exc:  # pragma: no cover - assertion captures an unexpected thread failure
+            errors.append(exc)
+        finally:
+            writer_done.set()
+
+    thread = threading.Thread(target=write)
+    thread.start()
+    while not writer_done.is_set():
+        assert isinstance(job.payload()["output"], str)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert errors == []
+
+
 def test_download_always_verifies_afterwards(runnable):
     """"กด download แล้วชัวร์ไหมว่าไฟล์มาครบ" — CLI ให้รัน verify-files ต่อเสมอ
     เว็บจึงต้องต่อให้ ไม่งั้นผู้ใช้ไม่มีทางรู้
@@ -422,24 +549,64 @@ def test_empty_options_change_nothing(runnable):
     from lmds.web import jobs
 
     assert jobs.controller_env({}) == {}
-    assert jobs.controller_env({"port": None, "api_key": "", "context": 0}) == {}
+    assert jobs.controller_env({"port": None, "api_key": "", "context": None}) == {}
 
 
-def test_start_passes_options_through(runnable, monkeypatch):
-    import os
+@pytest.mark.parametrize("options", [
+    {"port": 0}, {"port": 65536}, {"port": True}, {"port": "not-a-port"},
+    {"context": 0}, {"context": 1.5}, {"slots": -1},
+    {"bind": "evil.example"}, {"api_key": 123}, {"api_key": "bad\x00key"},
+    {"extra": "ignored-before"},
+])
+def test_local_controller_options_are_validated(options):
+    from lmds.web import jobs
 
+    with pytest.raises(jobs.JobError):
+        jobs.controller_env(options)
+
+
+def test_stop_rejects_options_it_cannot_apply(runnable):
+    response = TestClient(create_app()).post(f"/api/models/{runnable}/stop", json={"port": 8123})
+    assert response.status_code == 400
+
+
+def test_start_passes_options_through_without_mutating_process_env(runnable, monkeypatch):
     seen = {}
 
-    def fake_start(info):
-        seen.update({k: os.environ.get(k) for k in ("API_PORT", "API_KEY")})
+    def fake_start(info, *, env=None):
+        seen.update(env or {})
         return 0
 
     monkeypatch.setattr("lmds.fleet.start_server", fake_start)
     TestClient(create_app()).post(f"/api/models/{runnable}/start",
                                   json={"port": 8123, "api_key": "abc"})
     assert seen == {"API_PORT": "8123", "API_KEY": "abc"}
-    # ต้องคืน environment ให้เหมือนเดิม ไม่ทิ้งค่าไว้กระทบคำสั่งถัดไป
-    assert os.environ.get("API_PORT") is None
+
+
+def test_parallel_starts_keep_request_environments_isolated(runnable, monkeypatch):
+    """sync FastAPI handlers รันคนละ thread; API key ของ request หนึ่งห้ามไหลไปอีก request"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    barrier = threading.Barrier(2)
+    seen = []
+
+    def fake_start(info, *, env=None):
+        barrier.wait(timeout=5)
+        seen.append(dict(env or {}))
+        return 0
+
+    monkeypatch.setattr("lmds.fleet.start_server", fake_start)
+    client = TestClient(create_app())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(
+            lambda item: client.post(f"/api/models/{runnable}/start", json=item),
+            ({"port": 8101, "api_key": "alpha"}, {"port": 8102, "api_key": "beta"}),
+        ))
+    assert [r.status_code for r in responses] == [200, 200]
+    assert sorted(seen, key=lambda env: env["API_PORT"]) == [
+        {"API_KEY": "alpha", "API_PORT": "8101"},
+        {"API_KEY": "beta", "API_PORT": "8102"},
+    ]
 
 
 # ── ปิดช่องว่างเทียบ CLI: remove / autostart / test / stacked ────────────────
@@ -469,8 +636,27 @@ def test_removal_plan_respects_keep_weights(runnable):
 
 def test_remove_deletes_and_model_disappears(runnable, tmp_path):
     client = TestClient(create_app())
-    assert client.post(f"/api/models/{runnable}/remove", json={"keep_weights": True}).status_code == 200
+    assert client.post(f"/api/models/{runnable}/remove",
+                       json={"keep_weights": True, "confirm": runnable}).status_code == 200
     assert [m["slug"] for m in client.get("/api/models").json()["models"]] == []
+
+
+def test_local_remove_requires_the_exact_slug(runnable, monkeypatch):
+    called = []
+    monkeypatch.setattr("lmds.fleet.remove_server", lambda *args, **kwargs: called.append(args) or [])
+    client = TestClient(create_app())
+    for body in ({}, {"confirm": True}, {"confirm": "wrong"}, {"confirm": runnable.upper()}):
+        assert client.post(f"/api/models/{runnable}/remove", json=body).status_code == 400
+    assert called == []
+
+
+@pytest.mark.parametrize("body", [
+    {"confirm": "demo", "keep_weights": "false"},
+    {"confirm": "demo", "unexpected": True},
+])
+def test_local_remove_rejects_ambiguous_options(runnable, body):
+    body["confirm"] = runnable
+    assert TestClient(create_app()).post(f"/api/models/{runnable}/remove", json=body).status_code == 400
 
 
 def test_autostart_failure_tells_you_the_manual_commands(runnable, monkeypatch):
@@ -484,6 +670,14 @@ def test_autostart_failure_tells_you_the_manual_commands(runnable, monkeypatch):
     r = TestClient(create_app()).post(f"/api/models/{runnable}/autostart", json={"enabled": True})
     assert r.status_code == 409
     assert "sudo systemctl enable" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("body", [{}, {"enabled": "false"}, {"enabled": 0},
+                                   {"enabled": True, "extra": 1}])
+def test_autostart_requires_an_explicit_boolean(runnable, body):
+    assert TestClient(create_app()).post(
+        f"/api/models/{runnable}/autostart", json=body,
+    ).status_code == 400
 
 
 def test_test_text_runs_from_the_web(runnable, monkeypatch):
@@ -599,6 +793,24 @@ def test_nodes_list_exposes_cluster_ip(registered):
     node = TestClient(create_app()).get("/api/nodes").json()["nodes"][0]
     assert (node["name"], node["cluster_ip"]) == ("spark2", "10.10.0.2")
     assert "password" not in node
+
+
+def test_node_registry_remove_requires_the_exact_name(registered, monkeypatch):
+    from lmds.nodes import find
+
+    client = TestClient(create_app())
+    for body in ({}, {"confirm": True}, {"confirm": "SPARK2"}, {"confirm": "other"}):
+        assert client.request("DELETE", "/api/nodes/spark2", json=body).status_code == 400
+        assert find("spark2") is not None
+    assert client.request("DELETE", "/api/nodes/spark2", json={"confirm": "spark2"}).status_code == 200
+    assert find("spark2") is None
+
+
+def test_node_registry_remove_rejects_unknown_options(registered):
+    response = TestClient(create_app()).request(
+        "DELETE", "/api/nodes/spark2", json={"confirm": "spark2", "purge": True},
+    )
+    assert response.status_code == 400
 
 
 def test_node_inventory_reports_resources(registered):
@@ -861,7 +1073,7 @@ def test_gpu_telemetry_hides_values_the_card_does_not_report():
     โชว์ 0 ตรงนั้นคือการโกหก · เกจต้องหายไปเลยเมื่อค่าเป็น null"""
     body = TestClient(create_app()).get("/").text
     assert "function gauge(" in body
-    assert 'if (value == null) return "";' in body, "ต้องซ่อนเกจที่ไม่มีค่า ไม่ใช่วาดเป็น 0"
+    assert 'if (value === null) return "";' in body, "ต้องซ่อนเกจที่ไม่มีค่า ไม่ใช่วาดเป็น 0"
     assert "N/A (SoC)" in body, "unified memory ต้องบอกว่าเป็น SoC ไม่ใช่โชว์ 0 GB"
 
 
@@ -931,8 +1143,9 @@ def test_node_options_are_validated_on_the_server(registered, monkeypatch):
     monkeypatch.setattr("lmds.nodes.run",
                         lambda *a, **k: called.append(a) or SimpleNamespace(exit_code=0, stdout="", stderr=""))
     client = TestClient(create_app())
-    for bad in ({"port": "8001; rm -rf /"}, {"port": 0}, {"port": 70000},
-                {"context": -1}, {"gpu_util": 1.5}, {"context": "abc"}):
+    for bad in ({"port": "8001; rm -rf /"}, {"port": 0}, {"port": 70000}, {"port": True},
+                {"port": 8001.5}, {"context": -1}, {"gpu_util": 1.5}, {"context": "abc"},
+                {"unexpected": 1}):
         assert client.post("/api/nodes/spark2/models/demo/start", json=bad).status_code == 400, bad
     assert not called, "ค่าที่ไม่ผ่านการตรวจต้องไม่ถูกส่งไปเครื่องปลายทางเลย"
 
@@ -1041,6 +1254,66 @@ def test_install_on_an_unknown_node_is_404(registered):
     assert TestClient(create_app()).post("/api/nodes/nope/install", json={}).status_code == 404
 
 
+@pytest.mark.parametrize("body", [
+    {"with_prereq": "false"}, {"with_prereq": 1}, {"unknown": True},
+])
+def test_node_install_rejects_ambiguous_options(registered, body):
+    assert TestClient(create_app()).post("/api/nodes/spark2/install", json=body).status_code == 400
+
+
+@pytest.mark.parametrize("port", [0, 65536, True, "not-a-port"])
+def test_node_add_rejects_invalid_ssh_ports(monkeypatch, port):
+    called = []
+    monkeypatch.setattr("lmds.nodes.ensure_key", lambda: called.append("key"))
+    response = TestClient(create_app()).post("/api/nodes", json={
+        "host": "node.example", "user": "ops", "port": port,
+    })
+    assert response.status_code == 400
+    assert called == [], "invalid input must be rejected before any SSH/key side effect"
+
+
+@pytest.mark.parametrize("body", [
+    {"host": ["node.example"], "user": "ops"},
+    {"host": "node.example", "user": {"name": "ops"}},
+    {"host": "node.example", "user": "ops", "password": True},
+    {"host": "node.example", "user": "ops", "note": ["prod"]},
+    {"host": "node.example", "user": "ops", "unexpected": "ignored-before"},
+])
+def test_node_add_rejects_malformed_or_unknown_fields_before_side_effects(monkeypatch, body):
+    called = []
+    monkeypatch.setattr("lmds.nodes.ensure_key", lambda: called.append("key"))
+    response = TestClient(create_app()).post("/api/nodes", json=body)
+    assert response.status_code == 400
+    assert called == []
+
+
+def test_node_add_rejects_invalid_registry_name_before_side_effects(monkeypatch):
+    called = []
+    monkeypatch.setattr("lmds.nodes.ensure_key", lambda: called.append("key"))
+    response = TestClient(create_app()).post("/api/nodes", json={
+        "host": "node.example", "user": "ops", "name": "bad name",
+    })
+    assert response.status_code == 422
+    assert called == []
+
+
+@pytest.mark.parametrize("host,user", [
+    ("node.example", "-oProxyCommand=bad"),
+    ("node.example", "ops user"),
+    ("-Fmalicious", "ops"),
+    ("ops@node.example", "ops"),
+    ("node\x00.example", "ops"),
+])
+def test_node_add_rejects_ambiguous_ssh_destinations_before_side_effects(monkeypatch, host, user):
+    called = []
+    monkeypatch.setattr("lmds.nodes.ensure_key", lambda: called.append("key"))
+    response = TestClient(create_app()).post("/api/nodes", json={
+        "host": host, "user": user, "port": 22,
+    })
+    assert response.status_code == 422
+    assert called == []
+
+
 def test_two_installs_on_the_same_node_do_not_overlap(registered, monkeypatch):
     """git pull ซ้อน git pull บนเครื่องเดียวกัน = repo พัง"""
     from lmds.nodes.ssh import Result
@@ -1100,6 +1373,17 @@ def test_blank_entries_are_dropped(registered):
     assert data["alt_hosts"] == ["a.local", "b.local"]
 
 
+@pytest.mark.parametrize("body", [
+    {"alt_hosts": {"host": "a.local"}},
+    {"alt_hosts": ["a.local", 3]},
+    {"alt_hosts": "bad host"},
+    {"cluster_ip": ["10.10.0.2"]},
+    {"note": "ok", "host": "replacement.example"},
+])
+def test_node_patch_rejects_malformed_or_unknown_fields(registered, body):
+    assert TestClient(create_app()).patch("/api/nodes/spark2", json=body).status_code == 400
+
+
 # ── หน้าเว็บต้อง parse ได้ ────────────────────────────────────────────────────
 def _page_script() -> str:
     from lmds.web import api as web_api
@@ -1139,6 +1423,45 @@ def test_page_has_no_native_dialogs():
     code = "\n".join(line for line in script.splitlines() if not line.strip().startswith("//"))
     for name in ("alert(", "confirm(", "prompt("):
         assert name not in code, f"ยังมี {name} อยู่ — ใช้ say()/ask()/askFor() แทน"
+
+
+def test_untrusted_web_values_are_escaped_and_urls_are_scheme_checked():
+    """remote agent/profile/catalog data must not become active HTML in the operator browser"""
+    checker = shutil.which("node") or shutil.which("nodejs")
+    if checker is None:
+        pytest.skip("ไม่มี node สำหรับรัน helper ฝั่ง browser")
+    script = _page_script()
+    helpers = script[script.index("const esc ="):script.index("const open =")]
+    payload = '<img src=x onerror="globalThis.pwned=1">'
+    probe = helpers + f"\nconsole.log(JSON.stringify({{escaped: esc({payload!r}), " \
+        f"number: finite({payload!r}), unsafe: safeHref('javascript:alert(1)'), " \
+        "safe: safeHref('https://example.com/model')}));\n"
+    result = subprocess.run([checker, "-e", probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    import json
+
+    data = json.loads(result.stdout)
+    assert data["escaped"].startswith("&lt;img") and "<img" not in data["escaped"]
+    assert data["number"] is None
+    assert data["unsafe"] == ""
+    assert data["safe"] == "https://example.com/model"
+
+    # modal body is the common sink for API/SSH errors; job/log output has separate safe sinks
+    assert '${body ? `<div>${esc(body)}</div>` : ""}' in script
+    assert '${esc(d.output || "starting…")}' in script
+    assert "box.textContent = body" in script
+
+
+def test_job_polling_does_not_strand_ui_on_network_failure():
+    """fetch rejection must be handled: otherwise watching/button state remains stuck until reload."""
+    script = _page_script()
+    follow = script[script.index("async function followJob"):script.index("async function waitForJob")]
+    wait = script[script.index("async function waitForJob"):script.index("// ── ตัวดู log")]
+    assert "catch (_)" in follow
+    assert "watching.delete(slug)" in follow
+    assert "failures < 3" in follow
+    assert "catch (_)" in wait
+    assert "Lost contact while waiting for the job" in wait
 
 
 def test_page_ships_without_any_external_request():

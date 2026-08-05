@@ -154,7 +154,10 @@ def shared_fabric(members: list[dict]) -> tuple[str, dict[str, str]]:
     # วงไหนก็ได้ที่เร็วที่สุด — เท่ากันหมดก็เอาเลขน้อยสุดเพื่อให้ผลคงที่ทุกครั้งที่เรียก
     def rank(network: str) -> tuple:
         speeds = [by_network[network].get("speed_gbps") or 0 for by_network in per_machine]
-        return (min(speeds), [-int(part) for part in network.split("/")[0].split(".")])
+        # ipaddress รองรับทั้ง IPv4/IPv6; split(".") เดิมล้มทันทีเมื่อ agent รายงาน IPv6
+        # บน fabric แม้ UI/cluster.env จะยังตั้งค่าใช้งานจริงเป็น IPv4 เท่านั้น
+        address = ipaddress.ip_network(network, strict=False).network_address
+        return (min(speeds), -int(address))
 
     chosen = max(common, key=rank)
     return chosen, {

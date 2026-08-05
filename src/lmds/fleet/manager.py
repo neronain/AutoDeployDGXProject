@@ -528,13 +528,19 @@ class FleetError(Exception):
     pass
 
 
-def _run_controller(info: ServerInfo, command: str, extra: list[str] | None = None) -> int:
+def _run_controller(
+    info: ServerInfo,
+    command: str,
+    extra: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
     if not info.controller_exists:
         raise FleetError(
             f"ไม่พบ controller ของ {info.slug} ({info.controller or 'ไม่ระบุ'}) — "
             "bundle อาจถูกย้าย/ลบ (ใช้ lmds stop จะ fallback หยุดตรง ๆ ให้)"
         )
-    proc = subprocess.run([info.controller, command, *(extra or [])])
+    process_env = {**os.environ, **env} if env else None
+    proc = subprocess.run([info.controller, command, *(extra or [])], env=process_env)
     return proc.returncode
 
 
@@ -559,10 +565,17 @@ def stop_server(info: ServerInfo) -> str:
     return "docker-rm"
 
 
-def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
+def restart_server(
+    info: ServerInfo,
+    options: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """restart — controller ถ้ามี, ไม่งั้น docker restart (ใช้ได้กับ container ภายนอกด้วย)"""
     if info.controller_exists:
-        _run_controller(info, "restart", options)
+        if env is None:
+            _run_controller(info, "restart", options)
+        else:
+            _run_controller(info, "restart", options, env=env)
         return "controller"
     if info.mode == "docker" and info.container:
         proc = subprocess.run(["docker", "restart", info.container], capture_output=True)
@@ -575,13 +588,19 @@ def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
     )
 
 
-def start_server(info: ServerInfo, options: list[str] | None = None) -> int:
+def start_server(
+    info: ServerInfo,
+    options: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
     """options = flag ของ controller เช่น ["--port", "8001"] — ส่งผ่านไปตรง ๆ
 
     controller เป็นเจ้าของ flag พวกนี้ (แต่ละ engine มีไม่เท่ากัน) LMDS จึงไม่พยายาม
     รู้จักทุกตัว แค่ส่งต่อและปล่อยให้ controller ตรวจค่าเอง — มันตรวจอยู่แล้ว
     """
-    return _run_controller(info, "start", options)
+    if env is None:
+        return _run_controller(info, "start", options)
+    return _run_controller(info, "start", options, env=env)
 
 
 def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int:

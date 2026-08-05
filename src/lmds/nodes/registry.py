@@ -16,6 +16,7 @@ import yaml
 from lmds.config.paths import config_dir, ensure_config_dir
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+_SSH_USER_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.-]*$")
 
 
 class NodeError(Exception):
@@ -103,17 +104,41 @@ def validate_cluster_ip(value: str) -> str:
     return value
 
 
+def validate_node_name(name: str) -> str:
+    """Validate a registry key before any remote/key side effect begins."""
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        raise NodeError(
+            f"ชื่อ '{name}' ใช้ไม่ได้ — ใช้ a-z 0-9 . _ - เท่านั้น (ขึ้นต้นด้วยตัวอักษรหรือตัวเลข)"
+        )
+    return name
+
+
+def validate_ssh_target(host: str, user: str, port: int) -> tuple[str, str, int]:
+    """Reject ambiguous SSH destinations before any key/login side effect.
+
+    ``ssh`` receives ``user@host`` as one argv item. A user beginning with ``-`` turns the
+    destination into an option; whitespace/control characters and an extra ``@`` are never a
+    valid LMDS target and make logs/diagnostics ambiguous even when they do not reach a shell.
+    """
+    host = (host or "").strip()
+    user = (user or "").strip()
+    if (not host or host.startswith("-") or "@" in host
+            or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in host)):
+        raise NodeError("host ใช้ไม่ได้ — ระบุ IP หรือ hostname โดยไม่มีช่องว่าง/@ และห้ามขึ้นต้นด้วย -")
+    if not _SSH_USER_RE.fullmatch(user):
+        raise NodeError("user ใช้ไม่ได้ — ใช้ตัวอักษร ตัวเลข . _ - และห้ามขึ้นต้นด้วย -")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise NodeError("port SSH ต้องเป็นจำนวนเต็ม 1–65535")
+    return host, user, port
+
+
 def find(name: str) -> Node | None:
     return next((n for n in load() if n.name == name), None)
 
 
 def add(node: Node) -> Node:
-    if not _NAME_RE.match(node.name):
-        raise NodeError(
-            f"ชื่อ '{node.name}' ใช้ไม่ได้ — ใช้ a-z 0-9 . _ - เท่านั้น (ขึ้นต้นด้วยตัวอักษรหรือตัวเลข)"
-        )
-    if not node.host or not node.user:
-        raise NodeError("ต้องระบุทั้ง host และ user")
+    node.name = validate_node_name(node.name)
+    node.host, node.user, node.port = validate_ssh_target(node.host, node.user, node.port)
     node.cluster_ip = validate_cluster_ip(node.cluster_ip)
     existing = load()
     if any(n.name == node.name for n in existing):

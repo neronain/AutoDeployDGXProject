@@ -28,6 +28,8 @@ from .registry import (
     suggest_name,
     update,
     validate_cluster_ip,
+    validate_node_name,
+    validate_ssh_target,
 )
 from .ssh import (
     check_login,
@@ -71,4 +73,6 @@ __all__ = [
     "suggest_name",
     "update",
     "validate_cluster_ip",
+    "validate_node_name",
+    "validate_ssh_target",
 ]

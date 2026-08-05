@@ -119,7 +119,7 @@ dialog.modal {
 dialog.modal::backdrop { background: rgba(16, 24, 40, .45); backdrop-filter: blur(2px); }
 @media (prefers-color-scheme: dark) { dialog.modal::backdrop { background: rgba(0, 0, 0, .6); } }
 .modal-head {
-  padding: var(--s4) var(--s5) var(--s2); font-size: 15px; font-weight: 600;
+  margin: 0; padding: var(--s4) var(--s5) var(--s2); font-size: 15px; font-weight: 600;
 }
 .modal-body { padding: 0 var(--s5) var(--s4); color: var(--fg2); line-height: 1.6; font-size: 13.5px; }
 .modal-body pre {
@@ -349,8 +349,7 @@ pre {
 .clock-max { font-family: var(--mono); font-size: 11px; color: var(--fg2); }
 
 /* ── machines ───────────────────────────────────────────────────────── */
-/* ไม่ใช่ปุ่มสั่งงาน — มีกรอบเท่าปุ่มจริงแล้วดึงสายตาไปผิดที่
-   กดได้ทั้งแถบหัวการ์ด (disclosure pattern มาตรฐาน) ตัวนี้เหลือไว้เป็นสัญลักษณ์บอกสถานะ */
+/* ปุ่ม disclosure จริงสำหรับคีย์บอร์ด; ทั้งหัวแถวยังกดได้เพื่อให้ pointer target กว้าง */
 .ntoggle {
   width: 18px; height: 18px; min-height: 0; padding: 0; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
@@ -635,22 +634,25 @@ button.more { font-size: 15px; line-height: 1; padding: 0 10px; letter-spacing: 
 // ── กล่องโต้ตอบ ─────────────────────────────────────────────────────────
 // alert()/confirm()/prompt() บล็อกทั้งหน้า จัดสไตล์ไม่ได้ และบนมือถือขึ้นชื่อโดเมนนำหน้า
 // จนอ่านไม่ออกว่าใครถาม · <dialog> ให้ focus trap + Esc + ::backdrop มาตามมาตรฐานอยู่แล้ว
+let modalSeq = 0;
 function openModal({ title, body = "", detail = "", input = null, ok = "OK", cancel = null,
                      danger = false }) {
   return new Promise(resolve => {
     const dlg = document.createElement("dialog");
     dlg.className = "modal";
+    const titleId = `modal-title-${++modalSeq}`;
+    dlg.setAttribute("aria-labelledby", titleId);
     dlg.innerHTML = `
       <form method="dialog">
-        <div class="modal-head">${esc(title)}</div>
+        <h2 class="modal-head" id="${titleId}">${esc(title)}</h2>
         <div class="modal-body">
-          ${body ? `<div>${body}</div>` : ""}
+          ${body ? `<div>${esc(body)}</div>` : ""}
           ${detail ? `<pre>${esc(detail)}</pre>` : ""}
           ${input !== null ? `<input id="modal-input" value="${esc(input)}"
              autocomplete="off" spellcheck="false">` : ""}
         </div>
         <div class="modal-foot">
-          ${cancel ? `<button value="cancel">${esc(cancel)}</button>` : ""}
+          ${cancel ? `<button type="button" value="cancel">${esc(cancel)}</button>` : ""}
           <button value="ok" class="primary${danger ? " danger" : ""}">${esc(ok)}</button>
         </div>
       </form>`;
@@ -662,6 +664,11 @@ function openModal({ title, body = "", detail = "", input = null, ok = "OK", can
         : (field ? null : false);
       dlg.remove();
       resolve(value);
+    });
+    const cancelButton = dlg.querySelector('button[value="cancel"]');
+    if (cancelButton) cancelButton.addEventListener("click", () => {
+      dlg.returnValue = "cancel";
+      dlg.close();
     });
     dlg.showModal();
     (field || dlg.querySelector(".primary")).focus();
@@ -678,25 +685,41 @@ const askFor = (title, body, value) =>
 const token = new URLSearchParams(location.search).get("token") || "";
 const api = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), ...(token ? { "x-lmds-token": token } : {}) } });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const gb = v => v == null ? "—" : Math.round(v) + " GB";
+const finite = v => {
+  if (v === null || v === undefined || v === "" || typeof v === "boolean") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const fmt = (v, digits = null) => {
+  const n = finite(v);
+  if (n === null) return "—";
+  return digits === null ? n.toLocaleString() : n.toFixed(digits);
+};
+const gb = v => finite(v) === null ? "—" : Math.round(finite(v)) + " GB";
+const safeHref = value => {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
+  } catch { return ""; }
+};
 const open = new Set();
 let busy = null;
 
 function statCard(label, value, sub, colour) {
   return `<div class="stat"><span class="muted">${esc(label)}</span>
-    <b${colour ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
+    <b${colour ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${esc(sub)}</span>` : ""}</div>`;
 }
 
 
 function renderHost(h, models) {
   document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
-  const gpu = h.gpus[0];
+  const gpu = (Array.isArray(h.gpus) ? h.gpus : [])[0];
   const unified = h.memory_model === "unified";
   const cards = [];
 
   cards.push(gpu
-    ? statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
-        `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`)
+    ? statCard("GPU", String(gpu.name || "").replace(/^NVIDIA /, ""),
+        `${finite(gpu.vram_gb) !== null ? fmt(gpu.vram_gb) + " GB" : ""}${gpu.compute ? " · SM" + String(gpu.compute).replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`)
     : statCard("GPU", "not found", "check nvidia-smi"));
 
   // llama.cpp can serve several models at once, so this is a count, not a yes/no
@@ -715,7 +738,7 @@ function renderHost(h, models) {
   document.getElementById("stats").innerHTML = cards.join("");
   // CPU/หน่วยความจำ/ดิสก์/GPU ของเครื่องนี้ — เกจชุดเดียวกับที่ใช้กับเครื่องอื่น
   document.getElementById("hostcard").innerHTML =
-    systemCard(h) + (h.gpus || []).map(gpuCard).join("");
+    systemCard(h) + (Array.isArray(h.gpus) ? h.gpus : []).map(gpuCard).join("");
 }
 
 // Update only what changed. Rebuilding the whole list every poll makes open panels
@@ -732,7 +755,7 @@ function rowMarkup(m) {
   if (!m.controller_exists) tags.push(`<span class="tag bad">controller missing</span>`);
   else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">not downloaded</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
-    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>`;
+    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${finite(m.context) !== null ? " · " + esc(fmt(m.context)) + " tok" : ""}</div>`;
 }
 
 function actionsMarkup(m) {
@@ -794,11 +817,11 @@ function manageMarkup(m) {
       <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
     <div class="formgrid">
       <div class="fld"><label for="o-port-${esc(m.slug)}">Port</label>
-        <input type="number" id="o-port-${esc(m.slug)}" class="o-port" value="${o.port || m.port || 8000}"></div>
+        <input type="number" id="o-port-${esc(m.slug)}" class="o-port" value="${esc(o.port || m.port || 8000)}"></div>
       <div class="fld"><label for="o-ctx-${esc(m.slug)}">Context</label>
-        <input type="number" id="o-ctx-${esc(m.slug)}" class="o-ctx" value="${o.context || m.context || ""}"></div>
+        <input type="number" id="o-ctx-${esc(m.slug)}" class="o-ctx" value="${esc(o.context || m.context || "")}"></div>
       <div class="fld"><label for="o-slots-${esc(m.slug)}">Slots</label>
-        <input type="number" id="o-slots-${esc(m.slug)}" class="o-slots" value="${o.slots || m.max_num_seqs || 4}"
+        <input type="number" id="o-slots-${esc(m.slug)}" class="o-slots" value="${esc(o.slots || m.max_num_seqs || 4)}"
           title="Concurrent requests. llama.cpp splits the context evenly across slots."></div>
       <div class="fld"><label for="o-bind-${esc(m.slug)}">Bind</label>
         <select id="o-bind-${esc(m.slug)}" class="o-bind">
@@ -969,8 +992,9 @@ function wizForm(msg = "", extra = "") {
       // ตัวที่ยังไม่เคยรันจริงไปท้ายกลุ่ม — ระบบคิดแบบ conservative ให้อยู่แล้ว
       items.sort((a, b) => (b.tested - a.tested));
       const options = items.map(t => {
-        const size = t.memory_gb ? `${Math.round(t.memory_gb)} GB` : "";
-        const nodes = t.gpus > 1 ? ` · ${t.gpus}×` : "";
+        const memory = finite(t.memory_gb), gpuCount = finite(t.gpus);
+        const size = memory !== null ? `${Math.round(memory)} GB` : "";
+        const nodes = gpuCount > 1 ? ` · ${esc(fmt(gpuCount))}×` : "";
         return `<option value="${esc(t.name)}">${esc(t.name)}`
           + `${size ? ` — ${size}${nodes}` : ""}${t.tested ? "" : " · untested"}</option>`;
       }).join("");
@@ -992,16 +1016,16 @@ function planView(d) {
     <div class="kv">
       <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}</span>
       <span>revision</span><span class="mono">${esc(p.revision)}</span>
-      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${f.budget_gb} GB</span>
+      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${esc(fmt(f.budget_gb))} GB</span>
       ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
       <span>planner</span><span>${esc(p.generator)}</span>
     </div>
     ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
     <div class="field" style="margin-top:12px">
       <label>context</label>
-      <input id="w-ctx" type="number" value="${p.context}" max="${head}" style="flex:none;width:140px">
+      <input id="w-ctx" type="number" value="${esc(finite(p.context) ?? "")}" max="${esc(finite(head) ?? "")}" style="flex:none;width:140px">
       ${f.max_safe_context && f.max_safe_context > p.context
-        ? `<span class="dim">This machine can hold ${f.max_safe_context.toLocaleString()} — the suggested value is the v3.0.0 default, not a limit</span>` : ""}
+        ? `<span class="dim">This machine can hold ${esc(fmt(f.max_safe_context))} — the suggested value is the v3.0.0 default, not a limit</span>` : ""}
     </div>
     ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
       <div class="muted">Flags that need your approval</div>
@@ -1018,8 +1042,8 @@ function planView(d) {
 function resultView(r) {
   sess = null;
   wiz.innerHTML = `<div class="pad">
-    <div class="name">${esc(r.slug)} <span class="tag ok">passed ${r.gates.length} gates</span></div>
-    <div class="kv"><span>context</span><span>${r.context.toLocaleString()} tok</span>
+    <div class="name">${esc(r.slug)} <span class="tag ok">passed ${esc((r.gates || []).length)} gates</span></div>
+    <div class="kv"><span>context</span><span>${esc(fmt(r.context))} tok</span>
       <span>ZIP</span><span class="mono">${esc(r.zip)}</span></div>
     <div class="dim">Next: press download on the row below — it downloads and verifies, then start becomes available.</div>
     <div class="field" style="margin-top:12px"><button id="w-close">Close</button></div>
@@ -1048,7 +1072,7 @@ async function analyzeNow(overrides = {}) {
     if (det.kind === "choose-gguf") {
       wizForm(det.message, `<div style="margin-top:10px">${det.variants.map(v =>
         `<label style="display:block;padding:3px 0"><input type="radio" name="gguf" value="${esc(v.filename)}" style="min-width:auto;flex:none">
-         <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? v.size_gb + " GB" : ""}</span></label>`).join("")}
+         <span class="mono">${esc(v.filename)}</span> <span class="dim">${finite(v.size_gb) !== null ? esc(fmt(v.size_gb)) + " GB" : ""}</span></label>`).join("")}
         <button id="w-gguf" style="margin-top:8px">Use this file</button></div>`);
     } else if (det.kind === "gated") {
       wizForm(det.message, `<div class="field" style="margin-top:10px">
@@ -1067,26 +1091,41 @@ async function analyzeNow(overrides = {}) {
 const watching = new Map();
 
 async function followJob(slug, jobId) {
+  let failures = 0;
   const tick = async () => {
-    const r = await api(`/api/jobs/${jobId}`);
-    if (!r.ok) { watching.delete(slug); return; }
-    const d = await r.json();
-    const el = document.getElementById("panel-" + slug);
-    if (el) {
-      el.innerHTML = `<pre id="jobout-${esc(slug)}">${esc(d.output || "starting…")}</pre>`;
-      const out = document.getElementById("jobout-" + slug);
-      if (out) out.scrollTop = out.scrollHeight;
+    try {
+      const r = await api(`/api/jobs/${jobId}`);
+      if (!r.ok) { watching.delete(slug); return; }
+      const d = await r.json();
+      failures = 0;
+      const el = document.getElementById("panel-" + slug);
+      if (el) {
+        el.innerHTML = `<pre id="jobout-${esc(slug)}">${esc(d.output || "starting…")}</pre>`;
+        const out = document.getElementById("jobout-" + slug);
+        if (out) out.scrollTop = out.scrollHeight;
+      }
+      if (d.running) { setTimeout(tick, 1200); return; }
+      watching.delete(slug);
+      if (d.exit_code !== 0) {
+        // The controller already explained itself — show that instead of a bare exit code
+        const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
+        say(`${d.command} ${slug} failed`,
+            `The controller exited with code ${d.exit_code}.`,
+            reason || "no output from the controller");
+      }
+      refresh();
+    } catch (_) {
+      // A transient network failure must not strand the slug in `watching` forever.
+      failures += 1;
+      if (failures < 3 && watching.get(slug) === jobId) {
+        setTimeout(tick, 2000);
+        return;
+      }
+      watching.delete(slug);
+      say(`Lost contact while following ${slug}`,
+          "The job may still be running. Refresh the page to reconnect.");
+      refresh();
     }
-    if (d.running) { setTimeout(tick, 1200); return; }
-    watching.delete(slug);
-    if (d.exit_code !== 0) {
-      // The controller already explained itself — show that instead of a bare exit code
-      const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
-      say(`${d.command} ${slug} failed`,
-          `The controller exited with code ${d.exit_code}.`,
-          reason || "no output from the controller");
-    }
-    refresh();
   };
   watching.set(slug, jobId);
   tick();
@@ -1096,12 +1135,16 @@ async function followJob(slug, jobId) {
 // followJob() เขียนลง #panel-<slug> ซึ่งงานแบบนี้ไม่มี
 async function waitForJob(jobId, onTick) {
   for (;;) {
-    const r = await api(`/api/jobs/${jobId}`);
-    if (!r.ok) return { exit_code: 1, output: "job หายไประหว่างทาง" };
-    const d = await r.json();
-    if (onTick) onTick(d);
-    if (!d.running) return d;
-    await new Promise(done => setTimeout(done, 1500));
+    try {
+      const r = await api(`/api/jobs/${jobId}`);
+      if (!r.ok) return { exit_code: 1, output: "The job disappeared before it finished." };
+      const d = await r.json();
+      if (onTick) onTick(d);
+      if (!d.running) return d;
+      await new Promise(done => setTimeout(done, 1500));
+    } catch (_) {
+      return { exit_code: 1, output: "Lost contact while waiting for the job. It may still be running." };
+    }
   }
 }
 
@@ -1324,7 +1367,9 @@ document.addEventListener("click", async e => {
 
   if (act === "removeask") {
     const box = document.getElementById("rm-" + slug);
-    const d = await (await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`)).json();
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { say("Could not inspect removal", d.detail || "The removal plan is unavailable."); return; }
     const size = b => (b / 1024 ** 3).toFixed(1);
     box.innerHTML = `<div style="border:1px solid var(--bad);border-radius:7px;padding:12px;margin-top:10px">
       <div class="warn-line" style="color:var(--bad)">Deletes ${size(d.total_bytes)} GB — cannot be undone</div>
@@ -1342,7 +1387,7 @@ document.addEventListener("click", async e => {
     btn.disabled = true; btn.textContent = "Removing…";
     const r = await api(`/api/models/${encodeURIComponent(slug)}/remove`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ keep_weights: keep }),
+      body: JSON.stringify({ keep_weights: keep, confirm: slug }),
     });
     if (!r.ok) say("Could not remove", (await r.json()).detail || "");
     rows.delete(slug);
@@ -1371,7 +1416,7 @@ document.addEventListener("click", async e => {
   try {
     const r = await api(`/api/models/${encodeURIComponent(slug)}/${act}`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify(opts(slug)),
+      body: JSON.stringify(act === "stop" ? {} : opts(slug)),
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
@@ -1389,7 +1434,9 @@ document.addEventListener("click", async e => {
 // ค่าที่เป็น null คือ "การ์ดรุ่นนี้ไม่รายงาน" ไม่ใช่ศูนย์ — GB10 (unified SoC) ไม่บอก
 // power limit / fan / memory clock · โชว์ 0 ตรงนั้นคือการโกหกผู้ใช้ จึงซ่อนไปเลย
 function gauge(value, max, label, unit, colour, sub = "") {
-  if (value == null) return "";
+  value = finite(value);
+  max = finite(max);
+  if (value === null) return "";
   const pct = max ? Math.max(0, Math.min(1, value / max)) : 0;
   const r = 26, c = 2 * Math.PI * r, arc = c * 0.75;          // เว้นช่องล่างเหมือนมาตรวัดจริง
   const shown = Number.isInteger(value) ? value : value.toFixed(1);
@@ -1411,13 +1458,15 @@ function gauge(value, max, label, unit, colour, sub = "") {
 }
 
 function clockRow(label, mhz, max, colour) {
-  if (mhz == null) return "";
+  mhz = finite(mhz);
+  max = finite(max);
+  if (mhz === null) return "";
   const pct = max ? Math.min(100, Math.round(mhz / max * 100)) : 0;
   return `<div class="clock-row">
     <div class="clock-head">
       <span class="dim">${esc(label)}</span>
-      <span class="clock-num">${mhz.toLocaleString()}</span>
-      ${max ? `<span class="clock-max">/ ${max.toLocaleString()} MHz · ${pct}%</span>`
+      <span class="clock-num">${esc(fmt(mhz))}</span>
+      ${max ? `<span class="clock-max">/ ${esc(fmt(max))} MHz · ${pct}%</span>`
             : `<span class="clock-max">MHz</span>`}
     </div>
     <div class="clock-bar" role="meter" aria-label="${esc(label)}" aria-valuenow="${mhz}"
@@ -1427,16 +1476,18 @@ function clockRow(label, mhz, max, colour) {
 }
 
 function gpuCard(g) {
-  const busy = g.utilization_pct;
-  const link = g.pcie_gen ? `<span class="tag">GEN ${g.pcie_gen} ×${g.pcie_width || "?"}</span>` : "";
-  const vram = g.vram_used_gb != null && g.vram_gb
-    ? `<span class="npill"><span class="muted">VRAM</span> ${g.vram_used_gb}/${g.vram_gb} GB</span>`
-    : (g.vram_gb ? `<span class="npill"><span class="muted">MEMORY</span> ${g.vram_gb} GB pool</span>`
+  const busy = finite(g.utilization_pct);
+  const pcieGen = finite(g.pcie_gen), pcieWidth = finite(g.pcie_width);
+  const usedVram = finite(g.vram_used_gb), totalVram = finite(g.vram_gb);
+  const link = pcieGen !== null ? `<span class="tag">GEN ${esc(fmt(pcieGen))} ×${pcieWidth === null ? "?" : esc(fmt(pcieWidth))}</span>` : "";
+  const vram = usedVram !== null && totalVram
+    ? `<span class="npill"><span class="muted">VRAM</span> ${esc(fmt(usedVram))}/${esc(fmt(totalVram))} GB</span>`
+    : (totalVram ? `<span class="npill"><span class="muted">MEMORY</span> ${esc(fmt(totalVram))} GB pool</span>`
                  : `<span class="npill"><span class="muted">MEMORY</span> N/A (SoC)</span>`);
   return `<div class="gpu">
     <div class="gpu-head">
       <span class="gpu-name">${esc(g.name)}</span>
-      ${g.compute ? `<span class="tag">SM${esc(g.compute.replace(".", ""))}</span>` : ""}
+      ${g.compute ? `<span class="tag">SM${esc(String(g.compute).replace(".", ""))}</span>` : ""}
       ${link}<span class="grow"></span>${vram}
     </div>
     <div class="gauges">
@@ -1507,7 +1558,7 @@ function nodeAddForm() {
     </div>
     <div class="dim">Root is not required. LMDS needs a normal user in the <code>docker</code> group;
       a dedicated key (<code>id_lmds</code>) is installed and used from then on.
-      The node must already have LMDS installed.</div>
+      You can install or update LMDS from the machine menu after adding it.</div>
     <div id="n-msg"></div>
   </div></div>`;
 }
@@ -1517,11 +1568,12 @@ function nodeCard(node) {
   block.className = "machine";
   // grid ไม่ใช่ flex — flex ปล่อยให้ปุ่มไหลไปเรื่อย ๆ พอจอแคบก็แตกเป็นสามบรรทัดคนละความกว้าง
   block.innerHTML = `<div class="nhead">
-      <span class="ntoggle" aria-hidden="true">▼</span>
+      <button class="ntoggle" data-nact="collapse" data-node="${esc(node.name)}"
+        aria-expanded="true" aria-controls="nbody-${esc(node.name)}" aria-label="Collapse ${esc(node.name)}">▼</button>
       <span class="dot"></span>
       <div class="ninfo">
         <div class="name">${esc(node.name)}</div>
-        <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
+        <div class="muted">${esc(node.user)}@${esc(node.host)}:${esc(node.port)}${node.note ? " · " + esc(node.note) : ""}</div>
       </div>
       <span class="mono muted nver"></span>
       <div class="nacts">
@@ -1537,7 +1589,7 @@ function nodeCard(node) {
         title="Other addresses to try when the main one is unreachable">Addresses</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Remove from registry</button>
     </div>
-    <div class="nbody"></div>`;
+    <div class="nbody" id="nbody-${esc(node.name)}"></div>`;
   return block;
 }
 
@@ -1550,8 +1602,8 @@ function systemCard(host) {
   const cpu = host.cpu || {};
   const gpu = (host.gpus || [])[0];
   const unified = host.memory_model === "unified";
-  const used = host.ram_used_gb, total = host.ram_total_gb;
-  const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
+  const used = finite(host.ram_used_gb), total = finite(host.ram_total_gb);
+  const free = finite(host.disk_free_gb), diskTotal = finite(host.disk_total_gb);
   const fabric = host.fabric || {};
 
   const memPct = used != null && total ? Math.round(used / total * 100) : null;
@@ -1562,10 +1614,11 @@ function systemCard(host) {
   const vramPct = !unified && gpu && gpu.vram_used_gb != null && gpu.vram_gb
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
 
+  const cores = finite(cpu.cores), load1 = finite(cpu.load1), bestGbps = finite(fabric.best_gbps);
   const tags = [
-    cpu.cores ? `<span class="tag">${cpu.cores} cores</span>` : "",
-    cpu.load1 != null ? `<span class="tag">load ${cpu.load1}</span>` : "",
-    fabric.best_gbps ? `<span class="tag">${fabric.best_gbps}G${fabric.tier === "rdma" ? " RDMA" : ""}</span>` : "",
+    cores ? `<span class="tag">${esc(fmt(cores))} cores</span>` : "",
+    load1 !== null ? `<span class="tag">load ${esc(fmt(load1))}</span>` : "",
+    bestGbps ? `<span class="tag">${esc(fmt(bestGbps))}G${fabric.tier === "rdma" ? " RDMA" : ""}</span>` : "",
   ].join("");
 
   return `<div class="gpu">
@@ -1577,11 +1630,11 @@ function systemCard(host) {
     </div>
     <div class="gauges">
       ${gauge(cpu.percent == null ? null : Math.min(cpu.percent, 100), 100, "CPU", "%",
-              loadColour(cpu.percent), cpu.cores ? `${cpu.cores} cores` : "")}
+              loadColour(finite(cpu.percent)), cores ? `${fmt(cores)} cores` : "")}
       ${gauge(memPct, 100, unified ? "Unified" : "RAM", "%", loadColour(memPct),
               used != null ? `${Math.round(used)} / ${gb(total)}` : "")}
       ${vramPct == null ? "" : gauge(vramPct, 100, "VRAM", "%", loadColour(vramPct),
-              `${gpu.vram_used_gb} / ${gpu.vram_gb} GB`)}
+              `${fmt(gpu.vram_used_gb)} / ${fmt(gpu.vram_gb)} GB`)}
       ${gauge(diskPct, 100, "Disk free", "%", freeColour(diskPct),
               free != null ? `${gb(free)} / ${gb(diskTotal)}` : "")}
     </div>
@@ -1612,15 +1665,16 @@ function nodeModelsMarkup(name, data) {
         <span class="dim">git clone + install.sh on that machine — takes a few minutes</span>
       </div></div>`;
   }
-  const models = data.models || [];
+  const models = Array.isArray(data.models) ? data.models : [];
   const host = data.host || {};
   const sum = data.summary || {};
-  const gpuNames = (host.gpus || []).map(g => g.name.replace(/^NVIDIA /, "")).join(", ") || "no GPU";
+  const gpus = Array.isArray(host.gpus) ? host.gpus : [];
+  const gpuNames = gpus.map(g => String(g.name || "").replace(/^NVIDIA /, "")).join(", ") || "no GPU";
   const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}
-    · ${sum.running || 0} of ${sum.total || models.length} running${
-      data.age_seconds ? ` · updated ${Math.round(data.age_seconds)}s ago` : ""}</div>
+    · ${esc(fmt(finite(sum.running) ?? 0))} of ${esc(fmt(finite(sum.total) ?? models.length))} running${
+      finite(data.age_seconds) !== null ? ` · updated ${esc(fmt(Math.round(finite(data.age_seconds))))}s ago` : ""}</div>
     ${systemCard(host)}
-    ${(host.gpus || []).map(gpuCard).join("")}`;
+    ${gpus.map(gpuCard).join("")}`;
 
   if (!models.length) {
     return `<div class="pad" style="border-top:1px solid var(--line)">${head}
@@ -1643,27 +1697,27 @@ function nodeModelsMarkup(name, data) {
       const autoOn = auto === "enabled";
       // ปุ่มขึ้นตามสถานะจริง — ปุ่มที่กดแล้วล้มแน่ ๆ แย่กว่าไม่มีปุ่ม
       const more = [
-        m.running ? ["restart", "หยุดแล้วเปิดใหม่"] : null,
-        ["doctor", "ตรวจว่าทำไมยัง start ไม่ได้"],
-        ["logs", "log ล่าสุด 300 บรรทัด"],
-        m.downloaded ? ["repair", "โหลดไฟล์ที่ขาดกลับมา + ตรวจซ้ำ"] : null,
+        m.running ? ["restart", "Stop and start the server again"] : null,
+        ["doctor", "Explain why this model cannot start"],
+        ["logs", "Show the latest 300 log lines"],
+        m.downloaded ? ["repair", "Resume missing files and verify them"] : null,
         // n/a = เครื่องนั้นไม่มี systemd — ปุ่มที่กดแล้วล้มแน่ ๆ ไม่ควรมี
         auto === "n/a" ? null
-          : autoOn ? ["disable", "เลิก autostart หลัง reboot"]
-                   : ["enable", "ให้ขึ้นเองหลัง reboot (ต้อง sudo บนเครื่องนั้น)"],
-        ["remove", "ลบออกจากเครื่องนั้น — จะแสดงรายการ+ขนาดก่อนถามยืนยัน"],
+          : autoOn ? ["disable", "Disable autostart after reboot"]
+                   : ["enable", "Start after reboot (needs sudo on that machine)"],
+        ["remove", "Preview files and sizes before permanent removal"],
       ].filter(Boolean);
       return `<div style="margin-bottom:6px">
         <div class="field">
           <span class="dot ${state}"></span>
           <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
-            <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+            <span class="muted"> ${esc(m.engine)}${finite(m.context) !== null ? " · " + esc(fmt(m.context)) + " tok" : ""}</span>
             ${autoOn ? `<span class="tag">autostart</span>` : ""}</span>
-          <span class="mono muted">:${m.port || "—"}</span>
+          <span class="mono muted">:${finite(m.port) === null ? "—" : esc(fmt(m.port))}</span>
           <span class="muted">${label}</span>
           ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}">${act}</button>` : ""}
           <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                  class="${open ? "on" : ""}" title="คำสั่งอื่น">⋯</button>
+                  class="${open ? "on" : ""}" title="More commands">⋯</button>
         </div>
         ${open ? `<div class="submenu" data-for="${esc(m.slug)}">
           <div class="field" style="width:100%">
@@ -1673,17 +1727,17 @@ function nodeModelsMarkup(name, data) {
             <label>context</label>
             <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
                    placeholder="${esc(m.context ?? "")}" style="flex:none;width:130px"
-                   title="tokens — เกินที่หน่วยความจำรับไหว vLLM จะไม่ขึ้น">
+                   title="tokens — vLLM will refuse values that do not fit in memory">
             ${m.engine === "vllm" ? `<label>gpu-util</label>
             <input type="number" step="0.01" min="0.3" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
                    placeholder="0.85" style="flex:none;width:90px"
-                   title="สัดส่วนหน่วยความจำที่ vLLM จองไว้ (0.3–0.98)">` : ""}
-            <span class="dim">ว่าง = ใช้ค่าที่ตั้งไว้ใน bundle</span>
+                   title="Fraction of memory reserved by vLLM (0.3–0.98)">` : ""}
+            <span class="dim">Empty fields keep the bundle defaults.</span>
           </div>
           <div class="field" style="width:100%">${more.map(([c, hint]) =>
             `<button data-nact="model:${c}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                      title="${esc(hint)}">${c}</button>`).join("")}
-            <span class="dim">ลบโมเดล: <code>lmds node run ${esc(name)} remove ${esc(m.slug)}</code></span>
+            <span class="dim">CLI equivalent: <code>lmds node run ${esc(name)} remove ${esc(m.slug)}</code></span>
           </div>
         </div>` : ""}
       </div>`;
@@ -1722,20 +1776,25 @@ async function refreshNodes() {
       box.appendChild(block);
       const body = block.querySelector(".nbody");
       const head = block.querySelector(".nhead");
-      if (collapsedNodes.has(node.name)) { body.classList.add("collapsed"); head.classList.add("collapsed"); }
+      const toggle = block.querySelector(".ntoggle");
+      const setCollapsed = hidden => {
+        body.classList.toggle("collapsed", hidden);
+        head.classList.toggle("collapsed", hidden);
+        toggle.setAttribute("aria-expanded", String(!hidden));
+        toggle.setAttribute("aria-label", `${hidden ? "Expand" : "Collapse"} ${node.name}`);
+        if (hidden) collapsedNodes.add(node.name); else collapsedNodes.delete(node.name);
+      };
+      setCollapsed(collapsedNodes.has(node.name));
       // กดได้ทั้งแถบหัวการ์ด (disclosure pattern มาตรฐาน) ไม่ใช่เล็งปุ่มเล็ก ๆ ตัวเดียว
       head.addEventListener("click", e => {
         if (e.target.closest("button")) return;      // ปุ่มจริงในหัวการ์ดทำงานของมันไป
-        const hidden = body.classList.toggle("collapsed");
-        head.classList.toggle("collapsed", hidden);
-        // จำไว้ ไม่งั้น refresh รอบถัดไปกางกลับเองทุก 5 วินาที
-        if (hidden) collapsedNodes.add(node.name); else collapsedNodes.delete(node.name);
+        setCollapsed(!body.classList.contains("collapsed"));
       });
       nodeRows.set(node.name, {
         block,
         dot: block.querySelector(".dot"),
         version: block.querySelector(".nver"),
-        body,
+        body, head, toggle,
       });
       loadNode(node.name);
     }
@@ -1774,6 +1833,18 @@ document.addEventListener("click", async e => {
   if (!btn) return;
   const { nact, node, slug } = btn.dataset;
 
+  if (nact === "collapse") {
+    const row = nodeRows.get(node);
+    if (!row) return;
+    const hidden = !row.body.classList.contains("collapsed");
+    row.body.classList.toggle("collapsed", hidden);
+    row.head.classList.toggle("collapsed", hidden);
+    row.toggle.setAttribute("aria-expanded", String(!hidden));
+    row.toggle.setAttribute("aria-label", `${hidden ? "Expand" : "Collapse"} ${node}`);
+    if (hidden) collapsedNodes.add(node); else collapsedNodes.delete(node);
+    return;
+  }
+
   if (nact === "menu") {
     const key = node + "/" + slug;
     openModelMenus.has(key) ? openModelMenus.delete(key) : openModelMenus.add(key);
@@ -1797,8 +1868,8 @@ document.addEventListener("click", async e => {
   if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "install") {
     const go = await ask(`Install LMDS on ${node}?`,
-      `It clones the repo and runs <code>install.sh</code> over SSH. Docker and the NVIDIA `
-      + `toolkit are skipped — they need <code>sudo</code>, and there is no terminal here to `
+      `It clones the repo and runs install.sh over SSH. Docker and the NVIDIA `
+      + `toolkit are skipped — they need sudo, and there is no terminal here to `
       + `answer the password prompt.`, "Install");
     if (!go) return;
     btn.disabled = true;
@@ -1838,7 +1909,10 @@ document.addEventListener("click", async e => {
     if (!await ask(`Remove ${node} from the registry?`,
       "Nothing on that machine is changed — the SSH key stays where it is.",
       "Remove", true)) return;
-    await api(`/api/nodes/${encodeURIComponent(node)}`, { method: "DELETE" });
+    await api(`/api/nodes/${encodeURIComponent(node)}`, {
+      method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: node }),
+    });
     nodeRows.clear();
     refreshNodes();
     return;
@@ -1863,9 +1937,7 @@ document.addEventListener("click", async e => {
     // remove ครั้งแรกคือ --dry-run: server ยังไม่ลบอะไร แค่บอกว่าจะลบอะไรบ้าง
     // ผู้ใช้ต้องเห็นรายการ+ขนาดจริงก่อน แล้วกดยืนยันอีกครั้งถึงจะลบ
     if (command === "remove" && !btn.dataset.confirm) {
-      showNodeOutput(node, `จะลบ · ${slug}`, d.output, `
-        <button class="danger" data-nact="model:remove" data-node="${esc(node)}"
-                data-slug="${esc(slug)}" data-confirm="1">ยืนยันลบถาวร</button>`);
+      showNodeOutput(node, `Remove · ${slug}`, d.output, { node, slug });
       return;
     }
     if (command === "doctor" || command === "logs" || d.exit_code !== 0) {
@@ -1887,19 +1959,19 @@ function ipHint(m) {
   // The API sends state codes, not sentences — the CLI phrases these in Thai, the page in English
   const ip = m.ip || {};
   if (ip.state === "unset") {
-    return m.suggested_ip ? `No cluster IP set — detected ${m.suggested_ip} on the fast link`
+    return m.suggested_ip ? `No cluster IP set — detected ${String(m.suggested_ip)} on the fast link`
       : "No cluster IP set, and no fast link with an address was detected";
   }
-  if (ip.state === "mismatch") return `${m.cluster_ip} does not match any interface found on that machine`;
-  if (ip.state === "link-local") return `${m.cluster_ip} is a link-local address (169.254.x.x) — that port has no real IP configured yet`;
-  if (ip.state === "slow") return `${m.cluster_ip} is on ${ip.iface} at ${ip.speed_gbps}G — too slow to stack`;
+  if (ip.state === "mismatch") return `${String(m.cluster_ip || "")} does not match any interface found on that machine`;
+  if (ip.state === "link-local") return `${String(m.cluster_ip || "")} is a link-local address (169.254.x.x) — that port has no real IP configured yet`;
+  if (ip.state === "slow") return `${String(m.cluster_ip || "")} is on ${String(ip.iface || "")} at ${fmt(ip.speed_gbps)}G — too slow to stack`;
   return "";
 }
 
 function clusterMachineRow(m) {
   const fab = m.fabric || {};
   const link = !m.reachable ? "unreachable"
-    : fab.best_gbps ? `${fab.best_gbps}G${fab.tier === "rdma" ? " RDMA" : ""}`
+    : finite(fab.best_gbps) !== null ? `${fmt(fab.best_gbps)}G${fab.tier === "rdma" ? " RDMA" : ""}`
     : (m.has_gpu ? "no fast link" : "no GPU");
   const colour = !m.reachable ? "var(--bad)" : m.ready ? "var(--ok)" : "var(--warn)";
   const editable = !m.self && m.reachable;
@@ -1927,11 +1999,11 @@ function clusterGroupRow(g) {
       <b style="font-weight:500">${esc(names)}</b>
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "ready to stack" : "not ready"}</span>
     </div>
-    <div class="dim">${esc(g.gpu)} ×${g.gpus_per_node} per node · world size ${g.world_size} ·
-      ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
+    <div class="dim">${esc(g.gpu)} ×${esc(fmt(g.gpus_per_node))} per node · world size ${esc(fmt(g.world_size))} ·
+      ${esc(fmt(g.link_gbps))}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
     ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
-      ? `<div class="warn-line">${g.world_size} GPUs does not divide most models' attention heads —
-         use tensor-parallel ${g.parallelism.largest_tp} plus pipeline stages, not TP ${g.world_size}</div>`
+      ? `<div class="warn-line">${esc(fmt(g.world_size))} GPUs does not divide most models' attention heads —
+         use tensor-parallel ${esc(fmt(g.parallelism.largest_tp))} plus pipeline stages, not TP ${esc(fmt(g.world_size))}</div>`
       : ""}
     ${g.blockers.map(b => `<div class="warn-line">${esc({
       "missing-ip": "Cluster IP still missing on: ",
@@ -2026,7 +2098,7 @@ async function loadScan() {
         <span class="npill">${esc(m.kind)}</span>
         <span class="grow">${esc(m.name)}${m.layout === "root"
           ? ' <span class="dim">(legacy cache layout — HF_HUB_CACHE is set for you)</span>' : ""}</span>
-        <span class="mono muted">${m.size_gb} GB${m.shards ? " · " + m.shards + " shards" : ""}</span>
+        <span class="mono muted">${esc(fmt(m.size_gb))} GB${finite(m.shards) !== null ? " · " + esc(fmt(m.shards)) + " shards" : ""}</span>
       </div>`).join("")}</div>`;
   });
   box.innerHTML = `<div class="pad">${blocks.join("")}</div>`;
@@ -2047,6 +2119,7 @@ async function loadRecipes() {
       r.reasoning ? `<span class="npill">reasoning <b>${esc(r.reasoning)}</b></span>` : "",
       detail.length ? `<span class="npill">${detail.length} settings</span>` : "",
     ].filter(Boolean).join("");
+    const source = safeHref(r.source);
     return `<details class="recipe">
       <summary>
         <span class="rname">${esc(r.label || r.match)}</span>
@@ -2054,8 +2127,8 @@ async function loadRecipes() {
         <span class="tag">${esc(r.engine)}</span>
       </summary>
       <div class="rbody">
-        <div class="dim">Verified on ${esc(r.validated_on || "—")} ·
-          <a href="${esc(r.source)}" target="_blank" rel="noopener">source</a></div>
+        <div class="dim">Verified on ${esc(r.validated_on || "—")}${source ? ` ·
+          <a href="${esc(source)}" target="_blank" rel="noopener noreferrer">source</a>` : ""}</div>
         ${detail.length ? `<pre class="rset">${esc(detail.join("\n"))}</pre>` : ""}
         ${(r.notes || []).map(n => `<div class="warn-line">${esc(n)}</div>`).join("")}
       </div>
@@ -2076,10 +2149,10 @@ async function refresh() {
       // เพิ่งพิมพ์ลิงก์ออกมา — บอกวิธีขอลิงก์ที่ถูกจากตัวที่รันอยู่จริงไปเลย
       document.body.innerHTML =
         '<div style="max-width:520px;margin:80px auto;text-align:center;line-height:1.7">' +
-        '<p style="font-size:17px;font-weight:600">Token ไม่ตรงกับหน้าเว็บที่รันอยู่</p>' +
-        '<p style="color:var(--muted)">ลิงก์นี้อาจมาจากรอบก่อน — เอาลิงก์ปัจจุบันได้จากคำสั่ง:</p>' +
+        '<p style="font-size:17px;font-weight:600">This token does not match the running web server</p>' +
+        '<p style="color:var(--muted)">This may be an old link. Get the current one with:</p>' +
         '<p><code style="font-size:15px">lmds web --status</code></p>' +
-        '<p style="color:var(--muted);font-size:13px">อยากได้ token ใหม่: <code>lmds web --restart -b --bind 0.0.0.0</code></p>' +
+        '<p style="color:var(--muted);font-size:13px">To rotate the token: <code>lmds web --restart -b --bind 0.0.0.0</code></p>' +
         '</div>';
       return;
     }
@@ -2101,10 +2174,13 @@ let pollTimer = null;
 
 // แถวนี้กำลังถูกใช้อยู่ไหม — กางเมนูค้างไว้ หรือเคอร์เซอร์อยู่ในช่องกรอกของแถวนี้
 // ผลของคำสั่งต้องค้างอยู่จนผู้ใช้ปิดเอง — SSE วาดทับทุก 1 วิ ผลจะหายก่อนอ่านจบ
-function showNodeOutput(node, title, output, extra = "") {
+function showNodeOutput(node, title, output, removeConfirm = null) {
   const row = nodeRows.get(node);
   if (!row) return;
   pinnedOutput.add(node);
+  const extra = removeConfirm ? `<button class="danger" data-nact="model:remove"
+      data-node="${esc(removeConfirm.node)}" data-slug="${esc(removeConfirm.slug)}"
+      data-confirm="1">Confirm permanent removal</button>` : "";
   row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">${esc(title)}</b>
       <span class="grow"></span>${extra}
@@ -2121,7 +2197,7 @@ function nodeIsInUse(name) {
 // หยุดวาดทับแล้วต้องบอกด้วยว่าตัวเลขที่เห็นเริ่มเก่า — เงียบ ๆ ไปเฉย ๆ คือโกหกผู้ใช้
 function markStale(row, entry) {
   if (!row || !row.version) return;
-  const age = Math.round(entry.age_seconds || 0);
+  const age = Math.round(finite(entry.age_seconds) || 0);
   row.version.textContent = age > 20 ? `paused · ${age}s ago` : row.version.textContent;
 }
 

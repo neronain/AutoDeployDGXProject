@@ -32,6 +32,7 @@ CHAINS = {
     "repair": ["download", "verify-files"],  # repair = โหลดที่ขาด (resume) แล้วตรวจซ้ำ
 }
 _TAIL_LINES = 400
+_MAX_FINISHED_JOBS = 128
 
 
 @dataclass
@@ -44,6 +45,7 @@ class Job:
     lines: deque = field(default_factory=lambda: deque(maxlen=_TAIL_LINES))
     exit_code: int | None = None
     process: subprocess.Popen | None = None
+    _lines_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __setattr__(self, name: str, value) -> None:
         """งานจบ = สถานะบนดิสก์เปลี่ยนแล้ว (weight โหลดเสร็จ, server ขึ้น) — ทิ้งแคชทันที
@@ -62,6 +64,10 @@ class Job:
         return self.exit_code is None
 
     def payload(self) -> dict:
+        # deque รับ append จาก worker thread พร้อมกับ HTTP thread ที่อ่าน payload ได้ แต่ iterator
+        # ของ deque ไม่รับ mutation ระหว่าง join (RuntimeError: deque mutated during iteration)
+        with self._lines_lock:
+            output = "".join(self.lines)
         return {
             "id": self.id,
             "slug": self.slug,
@@ -70,8 +76,12 @@ class Job:
             "step": self.steps[self.step_index] if self.step_index < len(self.steps) else "",
             "running": self.running,
             "exit_code": self.exit_code,
-            "output": "".join(self.lines),
+            "output": output,
         }
+
+    def append(self, line: str) -> None:
+        with self._lines_lock:
+            self.lines.append(line)
 
 
 class JobError(Exception):
@@ -83,6 +93,16 @@ _ACTIVE: dict[str, str] = {}  # slug -> job id
 _LOCK = threading.Lock()
 
 
+def _prune_finished_locked() -> None:
+    """Keep recent results for the UI while bounding a long-lived daemon's memory."""
+    finished = [job_id for job_id, job in _JOBS.items() if not job.running]
+    for job_id in finished[:-_MAX_FINISHED_JOBS]:
+        _JOBS.pop(job_id, None)
+        for key, active_id in list(_ACTIVE.items()):
+            if active_id == job_id:
+                _ACTIVE.pop(key, None)
+
+
 def active_for(slug: str) -> Job | None:
     with _LOCK:
         job = _JOBS.get(_ACTIVE.get(slug, ""))
@@ -90,7 +110,8 @@ def active_for(slug: str) -> Job | None:
 
 
 def get(job_id: str) -> Job | None:
-    return _JOBS.get(job_id)
+    with _LOCK:
+        return _JOBS.get(job_id)
 
 
 def controller_env(options: dict | None) -> dict:
@@ -100,18 +121,49 @@ def controller_env(options: dict | None) -> dict:
     (แต่ละสคริปต์อ่านแค่ของตัวเอง ตัวที่เกินมาไม่มีผล)
     """
     options = options or {}
+    allowed = {"port", "bind", "context", "api_key", "slots"}
+    unknown = sorted(set(options) - allowed)
+    if unknown:
+        raise JobError(f"ตัวเลือกที่ไม่รู้จัก: {', '.join(unknown)}")
+
+    def positive_int(key: str, maximum: int | None = None) -> int | None:
+        raw = options.get(key)
+        if raw in (None, ""):
+            return None
+        if isinstance(raw, bool):
+            raise JobError(f"{key} ต้องเป็นจำนวนเต็มบวก")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise JobError(f"{key} ต้องเป็นจำนวนเต็มบวก") from None
+        if isinstance(raw, float) and not raw.is_integer():
+            raise JobError(f"{key} ต้องเป็นจำนวนเต็มบวก")
+        if value < 1 or (maximum is not None and value > maximum):
+            limit = f" 1–{maximum}" if maximum is not None else "บวก"
+            raise JobError(f"{key} ต้องเป็นจำนวนเต็ม{limit}")
+        return value
+
     env: dict[str, str] = {}
-    if options.get("port"):
-        env["API_PORT"] = str(int(options["port"]))
-    if options.get("bind"):
-        env["API_HOST"] = str(options["bind"])
-    if options.get("context"):
-        env["CTX_SIZE"] = env["MAX_MODEL_LEN"] = str(int(options["context"]))
-    if options.get("api_key"):
-        env["API_KEY"] = str(options["api_key"])
-    if options.get("slots"):
+    port = positive_int("port", 65535)
+    if port is not None:
+        env["API_PORT"] = str(port)
+    bind = options.get("bind")
+    if bind not in (None, ""):
+        if bind not in {"0.0.0.0", "127.0.0.1"}:
+            raise JobError("bind ต้องเป็น 0.0.0.0 หรือ 127.0.0.1")
+        env["API_HOST"] = bind
+    context = positive_int("context")
+    if context is not None:
+        env["CTX_SIZE"] = env["MAX_MODEL_LEN"] = str(context)
+    api_key = options.get("api_key")
+    if api_key not in (None, ""):
+        if not isinstance(api_key, str) or "\x00" in api_key:
+            raise JobError("api_key ต้องเป็นข้อความ")
+        env["API_KEY"] = api_key
+    slots = positive_int("slots")
+    if slots is not None:
         # llama.cpp แบ่ง context เท่า ๆ กันให้ทุก slot — ตัวนี้คือ knob ที่ client-config บ่นถึง
-        env["PARALLEL_SEQS"] = env["MAX_NUM_SEQS"] = str(int(options["slots"]))
+        env["PARALLEL_SEQS"] = env["MAX_NUM_SEQS"] = str(slots)
     return env
 
 
@@ -125,6 +177,7 @@ def start_task(key: str, command: str, work) -> Job:
     key ต้องไม่ชนกับ slug ของโมเดล — ผู้เรียกใส่ prefix เอง (เช่น "node:spark2")
     """
     with _LOCK:
+        _prune_finished_locked()
         current = _JOBS.get(_ACTIVE.get(key, ""))
         if current and current.running:
             raise JobError(f"{key} กำลังรัน '{current.command}' อยู่ — รอให้จบก่อน")
@@ -136,11 +189,11 @@ def start_task(key: str, command: str, work) -> Job:
         try:
             code, output = work()
         except Exception as exc:                     # noqa: BLE001 — งานเบื้องหลังต้องไม่ทำให้เว็บล้ม
-            job.lines.append(f"{type(exc).__name__}: {exc}\n")
+            job.append(f"{type(exc).__name__}: {exc}\n")
             job.exit_code = 1
             return
         for line in (output or "").splitlines(keepends=True):
-            job.lines.append(line)
+            job.append(line)
         job.exit_code = code
 
     threading.Thread(target=run, daemon=True).start()
@@ -158,6 +211,7 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
     extra_env = controller_env(options)
 
     with _LOCK:
+        _prune_finished_locked()
         current = _JOBS.get(_ACTIVE.get(slug, ""))
         if current and current.running:
             raise JobError(f"{slug} กำลังรัน '{current.command}' อยู่ — รอให้จบก่อน")
@@ -172,20 +226,20 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
         for index, step in enumerate(steps):
             job.step_index = index
             if len(steps) > 1:
-                job.lines.append(f"\n── {step} ({index + 1}/{len(steps)}) ──\n")
+                job.append(f"\n── {step} ({index + 1}/{len(steps)}) ──\n")
             try:
                 proc = subprocess.Popen(
                     [str(path), step], cwd=str(path.parent), env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                 )
             except OSError as exc:
-                job.lines.append(f"เรียก controller ไม่ได้: {exc}\n")
+                job.append(f"เรียก controller ไม่ได้: {exc}\n")
                 job.exit_code = 127
                 return
             job.process = proc
             assert proc.stdout is not None
             for line in proc.stdout:
-                job.lines.append(line)
+                job.append(line)
             code = proc.wait()
             if code != 0:
                 # ขั้นแรกล้ม = ไม่ต้องทำขั้นถัดไป (verify ไฟล์ที่โหลดไม่จบไม่มีประโยชน์)
