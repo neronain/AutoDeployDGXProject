@@ -139,6 +139,7 @@ lmds logs <slug> [-n N] [-f]  # ดู log · -f = ตาม realtime (docker lo
 lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
 lmds disable <slug>           # ยกเลิก autostart
 lmds repair <slug>            # download (resume) → verify-files
+lmds connect <slug> [--write] [--stdin] [-y]   # ตรวจผิว Anthropic แล้วให้ค่าตั้ง Claude Code
 lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างที่เกี่ยวข้อง (แสดงรายการ+ขนาดก่อนถามยืนยัน)
 ```
 
@@ -336,10 +337,11 @@ src/lmds/
 ├── validator/           # gates.py — quality gates ทั้ง 10 ด่านรวมอยู่ไฟล์เดียว
 ├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit
 ├── nodes/               # registry.py (nodes.yaml), ssh.py (key/probe/run), cluster.py (จับคู่ stacked)
+├── connect/             # claude_code.py — ค่าตั้ง Claude Code + ตรวจผิว Anthropic ของ endpoint
 ├── inventory.py         # payload ชุดเดียวที่หน้าเว็บและ `lmds agent info` ใช้ร่วมกัน
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 └── secrets/             # store.py (env/keyring/file), redact.py
-tests/                   # ~22 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/
+tests/                   # 29 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/
 ```
 
 > ยังไม่มี: `.github/workflows` (CI), `tests/fixtures/` สำหรับ regression เทียบ controllers v3.0.0,

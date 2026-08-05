@@ -141,6 +141,32 @@ cd bundles/qwen3-0-6b-gguf
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 
+### ต่อ Claude Code เข้ากับโมเดลที่รันอยู่
+
+endpoint เดียวเสิร์ฟสองผิว: `/v1/chat/completions` (OpenAI SDK, LangChain, Open WebUI) และ
+`/v1/messages` (Anthropic SDK, **Claude Code**) — ใช้พอร์ตเดียวกันและ `API_KEY` ตัวเดียวกัน
+**ไม่ต้องมี proxy** เพราะ engine พูด Messages API ได้เอง
+
+```bash
+lmds connect <ชื่อ>            # ตรวจแล้วพิมพ์บล็อก export ให้ copy
+lmds connect <ชื่อ> --write    # เขียนลง ~/.claude/settings.json ให้เลย (ถามยืนยันก่อน)
+```
+
+ตรวจให้จริงสองอย่างก่อนบอกค่า — ยิง `/v1/messages` ว่าตอบข้อความได้ไหม และส่ง tool ไปว่า
+ออก `tool_use` block ไหม (Claude Code ใช้ tool แทบทุกเทิร์น endpoint ที่ตอบข้อความได้แต่
+เรียก tool ไม่เป็นจะ "ต่อติดแต่ทำงานไม่ได้" ซึ่งหาสาเหตุยากกว่าต่อไม่ติด)
+
+ค่าที่ได้จะครบทุกจุดที่พลาดกันบ่อย: base URL **ไม่มี** `/v1` ต่อท้าย (client เติม
+`/v1/messages` เอง), ชื่อโมเดลครบสี่ช่อง (opus/sonnet/haiku/subagent — ตั้งช่องเดียวแล้ว
+งานเบื้องหลังจะยิงชื่อโมเดลของ Anthropic มาที่เครื่องเรา) และเพดาน output ตาม bundle
+
+> token: อ่านจาก env `API_KEY` ตัวเดียวกับที่ใช้ตอน start (หรือ `--stdin` สำหรับ script) —
+> ไม่รับเป็น flag เพราะค่าใน argv โผล่ใน `ps` ของทั้งเครื่อง · บล็อกที่พิมพ์ออกมาอ้าง
+> `$API_KEY` ไม่ใช่ค่าจริง จะได้ไม่มี token ค้างในประวัติเชลล์
+>
+> `--write` ใส่ค่าจริงลง `settings.json` (Claude Code อ่านโดยไม่ผ่านเชลล์) — สำรองของเดิม
+> ไว้ก่อนเสมอ ตั้งสิทธิ์ไฟล์เป็น 0600 และ**ห้ามเอาไฟล์นั้นไป commit**
+
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
 > `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด
 

@@ -1726,6 +1726,145 @@ def start(
 
 
 @app.command()
+def connect(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps", autocompletion=_complete_slug),
+    write: bool = typer.Option(False, "--write", help="เขียนลง ~/.claude/settings.json ให้เลย (สำรองของเดิมก่อน)"),
+    stdin_key: bool = typer.Option(False, "--stdin", help="อ่าน API key จาก stdin (สำหรับ scripting)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ต้องถามยืนยันตอน --write"),
+) -> None:
+    """ต่อ Claude Code เข้ากับโมเดลที่รันอยู่ — ตรวจให้ก่อน แล้วให้ค่าที่ copy ไปวางได้เลย
+
+    endpoint เดียวเสิร์ฟทั้งผิว OpenAI (/v1/chat/completions) และผิว Anthropic
+    (/v1/messages) — คำสั่งนี้ยิงผิว Anthropic จริงสองครั้ง (ตอบข้อความ + เรียก tool)
+    แล้วค่อยบอกค่าตั้ง จะได้ไม่ต้องไปเดาว่าพังตรงไหนทีหลัง
+
+    token: อ่านจาก env API_KEY ตัวเดียวกับที่ใช้ตอน start (หรือ --stdin)
+    · ไม่รับเป็น flag เพราะค่าใน argv โผล่ใน ps ของทั้งเครื่อง
+
+    exit 0 ต่อได้, 1 หาไม่เจอ/ยังไม่ได้ start, 2 ตรวจไม่ผ่าน
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from lmds.connect import (
+        KEY_ENV_VAR,
+        ConnectError,
+        build_config,
+        env_lines,
+        probe_endpoint,
+        write_settings,
+    )
+    from lmds.fleet import find
+    from lmds.secrets.redact import mask_preview
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list")
+        raise typer.Exit(code=1)
+    if not server.running:
+        err_console.print(f"[red]{slug} ยังไม่ได้รัน[/red] — สั่ง: lmds start {slug}")
+        raise typer.Exit(code=1)
+    if not server.controller_exists:
+        err_console.print(f"[red]ไม่พบ controller ของ {slug}[/red] — bundle ถูกย้าย/ลบไปแล้ว?")
+        raise typer.Exit(code=1)
+
+    api_key = sys.stdin.readline().strip() if stdin_key else os.environ.get(KEY_ENV_VAR, "")
+
+    proc = subprocess.run(
+        [server.controller, "client-config"], capture_output=True, text=True, timeout=60
+    )
+    if proc.returncode != 0:
+        err_console.print(f"[red]client-config ของ {slug} ไม่ผ่าน[/red] — {proc.stderr.strip()[:300]}")
+        raise typer.Exit(code=2)
+    try:
+        client_config = json.loads(proc.stdout)
+    except ValueError as exc:
+        err_console.print(f"[red]client-config ตอบไม่ใช่ JSON:[/red] {exc}")
+        raise typer.Exit(code=2)
+
+    try:
+        config = build_config(client_config, port=server.port, api_key=api_key)
+    except ConnectError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+
+    console.print(f"ตรวจผิว Anthropic ของ {slug} …")
+    probe = probe_endpoint(config)
+
+    table = Table(show_header=True)
+    table.add_column("")
+    table.add_column("ตรวจ")
+    table.add_column("ผล")
+    table.add_row(
+        "[green]✅[/green]" if probe.messages_ok else "[red]❌[/red]",
+        "/v1/messages ตอบข้อความ",
+        probe.sample or probe.detail or "-",
+    )
+    if probe.messages_ok:
+        table.add_row(
+            "[green]✅[/green]" if probe.tools_ok else "[yellow]⚠️ [/yellow]",
+            "เรียก tool ได้",
+            "ได้ tool_use block" if probe.tools_ok
+            else "ไม่ออก tool_use — Claude Code ใช้ tool แทบทุกเทิร์น จะใช้งานได้ไม่เต็มที่",
+        )
+    console.print(table)
+
+    if not probe.messages_ok:
+        err_console.print(f"[red]ยังต่อไม่ได้[/red] — {probe.detail}")
+        raise typer.Exit(code=2)
+
+    if write:
+        target = _connect_write(config, yes)
+        console.print(f"\n[green]เขียนแล้ว[/green] — เปิด claude ที่ไหนก็ได้ ไม่ต้อง export อะไรเพิ่ม")
+        console.print(f"  ไฟล์: {target}")
+        if config.needs_token:
+            console.print(f"  token ในไฟล์: {mask_preview(config.api_key)} — [yellow]อย่าเอาไฟล์นี้ไป commit[/yellow]")
+        return
+
+    console.print("\n[bold]copy ไปวางในเชลล์ที่จะเปิด claude[/bold]")
+    for line in env_lines(config):
+        console.print(f"  [cyan]{line}[/cyan]")
+    console.print("  [cyan]claude[/cyan]")
+    if config.compact_hint:
+        console.print(f"\n{config.compact_hint}")
+    if config.needs_token:
+        console.print(
+            f"\nบล็อกนี้อ้าง [cyan]${KEY_ENV_VAR}[/cyan] ไม่ใช่ค่าจริง — เปิดในเชลล์เดียวกับที่ตั้ง "
+            f"{KEY_ENV_VAR} ไว้ตอน start (ตอนนี้: {mask_preview(config.api_key)})"
+        )
+    console.print(f"หรือให้เขียนลง settings.json ให้เลย: [cyan]lmds connect {slug} --write[/cyan]")
+
+
+def _connect_write(config, yes: bool):
+    """เขียน settings.json ของผู้ใช้ — ต้องยืนยันก่อนเสมอถ้าไม่ได้สั่ง --yes
+
+    ไฟล์นี้เป็นของผู้ใช้และมี token อยู่ข้างใน · กฎของโปรเจกต์คือของที่เสี่ยงต้องให้
+    ผู้ใช้อนุมัติเอง ห้าม default เป็นอนุมัติ
+    """
+    from lmds.connect import ConnectError, settings_path, write_settings
+
+    target = settings_path()
+    if not yes:
+        action = "แก้" if target.exists() else "สร้าง"
+        console.print(f"\nจะ{action} {target} (เพิ่มเฉพาะคีย์ env — คีย์อื่นไม่แตะ)")
+        if target.exists():
+            console.print(f"สำรองของเดิมไว้ที่ {target.name}.lmds-bak ก่อน")
+        if not typer.confirm("ดำเนินการต่อ?", default=False):
+            err_console.print("ยกเลิก")
+            raise typer.Exit(code=1)
+    try:
+        written, backup = write_settings(config)
+    except (ConnectError, OSError) as exc:
+        err_console.print(f"[red]เขียนไม่สำเร็จ: {exc}[/red]")
+        raise typer.Exit(code=2)
+    if backup is not None:
+        console.print(f"สำรองของเดิมไว้ที่ {backup}")
+    return written
+
+
+@app.command()
 def enable(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
     now: bool = typer.Option(False, "--now", help="สั่ง start ทันทีด้วย (ไม่รอ reboot)"),
