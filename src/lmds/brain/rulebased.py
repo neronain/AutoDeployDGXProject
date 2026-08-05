@@ -110,6 +110,15 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
     context/max_output ไม่แตะ เพราะต้องมาจากการวิเคราะห์หน่วยความจำของ *เครื่องเป้าหมาย*
     ไม่ใช่ค่าคงที่จากเครื่องที่เคยรัน
     """
+    # สูตรของ engine อื่นใช้ไม่ได้กับ controller ที่เรากำลังสร้าง — ใส่ image ของ SGLang
+    # ลง controller ของ vLLM แล้ว bundle จะผ่าน gate ทุกด่านแต่ start ไม่ขึ้นเลย
+    if recipe.engine and recipe.engine != plan.runtime.engine.value:
+        plan.warnings.append(
+            f"โมเดลนี้ทดสอบมาด้วย {recipe.engine} ซึ่ง LMDS ยังไม่ได้ generate — "
+            f"bundle นี้เป็น {plan.runtime.engine.value} · ดูสูตรเต็ม: {recipe.source}"
+        )
+        return plan
+
     if recipe.image and recipe.image_applies_to(memory_model):
         plan.runtime.image_ref = recipe.image
     elif recipe.image:

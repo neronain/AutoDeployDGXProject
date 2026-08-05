@@ -113,3 +113,11 @@ def test_recipe_image_survives_hardening():
     fit = analyze(report, PRESETS["dgx-spark-stacked"])
     plan = harden_plan(rule_based_plan(report, fit), report, fit)
     assert plan.runtime.image_ref == "ghcr.io/anemll/dspark-vllm-gx10:0.1.1"
+
+
+def test_recipe_for_another_engine_is_not_applied():
+    """สูตร SGLang ต้องไม่ถูกยัดลง controller ของ vLLM — bundle จะผ่าน gate ทุกด่าน
+    แต่ start ไม่ขึ้นเลยเพราะ image คนละ engine"""
+    plan = plan_for("zai-org/GLM-4.7-Flash", target="dgx-spark-single")
+    assert "sglang" not in plan.runtime.image_ref
+    assert any("ยังไม่ได้ generate" in w for w in plan.warnings)
