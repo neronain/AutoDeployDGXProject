@@ -276,6 +276,75 @@ def node_remove(
 
 
 
+
+@app.command("scan")
+def scan_models(
+    root: list[str] = typer.Option([], "--root", help="ที่ค้นเพิ่มเติม (ระบุซ้ำได้)"),
+    all_nodes: bool = typer.Option(False, "--all", "-a", help="ค้นทุกเครื่องในทะเบียนด้วย"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """หา weight ที่มีอยู่แล้วบนเครื่อง ไม่ว่าจะถูกเก็บไว้แบบไหน
+
+    เครื่องลูกค้ามักมีโมเดลอยู่ก่อนติดตั้ง LMDS และไม่ได้จัดระเบียบแบบเดียวกับเรา —
+    คำสั่งนี้บอกว่ามีอะไรอยู่ตรงไหนแล้ว จะได้ไม่โหลดซ้ำหลายสิบ GB · **อ่านอย่างเดียว ไม่ย้ายไม่ลบ**
+    """
+    import json as json_module
+
+    from lmds.scanner import scan
+
+    def rows_for(models) -> list[dict]:
+        return [
+            {"kind": m.kind, "name": m.name, "path": m.path, "size_gb": m.size_gb,
+             "shards": m.shard_count, "layout": m.layout, "revisions": m.revisions,
+             "hub_cache_root": m.hub_cache_root}
+            for m in models
+        ]
+
+    local = rows_for(scan(list(root)))
+    payload = {"host": local}
+
+    if all_nodes:
+        from lmds.nodes import NodeError, load, run as run_remote
+
+        for node in load():
+            try:
+                result = run_remote(node, "lmds scan --json", timeout=300)
+                payload[node.name] = json_module.loads(result.stdout).get("host", []) \
+                    if result.ok else []
+            except (NodeError, json_module.JSONDecodeError):
+                payload[node.name] = []
+
+    if json_out:
+        print(json_module.dumps(payload, ensure_ascii=False))
+        return
+
+    for where, models in payload.items():
+        table = Table(title=f"weight ที่เจอบน {where}")
+        table.add_column("ชนิด")
+        table.add_column("โมเดล")
+        table.add_column("ขนาด", justify="right")
+        table.add_column("shard", justify="right")
+        table.add_column("ที่เก็บ")
+        if not models:
+            console.print(f"[dim]{where}: ไม่พบ weight (หรือติดต่อไม่ได้)[/dim]")
+            continue
+        for m in models:
+            note = ""
+            if m["kind"] == "hf" and m["layout"] == "root":
+                # เลย์เอาต์เก่า: ไลบรารีของ HF จะมองไม่เห็นถ้าไม่ตั้ง HF_HUB_CACHE ให้ตรง
+                note = "  [yellow](เลย์เอาต์เก่า — ต้องตั้ง HF_HUB_CACHE)[/yellow]"
+            table.add_row(m["kind"], m["name"], f"{m['size_gb']} GB",
+                          str(m["shards"] or "—"), m["path"] + note)
+        console.print(table)
+
+    legacy = [m for rows in payload.values() for m in rows
+              if m["kind"] == "hf" and m["layout"] == "root"]
+    if legacy:
+        console.print(
+            "\n[dim]โมเดลที่อยู่เลย์เอาต์เก่า controller จะตั้ง HF_HUB_CACHE ให้เองตอน start "
+            "— ไม่ต้องย้ายไฟล์[/dim]"
+        )
+
 @node_app.command("install")
 def node_install(
     name: str = typer.Argument(..., autocompletion=_complete_node),

@@ -614,3 +614,24 @@ def test_spark_targets_default_to_the_ngc_vllm_image():
 
     assert spark.runtime.image_ref.startswith("nvcr.io/nvidia/vllm")
     assert rtx.runtime.image_ref.startswith("vllm/vllm-openai")
+
+
+def test_deepseek_v4_forces_fp8_kv_cache():
+    """DeepSeek V4 ใช้ attention layout ที่บังคับ kv-cache fp8 — ปล่อย auto แล้ว vLLM
+    ตายตอน load_model ด้วย 'fp8_ds_mla layout only supports fp8 kv-cache, got auto'
+    (เจอจากการรันจริงบน DGX Spark)"""
+    from lmds.brain.rulebased import rule_based_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.inspector.report import ArtifactType, ModelReport
+
+    def report_for(repo):
+        return ModelReport(repo_id=repo, revision_sha="sha", artifact_type=ArtifactType.SAFETENSORS,
+                           weight_bytes=150 * 1024**3, shard_count=46, has_chat_template=True)
+
+    ds = report_for("nvidia/DeepSeek-V4-Flash-NVFP4")
+    plan = rule_based_plan(ds, analyze(ds, PRESETS["dgx-spark-stacked"]))
+    assert plan.serving.kv_cache_dtype == "fp8"
+
+    other = report_for("meta-llama/Llama-3.3-70B-Instruct")
+    plan2 = rule_based_plan(other, analyze(other, PRESETS["dgx-spark-stacked"]))
+    assert plan2.serving.kv_cache_dtype == "auto"

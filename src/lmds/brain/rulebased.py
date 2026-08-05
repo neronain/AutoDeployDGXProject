@@ -40,6 +40,23 @@ def default_image(engine: Engine, memory_model) -> str:
     return DEFAULT_IMAGES[engine]
 
 
+
+# ข้อบังคับของสถาปัตยกรรมโมเดล ไม่ใช่การปรับจูน — ไม่ตั้งแล้ว vLLM ตายตอน load_model
+# เช่น DeepSeek V4 ใช้ attention layout `fp8_ds_mla`/`nvfp4_ds_mla` ซึ่งบังคับ kv-cache เป็น fp8:
+#   AssertionError: DeepseekV4 fp8_ds_mla layout only supports fp8 kv-cache, got auto
+# rule-based ไม่มี LLM ไปค้นให้ ความรู้แบบนี้จึงต้องเขียนไว้ตรง ๆ
+ARCH_REQUIREMENTS: dict[str, dict] = {
+    "deepseek-v4": {"kv_cache_dtype": "fp8"},
+}
+
+
+def arch_requirements(repo_id: str) -> dict:
+    key = repo_id.lower().replace("_", "-")
+    for marker, requirements in ARCH_REQUIREMENTS.items():
+        if marker in key:
+            return requirements
+    return {}
+
 def slugify(repo_id: str) -> str:
     name = repo_id.split("/")[-1].lower()
     return re.sub(r"[^a-z0-9]+", "-", name).strip("-") or "model"
@@ -107,6 +124,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
         serving=Serving(
             context=context,
             max_output_tokens=fit.client_output_default,
+            **arch_requirements(report.repo_id),
         ),
         special_files=list(report.trust_remote_code_files),
         warnings=[
