@@ -27,6 +27,18 @@ DEFAULT_IMAGES = {
     Engine.LLAMACPP: "ghcr.io/ggml-org/llama.cpp:server-cuda",
 }
 
+# DGX Spark (GB10 / SM121 / ARM64) ใช้ image ของ NGC ที่ NVIDIA build มาให้เครื่องนี้โดยเฉพาะ
+# image upstream มี manifest arm64 ก็จริง แต่ไม่ได้ build kernel สำหรับ SM121 —
+# controller ที่ทีมรันจริงบน Spark ทุกตัวใช้ NGC ทั้งหมด (26.05-py3 / 26.06-py3)
+SPARK_VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.05-py3"
+
+
+def default_image(engine: Engine, memory_model) -> str:
+    """image ตั้งต้นตามเครื่องเป้าหมาย — unified memory = DGX Spark"""
+    if engine is Engine.VLLM and getattr(memory_model, "value", memory_model) == "unified":
+        return SPARK_VLLM_IMAGE
+    return DEFAULT_IMAGES[engine]
+
 
 def slugify(repo_id: str) -> str:
     name = repo_id.split("/")[-1].lower()
@@ -87,8 +99,9 @@ def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
         facts=build_facts(report),
         runtime=RuntimeChoice(
             engine=engine,
-            image_ref=DEFAULT_IMAGES[engine],
-            rationale="rule-based: เลือกตาม decision matrix (GGUF→llama.cpp, safetensors→vLLM)",
+            image_ref=default_image(engine, fit.memory_model),
+            rationale="rule-based: เลือกตาม decision matrix (GGUF→llama.cpp, safetensors→vLLM)"
+            " + image ตามเครื่องเป้าหมาย (unified memory → NGC build ของ DGX Spark)",
         ),
         topology=topology,
         serving=Serving(

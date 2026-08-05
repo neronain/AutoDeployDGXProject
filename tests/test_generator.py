@@ -597,3 +597,20 @@ def test_multimodal_bundle_can_prove_vision_works(tmp_path):
 def test_text_only_bundle_has_no_vision_test(tmp_path):
     bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
     assert "test_vision" not in bundle.controller.read_text(encoding="utf-8")
+
+
+def test_spark_targets_default_to_the_ngc_vllm_image():
+    """image upstream มี manifest arm64 แต่ไม่ได้ build kernel ให้ SM121 (GB10)
+    — controller ที่รันจริงบน Spark ทุกตัวใช้ NGC"""
+    from lmds.brain.rulebased import rule_based_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.inspector.report import ArtifactType, ModelReport
+
+    report = ModelReport(repo_id="meta-llama/Llama-3.3-70B-Instruct", revision_sha="sha",
+                         artifact_type=ArtifactType.SAFETENSORS, weight_bytes=140 * 1024**3,
+                         shard_count=30, has_chat_template=True)
+    spark = rule_based_plan(report, analyze(report, PRESETS["dgx-spark-stacked"]))
+    rtx = rule_based_plan(report, analyze(report, PRESETS["rtx-5090"]))
+
+    assert spark.runtime.image_ref.startswith("nvcr.io/nvidia/vllm")
+    assert rtx.runtime.image_ref.startswith("vllm/vllm-openai")
