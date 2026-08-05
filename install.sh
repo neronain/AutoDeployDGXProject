@@ -67,7 +67,11 @@ fi
 # ── ส่วนที่ 2: ติดตั้งตัว LMDS ────────────────────────────────────────────────
 echo "ติดตั้ง LMDS ลง ${INSTALL_DIR} ..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
-python3 -m venv "${INSTALL_DIR}/venv"
+# --clear เสมอ: ทางอัปเดตที่เอกสารบอกไว้คือรัน install.sh ซ้ำ ซึ่งเจอ venv เดิมอยู่แล้ว
+# venv เดิมอาจถูกสร้างด้วย python คนละตัว (เช่นเปลี่ยนไปใช้ conda ทีหลัง) แล้ว ensurepip จะล้ม
+# แบบอ่านไม่รู้เรื่อง — สร้างทับให้จบ ปลอดภัยเพราะโฟลเดอร์นี้เป็นของ LMDS ตัวเดียว
+python3 -m venv --clear "${INSTALL_DIR}/venv" ||
+  die "สร้าง venv ที่ ${INSTALL_DIR}/venv ไม่ได้ — ลบทิ้งแล้วลองใหม่: rm -rf '${INSTALL_DIR}/venv'"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install --quiet "$REPO_DIR"
 

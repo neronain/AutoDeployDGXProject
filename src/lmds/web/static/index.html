@@ -925,10 +925,12 @@ function clusterGroupRow(g) {
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "ready to stack" : "not ready"}</span>
     </div>
     <div class="dim">${esc(g.gpu)} ×${g.gpus_per_node} per node · world size ${g.world_size} ·
-      ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}</div>
-    ${g.blockers.map(b => `<div class="warn-line">${b.kind === "missing-ip"
-      ? "Cluster IP still missing on: " + esc(b.names.join(", "))
-      : "The same cluster IP is set on more than one machine: " + esc(b.names.join(", "))}</div>`).join("")}
+      ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
+    ${g.blockers.map(b => `<div class="warn-line">${esc({
+      "missing-ip": "Cluster IP still missing on: ",
+      "duplicate-ip": "The same cluster IP is set on more than one machine: ",
+      "split-fabric": "These cluster IPs are on different subnets and cannot reach each other: ",
+    }[b.kind] + b.names.join(", "))}</div>`).join("")}
     ${g.ready ? `<div class="dim" style="margin-top:6px">Deploy across these with a stacked bundle:
       <code>lmds deploy --topology stacked</code></div>` : ""}
   </div>`;

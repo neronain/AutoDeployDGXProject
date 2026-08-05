@@ -177,3 +177,52 @@ def test_link_local_filtering_does_not_need_the_node_flag():
     for link in host["fabric"]["links"]:
         link.pop("link_local", None)
     assert not cl.suggest_cluster_ip(host).startswith("169.254.")
+
+
+def two_fabric_host(a, b):
+    """DGX Spark จริงมี fabric สองวง — ปล่อยให้แต่ละเครื่องเลือกเองอาจได้คนละวง"""
+    links = [
+        {"iface": "enp1s0f1np1", "ip": a, "prefix": 24, "speed_gbps": 200,
+         "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": True},
+        {"iface": "enP2p1s0f1np1", "ip": b, "prefix": 24, "speed_gbps": 200,
+         "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": True},
+    ]
+    return {"arch": "aarch64", "profile": "dgx_spark", "gpus": [{"name": "NVIDIA GB10"}],
+            "fabric": {"links": links, "rdma_devices": ["r"], "best_gbps": 200,
+                       "tier": "rdma", "cluster_capable": True}}
+
+
+def test_suggestion_uses_a_fabric_both_machines_share():
+    machines = [
+        {"name": "head", "host": two_fabric_host("10.100.152.1", "10.100.153.1"), "cluster_ip": ""},
+        {"name": "worker", "host": two_fabric_host("10.100.152.2", "10.100.153.2"), "cluster_ip": ""},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    suggested = {m["name"]: m["suggested_ip"] for m in group["members"]}
+    # ต้องอยู่วงเดียวกันทั้งคู่ ไม่ใช่ต่างคนต่างเลือก
+    assert {ip.rsplit(".", 1)[0] for ip in suggested.values()} == {"10.100.152"}
+    assert group["fabric_network"] == "10.100.152.0/24"
+
+
+def test_cluster_ips_on_different_subnets_are_blocked():
+    """ตั้งครบทั้งคู่แต่คนละวง = ต่อกันไม่ติด ทั้งที่แต่ละเครื่องดูถูกหมด"""
+    machines = [
+        {"name": "head", "host": two_fabric_host("10.100.152.1", "10.100.153.1"),
+         "cluster_ip": "10.100.152.1"},
+        {"name": "worker", "host": two_fabric_host("10.100.152.2", "10.100.153.2"),
+         "cluster_ip": "10.100.153.2"},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert not group["ready"]
+    assert [b["kind"] for b in group["blockers"]] == ["split-fabric"]
+
+
+def test_shared_fabric_is_stable_across_calls():
+    """สองวงเร็วเท่ากัน — ต้องเลือกเหมือนเดิมทุกครั้ง ไม่งั้นค่าที่เสนอเปลี่ยนไปมา"""
+    machines = [
+        {"name": "head", "host": two_fabric_host("10.100.153.1", "10.100.152.1"), "cluster_ip": ""},
+        {"name": "worker", "host": two_fabric_host("10.100.152.2", "10.100.153.2"), "cluster_ip": ""},
+    ]
+    picks = {cl.shared_fabric([{"name": m["name"], "host": m["host"]} for m in machines])[0]
+             for _ in range(3)}
+    assert picks == {"10.100.152.0/24"}

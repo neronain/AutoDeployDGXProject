@@ -225,7 +225,7 @@ def _iface_addresses() -> dict[str, str]:
         parts = line.split()
         if len(parts) < 4 or parts[2] != "inet":
             continue
-        addresses.setdefault(parts[1], parts[3].split("/")[0])
+        addresses.setdefault(parts[1], parts[3])  # เก็บ CIDR ไว้ทั้งก้อน เช่น 10.100.152.1/24
     return addresses
 
 
@@ -261,10 +261,13 @@ def detect_fabric() -> dict:
         gbps = None
         if raw_speed.lstrip("-").isdigit() and int(raw_speed) > 0:
             gbps = int(raw_speed) // 1000 or None
-        address = addresses.get(name, "")
+        cidr = addresses.get(name, "")
+        address, _, prefix = cidr.partition("/")
         links.append({
             "iface": name,
             "ip": address,
+            # ต้องรู้ prefix ถึงจะบอกได้ว่าสองเครื่องอยู่วงเดียวกันไหม (Spark มี fabric หลายวง)
+            "prefix": int(prefix) if prefix.isdigit() else None,
             # 169.254.x.x = ที่อยู่ที่เครื่องตั้งเองเพราะไม่มี DHCP/config — ลิงก์ขึ้นแต่ยังไม่ได้ตั้งค่า
             "link_local": address.startswith("169.254."),
             "speed_gbps": gbps,

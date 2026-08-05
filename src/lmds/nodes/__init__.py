@@ -10,6 +10,8 @@ from .cluster import (
     cluster_groups,
     cluster_note,
     fabric_links,
+    link_network,
+    shared_fabric,
     stack_ready,
     suggest_cluster_ip,
 )
@@ -26,7 +28,16 @@ from .registry import (
     update,
     validate_cluster_ip,
 )
-from .ssh import check_login, ensure_key, install_key, key_path, probe, public_key_path, run
+from .ssh import (
+    check_login,
+    ensure_key,
+    install_key,
+    install_lmds,
+    key_path,
+    probe,
+    public_key_path,
+    run,
+)
 
 __all__ = [
     "add",
@@ -36,8 +47,11 @@ __all__ = [
     "cluster_note",
     "ensure_key",
     "fabric_links",
+    "link_network",
+    "shared_fabric",
     "find",
     "install_key",
+    "install_lmds",
     "key_path",
     "load",
     "MIN_STACK_GBPS",

@@ -119,6 +119,9 @@ def node_add(
         help="IP บนสายเร็ว (ConnectX/200G) ที่ใช้คุยกันตอน stacked — ว่าง = เสนอให้จากที่ตรวจพบ",
     ),
     cluster_iface: str = typer.Option("", "--cluster-iface", help="ชื่อ interface ของสายเร็ว"),
+    install: bool = typer.Option(
+        False, "--install", help="ติดตั้ง LMDS บนเครื่องนั้นให้เลยถ้ายังไม่มี (ต้องมี Docker อยู่แล้ว)",
+    ),
 ) -> None:
     """เพิ่มเครื่องเข้าทะเบียน — ถามรหัสผ่านครั้งเดียวเพื่อติดตั้ง SSH key แล้วทิ้งทันที
 
@@ -133,6 +136,7 @@ def node_add(
         install_key,
         load,
         probe,
+        install_lmds,
         public_key_path,
         suggest_cluster_ip,
         suggest_name,
@@ -166,6 +170,15 @@ def node_add(
         except NodeError as exc:
             info, reachable = {}, False
             node.last_error = str(exc)[:200]
+            if install:
+                console.print(f"ติดตั้ง LMDS บน {node.target} (ใช้เวลาสักพัก) …")
+                result = install_lmds(node)
+                if not result.ok:
+                    err_console.print((result.stderr or result.stdout)[-800:])
+                    err_console.print("[red]ติดตั้ง LMDS บนเครื่องนั้นไม่สำเร็จ[/red]")
+                else:
+                    info, reachable = probe(node), True
+                    node.last_error = ""
         host_info = info.get("host") or {}
         node.lmds_version = host_info.get("lmds_version", "")
         node.last_seen = _now() if reachable else ""
@@ -184,10 +197,10 @@ def node_add(
         console.print(f"\n[bold]เพิ่ม '{node.name}' แล้ว[/bold] — [yellow]แต่ยังอ่านสถานะไม่ได้[/yellow]")
         err_console.print(node.last_error)
         console.print(
-            f"\n[dim]SSH key ใช้ได้แล้ว — ติดตั้ง LMDS บนเครื่องนั้นได้เลย:[/dim]\n"
-            f"  ssh {node.target} 'git clone https://github.com/neronain/AutoDeployDGXProject "
-            f"&& cd AutoDeployDGXProject && ./install.sh'\n"
-            f"[dim]เสร็จแล้วเช็กด้วย: lmds node list --check[/dim]"
+            f"\n[dim]SSH key ใช้ได้แล้ว — ให้ระบบติดตั้ง LMDS ให้เลย:[/dim]\n"
+            f"  lmds node install {node.name}\n"
+            f"[dim](เครื่องนั้นต้องมี Docker + git อยู่แล้ว · ถ้ายังไม่มีต้องรัน ./install.sh "
+            f"บนเครื่องนั้นเองเพราะขั้น sudo ต้องมีคนกรอกรหัสผ่าน)[/dim]"
         )
         return
 
@@ -261,6 +274,50 @@ def node_remove(
     )
 
 
+
+
+@node_app.command("install")
+def node_install(
+    name: str = typer.Argument(..., autocompletion=_complete_node),
+    with_prereq: bool = typer.Option(
+        False, "--with-prereq",
+        help="ให้ติดตั้ง Docker/NVIDIA toolkit ด้วย (ต้องรัน sudo ได้โดยไม่ถามรหัสผ่าน)",
+    ),
+) -> None:
+    """ติดตั้งหรืออัปเดต LMDS บนเครื่องนั้นผ่าน SSH
+
+    ทุกเครื่องที่ hub คุมต้องมี `lmds` อยู่บนเครื่อง — hub ไม่ได้ส่ง agent ไปรันเอง แต่เรียก
+    `lmds agent info` ผ่าน SSH คำสั่งนี้จึงเป็นวิธีทำให้เครื่องปลายทางพร้อมโดยไม่ต้อง ssh เข้าไปเอง
+    """
+    from lmds.nodes import NodeError, find, install_lmds, probe, update
+
+    node = find(name)
+    if node is None:
+        err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
+        raise typer.Exit(code=1)
+
+    console.print(f"ติดตั้ง/อัปเดต LMDS บน {node.target} — ดึงจาก GitHub แล้วรัน install.sh บนเครื่องนั้น")
+    if not with_prereq:
+        console.print("[dim]ข้ามขั้น Docker/NVIDIA toolkit (ต้องใช้ sudo ซึ่งไม่มีคนกรอกรหัสผ่าน) "
+                      "— ใส่ --with-prereq ถ้า sudo ผ่านโดยไม่ถาม[/dim]")
+
+    result = install_lmds(node, with_prereq=with_prereq)
+    tail = (result.stdout or "").strip().splitlines()[-6:]
+    for line in tail:
+        console.print(f"[dim]{line}[/dim]")
+    if not result.ok:
+        err_console.print((result.stderr or "").strip()[-600:])
+        err_console.print(f"[red]ติดตั้งไม่สำเร็จบน {node.target}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        info = probe(node)
+    except NodeError as exc:
+        err_console.print(f"[red]ติดตั้งแล้วแต่ยังอ่านสถานะไม่ได้: {exc}[/red]")
+        raise typer.Exit(code=1)
+    version = (info.get("host") or {}).get("lmds_version", "")
+    update(name, lmds_version=version, last_seen=_now(), last_error="")
+    console.print(f"[green]พร้อมแล้ว[/green] — {node.name} รัน lmds {version}")
 
 @node_app.command("set")
 def node_set(
@@ -375,8 +432,11 @@ def node_cluster(
         )
         for blocker in group["blockers"]:
             names = ", ".join(blocker["names"])
-            text = ("ยังไม่ได้ตั้ง cluster IP: " + names) if blocker["kind"] == "missing-ip" \
-                else ("cluster IP ซ้ำกันระหว่างเครื่อง: " + names)
+            text = {
+                "missing-ip": "ยังไม่ได้ตั้ง cluster IP: ",
+                "duplicate-ip": "cluster IP ซ้ำกันระหว่างเครื่อง: ",
+                "split-fabric": "cluster IP อยู่คนละวง ต่อกันไม่ติด: ",
+            }[blocker["kind"]] + names
             console.print(f"    [yellow]· {text}[/yellow]")
         for member in group["members"]:
             if member["state"] == "unset" and member["suggested_ip"]:

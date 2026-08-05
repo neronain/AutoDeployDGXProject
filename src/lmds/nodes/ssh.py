@@ -158,6 +158,34 @@ def probe(node: Node, timeout: int = 30) -> dict:
         raise NodeError(f"{node.target} ตอบกลับไม่ใช่ JSON — เวอร์ชัน LMDS อาจไม่ตรงกัน") from exc
 
 
+# ติดตั้ง/อัปเดต LMDS บน node — hub ไม่ได้ push โค้ดไปเอง แต่สั่งให้เครื่องนั้น clone จาก GitHub
+# (ไม่ push เพราะ node อาจอยู่คนละสถาปัตยกรรม และ install.sh ต้องรันบนเครื่องนั้นอยู่ดี)
+REPO_URL = "https://github.com/neronain/AutoDeployDGXProject"
+_INSTALL_SCRIPT = """
+set -e
+cd "$HOME"
+if [ -d AutoDeployDGXProject/.git ]; then
+  cd AutoDeployDGXProject && git pull --ff-only
+else
+  git clone --depth 1 {repo} AutoDeployDGXProject && cd AutoDeployDGXProject
+fi
+LMDS_ASSUME_YES=1 {skip}./install.sh
+"$HOME/.local/bin/lmds" version
+"""
+
+
+def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False) -> Result:
+    """ติดตั้งหรืออัปเดต LMDS บน node ผ่าน SSH
+
+    ค่าเริ่มต้นข้ามขั้นตอน prerequisite (docker/toolkit) เพราะขั้นนั้นต้องใช้ sudo ซึ่งไม่มี tty
+    ให้กรอกรหัสผ่าน — เครื่องที่ยังไม่มี Docker ต้องไปรัน install.sh เองบนเครื่องนั้น
+    """
+    script = _INSTALL_SCRIPT.format(
+        repo=REPO_URL, skip="" if with_prereq else "LMDS_SKIP_PREREQ=1 ",
+    )
+    return run(node, script, timeout=timeout)
+
+
 def check_login(host: str, user: str, port: int = 22) -> bool:
     """key ใช้ได้แล้วหรือยัง — ใช้ตรวจก่อนถามรหัสผ่าน จะได้ไม่ถามซ้ำโดยไม่จำเป็น"""
     node = Node(name="_probe", host=host, user=user, port=port)

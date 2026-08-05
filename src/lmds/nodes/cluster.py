@@ -10,6 +10,7 @@ GPU รุ่นเดียวกัน จำนวนเท่ากัน �
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Iterable
 
 # ต่ำกว่านี้ stacked จะช้ากว่ารันแยกเครื่องจนไม่คุ้ม (activation/KV วิ่งข้ามเครื่องทุก token)
@@ -94,6 +95,56 @@ def check_cluster_ip(host: dict, cluster_ip: str) -> dict:
             "message": f"{cluster_ip} บน {match['iface']} {speed}G"}
 
 
+def link_network(link: dict) -> str:
+    """วงของลิงก์นี้ เช่น 10.100.152.0/24 — ว่างเมื่อคำนวณไม่ได้
+
+    node เวอร์ชันเก่ายังไม่ส่ง prefix มา จึงเดาเป็น /24 ซึ่งตรงกับ fabric ของ DGX Spark
+    """
+    ip = link.get("ip") or ""
+    if not ip:
+        return ""
+    prefix = link.get("prefix") or 24
+    try:
+        return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+    except ValueError:
+        return ""
+
+
+def shared_fabric(members: list[dict]) -> tuple[str, dict[str, str]]:
+    """วงที่ทุกเครื่องในกลุ่มมีขาอยู่ด้วยกัน → (ชื่อวง, {ชื่อเครื่อง: IP ในวงนั้น})
+
+    DGX Spark มี fabric มากกว่าหนึ่งวง (เช่น 10.100.152.0/24 กับ 10.100.153.0/24)
+    ถ้าปล่อยให้แต่ละเครื่องเลือกเองอาจได้คนละวง — ต่อกันไม่ติดทั้งที่ทุกอย่างดูถูก
+    """
+    per_machine: list[dict[str, dict]] = []
+    for machine in members:
+        by_network = {}
+        for link in fabric_links(machine["host"]):
+            network = link_network(link)
+            if network:
+                by_network.setdefault(network, link)
+        per_machine.append(by_network)
+
+    if not per_machine:
+        return "", {}
+    common = set(per_machine[0])
+    for by_network in per_machine[1:]:
+        common &= set(by_network)
+    if not common:
+        return "", {}
+
+    # วงไหนก็ได้ที่เร็วที่สุด — เท่ากันหมดก็เอาเลขน้อยสุดเพื่อให้ผลคงที่ทุกครั้งที่เรียก
+    def rank(network: str) -> tuple:
+        speeds = [by_network[network].get("speed_gbps") or 0 for by_network in per_machine]
+        return (min(speeds), [-int(part) for part in network.split("/")[0].split(".")])
+
+    chosen = max(common, key=rank)
+    return chosen, {
+        machine["name"]: per_machine[index][chosen]["ip"]
+        for index, machine in enumerate(members)
+    }
+
+
 def cluster_groups(machines: Iterable[dict]) -> list[dict]:
     """จัดกลุ่มเครื่องที่ stacked ด้วยกันได้
 
@@ -115,13 +166,15 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
         tiers = {fabric_tier(m["host"]) for m in members}
         speeds = [(m["host"].get("fabric") or {}).get("best_gbps") or 0 for m in members]
 
+        # เสนอ IP จากวงที่ทุกเครื่องมีขาร่วมกัน ไม่ใช่ให้แต่ละเครื่องเลือกเองอิสระ
+        network, shared_ips = shared_fabric(members)
         detail = []
         for machine in members:
             check = check_cluster_ip(machine["host"], machine.get("cluster_ip", ""))
             detail.append({
                 "name": machine["name"],
                 "cluster_ip": machine.get("cluster_ip", ""),
-                "suggested_ip": suggest_cluster_ip(machine["host"]),
+                "suggested_ip": shared_ips.get(machine["name"]) or suggest_cluster_ip(machine["host"]),
                 **check,
             })
 
@@ -133,6 +186,12 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             blockers.append({"kind": "missing-ip", "names": missing})
         if len(set(addresses)) != len(addresses):
             blockers.append({"kind": "duplicate-ip", "names": [d["name"] for d in detail]})
+        # ตั้งครบแล้วแต่คนละวง = ต่อกันไม่ติด ทั้งที่แต่ละเครื่องดูถูกหมด
+        set_networks = {
+            link_network({"ip": d["cluster_ip"], "prefix": None}) for d in detail if d["cluster_ip"]
+        }
+        if len(addresses) == len(detail) and len(set_networks) > 1:
+            blockers.append({"kind": "split-fabric", "names": [d["name"] for d in detail]})
 
         groups.append({
             "members": detail,
@@ -145,6 +204,7 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             "rdma": tiers == {"rdma"},
             "quality": "rdma" if tiers == {"rdma"} else "ethernet",
             "world_size": gpu_count * len(members),
+            "fabric_network": network,
             "blockers": blockers,
             "ready": not blockers,
         })
