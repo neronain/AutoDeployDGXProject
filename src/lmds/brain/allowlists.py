@@ -46,8 +46,18 @@ _BY_ENGINE = {Engine.VLLM: VLLM_FLAGS, Engine.LLAMACPP: LLAMACPP_FLAGS}
 
 # registry/repo ของ runtime image ที่ยอมรับ (เทียบส่วนก่อน :tag/@digest)
 # LLM เสนอ image นอกรายการนี้ไม่ได้ — เคยเกิดจริง: มโน ghcr.io/lmds/llamacpp-ubuntu-rtx จน start พัง
+# image ของชุมชนที่ "เราตรวจแล้ว" — เข้ามาได้ทางเดียวคือผ่าน recipes/catalog.yaml ซึ่งบังคับให้มี
+# source + validated_on · โมเดลบางตัวรันได้เฉพาะ build เฉพาะทาง (DeepSeek V4 บน GB10) การกัน
+# ทั้งหมดไว้เท่ากับกันโมเดลเหล่านั้นออกจากระบบ · มีเทสบังคับว่า image ในแคตตาล็อกต้องอยู่ในรายการนี้
+VETTED_COMMUNITY_IMAGES = {
+    "ghcr.io/anemll/dspark-vllm-gx10",   # DeepSeek V4 บน DGX Spark
+    "avarok/dgx-vllm-nvfp4-kernel",      # NVFP4 kernel สำหรับ GB10
+    "lmsysorg/sglang",                   # SGLang ทางการ
+}
+
 KNOWN_IMAGE_REPOS: dict[Engine, set[str]] = {
-    Engine.VLLM: {"vllm/vllm-openai", "nvcr.io/nvidia/vllm", "docker.io/vllm/vllm-openai"},
+    Engine.VLLM: {"vllm/vllm-openai", "nvcr.io/nvidia/vllm", "docker.io/vllm/vllm-openai"}
+    | VETTED_COMMUNITY_IMAGES,
     Engine.LLAMACPP: {"ghcr.io/ggml-org/llama.cpp", "ghcr.io/ggerganov/llama.cpp"},
 }
 

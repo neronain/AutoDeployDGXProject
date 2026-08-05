@@ -90,3 +90,26 @@ def test_catalog_file_ships_with_the_package():
 
     assert CATALOG_PATH.is_file(), f"ไม่พบ {CATALOG_PATH}"
     assert CATALOG_PATH.suffix == ".yaml"
+
+
+def test_every_recipe_image_passes_the_allowlist():
+    """image ที่ไม่อยู่ใน allowlist จะถูก harden แทนที่เงียบ ๆ — สูตรก็ไร้ผลทันที
+    เคสจริง: DeepSeek V4 ได้ image dspark จากสูตร แล้วถูกแทนด้วย vllm-openai:latest"""
+    from lmds.brain.allowlists import is_known_image
+    from lmds.brain.plan_schema import Engine
+
+    engines = {"vllm": Engine.VLLM, "llamacpp": Engine.LLAMACPP}
+    for recipe in load_catalog():
+        if not recipe.image or recipe.engine not in engines:
+            continue
+        assert is_known_image(engines[recipe.engine], recipe.image), \
+            f"{recipe.match}: image {recipe.image} ไม่อยู่ใน allowlist จะถูกแทนที่เงียบ ๆ"
+
+
+def test_recipe_image_survives_hardening():
+    from lmds.brain.orchestrator import harden_plan
+
+    report = report_for("nvidia/DeepSeek-V4-Flash-NVFP4")
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = harden_plan(rule_based_plan(report, fit), report, fit)
+    assert plan.runtime.image_ref == "ghcr.io/anemll/dspark-vllm-gx10:0.1.1"
