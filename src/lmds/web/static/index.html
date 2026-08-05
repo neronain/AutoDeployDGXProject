@@ -20,6 +20,11 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
+  /* ระยะห่างเป็นขั้นบันได ไม่ใช่ตัวเลขที่นึกออกตอนนั้น — ทำให้จังหวะทั้งหน้าเท่ากัน */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+  --control: 34px;      /* ความสูงของทุก control ในแถวเดียวกัน */
+  /* 1080 แคบไปสำหรับจอ 1440+ ที่คนดูแลเซิร์ฟเวอร์ใช้จริง — เหลือขอบว่างครึ่งจอ */
+  --page: 1320px;
   --r-sm: 6px; --r: 10px; --r-lg: 14px;
   --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
   --shadow-lg: 0 4px 12px rgba(16, 24, 40, .07);
@@ -39,13 +44,20 @@
 }
 
 * { box-sizing: border-box; }
+/* ข้ามไปเนื้อหาด้วยคีย์บอร์ด (WCAG 2.4.1) — ซ่อนจนกว่าจะถูกโฟกัส */
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  padding: 10px 16px; background: var(--accent); color: #fff;
+  border-radius: 0 0 var(--r-sm) 0; text-decoration: none; font-size: 14px;
+}
+.skip:focus { left: 0; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; padding: 0 20px 64px; background: var(--bg); color: var(--fg);
   font: 400 14px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
-.wrap { max-width: 1080px; margin: 0 auto; }
+.wrap { max-width: var(--page); margin: 0 auto; }
 
 /* ── header ─────────────────────────────────────────────────────────── */
 .topbar {
@@ -77,12 +89,88 @@ a { color: var(--accent); text-underline-offset: 2px; }
 /* ── section heading ────────────────────────────────────────────────── */
 .sec {
   display: flex; align-items: center; gap: 12px;
-  margin: 30px 0 12px; font-size: 11px; font-weight: 600;
-  color: var(--fg3); letter-spacing: .1em; text-transform: uppercase;
+  margin: var(--s6) 0 var(--s3); font-size: 11px; font-weight: 600;
+  color: var(--fg2); letter-spacing: .1em; text-transform: uppercase;
 }
-.sec > span:first-child { order: 1; }
+.sec > span:first-child, .sec > h2 { order: 1; }
+.sec h2 { font: inherit; margin: 0; }
 .sec::after { content: ""; flex: 1; height: 1px; background: var(--line); order: 2; }
 .sec button { order: 3; text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* ── แผงรองที่เป็นอิสระต่อกัน วางคู่กันได้บนจอกว้าง ─────────────────────
+   scan / recipes / cluster ไม่ได้ต่อเนื่องกัน การเรียงลงมาเป็นแถวเดียวทำให้ต้อง
+   เลื่อนยาวโดยไม่จำเป็น และปล่อยครึ่งจอขวาว่างเปล่าบนจอ 1440 */
+.panels { display: grid; gap: 0 var(--s5); }
+@media (min-width: 1100px) {
+  .panels { grid-template-columns: 1fr 1fr; align-items: start; }
+  /* หัวข้อกับการ์ดของมันต้องอยู่คอลัมน์เดียวกัน — display:contents จะแยกออกจากกันคนละช่อง */
+  .panel > .sec { margin-top: var(--s6); }
+}
+
+/* ── กล่องโต้ตอบของเราเอง ────────────────────────────────────────────────
+   <dialog> ของเบราว์เซอร์ให้ focus trap, Esc ปิด, inert ข้างหลัง และ ::backdrop
+   มาให้ครบตามมาตรฐาน — สิ่งที่ alert()/confirm() ให้ไม่ได้คือหน้าตาที่เข้ากับหน้าอื่น
+   และข้อความยาว ๆ ที่อ่านรู้เรื่อง (log ท้าย 4 บรรทัดใน alert คือกำแพงตัวอักษร) */
+dialog.modal {
+  padding: 0; border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--card); color: var(--fg); box-shadow: var(--shadow-lg);
+  width: min(560px, calc(100vw - 32px)); max-height: min(80vh, 720px);
+}
+dialog.modal::backdrop { background: rgba(16, 24, 40, .45); backdrop-filter: blur(2px); }
+@media (prefers-color-scheme: dark) { dialog.modal::backdrop { background: rgba(0, 0, 0, .6); } }
+.modal-head {
+  padding: var(--s4) var(--s5) var(--s2); font-size: 15px; font-weight: 600;
+}
+.modal-body { padding: 0 var(--s5) var(--s4); color: var(--fg2); line-height: 1.6; font-size: 13.5px; }
+.modal-body pre {
+  margin-top: var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 10px 12px; max-height: 240px;
+}
+.modal-body input { width: 100%; margin-top: var(--s3); }
+.modal-foot {
+  display: flex; justify-content: flex-end; gap: var(--s2);
+  padding: var(--s3) var(--s5) var(--s4); border-top: 1px solid var(--line);
+  background: var(--sunken);
+}
+.modal-foot .primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.modal-foot .primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.modal-foot .primary.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+@media (max-width: 720px) {
+  dialog.modal { width: calc(100vw - 24px); }
+  .modal-foot { flex-direction: column-reverse; }
+  .modal-foot button { width: 100%; }
+}
+
+/* ── สูตรที่รันผ่านจริง: หนึ่งบรรทัดต่อสูตร กางดูรายละเอียดได้ ───────────── */
+.recipe { border-top: 1px solid var(--line); }
+.recipe:first-child { border-top: 0; }
+.recipe > summary {
+  /* grid ไม่ใช่ flex — คอลัมน์ต้องตรงกันทุกแถวเวลากวาดสายตาลงมา
+     ▸ | ชื่อรุ่น | ป้ายค่าที่ตั้งให้ | engine */
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 62px;
+  align-items: center; gap: var(--s3);
+  padding: 12px 18px; cursor: pointer; list-style: none;
+}
+.recipe > summary > .tag { justify-self: end; }
+.recipe > summary::-webkit-details-marker { display: none; }
+.recipe > summary::before {
+  content: "▸"; color: var(--fg3); font-size: 11px; flex: none;
+  transition: transform .12s ease;
+}
+.recipe[open] > summary::before { transform: rotate(90deg); }
+.recipe > summary:hover { background: var(--sunken); }
+.recipe .rname { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.recipe .npills { justify-content: flex-end; }
+.rbody { padding: 0 18px 14px 34px; }
+.rset {
+  margin-top: var(--s2); padding: 10px 12px; border: 0; border-radius: var(--r-sm);
+  background: var(--sunken); font-size: 11.5px; max-height: none;
+}
+@media (prefers-reduced-motion: reduce) { .recipe > summary::before { transition: none; } }
+
+/* ปุ่มลอยสำหรับงานหลักบนมือถือ — หัวตารางเบียดจนปุ่ม Deploy หาย
+   ซ่อนบนเดสก์ท็อปเพราะปุ่มบน topbar เห็นอยู่แล้ว */
+.fab { display: none; }
 
 
 /* ── surfaces ───────────────────────────────────────────────────────── */
@@ -91,16 +179,24 @@ a { color: var(--accent); text-underline-offset: 2px; }
   border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden;
 }
 .pad { padding: 16px 18px; }
+/* การ์ดสองใบติดกันต้องมีระยะห่าง ไม่ใช่แปะชนกันจนดูเป็นใบเดียวที่เส้นขาด
+   (เจอตอนกดปุ่ม Deploy — กล่องวิซาร์ดโผล่ชนการ์ดเครื่องพอดี) */
+.card + .card, section + section > .card:first-child, #wiz { margin-top: var(--s4); }
+main > section { margin-bottom: var(--s5); }
 
 /* ── stat tiles: read like instrument panels ────────────────────────── */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin: 18px 0 4px; }
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s3); margin: var(--s5) 0 var(--s4);
+}
 .stat {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
-  padding: 13px 15px 14px; box-shadow: var(--shadow);
+  padding: var(--s4) var(--s4) 15px; box-shadow: var(--shadow);
 }
 .stat > .muted:first-child {
   display: block; font-size: 11px; font-weight: 600; letter-spacing: .07em;
-  text-transform: uppercase; color: var(--fg3);
+  /* 11px + fg3 ได้ 3.34:1 ตกเกณฑ์ WCAG AA — ป้ายกำกับต้องอ่านออกพอ ๆ กับตัวเลข */
+  text-transform: uppercase; color: var(--fg2);
 }
 .stat b {
   display: block; font-weight: 600; font-size: 20px; line-height: 1.25;
@@ -142,8 +238,8 @@ a { color: var(--accent); text-underline-offset: 2px; }
 
 /* ── controls ───────────────────────────────────────────────────────── */
 button {
-  font: 500 13px/1 var(--sans); padding: 7px 12px; border-radius: var(--r-sm);
-  cursor: pointer; background: var(--card); color: var(--fg);
+  font: 500 13px/1 var(--sans); padding: 0 13px; border-radius: var(--r-sm);
+  min-height: var(--control); cursor: pointer; background: var(--card); color: var(--fg);
   border: 1px solid var(--line2); transition: background .12s ease, border-color .12s ease;
 }
 button:hover:not(:disabled) { background: var(--sunken); border-color: var(--fg3); }
@@ -169,7 +265,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 
 input, select {
-  font: inherit; font-size: 13.5px; padding: 8px 11px; border-radius: var(--r-sm);
+  font: inherit; font-size: 13.5px; padding: 0 11px; border-radius: var(--r-sm);
+  min-height: var(--control); height: var(--control);
   background: var(--card); color: var(--fg); border: 1px solid var(--line2);
 }
 input:hover, select:hover { border-color: var(--fg3); }
@@ -177,6 +274,32 @@ input { flex: 1; min-width: 200px; }
 input::placeholder { color: var(--fg3); }
 label { font-size: 13px; color: var(--fg2); }
 .field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* ป้ายอยู่เหนือช่อง ไม่ใช่ซ้ายมือ — ป้ายซ้ายมือทำให้ช่องเริ่มไม่ตรงกันสักช่อง
+   และความกว้างของช่องมาจากชนิดข้อมูล ไม่ใช่ flex:1 ที่ยืดจนพอร์ตกว้าง 300px */
+.formgrid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s3); margin-bottom: var(--s3); align-items: end;
+}
+.formgrid .fld { display: grid; gap: 5px; min-width: 0; }
+.formgrid .fld > label { font-size: 12px; color: var(--fg2); }
+.formgrid .fld > input, .formgrid .fld > select { width: 100%; }
+.formgrid .wide { grid-column: 1 / -1; }
+/* แถวที่ช่องยาวเต็มแล้วมีปุ่มต่อท้าย */
+.fld-row { display: flex; gap: var(--s2); align-items: end; }
+.fld-row .fld { flex: 1; }
+
+/* checkbox: กล่องกับข้อความต้องอยู่กึ่งกลางกัน และกดที่ข้อความได้ด้วย */
+.check {
+  display: inline-flex; align-items: center; gap: var(--s2);
+  cursor: pointer; font-size: 13.5px; color: var(--fg2);
+}
+.check input[type="checkbox"] {
+  /* กฎรวมของ input ตั้ง flex:1 กับ min-width:200px ไว้สำหรับช่องข้อความ — ต้องล้างทั้งคู่
+     ไม่งั้นกล่องติ๊กกว้าง 200px แล้วดันข้อความ "Follow" ไปไกลจนดูเหมือนคนละอัน */
+  width: 16px; height: 16px; min-width: 0; min-height: 0; flex: none; margin: 0; padding: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
 
 /* ── output ─────────────────────────────────────────────────────────── */
 pre {
@@ -194,10 +317,10 @@ pre {
   font-size: 12.5px; color: var(--warn); padding: 5px 10px; margin: 4px 0;
   background: var(--warn-bg); border-radius: var(--r-sm);
 }
-.empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: 13.5px; }
+.empty { padding: var(--s5) 20px; text-align: center; color: var(--fg2); font-size: 13.5px; line-height: 1.6; }
 
 /* ── GPU telemetry ─────────────────────────────────────────────────── */
-.gpu { border-top: 1px solid var(--line); padding: 14px 18px; }
+.gpu { border-top: 1px solid var(--line); padding: var(--s4) 18px; }
 .gpu-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .gpu-name { font-weight: 600; font-size: 13.5px; }
 .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
@@ -210,28 +333,144 @@ pre {
 .gauge-sub { font-size: 10.5px; color: var(--fg3); margin-top: 2px;
   font-variant-numeric: tabular-nums; }
 .gauge-track { stroke: var(--meter-track); }
-.clocks { margin-top: 12px; display: grid; gap: 7px; }
-.clock-row { display: grid; grid-template-columns: 1fr 68px; gap: 10px; align-items: center;
-  font-size: 12px; }
-.clock-bar { height: 4px; border-radius: 999px; background: var(--meter-track); overflow: hidden; }
-.clock-bar i { display: block; height: 100%; }
-.clock-num { text-align: right; font-family: var(--mono); font-size: 11.5px;
-  font-variant-numeric: tabular-nums; color: var(--fg2); }
+.clocks { margin-top: var(--s4); display: grid; gap: var(--s3); }
+.clock-row { display: grid; gap: 5px; font-size: 12px; }
+.clock-head { display: flex; align-items: baseline; gap: var(--s2); }
+.clock-head .dim { flex: 1; font-size: 12px; }
+.clock-bar {
+  height: 8px; border-radius: 999px; background: var(--meter-track); overflow: hidden;
+}
+.clock-bar i { display: block; height: 100%; border-radius: 999px; }
+.clock-num {
+  font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+  color: var(--fg); font-weight: 500;
+}
+/* เพดานต้องอยู่ข้างค่าปัจจุบันเสมอ — "208 MHz" เฉย ๆ บอกไม่ได้ว่าการ์ดว่างหรือคอขวด */
+.clock-max { font-family: var(--mono); font-size: 11px; color: var(--fg2); }
 
 /* ── machines ───────────────────────────────────────────────────────── */
+/* ไม่ใช่ปุ่มสั่งงาน — มีกรอบเท่าปุ่มจริงแล้วดึงสายตาไปผิดที่
+   กดได้ทั้งแถบหัวการ์ด (disclosure pattern มาตรฐาน) ตัวนี้เหลือไว้เป็นสัญลักษณ์บอกสถานะ */
 .ntoggle {
-  font-family: var(--mono); width: 26px; height: 26px; padding: 0; flex: none;
+  width: 18px; height: 18px; min-height: 0; padding: 0; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 15px; line-height: 1; color: var(--fg2);
+  font-size: 10px; line-height: 1; color: var(--fg3);
+  background: none; border-color: transparent;
+  transition: transform .12s ease;
 }
+.nhead { cursor: pointer; }
+.nhead:hover .ntoggle { color: var(--fg2); }
+.nhead.collapsed .ntoggle { transform: rotate(-90deg); }
+/* ปุ่มจริงในหัวการ์ดต้องไม่ทำให้กดโดนตัวย่อ/ขยาย */
+.nhead .nacts, .nhead .nver { cursor: default; }
+@media (prefers-reduced-motion: reduce) { .ntoggle { transition: none; } }
 .nbody.collapsed { display: none; }
 /* หนึ่งเครื่อง = หนึ่งการ์ด — เดิมหัวเครื่องกับเนื้อหาของอีกเครื่องอยู่ระดับเดียวกันจนแยกไม่ออก */
 .machine {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
   box-shadow: var(--shadow); overflow: hidden; margin-bottom: 12px;
 }
-.machine > .item { background: var(--sunken); border-bottom: 1px solid var(--line); }
-.machine > .item:hover { background: var(--sunken); }
+/* ── กล่อง deploy ────────────────────────────────────────────────────────
+   ช่องกรอกกับ dropdown ต้องกว้างเท่ากันและมีป้ายกำกับ ของเดิมเรียงในแถวเดียวแบบ flex
+   แล้วบนจอแคบก็ตกบรรทัดคนละความกว้าง โดยไม่มีอะไรบอกว่าช่องไหนคืออะไร */
+.wizgrid {
+  display: grid; grid-template-columns: 2fr 1fr; gap: var(--s3); margin-bottom: var(--s3);
+}
+.wizgrid .fld { display: grid; gap: 5px; min-width: 0; }
+.wizgrid .fld > label { font-size: 12px; color: var(--fg2); }
+.wizgrid input, .wizgrid select { width: 100%; }
+.wizfoot { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.wizfoot .grow { flex: 1 1 0; min-width: 0; }
+button.primary {
+  background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+@media (max-width: 720px) {
+  .wizgrid { grid-template-columns: 1fr; }
+  .wizfoot .grow { display: none; }
+  .wizfoot { flex-direction: column; align-items: stretch; }
+  .wizfoot button { width: 100%; }
+  /* ตัวเลือกมาก่อนปุ่ม แล้วปุ่มหลักอยู่เหนือปุ่มรอง — อ่านจากบนลงล่างได้ตามลำดับที่ทำจริง */
+  .wizfoot .check { order: -2; }
+  .wizfoot #w-go { order: -1; }
+}
+
+/* ── ตัวดู log ────────────────────────────────────────────────────────── */
+.logbar {
+  display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+  padding: 10px 14px; background: var(--sunken); border-top: 1px solid var(--line);
+}
+.logbar .logfind { flex: 1 1 200px; min-width: 140px; }
+.logbar .loglines { flex: none; width: auto; }
+.logbar .check { flex: none; white-space: nowrap; }
+.logbar .grow { flex: 1 1 0; min-width: 0; }   /* .grow ทั่วไปกำหนด min-width 200px ไว้ */
+.logbar .logcount { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; }
+.logbox {
+  margin: 0; padding: 12px 14px; max-height: 420px; overflow: auto;
+  background: var(--card); border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  white-space: pre; overflow-wrap: normal;      /* ค่าเริ่มต้น: ไม่ตัดบรรทัด อ่าน log ที่จัดคอลัมน์ไว้ได้ */
+}
+.logbox.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .logbar { padding: 10px 12px; gap: var(--s2); }
+  .logbar .grow { display: none; }
+  .logbox { padding: 10px 12px; font-size: 11.5px; max-height: 300px; }
+}
+
+/* เมนูคำสั่งรองของแถวโมเดล — เปิดทีละแถว ปุ่มหลักจึงเหลือตัวเดียวในแถว */
+.mmenu {
+  display: flex; flex-wrap: wrap; gap: var(--s2);
+  padding: 10px 18px; background: var(--sunken); border-top: 1px solid var(--line);
+}
+/* [hidden] ของเบราว์เซอร์คือ display:none ใน UA stylesheet — กฎ display ของเราเอง
+   specificity สูงกว่า เลยทับจนเมนูเปิดค้างทุกแถวและปุ่ม ⋯ ดูเหมือนกดไม่ติด */
+.mmenu[hidden] { display: none; }
+button.more { font-size: 15px; line-height: 1; padding: 0 10px; letter-spacing: .06em; }
+@media (max-width: 720px) {
+  .mmenu { padding: 10px 12px; display: grid; grid-template-columns: repeat(2, 1fr); }
+}
+
+/* แถวโมเดล: ● ชื่อ/รายละเอียด … :port [ปุ่ม] */
+.mrow {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  align-items: center; gap: var(--s3);
+  padding: 13px 18px; border-top: 1px solid var(--line);
+}
+.mrow:first-child { border-top: 0; }
+.mrow:hover { background: var(--sunken); }
+.minfo { min-width: 0; }
+.macts { display: flex; gap: var(--s2); flex-wrap: wrap; justify-content: flex-end; }
+/* .acts ห่อปุ่มหลักไว้ — ให้ปุ่มข้างในเป็นลูกของ .macts ตรง ๆ จะได้จัดแถวด้วยกัน */
+.macts .acts { display: contents; }
+@media (max-width: 720px) {
+  .mrow { grid-template-columns: 8px minmax(0, 1fr) auto; row-gap: var(--s3); padding: 12px; }
+  /* ปุ่มลงบรรทัดใหม่แล้วแบ่งพื้นที่กันเอง — ของเดิมให้ .acts กินเต็มแถวแล้วปุ่มข้างในซ้อน
+     กันแนวตั้งทีละบรรทัด ส่วน ⋯ ก็กว้างเต็มอีกแถวหนึ่ง ดูแน่นและเปลืองที่มาก */
+  .macts {
+    grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--s2);
+    justify-content: flex-start;
+  }
+  .macts > button:not(.more) { flex: 1 1 auto; }
+  .macts .more { flex: 0 0 auto; margin-left: auto; }
+}
+
+/* หัวเครื่อง: [−] ● ชื่อ/ที่อยู่ … เวอร์ชัน [ปุ่มสี่ตัว] */
+.nhead {
+  display: grid; grid-template-columns: 26px 8px minmax(0, 1fr) auto auto;
+  align-items: center; gap: var(--s3);
+  padding: 12px 16px; background: var(--sunken); border-bottom: 1px solid var(--line);
+}
+.nhead .ninfo { min-width: 0; }
+.nhead .ninfo .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nhead .nver { font-size: 12px; }
+.nacts { display: flex; gap: var(--s2); }
+@media (max-width: 720px) {
+  /* ปุ่มสี่ตัวเรียงต่อท้ายชื่อไม่พอกว้าง — ลงบรรทัดใหม่แบบกว้างเท่ากันทุกปุ่ม
+     ไม่ใช่ปล่อยให้ไหลจนสามตัวอยู่บรรทัดหนึ่งแล้วอีกตัวตกไปอยู่คนเดียว */
+  .nhead { grid-template-columns: 26px 8px minmax(0, 1fr) auto; row-gap: var(--s3); }
+  .nacts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); }
+}
 .machine .nbody > .pad { border-top: 0; }
 .npills { display: flex; flex-wrap: wrap; gap: 6px; }
 .npill {
@@ -245,30 +484,67 @@ pre {
   border-radius: var(--r); padding: 12px 14px; margin-bottom: 10px; background: var(--sunken);
 }
 .cgroup.ok { border-left-color: var(--ok); }
-.ipedit { width: 150px; flex: none; font-family: var(--mono); font-size: 12.5px; }
+.ipedit { width: 100%; font-family: var(--mono); font-size: 12.5px; }
+/* แถวเครื่องในหน้า cluster: จุด | ชื่อ | ความเร็ว | cluster IP | ปุ่ม */
+.crow {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto 190px 62px;
+  align-items: center; gap: var(--s3); margin-bottom: var(--s2);
+}
+.crow .cspeed, .crow .cip { font-size: 12.5px; }
+.crow .cip { text-align: right; }
+.chint { margin: -2px 0 var(--s3) 32px; }
+@media (max-width: 720px) {
+  /* ห้าคอลัมน์ไม่พอ — ชื่อกับความเร็วบรรทัดแรก ช่อง IP กับปุ่มลงบรรทัดถัดไป */
+  .crow { grid-template-columns: 8px minmax(0, 1fr) auto; row-gap: var(--s2); }
+  .crow > .ipedit { grid-column: 2 / -1; }
+  .crow > button { grid-column: 2 / -1; }
+  .crow > .cip { grid-column: 2 / -1; text-align: left; }
+  .chint { margin-left: 20px; }
+}
 
 /* ── จอแคบ ────────────────────────────────────────────────────────────
    หน้านี้ถูกเปิดจากมือถือบ่อยกว่าที่คิด (ยืนอยู่หน้าเครื่องแล้วอยากสั่ง start/stop)
    สิ่งที่พังก่อนเพื่อนคือแถวปุ่มที่เบียดจนกดผิด กับตารางที่ดันหน้าให้เลื่อนแนวนอนทั้งหน้า */
 @media (max-width: 720px) {
-  body { padding: 0 12px 48px; }
-  .topbar { margin: 0 -12px 4px; padding: 11px 12px; }
-  .topbar .wrap { gap: 9px; flex-wrap: wrap; }
-  /* ชื่อโฮสต์ยาวกว่าจอเสมอ — ตัดให้จบบรรทัดแทนที่จะดันปุ่ม Deploy ตกขอบ */
-  #host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #ver { display: none; }
+  /* เว้นที่ให้ปุ่มลอยล่าง ไม่ให้ทับแถวสุดท้าย */
+  body { padding: 0 12px calc(72px + env(safe-area-inset-bottom, 0px)); }
+  .topbar { margin: 0 -12px 4px; padding: 10px 12px; }
+  .topbar .wrap { gap: var(--s2); }
+  /* ชื่อโฮสต์ยาวกว่าจอเสมอ — ตัดให้จบบรรทัดแทนที่จะดันของอื่นตกขอบ */
+  #host { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #ver, .topbar #new { display: none; }   /* ย้ายไปเป็นปุ่มลอยล่างแทน */
+
+  /* ปุ่มงานหลักอยู่ในระยะนิ้วโป้ง ตามที่ทุก mobile guideline บอกตรงกัน */
+  .fab {
+    display: flex; position: fixed; z-index: 30;
+    left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    align-items: center; justify-content: center; gap: var(--s2);
+    min-height: 46px; font-size: 15px; font-weight: 600;
+    background: var(--accent); color: #fff; border: 0; border-radius: var(--r);
+    box-shadow: var(--shadow-lg);
+  }
+  .fab:hover { background: var(--accent); filter: brightness(1.06); }
 
   .item { padding: 11px 12px; gap: 9px; }
   .pad { padding: 12px; }
-  .stats { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 9px; }
+  /* auto-fit ทำให้ 3 ใบกลายเป็น 2+1 แล้วเหลือช่องว่างข้างใบสุดท้าย — บังคับ 2 คอลัมน์
+     แล้วให้ใบสุดท้ายกินเต็มแถวแทน จะได้ไม่มีรูโหว่ */
+  .stats { grid-template-columns: repeat(2, 1fr); gap: var(--s2); }
+  .stats > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .kv { grid-template-columns: 108px 1fr; }
   .find b { width: 88px; }
 
-  /* ปุ่มบนจอสัมผัสต้องกดถูกตัวโดยไม่ต้องเล็ง — 36px คือขั้นต่ำที่ยังไม่เทอะทะ */
-  button { min-height: 36px; padding: 8px 12px; }
-  input, select { min-height: 38px; font-size: 16px; }   /* 16px = iOS ไม่ซูมเข้าตอนโฟกัส */
+  /* จอสัมผัสต้องกดถูกตัวโดยไม่ต้องเล็ง — ขยับ token ตัวเดียว ปุ่มกับ input ขยับพร้อมกัน */
+  :root { --control: 40px; }
+  input, select { font-size: 16px; }   /* 16px = iOS ไม่ซูมเข้าตอนโฟกัส */
   input { min-width: 0; }
   .ipedit { width: 100%; }
+
+  /* สี่คอลัมน์ไม่พอบนจอแคบ — ชื่อกับ engine อยู่บรรทัดแรก ป้ายค่าลงบรรทัดถัดไปเต็มความกว้าง */
+  .recipe > summary { grid-template-columns: 12px minmax(0, 1fr) 62px; }
+  .recipe > summary > .npills { grid-column: 2 / -1; justify-content: flex-start; }
+  .recipe > summary > .tag { grid-column: 3; grid-row: 1; }
+  .rbody { padding-left: 18px; }
 
   /* เมนูคำสั่งของโมเดลบนเครื่องอื่น เยื้อง 22px แล้วเหลือที่ให้ปุ่มไม่พอ */
   .submenu { margin-left: 0; }
@@ -288,6 +564,8 @@ pre {
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
+
 <header class="topbar">
   <div class="wrap">
     <h1>LMDS</h1>
@@ -297,45 +575,106 @@ pre {
   </div>
 </header>
 
-<div class="wrap">
+<main class="wrap" id="main">
 
-  <div class="stats" id="stats"></div>
-  <!-- เครื่องนี้ต้องอ่านเหมือนเครื่องอื่นในหน้าเดียวกัน — เกจชุดเดียวกัน ไม่ใช่คนละภาษา -->
-  <div class="card" id="hostcard"></div>
+  <section aria-label="This machine">
+    <div class="stats" id="stats"></div>
+    <!-- เครื่องนี้ต้องอ่านเหมือนเครื่องอื่นในหน้าเดียวกัน — เกจชุดเดียวกัน ไม่ใช่คนละภาษา -->
+    <div class="card" id="hostcard"></div>
+  </section>
+
   <div class="card" id="wiz" hidden></div>
 
-  <div class="sec">Models on this machine</div>
-  <div class="card" id="fleet"><div class="empty">Loading…</div></div>
+  <section aria-labelledby="h-fleet">
+    <div class="sec"><h2 id="h-fleet">Models on this machine</h2></div>
+    <div class="card" id="fleet" aria-busy="true"><div class="empty">Loading…</div></div>
+  </section>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span>Other machines</span>
-    <button id="node-new" style="font-size:12px">+ Add machine</button>
-  </div>
-  <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
+  <section aria-labelledby="h-nodes">
+    <div class="sec row between" style="align-items:baseline">
+      <h2 id="h-nodes">Other machines</h2>
+      <button id="node-new" style="font-size:12px">+ Add machine</button>
+    </div>
+    <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
+  </section>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span>Weights already on disk</span>
-    <button id="scan-run" style="font-size:12px">Scan</button>
-  </div>
-  <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
-    <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
+  <!-- สามแผงนี้เป็นอิสระต่อกัน — บนจอกว้างวางคู่กันแทนที่จะเรียงลงมายาว ๆ -->
+  <div class="panels">
+    <section class="panel" aria-labelledby="h-scan">
+      <div class="sec row between" style="align-items:baseline">
+        <h2 id="h-scan">Weights already on disk</h2>
+        <button id="scan-run" style="font-size:12px">Scan</button>
+      </div>
+      <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
+        <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
+    </section>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span>Proven recipes</span>
-    <button id="recipes-load" style="font-size:12px">Show</button>
+    <section class="panel" aria-labelledby="h-recipes">
+      <div class="sec row between" style="align-items:baseline">
+        <h2 id="h-recipes">Proven recipes</h2>
+        <button id="recipes-load" style="font-size:12px">Show</button>
+      </div>
+      <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
+        <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
+    </section>
   </div>
-  <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
-    <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span>Cluster fabric</span>
-    <button id="cluster-check" style="font-size:12px">Check now</button>
-  </div>
-  <div class="card" id="cluster"><div class="empty">Which machines can be stacked into one model —
-    <span class="dim">contacts every machine, so it runs only when you ask</span></div></div>
-</div>
+  <section aria-labelledby="h-cluster">
+    <div class="sec row between" style="align-items:baseline">
+      <h2 id="h-cluster">Cluster fabric</h2>
+      <button id="cluster-check" style="font-size:12px">Check now</button>
+    </div>
+    <div class="card" id="cluster"><div class="empty">Which machines can be stacked into one model —
+      <span class="dim">contacts every machine, so it runs only when you ask</span></div></div>
+  </section>
+</main>
+
+<button class="fab" id="new-fab">+ Deploy model</button>
 
 <script>
+// ── กล่องโต้ตอบ ─────────────────────────────────────────────────────────
+// alert()/confirm()/prompt() บล็อกทั้งหน้า จัดสไตล์ไม่ได้ และบนมือถือขึ้นชื่อโดเมนนำหน้า
+// จนอ่านไม่ออกว่าใครถาม · <dialog> ให้ focus trap + Esc + ::backdrop มาตามมาตรฐานอยู่แล้ว
+function openModal({ title, body = "", detail = "", input = null, ok = "OK", cancel = null,
+                     danger = false }) {
+  return new Promise(resolve => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "modal";
+    dlg.innerHTML = `
+      <form method="dialog">
+        <div class="modal-head">${esc(title)}</div>
+        <div class="modal-body">
+          ${body ? `<div>${body}</div>` : ""}
+          ${detail ? `<pre>${esc(detail)}</pre>` : ""}
+          ${input !== null ? `<input id="modal-input" value="${esc(input)}"
+             autocomplete="off" spellcheck="false">` : ""}
+        </div>
+        <div class="modal-foot">
+          ${cancel ? `<button value="cancel">${esc(cancel)}</button>` : ""}
+          <button value="ok" class="primary${danger ? " danger" : ""}">${esc(ok)}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(dlg);
+    const field = dlg.querySelector("#modal-input");
+    dlg.addEventListener("close", () => {
+      const value = dlg.returnValue === "ok"
+        ? (field ? field.value : true)
+        : (field ? null : false);
+      dlg.remove();
+      resolve(value);
+    });
+    dlg.showModal();
+    (field || dlg.querySelector(".primary")).focus();
+    if (field) field.select();
+  });
+}
+
+const say = (title, body, detail) => openModal({ title, body, detail, ok: "Close" });
+const ask = (title, body, ok = "Continue", danger = false) =>
+  openModal({ title, body, ok, cancel: "Cancel", danger });
+const askFor = (title, body, value) =>
+  openModal({ title, body, input: value ?? "", ok: "Save", cancel: "Cancel" });
+
 const token = new URLSearchParams(location.search).get("token") || "";
 const api = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), ...(token ? { "x-lmds-token": token } : {}) } });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -453,20 +792,24 @@ function manageMarkup(m) {
   return `<div class="pad" style="border-top:1px solid var(--line)">
     <div class="dim" style="margin-bottom:8px">Applied on start — same as
       <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
-    <div class="field">
-      <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
-      <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px">
-      <label>slots</label><input type="number" class="o-slots" value="${o.slots || m.max_num_seqs || 4}" style="flex:none;width:90px"
-        title="Concurrent requests. llama.cpp splits the context evenly across slots.">
-      <label>bind</label>
-      <select class="o-bind" style="flex:none">
-        <option value="0.0.0.0"${(o.bind || "0.0.0.0") === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (whole network)</option>
-        <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (this machine)</option>
-      </select>
+    <div class="formgrid">
+      <div class="fld"><label for="o-port-${esc(m.slug)}">Port</label>
+        <input type="number" id="o-port-${esc(m.slug)}" class="o-port" value="${o.port || m.port || 8000}"></div>
+      <div class="fld"><label for="o-ctx-${esc(m.slug)}">Context</label>
+        <input type="number" id="o-ctx-${esc(m.slug)}" class="o-ctx" value="${o.context || m.context || ""}"></div>
+      <div class="fld"><label for="o-slots-${esc(m.slug)}">Slots</label>
+        <input type="number" id="o-slots-${esc(m.slug)}" class="o-slots" value="${o.slots || m.max_num_seqs || 4}"
+          title="Concurrent requests. llama.cpp splits the context evenly across slots."></div>
+      <div class="fld"><label for="o-bind-${esc(m.slug)}">Bind</label>
+        <select id="o-bind-${esc(m.slug)}" class="o-bind">
+          <option value="0.0.0.0"${(o.bind || "0.0.0.0") === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (whole network)</option>
+          <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (this machine)</option>
+        </select></div>
     </div>
-    <div class="field">
-      <label>API key</label>
-      <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="empty = no authentication">
+    <div class="fld-row" style="margin-bottom:var(--s3)">
+      <div class="fld"><label for="o-key-${esc(m.slug)}">API key</label>
+        <input type="password" id="o-key-${esc(m.slug)}" class="o-key" value="${esc(o.api_key || "")}"
+          placeholder="empty = no authentication"></div>
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
     </div>
 
@@ -494,6 +837,7 @@ function manageMarkup(m) {
 
 function renderFleet(models) {
   const el = document.getElementById("fleet");
+  el.removeAttribute("aria-busy");    // โหลดเสร็จแล้ว — screen reader ต้องรู้ว่าอ่านได้
   if (!models.length) {
     rows.clear();
     el.innerHTML = `<div class="empty">No models yet — deploy one with the button above, or <code>lmds deploy &lt;model-url&gt;</code></div>`;
@@ -508,22 +852,30 @@ function renderFleet(models) {
     let row = rows.get(m.slug);
     if (!row) {
       const block = document.createElement("div");
-      block.innerHTML = `<div class="item">
+      // grid ไม่ใช่ flex — flex ปล่อยให้ปุ่มไหลไปเรื่อย ๆ พอจอแคบก็แตกเป็นสองบรรทัด
+      // คนละความกว้าง (สามตัวบรรทัดหนึ่ง อีกสองตัวตกไปอยู่ข้างล่างแบบไม่ตรงกับอะไรเลย)
+      block.innerHTML = `<div class="mrow">
           <span class="dot"></span>
-          <div class="grow"></div>
+          <div class="minfo"></div>
           <span class="mono muted port"></span>
-          <span class="acts"></span>
-          <button data-act="tests" data-slug="${esc(m.slug)}">tests</button>
-          <button data-act="opts" data-slug="${esc(m.slug)}">manage</button>
-          <button data-act="doctor" data-slug="${esc(m.slug)}">doctor</button>
-          <button data-act="logs" data-slug="${esc(m.slug)}">logs</button>
+          <div class="macts">
+            <span class="acts"></span>
+            <button data-act="more" data-slug="${esc(m.slug)}" class="more"
+              aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+          </div>
+        </div>
+        <div class="mmenu" id="mmenu-${esc(m.slug)}" hidden>
+          <button data-act="tests" data-slug="${esc(m.slug)}">Tests</button>
+          <button data-act="opts" data-slug="${esc(m.slug)}">Settings</button>
+          <button data-act="doctor" data-slug="${esc(m.slug)}">Doctor</button>
+          <button data-act="logs" data-slug="${esc(m.slug)}">Logs</button>
         </div>
         <div id="panel-${esc(m.slug)}"></div>`;
       el.appendChild(block);
       row = {
         block,
         dot: block.querySelector(".dot"),
-        info: block.querySelector(".grow"),
+        info: block.querySelector(".minfo"),
         port: block.querySelector(".port"),
         acts: block.querySelector(".acts"),
         state: null,
@@ -554,9 +906,7 @@ async function load(slug, kind) {
   const panel = document.getElementById("panel-" + slug);
   if (!panel) return;
   if (kind === "logs") {
-    const r = await api(`/api/models/${encodeURIComponent(slug)}/logs?lines=300`);
-    const d = await r.json();
-    panel.innerHTML = `<pre>${esc(r.ok ? (d.text || "(empty)") : d.detail)}</pre>`;
+    openLogViewer(slug, panel);
     return;
   }
   const r = await api(`/api/models/${encodeURIComponent(slug)}/doctor`);
@@ -580,13 +930,19 @@ const draft = { model: "", target: "", no_llm: false };
 function wizForm(msg = "", extra = "") {
   wiz.hidden = false;
   wiz.innerHTML = `<div class="pad">
-    <div class="field">
-      <input id="w-model" placeholder="Hugging Face link or org/model" autocomplete="off">
-      <select id="w-target"><option value="">This machine (auto-detect)</option></select>
-      <button id="w-go">Analyse</button>
-      <button id="w-close">Close</button>
+    <div class="wizgrid">
+      <div class="fld"><label for="w-model">Model</label>
+        <input id="w-model" placeholder="Hugging Face link or org/model" autocomplete="off"></div>
+      <div class="fld"><label for="w-target">Target machine</label>
+        <select id="w-target"><option value="">This machine (auto-detect)</option></select></div>
     </div>
-    <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> Skip the LLM (rule-based plan)</label>
+    <div class="wizfoot">
+      <label class="check" for="w-nollm">
+        <input type="checkbox" id="w-nollm"> Skip the LLM (rule-based plan)</label>
+      <span class="grow"></span>
+      <button id="w-close">Close</button>
+      <button id="w-go" class="primary">Analyse</button>
+    </div>
     ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
     ${extra}
   </div>`;
@@ -595,8 +951,32 @@ function wizForm(msg = "", extra = "") {
   api("/api/targets").then(r => r.json()).then(d => {
     const sel = document.getElementById("w-target");
     if (!sel) return;
-    d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
-      `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (untested)"}</option>`));
+    // รายการยาว 20 กว่าบรรทัดแบบเรียงพรืดหาของไม่เจอ — จัดกลุ่มตามตระกูลเครื่อง
+    // แล้วเรียง "ทดสอบแล้ว" ขึ้นก่อนในแต่ละกลุ่ม เพราะนั่นคือตัวที่ควรเลือกจริง
+    const family = t =>
+      t.name.startsWith("dgx-spark") ? "DGX Spark"
+      : t.name.startsWith("rtx-pro") ? "RTX Pro"
+      : /^rtx-50/.test(t.name) ? "GeForce RTX 50"
+      : /^rtx-40/.test(t.name) ? "GeForce RTX 40"
+      : /^rtx-30/.test(t.name) ? "GeForce RTX 30"
+      : "Other";
+    const order = ["DGX Spark", "RTX Pro", "GeForce RTX 50", "GeForce RTX 40",
+                   "GeForce RTX 30", "Other"];
+    const groups = new Map(order.map(name => [name, []]));
+    d.targets.forEach(t => groups.get(family(t)).push(t));
+    for (const [name, items] of groups) {
+      if (!items.length) continue;
+      // ตัวที่ยังไม่เคยรันจริงไปท้ายกลุ่ม — ระบบคิดแบบ conservative ให้อยู่แล้ว
+      items.sort((a, b) => (b.tested - a.tested));
+      const options = items.map(t => {
+        const size = t.memory_gb ? `${Math.round(t.memory_gb)} GB` : "";
+        const nodes = t.gpus > 1 ? ` · ${t.gpus}×` : "";
+        return `<option value="${esc(t.name)}">${esc(t.name)}`
+          + `${size ? ` — ${size}${nodes}` : ""}${t.tested ? "" : " · untested"}</option>`;
+      }).join("");
+      sel.insertAdjacentHTML("beforeend",
+        `<optgroup label="${esc(name)}">${options}</optgroup>`);
+    }
     sel.value = draft.target;
   });
 }
@@ -702,7 +1082,9 @@ async function followJob(slug, jobId) {
     if (d.exit_code !== 0) {
       // The controller already explained itself — show that instead of a bare exit code
       const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
-      alert(`${d.command} ${slug} failed (exit ${d.exit_code})\n\n${reason || "no output from the controller"}`);
+      say(`${d.command} ${slug} failed`,
+          `The controller exited with code ${d.exit_code}.`,
+          reason || "no output from the controller");
     }
     refresh();
   };
@@ -723,6 +1105,123 @@ async function waitForJob(jobId, onTick) {
   }
 }
 
+
+// ── ตัวดู log ────────────────────────────────────────────────────────────
+// log ของโมเดลยาวหลายพันบรรทัดและบรรทัดที่ต้องการมักอยู่กลาง ๆ — <pre> ก้อนเดียว
+// ทำให้ต้องเลื่อนหาเอง และตอนเซิร์ฟเวอร์กำลังโหลดโมเดลก็ต้องกดรีเฟรชเองตลอด
+const logState = new Map();   // slug → { follow, wrap, query, lines, timer }
+
+function logToolbar(slug, st, shown, total) {
+  return `<div class="logbar">
+    <input class="logfind" data-log="${esc(slug)}" value="${esc(st.query)}"
+      placeholder="Filter lines…" aria-label="Filter log lines">
+    <select class="loglines" data-log="${esc(slug)}" aria-label="How many lines">
+      ${[200, 500, 1000, 2000].map(n =>
+        `<option value="${n}"${st.lines === n ? " selected" : ""}>${n} lines</option>`).join("")}
+    </select>
+    <label class="check"><input type="checkbox" class="logfollow" data-log="${esc(slug)}"
+      ${st.follow ? "checked" : ""}> Follow</label>
+    <label class="check"><input type="checkbox" class="logwrap" data-log="${esc(slug)}"
+      ${st.wrap ? "checked" : ""}> Wrap</label>
+    <span class="grow"></span>
+    <span class="dim logcount">${shown === total ? `${total} lines` : `${shown} of ${total}`}</span>
+    <button class="logcopy" data-log="${esc(slug)}">Copy</button>
+  </div>`;
+}
+
+function renderLogBody(slug, text) {
+  const st = logState.get(slug);
+  const all = (text || "").replace(/\s+$/, "").split("\n");
+  const query = st.query.trim().toLowerCase();
+  const shown = query ? all.filter(l => l.toLowerCase().includes(query)) : all;
+  const body = shown.length ? shown.map(esc).join("\n") : "(no line matches)";
+  const box = document.getElementById("logbox-" + slug);
+  const bar = document.getElementById("logbar-" + slug);
+  if (bar) bar.outerHTML = `<div id="logbar-${esc(slug)}">${logToolbar(slug, st, shown.length, all.length)}</div>`;
+  if (!box) return;
+  // จำตำแหน่งไว้ก่อนเขียนทับ — ไม่งั้นทุกครั้งที่รีเฟรชจะเด้งกลับไปบนสุดกลางที่กำลังอ่าน
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.className = "logbox" + (st.wrap ? " wrap" : "");
+  box.textContent = body;
+  if (st.follow || atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function loadLogText(slug) {
+  const st = logState.get(slug);
+  const r = await api(`/api/models/${encodeURIComponent(slug)}/logs?lines=${st.lines}`);
+  const d = await r.json();
+  return r.ok ? (d.text || "(empty)") : (d.detail || "could not read the log");
+}
+
+async function refreshLog(slug) {
+  if (!logState.has(slug)) return;
+  const text = await loadLogText(slug);
+  logCache.set(slug, text);
+  renderLogBody(slug, text);
+}
+
+function openLogViewer(slug, panel) {
+  const st = logState.get(slug) || { follow: true, wrap: false, query: "", lines: 500, timer: null };
+  logState.set(slug, st);
+  panel.innerHTML = `<div class="logwrap-outer">
+    <div id="logbar-${esc(slug)}">${logToolbar(slug, st, 0, 0)}</div>
+    <pre id="logbox-${esc(slug)}" class="logbox${st.wrap ? " wrap" : ""}"
+      tabindex="0" aria-label="Log output">loading…</pre>
+  </div>`;
+  refreshLog(slug);
+  // ตามต่อเองระหว่างที่ Follow เปิด — ตอนโหลดโมเดลใหญ่ต้องดูไปเรื่อย ๆ ไม่ใช่กดเอง
+  clearInterval(st.timer);
+  st.timer = setInterval(() => {
+    if (!document.getElementById("logbox-" + slug)) { clearInterval(st.timer); st.timer = null; return; }
+    if (st.follow) refreshLog(slug);
+  }, 2000);
+}
+
+document.addEventListener("input", e => {
+  const slug = e.target.dataset && e.target.dataset.log;
+  if (!slug || !logState.has(slug)) return;
+  const st = logState.get(slug);
+  if (e.target.classList.contains("logfind")) {
+    st.query = e.target.value;
+    // เขียนทับ toolbar แล้วโฟกัสหาย — อัปเดตเฉพาะเนื้อ log
+    const all = document.getElementById("logbox-" + slug);
+    if (all) refreshLogKeepFocus(slug, e.target);
+  }
+});
+
+async function refreshLogKeepFocus(slug, field) {
+  const at = field.selectionStart;
+  renderLogBody(slug, logCache.get(slug) || "");
+  const again = document.querySelector(`.logfind[data-log="${CSS.escape(slug)}"]`);
+  if (again) { again.focus(); again.setSelectionRange(at, at); }
+}
+
+const logCache = new Map();
+
+document.addEventListener("change", e => {
+  const slug = e.target.dataset && e.target.dataset.log;
+  if (!slug || !logState.has(slug)) return;
+  const st = logState.get(slug);
+  if (e.target.classList.contains("logfollow")) st.follow = e.target.checked;
+  if (e.target.classList.contains("logwrap")) st.wrap = e.target.checked;
+  if (e.target.classList.contains("loglines")) st.lines = Number(e.target.value);
+  refreshLog(slug);
+});
+
+document.addEventListener("click", async e => {
+  const btn = e.target.closest(".logcopy");
+  if (!btn) return;
+  const box = document.getElementById("logbox-" + btn.dataset.log);
+  if (!box) return;
+  try {
+    await navigator.clipboard.writeText(box.textContent);
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+  } catch {
+    say("Could not copy", "The browser blocked clipboard access — select the text and copy it.");
+  }
+});
+
 function togglePanel(slug, key, render) {
   ["doctor", "logs", "tests", "opts"].filter(k => k !== key).forEach(k => open.delete(slug + " " + k));
   const panel = document.getElementById("panel-" + slug);
@@ -735,7 +1234,7 @@ function togglePanel(slug, key, render) {
 
 document.addEventListener("click", async e => {
   const id = e.target.id;
-  if (id === "new") { wizForm(); return; }
+  if (id === "new" || id === "new-fab") { wizForm(); return; }
   if (id === "w-close" || id === "w-cancel") {
     wiz.hidden = true; wiz.innerHTML = ""; sess = null;
     Object.assign(draft, { model: "", target: "", no_llm: false });
@@ -771,6 +1270,20 @@ document.addEventListener("click", async e => {
   const { act, slug } = btn.dataset;
   const model = models_by_slug.get(slug) || { slug };
 
+  // ปุ่มห้าตัวน้ำหนักเท่ากันในแถวเดียวคือสิ่งที่ทำให้หน้ารก — เหลือ primary กับ ⋯
+  // (pattern เดียวกับที่หน้านี้ใช้กับโมเดลบนเครื่องอื่นอยู่แล้ว)
+  if (act === "more") {
+    const menu = document.getElementById("mmenu-" + slug);
+    const opening = menu.hidden;
+    document.querySelectorAll(".mmenu").forEach(el => { el.hidden = true; });
+    document.querySelectorAll('button[data-act="more"]').forEach(b => {
+      b.classList.remove("on"); b.setAttribute("aria-expanded", "false");
+    });
+    menu.hidden = !opening;
+    btn.classList.toggle("on", opening);
+    btn.setAttribute("aria-expanded", String(opening));
+    return;
+  }
   if (act === "tests") { togglePanel(slug, "tests", () => testsMarkup(model)); return; }
   if (act === "opts") { togglePanel(slug, "opts", () => manageMarkup(model)); return; }
   if (act === "doctor" || act === "logs") {
@@ -803,7 +1316,7 @@ document.addEventListener("click", async e => {
       body: JSON.stringify({ enabled: act === "auto:on" }),
     });
     const d = await r.json();
-    if (!r.ok) alert(`Could not change autostart\n\n${d.detail || ""}`);
+    if (!r.ok) say("Could not change autostart", "", d.detail || "");
     btn.disabled = false;
     refresh();
     return;
@@ -831,7 +1344,7 @@ document.addEventListener("click", async e => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ keep_weights: keep }),
     });
-    if (!r.ok) alert((await r.json()).detail || "Could not remove");
+    if (!r.ok) say("Could not remove", (await r.json()).detail || "");
     rows.delete(slug);
     document.getElementById("fleet").innerHTML = "";
     refresh();
@@ -846,7 +1359,7 @@ document.addEventListener("click", async e => {
       body: JSON.stringify(opts(slug)),
     });
     const d = await r.json();
-    if (!r.ok) { alert(d.detail || "Could not start the job"); btn.disabled = false; return; }
+    if (!r.ok) { say("Could not start the job", d.detail || ""); btn.disabled = false; return; }
     followJob(slug, d.id);
     return;
   }
@@ -862,7 +1375,7 @@ document.addEventListener("click", async e => {
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      alert(`${act} ${slug} failed\n\n${d.detail || "check the logs for details"}`);
+      say(`${act} ${slug} failed`, d.detail || "Check the logs for details.");
     }
   } finally {
     busy = null;
@@ -901,9 +1414,15 @@ function clockRow(label, mhz, max, colour) {
   if (mhz == null) return "";
   const pct = max ? Math.min(100, Math.round(mhz / max * 100)) : 0;
   return `<div class="clock-row">
-    <div><div class="dim">${esc(label)}</div>
-      <div class="clock-bar"><i style="width:${pct}%;background:${colour}"></i></div></div>
-    <div class="clock-num">${mhz.toLocaleString()}<span class="dim"> MHz</span></div>
+    <div class="clock-head">
+      <span class="dim">${esc(label)}</span>
+      <span class="clock-num">${mhz.toLocaleString()}</span>
+      ${max ? `<span class="clock-max">/ ${max.toLocaleString()} MHz · ${pct}%</span>`
+            : `<span class="clock-max">MHz</span>`}
+    </div>
+    <div class="clock-bar" role="meter" aria-label="${esc(label)}" aria-valuenow="${mhz}"
+      aria-valuemin="0"${max ? ` aria-valuemax="${max}"` : ""}>
+      <i style="width:${Math.max(pct, mhz ? 2 : 0)}%;background:${colour}"></i></div>
   </div>`;
 }
 
@@ -996,20 +1515,27 @@ function nodeAddForm() {
 function nodeCard(node) {
   const block = document.createElement("div");
   block.className = "machine";
-  block.innerHTML = `<div class="item">
-      <button class="ntoggle" title="ย่อ/ขยาย">−</button>
+  // grid ไม่ใช่ flex — flex ปล่อยให้ปุ่มไหลไปเรื่อย ๆ พอจอแคบก็แตกเป็นสามบรรทัดคนละความกว้าง
+  block.innerHTML = `<div class="nhead">
+      <span class="ntoggle" aria-hidden="true">▼</span>
       <span class="dot"></span>
-      <div class="grow">
+      <div class="ninfo">
         <div class="name">${esc(node.name)}</div>
         <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
       </div>
       <span class="mono muted nver"></span>
-      <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
+      <div class="nacts">
+        <button data-nact="refresh" data-node="${esc(node.name)}">Refresh</button>
+        <button data-nact="nmenu" data-node="${esc(node.name)}" class="more"
+          aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+      </div>
+    </div>
+    <div class="mmenu nmenu" id="nmenu-${esc(node.name)}" hidden>
       <button data-nact="install" data-node="${esc(node.name)}"
-        title="Install or update LMDS on that machine over SSH">install</button>
+        title="Install or update LMDS on that machine over SSH">Install LMDS</button>
       <button data-nact="hosts" data-node="${esc(node.name)}"
-        title="Other addresses to try when the main one is unreachable">addresses</button>
-      <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
+        title="Other addresses to try when the main one is unreachable">Addresses</button>
+      <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Remove from registry</button>
     </div>
     <div class="nbody"></div>`;
   return block;
@@ -1195,11 +1721,13 @@ async function refreshNodes() {
       const block = nodeCard(node);
       box.appendChild(block);
       const body = block.querySelector(".nbody");
-      const toggle = block.querySelector(".ntoggle");
-      if (collapsedNodes.has(node.name)) { body.classList.add("collapsed"); toggle.textContent = "+"; }
-      toggle.addEventListener("click", () => {
+      const head = block.querySelector(".nhead");
+      if (collapsedNodes.has(node.name)) { body.classList.add("collapsed"); head.classList.add("collapsed"); }
+      // กดได้ทั้งแถบหัวการ์ด (disclosure pattern มาตรฐาน) ไม่ใช่เล็งปุ่มเล็ก ๆ ตัวเดียว
+      head.addEventListener("click", e => {
+        if (e.target.closest("button")) return;      // ปุ่มจริงในหัวการ์ดทำงานของมันไป
         const hidden = body.classList.toggle("collapsed");
-        toggle.textContent = hidden ? "+" : "−";
+        head.classList.toggle("collapsed", hidden);
         // จำไว้ ไม่งั้น refresh รอบถัดไปกางกลับเองทุก 5 วินาที
         if (hidden) collapsedNodes.add(node.name); else collapsedNodes.delete(node.name);
       });
@@ -1254,13 +1782,25 @@ document.addEventListener("click", async e => {
     return;
   }
   if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
+  if (nact === "nmenu") {
+    const menu = document.getElementById("nmenu-" + node);
+    const opening = menu.hidden;
+    document.querySelectorAll(".nmenu").forEach(el => { el.hidden = true; });
+    document.querySelectorAll('button[data-nact="nmenu"]').forEach(b => {
+      b.classList.remove("on"); b.setAttribute("aria-expanded", "false");
+    });
+    menu.hidden = !opening;
+    btn.classList.toggle("on", opening);
+    btn.setAttribute("aria-expanded", String(opening));
+    return;
+  }
   if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "install") {
-    if (!confirm(`Install or update LMDS on ${node}?
-
-`
-      + `It clones the repo and runs install.sh over SSH. Docker and the NVIDIA toolkit are `
-      + `skipped because they need sudo, which there is no terminal here to answer.`)) return;
+    const go = await ask(`Install LMDS on ${node}?`,
+      `It clones the repo and runs <code>install.sh</code> over SSH. Docker and the NVIDIA `
+      + `toolkit are skipped — they need <code>sudo</code>, and there is no terminal here to `
+      + `answer the password prompt.`, "Install");
+    if (!go) return;
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = "installing…";
@@ -1268,7 +1808,8 @@ document.addEventListener("click", async e => {
                         { method: "POST", headers: { "content-type": "application/json" },
                           body: JSON.stringify({ with_prereq: false }) });
     const d = await r.json();
-    if (!r.ok) { btn.disabled = false; btn.textContent = original; alert(d.detail || "Could not start"); return; }
+    if (!r.ok) { btn.disabled = false; btn.textContent = original;
+                 say("Could not start the install", d.detail || ""); return; }
     // ใช้เวลาหลายนาที — ตามผลเหมือน job อื่นแล้วค่อยรีเฟรชเครื่องนั้น
     const done = await waitForJob(d.id, line => { btn.textContent = "installing…"; });
     btn.disabled = false;
@@ -1279,25 +1820,24 @@ document.addEventListener("click", async e => {
   }
   if (nact === "hosts") {
     const current = (nodeHosts.get(node) || []).join(", ");
-    const answer = prompt(
-      `Other addresses for ${node}, comma separated.
-
-`
-      + `The hub tries the main address first, then these — useful when the same machine is `
-      + `reachable on the LAN at the office and over a VPN from outside.`, current);
+    const answer = await askFor(`Other addresses for ${node}`,
+      `Comma separated. The hub tries the main address first, then these — useful when the `
+      + `same machine is on the LAN at the office and on a VPN from outside.`, current);
     if (answer === null) return;
     const r = await api(`/api/nodes/${encodeURIComponent(node)}`, {
       method: "PATCH", headers: { "content-type": "application/json" },
       body: JSON.stringify({ alt_hosts: answer }),
     });
     const d = await r.json();
-    if (!r.ok) { alert(d.detail || "Could not save"); return; }
+    if (!r.ok) { say("Could not save", d.detail || ""); return; }
     nodeHosts.set(node, d.alt_hosts || []);
     refreshNodes();
     return;
   }
   if (nact === "forget") {
-    if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
+    if (!await ask(`Remove ${node} from the registry?`,
+      "Nothing on that machine is changed — the SSH key stays where it is.",
+      "Remove", true)) return;
     await api(`/api/nodes/${encodeURIComponent(node)}`, { method: "DELETE" });
     nodeRows.clear();
     refreshNodes();
@@ -1318,7 +1858,7 @@ document.addEventListener("click", async e => {
     const d = await r.json();
     btn.disabled = false;
     btn.textContent = original;
-    if (!r.ok) { alert(d.detail || "Command failed"); return; }
+    if (!r.ok) { say("Command failed", d.detail || ""); return; }
 
     // remove ครั้งแรกคือ --dry-run: server ยังไม่ลบอะไร แค่บอกว่าจะลบอะไรบ้าง
     // ผู้ใช้ต้องเห็นรายการ+ขนาดจริงก่อน แล้วกดยืนยันอีกครั้งถึงจะลบ
@@ -1364,17 +1904,20 @@ function clusterMachineRow(m) {
   const colour = !m.reachable ? "var(--bad)" : m.ready ? "var(--ok)" : "var(--warn)";
   const editable = !m.self && m.reachable;
   const hint = m.reachable ? ipHint(m) : (m.error || "");
-  return `<div class="field" style="margin-bottom:6px">
+  // grid ไม่ใช่ flex — ทุกแถวต้องมีคอลัมน์ตรงกัน ไม่งั้นแถวที่แก้ IP ได้กับแก้ไม่ได้
+  // จะดันความเร็วกับที่อยู่ไปคนละที่จนอ่านเทียบกันไม่ได้
+  return `<div class="crow">
     <span class="dot ${m.ready ? "on" : ""}"></span>
-    <span class="grow"><b style="font-weight:500">${esc(m.name)}</b>${m.self ? ' <span class="dim">(hub)</span>' : ""}</span>
-    <span class="mono" style="color:${colour}">${esc(link)}</span>
+    <span class="cname"><b style="font-weight:500">${esc(m.name)}</b>${m.self ? ' <span class="dim">(hub)</span>' : ""}</span>
+    <span class="mono cspeed" style="color:${colour}">${esc(link)}</span>
     ${editable
       ? `<input class="ipedit" data-ipfor="${esc(m.name)}" value="${esc(m.cluster_ip || "")}"
            placeholder="${esc(m.suggested_ip || "cluster IP")}" title="IP on the fast link, used for NCCL">
          <button data-cact="save-ip" data-node="${esc(m.name)}">save</button>`
-      : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>`}
+      : `<span class="mono muted cip">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>
+         <span></span>`}
   </div>
-  ${hint ? `<div class="dim" style="margin:-2px 0 8px 22px">${esc(hint)}</div>` : ""}`;
+  ${hint ? `<div class="chint dim">${esc(hint)}</div>` : ""}`;
 }
 
 function clusterGroupRow(g) {
@@ -1402,6 +1945,31 @@ function clusterGroupRow(g) {
   </div>`;
 }
 
+// แผงสามอันนี้โหลดเมื่อผู้ใช้กดเท่านั้น (แต่ละอันต่อเครื่อง/สแกนดิสก์จริง) — ปุ่มจึงต้อง
+// ปิดกลับได้ด้วย ไม่ใช่โหลดแล้วค้างอยู่อย่างนั้นจนกว่าจะรีเฟรชทั้งหน้า
+const PANELS = {
+  "scan-run":      { box: "scan",    show: "Scan",      hide: "Hide", load: () => loadScan() },
+  "recipes-load":  { box: "recipes", show: "Show",      hide: "Hide", load: () => loadRecipes() },
+  "cluster-check": { box: "cluster", show: "Check now", hide: "Hide", load: () => loadCluster() },
+};
+const panelIntro = new Map();   // เก็บข้อความตั้งต้นไว้คืนตอนปิด
+
+function togglePanelSection(id) {
+  const spec = PANELS[id];
+  const box = document.getElementById(spec.box);
+  const btn = document.getElementById(id);
+  if (!panelIntro.has(id)) panelIntro.set(id, box.innerHTML);
+  if (btn.dataset.open === "1") {
+    box.innerHTML = panelIntro.get(id);
+    btn.dataset.open = "";
+    btn.textContent = spec.show;
+    return;
+  }
+  btn.dataset.open = "1";
+  btn.textContent = spec.hide;
+  spec.load();
+}
+
 async function loadCluster() {
   const box = document.getElementById("cluster");
   box.innerHTML = `<div class="empty">Contacting every machine…</div>`;
@@ -1425,7 +1993,7 @@ async function loadCluster() {
 }
 
 document.addEventListener("click", async e => {
-  if (e.target.id === "cluster-check") { loadCluster(); return; }
+  if (e.target.id === "cluster-check") { togglePanelSection("cluster-check"); return; }
   const btn = e.target.closest('button[data-cact="save-ip"]');
   if (!btn) return;
   const name = btn.dataset.node;
@@ -1438,7 +2006,7 @@ document.addEventListener("click", async e => {
   btn.disabled = false;
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
-    alert(d.detail || "Could not save the cluster IP");
+    say("Could not save the cluster IP", d.detail || "");
     return;
   }
   loadCluster();
@@ -1468,23 +2036,36 @@ async function loadRecipes() {
   const box = document.getElementById("recipes");
   box.innerHTML = `<div class="empty">Loading…</div>`;
   const { recipes } = await (await api("/api/recipes")).json();
-  box.innerHTML = `<div class="pad">${recipes.map(r => {
-    const sets = [r.image ? "image" : "", ...Object.keys(r.serving || {}),
-                  r.tools ? "tools:" + r.tools : "", r.reasoning ? "reasoning:" + r.reasoning : ""]
-                 .filter(Boolean);
-    return `<div style="margin-bottom:12px">
-      <div class="row between"><b style="font-weight:500">${esc(r.label || r.match)}</b>
-        <span class="dim">${esc(r.engine)}</span></div>
-      <div class="npills" style="margin:4px 0">${sets.map(s => `<span class="npill">${esc(s)}</span>`).join("")}</div>
-      <div class="dim">verified on ${esc(r.validated_on || "—")} ·
-        <a href="${esc(r.source)}" target="_blank" rel="noopener">source</a></div>
-    </div>`;
-  }).join("")}</div>`;
+  // เดิมโชว์ชิปของ "ชื่อคีย์" ทุกตัวที่สูตรตั้ง — กินครึ่งจอโดยไม่บอกค่าอะไรเลย
+  // สิ่งที่คนอ่านหน้านี้อยากรู้จริงคือ ทดสอบบนอะไร และ parser ตัวไหน · ที่เหลือกางดูได้
+  box.innerHTML = recipes.map(r => {
+    const detail = Object.entries(r.serving || {})
+      .map(([k, v]) => `${k} = ${v}`)
+      .concat(r.image ? [`image = ${r.image}`] : []);
+    const badges = [
+      r.tools ? `<span class="npill">tools <b>${esc(r.tools)}</b></span>` : "",
+      r.reasoning ? `<span class="npill">reasoning <b>${esc(r.reasoning)}</b></span>` : "",
+      detail.length ? `<span class="npill">${detail.length} settings</span>` : "",
+    ].filter(Boolean).join("");
+    return `<details class="recipe">
+      <summary>
+        <span class="rname">${esc(r.label || r.match)}</span>
+        <span class="npills">${badges}</span>
+        <span class="tag">${esc(r.engine)}</span>
+      </summary>
+      <div class="rbody">
+        <div class="dim">Verified on ${esc(r.validated_on || "—")} ·
+          <a href="${esc(r.source)}" target="_blank" rel="noopener">source</a></div>
+        ${detail.length ? `<pre class="rset">${esc(detail.join("\n"))}</pre>` : ""}
+        ${(r.notes || []).map(n => `<div class="warn-line">${esc(n)}</div>`).join("")}
+      </div>
+    </details>`;
+  }).join("");
 }
 
 document.addEventListener("click", e => {
-  if (e.target.id === "scan-run") loadScan();
-  if (e.target.id === "recipes-load") loadRecipes();
+  if (e.target.id === "scan-run") togglePanelSection("scan-run");
+  if (e.target.id === "recipes-load") togglePanelSection("recipes-load");
 });
 
 async function refresh() {

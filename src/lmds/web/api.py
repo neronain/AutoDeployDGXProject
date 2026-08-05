@@ -411,22 +411,29 @@ def create_app(token: str = "") -> FastAPI:
                 "ip": check_cluster_ip(host, cluster_ip),
             }
 
+        # ต่อทุกเครื่องก่อนหนึ่งรอบ — ต้องรู้ว่าเครื่องอื่นอยู่วงไหนถึงจะเสนอ IP ของ hub ได้ถูก
+        probed, unreachable = [], []
+        for node in load():
+            try:
+                probed.append((node, (probe(node).get("host")) or {}))
+            except NodeError as exc:
+                unreachable.append((node, exc))
+
         local = host_payload()
         local_name = local.get("hostname") or "this machine"
         # hub เองไม่ได้อยู่ในทะเบียน จึงยังไม่มีที่เก็บ cluster IP ของตัวเอง — เสนอจากการ์ดที่ตรวจพบ
-        machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local)}]
+        # โดยเลือกวงที่ใช้ร่วมกับเครื่องอื่นได้ก่อน ไม่งั้นระบบจะฟ้อง split-fabric ที่ตัวเองสร้าง
+        machines = [{"name": local_name, "host": local,
+                     "cluster_ip": suggest_cluster_ip(local, [n.cluster_ip for n, _ in probed])}]
         rows = [row(local_name, local, machines[0]["cluster_ip"], True)]
-        for node in load():
-            try:
-                host = (probe(node).get("host")) or {}
-            except NodeError as exc:
-                rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
-                             "has_gpu": False, "error": str(exc)[:200], "fabric": None,
-                             "cluster_ip": node.cluster_ip, "suggested_ip": "",
-                             "ip": {"state": "unset", "iface": "", "speed_gbps": None}})
-                continue
+        for node, host in probed:
             machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
             rows.append(row(node.name, host, node.cluster_ip, False))
+        for node, exc in unreachable:
+            rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
+                         "has_gpu": False, "error": str(exc)[:200], "fabric": None,
+                         "cluster_ip": node.cluster_ip, "suggested_ip": "",
+                         "ip": {"state": "unset", "iface": "", "speed_gbps": None}})
         return {"machines": rows, "groups": cluster_groups(machines)}
 
     @app.patch("/api/nodes/{name}", dependencies=guarded)

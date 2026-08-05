@@ -617,7 +617,18 @@ def node_cluster(
 
     local = host_payload()
     local_name = local.get("hostname") or "เครื่องนี้"
-    machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local)}]
+    # ต่อทุกเครื่องก่อนหนึ่งรอบ — ต้องรู้ว่าเครื่องอื่นอยู่วงไหนถึงจะเสนอ IP ของ hub ได้ถูก
+    probed, unreachable = [], []
+    for node in load():
+        try:
+            probed.append((node, probe(node).get("host") or {}))
+        except NodeError as exc:
+            unreachable.append((node, str(exc)))
+
+    # เสนอ IP ของ hub จากวงที่ใช้ร่วมกับเครื่องอื่นได้ ไม่ใช่เลือกอิสระ — DGX Spark มี
+    # fabric สองวงที่เร็วเท่ากัน เลือกคนละวงแล้วระบบจะฟ้อง split-fabric ที่ตัวเองสร้างเอง
+    machines = [{"name": local_name, "host": local,
+                 "cluster_ip": suggest_cluster_ip(local, [n.cluster_ip for n, _ in probed])}]
 
     table = Table(title="สายเชื่อมของแต่ละเครื่อง")
     table.add_column("เครื่อง")
@@ -640,14 +651,11 @@ def node_cluster(
             table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
 
     add_row(local_name + " (hub)", local, machines[0]["cluster_ip"])
-    for node in load():
-        try:
-            host = probe(node).get("host") or {}
-        except NodeError as exc:
-            table.add_row(node.name, "—", node.cluster_ip or "—", f"[red]ต่อไม่ได้[/red] {str(exc)[:40]}")
-            continue
+    for node, host in probed:
         machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
         add_row(node.name, host, node.cluster_ip)
+    for node, error in unreachable:
+        table.add_row(node.name, "—", node.cluster_ip or "—", f"[red]ต่อไม่ได้[/red] {error[:40]}")
 
     console.print(table)
 

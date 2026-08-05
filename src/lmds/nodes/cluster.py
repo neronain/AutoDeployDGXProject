@@ -58,12 +58,30 @@ def fabric_links(host: dict) -> list[dict]:
     ]
 
 
-def suggest_cluster_ip(host: dict) -> str:
-    """IP ที่ควรใช้เป็น cluster IP — เส้นที่เร็วที่สุดที่มี IP อยู่แล้ว (ว่าง = ต้องกรอกเอง)"""
+def suggest_cluster_ip(host: dict, peer_ips: list[str] | None = None) -> str:
+    """IP ที่ควรใช้เป็น cluster IP — เส้นที่เร็วที่สุดที่มี IP อยู่แล้ว (ว่าง = ต้องกรอกเอง)
+
+    `peer_ips` = cluster IP ที่เครื่องอื่น **ตั้งไว้จริง** · DGX Spark มี fabric สองวงที่เร็ว
+    เท่ากัน (คู่แฝดของพอร์ตเดียวกัน) และทุกเครื่องมักมีขาอยู่ทั้งสองวง การเลือกตามความเร็ว
+    อย่างเดียวจึงตัดสินด้วยลำดับที่อ่านเจอ ซึ่งเป็นคนละวงกับที่เครื่องอื่นตั้งไว้ได้ง่าย ๆ
+
+    เคสจริงบน DGX Spark สองเครื่อง: s2 ตั้ง 10.100.16.2 แต่ hub ถูกเสนอ 10.100.17.1
+    แล้วระบบก็ฟ้อง split-fabric ที่ **ตัวเองสร้างขึ้นมาเอง** — ผู้ใช้ไม่ได้ทำอะไรผิดเลย
+    """
     links = fabric_links(host)
     if not links:
         return ""
-    return max(links, key=lambda link: link.get("speed_gbps") or 0).get("ip", "")
+    peer_networks = {
+        network for network in
+        (link_network({"ip": ip, "prefix": None}) for ip in (peer_ips or []) if ip)
+        if network
+    }
+
+    def rank(link: dict) -> tuple:
+        # วงที่เครื่องอื่นตั้งไว้แล้วมาก่อนความเร็วเสมอ — เร็วแต่คุยกันไม่ได้ไม่มีประโยชน์
+        return (link_network(link) in peer_networks, link.get("speed_gbps") or 0)
+
+    return max(links, key=rank).get("ip", "")
 
 
 def check_cluster_ip(host: dict, cluster_ip: str) -> dict:

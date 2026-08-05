@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -776,7 +779,9 @@ def test_destructive_button_is_quiet_until_hovered():
     """ปุ่มลบไม่ควรดึงสายตาไปกว่าปุ่มที่ใช้ทุกวัน — เด่นตอนจะกดจริงก็พอ"""
     body = TestClient(create_app()).get("/").text
     assert "button.danger { color: var(--fg2)" in body
-    assert 'class="danger">forget</button>' in body
+    # ปุ่มที่ลบของจริง ๆ ต้องติด class danger ไว้ — ตัวที่ลบเครื่องออกจากทะเบียนอยู่ในเมนู ⋯
+    assert 'class="danger">Remove from registry</button>' in body
+    assert 'style="border-color:var(--bad);color:var(--bad)"' in body   # ยืนยันการลบโมเดล
 
 
 def test_events_endpoint_exists_as_a_stream():
@@ -1093,3 +1098,56 @@ def test_blank_entries_are_dropped(registered):
     client = TestClient(create_app())
     data = client.patch("/api/nodes/spark2", json={"alt_hosts": "a.local, , ,b.local,"}).json()
     assert data["alt_hosts"] == ["a.local", "b.local"]
+
+
+# ── หน้าเว็บต้อง parse ได้ ────────────────────────────────────────────────────
+def _page_script() -> str:
+    from lmds.web import api as web_api
+
+    html = (Path(web_api.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+    return html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+
+def test_page_script_parses():
+    """สคริปต์ทั้งหน้าอยู่ในไฟล์เดียว — พิมพ์ผิดจุดเดียวคือทั้งหน้าตาย ไม่ใช่แค่ฟีเจอร์เดียว
+
+    เคสจริงตอนเขียน PR นี้: template literal ที่ควรเป็น "\n" กลายเป็นขึ้นบรรทัดใหม่จริง
+    ผลคือ "Other machines" ค้างที่ Loading… ตลอดกาล และไม่มีเทสไหนจับได้เลย
+    เพราะเทสฝั่ง API ผ่านหมด — เบราว์เซอร์ต่างหากที่พัง
+    """
+    script = _page_script()
+    checker = shutil.which("node") or shutil.which("nodejs")
+    if checker is None:
+        # ไม่มี node ก็ยังจับเคสที่เจอจริงได้: backtick/`${` ที่ไม่ปิด
+        assert script.count("`") % 2 == 0, "backtick ไม่ครบคู่ — template literal ค้าง"
+        pytest.skip("ไม่มี node ในเครื่องนี้ — ตรวจได้แค่ backtick")
+    # ส่งเป็นไฟล์ UTF-8 ไม่ใช่ stdin — โค้ดหน้าเว็บมีทั้งไทยและอังกฤษ ส่วน stdin ของ
+    # subprocess ใช้ encoding ของ locale ซึ่งบน Windows ไทยคือ cp874 แล้วพังตั้งแต่ยังไม่ตรวจ
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "page.js"
+        path.write_text(script, encoding="utf-8")
+        result = subprocess.run([checker, "--check", str(path)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[:800]
+
+
+def test_page_has_no_native_dialogs():
+    """alert()/confirm()/prompt() บล็อกทั้งหน้า จัดสไตล์ไม่ได้ และบนมือถือขึ้นชื่อโดเมนนำหน้า
+
+    มี openModal() ที่ใช้ <dialog> อยู่แล้ว — เทสนี้กันไม่ให้เผลอกลับไปใช้ของเดิม
+    """
+    script = _page_script()
+    code = "\n".join(line for line in script.splitlines() if not line.strip().startswith("//"))
+    for name in ("alert(", "confirm(", "prompt("):
+        assert name not in code, f"ยังมี {name} อยู่ — ใช้ say()/ask()/askFor() แทน"
+
+
+def test_page_ships_without_any_external_request():
+    """เครื่องเป้าหมายมักอยู่หลัง proxy หรือตัดเน็ต — CDN ตัวเดียวคือหน้าเว็บพังตรงที่ต้องใช้"""
+    from lmds.web import api as web_api
+
+    html = (Path(web_api.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in ("http://", "https://", "//cdn", "src=", "@import"):
+        if marker in ("http://", "https://"):
+            # ยอมให้มีลิงก์ที่ผู้ใช้กดเอง (target=_blank) แต่ห้ามโหลดทรัพยากรจากข้างนอก
+            continue
+        assert marker not in html.replace('src="${', ""), f"หน้าเว็บอ้างของข้างนอก: {marker}"

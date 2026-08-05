@@ -256,3 +256,46 @@ def test_three_machines_need_pipeline_parallel():
                                         (6, "pipeline-parallel")])
 def test_parallelism_note_by_size(size, kind):
     assert cl.parallelism_note(size)["kind"] == kind
+
+
+def test_hub_ip_follows_the_subnet_peers_actually_use():
+    """DGX Spark มี fabric สองวงที่เร็วเท่ากัน และทุกเครื่องมักมีขาอยู่ทั้งสองวง
+
+    เคสจริงบนเครื่องสองเครื่อง: s2 ตั้ง 10.100.16.2 ไว้ แต่ hub ถูกเสนอ 10.100.17.1
+    แล้วระบบก็ฟ้อง split-fabric ที่ **ตัวเองสร้างขึ้นมาเอง** — ผู้ใช้ไม่ได้ทำอะไรผิดเลย
+    """
+    from lmds.nodes import suggest_cluster_ip
+
+    host = {"fabric": {"links": [
+        {"iface": "enp1s0f0np0", "ip": "10.100.16.1", "prefix": 24, "speed_gbps": 200,
+         "state": "up", "connectx": True},
+        {"iface": "enP2p1s0f0np0", "ip": "10.100.17.1", "prefix": 24, "speed_gbps": 200,
+         "state": "up", "connectx": True},
+    ]}}
+    assert suggest_cluster_ip(host, ["10.100.16.2"]) == "10.100.16.1"
+    assert suggest_cluster_ip(host, ["10.100.17.2"]) == "10.100.17.1"
+
+
+def test_hub_ip_without_peers_still_picks_the_fastest():
+    """ยังไม่มีเครื่องอื่นในทะเบียน = ไม่มีอะไรให้ตาม — พฤติกรรมเดิมต้องไม่เปลี่ยน"""
+    from lmds.nodes import suggest_cluster_ip
+
+    host = {"fabric": {"links": [
+        {"iface": "eth0", "ip": "192.168.1.5", "prefix": 24, "speed_gbps": 25,
+         "state": "up", "connectx": False},
+        {"iface": "enp1s0f0np0", "ip": "10.100.16.1", "prefix": 24, "speed_gbps": 200,
+         "state": "up", "connectx": True},
+    ]}}
+    assert suggest_cluster_ip(host) == "10.100.16.1"
+    assert suggest_cluster_ip(host, []) == "10.100.16.1"
+
+
+def test_peer_ip_on_a_subnet_the_hub_cannot_reach_is_ignored():
+    """peer ตั้ง IP ที่ hub ไม่มีขาอยู่ — เสนอตามความเร็วต่อ ไม่ใช่คืนค่าว่าง"""
+    from lmds.nodes import suggest_cluster_ip
+
+    host = {"fabric": {"links": [
+        {"iface": "enp1s0f0np0", "ip": "10.100.16.1", "prefix": 24, "speed_gbps": 200,
+         "state": "up", "connectx": True},
+    ]}}
+    assert suggest_cluster_ip(host, ["192.168.99.2"]) == "10.100.16.1"
