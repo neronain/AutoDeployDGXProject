@@ -75,6 +75,20 @@
 | FR-1.5 | ตรวจ gated/private repo (HTTP 401/403) → ถาม HF token แบบ optional; ไม่ใส่ → แจ้งข้อจำกัดและดำเนินการเท่าที่ metadata สาธารณะเปิดให้ | P0 |
 | FR-1.6 | ดึง metadata ขนาดเล็กเท่านั้นตอน inspect (config.json, tokenizer_config.json, index.json, chat_template ฯลฯ) — **ไม่**ดาวน์โหลด weight ตอนวิเคราะห์ | P0 |
 
+### FR-1b Fleet หลายเครื่อง (เพิ่ม 2026-08-05)
+
+| ID | ข้อกำหนด | Priority |
+|---|---|---|
+| FR-1b.1 | เครื่องหนึ่ง (hub) คุมเครื่องอื่น (node) ผ่าน SSH โดย **node ไม่ต้องรัน daemon** — hub เรียก `lmds agent info` บนเครื่องนั้นเพื่อขอสถานะเป็น JSON | P0 |
+| FR-1b.2 | เพิ่มเครื่องด้วย ip/user/รหัสผ่าน **ครั้งเดียว** → ติดตั้ง SSH key ของ LMDS แล้วทิ้งรหัสผ่าน · **ทะเบียนต้องไม่มีฟิลด์รหัสผ่าน** | P0 |
+| FR-1b.3 | ติดตั้ง/อัปเดต LMDS บน node จาก hub (`lmds node install`) — node ต้องมี `lmds` อยู่บนเครื่องเพราะ "agent" คือตัวคำสั่งเอง | P0 |
+| FR-1b.4 | แสดงทรัพยากรสดทุกเครื่องจากที่เดียว: CPU, RAM/unified, VRAM, ดิสก์, ความเร็วสาย, **จำนวนโมเดลที่รัน** (llama.cpp รันหลายตัวพร้อมกันได้) | P0 |
+| FR-1b.5 | **node ล่มต้องไม่ทำให้ hub หรือหน้าเว็บพัง** — แถวนั้นรายงานว่าติดต่อไม่ได้แล้วจบ | P0 |
+| FR-1b.6 | ตรวจ fabric (ConnectX/RDMA/ความเร็วลิงก์) จาก `/sys` แล้วจับกลุ่มเครื่องที่ stacked ด้วยกันได้ — ต้องตรงทั้ง arch/profile/รุ่น GPU/จำนวน GPU และมีสาย ≥ 25G | P0 |
+| FR-1b.7 | **cluster IP ต้องให้คนยืนยัน ระบบเสนอได้แต่ห้ามตั้งเอง** — เดาผิดแล้ว stacked จะค้างตอน NCCL init โดยไม่บอกสาเหตุ · ต้องเสนอจากวงที่ทุกเครื่องมีขาร่วมกัน และปฏิเสธ link-local | P0 |
+| FR-1b.8 | เขียนค่าคลัสเตอร์ลง bundle (`cluster.env`) ได้ รวมถึง bundle ที่อยู่บนเครื่องอื่น | P1 |
+| FR-1b.9 | คำสั่งที่สั่งข้ามเครื่องผ่านหน้าเว็บต้องจำกัดด้วย allowlist ฝั่ง server | P0 |
+
 ### FR-2 Hardware Profiler
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
@@ -263,6 +277,7 @@ validation_notes: [...]
 ทุก bundle ต้องผ่านก่อนถึงมือผู้ใช้:
 
 - [ ] `bash -n` ผ่านทุกสคริปต์
+- [ ] **ไม่มี template tag เหลืออยู่ในไฟล์ผลลัพธ์** — Jinja ที่หลุดมาเป็น bash ที่ syntax ถูกต้อง `bash -n` จึงจับไม่ได้
 - [ ] Audit rules: ไม่มี numeric underscore, pipefail-safe, มี flags/env ครบตาม contract
 - [ ] `MODEL_PROFILE.yaml` ผ่าน schema, revision ถูก pin
 - [ ] `PACKAGE_SHA256SUMS` ครบทุกไฟล์
@@ -309,6 +324,13 @@ validation_notes: [...]
 | 2026-07-21 | **แนวทางที่เหลือของเฟส 1** | ดำเนินตามข้อเสนอใน PRD นี้ (provider เริ่มที่ OpenAI + Gemini + OpenAI-compatible, template vLLM/llama.cpp ก่อน) |
 | 2026-07-21 | **เครื่องทดสอบ RTX** | Ubuntu ทั้งหมด: RTX PRO 4000 Blackwell 24GB ×2 ใบ (multi-GPU) และ RTX 4070 Super 16GB แบบใบเดียว — ใช้เป็น GPU allowlist เริ่มต้น (`tested=true`) ร่วมกับ DGX Spark |
 | 2026-07-24 | **Stacked (multi-node) generation** | เปิดใช้ใน CLI ผ่าน `--target dgx-spark-stacked` — template `stacked-vllm-controller.sh.j2` port จาก reference v8.2 (DeepSeek-V4-Flash 2×DGX Spark, hardware-validated 2026-07-22) แบบ generic driven-by-env · topology เป็นสมบัติของ target (harden บังคับเสมอ ไม่ให้ LLM เลือก) · gate `stacked-contract` กัน bundle single-node ปลอม · **ยังไม่เพิ่ม flag `--topology` แยก** (topology มาจาก target) — `--topology both` เลื่อนเป็นงานต่อยอด |
+
+| 2026-08-05 | **Fleet หลายเครื่องคุยผ่าน SSH ไม่ใช้ daemon** | hub เรียก `lmds agent info` บน node ผ่าน SSH · node ไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 ไม่มี agent ให้ค้างเป็นซอมบี้ และ node เวอร์ชันต่างกันยังคุยกันได้ · ข้อแลกเปลี่ยนคือ **ทุกเครื่องต้องติดตั้ง LMDS ก่อน** ซึ่งชดเชยด้วย `lmds node install` จาก hub |
+| 2026-08-05 | **ไม่เก็บรหัสผ่านของ node เด็ดขาด** | ใช้ครั้งเดียวตอนติดตั้ง SSH key (`~/.config/lmds/id_lmds`) แล้วทิ้ง · `Node` dataclass ไม่มีฟิลด์รหัสผ่าน และมีเทสกันไม่ให้เผลอเพิ่มกลับเข้ามา · ผู้ใช้เสนอให้กรอก root ตอนแรก — เปลี่ยนเป็น user ในกลุ่ม `docker` เพราะ LMDS ไม่เคยต้องการ root ในการรันโมเดล |
+| 2026-08-05 | **cluster IP ระบบเสนอได้ แต่คนต้องยืนยัน** | ตรวจเจอการ์ด 200G เป็นคนละเรื่องกับรู้ว่า NCCL คุยกันทาง IP ไหน · เครื่องจริงมี fabric หลายวงและพอร์ตที่ยังไม่ตั้งค่าจะได้ 169.254.x.x มาเอง · เดาผิด = ค้างตอน NCCL init แบบไล่สาเหตุยาก จึงเสนอเฉพาะวงที่ทุกเครื่องมีขาร่วมกัน และมี blocker `split-fabric`/`link-local` |
+| 2026-08-05 | **stacked ใช้ `mp` backend ไม่ใช้ Ray** | ทดสอบ Llama 3.3 70B บน DGX Spark 2 เครื่องจริง — vLLM native multi-node (`--nnodes/--node-rank/--headless`) จับ NCCL ข้ามเครื่องผ่าน RoCE ได้ · ตัดสินใจ **ไม่** เพิ่ม Ray/tmux/`run_cluster.sh` เข้าระบบตามที่สคริปต์มือของผู้ใช้ทำ เพราะชิ้นส่วนน้อยกว่าและได้ผลเท่ากัน |
+| 2026-08-05 | **image ตั้งต้นแยกตามเครื่องเป้าหมาย** | DGX Spark (GB10/SM121) ใช้ `nvcr.io/nvidia/vllm` ของ NGC · `vllm/vllm-openai` มี manifest arm64 แต่ไม่ได้ build kernel ให้ SM121 · โมเดลที่ต้องใช้ build เฉพาะ (เช่น DeepSeek V4) override ผ่าน `cluster.env` ได้ |
+| 2026-08-05 | **static gate ไม่พอ ต้องรันจริง** | การรัน stacked ครั้งแรกบนฮาร์ดแวร์เจอบั๊ก 3 ตัวที่ gate ทั้ง 10 ด่านจับไม่ได้ เพราะทั้งหมดเป็น bash ที่ syntax ถูกต้อง (head container ไม่เคย start, Jinja หลุดเข้าไฟล์ผลลัพธ์, ล็อก image ใช้ร่วมทั้งเครื่อง) · เพิ่ม gate `template-rendered` และยึดหลักว่า **สถานะ hardware-validated ต้องมาจากการรันจริงเท่านั้น** |
 
 ### คำถามเปิด (ยังรอคำตอบ — ไม่ block เฟส 1)
 

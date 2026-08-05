@@ -189,6 +189,17 @@ _model_cache_dir() {
   printf '%s/hub/models--%s' "$hf_root" "$slug"
 }
 
+# path ฝั่งคอนเทนเนอร์ที่ HF ควรใช้เป็น hub cache (mount $HF_HOME ไว้ที่ /cache)
+_container_hub_cache() {
+  local hf_root="${1:-$HF_HOME}" slug
+  slug="$(_model_slug)"
+  if [[ -d "${hf_root}/models--${slug}/snapshots" && ! -d "${hf_root}/hub/models--${slug}/snapshots" ]]; then
+    printf '/cache'      # เลย์เอาต์เก่า: โมเดลอยู่ที่รากของ HF_HOME
+  else
+    printf '/cache/hub'
+  fi
+}
+
 _snapshot_path() {
   local hf_root="${1:-$HF_HOME}" model_dir ref_file commit snap
   model_dir="$(_model_cache_dir "$hf_root")"
@@ -681,6 +692,7 @@ start() {
 set -e
 export VLLM_HOST_IP=${wip}
 export HF_HOME=/cache
+export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 $(_nccl_env_pairs "$wifname" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
@@ -720,6 +732,7 @@ WSCRIPT
     -v "${head_fi}:/root/.cache/flashinfer"
     -e "VLLM_HOST_IP=${TRANSPORT_IP_MASTER}"
     -e HF_HOME=/cache -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1
+    -e "HF_HUB_CACHE=$(_container_hub_cache "$HF_HOME")"
   )
   hrun+=("${nccl_docker[@]}")
   [[ -n "$API_KEY" ]] && hrun+=(-e "VLLM_API_KEY=${API_KEY}")

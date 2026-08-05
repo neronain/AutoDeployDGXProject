@@ -369,3 +369,16 @@ def test_image_lock_is_per_bundle_not_per_machine(tmp_path):
     assert ".lmds-stacked-image-id" not in text
     assert "IMAGE_LOCK_FILE=" in text
     assert "deepseek-v4-flash-nvfp4" in text.split("IMAGE_LOCK_FILE=")[1].split("\n")[0]
+
+
+def test_container_hub_cache_handles_both_hf_layouts(tmp_path):
+    """HF cache มีสองเลย์เอาต์ ($HF_HOME/hub/models--X และ $HF_HOME/models--X)
+    เราตรวจเจอทั้งคู่ แต่ vLLM ในคอนเทนเนอร์มองแค่ hub/ — ต้องบอก HF_HUB_CACHE ให้ตรง
+    ไม่งั้นได้ LocalEntryNotFoundError ทั้งที่ verify-files บอกว่าไฟล์ครบ"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert "_container_hub_cache()" in text
+    # ต้องส่งให้ทั้ง head (docker -e) และ worker (export ในสคริปต์)
+    assert '-e "HF_HUB_CACHE=$(_container_hub_cache "$HF_HOME")"' in text
+    assert 'export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")' in text
