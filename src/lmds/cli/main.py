@@ -888,6 +888,7 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
         RepoNotFound,
         inspect_model,
     )
+    from lmds.inspector.ollama_api import ManifestNotFound, OllamaError
     from lmds.resolver import SourceError, parse_source
 
     try:
@@ -928,7 +929,7 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
                 "  หรือชั่วคราว:  [bold]export HF_TOKEN=hf_xxx[/bold]  ก่อนรัน ./<controller>.sh download"
             )
             return source, report
-    except RepoNotFound as exc:
+    except (RepoNotFound, ManifestNotFound) as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     except BudgetExceeded as exc:
@@ -938,6 +939,9 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
             "[yellow]ถ้าเป็นโมเดล MoE/quant ละเอียดที่ index ยาวจริง แจ้งทีมพัฒนาให้ปรับเพดาน "
             "(INDEX_FILE_CAP ใน inspector/hf_api.py)[/yellow]"
         )
+        raise typer.Exit(code=5)
+    except OllamaError as exc:
+        err_console.print(f"[red]ปัญหาเครือข่าย/Ollama registry:[/red] {exc}")
         raise typer.Exit(code=5)
     except HfError as exc:
         err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")

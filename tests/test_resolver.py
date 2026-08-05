@@ -46,9 +46,17 @@ def test_resolve_link_with_subdir():
     assert src.filename == "sub/dir/model-Q8_0.gguf"
 
 
-def test_ollama_rejected_with_clear_message():
-    with pytest.raises(UnsupportedSource, match="Ollama"):
-        parse_source("https://ollama.com/library/qwen3:32b")
+def test_ollama_link_resolves_to_registry_ref():
+    """เดิมเคยตอบว่ายังไม่รองรับ — ตอนนี้ resolve เป็น ref ของ registry (เทสละเอียดใน test_ollama.py)"""
+    src = parse_source("https://ollama.com/library/qwen3:32b")
+    assert src.kind == "ollama"
+    assert src.repo_id == "library/qwen3"
+    assert src.revision == "32b"
+
+
+def test_ngc_rejected_with_clear_message():
+    with pytest.raises(UnsupportedSource, match="NGC"):
+        parse_source("https://catalog.ngc.nvidia.com/models/foo")
 
 
 def test_dataset_link_rejected():

@@ -1,4 +1,7 @@
-"""Orchestrator ของการ inspect: Hub API → จำแนก artifact → ไฟล์ metadata → ModelReport"""
+"""Orchestrator ของการ inspect: Hub API → จำแนก artifact → ไฟล์ metadata → ModelReport
+
+Ollama registry เป็นอีกแหล่ง: manifest → blob ที่เป็น GGUF → parser ตัวเดียวกับ HF
+"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ import re
 
 from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
+from .ollama_api import OllamaClient, OllamaError
 from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport, ShardFile
 
 _SPLIT_GGUF_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -20,7 +24,14 @@ _SAFETENSORS_INDEX = "model.safetensors.index.json"
 _TOKENIZER_FILES = {"tokenizer.json", "tokenizer_config.json", "tokenizer.model", "vocab.json", "merges.txt"}
 
 
-def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
+def inspect_model(
+    source: ModelSource,
+    client: HfClient,
+    ollama_client: OllamaClient | None = None,
+) -> ModelReport:
+    if source.kind == "ollama":
+        return _inspect_ollama(source, ollama_client or OllamaClient())
+
     info = client.model_info(source.repo_id, source.revision)
     revision_sha = info.get("sha") or (source.revision or "main")
 
@@ -59,6 +70,55 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         _inspect_safetensors(report, source, client, revision_sha, safetensor_files)
     if artifact in (ArtifactType.GGUF, ArtifactType.MIXED):
         _inspect_gguf(report, source, client, revision_sha, gguf_files)
+    return report
+
+
+def _inspect_ollama(source: ModelSource, client: OllamaClient) -> ModelReport:
+    """manifest → blob ที่เป็น GGUF → header เดียวกับฝั่ง HF
+
+    digest ของ blob ทำหน้าที่เดียวกับ commit SHA ของ HF คือเป็น pin ที่ไม่ขยับ
+    (tag อย่าง `latest` ชี้ blob คนละตัวได้เมื่อเวลาผ่านไป)
+    """
+    tag = source.revision or "latest"
+    manifest = client.manifest(source.repo_id, tag)
+    digest, size = client.model_layer(manifest)
+    sha256 = digest.split(":", 1)[-1]
+
+    layers = manifest.get("layers", []) or []
+    media_types = {layer.get("mediaType") for layer in layers}
+
+    # Ollama เก็บ blob เป็นไฟล์ชื่อ sha256-<hex> — ใช้ชื่อเดียวกันเพื่อไม่ต้องสมมติชื่อไฟล์ที่ไม่มีจริง
+    filename = f"sha256-{sha256}"
+    report = ModelReport(
+        repo_id=f"{source.repo_id}:{tag}",
+        revision_requested=tag,
+        revision_sha=sha256,
+        artifact_type=ArtifactType.GGUF,
+        weight_bytes=size or None,
+        file_count=len(layers),
+        selected_gguf=filename,
+        gguf_variants=[GgufVariant(filename=filename, size_bytes=size or None, sha256=sha256)],
+    )
+
+    try:
+        gguf = parse_gguf(client.blob_range_source(source.repo_id, digest))
+    except (GgufParseError, BudgetExceeded, OllamaError, EOFError) as exc:
+        report.warnings.append(f"อ่าน GGUF header ไม่สำเร็จ: {exc}")
+        return report
+
+    report.architecture = gguf.architecture
+    report.context_length = gguf.context_length
+    report.kv_dims = _kv_dims_from_gguf(gguf)
+    # ชั้น template ของ Ollama เก็บ chat template ไว้แยกจาก GGUF — มีอย่างใดอย่างหนึ่งก็ถือว่ามี
+    report.has_chat_template = (
+        gguf.chat_template is not None
+        or "application/vnd.ollama.image.template" in media_types
+    )
+    if gguf.file_type is not None:
+        # ชื่อ quant อ่านจาก header ไม่ใช่เดาจากชื่อไฟล์ — Ollama ไม่มีชื่อไฟล์ให้เดาอยู่แล้ว
+        report.quantization = f"gguf-file-type-{gguf.file_type}"
+    if gguf.partial:
+        report.warnings.append("GGUF metadata อ่านได้บางส่วน (ชน budget) — ข้อมูลอาจไม่ครบ")
     return report
 
 
