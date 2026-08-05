@@ -215,13 +215,15 @@ def start_refresher() -> None:
     _thread.start()
 
 
-def stop_refresher(timeout: float = 5.0) -> None:
-    """สั่งหยุดแล้ว**รอให้จบจริง** — แค่ set event ยังไม่พอ
+def stop_refresher(timeout: float = 5.0) -> bool:
+    """สั่งหยุดและรอแบบ bounded; คืน True ต่อเมื่อ thread จบจริง
 
     รอบที่กำลังวิ่งอยู่ยังเขียน STORE ได้อีกครั้งหลัง set() ซึ่งกลายเป็นข้อมูลของ
-    สภาพแวดล้อมเก่าโผล่มาหลังหยุดไปแล้ว · loop ใช้ stop.wait(1.0) จึงออกภายในราว 1 วิ
+    สภาพแวดล้อมเก่าโผล่มาหลังหยุดไปแล้ว · ปกติ loop ออกภายในราว 1 วิ แต่ถ้ากำลัง
+    probe node อาจนานถึง timeout ของ SSH; caller ที่จะ reset STORE ต้องตรวจผลคืนเสมอ
     """
     _stop.set()
     thread = _thread
     if thread is not None and thread.is_alive():
         thread.join(timeout=timeout)
+    return thread is None or not thread.is_alive()

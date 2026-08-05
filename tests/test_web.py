@@ -342,6 +342,25 @@ def test_download_button_shows_until_weights_exist(runnable):
     assert client.get("/api/models").json()["models"][0]["downloaded"] is True
 
 
+def test_stop_refresher_reports_when_bounded_join_cannot_finish(monkeypatch):
+    """caller ห้าม reset STORE ถ้า refresher ยังติด SSH probe หลัง timeout"""
+    import threading
+
+    from lmds.web import state
+
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    monkeypatch.setattr(state, "_thread", thread)
+    state._stop.clear()
+    try:
+        assert state.stop_refresher(timeout=0.01) is False
+        assert state._stop.is_set()
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
+
+
 def test_job_output_is_streamed_back(runnable):
     client = TestClient(create_app())
     job = client.post(f"/api/models/{runnable}/run/download").json()

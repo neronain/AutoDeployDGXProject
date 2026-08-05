@@ -35,9 +35,11 @@ def fresh_web_state(monkeypatch):
     except ImportError:      # ยังไม่ได้ติดตั้ง extra ของเว็บ
         yield
         return
-    state.stop_refresher()
+    # node probe มี subprocess timeout 30 วิ — 5 วิ default ยังปล่อย thread เก่าเขียน STORE
+    # ตามหลัง reset ได้ ถ้าหยุดไม่ลงในกรอบนี้ให้ fail ตรง ๆ แทนการกลับไป flaky
+    assert state.stop_refresher(timeout=35.0), "web refresher did not stop before STORE reset"
     monkeypatch.setattr(state, "start_refresher", lambda: None)
     state.STORE.__init__()
     yield
-    state.stop_refresher()
+    assert state.stop_refresher(timeout=35.0), "web refresher did not stop before STORE reset"
     state.STORE.__init__()
