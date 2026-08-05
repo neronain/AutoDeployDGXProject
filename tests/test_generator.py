@@ -271,6 +271,10 @@ def test_llamacpp_prepare_finds_nvcc_outside_login_shell(isolated_config, tmp_pa
     text = bundle.controller.read_text(encoding="utf-8")
     assert "/usr/local/cuda/bin" in text
     assert 'export PATH="${cuda_bin}:${PATH}"' in text
+    assert '"${CUDACXX:-}"' in text
+    assert '"${CUDA_HOME:-}/bin/nvcc"' in text
+    assert '"${CUDA_PATH:-}/bin/nvcc"' in text
+    assert 'export CUDACXX="$nvcc_candidate"' in text
     # ต้องตาย ไม่ใช่แค่เตือน — template นี้ build ด้วย -DGGML_CUDA=ON เสมอ
     assert "ไม่พบ nvcc" in text
     nvcc_die = next(ln for ln in text.splitlines() if "ไม่พบ nvcc" in ln)

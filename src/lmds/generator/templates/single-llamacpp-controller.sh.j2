@@ -217,19 +217,28 @@ install_build_dependencies() {
   # (DGX OS ทำผ่าน /etc/profile.d) · งานที่รันจากหน้าเว็บ, systemd หรือ ssh แบบไม่ผ่าน
   # login shell จึงหา nvcc ไม่เจอ ทั้งที่ไฟล์อยู่ตรงนั้น แล้วไปตายลึก ๆ ที่ cmake ด้วย
   # "No CMAKE_CUDA_COMPILER could be found" ซึ่งไม่ได้บอกว่าต้องทำอะไรต่อเลย
-  if ! command -v nvcc >/dev/null 2>&1; then
-    local cuda_bin
-    for cuda_bin in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
-      [[ -x "${cuda_bin}/nvcc" ]] || continue
+  if ! command -v nvcc >/dev/null 2>&1 && [[ ! -x "${CUDACXX:-}" ]]; then
+    local nvcc_candidate cuda_bin
+    # ค่าที่ผู้ใช้/ระบบเลือกไว้ต้องมาก่อนการเดาจาก /usr/local — เครื่องที่ลงหลาย
+    # toolkit อาจตั้ง CUDA_HOME ไปเวอร์ชันที่ driver และโปรเจกต์นี้รองรับโดยตั้งใจ
+    for nvcc_candidate in \
+      "${CUDACXX:-}" \
+      "${CUDA_HOME:-}/bin/nvcc" \
+      "${CUDA_PATH:-}/bin/nvcc" \
+      /usr/local/cuda/bin/nvcc \
+      /usr/local/cuda-*/bin/nvcc; do
+      [[ -n "$nvcc_candidate" && -x "$nvcc_candidate" ]] || continue
+      cuda_bin="${nvcc_candidate%/*}"
       export PATH="${cuda_bin}:${PATH}"
-      echo "เพิ่ม ${cuda_bin} เข้า PATH — nvcc มีอยู่แต่ไม่ได้อยู่ใน PATH ของ shell นี้"
+      export CUDACXX="$nvcc_candidate"
+      echo "ใช้ nvcc ที่ ${nvcc_candidate} — เพิ่ม ${cuda_bin} เข้า PATH ของ shell นี้"
       break
     done
   fi
 
   # เดิมแค่เตือนแล้วปล่อยให้ build ล้มทีหลัง — ตายตรงนี้พร้อมบอกทางแก้ดีกว่า
   # เพราะ template นี้ build ด้วย -DGGML_CUDA=ON เสมอ ไม่มี nvcc ก็ไปต่อไม่ได้อยู่ดี
-  command -v nvcc >/dev/null 2>&1 || die "ไม่พบ nvcc (คอมไพเลอร์ของ CUDA Toolkit) — build llama.cpp แบบ CUDA ไม่ได้
+  command -v nvcc >/dev/null 2>&1 || [[ -x "${CUDACXX:-}" ]] || die "ไม่พบ nvcc (คอมไพเลอร์ของ CUDA Toolkit) — build llama.cpp แบบ CUDA ไม่ได้
   ถ้ามีไฟล์ /usr/local/cuda/bin/nvcc อยู่แล้ว สั่ง:  export PATH=/usr/local/cuda/bin:\$PATH
   ถ้าไม่มี ต้องติดตั้ง CUDA Toolkit ก่อน (DGX OS มีมาให้แล้ว — เครื่องอื่นใช้ apt/ตัวติดตั้งของ NVIDIA)"
 }
