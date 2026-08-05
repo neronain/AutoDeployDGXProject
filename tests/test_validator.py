@@ -220,6 +220,22 @@ def test_template_rendered_gate_catches_leftover_jinja(tmp_path):
     assert ":3:" in result.detail
 
 
+def test_template_rendered_gate_catches_leftover_expression(tmp_path):
+    """expression tag ก็หลุดได้: {{ slug }} ใน usage() ของ stacked controller อยู่ใน {% raw %}
+    bash -n ผ่านเพราะมันเป็นแค่ข้อความใน heredoc — ผู้ใช้ถึงเห็น {{ slug }} ดิบ ๆ ตอนสั่ง help"""
+    from lmds.validator.gates import gate_template_rendered
+
+    bundle = tmp_path / "b3"
+    bundle.mkdir()
+    (bundle / "x-stacked.sh").write_text(
+        "#!/usr/bin/env bash\nusage() {\n  cat <<EOF\n"
+        "{{ slug }} \u2014 vLLM stacked controller\nEOF\n}\n",
+        encoding="utf-8")
+    result = gate_template_rendered(bundle)
+    assert not result.passed
+    assert ":4:" in result.detail
+
+
 def test_template_rendered_gate_allows_docker_format_strings(tmp_path):
     """docker --format '{{.Names}}' ไม่ใช่ Jinja — ห้ามจับผิด"""
     from lmds.validator.gates import gate_template_rendered
