@@ -629,3 +629,15 @@ def test_prune_removes_only_dead_registrations(tmp_path, monkeypatch, isolated_c
     assert not (tmp_path / "run" / "dead").exists()
     assert (tmp_path / "run" / "alive" / "server.meta").exists()
     assert live.exists(), "prune ต้องไม่แตะไฟล์ controller"
+
+
+def test_tests_never_touch_the_real_run_root():
+    """เทสเคยเขียนทะเบียนลง ~/.lmds/run ของเครื่องจริง แล้วทิ้งรายการค้างให้ผู้ใช้เห็น"""
+    import os
+    from pathlib import Path
+
+    from lmds.fleet import run_root
+
+    real = Path.home() / ".lmds" / "run"
+    assert os.environ.get("LMDS_RUN_ROOT"), "conftest ต้องแยก LMDS_RUN_ROOT ทุกเทส"
+    assert run_root() != real

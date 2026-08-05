@@ -328,3 +328,25 @@ def test_scanner_does_not_double_count_hf_symlinks(tmp_path, monkeypatch):
     found = [m for m in scanner.scan() if m.kind == "hf"]
     assert len(found) == 1
     assert found[0].size_bytes == 4096, "นับ symlink ซ้ำกับ blob"
+
+
+def test_node_ctl_runs_the_bundle_controller(monkeypatch):
+    """`lmds node run` สั่งคำสั่งของ lmds · `node ctl` สั่งสคริปต์ controller ในตัว bundle
+    ซึ่งมีขั้นตอนที่ lmds ไม่ได้ห่อไว้ (prepare-runtime, sync-worker, test-text)"""
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+    from lmds.nodes.ssh import Result
+
+    add(make(name="n2"))
+    seen = {}
+
+    def fake_run(node, command, timeout=60):
+        seen["cmd"] = command
+        return Result(0, "ok", "")
+
+    monkeypatch.setattr("lmds.nodes.run", fake_run)
+    result = CliRunner().invoke(app, ["node", "ctl", "n2", "my-model", "start", "--gpu-util", "0.8"])
+    assert result.exit_code == 0, result.output
+    assert "bundles/my-model" in seen["cmd"]
+    assert "start --gpu-util 0.8" in seen["cmd"]

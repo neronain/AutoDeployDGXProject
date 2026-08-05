@@ -6,6 +6,8 @@ from typing import Optional
 
 import os
 
+import shlex
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -541,6 +543,49 @@ def node_set(
     console.print(f"อัปเดต '{node.name}' แล้ว — cluster IP: {node.cluster_ip or '—'} · "
                   f"ที่อยู่: {' → '.join(node.all_hosts)}")
 
+
+
+@node_app.command(
+    "ctl",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def node_ctl(
+    name: str = typer.Argument(..., autocompletion=_complete_node),
+    slug: str = typer.Argument(..., help="ชื่อ bundle บนเครื่องนั้น"),
+    command: list[str] = typer.Argument(..., help="คำสั่งของ controller เช่น prepare-runtime, start"),
+) -> None:
+    """สั่งคำสั่งของ controller บนเครื่องปลายทาง — เช่น prepare-runtime / download / sync-worker
+
+    ต่างจาก `lmds node run` ตรงที่อันนั้นสั่ง *คำสั่งของ lmds* ส่วนอันนี้สั่ง *สคริปต์ controller*
+    ในตัว bundle ซึ่งมีขั้นตอนที่ lmds ไม่ได้ห่อไว้ (prepare-runtime, sync-worker, test-text ฯลฯ)
+    """
+    from lmds.nodes import NodeError, find, run
+
+    node = find(name)
+    if node is None:
+        err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
+        raise typer.Exit(code=1)
+
+    # หา bundle บนเครื่องนั้นเอง — path ต่างกันไปตามที่ผู้ใช้ deploy ไว้
+    quoted = " ".join(shlex.quote(c) for c in command)
+    script = (
+        f"dir=\"$(ls -d ~/bundles/{slug} ~/*/bundles/{slug} ./bundles/{slug} 2>/dev/null | head -1)\"; "
+        f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug} บน {name}' >&2; exit 1; }}; "
+        f"ctl=\"$(ls \"$dir\"/*-single.sh \"$dir\"/*-stacked.sh 2>/dev/null | head -1)\"; "
+        f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller ใน '\"$dir\" >&2; exit 1; }}; "
+        f"cd \"$dir\" && \"$ctl\" {quoted}"
+    )
+    try:
+        # ขั้นอย่าง download/start ใช้เวลาเป็นสิบนาที — ต้องรอ ไม่ใช่ตัดจบที่ timeout สั้น ๆ
+        result = run(node, script, timeout=7200)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        err_console.print(result.stderr.rstrip())
+    raise typer.Exit(code=result.exit_code)
 
 @node_app.command("cluster")
 def node_cluster(
