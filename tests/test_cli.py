@@ -200,3 +200,29 @@ def test_web_stop_does_not_kill_a_recycled_pid(tmp_path, monkeypatch):
     result = runner.invoke(app, ["web", "--stop"])
     assert result.exit_code == 1
     assert killed == []
+
+
+def test_web_restart_waits_for_the_port_to_be_released(tmp_path, monkeypatch):
+    """SIGTERM ไม่ได้คืน socket ทันที — ไม่รอแล้วสตาร์ตต่อจะฟ้อง "พอร์ตไม่ว่าง"
+    จากตัวที่เราเพิ่งสั่งหยุดเอง (เจอจริงตอนสั่ง lmds web --restart -b บน controller)
+    """
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    daemon.write_state(pid=555, port=8600, bind="0.0.0.0", token="เก่า")
+    monkeypatch.setattr(daemon, "alive", lambda pid: pid == 555)
+    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    waited = []
+    monkeypatch.setattr(daemon, "wait_until_free", lambda *a, **k: waited.append(a) or True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+
+    class Proc:
+        pid = 556
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+
+    result = runner.invoke(app, ["web", "--restart", "-b", "--bind", "0.0.0.0"])
+    assert result.exit_code == 0, result.output
+    assert waited, "ต้องรอให้พอร์ตว่างก่อนสตาร์ตใหม่"
+    assert daemon.read_state()["pid"] == 556

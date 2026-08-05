@@ -1906,6 +1906,9 @@ def web(
         stopped = daemon.stop()
         if stopped is not None:
             console.print(f"หยุดหน้าเว็บแล้ว (PID {stopped['pid']})")
+            # รอให้ socket คืนก่อน ไม่งั้น --restart จะฟ้อง "พอร์ตไม่ว่าง" จากตัวที่เราเพิ่งฆ่าเอง
+            if restart_web:
+                daemon.wait_until_free(stopped.get("bind") or bind, int(stopped.get("port") or port))
         elif stop_web:
             err_console.print("ไม่พบหน้าเว็บที่รันเบื้องหลังอยู่")
             # พอร์ตไม่ว่างทั้งที่ไม่มีของเรา = มีอย่างอื่นยึดอยู่ ต้องบอก ไม่งั้นสตาร์ตรอบหน้าจะงงซ้ำ

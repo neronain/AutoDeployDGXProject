@@ -128,6 +128,19 @@ def wait_until_serving(host: str, port: int, pid: int, timeout: float = 12.0) ->
     return port_busy(host, port)
 
 
+def wait_until_free(host: str, port: int, timeout: float = 8.0) -> bool:
+    """รอให้พอร์ตว่างจริงหลังสั่งหยุด — SIGTERM คืน socket ไม่ทันที
+
+    ไม่รอแล้วสตาร์ตต่อทันที จะเจอ "พอร์ตไม่ว่าง" ทั้งที่เราเป็นคนสั่งหยุดเอง
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not port_busy(host, port):
+            return True
+        time.sleep(0.2)
+    return not port_busy(host, port)
+
+
 def stop(sig: int = 15) -> dict | None:
     """หยุดตัวที่รันอยู่ — คืนสถานะที่หยุดไป หรือ None ถ้าไม่มีอะไรให้หยุด"""
     state = running()
