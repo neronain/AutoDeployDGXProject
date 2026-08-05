@@ -601,18 +601,39 @@ _ensure_worker_owned_dir() {
 
 # FlashInfer JIT cache ที่ค้างจาก image เก่าทำให้โหลด TVM-FFI module คนละ signature แล้วพังตอน start
 # เป็นทางกู้เดียวเมื่อเจออาการนี้ — ไม่มีคำสั่งนี้ผู้ใช้ติดตาย
+# โฟลเดอร์เป็นของ user แต่ไฟล์ข้างในเป็นของ root (คอนเทนเนอร์รอบก่อนสร้างไว้) — เช็ก -w
+# ที่ตัวโฟลเดอร์จึงผ่าน แล้วไปตายตอน rm ทีละไฟล์ · chown ทั้งต้นไม้ก่อนเสมอ ไม่ใช่เฉพาะตอนเขียนไม่ได้
+_force_own_tree_local() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 0
+  docker run --rm -v "$dir:/repair" --entrypoint sh "$VLLM_IMAGE" \
+    -c "chown -R $(id -u):$(id -g) /repair" >/dev/null 2>&1 || true
+}
+
+_force_own_tree_remote() {
+  local host="$1" dir="$2" ruid rgid
+  ruid="$(ssh_at "$host" "id -u")" || return 0
+  rgid="$(ssh_at "$host" "id -g")" || return 0
+  ssh_at "$host" "test -d '$dir' && docker run --rm -v '$dir:/repair' --entrypoint sh '$VLLM_IMAGE' \
+    -c 'chown -R ${ruid}:${rgid} /repair' >/dev/null 2>&1 || true" || true
+}
+
 clear_fi_cache() {
   _require_non_root
   log "หยุด deployment ก่อนล้าง FlashInfer cache …"
   stop
   _ensure_local_owned_dir "$FLASHINFER_CACHE"
+  _force_own_tree_local "$FLASHINFER_CACHE"
   log "ล้าง FlashInfer cache บน head: ${FLASHINFER_CACHE}"
-  find "$FLASHINFER_CACHE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  find "$FLASHINFER_CACHE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + ||
+    die "ล้าง cache บน head ไม่สำเร็จ — ไฟล์อาจเป็นของ root: sudo rm -rf '${FLASHINFER_CACHE}'/*"
   _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
-  log "ล้าง FlashInfer cache บน worker: ${WORKER_FLASHINFER_CACHE}"
   local wip
   for wip in $WORKER_IPS; do
-    ssh_at "$wip" "find '${WORKER_FLASHINFER_CACHE}' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+    _force_own_tree_remote "$wip" "$WORKER_FLASHINFER_CACHE"
+    log "ล้าง FlashInfer cache บน ${wip}: ${WORKER_FLASHINFER_CACHE}"
+    ssh_at "$wip" "find '${WORKER_FLASHINFER_CACHE}' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +" ||
+      die "ล้าง cache บน ${wip} ไม่สำเร็จ — ไฟล์อาจเป็นของ root"
   done
   log "ล้างครบทั้งสอง node แล้ว"
 }
