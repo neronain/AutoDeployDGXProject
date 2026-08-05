@@ -289,9 +289,9 @@ REST ที่หน้าเว็บใช้ (token เดียวกับ�
 ตรวจชนิดและช่วงที่ server (port 1–65535 · context 256–10M · gpu_util 0.3–0.98) แล้วแปลงเป็น
 flag ของ controller · คำสั่งอื่นส่ง option มาด้วย = 400
 
-คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor logs enable disable`
-(`logs` ถูกบังคับ `-n 300`) — **`remove` ไม่อยู่ในนั้นโดยตั้งใจ** เพราะต้องใช้ `-y` ซึ่งข้ามหน้ายืนยัน
-ที่แสดงรายการ+ขนาดก่อนลบ weight หลายสิบ GB · มีเทสกันไม่ให้หลุดเข้ามา
+คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor logs enable disable remove`
+(`logs` ถูกบังคับ `-n 300`) — **`remove` ต้องผ่านสองขั้น**: คำขอที่ไม่มี `confirm` จะรัน `--dry-run`
+(ไม่ลบอะไร) · จะลบจริงต้องส่ง `{"confirm": "<slug>"}` ที่ตรงกับชื่อโมเดลเป๊ะ ไม่งั้น 400
 
 UI เป็นภาษาอังกฤษ · ต้องมี extra `web` (`pip install 'lmds[web]'` — `install.sh` ลงให้เอง)
 รายละเอียดการใช้งาน: [USAGE.md §5](USAGE.md)
