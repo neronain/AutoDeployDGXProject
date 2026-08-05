@@ -142,14 +142,18 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL={{ plan.served_model_name }}
 export ANTHROPIC_DEFAULT_HAIKU_MODEL={{ plan.served_model_name }}
 export CLAUDE_CODE_SUBAGENT_MODEL={{ plan.served_model_name }}
 
-# context ของโมเดลนี้เล็กกว่าที่ Claude Code ตั้งไว้เป็นค่าเริ่มต้น
-export CLAUDE_CODE_AUTO_COMPACT_WINDOW={{ plan.serving.context }}
+# เพดาน output ให้ตรงกับ bundle นี้
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS={{ plan.serving.max_output_tokens }}
-
+{% if plan.serving.context >= 100000 %}export CLAUDE_CODE_AUTO_COMPACT_WINDOW={{ plan.serving.context }}
+{% endif %}
 claude
 ```
 
-**ต้อง map ให้ครบทั้งสี่ตัว** — Claude Code ใช้ opus/sonnet กับงานหลัก, haiku กับงานเบื้องหลัง
+{% if plan.serving.context < 100000 %}context ของโมเดลนี้ {{ "{:,}".format(plan.serving.context) }} tokens ซึ่งต่ำกว่าขั้นต่ำ 100,000 ที่
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` ยอมรับ — Claude Code ดันค่าที่ต่ำกว่านั้นขึ้นเป็น 100,000 อยู่ดี
+ใส่ไปก็ไม่มีผล จึงไม่ใส่ · เมื่อบทสนทนายาวให้สั่ง `/compact` เอง
+
+{% endif %}**ต้อง map ให้ครบทั้งสี่ตัว** — Claude Code ใช้ opus/sonnet กับงานหลัก, haiku กับงานเบื้องหลัง
 และอีกตัวกับ subagent · ตั้งแค่ตัวเดียวแล้วงานเบื้องหลังจะยิงชื่อโมเดลของ Anthropic มาที่เครื่องนี้
 แล้วพัง (llama.cpp ไม่สนชื่อโมเดลจึงรอด แต่ vLLM ตรวจชื่อและตอบ 404)
 
