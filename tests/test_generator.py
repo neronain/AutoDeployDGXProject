@@ -188,6 +188,51 @@ def test_readme_has_delivery_contract_sections(isolated_config, tmp_path):
     assert "sha-pinned-123" in readme
 
 
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_controller_serves_anthropic_surface(isolated_config, tmp_path, kind):
+    """endpoint เดียวมีสองผิว — client สาย Anthropic (เช่น Claude Code) ใช้ /v1/messages"""
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "test-anthropic)" in text
+    assert "/v1/messages" in text
+    assert "anthropic-version: 2023-06-01" in text
+    # ต้องอ่านเฉพาะ block ชนิด text — โมเดล reasoning ส่ง block ชนิด thinking มาด้วย
+    assert 'b.get("type") == "text"' in text
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_anthropic_base_url_has_no_v1_suffix(isolated_config, tmp_path, kind):
+    """client สาย Anthropic เติม /v1/messages เอง — ถ้าใส่ /v1 ไปด้วยจะได้ /v1/v1/messages แล้ว 404"""
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    line = next(ln for ln in text.splitlines() if '"anthropic_base_url"' in ln)
+    assert line.rstrip().endswith('${API_PORT}",'), line
+    assert "/v1" not in line
+    # ผิว OpenAI ยังต้องมี /v1 เหมือนเดิม — สองผิวใช้ base ต่างกันคนละแบบ
+    openai_line = next(ln for ln in text.splitlines() if '"base_url"' in ln)
+    assert openai_line.rstrip().endswith('${API_PORT}/v1",'), openai_line
+
+
+def test_readme_documents_both_client_surfaces(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    assert "ต่อ client" in readme
+    assert "/v1/chat/completions" in readme
+    assert "/v1/messages" in readme
+    assert "ANTHROPIC_BASE_URL" in readme
+    assert "ANTHROPIC_AUTH_TOKEN" in readme
+    # Claude Code ยิงหลายช่องโมเดล (หลัก/เบื้องหลัง/subagent) — map ไม่ครบแล้วงานเบื้องหลังพัง
+    for env in (
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ):
+        assert env in readme, f"README ขาดการ map โมเดลช่อง {env}"
+
+
 def test_approved_flags_rendered_but_unapproved_not(isolated_config, tmp_path):
     report = safetensors_report()
     fit = analyze(report, PRESETS["dgx-spark-single"])

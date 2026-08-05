@@ -111,3 +111,12 @@ def test_list_hint_shows_one_command_per_line_including_repair_remove(tmp_path, 
     command_lines = [ln for ln in out.splitlines() if ln.strip().startswith("lmds ")]
     assert len(command_lines) >= 7
     assert all("·" not in ln for ln in command_lines)
+
+
+def test_anthropic_command_reaches_ui_allowlists():
+    """คำสั่งใหม่ต้องอยู่ในลิสต์ทั้งสองที่ ไม่งั้นปุ่มไม่ขึ้น (CLI) หรือหน้าเว็บสั่งไม่ได้"""
+    from lmds.inventory import KNOWN_COMMANDS
+    from lmds.web.jobs import ALLOWED
+
+    assert "test-anthropic" in KNOWN_COMMANDS
+    assert "test-anthropic" in ALLOWED

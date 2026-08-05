@@ -12,7 +12,8 @@ from pathlib import Path
 # คำสั่งที่ controller รู้จัก — ใช้กรองผลจาก dispatch table ไม่ให้ help/-h หลุดมาเป็นปุ่ม
 KNOWN_COMMANDS = {
     "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "status",
-    "logs", "client-config", "network-info", "test-text", "test-vision", "test-reasoning",
+    "logs", "client-config", "network-info", "test-text", "test-anthropic", "test-vision",
+    "test-reasoning",
     "test-tools", "bench", "stress", "props", "info", "wait-health", "doctor",
     "sync-worker", "verify-worker", "clear-fi-cache", "repair",
 }

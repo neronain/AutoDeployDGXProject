@@ -889,9 +889,12 @@ client_config() {
     input_budget="$CLIENT_INPUT"
   fi
   (( input_budget > 0 )) || die "context เล็กเกิน: input budget = ${input_budget}"
+  local advertise_ip
+  advertise_ip="$(detect_advertise_ip)"
   cat <<EOF
 {
-  "base_url": "http://$(detect_advertise_ip):${API_PORT}/v1",
+  "base_url": "http://${advertise_ip}:${API_PORT}/v1",
+  "anthropic_base_url": "http://${advertise_ip}:${API_PORT}",
   "model": "${SERVED_MODEL_NAME}",
   "api_key": "${API_KEY:-not-required}",
   "max_input_tokens": ${input_budget},
@@ -938,6 +941,69 @@ else:
   fi
 }
 
+# ผิวที่สองของ endpoint เดียวกัน: /v1/messages ตาม Messages API ของ Anthropic
+# client สาย Anthropic (Claude Code, anthropic SDK) คุยผ่าน path นี้ ไม่ใช่ /v1/chat/completions
+# แยก 404 (engine รุ่นนี้ไม่มี path) ออกจาก "โมเดลตอบไม่ได้" ให้ชัด เพราะวิธีแก้คนละทาง
+test_anthropic() {
+  need curl
+  local raw http_code response
+  raw="$(curl -sS -w $'\n%{http_code}' "http://127.0.0.1:${API_PORT}/v1/messages" \
+    ${API_KEY:+-H "x-api-key: $API_KEY"} \
+    -H "anthropic-version: 2023-06-01" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"model\": \"${SERVED_MODEL_NAME}\",
+      \"max_tokens\": 512,
+      \"system\": \"ตอบสั้นที่สุด\",
+      \"messages\": [{\"role\": \"user\", \"content\": \"ตอบสั้น ๆ: 2+2 เท่ากับเท่าไร\"}]
+    }")" || die "ต่อ /v1/messages ไม่ได้เลย — เซิร์ฟเวอร์รันอยู่ไหม: $0 status"
+
+  http_code="${raw##*$'\n'}"
+  response="${raw%$'\n'*}"
+
+  case "$http_code" in
+    200) ;;
+    404)
+      echo "test-anthropic: engine ที่รันอยู่ไม่ได้เสิร์ฟ /v1/messages (HTTP 404)" >&2
+      echo "  ผิว OpenAI (/v1/chat/completions) ยังใช้ได้ปกติ — ทดสอบด้วย: $0 test-text" >&2
+      echo "  ถ้าต้องใช้ client สาย Anthropic ต้องอัปเดต image ของ engine เป็นรุ่นที่มี Messages API" >&2
+      return 1 ;;
+    401|403)
+      die "/v1/messages ปฏิเสธ token (HTTP $http_code) — ส่ง API_KEY ตัวเดียวกับที่ใช้ตอน start" ;;
+    *)
+      die "/v1/messages ตอบ HTTP $http_code — ${response:0:300}" ;;
+  esac
+
+  echo "$response"
+  echo ""
+
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$response" | python3 -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+stop = body.get("stop_reason")
+# เก็บเฉพาะ block ชนิด text — โมเดลสาย reasoning ส่ง block ชนิด thinking มาด้วย
+# ซึ่งไม่ใช่คำตอบและไม่มี key "text" (อ่าน content[0].text ตรง ๆ จะพัง)
+text = "".join(
+    b.get("text") or ""
+    for b in (body.get("content") or [])
+    if isinstance(b, dict) and b.get("type") == "text"
+).strip()
+if text:
+    print("test-anthropic: OK — " + text[:200])
+    print("           ผิว Anthropic ใช้งานได้ — วิธีต่อ client ดูหัวข้อ \"ต่อ client\" ใน README")
+elif stop == "max_tokens":
+    print("test-anthropic: โมเดลใช้ budget หมดไปกับ thinking ก่อนได้ตอบ (reasoning model)")
+    print("           ไม่ใช่ความผิดพลาด — Messages API รับงานและตอบกลับถูกรูปแล้ว")
+else:
+    print("test-anthropic: ตอบกลับแต่ไม่มี text block (stop_reason=" + str(stop) + ")")
+' || true
+  fi
+}
+
 usage() {
   cat <<EOF
 {{ slug }} — vLLM stacked (multi-node) controller  (model: ${MODEL_ID})
@@ -968,6 +1034,7 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
   clear-fi-cache   หยุดแล้วล้าง FlashInfer JIT cache ทั้งสอง node
                    ใช้เมื่อ start พังหลังเปลี่ยน image (cache เก่าคนละ signature)
   test-text        ทดสอบ chat completion
+  test-anthropic   ทดสอบผ่าน /v1/messages (ผิว Anthropic — สำหรับ Claude Code)
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port the head node serves on             [default: ${API_PORT}]
@@ -1075,6 +1142,7 @@ case "${1:-help}" in
   info|banner) info ;;
   network-info)    network_info ;;
   test-text)       test_text ;;
+  test-anthropic)  test_anthropic ;;
   *)               usage ;;
 esac
 {% endraw %}

@@ -109,6 +109,61 @@ lmds disable {{ slug }}         # ยกเลิก
 {% endif %}- เพิ่ม/ลดชั่วคราว: `./{{ controller_name }} start --context 16384` หรือ env `{{ context_env }}`
 - เพิ่มทีละขั้น (16k → 32k → 65k) แล้วรัน test ซ้ำทุกครั้ง — memory พอไม่ได้แปลว่า TTFT ยอมรับได้
 
+## ต่อ client
+
+Endpoint เดียวเสิร์ฟสองผิวพร้อมกัน ใช้พอร์ตเดียวกันและ `API_KEY` ตัวเดียวกัน:
+
+| ผิว | path | client ที่ใช้ |
+|---|---|---|
+| OpenAI-compatible | `/v1/chat/completions` | OpenAI SDK, LangChain, Open WebUI, Continue |
+| Anthropic Messages | `/v1/messages` | Anthropic SDK, Claude Code |
+
+ค่าที่ต้องกรอกอ่านได้จาก `./{{ controller_name }} client-config` — `base_url` สำหรับผิว OpenAI
+(ลงท้าย `/v1`) และ `anthropic_base_url` สำหรับผิว Anthropic (**ไม่มี `/v1`** เพราะ client
+สาย Anthropic เติม `/v1/messages` ให้เอง ถ้าใส่ไปด้วยจะกลายเป็น `/v1/v1/messages` แล้วได้ 404)
+
+ถ้า `client-config` ตอบว่า budget ต่อ slot ไม่พอ ให้ระบุเอง เช่น `--client-output 2048`
+
+ตรวจว่าผิว Anthropic ใช้ได้จริงก่อน: `./{{ controller_name }} test-anthropic`
+(ถ้าตอบ 404 แปลว่า image ของ engine เก่าเกินกว่าจะมี Messages API — ผิว OpenAI ยังใช้ได้ปกติ)
+
+### Claude Code
+
+**ไม่ต้องมี proxy** — คู่มือส่วนใหญ่บนเน็ตให้ตั้ง LiteLLM หรือ FastAPI คั่นกลาง เพราะเขาใช้
+Ollama ซึ่งพูดแค่ผิว OpenAI · engine ที่ bundle นี้ใช้พูด Messages API ได้เอง จึงยิงตรงได้เลย
+
+```bash
+export ANTHROPIC_BASE_URL=<anthropic_base_url จาก client-config>
+export ANTHROPIC_AUTH_TOKEN=<ค่าเดียวกับ API_KEY ที่ใช้ตอน start>
+
+# Claude Code ไม่ได้ยิงโมเดลเดียว — ต้อง map ให้ครบทุกช่อง
+export ANTHROPIC_DEFAULT_OPUS_MODEL={{ plan.served_model_name }}
+export ANTHROPIC_DEFAULT_SONNET_MODEL={{ plan.served_model_name }}
+export ANTHROPIC_DEFAULT_HAIKU_MODEL={{ plan.served_model_name }}
+export CLAUDE_CODE_SUBAGENT_MODEL={{ plan.served_model_name }}
+
+# context ของโมเดลนี้เล็กกว่าที่ Claude Code ตั้งไว้เป็นค่าเริ่มต้น
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW={{ plan.serving.context }}
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS={{ plan.serving.max_output_tokens }}
+
+claude
+```
+
+**ต้อง map ให้ครบทั้งสี่ตัว** — Claude Code ใช้ opus/sonnet กับงานหลัก, haiku กับงานเบื้องหลัง
+และอีกตัวกับ subagent · ตั้งแค่ตัวเดียวแล้วงานเบื้องหลังจะยิงชื่อโมเดลของ Anthropic มาที่เครื่องนี้
+แล้วพัง (llama.cpp ไม่สนชื่อโมเดลจึงรอด แต่ vLLM ตรวจชื่อและตอบ 404)
+
+`ANTHROPIC_AUTH_TOKEN` ส่ง token ใน header `Authorization: Bearer` ส่วน `ANTHROPIC_API_KEY`
+ส่งใน `x-api-key` — เซิร์ฟเวอร์รับได้ทั้งสองแบบ แต่ `ANTHROPIC_API_KEY` ต้องกดอนุมัติหนึ่งครั้ง
+ตอนเปิด Claude Code จึงแนะนำตัวแรก · ตรวจว่าเข้าแล้วด้วย `/status` — ต้องเห็นบรรทัด
+`Anthropic base URL` ชี้มาที่เครื่องนี้
+
+{% if not plan.tool_calling.enabled %}> ⚠ bundle นี้ยังไม่ได้เปิด tool calling — Claude Code ใช้ tool แทบทุกเทิร์น
+> (อ่านไฟล์/แก้ไฟล์/รันคำสั่ง) ถ้าไม่เปิดจะได้แค่ข้อความเปล่า ๆ ตอบกลับมา
+{% endif %}
+> Anthropic ไม่ได้รับรองการใช้ Claude Code กับโมเดลที่ไม่ใช่ Claude — ส่วนนี้เขียนไว้เพราะ
+> endpoint พูด Messages API ได้จริง ไม่ได้แปลว่าเป็น configuration ที่มี support
+
 ## Security
 
 - อย่า hard-code token/API key ในสคริปต์ — ใช้ env (`HF_TOKEN`, `API_KEY`)

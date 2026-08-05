@@ -102,6 +102,15 @@ def test_stacked_controller_name_and_bash_syntax(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_stacked_controller_serves_anthropic_surface(tmp_path):
+    """stacked ก็ต้องมีผิว Anthropic เหมือน single — ไม่งั้น bundle สองแบบมีหน้าตา API ไม่เท่ากัน"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "test-anthropic)" in text
+    assert "/v1/messages" in text
+    assert '"anthropic_base_url"' in text
+
+
 def test_stacked_controller_has_multinode_machinery(tmp_path):
     bundle, _, _ = _stacked_bundle(tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")

@@ -21,7 +21,8 @@ ALLOWED = {
     # stacked (multi-node)
     "sync-worker", "verify-worker", "clear-fi-cache",
     # ทดสอบว่าโมเดลตอบจริง — CLI มีมาตลอด เว็บเพิ่งได้
-    "test-text", "test-vision", "test-reasoning", "test-tools", "bench", "stress",
+    "test-text", "test-anthropic", "test-vision", "test-reasoning", "test-tools",
+    "bench", "stress",
     "props", "info", "network-info", "client-config", "status", "wait-health", "doctor",
 }
 
