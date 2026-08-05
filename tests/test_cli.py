@@ -295,15 +295,22 @@ def test_web_token_file_is_not_world_readable(tmp_path, monkeypatch):
 # ── ตัวบอกความคืบหน้า ────────────────────────────────────────────────
 
 
-def test_working_is_silent_when_output_is_piped():
+def test_working_is_silent_when_output_is_piped(monkeypatch):
     """`lmds plan --json | jq` ต้องไม่มีอะไรปน — บาง shell/CI รวม stderr เข้า stdout ให้เอง"""
-    from lmds.cli.main import _working, err_console
+    from contextlib import contextmanager
+    from lmds.cli import main as cli_main
 
-    assert err_console.is_terminal is False  # pytest ไม่ใช่ terminal
-    with err_console.capture() as captured:
-        with _working("ไม่ควรเห็นบรรทัดนี้"):
-            pass
-    assert captured.get() == ""
+    class PipedConsole:
+        is_terminal = False
+
+        @contextmanager
+        def status(self, *_args, **_kwargs):
+            raise AssertionError("non-terminal path must not start Rich status")
+            yield
+
+    monkeypatch.setattr(cli_main, "err_console", PipedConsole())
+    with cli_main._working("ไม่ควรเปิด status"):
+        pass
 
 
 def test_working_shows_label_on_a_real_terminal(monkeypatch):
@@ -327,9 +334,9 @@ def test_working_shows_label_on_a_real_terminal(monkeypatch):
 
     fake = TerminalConsole()
     monkeypatch.setattr(cli_main, "err_console", fake)
-    with cli_main._working("อ่านข้อมูลจาก Hugging Face"):
+    with cli_main._working("อ่าน [red]ข้อมูล[/red] จาก Hugging Face"):
         pass
-    assert seen == [("[cyan]อ่านข้อมูลจาก Hugging Face…[/cyan]", "dots")]
+    assert seen == [(r"[cyan]อ่าน \[red]ข้อมูล\[/red] จาก Hugging Face…[/cyan]", "dots")]
 
 
 def test_working_lets_errors_through():

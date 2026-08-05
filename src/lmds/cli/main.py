@@ -13,6 +13,7 @@ from contextlib import contextmanager
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 import lmds
@@ -58,7 +59,9 @@ def _working(label: str):
     if not err_console.is_terminal:
         yield
         return
-    with err_console.status(f"[cyan]{label}…[/cyan]", spinner="dots"):
+    # label บางส่วนมาจาก provider/model/repo/node ที่ผู้ใช้ตั้งได้ — ห้ามให้ Rich
+    # ตีความวงเล็บเหลี่ยมในข้อมูลเหล่านั้นเป็น markup หรือทำให้ status crash
+    with err_console.status(f"[cyan]{escape(label)}…[/cyan]", spinner="dots"):
         yield
 
 
