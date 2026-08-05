@@ -19,8 +19,8 @@ MINIMAX_BASE = "https://api.minimax.io/v1"
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 # max_tokens เป็น field บังคับของ Messages API — ไม่มีค่า default ฝั่ง server
-# เป็น "เพดาน" ไม่ใช่โควตาที่ถูกเรียกเก็บ · plan ที่ยาวสุดเท่าที่เจอราว 3k token
-# เผื่อไว้กว้างเพราะถ้าตันจะได้ JSON ที่ถูกตัดกลางคัน ซึ่งแพงกว่าการเผื่อ
+# 16k เป็นเพดานภายในสำหรับ DeploymentPlan ไม่ใช่ขนาดคำตอบที่รับประกัน
+# ถ้าแตะเพดาน adapter จะปฏิเสธ partial JSON แทนการส่งต่อเป็นคำตอบปกติ
 ANTHROPIC_MAX_TOKENS = 16000
 
 # error ชั่วคราว: rate limit / ฝั่ง provider ล่มชั่วคราว — retry คุ้ม
@@ -268,9 +268,9 @@ class AnthropicProvider(LlmProvider):
         self._client = client or httpx.Client(timeout=120.0)
 
     def complete_json(self, system: str, user: str) -> str:
-        # ไม่ส่ง temperature โดยตั้งใจ — Claude ตั้งแต่รุ่น 4.7 ขึ้นไป (รวม claude-sonnet-5
-        # ที่เป็นค่า default ของ provider นี้) ตอบ 400 ทันทีถ้าเจอ temperature/top_p/top_k
-        # รุ่นเก่ารับได้ แต่ค่า default ก็เหมาะกับงาน structured อยู่แล้ว จึงไม่ต้องแยกเคส
+        # ไม่ส่ง sampling params โดยตั้งใจ: claude-sonnet-5 ซึ่งเป็น default
+        # ปฏิเสธค่า temperature/top_p/top_k ที่ไม่ใช่ default เมื่อใช้ adaptive thinking
+        # การละทิ้ง field เหล่านี้ยังรองรับรุ่นอื่นที่ผู้ใช้ override โดยไม่บังคับพฤติกรรมใหม่
         resp = _post_with_retry(
             self._client,
             f"{self._base}/messages",
@@ -303,13 +303,20 @@ class AnthropicProvider(LlmProvider):
             raise ProviderError(
                 f"anthropic ปฏิเสธคำขอนี้ (หมวด {details}) — เปลี่ยน provider หรือใช้ --no-llm"
             )
-        if stop == "max_tokens":
+        if stop in {"max_tokens", "model_context_window_exceeded"}:
+            ceiling = (
+                f"max_tokens ({ANTHROPIC_MAX_TOKENS})"
+                if stop == "max_tokens"
+                else "context window ของโมเดล"
+            )
             raise ProviderError(
-                f"คำตอบของ anthropic ถูกตัดที่ max_tokens ({ANTHROPIC_MAX_TOKENS}) — JSON ไม่ครบ"
+                f"คำตอบของ anthropic ถูกตัดที่ {ceiling} "
+                f"(stop_reason={stop}) — JSON ไม่ครบ"
             )
 
-        # เอาเฉพาะ block ชนิด text: รุ่นใหม่เปิด thinking เป็นค่าเริ่มต้น จึงมี block
-        # ชนิด thinking ปนมาซึ่งไม่ใช่คำตอบ · ต่อทุกก้อนเพราะ text ถูกแบ่งหลาย block ได้
+        # เอาเฉพาะ block ชนิด text: Sonnet 5 ใช้ adaptive thinking เป็น default
+        # จึงอาจมี block ชนิดอื่นปนมาซึ่งไม่ใช่คำตอบ · ต่อทุกก้อนเพราะ text
+        # ถูกแบ่งหลาย block ได้ และข้าม block ไม่รู้จักอย่างปลอดภัย
         content = data.get("content")
         text = "".join(
             block.get("text") or ""

@@ -327,7 +327,7 @@ def test_anthropic_request_shape_and_parse():
 
 
 def test_anthropic_never_sends_sampling_params():
-    """Claude 4.7 ขึ้นไปตอบ 400 ถ้าเจอ temperature/top_p/top_k — รวม default ของ provider นี้"""
+    """Sonnet 5 default ปฏิเสธ sampling params ที่ไม่ใช่ default เมื่อใช้ adaptive thinking"""
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -343,7 +343,7 @@ def test_anthropic_never_sends_sampling_params():
 
 
 def test_anthropic_joins_text_blocks_and_skips_thinking():
-    """รุ่นใหม่เปิด thinking เป็นค่าเริ่มต้น — block ชนิดนั้นไม่ใช่คำตอบและไม่มี key text"""
+    """Sonnet 5 ใช้ adaptive thinking เป็น default; block ที่ไม่ใช่ text ไม่ใช่คำตอบ"""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
@@ -384,6 +384,19 @@ def test_anthropic_truncated_output_says_why():
 
     provider = AnthropicProvider("claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler))
     with pytest.raises(ProviderError, match="max_tokens"):
+        provider.complete_json("s", "u")
+
+
+def test_anthropic_context_window_truncation_says_why():
+    """Sonnet 4.5+ อาจคืน partial output พร้อม stop_reason นี้โดยไม่ต้องเปิด beta"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_anthropic_ok(
+            '{"partial": ', stop_reason="model_context_window_exceeded"
+        ))
+
+    provider = AnthropicProvider("claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler))
+    with pytest.raises(ProviderError, match="model_context_window_exceeded"):
         provider.complete_json("s", "u")
 
 
