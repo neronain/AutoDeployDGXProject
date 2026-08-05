@@ -61,6 +61,19 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
    แล้ว dispatch ใน `make_provider()` · **ใช้ `_post_with_retry()`** เพื่อให้ได้ backoff เหมือนตัวอื่น
 4. เทสด้วย `httpx.MockTransport` ตามแบบใน `tests/test_providers.py`
 
+### เพิ่มสูตรที่ต้องใช้ env ของ engine
+
+`src/lmds/recipes/catalog.yaml` — ช่อง `env:` ผ่าน allowlist ของ
+`src/lmds/brain/allowlists.py` ซึ่งรับเฉพาะ**ตระกูลที่ engine เป็นเจ้าของ**
+(`VLLM_`, `NCCL_`, `FLASHINFER_`, `TORCH_`, `CUDA_`, `OMP_`, `GGML_`, `LLAMA_` ฯลฯ)
+
+เป็น prefix ไม่ใช่ลิสต์ชื่อ เพราะ env ของ engine เกิดใหม่แทบทุกเวอร์ชัน — ลิสต์ชื่อจะล้าสมัยทันที
+· ตระกูลใหม่เพิ่มที่ `ENV_PREFIXES` · มีเทสบังคับว่า **ทุก env ในแคตตาล็อกต้องผ่าน allowlist**
+
+**ห้ามผ่านเด็ดขาด** (ไม่มีขั้นอนุมัติให้ ต่างจาก flag): `LD_*`, `PATH`, `PYTHONPATH`,
+`BASH_ENV` — ทั้งหมดคือการรันโค้ดใน container · และชื่อที่มี `TOKEN`/`KEY`/`SECRET`/`PASSWORD`
+แม้จะขึ้นต้นถูกตระกูล (กฎข้อ 4)
+
 ### แก้ template ของ controller
 
 `src/lmds/generator/templates/*.j2` — หลังแก้ต้องผ่าน quality gates ทั้ง 8 ด่านโดยอัตโนมัติ

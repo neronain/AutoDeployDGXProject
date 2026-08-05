@@ -64,6 +64,13 @@ CLIENT_OUTPUT="${CLIENT_OUTPUT:-{{ plan.serving.max_output_tokens }}}"
 CLIENT_INPUT="${CLIENT_INPUT:-auto}"
 TEMPLATE_OVERHEAD_TOKENS="2048"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
+{% if extra_env_pairs -%}
+# env ที่รุ่นนี้ต้องใช้ตอนรัน (มาจากสูตรที่รันผ่านจริง / ขั้นวางแผน) — ไม่ใช่ flag ของ engine
+# ผ่าน allowlist ของ LMDS แล้ว: เฉพาะตระกูลที่ engine เป็นเจ้าของ ไม่มี LD_*/PATH/PYTHONPATH
+EXTRA_ENV=(
+{% for pair in extra_env_pairs %}  {{ pair }}
+{% endfor %})
+{% endif -%}
 # ========================================================================
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -324,6 +331,10 @@ start() {
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="$MODEL_DIR"
     server_args
+{%- if extra_env_pairs %}
+    # โหมด native ไม่มี container ให้ส่ง -e — ต้อง export เข้าโปรเซสเอง
+    export "${EXTRA_ENV[@]}"
+{%- endif %}
     nohup "$LLAMA_SERVER" "${SERVER_ARGS[@]}" >> "$LOG_FILE" 2>&1 &
     echo "$!" > "$PID_FILE"
   else
@@ -334,11 +345,16 @@ start() {
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="/models"
     server_args
-    docker run -d --name "$CONTAINER_NAME" \
-      --network host --gpus all \
-      -v "${MODEL_DIR}:/models:ro" \
-      "$LLAMACPP_IMAGE" \
-      "${SERVER_ARGS[@]}"
+    local docker_args=(
+      run -d --name "$CONTAINER_NAME"
+      --network host --gpus all
+      -v "${MODEL_DIR}:/models:ro"
+    )
+{%- if extra_env_pairs %}
+    local pair
+    for pair in "${EXTRA_ENV[@]}"; do docker_args+=(-e "$pair"); done
+{%- endif %}
+    docker "${docker_args[@]}" "$LLAMACPP_IMAGE" "${SERVER_ARGS[@]}"
   fi
 
   write_meta

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .plan_schema import Engine
 
 VLLM_FLAGS = {
@@ -52,6 +54,47 @@ LLAMACPP_FLAGS = {
 }
 
 _BY_ENGINE = {Engine.VLLM: VLLM_FLAGS, Engine.LLAMACPP: LLAMACPP_FLAGS}
+
+# ── environment variable ──────────────────────────────────────────────────────
+# env มีอำนาจมากกว่า flag: LD_PRELOAD โหลด .so เข้าโปรเซส · PYTHONPATH แทรกโมดูล ·
+# PATH สลับ binary · ทั้งหมดนี้คือการรันโค้ดใน container ซึ่งกฎข้อ 2 บอกว่าต้องอนุมัติเอง
+# แต่ env ของ engine เกิดใหม่แทบทุกเวอร์ชัน (vLLM มี VLLM_* หลายสิบตัว) การไล่ลิสต์ทีละชื่อ
+# จะล้าสมัยทันที — จึงคุมด้วย "ตระกูลที่ engine เป็นเจ้าของ" แทน
+ENV_PREFIXES = (
+    "VLLM_", "NCCL_", "FLASHINFER_", "TORCH_", "TORCHINDUCTOR_", "TRITON_",
+    "CUDA_", "CUBLAS_", "OMP_", "PYTORCH_", "UCX_", "GLOO_", "TP_SOCKET_",
+    "RAY_", "SAFETENSORS_", "TOKENIZERS_", "HF_HUB_", "TRANSFORMERS_", "OMPI_",
+    # llama.cpp
+    "GGML_", "LLAMA_",
+)
+
+# ชื่อที่ห้ามแม้จะขึ้นต้นถูกตระกูล — secret ห้ามมาจาก LLM หรือจากไฟล์แคตตาล็อก (กฎข้อ 4)
+# ตัวอย่างที่โดน: HF_HUB_TOKEN ผ่าน prefix HF_HUB_ แต่เป็น secret เต็มตัว
+_SECRETISH = ("TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
+
+# ชื่อ env จริงเป็นตัวพิมพ์ใหญ่/ตัวเลข/ขีดล่างเท่านั้น — กันชื่อแปลก ๆ ที่ไปโผล่ใน docker -e
+_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def is_allowed_env(name: str) -> bool:
+    if not _ENV_NAME.match(name or ""):
+        return False
+    if any(word in name for word in _SECRETISH):
+        return False
+    return name.startswith(ENV_PREFIXES)
+
+
+def split_env(env: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """แยก env ที่ยอมรับได้ ออกจากชื่อที่ต้องถูกปฏิเสธ — คืน (ที่ผ่าน, ชื่อที่ถูกตัด)"""
+    allowed: dict[str, str] = {}
+    rejected: list[str] = []
+    for name, value in (env or {}).items():
+        # ค่าที่มีขึ้นบรรทัดใหม่แทรก -e ตัวถัดไปได้เมื่อมีใครเอาไปต่อสตริง — ตัดทิ้งตั้งแต่ต้นทาง
+        if is_allowed_env(name) and "\n" not in str(value) and "\r" not in str(value):
+            allowed[name] = str(value)
+        else:
+            rejected.append(name)
+    return allowed, sorted(rejected)
 
 # registry/repo ของ runtime image ที่ยอมรับ (เทียบส่วนก่อน :tag/@digest)
 # LLM เสนอ image นอกรายการนี้ไม่ได้ — เคยเกิดจริง: มโน ghcr.io/lmds/llamacpp-ubuntu-rtx จน start พัง

@@ -105,6 +105,7 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         plan.warnings.append(
             "flag นอก allowlist ต้องได้รับอนุมัติจากผู้ใช้ก่อนใช้จริง: " + ", ".join(needs_approval)
         )
+    _harden_env(plan)
     _harden_runtime_assets(plan)
     _harden_projector(plan, report)
 
@@ -158,6 +159,28 @@ def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:
     plan.multimodal.projector_files = kept[:1]  # llama-server รับ --mmproj ได้ไฟล์เดียว
     if not plan.multimodal.modalities:
         plan.multimodal.modalities = ["image", "text"]
+
+
+def _harden_env(plan: DeploymentPlan) -> None:
+    """env ที่ไม่ใช่ของ engine ถูกตัดทิ้งพร้อมเหตุผล — ไม่มีทาง "อนุมัติ" ให้ผ่าน
+
+    env มีอำนาจมากกว่า flag: `LD_PRELOAD` โหลด .so เข้าโปรเซส · `PYTHONPATH` แทรกโมดูล ·
+    `PATH` สลับ binary — ทั้งหมดคือการรันโค้ดใน container ซึ่งอยู่กลุ่มเดียวกับไฟล์ runtime
+    ภายนอกตามกฎข้อ 2 · ต่างกันตรงที่ไฟล์ runtime มีทางให้ผู้ใช้อนุมัติเพราะตรวจ URL+SHA ได้
+    ส่วน env ไม่มีอะไรให้ตรวจ จึงปฏิเสธไปเลยดีกว่าเปิดช่องให้กดผ่าน
+
+    ตัวที่ engine เป็นเจ้าของจริง (VLLM_*, NCCL_*, FLASHINFER_* ฯลฯ) ผ่านได้ตามปกติ
+    เพราะเป็นสิ่งที่สูตรที่รันผ่านจริงต้องใช้
+    """
+    from .allowlists import split_env
+
+    allowed, rejected = split_env(plan.serving.extra_env)
+    plan.serving.extra_env = allowed
+    if rejected:
+        plan.warnings.append(
+            "ตัด env ที่ไม่ใช่ตัวแปรของ engine ออก (ตั้งเองบนเครื่องได้ถ้าจำเป็น): "
+            + ", ".join(rejected)
+        )
 
 
 def _harden_runtime_assets(plan: DeploymentPlan) -> None:

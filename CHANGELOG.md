@@ -328,6 +328,29 @@
 
 ### Fixed
 
+- **env ที่สูตรตั้งไว้ไม่เคยถึง controller ของ single-node** — `extra_env` ถูก render เฉพาะ
+  bundle แบบ stacked เท่านั้น · bundle เครื่องเดียวบันทึกค่าไว้ใน `MODEL_PROFILE.yaml` ครบ
+  แต่สคริปต์ไม่เคยตั้งให้ตอนรัน — **สูตรที่เขียนไว้เพื่อกัน start ไม่ขึ้น จึงไม่มีผลอะไรเลย**
+  · เคสจริงในแคตตาล็อก: `nvidia/NVIDIA-Nemotron-3-Super` (validated บน Spark **เครื่องเดียว**)
+  ต้องใช้ `VLLM_NVFP4_GEMM_BACKEND=marlin` ไม่งั้น MoE FP4 เลือก backend ผิด ·
+  `nvidia/DeepSeek-V4-Flash-NVFP4` ต้องใช้ `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0`
+  พร้อมคอมเมนต์ในแคตตาล็อกว่า *"ตัวที่ทำให้ start ไม่ผ่านถ้าไม่ตั้ง"*
+  · ตอนนี้ทั้ง vLLM และ llama.cpp ส่ง env ให้จริง — llama.cpp ครบทั้งโหมด docker (`-e`)
+  และ native (`export` ก่อน spawn เพราะไม่มี container ให้ส่ง)
+
+### Security
+
+- **`extra_env` ผ่าน allowlist แล้ว** — เดิม `harden_plan()` ไม่แตะ `extra_env` เลย ทั้งที่
+  ค่านี้ไหลเข้า `docker -e` ตรง ๆ · env มีอำนาจ**มากกว่า** flag: `LD_PRELOAD` โหลด `.so`
+  เข้าโปรเซส · `PYTHONPATH` แทรกโมดูลทับของจริง · `PATH` สลับ binary — ทั้งหมดคือการรันโค้ด
+  ใน container ซึ่งกฎข้อ 2 จัดไว้กลุ่มเดียวกับไฟล์ runtime ภายนอก
+  · รับเฉพาะ**ตระกูลที่ engine เป็นเจ้าของ** (`VLLM_`, `NCCL_`, `FLASHINFER_`, `GGML_` ฯลฯ)
+  ไม่ใช่ลิสต์ชื่อทีละตัว เพราะ env ของ engine เกิดใหม่แทบทุกเวอร์ชัน — ลิสต์ชื่อจะล้าสมัยทันที
+  · ปฏิเสธชื่อที่มี `TOKEN`/`KEY`/`SECRET`/`PASSWORD` **แม้จะขึ้นต้นถูกตระกูล** (กฎข้อ 4 —
+  `HF_HUB_TOKEN` ผ่าน prefix `HF_HUB_` ได้ถ้าไม่มีข้อนี้) และค่าที่มีขึ้นบรรทัดใหม่
+  · **ไม่มีทาง "อนุมัติ" ให้ผ่าน** ต่างจากไฟล์ runtime ที่ตรวจ URL+SHA ได้ — env ไม่มีอะไรให้ตรวจ
+  จึงปฏิเสธไปเลยดีกว่าเปิดช่องให้กดผ่าน (ตั้งเองบนเครื่องยังทำได้ตามปกติ)
+
 รอบย่อยนี้มาจากการใช้งานจริงบน controller (Ubuntu VM) + dgx-msi — ทุกข้อเป็นเคสที่ผู้ใช้ทำตาม
 คำแนะนำของตัวโปรแกรมเองแล้วเจอทางตัน
 
