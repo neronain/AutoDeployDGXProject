@@ -661,3 +661,45 @@ def test_start_passes_unknown_flags_to_the_controller(tmp_path, monkeypatch, iso
     assert result.exit_code == 0, result.output
     assert seen["cmd"] == "start"
     assert seen["extra"] == ["--port", "8001", "--gpu-util", "0.8"]
+
+
+def test_restart_passes_unknown_flags_to_the_controller(tmp_path, monkeypatch, isolated_config):
+    """start ส่ง flag ต่อได้แล้ว แต่ restart เคยรับ flag มาแล้วทิ้งเงียบ — ผู้ใช้เห็น
+    "restarted" ทั้งที่ port ไม่ได้เปลี่ยน ซึ่งแย่กว่า error เพราะไม่มีอะไรบอกว่าพลาด
+    """
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    controller.chmod(0o755)
+    make_meta(tmp_path, "m", controller=str(controller))
+
+    seen = {}
+    monkeypatch.setattr("lmds.fleet.manager._run_controller",
+                        lambda info, command, extra=None: seen.update(cmd=command, extra=extra) or 0)
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    result = runner.invoke(app, ["restart", "m", "--port", "8001"])
+    assert result.exit_code == 0, result.output
+    assert seen == {"cmd": "restart", "extra": ["--port", "8001"]}
+
+
+def test_logs_explains_a_model_that_never_ran(tmp_path, monkeypatch, isolated_config):
+    """เดิมปล่อย "tail: cannot open ..." ดิบ ๆ ออกไป ซึ่งอ่านเหมือนระบบพัง
+    ทั้งที่แค่ยังไม่เคยสตาร์ต (เจอจริงตอนกดปุ่ม logs บนหน้าเว็บ)
+    """
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    controller.chmod(0o755)
+    make_meta(tmp_path, "m", controller=str(controller))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    called = []
+    monkeypatch.setattr("lmds.fleet.manager._run_controller",
+                        lambda *a, **k: called.append(a) or 0)
+
+    result = runner.invoke(app, ["logs", "m"])
+    assert result.exit_code == 1
+    assert "ยังไม่เคยรัน" in result.output
+    assert "lmds start m" in result.output
+    assert not called, "ไม่ควรไปเรียก controller ให้ tail ไฟล์ที่ไม่มี"

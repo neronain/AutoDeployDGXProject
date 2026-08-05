@@ -119,6 +119,8 @@ def test_disable_autostart_runs_steps(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "have_systemctl", lambda: True)
     monkeypatch.setenv("LMDS_SYSTEMD_DIR", str(tmp_path / "systemd"))
     calls = []
+    states = iter(["enabled", "absent"])   # ก่อนสั่ง → หลังสั่ง
+    monkeypatch.setattr(manager, "autostart_status", lambda slug: next(states))
 
     class OK:
         returncode = 0
@@ -129,3 +131,27 @@ def test_disable_autostart_runs_steps(tmp_path, monkeypatch):
     joined = [" ".join(c) for c in calls]
     assert any("disable" in c for c in joined)
     assert any("rm -f" in c for c in joined)
+
+
+def test_disable_autostart_reports_failure_instead_of_claiming_success(tmp_path, monkeypatch):
+    """sudo ที่ขอรหัสผ่านไม่ได้ (เช่นถูกเรียกผ่าน SSH จาก hub) เคยถูกกลืนทั้งหมด แล้วรายงานว่า
+    "ปิด autostart แล้ว" — ผู้ใช้จะรู้ตัวอีกทีตอน reboot แล้วโมเดลเด้งขึ้นมาเอง
+    """
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_SYSTEMD_DIR", str(tmp_path / "systemd"))
+    monkeypatch.setattr(manager, "autostart_status", lambda slug: "enabled")  # ไม่เปลี่ยนเลย
+
+    class Fail:
+        returncode = 1
+
+    monkeypatch.setattr(manager.subprocess, "run", lambda *a, **k: Fail())
+    with pytest.raises(FleetError, match="ไม่สำเร็จ"):
+        disable_autostart("m")
+
+
+def test_disable_autostart_says_so_when_there_was_nothing_to_disable(tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_SYSTEMD_DIR", str(tmp_path / "systemd"))
+    monkeypatch.setattr(manager, "autostart_status", lambda slug: "absent")
+    with pytest.raises(FleetError, match="ไม่ได้ตั้ง autostart"):
+        disable_autostart("m")

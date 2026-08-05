@@ -172,19 +172,33 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
 
 
 def disable_autostart(info_or_slug) -> str:
-    """disable + ลบ systemd unit (ต้องใช้ sudo) — รับ ServerInfo หรือ slug"""
+    """disable + ลบ systemd unit (ต้องใช้ sudo) — รับ ServerInfo หรือ slug
+
+    ตรวจผลลัพธ์จริงหลังรัน ไม่ใช่เชื่อว่า sudo สำเร็จ · เดิมกลืน error ทุกตัวแล้วรายงานว่า
+    "ปิดแล้ว" เสมอ — sudo ที่ขอรหัสผ่านไม่ได้ (เช่นถูกเรียกผ่าน SSH) จึงกลายเป็นคำตอบว่า
+    สำเร็จ ทั้งที่ autostart ยังเปิดอยู่ ผู้ใช้จะรู้ตัวอีกทีตอน reboot แล้วโมเดลเด้งขึ้นมาเอง
+    """
     slug = info_or_slug.slug if isinstance(info_or_slug, ServerInfo) else info_or_slug
     if not have_systemctl():
         raise FleetError("เครื่องนี้ไม่มี systemd (systemctl)")
     name = unit_name(slug)
+    if autostart_status(slug) == "absent":
+        raise FleetError(f"ไม่ได้ตั้ง autostart ของ {slug} ไว้อยู่แล้ว (ไม่มี {name})")
     steps = [
         ["sudo", "systemctl", "disable", "--now", name],
         ["sudo", "rm", "-f", str(systemd_dir() / name)],
         ["sudo", "systemctl", "daemon-reload"],
     ]
     for cmd in steps:
-        # disable อาจ error ถ้า unit ไม่ได้ enable — ไม่ถือว่า fatal
+        # ตัว disable เองอาจ error ถ้า unit ไม่ได้ enable ไว้ — ไม่ fatal จึงไม่หยุดตรงนี้
         subprocess.run(cmd)
+    # เกณฑ์เดียวที่นับ: สุดท้ายมันหายไปจริงไหม
+    if autostart_status(slug) != "absent":
+        manual = "\n  ".join(" ".join(c) for c in steps)
+        raise FleetError(
+            f"ปิด autostart ไม่สำเร็จ — unit {name} ยังอยู่ (มักเพราะ sudo ขอรหัสผ่านไม่ได้)\n"
+            f"ลองรันมือบนเครื่องนั้น:\n  {manual}"
+        )
     return name
 
 
