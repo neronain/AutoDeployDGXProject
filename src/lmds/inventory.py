@@ -81,6 +81,17 @@ def host_payload() -> dict:
                 # ค่าสด — GB10 (unified) มักไม่รายงาน memory.total/used จึงเป็น None ได้
                 "vram_used_gb": round(gpu.vram_used_mib / 1024, 1) if gpu.vram_used_mib else None,
                 "utilization_pct": gpu.utilization_pct,
+                # telemetry — None = การ์ดรุ่นนี้ไม่รายงาน หน้าเว็บต้องซ่อนช่องนั้น ไม่ใช่โชว์ 0
+                "temperature_c": gpu.temperature_c,
+                "power_w": gpu.power_w,
+                "power_limit_w": gpu.power_limit_w,
+                "fan_pct": gpu.fan_pct,
+                "clock_graphics_mhz": gpu.clock_graphics_mhz,
+                "clock_graphics_max_mhz": gpu.clock_graphics_max_mhz,
+                "clock_memory_mhz": gpu.clock_memory_mhz,
+                "clock_sm_mhz": gpu.clock_sm_mhz,
+                "pcie_gen": gpu.pcie_gen,
+                "pcie_width": gpu.pcie_width,
             }
             for gpu in report.gpus
         ],

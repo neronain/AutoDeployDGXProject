@@ -187,6 +187,26 @@ pre {
 }
 .empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: 13.5px; }
 
+/* ── GPU telemetry ─────────────────────────────────────────────────── */
+.gpu { border-top: 1px solid var(--line); padding: 14px 18px; }
+.gpu-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.gpu-name { font-weight: 600; font-size: 13.5px; }
+.gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+.gauge { text-align: center; }
+.gauge svg { display: block; margin: 0 auto; }
+.gauge-val { font: 600 15px/1 var(--sans); font-variant-numeric: tabular-nums; fill: var(--fg); }
+.gauge-unit { font: 500 8px/1 var(--sans); fill: var(--fg3); }
+.gauge-label { font-size: 10.5px; color: var(--fg3); margin-top: 4px;
+  text-transform: uppercase; letter-spacing: .06em; }
+.gauge-track { stroke: var(--meter-track); }
+.clocks { margin-top: 12px; display: grid; gap: 7px; }
+.clock-row { display: grid; grid-template-columns: 1fr 68px; gap: 10px; align-items: center;
+  font-size: 12px; }
+.clock-bar { height: 4px; border-radius: 999px; background: var(--meter-track); overflow: hidden; }
+.clock-bar i { display: block; height: 100%; }
+.clock-num { text-align: right; font-family: var(--mono); font-size: 11.5px;
+  font-variant-numeric: tabular-nums; color: var(--fg2); }
+
 /* ── machines ───────────────────────────────────────────────────────── */
 .ntoggle {
   font-family: var(--mono); width: 26px; height: 26px; padding: 0; flex: none;
@@ -820,6 +840,74 @@ document.addEventListener("click", async e => {
 });
 
 
+
+// ── GPU telemetry ───────────────────────────────────────────────────────
+// ค่าที่เป็น null คือ "การ์ดรุ่นนี้ไม่รายงาน" ไม่ใช่ศูนย์ — GB10 (unified SoC) ไม่บอก
+// power limit / fan / memory clock · โชว์ 0 ตรงนั้นคือการโกหกผู้ใช้ จึงซ่อนไปเลย
+function gauge(value, max, label, unit, colour) {
+  if (value == null) return "";
+  const pct = max ? Math.max(0, Math.min(1, value / max)) : 0;
+  const r = 26, c = 2 * Math.PI * r, arc = c * 0.75;          // เว้นช่องล่างเหมือนมาตรวัดจริง
+  const shown = Number.isInteger(value) ? value : value.toFixed(1);
+  return `<div class="gauge">
+    <svg viewBox="0 0 68 60" width="68" height="60" role="img"
+         aria-label="${esc(label)} ${shown}${esc(unit)}">
+      <circle class="gauge-track" cx="34" cy="34" r="${r}" fill="none" stroke-width="5"
+        stroke-dasharray="${arc} ${c}" stroke-linecap="round"
+        transform="rotate(135 34 34)"></circle>
+      <circle cx="34" cy="34" r="${r}" fill="none" stroke="${colour}" stroke-width="5"
+        stroke-dasharray="${arc * pct} ${c}" stroke-linecap="round"
+        transform="rotate(135 34 34)"></circle>
+      <text class="gauge-val" x="34" y="36" text-anchor="middle">${shown}</text>
+      <text class="gauge-unit" x="34" y="46" text-anchor="middle">${esc(unit)}</text>
+    </svg>
+    <div class="gauge-label">${esc(label)}</div>
+  </div>`;
+}
+
+function clockRow(label, mhz, max, colour) {
+  if (mhz == null) return "";
+  const pct = max ? Math.min(100, Math.round(mhz / max * 100)) : 0;
+  return `<div class="clock-row">
+    <div><div class="dim">${esc(label)}</div>
+      <div class="clock-bar"><i style="width:${pct}%;background:${colour}"></i></div></div>
+    <div class="clock-num">${mhz.toLocaleString()}<span class="dim"> MHz</span></div>
+  </div>`;
+}
+
+function gpuCard(g) {
+  const busy = g.utilization_pct;
+  const link = g.pcie_gen ? `<span class="tag">GEN ${g.pcie_gen} ×${g.pcie_width || "?"}</span>` : "";
+  const vram = g.vram_used_gb != null && g.vram_gb
+    ? `<span class="npill"><span class="muted">VRAM</span> ${g.vram_used_gb}/${g.vram_gb} GB</span>`
+    : (g.vram_gb ? `<span class="npill"><span class="muted">MEMORY</span> ${g.vram_gb} GB pool</span>`
+                 : `<span class="npill"><span class="muted">MEMORY</span> N/A (SoC)</span>`);
+  return `<div class="gpu">
+    <div class="gpu-head">
+      <span class="gpu-name">${esc(g.name)}</span>
+      ${g.compute ? `<span class="tag">SM${esc(g.compute.replace(".", ""))}</span>` : ""}
+      ${link}<span class="grow"></span>${vram}
+    </div>
+    <div class="gauges">
+      ${gauge(busy, 100, "Compute", "%", "var(--meter)")}
+      ${gauge(g.power_w, g.power_limit_w || Math.max(g.power_w || 0, 100), "Power", "W", "var(--ok)")}
+      ${gauge(g.temperature_c, 100, "Temp", "°C", tempColour(g.temperature_c))}
+      ${gauge(g.fan_pct, 100, "Fan", "%", "var(--accent)")}
+    </div>
+    <div class="clocks">
+      ${clockRow("Graphics", g.clock_graphics_mhz, g.clock_graphics_max_mhz, "#a855f7")}
+      ${clockRow("Memory", g.clock_memory_mhz, g.clock_memory_mhz, "var(--meter)")}
+      ${clockRow("Streaming Multiprocessor", g.clock_sm_mhz, g.clock_graphics_max_mhz, "#f59e0b")}
+    </div>
+  </div>`;
+}
+
+// อุณหภูมิเป็นค่าเดียวที่ "สูง = อันตราย" จริง ๆ — ใช้สีบอกโดยไม่ต้องอ่านตัวเลข
+function tempColour(c) {
+  if (c == null) return "var(--meter)";
+  return c >= 85 ? "var(--bad)" : c >= 70 ? "var(--warn)" : "var(--ok)";
+}
+
 // ── fleet across machines ────────────────────────────────────────────────
 // The hub talks to each node over SSH (`lmds agent info`). A node being down must
 // degrade to one row saying so — never hang or blank the whole page.
@@ -912,8 +1000,10 @@ function nodeModelsMarkup(name, data) {
   const sum = data.summary || {};
   const gpuNames = (host.gpus || []).map(g => g.name.replace(/^NVIDIA /, "")).join(", ") || "no GPU";
   const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}
-    · ${sum.running || 0} of ${sum.total || models.length} running</div>
-    ${nodeResources(host)}`;
+    · ${sum.running || 0} of ${sum.total || models.length} running${
+      data.age_seconds ? ` · updated ${Math.round(data.age_seconds)}s ago` : ""}</div>
+    ${nodeResources(host)}
+    ${(host.gpus || []).map(gpuCard).join("")}`;
 
   if (!models.length) {
     return `<div class="pad" style="border-top:1px solid var(--line)">${head}

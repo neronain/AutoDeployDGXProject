@@ -13,7 +13,16 @@ from pathlib import Path
 
 from .profiles import KnownGpu, TargetProfile, classify, lookup_gpu
 
-_SMI_QUERY = "--query-gpu=name,memory.total,compute_cap,memory.used,utilization.gpu"
+# ค่าที่ถามจาก nvidia-smi — เรียงตามนี้แล้วอ่านตามลำดับ
+# GB10 (unified SoC) ตอบ [N/A] หลายตัว (power.limit, fan, clocks.mem, memory.total)
+# ต้องแยก "ไม่มีค่า" ออกจาก "ศูนย์" ให้ชัด ไม่งั้นหน้าจอจะโชว์ 0W ทั้งที่การ์ดทำงานอยู่
+_SMI_FIELDS = (
+    "name", "memory.total", "compute_cap", "memory.used", "utilization.gpu",
+    "temperature.gpu", "power.draw", "power.limit", "fan.speed",
+    "clocks.gr", "clocks.max.gr", "clocks.mem", "clocks.sm",
+    "pcie.link.gen.current", "pcie.link.width.current",
+)
+_SMI_QUERY = "--query-gpu=" + ",".join(_SMI_FIELDS)
 
 
 @dataclass
@@ -25,6 +34,17 @@ class DetectedGpu:
     # ค่าสด ณ ตอนตรวจ — None เมื่อ nvidia-smi ไม่รายงาน (เช่น GB10 ที่ memory.total ว่าง)
     vram_used_mib: int | None = None
     utilization_pct: int | None = None
+    # telemetry — None = การ์ดรุ่นนี้ไม่รายงาน ไม่ใช่ค่าเป็นศูนย์
+    temperature_c: int | None = None
+    power_w: float | None = None
+    power_limit_w: float | None = None
+    fan_pct: int | None = None
+    clock_graphics_mhz: int | None = None
+    clock_graphics_max_mhz: int | None = None
+    clock_memory_mhz: int | None = None
+    clock_sm_mhz: int | None = None
+    pcie_gen: int | None = None
+    pcie_width: int | None = None
 
     @property
     def tested(self) -> bool:
@@ -73,14 +93,27 @@ def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
         vram = int(float(parts[1])) if len(parts) > 1 and parts[1].replace(".", "").isdigit() else None
         cc = parts[2] if len(parts) > 2 and parts[2] else None
 
+        def _num(index: int):
+            """ค่าที่อ่านไม่ได้/[N/A] → None — อย่าแปลงเป็น 0 เพราะความหมายคนละอย่าง"""
+            if len(parts) <= index:
+                return None
+            raw = parts[index].strip()
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
         def _int(index: int) -> int | None:
-            if len(parts) > index and parts[index].replace(".", "").isdigit():
-                return int(float(parts[index]))
-            return None
+            value = _num(index)
+            return None if value is None else int(value)
 
         gpus.append(DetectedGpu(
             name=name, vram_mib=vram, compute_capability=cc, known=lookup_gpu(name),
             vram_used_mib=_int(3), utilization_pct=_int(4),
+            temperature_c=_int(5), power_w=_num(6), power_limit_w=_num(7), fan_pct=_int(8),
+            clock_graphics_mhz=_int(9), clock_graphics_max_mhz=_int(10),
+            clock_memory_mhz=_int(11), clock_sm_mhz=_int(12),
+            pcie_gen=_int(13), pcie_width=_int(14),
         ))
 
     for gpu in gpus:

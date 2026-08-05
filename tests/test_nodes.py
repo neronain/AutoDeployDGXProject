@@ -397,3 +397,30 @@ def test_docker_and_bridge_interfaces_are_ignored(tmp_path, monkeypatch):
     monkeypatch.setattr(profiler, "Path", FakePath)
     monkeypatch.setattr(profiler, "_run", lambda *a, **k: "")
     assert profiler.detect_fabric()["links"] == []
+
+
+# ── telemetry ของ GPU ───────────────────────────────────────────────────────
+def _smi(monkeypatch, line: str) -> list:
+    monkeypatch.setattr(profiler.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(profiler, "_run", lambda *a, **k: line + "\n")
+    return profiler.detect_gpus()[0]
+
+
+def test_telemetry_is_read_from_nvidia_smi(monkeypatch):
+    gpu = _smi(monkeypatch, "NVIDIA RTX 5090, 32768, 12.0, 8192, 55, 62, 210.5, 575, 41, "
+                            "2100, 2520, 7001, 2100, 5, 16")[0]
+    assert (gpu.temperature_c, gpu.power_w, gpu.power_limit_w, gpu.fan_pct) == (62, 210.5, 575.0, 41)
+    assert (gpu.clock_graphics_mhz, gpu.clock_graphics_max_mhz) == (2100, 2520)
+    assert (gpu.pcie_gen, gpu.pcie_width) == (5, 16)
+
+
+def test_missing_telemetry_is_none_not_zero(monkeypatch):
+    """GB10 (unified SoC) ตอบ [N/A] หลายตัว — โชว์ 0W ทั้งที่การ์ดทำงานอยู่คือการโกหก
+    ค่าจริงจากเครื่อง: NVIDIA GB10, 43°C, 4.28W, power.limit/fan/clocks.mem = [N/A]"""
+    gpu = _smi(monkeypatch, "NVIDIA GB10, [N/A], 12.1, [N/A], 0, 43, 4.28, [N/A], [N/A], "
+                            "208, 3003, [N/A], 208, 1, 1")[0]
+    assert gpu.temperature_c == 43 and gpu.power_w == 4.28
+    assert gpu.power_limit_w is None, "ไม่รายงาน ≠ ไม่มีเพดาน"
+    assert gpu.fan_pct is None, "ไม่รายงาน ≠ พัดลมหยุด"
+    assert gpu.clock_memory_mhz is None
+    assert gpu.clock_graphics_mhz == 208 and gpu.clock_graphics_max_mhz == 3003

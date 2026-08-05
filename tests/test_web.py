@@ -789,3 +789,19 @@ def test_cache_is_dropped_after_a_state_change(fleet):
     client.post(f"/api/models/{fleet}/stop")
     slugs = [m["slug"] for m in client.get("/api/models").json()["models"]]
     assert "ของเก่า" not in slugs
+
+
+def test_gpu_telemetry_hides_values_the_card_does_not_report():
+    """GB10 (unified SoC) ไม่รายงาน power limit / fan / memory clock —
+    โชว์ 0 ตรงนั้นคือการโกหก · เกจต้องหายไปเลยเมื่อค่าเป็น null"""
+    body = TestClient(create_app()).get("/").text
+    assert "function gauge(" in body
+    assert 'if (value == null) return "";' in body, "ต้องซ่อนเกจที่ไม่มีค่า ไม่ใช่วาดเป็น 0"
+    assert "N/A (SoC)" in body, "unified memory ต้องบอกว่าเป็น SoC ไม่ใช่โชว์ 0 GB"
+
+
+def test_temperature_is_colour_coded():
+    """อุณหภูมิเป็นค่าเดียวที่ 'สูง = อันตราย' จริง — ต้องเห็นได้โดยไม่ต้องอ่านตัวเลข"""
+    body = TestClient(create_app()).get("/").text
+    assert "function tempColour(" in body
+    assert "var(--bad)" in body.split("function tempColour(")[1][:200]
