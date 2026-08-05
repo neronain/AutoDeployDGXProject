@@ -297,6 +297,33 @@ def test_up_prepares_approved_runtime_assets_before_verify_files(tmp_path):
     ]
 
 
+def test_run_step_uses_absolute_controller_and_bundle_working_directory(tmp_path, monkeypatch):
+    """Generated controllers resolve relative files from their own bundle directory."""
+    import subprocess
+
+    from lmds.cli.main import _run_step
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    controller = bundle_dir / "model-single.sh"
+    controller.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        seen["cwd"] = kwargs.get("cwd")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert _run_step("bundle/model-single.sh", "download", 1, 1, "download") == 0
+    assert seen == {
+        "args": [str(controller.resolve()), "download"],
+        "cwd": str(bundle_dir.resolve()),
+    }
+
+
 def test_up_does_not_pretend_to_handle_stacked(isolated_config, tmp_path, monkeypatch):
     """stacked มีขั้น sync-worker/verify-worker ที่ต้องตัดสินใจเรื่องเครื่องปลายทาง — ทำแทนไม่ได้
 
