@@ -127,14 +127,19 @@ def test_env_is_scoped_to_the_selected_engine():
     assert not is_allowed_env(Engine.VLLM, "GGML_CUDA_FORCE_MMQ")
 
 
-def test_values_with_newlines_are_rejected():
-    """ค่าที่มีขึ้นบรรทัดใหม่แทรก -e ตัวถัดไปได้ทันทีที่มีใครเอาไปต่อสตริง"""
+def test_values_with_control_characters_are_rejected():
+    """CR/LF/NUL ในค่าไม่มีความหมายกับ env ที่อนุญาตและต้องไม่ถึง renderer"""
     allowed, rejected = split_env(Engine.VLLM, {
         "VLLM_USE_FLASHINFER_SAMPLER": "1\nNCCL_DEBUG=TRACE",
         "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1\r0",
+        "VLLM_MARLIN_USE_ATOMIC_ADD": "1\x00junk",
     })
     assert allowed == {}
-    assert rejected == ["VLLM_ALLOW_LONG_MAX_MODEL_LEN", "VLLM_USE_FLASHINFER_SAMPLER"]
+    assert rejected == [
+        "VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+        "VLLM_MARLIN_USE_ATOMIC_ADD",
+        "VLLM_USE_FLASHINFER_SAMPLER",
+    ]
 
 
 def test_values_are_coerced_to_strings():
