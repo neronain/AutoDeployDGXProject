@@ -225,6 +225,18 @@
   (ไม่งั้นภาพกระตุกตอน `Live` วาดทับ)
 - **`LICENSE`**, **`SECURITY.md`**, **`CONTRIBUTING.md`**, **`CHANGELOG.md`**, **`README.en.md`**
 
+### Fixed
+
+- **stacked ใช้สาย 200G แค่เส้นเดียวจากสองเส้นที่ต่ออยู่** — `NCCL_IB_HCA` ถูกตั้งจาก HCA
+  ที่คู่กับ `NCCL_SOCKET_IFNAME` ตัวเดียวแล้ว `return` ทันที · ConnectX ใบเดียวบน DGX Spark
+  มีสองพอร์ตที่ต่อสายพร้อมกันได้ บอก NCCL ตัวเดียวเท่ากับใช้แบนด์วิดท์ครึ่งเดียว **โดยไม่มี
+  อะไรฟ้อง** เพราะงานก็ยังรันได้ (เคสที่ไล่ยากที่สุดประเภทหนึ่ง)
+  · ตอนนี้เอา RoCE ทุกตัวที่ **ลิงก์ขึ้นจริง** (`operstate=up`) และเร็วพอ
+  (`NCCL_HCA_MIN_SPEED_MBPS`, default 25000) มาคั่นจุลภาค · ถ้า driver ไม่เขียน `speed`
+  จะถอยไปใช้พฤติกรรมเดิม
+  · ยืนยันบน DGX Spark จริง: เดิมได้ `rocep1s0f0` ตัวเดียว ตอนนี้ได้
+  `rocep1s0f0,roceP2p1s0f0` ตรงกับสาย 200 Gb/s ที่ขึ้นสองเส้น
+
 ### Changed
 
 - **help ของ controller เขียนใหม่เป็นภาษาอังกฤษ** แบ่งเป็น COMMANDS / OPTIONS / **API TOKEN** /

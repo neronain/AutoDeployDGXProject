@@ -382,3 +382,29 @@ def test_container_hub_cache_handles_both_hf_layouts(tmp_path):
     # ต้องส่งให้ทั้ง head (docker -e) และ worker (export ในสคริปต์)
     assert '-e "HF_HUB_CACHE=$(_container_hub_cache "$HF_HOME")"' in text
     assert 'export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")' in text
+
+
+def test_stacked_uses_every_active_roce_link(tmp_path):
+    """ConnectX ใบเดียวมีสองพอร์ตที่ต่อสายพร้อมกันได้ — บอก NCCL ตัวเดียวคือใช้สายเส้นเดียว
+
+    เคสจริงบน DGX Spark: rocep1s0f0 กับ roceP2p1s0f0 ขึ้นทั้งคู่ที่ 200 Gb/s
+    ของเดิมผูก HCA กับ NCCL_SOCKET_IFNAME ตัวเดียวแล้ว return ทันที = ได้ครึ่งเดียว
+    โดยไม่มีอะไรฟ้อง เพราะงาน "ก็รันได้"
+    """
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "detect_active_hcas()" in text
+    # ต้องกรองเฉพาะเส้นที่ขึ้นจริงและเร็วพอ ไม่งั้น NCCL ไปลองเส้นที่ตาย
+    assert "operstate" in text
+    assert "NCCL_HCA_MIN_SPEED_MBPS" in text
+    # ยังต้องมีทางถอยเมื่อ driver ไม่เขียน speed
+    assert "detect_hca_for_interface" in text
+
+
+def test_stacked_hca_detection_joins_devices_with_commas(tmp_path):
+    """NCCL_IB_HCA รับหลายตัวคั่นด้วยจุลภาค — ถ้า join ผิดจะกลายเป็นชื่อเดียวที่ไม่มีอยู่จริง"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    body = text.split("detect_active_hcas()", 1)[1].split("\n_resolve_hca", 1)[0]
+    assert "local IFS=," in body
+    assert '${found[*]}' in body
