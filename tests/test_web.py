@@ -666,12 +666,31 @@ def test_node_command_allowlist_blocks_anything_else(registered, monkeypatch):
     assert r.status_code == 400
 
 
-def test_node_command_never_exposes_remove(registered):
-    """`remove` ลบ weight หลายสิบ GB บนเครื่องปลายทาง และต้องใช้ -y ซึ่งข้ามหน้ายืนยัน
-    ที่แสดงรายการ+ขนาด — ปุ่มเดียวจบแบบนั้นอันตรายเกินไป จึงต้องไม่หลุดเข้า allowlist
-    """
+def test_node_remove_previews_before_it_deletes(registered, monkeypatch):
+    """กดปุ่มเดียวแล้ว weight 71 GB หายไม่ได้ — คำขอแรกต้องเป็น --dry-run เสมอ"""
+    seen = []
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: seen.append(command)
+                        or SimpleNamespace(exit_code=0, stdout="จะลบ 71.2 GB", stderr=""))
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/remove")
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert seen == ["lmds remove demo --dry-run"], "คำขอที่ไม่มี confirm ต้องไม่ลบอะไรเลย"
+
+
+def test_node_remove_needs_the_exact_slug_to_confirm(registered, monkeypatch):
+    """confirm ที่เดาได้ (เช่น true) ทำให้ปุ่มพลาดกลายเป็นการลบจริง — ต้องพิมพ์ชื่อให้ตรง"""
+    called = []
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: called.append(command)
+                        or SimpleNamespace(exit_code=0, stdout="", stderr=""))
+    client = TestClient(create_app())
+    for bad in ({"confirm": "yes"}, {"confirm": True}, {"confirm": "Demo"}):
+        assert client.post("/api/nodes/spark2/models/demo/remove", json=bad).status_code == 400, bad
+    assert not called
+
+    ok = client.post("/api/nodes/spark2/models/demo/remove", json={"confirm": "demo"})
+    assert ok.status_code == 200
+    assert called == ["lmds remove demo -y"]
 
 
 def test_node_logs_command_asks_for_a_bounded_number_of_lines(registered, monkeypatch):
@@ -931,3 +950,15 @@ def test_live_updates_pause_while_a_node_row_is_in_use():
     assert "openModelMenus" in page and "document.activeElement" in page, \
         "ต้องเช็กทั้งเมนูที่กางอยู่และช่องกรอกที่โฟกัสอยู่"
     assert "markStale" in page, "หยุดอัปเดตแล้วต้องบอกผู้ใช้ว่าตัวเลขเริ่มเก่า"
+
+
+def test_autostart_badge_is_not_shown_for_every_model():
+    """autostart เป็นสตริง enabled|disabled|absent|n/a — ทุกตัว truthy ใน JS
+
+    เช็กแบบ `m.autostart ? …` จึงติดป้าย "autostart" ให้ทุกโมเดลและเสนอปุ่ม disable
+    ทั้งที่ไม่เคยเปิดเลย (ผู้ใช้เจอจริงบน dgx-veerasiam) — สถานะที่ผิดแย่กว่าไม่มีสถานะ
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert 'm.autostart ? `<span class="tag">autostart</span>`' not in page
+    assert 'auto === "enabled"' in page, "ต้องเทียบค่ากับ enabled ตรง ๆ"
+    assert 'auto === "n/a"' in page, "เครื่องที่ไม่มี systemd ต้องไม่มีปุ่มที่กดแล้วล้มแน่ ๆ"

@@ -441,8 +441,9 @@ function manageMarkup(m) {
     <div class="sec" style="margin:16px 0 6px">Autostart after reboot</div>
     <div class="field">
       <span class="muted">status: ${esc(auto || "—")}</span>
-      ${auto === "enabled" ? btn("auto:off", "Disable autostart") : btn("auto:on", "Enable autostart")}
-      <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>
+      ${auto === "n/a" ? `<span class="dim">This machine has no systemd — autostart is not available.</span>`
+        : `${auto === "enabled" ? btn("auto:off", "Disable autostart") : btn("auto:on", "Enable autostart")}
+      <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>`}
     </div>
 
     ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px">Stacked (2 nodes)</div>
@@ -1056,20 +1057,28 @@ function nodeModelsMarkup(name, data) {
       const key = name + "/" + m.slug;
       const open = openModelMenus.has(key);
       const o = nodeOpts(key);
+      // autostart เป็นสตริง: enabled | disabled | absent | n/a — ทุกตัวเป็น truthy ใน JS
+      // เช็กแบบ `m.autostart ? …` จึงบอกว่า "เปิด autostart อยู่" กับทุกโมเดล ซึ่งไม่จริง
+      const auto = m.autostart || "";
+      const autoOn = auto === "enabled";
       // ปุ่มขึ้นตามสถานะจริง — ปุ่มที่กดแล้วล้มแน่ ๆ แย่กว่าไม่มีปุ่ม
       const more = [
         m.running ? ["restart", "หยุดแล้วเปิดใหม่"] : null,
         ["doctor", "ตรวจว่าทำไมยัง start ไม่ได้"],
         ["logs", "log ล่าสุด 300 บรรทัด"],
         m.downloaded ? ["repair", "โหลดไฟล์ที่ขาดกลับมา + ตรวจซ้ำ"] : null,
-        m.autostart ? ["disable", "เลิก autostart หลัง reboot"] : ["enable", "ให้ขึ้นเองหลัง reboot"],
+        // n/a = เครื่องนั้นไม่มี systemd — ปุ่มที่กดแล้วล้มแน่ ๆ ไม่ควรมี
+        auto === "n/a" ? null
+          : autoOn ? ["disable", "เลิก autostart หลัง reboot"]
+                   : ["enable", "ให้ขึ้นเองหลัง reboot (ต้อง sudo บนเครื่องนั้น)"],
+        ["remove", "ลบออกจากเครื่องนั้น — จะแสดงรายการ+ขนาดก่อนถามยืนยัน"],
       ].filter(Boolean);
       return `<div style="margin-bottom:6px">
         <div class="field">
           <span class="dot ${state}"></span>
           <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
             <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
-            ${m.autostart ? `<span class="tag">autostart</span>` : ""}</span>
+            ${autoOn ? `<span class="tag">autostart</span>` : ""}</span>
           <span class="mono muted">:${m.port || "—"}</span>
           <span class="muted">${label}</span>
           ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}">${act}</button>` : ""}
@@ -1204,26 +1213,30 @@ document.addEventListener("click", async e => {
     const original = btn.textContent;
     btn.textContent = command + "…";
     const withOpts = command === "start" || command === "restart";
+    const body = withOpts ? readNodeOpts(node, slug)
+      : (command === "remove" && btn.dataset.confirm ? { confirm: slug } : null);
     const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/${command}`,
-                        withOpts
-                          ? { method: "POST", headers: { "content-type": "application/json" },
-                              body: JSON.stringify(readNodeOpts(node, slug)) }
-                          : { method: "POST" });
+                        body ? { method: "POST", headers: { "content-type": "application/json" },
+                                 body: JSON.stringify(body) }
+                             : { method: "POST" });
     const d = await r.json();
     btn.disabled = false;
     btn.textContent = original;
     if (!r.ok) { alert(d.detail || "Command failed"); return; }
-    if (command === "doctor" || command === "logs" || d.exit_code !== 0) {
-      const row = nodeRows.get(node);
-      if (row) {
-        pinnedOutput.add(node);
-        row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
-            <b style="font-weight:500">${esc(command)} · ${esc(slug)}</b>
-            <button data-nact="close-output" data-node="${esc(node)}">close</button>
-          </div><pre>${esc(d.output || "(no output)")}</pre>`;
-      }
+
+    // remove ครั้งแรกคือ --dry-run: server ยังไม่ลบอะไร แค่บอกว่าจะลบอะไรบ้าง
+    // ผู้ใช้ต้องเห็นรายการ+ขนาดจริงก่อน แล้วกดยืนยันอีกครั้งถึงจะลบ
+    if (command === "remove" && !btn.dataset.confirm) {
+      showNodeOutput(node, `จะลบ · ${slug}`, d.output, `
+        <button class="danger" data-nact="model:remove" data-node="${esc(node)}"
+                data-slug="${esc(slug)}" data-confirm="1">ยืนยันลบถาวร</button>`);
       return;
     }
+    if (command === "doctor" || command === "logs" || d.exit_code !== 0) {
+      showNodeOutput(node, `${command} · ${slug}`, d.output);
+      return;
+    }
+    pinnedOutput.delete(node);
     loadNode(node);
     return;
   }
@@ -1410,6 +1423,18 @@ let stream = null;
 let pollTimer = null;
 
 // แถวนี้กำลังถูกใช้อยู่ไหม — กางเมนูค้างไว้ หรือเคอร์เซอร์อยู่ในช่องกรอกของแถวนี้
+// ผลของคำสั่งต้องค้างอยู่จนผู้ใช้ปิดเอง — SSE วาดทับทุก 1 วิ ผลจะหายก่อนอ่านจบ
+function showNodeOutput(node, title, output, extra = "") {
+  const row = nodeRows.get(node);
+  if (!row) return;
+  pinnedOutput.add(node);
+  row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
+      <b style="font-weight:500">${esc(title)}</b>
+      <span class="grow"></span>${extra}
+      <button data-nact="close-output" data-node="${esc(node)}">close</button>
+    </div><pre>${esc(output || "(no output)")}</pre>`;
+}
+
 function nodeIsInUse(name) {
   for (const key of openModelMenus) if (key.startsWith(name + "/")) return true;
   const row = nodeRows.get(name);

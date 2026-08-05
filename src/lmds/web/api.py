@@ -507,6 +507,8 @@ def create_app(token: str = "") -> FastAPI:
         """
         if not body:
             return []
+        if command == "remove":
+            return []   # remove รับแค่ confirm ซึ่งจัดการแยกไปแล้ว
         if command not in {"start", "restart"}:
             raise HTTPException(status_code=400, detail=f"'{command}' ไม่รับ option (รับเฉพาะ start/restart)")
 
@@ -541,15 +543,21 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.nodes import NodeError, find, run
 
         # allowlist ไม่ใช่พิธีกรรม — หน้าเว็บสั่งข้ามเครื่องได้ ทุกตัวที่เพิ่มต้องรันแบบ
-        # ไม่โต้ตอบได้จริง (ssh ปิด stdin) และไม่ทำลายของถาวร
-        # `remove` จงใจไม่อยู่ในนี้: มันลบ weight หลายสิบ GB และต้องใช้ -y ซึ่งข้ามหน้ายืนยัน
-        # ที่แสดงรายการ+ขนาด — ปุ่มเดียวจบแบบนั้นอันตรายเกินไปสำหรับเครื่องปลายทาง
+        # ไม่โต้ตอบได้จริง (ssh ปิด stdin)
         allowed = {
             "start": "", "stop": "", "restart": "", "repair": "", "doctor": "",
             "logs": "-n 300", "enable": "", "disable": "",
+            # remove ลบ weight หลายสิบ GB และกู้คืนไม่ได้ — หน้าเว็บต้องเรียก preview ก่อน
+            # (`--dry-run` ไม่ลบอะไร) แล้วส่ง confirm ที่ตรงกับ slug กลับมาถึงจะลบจริง
+            # ปุ่มเดียวจบไม่ได้ แต่ "ทำไม่ได้เลย" ก็ไม่ใช่คำตอบ — ผู้ใช้ต้องไป ssh เองอยู่ดี
+            "remove": "--dry-run",
         }
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
+        if command == "remove" and (body or {}).get("confirm"):
+            if (body or {}).get("confirm") != slug:
+                raise HTTPException(status_code=400, detail="ชื่อยืนยันไม่ตรงกับโมเดลที่จะลบ")
+            allowed = {**allowed, "remove": "-y"}
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 import os
+import sys
 
 import shlex
 
@@ -1834,8 +1835,12 @@ def remove(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
     keep_weights: bool = typer.Option(False, "--keep-weights", help="ไม่ลบ weight (เก็บไว้ deploy ใหม่โดยไม่ต้องโหลดซ้ำ)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ต้องถามยืนยัน"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="แสดงว่าจะลบอะไรบ้าง แล้วจบ — ไม่ลบจริง"),
 ) -> None:
-    """ลบโมเดลออกจากเครื่อง: หยุด → ยกเลิก autostart → ลบ bundle/ทะเบียน/log/weight"""
+    """ลบโมเดลออกจากเครื่อง: หยุด → ยกเลิก autostart → ลบ bundle/ทะเบียน/log/weight
+
+    `--dry-run` ใช้ดูรายการก่อนตัดสินใจ (และเป็นตัวที่หน้าเว็บเรียกก่อนถามยืนยัน)
+    """
     from lmds.fleet import find, remove_server, removal_plan
 
     server = find(slug)
@@ -1861,6 +1866,19 @@ def remove(
         err_console.print("[yellow]โมเดลนี้กำลังรันอยู่ — จะถูกหยุดก่อนลบ[/yellow]")
     if keep_weights:
         console.print("[dim]--keep-weights: weight จะไม่ถูกลบ (deploy ใหม่แล้วใช้ต่อได้เลย)[/dim]")
+
+    if dry_run:
+        console.print("[dim]--dry-run: ยังไม่ได้ลบอะไร · ลบจริง: "
+                      f"[bold]lmds remove {slug} -y[/bold][/dim]")
+        return
+
+    # ไม่มี terminal ให้ตอบ (เช่นถูกเรียกผ่าน SSH จาก hub) — "Aborted." เฉย ๆ ไม่บอกอะไรเลย
+    # ว่าทำไมและต้องทำยังไงต่อ ผู้ใช้จะคิดว่าคำสั่งทำงานแล้วไม่มีอะไรเกิดขึ้น
+    if not yes and not sys.stdin.isatty():
+        err_console.print("[red]ตอบยืนยันไม่ได้ — คำสั่งนี้ไม่ได้รันจาก terminal[/red]")
+        err_console.print(f"[dim]ดูรายการก่อน: [bold]lmds remove {slug} --dry-run[/bold] · "
+                          f"ลบจริง: [bold]lmds remove {slug} -y[/bold][/dim]")
+        raise typer.Exit(code=2)
 
     if not yes and not typer.confirm("ยืนยันลบ? (กู้คืนไม่ได้)", default=False):
         console.print("ยกเลิก")
