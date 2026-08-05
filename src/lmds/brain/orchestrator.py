@@ -16,13 +16,14 @@ from pydantic import ValidationError
 from lmds.config.paths import sessions_dir
 from lmds.fit import FitReport
 from lmds.inspector.report import ArtifactType, ModelReport
+from lmds.recipes import find_recipe
 from lmds.secrets import redact
 
 from .allowlists import is_known_image, split_flags
 from .plan_schema import DeploymentPlan, Engine, PlanError
 from .prompts import build_system_prompt, build_user_prompt
 from .providers import LlmProvider
-from .rulebased import rule_based_plan
+from .rulebased import apply_recipe, rule_based_plan
 
 MAX_ATTEMPTS = 3
 
@@ -249,6 +250,12 @@ def build_plan(
             attempts.append({"raw": redact(raw)[:8000], "error": feedback})
             continue
         plan.generator = f"llm:{provider.name}/{provider.model}"
+        # สูตรที่รันผ่านบนฮาร์ดแวร์แล้ว ชนะสิ่งที่ LLM ค้นมาเสมอในส่วนที่ทับกัน —
+        # อย่างหนึ่งคือหลักฐาน อีกอย่างคือการอนุมาน · ส่วนที่สูตรไม่ครอบคลุม LLM ยังคุมเหมือนเดิม
+        # (ถ้าไม่ทำตรงนี้ ลูกค้าที่ "มี" API key จะได้ผลแย่กว่าคนที่ไม่มี ซึ่งกลับหัวกลับหาง)
+        recipe = find_recipe(report.repo_id)
+        if recipe is not None:
+            plan = apply_recipe(plan, recipe, fit.memory_model.value)
         plan = harden_plan(plan, report, fit)
         attempts.append({"raw": redact(raw)[:8000], "error": ""})
         _log_session(report, fit, attempts, plan)

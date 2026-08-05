@@ -182,3 +182,34 @@ def test_deepseek_compilation_config_is_not_dropped():
     flags = " ".join(hardened.serving.extra_flags)
     assert "--compilation-config" in flags and "PIECEWISE" in flags
     assert "--moe-backend" in flags
+
+
+def test_llm_path_also_gets_the_recipe():
+    """ลูกค้าที่ "มี" API key ต้องไม่ได้ผลแย่กว่าคนที่ไม่มี — สูตรที่รันผ่านจริงชนะสิ่งที่ LLM ค้นมา
+    ในส่วนที่ทับกัน ส่วนที่สูตรไม่ครอบคลุม LLM ยังคุมเหมือนเดิม"""
+    from lmds.brain.orchestrator import build_plan
+    from lmds.brain.plan_schema import DeploymentPlan
+
+    report = report_for("nvidia/DeepSeek-V4-Flash-NVFP4")
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+
+    class FakeProvider:
+        name, model = "fake", "m1"
+
+        def complete_json(self, system, user):
+            # LLM เดา image และ kv-cache ผิด (image ทั่วไป, auto) แต่ตั้ง served name ที่ดีมา
+            plan = rule_based_plan(report, fit).model_copy(deep=True)
+            plan.runtime.image_ref = "vllm/vllm-openai:latest"
+            plan.serving.kv_cache_dtype = "auto"
+            plan.serving.extra_flags = []
+            plan.served_model_name = "ds-v4-from-llm"
+            return plan.model_dump_json()
+
+    plan = build_plan(report, fit, FakeProvider())
+    assert isinstance(plan, DeploymentPlan)
+    # สูตรทับสิ่งที่ LLM เดาผิด
+    assert plan.runtime.image_ref.startswith("ghcr.io/anemll/")
+    assert plan.serving.kv_cache_dtype == "nvfp4_ds_mla"
+    assert "--compilation-config" in " ".join(plan.serving.extra_flags)
+    # แต่ไม่ไปยุ่งกับสิ่งที่สูตรไม่ได้พูดถึง
+    assert plan.served_model_name == "ds-v4-from-llm"
