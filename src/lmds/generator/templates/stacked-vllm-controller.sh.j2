@@ -58,6 +58,9 @@ WORKER_HF_HOME="${WORKER_HF_HOME:-$HF_HOME}"
 WORKER_VLLM_CACHE="${WORKER_VLLM_CACHE:-$VLLM_CACHE}"
 WORKER_FLASHINFER_CACHE="${WORKER_FLASHINFER_CACHE:-$FLASHINFER_CACHE}"
 RUN_DIR="${RUN_DIR:-${HOME}/.lmds/run/{{ slug }}}"
+# ล็อก image ต่อ bundle ไม่ใช่ต่อเครื่อง — เครื่องเดียวมี stacked ได้หลายตัวและใช้คนละ image
+# (เช่น DeepSeek V4 ต้องใช้ build เฉพาะ ไม่ใช่ image เดียวกับ Llama)
+IMAGE_LOCK_FILE="${IMAGE_LOCK_FILE:-${HF_HOME}/.lmds-image-id-{{ slug }}}"
 
 # ── Serving ──
 API_HOST="${API_HOST:-0.0.0.0}"
@@ -140,6 +143,10 @@ validate_numbers() {
     die "invalid API_PORT: $API_PORT"
   [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( MAX_MODEL_LEN > 0 )) ||
     die "invalid context: $MAX_MODEL_LEN"
+  # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
+  # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
+  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 > 0.3 && v+0 <= 0.98)}' ||
+    die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)"
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
     die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
 }
@@ -150,6 +157,8 @@ parse_options() {
     case "$1" in
       --context)         MAX_MODEL_LEN="$2"; shift 2 ;;
       --context=*)       MAX_MODEL_LEN="${1#*=}"; shift ;;
+      --gpu-util)       GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
+      --gpu-util=*)   GPU_MEMORY_UTILIZATION="${1#*=}"; shift ;;
       --port)            API_PORT="$2"; shift 2 ;;
       --port=*)          API_PORT="${1#*=}"; shift ;;
       --bind)            API_HOST="$2"; shift 2 ;;
@@ -210,7 +219,7 @@ prepare_runtime() {
   local head_id worker_id
   head_id="$(_current_image_id)"
   [[ -n "$head_id" ]] || die "pull head image ไม่สำเร็จ"
-  echo "$head_id" > "${HF_HOME}/.lmds-stacked-image-id"
+  echo "$head_id" > "$IMAGE_LOCK_FILE"
   log "Head image locked: $head_id"
 
   local wip
@@ -234,7 +243,7 @@ _assert_runtime_images() {
   worker_id="$(ssh_worker "docker inspect '$VLLM_IMAGE' --format '{{.Id}}'" 2>/dev/null || true)"
   [[ -n "$worker_id" ]] || die "ไม่พบ runtime image บน worker — รัน: $0 prepare-runtime"
   [[ "$head_id" == "$worker_id" ]] || die "image mismatch head=${head_id} worker=${worker_id} — prepare-runtime ใหม่"
-  [[ -f "${HF_HOME}/.lmds-stacked-image-id" ]] && locked="$(cat "${HF_HOME}/.lmds-stacked-image-id")"
+  [[ -f "$IMAGE_LOCK_FILE" ]] && locked="$(cat "$IMAGE_LOCK_FILE")"
   [[ -z "$locked" || "$locked" == "$head_id" ]] ||
     die "image ปัจจุบันต่างจากที่ lock ไว้ — รัน prepare-runtime ใหม่ก่อน start"
   printf '%s' "$head_id"
@@ -246,7 +255,7 @@ runtime_info() {
   echo "Image     : $VLLM_IMAGE"
   echo "Backend   : mp (vLLM multiprocessing, TP=${TENSOR_PARALLEL_SIZE}, nnodes=${NNODES})"
   local locked="not yet locked (run prepare-runtime)"
-  [[ -f "${HF_HOME}/.lmds-stacked-image-id" ]] && locked="$(cat "${HF_HOME}/.lmds-stacked-image-id")"
+  [[ -f "$IMAGE_LOCK_FILE" ]] && locked="$(cat "$IMAGE_LOCK_FILE")"
   echo "Locked ID : ${locked}"
   docker inspect "$VLLM_IMAGE" --format 'Current ID : {{.Id}}' 2>/dev/null || true
 }

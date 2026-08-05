@@ -348,3 +348,24 @@ def test_head_container_command_is_not_double_invoked(tmp_path):
     assert '"${hrun[@]}"' in text
     # worker ยิงผ่าน ssh เป็นสตริง จึงต้องคงรูปเดิมไว้
     assert 'ssh_at "$wip" "$(printf \'%q \' "${wrun[@]}")"' in text
+
+
+def test_gpu_util_is_settable_and_validated(tmp_path):
+    """unified memory ชน OOM ง่ายกว่าการ์ดแยก — ต้องปรับได้โดยไม่ต้องแก้ไฟล์ และต้องกันค่าพัง"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert "--gpu-util)" in text and "--gpu-util=*)" in text
+    # bash เทียบทศนิยมไม่ได้ — ต้องใช้ awk ไม่ใช่ (( )) ที่จะตัดเป็น 0 เงียบ ๆ
+    assert "awk -v v=\"$GPU_MEMORY_UTILIZATION\"" in text
+
+
+def test_image_lock_is_per_bundle_not_per_machine(tmp_path):
+    """เครื่องเดียวรัน stacked ได้หลายตัวและใช้คนละ image (DeepSeek V4 ต้องใช้ build เฉพาะ)
+    — ล็อกร่วมกันทำให้ตัวที่สอง start ไม่ได้ด้วย 'image ต่างจากที่ lock ไว้'"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert ".lmds-stacked-image-id" not in text
+    assert "IMAGE_LOCK_FILE=" in text
+    assert "deepseek-v4-flash-nvfp4" in text.split("IMAGE_LOCK_FILE=")[1].split("\n")[0]

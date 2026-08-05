@@ -60,6 +60,10 @@ validate_numbers() {
     die "invalid API_PORT: $API_PORT"
   [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( MAX_MODEL_LEN > 0 )) ||
     die "invalid context: $MAX_MODEL_LEN"
+  # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
+  # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
+  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 > 0.3 && v+0 <= 0.98)}' ||
+    die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)"
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
     die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
 }
@@ -84,6 +88,8 @@ parse_options() {
     case "$1" in
       --context)        MAX_MODEL_LEN="$2"; shift 2 ;;
       --context=*)      MAX_MODEL_LEN="${1#*=}"; shift ;;
+      --gpu-util)      GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
+      --gpu-util=*)  GPU_MEMORY_UTILIZATION="${1#*=}"; shift ;;
       --port)           API_PORT="$2"; shift 2 ;;
       --port=*)         API_PORT="${1#*=}"; shift ;;
       --bind)           API_HOST="$2"; shift 2 ;;
