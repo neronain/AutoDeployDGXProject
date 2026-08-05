@@ -310,6 +310,17 @@
 
 ### Validated
 
+- 🎉 **stacked (multi-node) ผ่านบนฮาร์ดแวร์จริงเป็นครั้งแรก** — `meta-llama/Llama-3.3-70B-Instruct`
+  บน **DGX Spark 2 เครื่อง** (gigabyte01 + gigabyte02) ผ่าน LMDS ตั้งแต่ `deploy` จนถึง `test-text`:
+  `prepare-runtime → verify-files (30 shards + ขนาดตรงกับ Hub) → sync-worker → verify-worker →
+  start → test-text` · vLLM 26.05 (NGC), TP=2 nnodes=2, **`mp` backend ไม่ใช้ Ray**,
+  NCCL ผ่าน RoCE `enp1s0f1np1`/`rocep1s0f1` ที่ระบบหาให้เอง, context 65,536, โหลด 8 นาที,
+  `/health` ผ่าน, `test-text` ตอบถูก
+  · **คำตอบของคำถามค้างเรื่อง Ray**: vLLM native multi-node (`--nnodes/--node-rank/--headless`)
+  ใช้แทน Ray cluster ได้จริงบน DGX Spark — ชิ้นส่วนน้อยกว่า ไม่ต้องมี Ray/tmux/run_cluster.sh
+  · การรันจริงครั้งนี้เจอบั๊ก 3 ตัวที่ static gate จับไม่ได้ (head ไม่เคย start, Jinja หลุด,
+  `node run` กลืน flag) — ดูหัวข้อ Fixed
+
 - **hardware-validated ตัวที่สอง**: `Qwen3.5-122B-A10B-abliterated-NVFP4` (safetensors + NVFP4 + MoE)
   บน DGX Spark เครื่องเดียว — vLLM 0.26.0, FLASHINFER_CUTLASS NvFp4 MoE backend, context 65,536,
   `/health` ผ่าน (ตัวแรกคือ Qwen3-Coder-30B-A3B GGUF native build, 2026-07-21)

@@ -55,7 +55,7 @@
 
 เรียงตามที่แนะนำ:
 
-1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · งานต่อยอด: hardware regression บนคลัสเตอร์จริง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
+1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · งานต่อยอด: 4 เครื่อง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
 2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
    verify-files, 2026-08-02) · ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้
 3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
