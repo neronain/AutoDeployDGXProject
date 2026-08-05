@@ -261,6 +261,22 @@ def test_llamacpp_client_budget_accounts_parallel_slots(isolated_config, tmp_pat
     assert "context_per_slot" in text
 
 
+def test_llamacpp_prepare_finds_nvcc_outside_login_shell(isolated_config, tmp_path):
+    """/usr/local/cuda/bin อยู่ใน PATH เฉพาะ login shell — งานจากหน้าเว็บ/systemd/ssh หาไม่เจอ
+
+    เดิม controller แค่เตือนแล้วปล่อยให้ cmake ตายด้วย "No CMAKE_CUDA_COMPILER could be found"
+    ซึ่งไม่ได้บอกว่าต้องทำอะไรต่อ
+    """
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "/usr/local/cuda/bin" in text
+    assert 'export PATH="${cuda_bin}:${PATH}"' in text
+    # ต้องตาย ไม่ใช่แค่เตือน — template นี้ build ด้วย -DGGML_CUDA=ON เสมอ
+    assert "ไม่พบ nvcc" in text
+    nvcc_die = next(ln for ln in text.splitlines() if "ไม่พบ nvcc" in ln)
+    assert "die" in nvcc_die, nvcc_die
+
+
 def test_llamacpp_rtx_uses_docker_mode(isolated_config, tmp_path):
     bundle, _, _ = make_bundle(gguf_report(weight_bytes=5 * GIB), target="rtx-pro-4000", tmp_path=tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
