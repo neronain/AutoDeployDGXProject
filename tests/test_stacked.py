@@ -408,3 +408,20 @@ def test_stacked_hca_detection_joins_devices_with_commas(tmp_path):
     body = text.split("detect_active_hcas()", 1)[1].split("\n_resolve_hca", 1)[0]
     assert "local IFS=," in body
     assert '${found[*]}' in body
+
+
+def test_stacked_detects_hca_per_worker_and_falls_back_symmetrically(tmp_path):
+    """ชื่อ HCA เป็น local ต่อ node และห้ามปล่อย head ใช้ RoCE ขณะ worker fallback TCP"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "detect_worker_hcas()" in text
+    assert 'worker_hcas["$wip"]="$whca"' in text
+    assert '_nccl_env_pairs "$wifname" "${worker_hcas[$wip]}"' in text
+    assert 'NCCL_IB_HCA=""' in text
+    assert "ปิด RoCE ทั้งคลัสเตอร์" in text
+
+
+def test_stacked_rejects_invalid_hca_speed_threshold(tmp_path):
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert '[[ "$NCCL_HCA_MIN_SPEED_MBPS" =~ ^[0-9]+$ ]]' in text
