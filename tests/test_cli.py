@@ -307,17 +307,29 @@ def test_working_is_silent_when_output_is_piped():
 
 
 def test_working_shows_label_on_a_real_terminal(monkeypatch):
-    """บนหน้าจอจริงต้องบอกว่ากำลังทำอะไร ไม่ใช่ค้างเงียบ ๆ"""
-    from rich.console import Console
+    """บนหน้าจอจริงต้องเปิด status ด้วย label ที่ส่งมา
 
+    อย่าจับ output ของ Rich Live โดยตรง: งานที่จบก่อน refresh tick อาจไม่ paint เลย
+    (ถูกต้องสำหรับ UI) และพฤติกรรมนี้ต่างกันระหว่าง Rich 13–15 ที่ project รองรับ
+    """
+    from contextlib import contextmanager
     from lmds.cli import main as cli_main
 
-    fake = Console(force_terminal=True, width=100)
+    seen: list[tuple[str, str]] = []
+
+    class TerminalConsole:
+        is_terminal = True
+
+        @contextmanager
+        def status(self, label, *, spinner):
+            seen.append((label, spinner))
+            yield
+
+    fake = TerminalConsole()
     monkeypatch.setattr(cli_main, "err_console", fake)
-    with fake.capture() as captured:
-        with cli_main._working("อ่านข้อมูลจาก Hugging Face"):
-            pass
-    assert "อ่านข้อมูลจาก Hugging Face" in captured.get()
+    with cli_main._working("อ่านข้อมูลจาก Hugging Face"):
+        pass
+    assert seen == [("[cyan]อ่านข้อมูลจาก Hugging Face…[/cyan]", "dots")]
 
 
 def test_working_lets_errors_through():
