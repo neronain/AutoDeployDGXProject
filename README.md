@@ -145,6 +145,8 @@ lmds web --bind 0.0.0.0 --port 8600       # ให้ทั้งวง network 
 
 ```bash
 lmds web --background                     # รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้ทันที
+lmds web --status                         # ลืมลิงก์/token? ถามตัวที่รันอยู่
+lmds web --restart -b                     # เปิดใหม่ + token ใหม่
 lmds web --stop                           # หยุดตัวที่รันเบื้องหลัง
 ```
 

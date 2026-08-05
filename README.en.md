@@ -124,6 +124,8 @@ lmds web --bind 0.0.0.0               # reachable on the LAN; a token is generat
 
 ```bash
 lmds web --background                 # run detached; the terminal stays free for the CLI
+lmds web --status                     # forgot the link? ask the running server
+lmds web --restart -b                 # restart with a fresh token
 lmds web --stop
 ```
 
