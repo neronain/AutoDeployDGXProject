@@ -262,7 +262,7 @@ def test_llamacpp_client_budget_accounts_parallel_slots(isolated_config, tmp_pat
 
 
 def test_llamacpp_prepare_finds_nvcc_outside_login_shell(isolated_config, tmp_path):
-    """/usr/local/cuda/bin อยู่ใน PATH เฉพาะ login shell — งานจากหน้าเว็บ/systemd/ssh หาไม่เจอ
+    """งานจากหน้าเว็บ/systemd/ssh อาจไม่ได้ PATH ชุดเดียวกับ login shell จึงหา nvcc ไม่เจอ
 
     เดิม controller แค่เตือนแล้วปล่อยให้ cmake ตายด้วย "No CMAKE_CUDA_COMPILER could be found"
     ซึ่งไม่ได้บอกว่าต้องทำอะไรต่อ
