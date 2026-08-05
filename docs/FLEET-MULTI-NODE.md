@@ -236,6 +236,25 @@ controller ยัง **ตรวจก่อนว่าเครื่องท
 
 ---
 
+## 5.1 เข้าถึงจากนอกออฟฟิศ — ที่อยู่สำรอง
+
+เครื่องเดียวกันมักเข้าได้หลายทาง: LAN ตอนอยู่ที่ออฟฟิศ และ Tailscale/VPN ตอนออกไปข้างนอก
+
+```bash
+lmds node set spark-head   --alt-host 100.124.77.93
+lmds node set spark-worker --alt-host 100.115.254.108
+lmds node set spark-head                                 # ดูที่อยู่ทั้งหมด
+```
+
+hub ลอง**ที่อยู่หลักก่อนเสมอ** ต่อไม่ถึงจึงค่อยลองสำรอง — ไม่ต้องแก้ทะเบียนตอนย้ายที่ทำงาน
+
+> **ต่างจากการเปลี่ยน `host`**: เปลี่ยน host = คนละเครื่อง (ทำไม่ได้ ต้อง remove แล้ว add ใหม่)
+> ส่วน `--alt-host` คือทางเข้าอีกทางของ**เครื่องเดิม**
+>
+> failover เกิดเฉพาะเมื่อ**ต่อไม่ถึง** (timeout / no route / connection refused) เท่านั้น
+> คำสั่งที่ต่อได้แต่ล้มด้วย exit code ของตัวเอง จะไม่ถูกยิงซ้ำ — ไม่งั้นคำสั่งที่มีผลข้างเคียง
+> อย่าง `start` จะทำงานสองรอบ
+
 ## 6. ความปลอดภัย
 
 - **ไม่เก็บรหัสผ่าน** ที่ไหนเลย ใช้ครั้งเดียวตอนติดตั้ง key แล้วทิ้ง
@@ -266,7 +285,7 @@ lmds agent info                       # JSON สถานะเครื่อ�
 
 lmds node add <host> --user <u>       # + --name --port --note --cluster-ip --cluster-iface
 lmds node list [--check]
-lmds node set <name> [--cluster-ip IP] [--cluster-iface NAME] [--note TEXT]
+lmds node set <name> [--cluster-ip IP] [--cluster-iface NAME] [--note TEXT] [--alt-host IP]
 lmds node remove <name> [-y]
 lmds node run <name> <คำสั่ง lmds...>
 lmds node cluster [--write SLUG] [--worker NAME]
