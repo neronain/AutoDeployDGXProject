@@ -5,95 +5,236 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LMDS</title>
 <style>
-/* No CDN anywhere on this page — target machines may sit behind a proxy or be air-gapped */
+/* No CDN anywhere on this page — target machines may sit behind a proxy or be air-gapped.
+   Everything below is one self-contained stylesheet: no fonts, no icons, no frameworks. */
 :root {
-  --bg: #f7f7f5; --card: #fff; --line: #e3e2dd; --line2: #cfcec8;
-  --fg: #23231f; --fg2: #61605a; --fg3: #8b8a83;
-  --ok: #3b6d11; --warn: #854f0b; --bad: #a32d2d; --accent: #185fa5;
-  --ok-bg: #eaf3de; --warn-bg: #faeeda; --bad-bg: #fcebeb; --accent-bg: #e6f1fb;
-  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Neutral surface ramp — a console should recede so the data reads first */
+  --bg: #f6f7f9; --card: #ffffff; --sunken: #f0f2f5;
+  --line: #e2e5ea; --line2: #cbd1da;
+  --fg: #16191d; --fg2: #576070; --fg3: #858d9b;
+
+  --ok: #17703f; --warn: #8a5300; --bad: #a52834; --accent: #1f5fbf;
+  --ok-bg: #e6f4ec; --warn-bg: #fdf1de; --bad-bg: #fdecee; --accent-bg: #e9f0fc;
+  --meter: #4f7fd4; --meter-track: #e6e9ef;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --r-sm: 6px; --r: 10px; --r-lg: 14px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  --shadow-lg: 0 4px 12px rgba(16, 24, 40, .07);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14140f; --card: #1d1d18; --line: #33322c; --line2: #4a4941;
-    --fg: #ecebe4; --fg2: #a8a79f; --fg3: #7a7972;
-    --ok: #97c459; --warn: #efa027; --bad: #f09595; --accent: #85b7eb;
-    --ok-bg: #27300a; --warn-bg: #3a2a06; --bad-bg: #3a1616; --accent-bg: #10243a;
+    --bg: #0e1116; --card: #161a21; --sunken: #10141a;
+    --line: #262c36; --line2: #3a424f;
+    --fg: #e8eaee; --fg2: #9aa4b2; --fg3: #6b7480;
+
+    --ok: #56d38a; --warn: #f0b45c; --bad: #f78d99; --accent: #7fb0f5;
+    --ok-bg: #10291c; --warn-bg: #2e2205; --bad-bg: #2e1519; --accent-bg: #0f1f33;
+    --meter: #5b8cdd; --meter-track: #222834;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-lg: 0 6px 18px rgba(0, 0, 0, .45);
   }
 }
+
 * { box-sizing: border-box; }
-body { margin: 0; padding: 24px 20px 48px; background: var(--bg); color: var(--fg);
-  font: 400 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
-.wrap { max-width: 980px; margin: 0 auto; }
-h1 { font: 500 15px/1 var(--mono); letter-spacing: .08em; margin: 0; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; padding: 0 20px 64px; background: var(--bg); color: var(--fg);
+  font: 400 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1080px; margin: 0 auto; }
+
+/* ── header ─────────────────────────────────────────────────────────── */
+.topbar {
+  position: sticky; top: 0; z-index: 20; margin: 0 -20px 4px; padding: 14px 20px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .wrap { display: flex; align-items: center; gap: 14px; }
+h1 {
+  font: 600 15px/1 var(--mono); letter-spacing: .14em; margin: 0;
+  padding-right: 14px; border-right: 1px solid var(--line2);
+}
 .row { display: flex; align-items: center; gap: 12px; }
 .between { justify-content: space-between; }
-.muted { color: var(--fg2); font-size: 13px; }
-.dim { color: var(--fg3); font-size: 12px; }
-.mono { font-family: var(--mono); }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 22px; }
-.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
-.stat b { display: block; font-weight: 500; font-size: 16px; margin-top: 3px; }
-.bar { height: 20px; display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-top: 8px; }
-.bar i { display: flex; align-items: center; justify-content: center; font-size: 11px; font-style: normal; }
-.seg-a { background: #7f77dd; color: #eeedfe; }
-.item { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-.item:first-child { border-top: 0; }
-.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--line2); }
-.dot.on { background: var(--ok); }
-.dot.load { background: var(--warn); }
 .grow { flex: 1; min-width: 200px; }
-.name { font-weight: 500; font-size: 15px; }
-.tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--accent-bg); color: var(--accent); }
+
+/* ── type ───────────────────────────────────────────────────────────── */
+.muted { color: var(--fg2); font-size: 13px; }
+.dim { color: var(--fg3); font-size: 12px; line-height: 1.5; }
+.mono { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.name { font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
+code {
+  font-family: var(--mono); font-size: 12px; background: var(--sunken);
+  border: 1px solid var(--line); padding: 2px 6px; border-radius: var(--r-sm);
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+
+/* ── section heading ────────────────────────────────────────────────── */
+.sec {
+  display: flex; align-items: center; gap: 12px;
+  margin: 30px 0 12px; font-size: 11px; font-weight: 600;
+  color: var(--fg3); letter-spacing: .1em; text-transform: uppercase;
+}
+.sec > span:first-child { order: 1; }
+.sec::after { content: ""; flex: 1; height: 1px; background: var(--line); order: 2; }
+.sec button { order: 3; text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+
+/* ── surfaces ───────────────────────────────────────────────────────── */
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden;
+}
+.pad { padding: 16px 18px; }
+
+/* ── stat tiles: read like instrument panels ────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin: 18px 0 4px; }
+.stat {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 13px 15px 14px; box-shadow: var(--shadow);
+}
+.stat > .muted:first-child {
+  display: block; font-size: 11px; font-weight: 600; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--fg3);
+}
+.stat b {
+  display: block; font-weight: 600; font-size: 20px; line-height: 1.25;
+  margin-top: 5px; letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+}
+.stat .dim { margin-top: 3px; }
+.bar {
+  height: 5px; display: flex; border-radius: 999px; overflow: hidden;
+  margin-top: 10px; background: var(--meter-track);
+}
+.bar i { display: block; font-size: 0; }
+.seg-a { background: var(--meter); }
+
+/* ── rows ───────────────────────────────────────────────────────────── */
+.item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 18px; border-top: 1px solid var(--line); flex-wrap: wrap;
+  transition: background .12s ease;
+}
+.item:first-child { border-top: 0; }
+.item:hover { background: var(--sunken); }
+@media (prefers-reduced-motion: reduce) { .item { transition: none; } }
+
+.dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--line2); box-shadow: 0 0 0 3px transparent;
+}
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+.dot.load { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+
+.tag {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; background: var(--accent-bg); color: var(--accent);
+  white-space: nowrap;
+}
 .tag.bad { background: var(--bad-bg); color: var(--bad); }
 .tag.ok { background: var(--ok-bg); color: var(--ok); }
 .tag.warn { background: var(--warn-bg); color: var(--warn); }
-button { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
-  background: transparent; color: var(--fg); border: 1px solid var(--line2); }
-button:hover:not(:disabled) { background: var(--bg); }
-button:disabled { opacity: .45; cursor: default; }
-pre { margin: 0; padding: 12px 16px; background: var(--bg); border-top: 1px solid var(--line);
-  font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap;
-  word-break: break-word; max-height: 340px; overflow: auto; }
-.find { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; font-size: 13px; }
-.find span:first-child { width: 16px; flex: none; }
-.find b { width: 108px; flex: none; font-weight: 400; color: var(--fg2); }
-code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 3px 8px; border-radius: 6px; }
-.empty { padding: 40px 16px; text-align: center; color: var(--fg2); }
-.ntoggle { font-family: ui-monospace, monospace; width: 24px; padding: 2px 0; line-height: 1;
-  flex: none; }
-.nbody.collapsed { display: none; }
-.npills { display: flex; flex-wrap: wrap; gap: 6px; }
-.npill { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
-  padding: 3px 8px; font-size: 12px; white-space: nowrap; }
-.cgroup { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
-.cgroup.ok { border-color: var(--ok); }
-.ipedit { width: 140px; font-family: ui-monospace, monospace; }
-.sec { margin: 26px 0 10px; font-size: 13px; color: var(--fg3); letter-spacing: .05em; }
-.field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-input, select { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 7px;
-  background: var(--bg); color: var(--fg); border: 1px solid var(--line2); }
+
+/* ── controls ───────────────────────────────────────────────────────── */
+button {
+  font: 500 13px/1 var(--sans); padding: 7px 12px; border-radius: var(--r-sm);
+  cursor: pointer; background: var(--card); color: var(--fg);
+  border: 1px solid var(--line2); transition: background .12s ease, border-color .12s ease;
+}
+button:hover:not(:disabled) { background: var(--sunken); border-color: var(--fg3); }
+button:active:not(:disabled) { transform: translateY(.5px); }
+button:disabled { opacity: .4; cursor: default; }
+/* ปุ่มที่ลบของ: เงียบไว้ก่อน เด่นตอนจะกดจริง — ไม่ควรดึงสายตาไปกว่าปุ่มที่ใช้ทุกวัน */
+button.danger { color: var(--fg2); border-color: var(--line2); }
+button.danger:hover:not(:disabled) {
+  color: var(--bad); border-color: var(--bad); background: var(--bad-bg);
+}
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+
+input, select {
+  font: inherit; font-size: 13.5px; padding: 8px 11px; border-radius: var(--r-sm);
+  background: var(--card); color: var(--fg); border: 1px solid var(--line2);
+}
+input:hover, select:hover { border-color: var(--fg3); }
 input { flex: 1; min-width: 200px; }
+input::placeholder { color: var(--fg3); }
 label { font-size: 13px; color: var(--fg2); }
-.kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 13px; margin: 10px 0; }
+.field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* ── output ─────────────────────────────────────────────────────────── */
+pre {
+  margin: 0; padding: 14px 18px; background: var(--sunken);
+  border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px;
+  line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  max-height: 340px; overflow: auto;
+}
+.find { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; font-size: 13px; }
+.find span:first-child { width: 16px; flex: none; }
+.find b { width: 108px; flex: none; font-weight: 500; color: var(--fg2); }
+.kv { display: grid; grid-template-columns: 132px 1fr; gap: 5px 14px; font-size: 13px; margin: 10px 0; }
 .kv span:first-child { color: var(--fg2); }
-.warn-line { font-size: 13px; color: var(--warn); padding: 3px 0; }
-.pad { padding: 16px; }
+.warn-line {
+  font-size: 12.5px; color: var(--warn); padding: 5px 10px; margin: 4px 0;
+  background: var(--warn-bg); border-radius: var(--r-sm);
+}
+.empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: 13.5px; }
+
+/* ── machines ───────────────────────────────────────────────────────── */
+.ntoggle {
+  font-family: var(--mono); width: 26px; height: 26px; padding: 0; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1; color: var(--fg2);
+}
+.nbody.collapsed { display: none; }
+/* หนึ่งเครื่อง = หนึ่งการ์ด — เดิมหัวเครื่องกับเนื้อหาของอีกเครื่องอยู่ระดับเดียวกันจนแยกไม่ออก */
+.machine {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow); overflow: hidden; margin-bottom: 12px;
+}
+.machine > .item { background: var(--sunken); border-bottom: 1px solid var(--line); }
+.machine > .item:hover { background: var(--sunken); }
+.machine .nbody > .pad { border-top: 0; }
+.npills { display: flex; flex-wrap: wrap; gap: 6px; }
+.npill {
+  background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 4px 9px; font-size: 11.5px; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.npill .muted { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.cgroup {
+  border: 1px solid var(--line); border-left: 3px solid var(--line2);
+  border-radius: var(--r); padding: 12px 14px; margin-bottom: 10px; background: var(--sunken);
+}
+.cgroup.ok { border-left-color: var(--ok); }
+.ipedit { width: 150px; flex: none; font-family: var(--mono); font-size: 12.5px; }
+
+@media (max-width: 640px) {
+  body { padding: 0 14px 48px; }
+  .topbar { margin: 0 -14px 4px; padding: 12px 14px; }
+  .item { padding: 12px 14px; }
+  .pad { padding: 14px; }
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="row between">
-    <div class="row">
-      <h1>LMDS</h1>
-      <span class="muted" id="host">…</span>
-    </div>
-    <div class="row">
-      <button id="new">+ Deploy model</button>
-      <span class="dim" id="ver"></span>
-    </div>
+<header class="topbar">
+  <div class="wrap">
+    <h1>LMDS</h1>
+    <span class="muted grow" id="host">…</span>
+    <span class="dim" id="ver"></span>
+    <button id="new">+ Deploy model</button>
   </div>
+</header>
+
+<div class="wrap">
 
   <div class="stats" id="stats"></div>
   <div class="card" id="wiz" hidden></div>
@@ -105,7 +246,7 @@ label { font-size: 13px; color: var(--fg2); }
     <span>Other machines</span>
     <button id="node-new" style="font-size:12px">+ Add machine</button>
   </div>
-  <div class="card" id="nodes"><div class="empty">Loading…</div></div>
+  <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
 
   <div class="sec row between" style="align-items:baseline">
     <span>Weights already on disk</span>
@@ -687,7 +828,7 @@ const collapsedNodes = new Set();
 
 function nodeAddForm() {
   const box = document.getElementById("nodes");
-  box.innerHTML = `<div class="pad">
+  box.innerHTML = `<div class="card"><div class="pad">
     <div class="field">
       <input id="n-host" placeholder="IP or hostname" style="min-width:180px">
       <input id="n-user" placeholder="user (must be in the docker group)" style="min-width:180px">
@@ -703,11 +844,12 @@ function nodeAddForm() {
       a dedicated key (<code>id_lmds</code>) is installed and used from then on.
       The node must already have LMDS installed.</div>
     <div id="n-msg"></div>
-  </div>`;
+  </div></div>`;
 }
 
 function nodeCard(node) {
   const block = document.createElement("div");
+  block.className = "machine";
   block.innerHTML = `<div class="item">
       <button class="ntoggle" title="ย่อ/ขยาย">−</button>
       <span class="dot"></span>
@@ -717,7 +859,7 @@ function nodeCard(node) {
       </div>
       <span class="mono muted nver"></span>
       <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
-      <button data-nact="forget" data-node="${esc(node.name)}" style="border-color:var(--bad);color:var(--bad)">forget</button>
+      <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
     </div>
     <div class="nbody"></div>`;
   return block;
@@ -814,8 +956,8 @@ async function refreshNodes() {
   const nodes = d.nodes || [];
   if (!nodes.length) {
     nodeRows.clear();
-    box.innerHTML = `<div class="empty">No other machines registered — add one to control it from here<br>
-      <span class="dim">CLI: <code>lmds node add &lt;ip&gt; --user &lt;name&gt;</code></span></div>`;
+    box.innerHTML = `<div class="card"><div class="empty">No other machines registered — add one to control it from here<br>
+      <span class="dim">CLI: <code>lmds node add &lt;ip&gt; --user &lt;name&gt;</code></span></div></div>`;
     return;
   }
   if (!nodeRows.size) box.innerHTML = "";

@@ -687,3 +687,30 @@ def test_node_cards_can_be_collapsed():
     assert 'class="ntoggle"' in body
     assert ".nbody.collapsed { display: none; }" in body
     assert "collapsedNodes" in body
+
+
+def test_page_stays_readable_in_both_themes():
+    """หน้าเว็บรันบนเครื่องลูกค้าที่ตั้ง theme มาแล้ว — ต้องอ่านออกทั้งสองโหมด
+    ไม่ใช่ออกแบบให้สวยเฉพาะโหมดที่เราใช้เอง"""
+    body = TestClient(create_app()).get("/").text
+    assert "prefers-color-scheme: dark" in body
+    # สีทุกตัวต้องมาจาก token — hex ที่ hard-code ในกฎ CSS จะเพี้ยนในอีกโหมดหนึ่ง
+    import re
+
+    inside_dark = body.split("prefers-color-scheme: dark")[1].split("}\n}")[0]
+    assert "--bg:" in inside_dark and "--fg:" in inside_dark
+
+
+def test_page_respects_accessibility_basics():
+    """ops console ใช้คีย์บอร์ดเป็นหลักตอนแก้ปัญหา — focus ต้องเห็น
+    และ motion ต้องปิดได้สำหรับคนที่ตั้งค่าไว้"""
+    body = TestClient(create_app()).get("/").text
+    assert ":focus-visible" in body
+    assert "prefers-reduced-motion: reduce" in body
+
+
+def test_destructive_button_is_quiet_until_hovered():
+    """ปุ่มลบไม่ควรดึงสายตาไปกว่าปุ่มที่ใช้ทุกวัน — เด่นตอนจะกดจริงก็พอ"""
+    body = TestClient(create_app()).get("/").text
+    assert "button.danger { color: var(--fg2)" in body
+    assert 'class="danger">forget</button>' in body
