@@ -499,8 +499,44 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"name": node.name, "removed": True}
 
+    def _node_options(command: str, body: dict) -> list[str]:
+        """แปลง option จากหน้าเว็บเป็น flag ของ controller — ตรวจค่าก่อนเสมอ
+
+        ค่าพวกนี้ถูกต่อเป็นคำสั่งที่รันบนเครื่องอื่นผ่าน SSH · ต่อให้ quote แล้วก็ยัง
+        ต้องตรวจชนิดและช่วงที่นี่ ไม่ใช่ฝากไว้กับ JS ฝั่งเบราว์เซอร์ซึ่งใครก็ข้ามได้
+        """
+        if not body:
+            return []
+        if command not in {"start", "restart"}:
+            raise HTTPException(status_code=400, detail=f"'{command}' ไม่รับ option (รับเฉพาะ start/restart)")
+
+        def number(key: str, low: float, high: float, integer: bool = True):
+            raw = body.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                value = int(raw) if integer else float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นตัวเลข") from None
+            if not low <= value <= high:
+                raise HTTPException(status_code=400, detail=f"{key} ต้องอยู่ระหว่าง {low} ถึง {high}")
+            return value
+
+        flags: list[str] = []
+        port = number("port", 1, 65535)
+        if port is not None:
+            flags += ["--port", str(port)]
+        context = number("context", 256, 10_000_000)
+        if context is not None:
+            flags += ["--context", str(context)]
+        # ช่วงเดียวกับที่ controller ตรวจเอง — ตรงกันจะได้ไม่มีค่าที่ผ่านที่นี่แล้วไปตายปลายทาง
+        gpu_util = number("gpu_util", 0.3, 0.98, integer=False)
+        if gpu_util is not None:
+            flags += ["--gpu-util", f"{gpu_util:g}"]
+        return flags
+
     @app.post("/api/nodes/{name}/models/{slug}/{command}", dependencies=guarded)
-    def node_command(name: str, slug: str, command: str) -> dict:
+    def node_command(name: str, slug: str, command: str, body: dict | None = None) -> dict:
         """สั่งงานโมเดลบนเครื่องอื่น — ผ่าน CLI ของ node ตัวเดียวกับที่ผู้ใช้พิมพ์เอง"""
         from lmds.nodes import NodeError, find, run
 
@@ -517,10 +553,12 @@ def create_app(token: str = "") -> FastAPI:
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        suffix = allowed[command]
+        parts = ["lmds", command, shlex.quote(slug)]
+        if allowed[command]:
+            parts.append(allowed[command])
+        parts += _node_options(command, body or {})
         try:
-            result = run(node, f"lmds {command} {shlex.quote(slug)}{' ' + suffix if suffix else ''}",
-                         timeout=1800)
+            result = run(node, " ".join(parts), timeout=1800)
             state.STORE.force(name)   # สถานะเพิ่งเปลี่ยน — อย่าให้ผู้ใช้เห็นของเก่าอีก 15 วิ
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

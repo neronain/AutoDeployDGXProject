@@ -924,6 +924,25 @@ const nodeRows = new Map();
 const collapsedNodes = new Set();
 // เครื่องที่กำลังโชว์ผลคำสั่งอยู่ — ห้าม live update ทับจนกว่าผู้ใช้จะปิดเอง
 const pinnedOutput = new Set();
+// option ต่อโมเดลบนเครื่องอื่น เก็บในเบราว์เซอร์ — ไม่ส่งไปเขียนทับ bundle ปลายทาง
+// เพราะค่าที่ใช้ทดลอง (port ชนกัน, context ลดลงชั่วคราว) ไม่ควรกลายเป็นค่าถาวรของเครื่องนั้น
+function nodeOpts(key) {
+  try { return JSON.parse(localStorage.getItem("lmds:node:" + key) || "{}"); } catch { return {}; }
+}
+function readNodeOpts(node, slug) {
+  const row = nodeRows.get(node);
+  const box = row && row.body.querySelector(`.submenu[data-for="${CSS.escape(slug)}"]`);
+  if (!box) return nodeOpts(node + "/" + slug);
+  const num = sel => {
+    const el = box.querySelector(sel);
+    return el && el.value !== "" ? el.value : undefined;
+  };
+  const o = { port: num(".n-port"), context: num(".n-ctx"), gpu_util: num(".n-gpu") };
+  Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
+  localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(o));
+  return o;
+}
+
 // เมนู ⋯ ที่เปิดค้างไว้ (คีย์ = "<node>/<slug>") — live update ต้องไม่พับเมนูที่ผู้ใช้เพิ่งเปิด
 const openModelMenus = new Set();
 // payload ล่าสุดของแต่ละเครื่อง — ใช้วาดใหม่ตอนพับ/กางเมนูโดยไม่ต้องยิง SSH ซ้ำ
@@ -1034,6 +1053,7 @@ function nodeModelsMarkup(name, data) {
       const act = m.running ? "stop" : (m.downloaded ? "start" : "");
       const key = name + "/" + m.slug;
       const open = openModelMenus.has(key);
+      const o = nodeOpts(key);
       // ปุ่มขึ้นตามสถานะจริง — ปุ่มที่กดแล้วล้มแน่ ๆ แย่กว่าไม่มีปุ่ม
       const more = [
         m.running ? ["restart", "หยุดแล้วเปิดใหม่"] : null,
@@ -1054,10 +1074,26 @@ function nodeModelsMarkup(name, data) {
           <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                   class="${open ? "on" : ""}" title="คำสั่งอื่น">⋯</button>
         </div>
-        ${open ? `<div class="submenu">${more.map(([c, hint]) =>
-          `<button data-nact="model:${c}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                   title="${esc(hint)}">${c}</button>`).join("")}
-          <span class="dim">ลบโมเดล/แก้ option ใช้ที่เครื่องนั้นโดยตรง: <code>lmds node run ${esc(name)} …</code></span>
+        ${open ? `<div class="submenu" data-for="${esc(m.slug)}">
+          <div class="field" style="width:100%">
+            <label>port</label>
+            <input type="number" class="n-port" value="${esc(o.port ?? m.port ?? "")}"
+                   placeholder="${esc(m.port ?? 8000)}" style="flex:none;width:100px">
+            <label>context</label>
+            <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
+                   placeholder="${esc(m.context ?? "")}" style="flex:none;width:130px"
+                   title="tokens — เกินที่หน่วยความจำรับไหว vLLM จะไม่ขึ้น">
+            ${m.engine === "vllm" ? `<label>gpu-util</label>
+            <input type="number" step="0.01" min="0.3" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
+                   placeholder="0.85" style="flex:none;width:90px"
+                   title="สัดส่วนหน่วยความจำที่ vLLM จองไว้ (0.3–0.98)">` : ""}
+            <span class="dim">ว่าง = ใช้ค่าที่ตั้งไว้ใน bundle</span>
+          </div>
+          <div class="field" style="width:100%">${more.map(([c, hint]) =>
+            `<button data-nact="model:${c}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                     title="${esc(hint)}">${c}</button>`).join("")}
+            <span class="dim">ลบโมเดล: <code>lmds node run ${esc(name)} remove ${esc(m.slug)}</code></span>
+          </div>
         </div>` : ""}
       </div>`;
     }).join("")}
@@ -1165,8 +1201,12 @@ document.addEventListener("click", async e => {
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = command + "…";
+    const withOpts = command === "start" || command === "restart";
     const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/${command}`,
-                        { method: "POST" });
+                        withOpts
+                          ? { method: "POST", headers: { "content-type": "application/json" },
+                              body: JSON.stringify(readNodeOpts(node, slug)) }
+                          : { method: "POST" });
     const d = await r.json();
     btn.disabled = false;
     btn.textContent = original;

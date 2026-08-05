@@ -880,3 +880,40 @@ def test_page_javascript_parses():
     for i, block in enumerate(blocks):
         result = subprocess.run([node, "--check", "-"], input=block, capture_output=True, text=True)
         assert result.returncode == 0, f"script block {i} พัง:\n{result.stderr[:800]}"
+
+
+def test_node_start_passes_validated_port_and_context(registered, monkeypatch):
+    """หน้าเว็บต้องตั้ง port/context ตอนสั่งรันบนเครื่องอื่นได้ — ไม่งั้นต้องไป ssh แก้ .sh เอง"""
+    sent = {}
+
+    def fake_run(node, command, timeout=0):
+        sent["command"] = command
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.run", fake_run)
+    r = TestClient(create_app()).post(
+        "/api/nodes/spark2/models/demo/start", json={"port": 8001, "context": 32768, "gpu_util": 0.8})
+    assert r.status_code == 200
+    assert sent["command"] == "lmds start demo --port 8001 --context 32768 --gpu-util 0.8"
+
+
+def test_node_options_are_validated_on_the_server(registered, monkeypatch):
+    """ค่าพวกนี้ถูกต่อเป็นคำสั่งที่รันบนเครื่องอื่นผ่าน SSH — ตรวจที่ server เท่านั้นที่นับ
+    ฝากไว้กับ JS ในเบราว์เซอร์ไม่ได้ ใครก็ยิง API ตรงข้ามได้
+    """
+    called = []
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda *a, **k: called.append(a) or SimpleNamespace(exit_code=0, stdout="", stderr=""))
+    client = TestClient(create_app())
+    for bad in ({"port": "8001; rm -rf /"}, {"port": 0}, {"port": 70000},
+                {"context": -1}, {"gpu_util": 1.5}, {"context": "abc"}):
+        assert client.post("/api/nodes/spark2/models/demo/start", json=bad).status_code == 400, bad
+    assert not called, "ค่าที่ไม่ผ่านการตรวจต้องไม่ถูกส่งไปเครื่องปลายทางเลย"
+
+
+def test_node_options_are_rejected_for_commands_that_ignore_them(registered, monkeypatch):
+    """ส่ง port ไปกับ doctor แล้วเงียบ ๆ ทิ้ง = ผู้ใช้เข้าใจว่าตั้งค่าแล้วทั้งที่ไม่ได้ตั้ง"""
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda *a, **k: SimpleNamespace(exit_code=0, stdout="", stderr=""))
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/doctor", json={"port": 8001})
+    assert r.status_code == 400
