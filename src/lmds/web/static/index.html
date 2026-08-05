@@ -926,6 +926,10 @@ function clusterGroupRow(g) {
     </div>
     <div class="dim">${esc(g.gpu)} ×${g.gpus_per_node} per node · world size ${g.world_size} ·
       ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
+    ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
+      ? `<div class="warn-line">${g.world_size} GPUs does not divide most models' attention heads —
+         use tensor-parallel ${g.parallelism.largest_tp} plus pipeline stages, not TP ${g.world_size}</div>`
+      : ""}
     ${g.blockers.map(b => `<div class="warn-line">${esc({
       "missing-ip": "Cluster IP still missing on: ",
       "duplicate-ip": "The same cluster IP is set on more than one machine: ",

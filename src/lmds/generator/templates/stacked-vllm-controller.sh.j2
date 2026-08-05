@@ -36,6 +36,9 @@ fi
 MASTER_IP="${MASTER_IP:-10.100.152.1}"
 WORKER_IP="${WORKER_IP:-10.100.152.2}"
 SSH_USER="${SSH_USER:-${USER:-$(id -un)}}"
+# คลัสเตอร์ที่มากกว่า 2 เครื่อง: ใส่ IP ของ worker ทุกตัวคั่นด้วยช่องว่าง เรียงตาม node-rank
+# (rank 1, 2, 3 …) · ค่าเริ่มต้นคือ worker เดียว = พฤติกรรมเดิมทุกประการ
+WORKER_IPS="${WORKER_IPS:-{% if node_count > 2 %}{% for i in range(2, node_count + 1) %}10.100.152.{{ i }}{{ " " if not loop.last }}{% endfor %}{% else %}$WORKER_IP{% endif %}}"
 # fabric/transport IP สำหรับ NCCL — ถ้าใช้ QSFP แยก interface ให้ override สองตัวนี้
 TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
 TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
@@ -104,7 +107,10 @@ WORKER_INIT_WAIT="${WORKER_INIT_WAIT:-12}"
 # ─────────────────────────── helpers ───────────────────────────
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
-ssh_worker() { ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_USER}@${WORKER_IP}" "$@"; }
+ssh_at() { local host="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_USER}@${host}" "$@"; }
+# worker ตัวแรก — ใช้กับงานที่อ้างถึง "worker" ตัวเดียวโดยธรรมชาติ
+ssh_worker() { ssh_at "$WORKER_IP" "$@"; }
+worker_count() { set -- $WORKER_IPS; echo "$#"; }
 
 _require_non_root() {
   if (( EUID == 0 )); then
@@ -207,13 +213,18 @@ prepare_runtime() {
   echo "$head_id" > "${HF_HOME}/.lmds-stacked-image-id"
   log "Head image locked: $head_id"
 
-  log "Pulling runtime image on worker node (${WORKER_IP}) …"
-  ssh_worker "docker pull '$VLLM_IMAGE'" || die "pull worker image ไม่สำเร็จ (เช็ค SSH/worker docker)"
-  worker_id="$(ssh_worker "docker inspect '$VLLM_IMAGE' --format '{{.Id}}'" || true)"
-  [[ -n "$worker_id" ]] || die "อ่าน worker image id ไม่ได้"
-  [[ "$head_id" == "$worker_id" ]] ||
-    die "image ต่างกันระหว่าง head ($head_id) กับ worker ($worker_id) — re-pull ทั้งสอง node"
-  log "Runtime images ตรงกันทั้งสอง node. Lock: ${head_id:0:32}…"
+  local wip
+  for wip in $WORKER_IPS; do
+    log "Pulling runtime image on worker node (${wip}) …"
+    ssh_at "$wip" "docker pull '$VLLM_IMAGE'" || die "pull image บน ${wip} ไม่สำเร็จ (เช็ค SSH/docker)"
+  done
+  for wip in $WORKER_IPS; do
+    worker_id="$(ssh_at "$wip" "docker inspect '$VLLM_IMAGE' --format '{{.Id}}'" || true)"
+    [[ -n "$worker_id" ]] || die "อ่าน image id ของ ${wip} ไม่ได้"
+    [[ "$head_id" == "$worker_id" ]] ||
+      die "image ต่างกันระหว่าง head ($head_id) กับ ${wip} ($worker_id) — re-pull ทุก node"
+  done
+  log "Runtime images ตรงกันทุก node ($(( $(worker_count) + 1 )) เครื่อง). Lock: ${head_id:0:32}…"
 }
 
 _assert_runtime_images() {
@@ -334,22 +345,26 @@ sync_worker() {
   model_cache="$(_model_cache_dir "$HF_HOME")"
   cache_name="$(basename "$model_cache")"
   worker_hf="${WORKER_HF_HOME}"
-  log "Syncing model cache → worker ${WORKER_IP} (~${TOTAL_SIZE_APPROX_GB} GB ครั้งแรก)…"
-  ssh_worker "mkdir -p '${worker_hf}/hub' '${WORKER_VLLM_CACHE}' '${WORKER_FLASHINFER_CACHE}'" ||
-    die "สร้าง dir บน worker ไม่ได้ (เช็ค SSH)"
-  rsync -aH --info=progress2 --no-owner --no-group --partial --append-verify \
-    --exclude='*.lock' --exclude='tmp_*' \
-    "${model_cache}/" \
-    "${SSH_USER}@${WORKER_IP}:${worker_hf}/hub/${cache_name}/"
+  local wip
+  for wip in $WORKER_IPS; do
+    log "Syncing model cache → worker ${wip} (~${TOTAL_SIZE_APPROX_GB} GB ครั้งแรก)…"
+    ssh_at "$wip" "mkdir -p '${worker_hf}/hub' '${WORKER_VLLM_CACHE}' '${WORKER_FLASHINFER_CACHE}'" ||
+      die "สร้าง dir บน ${wip} ไม่ได้ (เช็ค SSH)"
+    rsync -aH --info=progress2 --no-owner --no-group --partial --append-verify \
+      --exclude='*.lock' --exclude='tmp_*' \
+      "${model_cache}/" \
+      "${SSH_USER}@${wip}:${worker_hf}/hub/${cache_name}/"
+  done
   log "sync-worker: DONE"
 }
 
 # ─────────────────────────── verify-worker ───────────────────────────
 verify_worker() {
-  log "Verifying worker (${WORKER_IP}) shards …"
-  local worker_hf="${WORKER_HF_HOME}" slug
+  local worker_hf="${WORKER_HF_HOME}" slug wip
   slug="$(_model_slug)"
-  ssh_worker "docker run --rm -v '${worker_hf}:/cache' -e HF_HOME=/cache -e SHARD_COUNT='${SHARD_COUNT}' -e MODEL_REVISION='${MODEL_REVISION}' -e MODEL_SLUG='${slug}' --entrypoint python3 '$VLLM_IMAGE' - <<'PYEOF'
+  for wip in $WORKER_IPS; do
+  log "Verifying worker (${wip}) shards …"
+  ssh_at "$wip" "docker run --rm -v '${worker_hf}:/cache' -e HF_HOME=/cache -e SHARD_COUNT='${SHARD_COUNT}' -e MODEL_REVISION='${MODEL_REVISION}' -e MODEL_SLUG='${slug}' --entrypoint python3 '$VLLM_IMAGE' - <<'PYEOF'
 import os, pathlib, sys
 slug = os.environ["MODEL_SLUG"]
 rev = os.environ["MODEL_REVISION"]
@@ -373,7 +388,8 @@ if want and len(shards) != want:
     sys.exit('worker shard count %d != expected %d' % (len(shards), want))
 print('verify-worker: PASS')
 PYEOF
-" || die "verify-worker ล้มเหลว"
+" || die "verify-worker ล้มเหลวที่ ${wip}"
+  done
   log "verify-worker: PASS"
 }
 
@@ -549,16 +565,18 @@ _ensure_local_owned_dir() {
 }
 
 _ensure_worker_owned_dir() {
-  local dir="$1" ruid rgid
-  ruid="$(ssh_worker "id -u")" || die "อ่าน UID ของ worker ผ่าน SSH ไม่ได้"
-  rgid="$(ssh_worker "id -g")" || die "อ่าน GID ของ worker ผ่าน SSH ไม่ได้"
-  ssh_worker "mkdir -p '$(dirname "$dir")'" || die "สร้าง parent บน worker ไม่ได้: $dir"
-  if ssh_worker "test -e '$dir'" 2>/dev/null && ! ssh_worker "test -w '$dir'" 2>/dev/null; then
-    log "ซ่อมสิทธิ์ cache บน worker: $dir"
-    ssh_worker "docker run --rm -v '$dir:/repair' --entrypoint sh '$VLLM_IMAGE' -c 'chown -R ${ruid}:${rgid} /repair'" ||
-      die "ซ่อม $dir บน worker ไม่ได้ — บน worker รัน: sudo chown -R ${ruid}:${rgid} '$dir'"
-  fi
-  ssh_worker "mkdir -p '$dir' && test -w '$dir'" || die "เขียน $dir บน worker ไม่ได้"
+  local dir="$1" ruid rgid wip
+  for wip in $WORKER_IPS; do
+    ruid="$(ssh_at "$wip" "id -u")" || die "อ่าน UID ของ ${wip} ผ่าน SSH ไม่ได้"
+    rgid="$(ssh_at "$wip" "id -g")" || die "อ่าน GID ของ ${wip} ผ่าน SSH ไม่ได้"
+    ssh_at "$wip" "mkdir -p '$(dirname "$dir")'" || die "สร้าง parent บน ${wip} ไม่ได้: $dir"
+    if ssh_at "$wip" "test -e '$dir'" 2>/dev/null && ! ssh_at "$wip" "test -w '$dir'" 2>/dev/null; then
+      log "ซ่อมสิทธิ์ cache บน ${wip}: $dir"
+      ssh_at "$wip" "docker run --rm -v '$dir:/repair' --entrypoint sh '$VLLM_IMAGE' -c 'chown -R ${ruid}:${rgid} /repair'" ||
+        die "ซ่อม $dir บน ${wip} ไม่ได้ — บนเครื่องนั้นรัน: sudo chown -R ${ruid}:${rgid} '$dir'"
+    fi
+    ssh_at "$wip" "mkdir -p '$dir' && test -w '$dir'" || die "เขียน $dir บน ${wip} ไม่ได้"
+  done
 }
 
 # FlashInfer JIT cache ที่ค้างจาก image เก่าทำให้โหลด TVM-FFI module คนละ signature แล้วพังตอน start
@@ -572,7 +590,10 @@ clear_fi_cache() {
   find "$FLASHINFER_CACHE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
   _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
   log "ล้าง FlashInfer cache บน worker: ${WORKER_FLASHINFER_CACHE}"
-  ssh_worker "find '${WORKER_FLASHINFER_CACHE}' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+  local wip
+  for wip in $WORKER_IPS; do
+    ssh_at "$wip" "find '${WORKER_FLASHINFER_CACHE}' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+  done
   log "ล้างครบทั้งสอง node แล้ว"
 }
 
@@ -610,14 +631,19 @@ start() {
 
   # ลบ container ค้าง
   docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
-  ssh_worker "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
+  for wip in $WORKER_IPS; do
+    ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
+  done
 
   verify_files
   _ensure_local_owned_dir "$FLASHINFER_CACHE"
   _ensure_local_owned_dir "$head_fi"
   _ensure_local_owned_dir "$VLLM_CACHE"
-  local worker_hf="${WORKER_HF_HOME}"
-  ssh_worker "mkdir -p '${worker_hf}' '${WORKER_VLLM_CACHE}'" || die "เตรียม dir บน worker ไม่ได้"
+  local worker_hf="${WORKER_HF_HOME}" wip
+  for wip in $WORKER_IPS; do
+    ssh_at "$wip" "mkdir -p '${worker_hf}' '${WORKER_VLLM_CACHE}'" ||
+      die "เตรียม dir บน ${wip} ไม่ได้"
+  done
   _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
   _ensure_worker_owned_dir "$worker_fi"
 
@@ -632,39 +658,48 @@ start() {
     nccl_docker+=(-e "$line")
   done < <(_nccl_env_pairs 2>/dev/null)
 
-  # ── Step 1: worker (rank 1, headless) ก่อน ──
-  log "Starting worker (rank 1, headless) on ${WORKER_IP} …"
-  local worker_script
-  worker_script="$(cat <<WSCRIPT
+  # ── Step 1: worker ทุกตัว (rank 1..N-1, headless) ก่อน ──
+  # container ชื่อเดียวกันได้เพราะอยู่คนละเครื่อง · rank เรียงตามลำดับใน WORKER_IPS
+  local rank=0 worker_script wifname
+  for wip in $WORKER_IPS; do
+    rank=$(( rank + 1 ))
+    wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wip}' \
+      '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true)"
+    [[ -n "$wifname" ]] || wifname="$NCCL_SOCKET_IFNAME"
+    log "Starting worker rank ${rank} (headless) on ${wip} [${wifname:-auto}] …"
+    worker_script="$(cat <<WSCRIPT
 #!/bin/bash
 set -e
-export VLLM_HOST_IP=${TRANSPORT_IP_WORKER}
+export VLLM_HOST_IP=${wip}
 export HF_HOME=/cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-$(_nccl_env_pairs "$WORKER_IFNAME" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
-exec vllm${quoted_common} --node-rank 1 --host 127.0.0.1 --port 18000 --headless
+$(_nccl_env_pairs "$wifname" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
+exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port 18000 --headless
 WSCRIPT
 )"
-  ssh_worker "mkdir -p /tmp/lmds-${SLUG} && cat > /tmp/lmds-${SLUG}/worker.sh" <<< "$worker_script"
-  ssh_worker "chmod +x /tmp/lmds-${SLUG}/worker.sh"
-  local -a wrun=(
-    docker run -d --name "${WORKER_CONTAINER}"
-    --gpus all --network host --ipc host
-    -v "${worker_hf}:/cache"
-    -v "${WORKER_VLLM_CACHE}:/root/.cache/vllm"
-    -v "${worker_fi}:/root/.cache/flashinfer"
-    -v "/tmp/lmds-${SLUG}:/tmp/lmds-${SLUG}"
-    --entrypoint bash "${VLLM_IMAGE}" "/tmp/lmds-${SLUG}/worker.sh"
-  )
-  ssh_worker "$(printf '%q ' "${wrun[@]}")" || die "start worker container ไม่สำเร็จ"
+    ssh_at "$wip" "mkdir -p /tmp/lmds-${SLUG} && cat > /tmp/lmds-${SLUG}/worker.sh" <<< "$worker_script"
+    ssh_at "$wip" "chmod +x /tmp/lmds-${SLUG}/worker.sh"
+    local -a wrun=(
+      docker run -d --name "${WORKER_CONTAINER}"
+      --gpus all --network host --ipc host
+      -v "${worker_hf}:/cache"
+      -v "${WORKER_VLLM_CACHE}:/root/.cache/vllm"
+      -v "${worker_fi}:/root/.cache/flashinfer"
+      -v "/tmp/lmds-${SLUG}:/tmp/lmds-${SLUG}"
+      --entrypoint bash "${VLLM_IMAGE}" "/tmp/lmds-${SLUG}/worker.sh"
+    )
+    ssh_at "$wip" "$(printf '%q ' "${wrun[@]}")" || die "start worker container บน ${wip} ไม่สำเร็จ"
+  done
 
   log "รอ worker init ${WORKER_INIT_WAIT}s …"
   sleep "$WORKER_INIT_WAIT"
-  if [[ "$(ssh_worker "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
-    ssh_worker "docker logs --tail 200 '${WORKER_CONTAINER}' 2>&1" || true
-    die "worker container หยุดก่อน head จะเริ่ม — ดู log ด้านบน"
-  fi
+  for wip in $WORKER_IPS; do
+    if [[ "$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
+      ssh_at "$wip" "docker logs --tail 200 '${WORKER_CONTAINER}' 2>&1" || true
+      die "worker container บน ${wip} หยุดก่อน head จะเริ่ม — ดู log ด้านบน"
+    fi
+  done
 
   # ── Step 2: head (rank 0, serving API) ──
   log "Starting head (rank 0, API) locally …"
@@ -726,10 +761,15 @@ stop() {
   log "Stopping head …"
   docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
   log "Stopping worker on ${WORKER_IP} …"
-  ssh_worker "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
+  local wip
+  for wip in $WORKER_IPS; do
+    ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
+  done
   # mp backend ทิ้ง shared memory ไว้ — ไม่เก็บกวาด start รอบหน้าจะชนของเก่า
   sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true
-  ssh_worker "sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true" || true
+  for wip in $WORKER_IPS; do
+    ssh_at "$wip" "sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true" || true
+  done
   echo "stopped ${MASTER_CONTAINER} + ${WORKER_CONTAINER}"
 }
 
@@ -740,7 +780,11 @@ status() {
   echo "--- Head (local) ---"
   docker ps -a --filter "name=^${MASTER_CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
   echo "--- Worker (${WORKER_IP}) ---"
-  ssh_worker "docker ps -a --filter 'name=^${WORKER_CONTAINER}$' --format 'table {{.Names}}\t{{.Status}}'" 2>/dev/null || echo "(SSH ล้มเหลว)"
+  local wip
+  for wip in $WORKER_IPS; do
+    echo "-- worker ${wip}"
+    ssh_at "$wip" "docker ps -a --filter 'name=^${WORKER_CONTAINER}$' --format 'table {{.Names}}\t{{.Status}}'" 2>/dev/null || echo "(SSH ล้มเหลว)"
+  done
   echo "--- API ---"
   if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
     echo "API: healthy"
@@ -763,7 +807,10 @@ logs() {
   fi
   case "$target" in
     head|master) docker logs --tail "$n" "$MASTER_CONTAINER" 2>&1 ;;
-    worker)      ssh_worker "docker logs --tail '$n' '${WORKER_CONTAINER}' 2>&1" ;;
+    worker)      for wip in $WORKER_IPS; do
+                   echo "===== worker ${wip} ====="
+                   ssh_at "$wip" "docker logs --tail '$n' '${WORKER_CONTAINER}' 2>&1" || true
+                 done ;;
     *)           die "logs target ต้องเป็น: head | worker (หรือใส่ตัวเลขจำนวนบรรทัด)" ;;
   esac
 }

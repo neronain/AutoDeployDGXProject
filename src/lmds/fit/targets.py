@@ -15,6 +15,13 @@ class TargetSpec:
     gpu_count: int = 1
     system_ram_gb: float | None = None  # ใช้ประเมิน offload ของ llama.cpp
     tested: bool = False  # False → คำนวณแบบ conservative (ลด budget เพิ่ม)
+    # GPU ต่อ "เครื่อง" — ใช้แยกว่า gpu_count มาจากหลาย GPU ในเครื่องเดียว (RTX dual)
+    # หรือหลายเครื่องเครื่องละใบ (DGX Spark stacked) ซึ่งคนละเรื่องกันตอน generate
+    gpus_per_node: int = 1
+
+    @property
+    def node_count(self) -> int:
+        return max(1, self.gpu_count // max(1, self.gpus_per_node))
 
     @property
     def total_gpu_memory_gb(self) -> float:
@@ -29,8 +36,16 @@ PRESETS: dict[str, TargetSpec] = {
     "dgx-spark-stacked": TargetSpec(
         "dgx-spark-stacked", MemoryModel.UNIFIED, 128.0, 2, system_ram_gb=None, tested=True
     ),
+    # 4 เครื่อง: TP=4 หาร attention heads ของโมเดลส่วนใหญ่ลงตัว (64/4=16) ต่างจาก 3 เครื่อง
+    # ที่ TP=3 มักหารไม่ลง — ยังไม่ได้ทดสอบจริง จึงคิดแบบ conservative
+    "dgx-spark-stacked-4": TargetSpec(
+        "dgx-spark-stacked-4", MemoryModel.UNIFIED, 128.0, 4, system_ram_gb=None, tested=False
+    ),
     "rtx-pro-4000": TargetSpec("rtx-pro-4000", MemoryModel.DISCRETE, 24.0, 1, tested=True),
-    "rtx-pro-4000-dual": TargetSpec("rtx-pro-4000-dual", MemoryModel.DISCRETE, 24.0, 2, tested=True),
+    # dual = สอง GPU ใน "เครื่องเดียว" ไม่ใช่สองเครื่อง — node_count จึงต้องเป็น 1
+    "rtx-pro-4000-dual": TargetSpec(
+        "rtx-pro-4000-dual", MemoryModel.DISCRETE, 24.0, 2, tested=True, gpus_per_node=2
+    ),
     "rtx-4070-super": TargetSpec("rtx-4070-super", MemoryModel.DISCRETE, 12.0, 1, tested=True),
     "rtx-4070-ti-super": TargetSpec("rtx-4070-ti-super", MemoryModel.DISCRETE, 16.0, 1, tested=True),
     # hardware-validated 2026-08-03: gemma-4-12b-it UD-Q8_K_XL (GGUF + vision) ที่ context 16,384

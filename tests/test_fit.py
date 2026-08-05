@@ -195,3 +195,21 @@ def test_no_headroom_note_when_cap_not_binding():
     fit = analyze(qwen32b(), PRESETS["dgx-spark-single"])
     assert fit.max_safe_context == fit.recommended_context
     assert not any("รองรับได้ถึง" in n for n in fit.notes)
+
+
+def test_node_count_separates_multi_gpu_from_multi_machine():
+    """gpu_count=2 หมายถึงคนละอย่างกันระหว่าง RTX dual (เครื่องเดียว) กับ Spark stacked (สองเครื่อง)"""
+    from lmds.fit import PRESETS
+
+    assert PRESETS["dgx-spark-stacked"].node_count == 2
+    assert PRESETS["rtx-pro-4000-dual"].node_count == 1
+    assert PRESETS["dgx-spark-single"].node_count == 1
+
+
+def test_four_node_preset_totals_four_sparks():
+    from lmds.fit import PRESETS
+
+    spec = PRESETS["dgx-spark-stacked-4"]
+    assert (spec.node_count, spec.total_gpu_memory_gb) == (4, 512.0)
+    # ยังไม่เคยรันจริง — ต้องคิดแบบ conservative จนกว่าจะมีเครื่องทดสอบ
+    assert spec.tested is False

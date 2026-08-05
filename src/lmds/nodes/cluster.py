@@ -145,6 +145,26 @@ def shared_fabric(members: list[dict]) -> tuple[str, dict[str, str]]:
     }
 
 
+
+# vLLM ต้องแบ่ง attention head ให้ทุก rank เท่ากัน — TP ที่หาร head ไม่ลงตัวจะถูกปฏิเสธ
+# ตั้งแต่ start โมเดลส่วนใหญ่มี head เป็นเลขยกกำลังสอง (Llama 3.3 70B = 64) จำนวนเครื่อง
+# ที่เป็นเลขยกกำลังสองจึงใช้ tensor-parallel ได้ตรง ๆ ส่วนจำนวนอื่นต้องใช้ pipeline แทน
+def tensor_parallel_fits(world_size: int) -> bool:
+    return world_size > 0 and (world_size & (world_size - 1)) == 0
+
+
+def parallelism_note(world_size: int) -> dict:
+    """บอกว่าขนาดคลัสเตอร์นี้ใช้ TP ได้ไหม และถ้าไม่ได้ควรทำอย่างไร
+
+    คืนรหัส ไม่ใช่ประโยค — CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเอง
+    """
+    if tensor_parallel_fits(world_size):
+        return {"kind": "tensor-parallel", "world_size": world_size, "usable": True}
+    # 3, 5, 6, 7 … : TP หารไม่ลง ต้อง pipeline (ช้ากว่าเพราะ token ไหลเป็นทอด)
+    return {"kind": "pipeline-parallel", "world_size": world_size, "usable": True,
+            "largest_tp": 1 << (world_size.bit_length() - 1)}
+
+
 def cluster_groups(machines: Iterable[dict]) -> list[dict]:
     """จัดกลุ่มเครื่องที่ stacked ด้วยกันได้
 
@@ -205,6 +225,7 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             "quality": "rdma" if tiers == {"rdma"} else "ethernet",
             "world_size": gpu_count * len(members),
             "fabric_network": network,
+            "parallelism": parallelism_note(gpu_count * len(members)),
             "blockers": blockers,
             "ready": not blockers,
         })

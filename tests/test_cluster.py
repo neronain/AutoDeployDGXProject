@@ -226,3 +226,33 @@ def test_shared_fabric_is_stable_across_calls():
     picks = {cl.shared_fabric([{"name": m["name"], "host": m["host"]} for m in machines])[0]
              for _ in range(3)}
     assert picks == {"10.100.152.0/24"}
+
+
+# ── ขยายเป็น 3–4 เครื่อง ────────────────────────────────────────────────────
+def test_four_machines_form_one_group():
+    machines = [
+        {"name": f"spark{i}", "host": host(ip=f"10.100.152.{i}"), "cluster_ip": f"10.100.152.{i}"}
+        for i in range(1, 5)
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert group["ready"] and group["world_size"] == 4
+    assert group["parallelism"]["kind"] == "tensor-parallel"
+
+
+def test_three_machines_need_pipeline_parallel():
+    """TP=3 หาร attention head ของโมเดลส่วนใหญ่ไม่ลงตัว (Llama 3.3 70B = 64 heads)"""
+    machines = [
+        {"name": f"spark{i}", "host": host(ip=f"10.100.152.{i}"), "cluster_ip": f"10.100.152.{i}"}
+        for i in range(1, 4)
+    ]
+    (group,) = cl.cluster_groups(machines)
+    note = group["parallelism"]
+    assert note["kind"] == "pipeline-parallel"
+    assert note["largest_tp"] == 2  # TP=2 แล้วเหลือเครื่องที่สามไว้ทำ pipeline
+
+
+@pytest.mark.parametrize("size, kind", [(2, "tensor-parallel"), (4, "tensor-parallel"),
+                                        (8, "tensor-parallel"), (3, "pipeline-parallel"),
+                                        (6, "pipeline-parallel")])
+def test_parallelism_note_by_size(size, kind):
+    assert cl.parallelism_note(size)["kind"] == kind

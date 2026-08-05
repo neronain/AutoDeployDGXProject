@@ -29,6 +29,13 @@
 - **`lmds node cluster --write <slug>`** — เขียน `cluster.env` ลง bundle
   (`MASTER_IP`/`WORKER_IP`/`SSH_USER`/`TRANSPORT_IP_*`/`NCCL_SOCKET_IFNAME`) → stacked controller
   source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วข้ามการถาม IP ตอน `start` (env ภายนอกยังชนะไฟล์นี้เสมอ)
+- **รองรับคลัสเตอร์เกิน 2 เครื่อง (เตรียมไว้ ยังไม่ได้รันจริง)** — controller วน worker ทุกตัวจาก
+  `WORKER_IPS` ทุกขั้นตอน (prepare-runtime, sync/verify-worker, start ตาม node-rank, stop, status,
+  logs, clear-fi-cache) · ค่าเริ่มต้นของ bundle 2 เครื่องยังเป็น worker เดียวเหมือนเดิมทุกประการ
+  · target preset ใหม่ `dgx-spark-stacked-4` · `TargetSpec.node_count` แยก "หลาย GPU ในเครื่องเดียว"
+  (RTX dual) ออกจาก "หลายเครื่องเครื่องละใบ" (Spark stacked) ซึ่งเดิมปนกันอยู่ที่ `gpu_count`
+  · `lmds node cluster` เตือนเมื่อจำนวนเครื่องไม่เข้ากับ tensor parallel (3 เครื่อง = TP=3 หาร
+  attention head ไม่ลง ต้องใช้ TP=2 + pipeline)
 - **`lmds agent info`** — พิมพ์สถานะเครื่องเป็น JSON ให้ hub อ่าน (ปกติไม่ได้พิมพ์เอง)
 - **`lmds node install <ชื่อ>` / `node add --install`** — ติดตั้งหรืออัปเดต LMDS บนเครื่องปลายทาง
   จาก hub (clone/pull จาก GitHub → `install.sh` บนเครื่องนั้น) · ข้ามขั้น Docker/toolkit เป็นค่าเริ่มต้น

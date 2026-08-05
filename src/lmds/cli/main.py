@@ -432,9 +432,12 @@ def node_cluster(
     for group in groups:
         names = " + ".join(m["name"] for m in group["members"])
         mark = "[green]พร้อม[/green]" if group["ready"] else "[yellow]ยังไม่พร้อม[/yellow]"
+        note = group["parallelism"]
+        parallel = (f"TP={note['world_size']}" if note["kind"] == "tensor-parallel"
+                    else f"TP={note['largest_tp']} + pipeline (TP={note['world_size']} หาร head ไม่ลง)")
         console.print(
             f"  {mark} {names} — {group['gpu']} x{group['gpus_per_node']}/เครื่อง · "
-            f"world size {group['world_size']} · {group['link_gbps']}G "
+            f"world size {group['world_size']} ({parallel}) · {group['link_gbps']}G "
             f"{'RDMA' if group['rdma'] else 'ethernet'}"
         )
         for blocker in group["blockers"]:
@@ -483,25 +486,29 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
         if chosen is None:
             err_console.print(f"[red]'{worker_name}' ไม่ได้อยู่ในกลุ่มที่พร้อม[/red]")
             raise typer.Exit(code=1)
-    elif len(others) == 1:
+    elif others:
+        # เกิน 2 เครื่องก็เขียนได้ — worker ทุกตัวลง WORKER_IPS เรียงตาม node-rank
         chosen = others[0]
     else:
-        err_console.print(
-            "[red]กลุ่มนี้มีมากกว่า 2 เครื่อง[/red] — ระบุด้วย --worker <ชื่อ> "
-            f"(เลือกได้: {', '.join(m['name'] for m in others)})"
-        )
+        err_console.print("[red]กลุ่มนี้ไม่มี worker[/red]")
         raise typer.Exit(code=1)
+    workers = [chosen] if worker_name else others
 
     head = next(m for m in group["members"] if m["name"] == head_name)
     node = find_node(chosen["name"])
     iface = head.get("iface") or ""
+    worker_ips = [m["cluster_ip"] for m in workers]
     lines = [
         "# สร้างโดย lmds node cluster --write — แก้มือได้ ค่า env ภายนอกยังชนะไฟล์นี้",
         f"MASTER_IP={head['cluster_ip']}",
-        f"WORKER_IP={chosen['cluster_ip']}",
+        f"WORKER_IP={worker_ips[0]}",
+        # worker ทุกตัวเรียงตาม node-rank 1..N-1 — controller วนจากตัวแปรนี้
+        f'WORKER_IPS="{" ".join(worker_ips)}"',
+        f"NNODES={len(workers) + 1}",
+        f"TENSOR_PARALLEL_SIZE={len(workers) + 1}",
         f"SSH_USER={node.user if node else ''}",
         f"TRANSPORT_IP_MASTER={head['cluster_ip']}",
-        f"TRANSPORT_IP_WORKER={chosen['cluster_ip']}",
+        f"TRANSPORT_IP_WORKER={worker_ips[0]}",
     ]
     if iface:
         # NCCL เลือก interface เองแล้วมักได้เส้นบริหารจัดการที่ช้ากว่า — ระบุให้ชัด
@@ -548,7 +555,8 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
         target = str(path)
 
     console.print(f"\n[green]เขียน {target} แล้ว[/green]")
-    console.print(f"[dim]head {head['cluster_ip']} · worker {chosen['cluster_ip']}"
+    console.print(f"[dim]head {head['cluster_ip']} · worker {' '.join(worker_ips)}"
+                  f" · {len(workers) + 1} เครื่อง (TP={len(workers) + 1})"
                   f"{' · NCCL ' + iface if iface else ''}[/dim]")
     console.print(f"[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
 

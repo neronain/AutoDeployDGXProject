@@ -107,8 +107,10 @@ def test_stacked_controller_has_multinode_machinery(tmp_path):
     text = bundle.controller.read_text(encoding="utf-8")
     for marker in MULTINODE_MARKERS:
         assert marker in text, f"ขาด marker multi-node: {marker}"
-    # worker-first: --headless (worker) + --node-rank 0/1
-    assert "--node-rank 1" in text and "--node-rank 0" in text
+    # worker-first: worker ทุกตัว (rank 1..N-1, headless) ต้องขึ้นก่อน head (rank 0)
+    assert "--node-rank ${rank} --host 127.0.0.1 --port 18000 --headless" in text
+    assert "--node-rank 0" in text
+    assert text.index("--node-rank ${rank}") < text.index("--node-rank 0")
 
 
 def test_stacked_controller_satisfies_single_contract(tmp_path):
@@ -298,3 +300,39 @@ def test_controller_derives_the_roce_hca(tmp_path):
     assert "detect_hca_for_interface()" in text
     assert "/sys/class/infiniband/" in text
     assert '[[ -n "$NCCL_IB_HCA" ]] && return 0' in text
+
+
+def test_four_node_target_renders_four_workers(tmp_path):
+    """เพิ่มเครื่องเป็น 4 ต้องได้ NNODES/TP/รายชื่อ worker ครบ ไม่ใช่แค่ตัวเลขเปลี่ยน"""
+    from lmds.brain import build_plan as _build_plan
+    from lmds.fit import PRESETS as _PRESETS, analyze as _analyze
+    from lmds.generator import render_bundle as _render
+
+    report = big_safetensors()
+    fit = _analyze(report, _PRESETS["dgx-spark-stacked-4"])
+    bundle = _render(_build_plan(report, fit, provider=None), report, fit, tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert 'NNODES="${NNODES:-4}"' in text
+    assert 'TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"' in text
+    # ค่าเริ่มต้นต้องมี worker ครบสามตัว ไม่ใช่ตัวเดียวแล้วเงียบ ๆ รันไม่ครบ
+    assert "10.100.152.2 10.100.152.3 10.100.152.4" in text
+    assert subprocess.run(["bash", "-n", str(bundle.controller)]).returncode == 0
+
+
+def test_two_node_bundle_keeps_the_single_worker_default(tmp_path):
+    """bundle เดิมต้องไม่เปลี่ยนพฤติกรรม — WORKER_IPS ตกมาที่ WORKER_IP ตัวเดียว"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+    assert 'WORKER_IPS="${WORKER_IPS:-$WORKER_IP}"' in text
+
+
+def test_every_worker_step_iterates_over_the_list(tmp_path):
+    """ขั้นตอนที่แตะ worker ต้องวนทุกเครื่อง ไม่งั้น 4 เครื่องจะทำงานแค่เครื่องแรก"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    # sync/verify/start/stop/status/logs/prepare-runtime ต้องมีลูปของตัวเอง
+    assert text.count("for wip in $WORKER_IPS; do") >= 8
+    # ssh_worker เหลือไว้ได้เฉพาะงานที่อ้างถึง worker ตัวแรกโดยธรรมชาติ
+    assert 'ssh_worker() { ssh_at "$WORKER_IP" "$@"; }' in text

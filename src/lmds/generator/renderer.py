@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 import lmds
 from lmds.brain.plan_schema import DeploymentPlan, Engine, Topology
 from lmds.fit import FitReport
+from lmds.fit.targets import PRESETS
 from lmds.inspector.report import ModelReport
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -124,12 +125,16 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
     required += [f for f in plan.special_files if "/" not in f]
 
     is_stacked = plan.topology.value == "stacked"
+    # จำนวนเครื่องมาจาก target preset ไม่ใช่ค่าคงที่ — dgx-spark-stacked-4 = 4 เครื่อง
+    # preset ที่ไม่รู้จัก (target กำหนดเอง) ถอยไปที่ 2 ซึ่งเป็นรูปแบบ stacked ที่ทดสอบแล้ว
+    spec = PRESETS.get(fit.target_name)
+    node_count = (spec.node_count if spec else 2) if is_stacked else 1
     tensor_parallel = 1
     if plan.topology.value == "multi-gpu":
         tensor_parallel = 2  # ค่าตั้งต้น dual-GPU — override ได้ผ่าน env ใน controller
     elif is_stacked:
-        tensor_parallel = 2  # 2 node × 1 GPU = TP2/nnodes2 (ค่าตั้งต้น 2×DGX Spark)
-    node_count = 2 if is_stacked else 1
+        # 1 GPU ต่อเครื่องบน DGX Spark → TP = จำนวนเครื่อง
+        tensor_parallel = (spec.gpu_count if spec else 2)
 
     weights_gb = fit.weights_gb or (report.weight_bytes or 0) / 1024**3
     disk_gb = int(weights_gb * 1.2 + 20)  # โมเดล + image + เผื่อ
