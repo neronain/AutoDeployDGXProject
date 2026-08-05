@@ -58,10 +58,19 @@
 1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · งานต่อยอด: 4 เครื่อง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
 2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
    verify-files, 2026-08-02) · ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้
+   · **มีหลักฐานแล้วว่าคุ้มที่สุดในเฟส 2**: การรัน DeepSeek V4 ครั้งแรกพัง 4 รอบ แต่ละรอบสาเหตุ
+   อ่านได้จาก traceback ตรง ๆ (`only supports fp8 kv-cache` → kv-cache-dtype ·
+   `Expected 7 but got 8 arguments` → cudagraph PIECEWISE · `LocalEntryNotFoundError` →
+   HF_HUB_CACHE) · `lmds doctor` จับได้เฉพาะอาการที่รู้จักล่วงหน้า ส่วน LLM อ่าน log จริงได้
 3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
-4. **Web UI หน้าเดียว** (FastAPI) — reuse core ทั้งหมด, สำหรับลูกค้าที่ไม่ถนัด CLI
+4. ~~**Web UI หน้าเดียว**~~ — ✅ **ทำแล้ว (2026-08-04/05)** `lmds web` · host stats, deploy wizard,
+   fleet หลายเครื่อง, cluster fabric, scan, recipes · งานต่อยอด: `node install` / `--alt-host` /
+   deploy wizard ยังต้องใช้ CLI
 5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
-6. Anthropic provider, i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
+6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
+   ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
+   ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ)
+7. Anthropic provider, i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
    `lmds node` (ทะเบียนเครื่อง + `lmds agent info` ผ่าน SSH) พร้อมตรวจ ConnectX/200G และจับคู่ stacked
    · งานต่อยอด: push bundle ไปติดตั้งบน node ให้อัตโนมัติ, ยืนยัน fabric detection กับ ConnectX จริง
 
