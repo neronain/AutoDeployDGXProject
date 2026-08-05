@@ -763,7 +763,8 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | `docker pull` ล้ม / `TLS handshake timeout` | เครื่องอยู่หลัง proxy หรือโดน rate limit | ตั้ง proxy ให้ **docker daemon** ด้วย ไม่ใช่แค่ shell ([INSTALL §1.7](INSTALL.md)) |
 | `prepare-runtime` build ล้มบน DGX Spark | ขาด CUDA Toolkit หรือ CUDA arch ไม่ตรง | ดูบรรทัดเตือน `ไม่พบ nvcc` · override ได้: `CUDA_ARCHITECTURES=121 ./xxx-single.sh prepare-runtime` |
 | `ยังไม่มี llama-server — รัน: ... prepare-runtime` | ข้ามขั้น prepare-runtime บนเครื่อง ARM64 | รัน `./xxx-single.sh prepare-runtime` ก่อน start (ดู §2) |
-| ลิงก์ `ollama.com/...` ใช้ไม่ได้ | ยังรองรับเฉพาะ Hugging Face | ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน (roadmap เฟส 2) |
+| ลิงก์ `ollama.com/...` แจ้งว่าเป็นของ Hugging Face | ref แบบ `ollama.com/hf.co/<org>/<model>:<quant>` ชี้ไป HF ไม่ใช่ registry ของ Ollama — tag ตรงนั้นคือ quant ไม่ใช่ชื่อไฟล์ ระบบจึงไม่เดาให้ | ใช้ลิงก์ HF ของไฟล์ GGUF ตัวนั้นตรง ๆ |
+| ลิงก์ NGC (`catalog.ngc.nvidia.com/...`) ใช้ไม่ได้ | ยังไม่รองรับ (roadmap เฟส 2) | ใช้ลิงก์ HF หรือ `ollama.com` ของโมเดลตัวเดียวกันแทน |
 | `verify-files` แจ้ง shard หาย / ขนาดไม่ตรง | download ไม่ครบ หรือไฟล์ใน cache ถูกลบ | `lmds repair <ชื่อ>` (โหลดเฉพาะส่วนที่ขาด) |
 | `lmds list` ขึ้น ⚠ (ไฟล์ controller หาย) | โฟลเดอร์ bundle ถูกลบ/ย้าย | `lmds deploy` ลิงก์เดิมเพื่อสร้าง bundle ใหม่ — weight เดิมใช้ต่อได้ · หรือ `lmds remove <ชื่อ>` ถ้าไม่ใช้แล้ว |
 | มีแถวขยะค้างใน `lmds ps` / `lmds list` | process/ทะเบียนเก่าค้างจากรอบก่อน | `lmds remove <ชื่อ>` เก็บกวาดให้ครบทุกที่ |
