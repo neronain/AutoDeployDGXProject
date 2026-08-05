@@ -978,7 +978,9 @@ function systemCard(host) {
   const fabric = host.fabric || {};
 
   const memPct = used != null && total ? Math.round(used / total * 100) : null;
-  const diskPct = free != null && diskTotal ? Math.round((diskTotal - free) / diskTotal * 100) : null;
+  // ดิสก์วัดเป็น "เหลือเท่าไร" ไม่ใช่ "ใช้ไปเท่าไร" — เกจกับตัวเลขใต้มันจะได้พูดเรื่องเดียวกัน
+  // และคำถามจริงตอนจะโหลดโมเดล 150 GB คือ "เหลือพอไหม"
+  const diskPct = free != null && diskTotal ? Math.round(free / diskTotal * 100) : null;
   // unified = GPU กินจาก pool เดียวกับ RAM · โชว์แยกอีกเกจคือนับซ้ำ
   const vramPct = !unified && gpu && gpu.vram_used_gb != null && gpu.vram_gb
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
@@ -1003,13 +1005,19 @@ function systemCard(host) {
               used != null ? `${Math.round(used)} / ${gb(total)}` : "")}
       ${vramPct == null ? "" : gauge(vramPct, 100, "VRAM", "%", loadColour(vramPct),
               `${gpu.vram_used_gb} / ${gpu.vram_gb} GB`)}
-      ${gauge(diskPct, 100, "Disk", "%", loadColour(diskPct),
-              free != null ? `${gb(free)} free` : "")}
+      ${gauge(diskPct, 100, "Disk free", "%", freeColour(diskPct),
+              free != null ? `${gb(free)} / ${gb(diskTotal)}` : "")}
     </div>
   </div>`;
 }
 
 // เต็มใกล้ 100% = ของจะไม่พอ — บอกด้วยสีก่อนที่ผู้ใช้จะไปเจอตอน start ไม่ขึ้น
+// ดิสก์กลับด้าน: เหลือน้อย = แย่ · โมเดลเดียวกินได้เป็นร้อย GB
+function freeColour(pct) {
+  if (pct == null) return "var(--meter)";
+  return pct <= 5 ? "var(--bad)" : pct <= 15 ? "var(--warn)" : "var(--meter)";
+}
+
 function loadColour(pct) {
   if (pct == null) return "var(--meter)";
   return pct >= 90 ? "var(--bad)" : pct >= 75 ? "var(--warn)" : "var(--meter)";
