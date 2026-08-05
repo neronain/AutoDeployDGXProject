@@ -207,6 +207,8 @@ pre {
 .gauge-unit { font: 500 8px/1 var(--sans); fill: var(--fg3); }
 .gauge-label { font-size: 10.5px; color: var(--fg3); margin-top: 4px;
   text-transform: uppercase; letter-spacing: .06em; }
+.gauge-sub { font-size: 10.5px; color: var(--fg3); margin-top: 2px;
+  font-variant-numeric: tabular-nums; }
 .gauge-track { stroke: var(--meter-track); }
 .clocks { margin-top: 12px; display: grid; gap: 7px; }
 .clock-row { display: grid; grid-template-columns: 1fr 68px; gap: 10px; align-items: center;
@@ -266,6 +268,8 @@ pre {
 <div class="wrap">
 
   <div class="stats" id="stats"></div>
+  <!-- เครื่องนี้ต้องอ่านเหมือนเครื่องอื่นในหน้าเดียวกัน — เกจชุดเดียวกัน ไม่ใช่คนละภาษา -->
+  <div class="card" id="hostcard"></div>
   <div class="card" id="wiz" hidden></div>
 
   <div class="sec">Models on this machine</div>
@@ -312,12 +316,6 @@ function statCard(label, value, sub, colour) {
     <b${colour ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
 }
 
-function bar(label, value, pct, sub) {
-  const p = Math.max(0, Math.min(100, pct || 0));
-  return `<div class="stat"><span class="muted">${esc(label)}</span><b>${esc(value)}</b>
-    <div class="bar"><i class="seg-a" style="width:${p}%"></i><i style="width:${100 - p}%"></i></div>
-    ${sub ? `<span class="dim">${esc(sub)}</span>` : ""}</div>`;
-}
 
 function renderHost(h, models) {
   document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
@@ -329,31 +327,6 @@ function renderHost(h, models) {
     ? statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
         `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`)
     : statCard("GPU", "not found", "check nvidia-smi"));
-
-  // VRAM only makes sense as its own card on discrete cards. On unified memory (DGX Spark)
-  // the GPU allocates out of the same pool the RAM card already shows.
-  if (gpu && !unified && gpu.vram_used_gb != null && gpu.vram_gb) {
-    cards.push(bar("VRAM", `${gpu.vram_used_gb} / ${gpu.vram_gb} GB`,
-      Math.round(gpu.vram_used_gb / gpu.vram_gb * 100),
-      gpu.utilization_pct != null ? `GPU ${gpu.utilization_pct}% busy` : ""));
-  }
-
-  const cpu = h.cpu || {};
-  cards.push(bar("CPU", cpu.cores ? `${cpu.cores} cores` : "—",
-    cpu.percent == null ? 0 : Math.min(cpu.percent, 100),
-    cpu.load1 != null ? `load ${cpu.load1}${cpu.percent > 100 ? " · oversubscribed" : ""}` : ""));
-
-  // Unified memory (DGX Spark) is one CPU+GPU pool — not the same thing as a discrete card's VRAM
-  const used = h.ram_used_gb, total = h.ram_total_gb;
-  cards.push(bar(unified ? "Unified memory" : "RAM",
-    `${used != null ? Math.round(used) : "—"} / ${gb(total)}`,
-    used != null && total ? Math.round(used / total * 100) : 0,
-    unified ? "shared by CPU and GPU" : ""));
-
-  const free = h.disk_free_gb, diskTotal = h.disk_total_gb;
-  cards.push(bar("Disk", `${gb(free)} free`,
-    free != null && diskTotal ? Math.round((diskTotal - free) / diskTotal * 100) : 0,
-    diskTotal ? `of ${gb(diskTotal)}` : ""));
 
   // llama.cpp can serve several models at once, so this is a count, not a yes/no
   if (models) {
@@ -369,6 +342,9 @@ function renderHost(h, models) {
     `${esc(h.profile)} · ${esc(h.arch)}`, ready ? "var(--ok)" : "var(--bad)"));
 
   document.getElementById("stats").innerHTML = cards.join("");
+  // CPU/หน่วยความจำ/ดิสก์/GPU ของเครื่องนี้ — เกจชุดเดียวกับที่ใช้กับเครื่องอื่น
+  document.getElementById("hostcard").innerHTML =
+    systemCard(h) + (h.gpus || []).map(gpuCard).join("");
 }
 
 // Update only what changed. Rebuilding the whole list every poll makes open panels
@@ -853,7 +829,7 @@ document.addEventListener("click", async e => {
 // ── GPU telemetry ───────────────────────────────────────────────────────
 // ค่าที่เป็น null คือ "การ์ดรุ่นนี้ไม่รายงาน" ไม่ใช่ศูนย์ — GB10 (unified SoC) ไม่บอก
 // power limit / fan / memory clock · โชว์ 0 ตรงนั้นคือการโกหกผู้ใช้ จึงซ่อนไปเลย
-function gauge(value, max, label, unit, colour) {
+function gauge(value, max, label, unit, colour, sub = "") {
   if (value == null) return "";
   const pct = max ? Math.max(0, Math.min(1, value / max)) : 0;
   const r = 26, c = 2 * Math.PI * r, arc = c * 0.75;          // เว้นช่องล่างเหมือนมาตรวัดจริง
@@ -871,6 +847,7 @@ function gauge(value, max, label, unit, colour) {
       <text class="gauge-unit" x="34" y="46" text-anchor="middle">${esc(unit)}</text>
     </svg>
     <div class="gauge-label">${esc(label)}</div>
+    ${sub ? `<div class="gauge-sub">${esc(sub)}</div>` : ""}
   </div>`;
 }
 
@@ -987,40 +964,57 @@ function nodeCard(node) {
   return block;
 }
 
-function pill(label, value, sub) {
-  return `<span class="npill"><span class="muted">${esc(label)}</span> <b>${esc(value)}</b>${
-    sub ? ` <span class="dim">${esc(sub)}</span>` : ""}</span>`;
-}
 
 // One line of live resources per machine. Everything here comes from the same
 // `lmds agent info` payload the local cards use, so the numbers mean the same thing.
-function nodeResources(host) {
+// CPU / memory / disk เป็นมาตรวัดชุดเดียวกับการ์ด GPU — อ่านทั้งเครื่องได้ในสายตาเดียว
+// ตัวเลขจริงอยู่ใต้ทุกเกจ เพราะ "80%" ของ 122 GB กับของ 8 GB ไม่ใช่เรื่องเดียวกัน
+function systemCard(host) {
   const cpu = host.cpu || {};
   const gpu = (host.gpus || [])[0];
   const unified = host.memory_model === "unified";
-  const out = [];
-
-  out.push(pill("CPU", cpu.cores ? `${cpu.cores}c` : "—",
-    cpu.percent != null ? `${cpu.percent}%` : ""));
-  out.push(pill(unified ? "Unified" : "RAM",
-    `${host.ram_used_gb != null ? Math.round(host.ram_used_gb) : "—"}/${gb(host.ram_total_gb)}`));
-
-  if (gpu) {
-    // Unified memory reports no separate VRAM figure — showing 0 GB there would be a lie
-    const vram = unified ? (gpu.vram_gb ? `${gpu.vram_gb} GB pool` : "shared")
-      : (gpu.vram_used_gb != null && gpu.vram_gb ? `${gpu.vram_used_gb}/${gpu.vram_gb} GB`
-        : (gpu.vram_gb ? `${gpu.vram_gb} GB` : "—"));
-    out.push(pill("VRAM", vram, gpu.utilization_pct != null ? `${gpu.utilization_pct}% busy` : ""));
-  }
-
-  out.push(pill("Disk", `${gb(host.disk_free_gb)} free`));
-
+  const used = host.ram_used_gb, total = host.ram_total_gb;
+  const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
   const fabric = host.fabric || {};
-  if (fabric.best_gbps) {
-    out.push(pill("Link", `${fabric.best_gbps}G`, fabric.tier === "rdma" ? "RDMA" : ""));
-  }
-  return `<div class="npills">${out.join("")}</div>`;
+
+  const memPct = used != null && total ? Math.round(used / total * 100) : null;
+  const diskPct = free != null && diskTotal ? Math.round((diskTotal - free) / diskTotal * 100) : null;
+  // unified = GPU กินจาก pool เดียวกับ RAM · โชว์แยกอีกเกจคือนับซ้ำ
+  const vramPct = !unified && gpu && gpu.vram_used_gb != null && gpu.vram_gb
+    ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
+
+  const tags = [
+    cpu.cores ? `<span class="tag">${cpu.cores} cores</span>` : "",
+    cpu.load1 != null ? `<span class="tag">load ${cpu.load1}</span>` : "",
+    fabric.best_gbps ? `<span class="tag">${fabric.best_gbps}G${fabric.tier === "rdma" ? " RDMA" : ""}</span>` : "",
+  ].join("");
+
+  return `<div class="gpu">
+    <div class="gpu-head">
+      <span class="gpu-name">System</span>${tags}
+      <span class="grow"></span>
+      <span class="npill"><span class="muted">${unified ? "Unified" : "RAM"}</span> ${
+        used != null ? Math.round(used) : "—"}/${gb(total)}</span>
+    </div>
+    <div class="gauges">
+      ${gauge(cpu.percent == null ? null : Math.min(cpu.percent, 100), 100, "CPU", "%",
+              loadColour(cpu.percent), cpu.cores ? `${cpu.cores} cores` : "")}
+      ${gauge(memPct, 100, unified ? "Unified" : "RAM", "%", loadColour(memPct),
+              used != null ? `${Math.round(used)} / ${gb(total)}` : "")}
+      ${vramPct == null ? "" : gauge(vramPct, 100, "VRAM", "%", loadColour(vramPct),
+              `${gpu.vram_used_gb} / ${gpu.vram_gb} GB`)}
+      ${gauge(diskPct, 100, "Disk", "%", loadColour(diskPct),
+              free != null ? `${gb(free)} free` : "")}
+    </div>
+  </div>`;
 }
+
+// เต็มใกล้ 100% = ของจะไม่พอ — บอกด้วยสีก่อนที่ผู้ใช้จะไปเจอตอน start ไม่ขึ้น
+function loadColour(pct) {
+  if (pct == null) return "var(--meter)";
+  return pct >= 90 ? "var(--bad)" : pct >= 75 ? "var(--warn)" : "var(--meter)";
+}
+
 
 function nodeModelsMarkup(name, data) {
   if (!data.reachable) {
@@ -1036,7 +1030,7 @@ function nodeModelsMarkup(name, data) {
   const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}
     · ${sum.running || 0} of ${sum.total || models.length} running${
       data.age_seconds ? ` · updated ${Math.round(data.age_seconds)}s ago` : ""}</div>
-    ${nodeResources(host)}
+    ${systemCard(host)}
     ${(host.gpus || []).map(gpuCard).join("")}`;
 
   if (!models.length) {
