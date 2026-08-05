@@ -501,8 +501,39 @@ detect_hca_for_interface() {
   return 0
 }
 
+# DGX Spark มี RoCE หลายตัว และ ConnectX ใบเดียวมีสองพอร์ตที่ต่อสายจริงได้พร้อมกัน
+# บอก NCCL แค่ตัวเดียวเท่ากับใช้สายเส้นเดียว — ได้ครึ่งเดียวของที่มี โดยไม่มีอะไรฟ้อง
+# เพราะงาน "ก็รันได้" · เอาเฉพาะตัวที่ลิงก์ขึ้นจริงและเร็วพอ ไม่งั้น NCCL ไปลองเส้นที่ตาย
+NCCL_HCA_MIN_SPEED_MBPS="${NCCL_HCA_MIN_SPEED_MBPS:-25000}"
+
+detect_active_hcas() {
+  local dev name netdev speed found=()
+  for dev in /sys/class/infiniband/*; do
+    [[ -d "$dev" ]] || continue
+    name="$(basename "$dev")"
+    for netdev in "$dev"/device/net/*; do
+      [[ -d "$netdev" ]] || continue
+      [[ "$(cat "$netdev/operstate" 2>/dev/null)" == "up" ]] || continue
+      speed="$(cat "$netdev/speed" 2>/dev/null || echo 0)"
+      [[ "$speed" =~ ^[0-9]+$ ]] || continue
+      (( speed >= NCCL_HCA_MIN_SPEED_MBPS )) || continue
+      found+=("$name")
+      break
+    done
+  done
+  (( ${#found[@]} )) || return 0
+  local IFS=,
+  echo "${found[*]}"
+}
+
 _resolve_hca() {
   [[ -n "$NCCL_IB_HCA" ]] && return 0
+  NCCL_IB_HCA="$(detect_active_hcas)"
+  if [[ -n "$NCCL_IB_HCA" ]]; then
+    log "RoCE HCA ที่ลิงก์ขึ้นและใช้ได้: ${NCCL_IB_HCA}"
+    return 0
+  fi
+  # ไม่มีตัวไหนรายงานความเร็ว (บาง driver ไม่เขียน speed) — ถอยไปใช้ตัวที่คู่กับ interface
   NCCL_IB_HCA="$(detect_hca_for_interface "$NCCL_SOCKET_IFNAME")"
   [[ -n "$NCCL_IB_HCA" ]] && log "พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME}: ${NCCL_IB_HCA}"
   return 0
