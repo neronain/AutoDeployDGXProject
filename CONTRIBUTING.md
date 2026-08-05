@@ -63,16 +63,16 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
 
 ### เพิ่มสูตรที่ต้องใช้ env ของ engine
 
-`src/lmds/recipes/catalog.yaml` — ช่อง `env:` ผ่าน allowlist ของ
-`src/lmds/brain/allowlists.py` ซึ่งรับเฉพาะ**ตระกูลที่ engine เป็นเจ้าของ**
-(`VLLM_`, `NCCL_`, `FLASHINFER_`, `TORCH_`, `CUDA_`, `OMP_`, `GGML_`, `LLAMA_` ฯลฯ)
+`src/lmds/recipes/catalog.yaml` — ช่อง `env:` ผ่าน **exact per-engine allowlist**
+และ value validator ใน `src/lmds/brain/allowlists.py` ทุกตัว · จะเพิ่ม env ใหม่ต้อง:
 
-เป็น prefix ไม่ใช่ลิสต์ชื่อ เพราะ env ของ engine เกิดใหม่แทบทุกเวอร์ชัน — ลิสต์ชื่อจะล้าสมัยทันที
-· ตระกูลใหม่เพิ่มที่ `ENV_PREFIXES` · มีเทสบังคับว่า **ทุก env ในแคตตาล็อกต้องผ่าน allowlist**
+1. ยืนยันจาก upstream source ว่าชื่อและค่านั้นถูกต้อง
+2. ยืนยันว่าไม่โหลด plugin/module/config/pickle หรือรับ secret
+3. เพิ่มชื่อใน `_ENV_BY_ENGINE`, validator ที่แคบที่สุด และ negative test
+4. ใส่หลักฐานใน recipe `source`/`validated_on`; มีเทสบังคับว่าทุก env ใน catalog ผ่าน
 
-**ห้ามผ่านเด็ดขาด** (ไม่มีขั้นอนุมัติให้ ต่างจาก flag): `LD_*`, `PATH`, `PYTHONPATH`,
-`BASH_ENV` — ทั้งหมดคือการรันโค้ดใน container · และชื่อที่มี `TOKEN`/`KEY`/`SECRET`/`PASSWORD`
-แม้จะขึ้นต้นถูกตระกูล (กฎข้อ 4)
+Prefix กว้างห้ามใช้: `NCCL_` มี `NCCL_ENV_PLUGIN`/`NCCL_NET_PLUGIN` ที่โหลด `.so`
+และ `VLLM_` มี `VLLM_ALLOW_INSECURE_SERIALIZATION` ที่เปิด pickle — prefix จึงไม่ใช่ security boundary
 
 ### แก้ template ของ controller
 

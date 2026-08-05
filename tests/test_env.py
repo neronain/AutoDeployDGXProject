@@ -14,6 +14,7 @@ import pytest
 
 from lmds.brain.allowlists import is_allowed_env, split_env
 from lmds.brain.orchestrator import harden_plan
+from lmds.brain.plan_schema import Engine
 from lmds.brain.rulebased import rule_based_plan
 from lmds.fit import PRESETS, analyze
 from lmds.fit.analyzer import GIB
@@ -58,19 +59,18 @@ def _plan_with_env(report, env, target="dgx-spark-single"):
 
 # ── allowlist ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("name", [
-    "VLLM_MARLIN_USE_ATOMIC_ADD",
-    "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS",
-    "NCCL_IB_HCA",
-    "FLASHINFER_DISABLE_VERSION_CHECK",
-    "TORCH_CUDA_ARCH_LIST",
-    "CUDA_VISIBLE_DEVICES",
-    "OMP_NUM_THREADS",
-    "GGML_CUDA_FORCE_MMQ",
+@pytest.mark.parametrize("engine,name", [
+    (Engine.VLLM, "VLLM_MARLIN_USE_ATOMIC_ADD"),
+    (Engine.VLLM, "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS"),
+    (Engine.VLLM, "NCCL_IB_HCA"),
+    (Engine.VLLM, "TORCH_CUDA_ARCH_LIST"),
+    (Engine.VLLM, "CUDA_VISIBLE_DEVICES"),
+    (Engine.VLLM, "OMP_NUM_THREADS"),
+    (Engine.LLAMACPP, "GGML_CUDA_FORCE_MMQ"),
 ])
-def test_engine_variables_are_allowed(name):
+def test_engine_variables_are_allowed(engine, name):
     """สูตรที่รันผ่านจริงต้องตั้ง env พวกนี้ได้ — ไม่งั้น allowlist ทำให้ระบบใช้ไม่ได้"""
-    assert is_allowed_env(name)
+    assert is_allowed_env(engine, name)
 
 
 @pytest.mark.parametrize("name", [
@@ -88,7 +88,7 @@ def test_loader_variables_are_rejected(name):
     ต่างจากไฟล์ runtime ภายนอกตรงที่ไฟล์มี URL+SHA ให้ตรวจ ส่วน env ไม่มีอะไรให้ตรวจเลย
     จึงปฏิเสธไปตรง ๆ ดีกว่าเปิดช่องให้กดผ่าน
     """
-    assert not is_allowed_env(name)
+    assert not is_allowed_env(Engine.VLLM, name)
 
 
 @pytest.mark.parametrize("name", [
@@ -99,25 +99,74 @@ def test_secretish_names_are_rejected_even_with_a_valid_prefix(name):
 
     HF_HUB_TOKEN ผ่าน prefix HF_HUB_ ได้ถ้าไม่มีข้อนี้ — แล้วก็จะไปโผล่ใน bundle
     """
-    assert not is_allowed_env(name)
+    assert not is_allowed_env(Engine.VLLM, name)
 
 
 @pytest.mark.parametrize("name", ["vllm_lower", "VLLM-DASH", "1VLLM", "", "VLLM_A B"])
 def test_malformed_names_are_rejected(name):
-    assert not is_allowed_env(name)
+    assert not is_allowed_env(Engine.VLLM, name)
+
+
+@pytest.mark.parametrize("name", [
+    "NCCL_ENV_PLUGIN",
+    "NCCL_NET_PLUGIN",
+    "NCCL_PROFILER_PLUGIN",
+    "VLLM_ALLOW_INSECURE_SERIALIZATION",
+    "VLLM_LOGGING_CONFIG_PATH",
+    "VLLM_PLUGINS",
+])
+def test_code_loading_and_insecure_engine_env_are_rejected(name):
+    """prefix ถูกไม่ได้แปลว่าปลอดภัย: บางตัวโหลด .so/config/pickle ได้"""
+    assert not is_allowed_env(Engine.VLLM, name)
+
+
+def test_env_is_scoped_to_the_selected_engine():
+    assert is_allowed_env(Engine.VLLM, "VLLM_USE_FLASHINFER_SAMPLER")
+    assert not is_allowed_env(Engine.LLAMACPP, "VLLM_USE_FLASHINFER_SAMPLER")
+    assert is_allowed_env(Engine.LLAMACPP, "GGML_CUDA_FORCE_MMQ")
+    assert not is_allowed_env(Engine.VLLM, "GGML_CUDA_FORCE_MMQ")
 
 
 def test_values_with_newlines_are_rejected():
     """ค่าที่มีขึ้นบรรทัดใหม่แทรก -e ตัวถัดไปได้ทันทีที่มีใครเอาไปต่อสตริง"""
-    allowed, rejected = split_env({"VLLM_X": "ok", "VLLM_Y": "a\nb", "VLLM_Z": "c\rd"})
-    assert allowed == {"VLLM_X": "ok"}
-    assert rejected == ["VLLM_Y", "VLLM_Z"]
+    allowed, rejected = split_env(Engine.VLLM, {
+        "VLLM_USE_FLASHINFER_SAMPLER": "1\nNCCL_DEBUG=TRACE",
+        "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1\r0",
+    })
+    assert allowed == {}
+    assert rejected == ["VLLM_ALLOW_LONG_MAX_MODEL_LEN", "VLLM_USE_FLASHINFER_SAMPLER"]
 
 
 def test_values_are_coerced_to_strings():
     """catalog.yaml เขียน 1 เปล่า ๆ ได้ — YAML จะ parse เป็น int แล้ว shlex.quote พัง"""
-    allowed, _ = split_env({"VLLM_N": 1})
-    assert allowed == {"VLLM_N": "1"}
+    allowed, _ = split_env(Engine.VLLM, {"VLLM_USE_FLASHINFER_SAMPLER": 1})
+    assert allowed == {"VLLM_USE_FLASHINFER_SAMPLER": "1"}
+
+
+def test_documented_structured_values_are_accepted():
+    env = {
+        "CUDA_VISIBLE_DEVICES": "GPU-8932f937,0,-1",
+        "TORCH_CUDA_ARCH_LIST": "8.0 8.6+PTX",
+        "NCCL_IB_HCA": "=mlx5_0:1,^mlx5_1:2",
+    }
+    allowed, rejected = split_env(Engine.VLLM, env)
+    assert allowed == env
+    assert rejected == []
+
+
+@pytest.mark.parametrize("name,value", [
+    ("VLLM_USE_FLASHINFER_SAMPLER", "yes"),
+    ("OMP_NUM_THREADS", "0"),
+    ("NCCL_IB_HCA", "/tmp/plugin.so"),
+    ("VLLM_NVFP4_GEMM_BACKEND", "../../evil"),
+    ("VLLM_NVFP4_GEMM_BACKEND", "not-a-real-backend"),
+    ("CUDA_VISIBLE_DEVICES", "0; touch /tmp/pwn"),
+    ("TORCH_CUDA_ARCH_LIST", "8.0; touch /tmp/pwn"),
+])
+def test_invalid_values_are_rejected(name, value):
+    allowed, rejected = split_env(Engine.VLLM, {name: value})
+    assert allowed == {}
+    assert rejected == [name]
 
 
 # ── harden ───────────────────────────────────────────────────────────────────
@@ -138,13 +187,16 @@ def test_harden_keeps_a_clean_env_untouched():
     assert not any("ตัด env" in w for w in plan.warnings)
 
 
-def test_rejected_env_never_reaches_the_bundle(tmp_path):
-    """ด่านสุดท้าย: ต่อให้มีคนลืมเรียก harden ตรงไหน bundle ก็ต้องไม่มีของแบบนี้"""
-    plan, report, fit = _plan_with_env(safetensors_report(), {"LD_PRELOAD": "/tmp/evil.so"})
-    bundle = render_bundle(plan, report, fit, tmp_path)
-    text = bundle.controller.read_text(encoding="utf-8")
-    assert "LD_PRELOAD" not in text
-    assert "evil.so" not in text
+def test_renderer_fails_closed_if_hardening_was_skipped(tmp_path):
+    """renderer เป็น public API: ข้าม harden ก็ต้องสร้าง bundle ที่มี env อันตรายไม่ได้"""
+    report = safetensors_report()
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = rule_based_plan(report, fit)
+    plan.serving.extra_env = {"LD_PRELOAD": "/tmp/evil.so"}
+
+    with pytest.raises(ValueError, match="LD_PRELOAD"):
+        render_bundle(plan, report, fit, tmp_path)
+    assert not any(tmp_path.iterdir())
 
 
 # ── env ต้องไปถึง controller จริง ─────────────────────────────────────────────
@@ -206,5 +258,9 @@ def test_every_env_in_the_catalog_passes_the_allowlist():
     from lmds.recipes import load_catalog
 
     for recipe in load_catalog():
-        allowed, rejected = split_env({k: str(v) for k, v in (recipe.env or {}).items()})
+        if not recipe.env:
+            continue
+        allowed, rejected = split_env(
+            Engine(recipe.engine), {k: str(v) for k, v in recipe.env.items()}
+        )
         assert not rejected, f"{recipe.match}: env ไม่ผ่าน allowlist — {rejected}"

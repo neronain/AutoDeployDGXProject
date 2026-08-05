@@ -52,7 +52,7 @@ ASSET_SHAS=(
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 {% if extra_env_pairs -%}
 # env ที่รุ่นนี้ต้องใช้ตอนรัน (มาจากสูตรที่รันผ่านจริง / ขั้นวางแผน) — ไม่ใช่ flag ของ engine
-# ผ่าน allowlist ของ LMDS แล้ว: เฉพาะตระกูลที่ engine เป็นเจ้าของ ไม่มี LD_*/PATH/PYTHONPATH
+# ผ่าน exact vLLM allowlist + value validator ของ LMDS แล้ว
 EXTRA_ENV=(
 {% for pair in extra_env_pairs %}  {{ pair }}
 {% endfor %})

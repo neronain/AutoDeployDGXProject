@@ -56,42 +56,89 @@ LLAMACPP_FLAGS = {
 _BY_ENGINE = {Engine.VLLM: VLLM_FLAGS, Engine.LLAMACPP: LLAMACPP_FLAGS}
 
 # ── environment variable ──────────────────────────────────────────────────────
-# env มีอำนาจมากกว่า flag: LD_PRELOAD โหลด .so เข้าโปรเซส · PYTHONPATH แทรกโมดูล ·
-# PATH สลับ binary · ทั้งหมดนี้คือการรันโค้ดใน container ซึ่งกฎข้อ 2 บอกว่าต้องอนุมัติเอง
-# แต่ env ของ engine เกิดใหม่แทบทุกเวอร์ชัน (vLLM มี VLLM_* หลายสิบตัว) การไล่ลิสต์ทีละชื่อ
-# จะล้าสมัยทันที — จึงคุมด้วย "ตระกูลที่ engine เป็นเจ้าของ" แทน
-ENV_PREFIXES = (
-    "VLLM_", "NCCL_", "FLASHINFER_", "TORCH_", "TORCHINDUCTOR_", "TRITON_",
-    "CUDA_", "CUBLAS_", "OMP_", "PYTORCH_", "UCX_", "GLOO_", "TP_SOCKET_",
-    "RAY_", "SAFETENSORS_", "TOKENIZERS_", "HF_HUB_", "TRANSFORMERS_", "OMPI_",
-    # llama.cpp
-    "GGML_", "LLAMA_",
+# Prefix ไม่ใช่ security boundary: NCCL_ENV_PLUGIN/NCCL_NET_PLUGIN รับ path ของ .so
+# และ vLLM มี VLLM_ALLOW_INSECURE_SERIALIZATION ที่เปิด pickle โดยตรง · จึงรับเฉพาะ
+# ชื่อที่ review แล้ว แยกตาม engine และตรวจทรงของค่าอีกชั้น
+_COMMON_SAFE_ENV = {"CUDA_VISIBLE_DEVICES", "OMP_NUM_THREADS"}
+
+_VLLM_SAFE_ENV = _COMMON_SAFE_ENV | {
+    "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS",
+    "VLLM_USE_FLASHINFER_SAMPLER",
+    "VLLM_NVFP4_GEMM_BACKEND",
+    "VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+    "VLLM_FLASHINFER_ALLREDUCE_BACKEND",
+    "VLLM_USE_FLASHINFER_MOE_FP4",
+    "VLLM_MARLIN_USE_ATOMIC_ADD",
+    "TORCH_CUDA_ARCH_LIST",
+    "NCCL_IB_HCA",
+}
+
+_LLAMACPP_SAFE_ENV = _COMMON_SAFE_ENV | {"GGML_CUDA_FORCE_MMQ"}
+
+_ENV_BY_ENGINE = {
+    Engine.VLLM: _VLLM_SAFE_ENV,
+    Engine.LLAMACPP: _LLAMACPP_SAFE_ENV,
+}
+
+_BOOL_ENV = {
+    "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS",
+    "VLLM_USE_FLASHINFER_SAMPLER",
+    "VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+    "VLLM_USE_FLASHINFER_MOE_FP4",
+    "VLLM_MARLIN_USE_ATOMIC_ADD",
+    "GGML_CUDA_FORCE_MMQ",
+}
+
+_NVFP4_GEMM_BACKENDS = {
+    "flashinfer-cudnn",
+    "flashinfer-trtllm",
+    "flashinfer-cutlass",
+    "cutlass",
+    "marlin",
+    "emulation",
+}
+
+_CUDA_DEVICE_LIST = re.compile(
+    r"(?:-?\d+|GPU-[A-Fa-f0-9-]+|MIG-GPU-[A-Fa-f0-9-]+/\d+/\d+)"
+    r"(?:,(?:-?\d+|GPU-[A-Fa-f0-9-]+|MIG-GPU-[A-Fa-f0-9-]+/\d+/\d+))*"
 )
-
-# ชื่อที่ห้ามแม้จะขึ้นต้นถูกตระกูล — secret ห้ามมาจาก LLM หรือจากไฟล์แคตตาล็อก (กฎข้อ 4)
-# ตัวอย่างที่โดน: HF_HUB_TOKEN ผ่าน prefix HF_HUB_ แต่เป็น secret เต็มตัว
-_SECRETISH = ("TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
-
-# ชื่อ env จริงเป็นตัวพิมพ์ใหญ่/ตัวเลข/ขีดล่างเท่านั้น — กันชื่อแปลก ๆ ที่ไปโผล่ใน docker -e
-_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_TORCH_ARCH_LIST = re.compile(r"\d+(?:\.\d+)?[a-z]?(?:\+PTX)?(?:[ ;]+\d+(?:\.\d+)?[a-z]?(?:\+PTX)?)*")
+_SAFE_HCA_LIST = re.compile(r"^[A-Za-z0-9_=^,.:+-]+$")
 
 
-def is_allowed_env(name: str) -> bool:
-    if not _ENV_NAME.match(name or ""):
+def is_allowed_env(engine: Engine, name: str) -> bool:
+    return name in _ENV_BY_ENGINE[engine]
+
+
+def _is_allowed_env_value(name: str, value: str) -> bool:
+    if not value or "\n" in value or "\r" in value or "\x00" in value:
         return False
-    if any(word in name for word in _SECRETISH):
-        return False
-    return name.startswith(ENV_PREFIXES)
+    if name in _BOOL_ENV:
+        return value in {"0", "1"}
+    if name == "OMP_NUM_THREADS":
+        return value.isdigit() and int(value) > 0
+    if name == "VLLM_FLASHINFER_ALLREDUCE_BACKEND":
+        return value in {"auto", "trtllm", "mnnvl"}
+    if name == "VLLM_NVFP4_GEMM_BACKEND":
+        return value in _NVFP4_GEMM_BACKENDS
+    if name == "CUDA_VISIBLE_DEVICES":
+        return bool(_CUDA_DEVICE_LIST.fullmatch(value))
+    if name == "TORCH_CUDA_ARCH_LIST":
+        return bool(_TORCH_ARCH_LIST.fullmatch(value))
+    if name == "NCCL_IB_HCA":
+        return bool(_SAFE_HCA_LIST.fullmatch(value))
+    # เพิ่มชื่อเข้า allowlist แต่ลืมเพิ่ม validator ต้อง fail closed
+    return False
 
 
-def split_env(env: dict[str, str]) -> tuple[dict[str, str], list[str]]:
-    """แยก env ที่ยอมรับได้ ออกจากชื่อที่ต้องถูกปฏิเสธ — คืน (ที่ผ่าน, ชื่อที่ถูกตัด)"""
+def split_env(engine: Engine, env: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """แยก env ที่ผ่าน exact per-engine allowlist และ value validator"""
     allowed: dict[str, str] = {}
     rejected: list[str] = []
     for name, value in (env or {}).items():
-        # ค่าที่มีขึ้นบรรทัดใหม่แทรก -e ตัวถัดไปได้เมื่อมีใครเอาไปต่อสตริง — ตัดทิ้งตั้งแต่ต้นทาง
-        if is_allowed_env(name) and "\n" not in str(value) and "\r" not in str(value):
-            allowed[name] = str(value)
+        text = str(value)
+        if is_allowed_env(engine, name) and _is_allowed_env_value(name, text):
+            allowed[name] = text
         else:
             rejected.append(name)
     return allowed, sorted(rejected)

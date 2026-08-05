@@ -340,14 +340,12 @@
 
 ### Security
 
-- **`extra_env` ผ่าน allowlist แล้ว** — เดิม `harden_plan()` ไม่แตะ `extra_env` เลย ทั้งที่
+- **`extra_env` ผ่าน exact per-engine allowlist + value validator แล้ว** — เดิม `harden_plan()` ไม่แตะ `extra_env` เลย ทั้งที่
   ค่านี้ไหลเข้า `docker -e` ตรง ๆ · env มีอำนาจ**มากกว่า** flag: `LD_PRELOAD` โหลด `.so`
   เข้าโปรเซส · `PYTHONPATH` แทรกโมดูลทับของจริง · `PATH` สลับ binary — ทั้งหมดคือการรันโค้ด
   ใน container ซึ่งกฎข้อ 2 จัดไว้กลุ่มเดียวกับไฟล์ runtime ภายนอก
-  · รับเฉพาะ**ตระกูลที่ engine เป็นเจ้าของ** (`VLLM_`, `NCCL_`, `FLASHINFER_`, `GGML_` ฯลฯ)
-  ไม่ใช่ลิสต์ชื่อทีละตัว เพราะ env ของ engine เกิดใหม่แทบทุกเวอร์ชัน — ลิสต์ชื่อจะล้าสมัยทันที
-  · ปฏิเสธชื่อที่มี `TOKEN`/`KEY`/`SECRET`/`PASSWORD` **แม้จะขึ้นต้นถูกตระกูล** (กฎข้อ 4 —
-  `HF_HUB_TOKEN` ผ่าน prefix `HF_HUB_` ได้ถ้าไม่มีข้อนี้) และค่าที่มีขึ้นบรรทัดใหม่
+  · prefix กว้างถูกห้าม: `NCCL_ENV_PLUGIN`/`NCCL_NET_PLUGIN` โหลด `.so` ได้
+  และ `VLLM_ALLOW_INSECURE_SERIALIZATION` เปิด pickle · env ใหม่จึงต้องเพิ่มชื่อ+validator+negative test ผ่าน code review
   · **ไม่มีทาง "อนุมัติ" ให้ผ่าน** ต่างจากไฟล์ runtime ที่ตรวจ URL+SHA ได้ — env ไม่มีอะไรให้ตรวจ
   จึงปฏิเสธไปเลยดีกว่าเปิดช่องให้กดผ่าน (ตั้งเองบนเครื่องยังทำได้ตามปกติ)
 

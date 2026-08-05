@@ -65,11 +65,10 @@ Options:
    - โหมด `--yes`/non-interactive → ไม่ prompt, fail พร้อมข้อความบอกวิธีตั้ง token
 2. **ขั้นยืนยันแผน** — แสดงตารางสรุป (model/revision, runtime+image digest, topology, context, VRAM/memory budget, feature ที่เปิด, คำเตือน, facts ที่เป็น `unverified`) ให้ผู้ใช้ ยืนยัน / แก้ค่า / ยกเลิก
 3. **Extra flags จาก LLM ที่อยู่นอก allowlist** — แสดงเป็นรายการแยกสีเตือน ต้องกดยืนยันรายตัว
-3b. **env (`extra_env`) ไม่มีขั้นอนุมัติ — ตัวที่ไม่ผ่าน allowlist ถูกตัดทิ้งพร้อมเหตุผล** ·
-   รับเฉพาะตระกูลที่ engine เป็นเจ้าของ (`VLLM_`/`NCCL_`/`FLASHINFER_`/`TORCH_`/`CUDA_`/
-   `OMP_`/`GGML_`/`LLAMA_` ฯลฯ) · ปฏิเสธ `LD_*`/`PATH`/`PYTHONPATH`/`BASH_ENV` และชื่อที่มี
-   `TOKEN`/`KEY`/`SECRET`/`PASSWORD` แม้จะขึ้นต้นถูกตระกูล · ไฟล์ runtime ภายนอกมีขั้นอนุมัติ
-   เพราะตรวจ URL+SHA ได้ ส่วน env ไม่มีอะไรให้ตรวจ จึงปฏิเสธไปเลย
+3b. **env (`extra_env`) ไม่มีขั้นอนุมัติ — ตัวที่ไม่ผ่าน exact per-engine allowlist
+   หรือ value validator ถูกตัดทิ้งพร้อมเหตุผล** · prefix เช่น `NCCL_`/`VLLM_`
+   ไม่ใช่ security boundary เพราะมีตัวแปรที่โหลด plugin/config/pickle ได้ · ไฟล์ runtime ภายนอก
+   มีขั้นอนุมัติเพราะตรวจ URL+SHA ได้ ส่วน env ไม่มีหลักฐานพอให้อนุมัติหน้างาน
 4. **Exit codes**: `0` สำเร็จ, `2` validation ไม่ผ่านหลังวนแก้ครบ N รอบ, `3` โมเดลไม่ fit กับ target, `4` ต้องการ token/สิทธิ์, `5` provider/network error
 5. **Topology มาจาก target (ไม่มี flag แยก)** — เป็นสมบัติของเครื่องเป้าหมาย ไม่ใช่การตัดสินใจของ LLM · `dgx-spark-stacked` → `stacked` (multi-node controller: worker-first + sync/verify-worker), `rtx-*-dual`/`*-multi` → `multi-gpu` (tensor parallel ในเครื่อง), นอกนั้น → `single` · harden จะบังคับ topology กลับตาม target เสมอ · stacked ต้องใช้ vLLM (GGUF+stacked ถูกปฏิเสธ) · **`--topology both` (สร้าง single+stacked พร้อมกัน) = งานเฟสถัดไป**
 

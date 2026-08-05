@@ -169,16 +169,17 @@ def _harden_env(plan: DeploymentPlan) -> None:
     ภายนอกตามกฎข้อ 2 · ต่างกันตรงที่ไฟล์ runtime มีทางให้ผู้ใช้อนุมัติเพราะตรวจ URL+SHA ได้
     ส่วน env ไม่มีอะไรให้ตรวจ จึงปฏิเสธไปเลยดีกว่าเปิดช่องให้กดผ่าน
 
-    ตัวที่ engine เป็นเจ้าของจริง (VLLM_*, NCCL_*, FLASHINFER_* ฯลฯ) ผ่านได้ตามปกติ
-    เพราะเป็นสิ่งที่สูตรที่รันผ่านจริงต้องใช้
+    รับเฉพาะชื่อที่ review แล้วสำหรับ engine นั้น และค่าที่ผ่าน validator;
+    prefix เดียวไม่พอเพราะ NCCL_/VLLM_ มีตัวแปรที่โหลด plugin/pickle ได้
     """
     from .allowlists import split_env
 
-    allowed, rejected = split_env(plan.serving.extra_env)
+    allowed, rejected = split_env(plan.runtime.engine, plan.serving.extra_env)
     plan.serving.extra_env = allowed
     if rejected:
         plan.warnings.append(
-            "ตัด env ที่ไม่ใช่ตัวแปรของ engine ออก (ตั้งเองบนเครื่องได้ถ้าจำเป็น): "
+            "ตัด env ที่ไม่ผ่าน per-engine allowlist/value check "
+            "(ตั้งเองบนเครื่องได้ถ้าจำเป็น): "
             + ", ".join(rejected)
         )
 
