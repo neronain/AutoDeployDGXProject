@@ -48,9 +48,9 @@ err_console = Console(stderr=True)
 def _working(label: str):
     """บอกว่ากำลังทำอะไรอยู่ระหว่างรอ
 
-    ขั้นตอนพวกนี้เงียบได้ตั้งแต่ 3 วินาทีถึงเป็นนาที (อ่าน metadata จาก Hub, เรียก LLM,
-    รัน gates) ผู้ใช้แยกไม่ออกว่าค้างหรือกำลังทำงาน — เคสจริงคือ inspect โมเดลใหญ่
-    เงียบ 11 วินาทีแล้วมีคน Ctrl-C ทิ้ง
+    ขั้นตอนพวกนี้อาจเงียบอยู่นาน (อ่าน metadata จาก Hub, เรียก LLM, รัน gates)
+    ผู้ใช้แยกไม่ออกว่าค้างหรือกำลังทำงาน — มีรายงานว่า inspect โมเดลใหญ่ถูก Ctrl-C
+    เพราะผู้ใช้คิดว่าค้าง
 
     ออก stderr และเงียบสนิทเมื่อไม่ได้ต่อ terminal — `lmds plan --json` ต้อง pipe ต่อได้
     โดยไม่มีอะไรปน และบาง shell/CI รวม stderr เข้า stdout ให้เอง การเงียบจึงปลอดภัยกว่า
@@ -893,7 +893,7 @@ def _build_plan_safe(report, fit, provider):
 
     if provider is not None:
         try:
-            with _working(f"ให้ {provider.name} ({provider.model}) วางแผน — รอบละหลายสิบวินาที"):
+            with _working(f"ให้ {provider.name} ({provider.model}) วางแผน — อาจใช้เวลานาน"):
                 return build_plan(report, fit, provider)
         except (PlanError, ProviderError) as exc:
             err_console.print(f"[yellow]LLM ใช้ไม่ได้: {exc}[/yellow]")

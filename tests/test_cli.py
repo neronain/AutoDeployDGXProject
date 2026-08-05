@@ -317,7 +317,7 @@ def test_working_shows_label_on_a_real_terminal(monkeypatch):
     """บนหน้าจอจริงต้องเปิด status ด้วย label ที่ส่งมา
 
     อย่าจับ output ของ Rich Live โดยตรง: งานที่จบก่อน refresh tick อาจไม่ paint เลย
-    (ถูกต้องสำหรับ UI) และพฤติกรรมนี้ต่างกันระหว่าง Rich 13–15 ที่ project รองรับ
+    (ถูกต้องสำหรับ UI) จึงต้องทดสอบการเรียก API ไม่ผูกกับจังหวะ repaint ของ Rich
     """
     from contextlib import contextmanager
     from lmds.cli import main as cli_main
