@@ -350,3 +350,50 @@ def test_node_ctl_runs_the_bundle_controller(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "bundles/my-model" in seen["cmd"]
     assert "start --gpu-util 0.8" in seen["cmd"]
+
+
+def test_virtual_nic_without_device_link_is_still_reported(tmp_path, monkeypatch):
+    """NIC เสมือน (VM/cloud) ไม่มี /sys/class/net/<if>/device — เดิมข้ามทิ้งทั้งใบ
+    เครื่องแบบนั้นจึงรายงานว่า "ไม่มีเครือข่ายเลย" ทั้งที่มี IP อยู่
+    (เจอจริงบน OrbStack VM ที่จะใช้เป็น controller)"""
+    net = tmp_path / "sys/class/net/eth0"
+    net.mkdir(parents=True)
+    (net / "speed").write_text("10000")
+    (net / "operstate").write_text("up")
+    (tmp_path / "sys/class/net/lo").mkdir(parents=True)
+
+    real_path = profiler.Path
+
+    class FakePath(type(real_path())):
+        def __new__(cls, *args):
+            text = str(args[0]) if args else ""
+            return real_path(str(tmp_path) + text) if text.startswith("/sys/") else real_path(*args)
+
+    monkeypatch.setattr(profiler, "Path", FakePath)
+    monkeypatch.setattr(profiler, "_run", lambda *a, **k:
+                        "2: eth0    inet 192.168.139.92/24 brd 192.168.139.255 scope global\n")
+
+    fabric = profiler.detect_fabric()
+    assert [l["iface"] for l in fabric["links"]] == ["eth0"]
+    assert fabric["links"][0]["ip"] == "192.168.139.92"
+    assert fabric["best_gbps"] == 10
+
+
+def test_docker_and_bridge_interfaces_are_ignored(tmp_path, monkeypatch):
+    """docker0/veth/br- ไม่ใช่ทางออกจริงของเครื่อง — รกและทำให้เลือก cluster IP ผิด"""
+    for name in ("docker0", "veth1234", "br-abc"):
+        d = tmp_path / "sys/class/net" / name
+        d.mkdir(parents=True)
+        (d / "speed").write_text("10000")
+        (d / "operstate").write_text("up")
+
+    real_path = profiler.Path
+
+    class FakePath(type(real_path())):
+        def __new__(cls, *args):
+            text = str(args[0]) if args else ""
+            return real_path(str(tmp_path) + text) if text.startswith("/sys/") else real_path(*args)
+
+    monkeypatch.setattr(profiler, "Path", FakePath)
+    monkeypatch.setattr(profiler, "_run", lambda *a, **k: "")
+    assert profiler.detect_fabric()["links"] == []

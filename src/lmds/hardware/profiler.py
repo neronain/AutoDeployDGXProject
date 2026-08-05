@@ -247,7 +247,10 @@ def detect_fabric() -> dict:
     links = []
     for iface in sorted(net.iterdir()):
         name = iface.name
-        if name == "lo" or (iface / "device").exists() is False:
+        # NIC เสมือน (VM/cloud) ไม่มี symlink device/ — เดิมข้ามทิ้งทั้งใบ ทำให้เครื่องแบบนั้น
+        # รายงานว่า "ไม่มีเครือข่ายเลย" ทั้งที่มี IP อยู่ · ข้ามเฉพาะ loopback กับ virtual bridge
+        # ที่ไม่ใช่ทางออกจริงก็พอ
+        if name == "lo" or name.startswith(("docker", "br-", "veth", "virbr", "cni", "flannel")):
             continue
         driver = ""
         try:
@@ -299,7 +302,9 @@ def detect_fabric() -> dict:
         summary = f"{fastest['iface']} {best}G — เร็วไม่พอสำหรับ stacked ให้รันแยกเครื่อง"
 
     return {
-        "links": [l for l in links if l["connectx"] or l["speed_gbps"]],
+        # เก็บลิงก์ที่ "มีความหมาย" ไว้ทั้งหมด: การ์ดจริง หรือรู้ความเร็ว หรืออย่างน้อยมี IP
+        # เครื่อง controller บน VM มีแต่ eth0 ที่ไม่มี device/ — ถ้ากรองทิ้งจะดูเหมือนเครื่องพัง
+        "links": [l for l in links if l["connectx"] or l["speed_gbps"] or l["ip"]],
         "rdma_devices": rdma_devices,
         "best_gbps": best,
         "tier": tier,
