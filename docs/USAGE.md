@@ -131,6 +131,9 @@ cd bundles/qwen3-0-6b-gguf
 > (deploy → download → verify-files → prepare-runtime ถ้าจำเป็น → start → test-text)
 > แล้วบอกวิธีต่อ client ให้ · ล้มขั้นไหนหยุดตรงนั้นพร้อมบอกว่าดูต่อที่ไหน
 > · stacked ยังต้องใช้ `lmds deploy` แล้วทำตาม README ของ bundle
+>
+> **แค่อยากรู้ว่ารันได้จริงไหม ไม่ต้องการให้ค้างไว้?** `lmds up <ลิงก์> --smoke`
+> รัน test ทุกตัวที่ bundle มีแล้ว `stop` ให้ — ดู §4.7
 
 | คำสั่ง | หน้าที่ |
 |---|---|
@@ -639,6 +642,41 @@ gguf  gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf 25.7 GB               ~/models/gemma4-2
 > ถ้าไม่ตั้งให้ตรง vLLM ในคอนเทนเนอร์จะฟ้อง `LocalEntryNotFoundError` ทั้งที่ `verify-files`
 > เพิ่งบอกว่าไฟล์ครบ — เป็นอาการที่ไล่สาเหตุยากมากถ้าไม่รู้ว่ามีสองเลย์เอาต์
 
+## 4.7 พิสูจน์ว่ารันได้จริง — `lmds smoke`
+
+`lmds validate` บอกได้แค่ว่า **สคริปต์ถูกต้อง** — bundle ที่ผ่านทุก gate จึงเป็น
+`static-validated` เสมอ ไม่ได้แปลว่าโมเดลโหลดขึ้นจริงบนเครื่องนี้
+
+```bash
+lmds smoke qwen3-8b            # bundle ที่ deploy ไว้แล้ว
+lmds up <ลิงก์> --smoke         # deploy ใหม่แล้วทดสอบเลยในคำสั่งเดียว
+```
+
+เดินให้ตามลำดับนี้แล้ว **`stop` ให้ตอนจบ** (ไม่ทิ้งเซิร์ฟเวอร์ค้างกินหน่วยความจำ):
+
+```text
+download → verify-files → [prepare-runtime] → start (รอ /health) → test ทุกตัวที่ bundle มี → stop
+```
+
+ผ่านครบทุกขั้น = **`hardware-validated`** · ดูสถานะได้ที่ `lmds doctor <ชื่อ>`
+
+| | ตรวจอะไร | ได้สถานะอะไร |
+|---|---|---|
+| `lmds validate` | สคริปต์ถูกต้อง (10 gates, ไม่ต้องมี GPU) | `static-validated` |
+| `lmds smoke` | โมเดลโหลดขึ้นและตอบได้จริงบนเครื่องนี้ | `hardware-validated` |
+
+- **test ที่รันมาจาก bundle จริง ไม่ใช่รายการตายตัว** — llama.cpp มีแค่ `test-text` ส่วน vLLM
+  มี `test-reasoning`/`test-tools` เมื่อ plan เปิดไว้ · สั่ง test ที่ bundle ไม่มี controller จะตอบ
+  help แล้ว exit 0 = **รายงานว่าผ่านทั้งที่ไม่เคยทดสอบอะไร**
+- **แก้ controller ทีหลัง สถานะตกกลับเอง** — ผลผูกกับ sha256 ของสคริปต์ที่รันจริง
+  ไม่ต้องมีใครไปจำว่าเคยแก้อะไรไว้
+- ผลอยู่ที่ `~/.lmds/run/<ชื่อ>/smoke.json` **ไม่ได้อยู่ในโฟลเดอร์ bundle** — เพราะ
+  `hardware-validated` เป็นคุณสมบัติของ (bundle × เครื่อง) ส่ง ZIP ไปเครื่องอื่นแล้ว
+  สถานะต้องไม่ตามไปด้วย ต้องรัน `lmds smoke` บนเครื่องนั้นเอง
+
+> ใช้ตอนไหนคุ้มที่สุด: หลังอัปเดต driver/Docker, หลัง `lmds repair`, หรือก่อนส่งมอบให้ลูกค้า
+> — คำสั่งเดียวตอบได้ว่าเครื่องนี้ยังรันโมเดลตัวนี้ได้อยู่ไหม
+
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
 สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**
@@ -706,6 +744,7 @@ lmds inspect Qwen/Qwen3-32B --json                   # ผลวิเครา�
 lmds generate ...                                    # เหมือน deploy แต่ไม่มีขั้นยืนยัน
 lmds validate bundles/qwen3-32b                      # ตรวจ bundle ย้อนหลัง (เช็คว่าไม่มีใครแก้ไฟล์)
 lmds validate bundles/qwen3-32b --fix                # regenerate checksum หลังตั้งใจแก้ไฟล์เอง
+lmds smoke qwen3-32b                                 # รันจริงบนเครื่องนี้แล้ว stop ให้ (ดู §4.7)
 lmds hardware                                        # ตรวจเครื่อง (GPU/RAM/ดิสก์/Docker/profile)
 lmds scan                                            # โมเดลที่มีอยู่แล้วบนเครื่อง (ทุกที่เก็บ)
 lmds scan --all                                      # ค้นทุกเครื่องในทะเบียนด้วย

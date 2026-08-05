@@ -121,7 +121,17 @@ lmds disable {{ slug }}         # ยกเลิก
 
 - **{{ validation_status }}**
 - static validation: `bash -n` + LMDS quality gates ผ่านแล้ว
-- hardware validation: {{ "ผ่านแล้ว" if hardware_validated else "ยังไม่ได้รันบนเครื่องจริง — สถานะจะอัปเดตเมื่อรัน acceptance tests" }}
+- hardware validation: {{ "ผ่านแล้ว" if hardware_validated else "ยังไม่ได้รันบนเครื่องจริง" }}
+{% if not hardware_validated %}
+พิสูจน์บนเครื่องนี้ด้วยคำสั่งเดียว — เดิน acceptance ทั้งลำดับให้แล้ว stop ให้ตอนจบ:
+
+```bash
+lmds smoke {{ slug }}
+```
+
+ผ่านครบทุกขั้น = `hardware-validated` · ผลผูกกับ sha256 ของ controller ตัวนี้
+แก้สคริปต์ทีหลังแล้วสถานะตกกลับเป็น `static-validated` เอง · ดูสถานะได้ที่ `lmds doctor {{ slug }}`
+{% endif %}
 
 {% if plan.warnings %}## Warnings จากขั้นวางแผน
 

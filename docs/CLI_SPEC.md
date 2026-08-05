@@ -20,6 +20,8 @@ lmds scan [--root DIR] [--all] [--json]    # หา weight ที่มีอย
 lmds recipes [MODEL]                       # สูตรที่รันผ่านจริง — ใช้แทน LLM เมื่อไม่มี API key
 lmds prune [-y]                            # ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้ว
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
+lmds smoke <SLUG>                          # รันจริงบนเครื่องนี้: download → verify → start/health
+                                           #   → test ทุกตัวที่ bundle มี → stop · ผ่านหมด = hardware-validated
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
 lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
 lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
@@ -131,6 +133,8 @@ Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 
 ```text
 lmds up <ลิงก์> [--target ...] [-y]   # deploy แล้วเดินต่อจนเซิร์ฟเวอร์ตอบได้ (ไม่ใช่ stacked)
+lmds up <ลิงก์> --smoke               # เหมือนข้างบนแต่รัน test ทุกตัวแล้ว stop ให้ (ไม่ทิ้งค้างไว้)
+lmds smoke <slug>                     # รัน acceptance เต็มกับ bundle ที่มีอยู่แล้ว → hardware-validated
 lmds ps                       # เครื่อง + โมเดลที่รัน/เคยรัน + สถานะจริง + endpoint
 lmds list                     # bundle ทั้งหมด + สถานะ (●/◐/○/⚠) + engine/port/context/feature + autostart
 lmds start <slug> [flag...]   # start ตามชื่อ (ไม่ต้อง cd ไป bundle) · flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller
@@ -246,12 +250,40 @@ gguf  gemma-4-26B-A4B-it-UD-Q8.gguf     25.7 GB    —   ~/models/…
 - เลย์เอาต์ `root` (`$HF_HOME/models--X` ไม่มี `hub/`) ไลบรารีของ HF จะมองไม่เห็นถ้าไม่ตั้ง
   `HF_HUB_CACHE` ให้ตรง — **stacked controller ตั้งให้เองตอน start แล้ว ไม่ต้องย้ายไฟล์**
 
+## `lmds smoke <slug>`
+
+รัน acceptance เต็มลำดับบนเครื่องนี้แล้ว `stop` ให้ — **ทางเดียว**ที่ bundle จะเป็น
+`hardware-validated` ได้ (กฎข้อ 3: ห้ามอ้างโดยไม่ได้รันจริง)
+
+```text
+download → verify-files → [prepare-runtime] → start (รอ /health) → test-* ทุกตัวที่มี → stop
+```
+
+- **`test-*` อ่านจาก dispatch ของ controller จริง** ไม่ใช่รายการที่ hardcode ไว้ — แต่ละ bundle
+  มีไม่เท่ากัน (llama.cpp มีแค่ `test-text` · vLLM มี `test-reasoning`/`test-tools` เมื่อ plan เปิดไว้)
+  · ถ้า hardcode ไว้ controller จะตอบ usage แล้ว exit 0 = **รายงานว่าผ่านทั้งที่ไม่เคยทดสอบ**
+  · test ที่เพิ่มเข้า template ทีหลังถูกรันเองโดยไม่ต้องกลับมาแก้
+- **`stop` รันเสมอเมื่อ start ไปแล้ว** แม้ test จะตก — ไม่งั้นเซิร์ฟเวอร์ค้างกินหน่วยความจำ
+  แล้ว smoke รอบถัดไปชน port ตัวเอง จนดูเหมือน "โมเดลนี้รันไม่ได้"
+- **`prepare-runtime` ใส่ให้เฉพาะ native build** — ดูจาก `RUNTIME_MODE` ที่ render ลงสคริปต์
+  ไม่ใช่จากการมี dispatch case (template ใส่ case นั้นไว้ทุก mode)
+
+ผลเก็บที่ `~/.lmds/run/<slug>/smoke.json` — **ไม่ใช่ในโฟลเดอร์ bundle** เพราะสองเหตุผล:
+เพิ่มไฟล์ในนั้นทำให้ gate `checksums` ตกทันที · และ `hardware-validated` เป็นคุณสมบัติของ
+(bundle × เครื่อง) ไม่ใช่ของ bundle เดี่ยว ๆ — ส่ง ZIP ไปเครื่องอื่นแล้วสถานะต้องไม่ตามไปด้วย
+
+**สถานะถูกเพิกถอนเองเมื่อ controller เปลี่ยน** — ผลผูกกับ sha256 ของสคริปต์ที่รัน ใครแก้
+context/flag ทีหลัง `lmds doctor` จะกลับไปรายงาน `static-validated` โดยไม่ต้องมีใครไปจำ
+
+Exit codes: 0 ผ่านครบ · นอกนั้นคือ exit code ของขั้นที่ตก
+
 ## `lmds doctor <slug>`
 
 ตรวจว่าทำไมโมเดลยัง download/start ไม่ผ่าน แล้วบอกคำสั่งแก้ — คำนวณล้วน ไม่ใช้ LLM
 
 ตรวจ: `bundle` · `hf-token` (gated แต่ไม่มี `HF_TOKEN`) · `weights` (รวม mmproj และไฟล์ 0 ไบต์) ·
-`permissions` · `disk` · `docker` · `runtime-image` · `port` (บอกชื่อโมเดลที่ยึดอยู่) · `server`
+`permissions` · `disk` · `docker` · `runtime-image` · `port` (บอกชื่อโมเดลที่ยึดอยู่) · `server` ·
+`validation` (static- หรือ hardware-validated — ดู `lmds smoke`)
 
 Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มีข้อที่ต้องแก้
 
@@ -337,11 +369,16 @@ src/lmds/
 ├── validator/           # gates.py — quality gates ทั้ง 10 ด่านรวมอยู่ไฟล์เดียว
 ├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit
 ├── nodes/               # registry.py (nodes.yaml), ssh.py (key/probe/run), cluster.py (จับคู่ stacked)
+├── doctor/              # checks.py — วินิจฉัยว่าทำไม start/download ไม่ผ่าน (คำนวณล้วน)
+├── smoke/               # __init__.py — รัน acceptance จริง + สถานะ hardware-validated ที่เพิกถอนเองได้
+├── recipes/             # __init__.py + catalog.yaml — สูตรที่รันผ่านจริง (ใช้แทน LLM ได้)
+├── web/                 # api.py (FastAPI), state.py, jobs.py, deploy.py, daemon.py, static/index.html
 ├── inventory.py         # payload ชุดเดียวที่หน้าเว็บและ `lmds agent info` ใช้ร่วมกัน
+├── scanner.py           # หา weight ที่มีอยู่แล้วบนเครื่อง (อ่านอย่างเดียว)
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 └── secrets/             # store.py (env/keyring/file), redact.py
-tests/                   # ~22 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/
+tests/                   # ~31 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/
 ```
 
-> ยังไม่มี: `.github/workflows` (CI), `tests/fixtures/` สำหรับ regression เทียบ controllers v3.0.0,
+> ยังไม่มี: `tests/fixtures/` สำหรับ regression เทียบ controllers v3.0.0,
 > template registry แบบไฟล์ data (image digest ยัง hardcode ในโค้ด)

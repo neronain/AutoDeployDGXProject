@@ -262,6 +262,21 @@ def _check_server(server: ServerInfo) -> list[Finding]:
                     f"lmds logs {server.slug} -f")]
 
 
+def _check_validation(server: ServerInfo) -> list[Finding]:
+    """bundle นี้เคยรันผ่านจริงบนเครื่องนี้หรือยัง — ไม่ใช่ปัญหา แต่เป็นข้อเท็จจริงที่ต้องรู้
+
+    ไม่เคยเป็น FAIL: `static-validated` ไม่ใช่อาการเสีย แค่ยังไม่มีหลักฐานว่ารันได้
+    """
+    from lmds.smoke import STATUS_HARDWARE, validation_status
+
+    controller = server.controller if server.controller_exists else None
+    status, reason = validation_status(server.slug, controller)
+    if status == STATUS_HARDWARE:
+        return [Finding("validation", Status.OK, f"{status} — {reason}")]
+    return [Finding("validation", Status.OK, f"{status} — {reason}",
+                    f"พิสูจน์บนเครื่องนี้: lmds smoke {server.slug}")]
+
+
 def _check_controller(server: ServerInfo) -> list[Finding]:
     if server.controller_exists:
         return [Finding("bundle", Status.OK, server.controller)]
@@ -297,4 +312,5 @@ def diagnose(slug: str) -> Diagnosis:
 
     result.findings.extend(_check_port(server))
     result.findings.extend(_check_server(server))
+    result.findings.extend(_check_validation(server))
     return result

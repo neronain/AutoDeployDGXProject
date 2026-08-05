@@ -1452,11 +1452,18 @@ def up(
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (ไม่อนุมัติ flag ค้าง)"),
+    smoke: bool = typer.Option(
+        False, "--smoke",
+        help="โหมดทดสอบ: รัน test ทุกตัวที่ bundle มี แล้ว stop ให้ — ไม่ทิ้งเซิร์ฟเวอร์ค้างไว้",
+    ),
 ) -> None:
     """ลิงก์เดียวจบ: deploy → download → verify → start → ทดสอบ แล้วบอกวิธีต่อ client
 
     `lmds deploy` หยุดที่ bundle แล้วให้ผู้ใช้ไปพิมพ์ต่ออีก 4-5 คำสั่งตามลำดับที่ถูกต้อง
     ซึ่งเป็นจุดที่คนใช้ครั้งแรกหลุดบ่อยที่สุด — คำสั่งนี้เดินให้จนเซิร์ฟเวอร์ตอบได้จริง
+
+    `--smoke` เปลี่ยนเป็นโหมดทดสอบ: รัน test ทุกตัวที่ bundle มี แล้ว stop ให้ —
+    ใช้ตอนอยากรู้แค่ว่า "รันได้จริงไหม" โดยไม่ทิ้งเซิร์ฟเวอร์ค้างไว้กินหน่วยความจำ
 
     stacked (หลายเครื่อง) ยังต้องใช้ `lmds deploy` แล้วทำตาม README ของ bundle
     เพราะมีขั้น sync-worker/verify-worker ที่ต้องตัดสินใจเรื่องเครื่องปลายทาง
@@ -1486,6 +1493,9 @@ def up(
         )
         return
 
+    if smoke:
+        raise typer.Exit(code=_run_smoke(controller, slug))
+
     steps = list(_UP_STEPS)
     # llama.cpp บน ARM64 ไม่มี image ทางการ ต้อง build เองก่อนหนึ่งครั้ง
     # ดูจาก RUNTIME_MODE ที่ render ลงสคริปต์ ไม่ใช่จากการมีคำสั่ง prepare-runtime
@@ -1509,6 +1519,88 @@ def up(
     console.print(f"  ค่าต่อ client:        [cyan]{controller} client-config[/cyan]")
     console.print(f"  ต่อ Claude Code:     [cyan]lmds connect {slug}[/cyan]")
     console.print(f"  ดูสถานะ/หยุด:        [cyan]lmds ps[/cyan] · [cyan]lmds stop {slug}[/cyan]")
+
+
+def _render_smoke(record) -> None:
+    from lmds.smoke import STATUS_HARDWARE
+
+    table = Table(title=f"Smoke test — {record.slug}")
+    table.add_column("#", justify="right")
+    table.add_column("ขั้น")
+    table.add_column("")
+    table.add_column("เวลา", justify="right")
+    for index, step in enumerate(record.steps, start=1):
+        table.add_row(
+            str(index),
+            f"{step.command}  [dim]{step.label}[/dim]",
+            "[green]ผ่าน[/green]" if step.ok else f"[red]ตก (exit {step.code})[/red]",
+            f"{step.seconds:.0f}s",
+        )
+    console.print(table)
+
+    if record.passed:
+        console.print(
+            f"\n[green]{STATUS_HARDWARE}[/green] — รันจริงบนเครื่องนี้ผ่านครบทุกขั้น "
+            f"({record.seconds:.0f} วินาที)"
+        )
+        if not record.stopped:
+            console.print("[yellow]แต่หยุดเซิร์ฟเวอร์ไม่สำเร็จ[/yellow] — ตรวจด้วย lmds ps")
+        return
+
+    failed = record.failed_step
+    where = failed.command if failed else "?"
+    err_console.print(
+        f"\n[red]smoke test ไม่ผ่าน — ตกที่ {where}[/red]\n"
+        f"  ดูสาเหตุ:  lmds doctor {record.slug}\n"
+        f"  ดู log:    lmds logs {record.slug}\n"
+        f"  ลองใหม่เฉพาะขั้นนี้:  {record.controller} {where}"
+    )
+
+
+def _run_smoke(controller: str, slug: str) -> int:
+    """เดิน acceptance เต็ม + stop แล้วสรุปผล — คืน exit code ของขั้นที่ตก (0 = ผ่านหมด)"""
+    from lmds.smoke import run_smoke
+
+    def announce(index: int, total: int, command: str, label: str) -> None:
+        console.print(f"\n[bold cyan][{index}/{total}] {label}[/bold cyan]  [dim]({command})[/dim]")
+
+    record = run_smoke(controller, slug, on_step=announce)
+    _render_smoke(record)
+    failed = record.failed_step
+    return failed.code if failed else 0
+
+
+@app.command()
+def smoke(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
+) -> None:
+    """ทดสอบว่า bundle ที่ deploy ไว้แล้ว *รันได้จริง* บนเครื่องนี้ แล้ว stop ให้
+
+    gates ทั้งหมดตรวจได้แค่ว่าสคริปต์ถูกต้อง — bundle จึงเป็น `static-validated` เสมอ
+    คำสั่งนี้เดิน download → verify → start/health → test ทุกตัวที่ bundle มี → stop
+    แล้วบันทึกผลไว้ · ผ่านครบ = `hardware-validated` (กฎข้อ 3: ห้ามอ้างโดยไม่ได้รันจริง)
+
+    ผลผูกกับ sha256 ของ controller ที่รัน — แก้สคริปต์ทีหลังแล้วสถานะตกกลับเองอัตโนมัติ
+
+    Exit code: 0 ผ่านหมด · นอกนั้นคือ exit code ของขั้นที่ตก
+    """
+    from lmds.fleet import find
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds list")
+        raise typer.Exit(code=1)
+    if not server.controller_exists:
+        err_console.print(
+            f"[red]ไม่พบไฟล์ controller ของ {slug}[/red] ({server.controller or 'ไม่ระบุ'}) — "
+            "bundle ถูกย้าย/ลบ · deploy ใหม่ก่อน"
+        )
+        raise typer.Exit(code=1)
+    if server.running:
+        console.print(
+            f"[yellow]{slug} รันอยู่ (port {server.port})[/yellow] — smoke จะ restart แล้วหยุดให้ตอนจบ"
+        )
+    raise typer.Exit(code=_run_smoke(server.controller, slug))
 
 
 @app.command()
