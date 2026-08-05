@@ -373,15 +373,21 @@ def create_app(token: str = "") -> FastAPI:
                 if not check_login(host, user, port):
                     raise HTTPException(status_code=422,
                                         detail={"kind": "key-failed", "message": "ติดตั้ง key แล้วแต่ยัง login ไม่ได้"})
-            info = probe(node)
+            # ยังไม่ได้ติดตั้ง LMDS บนเครื่องนั้นก็เพิ่มได้ — key ติดตั้งไปแล้ว ค่อยไปลงทีหลังได้
+            try:
+                info = probe(node)
+                reachable = True
+            except NodeError as exc:
+                info, reachable = {}, False
+                node.last_error = str(exc)[:200]
             node.lmds_version = (info.get("host") or {}).get("lmds_version", "")
-            node.last_seen = _timestamp()
+            node.last_seen = _timestamp() if reachable else ""
             add(node)
         except NodeError as exc:
             raise HTTPException(status_code=422, detail={"kind": "node", "message": str(exc)}) from exc
         finally:
             password = ""  # noqa: F841 — เคลียร์ทันที ไม่ให้ค้างในเฟรม
-        return {"name": node.name, "reachable": True, **info}
+        return {"name": node.name, "reachable": reachable, "error": node.last_error, **info}
 
     @app.delete("/api/nodes/{name}", dependencies=guarded)
     def node_remove(name: str) -> dict:

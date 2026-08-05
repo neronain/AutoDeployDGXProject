@@ -187,3 +187,23 @@ def test_detect_cpu_reports_cores():
     cpu = profiler.detect_cpu()
     assert cpu["cores"] and cpu["cores"] > 0
     assert cpu["percent"] is None or cpu["percent"] >= 0
+
+
+def test_add_registers_a_machine_without_lmds(monkeypatch):
+    """เครื่องที่ยังไม่ได้ลง LMDS ต้องเพิ่มเข้าทะเบียนได้ — ไม่งั้นวางลำดับกลับหัว
+    (key ติดตั้งไปแล้ว และ hub ใช้ node run สั่งติดตั้งต่อได้)"""
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+
+    monkeypatch.setattr("lmds.nodes.ensure_key", lambda: None)
+    monkeypatch.setattr("lmds.nodes.check_login", lambda *a, **k: True)
+    monkeypatch.setattr("lmds.nodes.probe",
+                        lambda node: (_ for _ in ()).throw(NodeError("ยังไม่ได้ติดตั้ง LMDS")))
+
+    result = CliRunner().invoke(app, ["node", "add", "10.0.0.5", "--user", "ops", "--name", "new"])
+    assert result.exit_code == 0, result.output
+    node = find("new")
+    assert node is not None
+    assert "ยังไม่ได้ติดตั้ง LMDS" in node.last_error
+    assert node.last_seen == ""  # ยังไม่เคยอ่านสถานะได้จริง

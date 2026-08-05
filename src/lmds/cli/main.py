@@ -158,11 +158,18 @@ def node_add(
                 raise typer.Exit(code=1)
             console.print("[green]ติดตั้ง key สำเร็จ[/green]")
 
-        info = probe(node)
+        # เครื่องที่ยังไม่ได้ติดตั้ง LMDS ต้องเพิ่มเข้าทะเบียนได้ — key ติดตั้งไปแล้ว
+        # และ hub ยังใช้ node run สั่งติดตั้งต่อได้ การบังคับให้ติดตั้งก่อนเป็นการวางลำดับกลับหัว
+        try:
+            info = probe(node)
+            reachable = True
+        except NodeError as exc:
+            info, reachable = {}, False
+            node.last_error = str(exc)[:200]
         host_info = info.get("host") or {}
         node.lmds_version = host_info.get("lmds_version", "")
-        node.last_seen = _now()
-        if not node.cluster_ip:
+        node.last_seen = _now() if reachable else ""
+        if reachable and not node.cluster_ip:
             # เสนอเฉย ๆ ไม่ตั้งให้เอง — เดา IP ผิดแล้ว stacked จะค้างตอน NCCL init โดยไม่บอกสาเหตุ
             suggestion = suggest_cluster_ip(host_info)
             if suggestion:
@@ -172,6 +179,17 @@ def node_add(
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
+
+    if not reachable:
+        console.print(f"\n[bold]เพิ่ม '{node.name}' แล้ว[/bold] — [yellow]แต่ยังอ่านสถานะไม่ได้[/yellow]")
+        err_console.print(node.last_error)
+        console.print(
+            f"\n[dim]SSH key ใช้ได้แล้ว — ติดตั้ง LMDS บนเครื่องนั้นได้เลย:[/dim]\n"
+            f"  ssh {node.target} 'git clone https://github.com/neronain/AutoDeployDGXProject "
+            f"&& cd AutoDeployDGXProject && ./install.sh'\n"
+            f"[dim]เสร็จแล้วเช็กด้วย: lmds node list --check[/dim]"
+        )
+        return
 
     gpus = ", ".join(g["name"] for g in host_info.get("gpus", [])) or "ไม่พบ GPU"
     console.print(
