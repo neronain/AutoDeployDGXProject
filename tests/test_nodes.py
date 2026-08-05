@@ -266,3 +266,47 @@ def test_node_run_passes_flags_through(monkeypatch):
     result = CliRunner().invoke(app, ["node", "run", "n1", "logs", "my-model", "-n", "100"])
     assert result.exit_code == 0, result.output
     assert seen["cmd"] == "lmds logs my-model -n 100"
+
+
+# ── ที่อยู่สำรอง (Tailscale/VPN) ─────────────────────────────────────────────
+def test_alt_hosts_are_tried_after_the_primary():
+    """เครื่องเดียวกันเข้าได้หลายทาง — LAN ตอนอยู่ออฟฟิศ, Tailscale ตอนออกนอก"""
+    node = make(host="10.0.0.5", alt_hosts=["100.64.0.5"])
+    assert node.all_hosts == ["10.0.0.5", "100.64.0.5"]
+
+
+def test_alt_host_duplicate_of_primary_is_dropped():
+    node = make(host="10.0.0.5", alt_hosts=["10.0.0.5", ""])
+    assert node.all_hosts == ["10.0.0.5"]
+
+
+def test_failover_only_happens_when_unreachable(monkeypatch):
+    """คำสั่งที่ล้มเพราะ exit code ของตัวมันเอง ต้องไม่ถูกยิงซ้ำที่อยู่สำรอง
+    ไม่งั้นคำสั่งที่มีผลข้างเคียงจะทำงานสองรอบ"""
+    from lmds.nodes import ssh
+
+    tried = []
+
+    def fake(target, port, wrapped, timeout):
+        tried.append(target)
+        return ssh.Result(1, "", "boom")   # ต่อได้ แต่คำสั่งล้ม
+
+    monkeypatch.setattr(ssh, "_run_ssh", fake)
+    ssh.run(make(host="a", alt_hosts=["b"]), "true")
+    assert tried == ["ops@a"]
+
+
+def test_failover_happens_on_timeout(monkeypatch):
+    from lmds.nodes import ssh
+
+    tried = []
+
+    def fake(target, port, wrapped, timeout):
+        tried.append(target)
+        if target.endswith("@a"):
+            return ssh.Result(124, "", "หมดเวลา 60s")
+        return ssh.Result(0, "ok", "")
+
+    monkeypatch.setattr(ssh, "_run_ssh", fake)
+    result = ssh.run(make(host="a", alt_hosts=["b"]), "true")
+    assert tried == ["ops@a", "ops@b"] and result.stdout == "ok"

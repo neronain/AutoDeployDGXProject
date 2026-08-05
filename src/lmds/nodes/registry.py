@@ -39,6 +39,13 @@ class Node:
     # NCCL ต้องยิงผ่านการ์ดเร็ว (ConnectX/200G) ไม่ใช่สายบริหารจัดการ
     cluster_ip: str = ""
     cluster_iface: str = ""
+    # ที่อยู่สำรองของ "เครื่องเดียวกัน" — เช่น Tailscale/VPN ที่ใช้ตอนออกนอกออฟฟิศ
+    # ต่างจากการเปลี่ยน host (= คนละเครื่อง) ตรงที่นี่คือทางเข้าอีกทางของเครื่องเดิม
+    alt_hosts: list[str] = field(default_factory=list)
+
+    @property
+    def all_hosts(self) -> list[str]:
+        return [self.host, *[h for h in self.alt_hosts if h and h != self.host]]
 
     @property
     def target(self) -> str:

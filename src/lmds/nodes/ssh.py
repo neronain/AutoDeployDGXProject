@@ -75,7 +75,32 @@ def run(node: Node, command: str, timeout: int = 60) -> Result:
     `~/.local/bin` จึงหาไม่เจอ ทั้งที่ login เข้าไปเองแล้วใช้ได้ปกติ
     """
     wrapped = f"bash -lc {shlex.quote(command)}"
-    args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port), node.target, wrapped]
+    # เครื่องเดียวกันอาจเข้าได้หลายทาง (LAN ตอนอยู่ออฟฟิศ, Tailscale ตอนออกนอก)
+    # ลองทีละทางจนกว่าจะติด — ล้มเพราะ "ต่อไม่ถึง" เท่านั้นที่ถือว่าควรลองทางถัดไป
+    hosts = getattr(node, "all_hosts", [node.host])
+    last: Result | None = None
+    for index, host in enumerate(hosts):
+        result = _run_ssh(f"{node.user}@{host}", node.port, wrapped, timeout)
+        if result.ok or not _looks_unreachable(result):
+            return result
+        last = result
+        if index + 1 < len(hosts):
+            continue
+    return last if last is not None else Result(255, "", "ไม่มีที่อยู่ให้ต่อ")
+
+
+def _looks_unreachable(result: Result) -> bool:
+    """แยก "ต่อไม่ถึง" ออกจาก "ต่อได้แต่คำสั่งล้ม" — อย่างหลังไม่ควรไปลองทางอื่นซ้ำ"""
+    if result.exit_code not in (124, 255):
+        return False
+    text = (result.stderr or "").lower()
+    markers = ("no route to host", "connection refused", "timed out", "หมดเวลา",
+               "could not resolve", "network is unreachable", "connection timed out")
+    return result.exit_code == 124 or any(m in text for m in markers) or not text
+
+
+def _run_ssh(target: str, port: int, wrapped: str, timeout: int) -> Result:
+    args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(port), target, wrapped]
     try:
         proc = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout,

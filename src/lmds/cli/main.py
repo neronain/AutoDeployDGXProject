@@ -448,8 +448,12 @@ def node_set(
     cluster_ip: Optional[str] = typer.Option(None, "--cluster-ip", help="IP บนสายเร็วที่ใช้ตอน stacked"),
     cluster_iface: Optional[str] = typer.Option(None, "--cluster-iface", help="ชื่อ interface ของสายเร็ว"),
     note: Optional[str] = typer.Option(None, "--note"),
+    alt_host: Optional[str] = typer.Option(
+        None, "--alt-host",
+        help="ที่อยู่สำรองของเครื่องเดียวกัน เช่น Tailscale (คั่นด้วย , ได้ · ว่าง = ลบทิ้ง)",
+    ),
 ) -> None:
-    """แก้ค่าของเครื่องในทะเบียน — cluster IP/interface และโน้ต
+    """แก้ค่าของเครื่องในทะเบียน — cluster IP/interface, ที่อยู่สำรอง และโน้ต
 
     เปลี่ยน host/user/port ไม่ได้ที่นี่โดยตั้งใจ: ที่อยู่เปลี่ยน = คนละเครื่อง ให้ remove แล้ว add ใหม่
     """
@@ -463,9 +467,12 @@ def node_set(
     changes = {k: v for k, v in
                (("cluster_ip", cluster_ip), ("cluster_iface", cluster_iface), ("note", note))
                if v is not None}
+    if alt_host is not None:
+        changes["alt_hosts"] = [h.strip() for h in alt_host.split(",") if h.strip()]
     if not changes:
         console.print(f"[bold]{node.name}[/bold] — {node.target}:{node.port}")
         console.print(f"cluster IP: {node.cluster_ip or '—'}  interface: {node.cluster_iface or '—'}")
+        console.print(f"ที่อยู่: {' → '.join(node.all_hosts)}")
         try:
             suggestion = suggest_cluster_ip(probe(node).get("host") or {})
         except NodeError:
@@ -480,7 +487,8 @@ def node_set(
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
-    console.print(f"อัปเดต '{node.name}' แล้ว — cluster IP: {node.cluster_ip or '—'}")
+    console.print(f"อัปเดต '{node.name}' แล้ว — cluster IP: {node.cluster_ip or '—'} · "
+                  f"ที่อยู่: {' → '.join(node.all_hosts)}")
 
 
 @node_app.command("cluster")
