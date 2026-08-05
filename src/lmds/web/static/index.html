@@ -1300,7 +1300,15 @@ async function refresh() {
   try {
     const [h, m] = await Promise.all([api("/api/host"), api("/api/models")]);
     if (h.status === 401) {
-      document.body.innerHTML = '<p style="text-align:center;margin-top:60px">A token is required — open the link that <code>lmds web</code> printed.</p>';
+      // token ผิดมักไม่ได้แปลว่า copy มาผิด แต่เป็นเพราะ server ที่เสิร์ฟอยู่คือคนละตัวกับที่
+      // เพิ่งพิมพ์ลิงก์ออกมา — บอกวิธีขอลิงก์ที่ถูกจากตัวที่รันอยู่จริงไปเลย
+      document.body.innerHTML =
+        '<div style="max-width:520px;margin:80px auto;text-align:center;line-height:1.7">' +
+        '<p style="font-size:17px;font-weight:600">Token ไม่ตรงกับหน้าเว็บที่รันอยู่</p>' +
+        '<p style="color:var(--muted)">ลิงก์นี้อาจมาจากรอบก่อน — เอาลิงก์ปัจจุบันได้จากคำสั่ง:</p>' +
+        '<p><code style="font-size:15px">lmds web --status</code></p>' +
+        '<p style="color:var(--muted);font-size:13px">อยากได้ token ใหม่: <code>lmds web --restart -b --bind 0.0.0.0</code></p>' +
+        '</div>';
       return;
     }
     const models = (await m.json()).models;

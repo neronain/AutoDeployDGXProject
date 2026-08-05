@@ -1878,27 +1878,63 @@ def web(
     token: str = typer.Option("", "--token", help="บังคับ token (ว่าง = สุ่มให้เมื่อ bind ออก network)"),
     background: bool = typer.Option(False, "--background", "-b", help="รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้"),
     stop_web: bool = typer.Option(False, "--stop", help="หยุดตัวที่รันเบื้องหลังอยู่"),
+    restart_web: bool = typer.Option(False, "--restart", help="หยุดตัวที่รันอยู่แล้วเปิดใหม่ (token ใหม่)"),
+    status_only: bool = typer.Option(False, "--status", help="บอกว่ามีตัวไหนรันอยู่ + ลิงก์ของมัน"),
 ) -> None:
     """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
-    from lmds.fleet import run_root
+    from lmds.web import daemon
 
-    pid_file = run_root() / "web.pid"
-    if stop_web:
-        try:
-            pid = int(pid_file.read_text(encoding="utf-8").strip())
-            os.kill(pid, 15)
-            pid_file.unlink(missing_ok=True)
-            console.print(f"หยุดหน้าเว็บแล้ว (PID {pid})")
-        except (OSError, ValueError):
-            err_console.print("ไม่พบหน้าเว็บที่รันเบื้องหลังอยู่")
-            raise typer.Exit(code=1)
+    def show_running(state: dict, prefix: str) -> None:
+        """พิมพ์ลิงก์ของ *ตัวที่เสิร์ฟจริง* — ลิงก์ที่ใช้ไม่ได้แย่กว่าไม่พิมพ์เลย"""
+        from lmds.hardware.profiler import primary_ip
+
+        console.print(f"{prefix} (PID {state['pid']} · พอร์ต {state['port']})")
+        exposed_now = state.get("bind") not in {"127.0.0.1", "localhost", "::1"}
+        hosts = [h for h in (primary_ip() if exposed_now else "", "127.0.0.1") if h]
+        for h in dict.fromkeys(hosts):
+            console.print(f"  [bold]{daemon.url(state, h)}[/bold]")
+
+    if status_only:
+        state = daemon.running()
+        if state is None:
+            console.print("ไม่มีหน้าเว็บที่รันเบื้องหลังอยู่ — เปิดด้วย: [bold]lmds web -b --bind 0.0.0.0[/bold]")
+            return
+        show_running(state, "หน้าเว็บรันอยู่")
         return
+
+    if stop_web or restart_web:
+        stopped = daemon.stop()
+        if stopped is not None:
+            console.print(f"หยุดหน้าเว็บแล้ว (PID {stopped['pid']})")
+        elif stop_web:
+            err_console.print("ไม่พบหน้าเว็บที่รันเบื้องหลังอยู่")
+            # พอร์ตไม่ว่างทั้งที่ไม่มีของเรา = มีอย่างอื่นยึดอยู่ ต้องบอก ไม่งั้นสตาร์ตรอบหน้าจะงงซ้ำ
+            if daemon.port_busy(bind, port):
+                err_console.print(f"[yellow]แต่พอร์ต {port} ไม่ว่าง[/yellow] — มีโปรแกรมอื่นยึดอยู่: "
+                                  f"[bold]ss -ltnp | grep {port}[/bold]")
+            raise typer.Exit(code=1)
+        if stop_web:
+            return
 
     try:
         from lmds.web import serve
     except ImportError:
         err_console.print("[red]ยังไม่ได้ติดตั้งส่วนเว็บ[/red] — ติดตั้ง: "
                           "[bold]~/.local/share/lmds/venv/bin/pip install 'fastapi>=0.110' 'uvicorn>=0.27'[/bold]")
+        raise typer.Exit(code=1)
+
+    # มีตัวรันอยู่แล้วต้องไม่สตาร์ตซ้อน — รอบสองจะ bind ไม่ได้แล้วตาย แต่เราเผลอพิมพ์
+    # token ใหม่ให้ไปแล้ว ผู้ใช้จึงเปิดลิงก์แล้วเจอ "ต้องมี token" ทั้งที่ copy มาถูก
+    existing = daemon.running()
+    if existing is not None:
+        show_running(existing, "[yellow]มีหน้าเว็บรันอยู่แล้ว[/yellow] — ใช้ลิงก์นี้")
+        console.print("[dim]อยากได้ token ใหม่หรือเปลี่ยนพอร์ต: [bold]lmds web --restart -b[/bold] · "
+                      "หยุด: [bold]lmds web --stop[/bold][/dim]")
+        return
+    if daemon.port_busy(bind, port):
+        err_console.print(f"[red]พอร์ต {port} ไม่ว่าง[/red] — มีโปรแกรมอื่นยึดอยู่ (ไม่ใช่ของ lmds)")
+        err_console.print(f"[dim]ดูว่าใคร: [bold]ss -ltnp | grep {port}[/bold] · "
+                          f"หรือใช้พอร์ตอื่น: [bold]lmds web --port {port + 1}[/bold][/dim]")
         raise typer.Exit(code=1)
 
     # หน้านี้สั่ง start/stop โมเดลได้ — เปิดออก network โดยไม่มี token = ใครในวงก็สั่งได้
@@ -1929,17 +1965,26 @@ def web(
         import subprocess
         import sys
 
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        log_file = pid_file.parent / "web.log"
-        with open(log_file, "ab") as log:
+        log_path = daemon.log_file()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "ab") as log:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "lmds.cli.main", "web",
                  "--port", str(port), "--bind", bind, *(["--token", token] if token else [])],
                 stdout=log, stderr=log, start_new_session=True,
             )
-        pid_file.write_text(str(proc.pid), encoding="utf-8")
-        console.print(f"[dim]รันเบื้องหลัง (PID {proc.pid}) · log: {log_file}[/dim]")
-        console.print("[dim]หยุดด้วย: lmds web --stop[/dim]")
+        # ต้องรอให้มันรับ connection ได้จริงก่อน — เคสที่พังคือ bind ไม่ได้แล้วตายใน 0.2 วิ
+        # ซึ่ง Popen มองว่าสำเร็จ แล้วเราก็พิมพ์ลิงก์พร้อม token ที่ไม่มีใครถืออยู่ให้ผู้ใช้
+        if not daemon.wait_until_serving(bind, port, proc.pid):
+            proc.poll()
+            err_console.print(f"[red]เปิดหน้าเว็บไม่สำเร็จ[/red] — log: {log_path}")
+            tail = daemon.log_tail()
+            if tail:
+                err_console.print(f"[dim]{tail}[/dim]")
+            raise typer.Exit(code=1)
+        daemon.write_state(proc.pid, port, bind, token)
+        console.print(f"[dim]รันเบื้องหลัง (PID {proc.pid}) · log: {log_path}[/dim]")
+        console.print("[dim]ดูลิงก์อีกครั้ง: lmds web --status · หยุด: lmds web --stop[/dim]")
         return
 
     console.print("[dim]หยุดด้วย Ctrl-C · หรือรันเบื้องหลังด้วย: lmds web --background[/dim]")

@@ -112,3 +112,91 @@ def test_complete_target_presets():
     assert "dgx-spark-stacked" in _complete_target("dgx")
     assert all(name.startswith("rtx-40") for name in _complete_target("rtx-40"))
     assert _complete_target("zzz") == []
+
+
+# ── หน้าเว็บที่รันเบื้องหลัง ────────────────────────────────────────────────────
+# ทั้งกลุ่มนี้มาจากเคสจริงบน controller: `lmds web -b` ซ้ำ ๆ แล้วหน้าเว็บใช้ได้บ้างไม่ได้บ้าง
+# เพราะรอบหลัง bind ไม่ได้แล้วตาย แต่ CLI พิมพ์ token ใหม่ให้ ผู้ใช้จึงเจอ "ต้องมี token"
+
+def test_web_refuses_to_start_when_one_is_already_running(tmp_path, monkeypatch):
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    daemon.write_state(pid=4242, port=8600, bind="0.0.0.0", token="เดิม")
+    monkeypatch.setattr(daemon, "alive", lambda pid: pid == 4242)
+    started = []
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: started.append(a) or None)
+
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"])
+
+    assert result.exit_code == 0
+    assert not started, "ต้องไม่สตาร์ตซ้อน"
+    # ต้องพิมพ์ลิงก์ของตัวที่เสิร์ฟจริง ไม่ใช่ token ใหม่ที่ไม่มีใครถืออยู่
+    assert "เดิม" in result.output
+    assert "--restart" in result.output
+
+
+def test_web_status_shows_the_link_of_the_live_server(tmp_path, monkeypatch):
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    daemon.write_state(pid=99, port=8611, bind="0.0.0.0", token="tok-live")
+    monkeypatch.setattr(daemon, "alive", lambda pid: True)
+
+    result = runner.invoke(app, ["web", "--status"])
+    assert result.exit_code == 0
+    assert "tok-live" in result.output and "8611" in result.output
+
+
+def test_web_status_forgets_a_dead_server(tmp_path, monkeypatch):
+    """ไฟล์สถานะค้างจากรอบที่ตายไปแล้วต้องไม่ถูกรายงานว่ายังรันอยู่"""
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    daemon.write_state(pid=123456, port=8600, bind="0.0.0.0", token="ศพ")
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    result = runner.invoke(app, ["web", "--status"])
+    assert result.exit_code == 0
+    assert "ศพ" not in result.output
+    assert not daemon.state_file().exists()
+
+
+def test_web_background_reports_failure_instead_of_a_dead_link(tmp_path, monkeypatch):
+    """สตาร์ตไม่ขึ้นต้องบอกว่าไม่ขึ้น + เหตุผลจาก log — ไม่ใช่พิมพ์ลิงก์ที่เปิดไม่ได้"""
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    daemon.log_file().parent.mkdir(parents=True, exist_ok=True)
+    daemon.log_file().write_text("ERROR:    [Errno 98] address already in use\n", encoding="utf-8")
+
+    class DeadProc:
+        pid = 777
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: DeadProc())
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: False)
+
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"])
+    assert result.exit_code == 1
+    assert "ไม่สำเร็จ" in result.output
+    assert "Errno 98" in result.output
+    assert not daemon.state_file().exists(), "สตาร์ตไม่ขึ้นต้องไม่เขียนสถานะค้างไว้"
+
+
+def test_web_stop_does_not_kill_a_recycled_pid(tmp_path, monkeypatch):
+    """PID ถูกใช้ซ้ำได้ — ถ้า process นั้นไม่ใช่หน้าเว็บของเราแล้ว ห้ามส่งสัญญาณไปหา"""
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    daemon.write_state(pid=31337, port=8600, bind="0.0.0.0", token="t")
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+    killed = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+
+    result = runner.invoke(app, ["web", "--stop"])
+    assert result.exit_code == 1
+    assert killed == []
