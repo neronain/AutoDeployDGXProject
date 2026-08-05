@@ -716,7 +716,8 @@ WSCRIPT
   [[ -n "$API_KEY" ]] && hrun+=(-e "VLLM_API_KEY=${API_KEY}")
   hrun+=(--entrypoint bash "$VLLM_IMAGE"
     -lc "exec vllm${quoted_common} --node-rank 0 --host $(printf '%q' "$API_HOST") --port $(printf '%q' "$API_PORT")")
-  docker "${hrun[@]}"
+  # array ขึ้นต้นด้วย docker อยู่แล้ว — เรียกซ้ำจะได้ `docker docker run -d …`
+  "${hrun[@]}"
 
   write_meta
   # ── Step 3: health poll ──

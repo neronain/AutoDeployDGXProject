@@ -336,3 +336,15 @@ def test_every_worker_step_iterates_over_the_list(tmp_path):
     assert text.count("for wip in $WORKER_IPS; do") >= 8
     # ssh_worker เหลือไว้ได้เฉพาะงานที่อ้างถึง worker ตัวแรกโดยธรรมชาติ
     assert 'ssh_worker() { ssh_at "$WORKER_IP" "$@"; }' in text
+
+
+def test_head_container_command_is_not_double_invoked(tmp_path):
+    """เคสจริง: `docker "${hrun[@]}"` ทั้งที่ array ขึ้นต้นด้วย docker → `docker docker run -d`
+    แล้ว head ไม่เคยขึ้นเลย · bash -n ไม่จับ เพราะเป็น syntax ที่ถูกต้อง"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert 'docker "${hrun[@]}"' not in text
+    assert '"${hrun[@]}"' in text
+    # worker ยิงผ่าน ssh เป็นสตริง จึงต้องคงรูปเดิมไว้
+    assert 'ssh_at "$wip" "$(printf \'%q \' "${wrun[@]}")"' in text
