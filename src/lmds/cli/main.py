@@ -1906,10 +1906,11 @@ def web(
     if stop_web or restart_web:
         stopped = daemon.stop()
         if stopped is not None:
+            # "หยุดแล้ว" ต้องแปลว่าพอร์ตว่างจริง — SIGTERM ไม่ได้คืน socket ทันที ถ้าไม่รอ
+            # คำสั่งถัดไปของผู้ใช้ (ทั้ง --restart และ `lmds web -b` ที่พิมพ์เอง) จะฟ้อง
+            # "พอร์ตไม่ว่าง" จากตัวที่เขาเพิ่งสั่งหยุดไปเอง
+            daemon.wait_until_free(stopped.get("bind") or bind, int(stopped.get("port") or port))
             console.print(f"หยุดหน้าเว็บแล้ว (PID {stopped['pid']})")
-            # รอให้ socket คืนก่อน ไม่งั้น --restart จะฟ้อง "พอร์ตไม่ว่าง" จากตัวที่เราเพิ่งฆ่าเอง
-            if restart_web:
-                daemon.wait_until_free(stopped.get("bind") or bind, int(stopped.get("port") or port))
         elif stop_web:
             err_console.print("ไม่พบหน้าเว็บที่รันเบื้องหลังอยู่")
             # พอร์ตไม่ว่างทั้งที่ไม่มีของเรา = มีอย่างอื่นยึดอยู่ ต้องบอก ไม่งั้นสตาร์ตรอบหน้าจะงงซ้ำ

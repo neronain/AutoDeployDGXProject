@@ -1,3 +1,4 @@
+import pytest
 from typer.testing import CliRunner
 
 import lmds
@@ -202,9 +203,10 @@ def test_web_stop_does_not_kill_a_recycled_pid(tmp_path, monkeypatch):
     assert killed == []
 
 
-def test_web_restart_waits_for_the_port_to_be_released(tmp_path, monkeypatch):
-    """SIGTERM ไม่ได้คืน socket ทันที — ไม่รอแล้วสตาร์ตต่อจะฟ้อง "พอร์ตไม่ว่าง"
-    จากตัวที่เราเพิ่งสั่งหยุดเอง (เจอจริงตอนสั่ง lmds web --restart -b บน controller)
+@pytest.mark.parametrize("flag", ["--restart", "--stop"])
+def test_web_stop_waits_for_the_port_to_be_released(tmp_path, monkeypatch, flag):
+    """"หยุดแล้ว" ต้องแปลว่าพอร์ตว่างจริง — SIGTERM ไม่ได้คืน socket ทันที ถ้าไม่รอ
+    คำสั่งถัดไปของผู้ใช้จะฟ้อง "พอร์ตไม่ว่าง" จากตัวที่เขาเพิ่งสั่งหยุดไปเอง (เจอจริงทั้งสองทาง)
     """
     from lmds.web import daemon
 
@@ -222,10 +224,11 @@ def test_web_restart_waits_for_the_port_to_be_released(tmp_path, monkeypatch):
     monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
     monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
 
-    result = runner.invoke(app, ["web", "--restart", "-b", "--bind", "0.0.0.0"])
+    result = runner.invoke(app, ["web", flag, "-b", "--bind", "0.0.0.0"])
     assert result.exit_code == 0, result.output
-    assert waited, "ต้องรอให้พอร์ตว่างก่อนสตาร์ตใหม่"
-    assert daemon.read_state()["pid"] == 556
+    assert waited, "ต้องรอให้พอร์ตว่างก่อนบอกว่าหยุดแล้ว"
+    if flag == "--restart":
+        assert daemon.read_state()["pid"] == 556
 
 
 def test_web_reuses_the_same_token_across_restarts(tmp_path, monkeypatch):
