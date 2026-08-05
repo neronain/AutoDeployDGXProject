@@ -36,6 +36,14 @@
   (RTX dual) ออกจาก "หลายเครื่องเครื่องละใบ" (Spark stacked) ซึ่งเดิมปนกันอยู่ที่ `gpu_count`
   · `lmds node cluster` เตือนเมื่อจำนวนเครื่องไม่เข้ากับ tensor parallel (3 เครื่อง = TP=3 หาร
   attention head ไม่ลง ต้องใช้ TP=2 + pipeline)
+- **`lmds recipes` — สูตรที่รันผ่านจริง ใช้แทน LLM เมื่อลูกค้าไม่มี API key** · ทีม SI หลายรายแจ้งว่า
+  ไม่มี provider ให้ใส่ จึงสร้างอะไรไม่ได้ · `--no-llm` ใช้ได้ก็จริงแต่ rule-based ไม่รู้เรื่องเฉพาะรุ่น
+  ทำให้ **deploy ผ่านแต่ start ไม่ขึ้น** · แคตตาล็อกใน `src/lmds/recipes/catalog.yaml` เก็บ image,
+  serving flags, parser, env ที่ทดสอบบนฮาร์ดแวร์แล้ว — ทุกสูตร**ต้องมี `source` และ `validated_on`**
+  (มีเทสบังคับ) · ไม่แตะ context เพราะต้องมาจากเครื่องเป้าหมาย · `image_for` ผูก image กับสถาปัตยกรรม
+  ที่ทดสอบมา ไม่ให้ build ของ DGX Spark ถูกใช้กับ RTX เงียบ ๆ
+  · สูตรชุดแรก 7 รุ่นจากรีโป deployment ของทีม: DeepSeek-V4-Flash, Llama-3.3-70B, Qwen3.5-122B GPTQ,
+  Qwen3-Coder-Next NVFP4, GLM-4.7-Flash, Gemma-4-31B, Nemotron-3-Super
 - **`lmds scan` — หา weight ที่มีอยู่แล้วบนเครื่อง ไม่ว่าจะเก็บไว้แบบไหน** · เครื่องลูกค้ามักมีโมเดล
   อยู่ก่อนติดตั้ง LMDS และไม่ได้จัดระเบียบแบบเดียวกับเรา · ค้นจาก env (`HF_HOME`, `HF_HUB_CACHE`,
   `TRANSFORMERS_CACHE`, `MODEL_DIR`, `LLAMA_CACHE`) + ที่ที่นิยมวางกัน (`~/.cache/huggingface[/hub]`,

@@ -1,0 +1,127 @@
+# สูตรที่ผ่านการรันจริงแล้ว — ใช้เมื่อไม่มี LLM provider
+#
+# ลูกค้า/ทีม SI จำนวนมากไม่มี API key ของ LLM ทำให้ `lmds deploy` ตกไปใช้ rule-based
+# ซึ่งไม่รู้เรื่องเฉพาะรุ่น (parser, image, ข้อบังคับของ quantization) แล้ว start ไม่ผ่าน
+#
+# แฟ้มนี้คือความรู้ที่ได้จากการรันจริงบนฮาร์ดแวร์ ไม่ใช่การเดา — ทุกสูตรต้องมี `source`
+# บอกว่ามาจากไหน และ `validated_on` บอกว่าเคยรันผ่านบนเครื่องอะไร
+#
+# กติกา:
+#   - ใส่เฉพาะค่าที่ "ต้องตั้ง" จริง ๆ ค่าที่ปล่อยให้ระบบคำนวณเองอย่าใส่ (เช่น context
+#     ที่ควรมาจากการวิเคราะห์หน่วยความจำของเครื่องเป้าหมาย ไม่ใช่ค่าคงที่)
+#   - `match` เทียบกับ repo id แบบไม่สนตัวพิมพ์ · ใช้ prefix ได้เพื่อครอบทุก variant
+#   - สูตรไม่ผูกกับ target — เครื่องเล็กเครื่องใหญ่ใช้สูตรเดียวกันได้ ส่วน context/TP
+#     ยังมาจาก fit analyzer เหมือนเดิม
+
+version: 1
+
+recipes:
+  - match: nvidia/DeepSeek-V4-Flash-NVFP4
+    label: DeepSeek-V4-Flash (NVFP4)
+    engine: vllm
+    # build เฉพาะของ DGX Spark — image ทั่วไปยังไม่มี kernel ของ DeepSeek V4
+    image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
+    image_for: [unified]   # build/ทดสอบบน DGX Spark
+    serving:
+      # attention layout fp8_ds_mla ไม่รับ auto — ไม่ตั้งแล้วตายตอน load_model
+      kv_cache_dtype: fp8
+      moe_backend: marlin
+      max_num_seqs: 6
+    notes:
+      - โมเดล MoE ขนาดใหญ่ ต้องใช้ 2 เครื่องขึ้นไปบน DGX Spark
+      - ตรวจ cache layout ให้ดี — weight ที่โหลดด้วย HF รุ่นเก่าอยู่นอก hub/
+    source: https://github.com/neronain/deepseek-v4-flash-nvfp4-stacked-on-DGX-Spark
+    validated_on: 2x DGX Spark (GB10) · vLLM dspark build
+
+  - match: meta-llama/Llama-3.3-70B-Instruct
+    label: Llama-3.3-70B-Instruct
+    engine: vllm
+    image: nvcr.io/nvidia/vllm:26.05-py3
+    image_for: [unified]   # build/ทดสอบบน DGX Spark
+    serving:
+      max_num_seqs: 4
+    tool_calling:
+      enabled: true
+      parser: llama3_json
+      # template ของ Llama 3.1 ใช้กับ 3.3 ได้ — เป็นตัวที่ vLLM แนะนำเอง
+      chat_template: tool_chat_template_llama3.1_json.jinja
+    notes:
+      - bf16 131 GB — ต้องใช้ 2 เครื่อง (TP=2) บน DGX Spark
+      - gated repo ต้องมี HF token
+    source: https://github.com/neronain/Deploy-Llama-3.3-70B-use-vLLM-On-NVIDIA-DGX-Spark-x2
+    validated_on: 2x DGX Spark (GB10) · vLLM 26.05 NGC · TP=2 · 5 ส.ค. 2569
+
+  - match: Qwen/Qwen3.5-122B-A10B-GPTQ-Int4
+    label: Qwen3.5-122B-A10B (GPTQ-Int4)
+    engine: vllm
+    serving:
+      quantization: gptq
+      gpu_memory_utilization: 0.85
+      trust_remote_code: true
+    tool_calling:
+      enabled: true
+      parser: qwen3_coder
+    reasoning:
+      enabled: true
+      parser: qwen3
+    source: https://github.com/neronain/Qwen3.5-122B-GPTQ-Int4-on-DGX-Spark
+    validated_on: DGX Spark (GB10) เครื่องเดียว
+
+  - match: ucbye/Qwen3-Coder-Next-NVFP4-GB10
+    label: Qwen3-Coder-Next (NVFP4-GB10)
+    engine: vllm
+    image: avarok/dgx-vllm-nvfp4-kernel:latest
+    image_for: [unified]   # build/ทดสอบบน DGX Spark
+    serving:
+      kv_cache_dtype: fp8
+    tool_calling:
+      enabled: true
+      parser: qwen3_coder
+    notes:
+      - NVFP4 ที่ quantize มาสำหรับ GB10 โดยเฉพาะ ต้องใช้ image ที่มี kernel ตรงรุ่น
+    source: https://github.com/neronain/Qwen3-Coder-Next-NVFP4-GB10
+    validated_on: DGX Spark (GB10) เครื่องเดียว
+
+  - match: zai-org/GLM-4.7-Flash
+    label: GLM-4.7-Flash (MoE 30B-A3B)
+    engine: sglang
+    image: lmsysorg/sglang:latest
+    serving:
+      mem_fraction_static: 0.85
+    tool_calling:
+      enabled: true
+      parser: glm47
+    reasoning:
+      enabled: true
+      parser: glm47
+    speculative:
+      algorithm: EAGLE
+    notes:
+      - SGLang ยังไม่อยู่ในชุด template ของ LMDS — สูตรนี้ใช้เป็นข้อมูลอ้างอิงก่อน
+    source: https://github.com/neronain/GLM-4.7-Flash-on-DGXSpark
+    validated_on: DGX Spark (GB10) เครื่องเดียว
+
+  - match: google/gemma-4-31B-it
+    label: Gemma-4-31B-it
+    engine: vllm
+    image: vllm/vllm-openai:latest
+    serving:
+      dtype: bfloat16
+    source: https://github.com/neronain/Gemma-4-31B-it-on-DGX-Spark-128G-with-vLLM
+    validated_on: DGX Spark (GB10) 128 GB เครื่องเดียว
+
+  - match: nvidia/Nemotron-3-Super
+    label: Nemotron-3-Super (120B)
+    engine: vllm
+    image: vllm/vllm-openai:v0.20.0
+    image_for: [unified]   # build/ทดสอบบน DGX Spark
+    serving:
+      kv_cache_dtype: fp8
+    env:
+      # ค่าพวกนี้ต้องตั้งตอนรัน ไม่ใช่ flag ของ vLLM — ไม่ตั้งแล้ว MoE FP4 เลือก backend ผิด
+      VLLM_NVFP4_GEMM_BACKEND: marlin
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
+      VLLM_USE_FLASHINFER_MOE_FP4: "0"
+    source: https://github.com/neronain/Nemotron-120B-DGXSpark
+    validated_on: DGX Spark (GB10) เครื่องเดียว

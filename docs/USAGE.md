@@ -507,6 +507,30 @@ stacked controller จะ source ไฟล์นี้**ก่อน default ท
 
 รายละเอียดทั้งหมด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
 
+## 4.5.1 ไม่มี API key ของ LLM ก็ deploy ได้ — `lmds recipes`
+
+`lmds deploy --no-llm` ใช้ได้อยู่แล้ว แต่ rule-based รู้แค่ "GGUF → llama.cpp, safetensors → vLLM"
+ไม่รู้เรื่องเฉพาะรุ่น เช่น DeepSeek V4 บังคับ `kv-cache fp8` หรือ Qwen3-Coder NVFP4 ต้องใช้ image
+ที่มี kernel ตรงรุ่น — ผลคือ **deploy ผ่าน แต่ start ไม่ขึ้น**
+
+LMDS จึงเก็บ **สูตรที่รันผ่านจริงบนฮาร์ดแวร์แล้ว** ไว้ในตัวโปรแกรม และใช้อัตโนมัติ:
+
+```bash
+lmds recipes                                    # มีสูตรอะไรบ้าง
+lmds recipes nvidia/DeepSeek-V4-Flash-NVFP4     # สูตรตัวนั้น + ที่มา + เคยรันบนอะไร
+lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked --no-llm --yes
+```
+
+ตอน deploy จะขึ้นบรรทัดบอกว่าใช้สูตรไหน:
+
+```text
+ใช้สูตรที่รันผ่านจริง: DeepSeek-V4-Flash (NVFP4) — https://github.com/neronain/deepseek-…
+```
+
+- สูตร **ไม่แตะ context** — ค่านั้นยังมาจากการวิเคราะห์หน่วยความจำของเครื่องคุณเอง
+- image ที่ทดสอบบน DGX Spark จะไม่ถูกนำไปใช้กับ RTX เงียบ ๆ (จะเตือนแล้วใช้ค่าตั้งต้น)
+- โมเดลที่ยังไม่มีสูตร ทำงานเหมือนเดิมทุกอย่าง
+
 ## 4.6 เครื่องที่มีโมเดลอยู่ก่อนแล้ว — `lmds scan`
 
 เครื่องลูกค้าที่ใช้งานมาก่อนติดตั้ง LMDS มักมี weight กระจายอยู่หลายที่และไม่ได้จัดระเบียบแบบเรา
@@ -593,6 +617,7 @@ lmds validate bundles/qwen3-32b --fix                # regenerate checksum ห�
 lmds hardware                                        # ตรวจเครื่อง (GPU/RAM/ดิสก์/Docker/profile)
 lmds scan                                            # โมเดลที่มีอยู่แล้วบนเครื่อง (ทุกที่เก็บ)
 lmds scan --all                                      # ค้นทุกเครื่องในทะเบียนด้วย
+lmds recipes                                         # สูตรที่รันผ่านจริง (ใช้เองเมื่อไม่มี LLM)
 lmds config show                                     # ดู config (key ถูก mask)
 lmds config defaults                                 # ดู default model ของแต่ละ provider
 lmds repair <ชื่อ>                                    # ซ่อมไฟล์ที่ขาด (ดู §4.3)

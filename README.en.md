@@ -76,6 +76,7 @@ lmds ps --all                            # every model on every machine, one tab
 lmds node run spark2 doctor my-model     # run any lmds command on that machine
 lmds node cluster                        # who has ConnectX/200G, and which pairs can be stacked
 lmds scan --all                          # models already on each machine, wherever they were put
+lmds recipes                             # configurations proven on hardware — used when no LLM key is set
 ```
 
 Nodes run **no daemon** and need no port open beyond 22 — the hub calls `lmds agent info` over SSH.

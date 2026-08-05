@@ -102,6 +102,7 @@ lmds ps --all                            # โมเดลของทุกเ�
 lmds node run spark2 doctor my-model     # สั่งคำสั่ง lmds อะไรก็ได้ข้ามเครื่อง
 lmds node cluster                        # เครื่องไหนมี ConnectX/200G และจับคู่ stacked กันได้
 lmds scan --all                          # โมเดลที่มีอยู่แล้วบนทุกเครื่อง (ไม่ต้องโหลดซ้ำ)
+lmds recipes                             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key ของ LLM
 ```
 
 - เครื่องปลายทาง **ไม่ต้องรัน daemon** และไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 — hub เรียก `lmds agent info` ผ่าน SSH

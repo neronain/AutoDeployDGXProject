@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from lmds.fit import FitReport
+from lmds.recipes import find_recipe
 from lmds.inspector.report import ArtifactType, ModelReport
 
 from .plan_schema import (
@@ -102,6 +103,55 @@ def build_facts(report: ModelReport) -> list[Fact]:
     return facts
 
 
+
+def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> DeploymentPlan:
+    """เติมค่าจากสูตรที่รันผ่านจริงลง plan — ทับเฉพาะสิ่งที่สูตรระบุไว้เท่านั้น
+
+    context/max_output ไม่แตะ เพราะต้องมาจากการวิเคราะห์หน่วยความจำของ *เครื่องเป้าหมาย*
+    ไม่ใช่ค่าคงที่จากเครื่องที่เคยรัน
+    """
+    if recipe.image and recipe.image_applies_to(memory_model):
+        plan.runtime.image_ref = recipe.image
+    elif recipe.image:
+        # image ที่ทดสอบมาเป็นของอีกสถาปัตยกรรม — บอกไว้ ดีกว่าใช้เงียบ ๆ แล้วพังตอน start
+        plan.warnings.append(
+            f"สูตรนี้ทดสอบด้วย image {recipe.image} บนเครื่องคนละแบบ — ใช้ค่าตั้งต้นแทน"
+        )
+
+    serving_fields = set(Serving.model_fields)
+    extra: list[str] = []
+    for key, value in (recipe.serving or {}).items():
+        if key in serving_fields:
+            setattr(plan.serving, key, value)
+        elif value is True:
+            extra.append(f"--{key.replace('_', '-')}")
+        else:
+            extra.extend([f"--{key.replace('_', '-')}", str(value)])
+    if extra:
+        plan.serving.extra_flags = list(dict.fromkeys(plan.serving.extra_flags + extra))
+
+    tools = recipe.tool_calling or {}
+    if tools.get("enabled"):
+        plan.tool_calling.enabled = True
+        plan.tool_calling.parser = tools.get("parser") or plan.tool_calling.parser
+        if tools.get("chat_template"):
+            plan.tool_calling.chat_template_override = tools["chat_template"]
+
+    thinking = recipe.reasoning or {}
+    if thinking.get("enabled"):
+        plan.reasoning.enabled = True
+        plan.reasoning.parser = thinking.get("parser") or plan.reasoning.parser
+
+    plan.runtime.rationale += f" + สูตรที่รันผ่านจริง ({recipe.validated_on or recipe.source})"
+    # rule-based ไม่มีการวิจัยก็จริง แต่สูตรนี้มาจากการรันบนฮาร์ดแวร์ — คำเตือนเดิมจึงไม่ตรงแล้ว
+    plan.warnings = [w for w in plan.warnings if "ไม่มีการวิจัย parser" not in w]
+    plan.warnings.insert(0, f"ใช้สูตรที่รันผ่านจริง: {recipe.label or recipe.match} — {recipe.source}")
+    for note in recipe.notes or []:
+        if note not in plan.warnings:
+            plan.warnings.append(note)
+    return plan
+
+
 def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
     engine = Engine.LLAMACPP if report.artifact_type is ArtifactType.GGUF else Engine.VLLM
     topology = topology_for_target(fit.target_name)
@@ -137,4 +187,9 @@ def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
         plan.warnings.append("ไม่พบ chat template — ต้องระบุ template เองตอนใช้งาน chat")
     if report.trust_remote_code_files:
         plan.warnings.append("repo มีไฟล์ remote code — review ก่อนเปิด --trust-remote-code (ต้องอนุมัติเอง)")
+
+    # สูตรที่รันผ่านจริงมาก่อนค่าตั้งต้นเสมอ — นี่คือสิ่งที่ทดแทน LLM ให้เครื่องที่ไม่มี provider
+    recipe = find_recipe(report.repo_id)
+    if recipe is not None:
+        plan = apply_recipe(plan, recipe, fit.memory_model.value)
     return plan

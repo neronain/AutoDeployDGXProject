@@ -277,6 +277,60 @@ def node_remove(
 
 
 
+
+@app.command("recipes")
+def list_recipes(
+    model: Optional[str] = typer.Argument(None, help="ดูสูตรของโมเดลนี้ (ว่าง = ทั้งหมด)"),
+) -> None:
+    """สูตรที่รันผ่านจริงแล้ว — ใช้อัตโนมัติเมื่อไม่มี LLM provider
+
+    เครื่องที่ไม่มี API key จะได้ค่าเหล่านี้แทนการเดา: image ที่ถูกรุ่น, parser, และข้อบังคับ
+    ของ quantization ที่ไม่ตั้งแล้ว start ไม่ขึ้น
+    """
+    from lmds.recipes import find_recipe, load_catalog
+
+    if model:
+        recipe = find_recipe(model)
+        if recipe is None:
+            console.print(f"[yellow]ยังไม่มีสูตรของ '{model}'[/yellow] — จะใช้ rule-based ตามปกติ")
+            console.print("[dim]ดูทั้งหมด: lmds recipes[/dim]")
+            raise typer.Exit(code=1)
+        console.print(f"[bold]{recipe.label or recipe.match}[/bold]")
+        console.print(f"  engine    : {recipe.engine}")
+        if recipe.image:
+            console.print(f"  image     : {recipe.image}")
+        for key, value in (recipe.serving or {}).items():
+            console.print(f"  {key:10}: {value}")
+        if recipe.tool_calling.get("parser"):
+            console.print(f"  tools     : {recipe.tool_calling['parser']}")
+        if recipe.reasoning.get("parser"):
+            console.print(f"  reasoning : {recipe.reasoning['parser']}")
+        for note in recipe.notes or []:
+            console.print(f"  [dim]· {note}[/dim]")
+        console.print(f"\n  ทดสอบบน : {recipe.validated_on or '—'}")
+        console.print(f"  ที่มา    : {recipe.source or '—'}")
+        return
+
+    catalog = load_catalog()
+    table = Table(title=f"สูตรที่รันผ่านจริง ({len(catalog)} รุ่น)")
+    table.add_column("โมเดล")
+    table.add_column("engine")
+    table.add_column("สิ่งที่สูตรกำหนด")
+    table.add_column("ทดสอบบน")
+    for recipe in catalog:
+        sets = []
+        if recipe.image:
+            sets.append("image")
+        sets += list((recipe.serving or {}).keys())
+        if recipe.tool_calling.get("parser"):
+            sets.append("tools")
+        if recipe.reasoning.get("parser"):
+            sets.append("reasoning")
+        table.add_row(recipe.label or recipe.match, recipe.engine, ", ".join(sets),
+                      recipe.validated_on or "—")
+    console.print(table)
+    console.print("[dim]ใช้อัตโนมัติตอน deploy เมื่อไม่มี LLM provider · ดูรายตัว: lmds recipes <model>[/dim]")
+
 @app.command("scan")
 def scan_models(
     root: list[str] = typer.Option([], "--root", help="ที่ค้นเพิ่มเติม (ระบุซ้ำได้)"),
