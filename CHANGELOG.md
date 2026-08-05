@@ -245,6 +245,12 @@
 
 ### Fixed
 
+- **Jinja หลุดเข้าไฟล์ผลลัพธ์ของ stacked controller** — `{% if report.gated %}` และ
+  `{% if shard_files %}` ถูกวางไว้ใน `{% raw %}` จึงไม่เคยถูกแปลง สคริปต์ที่ส่งให้ผู้ใช้จึงมีบรรทัด
+  `{%: command not found` และ **ไม่มีการตรวจ shard รายไฟล์เลย** · `bash -n` จับไม่ได้เพราะเป็น
+  bash ที่ syntax ถูกต้อง — เจอตอนรัน `verify-files` บน DGX Spark จริง
+- **gate ใหม่ `template-rendered`** — ปฏิเสธ bundle ที่มี Jinja tag เหลืออยู่ (กันคลาสบั๊กนี้ทั้งคลาส
+  ไม่ใช่แค่เคสนี้) · quality gates เพิ่มเป็น 10 ด่าน
 - **`install.sh` ล้มเมื่อรันซ้ำเพื่ออัปเดต** (`ensurepip ... returned non-zero exit status 1`)
   — venv เดิมอาจถูกสร้างด้วย python คนละตัว (เช่นเครื่องที่มี conda) การรัน `python3 -m venv`
   ทับของเดิมจึงพัง · ใช้ `--clear` เสมอและตายพร้อมบอกวิธีแก้ถ้าสร้างไม่ได้

@@ -203,3 +203,30 @@ def test_stacked_gate_requires_cluster_prompt(isolated_config, tmp_path):
     results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
     assert results["stacked-contract"].passed is False
     assert "prompt_cluster_config" in results["stacked-contract"].detail
+
+
+def test_template_rendered_gate_catches_leftover_jinja(tmp_path):
+    """Jinja ที่หลุดมาเป็น bash ที่ syntax ถูก — bash -n ผ่าน แล้วไปตายตอนรันจริง
+    เคสจริง: {% if shard_files %} ถูกวางใน {% raw %} จึงไม่เคยถูกแปลง"""
+    from lmds.validator.gates import gate_template_rendered
+
+    bundle = tmp_path / "b"
+    bundle.mkdir()
+    script = bundle / "x-single.sh"
+    script.write_text("#!/usr/bin/env bash\nset -Eeuo pipefail\n{% if shard_files %}\necho hi\n",
+                      encoding="utf-8")
+    result = gate_template_rendered(bundle)
+    assert not result.passed
+    assert ":3:" in result.detail
+
+
+def test_template_rendered_gate_allows_docker_format_strings(tmp_path):
+    """docker --format '{{.Names}}' ไม่ใช่ Jinja — ห้ามจับผิด"""
+    from lmds.validator.gates import gate_template_rendered
+
+    bundle = tmp_path / "b2"
+    bundle.mkdir()
+    (bundle / "x-single.sh").write_text(
+        "#!/usr/bin/env bash\ndocker ps --format '{{.Names}}\\t{{.Status}}'\n"
+        'echo "${VAR:-default}"\n', encoding="utf-8")
+    assert gate_template_rendered(bundle).passed

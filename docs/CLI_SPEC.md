@@ -243,7 +243,7 @@ src/lmds/
 ├── brain/               # providers.py, orchestrator.py, plan_schema.py, prompts.py,
 │                        #   rulebased.py, allowlists.py (flag/image allowlist)
 ├── generator/           # renderer.py + templates/*.j2 (single-vllm, single-llamacpp, stacked-vllm)
-├── validator/           # gates.py — quality gates ทั้ง 9 ด่านรวมอยู่ไฟล์เดียว
+├── validator/           # gates.py — quality gates ทั้ง 10 ด่านรวมอยู่ไฟล์เดียว
 ├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit
 ├── nodes/               # registry.py (nodes.yaml), ssh.py (key/probe/run), cluster.py (จับคู่ stacked)
 ├── inventory.py         # payload ชุดเดียวที่หน้าเว็บและ `lmds agent info` ใช้ร่วมกัน

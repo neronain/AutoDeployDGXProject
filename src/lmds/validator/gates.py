@@ -299,8 +299,27 @@ def gate_checksums(bundle_dir: Path) -> GateResult:
     return GateResult("checksums", True, f"{len(actual)} ไฟล์")
 
 
+
+# Jinja ที่หลุดออกมาเป็น bash ที่ syntax ถูกต้อง — `bash -n` ผ่าน แล้วไปตายตอนรันจริง
+# เคสจริง: {% if shard_files %} ถูกวางไว้ใน {% raw %} จึงไม่เคยถูกแปลง และหลุดไปกับ bundle
+_TEMPLATE_LEFTOVER = re.compile(r"(?m)^\s*\{%|\{%\s*(if|for|endif|endfor|raw|endraw)\b")
+
+
+def gate_template_rendered(bundle_dir: Path) -> GateResult:
+    for script in _controllers(bundle_dir):
+        match = _TEMPLATE_LEFTOVER.search(script.read_text(encoding="utf-8"))
+        if match:
+            line = script.read_text(encoding="utf-8")[: match.start()].count("\n") + 1
+            return GateResult(
+                "template-rendered", False,
+                f"{script.name}:{line}: มี Jinja tag เหลืออยู่ในไฟล์ผลลัพธ์ ({match.group(0).strip()})",
+            )
+    return GateResult("template-rendered", True)
+
+
 ALL_GATES = [
     gate_bash_syntax,
+    gate_template_rendered,
     gate_numeric_underscore,
     gate_pipefail_safe,
     gate_line_continuation,

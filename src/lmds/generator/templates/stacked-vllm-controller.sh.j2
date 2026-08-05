@@ -254,7 +254,7 @@ runtime_info() {
 # ───────────────────────────── download ─────────────────────────────
 download() {
   need docker
-{% if report.gated %}  # gated repo: ไม่มี token = ดาวน์โหลดล้มด้วย 401 ที่อ่านยาก — ตรวจตั้งแต่ต้นดีกว่า
+{% endraw %}{% if report.gated %}  # gated repo: ไม่มี token = ดาวน์โหลดล้มด้วย 401 ที่อ่านยาก — ตรวจตั้งแต่ต้นดีกว่า
   if [[ -z "${HF_TOKEN:-}" ]]; then
     die "${MODEL_ID} เป็น gated repo — ต้องมี HF_TOKEN ก่อน download
   1) ขอสิทธิ์ที่ https://huggingface.co/${MODEL_ID} (ต้องขึ้น ACCEPTED)
@@ -262,7 +262,7 @@ download() {
   3) export HF_TOKEN=hf_xxx   แล้วรันใหม่: $0 download
 หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
   fi
-{% endif %}  mkdir -p "$HF_HOME"
+{% endif %}{% raw %}  mkdir -p "$HF_HOME"
   log "Downloading ${MODEL_ID} @ ${MODEL_REVISION} (resume-safe) …"
   local dl_args=(
     run --rm -i --network host
@@ -318,7 +318,7 @@ verify_files() {
   if (( SHARD_COUNT > 0 )) && (( n != SHARD_COUNT )); then
     die "shard ไม่ครบ: คาด ${SHARD_COUNT} พบ ${n} ใน ${snap}"
   fi
-{% if shard_files %}
+{% endraw %}{% if shard_files %}
   # ตรวจทีละไฟล์ + ขนาดตรงกับที่ Hub รายงาน — นับจำนวนอย่างเดียวจับไฟล์ที่โหลดไม่ครบไม่ได้
   # สำคัญกว่าฝั่ง single เพราะ stacked มีขั้น rsync ข้ามเครื่องเพิ่มมาอีกจุดที่ไฟล์ขาดได้
   local i path actual_size
@@ -332,7 +332,7 @@ verify_files() {
     fi
   done
   echo "shard ครบ {{ '${#SHARD_FILES[@]}' }} ไฟล์ (ขนาดตรงกับ Hub)"
-{% endif %}
+{% endif %}{% raw %}
   echo "verify-files: OK (${n} shards @ ${snap})"
 }
 
