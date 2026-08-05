@@ -229,7 +229,7 @@ def _run_up(monkeypatch, tmp_path, report, target: str, model: str, fail_on: str
     return result, fake
 
 
-def test_up_runs_controller_steps_in_the_only_order_that_works(
+def test_up_runs_controller_steps_after_their_prerequisites(
     isolated_config, tmp_path, monkeypatch
 ):
     """start ก่อน download = ไม่มีไฟล์ · ข้าม verify-files = ไฟล์ครึ่งเดียวแล้วไปตายตอนโหลด"""
@@ -238,7 +238,7 @@ def test_up_runs_controller_steps_in_the_only_order_that_works(
     )
     assert result.exit_code == 0, result.output
     # prepare-runtime แทรกเฉพาะ bundle ที่ build เอง (llama.cpp บน ARM64 ไม่มี image ทางการ)
-    assert fake.calls == ["download", "verify-files", "prepare-runtime", "start", "test-text"]
+    assert fake.calls == ["download", "prepare-runtime", "verify-files", "start", "test-text"]
     assert "พร้อมใช้งานแล้ว" in result.output
     assert "client-config" in result.output
     assert "lmds connect" not in result.output
@@ -253,7 +253,7 @@ def test_up_stops_at_the_failing_step_and_says_where_to_look(
         fail_on="verify-files",
     )
     assert result.exit_code == 3  # คืน exit code ของ controller ตรง ๆ
-    assert fake.calls == ["download", "verify-files"]  # ไม่เดินต่อหลังล้ม
+    assert fake.calls == ["download", "prepare-runtime", "verify-files"]  # ไม่เดินต่อหลังล้ม
     assert "ไม่ผ่านขั้น verify-files" in result.output
     assert "lmds doctor qwen3-8b-gguf" in result.output
 
@@ -269,6 +269,32 @@ def test_up_skips_prepare_runtime_when_bundle_uses_a_prebuilt_image(
     assert result.exit_code == 0, result.output
     assert "prepare-runtime" not in fake.calls
     assert fake.calls == ["download", "verify-files", "start", "test-text"]
+
+
+def test_up_prepares_approved_runtime_assets_before_verify_files(tmp_path):
+    """verify-files checks approved assets, so up must fetch them first."""
+    from lmds.generator import Bundle
+    from lmds.cli.main import _single_delivery_commands, _up_steps
+
+    controller = tmp_path / "model-single.sh"
+    controller.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    bundle = Bundle(
+        directory=tmp_path,
+        controller=controller,
+        has_runtime_assets=True,
+    )
+
+    assert [command for command, _ in _up_steps(bundle)] == [
+        "download",
+        "prepare-runtime",
+        "verify-files",
+        "start",
+        "test-text",
+    ]
+
+    assert _single_delivery_commands(native_prepare=False, assets=True) == [
+        command for command, _ in _up_steps(bundle)
+    ]
 
 
 def test_up_does_not_pretend_to_handle_stacked(isolated_config, tmp_path, monkeypatch):

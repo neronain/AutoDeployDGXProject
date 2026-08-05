@@ -1345,6 +1345,16 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     return bundle, results, [*bundle.files, checksums_path, zip_path]
 
 
+def _single_delivery_commands(*, native_prepare: bool, assets: bool) -> list[str]:
+    """Commands for a single-node bundle in prerequisite order."""
+    steps = ["download"]
+    if native_prepare or assets:
+        # runtime assets are verified by verify-files, so they must be fetched
+        # first. Native llama.cpp uses the same deterministic order.
+        steps.append("prepare-runtime")
+    return [*steps, "verify-files", "start", "test-text"]
+
+
 def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: bool = False,
                      assets: bool = False) -> None:
     table = Table(title="Bundle (static-validated ✅)")
@@ -1355,10 +1365,7 @@ def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: b
     if stacked:
         steps = ["prepare-runtime", "download", "verify-files", "sync-worker", "verify-worker", "start"]
     else:
-        steps = ["download", "verify-files"]
-        if native_prepare or assets:
-            steps.append("prepare-runtime")  # build llama.cpp / ดึงไฟล์ runtime ภายนอก (ครั้งแรกครั้งเดียว)
-        steps += ["start", "test-text"]
+        steps = _single_delivery_commands(native_prepare=native_prepare, assets=assets)
     chain = " && ".join(f"./{bundle.controller.name} {s}" for s in steps)
     console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory}\n  {chain}")
     if stacked:
@@ -1492,14 +1499,26 @@ def deploy(
     return bundle
 
 
-# ขั้นตอนหลัง generate ที่ผู้ใช้ต้องพิมพ์เองทุกครั้ง — ผิดลำดับแล้วพังแบบไม่บอกสาเหตุ
+# ขั้นตอนหลัง generate ที่ผู้ใช้ต้องพิมพ์เองทุกครั้ง — ข้าม prerequisite แล้วพังแบบไม่บอกสาเหตุ
 # (start ก่อน download = ไม่มีไฟล์ · ข้าม verify-files = ไฟล์ครึ่งเดียวแล้วไปตายตอนโหลด)
-_UP_STEPS = [
-    ("download", "ดาวน์โหลดไฟล์โมเดล"),
-    ("verify-files", "ตรวจไฟล์ครบและถูกต้อง"),
-    ("start", "เปิดเซิร์ฟเวอร์แล้วรอ /health"),
-    ("test-text", "ให้โมเดลตอบหนึ่งคำถาม"),
-]
+def _up_steps(bundle: Bundle) -> list[tuple[str, str]]:
+    """Return the controller sequence from render-time bundle facts."""
+    labels = {
+        "download": "ดาวน์โหลดไฟล์โมเดล",
+        "prepare-runtime": (
+            "เตรียม engine (ครั้งแรกครั้งเดียว)"
+            if bundle.native_prepare
+            else "ดึงไฟล์ runtime ที่อนุมัติแล้ว (ครั้งแรกครั้งเดียว)"
+        ),
+        "verify-files": "ตรวจไฟล์ครบและถูกต้อง",
+        "start": "เปิดเซิร์ฟเวอร์แล้วรอ /health",
+        "test-text": "ให้โมเดลตอบหนึ่งคำถาม",
+    }
+    commands = _single_delivery_commands(
+        native_prepare=bundle.native_prepare,
+        assets=bundle.has_runtime_assets,
+    )
+    return [(command, labels[command]) for command in commands]
 
 
 def _run_step(controller: str, command: str, index: int, total: int, label: str) -> int:
@@ -1554,7 +1573,7 @@ def up(
     controller = str(bundle.controller)
     slug = bundle.controller.parent.name
 
-    if slug.endswith("-stacked") or "-stacked.sh" in controller:
+    if bundle.stacked:
         err_console.print(
             "\n[yellow]bundle นี้เป็น stacked (หลายเครื่อง)[/yellow] — ขั้น sync-worker/verify-worker "
             "ต้องตัดสินใจเรื่องเครื่องปลายทางเอง · สร้าง bundle ให้แล้ว แต่ `lmds up` "
@@ -1562,12 +1581,7 @@ def up(
         )
         raise typer.Exit(code=1)
 
-    steps = list(_UP_STEPS)
-    # llama.cpp บน ARM64 ไม่มี image ทางการ ต้อง build เองก่อนหนึ่งครั้ง
-    # ดูจาก RUNTIME_MODE ที่ render ลงสคริปต์ ไม่ใช่จากการมีคำสั่ง prepare-runtime
-    # เพราะ template ใส่ dispatch case นั้นไว้ทุก mode แม้ mode docker จะไม่ต้องใช้
-    if 'RUNTIME_MODE:-native' in bundle.controller.read_text(encoding="utf-8"):
-        steps.insert(2, ("prepare-runtime", "เตรียม engine (ครั้งแรกครั้งเดียว — ใช้ sudo)"))
+    steps = _up_steps(bundle)
 
     total = len(steps)
     for index, (command, label) in enumerate(steps, start=1):
