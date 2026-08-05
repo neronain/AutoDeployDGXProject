@@ -139,6 +139,9 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
     if extra:
         plan.serving.extra_flags = list(dict.fromkeys(plan.serving.extra_flags + extra))
 
+    if recipe.env:
+        plan.serving.extra_env = {**plan.serving.extra_env, **{k: str(v) for k, v in recipe.env.items()}}
+
     tools = recipe.tool_calling or {}
     if tools.get("enabled"):
         plan.tool_calling.enabled = True

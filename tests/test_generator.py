@@ -630,7 +630,8 @@ def test_deepseek_v4_forces_fp8_kv_cache():
 
     ds = report_for("nvidia/DeepSeek-V4-Flash-NVFP4")
     plan = rule_based_plan(ds, analyze(ds, PRESETS["dgx-spark-stacked"]))
-    assert plan.serving.kv_cache_dtype == "fp8"
+    # สูตรระบุ layout เฉพาะของ DeepSeek V4 ทับค่ากว้าง ๆ ที่ ARCH_REQUIREMENTS ตั้งไว้
+    assert plan.serving.kv_cache_dtype == "nvfp4_ds_mla"
 
     other = report_for("meta-llama/Llama-3.3-70B-Instruct")
     plan2 = rule_based_plan(other, analyze(other, PRESETS["dgx-spark-stacked"]))

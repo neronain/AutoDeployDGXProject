@@ -84,6 +84,8 @@ class Serving(BaseModel):
     kv_cache_dtype: str = "auto"
     max_num_seqs: int = Field(default=4, gt=0, le=256)
     extra_flags: list[str] = Field(default_factory=list)
+    # env ที่ runtime ต้องการแต่ไม่ใช่ flag ของ vLLM — บาง backend เลือกทางผิดถ้าไม่ตั้ง
+    extra_env: dict[str, str] = Field(default_factory=dict)
 
 
 class DeploymentPlan(BaseModel):

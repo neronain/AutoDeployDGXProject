@@ -181,6 +181,10 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
             {"filename": s.filename, "size": s.size_bytes or ""}
             for s in report.safetensor_shards
         ],
+        # quote ทั้งก้อน KEY=VALUE — _quote_flag แยกช่องว่างเป็นคนละ token ซึ่งผิดสำหรับ env
+        "extra_env_pairs": [
+            shlex.quote(f"{key}={value}") for key, value in (plan.serving.extra_env or {}).items()
+        ],
         "runtime_assets": [
             {"filename": a.filename, "url": a.url, "sha256": a.sha256 or ""}
             for a in plan.runtime_assets
@@ -253,6 +257,7 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "kv_cache_dtype": plan.serving.kv_cache_dtype,
             "max_num_seqs": plan.serving.max_num_seqs,
             "extra_flags": plan.serving.extra_flags,
+            "extra_env": plan.serving.extra_env,
         },
         "features": {
             "tool_calling": plan.tool_calling.model_dump(mode="json"),

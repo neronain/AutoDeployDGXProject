@@ -36,7 +36,7 @@ def test_every_recipe_states_where_it_came_from(recipe):
 def test_deepseek_recipe_sets_what_the_hardware_run_needed():
     plan = plan_for("nvidia/DeepSeek-V4-Flash-NVFP4")
     assert plan.runtime.image_ref == "ghcr.io/anemll/dspark-vllm-gx10:0.1.1"
-    assert plan.serving.kv_cache_dtype == "fp8"
+    assert plan.serving.kv_cache_dtype == "nvfp4_ds_mla"
     # ค่าที่ไม่ใช่ฟิลด์ของ Serving ต้องกลายเป็น flag ไม่ใช่หายไปเงียบ ๆ
     assert "--moe-backend" in plan.serving.extra_flags
 
@@ -121,3 +121,27 @@ def test_recipe_for_another_engine_is_not_applied():
     plan = plan_for("zai-org/GLM-4.7-Flash", target="dgx-spark-single")
     assert "sglang" not in plan.runtime.image_ref
     assert any("ยังไม่ได้ generate" in w for w in plan.warnings)
+
+
+def test_recipe_env_reaches_the_container():
+    """บาง runtime เลือก backend ผิดถ้าไม่ตั้ง env — DeepSeek V4 ตายที่
+    determine_available_memory ถ้าไม่ปิด CUDA-graph memory profiler"""
+    plan = plan_for("nvidia/DeepSeek-V4-Flash-NVFP4")
+    assert plan.serving.extra_env.get("VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS") == "0"
+
+
+def test_recipe_env_is_rendered_into_the_controller(tmp_path):
+    import subprocess
+
+    from lmds.brain.orchestrator import harden_plan
+    from lmds.generator import render_bundle
+
+    report = report_for("nvidia/DeepSeek-V4-Flash-NVFP4")
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = harden_plan(rule_based_plan(report, fit), report, fit)
+    bundle = render_bundle(plan, report, fit, tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "EXTRA_DOCKER_ENV=(" in text
+    assert "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0" in text
+    assert subprocess.run(["bash", "-n", str(bundle.controller)]).returncode == 0

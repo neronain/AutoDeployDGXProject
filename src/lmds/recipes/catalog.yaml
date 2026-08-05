@@ -23,10 +23,24 @@ recipes:
     image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
     image_for: [unified]   # build/ทดสอบบน DGX Spark
     serving:
-      # attention layout fp8_ds_mla ไม่รับ auto — ไม่ตั้งแล้วตายตอน load_model
-      kv_cache_dtype: fp8
+      # layout เฉพาะของ DeepSeek V4 — ค่า fp8 ธรรมดาผ่าน assertion ก็จริงแต่ไม่ใช่ของที่ build นี้ใช้
+      kv_cache_dtype: nvfp4_ds_mla
       moe_backend: marlin
       max_num_seqs: 6
+      block_size: 256
+      max_cudagraph_capture_size: 24
+      generation_config: vllm
+    env:
+      # ตัวที่ทำให้ start ไม่ผ่านถ้าไม่ตั้ง: profiler ของ CUDA graph ไปเรียก TVM-FFI คนละ signature
+      # แล้วตายที่ determine_available_memory ด้วย "Expected 7 but got 8 arguments"
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+      VLLM_USE_FLASHINFER_SAMPLER: "1"
+    tool_calling:
+      enabled: true
+      parser: deepseek_v4
+    reasoning:
+      enabled: true
+      parser: deepseek_v4
     notes:
       - โมเดล MoE ขนาดใหญ่ ต้องใช้ 2 เครื่องขึ้นไปบน DGX Spark
       - ตรวจ cache layout ให้ดี — weight ที่โหลดด้วย HF รุ่นเก่าอยู่นอก hub/
