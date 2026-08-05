@@ -1,10 +1,11 @@
-# สูตรที่ผ่านการรันจริงแล้ว — ใช้เมื่อไม่มี LLM provider
+# สูตรที่ผ่านการรันจริงและ settings hints ที่มีที่มา — ใช้เมื่อไม่มี LLM provider
 #
 # ลูกค้า/ทีม SI จำนวนมากไม่มี API key ของ LLM ทำให้ `lmds deploy` ตกไปใช้ rule-based
 # ซึ่งไม่รู้เรื่องเฉพาะรุ่น (parser, image, ข้อบังคับของ quantization) แล้ว start ไม่ผ่าน
 #
-# แฟ้มนี้คือความรู้ที่ได้จากการรันจริงบนฮาร์ดแวร์ ไม่ใช่การเดา — ทุกสูตรต้องมี `source`
-# บอกว่ามาจากไหน และ `validated_on` บอกว่าเคยรันผ่านบนเครื่องอะไร
+# `status: hardware-validated` (ค่าเริ่มต้น) คือ bundle ที่รันจริงบนฮาร์ดแวร์แล้ว
+# `status: settings-only` คือ hint ที่ตรวจที่มาแล้ว แต่ prerequisites/runtime ของ LMDS ยังไม่ครบ
+# ทุกสูตรต้องมี `source`; `validated_on` ต้องบอกระดับหลักฐานตามจริง
 #
 # กติกา:
 #   - ใส่เฉพาะค่าที่ "ต้องตั้ง" จริง ๆ ค่าที่ปล่อยให้ระบบคำนวณเองอย่าใส่ (เช่น context
@@ -146,34 +147,28 @@ recipes:
     validated_on: DGX Spark (GB10) เครื่องเดียว
 
   # ─────────────────────────────────────────────────────────────────────
-  # สูตรจาก eugr/spark-vllm-docker — โปรเจกต์ MIT ที่ทดสอบ vLLM บน DGX Spark
-  # ต่อรุ่นและมี CI รันจริง · เราเอามาเฉพาะ "ค่าที่ต้องตั้งต่อรุ่น" (parser, kv-cache,
-  # attention backend, env) ไม่ได้เอา image เพราะเขา build เองในเครื่อง (`vllm-node`)
-  # ซึ่งไม่ใช่ ref ที่ดึงจาก registry ได้ — bundle ของเราจึงใช้ image ตั้งต้นเหมือนเดิม
-  #
-  # validated_on เขียนตามจริงว่าใครเป็นคนทดสอบ ไม่ได้แอบอ้างว่าเรารันเอง
+  # Parser hints จาก eugr/spark-vllm-docker commit 42b3a793 (MIT)
+  # เก็บเฉพาะชื่อ parser ที่ portable เท่านั้น ไม่คัดลอก serving/env/image จาก upstream:
+  # หลายสูตรพึ่ง local image, patches, chat template หรือ parser plugin ที่ LMDS ยังติดตั้งไม่ได้
+  # จึงติด status=settings-only และไม่อ้างว่า bundle ของ LMDS ผ่าน runtime validation
 
   - match: Qwen/Qwen3.5-35B-A3B
-    label: Qwen3.5-35B-A3B (MoE)
+    label: Qwen3.5-35B-A3B (parser hint)
     engine: vllm
-    serving:
-      kv_cache_dtype: fp8
-      # SM121 เลือก backend เองแล้วได้ตัวที่ช้ากว่า — สูตรที่รันผ่านบังคับ flashinfer
-      attention_backend: flashinfer
-      enable_prefix_caching: true
-    env:
-      VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+    status: settings-only
     tool_calling:
       enabled: true
       parser: qwen3_coder
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+    notes:
+      - settings-only — upstream FP8 recipe ยังพึ่ง fix-qwen3-coder-next และ chat-template mod;
+        LMDS ยังไม่ bundle prerequisites เหล่านี้
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/qwen3.5-35b-a3b-fp8.yaml
+    validated_on: not validated as an LMDS bundle — imported parser name only (upstream MIT recipe)
 
   - match: Qwen/Qwen3.5-122B-A10B-FP8
-    label: Qwen3.5-122B-A10B (FP8)
+    label: Qwen3.5-122B-A10B FP8 (parser hint)
     engine: vllm
-    serving:
-      enable_prefix_caching: true
+    status: settings-only
     tool_calling:
       enabled: true
       parser: qwen3_coder
@@ -181,62 +176,76 @@ recipes:
       enabled: true
       parser: qwen3
     notes:
-      - ต่างจาก variant GPTQ-Int4 ที่ใช้ parser qwen3_xml — เลือกตาม quantization ที่โหลดมา
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+      - settings-only — upstream ใช้ unsloth.jinja จาก chat-template mod ซึ่ง LMDS ยังไม่ bundle
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/qwen3.5-122b-fp8.yaml
+    validated_on: not validated as an LMDS bundle — imported parser names only (upstream MIT recipe)
 
-  - match: Qwen/Qwen3.6-35B-A3B
-    label: Qwen3.6-35B-A3B (MoE)
+  - match: Qwen/Qwen3.6-35B-A3B-FP8
+    label: Qwen3.6-35B-A3B FP8 (parser hint)
     engine: vllm
-    serving:
-      kv_cache_dtype: fp8
-      attention_backend: flashinfer
-      enable_prefix_caching: true
-    env:
-      VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+    status: settings-only
     tool_calling:
       enabled: true
-      # 3.6 เปลี่ยนรูปแบบ tool call เป็น xml — ใช้ qwen3_coder เหมือน 3.5 แล้วแยกไม่ออก
       parser: qwen3_xml
     reasoning:
       enabled: true
       parser: qwen3
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+    notes:
+      - settings-only — upstream ใช้ fixed_chat_template.jinja จาก chat-template mod;
+        LMDS ยังไม่ bundle ไฟล์นี้
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/qwen3.6-35b-a3b-fp8.yaml
+    validated_on: not validated as an LMDS bundle — imported parser names only (upstream MIT recipe)
+
+  - match: nvidia/Qwen3.6-35B-A3B-NVFP4
+    label: Qwen3.6-35B-A3B NVFP4 (parser hint)
+    engine: vllm
+    status: settings-only
+    tool_calling:
+      enabled: true
+      parser: qwen3_xml
+    reasoning:
+      enabled: true
+      parser: qwen3
+    notes:
+      - settings-only — upstream ทดสอบกับ local vllm-node image; LMDS ยังไม่ validate image/runtime เดียวกัน
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/qwen3.6-35b-a3b-nvfp4.yaml
+    validated_on: not validated as an LMDS bundle — imported parser names only (upstream MIT recipe)
 
   - match: QuantTrio/MiniMax-M2
-    label: MiniMax-M2 (AWQ)
+    label: MiniMax-M2 AWQ (parser hint)
     engine: vllm
+    status: settings-only
     tool_calling:
       enabled: true
       parser: minimax_m2
     reasoning:
       enabled: true
       parser: minimax_m2
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+    notes:
+      - settings-only — upstream image มี MiniMax runtime patch; LMDS ยังไม่ validate default image กับโมเดลนี้
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/minimax-m2-awq.yaml
+    validated_on: not validated as an LMDS bundle — imported parser names only (upstream MIT recipe)
 
   - match: stepfun-ai/Step-3.7-Flash
-    label: Step-3.7-Flash
+    label: Step-3.7-Flash (parser hint)
     engine: vllm
-    serving:
-      kv_cache_dtype: fp8
+    status: settings-only
     tool_calling:
       enabled: true
       parser: step3p5
     reasoning:
       enabled: true
       parser: step3p5
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+    notes:
+      - settings-only — upstream ต้องใช้ Step-3.7 support patch และ gpu-mem-util-gb mod;
+        LMDS ยังไม่ bundle สอง prerequisite นี้
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/step-3.7-flash-fp8.yaml
+    validated_on: not validated as an LMDS bundle — imported parser names only (upstream MIT recipe)
 
   - match: openai/gpt-oss-120b
-    label: GPT-OSS-120B (MXFP4)
+    label: GPT-OSS-120B (parser hint)
     engine: vllm
-    serving:
-      kv_cache_dtype: fp8
-      attention_backend: FLASHINFER
-      enable_prefix_caching: true
+    status: settings-only
     tool_calling:
       enabled: true
       parser: openai
@@ -244,24 +253,20 @@ recipes:
       enabled: true
       parser: openai_gptoss
     notes:
-      - น้ำหนักเป็น MXFP4 — ต้องใช้ image ที่มี kernel MXFP4 (สูตรต้นทาง build เอง)
-        image ตั้งต้นของ LMDS อาจ start ไม่ขึ้น ถ้าเจอให้ระบุ image เองตอน start
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+      - settings-only — upstream ต้องใช้ local vllm-node-mxfp4 image, MXFP4 env และ flags;
+        LMDS ยังไม่รองรับ prerequisites เหล่านี้ จึงไม่ใช่สูตร deploy ที่พร้อมรัน
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/openai-gpt-oss-120b.yaml
+    validated_on: not validated as an LMDS bundle — imported parser names only (upstream MIT recipe)
 
-  - match: nvidia/NVIDIA-Nemotron-3-Nano
-    label: Nemotron-3-Nano (30B-A3B)
+  - match: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    label: Nemotron-3-Nano NVFP4 (tool parser hint)
     engine: vllm
-    serving:
-      kv_cache_dtype: fp8
+    status: settings-only
     tool_calling:
       enabled: true
       parser: qwen3_coder
-    reasoning:
-      enabled: true
-      parser: nano_v3
     notes:
-      - สูตรต้นทางโหลด reasoning parser จากไฟล์ปลั๊กอินภายนอก (nano_v3_reasoning_parser.py)
-        ซึ่งเป็นโค้ดที่รันใน container — LMDS ไม่ inject ให้อัตโนมัติ ต้องอนุมัติเองผ่าน runtime asset
-    source: https://github.com/eugr/spark-vllm-docker (MIT)
-    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+      - settings-only — ไม่ตั้ง nano_v3 reasoning parser เพราะต้องโหลด plugin ภายนอก;
+        LMDS ยังไม่ bundle/verify plugin นี้
+    source: https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/recipes/nemotron-3-nano-nvfp4.yaml
+    validated_on: not validated as an LMDS bundle — imported tool parser only (upstream MIT recipe)

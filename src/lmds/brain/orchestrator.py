@@ -250,9 +250,8 @@ def build_plan(
             attempts.append({"raw": redact(raw)[:8000], "error": feedback})
             continue
         plan.generator = f"llm:{provider.name}/{provider.model}"
-        # สูตรที่รันผ่านบนฮาร์ดแวร์แล้ว ชนะสิ่งที่ LLM ค้นมาเสมอในส่วนที่ทับกัน —
-        # อย่างหนึ่งคือหลักฐาน อีกอย่างคือการอนุมาน · ส่วนที่สูตรไม่ครอบคลุม LLM ยังคุมเหมือนเดิม
-        # (ถ้าไม่ทำตรงนี้ ลูกค้าที่ "มี" API key จะได้ผลแย่กว่าคนที่ไม่มี ซึ่งกลับหัวกลับหาง)
+        # สูตร hardware-validated ชนะสิ่งที่ LLM ค้นมาในส่วนที่ทับกัน; settings-only hint
+        # มีหลักฐานต่ำกว่า จึงเติมเฉพาะ parser ที่ LLM ไม่ได้เลือกไว้ (ดู apply_recipe)
         recipe = find_recipe(report.repo_id)
         if recipe is not None:
             plan = apply_recipe(plan, recipe, fit.memory_model.value)

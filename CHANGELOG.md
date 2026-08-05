@@ -8,19 +8,14 @@
 
 ### Added
 
-- **แคตตาล็อกสูตรเพิ่มอีก 7 ตระกูล** — Qwen3.5-35B-A3B, Qwen3.5-122B-FP8, Qwen3.6-35B-A3B,
-  MiniMax-M2, Step-3.7-Flash, GPT-OSS-120B, Nemotron-3-Nano · นำเข้าจาก
-  [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT) ซึ่งทดสอบ vLLM
-  บน DGX Spark ต่อรุ่นและมี CI รันจริง
-  · เอาเฉพาะ **ค่าที่ต้องตั้งต่อรุ่น** (tool/reasoning parser, kv-cache-dtype, attention backend,
-  env) **ไม่ได้เอา image** เพราะเขา build เองในเครื่อง ไม่ใช่ ref ที่ดึงจาก registry ได้
-  · `validated_on` เขียนตามจริงว่าผู้ทดสอบคือโปรเจกต์ต้นทาง ไม่ใช่เรา — มีเทสบังคับไว้
-  · จุดที่ต่างกันแบบเงียบ ๆ และสูตรช่วยได้: Qwen3.5 ใช้ `qwen3_coder` แต่ **3.6 ใช้ `qwen3_xml`**
-  ใช้ผิดแล้ว tool call หลุดออกมาเป็นข้อความธรรมดา
-- **`--attention-backend` เข้า allowlist ของ vLLM** — เป็นของเฉพาะรุ่น+สถาปัตยกรรม ไม่ใช่การจูน
-  (บน GB10 gemma4 ต้องใช้ `TRITON_ATTN` ส่วน Qwen3.5/3.6 ต้องใช้ `flashinfer`) · เดิม flag นี้
-  ไปกอง `flags_needing_approval` แปลว่าคน deploy แบบ `-y` จะไม่ได้มันเลย ซึ่งพังเงียบ:
-  bundle ออกมาครบแต่ช้ากว่าที่ทดสอบไว้ หรือตายตอน init kernel
+- **settings-only parser hints เพิ่มจาก 8 upstream recipes** — Qwen3.5, Qwen3.6, MiniMax-M2,
+  Step-3.7-Flash, GPT-OSS-120B และ Nemotron-3-Nano · pin ที่ commit ของ
+  [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT)
+  · คัดมาเฉพาะชื่อ tool/reasoning parser ที่ portable; ไม่คัด image, env หรือ serving flags
+  ที่ผูกกับ local build/patch/chat template/plugin ของ upstream
+  · ทุก entry ติด `status: settings-only`, แสดงคำเตือนว่า **ยังไม่ runtime-validated โดย LMDS**
+  และไม่ทับ parser ที่ LLM เลือกไว้ · Qwen3.6 NVFP4 ชี้ org ที่ถูกต้องคือ `nvidia/`
+  · prerequisite support เป็นงานแยกใน ROADMAP ก่อนยกระดับ entry เหล่านี้เป็น hardware-validated
 - **คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)** — เครื่องที่คุณใช้เป็น *hub* คุมเครื่องอื่นผ่าน SSH
   · `lmds node add <ip> --user <u>` ถามรหัสผ่าน **ครั้งเดียว** เพื่อติดตั้ง SSH key ของ LMDS แล้วทิ้งทันที
   — **ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ** (มีเทสกันไม่ให้เผลอเพิ่มกลับเข้ามา)

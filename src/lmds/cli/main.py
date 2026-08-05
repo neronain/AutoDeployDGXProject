@@ -285,7 +285,7 @@ def node_remove(
 def list_recipes(
     model: Optional[str] = typer.Argument(None, help="ดูสูตรของโมเดลนี้ (ว่าง = ทั้งหมด)"),
 ) -> None:
-    """สูตรที่รันผ่านจริงแล้ว — ใช้อัตโนมัติเมื่อไม่มี LLM provider
+    """สูตรที่รันผ่านจริงและ settings hints — ใช้อัตโนมัติเมื่อไม่มี LLM provider
 
     เครื่องที่ไม่มี API key จะได้ค่าเหล่านี้แทนการเดา: image ที่ถูกรุ่น, parser, และข้อบังคับ
     ของ quantization ที่ไม่ตั้งแล้ว start ไม่ขึ้น
@@ -299,6 +299,7 @@ def list_recipes(
             console.print("[dim]ดูทั้งหมด: lmds recipes[/dim]")
             raise typer.Exit(code=1)
         console.print(f"[bold]{recipe.label or recipe.match}[/bold]")
+        console.print(f"  status    : {recipe.status}")
         console.print(f"  engine    : {recipe.engine}")
         if recipe.image:
             console.print(f"  image     : {recipe.image}")
@@ -310,16 +311,17 @@ def list_recipes(
             console.print(f"  reasoning : {recipe.reasoning['parser']}")
         for note in recipe.notes or []:
             console.print(f"  [dim]· {note}[/dim]")
-        console.print(f"\n  ทดสอบบน : {recipe.validated_on or '—'}")
+        console.print(f"\n  หลักฐาน  : {recipe.validated_on or '—'}")
         console.print(f"  ที่มา    : {recipe.source or '—'}")
         return
 
     catalog = load_catalog()
-    table = Table(title=f"สูตรที่รันผ่านจริง ({len(catalog)} รุ่น)")
+    table = Table(title=f"Recipes และ settings hints ({len(catalog)} รุ่น)")
     table.add_column("โมเดล")
+    table.add_column("สถานะ")
     table.add_column("engine")
     table.add_column("สิ่งที่สูตรกำหนด")
-    table.add_column("ทดสอบบน")
+    table.add_column("หลักฐาน")
     for recipe in catalog:
         sets = []
         if recipe.image:
@@ -329,7 +331,7 @@ def list_recipes(
             sets.append("tools")
         if recipe.reasoning.get("parser"):
             sets.append("reasoning")
-        table.add_row(recipe.label or recipe.match, recipe.engine, ", ".join(sets),
+        table.add_row(recipe.label or recipe.match, recipe.status, recipe.engine, ", ".join(sets),
                       recipe.validated_on or "—")
     console.print(table)
     console.print("[dim]ใช้อัตโนมัติตอน deploy เมื่อไม่มี LLM provider · ดูรายตัว: lmds recipes <model>[/dim]")

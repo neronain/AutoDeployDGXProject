@@ -17,7 +17,7 @@ lmds generate <MODEL_URL_OR_ID>            # plan → render bundle (controller/
                                            #   --output DIR, --target, --no-llm — validate+zip อยู่ใน M6
 lmds hardware                              # ตรวจ/แสดง hardware profile ของเครื่อง
 lmds scan [--root DIR] [--all] [--json]    # หา weight ที่มีอยู่แล้วบนเครื่อง (อ่านอย่างเดียว)
-lmds recipes [MODEL]                       # สูตรที่รันผ่านจริง — ใช้แทน LLM เมื่อไม่มี API key
+lmds recipes [MODEL]                       # สูตรที่รันผ่านจริง + settings hints ที่มีที่มา
 lmds prune [-y]                            # ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้ว
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
@@ -203,14 +203,16 @@ lmds ps --all                     # โมเดลของทุกเคร�
 
 ## `lmds recipes [MODEL]`
 
-สูตรที่ **รันผ่านจริงบนฮาร์ดแวร์แล้ว** เก็บไว้ในตัวโปรแกรม (`src/lmds/recipes/catalog.yaml`)
+สูตรและ settings hints ที่ตรวจที่มาแล้วเก็บไว้ในตัวโปรแกรม (`src/lmds/recipes/catalog.yaml`)
 
 ปัญหาที่แก้: ลูกค้า/ทีม SI จำนวนมากไม่มี API key ของ LLM → `deploy` ตกไปใช้ rule-based ซึ่งรู้แค่
 "GGUF → llama.cpp, safetensors → vLLM" ไม่รู้เรื่องเฉพาะรุ่น → **deploy ผ่านแต่ start ไม่ขึ้น**
 
 สูตรกำหนดได้: `image` · `serving` (kv_cache_dtype, quantization, moe_backend, …) · `tool_calling`
-· `reasoning` · `env` · `notes` — และ **ต้องมี `source` + `validated_on` เสมอ** สูตรที่ไม่มีที่มา
-คือการเดา มีเทสบังคับไว้
+· `reasoning` · `env` · `notes` — และ **ต้องมี `source` + `status` + `validated_on` เสมอ**
+· `hardware-validated` = bundle ของ LMDS รันจริงแล้วและชนะค่า LLM ที่ทับกัน
+· `settings-only` = hint portable ที่ยังขาด runtime prerequisites; เติมเฉพาะ parser ที่ว่าง
+และต้องเตือนชัดว่าไม่ใช่สูตรพร้อมรัน
 
 - **ไม่แตะ `context` / `max_output`** — สองค่านี้ต้องมาจากการวิเคราะห์หน่วยความจำของเครื่องเป้าหมาย
   ไม่ใช่ค่าคงที่จากเครื่องที่เคยรัน

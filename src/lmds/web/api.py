@@ -376,11 +376,12 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.get("/api/recipes", dependencies=guarded)
     def recipes_list() -> dict:
-        """สูตรที่รันผ่านจริง — สิ่งที่ใช้แทน LLM เมื่อเครื่องไม่มี provider"""
+        """สูตรที่รันผ่านจริงและ settings hints — ใช้เมื่อเครื่องไม่มี provider"""
         from lmds.recipes import load_catalog
 
         return {"recipes": [
-            {"match": r.match, "label": r.label, "engine": r.engine, "image": r.image,
+            {"match": r.match, "label": r.label, "status": r.status,
+             "engine": r.engine, "image": r.image,
              "serving": r.serving, "tools": r.tool_calling.get("parser"),
              "reasoning": r.reasoning.get("parser"), "notes": r.notes,
              "source": r.source, "validated_on": r.validated_on}

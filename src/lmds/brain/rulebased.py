@@ -105,10 +105,11 @@ def build_facts(report: ModelReport) -> list[Fact]:
 
 
 def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> DeploymentPlan:
-    """เติมค่าจากสูตรที่รันผ่านจริงลง plan — ทับเฉพาะสิ่งที่สูตรระบุไว้เท่านั้น
+    """เติมค่าจาก recipe ลง plan — ทับเฉพาะสิ่งที่สูตรระบุไว้เท่านั้น
 
     context/max_output ไม่แตะ เพราะต้องมาจากการวิเคราะห์หน่วยความจำของ *เครื่องเป้าหมาย*
-    ไม่ใช่ค่าคงที่จากเครื่องที่เคยรัน
+    ไม่ใช่ค่าคงที่จากเครื่องที่เคยรัน · settings-only เติม parser ที่ยังว่าง แต่ไม่ทับ
+    ค่าที่ LLM เลือก เพราะหลักฐานยังไม่ถึงระดับ hardware-validated
     """
     # สูตรของ engine อื่นใช้ไม่ได้กับ controller ที่เรากำลังสร้าง — ใส่ image ของ SGLang
     # ลง controller ของ vLLM แล้ว bundle จะผ่าน gate ทุกด่านแต่ start ไม่ขึ้นเลย
@@ -119,9 +120,9 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
         )
         return plan
 
-    if recipe.image and recipe.image_applies_to(memory_model):
+    if recipe.is_hardware_validated and recipe.image and recipe.image_applies_to(memory_model):
         plan.runtime.image_ref = recipe.image
-    elif recipe.image:
+    elif recipe.is_hardware_validated and recipe.image:
         # image ที่ทดสอบมาเป็นของอีกสถาปัตยกรรม — บอกไว้ ดีกว่าใช้เงียบ ๆ แล้วพังตอน start
         plan.warnings.append(
             f"สูตรนี้ทดสอบด้วย image {recipe.image} บนเครื่องคนละแบบ — ใช้ค่าตั้งต้นแทน"
@@ -129,7 +130,8 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
 
     serving_fields = set(Serving.model_fields)
     extra: list[str] = []
-    for key, value in (recipe.serving or {}).items():
+    serving = recipe.serving if recipe.is_hardware_validated else {}
+    for key, value in serving.items():
         if key in serving_fields:
             setattr(plan.serving, key, value)
         elif value is True:
@@ -139,25 +141,35 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
     if extra:
         plan.serving.extra_flags = list(dict.fromkeys(plan.serving.extra_flags + extra))
 
-    if recipe.env:
+    if recipe.is_hardware_validated and recipe.env:
         plan.serving.extra_env = {**plan.serving.extra_env, **{k: str(v) for k, v in recipe.env.items()}}
 
     tools = recipe.tool_calling or {}
     if tools.get("enabled"):
         plan.tool_calling.enabled = True
-        plan.tool_calling.parser = tools.get("parser") or plan.tool_calling.parser
-        if tools.get("chat_template"):
+        if recipe.is_hardware_validated or not plan.tool_calling.parser:
+            plan.tool_calling.parser = tools.get("parser") or plan.tool_calling.parser
+        if recipe.is_hardware_validated and tools.get("chat_template"):
             plan.tool_calling.chat_template_override = tools["chat_template"]
 
     thinking = recipe.reasoning or {}
     if thinking.get("enabled"):
         plan.reasoning.enabled = True
-        plan.reasoning.parser = thinking.get("parser") or plan.reasoning.parser
+        if recipe.is_hardware_validated or not plan.reasoning.parser:
+            plan.reasoning.parser = thinking.get("parser") or plan.reasoning.parser
 
-    plan.runtime.rationale += f" + สูตรที่รันผ่านจริง ({recipe.validated_on or recipe.source})"
-    # rule-based ไม่มีการวิจัยก็จริง แต่สูตรนี้มาจากการรันบนฮาร์ดแวร์ — คำเตือนเดิมจึงไม่ตรงแล้ว
-    plan.warnings = [w for w in plan.warnings if "ไม่มีการวิจัย parser" not in w]
-    plan.warnings.insert(0, f"ใช้สูตรที่รันผ่านจริง: {recipe.label or recipe.match} — {recipe.source}")
+    if recipe.is_hardware_validated:
+        plan.runtime.rationale += f" + สูตรที่รันผ่านจริง ({recipe.validated_on or recipe.source})"
+        # rule-based ไม่มีการวิจัยก็จริง แต่สูตรนี้มาจากการรันบนฮาร์ดแวร์ — คำเตือนเดิมจึงไม่ตรงแล้ว
+        plan.warnings = [w for w in plan.warnings if "ไม่มีการวิจัย parser" not in w]
+        plan.warnings.insert(0, f"ใช้สูตรที่รันผ่านจริง: {recipe.label or recipe.match} — {recipe.source}")
+    else:
+        plan.runtime.rationale += f" + settings-only hint ({recipe.source})"
+        plan.warnings.insert(
+            0,
+            f"ใช้ parser hint แบบ settings-only (ยังไม่ runtime-validated โดย LMDS): "
+            f"{recipe.label or recipe.match} — {recipe.source}",
+        )
     for note in recipe.notes or []:
         if note not in plan.warnings:
             plan.warnings.append(note)
@@ -200,7 +212,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
     if report.trust_remote_code_files:
         plan.warnings.append("repo มีไฟล์ remote code — review ก่อนเปิด --trust-remote-code (ต้องอนุมัติเอง)")
 
-    # สูตรที่รันผ่านจริงมาก่อนค่าตั้งต้นเสมอ — นี่คือสิ่งที่ทดแทน LLM ให้เครื่องที่ไม่มี provider
+    # สูตร hardware-validated มาก่อนค่าตั้งต้น; settings-only เติมเฉพาะช่อง parser ที่ยังว่าง
     recipe = find_recipe(report.repo_id)
     if recipe is not None:
         plan = apply_recipe(plan, recipe, fit.memory_model.value)

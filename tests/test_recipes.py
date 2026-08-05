@@ -1,4 +1,4 @@
-"""สูตรที่รันผ่านจริง — สิ่งที่ทดแทน LLM ให้เครื่องลูกค้าที่ไม่มี API key"""
+"""สูตรที่รันผ่านจริงและ settings hints — ความรู้ deterministic เมื่อไม่มี LLM"""
 
 from __future__ import annotations
 
@@ -29,8 +29,9 @@ def test_catalog_loads():
 def test_every_recipe_states_where_it_came_from(recipe):
     """สูตรที่ไม่มีที่มาคือการเดา — ห้ามมีในแคตตาล็อก"""
     assert recipe.source, f"{recipe.match} ไม่มี source"
-    assert recipe.validated_on, f"{recipe.match} ไม่ได้บอกว่ารันผ่านบนอะไร"
+    assert recipe.validated_on, f"{recipe.match} ไม่ได้บอกระดับหลักฐาน"
     assert recipe.engine, f"{recipe.match} ไม่ได้ระบุ engine"
+    assert recipe.status in {"hardware-validated", "settings-only"}, recipe.match
 
 
 def test_deepseek_recipe_sets_what_the_hardware_run_needed():
@@ -220,43 +221,58 @@ def test_llm_path_also_gets_the_recipe():
     [
         ("Qwen/Qwen3.5-35B-A3B-FP8", "qwen3_coder"),
         ("Qwen/Qwen3.6-35B-A3B-FP8", "qwen3_xml"),
-        ("Qwen/Qwen3.6-35B-A3B-NVFP4", "qwen3_xml"),
+        ("nvidia/Qwen3.6-35B-A3B-NVFP4", "qwen3_xml"),
         ("QuantTrio/MiniMax-M2-AWQ", "minimax_m2"),
         ("openai/gpt-oss-120b", "openai"),
         ("stepfun-ai/Step-3.7-Flash-FP8", "step3p5"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "qwen3_coder"),
     ],
 )
-def test_new_families_get_the_tool_parser_that_was_tested(repo_id, tool_parser):
-    """Qwen 3.5 กับ 3.6 เปลี่ยนรูปแบบ tool call — ใช้ parser ผิดแล้ว tool call หลุดเป็นข้อความ"""
+def test_new_families_get_the_cited_portable_tool_parser(repo_id, tool_parser):
+    """เก็บเฉพาะ parser hint ที่อ่านได้ตรง ๆ จาก recipe ต้นทาง"""
     recipe = find_recipe(repo_id)
     assert recipe is not None, f"ไม่มีสูตรของ {repo_id}"
     assert recipe.tool_calling.get("parser") == tool_parser
 
 
-def test_attention_backend_from_a_recipe_is_not_left_pending_approval():
-    """backend ของ attention เป็นของเฉพาะรุ่น+สถาปัตยกรรม ไม่ใช่การจูน — ต้องผ่าน allowlist
-
-    ถ้าไม่ผ่าน มันจะไปกอง flags_needing_approval แล้วผู้ใช้ที่ deploy แบบ -y จะไม่ได้ flag นั้น
-    ซึ่งเป็นเคสที่พังเงียบ: bundle ออกมาครบ แต่ start แล้วช้ากว่าที่ทดสอบไว้หรือตายตอน init
-    """
-    from lmds.brain.orchestrator import harden_plan
-    from lmds.brain.rulebased import apply_recipe
-
-    report = report_for("Qwen/Qwen3.5-35B-A3B-FP8")
-    fit = analyze(report, PRESETS["dgx-spark-stacked"])
-    plan = harden_plan(
-        apply_recipe(rule_based_plan(report, fit), find_recipe(report.repo_id), fit.memory_model.value),
-        report, fit,
-    )
-    # harden รวม flag กับค่าเป็นสตริงเดียว — เทียบด้วย prefix ไม่ใช่ความเท่ากันของ element
-    assert any(f.startswith("--attention-backend") for f in plan.serving.extra_flags), plan.serving.extra_flags
-    assert not [f for f in plan.flags_needing_approval if "attention-backend" in f]
-
-
-def test_imported_recipes_say_who_actually_tested_them():
-    """เอาสูตรของโปรเจกต์อื่นมาต้องบอกตรง ๆ ว่าใครทดสอบ — ไม่ใช่เขียนเหมือนเรารันเอง"""
+def test_imported_hints_are_portable_and_never_claim_runtime_validation():
+    """local image/patch/env/flags ของ upstream ห้ามหลุดมาเป็นสูตรพร้อมรันของ LMDS"""
     imported = [r for r in load_catalog() if "eugr/spark-vllm-docker" in r.source]
     assert imported, "ไม่มีสูตรที่นำเข้ามา"
     for recipe in imported:
-        assert "โปรเจกต์ต้นทาง" in recipe.validated_on, recipe.match
-        assert "MIT" in recipe.source, recipe.match
+        assert recipe.status == "settings-only", recipe.match
+        assert "not validated as an LMDS bundle" in recipe.validated_on, recipe.match
+        assert "42b3a7932ee60d9baf0f706c6ab681fdef62d0fe" in recipe.source, recipe.match
+        assert not recipe.image, recipe.match
+        assert not recipe.serving, recipe.match
+        assert not recipe.env, recipe.match
+        assert recipe.notes and "settings-only" in recipe.notes[0], recipe.match
+
+
+def test_settings_hint_fills_rulebased_parser_but_does_not_outrank_llm_choice():
+    from lmds.brain.rulebased import apply_recipe
+
+    report = report_for("Qwen/Qwen3.6-35B-A3B-FP8")
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    recipe = find_recipe(report.repo_id)
+
+    rule_plan = rule_based_plan(report, fit)
+    assert rule_plan.tool_calling.parser == "qwen3_xml"
+    assert any("settings-only" in warning for warning in rule_plan.warnings)
+    assert any("ไม่มีการวิจัย parser" in warning for warning in rule_plan.warnings)
+
+    llm_plan = rule_based_plan(report_for("some-org/unmatched"), fit)
+    llm_plan.tool_calling.parser = "newer_parser"
+    apply_recipe(llm_plan, recipe, fit.memory_model.value)
+    assert llm_plan.tool_calling.parser == "newer_parser"
+
+
+def test_qwen36_nvfp4_uses_the_real_nvidia_org():
+    assert find_recipe("nvidia/Qwen3.6-35B-A3B-NVFP4") is not None
+    assert find_recipe("Qwen/Qwen3.6-35B-A3B-NVFP4") is None
+
+
+def test_nemotron_external_reasoning_plugin_is_not_enabled_without_the_asset():
+    recipe = find_recipe("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4")
+    assert recipe.reasoning == {}
+    assert any("reasoning parser" in note for note in recipe.notes)

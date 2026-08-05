@@ -1380,7 +1380,7 @@ async function loadRecipes() {
       <div class="row between"><b style="font-weight:500">${esc(r.label || r.match)}</b>
         <span class="dim">${esc(r.engine)}</span></div>
       <div class="npills" style="margin:4px 0">${sets.map(s => `<span class="npill">${esc(s)}</span>`).join("")}</div>
-      <div class="dim">verified on ${esc(r.validated_on || "—")} ·
+      <div class="dim">${esc(r.status || "hardware-validated")} · ${esc(r.validated_on || "—")} ·
         <a href="${esc(r.source)}" target="_blank" rel="noopener">source</a></div>
     </div>`;
   }).join("")}</div>`;

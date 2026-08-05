@@ -1,13 +1,14 @@
-"""สูตรที่ผ่านการรันจริง — ใช้เมื่อเครื่องลูกค้าไม่มี LLM provider
+"""สูตรที่ผ่านการรันจริงและ settings hints ที่มีที่มา — ใช้เมื่อไม่มี LLM provider
 
 ที่มา: ทีม SI และลูกค้าหลายรายไม่มี API key ของ LLM ทำให้ `lmds deploy` ตกไปใช้ rule-based
 ซึ่งรู้แค่ "GGUF → llama.cpp, safetensors → vLLM" ไม่รู้เรื่องเฉพาะรุ่น เช่น DeepSeek V4
 บังคับ kv-cache fp8 หรือ Qwen3-Coder NVFP4 ต้องใช้ image ที่มี kernel ตรงรุ่น — deploy ผ่าน
 แต่ start ไม่ขึ้น
 
-แฟ้มนี้จึงเก็บสิ่งที่ **รันผ่านจริงบนฮาร์ดแวร์แล้ว** ไม่ใช่การเดา ทุกสูตรมี `source` และ
-`validated_on` กำกับ · เป็นความรู้ที่กำหนดไว้ตายตัว (deterministic) จึงไม่ขัดกับหลักการของ
-โปรเจกต์ที่ว่า LLM ห้ามเขียน Bash — สูตรแค่เติมค่าลง DeploymentPlan เหมือนที่ LLM ทำ
+รายการ `hardware-validated` เก็บสิ่งที่รันผ่านจริงบนฮาร์ดแวร์ ส่วน `settings-only` เก็บ hint
+แบบ portable จากแหล่งอ้างอิง แต่ไม่อ้างว่า bundle ของ LMDS รันผ่านแล้ว ทุกสูตรมี `source`,
+`status` และ `validated_on` กำกับ · เป็นความรู้ deterministic จึงไม่ขัดกับหลักการที่ LLM
+ห้ามเขียน Bash — สูตรแค่เติมค่าลง DeploymentPlan เหมือนที่ LLM ทำ
 """
 
 from __future__ import annotations
@@ -38,13 +39,18 @@ class Recipe:
     notes: list[str] = field(default_factory=list)
     source: str = ""
     validated_on: str = ""
+    status: str = "hardware-validated"
 
     def image_applies_to(self, memory_model: str) -> bool:
         return not self.image_for or memory_model in self.image_for
 
     @property
+    def is_hardware_validated(self) -> bool:
+        return self.status == "hardware-validated"
+
+    @property
     def summary(self) -> str:
-        bits = [self.engine or "?"]
+        bits = [self.status, self.engine or "?"]
         if self.image:
             bits.append(self.image)
         if self.tool_calling.get("parser"):

@@ -69,7 +69,10 @@
 5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
 6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
    ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
-   ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ)
+   ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ) · **ค้างเป็นฟีเจอร์แยก:**
+   schema/controller สำหรับ prerequisite ของ settings-only recipes (local/pinned image build,
+   verified chat template, runtime patch และ reasoning-parser plugin ที่ผ่าน SHA-256 + quality gates)
+   ก่อนยกระดับ Qwen3.5/3.6, Step-3.7, GPT-OSS และ Nemotron hints เป็น hardware-validated
 7. Anthropic provider, i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
    `lmds node` (ทะเบียนเครื่อง + `lmds agent info` ผ่าน SSH) พร้อมตรวจ ConnectX/200G และจับคู่ stacked
    · งานต่อยอด: push bundle ไปติดตั้งบน node ให้อัตโนมัติ, ยืนยัน fabric detection กับ ConnectX จริง
