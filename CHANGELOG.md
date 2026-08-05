@@ -342,6 +342,13 @@
 
 ### Validated
 
+- 🎉 **DeepSeek-V4-Flash-NVFP4 ผ่านบน DGX Spark 2 เครื่องผ่าน LMDS** — โมเดล MoE 157 GB (46 shards)
+  · **ต้องถูกพร้อมกัน 6 อย่างถึงจะ start ขึ้น** และไม่มีอันไหนบอกสาเหตุตรง ๆ: image ที่มี kernel
+  ของ DeepSeek V4 · `HF_HUB_CACHE` ตรง cache layout · `kv-cache-dtype nvfp4_ds_mla` ·
+  **`cudagraph_mode PIECEWISE`** (ตัวสุดท้ายที่ติด — `Expected 7 but got 8 arguments`) ·
+  ล็อก image ต่อ bundle · `clear-fi-cache` ที่ลบไฟล์ของ root ได้
+  · ทั้งหมดอยู่ในสูตรแล้ว — ครั้งต่อไปคำสั่งเดียวจบ ไม่ต้องมี API key
+
 - 🎉 **stacked (multi-node) ผ่านบนฮาร์ดแวร์จริงเป็นครั้งแรก** — `meta-llama/Llama-3.3-70B-Instruct`
   บน **DGX Spark 2 เครื่อง** (gigabyte01 + gigabyte02) ผ่าน LMDS ตั้งแต่ `deploy` จนถึง `test-text`:
   `prepare-runtime → verify-files (30 shards + ขนาดตรงกับ Hub) → sync-worker → verify-worker →

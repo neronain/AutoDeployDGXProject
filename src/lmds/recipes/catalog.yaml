@@ -50,7 +50,7 @@ recipes:
       - โมเดล MoE ขนาดใหญ่ ต้องใช้ 2 เครื่องขึ้นไปบน DGX Spark
       - ตรวจ cache layout ให้ดี — weight ที่โหลดด้วย HF รุ่นเก่าอยู่นอก hub/
     source: https://github.com/neronain/deepseek-v4-flash-nvfp4-stacked-on-DGX-Spark
-    validated_on: 2x DGX Spark (GB10) · vLLM dspark build
+    validated_on: 2x DGX Spark (GB10) · vLLM dspark build · TP=2 · test-text ผ่าน 5 ส.ค. 2569
 
   - match: meta-llama/Llama-3.3-70B-Instruct
     label: Llama-3.3-70B-Instruct
