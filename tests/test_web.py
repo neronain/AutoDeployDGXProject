@@ -529,7 +529,7 @@ def test_commands_are_read_from_the_controller_itself(tmp_path, monkeypatch):
     (เจอจริง: test-vision ไม่โผล่ให้ผู้ใช้เพราะ bundle สร้างก่อนมีคำสั่งนี้)
     """
     from lmds.fleet import register_bundle
-    from lmds.web.api import _controller_commands
+    from lmds.inventory import controller_commands as _controller_commands
     from tests.test_generator import gguf_report, make_bundle, mmproj_gguf_report
 
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
@@ -545,7 +545,7 @@ def test_commands_are_read_from_the_controller_itself(tmp_path, monkeypatch):
 
 def test_unknown_commands_are_not_reported(tmp_path):
     """dispatch table มี help|--help|-h ปนอยู่ — ต้องไม่หลุดออกมาเป็นปุ่ม"""
-    from lmds.web.api import _controller_commands
+    from lmds.inventory import controller_commands as _controller_commands
 
     script = tmp_path / "x-single.sh"
     script.write_text("#!/usr/bin/env bash\ncase \"$1\" in\n  start) start ;;\n"
@@ -554,7 +554,7 @@ def test_unknown_commands_are_not_reported(tmp_path):
 
 
 def test_missing_controller_reports_no_commands():
-    from lmds.web.api import _controller_commands
+    from lmds.inventory import controller_commands as _controller_commands
 
     assert _controller_commands("/ไม่มี/ที่นี่.sh") == []
 
@@ -562,3 +562,101 @@ def test_missing_controller_reports_no_commands():
 def test_model_payload_exposes_commands(runnable):
     model = TestClient(create_app()).get("/api/models").json()["models"][0]
     assert isinstance(model["commands"], list)
+
+
+# ── fleet หลายเครื่อง ────────────────────────────────────────────────────────
+@pytest.fixture
+def registered(monkeypatch):
+    """เครื่องหนึ่งเครื่องในทะเบียน + SSH ที่ถูก mock ทั้งหมด — เทสห้ามต่อออกนอกเครื่องจริง"""
+    from lmds.nodes import Node, add
+
+    add(Node(name="spark2", host="10.0.0.6", user="ops", cluster_ip="10.10.0.2"))
+
+    fabric = {"links": [{"iface": "enp1s0f0np0", "ip": "10.10.0.2", "speed_gbps": 200,
+                         "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": True}],
+              "rdma_devices": ["mlx5_0"], "best_gbps": 200, "tier": "rdma", "cluster_capable": True}
+    payload = {
+        "host": {"lmds_version": "0.1.0", "hostname": "spark2", "arch": "aarch64",
+                 "profile": "dgx_spark", "gpus": [{"name": "NVIDIA GB10"}], "fabric": fabric,
+                 "cpu": {"cores": 20, "percent": 8}, "ram_used_gb": 30, "ram_total_gb": 119},
+        "models": [], "summary": {"total": 0, "running": 0, "healthy": 0, "not_downloaded": 0},
+    }
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: payload)
+    monkeypatch.setattr("lmds.nodes.ssh.probe", lambda node: payload)
+    return payload
+
+
+def test_nodes_list_exposes_cluster_ip(registered):
+    node = TestClient(create_app()).get("/api/nodes").json()["nodes"][0]
+    assert (node["name"], node["cluster_ip"]) == ("spark2", "10.10.0.2")
+    assert "password" not in node
+
+
+def test_node_inventory_reports_resources(registered):
+    data = TestClient(create_app()).get("/api/nodes/spark2/inventory").json()
+    assert data["reachable"] is True
+    assert data["host"]["cpu"]["cores"] == 20
+    assert data["host"]["fabric"]["best_gbps"] == 200
+
+
+def test_unreachable_node_degrades_instead_of_failing(monkeypatch):
+    """เครื่องล่มหนึ่งเครื่องต้องไม่ทำให้ทั้งหน้าเว็บพัง"""
+    from lmds.nodes import Node, NodeError, add
+
+    add(Node(name="down", host="10.0.0.9", user="ops"))
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: (_ for _ in ()).throw(NodeError("timeout")))
+    data = TestClient(create_app()).get("/api/nodes/down/inventory").json()
+    assert data["reachable"] is False
+    assert "timeout" in data["error"]
+
+
+def test_patch_sets_cluster_ip(registered):
+    client = TestClient(create_app())
+    r = client.patch("/api/nodes/spark2", json={"cluster_ip": "10.10.0.7"})
+    assert r.status_code == 200
+    assert client.get("/api/nodes").json()["nodes"][0]["cluster_ip"] == "10.10.0.7"
+
+
+def test_patch_rejects_a_bad_cluster_ip(registered):
+    r = TestClient(create_app()).patch("/api/nodes/spark2", json={"cluster_ip": "10.10.0"})
+    assert r.status_code == 400
+
+
+def test_patch_cannot_change_the_address(registered):
+    """host/user แก้ที่นี่ไม่ได้ — ที่อยู่เปลี่ยน = คนละเครื่อง"""
+    r = TestClient(create_app()).patch("/api/nodes/spark2", json={"host": "1.2.3.4"})
+    assert r.status_code == 400
+
+
+def test_patch_unknown_node_is_404(registered):
+    assert TestClient(create_app()).patch("/api/nodes/nope", json={"note": "x"}).status_code == 404
+
+
+def test_cluster_view_sends_codes_not_thai_sentences(registered, monkeypatch):
+    """หน้าเว็บเป็นภาษาอังกฤษล้วน — API ต้องส่งรหัสสถานะให้ JS เรียบเรียงเอง"""
+    data = TestClient(create_app()).get("/api/cluster").json()
+    node = next(m for m in data["machines"] if m["name"] == "spark2")
+    assert node["ip"]["state"] in {"ok", "unset", "mismatch", "slow"}
+    assert node["fabric"]["best_gbps"] == 200
+    for group in data["groups"]:
+        for blocker in group["blockers"]:
+            assert set(blocker) == {"kind", "names"}
+
+
+def test_cluster_view_groups_matching_machines(registered, monkeypatch):
+    from lmds.inventory import host_payload as real_host_payload
+
+    hub = dict(real_host_payload())
+    hub.update(registered["host"], hostname="spark1")
+    monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
+
+    data = TestClient(create_app()).get("/api/cluster").json()
+    (group,) = data["groups"]
+    assert sorted(m["name"] for m in group["members"]) == ["spark1", "spark2"]
+    assert group["world_size"] == 2
+
+
+def test_node_command_allowlist_blocks_anything_else(registered, monkeypatch):
+    """ปุ่มบนหน้าเว็บสั่งข้ามเครื่องได้ — ต้องจำกัดคำสั่งไว้เท่าที่จำเป็น"""
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/rm-rf")
+    assert r.status_code == 400

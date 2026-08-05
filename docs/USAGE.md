@@ -423,6 +423,76 @@ lmds disable gemma-4-26b-a4b-it-gguf         # ยกเลิก autostart
 - เช็ก/ดู log ของ service: `systemctl status lmds-<ชื่อ>` · `journalctl -u lmds-<ชื่อ> -f`
 - ต้องมี `systemd` (DGX OS/Ubuntu มีอยู่แล้ว) · **stacked (2 เครื่อง):** master ตั้ง autostart ได้ แต่ตอน boot worker ต้องเปิดอยู่ + SSH ถึงได้ ไม่งั้น start จะรอ/ล้ม
 
+## 4.5 คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)
+
+หน้างานที่มีมากกว่า 1 เครื่อง — แทนที่จะ ssh ไล่ทีละตัว ให้เครื่องที่คุณนั่งอยู่ (**hub**) คุมเครื่องอื่นทั้งหมด
+
+### เตรียมเครื่องปลายทาง
+
+1. ติดตั้ง LMDS ไว้แล้ว (`lmds` อยู่ใน PATH)
+2. user ที่จะใช้ **อยู่ในกลุ่ม `docker`** — **ไม่ต้องเป็น root**
+3. sshd เปิดอยู่
+
+### เพิ่มเครื่อง (กรอกรหัสผ่านครั้งเดียว)
+
+```bash
+lmds node add 192.168.10.21 --user ops
+# ถามรหัสผ่าน → ติดตั้ง SSH key ของ LMDS → ทิ้งรหัสผ่านทันที
+```
+
+รหัสผ่าน**ไม่ถูกบันทึกลงดิสก์** และทะเบียน (`~/.config/lmds/nodes.yaml`, สิทธิ์ 0600) ไม่มีฟิลด์รหัสผ่าน
+ตั้งแต่แรก · ตั้งแต่นั้นไปใช้ key ของ LMDS เอง (`~/.config/lmds/id_lmds`) แยกจาก key ส่วนตัวคุณ
+
+### ใช้งานประจำวัน
+
+```bash
+lmds node list                      # ทะเบียนทั้งหมด (เร็ว — อ่านไฟล์)
+lmds node list --check              # ต่อจริง ดูว่าเครื่องไหนยังตอบ
+lmds ps --all                       # โมเดลของทุกเครื่องในตารางเดียว
+lmds node run spark2 doctor my-model  # รันคำสั่ง lmds อะไรก็ได้บนเครื่องนั้น
+lmds node run spark2 logs my-model -n 200
+lmds node remove spark2             # ออกจากทะเบียน (ไม่แตะเครื่องนั้น)
+```
+
+- เครื่องปลายทาง**ไม่ต้องรัน daemon** — hub เรียก `lmds agent info` ผ่าน SSH เอาสถานะเป็น JSON
+- เครื่องหนึ่งล่ม เครื่องอื่นและหน้าเว็บไม่กระทบ (แถวนั้นขึ้นว่าติดต่อไม่ได้)
+
+### ดูทรัพยากรของแต่ละเครื่อง
+
+หน้าเว็บส่วน **Other machines** แสดงต่อเครื่อง: **CPU** (จำนวน core + load) · **RAM/Unified memory** ·
+**VRAM** (ใช้/ทั้งหมด + %busy — การ์ดแยกเท่านั้น DGX Spark เป็น unified จึงแสดงเป็น pool) ·
+**Disk** · **ความเร็วสาย** · และ **จำนวนโมเดลที่รันอยู่** (llama.cpp รันหลายตัวพร้อมกันได้ จึงเป็นตัวเลข
+ไม่ใช่ใช่/ไม่ใช่)
+
+ปุ่มสั่งข้ามเครื่องจำกัดไว้ที่ `start / stop / restart / repair / doctor` (บังคับที่ฝั่ง server)
+
+### เครื่องไหน stacked ด้วยกันได้ (ConnectX / 200G)
+
+```bash
+lmds node cluster
+```
+
+ตรวจจาก `/sys` ให้เอง: ความเร็วลิงก์ · การ์ด ConnectX (vendor `0x15b3`) · อุปกรณ์ RDMA · IP ของแต่ละ interface
+แล้วจับกลุ่มเฉพาะเครื่องที่ **arch/profile/รุ่น GPU/จำนวน GPU ตรงกัน และมีสาย ≥ 25G ทั้งคู่**
+
+สิ่งที่ระบบเดาให้ไม่ได้คือ **NCCL จะคุยกันทาง IP ไหน** (เครื่องหนึ่งมักมีทั้งเส้น SSH และเส้น fabric) —
+ระบบเสนอ IP ที่เจอบนสายเร็วสุด แต่ต้องยืนยันเอง:
+
+```bash
+lmds node set spark2 --cluster-ip 10.10.0.2     # ตั้งค่า
+lmds node set spark2                            # ดูค่าปัจจุบัน + ค่าที่ตรวจพบ
+lmds node cluster --write my-70b-model          # เขียน cluster.env ลง bundle
+```
+
+`cluster.env` มี `MASTER_IP` / `WORKER_IP` / `SSH_USER` / `TRANSPORT_IP_*` / `NCCL_SOCKET_IFNAME` —
+stacked controller จะ source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วไม่ถาม IP ตอน `start` อีก
+(ตั้ง env จากภายนอกยังชนะไฟล์นี้เสมอ · ไม่มีไฟล์ = ถามแบบเดิม)
+
+> ถ้าไม่ตั้ง `NCCL_SOCKET_IFNAME` ไว้ NCCL จะเลือก interface เอง และมักได้เส้นบริหารจัดการที่ช้ากว่า —
+> ยังรันได้แต่ช้าลงแบบหาสาเหตุยาก
+
+รายละเอียดทั้งหมด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
+
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
 สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**
@@ -484,6 +554,8 @@ lmds config defaults                                 # ดู default model ข�
 lmds repair <ชื่อ>                                    # ซ่อมไฟล์ที่ขาด (ดู §4.3)
 lmds remove <ชื่อ> --keep-weights                     # ลบ bundle แต่เก็บ weight (ดู §4.3)
 lmds --install-completion                            # เปิด tab completion (ดู §4.4)
+lmds node list / lmds ps --all                       # เครื่องอื่นในทะเบียน (ดู §4.5)
+lmds agent info                                      # JSON สถานะเครื่องนี้ (hub เรียกผ่าน SSH)
 ```
 
 ตั้ง key แบบไม่ต้องพิมพ์มือ (สำหรับ script/automation):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -23,71 +24,16 @@ import lmds
 STATIC = Path(__file__).parent / "static"
 
 
+def _timestamp() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
 def _host_payload() -> dict:
-    from lmds.fit.targets import from_hardware_report
-    from lmds.hardware import probe
-    from lmds.hardware.profiler import host_summary
+    from lmds.inventory import host_payload
 
-    report = probe()
-    summary = host_summary()
-    target = from_hardware_report(report)
-    return {
-        "hostname": summary.hostname,
-        "ip": summary.ip,
-        "arch": report.arch,
-        "profile": report.profile.value,
-        "ram_used_gb": summary.ram_used_gb,
-        "ram_total_gb": summary.ram_total_gb,
-        "disk_free_gb": report.disk_free_gb,
-        "disk_total_gb": report.disk_total_gb,
-        "docker": report.docker,
-        "toolkit": report.nvidia_container_toolkit,
-        # unified (Spark) ต้องแสดง memory คนละแบบกับ discrete (RTX) — ดู mockup
-        "memory_model": target.memory_model.value if target else None,
-        "gpus": [
-            {
-                "name": gpu.name,
-                "vram_gb": round(gpu.vram_mib / 1024, 1) if gpu.vram_mib
-                else (gpu.known.vram_gb if gpu.known else None),
-                "compute": gpu.compute_capability,
-                "tested": gpu.tested,
-            }
-            for gpu in report.gpus
-        ],
-    }
-
-
-def _weights_present(server, profile) -> bool:
-    """โหลด weight มาแล้วหรือยัง — ใช้ตัวตรวจชุดเดียวกับ lmds doctor ไม่คำนวณซ้ำคนละทาง"""
-    from lmds.doctor.checks import _weight_paths
-
-    if not profile:
-        return False
-    directory, wanted = _weight_paths(profile, server.slug)
-    if not directory.is_dir():
-        return False
-    return all((directory / name).exists() for name in wanted)
-
-
-_COMMAND_RE = re.compile(r"(?m)^\s{2}([a-z][a-z-]*)\)")
-
-
-def _controller_commands(controller: str) -> list[str]:
-    """คำสั่งที่ controller ตัวนี้รองรับจริง — อ่านจาก dispatch table ของสคริปต์เอง
-
-    bundle เก่าไม่มีคำสั่งใหม่ ๆ (เช่น test-vision) การเดาจาก profile ทำให้ปุ่มขึ้นแล้วกดล้ม
-    """
-    try:
-        text = Path(controller).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    known = {
-        "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "status",
-        "logs", "client-config", "network-info", "test-text", "test-vision", "test-reasoning",
-        "test-tools", "bench", "stress", "props", "info", "wait-health", "doctor",
-        "sync-worker", "verify-worker", "clear-fi-cache", "repair",
-    }
-    return sorted({m for m in _COMMAND_RE.findall(text) if m in known})
+    return host_payload()
 
 
 def _active_job(slug: str) -> dict | None:
@@ -98,31 +44,9 @@ def _active_job(slug: str) -> dict | None:
 
 
 def _model_payload(server) -> dict:
-    from lmds.fleet import autostart_status, bundle_profile, feature_summary, profile_context
+    from lmds.inventory import model_payload
 
-    profile = bundle_profile(server.controller)
-    return {
-        "slug": server.slug,
-        "model_id": server.model_id or server.model,
-        "engine": server.engine,
-        "mode": server.mode,
-        "port": server.port,
-        "running": server.running,
-        "healthy": server.healthy,
-        "registered": server.registered,
-        "external": server.external,
-        "controller_exists": server.controller_exists,
-        "endpoint": server.endpoint,
-        "context": profile_context(profile),
-        "features": feature_summary(profile),
-        "autostart": autostart_status(server.slug),
-        "topology": (profile or {}).get("topology"),
-        "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
-        "commands": _controller_commands(server.controller) if server.controller_exists else [],
-        "started_at": server.started_at,
-        "downloaded": _weights_present(server, profile),
-        "job": _active_job(server.slug),
-    }
+    return model_payload(server, _active_job(server.slug))
 
 
 def create_app(token: str = "") -> FastAPI:
@@ -334,6 +258,158 @@ def create_app(token: str = "") -> FastAPI:
         except FleetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"slug": slug, "unit": name, "enabled": enabled}
+
+    # ── fleet หลายเครื่อง — hub คุม node อื่นผ่าน SSH ────────────────────────
+    @app.get("/api/nodes", dependencies=guarded)
+    def nodes_list() -> dict:
+        from lmds.nodes import load
+
+        return {"nodes": [
+            {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
+             "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
+             "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface}
+            for n in load()
+        ]}
+
+    @app.get("/api/nodes/{name}/inventory", dependencies=guarded)
+    def node_inventory(name: str) -> dict:
+        """สถานะของ node หนึ่งเครื่อง — เครื่องล่มต้องไม่ทำให้ทั้งหน้าพัง จึงคืน reachable=false"""
+        from lmds.nodes import NodeError, find, probe, update
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        try:
+            info = probe(node)
+        except NodeError as exc:
+            update(name, last_error=str(exc)[:200])
+            return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
+        update(name, last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
+        return {"name": name, "reachable": True, "error": "", **info}
+
+    @app.get("/api/cluster", dependencies=guarded)
+    def cluster_view() -> dict:
+        """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริง จึงช้ากว่าหน้าอื่น
+
+        เรียกเมื่อผู้ใช้กดเท่านั้น ไม่รวมอยู่ใน poll ปกติ
+        """
+        from lmds.inventory import host_payload
+        from lmds.nodes import (
+            NodeError, check_cluster_ip, cluster_groups, load, probe, stack_ready,
+            suggest_cluster_ip,
+        )
+
+        def row(name, host, cluster_ip, is_self):
+            # ส่งข้อมูลดิบอย่างเดียว — หน้าเว็บเป็นภาษาอังกฤษ จึงเรียบเรียงประโยคฝั่ง JS
+            return {
+                "name": name, "self": is_self, "reachable": True,
+                "ready": stack_ready(host), "has_gpu": bool(host.get("gpus")),
+                "fabric": host.get("fabric"), "cluster_ip": cluster_ip,
+                "suggested_ip": suggest_cluster_ip(host),
+                "ip": check_cluster_ip(host, cluster_ip),
+            }
+
+        local = host_payload()
+        local_name = local.get("hostname") or "this machine"
+        # hub เองไม่ได้อยู่ในทะเบียน จึงยังไม่มีที่เก็บ cluster IP ของตัวเอง — เสนอจากการ์ดที่ตรวจพบ
+        machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local)}]
+        rows = [row(local_name, local, machines[0]["cluster_ip"], True)]
+        for node in load():
+            try:
+                host = (probe(node).get("host")) or {}
+            except NodeError as exc:
+                rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
+                             "has_gpu": False, "error": str(exc)[:200], "fabric": None,
+                             "cluster_ip": node.cluster_ip, "suggested_ip": "",
+                             "ip": {"state": "unset", "iface": "", "speed_gbps": None}})
+                continue
+            machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
+            rows.append(row(node.name, host, node.cluster_ip, False))
+        return {"machines": rows, "groups": cluster_groups(machines)}
+
+    @app.patch("/api/nodes/{name}", dependencies=guarded)
+    def node_patch(name: str, body: dict) -> dict:
+        """แก้ค่าที่แก้ได้ของเครื่อง — ตอนนี้คือ cluster IP/interface และโน้ต"""
+        from lmds.nodes import NodeError, find, update
+
+        if find(name) is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note") if k in body}
+        if not changes:
+            raise HTTPException(status_code=400, detail="ไม่มีฟิลด์ที่แก้ได้ในคำขอนี้")
+        try:
+            node = update(name, **changes)
+        except NodeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"name": node.name, "cluster_ip": node.cluster_ip,
+                "cluster_iface": node.cluster_iface, "note": node.note}
+
+    @app.post("/api/nodes", dependencies=guarded)
+    def node_add(body: dict) -> dict:
+        """เพิ่มเครื่อง — รหัสผ่านใช้ครั้งเดียวเพื่อติดตั้ง key แล้วทิ้ง ไม่เขียนลงดิสก์"""
+        from lmds.nodes import (
+            Node, NodeError, add, check_login, ensure_key, install_key, load, probe, suggest_name,
+        )
+
+        host = (body.get("host") or "").strip()
+        user = (body.get("user") or "").strip()
+        if not host or not user:
+            raise HTTPException(status_code=400, detail="ต้องระบุทั้ง host และ user")
+        port = int(body.get("port") or 22)
+        password = body.get("password") or ""
+
+        try:
+            ensure_key()
+            name = (body.get("name") or "").strip() or suggest_name(host, {n.name for n in load()})
+            node = Node(name=name, host=host, user=user, port=port, note=body.get("note") or "")
+            if not check_login(host, user, port):
+                if not password:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"kind": "need-password",
+                                "message": f"ยังเข้า {user}@{host} ด้วย key ไม่ได้ — ใส่รหัสผ่านครั้งเดียวเพื่อติดตั้ง key"},
+                    )
+                install_key(host, user, password, port)
+                if not check_login(host, user, port):
+                    raise HTTPException(status_code=422,
+                                        detail={"kind": "key-failed", "message": "ติดตั้ง key แล้วแต่ยัง login ไม่ได้"})
+            info = probe(node)
+            node.lmds_version = (info.get("host") or {}).get("lmds_version", "")
+            node.last_seen = _timestamp()
+            add(node)
+        except NodeError as exc:
+            raise HTTPException(status_code=422, detail={"kind": "node", "message": str(exc)}) from exc
+        finally:
+            password = ""  # noqa: F841 — เคลียร์ทันที ไม่ให้ค้างในเฟรม
+        return {"name": node.name, "reachable": True, **info}
+
+    @app.delete("/api/nodes/{name}", dependencies=guarded)
+    def node_remove(name: str) -> dict:
+        from lmds.nodes import NodeError, remove
+
+        try:
+            node = remove(name)
+        except NodeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"name": node.name, "removed": True}
+
+    @app.post("/api/nodes/{name}/models/{slug}/{command}", dependencies=guarded)
+    def node_command(name: str, slug: str, command: str) -> dict:
+        """สั่งงานโมเดลบนเครื่องอื่น — ผ่าน CLI ของ node ตัวเดียวกับที่ผู้ใช้พิมพ์เอง"""
+        from lmds.nodes import NodeError, find, run
+
+        allowed = {"start", "stop", "restart", "repair", "doctor"}
+        if command not in allowed:
+            raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        try:
+            result = run(node, f"lmds {command} {shlex.quote(slug)}", timeout=1800)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "slug": slug, "command": command,
+                "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
 
     return app
 

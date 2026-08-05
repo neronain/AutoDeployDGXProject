@@ -26,6 +26,13 @@ MASTER_CONTAINER="${MASTER_CONTAINER:-lmds-{{ slug }}-head}"
 WORKER_CONTAINER="${WORKER_CONTAINER:-lmds-{{ slug }}-worker}"
 
 # ── Cluster nodes (ต้องแก้ให้ตรงเครื่องจริง) ──
+# hub เขียน cluster.env ให้ได้ด้วย `lmds node cluster --write {{ slug }}` — มีก็ใช้เลยไม่ต้องถาม
+# env ที่ตั้งมาจากภายนอกยังชนะไฟล์นี้เสมอ (ไฟล์ถูกอ่านก่อน default ทั้งหมดด้านล่าง)
+CLUSTER_ENV="${CLUSTER_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cluster.env}"
+if [[ -f "$CLUSTER_ENV" ]]; then
+  set -a; . "$CLUSTER_ENV"; set +a
+fi
+
 MASTER_IP="${MASTER_IP:-10.100.152.1}"
 WORKER_IP="${WORKER_IP:-10.100.152.2}"
 SSH_USER="${SSH_USER:-${USER:-$(id -un)}}"
@@ -453,6 +460,11 @@ _nccl_env_pairs() {
 # (ข้อบังคับของ controller contract v3.0.0 สำหรับ stacked)
 prompt_cluster_config() {
   [[ -t 0 ]] || return 0
+  # ค่ามาจาก hub แล้ว (cluster.env) — ถามซ้ำมีแต่จะให้พิมพ์ผิด
+  if [[ -f "$CLUSTER_ENV" ]]; then
+    log "ใช้ค่าคลัสเตอร์จาก $CLUSTER_ENV (head ${MASTER_IP} · worker ${WORKER_IP})"
+    return 0
+  fi
   local ans
   printf '\n== Cluster configuration (กด Enter เพื่อใช้ค่าเดิม) ==\n'
   read -rp "  Head (master) node IP [${MASTER_IP}]: " ans || true; [[ -z "$ans" ]] || MASTER_IP="$ans"

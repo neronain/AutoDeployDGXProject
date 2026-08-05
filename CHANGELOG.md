@@ -8,6 +8,33 @@
 
 ### Added
 
+- **คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)** — เครื่องที่คุณใช้เป็น *hub* คุมเครื่องอื่นผ่าน SSH
+  · `lmds node add <ip> --user <u>` ถามรหัสผ่าน **ครั้งเดียว** เพื่อติดตั้ง SSH key ของ LMDS แล้วทิ้งทันที
+  — **ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ** (มีเทสกันไม่ให้เผลอเพิ่มกลับเข้ามา)
+  · `node list [--check]` / `node set` / `node remove` / `node run <name> <คำสั่ง lmds...>` / `ps --all`
+  · **node ไม่ต้องรัน daemon** และไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 — hub เรียก `lmds agent info` ผ่าน SSH
+  · **ไม่ต้องใช้ root** — user ที่อยู่ในกลุ่ม `docker` พอ
+  · เครื่องหนึ่งล่มต้องไม่ทำให้หน้าเว็บพัง — แถวนั้นขึ้นว่าติดต่อไม่ได้แล้วจบ
+- **ทรัพยากรสดต่อเครื่อง** — CPU (core + load 1 นาที) · RAM/Unified memory · **VRAM ที่ใช้จริง + %busy**
+  · ดิสก์ (ใช้/ทั้งหมด) · ความเร็วสาย · **จำนวนโมเดลที่รันอยู่** (llama.cpp รันได้หลายตัวพร้อมกัน จึงเป็น
+  ตัวเลข ไม่ใช่ใช่/ไม่ใช่) — แสดงทั้งหน้า "เครื่องนี้" และทุกเครื่องในทะเบียน จาก payload ชุดเดียวกัน
+- **ตรวจ ConnectX / 200G / RDMA แล้วบอกว่าเครื่องไหน stacked ด้วยกันได้** — `lmds node cluster`
+  · อ่านจาก `/sys` ล้วน (ไม่ต้อง root ไม่ต้องมี ethtool/ibstat): ความเร็วลิงก์, vendor `0x15b3`,
+  `/sys/class/infiniband/*`, IP ของแต่ละ interface
+  · จับกลุ่มเฉพาะเครื่องที่ **arch/profile/รุ่น GPU/จำนวน GPU ตรงกัน และมีสาย ≥ 25G ทั้งคู่** —
+  ความเร็วที่รายงานเป็นของ **เครื่องที่ช้าที่สุดในกลุ่ม** เพราะ NCCL รอ rank ที่ช้าที่สุดเสมอ
+- **กำหนด cluster IP ที่ NCCL จะใช้** — `lmds node set <name> --cluster-ip <ip>` (ตรวจว่าเป็น IPv4 ที่ใช้ได้จริง
+  และตรงกับ interface ที่ตรวจพบ) · ระบบ **เสนอ** IP บนสายเร็วสุดให้ แต่ไม่ตั้งเอง เพราะเดาผิดแล้ว
+  stacked จะค้างตอน NCCL init โดยไม่บอกสาเหตุ
+- **`lmds node cluster --write <slug>`** — เขียน `cluster.env` ลง bundle
+  (`MASTER_IP`/`WORKER_IP`/`SSH_USER`/`TRANSPORT_IP_*`/`NCCL_SOCKET_IFNAME`) → stacked controller
+  source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วข้ามการถาม IP ตอน `start` (env ภายนอกยังชนะไฟล์นี้เสมอ)
+- **`lmds agent info`** — พิมพ์สถานะเครื่องเป็น JSON ให้ hub อ่าน (ปกติไม่ได้พิมพ์เอง)
+- **หน้าเว็บ: ส่วน Other machines + Cluster fabric** — เพิ่มเครื่อง, ดูทรัพยากรสด, สั่ง start/stop/doctor
+  ข้ามเครื่อง (allowlist ฝั่ง server: `start stop restart repair doctor`), แก้ cluster IP ได้ในตาราง
+- **เอกสารใหม่ [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)** — fleet vs stacked, สถาปัตยกรรม
+  ที่ไม่มี daemon, ความปลอดภัย, cluster fabric และข้อจำกัดที่รู้ตัว
+
 - **`lmds remove <slug>`** — ลบโมเดลออกจากเครื่องทั้งหมด: หยุดเซิร์ฟเวอร์ → ยกเลิก autostart →
   ลบ bundle + ZIP + ทะเบียน/log + runtime files + weight · แสดงรายการและขนาดให้ดูก่อนถามยืนยันเสมอ
   · `--keep-weights` เก็บ weight ไว้ (deploy ใหม่ได้โดยไม่ต้องโหลดหลายสิบ GB ซ้ำ)
@@ -176,6 +203,13 @@
   (เดิมนับจำนวนอย่างเดียว ซึ่งหยาบกว่าฝั่ง single ทั้งที่ stacked มีขั้น rsync ข้ามเครื่องเพิ่มอีกจุด
   ที่ไฟล์ขาดได้), คำเตือน endpoint ไม่มี API key, และ help ภาษาอังกฤษพร้อมหัวข้อ **API TOKEN**
   · ยังไม่ port: `runtime_assets` และ `wait-health` (ดู Known gaps)
+
+### Known gaps (fleet)
+
+- hub ยังไม่เก็บ cluster IP **ของตัวเอง** ในทะเบียน (ตัวเองไม่ได้อยู่ในทะเบียน) — ใช้ค่าที่ตรวจพบตอนเขียน `cluster.env`
+- `lmds deploy` ยังไม่ push bundle ไปติดตั้งบน node ให้ — node ต้องมี LMDS อยู่ก่อน
+- กลุ่ม stacked > 2 เครื่อง แสดงผลได้ แต่ `--write` ต้องระบุ `--worker` เอง (template เป็น head+worker คู่เดียว)
+- fabric detection มีเทสครอบด้วย sysfs จำลอง — **ยังไม่ได้ยืนยันกับ ConnectX บนเครื่องจริง**
 
 ### Known gaps
 

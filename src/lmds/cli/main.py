@@ -28,6 +28,12 @@ app = typer.Typer(
 config_app = typer.Typer(help="จัดการ provider, credentials และ site profile", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 
+node_app = typer.Typer(help="คุมเครื่องอื่นจากเครื่องนี้ (fleet หลายเครื่อง)", no_args_is_help=True)
+app.add_typer(node_app, name="node")
+
+agent_app = typer.Typer(help="ให้ hub เรียกผ่าน SSH — ปกติผู้ใช้ไม่ต้องเรียกเอง", no_args_is_help=True)
+app.add_typer(agent_app, name="agent")
+
 console = Console()
 err_console = Console(stderr=True)
 
@@ -72,6 +78,381 @@ def _complete_target(incomplete: str) -> list[str]:
         return sorted(name for name in PRESETS if name.startswith(incomplete))
     except Exception:
         return []
+
+
+def _now() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _complete_node(incomplete: str) -> list[str]:
+    try:
+        from lmds.nodes import load
+
+        return [n.name for n in load() if n.name.startswith(incomplete)]
+    except Exception:  # noqa: BLE001 — completion ห้ามพังทั้งคำสั่ง
+        return []
+
+
+# ── agent: ให้ hub เรียกผ่าน SSH (node ไม่ต้องรัน daemon อะไรเลย) ─────────────
+@agent_app.command("info")
+def agent_info() -> None:
+    """พิมพ์สถานะเครื่องนี้เป็น JSON — hub เรียกผ่าน `ssh <node> lmds agent info`"""
+    import json as json_module
+
+    from lmds.inventory import snapshot
+
+    print(json_module.dumps(snapshot(), ensure_ascii=False))
+
+
+# ── node: ทะเบียนเครื่องที่ hub คุมอยู่ ───────────────────────────────────────
+@node_app.command("add")
+def node_add(
+    host: str = typer.Argument(..., help="IP หรือ hostname ของเครื่องปลายทาง"),
+    user: str = typer.Option(..., "--user", "-u", help="user ปกติที่อยู่ในกลุ่ม docker (ไม่ต้องเป็น root)"),
+    name: Optional[str] = typer.Option(None, "--name", help="ชื่อเรียกในระบบ (ว่าง = ตั้งให้จาก host)"),
+    port: int = typer.Option(22, "--port", help="พอร์ต SSH"),
+    note: str = typer.Option("", "--note", help="โน้ตสั้น ๆ เช่นตำแหน่งเครื่อง"),
+    cluster_ip: str = typer.Option(
+        "", "--cluster-ip",
+        help="IP บนสายเร็ว (ConnectX/200G) ที่ใช้คุยกันตอน stacked — ว่าง = เสนอให้จากที่ตรวจพบ",
+    ),
+    cluster_iface: str = typer.Option("", "--cluster-iface", help="ชื่อ interface ของสายเร็ว"),
+) -> None:
+    """เพิ่มเครื่องเข้าทะเบียน — ถามรหัสผ่านครั้งเดียวเพื่อติดตั้ง SSH key แล้วทิ้งทันที
+
+    ไม่ต้องใช้ root: user ที่อยู่ในกลุ่ม docker ทำได้ทุกอย่างที่ LMDS ต้องการ
+    """
+    from lmds.nodes import (
+        Node,
+        NodeError,
+        add,
+        check_login,
+        ensure_key,
+        install_key,
+        load,
+        probe,
+        public_key_path,
+        suggest_cluster_ip,
+        suggest_name,
+    )
+
+    try:
+        ensure_key()
+        chosen = name or suggest_name(host, {n.name for n in load()})
+        node = Node(name=chosen, host=host, user=user, port=port, note=note,
+                    cluster_ip=cluster_ip.strip(), cluster_iface=cluster_iface.strip())
+
+        if check_login(host, user, port):
+            console.print("[green]key ใช้ได้อยู่แล้ว[/green] — ข้ามการถามรหัสผ่าน")
+        else:
+            console.print(f"ติดตั้ง SSH key ของ LMDS ไปยัง {user}@{host}")
+            console.print(f"[dim]public key: {public_key_path()}[/dim]")
+            console.print("[dim]รหัสผ่านใช้ครั้งเดียวเพื่อติดตั้ง key — ไม่ถูกบันทึกลงดิสก์[/dim]")
+            password = typer.prompt(f"รหัสผ่านของ {user}@{host}", hide_input=True)
+            install_key(host, user, password, port)
+            del password
+            if not check_login(host, user, port):
+                err_console.print("[red]ติดตั้ง key แล้วแต่ยัง login ไม่ได้[/red]")
+                raise typer.Exit(code=1)
+            console.print("[green]ติดตั้ง key สำเร็จ[/green]")
+
+        info = probe(node)
+        host_info = info.get("host") or {}
+        node.lmds_version = host_info.get("lmds_version", "")
+        node.last_seen = _now()
+        if not node.cluster_ip:
+            # เสนอเฉย ๆ ไม่ตั้งให้เอง — เดา IP ผิดแล้ว stacked จะค้างตอน NCCL init โดยไม่บอกสาเหตุ
+            suggestion = suggest_cluster_ip(host_info)
+            if suggestion:
+                console.print(f"[dim]พบสายเร็วที่ {suggestion} — ตั้งเป็น cluster IP ด้วย: "
+                              f"lmds node set {chosen} --cluster-ip {suggestion}[/dim]")
+        add(node)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    gpus = ", ".join(g["name"] for g in host_info.get("gpus", [])) or "ไม่พบ GPU"
+    console.print(
+        f"\n[bold]เพิ่ม '{node.name}' แล้ว[/bold] — {gpus} · "
+        f"lmds {node.lmds_version} · โมเดล {len(info.get('models', []))} ตัว"
+    )
+    console.print("[dim]ดูทั้งหมด: lmds node list · สถานะรวมทุกเครื่อง: lmds ps --all[/dim]")
+
+
+@node_app.command("list")
+def node_list(
+    check: bool = typer.Option(False, "--check", help="ต่อจริงเพื่อดูว่าเครื่องยังตอบไหม (ช้ากว่า)"),
+) -> None:
+    """เครื่องทั้งหมดที่อยู่ในทะเบียน"""
+    from lmds.nodes import NodeError, load, probe, update
+
+    nodes = load()
+    if not nodes:
+        console.print("ยังไม่มีเครื่องในทะเบียน — เพิ่มด้วย: lmds node add <ip> --user <ชื่อ>")
+        return
+
+    table = Table(title="เครื่องในทะเบียน")
+    table.add_column("ชื่อ")
+    table.add_column("ปลายทาง")
+    table.add_column("lmds")
+    table.add_column("สถานะ" if check else "เห็นล่าสุด")
+    table.add_column("โน้ต")
+
+    for node in nodes:
+        if check:
+            try:
+                info = probe(node)
+                version = (info.get("host") or {}).get("lmds_version", "")
+                update(node.name, last_seen=_now(), last_error="", lmds_version=version)
+                status = f"[green]ต่อได้[/green] · โมเดล {len(info.get('models', []))} ตัว"
+            except NodeError as exc:
+                update(node.name, last_error=str(exc)[:200])
+                version = node.lmds_version
+                status = f"[red]ต่อไม่ได้[/red] {str(exc)[:60]}"
+        else:
+            version = node.lmds_version
+            status = node.last_seen or "—"
+        table.add_row(node.name, f"{node.target}:{node.port}", version or "—", status, node.note)
+
+    console.print(table)
+    if not check:
+        console.print("[dim]ต่อจริงเพื่อเช็กสถานะ: lmds node list --check[/dim]")
+
+
+@node_app.command("remove")
+def node_remove(
+    name: str = typer.Argument(..., autocompletion=_complete_node),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """เอาเครื่องออกจากทะเบียน — ไม่แตะอะไรบนเครื่องนั้น"""
+    from lmds.nodes import NodeError, remove
+
+    if not yes and not typer.confirm(f"เอา '{name}' ออกจากทะเบียน?", default=True):
+        raise typer.Exit(code=1)
+    try:
+        node = remove(name)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"เอา '{node.name}' ออกแล้ว")
+    console.print(
+        f"[dim]key ของ LMDS ยังอยู่บนเครื่องนั้น — ถอนเองได้ที่ {node.target}: "
+        "ลบบรรทัดที่ลงท้ายด้วย lmds-hub ออกจาก ~/.ssh/authorized_keys[/dim]"
+    )
+
+
+
+@node_app.command("set")
+def node_set(
+    name: str = typer.Argument(..., autocompletion=_complete_node),
+    cluster_ip: Optional[str] = typer.Option(None, "--cluster-ip", help="IP บนสายเร็วที่ใช้ตอน stacked"),
+    cluster_iface: Optional[str] = typer.Option(None, "--cluster-iface", help="ชื่อ interface ของสายเร็ว"),
+    note: Optional[str] = typer.Option(None, "--note"),
+) -> None:
+    """แก้ค่าของเครื่องในทะเบียน — cluster IP/interface และโน้ต
+
+    เปลี่ยน host/user/port ไม่ได้ที่นี่โดยตั้งใจ: ที่อยู่เปลี่ยน = คนละเครื่อง ให้ remove แล้ว add ใหม่
+    """
+    from lmds.nodes import NodeError, find, probe, suggest_cluster_ip, update
+
+    node = find(name)
+    if node is None:
+        err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
+        raise typer.Exit(code=1)
+
+    changes = {k: v for k, v in
+               (("cluster_ip", cluster_ip), ("cluster_iface", cluster_iface), ("note", note))
+               if v is not None}
+    if not changes:
+        console.print(f"[bold]{node.name}[/bold] — {node.target}:{node.port}")
+        console.print(f"cluster IP: {node.cluster_ip or '—'}  interface: {node.cluster_iface or '—'}")
+        try:
+            suggestion = suggest_cluster_ip(probe(node).get("host") or {})
+        except NodeError:
+            suggestion = ""
+        if suggestion and suggestion != node.cluster_ip:
+            console.print(f"[dim]สายเร็วที่ตรวจพบ: {suggestion}[/dim]")
+        console.print("[dim]ตั้งค่า: lmds node set <ชื่อ> --cluster-ip <ip>[/dim]")
+        return
+
+    try:
+        node = update(name, **changes)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"อัปเดต '{node.name}' แล้ว — cluster IP: {node.cluster_ip or '—'}")
+
+
+@node_app.command("cluster")
+def node_cluster(
+    write: Optional[str] = typer.Option(
+        None, "--write", "-w", metavar="SLUG",
+        help="เขียน cluster.env ลง bundle ของโมเดลนั้น เพื่อให้ controller ไม่ต้องถาม IP ตอน start",
+    ),
+    worker: Optional[str] = typer.Option(
+        None, "--worker", help="ชื่อเครื่องที่จะเป็น worker (ว่าง = ใช้เครื่องเดียวในกลุ่มที่พร้อม)",
+    ),
+) -> None:
+    """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริงจึงช้ากว่า node list"""
+    from lmds.inventory import host_payload
+    from lmds.nodes import (
+        NodeError, check_cluster_ip, cluster_groups, cluster_note, load, probe,
+        stack_ready, suggest_cluster_ip,
+    )
+
+    local = host_payload()
+    local_name = local.get("hostname") or "เครื่องนี้"
+    machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local)}]
+
+    table = Table(title="สายเชื่อมของแต่ละเครื่อง")
+    table.add_column("เครื่อง")
+    table.add_column("สายเร็วสุด")
+    table.add_column("cluster IP")
+    table.add_column("stacked ได้")
+
+    def add_row(name: str, host: dict, cluster_ip: str) -> None:
+        fabric = host.get("fabric") or {}
+        best = fabric.get("best_gbps")
+        check = check_cluster_ip(host, cluster_ip)
+        ready = stack_ready(host)
+        table.add_row(
+            name,
+            f"{best}G" if best else "—",
+            cluster_ip or f"[yellow]—[/yellow]",
+            "[green]ได้[/green]" if ready else f"[yellow]ไม่ได้[/yellow] {cluster_note(host)[:40]}",
+        )
+        if check["state"] in {"mismatch", "slow"}:
+            table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
+
+    add_row(local_name + " (hub)", local, machines[0]["cluster_ip"])
+    for node in load():
+        try:
+            host = probe(node).get("host") or {}
+        except NodeError as exc:
+            table.add_row(node.name, "—", node.cluster_ip or "—", f"[red]ต่อไม่ได้[/red] {str(exc)[:40]}")
+            continue
+        machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
+        add_row(node.name, host, node.cluster_ip)
+
+    console.print(table)
+
+    groups = cluster_groups(machines)
+    if not groups:
+        console.print(
+            "\n[dim]ยังไม่มีคู่ที่ stacked ได้ — ต้องมีอย่างน้อย 2 เครื่องที่ GPU รุ่นเดียวกัน "
+            "จำนวนเท่ากัน และมีสายเร็วอย่างน้อย 25G[/dim]"
+        )
+        return
+
+    console.print("\n[bold]กลุ่มที่ stacked ด้วยกันได้[/bold]")
+    for group in groups:
+        names = " + ".join(m["name"] for m in group["members"])
+        mark = "[green]พร้อม[/green]" if group["ready"] else "[yellow]ยังไม่พร้อม[/yellow]"
+        console.print(
+            f"  {mark} {names} — {group['gpu']} x{group['gpus_per_node']}/เครื่อง · "
+            f"world size {group['world_size']} · {group['link_gbps']}G "
+            f"{'RDMA' if group['rdma'] else 'ethernet'}"
+        )
+        for blocker in group["blockers"]:
+            names = ", ".join(blocker["names"])
+            text = ("ยังไม่ได้ตั้ง cluster IP: " + names) if blocker["kind"] == "missing-ip" \
+                else ("cluster IP ซ้ำกันระหว่างเครื่อง: " + names)
+            console.print(f"    [yellow]· {text}[/yellow]")
+        for member in group["members"]:
+            if member["state"] == "unset" and member["suggested_ip"]:
+                console.print(
+                    f"    [dim]lmds node set {member['name']} --cluster-ip {member['suggested_ip']}[/dim]"
+                )
+
+    if write:
+        _write_cluster_env(write, groups, local_name, worker)
+    elif any(g["ready"] for g in groups):
+        console.print(
+            "\n[dim]ให้ controller ใช้ค่าเหล่านี้เลย: lmds node cluster --write <slug>[/dim]"
+        )
+
+
+def _write_cluster_env(slug, groups, local_name, worker_name) -> None:
+    """เขียน cluster.env ลง bundle — controller จะ source ไฟล์นี้แทนการถาม IP ตอน start"""
+    from lmds.fleet import bundle_roots
+    from lmds.nodes import find as find_node
+
+    ready = [g for g in groups if g["ready"] and any(m["name"] == local_name for m in g["members"])]
+    if not ready:
+        err_console.print(
+            "[red]ยังไม่มีกลุ่มที่พร้อมและมีเครื่องนี้เป็นสมาชิก[/red] — "
+            "ต้องตั้ง cluster IP ให้ครบก่อน (ดูตารางด้านบน)"
+        )
+        raise typer.Exit(code=1)
+    group = ready[0]
+
+    others = [m for m in group["members"] if m["name"] != local_name]
+    if worker_name:
+        chosen = next((m for m in others if m["name"] == worker_name), None)
+        if chosen is None:
+            err_console.print(f"[red]'{worker_name}' ไม่ได้อยู่ในกลุ่มที่พร้อม[/red]")
+            raise typer.Exit(code=1)
+    elif len(others) == 1:
+        chosen = others[0]
+    else:
+        err_console.print(
+            "[red]กลุ่มนี้มีมากกว่า 2 เครื่อง[/red] — ระบุด้วย --worker <ชื่อ> "
+            f"(เลือกได้: {', '.join(m['name'] for m in others)})"
+        )
+        raise typer.Exit(code=1)
+
+    head = next(m for m in group["members"] if m["name"] == local_name)
+    node = find_node(chosen["name"])
+    bundle = next((root / slug for root in bundle_roots() if (root / slug).is_dir()), None)
+    if bundle is None:
+        err_console.print(f"[red]ไม่พบ bundle ของ '{slug}'[/red] — ดูรายชื่อ: lmds ps")
+        raise typer.Exit(code=1)
+
+    iface = head.get("iface") or ""
+    lines = [
+        "# สร้างโดย lmds node cluster --write — แก้มือได้ ค่า env ภายนอกยังชนะไฟล์นี้",
+        f"MASTER_IP={head['cluster_ip']}",
+        f"WORKER_IP={chosen['cluster_ip']}",
+        f"SSH_USER={node.user if node else ''}",
+        f"TRANSPORT_IP_MASTER={head['cluster_ip']}",
+        f"TRANSPORT_IP_WORKER={chosen['cluster_ip']}",
+    ]
+    if iface:
+        # NCCL เลือก interface เองแล้วมักได้เส้นบริหารจัดการที่ช้ากว่า — ระบุให้ชัด
+        lines.append(f"NCCL_SOCKET_IFNAME={iface}")
+    target = bundle / "cluster.env"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    target.chmod(0o600)
+
+    console.print(f"\n[green]เขียน {target} แล้ว[/green]")
+    console.print(f"[dim]head {head['cluster_ip']} · worker {chosen['cluster_ip']}"
+                  f"{' · NCCL ' + iface if iface else ''}[/dim]")
+    console.print(f"[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
+
+@node_app.command("run")
+def node_run(
+    name: str = typer.Argument(..., autocompletion=_complete_node),
+    command: list[str] = typer.Argument(..., help="คำสั่ง lmds ที่จะรันบนเครื่องนั้น เช่น: ps"),
+) -> None:
+    """รันคำสั่ง lmds บนเครื่องปลายทาง เช่น `lmds node run spark1 doctor my-model`"""
+    from lmds.nodes import NodeError, find, run
+
+    node = find(name)
+    if node is None:
+        err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
+        raise typer.Exit(code=1)
+    try:
+        result = run(node, "lmds " + " ".join(command), timeout=900)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        err_console.print(result.stderr.rstrip())
+    raise typer.Exit(code=result.exit_code)
 
 
 @app.command()
@@ -750,17 +1131,68 @@ def _status_label(server) -> str:
     return "[dim]○ stopped[/dim]"
 
 
+def _render_all_nodes() -> None:
+    """สถานะรวมของเครื่องอื่นในทะเบียน — ถามทีละเครื่องผ่าน SSH
+
+    เครื่องที่ต่อไม่ได้ต้องไม่ทำให้ทั้งตารางพัง แค่ขึ้นว่าติดต่อไม่ได้พร้อมเหตุผล
+    """
+    from lmds.nodes import NodeError, load, probe
+
+    nodes = load()
+    if not nodes:
+        console.print("[dim]ยังไม่มีเครื่องอื่นในทะเบียน — เพิ่มด้วย: lmds node add <ip> --user <ชื่อ>[/dim]\n")
+        return
+
+    table = Table(title=f"เครื่องอื่นในทะเบียน ({len(nodes)})")
+    table.add_column("เครื่อง")
+    table.add_column("โมเดล (slug)")
+    table.add_column("engine")
+    table.add_column("port")
+    table.add_column("สถานะ")
+
+    for node in nodes:
+        try:
+            info = probe(node)
+        except NodeError as exc:
+            table.add_row(f"[bold]{node.name}[/bold]", "—", "—", "—",
+                          f"[red]ติดต่อไม่ได้[/red] {str(exc).splitlines()[0][:60]}")
+            continue
+        models = info.get("models") or []
+        gpu = ", ".join(g["name"].replace("NVIDIA ", "") for g in (info.get("host") or {}).get("gpus", []))
+        if not models:
+            table.add_row(f"[bold]{node.name}[/bold]", "[dim](ยังไม่มีโมเดล)[/dim]", "—", "—",
+                          f"[green]ต่อได้[/green] · {gpu or 'ไม่พบ GPU'}")
+            continue
+        for index, model in enumerate(models):
+            if model.get("running"):
+                status = "[green]● running[/green]" if model.get("healthy") else "[yellow]◐ loading[/yellow]"
+            elif not model.get("downloaded"):
+                status = "[yellow]○ ยังไม่โหลดไฟล์[/yellow]"
+            else:
+                status = "○ stopped"
+            table.add_row(f"[bold]{node.name}[/bold]" if index == 0 else "",
+                          model.get("slug", ""), model.get("engine", ""),
+                          str(model.get("port") or "-"), status)
+
+    console.print(table)
+    console.print("[dim]สั่งงานเครื่องอื่น: lmds node run <เครื่อง> <คำสั่ง lmds>[/dim]\n")
+
+
 @app.command()
-def ps() -> None:
+def ps(
+    all_nodes: bool = typer.Option(False, "--all", "-a", help="รวมเครื่องอื่นในทะเบียนด้วย (fleet)"),
+) -> None:
     """แสดงเครื่อง + ทุกโมเดลที่ deploy ในเครื่องนี้ พร้อมสถานะจริง (running/health/endpoint)"""
     from lmds.fleet import discover
 
     _render_host_panel()
+    if all_nodes:
+        _render_all_nodes()
     servers = discover()
     if not servers:
         console.print("ยังไม่มีโมเดลที่เคย start ในเครื่องนี้ — deploy ก่อน: lmds deploy <model-url>")
         return
-    table = Table(title="LMDS Fleet")
+    table = Table(title="LMDS Fleet (เครื่องนี้)" if all_nodes else "LMDS Fleet")
     table.add_column("ชื่อ (slug)")
     table.add_column("โมเดล")
     table.add_column("engine")

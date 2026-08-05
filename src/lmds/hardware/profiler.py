@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .profiles import KnownGpu, TargetProfile, classify, lookup_gpu
 
-_SMI_QUERY = "--query-gpu=name,memory.total,compute_cap"
+_SMI_QUERY = "--query-gpu=name,memory.total,compute_cap,memory.used,utilization.gpu"
 
 
 @dataclass
@@ -22,6 +22,9 @@ class DetectedGpu:
     vram_mib: int | None
     compute_capability: str | None
     known: KnownGpu | None = None
+    # ค่าสด ณ ตอนตรวจ — None เมื่อ nvidia-smi ไม่รายงาน (เช่น GB10 ที่ memory.total ว่าง)
+    vram_used_mib: int | None = None
+    utilization_pct: int | None = None
 
     @property
     def tested(self) -> bool:
@@ -69,12 +72,49 @@ def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
         name = parts[0]
         vram = int(float(parts[1])) if len(parts) > 1 and parts[1].replace(".", "").isdigit() else None
         cc = parts[2] if len(parts) > 2 and parts[2] else None
-        gpus.append(DetectedGpu(name=name, vram_mib=vram, compute_capability=cc, known=lookup_gpu(name)))
+
+        def _int(index: int) -> int | None:
+            if len(parts) > index and parts[index].replace(".", "").isdigit():
+                return int(float(parts[index]))
+            return None
+
+        gpus.append(DetectedGpu(
+            name=name, vram_mib=vram, compute_capability=cc, known=lookup_gpu(name),
+            vram_used_mib=_int(3), utilization_pct=_int(4),
+        ))
 
     for gpu in gpus:
         if gpu.known is None:
             notes.append(f"GPU นอก allowlist: {gpu.name} — Fit Analyzer จะใช้โหมด conservative")
     return gpus, notes
+
+
+
+def detect_cpu() -> dict:
+    """CPU: จำนวน core + โหลดเฉลี่ย 1 นาที แปลงเป็น % ของทั้งเครื่อง
+
+    ใช้ loadavg แทนการวัด %util แบบ snapshot เพราะไม่ต้องรอสองครั้ง (หน้าเว็บ poll ทุก 5 วิ)
+    · โหลด > 100% เป็นไปได้และหมายถึงมีงานรอคิว — ไม่ตัดเพดานให้ เพราะมันคือข้อมูล
+    """
+    import os as _os
+
+    cores = _os.cpu_count()
+    load1 = None
+    try:
+        load1 = round(_os.getloadavg()[0], 2)
+    except (OSError, AttributeError):
+        pass
+    percent = round(load1 / cores * 100) if load1 is not None and cores else None
+    model = ""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    model = line.split(":", 1)[1].strip()
+                    break
+    except OSError:
+        pass
+    return {"cores": cores, "load1": load1, "percent": percent, "model": model}
 
 
 def detect_ram_gb() -> float | None:
@@ -155,6 +195,110 @@ def host_summary() -> HostSummary:
         ram_total_gb=total,
         ram_available_gb=available,
     )
+
+
+
+# ── network fabric: ConnectX / 200G / RDMA ────────────────────────────────────
+# ใช้ตัดสินว่าเครื่องนี้ "ต่อ stacked ได้ไหม" — stacked (TP ข้ามเครื่อง) ยิง KV/activation
+# ผ่านสายตลอดเวลา ถ้าไม่ใช่ RDMA 100G+ จะช้าจนไม่คุ้มเทียบกับรันแยกเครื่อง
+_MELLANOX_VENDOR = "0x15b3"
+_RDMA_DRIVERS = {"mlx5_core", "mlx4_core", "irdma", "ionic", "bnxt_en"}
+
+
+def _sysfs(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _iface_addresses() -> dict[str, str]:
+    """iface → IPv4 — ใช้เสนอค่าให้ผู้ใช้เลือกเป็น cluster IP ไม่ใช่ตั้งให้เอง
+
+    stacked ต้องรู้ว่า rank คุยกันทาง IP ไหน ซึ่งมักคนละเส้นกับ IP ที่ใช้ SSH
+    """
+    out = _run(["ip", "-o", "-4", "addr", "show"], timeout=5)
+    if not out:
+        return {}
+    addresses: dict[str, str] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[2] != "inet":
+            continue
+        addresses.setdefault(parts[1], parts[3].split("/")[0])
+    return addresses
+
+
+def detect_fabric() -> dict:
+    """การ์ดเครือข่ายความเร็วสูง + RDMA ของเครื่องนี้
+
+    อ่านจาก /sys เท่านั้น (ไม่ต้อง root ไม่ต้องมี ethtool/ibstat) — บนเครื่องที่ไม่ใช่ Linux
+    หรืออ่านไม่ได้จะได้ tier="unknown" ไม่ใช่การเดา
+    """
+    net = Path("/sys/class/net")
+    if not net.is_dir():
+        return {"links": [], "rdma_devices": [], "best_gbps": None, "tier": "unknown",
+                "cluster_capable": False, "summary": "ตรวจไม่ได้บนเครื่องนี้"}
+
+    rdma_devices = sorted(p.name for p in Path("/sys/class/infiniband").glob("*")) \
+        if Path("/sys/class/infiniband").is_dir() else []
+
+    addresses = _iface_addresses()
+    links = []
+    for iface in sorted(net.iterdir()):
+        name = iface.name
+        if name == "lo" or (iface / "device").exists() is False:
+            continue
+        driver = ""
+        try:
+            driver = (iface / "device" / "driver").resolve().name
+        except OSError:
+            pass
+        vendor = _sysfs(str(iface / "device" / "vendor"))
+        state = _sysfs(str(iface / "operstate")) or "unknown"
+        raw_speed = _sysfs(str(iface / "speed"))
+        # speed อ่านได้เฉพาะตอนลิงก์ขึ้น — ลิงก์ลงจะได้ -1 หรือ error
+        gbps = None
+        if raw_speed.lstrip("-").isdigit() and int(raw_speed) > 0:
+            gbps = int(raw_speed) // 1000 or None
+        links.append({
+            "iface": name,
+            "ip": addresses.get(name, ""),
+            "speed_gbps": gbps,
+            "driver": driver,
+            "state": state,
+            "connectx": vendor == _MELLANOX_VENDOR or driver.startswith("mlx"),
+            "rdma": driver in _RDMA_DRIVERS and bool(rdma_devices),
+        })
+
+    up = [l for l in links if l["state"] == "up" and l["speed_gbps"]]
+    best = max((l["speed_gbps"] for l in up), default=None)
+    fastest = max(up, key=lambda l: l["speed_gbps"], default=None)
+    has_rdma = bool(rdma_devices) and any(l["rdma"] for l in up)
+
+    if best is None:
+        tier, summary = "unknown", "ไม่พบลิงก์ที่ขึ้นและรายงานความเร็วได้"
+    elif has_rdma and best >= 100:
+        tier = "rdma"
+        summary = f"{fastest['iface']} {best}G RDMA ({fastest['driver']}) — stacked ได้เต็มที่"
+    elif best >= 100:
+        tier = "fast"
+        summary = f"{fastest['iface']} {best}G แต่ยังไม่เห็น RDMA — stacked ได้แต่ควรเปิด RoCE ก่อน"
+    elif best >= 25:
+        tier = "fast"
+        summary = f"{fastest['iface']} {best}G — พอ stacked ได้ แต่ช้ากว่า 100G ชัดเจน"
+    else:
+        tier = "basic"
+        summary = f"{fastest['iface']} {best}G — เร็วไม่พอสำหรับ stacked ให้รันแยกเครื่อง"
+
+    return {
+        "links": [l for l in links if l["connectx"] or l["speed_gbps"]],
+        "rdma_devices": rdma_devices,
+        "best_gbps": best,
+        "tier": tier,
+        "cluster_capable": tier in {"rdma", "fast"},
+        "summary": summary,
+    }
 
 
 def detect_docker() -> tuple[bool, bool]:

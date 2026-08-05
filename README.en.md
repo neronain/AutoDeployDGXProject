@@ -63,6 +63,37 @@ lmds remove <name>       # delete everything (--keep-weights to keep the downloa
 `lmds ps` also adopts **containers you started yourself** (vLLM / llama.cpp / Ollama / TGI) — they can
 be stopped, restarted, tailed and enabled too. Stopping those uses `docker stop`, never `docker rm -f`.
 
+## Controlling several machines from one
+
+A site with more than one machine does not need one SSH session per box. Register a machine once
+with its ip/user/password — LMDS installs its own SSH key and discards the password immediately
+(the registry has no password field, on purpose).
+
+```bash
+lmds node add 192.168.10.21 --user ops   # asks for the password once, installs the key
+lmds node list --check                   # which machines still answer
+lmds ps --all                            # every model on every machine, one table
+lmds node run spark2 doctor my-model     # run any lmds command on that machine
+lmds node cluster                        # who has ConnectX/200G, and which pairs can be stacked
+```
+
+Nodes run **no daemon** and need no port open beyond 22 — the hub calls `lmds agent info` over SSH.
+Root is not required; a user in the `docker` group is enough. Each machine reports live CPU, RAM
+(or unified memory), VRAM, disk, link speed and **how many models are running** — llama.cpp can
+serve several at once.
+
+For stacking, LMDS reads `/sys` to find ConnectX/RDMA links and their speed, then groups machines
+that can actually be stacked together (same GPU model and count, fast enough link on both). It
+suggests the cluster IP it found but never assumes it — set it explicitly, then write it into the
+bundle so the controller stops asking:
+
+```bash
+lmds node set spark2 --cluster-ip 10.10.0.2
+lmds node cluster --write my-70b-model    # writes cluster.env (MASTER_IP/WORKER_IP/NCCL_SOCKET_IFNAME)
+```
+
+Details: [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
+
 ## Web UI (optional)
 
 ```bash
@@ -75,7 +106,8 @@ lmds web --background                 # run detached; the terminal stays free fo
 lmds web --stop
 ```
 
-One English-language page covering the whole workflow: host status, deploy wizard, download
+One English-language page covering the whole workflow: host status (CPU, memory, VRAM, disk,
+running-model count), other machines with their live resources, cluster fabric, deploy wizard, download
 (which verifies afterwards), start/stop/restart, per-model port/context/slots/API key, the test
 commands (`test-text`, `test-vision`, `bench`, `stress`, …), autostart, stacked commands, repair
 and remove. Buttons follow what each controller actually supports, read from the script itself —
@@ -123,6 +155,7 @@ machine. Full details: [SECURITY.md](SECURITY.md).
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Prerequisites, disk layout, proxy/air-gapped, provider setup (incl. local AI), how models are fetched and run, smoke test |
 | [docs/USAGE.md](docs/USAGE.md) | Full usage guide: deploy, controller commands + env, fleet management, target presets, troubleshooting |
+| [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Controlling several machines from one hub: registration, live resources, ConnectX/200G detection, cluster IPs |
 | [docs/PRD.md](docs/PRD.md) | Product requirements, architecture, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | CLI specification (unimplemented parts marked ❌) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones and phases |

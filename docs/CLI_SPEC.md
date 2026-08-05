@@ -20,6 +20,8 @@ lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates ก�
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
 lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
 lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
+lmds node <subcommand>                     # ทะเบียนเครื่องอื่น (fleet หลายเครื่อง) — ดูหัวข้อ node
+lmds agent info                            # JSON สถานะเครื่องนี้ (hub เรียกผ่าน SSH ไม่ได้พิมพ์เอง)
 lmds config <subcommand>                   # จัดการ provider, credentials
 lmds version                               # เวอร์ชันโปรแกรม + เวอร์ชัน template registry
 
@@ -148,6 +150,31 @@ lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างท
 - `--now` = start ทันทีด้วย · `--timeout` = เวลารอ health ตอน boot (โมเดลใหญ่ควรเพิ่ม) · ต้องมี `systemd`
 - ทุก controller ลงทะเบียนตัวเองใต้ `~/.lmds/run/<slug>/server.meta` ตอน `start` — fleet อ่านจากตรงนี้ (ไม่มี daemon)
 
+## `lmds node` (fleet หลายเครื่อง)
+
+```text
+lmds node add <host> --user <u>   # ติดตั้ง SSH key (ถามรหัสผ่านครั้งเดียว) + เพิ่มเข้าทะเบียน
+                                  #   --name --port --note --cluster-ip --cluster-iface
+lmds node list [--check]          # ทะเบียน · --check = ต่อจริงเพื่อดูว่ายังตอบไหม
+lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / --note (ไม่มีอาร์กิวเมนต์ = ดูค่าปัจจุบัน)
+lmds node remove <name> [-y]      # ออกจากทะเบียนอย่างเดียว ไม่แตะเครื่องนั้น
+lmds node run <name> <cmd...>     # รันคำสั่ง lmds บนเครื่องนั้น
+lmds node cluster [--write SLUG] [--worker NAME]   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
+lmds ps --all                     # โมเดลของทุกเครื่องรวมกัน
+```
+
+- **ไม่มี daemon บน node** — hub เรียก `lmds agent info` ผ่าน SSH (`BatchMode=yes`) node เปิดแค่พอร์ต 22
+- **ไม่เก็บรหัสผ่าน** — ใช้ครั้งเดียวติดตั้ง key (`~/.config/lmds/id_lmds`, ed25519, comment `lmds-hub`)
+  แล้วทิ้ง · `Node` dataclass ไม่มีฟิลด์รหัสผ่านและมีเทสกันไว้
+- ทะเบียนอยู่ที่ `~/.config/lmds/nodes.yaml` (0600) · แก้ host/user/port ผ่าน `set` ไม่ได้โดยตั้งใจ
+  (ที่อยู่เปลี่ยน = คนละเครื่อง → remove แล้ว add ใหม่)
+- `node cluster` ตรวจ ConnectX/RDMA/ความเร็วลิงก์จาก `/sys` แล้วจับกลุ่มเครื่องที่ stacked ด้วยกันได้
+  (ต้องตรง: arch, profile, รุ่น GPU, จำนวน GPU และมีสาย ≥ 25G ทั้งคู่)
+- `--write <slug>` เขียน `cluster.env` ลง bundle (MASTER_IP/WORKER_IP/SSH_USER/TRANSPORT_IP_*/NCCL_SOCKET_IFNAME)
+  → stacked controller source ไฟล์นี้ก่อน default แล้วไม่ถาม IP ตอน start
+
+รายละเอียด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
+
 ## `lmds doctor <slug>`
 
 ตรวจว่าทำไมโมเดลยัง download/start ไม่ผ่าน แล้วบอกคำสั่งแก้ — คำนวณล้วน ไม่ใช้ LLM
@@ -166,6 +193,10 @@ Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มี
 | `--token` | ว่าง | บังคับ token เอง |
 | `--background` / `-b` | ปิด | รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้ |
 | `--stop` | — | หยุดตัวที่รันเบื้องหลัง |
+
+REST ที่หน้าเว็บใช้ (token เดียวกับหน้าเว็บ): `/api/host` `/api/models` `/api/nodes`
+`/api/nodes/{name}/inventory` `/api/cluster` — `PATCH /api/nodes/{name}` แก้ cluster IP ·
+คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor`
 
 UI เป็นภาษาอังกฤษ · ต้องมี extra `web` (`pip install 'lmds[web]'` — `install.sh` ลงให้เอง)
 รายละเอียดการใช้งาน: [USAGE.md §5](USAGE.md)
@@ -189,6 +220,8 @@ Output: ตาราง pass/fail ต่อ gate + exit code `0/2`
 ├── config.yaml          # provider, default target, ภาษา UI (th/en)
 ├── credentials          # 0600 — ใช้เมื่อไม่มี keyring
 ├── profile.yaml         # site profile (master/workers, paths, api defaults)
+├── nodes.yaml           # 0600 — ทะเบียนเครื่องอื่น (ไม่มีรหัสผ่าน) + cluster IP
+├── id_lmds[.pub]        # SSH key ของ hub สำหรับเข้า node
 └── sessions/            # audit log ต่อการ generate (prompt/response/decisions) — redacted
 ```
 
@@ -207,6 +240,8 @@ src/lmds/
 ├── generator/           # renderer.py + templates/*.j2 (single-vllm, single-llamacpp, stacked-vllm)
 ├── validator/           # gates.py — quality gates ทั้ง 9 ด่านรวมอยู่ไฟล์เดียว
 ├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit
+├── nodes/               # registry.py (nodes.yaml), ssh.py (key/probe/run), cluster.py (จับคู่ stacked)
+├── inventory.py         # payload ชุดเดียวที่หน้าเว็บและ `lmds agent info` ใช้ร่วมกัน
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 └── secrets/             # store.py (env/keyring/file), redact.py
 tests/                   # ~22 ไฟล์ test (unit + E2E) — ยังไม่มี tests/fixtures/

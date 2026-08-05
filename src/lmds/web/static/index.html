@@ -61,6 +61,12 @@ pre { margin: 0; padding: 12px 16px; background: var(--bg); border-top: 1px soli
 .find b { width: 108px; flex: none; font-weight: 400; color: var(--fg2); }
 code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 3px 8px; border-radius: 6px; }
 .empty { padding: 40px 16px; text-align: center; color: var(--fg2); }
+.npills { display: flex; flex-wrap: wrap; gap: 6px; }
+.npill { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.cgroup { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.cgroup.ok { border-color: var(--ok); }
+.ipedit { width: 140px; font-family: ui-monospace, monospace; }
 .sec { margin: 26px 0 10px; font-size: 13px; color: var(--fg3); letter-spacing: .05em; }
 .field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 input, select { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 7px;
@@ -91,6 +97,19 @@ label { font-size: 13px; color: var(--fg2); }
 
   <div class="sec">Models on this machine</div>
   <div class="card" id="fleet"><div class="empty">Loading…</div></div>
+
+  <div class="sec row between" style="align-items:baseline">
+    <span>Other machines</span>
+    <button id="node-new" style="font-size:12px">+ Add machine</button>
+  </div>
+  <div class="card" id="nodes"><div class="empty">Loading…</div></div>
+
+  <div class="sec row between" style="align-items:baseline">
+    <span>Cluster fabric</span>
+    <button id="cluster-check" style="font-size:12px">Check now</button>
+  </div>
+  <div class="card" id="cluster"><div class="empty">Which machines can be stacked into one model —
+    <span class="dim">contacts every machine, so it runs only when you ask</span></div></div>
 </div>
 
 <script>
@@ -106,7 +125,14 @@ function statCard(label, value, sub, colour) {
     <b${colour ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
 }
 
-function renderHost(h) {
+function bar(label, value, pct, sub) {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  return `<div class="stat"><span class="muted">${esc(label)}</span><b>${esc(value)}</b>
+    <div class="bar"><i class="seg-a" style="width:${p}%"></i><i style="width:${100 - p}%"></i></div>
+    ${sub ? `<span class="dim">${esc(sub)}</span>` : ""}</div>`;
+}
+
+function renderHost(h, models) {
   document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
   const gpu = h.gpus[0];
   const unified = h.memory_model === "unified";
@@ -117,15 +143,40 @@ function renderHost(h) {
         `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`)
     : statCard("GPU", "not found", "check nvidia-smi"));
 
+  // VRAM only makes sense as its own card on discrete cards. On unified memory (DGX Spark)
+  // the GPU allocates out of the same pool the RAM card already shows.
+  if (gpu && !unified && gpu.vram_used_gb != null && gpu.vram_gb) {
+    cards.push(bar("VRAM", `${gpu.vram_used_gb} / ${gpu.vram_gb} GB`,
+      Math.round(gpu.vram_used_gb / gpu.vram_gb * 100),
+      gpu.utilization_pct != null ? `GPU ${gpu.utilization_pct}% busy` : ""));
+  }
+
+  const cpu = h.cpu || {};
+  cards.push(bar("CPU", cpu.cores ? `${cpu.cores} cores` : "—",
+    cpu.percent == null ? 0 : Math.min(cpu.percent, 100),
+    cpu.load1 != null ? `load ${cpu.load1}${cpu.percent > 100 ? " · oversubscribed" : ""}` : ""));
+
   // Unified memory (DGX Spark) is one CPU+GPU pool — not the same thing as a discrete card's VRAM
   const used = h.ram_used_gb, total = h.ram_total_gb;
-  const pct = used != null && total ? Math.round(used / total * 100) : 0;
-  cards.push(`<div class="stat"><span class="muted">${unified ? "Unified memory" : "RAM"}</span>
-    <b>${used != null ? Math.round(used) : "—"} / ${gb(total)}</b>
-    <div class="bar"><i class="seg-a" style="width:${pct}%"></i><i style="width:${100 - pct}%"></i></div>
-    ${unified ? '<span class="dim">shared by CPU and GPU</span>' : ""}</div>`);
+  cards.push(bar(unified ? "Unified memory" : "RAM",
+    `${used != null ? Math.round(used) : "—"} / ${gb(total)}`,
+    used != null && total ? Math.round(used / total * 100) : 0,
+    unified ? "shared by CPU and GPU" : ""));
 
-  cards.push(statCard("Disk", gb(h.disk_free_gb), "free"));
+  const free = h.disk_free_gb, diskTotal = h.disk_total_gb;
+  cards.push(bar("Disk", `${gb(free)} free`,
+    free != null && diskTotal ? Math.round((diskTotal - free) / diskTotal * 100) : 0,
+    diskTotal ? `of ${gb(diskTotal)}` : ""));
+
+  // llama.cpp can serve several models at once, so this is a count, not a yes/no
+  if (models) {
+    const running = models.filter(m => m.running).length;
+    const healthy = models.filter(m => m.healthy).length;
+    cards.push(statCard("Models running", `${running} / ${models.length}`,
+      running ? `${healthy} serving` : "none started",
+      running ? "var(--ok)" : ""));
+  }
+
   const ready = h.docker && h.toolkit;
   cards.push(statCard("Docker + GPU", ready ? "ready" : h.docker ? "no GPU access" : "not ready",
     `${esc(h.profile)} · ${esc(h.arch)}`, ready ? "var(--ok)" : "var(--bad)"));
@@ -610,6 +661,320 @@ document.addEventListener("click", async e => {
   }
 });
 
+
+// ── fleet across machines ────────────────────────────────────────────────
+// The hub talks to each node over SSH (`lmds agent info`). A node being down must
+// degrade to one row saying so — never hang or blank the whole page.
+const nodeRows = new Map();
+
+function nodeAddForm() {
+  const box = document.getElementById("nodes");
+  box.innerHTML = `<div class="pad">
+    <div class="field">
+      <input id="n-host" placeholder="IP or hostname" style="min-width:180px">
+      <input id="n-user" placeholder="user (must be in the docker group)" style="min-width:180px">
+      <input id="n-name" placeholder="name (optional)" style="flex:none;width:150px">
+      <input id="n-port" type="number" value="22" style="flex:none;width:90px" title="SSH port">
+    </div>
+    <div class="field">
+      <input id="n-pass" type="password" placeholder="password — used once to install the SSH key, never stored">
+      <button id="n-save">Add</button>
+      <button id="n-cancel">Cancel</button>
+    </div>
+    <div class="dim">Root is not required. LMDS needs a normal user in the <code>docker</code> group;
+      a dedicated key (<code>id_lmds</code>) is installed and used from then on.
+      The node must already have LMDS installed.</div>
+    <div id="n-msg"></div>
+  </div>`;
+}
+
+function nodeCard(node) {
+  const block = document.createElement("div");
+  block.innerHTML = `<div class="item">
+      <span class="dot"></span>
+      <div class="grow">
+        <div class="name">${esc(node.name)}</div>
+        <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
+      </div>
+      <span class="mono muted nver"></span>
+      <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
+      <button data-nact="forget" data-node="${esc(node.name)}" style="border-color:var(--bad);color:var(--bad)">forget</button>
+    </div>
+    <div class="nbody"></div>`;
+  return block;
+}
+
+function pill(label, value, sub) {
+  return `<span class="npill"><span class="muted">${esc(label)}</span> <b>${esc(value)}</b>${
+    sub ? ` <span class="dim">${esc(sub)}</span>` : ""}</span>`;
+}
+
+// One line of live resources per machine. Everything here comes from the same
+// `lmds agent info` payload the local cards use, so the numbers mean the same thing.
+function nodeResources(host) {
+  const cpu = host.cpu || {};
+  const gpu = (host.gpus || [])[0];
+  const unified = host.memory_model === "unified";
+  const out = [];
+
+  out.push(pill("CPU", cpu.cores ? `${cpu.cores}c` : "—",
+    cpu.percent != null ? `${cpu.percent}%` : ""));
+  out.push(pill(unified ? "Unified" : "RAM",
+    `${host.ram_used_gb != null ? Math.round(host.ram_used_gb) : "—"}/${gb(host.ram_total_gb)}`));
+
+  if (gpu) {
+    // Unified memory reports no separate VRAM figure — showing 0 GB there would be a lie
+    const vram = unified ? (gpu.vram_gb ? `${gpu.vram_gb} GB pool` : "shared")
+      : (gpu.vram_used_gb != null && gpu.vram_gb ? `${gpu.vram_used_gb}/${gpu.vram_gb} GB`
+        : (gpu.vram_gb ? `${gpu.vram_gb} GB` : "—"));
+    out.push(pill("VRAM", vram, gpu.utilization_pct != null ? `${gpu.utilization_pct}% busy` : ""));
+  }
+
+  out.push(pill("Disk", `${gb(host.disk_free_gb)} free`));
+
+  const fabric = host.fabric || {};
+  if (fabric.best_gbps) {
+    out.push(pill("Link", `${fabric.best_gbps}G`, fabric.tier === "rdma" ? "RDMA" : ""));
+  }
+  return `<div class="npills">${out.join("")}</div>`;
+}
+
+function nodeModelsMarkup(name, data) {
+  if (!data.reachable) {
+    return `<div class="pad" style="border-top:1px solid var(--line)">
+      <div class="warn-line" style="color:var(--bad)">Unreachable — ${esc((data.error || "").split("\n")[0])}</div>
+      <div class="dim">The hub reaches nodes over SSH only. Check the machine is on and
+        <code>lmds</code> is on its PATH.</div></div>`;
+  }
+  const models = data.models || [];
+  const host = data.host || {};
+  const sum = data.summary || {};
+  const gpuNames = (host.gpus || []).map(g => g.name.replace(/^NVIDIA /, "")).join(", ") || "no GPU";
+  const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}
+    · ${sum.running || 0} of ${sum.total || models.length} running</div>
+    ${nodeResources(host)}`;
+
+  if (!models.length) {
+    return `<div class="pad" style="border-top:1px solid var(--line)">${head}
+      <div class="dim" style="margin-top:8px">No models deployed yet</div></div>`;
+  }
+  return `<div class="pad" style="border-top:1px solid var(--line)">
+    ${head}
+    <div style="margin-top:10px"></div>
+    ${models.map(m => {
+      const state = m.running ? (m.healthy ? "on" : "load") : "";
+      const label = m.running ? (m.healthy ? "running" : "loading")
+        : (m.downloaded ? "stopped" : "not downloaded");
+      const act = m.running ? "stop" : (m.downloaded ? "start" : "");
+      return `<div class="field" style="margin-bottom:6px">
+        <span class="dot ${state}"></span>
+        <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
+          <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span></span>
+        <span class="mono muted">:${m.port || "—"}</span>
+        <span class="muted">${label}</span>
+        ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}">${act}</button>` : ""}
+        <button data-nact="model:doctor" data-node="${esc(name)}" data-slug="${esc(m.slug)}">doctor</button>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+async function loadNode(name) {
+  const row = nodeRows.get(name);
+  if (!row) return;
+  row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><span class="muted">Contacting ${esc(name)}…</span></div>`;
+  const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory`)).json();
+  row.dot.className = "dot " + (d.reachable ? "on" : "");
+  row.version.textContent = d.reachable ? (d.host && d.host.lmds_version ? "v" + d.host.lmds_version : "") : "offline";
+  row.body.innerHTML = nodeModelsMarkup(name, d);
+}
+
+async function refreshNodes() {
+  const box = document.getElementById("nodes");
+  const d = await (await api("/api/nodes")).json();
+  const nodes = d.nodes || [];
+  if (!nodes.length) {
+    nodeRows.clear();
+    box.innerHTML = `<div class="empty">No other machines registered — add one to control it from here<br>
+      <span class="dim">CLI: <code>lmds node add &lt;ip&gt; --user &lt;name&gt;</code></span></div>`;
+    return;
+  }
+  if (!nodeRows.size) box.innerHTML = "";
+  const seen = new Set();
+  for (const node of nodes) {
+    seen.add(node.name);
+    if (!nodeRows.has(node.name)) {
+      const block = nodeCard(node);
+      box.appendChild(block);
+      nodeRows.set(node.name, {
+        block,
+        dot: block.querySelector(".dot"),
+        version: block.querySelector(".nver"),
+        body: block.querySelector(".nbody"),
+      });
+      loadNode(node.name);
+    }
+  }
+  for (const [name, row] of nodeRows) {
+    if (!seen.has(name)) { row.block.remove(); nodeRows.delete(name); }
+  }
+}
+
+document.addEventListener("click", async e => {
+  if (e.target.id === "node-new") { nodeAddForm(); return; }
+  if (e.target.id === "n-cancel") { nodeRows.clear(); refreshNodes(); return; }
+  if (e.target.id === "n-save") {
+    const val = id => (document.getElementById(id) || {}).value || "";
+    const msg = document.getElementById("n-msg");
+    e.target.disabled = true;
+    msg.innerHTML = `<div class="muted">Installing the key and contacting the machine…</div>`;
+    const r = await api("/api/nodes", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: val("n-host"), user: val("n-user"), name: val("n-name"),
+                             port: +val("n-port") || 22, password: val("n-pass") }),
+    });
+    const d = await r.json();
+    e.target.disabled = false;
+    if (!r.ok) {
+      const det = d.detail || {};
+      msg.innerHTML = `<div class="warn-line" style="color:var(--bad)">${esc(det.message || det || "Could not add the machine")}</div>`;
+      return;
+    }
+    nodeRows.clear();
+    refreshNodes();
+    return;
+  }
+
+  const btn = e.target.closest("button[data-nact]");
+  if (!btn) return;
+  const { nact, node, slug } = btn.dataset;
+
+  if (nact === "refresh") { loadNode(node); return; }
+  if (nact === "forget") {
+    if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
+    await api(`/api/nodes/${encodeURIComponent(node)}`, { method: "DELETE" });
+    nodeRows.clear();
+    refreshNodes();
+    return;
+  }
+  if (nact.startsWith("model:")) {
+    const command = nact.slice(6);
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = command + "…";
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/${command}`,
+                        { method: "POST" });
+    const d = await r.json();
+    btn.disabled = false;
+    btn.textContent = original;
+    if (!r.ok) alert(d.detail || "Command failed");
+    else if (command === "doctor" || d.exit_code !== 0) {
+      const row = nodeRows.get(node);
+      if (row) row.body.innerHTML = `<pre>${esc(d.output || "(no output)")}</pre>`;
+      return;
+    }
+    loadNode(node);
+    return;
+  }
+});
+
+
+// ── cluster fabric ───────────────────────────────────────────────────────
+// Stacking turns several machines into one model, so they must match on hardware
+// AND be told which address to talk over. Detection can find the card; only a human
+// knows which subnet is meant to carry NCCL traffic — hence the editable IP.
+function ipHint(m) {
+  // The API sends state codes, not sentences — the CLI phrases these in Thai, the page in English
+  const ip = m.ip || {};
+  if (ip.state === "unset") {
+    return m.suggested_ip ? `No cluster IP set — detected ${m.suggested_ip} on the fast link`
+      : "No cluster IP set, and no fast link with an address was detected";
+  }
+  if (ip.state === "mismatch") return `${m.cluster_ip} does not match any interface found on that machine`;
+  if (ip.state === "slow") return `${m.cluster_ip} is on ${ip.iface} at ${ip.speed_gbps}G — too slow to stack`;
+  return "";
+}
+
+function clusterMachineRow(m) {
+  const fab = m.fabric || {};
+  const link = !m.reachable ? "unreachable"
+    : fab.best_gbps ? `${fab.best_gbps}G${fab.tier === "rdma" ? " RDMA" : ""}`
+    : (m.has_gpu ? "no fast link" : "no GPU");
+  const colour = !m.reachable ? "var(--bad)" : m.ready ? "var(--ok)" : "var(--warn)";
+  const editable = !m.self && m.reachable;
+  const hint = m.reachable ? ipHint(m) : (m.error || "");
+  return `<div class="field" style="margin-bottom:6px">
+    <span class="dot ${m.ready ? "on" : ""}"></span>
+    <span class="grow"><b style="font-weight:500">${esc(m.name)}</b>${m.self ? ' <span class="dim">(hub)</span>' : ""}</span>
+    <span class="mono" style="color:${colour}">${esc(link)}</span>
+    ${editable
+      ? `<input class="ipedit" data-ipfor="${esc(m.name)}" value="${esc(m.cluster_ip || "")}"
+           placeholder="${esc(m.suggested_ip || "cluster IP")}" title="IP on the fast link, used for NCCL">
+         <button data-cact="save-ip" data-node="${esc(m.name)}">save</button>`
+      : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>`}
+  </div>
+  ${hint ? `<div class="dim" style="margin:-2px 0 8px 22px">${esc(hint)}</div>` : ""}`;
+}
+
+function clusterGroupRow(g) {
+  const names = g.members.map(m => m.name).join(" + ");
+  return `<div class="cgroup${g.ready ? " ok" : ""}">
+    <div class="row between">
+      <b style="font-weight:500">${esc(names)}</b>
+      <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "ready to stack" : "not ready"}</span>
+    </div>
+    <div class="dim">${esc(g.gpu)} ×${g.gpus_per_node} per node · world size ${g.world_size} ·
+      ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}</div>
+    ${g.blockers.map(b => `<div class="warn-line">${b.kind === "missing-ip"
+      ? "Cluster IP still missing on: " + esc(b.names.join(", "))
+      : "The same cluster IP is set on more than one machine: " + esc(b.names.join(", "))}</div>`).join("")}
+    ${g.ready ? `<div class="dim" style="margin-top:6px">Deploy across these with a stacked bundle:
+      <code>lmds deploy --topology stacked</code></div>` : ""}
+  </div>`;
+}
+
+async function loadCluster() {
+  const box = document.getElementById("cluster");
+  box.innerHTML = `<div class="empty">Contacting every machine…</div>`;
+  let d;
+  try {
+    d = await (await api("/api/cluster")).json();
+  } catch {
+    box.innerHTML = `<div class="empty">Could not read the cluster view</div>`;
+    return;
+  }
+  const groups = d.groups || [];
+  box.innerHTML = `<div class="pad">
+    ${(d.machines || []).map(clusterMachineRow).join("")}
+    <div class="dim" style="margin:8px 0 14px">The hub's own address is detected, not stored —
+      set it on the deploy itself when you launch a stacked bundle.</div>
+    ${groups.length
+      ? groups.map(clusterGroupRow).join("")
+      : `<div class="dim">No stackable pair yet — stacking needs at least two machines with the same
+         GPU model and count, and a link of ${25}G or faster on both.</div>`}
+  </div>`;
+}
+
+document.addEventListener("click", async e => {
+  if (e.target.id === "cluster-check") { loadCluster(); return; }
+  const btn = e.target.closest('button[data-cact="save-ip"]');
+  if (!btn) return;
+  const name = btn.dataset.node;
+  const input = document.querySelector(`input[data-ipfor="${CSS.escape(name)}"]`);
+  btn.disabled = true;
+  const r = await api(`/api/nodes/${encodeURIComponent(name)}`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cluster_ip: (input.value || "").trim() }),
+  });
+  btn.disabled = false;
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || "Could not save the cluster IP");
+    return;
+  }
+  loadCluster();
+});
+
 async function refresh() {
   try {
     const [h, m] = await Promise.all([api("/api/host"), api("/api/models")]);
@@ -617,8 +982,9 @@ async function refresh() {
       document.body.innerHTML = '<p style="text-align:center;margin-top:60px">A token is required — open the link that <code>lmds web</code> printed.</p>';
       return;
     }
-    renderHost(await h.json());
-    renderFleet((await m.json()).models);
+    const models = (await m.json()).models;
+    renderHost(await h.json(), models);
+    renderFleet(models);
   } catch {
     document.getElementById("fleet").innerHTML = `<div class="empty">Cannot reach LMDS — is the server still running?</div>`;
   }
@@ -626,6 +992,7 @@ async function refresh() {
 
 api("/api/version").then(r => r.json()).then(d => document.getElementById("ver").textContent = "v" + d.version).catch(() => {});
 refresh();
+refreshNodes();
 setInterval(() => { if (!busy) refresh(); }, 5000);
 </script>
 </body>

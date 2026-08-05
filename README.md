@@ -90,6 +90,28 @@ lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/�
 lmds remove <ชื่อ>        # ลบออกจากเครื่องทั้งหมด (--keep-weights = เก็บ weight ไว้)
 ```
 
+## คุมหลายเครื่องจากเครื่องเดียว (Multi-node Fleet)
+
+หน้างานที่มีมากกว่า 1 เครื่อง ไม่ต้อง ssh ไล่ทีละตัว — เพิ่มเครื่องด้วย ip/user/รหัสผ่าน **ครั้งเดียว**
+ระบบติดตั้ง SSH key ให้แล้วทิ้งรหัสผ่านทันที (ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ)
+
+```bash
+lmds node add 192.168.10.21 --user ops   # ถามรหัสผ่านครั้งเดียว → ติดตั้ง key
+lmds node list --check                   # เครื่องไหนยังตอบบ้าง
+lmds ps --all                            # โมเดลของทุกเครื่องในตารางเดียว
+lmds node run spark2 doctor my-model     # สั่งคำสั่ง lmds อะไรก็ได้ข้ามเครื่อง
+lmds node cluster                        # เครื่องไหนมี ConnectX/200G และจับคู่ stacked กันได้
+```
+
+- เครื่องปลายทาง **ไม่ต้องรัน daemon** และไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 — hub เรียก `lmds agent info` ผ่าน SSH
+- **ไม่ต้องใช้ root** — user ที่อยู่ในกลุ่ม `docker` พอ
+- เห็นทรัพยากรสดของทุกเครื่อง: CPU · RAM/Unified · VRAM · ดิสก์ · ความเร็วสาย · **จำนวนโมเดลที่รัน**
+  (llama.cpp รันหลายตัวพร้อมกันได้)
+- ตรวจ **ConnectX/RDMA/ความเร็วลิงก์** ให้เอง แล้วบอกว่าเครื่องคู่ไหน stacked ด้วยกันได้ ·
+  กรอก cluster IP ที่ NCCL จะใช้ แล้วสั่ง `lmds node cluster --write <slug>` เขียนลง bundle ได้เลย
+
+รายละเอียด: [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
+
 ## หน้าเว็บ (ทางเลือก)
 
 ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้ — เปิดหน้าเดียวที่คุมได้ครบ: สถานะเครื่อง, โมเดลทั้งหมด,
@@ -150,6 +172,7 @@ LMDS_SKIP_PREREQ=1 ./install.sh              # ลง LMDS อย่างเด
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | **คู่มือติดตั้งละเอียด** — prerequisites, ดิสก์/ที่เก็บไฟล์, proxy/air-gapped, ตั้ง provider (รวม Local AI), โมเดลถูกดึงมาและรันยังไง, smoke test, ถอนการติดตั้ง |
 | [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว + env, fleet (ps/list/restart/logs -f/repair/remove/completion), target presets ครบ 20 ตัว, troubleshooting |
+| [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | **คุมหลายเครื่องจากเครื่องเดียว** — เพิ่มเครื่องด้วย ip/user/รหัสผ่านครั้งเดียว, ดู CPU/RAM/VRAM/ดิสก์/โมเดลที่รันของทุกเครื่อง, ตรวจ ConnectX/200G และจับคู่เครื่องที่ stacked ด้วยกันได้ |
 | [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | แผนพัฒนา 3 เฟส + work breakdown ของเฟส 1 |

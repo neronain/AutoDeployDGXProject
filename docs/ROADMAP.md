@@ -47,6 +47,7 @@
 ### นอกขอบเขตเฟส 1 (ตัดออกชัดเจน)
 
 - Web UI, repair แบบวิเคราะห์ log, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
+  → ~~Web UI~~ **ทำแล้ว (2026-08-04)** · ~~SSH remote probe~~ **ทำแล้ว (2026-08-05)** เป็น fleet หลายเครื่อง
 - ~~ไม่มี CI~~ → **มี CI แล้ว (2026-08-02)** · ~~จัดการ container ที่ไม่ได้มาจาก lmds / remove / repair ไฟล์~~ → **ทำแล้ว (2026-08-02)** ตามที่เจอจากการใช้งานจริง
 - ~~stacked controller generation~~ → **ทำเสร็จแล้ว (M8, 2026-07-24)** เลือกผ่าน `--target dgx-spark-stacked`
 
@@ -60,7 +61,9 @@
 3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
 4. **Web UI หน้าเดียว** (FastAPI) — reuse core ทั้งหมด, สำหรับลูกค้าที่ไม่ถนัด CLI
 5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
-6. Anthropic provider, i18n ไทยเต็มรูป, SSH remote probe
+6. Anthropic provider, i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
+   `lmds node` (ทะเบียนเครื่อง + `lmds agent info` ผ่าน SSH) พร้อมตรวจ ConnectX/200G และจับคู่ stacked
+   · งานต่อยอด: push bundle ไปติดตั้งบน node ให้อัตโนมัติ, ยืนยัน fabric detection กับ ConnectX จริง
 
 ## เฟส 3 — ข้อเสนอระยะยาว
 

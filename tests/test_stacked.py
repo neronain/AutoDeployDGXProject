@@ -7,6 +7,7 @@ multi-node ที่ผ่าน bash -n + quality gates ครบ, กัน GG
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 
 import pytest
@@ -244,3 +245,16 @@ def test_stacked_can_recover_from_stale_flashinfer_cache(tmp_path):
     assert "clear_fi_cache()" in script
     assert "clear-fi-cache)" in script
     assert "props)" in script
+
+
+def test_controller_reads_cluster_env_before_defaults(tmp_path):
+    """hub เขียน cluster.env ให้แล้ว controller ต้องใช้เลย ไม่ใช่ถาม IP ซ้ำตอน start"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    env_line = text.index('CLUSTER_ENV="${CLUSTER_ENV:-')
+    master_line = text.index('MASTER_IP="${MASTER_IP:-')
+    # ต้องอ่านไฟล์ก่อนตั้ง default ไม่งั้นค่าใน cluster.env ไม่มีผล
+    assert env_line < master_line
+    assert 'set -a; . "$CLUSTER_ENV"; set +a' in text
+    assert 'if [[ -f "$CLUSTER_ENV" ]]; then' in text
