@@ -1486,6 +1486,98 @@ def deploy(
                      stacked=deployment_plan.topology.value == "stacked",
                      assets=bool(deployment_plan.runtime_assets))
     console.print("\n[dim]สถานะ: static-validated — รัน acceptance ตามลำดับด้านบนเพื่อยืนยันบนเครื่องจริง[/dim]")
+    # typer ไม่ใช้ค่า return ของ command — คืนไว้ให้ `lmds up` เดินต่อโดยไม่ต้องเดา path ของ bundle
+    return bundle
+
+
+# ขั้นตอนหลัง generate ที่ผู้ใช้ต้องพิมพ์เองทุกครั้ง — ผิดลำดับแล้วพังแบบไม่บอกสาเหตุ
+# (start ก่อน download = ไม่มีไฟล์ · ข้าม verify-files = ไฟล์ครึ่งเดียวแล้วไปตายตอนโหลด)
+_UP_STEPS = [
+    ("download", "ดาวน์โหลดไฟล์โมเดล"),
+    ("verify-files", "ตรวจไฟล์ครบและถูกต้อง"),
+    ("start", "เปิดเซิร์ฟเวอร์แล้วรอ /health"),
+    ("test-text", "ให้โมเดลตอบหนึ่งคำถาม"),
+]
+
+
+def _run_step(controller: str, command: str, index: int, total: int, label: str) -> int:
+    """รันคำสั่งของ controller แบบเห็น output สด — ขั้นตอนพวกนี้กินเวลาหลายนาที
+
+    ไม่ capture เพราะผู้ใช้ต้องเห็นความคืบหน้าจริง (progress ของ download,
+    log ตอนโหลดโมเดล) ไม่ใช่จอค้างเปล่า ๆ
+    """
+    import subprocess
+
+    console.print(f"\n[bold cyan][{index}/{total}] {label}[/bold cyan]  [dim]({command})[/dim]")
+    return subprocess.run([controller, command]).returncode
+
+
+@app.command()
+def up(
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    revision: Optional[str] = typer.Option(None, "--revision"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้", autocompletion=_complete_target),
+    output: str = typer.Option("./bundles", "--output"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
+    concurrency: int = typer.Option(1, "--concurrency"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (ไม่อนุมัติ flag ค้าง)"),
+) -> None:
+    """ลิงก์เดียวจบ: deploy → download → verify → start → ทดสอบ แล้วบอกวิธีต่อ client
+
+    `lmds deploy` หยุดที่ bundle แล้วให้ผู้ใช้ไปพิมพ์ต่ออีก 4-5 คำสั่งตามลำดับที่ถูกต้อง
+    ซึ่งเป็นจุดที่คนใช้ครั้งแรกหลุดบ่อยที่สุด — คำสั่งนี้เดินให้จนเซิร์ฟเวอร์ตอบได้จริง
+
+    stacked (หลายเครื่อง) ยังต้องใช้ `lmds deploy` แล้วทำตาม README ของ bundle
+    เพราะมีขั้น sync-worker/verify-worker ที่ต้องตัดสินใจเรื่องเครื่องปลายทาง
+
+    Exit codes: เหมือน deploy ทุกอย่าง · ถ้าขั้นตอนหลัง generate ล้ม จะคืน exit code
+    ของ controller ตัวนั้นตรง ๆ
+    """
+    bundle = deploy(
+        model=model,
+        revision=revision,
+        target=target,
+        output=output,
+        no_llm=no_llm,
+        concurrency=concurrency,
+        yes=yes,
+    )
+    if bundle is None:  # ไม่ควรเกิด — deploy โยน typer.Exit เมื่อไปต่อไม่ได้
+        raise typer.Exit(code=1)
+
+    controller = str(bundle.controller)
+    slug = bundle.controller.parent.name
+
+    if slug.endswith("-stacked") or "-stacked.sh" in controller:
+        console.print(
+            "\n[yellow]bundle นี้เป็น stacked (หลายเครื่อง)[/yellow] — ขั้น sync-worker/verify-worker "
+            "ต้องตัดสินใจเรื่องเครื่องปลายทางเอง · ทำตาม README ของ bundle ต่อ"
+        )
+        return
+
+    steps = list(_UP_STEPS)
+    # llama.cpp บน ARM64 ไม่มี image ทางการ ต้อง build เองก่อนหนึ่งครั้ง
+    # ดูจาก RUNTIME_MODE ที่ render ลงสคริปต์ ไม่ใช่จากการมีคำสั่ง prepare-runtime
+    # เพราะ template ใส่ dispatch case นั้นไว้ทุก mode แม้ mode docker จะไม่ต้องใช้
+    if 'RUNTIME_MODE:-native' in bundle.controller.read_text(encoding="utf-8"):
+        steps.insert(2, ("prepare-runtime", "เตรียม engine (ครั้งแรกครั้งเดียว — ใช้ sudo)"))
+
+    total = len(steps)
+    for index, (command, label) in enumerate(steps, start=1):
+        code = _run_step(controller, command, index, total, label)
+        if code != 0:
+            err_console.print(
+                f"\n[red]ไม่ผ่านขั้น {command} (exit {code})[/red]\n"
+                f"  ดูสาเหตุ:  lmds doctor {slug}\n"
+                f"  ดู log:    lmds logs {slug}\n"
+                f"  ลองใหม่เฉพาะขั้นนี้:  {controller} {command}"
+            )
+            raise typer.Exit(code=code)
+
+    console.print(f"\n[green]พร้อมใช้งานแล้ว[/green] — {slug}")
+    console.print(f"  ค่าต่อ client:        [cyan]{controller} client-config[/cyan]")
+    console.print(f"  ต่อ Claude Code:     [cyan]lmds connect {slug}[/cyan]")
+    console.print(f"  ดูสถานะ/หยุด:        [cyan]lmds ps[/cyan] · [cyan]lmds stop {slug}[/cyan]")
 
 
 @app.command()

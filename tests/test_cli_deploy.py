@@ -191,3 +191,97 @@ def test_approved_flag_survives_into_script(isolated_config, tmp_path):
     bundle = render_bundle(plan, report, fit, tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
     assert "--no-mmap" in text
+
+
+# ── lmds up (deploy แล้วเดินต่อจนเซิร์ฟเวอร์ตอบได้) ──────────────────────
+
+
+class _FakeController:
+    """แทนการเรียก controller — ปล่อย subprocess อื่น (เช่น bash -n ของ gate) ผ่านของจริง"""
+
+    def __init__(self, fail_on: str = ""):
+        import subprocess
+
+        self.calls: list[str] = []
+        self.fail_on = fail_on
+        self._real = subprocess.run
+
+    def __call__(self, args, **kwargs):
+        import subprocess
+
+        is_controller = (
+            isinstance(args, (list, tuple)) and len(args) == 2 and str(args[0]).endswith(".sh")
+        )
+        if not is_controller:
+            return self._real(args, **kwargs)
+        self.calls.append(args[1])
+        return subprocess.CompletedProcess(args, 3 if args[1] == self.fail_on else 0)
+
+
+def _run_up(monkeypatch, tmp_path, report, target: str, model: str, fail_on: str = ""):
+    _patch_inspect(monkeypatch, report)
+    fake = _FakeController(fail_on)
+    monkeypatch.setattr("subprocess.run", fake)
+    result = runner.invoke(
+        app,
+        ["up", model, "--no-llm", "--target", target, "--output", str(tmp_path), "--yes"],
+    )
+    return result, fake
+
+
+def test_up_runs_controller_steps_in_the_only_order_that_works(
+    isolated_config, tmp_path, monkeypatch
+):
+    """start ก่อน download = ไม่มีไฟล์ · ข้าม verify-files = ไฟล์ครึ่งเดียวแล้วไปตายตอนโหลด"""
+    result, fake = _run_up(
+        monkeypatch, tmp_path, gguf_report(), "dgx-spark-single", "unsloth/Qwen3-8B-GGUF"
+    )
+    assert result.exit_code == 0, result.output
+    # prepare-runtime แทรกเฉพาะ bundle ที่ build เอง (llama.cpp บน ARM64 ไม่มี image ทางการ)
+    assert fake.calls == ["download", "verify-files", "prepare-runtime", "start", "test-text"]
+    assert "พร้อมใช้งานแล้ว" in result.output
+    assert "lmds connect qwen3-8b-gguf" in result.output
+
+
+def test_up_stops_at_the_failing_step_and_says_where_to_look(
+    isolated_config, tmp_path, monkeypatch
+):
+    """ล้มแล้วต้องรู้ทันทีว่าล้มขั้นไหนและดูต่อที่ไหน ไม่ใช่ไล่อ่าน log เอง"""
+    result, fake = _run_up(
+        monkeypatch, tmp_path, gguf_report(), "dgx-spark-single", "unsloth/Qwen3-8B-GGUF",
+        fail_on="verify-files",
+    )
+    assert result.exit_code == 3  # คืน exit code ของ controller ตรง ๆ
+    assert fake.calls == ["download", "verify-files"]  # ไม่เดินต่อหลังล้ม
+    assert "ไม่ผ่านขั้น verify-files" in result.output
+    assert "lmds doctor qwen3-8b-gguf" in result.output
+
+
+def test_up_skips_prepare_runtime_when_bundle_uses_a_prebuilt_image(
+    isolated_config, tmp_path, monkeypatch
+):
+    """bundle ที่รันด้วย docker image ไม่มีขั้น build — สั่งไปก็ไม่มีคำสั่งนั้นใน controller"""
+    result, fake = _run_up(
+        monkeypatch, tmp_path, gguf_report(weight_bytes=5 * GIB), "rtx-pro-4000",
+        "unsloth/Qwen3-8B-GGUF",
+    )
+    assert result.exit_code == 0, result.output
+    assert "prepare-runtime" not in fake.calls
+    assert fake.calls == ["download", "verify-files", "start", "test-text"]
+
+
+def test_up_does_not_pretend_to_handle_stacked(isolated_config, tmp_path, monkeypatch):
+    """stacked มีขั้น sync-worker/verify-worker ที่ต้องตัดสินใจเรื่องเครื่องปลายทาง — ทำแทนไม่ได้
+
+    ทำครึ่ง ๆ แล้วปล่อยไว้แย่กว่าบอกตรง ๆ ว่าต้องทำต่อเองตาม README
+    """
+    from tests.test_stacked import big_safetensors
+
+    result, fake = _run_up(
+        monkeypatch, tmp_path, big_safetensors(), "dgx-spark-stacked",
+        "nvidia/DeepSeek-V4-Flash-NVFP4",
+    )
+    assert result.exit_code == 0, result.output
+    assert fake.calls == []
+    assert "stacked" in result.output
+    assert "README" in result.output
