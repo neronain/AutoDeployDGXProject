@@ -85,7 +85,6 @@ Special files: chat_template.jinja, tool parser: hermes
 
 ```text
 lmds config set-provider <openai|gemini|minimax|anthropic|openai-compat> [--base-url URL] [--model NAME]
-                                        # anthropic: ตั้งค่าได้แต่ adapter ยังไม่ทำ (เฟส 2) — จะ error ตอนใช้จริง
 lmds config set-key <provider> [--stdin]   # prompt แบบซ่อน input → เก็บ keyring หรือ ~/.config/lmds/credentials (0600)
 lmds config set-hf-token [--stdin]      # เก็บ HF token (optional)
 lmds config show                        # แสดง config ปัจจุบัน (redact ทุก secret) + ที่มาของ secret แต่ละตัว

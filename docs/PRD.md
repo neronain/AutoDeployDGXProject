@@ -12,7 +12,7 @@
 
 ## 1. บทสรุปผู้บริหาร (Executive Summary)
 
-**Local Model Deploy Studio (LMDS)** คือโปรแกรมสำหรับรันบน Ubuntu ที่รับ **ลิงก์โมเดล** (เป้าหมาย: Hugging Face, Ollama, NGC, GitHub หรือ URL ตรง — **ปัจจุบันรองรับ Hugging Face เท่านั้น** ที่เหลืออยู่เฟส 2) แล้วใช้ **LLM API ภายนอก** (OpenAI / Gemini / MiniMax / OpenAI-compatible endpoint — Claude อยู่เฟส 2) เป็น "สมอง" ในการวิเคราะห์โมเดล เลือก runtime และ**สร้างชุดสคริปต์ deploy (deployment bundle) ที่ผ่านการ validate แล้ว** สำหรับเครื่องเป้าหมาย ตั้งแต่ **NVIDIA DGX Spark** (เดี่ยวหรือ stacked) ไปจนถึง **เครื่อง Ubuntu ทั่วไปที่ใช้ GPU RTX**
+**Local Model Deploy Studio (LMDS)** คือโปรแกรมสำหรับรันบน Ubuntu ที่รับ **ลิงก์โมเดล** (เป้าหมาย: Hugging Face, Ollama, NGC, GitHub หรือ URL ตรง — **ปัจจุบันรองรับ Hugging Face เท่านั้น** ที่เหลืออยู่เฟส 2) แล้วใช้ **LLM API ภายนอก** (OpenAI / Gemini / MiniMax / Anthropic Claude / OpenAI-compatible endpoint) เป็น "สมอง" ในการวิเคราะห์โมเดล เลือก runtime และ**สร้างชุดสคริปต์ deploy (deployment bundle) ที่ผ่านการ validate แล้ว** สำหรับเครื่องเป้าหมาย ตั้งแต่ **NVIDIA DGX Spark** (เดี่ยวหรือ stacked) ไปจนถึง **เครื่อง Ubuntu ทั่วไปที่ใช้ GPU RTX**
 
 จุดแข็งของระบบคือไม่ได้เริ่มจากศูนย์ — เรามี **controller standard v3.0.0** ที่รันจริงแล้วกับโมเดลกว่า 12 ตัว (Gemma, GPT-OSS-120B, Llama 3.3 70B NVFP4, Nemotron, Qwen3, MiniMax ฯลฯ) พร้อม contract, template, quality gates และ audit tools ที่พิสูจน์แล้ว LMDS คือการยกกระบวนการนี้จาก "skill ที่ต้องรันผ่าน Claude Code" มาเป็น **โปรแกรม standalone ที่ลูกค้าใช้เองได้** โดยใช้ LLM API key ของลูกค้าเอง
 
@@ -34,7 +34,7 @@
 
 ### เป้าหมาย (Goals)
 - **G1** — รับลิงก์โมเดลจาก Hugging Face ✅ (repo / ลิงก์ไฟล์ GGUF ตรง) แล้วสร้าง deployment bundle ที่รันได้จริง · Ollama / NGC / GitHub release ❌ เฟส 2
-- **G2** — รองรับ LLM provider อย่างน้อย: OpenAI ✅, Google Gemini ✅, MiniMax ✅ และ endpoint แบบ OpenAI-compatible ✅ (Ollama/vLLM — โมเดล local เป็นสมองเองได้โดยไม่ต้องมี key) · Anthropic Claude ❌ เฟส 2
+- **G2** — รองรับ LLM provider อย่างน้อย: OpenAI ✅, Google Gemini ✅, MiniMax ✅ และ endpoint แบบ OpenAI-compatible ✅ (Ollama/vLLM — โมเดล local เป็นสมองเองได้โดยไม่ต้องมี key) · Anthropic Claude ✅
 - **G3** — ถาม HF token แบบ **optional** เฉพาะเมื่อจำเป็น (ตรวจ gated repo อัตโนมัติ) — ไม่ใส่ก็ดาวน์โหลด repo สาธารณะได้ตามปกติ
 - **G4** — รองรับฮาร์ดแวร์ 3 กลุ่ม: DGX Spark เดี่ยว, DGX Spark stacked (2+ เครื่อง), และ Ubuntu + RTX (single/multi-GPU, x86_64)
 - **G5** — ทุก bundle ที่ส่งออกผ่าน quality gates เดียวกับ v3.0.0 (`bash -n`, audit rules, SHA-256 manifest) โดยอัตโนมัติ
@@ -107,7 +107,7 @@
 ### FR-4 LLM Orchestrator ("สมอง")
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
-| FR-4.1 | Provider abstraction: OpenAI ✅, Gemini ✅, MiniMax ✅, OpenAI-compatible URL ✅ (ใช้โมเดล local เป็นสมองได้) — เลือก + สลับได้ · **Anthropic ❌ ยังไม่ทำ (เฟส 2)** | P0 |
+| FR-4.1 | Provider abstraction: OpenAI ✅, Gemini ✅, MiniMax ✅, Anthropic ✅, OpenAI-compatible URL ✅ (ใช้โมเดล local เป็นสมองได้) — เลือก + สลับได้ | P0 |
 | FR-4.2 | LLM ใช้ใน 3 งานเท่านั้น: (a) สรุป/สกัดข้อเท็จจริงจาก model card + configs (b) เลือกค่าใน **Deployment Plan (JSON schema ตายตัว, validate ด้วย schema ก่อนใช้)** (c) เขียนเนื้อหา README/คำอธิบาย | P0 |
 | FR-4.3 | ทุก fact ที่ LLM สกัด ต้อง tag ที่มา: `verified` (จากไฟล์จริง) / `inferred` / `unverified` — ตาม operating principle ข้อ 4 ของ SKILL.md | P0 |
 | FR-4.4 | มี fallback แบบ degraded: ถ้าไม่มี API key เลย ระบบยังทำงานได้กับโมเดลที่เข้า rule-based matrix ได้ (โมเดลตระกูลที่รู้จัก) โดยไม่มีคำอธิบาย/การวิเคราะห์เชิงลึก | P1 |
@@ -295,7 +295,7 @@ validation_notes: [...]
 - **เกณฑ์สำเร็จ**: โมเดลอ้างอิง 5 ตัว (dense safetensors, GGUF, NVFP4, MoE, gated) ได้ bundle ที่รันจริงบนเครื่อง Spark และ RTX อย่างละ 1 เครื่อง
 
 ### เฟส 2
-- Ollama + NGC source, stacked controller, repair workflow, Anthropic provider
+- Ollama + NGC source, stacked controller, repair workflow, ~~Anthropic provider~~ ✅
 - Web UI หน้าเดียว, runtime smoke test อัตโนมัติบนเครื่องเป้าหมาย, i18n ไทยเต็มรูป
 
 ### เฟส 3

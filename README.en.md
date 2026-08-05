@@ -13,8 +13,7 @@ model) as its "brain" to analyse the model and produce a **validated deployment 
 - **Ubuntu + RTX GPU** — ordinary local AI servers (x86_64)
 
 > **Supported model sources today: Hugging Face only.** Ollama and NVIDIA NGC links are phase 2 —
-> passing one produces a clear "not supported yet" message. The `anthropic` provider can be
-> configured but its adapter is also phase 2.
+> passing one produces a clear "not supported yet" message.
 
 ## Core design principle
 

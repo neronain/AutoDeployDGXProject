@@ -5,6 +5,7 @@ import pytest
 
 from lmds.brain import providers
 from lmds.brain import (
+    AnthropicProvider,
     GeminiProvider,
     MiniMaxProvider,
     MissingKey,
@@ -290,7 +291,178 @@ def test_openai_real_still_requires_key():
         make_provider(ProviderConfig(name=ProviderName.OPENAI, model="gpt-4.1"), api_key=None)
 
 
-def test_make_provider_anthropic_phase2():
+def _anthropic_client(handler):
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _anthropic_ok(text: str, **extra) -> dict:
+    body = {"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}
+    body.update(extra)
+    return body
+
+
+def test_anthropic_request_shape_and_parse():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["key"] = request.headers.get("x-api-key")
+        seen["version"] = request.headers.get("anthropic-version")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_anthropic_ok('{"ok": true}'))
+
+    provider = AnthropicProvider(
+        "claude-sonnet-5", "sk-ant-test123456789", client=_anthropic_client(handler)
+    )
+    assert provider.complete_json("SYSTEM", "USER") == '{"ok": true}'
+    assert seen["url"] == "https://api.anthropic.com/v1/messages"
+    assert seen["key"] == "sk-ant-test123456789"
+    assert seen["version"] == "2023-06-01"
+    body = seen["body"]
+    assert body["model"] == "claude-sonnet-5"
+    # system เป็น field ระดับบนสุด ไม่ใช่ message — ผิดตรงนี้คือ system prompt หายทั้งก้อน
+    assert body["system"] == "SYSTEM"
+    assert body["messages"] == [{"role": "user", "content": "USER"}]
+    assert body["max_tokens"] > 0  # field บังคับ ไม่มีค่า default ฝั่ง server
+
+
+def test_anthropic_never_sends_sampling_params():
+    """Claude 4.7 ขึ้นไปตอบ 400 ถ้าเจอ temperature/top_p/top_k — รวม default ของ provider นี้"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_anthropic_ok("{}"))
+
+    AnthropicProvider(
+        "claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler)
+    ).complete_json("s", "u")
+    assert "temperature" not in seen["body"]
+    assert "top_p" not in seen["body"]
+    assert "top_k" not in seen["body"]
+
+
+def test_anthropic_joins_text_blocks_and_skips_thinking():
+    """รุ่นใหม่เปิด thinking เป็นค่าเริ่มต้น — block ชนิดนั้นไม่ใช่คำตอบและไม่มี key text"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content": [
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": '{"a":'},
+                {"type": "text", "text": " 1}"},
+            ],
+            "stop_reason": "end_turn",
+        })
+
+    out = AnthropicProvider(
+        "claude-opus-5", "k-1234567890", client=_anthropic_client(handler)
+    ).complete_json("s", "u")
+    assert json.loads(out) == {"a": 1}
+
+
+def test_anthropic_refusal_is_not_a_schema_failure():
+    """refusal มาเป็น HTTP 200 ที่ content ว่าง — ถ้าไม่ดักจะกลายเป็น retry เปล่าอีกสองรอบ"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content": [],
+            "stop_reason": "refusal",
+            "stop_details": {"type": "refusal", "category": "cyber"},
+        })
+
+    provider = AnthropicProvider("claude-opus-5", "k-1234567890", client=_anthropic_client(handler))
+    with pytest.raises(ProviderError, match="cyber"):
+        provider.complete_json("s", "u")
+
+
+def test_anthropic_truncated_output_says_why():
+    """JSON ที่ถูกตัดกลางคันจะพังตอน parse โดยไม่บอกสาเหตุจริง"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_anthropic_ok('{"partial": ', stop_reason="max_tokens"))
+
+    provider = AnthropicProvider("claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler))
+    with pytest.raises(ProviderError, match="max_tokens"):
+        provider.complete_json("s", "u")
+
+
+def test_anthropic_empty_content_is_an_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": [], "stop_reason": "end_turn"})
+
+    provider = AnthropicProvider("claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler))
+    with pytest.raises(ProviderError, match="ไม่ได้ส่งข้อความกลับมา"):
+        provider.complete_json("s", "u")
+
+
+def test_anthropic_surfaces_api_error_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": "model: unknown model"},
+        })
+
+    provider = AnthropicProvider("claude-nope", "k-1234567890", client=_anthropic_client(handler))
+    with pytest.raises(ProviderError, match="unknown model"):
+        provider.complete_json("s", "u")
+
+
+def test_anthropic_non_json_error_body_falls_back_to_text():
+    """gateway/proxy ที่ขวางอยู่ตอบ HTML — ยังต้องเห็นสาเหตุ ไม่ใช่เหลือแค่เลข status"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html>bad gateway</html>")
+
+    provider = AnthropicProvider("claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler))
+    with pytest.raises(ProviderError, match="bad gateway"):
+        provider.complete_json("s", "u")
+
+
+def test_anthropic_retries_529_overloaded(no_sleep):
+    """529 = overloaded_error ของ Anthropic — ล่มชั่วคราวเหมือน 503 ไม่ใช่ความผิดของ config"""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(529, json={"type": "error", "error": {"type": "overloaded_error"}})
+        return httpx.Response(200, json=_anthropic_ok('{"ok": 1}'))
+
+    out = AnthropicProvider(
+        "claude-sonnet-5", "k-1234567890", client=_anthropic_client(handler)
+    ).complete_json("s", "u")
+    assert out == '{"ok": 1}'
+    assert len(calls) == 2
+
+
+def test_anthropic_custom_base_url_for_gateway():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=_anthropic_ok("{}"))
+
+    AnthropicProvider(
+        "claude-sonnet-5", "k-1234567890",
+        base_url="https://gw.internal/anthropic/v1/",
+        client=_anthropic_client(handler),
+    ).complete_json("s", "u")
+    assert seen["url"] == "https://gw.internal/anthropic/v1/messages"
+
+
+def test_make_provider_anthropic():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_anthropic_ok('{"ok": true}'))
+
     config = ProviderConfig(name=ProviderName.ANTHROPIC, model="claude-sonnet-5")
-    with pytest.raises(ProviderError, match="เฟส 2"):
-        make_provider(config, "k-123")
+    provider = make_provider(config, "sk-ant-1234567890", client=_anthropic_client(handler))
+    assert isinstance(provider, AnthropicProvider)
+    assert provider.name == "anthropic"
+    assert provider.complete_json("s", "u") == '{"ok": true}'
+
+
+def test_anthropic_requires_key():
+    config = ProviderConfig(name=ProviderName.ANTHROPIC, model="claude-sonnet-5")
+    with pytest.raises(MissingKey):
+        make_provider(config, api_key=None)

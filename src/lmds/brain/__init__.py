@@ -17,6 +17,7 @@ from .plan_schema import (
     Topology,
 )
 from .providers import (
+    AnthropicProvider,
     GeminiProvider,
     LlmProvider,
     MiniMaxProvider,
@@ -28,6 +29,7 @@ from .providers import (
 from .rulebased import rule_based_plan, slugify
 
 __all__ = [
+    "AnthropicProvider",
     "Confidence",
     "DeploymentPlan",
     "Engine",

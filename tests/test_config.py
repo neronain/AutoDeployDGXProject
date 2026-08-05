@@ -22,12 +22,12 @@ def test_set_provider_default_model(isolated_config):
     assert reloaded.provider.name is ProviderName.OPENAI
 
 
-def test_anthropic_rejected_at_config_time(isolated_config):
-    """เดิมตั้งค่าผ่าน แล้วไปพังตอน deploy — ต้องบอกตั้งแต่ตอนตั้งค่า"""
+def test_anthropic_uses_default_model(isolated_config):
+    """เดิมปฏิเสธตั้งแต่ตอนตั้งค่าเพราะยังไม่มี adapter — ตอนนี้ตั้งได้เหมือน provider อื่น"""
     settings = Settings.load()
-    with pytest.raises(ValueError, match="เฟส 2"):
-        settings.set_provider(ProviderName.ANTHROPIC)
-    assert settings.provider is None  # ไม่เขียนทับ config เดิม
+    provider = settings.set_provider(ProviderName.ANTHROPIC)
+    assert provider.model == "claude-sonnet-5"
+    assert provider.base_url is None  # ยิง api.anthropic.com ตรง ไม่ต้องระบุ
 
 
 def test_openai_compat_requires_base_url(isolated_config):

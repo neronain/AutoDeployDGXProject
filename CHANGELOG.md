@@ -8,6 +8,12 @@
 
 ### Added
 
+- **provider `anthropic` ใช้ได้จริงแล้ว** — เรียก Messages API ของ Anthropic ตรง ไม่ผ่าน shim
+  · `lmds config set-provider anthropic` (default `claude-sonnet-5`) + `lmds config set-key anthropic`
+  · **ไม่ส่ง `temperature`/`top_p`/`top_k`** เพราะ Claude ตั้งแต่รุ่น 4.7 ขึ้นไปตอบ 400 ถ้าเจอ
+  · `stop_reason` ที่เป็น `refusal`/`max_tokens` มาเป็น HTTP 200 — แยกข้อความให้ชัด
+  ไม่ปล่อยให้กลายเป็น "ไม่ผ่าน schema 3 ครั้ง" ซึ่งชี้ผิดทางและเสียเงินอีกสองรอบ
+  · `529 overloaded_error` เข้า retry เหมือน 503
 - **คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)** — เครื่องที่คุณใช้เป็น *hub* คุมเครื่องอื่นผ่าน SSH
   · `lmds node add <ip> --user <u>` ถามรหัสผ่าน **ครั้งเดียว** เพื่อติดตั้ง SSH key ของ LMDS แล้วทิ้งทันที
   — **ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ** (มีเทสกันไม่ให้เผลอเพิ่มกลับเข้ามา)

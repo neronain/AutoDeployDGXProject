@@ -48,6 +48,7 @@
 
 - Web UI, repair แบบวิเคราะห์ log, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
   → ~~Web UI~~ **ทำแล้ว (2026-08-04)** · ~~SSH remote probe~~ **ทำแล้ว (2026-08-05)** เป็น fleet หลายเครื่อง
+  · ~~Anthropic adapter~~ **ทำแล้ว (2026-08-06)**
 - ~~ไม่มี CI~~ → **มี CI แล้ว (2026-08-02)** · ~~จัดการ container ที่ไม่ได้มาจาก lmds / remove / repair ไฟล์~~ → **ทำแล้ว (2026-08-02)** ตามที่เจอจากการใช้งานจริง
 - ~~stacked controller generation~~ → **ทำเสร็จแล้ว (M8, 2026-07-24)** เลือกผ่าน `--target dgx-spark-stacked`
 
@@ -70,7 +71,9 @@
 6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
    ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
    ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ)
-7. Anthropic provider, i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
+7. ~~Anthropic provider~~ → ✅ **ทำแล้ว (2026-08-06)** เรียก Messages API ตรง
+   (`lmds config set-provider anthropic` · default `claude-sonnet-5`)
+   · i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
    `lmds node` (ทะเบียนเครื่อง + `lmds agent info` ผ่าน SSH) พร้อมตรวจ ConnectX/200G และจับคู่ stacked
    · งานต่อยอด: push bundle ไปติดตั้งบน node ให้อัตโนมัติ, ยืนยัน fabric detection กับ ConnectX จริง
 

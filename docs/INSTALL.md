@@ -295,13 +295,16 @@ lmds config set-key gemini
 lmds config set-provider minimax
 lmds config set-key minimax
 
-# แบบ E: ไม่มี LLM เลย — ไม่ต้องตั้งอะไร แล้วเติม --no-llm ทุกครั้งที่ deploy (rule-based mode)
+# แบบ E: Anthropic Claude (default model: claude-sonnet-5)
+lmds config set-provider anthropic
+lmds config set-key anthropic
+
+# แบบ F: ไม่มี LLM เลย — ไม่ต้องตั้งอะไร แล้วเติม --no-llm ทุกครั้งที่ deploy (rule-based mode)
 ```
 
 เปลี่ยนโมเดลของ provider ได้ด้วย `--model` เช่น `lmds config set-provider openai --model gpt-4.1-mini`
 ดูรายการ default ต่อ provider: `lmds config defaults`
 
-> ⚠️ `anthropic` ตั้งค่าได้แต่ยัง**เรียกใช้จริงไม่ได้** (adapter อยู่ใน roadmap เฟส 2) — ตั้งแล้วจะ error ตอน deploy
 > **หมายเหตุ**: ถ้า provider ที่ตั้งไว้ใช้ไม่ได้ตอน deploy (เช่น quota หมด / เครือข่ายล่ม)
 > ระบบจะ**สลับเป็น rule-based mode ให้อัตโนมัติ**พร้อมแจ้งสาเหตุ — งานไม่สะดุด
 

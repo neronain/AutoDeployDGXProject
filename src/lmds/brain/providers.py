@@ -1,7 +1,7 @@
 """LLM provider adapters — เรียก REST API ตรงผ่าน httpx (ไม่พึ่ง SDK หนัก)
 
 adapter เดียว (OpenAI-compatible) ครอบทั้ง OpenAI จริงและ endpoint local ทุกตัว
-Gemini ใช้ REST ของ Google โดยตรง — Anthropic เตรียม interface ไว้ (เฟส 2)
+Gemini ใช้ REST ของ Google โดยตรง · Anthropic ใช้ Messages API ตรง ไม่ผ่าน shim
 """
 
 from __future__ import annotations
@@ -16,10 +16,17 @@ from lmds.config.settings import ProviderConfig, ProviderName
 OPENAI_BASE = "https://api.openai.com/v1"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MINIMAX_BASE = "https://api.minimax.io/v1"
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+ANTHROPIC_VERSION = "2023-06-01"
+# max_tokens เป็น field บังคับของ Messages API — ไม่มีค่า default ฝั่ง server
+# เป็น "เพดาน" ไม่ใช่โควตาที่ถูกเรียกเก็บ · plan ที่ยาวสุดเท่าที่เจอราว 3k token
+# เผื่อไว้กว้างเพราะถ้าตันจะได้ JSON ที่ถูกตัดกลางคัน ซึ่งแพงกว่าการเผื่อ
+ANTHROPIC_MAX_TOKENS = 16000
 
 # error ชั่วคราว: rate limit / ฝั่ง provider ล่มชั่วคราว — retry คุ้ม
 # ไม่รวม 400/401/403/404 (ผิดที่ config ของเรา retry ไปก็เหมือนเดิม)
-RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+# 529 = overloaded_error ของ Anthropic (นอกมาตรฐาน HTTP แต่หมายถึงล่มชั่วคราวเหมือน 503)
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
 MAX_HTTP_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 2.0
 MAX_RETRY_AFTER_SECONDS = 30.0
@@ -99,6 +106,23 @@ def _mentions_response_format(response: httpx.Response) -> bool:
     except Exception:
         return False
     return "response_format" in body or "json_object" in body or "json mode" in body
+
+
+def _anthropic_error(response: httpx.Response) -> str:
+    """Anthropic ห่อ error ไว้ใน {"error": {"message": ...}} — ดึงข้อความจริงออกมา
+
+    ถ้า body ไม่ใช่รูปนั้น (proxy ขวางอยู่ หรือ HTML จาก gateway) คืน text ดิบไปเลย
+    ดีกว่ากลืนสาเหตุแล้วเหลือแต่เลข status
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+    return response.text[:300]
 
 
 class LlmProvider(ABC):
@@ -219,6 +243,84 @@ class MiniMaxProvider(LlmProvider):
             raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}")
 
 
+class AnthropicProvider(LlmProvider):
+    """Claude ผ่าน Messages API ตรง — ไม่ใช่ shim ที่แปลงเป็น /chat/completions
+
+    reuse OpenAiCompatProvider ไม่ได้เพราะต่างกันสามเรื่อง:
+    - `system` เป็น field ระดับบนสุด ไม่ใช่ message ที่มี role=system
+    - auth ใช้ header `x-api-key` ไม่ใช่ `Authorization: Bearer`
+    - ไม่มีโหมด "ขอ JSON เฉย ๆ" แบบ response_format={"type": "json_object"}
+
+    เรื่องสุดท้ายคือเหตุผลที่ payload ไม่มี field บังคับ JSON เลย · ของ Anthropic
+    ที่ใกล้ที่สุดคือ structured outputs ซึ่งต้องแนบ JSON Schema ไปด้วย แต่ interface
+    complete_json(system, user) ไม่มี schema ให้ (และเปลี่ยน interface เพื่อ provider
+    เดียวก็ไม่คุ้ม — อีกสามตัวไม่ได้ใช้ schema) · ที่พึ่งได้แทนคือของที่มีอยู่แล้ว:
+    system prompt ของ orchestrator แนบ schema เต็มมาให้ และฝั่งผู้เรียกมี strip fence +
+    validate + retry พร้อม feedback อีกชั้น — ทางเดียวกับที่ minimax เดินอยู่ทุกวันนี้
+    """
+
+    def __init__(self, model: str, api_key: str, base_url: str | None = None,
+                 client: httpx.Client | None = None):
+        self.name = "anthropic"
+        self.model = model
+        self._key = api_key
+        self._base = (base_url or ANTHROPIC_BASE).rstrip("/")
+        self._client = client or httpx.Client(timeout=120.0)
+
+    def complete_json(self, system: str, user: str) -> str:
+        # ไม่ส่ง temperature โดยตั้งใจ — Claude ตั้งแต่รุ่น 4.7 ขึ้นไป (รวม claude-sonnet-5
+        # ที่เป็นค่า default ของ provider นี้) ตอบ 400 ทันทีถ้าเจอ temperature/top_p/top_k
+        # รุ่นเก่ารับได้ แต่ค่า default ก็เหมาะกับงาน structured อยู่แล้ว จึงไม่ต้องแยกเคส
+        resp = _post_with_retry(
+            self._client,
+            f"{self._base}/messages",
+            headers={"x-api-key": self._key, "anthropic-version": ANTHROPIC_VERSION},
+            payload={
+                "model": self.model,
+                "max_tokens": ANTHROPIC_MAX_TOKENS,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+            },
+            provider_name=self.name,
+        )
+        if resp.status_code != 200:
+            raise ProviderError(
+                f"anthropic ตอบ HTTP {resp.status_code}: {_anthropic_error(resp)}"
+            )
+
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise ProviderError(f"รูปแบบคำตอบของ anthropic ผิดปกติ: {exc}")
+
+        # refusal มาเป็น HTTP 200 ที่ content ว่าง ไม่ใช่ error — ถ้าไม่ดัก
+        # ผู้ใช้จะเห็นแค่ "ไม่ผ่าน schema 3 ครั้ง" ซึ่งชี้ไปผิดทางและเสียเงินอีกสองรอบ
+        stop = data.get("stop_reason")
+        if stop == "refusal":
+            stop_details = data.get("stop_details")
+            category = stop_details.get("category") if isinstance(stop_details, dict) else None
+            details = category or "ไม่ระบุ"
+            raise ProviderError(
+                f"anthropic ปฏิเสธคำขอนี้ (หมวด {details}) — เปลี่ยน provider หรือใช้ --no-llm"
+            )
+        if stop == "max_tokens":
+            raise ProviderError(
+                f"คำตอบของ anthropic ถูกตัดที่ max_tokens ({ANTHROPIC_MAX_TOKENS}) — JSON ไม่ครบ"
+            )
+
+        # เอาเฉพาะ block ชนิด text: รุ่นใหม่เปิด thinking เป็นค่าเริ่มต้น จึงมี block
+        # ชนิด thinking ปนมาซึ่งไม่ใช่คำตอบ · ต่อทุกก้อนเพราะ text ถูกแบ่งหลาย block ได้
+        content = data.get("content")
+        text = "".join(
+            block.get("text") or ""
+            for block in (content if isinstance(content, list) else [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if not text:
+            raise ProviderError(f"anthropic ไม่ได้ส่งข้อความกลับมา (stop_reason={stop})")
+        return text
+
+
 def make_provider(config: ProviderConfig, api_key: str | None,
                   client: httpx.Client | None = None) -> LlmProvider:
     """สร้าง provider จาก config + key
@@ -236,5 +338,7 @@ def make_provider(config: ProviderConfig, api_key: str | None,
     if config.name is ProviderName.MINIMAX:
         return MiniMaxProvider(config.model, api_key, base_url=config.base_url, client=client)
     if config.name is ProviderName.ANTHROPIC:
-        raise ProviderError("Anthropic adapter อยู่ใน roadmap เฟส 2 — ใช้ openai/gemini/openai-compat ก่อน")
+        return AnthropicProvider(
+            config.model, api_key, base_url=config.base_url, client=client
+        )
     return OpenAiCompatProvider(config.name.value, config.model, api_key, client=client)

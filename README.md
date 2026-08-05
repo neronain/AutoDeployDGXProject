@@ -11,7 +11,7 @@
 
 สืบทอดมาตรฐานจาก [dgx-spark-all-controllers v3.0.0](https://github.com/neronain/dgx-spark-all-controllers) และ skill pack `dgx-spark-model-deployer-team-pack-v3.0.0` ซึ่งมี controller ที่รันจริงแล้วกว่า 12 โมเดล
 
-> **แหล่งโมเดลที่รองรับตอนนี้: Hugging Face เท่านั้น** — ลิงก์ Ollama (`ollama.com/...`) และ NVIDIA NGC อยู่ใน roadmap เฟส 2 (ใส่แล้วระบบจะแจ้งว่ายังไม่รองรับ พร้อมแนะให้ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน) · provider `anthropic` ตั้งค่าได้แล้วแต่ adapter ยังอยู่ในเฟส 2
+> **แหล่งโมเดลที่รองรับตอนนี้: Hugging Face เท่านั้น** — ลิงก์ Ollama (`ollama.com/...`) และ NVIDIA NGC อยู่ใน roadmap เฟส 2 (ใส่แล้วระบบจะแจ้งว่ายังไม่รองรับ พร้อมแนะให้ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน)
 
 ## สถานะโปรเจกต์
 
