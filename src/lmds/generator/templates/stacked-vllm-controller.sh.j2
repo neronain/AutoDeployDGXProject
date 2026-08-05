@@ -435,16 +435,43 @@ build_common_args() {
   fi
 }
 
+# หา interface จาก IP ที่ตั้งไว้ — ดีกว่าให้คนกรอกชื่อ interface เอง เพราะชื่อบน DGX Spark
+# ยาวและต่างกันระหว่างพอร์ต (enp1s0f1np1 vs enP2p1s0f1np1) พิมพ์ผิดแล้ว NCCL เงียบ ๆ ไปใช้เส้นช้า
+detect_interface() {
+  local target="$1"
+  ip -o -4 addr show 2>/dev/null |
+    awk -v want="$target" '$4 ~ ("^" want "/") {print $2; exit}'
+}
+
+# interface ของ worker อาจชื่อไม่เหมือน head ต่อให้เป็นเครื่องรุ่นเดียวกัน — ถามเครื่องนั้นเอง
+detect_worker_interface() {
+  ssh_worker "ip -o -4 addr show 2>/dev/null | awk -v want='${TRANSPORT_IP_WORKER}' \
+    '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true
+}
+
+_resolve_ifname() {
+  # ค่าที่ตั้งมาเองชนะเสมอ ไม่มีค่อยหาให้จาก IP
+  [[ -n "$NCCL_SOCKET_IFNAME" ]] && return 0
+  NCCL_SOCKET_IFNAME="$(detect_interface "$TRANSPORT_IP_MASTER")"
+  [[ -n "$NCCL_SOCKET_IFNAME" ]] &&
+    log "พบ interface ของ ${TRANSPORT_IP_MASTER}: ${NCCL_SOCKET_IFNAME}"
+  return 0
+}
+
 _nccl_env_pairs() {
   # พิมพ์ทีละบรรทัด KEY=VALUE — ใช้ทั้ง head (docker -e) และ worker (export)
+  local ifname="${1:-$NCCL_SOCKET_IFNAME}"
   echo "NCCL_IGNORE_CPU_AFFINITY=1"
   echo "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX}"
-  if [[ -n "$NCCL_SOCKET_IFNAME" ]]; then
-    echo "NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}"
-    echo "GLOO_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}"
-    echo "TP_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}"
+  if [[ -n "$ifname" ]]; then
+    echo "NCCL_SOCKET_IFNAME=${ifname}"
+    echo "GLOO_SOCKET_IFNAME=${ifname}"
+    echo "TP_SOCKET_IFNAME=${ifname}"
+    # UCX/OMPI เลือกเส้นเองแยกจาก NCCL — ไม่บอกด้วยจะหลุดไปใช้ management NIC
+    echo "UCX_NET_DEVICES=${ifname}"
+    echo "OMPI_MCA_btl_tcp_if_include=${ifname}"
   else
-    echo "WARN: NCCL_SOCKET_IFNAME ไม่ได้ตั้ง — NCCL อาจเลือก interface ผิด" >&2
+    echo "WARN: หา interface ของ ${TRANSPORT_IP_MASTER} ไม่เจอ — NCCL อาจเลือกเส้นผิด" >&2
   fi
   if [[ -n "$NCCL_IB_HCA" ]]; then
     echo "NCCL_IB_HCA=${NCCL_IB_HCA}"
@@ -458,6 +485,15 @@ _nccl_env_pairs() {
 # ─────────────────────────── start ───────────────────────────
 # ถาม IP/user ของคลัสเตอร์ก่อน start — ค่า default ในไฟล์เป็นแค่ตัวอย่าง เครื่องจริงแทบไม่เคยตรง
 # (ข้อบังคับของ controller contract v3.0.0 สำหรับ stacked)
+# กันเคสรันสคริปต์ head ผิดเครื่อง — เจอตอนเริ่ม ดีกว่าไปตายตอน NCCL init ที่อ่านไม่รู้เรื่อง
+check_running_on_master() {
+  local ifname
+  ifname="$(detect_interface "$TRANSPORT_IP_MASTER")"
+  [[ -n "$ifname" ]] || die \
+    "เครื่องนี้ไม่มี IP ${TRANSPORT_IP_MASTER} (head) — สคริปต์นี้ต้องรันบนเครื่อง head เท่านั้น
+    ถ้าสลับ head/worker ให้แก้ MASTER_IP/WORKER_IP หรือ cluster.env"
+}
+
 prompt_cluster_config() {
   [[ -t 0 ]] || return 0
   # ค่ามาจาก hub แล้ว (cluster.env) — ถามซ้ำมีแต่จะให้พิมพ์ผิด
@@ -525,6 +561,15 @@ props() { curl -fsS "http://127.0.0.1:${API_PORT}/v1/models" | python3 -m json.t
 start() {
   _require_non_root
   need docker; need curl
+  check_running_on_master
+  _resolve_ifname
+  local WORKER_IFNAME="$NCCL_SOCKET_IFNAME"
+  local detected_worker; detected_worker="$(detect_worker_interface)"
+  if [[ -n "$detected_worker" ]]; then
+    WORKER_IFNAME="$detected_worker"
+    [[ "$WORKER_IFNAME" == "$NCCL_SOCKET_IFNAME" ]] ||
+      log "worker ใช้ interface คนละชื่อกับ head: ${WORKER_IFNAME}"
+  fi
   local image_id; image_id="$(_assert_runtime_images)"
   local cache_key="${image_id#sha256:}"; cache_key="${cache_key:0:16}"
   local head_fi="${FLASHINFER_CACHE}/${cache_key}"
@@ -576,7 +621,7 @@ export VLLM_HOST_IP=${TRANSPORT_IP_WORKER}
 export HF_HOME=/cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-$(_nccl_env_pairs 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
+$(_nccl_env_pairs "$WORKER_IFNAME" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
 exec vllm${quoted_common} --node-rank 1 --host 127.0.0.1 --port 18000 --headless
 WSCRIPT
 )"

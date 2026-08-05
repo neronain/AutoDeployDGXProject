@@ -258,3 +258,33 @@ def test_controller_reads_cluster_env_before_defaults(tmp_path):
     assert env_line < master_line
     assert 'set -a; . "$CLUSTER_ENV"; set +a' in text
     assert 'if [[ -f "$CLUSTER_ENV" ]]; then' in text
+
+
+def test_controller_derives_the_interface_from_the_cluster_ip(tmp_path):
+    """ชื่อ interface บน DGX Spark ยาวและต่างกันทุกพอร์ต — ให้สคริปต์หาเองจาก IP ดีกว่าให้คนพิมพ์"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert "detect_interface()" in text
+    assert "detect_worker_interface()" in text
+    # ค่าที่ผู้ใช้ตั้งมาเองต้องชนะการตรวจอัตโนมัติเสมอ
+    assert '[[ -n "$NCCL_SOCKET_IFNAME" ]] && return 0' in text
+
+
+def test_controller_refuses_to_start_on_the_wrong_machine(tmp_path):
+    """รันสคริปต์ head ผิดเครื่องต้องตายทันที ไม่ใช่ไปตายตอน NCCL init ที่อ่านไม่รู้เรื่อง"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    assert "check_running_on_master" in text
+    assert text.index("check_running_on_master\n") > text.index("start() {")
+
+
+def test_fabric_env_covers_ucx_and_ompi(tmp_path):
+    """UCX/OMPI เลือกเส้นเองแยกจาก NCCL — ไม่บอกด้วยจะหลุดไปใช้ management NIC"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
+
+    for key in ("NCCL_SOCKET_IFNAME=", "GLOO_SOCKET_IFNAME=", "TP_SOCKET_IFNAME=",
+                "UCX_NET_DEVICES=", "OMPI_MCA_btl_tcp_if_include="):
+        assert key in text, key

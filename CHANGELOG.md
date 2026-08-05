@@ -30,6 +30,13 @@
   (`MASTER_IP`/`WORKER_IP`/`SSH_USER`/`TRANSPORT_IP_*`/`NCCL_SOCKET_IFNAME`) → stacked controller
   source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วข้ามการถาม IP ตอน `start` (env ภายนอกยังชนะไฟล์นี้เสมอ)
 - **`lmds agent info`** — พิมพ์สถานะเครื่องเป็น JSON ให้ hub อ่าน (ปกติไม่ได้พิมพ์เอง)
+- **stacked controller: หา NCCL interface เองจาก cluster IP** (ทั้ง head และ worker) — ชื่อพอร์ตบน
+  DGX Spark ยาวและไม่เหมือนกันทุกเส้น (`enp1s0f1np1` vs `enP2p1s0f1np1` คนละ fabric บนเครื่องเดียวกัน)
+  ให้คนพิมพ์เองแล้วผิดจะเงียบ ๆ ตกไปใช้เส้นช้า · ค่าที่ตั้งเองยังชนะเสมอ
+- **stacked controller: ตรวจว่ารันบนเครื่อง head จริง** ก่อนเริ่ม — รันผิดเครื่องตายทันทีพร้อมเหตุผล
+  แทนที่จะไปตายตอน NCCL init · เพิ่ม `UCX_NET_DEVICES` / `OMPI_MCA_btl_tcp_if_include`
+  (สองตัวนี้เลือกเส้นเองแยกจาก NCCL ไม่บอกด้วยจะหลุดไปใช้ management NIC)
+  — ทั้งสามข้อมาจากสคริปต์ Llama 3.3 70B ที่ผู้ใช้รันจริงบน DGX Spark
 - **หน้าเว็บ: ส่วน Other machines + Cluster fabric** — เพิ่มเครื่อง, ดูทรัพยากรสด, สั่ง start/stop/doctor
   ข้ามเครื่อง (allowlist ฝั่ง server: `start stop restart repair doctor`), แก้ cluster IP ได้ในตาราง
 - **เอกสารใหม่ [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)** — fleet vs stacked, สถาปัตยกรรม
