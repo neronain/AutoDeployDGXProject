@@ -24,6 +24,15 @@ VLLM_FLAGS = {
     "--swap-space",
     "--tokenizer-mode",
     "--limit-mm-per-prompt",
+    # flag ที่โมเดลบางตระกูล "ต้อง" ใช้ ไม่ใช่การปรับจูน — เข้ามาทาง recipes/catalog.yaml
+    # ซึ่งบังคับ source + validated_on อยู่แล้ว · เคสจริง: DeepSeek V4 ต้องใช้ PIECEWISE cudagraph
+    # ไม่งั้น kernel init ของ DeepGEMM เรียกคนละ signature แล้วตายตอนโหลดโมเดล
+    "--compilation-config",
+    "--max-cudagraph-capture-size",
+    "--moe-backend",
+    "--block-size",
+    "--generation-config",
+    "--async-scheduling",
 }
 
 LLAMACPP_FLAGS = {

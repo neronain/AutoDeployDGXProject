@@ -145,3 +145,40 @@ def test_recipe_env_is_rendered_into_the_controller(tmp_path):
     assert "EXTRA_DOCKER_ENV=(" in text
     assert "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0" in text
     assert subprocess.run(["bash", "-n", str(bundle.controller)]).returncode == 0
+
+
+def test_every_recipe_flag_either_survives_or_asks_for_approval():
+    """flag ที่ allowlist ไม่รู้จักจะถูก harden ตัดทิ้ง — สูตรก็ไร้ผลโดยไม่มีอาการอะไรบอก
+    เคสจริง: DeepSeek V4 เสีย --compilation-config PIECEWISE ไปเงียบ ๆ แล้ว start ไม่ผ่านสามรอบ
+
+    ข้อยกเว้นที่ถูกต้อง: flag อ่อนไหวอย่าง --trust-remote-code ต้องไม่ถูกเปิดเงียบ ๆ
+    แต่ก็ต้องไม่หายไปเฉย ๆ — ต้องโผล่ใน flags_needing_approval ให้ผู้ใช้ตัดสิน
+    """
+    from lmds.brain.orchestrator import harden_plan
+
+    for recipe in load_catalog():
+        if recipe.engine != "vllm" or not recipe.serving:
+            continue
+        report = report_for(recipe.match)
+        fit = analyze(report, PRESETS["dgx-spark-stacked"])
+        plan = rule_based_plan(report, fit)
+        wanted = [f for f in plan.serving.extra_flags if f.startswith("--")]
+        hardened = harden_plan(plan, report, fit)
+        kept = " ".join(hardened.serving.extra_flags)
+        pending = " ".join(hardened.flags_needing_approval)
+
+        for flag in wanted:
+            assert flag in kept or flag in pending, \
+                f"{recipe.match}: {flag} หายไปเงียบ ๆ ตอน harden"
+
+
+def test_deepseek_compilation_config_is_not_dropped():
+    """ตัวที่ทำให้ start ไม่ผ่านจริง — ต้องอยู่ในคำสั่งที่รันจริง ไม่ใช่รออนุมัติ"""
+    from lmds.brain.orchestrator import harden_plan
+
+    report = report_for("nvidia/DeepSeek-V4-Flash-NVFP4")
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    hardened = harden_plan(rule_based_plan(report, fit), report, fit)
+    flags = " ".join(hardened.serving.extra_flags)
+    assert "--compilation-config" in flags and "PIECEWISE" in flags
+    assert "--moe-backend" in flags
