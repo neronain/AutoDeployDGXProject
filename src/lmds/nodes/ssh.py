@@ -77,7 +77,10 @@ def run(node: Node, command: str, timeout: int = 60) -> Result:
     wrapped = f"bash -lc {shlex.quote(command)}"
     args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port), node.target, wrapped]
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,  # ไม่งั้น ssh ไปกิน stdin ของคนเรียกแล้วค้าง
+        )
     except FileNotFoundError as exc:
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
     except subprocess.TimeoutExpired:
