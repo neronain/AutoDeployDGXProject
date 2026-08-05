@@ -144,3 +144,124 @@ recipes:
       VLLM_USE_FLASHINFER_MOE_FP4: "0"
     source: https://github.com/neronain/Nemotron-120B-DGXSpark
     validated_on: DGX Spark (GB10) เครื่องเดียว
+
+  # ─────────────────────────────────────────────────────────────────────
+  # สูตรจาก eugr/spark-vllm-docker — โปรเจกต์ MIT ที่ทดสอบ vLLM บน DGX Spark
+  # ต่อรุ่นและมี CI รันจริง · เราเอามาเฉพาะ "ค่าที่ต้องตั้งต่อรุ่น" (parser, kv-cache,
+  # attention backend, env) ไม่ได้เอา image เพราะเขา build เองในเครื่อง (`vllm-node`)
+  # ซึ่งไม่ใช่ ref ที่ดึงจาก registry ได้ — bundle ของเราจึงใช้ image ตั้งต้นเหมือนเดิม
+  #
+  # validated_on เขียนตามจริงว่าใครเป็นคนทดสอบ ไม่ได้แอบอ้างว่าเรารันเอง
+
+  - match: Qwen/Qwen3.5-35B-A3B
+    label: Qwen3.5-35B-A3B (MoE)
+    engine: vllm
+    serving:
+      kv_cache_dtype: fp8
+      # SM121 เลือก backend เองแล้วได้ตัวที่ช้ากว่า — สูตรที่รันผ่านบังคับ flashinfer
+      attention_backend: flashinfer
+      enable_prefix_caching: true
+    env:
+      VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+    tool_calling:
+      enabled: true
+      parser: qwen3_coder
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+
+  - match: Qwen/Qwen3.5-122B-A10B-FP8
+    label: Qwen3.5-122B-A10B (FP8)
+    engine: vllm
+    serving:
+      enable_prefix_caching: true
+    tool_calling:
+      enabled: true
+      parser: qwen3_coder
+    reasoning:
+      enabled: true
+      parser: qwen3
+    notes:
+      - ต่างจาก variant GPTQ-Int4 ที่ใช้ parser qwen3_xml — เลือกตาม quantization ที่โหลดมา
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+
+  - match: Qwen/Qwen3.6-35B-A3B
+    label: Qwen3.6-35B-A3B (MoE)
+    engine: vllm
+    serving:
+      kv_cache_dtype: fp8
+      attention_backend: flashinfer
+      enable_prefix_caching: true
+    env:
+      VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+    tool_calling:
+      enabled: true
+      # 3.6 เปลี่ยนรูปแบบ tool call เป็น xml — ใช้ qwen3_coder เหมือน 3.5 แล้วแยกไม่ออก
+      parser: qwen3_xml
+    reasoning:
+      enabled: true
+      parser: qwen3
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+
+  - match: QuantTrio/MiniMax-M2
+    label: MiniMax-M2 (AWQ)
+    engine: vllm
+    tool_calling:
+      enabled: true
+      parser: minimax_m2
+    reasoning:
+      enabled: true
+      parser: minimax_m2
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+
+  - match: stepfun-ai/Step-3.7-Flash
+    label: Step-3.7-Flash
+    engine: vllm
+    serving:
+      kv_cache_dtype: fp8
+    tool_calling:
+      enabled: true
+      parser: step3p5
+    reasoning:
+      enabled: true
+      parser: step3p5
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+
+  - match: openai/gpt-oss-120b
+    label: GPT-OSS-120B (MXFP4)
+    engine: vllm
+    serving:
+      kv_cache_dtype: fp8
+      attention_backend: FLASHINFER
+      enable_prefix_caching: true
+    tool_calling:
+      enabled: true
+      parser: openai
+    reasoning:
+      enabled: true
+      parser: openai_gptoss
+    notes:
+      - น้ำหนักเป็น MXFP4 — ต้องใช้ image ที่มี kernel MXFP4 (สูตรต้นทาง build เอง)
+        image ตั้งต้นของ LMDS อาจ start ไม่ขึ้น ถ้าเจอให้ระบุ image เองตอน start
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง
+
+  - match: nvidia/NVIDIA-Nemotron-3-Nano
+    label: Nemotron-3-Nano (30B-A3B)
+    engine: vllm
+    serving:
+      kv_cache_dtype: fp8
+    tool_calling:
+      enabled: true
+      parser: qwen3_coder
+    reasoning:
+      enabled: true
+      parser: nano_v3
+    notes:
+      - สูตรต้นทางโหลด reasoning parser จากไฟล์ปลั๊กอินภายนอก (nano_v3_reasoning_parser.py)
+        ซึ่งเป็นโค้ดที่รันใน container — LMDS ไม่ inject ให้อัตโนมัติ ต้องอนุมัติเองผ่าน runtime asset
+    source: https://github.com/eugr/spark-vllm-docker (MIT)
+    validated_on: DGX Spark (GB10) — ผู้ทดสอบคือโปรเจกต์ต้นทาง มี CI รันต่อรุ่น ไม่ใช่เราเอง

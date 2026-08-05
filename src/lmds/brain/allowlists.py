@@ -33,6 +33,10 @@ VLLM_FLAGS = {
     "--block-size",
     "--generation-config",
     "--async-scheduling",
+    # backend ของ attention เป็นของเฉพาะรุ่น+สถาปัตยกรรม ไม่ใช่การจูน: บน GB10 (SM121)
+    # gemma4 ต้องใช้ TRITON_ATTN ส่วน Qwen3.5/3.6 ต้องใช้ flashinfer — ปล่อยให้ vLLM
+    # เลือกเองแล้วบางรุ่นตายตอน init kernel · เข้ามาทาง recipes/catalog.yaml เหมือนตัวอื่น
+    "--attention-backend",
 }
 
 LLAMACPP_FLAGS = {

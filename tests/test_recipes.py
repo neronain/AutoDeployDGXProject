@@ -213,3 +213,50 @@ def test_llm_path_also_gets_the_recipe():
     assert "--compilation-config" in " ".join(plan.serving.extra_flags)
     # แต่ไม่ไปยุ่งกับสิ่งที่สูตรไม่ได้พูดถึง
     assert plan.served_model_name == "ds-v4-from-llm"
+
+
+@pytest.mark.parametrize(
+    "repo_id, tool_parser",
+    [
+        ("Qwen/Qwen3.5-35B-A3B-FP8", "qwen3_coder"),
+        ("Qwen/Qwen3.6-35B-A3B-FP8", "qwen3_xml"),
+        ("Qwen/Qwen3.6-35B-A3B-NVFP4", "qwen3_xml"),
+        ("QuantTrio/MiniMax-M2-AWQ", "minimax_m2"),
+        ("openai/gpt-oss-120b", "openai"),
+        ("stepfun-ai/Step-3.7-Flash-FP8", "step3p5"),
+    ],
+)
+def test_new_families_get_the_tool_parser_that_was_tested(repo_id, tool_parser):
+    """Qwen 3.5 กับ 3.6 เปลี่ยนรูปแบบ tool call — ใช้ parser ผิดแล้ว tool call หลุดเป็นข้อความ"""
+    recipe = find_recipe(repo_id)
+    assert recipe is not None, f"ไม่มีสูตรของ {repo_id}"
+    assert recipe.tool_calling.get("parser") == tool_parser
+
+
+def test_attention_backend_from_a_recipe_is_not_left_pending_approval():
+    """backend ของ attention เป็นของเฉพาะรุ่น+สถาปัตยกรรม ไม่ใช่การจูน — ต้องผ่าน allowlist
+
+    ถ้าไม่ผ่าน มันจะไปกอง flags_needing_approval แล้วผู้ใช้ที่ deploy แบบ -y จะไม่ได้ flag นั้น
+    ซึ่งเป็นเคสที่พังเงียบ: bundle ออกมาครบ แต่ start แล้วช้ากว่าที่ทดสอบไว้หรือตายตอน init
+    """
+    from lmds.brain.orchestrator import harden_plan
+    from lmds.brain.rulebased import apply_recipe
+
+    report = report_for("Qwen/Qwen3.5-35B-A3B-FP8")
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = harden_plan(
+        apply_recipe(rule_based_plan(report, fit), find_recipe(report.repo_id), fit.memory_model.value),
+        report, fit,
+    )
+    # harden รวม flag กับค่าเป็นสตริงเดียว — เทียบด้วย prefix ไม่ใช่ความเท่ากันของ element
+    assert any(f.startswith("--attention-backend") for f in plan.serving.extra_flags), plan.serving.extra_flags
+    assert not [f for f in plan.flags_needing_approval if "attention-backend" in f]
+
+
+def test_imported_recipes_say_who_actually_tested_them():
+    """เอาสูตรของโปรเจกต์อื่นมาต้องบอกตรง ๆ ว่าใครทดสอบ — ไม่ใช่เขียนเหมือนเรารันเอง"""
+    imported = [r for r in load_catalog() if "eugr/spark-vllm-docker" in r.source]
+    assert imported, "ไม่มีสูตรที่นำเข้ามา"
+    for recipe in imported:
+        assert "โปรเจกต์ต้นทาง" in recipe.validated_on, recipe.match
+        assert "MIT" in recipe.source, recipe.match
