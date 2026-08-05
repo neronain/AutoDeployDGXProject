@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import stat
+from pathlib import Path
 from typing import Optional
 
 from lmds.config.paths import credentials_file, ensure_config_dir
@@ -72,8 +73,34 @@ def check_credentials_permissions() -> Optional[str]:
     return None
 
 
+
+def _hf_cli_token() -> Optional[str]:
+    """token ที่ `huggingface-cli login` เขียนไว้ — เครื่องที่เคยโหลดโมเดล gated มีอยู่แล้ว
+
+    ไม่อ่านตรงนี้ = บังคับให้ผู้ใช้กรอก token ซ้ำทั้งที่เครื่องมีอยู่แล้ว ซึ่งไม่มีเหตุผล
+    ลำดับตาม huggingface_hub: HF_TOKEN_PATH > HF_HOME/token > ~/.cache/huggingface/token
+    """
+    candidates = []
+    explicit = os.environ.get("HF_TOKEN_PATH")
+    if explicit:
+        candidates.append(Path(explicit))
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        candidates.append(Path(hf_home) / "token")
+    candidates.append(Path.home() / ".cache" / "huggingface" / "token")
+
+    for path in candidates:
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return None
+
+
 def get_secret(name: str) -> Optional[str]:
-    """resolve secret ตามลำดับ env > keyring > credentials file; คืน None ถ้าไม่พบ"""
+    """resolve secret ตามลำดับ env > keyring > credentials file > (hf) ไฟล์ของ huggingface-cli"""
     for env_name in SECRET_ENV_VARS.get(name, []):
         value = os.environ.get(env_name)
         if value:
@@ -88,7 +115,11 @@ def get_secret(name: str) -> Optional[str]:
         except Exception:
             pass
 
-    return _read_credentials_file().get(name)
+    stored = _read_credentials_file().get(name)
+    if stored:
+        return stored
+    # ท้ายสุดสำหรับ hf เท่านั้น — ของที่ผู้ใช้ตั้งกับ LMDS เองต้องชนะไฟล์ของเครื่องมือตัวอื่นเสมอ
+    return _hf_cli_token() if name == "hf" else None
 
 
 def set_secret(name: str, value: str) -> str:
@@ -137,4 +168,6 @@ def secret_source(name: str) -> Optional[str]:
             pass
     if name in _read_credentials_file():
         return "file"
+    if name == "hf" and _hf_cli_token():
+        return "huggingface-cli"
     return None

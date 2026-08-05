@@ -207,3 +207,41 @@ def test_add_registers_a_machine_without_lmds(monkeypatch):
     assert node is not None
     assert "ยังไม่ได้ติดตั้ง LMDS" in node.last_error
     assert node.last_seen == ""  # ยังไม่เคยอ่านสถานะได้จริง
+
+
+# ── HF token ที่เครื่องมีอยู่แล้ว ────────────────────────────────────────────
+def test_hf_token_falls_back_to_the_huggingface_cli_file(tmp_path, monkeypatch):
+    """เครื่องที่เคยโหลดโมเดล gated มี ~/.cache/huggingface/token อยู่แล้ว — อย่าถามซ้ำ"""
+    from lmds.secrets import store
+
+    home = tmp_path / "home"
+    (home / ".cache" / "huggingface").mkdir(parents=True)
+    (home / ".cache" / "huggingface" / "token").write_text("hf_fromcli\n", encoding="utf-8")
+    monkeypatch.setattr(store.Path, "home", classmethod(lambda cls: home))
+
+    assert store.get_secret("hf") == "hf_fromcli"
+    assert store.secret_source("hf") == "huggingface-cli"
+
+
+def test_lmds_own_hf_token_wins_over_the_cli_file(tmp_path, monkeypatch):
+    """ของที่ผู้ใช้ตั้งกับ LMDS ต้องชนะไฟล์ของเครื่องมือตัวอื่นเสมอ"""
+    from lmds.secrets import store
+
+    home = tmp_path / "home2"
+    (home / ".cache" / "huggingface").mkdir(parents=True)
+    (home / ".cache" / "huggingface" / "token").write_text("hf_fromcli", encoding="utf-8")
+    monkeypatch.setattr(store.Path, "home", classmethod(lambda cls: home))
+    store.set_secret("hf", "hf_mine")
+
+    assert store.get_secret("hf") == "hf_mine"
+
+
+def test_other_secrets_never_read_the_hf_file(tmp_path, monkeypatch):
+    from lmds.secrets import store
+
+    home = tmp_path / "home3"
+    (home / ".cache" / "huggingface").mkdir(parents=True)
+    (home / ".cache" / "huggingface" / "token").write_text("hf_fromcli", encoding="utf-8")
+    monkeypatch.setattr(store.Path, "home", classmethod(lambda cls: home))
+
+    assert store.get_secret("openai") is None
