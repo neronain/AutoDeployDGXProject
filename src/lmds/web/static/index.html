@@ -891,6 +891,7 @@ function ipHint(m) {
       : "No cluster IP set, and no fast link with an address was detected";
   }
   if (ip.state === "mismatch") return `${m.cluster_ip} does not match any interface found on that machine`;
+  if (ip.state === "link-local") return `${m.cluster_ip} is a link-local address (169.254.x.x) — that port has no real IP configured yet`;
   if (ip.state === "slow") return `${m.cluster_ip} is on ${ip.iface} at ${ip.speed_gbps}G — too slow to stack`;
   return "";
 }

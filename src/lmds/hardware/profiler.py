@@ -261,9 +261,12 @@ def detect_fabric() -> dict:
         gbps = None
         if raw_speed.lstrip("-").isdigit() and int(raw_speed) > 0:
             gbps = int(raw_speed) // 1000 or None
+        address = addresses.get(name, "")
         links.append({
             "iface": name,
-            "ip": addresses.get(name, ""),
+            "ip": address,
+            # 169.254.x.x = ที่อยู่ที่เครื่องตั้งเองเพราะไม่มี DHCP/config — ลิงก์ขึ้นแต่ยังไม่ได้ตั้งค่า
+            "link_local": address.startswith("169.254."),
             "speed_gbps": gbps,
             "driver": driver,
             "state": state,
@@ -273,7 +276,8 @@ def detect_fabric() -> dict:
 
     up = [l for l in links if l["state"] == "up" and l["speed_gbps"]]
     best = max((l["speed_gbps"] for l in up), default=None)
-    fastest = max(up, key=lambda l: l["speed_gbps"], default=None)
+    # เส้นที่ตั้งค่าแล้วมาก่อนเสมอ ต่อให้ link-local จะเร็วเท่ากัน — ยิง NCCL ไป 169.254 ไม่ถึงกัน
+    fastest = max(up, key=lambda l: (not l["link_local"], l["speed_gbps"]), default=None)
     has_rdma = bool(rdma_devices) and any(l["rdma"] for l in up)
 
     if best is None:

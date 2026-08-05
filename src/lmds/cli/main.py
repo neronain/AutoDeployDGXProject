@@ -341,7 +341,7 @@ def node_cluster(
             cluster_ip or f"[yellow]—[/yellow]",
             "[green]ได้[/green]" if ready else f"[yellow]ไม่ได้[/yellow] {cluster_note(host)[:40]}",
         )
-        if check["state"] in {"mismatch", "slow"}:
+        if check["state"] in {"mismatch", "slow", "link-local"}:
             table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
 
     add_row(local_name + " (hub)", local, machines[0]["cluster_ip"])

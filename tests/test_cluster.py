@@ -136,3 +136,44 @@ def test_blockers_carry_codes_not_sentences():
     ]
     (group,) = cl.cluster_groups(machines)
     assert all(set(b) == {"kind", "names"} for b in group["blockers"])
+
+
+# ── เคสจากเครื่องจริง (DGX Spark, ConnectX 4 พอร์ต) ──────────────────────────
+def multi_port_host():
+    """DGX Spark จริง: ConnectX 200G สี่เส้น สองเส้นยังไม่ได้ตั้ง IP (ได้ 169.254 มาเอง)"""
+    links = [
+        {"iface": "enP2p1s0f0np0", "ip": "169.254.31.110", "speed_gbps": 200,
+         "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": True},
+        {"iface": "enP2p1s0f1np1", "ip": "10.100.153.1", "speed_gbps": 200,
+         "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": True},
+        {"iface": "enP7s7", "ip": "192.168.79.9", "speed_gbps": 1,
+         "driver": "r8127", "state": "up", "connectx": False, "rdma": False},
+        {"iface": "enp1s0f1np1", "ip": "10.100.152.1", "speed_gbps": 200,
+         "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": True},
+    ]
+    return {"arch": "aarch64", "profile": "dgx_spark", "gpus": [{"name": "NVIDIA GB10"}],
+            "fabric": {"links": links, "rdma_devices": ["rocep1s0f1"], "best_gbps": 200,
+                       "tier": "rdma", "cluster_capable": True}}
+
+
+def test_link_local_is_never_suggested():
+    """169.254.x.x ลิงก์ขึ้นและเร็ว 200G เหมือนกัน แต่ยิง NCCL ข้ามเครื่องไม่ถึง"""
+    assert cl.suggest_cluster_ip(multi_port_host()) in {"10.100.152.1", "10.100.153.1"}
+
+
+def test_link_local_ip_is_flagged():
+    check = cl.check_cluster_ip(multi_port_host(), "169.254.31.110")
+    assert check["state"] == "link-local"
+
+
+def test_management_ip_on_a_slow_port_is_flagged():
+    """เผลอกรอก IP ที่ใช้ SSH (สาย 1G) เป็นกรณีที่เกิดง่ายที่สุด"""
+    assert cl.check_cluster_ip(multi_port_host(), "192.168.79.9")["state"] == "slow"
+
+
+def test_link_local_filtering_does_not_need_the_node_flag():
+    """node เวอร์ชันเก่ายังไม่ส่งฟิลด์ link_local มา — hub ต้องตัดสินจาก IP เองได้"""
+    host = multi_port_host()
+    for link in host["fabric"]["links"]:
+        link.pop("link_local", None)
+    assert not cl.suggest_cluster_ip(host).startswith("169.254.")

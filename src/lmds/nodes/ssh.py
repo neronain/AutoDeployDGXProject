@@ -15,6 +15,7 @@ import os
 import pty
 import select
 import shutil
+import shlex
 import subprocess
 from dataclasses import dataclass
 
@@ -67,8 +68,14 @@ class Result:
 
 
 def run(node: Node, command: str, timeout: int = 60) -> Result:
-    """รันคำสั่งบน node ด้วย key — ไม่ถามรหัสผ่าน (BatchMode) ถ้า key ใช้ไม่ได้จะล้มทันที"""
-    args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port), node.target, command]
+    """รันคำสั่งบน node ด้วย key — ไม่ถามรหัสผ่าน (BatchMode) ถ้า key ใช้ไม่ได้จะล้มทันที
+
+    ห่อด้วย `bash -lc` เพราะ `ssh host cmd` เป็น shell แบบ non-interactive ที่ไม่อ่าน
+    `.profile`/`.bashrc` (ของ Ubuntu return ทันทีเมื่อไม่ interactive) — `lmds` ที่ติดตั้งไว้ที่
+    `~/.local/bin` จึงหาไม่เจอ ทั้งที่ login เข้าไปเองแล้วใช้ได้ปกติ
+    """
+    wrapped = f"bash -lc {shlex.quote(command)}"
+    args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port), node.target, wrapped]
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:

@@ -38,12 +38,22 @@ def stack_ready(host: dict) -> bool:
     return bool(host.get("gpus")) and best is not None and best >= MIN_STACK_GBPS
 
 
+def _is_link_local(ip: str) -> bool:
+    return ip.startswith("169.254.")
+
+
 def fabric_links(host: dict) -> list[dict]:
-    """ลิงก์ที่เสนอให้เลือกเป็น cluster interface — เร็วพอและมี IP แล้ว"""
+    """ลิงก์ที่เสนอให้เลือกเป็น cluster interface — เร็วพอ มี IP และไม่ใช่ link-local
+
+    เครื่องจริง (DGX Spark) มีพอร์ต ConnectX หลายเส้น เส้นที่ยังไม่ได้ตั้งค่าจะได้ 169.254.x.x
+    มาเอง ลิงก์ขึ้นและเร็ว 200G เหมือนกัน แต่ยิง NCCL ข้ามเครื่องไม่ถึง — ห้ามเสนอ
+    """
+    # ตัดสินจาก IP เอง ไม่พึ่งแฟล็ก link_local ของ node — node เวอร์ชันเก่ายังไม่ส่งฟิลด์นี้มา
     links = (host.get("fabric") or {}).get("links") or []
     return [
         link for link in links
-        if link.get("ip") and (link.get("speed_gbps") or 0) >= MIN_STACK_GBPS
+        if link.get("ip") and not _is_link_local(link["ip"])
+        and (link.get("speed_gbps") or 0) >= MIN_STACK_GBPS
     ]
 
 
@@ -59,7 +69,7 @@ def check_cluster_ip(host: dict, cluster_ip: str) -> dict:
     """ตรวจว่า cluster IP ที่ตั้งไว้ตรงกับการ์ดจริงไหม
 
     คืนทั้ง state (ให้หน้าเว็บเรียบเรียงข้อความเองเป็นอังกฤษ) และ message ภาษาไทยสำหรับ CLI
-    state: ok / unset / mismatch / slow
+    state: ok / unset / mismatch / slow / link-local
     """
     if not cluster_ip:
         suggestion = suggest_cluster_ip(host)
@@ -72,6 +82,10 @@ def check_cluster_ip(host: dict, cluster_ip: str) -> dict:
         # ไม่ใช่ error เสมอไป: IP อาจอยู่บนการ์ดที่ตรวจไม่ได้ แต่ต้องเตือนเพราะพิมพ์ผิดก็มาทางนี้
         return {"state": "mismatch", "iface": "", "speed_gbps": None,
                 "message": f"{cluster_ip} ไม่ตรงกับการ์ดที่ตรวจพบบนเครื่องนี้ — ตรวจอีกครั้ง"}
+    if _is_link_local(cluster_ip):
+        return {"state": "link-local", "iface": match["iface"],
+                "speed_gbps": match.get("speed_gbps"),
+                "message": f"{cluster_ip} เป็น link-local (169.254.x.x) — เส้นนี้ยังไม่ได้ตั้งค่า IP จริง"}
     speed = match.get("speed_gbps") or 0
     if speed < MIN_STACK_GBPS:
         return {"state": "slow", "iface": match["iface"], "speed_gbps": speed,
