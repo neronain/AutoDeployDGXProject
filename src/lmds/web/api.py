@@ -504,14 +504,23 @@ def create_app(token: str = "") -> FastAPI:
         """สั่งงานโมเดลบนเครื่องอื่น — ผ่าน CLI ของ node ตัวเดียวกับที่ผู้ใช้พิมพ์เอง"""
         from lmds.nodes import NodeError, find, run
 
-        allowed = {"start", "stop", "restart", "repair", "doctor"}
+        # allowlist ไม่ใช่พิธีกรรม — หน้าเว็บสั่งข้ามเครื่องได้ ทุกตัวที่เพิ่มต้องรันแบบ
+        # ไม่โต้ตอบได้จริง (ssh ปิด stdin) และไม่ทำลายของถาวร
+        # `remove` จงใจไม่อยู่ในนี้: มันลบ weight หลายสิบ GB และต้องใช้ -y ซึ่งข้ามหน้ายืนยัน
+        # ที่แสดงรายการ+ขนาด — ปุ่มเดียวจบแบบนั้นอันตรายเกินไปสำหรับเครื่องปลายทาง
+        allowed = {
+            "start": "", "stop": "", "restart": "", "repair": "", "doctor": "",
+            "logs": "-n 300", "enable": "", "disable": "",
+        }
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        suffix = allowed[command]
         try:
-            result = run(node, f"lmds {command} {shlex.quote(slug)}", timeout=1800)
+            result = run(node, f"lmds {command} {shlex.quote(slug)}{' ' + suffix if suffix else ''}",
+                         timeout=1800)
             state.STORE.force(name)   # สถานะเพิ่งเปลี่ยน — อย่าให้ผู้ใช้เห็นของเก่าอีก 15 วิ
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

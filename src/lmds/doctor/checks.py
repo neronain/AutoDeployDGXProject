@@ -118,13 +118,11 @@ def _check_hf_token(profile: dict) -> list[Finding]:
 
 
 def _weight_paths(profile: dict, slug: str) -> tuple[Path, list[str]]:
-    """คืน (โฟลเดอร์ที่ควรมี weight, รายชื่อไฟล์ที่ต้องมี)"""
+    """คืน (โฟลเดอร์ที่ควรมี weight, ไฟล์ที่**ขาดไม่ได้**) — projector อยู่ใน _projectors()"""
     model = profile.get("model") or {}
     engine = (profile.get("runtime") or {}).get("engine")
     if engine == "llamacpp":
         wanted = [n.rsplit("/", 1)[-1] for n in [model.get("selected_gguf")] if n]
-        projectors = ((profile.get("features") or {}).get("multimodal") or {}).get("projector_files") or []
-        wanted += [p.rsplit("/", 1)[-1] for p in projectors]
         return _model_dir(slug), wanted
     repo = (model.get("id") or "").replace("/", "--")
     revision = model.get("revision") or "main"
@@ -145,6 +143,16 @@ def _weight_paths(profile: dict, slug: str) -> tuple[Path, list[str]]:
     return home / "hub" / f"models--{repo}" / "snapshots" / revision, []
 
 
+def _projectors(profile: dict) -> list[str]:
+    """ไฟล์ mmproj ที่ profile ประกาศไว้ — เป็น **ทางเลือก** ไม่ใช่ของบังคับ
+
+    llama-server รับ `--mmproj` ได้ไฟล์เดียว แต่ repo มักมีหลาย precision (BF16/F16/F32)
+    ให้เลือก · profile รุ่นเก่าจึงลิสต์ไว้ทั้งหมด ทั้งที่ controller โหลดและใช้แค่ตัวเดียว
+    """
+    multimodal = (profile.get("features") or {}).get("multimodal") or {}
+    return [p.rsplit("/", 1)[-1] for p in (multimodal.get("projector_files") or [])]
+
+
 def _check_weights(profile: dict, slug: str) -> list[Finding]:
     directory, wanted = _weight_paths(profile, slug)
     if not directory.is_dir():
@@ -153,7 +161,6 @@ def _check_weights(profile: dict, slug: str) -> list[Finding]:
 
     missing = [name for name in wanted if not (directory / name).exists()]
     if missing:
-        # เคสจริง: mmproj ไม่ถูกโหลด → multimodal กลายเป็น text-only เงียบ ๆ
         return [Finding("weights", Status.FAIL, f"ไฟล์ที่ต้องมีหายไป: {', '.join(missing)}",
                         f"lmds repair {slug}  (โหลดเฉพาะส่วนที่ขาด)")]
 
@@ -161,7 +168,19 @@ def _check_weights(profile: dict, slug: str) -> list[Finding]:
     if empty:
         return [Finding("weights", Status.FAIL, f"มีไฟล์ขนาด 0 ไบต์: {', '.join(empty[:3])}",
                         f"lmds repair {slug}")]
-    return [Finding("weights", Status.OK, str(directory))]
+
+    findings = [Finding("weights", Status.OK, str(directory))]
+    # mmproj ขาด = เสีย vision แต่โมเดล **ยังรันได้** เป็น text-only จึงเป็นคำเตือน ไม่ใช่ FAIL
+    # เดิมนับรวมเป็นไฟล์บังคับและบังคับ *ครบทุก precision* → gemma-4-31b ที่โหลดครบแล้วขึ้นว่า
+    # "ยังไม่ download" ตลอดกาล ปุ่ม start เลยไม่ขึ้นทั้งที่รันได้จริง (เจอบน dgx-veerasiam)
+    projectors = _projectors(profile)
+    if projectors and not any((directory / name).exists() for name in projectors):
+        findings.append(Finding(
+            "multimodal", Status.WARN,
+            f"ไม่มีไฟล์ mmproj ({', '.join(projectors)}) — โมเดลจะรับแต่ข้อความ ภาพใช้ไม่ได้",
+            f"lmds repair {slug}  (หรือรันแบบ text-only ต่อได้เลย)",
+        ))
+    return findings
 
 
 def _check_permissions(profile: dict, slug: str) -> list[Finding]:

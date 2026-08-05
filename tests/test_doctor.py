@@ -100,15 +100,48 @@ def test_public_model_never_asks_for_a_token(tmp_path, monkeypatch):
     assert not [f for f in diagnose(slug).findings if f.name == "hf-token"]
 
 
-def test_missing_mmproj_is_caught(tmp_path, monkeypatch):
+def test_missing_mmproj_warns_but_does_not_block(tmp_path, monkeypatch):
     """เคสจริง gemma-4-12b-it: mmproj ไม่ถูกโหลด → multimodal กลายเป็น text-only เงียบ ๆ
-    ไม่มี error ให้เห็นเลยสักจุด
+
+    ต้องเตือน แต่ต้อง **ไม่บล็อก** — โมเดลยังรันเป็น text-only ได้ · เดิมนับเป็น FAIL
+    ทำให้ gemma-4-31b ที่โหลดครบขึ้นว่า "ยังไม่ download" ตลอดกาล ปุ่ม start เลยไม่ขึ้น
     """
     slug = _setup(tmp_path, monkeypatch, projectors=["mmproj-BF16.gguf"], files=("demo-Q8.gguf",))
-    weights = next(f for f in diagnose(slug).findings if f.name == "weights")
-    assert weights.status is Status.FAIL
-    assert "mmproj-BF16.gguf" in weights.detail
-    assert "repair" in weights.fix
+    result = diagnose(slug)
+    assert next(f for f in result.findings if f.name == "weights").status is Status.OK
+    warn = next(f for f in result.findings if f.name == "multimodal")
+    assert warn.status is Status.WARN
+    assert "mmproj-BF16.gguf" in warn.detail
+    assert "repair" in warn.fix
+
+
+def test_one_projector_precision_is_enough(tmp_path, monkeypatch):
+    """profile รุ่นเก่าลิสต์ mmproj ทุก precision แต่ llama-server รับ --mmproj ได้ไฟล์เดียว
+    — มีตัวใดตัวหนึ่งก็พอ (gemma-4-31b-it-gguf บน dgx-veerasiam)
+    """
+    slug = _setup(
+        tmp_path, monkeypatch,
+        projectors=["mmproj-BF16.gguf", "mmproj-F16.gguf", "mmproj-F32.gguf"],
+        files=("demo-Q8.gguf", "mmproj-F16.gguf"),
+    )
+    result = diagnose(slug)
+    assert next(f for f in result.findings if f.name == "weights").status is Status.OK
+    assert not [f for f in result.findings if f.name == "multimodal"]
+
+
+def test_model_with_only_the_main_gguf_counts_as_downloaded(tmp_path, monkeypatch):
+    """สิ่งที่ผู้ใช้เห็นบนหน้าเว็บ: ป้าย "not downloaded" ต้องหายไปเมื่อ weight หลักครบ"""
+    from lmds.inventory import weights_present
+
+    slug = _setup(
+        tmp_path, monkeypatch,
+        projectors=["mmproj-BF16.gguf", "mmproj-F16.gguf", "mmproj-F32.gguf"],
+        files=("demo-Q8.gguf",),
+    )
+    from lmds.fleet import bundle_profile, find
+
+    server = find(slug)
+    assert weights_present(server, bundle_profile(server.controller)) is True
 
 
 def test_complete_multimodal_download_passes(tmp_path, monkeypatch):

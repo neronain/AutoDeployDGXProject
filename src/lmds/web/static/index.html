@@ -154,6 +154,15 @@ button.danger { color: var(--fg2); border-color: var(--line2); }
 button.danger:hover:not(:disabled) {
   color: var(--bad); border-color: var(--bad); background: var(--bad-bg);
 }
+/* ปุ่ม ⋯ ตอนกางเมนู — ต้องเห็นได้ว่าแถวไหนกำลังเปิดอยู่ */
+button.on { background: var(--sunken); border-color: var(--accent); color: var(--fg); }
+/* เมนูคำสั่งของโมเดลบนเครื่องอื่น — เยื้องเข้าไปให้เห็นว่าเป็นของแถวบน ไม่ใช่แถวใหม่ */
+.submenu {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  margin: 2px 0 10px 22px; padding: 8px 10px;
+  background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.submenu .dim { margin-left: auto; font-size: 12px; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
@@ -915,6 +924,10 @@ const nodeRows = new Map();
 const collapsedNodes = new Set();
 // เครื่องที่กำลังโชว์ผลคำสั่งอยู่ — ห้าม live update ทับจนกว่าผู้ใช้จะปิดเอง
 const pinnedOutput = new Set();
+// เมนู ⋯ ที่เปิดค้างไว้ (คีย์ = "<node>/<slug>") — live update ต้องไม่พับเมนูที่ผู้ใช้เพิ่งเปิด
+const openModelMenus = new Set();
+// payload ล่าสุดของแต่ละเครื่อง — ใช้วาดใหม่ตอนพับ/กางเมนูโดยไม่ต้องยิง SSH ซ้ำ
+const lastNodeData = new Map();
 
 function nodeAddForm() {
   const box = document.getElementById("nodes");
@@ -1019,14 +1032,33 @@ function nodeModelsMarkup(name, data) {
       const label = m.running ? (m.healthy ? "running" : "loading")
         : (m.downloaded ? "stopped" : "not downloaded");
       const act = m.running ? "stop" : (m.downloaded ? "start" : "");
-      return `<div class="field" style="margin-bottom:6px">
-        <span class="dot ${state}"></span>
-        <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
-          <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span></span>
-        <span class="mono muted">:${m.port || "—"}</span>
-        <span class="muted">${label}</span>
-        ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}">${act}</button>` : ""}
-        <button data-nact="model:doctor" data-node="${esc(name)}" data-slug="${esc(m.slug)}">doctor</button>
+      const key = name + "/" + m.slug;
+      const open = openModelMenus.has(key);
+      // ปุ่มขึ้นตามสถานะจริง — ปุ่มที่กดแล้วล้มแน่ ๆ แย่กว่าไม่มีปุ่ม
+      const more = [
+        m.running ? ["restart", "หยุดแล้วเปิดใหม่"] : null,
+        ["doctor", "ตรวจว่าทำไมยัง start ไม่ได้"],
+        ["logs", "log ล่าสุด 300 บรรทัด"],
+        m.downloaded ? ["repair", "โหลดไฟล์ที่ขาดกลับมา + ตรวจซ้ำ"] : null,
+        m.autostart ? ["disable", "เลิก autostart หลัง reboot"] : ["enable", "ให้ขึ้นเองหลัง reboot"],
+      ].filter(Boolean);
+      return `<div style="margin-bottom:6px">
+        <div class="field">
+          <span class="dot ${state}"></span>
+          <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
+            <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+            ${m.autostart ? `<span class="tag">autostart</span>` : ""}</span>
+          <span class="mono muted">:${m.port || "—"}</span>
+          <span class="muted">${label}</span>
+          ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}">${act}</button>` : ""}
+          <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                  class="${open ? "on" : ""}" title="คำสั่งอื่น">⋯</button>
+        </div>
+        ${open ? `<div class="submenu">${more.map(([c, hint]) =>
+          `<button data-nact="model:${c}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                   title="${esc(hint)}">${c}</button>`).join("")}
+          <span class="dim">ลบโมเดล/แก้ option ใช้ที่เครื่องนั้นโดยตรง: <code>lmds node run ${esc(name)} …</code></span>
+        </div>` : ""}
       </div>`;
     }).join("")}
   </div>`;
@@ -1039,6 +1071,7 @@ async function loadNode(name) {
   const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`)).json();
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   row.version.textContent = d.reachable ? (d.host && d.host.lmds_version ? "v" + d.host.lmds_version : "") : "offline";
+  lastNodeData.set(name, d);
   row.body.innerHTML = nodeModelsMarkup(name, d);
 }
 
@@ -1111,6 +1144,13 @@ document.addEventListener("click", async e => {
   if (!btn) return;
   const { nact, node, slug } = btn.dataset;
 
+  if (nact === "menu") {
+    const key = node + "/" + slug;
+    openModelMenus.has(key) ? openModelMenus.delete(key) : openModelMenus.add(key);
+    const row = nodeRows.get(node);
+    if (row && !pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
+    return;
+  }
   if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "forget") {
@@ -1131,7 +1171,7 @@ document.addEventListener("click", async e => {
     btn.disabled = false;
     btn.textContent = original;
     if (!r.ok) { alert(d.detail || "Command failed"); return; }
-    if (command === "doctor" || d.exit_code !== 0) {
+    if (command === "doctor" || command === "logs" || d.exit_code !== 0) {
       const row = nodeRows.get(node);
       if (row) {
         pinnedOutput.add(node);
@@ -1343,6 +1383,7 @@ function applySnapshot(snap) {
     // อย่าเขียนทับตอนผู้ใช้กำลังกดปุ่มอยู่ — ปุ่มจะกระโดดหนีมือ
     // และอย่าลบผลลัพธ์ที่ผู้ใช้เพิ่งขอดู (doctor/logs) — SSE ส่งทุก 1-3 วิ ผลจะหายก่อนอ่านจบ
     if (busy || pinnedOutput.has(name)) continue;
+    lastNodeData.set(name, payload);
     row.dot.className = "dot " + (entry.data ? "on" : "");
     row.version.textContent = entry.data && entry.data.host
       ? "v" + (entry.data.host.lmds_version || "") : "offline";

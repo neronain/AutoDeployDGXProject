@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -663,6 +664,44 @@ def test_node_command_allowlist_blocks_anything_else(registered, monkeypatch):
     """ปุ่มบนหน้าเว็บสั่งข้ามเครื่องได้ — ต้องจำกัดคำสั่งไว้เท่าที่จำเป็น"""
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/rm-rf")
     assert r.status_code == 400
+
+
+def test_node_command_never_exposes_remove(registered):
+    """`remove` ลบ weight หลายสิบ GB บนเครื่องปลายทาง และต้องใช้ -y ซึ่งข้ามหน้ายืนยัน
+    ที่แสดงรายการ+ขนาด — ปุ่มเดียวจบแบบนั้นอันตรายเกินไป จึงต้องไม่หลุดเข้า allowlist
+    """
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/remove")
+    assert r.status_code == 400
+
+
+def test_node_logs_command_asks_for_a_bounded_number_of_lines(registered, monkeypatch):
+    """logs ที่ไม่จำกัดบรรทัดคือการดึง log ทั้งไฟล์ข้ามเครือข่ายมาใส่เบราว์เซอร์"""
+    sent = {}
+
+    def fake_run(node, command, timeout=0):
+        sent["command"] = command
+        return SimpleNamespace(exit_code=0, stdout="log บรรทัดหนึ่ง", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.run", fake_run)
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/logs")
+    assert r.status_code == 200
+    assert sent["command"] == "lmds logs demo -n 300"
+
+
+def test_node_menu_commands_all_reach_the_node(registered, monkeypatch):
+    """ทุกปุ่มในเมนู ⋯ ของหน้าเว็บต้องผ่าน allowlist จริง — ปุ่มที่กดแล้ว 400 แย่กว่าไม่มีปุ่ม"""
+    seen = []
+
+    def fake_run(node, command, timeout=0):
+        seen.append(command)
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.run", fake_run)
+    client = TestClient(create_app())
+    menu = ["start", "stop", "restart", "doctor", "logs", "repair", "enable", "disable"]
+    for command in menu:
+        assert client.post(f"/api/nodes/spark2/models/demo/{command}").status_code == 200, command
+    assert len(seen) == len(menu)
 
 
 def test_page_only_suggests_commands_that_exist():
