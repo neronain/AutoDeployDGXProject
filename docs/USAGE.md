@@ -127,6 +127,11 @@ cd bundles/qwen3-0-6b-gguf
 
 ### คำสั่งทั้งหมดของ controller
 
+> **ไม่อยากพิมพ์ทีละคำสั่ง?** `lmds up <ลิงก์>` เดินให้ทั้งชุดตามลำดับที่ถูกต้อง
+> (deploy → download → verify-files → prepare-runtime ถ้าจำเป็น → start → test-text)
+> แล้วบอกวิธีต่อ client ให้ · ล้มขั้นไหนหยุดตรงนั้นพร้อมบอกว่าดูต่อที่ไหน
+> · stacked ยังต้องใช้ `lmds deploy` แล้วทำตาม README ของ bundle
+
 | คำสั่ง | หน้าที่ |
 |---|---|
 | `download` | ดาวน์โหลดโมเดล (pin revision, resume ได้) |

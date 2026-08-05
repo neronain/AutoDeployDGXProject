@@ -47,6 +47,7 @@ source ~/.bashrc                      # สคริปต์บอกเอง�
 
 lmds hardware                         # ตรวจเครื่อง + จำแนก target profile
 lmds inspect Qwen/Qwen3-32B --target rtx-pro-4000-dual    # วิเคราะห์ + fit โดยไม่ generate
+lmds up https://huggingface.co/Qwen/Qwen3-32B      # ลิงก์เดียวจบ — deploy → โหลด → เปิด → ทดสอบ
 lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
 # → วิเคราะห์ → วางแผน → ยืนยัน (อนุมัติ flag/แก้ context ได้) → bundle + ZIP ที่ผ่าน quality gates ทุกด่าน
 
