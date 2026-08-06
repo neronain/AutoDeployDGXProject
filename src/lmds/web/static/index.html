@@ -254,6 +254,14 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   display: flex; gap: 14px;
 }
 /* ตัวบอกว่าใช้ LLM ตัวไหนอยู่ — ค่าที่เปลี่ยนผลลัพธ์ของทุก deploy ไม่ควรซ่อนอยู่ใน CLI */
+/* ชิปสรุปในหัวการ์ดเครื่อง — อ่านได้ในบรรทัดเดียวตอนย่อ */
+.nsum { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.chip {
+  font-size: 11px; color: var(--c); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; background: var(--sunken);
+}
+.chip b { font-weight: 600; color: var(--c); }
 .brain { font-size: 12px; padding: 5px 10px; max-width: 260px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .brain.off { color: var(--warn); border-color: var(--warn); }
@@ -1206,6 +1214,7 @@ function nodeCard(node) {
         <div class="name">${esc(node.name)}</div>
         <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
       </div>
+      <span class="nsum"></span>
       <span class="mono muted nver"></span>
       <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
@@ -1444,6 +1453,7 @@ async function loadNode(name) {
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   row.version.textContent = d.reachable ? (d.host && d.host.lmds_version ? "v" + d.host.lmds_version : "") : "offline";
   lastNodeData.set(name, d);
+  paintSummary(name, d.host);
   row.body.innerHTML = nodeModelsMarkup(name, d);
 }
 
@@ -1489,6 +1499,7 @@ async function refreshNodes() {
         block,
         dot: block.querySelector(".dot"),
         version: block.querySelector(".nver"),
+        summary: block.querySelector(".nsum"),
         body,
       });
       loadNode(node.name);
@@ -1889,6 +1900,33 @@ function followNodeJob(node, slug, jobId) {
   tick();
 }
 
+// สรุปทรัพยากรในหัวการ์ด — ย่อการ์ดไว้แล้วยังต้องรู้ว่าเครื่องนั้นว่างหรือเต็ม
+// ไม่งั้นต้องกางทีละใบเพื่อดูว่าจะสั่งงานเครื่องไหนดี ซึ่งคือเหตุผลที่ย่อมันตั้งแต่แรก
+function summaryMarkup(host) {
+  if (!host) return "";
+  const cpu = (host.cpu || {}).percent;
+  const used = host.ram_used_gb, total = host.ram_total_gb;
+  const mem = used != null && total ? Math.round(used / total * 100) : null;
+  const gpu = (host.gpus || [])[0];
+  const unified = host.memory_model === "unified";
+  const vram = !unified && gpu && gpu.vram_used_gb != null && gpu.vram_gb
+    ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
+  const busy = gpu ? gpu.utilization_pct : null;
+  // สีเดียวกับเกจข้างใน — ตัวเลขชุดเดียวกันต้องอ่านได้เหมือนกันทั้งย่อและกาง
+  const chip = (label, pct, extra = "") => pct == null ? "" :
+    `<span class="chip" style="--c:${pct >= 90 ? "var(--bad)" : pct >= 75 ? "var(--warn)" : "var(--fg3)"}">
+       ${esc(label)} <b>${pct}%</b>${extra ? `<span class="dim"> ${esc(extra)}</span>` : ""}</span>`;
+  return chip("CPU", cpu == null ? null : Math.min(cpu, 100))
+    + chip(unified ? "MEM" : "RAM", mem, used != null ? `${Math.round(used)}/${gb(total)}` : "")
+    + chip("VRAM", vram)
+    + chip("GPU", busy);
+}
+
+function paintSummary(name, host) {
+  const row = nodeRows.get(name);
+  if (row && row.summary) row.summary.innerHTML = summaryMarkup(host);
+}
+
 function nodeIsInUse(name) {
   for (const key of openModelMenus) if (key.startsWith(name + "/")) return true;
   const row = nodeRows.get(name);
@@ -1920,10 +1958,13 @@ function applySnapshot(snap) {
     // และห้ามวาดทับตอนผู้ใช้กำลังกรอก port/context อยู่ — ตัวเลขที่พิมพ์ไปแล้วจะหายทุก 1 วิ
     // จนกรอกไม่ทัน (เจอจริง) · เมนูที่กางอยู่ = กำลังใช้งานแถวนั้น ปล่อยไว้จนกว่าจะปิดเอง
     if (busy || pinnedOutput.has(name) || nodeIsInUse(name)) {
+      // แถบสรุปในหัวไม่มีอะไรให้ผู้ใช้กดหรือพิมพ์ — อัปเดตได้เสมอแม้ตัวการ์ดถูกล็อกอยู่
+      paintSummary(name, (entry.data || {}).host);
       markStale(row, entry);
       continue;
     }
     lastNodeData.set(name, payload);
+    paintSummary(name, (entry.data || {}).host);
     row.dot.className = "dot " + (entry.data ? "on" : "");
     row.version.textContent = entry.data && entry.data.host
       ? "v" + (entry.data.host.lmds_version || "") : "offline";

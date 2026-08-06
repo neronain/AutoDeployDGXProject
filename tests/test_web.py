@@ -1445,3 +1445,21 @@ def test_an_image_whose_tag_is_missing_is_refused(registered, monkeypatch):
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start",
                                       json={"image": "vllm/vllm-openai:v0.6.3.ss"})
     assert r.status_code == 400 and "ไม่มีอยู่จริง" in r.json()["detail"]
+
+
+def test_a_collapsed_machine_still_shows_its_load():
+    """ย่อการ์ดไว้แล้วยังต้องรู้ว่าเครื่องไหนว่าง — ไม่งั้นต้องกางทีละใบเพื่อเลือกว่าจะสั่งงาน
+    เครื่องไหน ซึ่งคือเหตุผลที่ย่อมันตั้งแต่แรก
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "function summaryMarkup" in page and 'class="nsum"' in page
+    # แถบสรุปต้องอัปเดตแม้ตัวการ์ดถูกล็อก (ผู้ใช้กำลังพิมพ์/มีผลคำสั่งค้างอยู่)
+    guard = page.split("if (busy || pinnedOutput.has(name) || nodeIsInUse(name))")[1][:300]
+    assert "paintSummary" in guard, "ค่าในหัวต้องไม่ค้างตอนตัวการ์ดถูกล็อก"
+
+
+def test_the_collapsed_summary_uses_the_same_colour_thresholds():
+    """ตัวเลขชุดเดียวกันต้องอ่านได้เหมือนกันทั้งย่อและกาง — คนละเกณฑ์คือคนละความหมาย"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    summary = page.split("function summaryMarkup")[1].split("function paintSummary")[0]
+    assert "pct >= 90" in summary and "pct >= 75" in summary
