@@ -28,6 +28,37 @@ from pathlib import Path
 # ตัวชี้ว่า process หนึ่งเป็นหน้าเว็บของ LMDS จริง ไม่ใช่ PID ที่ถูกใช้ซ้ำ
 _CMDLINE_MARK = "lmds.cli.main"
 
+# ตั้ง token จาก environment ได้ — สำหรับเครื่องที่รันด้วย systemd/compose ซึ่งไม่มีใคร
+# นั่งตอบคำถามตอนสตาร์ต และไม่ควรต้องพึ่งไฟล์ในโฮมของ user คนใดคนหนึ่ง
+TOKEN_ENV = "LMDS_WEB_TOKEN"
+
+# สั้นกว่านี้เดาได้ในเวลาที่มีความหมาย — หน้านี้สั่ง start/stop โมเดลได้ทุกเครื่องในทะเบียน
+MIN_TOKEN_LEN = 8
+
+
+class TokenError(ValueError):
+    """token ที่ผู้ใช้ตั้งเองใช้ไม่ได้ — ข้อความอธิบายว่าทำไม"""
+
+
+def validate_token(token: str) -> str:
+    """token ที่ผู้ใช้ตั้งเอง: อะไรก็ได้ แต่ต้องยาวพอ และไม่มีช่องว่าง/ตัวควบคุม
+
+    ไม่บังคับรูปแบบตัวอักษร (ผู้ใช้อยากใช้ passphrase ภาษาไทยก็ได้) แต่ช่องว่างกับ
+    ตัวควบคุมทำให้ copy ไป paste แล้วเพี้ยนโดยไม่มีใครรู้ตัว จึงกันไว้
+    """
+    token = token.strip()
+    if len(token) < MIN_TOKEN_LEN:
+        raise TokenError(f"token ต้องยาวอย่างน้อย {MIN_TOKEN_LEN} ตัว (ได้มา {len(token)})")
+    if any(ch.isspace() or ord(ch) < 32 for ch in token):
+        raise TokenError("token ต้องไม่มีช่องว่างหรือตัวควบคุม — copy/paste แล้วเพี้ยนโดยไม่รู้ตัว")
+    return token
+
+
+def new_token() -> str:
+    import secrets
+
+    return secrets.token_urlsafe(24)
+
 
 def token_file() -> Path:
     """token ที่ใช้ซ้ำได้ข้ามการ start/stop — อยู่ใน config ไม่ใช่ run/ เพราะต้องอยู่ยาว"""
@@ -190,9 +221,8 @@ def stop(sig: int = 15) -> dict | None:
 
 
 def url(state: dict, host: str = "") -> str:
-    token = state.get("token") or ""
-    query = f"?token={token}" if token else ""
-    return f"http://{host or '127.0.0.1'}:{state.get('port', 8600)}/{query}"
+    """ลิงก์ล้วน ไม่มี token — token อยู่ใน URL แปลว่ามันไปอยู่ใน history/log/referrer"""
+    return f"http://{host or '127.0.0.1'}:{state.get('port', 8600)}/"
 
 
 def log_tail(lines: int = 12) -> str:

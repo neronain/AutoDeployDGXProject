@@ -1,3 +1,6 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 from typer.testing import CliRunner
 
@@ -133,8 +136,8 @@ def test_web_refuses_to_start_when_one_is_already_running(tmp_path, monkeypatch)
     assert result.exit_code == 0
     assert not started, "ต้องไม่สตาร์ตซ้อน"
     # ต้องพิมพ์ลิงก์ของตัวที่เสิร์ฟจริง ไม่ใช่ token ใหม่ที่ไม่มีใครถืออยู่
-    assert "เดิม" in result.output
     assert "--restart" in result.output
+    assert "8600" in result.output
 
 
 def test_web_status_shows_the_link_of_the_live_server(tmp_path, monkeypatch):
@@ -290,3 +293,101 @@ def test_web_token_file_is_not_world_readable(tmp_path, monkeypatch):
     daemon.remember_token("s3cret")
     mode = daemon.token_file().stat().st_mode
     assert not mode & (stat.S_IRGRP | stat.S_IROTH)
+
+
+def test_web_asks_for_a_token_on_first_run(tmp_path, monkeypatch):
+    """ครั้งแรกของเครื่องต้องถามก่อน — ปล่อยว่างแล้วสุ่มให้ (ผู้ใช้ขอไว้แบบเดียวกับ Openclaw)"""
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.delenv(daemon.TOKEN_ENV, raising=False)
+    monkeypatch.setattr("lmds.cli.main.sys", SimpleNamespace(
+        stdin=SimpleNamespace(isatty=lambda: True), executable=sys.executable))
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    class Proc:
+        pid = 910
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+
+    # สั้นเกิน → ถามซ้ำ · แล้วค่อยกรอกที่ยาวพอ
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"], input="sh0rt\nรหัสผ่านของผมเอง\n")
+    assert result.exit_code == 0, result.output
+    assert "อย่างน้อย" in result.output, "token สั้นต้องบอกเหตุผลแล้วถามใหม่"
+    assert daemon.remembered_token() == "รหัสผ่านของผมเอง"
+
+
+def test_web_generates_a_token_when_the_prompt_is_left_empty(tmp_path, monkeypatch):
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.delenv(daemon.TOKEN_ENV, raising=False)
+    monkeypatch.setattr("lmds.cli.main.sys", SimpleNamespace(
+        stdin=SimpleNamespace(isatty=lambda: True), executable=sys.executable))
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    class Proc:
+        pid = 911
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"], input="\n")
+    assert result.exit_code == 0, result.output
+    assert len(daemon.remembered_token()) >= daemon.MIN_TOKEN_LEN
+
+
+def test_web_token_can_come_from_the_environment(tmp_path, monkeypatch):
+    """เครื่องที่รันด้วย systemd/compose ไม่มีใครนั่งตอบคำถาม — ตั้งผ่าน env ได้"""
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv(daemon.TOKEN_ENV, "จาก-environment")
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    class Proc:
+        pid = 912
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"])
+    assert result.exit_code == 0, result.output
+    assert daemon.read_state()["token"] == "จาก-environment"
+    assert daemon.TOKEN_ENV in result.output, "ต้องบอกว่า token มาจากไหน"
+
+
+def test_web_rejects_a_token_that_is_too_short(tmp_path, monkeypatch):
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0", "--token", "1234"])
+    assert result.exit_code == 1
+    assert "อย่างน้อย" in result.output
+
+
+def test_printed_link_never_carries_the_token(tmp_path, monkeypatch):
+    """URL ไปโผล่ใน history, log ของ proxy และ referrer — และคนที่ยืนดูจอก็อ่านได้"""
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(daemon, "wait_until_serving", lambda *a, **k: True)
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "alive", lambda pid: False)
+
+    class Proc:
+        pid = 913
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Proc())
+    result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0", "--token", "token-ยาวพอแล้ว"])
+    assert result.exit_code == 0, result.output
+    for line in result.output.splitlines():
+        if "http://" in line:
+            assert "token=" not in line, f"ลิงก์ยังพก token: {line}"

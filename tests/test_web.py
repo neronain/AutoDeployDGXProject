@@ -962,3 +962,44 @@ def test_autostart_badge_is_not_shown_for_every_model():
     assert 'm.autostart ? `<span class="tag">autostart</span>`' not in page
     assert 'auto === "enabled"' in page, "ต้องเทียบค่ากับ enabled ตรง ๆ"
     assert 'auto === "n/a"' in page, "เครื่องที่ไม่มี systemd ต้องไม่มีปุ่มที่กดแล้วล้มแน่ ๆ"
+
+
+def test_auth_endpoint_says_whether_a_token_is_needed():
+    """หน้าเว็บถามก่อนวาด — bind 127.0.0.1 ไม่ต้องมี token จะได้ไม่บังคับ login โดยไม่จำเป็น"""
+    assert TestClient(create_app()).get("/api/auth").json() == {"required": False}
+    assert TestClient(create_app("s3cret-token")).get("/api/auth").json() == {"required": True}
+
+
+def test_auth_check_accepts_the_right_token_and_rejects_the_wrong_one():
+    client = TestClient(create_app("s3cret-token"))
+    assert client.post("/api/auth", headers={"x-lmds-token": "s3cret-token"}).status_code == 200
+    assert client.post("/api/auth", headers={"x-lmds-token": "wrong"}).status_code == 401
+
+
+def test_repeated_wrong_tokens_get_throttled():
+    """token สั้นสุด 8 ตัวที่ผู้ใช้ตั้งเองอาจเป็นคำที่เดาได้ — ยิงได้ไม่จำกัดคือเดาจนเจอ"""
+    client = TestClient(create_app("s3cret-token"))
+    codes = [client.post("/api/auth", headers={"x-lmds-token": "nope"}).status_code
+             for _ in range(12)]
+    assert codes[0] == 401, "ครั้งแรก ๆ ต้องเป็น 401 ธรรมดา คนพิมพ์ผิดไม่ควรโดนลงโทษ"
+    assert 429 in codes, "ผิดรัว ๆ ต้องโดนหน่วง"
+    # ของจริงต้องยังเข้าได้ระหว่างถูกหน่วง? ไม่ — หน่วงคิดจาก IP จึงกันทั้งหมด
+    assert client.post("/api/auth", headers={"x-lmds-token": "s3cret-token"}).status_code == 429
+
+
+def test_a_successful_login_clears_the_throttle():
+    client = TestClient(create_app("s3cret-token"))
+    for _ in range(3):
+        client.post("/api/auth", headers={"x-lmds-token": "nope"})
+    assert client.post("/api/auth", headers={"x-lmds-token": "s3cret-token"}).status_code == 200
+    for _ in range(3):
+        client.post("/api/auth", headers={"x-lmds-token": "nope"})
+    assert client.post("/api/auth", headers={"x-lmds-token": "s3cret-token"}).status_code == 200
+
+
+def test_page_asks_for_the_token_before_drawing_anything():
+    """เดิมหน้าโหลดขึ้นมาก่อนแล้วค่อยพังตอนเรียก API — คนที่ไม่มีสิทธิ์เห็นโครงหน้าและชื่อเครื่อง"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "function loginScreen" in page and "async function boot()" in page
+    assert "localStorage.setItem(TOKEN_KEY" in page, "ผ่านแล้วต้องจำไว้ ไม่ใช่ให้กรอกทุกครั้ง"
+    assert "history.replaceState" in page, "?token= ใน URL ต้องถูกลบออกจากแถบที่อยู่"

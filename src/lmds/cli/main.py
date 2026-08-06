@@ -1931,6 +1931,8 @@ def web(
             console.print("ไม่มีหน้าเว็บที่รันเบื้องหลังอยู่ — เปิดด้วย: [bold]lmds web -b --bind 0.0.0.0[/bold]")
             return
         show_running(state, "หน้าเว็บรันอยู่")
+        if state.get("token"):
+            console.print(f"\n  token: [bold]{state['token']}[/bold]")
         return
 
     if stop_web or restart_web:
@@ -1978,23 +1980,48 @@ def web(
     exposed = bind not in {"127.0.0.1", "localhost", "::1"}
     if new_token:
         daemon.forget_token()
-    if exposed and not token:
-        import secrets as _secrets
 
-        # ใช้ token เดิมของเครื่องนี้ถ้ามี — ลิงก์ที่ bookmark ไว้จะได้ไม่ตายทุกครั้งที่ restart
-        token = daemon.remembered_token()
-        if token:
-            err_console.print("[dim]ใช้ token เดิมของเครื่องนี้ (ลิงก์เดิมยังใช้ได้) · "
-                              "เปลี่ยนใหม่: --new-token[/dim]")
+    # ลำดับที่มาของ token — ตัวบนสุดที่มีค่าชนะ · ผู้ใช้ต้องเดาได้ว่ามันมาจากไหน
+    #   1. --token   2. $LMDS_WEB_TOKEN   3. ที่จำไว้ในเครื่อง   4. ถามตอนสตาร์ต   5. สุ่มให้
+    source = "--token"
+    if token:
+        try:
+            token = daemon.validate_token(token)
+        except daemon.TokenError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    elif os.environ.get(daemon.TOKEN_ENV):
+        try:
+            token = daemon.validate_token(os.environ[daemon.TOKEN_ENV])
+        except daemon.TokenError as exc:
+            err_console.print(f"[red]${daemon.TOKEN_ENV}: {exc}[/red]")
+            raise typer.Exit(code=1)
+        source = f"${daemon.TOKEN_ENV}"
+    elif exposed and daemon.remembered_token():
+        token, source = daemon.remembered_token(), "ที่จำไว้ในเครื่อง"
+    elif exposed:
+        # ครั้งแรกของเครื่องนี้ — ถามก่อน ปล่อยว่างแล้วสุ่มให้ · ไม่มี terminal ก็สุ่มเลย
+        if sys.stdin.isatty():
+            console.print(f"[bold]ตั้ง token สำหรับเข้าหน้าเว็บ[/bold] "
+                          f"(อย่างน้อย {daemon.MIN_TOKEN_LEN} ตัว · Enter เฉย ๆ = สุ่มให้)")
+            while True:
+                typed = typer.prompt("token", default="", show_default=False).strip()
+                if not typed:
+                    token, source = daemon.new_token(), "สุ่มให้"
+                    break
+                try:
+                    token, source = daemon.validate_token(typed), "ที่กรอกเอง"
+                    break
+                except daemon.TokenError as exc:
+                    err_console.print(f"[red]{exc}[/red]")
         else:
-            token = _secrets.token_urlsafe(24)
-            daemon.remember_token(token)
-            err_console.print("[yellow]bind ออก network — สุ่ม token ให้แล้ว "
-                              "(ใช้ซ้ำได้ทุกครั้งที่เปิด · ตั้งเอง: --token)[/yellow]")
+            token, source = daemon.new_token(), "สุ่มให้"
+        daemon.remember_token(token)
 
-    query = f"?token={token}" if token else ""
+    # ไม่ใส่ token ใน URL อีกต่อไป — URL ไปอยู่ใน history/log/referrer ของเบราว์เซอร์
+    # และคนที่ยืนดูจอก็อ่านได้ · หน้าเว็บมีช่องให้กรอก token เอง (จำไว้ให้ในเบราว์เซอร์)
     if not exposed:
-        console.print(f"เปิดที่: [bold]http://127.0.0.1:{port}/{query}[/bold]")
+        console.print(f"เปิดที่: [bold]http://127.0.0.1:{port}/[/bold]")
     else:
         # 0.0.0.0 เป็นที่อยู่สำหรับ bind ไม่ใช่ที่อยู่ที่เปิดในเบราว์เซอร์ได้ —
         # พิมพ์ IP จริงของเครื่องให้ ไม่งั้นผู้ใช้ต้องไปหา IP เอง
@@ -2003,13 +2030,17 @@ def web(
         hosts = [h for h in (primary_ip(), "127.0.0.1") if h]
         console.print("เปิดที่:")
         for h in dict.fromkeys(hosts):
-            console.print(f"  [bold]http://{h}:{port}/{query}[/bold]")
-        console.print("[dim]ทุกคนที่เข้าถึงเครื่องนี้ในวง network เปิดลิงก์นี้ได้ — อย่าแชร์ token ออกนอกทีม[/dim]")
+            console.print(f"  [bold]http://{h}:{port}/[/bold]")
+    if token:
+        console.print(f"\n  token: [bold]{token}[/bold]  [dim]({source})[/dim]")
+        console.print("[dim]กรอกในหน้าเว็บครั้งแรกครั้งเดียว เบราว์เซอร์จำให้ · "
+                      "ดูอีกครั้ง: lmds web --status[/dim]")
+    if exposed:
+        console.print("[dim]ทุกคนที่เข้าถึงเครื่องนี้ในวง network เปิดหน้านี้ได้ — อย่าแชร์ token ออกนอกทีม[/dim]")
         console.print("[dim]เครื่องที่มีหลายวง (เช่น Tailscale/VPN) ใช้ IP ของวงนั้นแทนได้ พอร์ตและ token เดียวกัน[/dim]")
     if background:
         # หน้าเว็บกับ CLI ต้องใช้พร้อมกันได้ — รันค้าง terminal ไว้ทำให้เลือกได้อย่างเดียว
         import subprocess
-        import sys
 
         log_path = daemon.log_file()
         log_path.parent.mkdir(parents=True, exist_ok=True)

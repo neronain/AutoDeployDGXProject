@@ -163,6 +163,12 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
 }
 .submenu .dim { margin-left: auto; font-size: 12px; }
+.login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+.login-box {
+  width: 100%; max-width: 340px; background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--r); padding: 26px 24px;
+}
+.login-box input { width: 100%; margin: 6px 0 4px; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
@@ -261,6 +267,7 @@ pre {
     <h1>LMDS</h1>
     <span class="muted grow" id="host">…</span>
     <span class="dim" id="ver"></span>
+    <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้">Sign out</button>
     <button id="new">+ Deploy model</button>
   </div>
 </header>
@@ -304,7 +311,19 @@ pre {
 </div>
 
 <script>
-const token = new URLSearchParams(location.search).get("token") || "";
+// token มาจาก 3 ทาง: ที่เบราว์เซอร์จำไว้ → ที่กรอกในหน้า login → ?token= (ของเก่า/สคริปต์)
+// ตัวใน URL ถ้ามีจะถูกย้ายเข้าที่เก็บแล้วลบออกจากแถบที่อยู่ทันที — URL ไปโผล่ใน history,
+// log ของ proxy และ referrer ได้ ส่วนคนที่ยืนดูจอก็อ่านได้ตรง ๆ
+const TOKEN_KEY = "lmds:token";
+let token = localStorage.getItem(TOKEN_KEY) || "";
+{
+  const fromUrl = new URLSearchParams(location.search).get("token");
+  if (fromUrl) {
+    token = fromUrl;
+    localStorage.setItem(TOKEN_KEY, token);
+    history.replaceState(null, "", location.pathname);
+  }
+}
 const api = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), ...(token ? { "x-lmds-token": token } : {}) } });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const gb = v => v == null ? "—" : Math.round(v) + " GB";
@@ -1394,16 +1413,10 @@ document.addEventListener("click", e => {
 async function refresh() {
   try {
     const [h, m] = await Promise.all([api("/api/host"), api("/api/models")]);
-    if (h.status === 401) {
-      // token ผิดมักไม่ได้แปลว่า copy มาผิด แต่เป็นเพราะ server ที่เสิร์ฟอยู่คือคนละตัวกับที่
-      // เพิ่งพิมพ์ลิงก์ออกมา — บอกวิธีขอลิงก์ที่ถูกจากตัวที่รันอยู่จริงไปเลย
-      document.body.innerHTML =
-        '<div style="max-width:520px;margin:80px auto;text-align:center;line-height:1.7">' +
-        '<p style="font-size:17px;font-weight:600">Token ไม่ตรงกับหน้าเว็บที่รันอยู่</p>' +
-        '<p style="color:var(--muted)">ลิงก์นี้อาจมาจากรอบก่อน — เอาลิงก์ปัจจุบันได้จากคำสั่ง:</p>' +
-        '<p><code style="font-size:15px">lmds web --status</code></p>' +
-        '<p style="color:var(--muted);font-size:13px">อยากได้ token ใหม่: <code>lmds web --restart -b --bind 0.0.0.0</code></p>' +
-        '</div>';
+    // token ถูกเพิกถอน/เปลี่ยนระหว่างเปิดหน้าค้างไว้ — กลับไปหน้า login แทนที่จะโชว์หน้าเปล่า
+    if (h.status === 401 || h.status === 429) {
+      const d = await h.json().catch(() => ({}));
+      loginScreen(d.detail || "token ใช้ไม่ได้แล้ว");
       return;
     }
     const models = (await m.json()).models;
@@ -1491,9 +1504,68 @@ function startStream() {
   };
 }
 
-refresh();
-refreshNodes();
-startStream();
+// ── เข้าใช้งาน ───────────────────────────────────────────────────────────
+// ต้องผ่าน token ก่อนถึงจะวาดอะไร — เดิมหน้าโหลดขึ้นมาก่อนแล้วค่อยพังตอนเรียก API
+// ซึ่งทำให้คนที่ไม่มีสิทธิ์ยังเห็นโครงหน้าและชื่อเครื่อง
+function loginScreen(message = "") {
+  document.body.innerHTML = `
+    <div class="login">
+      <div class="login-box">
+        <h1 style="letter-spacing:.16em;font-size:15px">LMDS</h1>
+        <p class="muted" style="margin:6px 0 18px">Local Model Deploy Studio</p>
+        <label class="dim" for="tok">Access token</label>
+        <input id="tok" type="password" autocomplete="current-password" autofocus
+               placeholder="วาง token ที่ lmds web พิมพ์ออกมา">
+        <div id="tok-err" class="warn-line" style="color:var(--bad);min-height:18px">${esc(message)}</div>
+        <button id="tok-go" style="width:100%">เข้าใช้งาน</button>
+        <p class="dim" style="margin-top:14px">ลืม token? รันบนเครื่องนั้น: <code>lmds web --status</code></p>
+      </div>
+    </div>`;
+  const input = document.getElementById("tok");
+  const submit = async () => {
+    const typed = input.value.trim();
+    if (!typed) return;
+    const err = document.getElementById("tok-err");
+    err.textContent = "";
+    const r = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": typed } });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      // 429 = ผิดหลายครั้งเกินไป · ข้อความจาก server บอกว่าต้องรอนานแค่ไหน
+      err.textContent = d.detail || "token ไม่ถูกต้อง";
+      input.select();
+      return;
+    }
+    localStorage.setItem(TOKEN_KEY, typed);
+    location.reload();
+  };
+  document.getElementById("tok-go").onclick = submit;
+  input.onkeydown = e => { if (e.key === "Enter") submit(); };
+}
+
+function signOut() {
+  localStorage.removeItem(TOKEN_KEY);
+  location.reload();
+}
+
+async function boot() {
+  const mode = await fetch("/api/auth").then(r => r.json()).catch(() => ({ required: false }));
+  if (mode.required) {
+    if (!token) { loginScreen(); return; }
+    const ok = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": token } });
+    if (!ok.ok) {
+      const d = await ok.json().catch(() => ({}));
+      loginScreen(d.detail || "token ที่จำไว้ใช้ไม่ได้แล้ว");
+      return;
+    }
+    document.getElementById("signout").hidden = false;
+  }
+  refresh();
+  refreshNodes();
+  startStream();
+}
+
+document.getElementById("signout").onclick = signOut;
+boot();
 </script>
 </body>
 </html>

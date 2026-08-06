@@ -15,6 +15,7 @@ import json
 import re
 import secrets
 import shlex
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -56,18 +57,69 @@ def _model_payload(server) -> dict:
     return model_payload(server, _active_job(server.slug))
 
 
+# กันเดา token: token สั้นสุด 8 ตัวที่ผู้ใช้ตั้งเองอาจเป็นคำที่เดาได้ ถ้ายิงได้ไม่จำกัด
+# บอตในวง network เดาจนเจอได้ · หน่วงเป็นขั้นตามจำนวนครั้งที่ผิดติดกันจาก IP เดียวกัน
+_FAIL_WINDOW = 300.0      # ลืมความผิดพลาดหลังเงียบไป 5 นาที
+_FAIL_FREE = 5            # ผิดได้เท่านี้ก่อนโดนหน่วง (พิมพ์ผิดจริง ๆ ไม่ควรโดนลงโทษ)
+_FAIL_LOCK_MAX = 60.0     # หน่วงสูงสุดต่อครั้ง
+
+
+class _Attempts:
+    """นับความพยายามที่ผิดต่อ IP — อยู่ในหน่วยความจำของ process เดียว พอสำหรับงานนี้"""
+
+    def __init__(self) -> None:
+        self._by_ip: dict[str, tuple[int, float]] = {}
+
+    def locked_for(self, ip: str) -> float:
+        count, last = self._by_ip.get(ip, (0, 0.0))
+        if count <= _FAIL_FREE or time.time() - last > _FAIL_WINDOW:
+            return 0.0
+        wait = min(2.0 ** (count - _FAIL_FREE), _FAIL_LOCK_MAX)
+        remaining = wait - (time.time() - last)
+        return max(0.0, remaining)
+
+    def failed(self, ip: str) -> None:
+        count, last = self._by_ip.get(ip, (0, 0.0))
+        if time.time() - last > _FAIL_WINDOW:
+            count = 0
+        self._by_ip[ip] = (count + 1, time.time())
+
+    def passed(self, ip: str) -> None:
+        self._by_ip.pop(ip, None)
+
+
 def create_app(token: str = "") -> FastAPI:
     app = FastAPI(title="LMDS", docs_url=None, redoc_url=None, openapi_url=None)
+    attempts = _Attempts()
+
+    def _client_ip(request: Request) -> str:
+        return request.client.host if request.client else "?"
 
     def require_token(request: Request) -> None:
         if not token:
             return
+        ip = _client_ip(request)
+        wait = attempts.locked_for(ip)
+        if wait:
+            raise HTTPException(status_code=429, detail=f"ผิดหลายครั้งเกินไป — รออีก {wait:.0f} วินาที")
         supplied = request.headers.get("x-lmds-token") or request.query_params.get("token", "")
         # compare_digest กัน timing attack — เทียบสตริงตรง ๆ รั่วความยาวและ prefix
         if not secrets.compare_digest(supplied, token):
+            attempts.failed(ip)
             raise HTTPException(status_code=401, detail="token ไม่ถูกต้อง")
+        attempts.passed(ip)
 
     guarded = [Depends(require_token)]
+
+    @app.get("/api/auth")
+    def auth_mode() -> dict:
+        """หน้าเว็บถามก่อนวาดว่าเครื่องนี้ต้อง token ไหม — bind 127.0.0.1 ไม่ต้อง"""
+        return {"required": bool(token)}
+
+    @app.post("/api/auth")
+    def auth_check(request: Request, _: None = Depends(require_token)) -> dict:
+        """ตรวจ token ที่กรอกในหน้า login — ผ่านแล้วเบราว์เซอร์ถึงจะเก็บไว้ใช้ต่อ"""
+        return {"ok": True}
 
     # ตัวเดียวที่คุยกับ node จริง — endpoint ทุกตัวอ่านจากแคชที่มันเติมให้ จึงตอบทันทีเสมอ
     state.start_refresher()
