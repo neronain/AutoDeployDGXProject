@@ -295,6 +295,42 @@ def create_app(token: str = "") -> FastAPI:
         except DeployError as exc:
             raise _deploy_error(exc) from exc
 
+    @app.post("/api/nodes/{name}/models/{slug}/ctl/{command}", dependencies=guarded)
+    def node_controller_command(name: str, slug: str, command: str) -> dict:
+        """สั่ง *คำสั่งของ controller* บนเครื่องอื่น — ชุดทดสอบ/ข้อมูล ที่ `lmds` ไม่ได้ห่อไว้
+
+        ปุ่มบนหน้าเว็บขึ้นตาม `commands` ที่ bundle นั้นรองรับจริงอยู่แล้ว แต่ allowlist
+        ที่นี่กันไว้อีกชั้น: รับเฉพาะคำสั่งที่ **อ่านอย่างเดียวหรือทดสอบ** ไม่ใช่ทุกอย่าง
+        ที่ dispatch table มี (download/start/stop มีทางของมันเองที่จัดการ option แล้ว)
+        """
+        from lmds.nodes import NodeError, find, run
+
+        allowed = {
+            "test-text", "test-vision", "test-reasoning", "test-tools",
+            "bench", "stress", "client-config", "network-info", "status", "props",
+            "verify-files", "prepare-runtime", "sync-worker", "verify-worker", "clear-fi-cache",
+        }
+        if command not in allowed:
+            raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        quoted = shlex.quote(slug)
+        script = (
+            f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\"; "
+            f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug} บน {name}' >&2; exit 1; }}; "
+            f"cd \"$dir\" || exit 1; "
+            f"ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
+            f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
+            f"\"$ctl\" {shlex.quote(command)}"
+        )
+        try:
+            result = run(node, script, timeout=3600)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "slug": slug, "command": command,
+                "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
+
     @app.post("/api/models/{slug}/push/{name}", dependencies=guarded)
     def push_bundle(slug: str, name: str) -> dict:
         """ส่ง bundle ที่สร้าง+ตรวจแผนไว้ในเครื่องนี้ ไปติดตั้งบนเครื่องอื่น
@@ -586,43 +622,24 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"name": node.name, "removed": True}
 
-    def _node_options(command: str, body: dict) -> list[str]:
-        """แปลง option จากหน้าเว็บเป็น flag ของ controller — ตรวจค่าก่อนเสมอ
+    def _node_env(command: str, body: dict) -> str:
+        """แปลง option จากหน้าเว็บเป็น env ที่ controller อ่าน — **ชุดเดียวกับโมเดลในเครื่องนี้**
 
-        ค่าพวกนี้ถูกต่อเป็นคำสั่งที่รันบนเครื่องอื่นผ่าน SSH · ต่อให้ quote แล้วก็ยัง
-        ต้องตรวจชนิดและช่วงที่นี่ ไม่ใช่ฝากไว้กับ JS ฝั่งเบราว์เซอร์ซึ่งใครก็ข้ามได้
+        เดิม node ใช้ flag ส่วน local ใช้ env ทำให้ตั้งค่าได้ไม่เท่ากัน (node ไม่มี slots,
+        bind, API key) ทั้งที่ controller ตัวเดียวกันรับได้หมด — ผู้ใช้เห็นสองหน้าจอที่
+        ทำงานคนละอย่างทั้งที่ควรเหมือนกัน
         """
         if not body:
-            return []
-        if command == "remove":
-            return []   # remove รับแค่ confirm ซึ่งจัดการแยกไปแล้ว
+            return ""
         if command not in {"start", "restart"}:
             raise HTTPException(status_code=400, detail=f"'{command}' ไม่รับ option (รับเฉพาะ start/restart)")
+        from . import jobs
 
-        def number(key: str, low: float, high: float, integer: bool = True):
-            raw = body.get(key)
-            if raw in (None, ""):
-                return None
-            try:
-                value = int(raw) if integer else float(raw)
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail=f"{key} ต้องเป็นตัวเลข") from None
-            if not low <= value <= high:
-                raise HTTPException(status_code=400, detail=f"{key} ต้องอยู่ระหว่าง {low} ถึง {high}")
-            return value
-
-        flags: list[str] = []
-        port = number("port", 1, 65535)
-        if port is not None:
-            flags += ["--port", str(port)]
-        context = number("context", 256, 10_000_000)
-        if context is not None:
-            flags += ["--context", str(context)]
-        # ช่วงเดียวกับที่ controller ตรวจเอง — ตรงกันจะได้ไม่มีค่าที่ผ่านที่นี่แล้วไปตายปลายทาง
-        gpu_util = number("gpu_util", 0.3, 0.98, integer=False)
-        if gpu_util is not None:
-            flags += ["--gpu-util", f"{gpu_util:g}"]
-        return flags
+        try:
+            env = jobs.controller_env(jobs.clean_options(body))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
     @app.post("/api/nodes/{name}/models/{slug}/{command}", dependencies=guarded)
     def node_command(name: str, slug: str, command: str, body: dict | None = None) -> dict:
@@ -648,10 +665,10 @@ def create_app(token: str = "") -> FastAPI:
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        parts = ["lmds", command, shlex.quote(slug)]
+        env = _node_env(command, {k: v for k, v in (body or {}).items() if k != "confirm"})
+        parts = ([env] if env else []) + ["lmds", command, shlex.quote(slug)]
         if allowed[command]:
             parts.append(allowed[command])
-        parts += _node_options(command, body or {})
         try:
             result = run(node, " ".join(parts), timeout=1800)
             state.STORE.force(name)   # สถานะเพิ่งเปลี่ยน — อย่าให้ผู้ใช้เห็นของเก่าอีก 15 วิ

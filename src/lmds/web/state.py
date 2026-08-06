@@ -215,5 +215,16 @@ def start_refresher() -> None:
     _thread.start()
 
 
-def stop_refresher() -> None:
+def stop_refresher(wait: float = 5.0) -> None:
+    """หยุด refresher แล้ว **รอให้รอบที่ค้างอยู่จบจริง**
+
+    ตั้ง event เฉย ๆ ไม่พอ — thread อาจกำลังอยู่กลาง `_refresh_local()` แล้วเขียนผลลง
+    STORE หลังจากที่ผู้เรียกคิดว่าหยุดไปแล้ว · เป็นอาการเดียวกับที่แก้ไปหลายรอบในรอบนี้:
+    บอกว่าเสร็จทั้งที่ยังไม่เสร็จ
+    """
+    global _thread
     _stop.set()
+    thread = _thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=wait)
+    _thread = None

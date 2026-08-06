@@ -1055,7 +1055,10 @@ function readNodeOpts(node, slug) {
     const el = box.querySelector(sel);
     return el && el.value !== "" ? el.value : undefined;
   };
-  const o = { port: num(".n-port"), context: num(".n-ctx"), gpu_util: num(".n-gpu") };
+  const o = {
+    port: num(".n-port"), context: num(".n-ctx"), gpu_util: num(".n-gpu"),
+    slots: num(".n-slots"), bind: num(".n-bind"), api_key: num(".n-key"),
+  };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
   localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(o));
   return o;
@@ -1204,54 +1207,93 @@ function nodeModelsMarkup(name, data) {
       // เช็กแบบ `m.autostart ? …` จึงบอกว่า "เปิด autostart อยู่" กับทุกโมเดล ซึ่งไม่จริง
       const auto = m.autostart || "";
       const autoOn = auto === "enabled";
-      // ปุ่มขึ้นตามสถานะจริง — ปุ่มที่กดแล้วล้มแน่ ๆ แย่กว่าไม่มีปุ่ม
-      const more = [
-        m.running ? ["restart", "หยุดแล้วเปิดใหม่"] : null,
-        ["doctor", "ตรวจว่าทำไมยัง start ไม่ได้"],
-        ["logs", "log ล่าสุด 300 บรรทัด"],
-        // `lmds repair` = download (resume) → verify-files · ตอน "ยังไม่มีไฟล์" คือตอนที่
-        // ต้องใช้มากที่สุด เงื่อนไขเดิมกลับด้าน ทำให้ doctor บอกให้ไป cd เข้า bundle เอง
-        // ทั้งที่ปุ่มควรอยู่ตรงนี้
-        m.downloaded ? ["repair", "ตรวจไฟล์ซ้ำ + โหลดส่วนที่ขาดกลับมา"]
-                     : ["repair", "โหลด weight (resume ได้) แล้วตรวจไฟล์ให้อัตโนมัติ"],
-        // n/a = เครื่องนั้นไม่มี systemd — ปุ่มที่กดแล้วล้มแน่ ๆ ไม่ควรมี
-        auto === "n/a" ? null
-          : autoOn ? ["disable", "เลิก autostart หลัง reboot"]
-                   : ["enable", "ให้ขึ้นเองหลัง reboot (ต้อง sudo บนเครื่องนั้น)"],
-        ["remove", "ลบออกจากเครื่องนั้น — จะแสดงรายการ+ขนาดก่อนถามยืนยัน"],
-      ].filter(Boolean);
+      const nbtn = (cmd, label, hint = "", cls = "") =>
+        `<button data-nact="model:${cmd}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                 title="${esc(hint)}" class="${cls}">${esc(label || cmd)}</button>`;
+      // ปุ่มชุดทดสอบขึ้นตามที่ controller ตัวนั้นรองรับจริง (อ่านจาก dispatch table ของมันเอง)
+      // — bundle เก่าที่ยังไม่มีคำสั่งใหม่จะไม่มีปุ่มให้กดแล้วล้ม เหมือนโมเดลในเครื่องนี้เป๊ะ
+      const ctl = (cmd, hint) => (m.commands || []).includes(cmd)
+        ? `<button data-nact="ctl:${cmd}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                   title="${esc(hint)}">${cmd}</button>` : "";
       return `<div style="margin-bottom:6px">
         <div class="field">
           <span class="dot ${state}"></span>
           <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
             <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+            ${m.topology === "stacked" ? `<span class="tag">stacked</span>` : ""}
+            ${(m.features || "").includes("image") ? `<span class="tag">vision</span>` : ""}
             ${autoOn ? `<span class="tag">autostart</span>` : ""}</span>
           <span class="mono muted">:${m.port || "—"}</span>
           <span class="muted">${label}</span>
-          ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                  title="${act === "download" ? "โหลด weight แล้วตรวจไฟล์ให้ (lmds repair)" : ""}">${act}</button>` : ""}
+          ${act ? nbtn(act, act, act === "download" ? "โหลด weight แล้วตรวจไฟล์ให้ (lmds repair)" : "") : ""}
           <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                  class="${open ? "on" : ""}" title="คำสั่งอื่น">⋯</button>
+                  class="${open ? "on" : ""}" title="ตั้งค่า + คำสั่งทั้งหมด">⋯</button>
         </div>
         ${open ? `<div class="submenu" data-for="${esc(m.slug)}">
+          <div class="dim" style="width:100%">ตั้งค่าตอน start — เหมือน
+            <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
           <div class="field" style="width:100%">
             <label>port</label>
-            <input type="number" class="n-port" value="${esc(o.port ?? m.port ?? "")}"
+            <input type="number" class="n-port" value="${esc(o.port ?? "")}"
                    placeholder="${esc(m.port ?? 8000)}" style="flex:none;width:100px">
             <label>context</label>
             <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
-                   placeholder="${esc(m.context ?? "")}" style="flex:none;width:130px"
+                   placeholder="${esc(m.context ?? "")}" style="flex:none;width:120px"
                    title="tokens — เกินที่หน่วยความจำรับไหว vLLM จะไม่ขึ้น">
+            <label>slots</label>
+            <input type="number" class="n-slots" value="${esc(o.slots ?? "")}"
+                   placeholder="${esc(m.max_num_seqs ?? 4)}" style="flex:none;width:80px"
+                   title="จำนวน request พร้อมกัน — llama.cpp แบ่ง context เท่า ๆ กันให้ทุก slot">
             ${m.engine === "vllm" ? `<label>gpu-util</label>
             <input type="number" step="0.01" min="0.3" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
-                   placeholder="0.85" style="flex:none;width:90px"
+                   placeholder="0.85" style="flex:none;width:85px"
                    title="สัดส่วนหน่วยความจำที่ vLLM จองไว้ (0.3–0.98)">` : ""}
-            <span class="dim">ว่าง = ใช้ค่าที่ตั้งไว้ใน bundle</span>
+            <label>bind</label>
+            <select class="n-bind" style="flex:none">
+              <option value=""${!o.bind ? " selected" : ""}>ค่าใน bundle</option>
+              <option value="0.0.0.0"${o.bind === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (ทั้งวง)</option>
+              <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (เครื่องนั้น)</option>
+            </select>
           </div>
-          <div class="field" style="width:100%">${more.map(([c, hint]) =>
-            `<button data-nact="model:${c}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                     title="${esc(hint)}">${c}</button>`).join("")}
-            <span class="dim">ลบโมเดล: <code>lmds node run ${esc(name)} remove ${esc(m.slug)}</code></span>
+          <div class="field" style="width:100%">
+            <label>API key</label>
+            <input type="password" class="n-key" value="${esc(o.api_key ?? "")}"
+                   placeholder="ว่าง = ไม่ต้องยืนยันตัวตน" style="min-width:180px">
+            <span class="dim">เก็บในเบราว์เซอร์นี้ ไม่ได้เขียนลง bundle ปลายทาง</span>
+          </div>
+
+          <div class="sec" style="width:100%;margin:6px 0 2px">ทดสอบ</div>
+          <div class="field" style="width:100%">
+            ${ctl("test-text", "ถามสั้น ๆ แล้วดูว่าตอบไหม")}
+            ${ctl("test-vision", "ส่งภาพสีแดงไปถามว่าเห็นสีอะไร")}
+            ${ctl("test-reasoning", "ตรวจว่า parser แยก chain-of-thought ออกจริง")}
+            ${ctl("test-tools", "ตรวจว่า parser ออก tool_calls จริง")}
+            ${ctl("bench", "ความเร็วแบบ request เดียว")}
+            ${ctl("stress", "ยิงพร้อมกันหลาย request")}
+            ${ctl("client-config", "ค่าที่ client ต้องใช้: base URL + งบ token")}
+            ${ctl("network-info", "bind กับ endpoint ที่ประกาศออกไป")}
+            ${ctl("status", "สถานะ container/process + API")}
+            ${m.running ? "" : `<span class="dim">ยังไม่ได้รัน — ชุดทดสอบส่วนใหญ่ต้อง start ก่อน</span>`}
+          </div>
+          ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px">Stacked</div>
+          <div class="field" style="width:100%">
+            ${ctl("prepare-runtime", "เตรียม runtime บนทุกเครื่องในกลุ่ม")}
+            ${ctl("sync-worker", "ซิงก์ไฟล์ไป worker")}
+            ${ctl("verify-worker", "ตรวจว่า worker พร้อม")}
+            ${ctl("clear-fi-cache", "ล้างแคชของ FlashInfer")}
+          </div>` : ""}
+
+          <div class="sec" style="width:100%;margin:6px 0 2px">จัดการ</div>
+          <div class="field" style="width:100%">
+            ${m.running ? nbtn("restart", "restart", "หยุดแล้วเปิดใหม่ด้วยค่าข้างบน") : ""}
+            ${nbtn("doctor", "doctor", "ตรวจว่าทำไมยัง start ไม่ได้")}
+            ${nbtn("logs", "logs", "log ล่าสุด 300 บรรทัด")}
+            ${nbtn("repair", "repair", m.downloaded ? "ตรวจไฟล์ซ้ำ + โหลดส่วนที่ขาด" : "โหลด weight (resume ได้)")}
+            ${ctl("verify-files", "ตรวจ checksum ของไฟล์ที่โหลดมา")}
+            ${auto === "n/a" ? `<span class="dim">เครื่องนี้ไม่มี systemd — ตั้ง autostart ไม่ได้</span>`
+              : autoOn ? nbtn("disable", "disable autostart", "เลิกให้ขึ้นเองหลัง reboot")
+                       : nbtn("enable", "enable autostart", "ให้ขึ้นเองหลัง reboot (ต้อง sudo บนเครื่องนั้น)")}
+            ${nbtn("remove", "remove", "ลบออกจากเครื่องนั้น — แสดงรายการ+ขนาดก่อนถามยืนยัน", "danger")}
           </div>
         </div>` : ""}
       </div>`;
@@ -1357,6 +1399,22 @@ document.addEventListener("click", async e => {
     refreshNodes();
     return;
   }
+  if (nact.startsWith("ctl:")) {
+    const command = nact.slice(4);
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = command + "…";
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/ctl/${command}`,
+                        { method: "POST" });
+    const d = await r.json();
+    btn.disabled = false;
+    btn.textContent = original;
+    if (!r.ok) { alert(d.detail || "Command failed"); return; }
+    // ชุดทดสอบมีค่าที่ผลลัพธ์เท่านั้น — ต้องโชว์เสมอ ไม่ว่าจะผ่านหรือไม่ผ่าน
+    showNodeOutput(node, `${command} · ${slug}`, d.output);
+    return;
+  }
+
   if (nact.startsWith("model:")) {
     // ปุ่มชื่อ download แต่คำสั่งจริงคือ repair (download resume → verify-files)
     // ชื่อปุ่มพูดกับผู้ใช้ ส่วนคำสั่งพูดกับ CLI — ไม่ต้องเหมือนกัน แต่ต้องไม่ขัดกัน

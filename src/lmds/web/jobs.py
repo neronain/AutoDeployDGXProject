@@ -112,7 +112,48 @@ def controller_env(options: dict | None) -> dict:
     if options.get("slots"):
         # llama.cpp แบ่ง context เท่า ๆ กันให้ทุก slot — ตัวนี้คือ knob ที่ client-config บ่นถึง
         env["PARALLEL_SEQS"] = env["MAX_NUM_SEQS"] = str(int(options["slots"]))
+    if options.get("gpu_util"):
+        env["GPU_MEMORY_UTILIZATION"] = str(float(options["gpu_util"]))
     return env
+
+
+# ช่วงที่รับได้ของแต่ละค่า — ตรวจที่เดียวกันทั้งเครื่องนี้และเครื่องอื่น จะได้ไม่มีสองมาตรฐาน
+OPTION_RANGES = {
+    "port": (1, 65535, int),
+    "context": (256, 10_000_000, int),
+    "slots": (1, 1024, int),
+    "gpu_util": (0.3, 0.98, float),
+}
+
+
+def clean_options(options: dict | None) -> dict:
+    """ตรวจค่าที่มาจากหน้าเว็บก่อนเอาไปต่อเป็นคำสั่ง — คืน dict ที่ปลอดภัยแล้ว
+
+    ค่าพวกนี้ถูกส่งข้ามเครื่องผ่าน SSH · ตรวจที่ฝั่ง server เท่านั้นที่นับ
+    """
+    options = options or {}
+    cleaned: dict = {}
+    for key, (low, high, cast) in OPTION_RANGES.items():
+        raw = options.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            value = cast(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} ต้องเป็นตัวเลข") from None
+        if not low <= value <= high:
+            raise ValueError(f"{key} ต้องอยู่ระหว่าง {low} ถึง {high}")
+        cleaned[key] = value
+    if options.get("bind") in ("0.0.0.0", "127.0.0.1"):
+        cleaned["bind"] = options["bind"]
+    elif options.get("bind"):
+        raise ValueError("bind รับได้เฉพาะ 0.0.0.0 หรือ 127.0.0.1")
+    if options.get("api_key"):
+        key = str(options["api_key"])
+        if any(ch.isspace() or ord(ch) < 32 for ch in key):
+            raise ValueError("API key ต้องไม่มีช่องว่างหรือตัวควบคุม")
+        cleaned["api_key"] = key
+    return cleaned
 
 
 def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:

@@ -919,8 +919,10 @@ def test_page_javascript_parses():
         assert result.returncode == 0, f"script block {i} พัง:\n{result.stderr[:800]}"
 
 
-def test_node_start_passes_validated_port_and_context(registered, monkeypatch):
-    """หน้าเว็บต้องตั้ง port/context ตอนสั่งรันบนเครื่องอื่นได้ — ไม่งั้นต้องไป ssh แก้ .sh เอง"""
+def test_node_start_passes_options_as_env_just_like_a_local_model(registered, monkeypatch):
+    """โมเดลบนเครื่องอื่นต้องตั้งค่าได้เท่ากับโมเดลในเครื่อง — controller ตัวเดียวกัน
+    รับ env ชุดเดียวกัน · เดิม node ใช้ flag ทำให้ตั้ง slots/bind/API key ไม่ได้เลย
+    """
     sent = {}
 
     def fake_run(node, command, timeout=0):
@@ -928,10 +930,16 @@ def test_node_start_passes_validated_port_and_context(registered, monkeypatch):
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     monkeypatch.setattr("lmds.nodes.run", fake_run)
-    r = TestClient(create_app()).post(
-        "/api/nodes/spark2/models/demo/start", json={"port": 8001, "context": 32768, "gpu_util": 0.8})
-    assert r.status_code == 200
-    assert sent["command"] == "lmds start demo --port 8001 --context 32768 --gpu-util 0.8"
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start", json={
+        "port": 8001, "context": 32768, "gpu_util": 0.8, "slots": 8,
+        "bind": "127.0.0.1", "api_key": "s3cret",
+    })
+    assert r.status_code == 200, r.text
+    for expected in ("API_PORT=8001", "CTX_SIZE=32768", "MAX_MODEL_LEN=32768",
+                     "PARALLEL_SEQS=8", "MAX_NUM_SEQS=8", "API_HOST=127.0.0.1",
+                     "API_KEY=s3cret", "GPU_MEMORY_UTILIZATION=0.8"):
+        assert expected in sent["command"], expected
+    assert sent["command"].endswith("lmds start demo")
 
 
 def test_node_options_are_validated_on_the_server(registered, monkeypatch):
@@ -1042,8 +1050,7 @@ def test_a_model_without_weights_still_offers_a_way_to_get_them():
     เงื่อนไขเดิมกลับด้าน: repair ขึ้นเฉพาะตอน downloaded ซึ่งเป็นตอนที่ไม่ต้องใช้
     """
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
-    assert 'm.downloaded ? ["repair"' in page and ': ["repair"' in page, \
-        "repair ต้องมีทั้งสองสถานะ — ยังไม่มีไฟล์คือตอนที่ต้องใช้มากที่สุด"
+    assert 'nbtn("repair"' in page, "repair ต้องมีเสมอ — ยังไม่มีไฟล์คือตอนที่ต้องใช้มากที่สุด"
     assert '(m.downloaded ? "start" : "download")' in page, \
         "ยังไม่มี weight ปุ่มหลักต้องเป็น download ไม่ใช่ปล่อยว่าง"
 
@@ -1062,7 +1069,8 @@ def test_doctor_fixes_point_at_commands_the_web_can_actually_run(tmp_path, monke
     import re
 
     api_src = (Path(__file__).resolve().parents[1] / "src/lmds/web/api.py").read_text(encoding="utf-8")
-    allowed = set(re.findall(r'"(\w[\w-]*)": "[^"]*",', api_src.split("allowed = {")[1].split("}")[0]))
+    block = api_src.split('allowed = {\n            "start"')[1].split("}")[0]
+    allowed = set(re.findall(r'"(\w[\w-]*)":', block)) | {"start"}
     for command in re.findall(r'f"lmds (\w+) \{slug\}', src):
         assert command in allowed, f"doctor แนะนำ `lmds {command}` แต่หน้าเว็บสั่งข้ามเครื่องไม่ได้"
 
@@ -1101,3 +1109,29 @@ def test_pushing_to_an_unknown_machine_says_so(registered, tmp_path, monkeypatch
     monkeypatch.setattr("lmds.fleet.bundle_roots", lambda: [tmp_path])
     r = TestClient(create_app()).post("/api/models/demo/push/not-a-machine")
     assert r.status_code == 404
+
+
+def test_node_models_get_the_same_controls_as_local_ones():
+    """โมเดลบนเครื่องอื่นเคยตั้งได้แค่ port/context/gpu-util ส่วนโมเดลในเครื่องตั้งได้
+    slots/bind/API key ด้วย และมีชุดทดสอบครบ — controller ตัวเดียวกันแท้ ๆ
+    ผู้ใช้เห็นสองหน้าจอที่ทำงานคนละอย่างทั้งที่ควรเหมือนกัน
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    for field in ("n-port", "n-ctx", "n-slots", "n-bind", "n-key", "n-gpu"):
+        assert f'class="{field}"' in page, f"เมนูของ node ขาดช่อง {field}"
+    for command in ("test-text", "test-vision", "bench", "stress", "client-config", "verify-files"):
+        assert f'ctl("{command}"' in page, f"เมนูของ node ขาดปุ่ม {command}"
+
+
+def test_node_controller_commands_are_allowlisted(registered, monkeypatch):
+    """endpoint นี้รันสคริปต์ของ bundle บนเครื่องอื่น — ต้องรับเฉพาะคำสั่งที่อ่าน/ทดสอบ"""
+    calls = []
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: calls.append(command)
+                        or SimpleNamespace(exit_code=0, stdout="ok", stderr=""))
+    client = TestClient(create_app())
+    assert client.post("/api/nodes/spark2/models/demo/ctl/test-text").status_code == 200
+    assert "test-text" in calls[0] and "bundles/demo" in calls[0]
+    # start/stop/download มีทางของมันเองที่จัดการ option แล้ว — ห้ามเข้าทางนี้
+    for bad in ("start", "stop", "download", "rm-rf"):
+        assert client.post(f"/api/nodes/spark2/models/demo/ctl/{bad}").status_code == 400, bad
