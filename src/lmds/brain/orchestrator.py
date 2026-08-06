@@ -59,15 +59,31 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         )
         plan.runtime.engine = expected_engine
 
-    if not is_known_image(plan.runtime.engine, plan.runtime.image_ref):
-        from .rulebased import DEFAULT_IMAGES
+    # image ตั้งต้นต้องตรงกับเครื่องเป้าหมาย — DGX Spark ใช้ NGC ไม่ใช่ upstream
+    # (upstream มี manifest arm64 แต่ไม่ได้ build kernel ให้ SM121)
+    from .rulebased import default_image
 
+    fallback = default_image(plan.runtime.engine, fit.memory_model)
+
+    if not is_known_image(plan.runtime.engine, plan.runtime.image_ref):
         plan.warnings.append(
             f"image ที่แผนเสนอ ({plan.runtime.image_ref}) ไม่อยู่ใน registry ที่ยอมรับ — "
-            f"เปลี่ยนเป็น {DEFAULT_IMAGES[plan.runtime.engine]}"
+            f"เปลี่ยนเป็น {fallback}"
         )
-        plan.runtime.image_ref = DEFAULT_IMAGES[plan.runtime.engine]
+        plan.runtime.image_ref = fallback
         plan.runtime.image_pin = None
+    else:
+        # repo ถูกไม่ได้แปลว่า tag มีอยู่จริง — LLM เคยเสนอ `vllm/vllm-openai:v0.6.3.ss`
+        # ซึ่งผ่าน gate ทุกด่านแล้วไปตายตอนรันด้วย "manifest unknown"
+        from .registry import tag_exists
+
+        if tag_exists(plan.runtime.image_ref) is False:
+            plan.warnings.append(
+                f"tag ของ image ที่แผนเสนอ ({plan.runtime.image_ref}) ไม่มีอยู่จริงบน registry — "
+                f"เปลี่ยนเป็น {fallback}"
+            )
+            plan.runtime.image_ref = fallback
+            plan.runtime.image_pin = None
 
     if fit.recommended_context and plan.serving.context > fit.recommended_context:
         plan.warnings.append(

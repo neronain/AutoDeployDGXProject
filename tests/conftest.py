@@ -36,3 +36,20 @@ def fresh_web_state():
     yield
     state.stop_refresher()
     state.STORE.__init__()
+
+
+@pytest.fixture(autouse=True)
+def no_registry_lookups(monkeypatch):
+    """เทสต้องไม่ยิงเน็ตจริง — การตรวจ image tag ทำให้ชุดเทสช้าจาก 12 วิเป็น 90 วิ
+    และผลจะเปลี่ยนไปตามว่าตอนนั้นต่อเน็ตได้ไหม ซึ่งไม่ใช่สิ่งที่เทสควรวัด
+
+    เทสที่ตั้งใจตรวจพฤติกรรมนี้ patch ทับเองได้ตามปกติ
+    """
+    try:
+        from lmds.brain.registry import SKIP_ENV
+    except ImportError:
+        yield
+        return
+    # ตั้ง env แทนการ patch ตัวฟังก์ชัน — patch แล้วเทสของ tag_exists เองจะไปทดสอบ stub
+    monkeypatch.setenv(SKIP_ENV, "1")
+    yield

@@ -282,3 +282,88 @@ def test_system_prompt_documents_runtime_assets():
     assert "/opt/lmds/plugins" in prompt          # mount point ที่ flag ต้องชี้ไป
     assert "raw.githubusercontent.com" in prompt  # host allowlist
     assert "must approve" in prompt               # บอกว่าผู้ใช้ต้องอนุมัติ
+
+
+# ── ตรวจว่า image tag มีอยู่จริง ────────────────────────────────────────────────
+# LLM เสนอ `vllm/vllm-openai:v0.6.3.ss` ซึ่งไม่มีอยู่จริง · allowlist เดิมตรวจแค่ repo
+# bundle จึงผ่าน gate ทุกด่านแล้วไปตายตอนรันด้วย "manifest unknown" (ผู้ใช้เจอจริง)
+
+def test_split_image_ref_handles_every_registry_shape():
+    from lmds.brain.registry import split_ref
+
+    assert split_ref("vllm/vllm-openai:v0.6.3.ss") == ("registry-1.docker.io", "vllm/vllm-openai", "v0.6.3.ss")
+    assert split_ref("ubuntu") == ("registry-1.docker.io", "library/ubuntu", "latest")
+    assert split_ref("ghcr.io/ggml-org/llama.cpp:server-cuda") == ("ghcr.io", "ggml-org/llama.cpp", "server-cuda")
+    assert split_ref("nvcr.io/nvidia/vllm:26.05-py3") == ("nvcr.io", "nvidia/vllm", "26.05-py3")
+
+
+def test_a_tag_that_does_not_exist_is_reported_as_missing(monkeypatch):
+    import httpx
+
+    from lmds.brain.registry import SKIP_ENV, tag_exists
+
+    monkeypatch.delenv(SKIP_ENV, raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "token" in str(request.url):
+            return httpx.Response(200, json={"token": "t"})
+        return httpx.Response(404, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert tag_exists("vllm/vllm-openai:v0.6.3.ss", client=client) is False
+
+
+def test_a_registry_we_cannot_query_is_not_treated_as_missing(monkeypatch):
+    """nvcr.io ต้องล็อกอิน · เครื่อง air-gapped ต่อไม่ได้ — ทั้งคู่ไม่ใช่เหตุผลที่จะห้าม deploy
+
+    เคสนี้ตัดสินได้ก่อนแตะเน็ต (registry ไม่อยู่ในรายการที่ถามแบบ anonymous ได้)
+    """
+    from lmds.brain.registry import SKIP_ENV, tag_exists
+
+    monkeypatch.delenv(SKIP_ENV, raising=False)
+    assert tag_exists("nvcr.io/nvidia/vllm:26.05-py3") is None
+
+
+def test_an_unreachable_registry_is_not_treated_as_missing(monkeypatch):
+    import httpx
+
+    from lmds.brain.registry import SKIP_ENV, tag_exists
+
+    monkeypatch.delenv(SKIP_ENV, raising=False)
+
+    def boom(request):
+        raise httpx.ConnectError("no network")
+
+    client = httpx.Client(transport=httpx.MockTransport(boom))
+    assert tag_exists("vllm/vllm-openai:latest", client=client) is None
+
+
+def test_harden_replaces_an_image_whose_tag_does_not_exist(isolated_config, monkeypatch):
+    """repo ถูกไม่ได้แปลว่า tag มีอยู่ — เคสจริง: `vllm/vllm-openai:v0.6.3.ss`
+    ผ่าน gate ทุกด่านแล้วไปตายตอนรันด้วย "manifest unknown"
+    """
+    from lmds.brain import registry
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: False)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    report = qwen_report()
+    plan = DeploymentPlan.model_validate(valid_plan_dict(
+        runtime={"engine": "vllm", "image_ref": "vllm/vllm-openai:v0.6.3.ss", "rationale": "x"}))
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert hardened.runtime.image_ref != "vllm/vllm-openai:v0.6.3.ss"
+    assert any("ไม่มีอยู่จริง" in w for w in hardened.warnings)
+
+
+def test_a_corrected_image_matches_the_target_machine(isolated_config, monkeypatch):
+    """DGX Spark ต้องได้ image ของ NGC ไม่ใช่ upstream — upstream มี manifest arm64
+    แต่ไม่ได้ build kernel ให้ SM121 · fallback เดิมคืนค่าเดียวไม่สนเครื่องเป้าหมาย
+    """
+    from lmds.brain import registry
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: False)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    report = qwen_report()
+    plan = DeploymentPlan.model_validate(valid_plan_dict(
+        runtime={"engine": "vllm", "image_ref": "vllm/vllm-openai:nope", "rationale": "x"}))
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert hardened.runtime.image_ref.startswith("nvcr.io/nvidia/vllm")
