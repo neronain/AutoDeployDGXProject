@@ -273,6 +273,53 @@ def create_app(token: str = "") -> FastAPI:
                 return preset
         return ""
 
+    @app.get("/api/provider", dependencies=guarded)
+    def provider_get() -> dict:
+        """LLM ที่ใช้เป็นสมองของระบบตอนนี้ — key ถูก mask เสมอ ไม่ส่งค่าจริงออกไป"""
+        from lmds.config import DEFAULT_MODELS, ProviderName, Settings
+        from lmds.secrets import get_secret
+
+        settings = Settings.load()
+        provider = settings.provider
+        key = get_secret(provider.name.value) if provider else ""
+        return {
+            "configured": provider is not None,
+            "name": provider.name.value if provider else "",
+            "model": provider.model if provider else "",
+            "base_url": provider.base_url if provider else "",
+            # ไม่ส่ง key จริงกลับไปเด็ดขาด — บอกแค่ว่ามีหรือยัง และท้าย 4 ตัวไว้ยืนยันว่าใช่ตัวที่คิด
+            "has_key": bool(key),
+            "key_hint": f"…{key[-4:]}" if key else "",
+            "choices": [n.value for n in ProviderName],
+            "defaults": {n.value: DEFAULT_MODELS[n] for n in ProviderName},
+        }
+
+    @app.put("/api/provider", dependencies=guarded)
+    def provider_set(body: dict) -> dict:
+        """ตั้ง provider / model / base URL / API key จากหน้าเว็บ
+
+        เดิมต้องกลับไป CLI ทุกครั้ง ทั้งที่หน้าเว็บคือที่ที่ผู้ใช้เห็นว่าแผนออกมาไม่ดี
+        """
+        from lmds.config import ProviderName, Settings
+        from lmds.secrets import set_secret
+
+        name = (body.get("name") or "").strip()
+        try:
+            provider_name = ProviderName(name)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"ไม่รู้จัก provider '{name}'") from None
+        settings = Settings.load()
+        try:
+            settings.set_provider(provider_name, (body.get("model") or "").strip(),
+                                  (body.get("base_url") or "").strip() or None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        settings.save()
+        key = (body.get("api_key") or "").strip()
+        if key:
+            set_secret(provider_name.value, key)
+        return provider_get()
+
     @app.get("/api/targets", dependencies=guarded)
     def targets_list() -> dict:
         from .deploy import targets

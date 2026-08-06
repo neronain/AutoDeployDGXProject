@@ -253,6 +253,11 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   padding: 8px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--fg3);
   display: flex; gap: 14px;
 }
+/* ตัวบอกว่าใช้ LLM ตัวไหนอยู่ — ค่าที่เปลี่ยนผลลัพธ์ของทุก deploy ไม่ควรซ่อนอยู่ใน CLI */
+.brain { font-size: 12px; padding: 5px 10px; max-width: 260px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.brain.off { color: var(--warn); border-color: var(--warn); }
+.brain b { font-weight: 600; }
 .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-box {
   width: 100%; max-width: 340px; background: var(--card);
@@ -379,6 +384,7 @@ pre {
   <div class="wrap">
     <h1>LMDS</h1>
     <span class="muted grow" id="host">…</span>
+    <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
     <span class="dim" id="ver"></span>
     <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้">Sign out</button>
     <button id="new">+ Deploy model</button>
@@ -1952,6 +1958,64 @@ async function boot() {
   refresh();
   refreshNodes();
   startStream();
+  loadProvider();
+}
+
+// ── LLM ที่ใช้ช่วยวางแผน ─────────────────────────────────────────────────
+// ค่าพวกนี้เปลี่ยนผลลัพธ์ของทุก deploy — เดิมดูและแก้ได้จาก CLI เท่านั้น ทั้งที่หน้าเว็บ
+// คือที่ที่ผู้ใช้เห็นว่าแผนออกมาไม่ดีแล้วอยากเปลี่ยนสมองทันที
+let providerState = null;
+
+async function loadProvider() {
+  const btn = document.getElementById("brain");
+  if (!btn) return;
+  try {
+    providerState = await (await api("/api/provider")).json();
+  } catch { return; }
+  const p = providerState;
+  btn.classList.toggle("off", !p.configured || !p.has_key);
+  btn.innerHTML = p.configured
+    ? `<b>${esc(p.name)}</b> · ${esc(p.model)}${p.has_key ? "" : " · ไม่มี key"}`
+    : "ไม่ได้ตั้ง LLM · rule-based";
+  btn.title = p.configured
+    ? `${p.name} · ${p.model}${p.base_url ? " · " + p.base_url : ""}${p.has_key ? " · key " + p.key_hint : " · ยังไม่ได้ใส่ key"}`
+    : "ยังไม่ได้ตั้ง LLM — deploy จะใช้ rule-based + recipes";
+}
+
+function providerForm(message = "") {
+  const p = providerState || { choices: ["openai"], defaults: {} };
+  wiz.hidden = false;
+  wiz.innerHTML = `<div class="pad">
+    <div class="name">LLM ที่ใช้ช่วยวางแผน deploy</div>
+    <div class="dim" style="margin-bottom:10px">ไม่ตั้งก็ deploy ได้ — ระบบจะใช้ rule-based
+      + สูตรที่ผ่านการรันจริง (recipes) แทน</div>
+    <div class="field">
+      <label>provider</label>
+      <select id="p-name" style="flex:none">
+        ${(p.choices || []).map(c => `<option value="${esc(c)}"${c === p.name ? " selected" : ""}>${esc(c)}</option>`).join("")}
+      </select>
+      <label>model</label>
+      <input id="p-model" value="${esc(p.model || "")}" placeholder="ว่าง = default ของ provider">
+    </div>
+    <div class="field">
+      <label>base URL</label>
+      <input id="p-url" value="${esc(p.base_url || "")}" placeholder="จำเป็นเฉพาะ openai-compat">
+    </div>
+    <div class="field">
+      <label>API key</label>
+      <input id="p-key" type="password" placeholder="${p.has_key ? "มีอยู่แล้ว " + esc(p.key_hint) + " — ปล่อยว่าง = ใช้ตัวเดิม" : "ยังไม่ได้ใส่"}">
+      <button id="p-save">Save</button>
+      <button id="p-close">Close</button>
+    </div>
+    ${message ? `<div class="warn-line">${esc(message)}</div>` : ""}
+    <div class="dim">key ถูกเก็บใน keyring ของเครื่องนี้ (ไม่มี keyring = ไฟล์สิทธิ์ 0600)
+      และไม่เคยถูกส่งกลับมาที่หน้าเว็บ — ช่องนี้จึงว่างเสมอแม้ตั้งไว้แล้ว</div>
+  </div>`;
+  const defaults = p.defaults || {};
+  document.getElementById("p-name").onchange = e => {
+    const model = document.getElementById("p-model");
+    if (model && !model.value.trim()) model.placeholder = defaults[e.target.value] || "ต้องระบุเอง";
+  };
 }
 
 // ── command palette (⌘K / Ctrl-K) ───────────────────────────────────────
@@ -1979,6 +2043,8 @@ function palCommands() {
                run: () => document.getElementById("node-new").click() });
   items.push({ label: "Scan weights", hint: "weight ที่มีอยู่แล้วบนดิสก์", where: "หน้าเว็บ",
                run: () => document.getElementById("scan-run")?.click() });
+  items.push({ label: "LLM provider", hint: "เปลี่ยน provider / model / base URL / key",
+               where: "หน้าเว็บ", run: () => providerForm() });
   return items;
 }
 
@@ -2064,6 +2130,27 @@ document.addEventListener("keydown", e => {
   // "/" เปิดได้เหมือนกัน แต่ต้องไม่แย่งตอนผู้ใช้กำลังพิมพ์อยู่ในช่องกรอก
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
   if (e.key === "/" && !typing) { e.preventDefault(); palOpen(); }
+});
+
+document.getElementById("brain").onclick = () => providerForm();
+
+document.addEventListener("click", async e => {
+  if (e.target.id === "p-close") { wiz.hidden = true; wiz.innerHTML = ""; return; }
+  if (e.target.id !== "p-save") return;
+  const val = id => (document.getElementById(id) || {}).value || "";
+  e.target.disabled = true;
+  const r = await api("/api/provider", {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: val("p-name"), model: val("p-model"),
+                           base_url: val("p-url"), api_key: val("p-key") }),
+  });
+  e.target.disabled = false;
+  const d = await r.json();
+  if (!r.ok) { providerForm(typeof d.detail === "string" ? d.detail : "บันทึกไม่สำเร็จ"); return; }
+  providerState = d;
+  loadProvider();
+  wiz.hidden = true;
+  wiz.innerHTML = "";
 });
 
 document.getElementById("signout").onclick = signOut;

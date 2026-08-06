@@ -1272,3 +1272,44 @@ def test_palette_does_not_steal_the_slash_key_while_typing():
     """'/' เปิด palette ได้ แต่ต้องไม่แย่งตอนผู้ใช้กำลังพิมพ์ token หรือ path อยู่"""
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert "INPUT|TEXTAREA|SELECT" in page and "!typing" in page
+
+
+def test_provider_is_visible_and_editable_from_the_page(isolated_config, monkeypatch):
+    """LLM ที่ใช้ช่วยวางแผนเปลี่ยนผลลัพธ์ของทุก deploy — เดิมดูและแก้ได้จาก CLI เท่านั้น
+    ทั้งที่หน้าเว็บคือที่ที่ผู้ใช้เห็นว่าแผนออกมาไม่ดีแล้วอยากเปลี่ยนทันที
+    """
+    client = TestClient(create_app())
+    before = client.get("/api/provider").json()
+    assert before["configured"] is False and "openai" in before["choices"]
+
+    r = client.put("/api/provider", json={"name": "openai-compat", "model": "aeon-ultimate",
+                                          "base_url": "http://192.168.10.43:8080/v1",
+                                          "api_key": "sk-test-1234"})
+    assert r.status_code == 200, r.text
+    after = r.json()
+    assert after["name"] == "openai-compat" and after["model"] == "aeon-ultimate"
+    assert after["base_url"] == "http://192.168.10.43:8080/v1"
+
+
+def test_provider_endpoint_never_returns_the_key(isolated_config):
+    """key อยู่ใน keyring/ไฟล์ 0600 ของเครื่อง — ส่งกลับมาที่เบราว์เซอร์คือทำให้มันรั่ว
+    ผ่านทุกที่ที่ response ไปโผล่ (cache, devtools, log ของ proxy)
+    """
+    client = TestClient(create_app())
+    client.put("/api/provider", json={"name": "openai", "api_key": "sk-secret-value-9999"})
+    body = client.get("/api/provider").text
+    assert "sk-secret-value-9999" not in body
+    payload = client.get("/api/provider").json()
+    assert payload["has_key"] is True and payload["key_hint"] == "…9999"
+
+
+def test_provider_rejects_openai_compat_without_a_base_url(isolated_config):
+    r = TestClient(create_app()).put("/api/provider", json={"name": "openai-compat", "model": "x"})
+    assert r.status_code == 400
+    assert "base-url" in r.json()["detail"] or "base_url" in r.json()["detail"]
+
+
+def test_page_shows_which_llm_is_in_use():
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert 'id="brain"' in page and "function loadProvider" in page
+    assert "rule-based" in page, "ไม่ได้ตั้ง LLM ต้องบอกว่าใช้ rule-based แทน ไม่ใช่ปล่อยว่าง"
