@@ -1003,3 +1003,14 @@ def test_page_asks_for_the_token_before_drawing_anything():
     assert "function loginScreen" in page and "async function boot()" in page
     assert "localStorage.setItem(TOKEN_KEY" in page, "ผ่านแล้วต้องจำไว้ ไม่ใช่ให้กรอกทุกครั้ง"
     assert "history.replaceState" in page, "?token= ใน URL ต้องถูกลบออกจากแถบที่อยู่"
+
+
+def test_cluster_ip_is_shown_on_the_machine_it_belongs_to():
+    """เดิม cluster IP ทุกเครื่องกองรวมกันอยู่การ์ดล่างสุด ลูกค้าอ่านแล้วไม่รู้ว่าอันไหนของใคร
+    — ต้องอยู่ในการ์ดของเครื่องนั้น และกลุ่มที่ stacked ด้วยกันได้ต้องมีรั้วสีคร่อมไว้
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "function clusterStrip" in page and "class=\"nclus\"" in page
+    assert "function layoutClusterGroups" in page, "เครื่องกลุ่มเดียวกันต้องถูกจัดให้อยู่ติดกัน"
+    assert '<div class="card" id="cluster">' not in page, "การ์ด cluster ล่างสุดต้องไม่เหลือไว้ให้สับสน"
+    assert "⇄" in page, "ต้องบอกชื่อคู่ของเครื่องนั้นตรง ๆ"

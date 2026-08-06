@@ -163,6 +163,28 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
 }
 .submenu .dim { margin-left: auto; font-size: 12px; }
+/* กลุ่ม cluster — รั้วสีคร่อมเครื่องที่ stacked ด้วยกันได้ ทำหน้าที่เป็น "เส้นเชื่อม"
+   ที่บอกว่าคู่ไหนเป็นคู่ไหน โดยไม่ต้องอ่านชื่อทีละตัว */
+.gwrap {
+  border: 1px solid var(--line); border-left: 3px solid var(--g);
+  border-radius: var(--r); padding: 10px 10px 2px; margin-bottom: 12px;
+  background: color-mix(in srgb, var(--g) 4%, transparent);
+}
+.gwrap .machine { margin-bottom: 8px; }
+.gbar { padding: 2px 4px 10px; }
+.ghead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.gsub { margin-top: 3px; }
+.gtag {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--g); border: 1px solid var(--g); border-radius: 999px; padding: 2px 8px;
+  background: color-mix(in srgb, var(--g) 12%, transparent); white-space: nowrap;
+}
+/* แถบ cluster ในการ์ดของเครื่องนั้น ๆ — อยู่ติดกับชื่อเครื่อง ไม่ต้องเลื่อนไปหาข้างล่าง */
+.nclus {
+  padding: 8px 14px; border-top: 1px solid var(--line);
+  background: var(--sunken); font-size: 12.5px;
+}
+.nclus.in-group { border-left: 3px solid var(--g); }
 .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-box {
   width: 100%; max-width: 340px; background: var(--card);
@@ -284,7 +306,10 @@ pre {
 
   <div class="sec row between" style="align-items:baseline">
     <span>Other machines</span>
-    <button id="node-new" style="font-size:12px">+ Add machine</button>
+    <span>
+      <button id="cluster-check" style="font-size:12px" title="ตรวจว่าเครื่องไหนจับคู่ stacked กันได้">Check cluster</button>
+      <button id="node-new" style="font-size:12px">+ Add machine</button>
+    </span>
   </div>
   <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
 
@@ -302,12 +327,6 @@ pre {
   <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
     <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span>Cluster fabric</span>
-    <button id="cluster-check" style="font-size:12px">Check now</button>
-  </div>
-  <div class="card" id="cluster"><div class="empty">Which machines can be stacked into one model —
-    <span class="dim">contacts every machine, so it runs only when you ask</span></div></div>
 </div>
 
 <script>
@@ -980,6 +999,7 @@ function nodeCard(node) {
       <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
     </div>
+    <div class="nclus" hidden></div>
     <div class="nbody"></div>`;
   return block;
 }
@@ -1179,6 +1199,8 @@ async function refreshNodes() {
   for (const [name, row] of nodeRows) {
     if (!seen.has(name)) { row.block.remove(); nodeRows.delete(name); }
   }
+  // การ์ดที่เพิ่ง append ไปต่อท้าย box ต้องถูกดึงกลับเข้ารั้วกลุ่มของมัน
+  if (clusterData) layoutClusterGroups();
 }
 
 document.addEventListener("click", async e => {
@@ -1279,7 +1301,13 @@ function ipHint(m) {
   return "";
 }
 
-function clusterMachineRow(m) {
+// ข้อมูล cluster ล่าสุด — เก็บไว้เพราะการตรวจต้องต่อ SSH ทุกเครื่อง จึงทำเมื่อผู้ใช้สั่งเท่านั้น
+let clusterData = null;
+
+// สีประจำกลุ่ม — คนดูต้องบอกได้ว่า "เครื่องนี้อยู่กลุ่มเดียวกับเครื่องไหน" โดยไม่ต้องอ่านชื่อ
+const GROUP_COLOURS = ["var(--accent)", "#f59e0b", "#a855f7", "#14b8a6"];
+
+function clusterStrip(m, group, index) {
   const fab = m.fabric || {};
   const link = !m.reachable ? "unreachable"
     : fab.best_gbps ? `${fab.best_gbps}G${fab.tier === "rdma" ? " RDMA" : ""}`
@@ -1287,64 +1315,117 @@ function clusterMachineRow(m) {
   const colour = !m.reachable ? "var(--bad)" : m.ready ? "var(--ok)" : "var(--warn)";
   const editable = !m.self && m.reachable;
   const hint = m.reachable ? ipHint(m) : (m.error || "");
-  return `<div class="field" style="margin-bottom:6px">
-    <span class="dot ${m.ready ? "on" : ""}"></span>
-    <span class="grow"><b style="font-weight:500">${esc(m.name)}</b>${m.self ? ' <span class="dim">(hub)</span>' : ""}</span>
-    <span class="mono" style="color:${colour}">${esc(link)}</span>
-    ${editable
-      ? `<input class="ipedit" data-ipfor="${esc(m.name)}" value="${esc(m.cluster_ip || "")}"
-           placeholder="${esc(m.suggested_ip || "cluster IP")}" title="IP on the fast link, used for NCCL">
-         <button data-cact="save-ip" data-node="${esc(m.name)}">save</button>`
-      : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>`}
-  </div>
-  ${hint ? `<div class="dim" style="margin:-2px 0 8px 22px">${esc(hint)}</div>` : ""}`;
+  // คู่ของเครื่องนี้ — บอกชื่อตรง ๆ ดีกว่าให้ไปไล่หาเองว่าใครอยู่กลุ่มเดียวกัน
+  const partners = group ? group.members.filter(x => x.name !== m.name).map(x => x.name) : [];
+  return `<div class="field">
+      ${group ? `<span class="gtag" style="--g:${GROUP_COLOURS[index % GROUP_COLOURS.length]}">
+        Cluster ${String.fromCharCode(65 + index)}</span>` : ""}
+      <span class="dim">fabric</span>
+      <span class="mono" style="color:${colour}">${esc(link)}</span>
+      <span class="dim">cluster IP</span>
+      ${editable
+        ? `<input class="ipedit" data-ipfor="${esc(m.name)}" value="${esc(m.cluster_ip || "")}"
+             placeholder="${esc(m.suggested_ip || "cluster IP")}" title="IP บนสายเร็ว ใช้โดย NCCL">
+           <button data-cact="save-ip" data-node="${esc(m.name)}">save</button>`
+        : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>
+           ${m.self ? '<span class="dim">(hub — ตรวจให้ ไม่ได้เก็บไว้)</span>' : ""}`}
+      <span class="grow"></span>
+      ${partners.length ? `<span class="dim">⇄ ${esc(partners.join(", "))}</span>` : ""}
+    </div>
+    ${hint ? `<div class="dim" style="margin-top:4px">${esc(hint)}</div>` : ""}`;
 }
 
-function clusterGroupRow(g) {
-  const names = g.members.map(m => m.name).join(" + ");
-  return `<div class="cgroup${g.ready ? " ok" : ""}">
-    <div class="row between">
-      <b style="font-weight:500">${esc(names)}</b>
-      <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "ready to stack" : "not ready"}</span>
+// หัวกลุ่ม: บอกว่ากลุ่มนี้คือเครื่องอะไรบ้าง พร้อมสิ่งที่ยังขาด — อยู่เหนือเครื่องที่มันพูดถึง
+function groupHeader(g, index) {
+  const blockers = g.blockers.map(b => `<div class="warn-line">${esc({
+    "missing-ip": "ยังไม่ได้ตั้ง cluster IP ที่: ",
+    "duplicate-ip": "cluster IP ซ้ำกันมากกว่าหนึ่งเครื่อง: ",
+    "split-fabric": "cluster IP อยู่คนละ subnet คุยกันไม่ได้: ",
+  }[b.kind] + b.names.join(", "))}</div>`).join("");
+  return `<div class="ghead">
+      <span class="gtag" style="--g:${GROUP_COLOURS[index % GROUP_COLOURS.length]}">
+        Cluster ${String.fromCharCode(65 + index)}</span>
+      <b style="font-weight:500">${esc(g.members.map(m => m.name).join("  ⇄  "))}</b>
+      <span class="grow"></span>
+      <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "stacked ได้" : "ยังไม่พร้อม"}</span>
     </div>
-    <div class="dim">${esc(g.gpu)} ×${g.gpus_per_node} per node · world size ${g.world_size} ·
+    <div class="dim gsub">${esc(g.gpu)} ×${g.gpus_per_node} ต่อเครื่อง · world size ${g.world_size} ·
       ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
     ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
-      ? `<div class="warn-line">${g.world_size} GPUs does not divide most models' attention heads —
-         use tensor-parallel ${g.parallelism.largest_tp} plus pipeline stages, not TP ${g.world_size}</div>`
-      : ""}
-    ${g.blockers.map(b => `<div class="warn-line">${esc({
-      "missing-ip": "Cluster IP still missing on: ",
-      "duplicate-ip": "The same cluster IP is set on more than one machine: ",
-      "split-fabric": "These cluster IPs are on different subnets and cannot reach each other: ",
-    }[b.kind] + b.names.join(", "))}</div>`).join("")}
-    ${g.ready ? `<div class="dim" style="margin-top:6px">Deploy across these:
-      <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> on
-      <b style="font-weight:500">${esc(g.members[0].name)}</b>, then
-      <code>lmds node cluster --write &lt;slug&gt; --on ${esc(g.members[0].name)}</code></div>` : ""}
-  </div>`;
+      ? `<div class="warn-line">${g.world_size} GPU หารจำนวน attention head ของโมเดลส่วนใหญ่ไม่ลงตัว —
+         ใช้ tensor-parallel ${g.parallelism.largest_tp} + pipeline stage แทน TP ${g.world_size}</div>` : ""}
+    ${blockers}
+    ${g.ready ? `<div class="dim gsub">deploy ข้ามเครื่องกลุ่มนี้:
+      <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> บน
+      <b style="font-weight:500">${esc(g.members[0].name)}</b> แล้ว
+      <code>lmds node cluster --write &lt;slug&gt; --on ${esc(g.members[0].name)}</code></div>` : ""}`;
+}
+
+// จัดการ์ดใหม่: เครื่องที่อยู่กลุ่มเดียวกันต้องอยู่ติดกัน และมีเส้นรั้วสีเดียวกันคร่อมไว้
+// เพื่อให้เห็นว่า "คู่นี้แหละที่ stacked กันได้" โดยไม่ต้องอ่านชื่อทีละตัว
+function layoutClusterGroups() {
+  const box = document.getElementById("nodes");
+  if (!box) return;
+  for (const wrap of [...box.querySelectorAll(".gwrap")]) {
+    while (wrap.children.length > 1) box.appendChild(wrap.children[1]);
+    wrap.remove();
+  }
+  for (const row of nodeRows.values()) row.block.querySelector(".nclus").hidden = true;
+  if (!clusterData) return;
+
+  const byName = new Map((clusterData.machines || []).map(m => [m.name, m]));
+  const groups = clusterData.groups || [];
+  const groupOf = new Map();
+  groups.forEach((g, i) => g.members.forEach(m => groupOf.set(m.name, i)));
+
+  groups.forEach((g, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "gwrap";
+    wrap.style.setProperty("--g", GROUP_COLOURS[i % GROUP_COLOURS.length]);
+    wrap.innerHTML = `<div class="gbar">${groupHeader(g, i)}</div>`;
+    const first = nodeRows.get(g.members.find(m => nodeRows.has(m.name))?.name);
+    box.insertBefore(wrap, first ? first.block : null);
+    for (const member of g.members) {
+      const row = nodeRows.get(member.name);
+      if (row) wrap.appendChild(row.block);   // hub ไม่มีการ์ดของตัวเองในลิสต์นี้
+    }
+  });
+
+  for (const [name, row] of nodeRows) {
+    const machine = byName.get(name);
+    const strip = row.block.querySelector(".nclus");
+    if (!machine) { strip.hidden = true; continue; }
+    strip.hidden = false;
+    const gi = groupOf.has(name) ? groupOf.get(name) : -1;
+    // กำลังพิมพ์ IP อยู่ตรงนี้ — วาดทับคือลบสิ่งที่พิมพ์ไปแล้ว
+    if (strip.contains(document.activeElement)) continue;
+    strip.innerHTML = clusterStrip(machine, gi >= 0 ? groups[gi] : null, gi);
+    strip.style.setProperty("--g", gi >= 0 ? GROUP_COLOURS[gi % GROUP_COLOURS.length] : "transparent");
+    strip.classList.toggle("in-group", gi >= 0);
+  }
 }
 
 async function loadCluster() {
-  const box = document.getElementById("cluster");
-  box.innerHTML = `<div class="empty">Contacting every machine…</div>`;
-  let d;
+  const button = document.getElementById("cluster-check");
+  if (button) { button.disabled = true; button.textContent = "Checking…"; }
   try {
-    d = await (await api("/api/cluster")).json();
+    clusterData = await (await api("/api/cluster")).json();
   } catch {
-    box.innerHTML = `<div class="empty">Could not read the cluster view</div>`;
-    return;
+    clusterData = null;
   }
-  const groups = d.groups || [];
-  box.innerHTML = `<div class="pad">
-    ${(d.machines || []).map(clusterMachineRow).join("")}
-    <div class="dim" style="margin:8px 0 14px">The hub's own address is detected, not stored —
-      set it on the deploy itself when you launch a stacked bundle.</div>
-    ${groups.length
-      ? groups.map(clusterGroupRow).join("")
-      : `<div class="dim">No stackable pair yet — stacking needs at least two machines with the same
-         GPU model and count, and a link of ${25}G or faster on both.</div>`}
-  </div>`;
+  if (button) { button.disabled = false; button.textContent = "Check cluster"; }
+  layoutClusterGroups();
+  if (clusterData && !(clusterData.groups || []).length) {
+    const box = document.getElementById("nodes");
+    if (box && !box.querySelector(".gnone")) {
+      const note = document.createElement("div");
+      note.className = "gnone dim";
+      note.style.margin = "0 0 10px";
+      note.textContent = "ยังไม่มีคู่ที่ stacked ได้ — ต้องมีอย่างน้อยสองเครื่องที่ GPU รุ่นและจำนวนตรงกัน "
+        + "และมีสายเร็วอย่างน้อย 25G ทั้งคู่";
+      box.prepend(note);
+    }
+  }
 }
 
 document.addEventListener("click", async e => {
