@@ -268,7 +268,9 @@ def test_controller_derives_the_interface_from_the_cluster_ip(tmp_path):
     text = pathlib.Path(bundle.controller).read_text(encoding="utf-8")
 
     assert "detect_interface()" in text
-    assert "detect_worker_interface()" in text
+    assert "TRANSPORT_IP_WORKERS" in text
+    assert "want='${wtransport}'" in text
+    assert "VLLM_HOST_IP=${wtransport}" in text
     # ค่าที่ผู้ใช้ตั้งมาเองต้องชนะการตรวจอัตโนมัติเสมอ
     assert '[[ -n "$NCCL_SOCKET_IFNAME" ]] && return 0' in text
 
@@ -382,3 +384,50 @@ def test_container_hub_cache_handles_both_hf_layouts(tmp_path):
     # ต้องส่งให้ทั้ง head (docker -e) และ worker (export ในสคริปต์)
     assert '-e "HF_HUB_CACHE=$(_container_hub_cache "$HF_HOME")"' in text
     assert 'export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")' in text
+
+
+def test_stacked_uses_every_active_roce_link(tmp_path):
+    """auto mode ต้องเก็บ rail ที่เร็วที่สุดทุกเส้น โดยไม่ใช้ threshold ตัวเลขที่เดาเอง."""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "detect_active_hcas()" in text
+    # operstate/speed เป็น local preflight เท่านั้น; end-to-end ต้องพิสูจน์บน fabric จริง
+    assert "operstate" in text
+    assert "max_speed" in text
+    assert "NCCL_HCA_MIN_SPEED_MBPS" not in text
+    # ยังต้องมีทางถอยเมื่อ driver ไม่เขียน speed
+    assert "detect_hca_for_interface" in text
+
+
+def test_stacked_hca_detection_joins_devices_with_commas(tmp_path):
+    """NCCL_IB_HCA รับหลายตัวคั่นด้วยจุลภาค — ถ้า join ผิดจะกลายเป็นชื่อเดียวที่ไม่มีอยู่จริง"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    body = text.split("detect_active_hcas()", 1)[1].split("\n_resolve_hca", 1)[0]
+    assert "local IFS=," in body
+    assert '${selected[*]}' in body
+    assert 'selected+=("${item%:*}")' in body
+    assert 'echo "=${selected[*]}"' in body
+
+
+def test_stacked_detects_hca_per_worker_and_falls_back_symmetrically(tmp_path):
+    """ชื่อ HCA เป็น local ต่อ node และห้ามปล่อย head ใช้ RoCE ขณะ worker fallback TCP"""
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "detect_worker_hcas()" in text
+    assert 'worker_hcas["$wip"]="$whca"' in text
+    assert '_nccl_env_pairs "$wifname" "${worker_hcas[$wip]}"' in text
+    assert '"$(_hca_count "$whca")" -eq "$head_hca_count"' in text
+    assert 'NCCL_IB_HCA=""' in text
+    assert "ปิด RoCE ทั้งคลัสเตอร์" in text
+
+
+def test_stacked_transport_mapping_and_gid_are_fail_safe(tmp_path):
+    bundle, _, _ = _stacked_bundle(tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert '[[ ${#worker_nodes[@]} -eq ${#transport_nodes[@]} ]]' in text
+    assert "TRANSPORT_IP_WORKERS ต้องมี IP เท่าจำนวน WORKER_IPS" in text
+    assert "หา fabric IP บน worker ไม่พบ" in text
+    assert 'bad_transport+=("${wip}:${wtransport}")' in text
+    assert 'NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-}"' in text
+    assert '[[ -n "$NCCL_IB_GID_INDEX" ]] && echo "NCCL_IB_GID_INDEX=' in text

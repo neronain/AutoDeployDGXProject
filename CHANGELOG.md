@@ -225,6 +225,25 @@
   (ไม่งั้นภาพกระตุกตอน `Live` วาดทับ)
 - **`LICENSE`**, **`SECURITY.md`**, **`CONTRIBUTING.md`**, **`CHANGELOG.md`**, **`README.en.md`**
 
+### Fixed
+
+- **stacked มองเห็น RoCE rail ที่พร้อมใช้เพียงตัวเดียวทั้งที่มีหลายตัว** — `NCCL_IB_HCA`
+  เคยถูกตั้งจาก HCA ที่คู่กับ `NCCL_SOCKET_IFNAME` ตัวเดียวแล้ว `return` ทันที ทำให้ NCCL
+  ไม่มีโอกาสเลือก rail อื่นที่เครื่องมีอยู่; ผลต่อ throughput จริงขึ้นกับ topology และต้องวัด
+  ด้วย collective benchmark ไม่สรุปเป็นสัดส่วนจากจำนวนสายอย่างเดียว
+  · auto mode ตอนนี้เลือก HCA ที่ `operstate=up` และมี link speed สูงสุดทุกตัว คั่นด้วยจุลภาค
+  แบบ exact-name (`=`) · ถ้า driver ไม่เขียน `speed` จะถอยไปใช้ HCA ที่ผูกกับ transport NIC
+  · ตรวจ transport IP/interface/HCA แยกทุก worker และต้องได้จำนวน rail เท่ากับ head;
+  ถ้ายืนยันไม่ได้จะ fallback TCP ทั้งคลัสเตอร์แทน transport คนละแบบ
+  · `TRANSPORT_IP_WORKERS` รองรับ fabric IP แยกจาก SSH/management IP และต้องเรียงตรงกับ
+  `WORKER_IPS`; `NCCL_IB_GID_INDEX` ไม่ถูกเดาเป็นค่าคงที่อีก ผู้ดูแล fabric ยัง override ได้
+  · **วัดบน DGX Spark สองเครื่องแล้ว** (perftest `ib_write_bw`, 65536 B, `-q 4`, RoCE, 2026-08-06):
+  สายเดียว `rocep1s0f0` ได้ **111.71 Gb/s** · สองสายพร้อมกัน **93.5 + 93.4 = 186.9 Gb/s**
+  (สามรอบได้ 186.9 / 184.9 / 186.4) = ราว **1.66 เท่า ไม่ใช่สองเท่า** — แต่ละสายตกจาก 111.7
+  เหลือ ~93 เพราะชนคอขวดฝั่ง host ที่แชร์กัน · เป็นตัวเลขของ RDMA write ล้วน ไม่ใช่ collective
+  ของ NCCL (ยังต้องวัดด้วย `all_reduce_perf` แยกต่างหาก) แต่พอยืนยันได้ว่าการบอก NCCL
+  ให้ครบทุก rail คุ้ม และยืนยันด้วยว่า **ห้ามอ้างว่าได้สองเท่า**
+
 ### Changed
 
 - **help ของ controller เขียนใหม่เป็นภาษาอังกฤษ** แบ่งเป็น COMMANDS / OPTIONS / **API TOKEN** /
