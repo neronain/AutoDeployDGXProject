@@ -176,6 +176,13 @@ remove (แสดงรายการ + ขนาดก่อนยืนยั
 **เครื่องที่ stacked ด้วยกันได้มีรั้วสีคร่อมไว้** พร้อมป้าย `CLUSTER A/B` และ cluster IP อยู่ใน
 การ์ดของเครื่องนั้นเอง — ไม่ต้องไล่หาว่าค่าไหนของใคร
 
+**โมเดลบนเครื่องอื่นคุมได้เท่ากับโมเดลในเครื่อง** — ตั้ง port/context/slots/bind/API key/gpu-util
+ก่อนสั่ง start · ชุดทดสอบครบ (`test-text`, `test-vision`, `bench`, `client-config`, …) · doctor,
+logs, repair, autostart, remove — เป็น controller ตัวเดียวกัน จึงไม่มีเหตุผลให้ต่างกัน
+
+**เครื่องที่เปิดหน้าเว็บไม่ใช่เครื่องที่จะรันโมเดล?** สร้าง bundle ที่นี่ ตรวจแผนที่นี่ แล้วส่ง
+ตัวเดียวกันไปติดตั้ง: `manage` → **Run on another machine** หรือ `lmds node push <เครื่อง> <slug>`
+
 > **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง bundle เก่า
 > ที่ยังไม่มีคำสั่งใหม่จะไม่มีปุ่มนั้นให้กดแล้วล้ม · `enable`/`disable` autostart ต้องใช้ `sudo` ซึ่ง
 > หน้าเว็บไม่มี tty — ถ้าทำไม่ได้จะบอกคำสั่งให้ไปรันเอง · ยังต้องใช้ CLI: `lmds config`, `lmds hardware`

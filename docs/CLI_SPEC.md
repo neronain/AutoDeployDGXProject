@@ -169,6 +169,7 @@ lmds node run <name> <cmd...>          # รันคำสั่ง *ของ 
 lmds node ctl <name> <slug> <cmd...>   # รัน *สคริปต์ controller* ในตัว bundle บนเครื่องนั้น
                                        #   (prepare-runtime, download, sync-worker, test-text …)
 lmds node cluster [--write SLUG] [--worker NAME]   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
+lmds node push <name> <slug> [--download] [--start]  # ส่ง bundle จากเครื่องนี้ไปติดตั้งบนเครื่องนั้น
 lmds ps --all                     # โมเดลของทุกเครื่องรวมกัน
 ```
 
@@ -290,9 +291,18 @@ Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มี
 
 REST ที่หน้าเว็บใช้ (token เดียวกับหน้าเว็บ): `/api/host` `/api/models` `/api/nodes`
 `/api/nodes/{name}/inventory` `/api/cluster` — `PATCH /api/nodes/{name}` แก้ cluster IP ·
-`POST /api/nodes/{name}/models/{slug}/start|restart` รับ body `{"port","context","gpu_util"}` —
-ตรวจชนิดและช่วงที่ server (port 1–65535 · context 256–10M · gpu_util 0.3–0.98) แล้วแปลงเป็น
-flag ของ controller · คำสั่งอื่นส่ง option มาด้วย = 400
+`POST /api/nodes/{name}/models/{slug}/start|restart` รับ body
+`{"port","context","slots","bind","api_key","gpu_util"}` — ตรวจด้วย `jobs.clean_options()`
+**ตัวเดียวกับโมเดลในเครื่อง** (port 1–65535 · context 256–10M · slots 1–1024 · gpu_util 0.3–0.98 ·
+bind เฉพาะ 0.0.0.0/127.0.0.1 · api_key ห้ามมีช่องว่าง) แล้วแปลงเป็น **env ของ controller**
+· คำสั่งอื่นส่ง option มาด้วย = 400
+
+`POST /api/nodes/{name}/models/{slug}/ctl/{command}` — สั่ง *คำสั่งของ controller* บนเครื่องนั้น
+(ชุดทดสอบ/ข้อมูล) · allowlist รับเฉพาะคำสั่งที่อ่านหรือทดสอบ: `test-*` `bench` `stress`
+`client-config` `network-info` `status` `props` `verify-files` `prepare-runtime` `sync-worker`
+`verify-worker` `clear-fi-cache` — `start`/`stop`/`download` มีทางของมันเองที่จัดการ option แล้ว
+
+`POST /api/models/{slug}/push/{name}` — ส่ง bundle ZIP ของ slug นั้นไปแตกที่ `~/bundles` บนเครื่องนั้น
 
 คำสั่งข้ามเครื่องจำกัดด้วย allowlist `start stop restart repair doctor logs enable disable remove`
 (`logs` ถูกบังคับ `-n 300`) — **`remove` ต้องผ่านสองขั้น**: คำขอที่ไม่มี `confirm` จะรัน `--dry-run`

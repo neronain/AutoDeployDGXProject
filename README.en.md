@@ -124,6 +124,7 @@ lmds web --bind 0.0.0.0               # reachable on the LAN; asks you to set a 
 
 ```bash
 lmds web --background                 # run detached; the terminal stays free for the CLI
+lmds node push <machine> <slug>       # send a bundle built here to the machine that will run it
 lmds web --status                     # forgot the link? ask the running server
 lmds web --restart -b                 # restart; the existing link keeps working
 lmds web -b --new-token               # rotate the token

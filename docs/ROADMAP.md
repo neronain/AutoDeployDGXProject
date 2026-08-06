@@ -69,8 +69,10 @@
    telemetry ของ GPU · เมนู ⋯ ต่อโมเดลบนเครื่องอื่น (restart/doctor/logs/repair/autostart/remove)
    · ตั้ง port/context/gpu-util ตอนสั่งรันข้ามเครื่อง · **หน้า login + token ที่อยู่ยาว**
    · cluster IP ย้ายไปอยู่ในการ์ดของเครื่องนั้น + รั้วสีจับคู่ที่ stacked ได้
-   · งานต่อยอด: **job progress / log สด**, แท็บ tests+manage สำหรับโมเดลบนเครื่องอื่น,
-   command palette (⌘K), `node install` / deploy wizard ยังต้องใช้ CLI
+   · ~~แท็บ tests+manage สำหรับโมเดลบนเครื่องอื่น~~ **ทำแล้ว (2026-08-06)** — คุมได้เท่ากับ
+   โมเดลในเครื่อง (env ชุดเดียวกัน) · ~~ส่ง bundle ไปเครื่องอื่น~~ **ทำแล้ว** `lmds node push`
+   · งานต่อยอด: **job progress / log สด**, command palette (⌘K), deploy wizard เลือกเครื่อง
+   ปลายทางได้ตั้งแต่ต้น (ตอนนี้ต้อง deploy แล้วค่อย push)
 5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
 6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
    ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
