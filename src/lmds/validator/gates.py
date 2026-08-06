@@ -285,7 +285,23 @@ def gate_model_urls(bundle_dir: Path) -> GateResult:
     model = data["model"]
     source = model.get("source")
     if source is None:
-        return GateResult("model-urls", True, "n/a (legacy profile v1 ไม่มี model.source)")
+        # bundle ที่สร้างจาก Ollama branch รุ่นบั๊กเป็น profile v1 จึงไม่มี source แต่ยังจำแนกได้
+        # อย่างไม่กำกวมจาก tuple ที่ HF สร้างไม่ได้: id มี :tag + revision เป็น SHA-256 hex +
+        # selected_gguf เป็นชื่อ content-addressed เดียวกัน. จับ bundle เก่าที่ URL ผิดได้ด้วย;
+        # profile v1 ทั่วไปยัง validate ได้ตามเดิม
+        revision = model.get("revision")
+        selected = model.get("selected_gguf")
+        model_id = model.get("id")
+        if (
+            isinstance(model_id, str)
+            and ":" in model_id
+            and isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{64}", revision)
+            and selected == f"sha256-{revision}"
+        ):
+            source = "ollama"
+        else:
+            return GateResult("model-urls", True, "n/a (legacy profile v1 ไม่มี model.source)")
     if source not in {"huggingface", "ollama"}:
         return GateResult("model-urls", False, f"ไม่รู้จัก model.source: {source!r}")
     if (data.get("runtime") or {}).get("engine") != "llamacpp":

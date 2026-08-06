@@ -162,6 +162,30 @@ def test_model_url_gate_keeps_legacy_profile_v1_compatible(bundle_dir):
     assert "legacy" in results["model-urls"].detail
 
 
+def test_model_url_gate_infers_and_checks_buggy_legacy_ollama_profile(isolated_config, tmp_path):
+    report = ollama_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    profile = bundle.directory / "MODEL_PROFILE.yaml"
+    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
+    data["profile_version"] = 1
+    data["model"].pop("source")
+    profile.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    controller = bundle.controller
+    controller.write_text(
+        controller.read_text(encoding="utf-8").replace(
+            report.gguf_variants[0].download_url,
+            f"https://huggingface.co/{report.repo_id}/resolve/"
+            f"{report.revision_sha}/{report.selected_gguf}",
+        ),
+        encoding="utf-8",
+    )
+
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["profile-schema"].passed is True
+    assert results["model-urls"].passed is False
+    assert "source=ollama" in results["model-urls"].detail
+
+
 def test_bash_syntax_gate_catches_broken_script(bundle_dir):
     script = next(bundle_dir.glob("*.sh"))
     script.write_text(script.read_text(encoding="utf-8") + "\nif [ x; then\n", encoding="utf-8")
