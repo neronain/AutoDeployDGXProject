@@ -233,7 +233,13 @@ def probe(node: Node, timeout: int = 30) -> dict:
 
 # ติดตั้ง/อัปเดต LMDS บน node — hub ไม่ได้ push โค้ดไปเอง แต่สั่งให้เครื่องนั้น clone จาก GitHub
 # (ไม่ push เพราะ node อาจอยู่คนละสถาปัตยกรรม และ install.sh ต้องรันบนเครื่องนั้นอยู่ดี)
-REPO_URL = "https://github.com/neronain/AutoDeployDGXProject"
+# repo ที่ node ดึงโค้ดไปติดตั้ง — ตั้งใหม่ได้ด้วย $LMDS_REPO_URL
+#
+# repo ส่วนตัวดึงผ่าน HTTPS แบบไม่ล็อกอินไม่ได้ (GitHub เลิกรับรหัสผ่านตั้งแต่ 2021) —
+# ไซต์ที่ใช้ repo ส่วนตัวจึงต้องชี้ไปที่ SSH remote (`git@github.com:org/repo.git`
+# คู่กับ deploy key บนเครื่องนั้น) หรือ mirror ภายในของตัวเอง
+# ค่าตายตัวตัวเดียวแปลว่า `lmds node install` ใช้กับ repo ส่วนตัวไม่ได้เลย
+REPO_URL = os.environ.get("LMDS_REPO_URL") or "https://github.com/neronain/AutoDeployDGXProject"
 _INSTALL_SCRIPT = """
 set -e
 cd "$HOME"

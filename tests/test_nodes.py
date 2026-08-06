@@ -457,3 +457,20 @@ def test_thai_names_are_all_or_nothing():
     from lmds.nodes.registry import name_ok
 
     assert name_ok("ปลาย-01") == name_ok("เครื่องหลัก") is True
+
+
+def test_install_repo_can_point_somewhere_else(monkeypatch):
+    """repo ส่วนตัวดึงผ่าน HTTPS แบบไม่ล็อกอินไม่ได้ — ค่าตายตัวตัวเดียวแปลว่า
+    `lmds node install` ใช้กับ repo ส่วนตัวไม่ได้เลย · ไซต์ต้องชี้ไป SSH remote
+    หรือ mirror ภายในของตัวเองได้
+    """
+    import importlib
+
+    monkeypatch.setenv("LMDS_REPO_URL", "git@github.com:acme/lmds.git")
+    ssh = importlib.reload(importlib.import_module("lmds.nodes.ssh"))
+    try:
+        assert ssh.REPO_URL == "git@github.com:acme/lmds.git"
+        assert "git@github.com:acme/lmds.git" in ssh.install_script()
+    finally:
+        monkeypatch.delenv("LMDS_REPO_URL", raising=False)
+        importlib.reload(ssh)
