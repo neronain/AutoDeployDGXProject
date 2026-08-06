@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import os
@@ -15,6 +16,7 @@ from rich.table import Table
 
 import lmds
 from lmds.config import DEFAULT_MODELS, ProviderName, Settings, config_dir
+from lmds.generator import Bundle
 from lmds.secrets import (
     check_credentials_permissions,
     get_secret,
@@ -1343,6 +1345,16 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     return bundle, results, [*bundle.files, checksums_path, zip_path]
 
 
+def _single_delivery_commands(*, native_prepare: bool, assets: bool) -> list[str]:
+    """Commands for a single-node bundle in prerequisite order."""
+    steps = ["download"]
+    if native_prepare or assets:
+        # runtime assets are verified by verify-files, so they must be fetched
+        # first. Native llama.cpp uses the same deterministic order.
+        steps.append("prepare-runtime")
+    return [*steps, "verify-files", "start", "test-text"]
+
+
 def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: bool = False,
                      assets: bool = False) -> None:
     table = Table(title="Bundle (static-validated ✅)")
@@ -1353,10 +1365,7 @@ def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: b
     if stacked:
         steps = ["prepare-runtime", "download", "verify-files", "sync-worker", "verify-worker", "start"]
     else:
-        steps = ["download", "verify-files"]
-        if native_prepare or assets:
-            steps.append("prepare-runtime")  # build llama.cpp / ดึงไฟล์ runtime ภายนอก (ครั้งแรกครั้งเดียว)
-        steps += ["start", "test-text"]
+        steps = _single_delivery_commands(native_prepare=native_prepare, assets=assets)
     chain = " && ".join(f"./{bundle.controller.name} {s}" for s in steps)
     console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory}\n  {chain}")
     if stacked:
@@ -1391,7 +1400,7 @@ def deploy(
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
-) -> None:
+) -> Bundle:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
 
     Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก, 2 ไม่ผ่าน gates, 3 ไม่ fit, 4 ต้องการ token, 5 provider
@@ -1486,6 +1495,109 @@ def deploy(
                      stacked=deployment_plan.topology.value == "stacked",
                      assets=bool(deployment_plan.runtime_assets))
     console.print("\n[dim]สถานะ: static-validated — รัน acceptance ตามลำดับด้านบนเพื่อยืนยันบนเครื่องจริง[/dim]")
+    # typer ไม่ใช้ค่า return ของ command — คืนไว้ให้ `lmds up` เดินต่อโดยไม่ต้องเดา path ของ bundle
+    return bundle
+
+
+# ขั้นตอนหลัง generate ที่ผู้ใช้ต้องพิมพ์เองทุกครั้ง — ข้าม prerequisite แล้วพังแบบไม่บอกสาเหตุ
+# (start ก่อน download = ไม่มีไฟล์ · ข้าม verify-files = ไฟล์ครึ่งเดียวแล้วไปตายตอนโหลด)
+def _up_steps(bundle: Bundle) -> list[tuple[str, str]]:
+    """Return the controller sequence from render-time bundle facts."""
+    labels = {
+        "download": "ดาวน์โหลดไฟล์โมเดล",
+        "prepare-runtime": (
+            "เตรียม engine (ครั้งแรกครั้งเดียว)"
+            if bundle.native_prepare
+            else "ดึงไฟล์ runtime ที่อนุมัติแล้ว (ครั้งแรกครั้งเดียว)"
+        ),
+        "verify-files": "ตรวจไฟล์ครบและถูกต้อง",
+        "start": "เปิดเซิร์ฟเวอร์แล้วรอ /health",
+        "test-text": "ให้โมเดลตอบหนึ่งคำถาม",
+    }
+    commands = _single_delivery_commands(
+        native_prepare=bundle.native_prepare,
+        assets=bundle.has_runtime_assets,
+    )
+    return [(command, labels[command]) for command in commands]
+
+
+def _run_step(controller: str, command: str, index: int, total: int, label: str) -> int:
+    """รันคำสั่งของ controller แบบเห็น output สด — ขั้นตอนพวกนี้กินเวลาหลายนาที
+
+    ไม่ capture เพราะผู้ใช้ต้องเห็นความคืบหน้าจริง (progress ของ download,
+    log ตอนโหลดโมเดล) ไม่ใช่จอค้างเปล่า ๆ
+    """
+    import subprocess
+
+    console.print(f"\n[bold cyan][{index}/{total}] {label}[/bold cyan]  [dim]({command})[/dim]")
+    controller_path = Path(controller).resolve()
+    return subprocess.run(
+        [str(controller_path), command],
+        cwd=str(controller_path.parent),
+    ).returncode
+
+
+@app.command()
+def up(
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    revision: Optional[str] = typer.Option(None, "--revision"),
+    target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้", autocompletion=_complete_target),
+    output: str = typer.Option("./bundles", "--output"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
+    concurrency: int = typer.Option(1, "--concurrency"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (ไม่อนุมัติ flag ค้าง)"),
+) -> None:
+    """ลิงก์เดียวจบ: deploy → download → verify → start → ทดสอบ แล้วบอกวิธีต่อ client
+
+    `lmds deploy` หยุดที่ bundle แล้วให้ผู้ใช้ไปพิมพ์ต่ออีก 4-5 คำสั่งตามลำดับที่ถูกต้อง
+    ซึ่งเป็นจุดที่คนใช้ครั้งแรกหลุดบ่อยที่สุด — คำสั่งนี้เดินให้จนเซิร์ฟเวอร์ตอบได้จริง
+
+    stacked (หลายเครื่อง) ยังต้องใช้ `lmds deploy` แล้วทำตาม README ของ bundle
+    เพราะมีขั้น sync-worker/verify-worker ที่ต้องตัดสินใจเรื่องเครื่องปลายทาง
+
+    Exit codes: เหมือน deploy ทุกอย่าง · ถ้าขั้นตอนหลัง generate ล้ม จะคืน exit code
+    ของ controller ตัวนั้นตรง ๆ
+    """
+    bundle = deploy(
+        model=model,
+        revision=revision,
+        target=target,
+        output=output,
+        no_llm=no_llm,
+        concurrency=concurrency,
+        yes=yes,
+    )
+    if bundle is None:  # ไม่ควรเกิด — deploy โยน typer.Exit เมื่อไปต่อไม่ได้
+        raise typer.Exit(code=1)
+
+    controller = str(bundle.controller)
+    slug = bundle.controller.parent.name
+
+    if bundle.stacked:
+        err_console.print(
+            "\n[yellow]bundle นี้เป็น stacked (หลายเครื่อง)[/yellow] — ขั้น sync-worker/verify-worker "
+            "ต้องตัดสินใจเรื่องเครื่องปลายทางเอง · สร้าง bundle ให้แล้ว แต่ `lmds up` "
+            "ยังทำงานให้ครบตามสัญญาไม่ได้ — ทำตาม README ของ bundle ต่อ"
+        )
+        raise typer.Exit(code=1)
+
+    steps = _up_steps(bundle)
+
+    total = len(steps)
+    for index, (command, label) in enumerate(steps, start=1):
+        code = _run_step(controller, command, index, total, label)
+        if code != 0:
+            err_console.print(
+                f"\n[red]ไม่ผ่านขั้น {command} (exit {code})[/red]\n"
+                f"  ดูสาเหตุ:  lmds doctor {slug}\n"
+                f"  ดู log:    lmds logs {slug}\n"
+                f"  ลองใหม่เฉพาะขั้นนี้:  {controller} {command}"
+            )
+            raise typer.Exit(code=code)
+
+    console.print(f"\n[green]พร้อมใช้งานแล้ว[/green] — {slug}")
+    console.print(f"  ค่าต่อ client:        [cyan]{controller} client-config[/cyan]")
+    console.print(f"  ดูสถานะ/หยุด:        [cyan]lmds ps[/cyan] · [cyan]lmds stop {slug}[/cyan]")
 
 
 @app.command()

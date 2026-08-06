@@ -356,6 +356,8 @@ def test_runtime_asset_fetched_and_mounted(tmp_path):
     bundle = render_bundle(plan, report, fit, tmp_path)
     script = bundle.controller.read_text(encoding="utf-8")
 
+    assert bundle.has_runtime_assets is True
+    assert bundle.native_prepare is False
     assert "prepare_runtime()" in script
     assert "prepare-runtime) prepare_runtime" in script
     assert "super_v3_reasoning_parser.py" in script

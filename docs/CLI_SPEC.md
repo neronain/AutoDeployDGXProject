@@ -130,6 +130,7 @@ Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 ## `lmds` fleet (จัดการโมเดลในเครื่อง)
 
 ```text
+lmds up <ลิงก์> [--target ...] [-y]   # deploy แล้วเดินต่อจนเซิร์ฟเวอร์ตอบได้ (ไม่ใช่ stacked)
 lmds ps                       # เครื่อง + โมเดลที่รัน/เคยรัน + สถานะจริง + endpoint
 lmds list                     # bundle ทั้งหมด + สถานะ (●/◐/○/⚠) + engine/port/context/feature + autostart
 lmds start <slug> [flag...]   # start ตามชื่อ (ไม่ต้อง cd ไป bundle) · flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller

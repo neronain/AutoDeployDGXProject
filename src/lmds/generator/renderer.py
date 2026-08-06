@@ -30,6 +30,12 @@ class Bundle:
     directory: Path
     controller: Path
     files: list[Path] = field(default_factory=list)
+    # Execution requirements are facts established while rendering.  Keep them
+    # with the bundle so callers such as `lmds up` do not infer behavior by
+    # grepping generated Bash (or silently miss an approved runtime asset).
+    native_prepare: bool = False
+    has_runtime_assets: bool = False
+    stacked: bool = False
 
 
 def _environment() -> Environment:
@@ -328,4 +334,11 @@ def render_bundle(
         special_path.write_text(env.get_template("SPECIAL_FILES.md.j2").render(context), encoding="utf-8")
         files.append(special_path)
 
-    return Bundle(directory=directory, controller=controller_path, files=files)
+    return Bundle(
+        directory=directory,
+        controller=controller_path,
+        files=files,
+        native_prepare=context["native_llamacpp"],
+        has_runtime_assets=bool(context["runtime_assets"]),
+        stacked=is_stacked,
+    )
