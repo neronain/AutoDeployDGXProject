@@ -520,6 +520,11 @@ detect_hca_for_interface() {
   return 0
 }
 
+# วัดจริงบน DGX Spark สองเครื่อง (perftest ib_write_bw, 65536B, -q 4, RoCE) 2026-08-06:
+#   สายเดียว rocep1s0f0            111.71 Gb/s
+#   สองสายพร้อมกัน (คู่แฝดของพอร์ตเดียว)  93.5 + 93.4 = 186.9 Gb/s  (สามรอบ: 186.9 / 184.9 / 186.4)
+# = ราว 1.66 เท่า ไม่ใช่สองเท่า — แต่ละสายตกจาก 111.7 เหลือ ~93 เพราะชนคอขวดฝั่ง host
+# ที่แชร์กัน ตัวเลขนี้คือเหตุผลที่ต้องบอก NCCL ให้ครบทุก rail แต่ห้ามอ้างว่าได้สองเท่า
 detect_active_hcas() {
   local dev name netdev speed max_speed=0 item
   local -a found=() selected=()
