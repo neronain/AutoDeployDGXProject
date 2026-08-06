@@ -474,3 +474,50 @@ def test_install_repo_can_point_somewhere_else(monkeypatch):
     finally:
         monkeypatch.delenv("LMDS_REPO_URL", raising=False)
         importlib.reload(ssh)
+
+
+def test_node_install_all_updates_every_machine(tmp_path, monkeypatch, isolated_config):
+    """อัปเดตทีละเครื่องด้วยมือแปลว่ามีวันลืมเครื่องหนึ่ง แล้วมันค้างเวอร์ชันเก่าอยู่เงียบ ๆ
+    จนกว่าจะมีคนสังเกตเห็น (msi-6 ค้างที่ 0.1.0 อยู่หลายรอบ)
+    """
+    from types import SimpleNamespace
+
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+    from lmds.nodes import Node, add
+
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path))
+    for index, name in enumerate(("a", "b", "c"), 1):
+        add(Node(name=name, host=f"10.0.0.{index}", user="u"))
+    done = []
+    monkeypatch.setattr("lmds.nodes.install_lmds",
+                        lambda node, with_prereq=False: done.append(node.name)
+                        or SimpleNamespace(ok=True, stdout="", stderr=""))
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: {"host": {"lmds_version": "0.2.0"}})
+
+    result = CliRunner().invoke(app, ["node", "install", "--all"])
+    assert result.exit_code == 0, result.output
+    assert done == ["a", "b", "c"], "ต้องครบทุกเครื่อง ไม่ใช่หยุดที่ตัวแรก"
+
+
+def test_node_install_all_reports_which_ones_failed(tmp_path, monkeypatch, isolated_config):
+    """เครื่องหนึ่งล้มต้องไม่หยุดเครื่องที่เหลือ และต้องบอกชื่อตัวที่ล้ม ไม่ใช่แค่ exit ไม่เป็นศูนย์"""
+    from types import SimpleNamespace
+
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+    from lmds.nodes import Node, add
+
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path))
+    for index, name in enumerate(("good", "bad"), 1):
+        add(Node(name=name, host=f"10.0.0.{index}", user="u"))
+    monkeypatch.setattr("lmds.nodes.install_lmds",
+                        lambda node, with_prereq=False: SimpleNamespace(
+                            ok=node.name != "bad", stdout="", stderr="ต่อไม่ได้"))
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: {"host": {"lmds_version": "0.2.0"}})
+
+    result = CliRunner().invoke(app, ["node", "install", "--all"])
+    assert result.exit_code == 1
+    assert "bad" in result.output and "พร้อมแล้ว" in result.output

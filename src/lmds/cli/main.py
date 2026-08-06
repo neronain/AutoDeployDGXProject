@@ -457,7 +457,9 @@ def scan_models(
 
 @node_app.command("install")
 def node_install(
-    name: str = typer.Argument(..., autocompletion=_complete_node),
+    name: str = typer.Argument("", autocompletion=_complete_node,
+                               help="ชื่อเครื่อง (เว้นว่างคู่กับ --all = ทุกเครื่องในทะเบียน)"),
+    all_nodes: bool = typer.Option(False, "--all", help="อัปเดตทุกเครื่องในทะเบียน"),
     with_prereq: bool = typer.Option(
         False, "--with-prereq",
         help="ให้ติดตั้ง Docker/NVIDIA toolkit ด้วย (ต้องรัน sudo ได้โดยไม่ถามรหัสผ่าน)",
@@ -468,8 +470,39 @@ def node_install(
     ทุกเครื่องที่ hub คุมต้องมี `lmds` อยู่บนเครื่อง — hub ไม่ได้ส่ง agent ไปรันเอง แต่เรียก
     `lmds agent info` ผ่าน SSH คำสั่งนี้จึงเป็นวิธีทำให้เครื่องปลายทางพร้อมโดยไม่ต้อง ssh เข้าไปเอง
     """
-    from lmds.nodes import NodeError, find, install_lmds, probe, update
+    from lmds.nodes import NodeError, find, install_lmds, load, probe, update
 
+    # อัปเดตทีละเครื่องด้วยมือแปลว่ามีวันลืมเครื่องหนึ่ง แล้วมันค้างเวอร์ชันเก่าอยู่เงียบ ๆ
+    # จนกว่าจะมีคนสังเกตเห็น (เจอจริง: msi-6 ค้างที่ 0.1.0 อยู่หลายรอบ)
+    if all_nodes:
+        nodes = load()
+        if not nodes:
+            console.print("ยังไม่มีเครื่องในทะเบียน")
+            return
+        failed = []
+        for index, target in enumerate(nodes, 1):
+            console.print(f"\n[bold]{index}/{len(nodes)}[/bold] {target.name}")
+            result = install_lmds(target, with_prereq=with_prereq)
+            if not result.ok:
+                failed.append(target.name)
+                err_console.print(f"[red]ไม่สำเร็จ[/red] {(result.stderr or '').strip()[-200:]}")
+                continue
+            try:
+                version = (probe(target).get("host") or {}).get("lmds_version", "")
+                update(target.name, lmds_version=version, last_seen=_now(), last_error="")
+                console.print(f"[green]พร้อมแล้ว[/green] — lmds {version}")
+            except NodeError as exc:
+                failed.append(target.name)
+                err_console.print(f"[red]ติดตั้งแล้วแต่อ่านสถานะไม่ได้: {exc}[/red]")
+        if failed:
+            err_console.print(f"\n[red]ไม่สำเร็จ {len(failed)} เครื่อง:[/red] {', '.join(failed)}")
+            raise typer.Exit(code=1)
+        console.print(f"\n[green]อัปเดตครบ {len(nodes)} เครื่อง[/green]")
+        return
+
+    if not name:
+        err_console.print("[red]ต้องระบุชื่อเครื่อง[/red] หรือใช้ --all เพื่ออัปเดตทุกเครื่อง")
+        raise typer.Exit(code=1)
     node = find(name)
     if node is None:
         err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
