@@ -1347,3 +1347,33 @@ def test_model_list_failure_is_explained_not_a_stack_trace(isolated_config, monk
     monkeypatch.setattr("lmds.brain.providers.list_models", boom)
     r = TestClient(create_app()).post("/api/provider/models", json={"name": "openai"})
     assert r.status_code == 422 and "key ใช้ไม่ได้" in r.json()["detail"]
+
+
+def test_a_node_without_lmds_can_be_installed_from_the_page(registered, monkeypatch):
+    """เครื่องที่เพิ่งเพิ่มเข้ามามักยังไม่มี LMDS — เดิมหน้าเว็บบอกแค่ว่าติดต่อไม่ได้
+    พร้อมคำสั่งให้ไป ssh ทำเอง ทั้งที่ hub ต่อ SSH ได้อยู่แล้วและ CLI ก็มีคำสั่งนี้มาตลอด
+    """
+    sent = {}
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: sent.update(command=command) or FakeStream(["ok\n"]))
+    client = TestClient(create_app())
+    r = client.post("/api/nodes/spark2/install")
+    assert r.status_code == 200, r.text
+    wait_for_job(client, r.json()["job"]["id"])
+    assert "install.sh" in sent["command"] and "AutoDeployDGXProject" in sent["command"]
+    assert "LMDS_SKIP_PREREQ=1" in sent["command"], \
+        "ขั้น prerequisite ต้องใช้ sudo ซึ่งไม่มี tty ให้กรอกรหัส — ค่าเริ่มต้นต้องข้าม"
+
+
+def test_install_button_only_shows_when_ssh_works(registered):
+    """ต่อ SSH ไม่ได้ (เครื่องปิด/เน็ตไม่ถึง) เป็นคนละเรื่องกับไม่มี lmds — ปุ่มติดตั้ง
+    กดไปก็ล้ม จึงไม่ควรขึ้น
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "const needsInstall" in page
+    assert 'data-nact="install"' in page
+
+
+def test_installing_an_unknown_machine_says_so(registered):
+    r = TestClient(create_app()).post("/api/nodes/not-a-machine/install")
+    assert r.status_code == 404

@@ -247,16 +247,20 @@ LMDS_ASSUME_YES=1 {skip}./install.sh
 """
 
 
+def install_script(with_prereq: bool = False) -> str:
+    """สคริปต์ติดตั้ง — แยกออกมาเพื่อให้ทั้งแบบรอผลและแบบสตรีมใช้ตัวเดียวกัน"""
+    return _INSTALL_SCRIPT.format(
+        repo=REPO_URL, skip="" if with_prereq else "LMDS_SKIP_PREREQ=1 ",
+    )
+
+
 def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False) -> Result:
     """ติดตั้งหรืออัปเดต LMDS บน node ผ่าน SSH
 
     ค่าเริ่มต้นข้ามขั้นตอน prerequisite (docker/toolkit) เพราะขั้นนั้นต้องใช้ sudo ซึ่งไม่มี tty
     ให้กรอกรหัสผ่าน — เครื่องที่ยังไม่มี Docker ต้องไปรัน install.sh เองบนเครื่องนั้น
     """
-    script = _INSTALL_SCRIPT.format(
-        repo=REPO_URL, skip="" if with_prereq else "LMDS_SKIP_PREREQ=1 ",
-    )
-    return run(node, script, timeout=timeout)
+    return run(node, install_script(with_prereq), timeout=timeout)
 
 
 def check_login(host: str, user: str, port: int = 22) -> bool:

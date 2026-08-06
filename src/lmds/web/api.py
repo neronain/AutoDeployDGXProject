@@ -540,6 +540,29 @@ def create_app(token: str = "") -> FastAPI:
             for n in load()
         ]}
 
+    @app.post("/api/nodes/{name}/install", dependencies=guarded)
+    def node_install(name: str, body: dict | None = None) -> dict:
+        """ติดตั้ง/อัปเดต LMDS บนเครื่องนั้นจากหน้าเว็บ
+
+        เครื่องที่เพิ่งเพิ่มเข้ามามักยังไม่มี LMDS — เดิมหน้าเว็บบอกแค่ว่าติดต่อไม่ได้
+        พร้อมคำสั่งให้ไป ssh ทำเอง ทั้งที่ hub ต่อ SSH ได้อยู่แล้วและ CLI ก็มี
+        `lmds node install` มาตลอด
+        """
+        from lmds.nodes import find, install_script
+
+        from . import jobs
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        # prerequisite (docker/toolkit) ต้องใช้ sudo ซึ่งไม่มี tty ให้กรอกรหัส — ค่าเริ่มต้นจึงข้าม
+        script = install_script(with_prereq=bool((body or {}).get("with_prereq")))
+        try:
+            job = jobs.start_remote(name, "_install", "install", script)
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "job": job.payload()}
+
     def _attach_node_jobs(name: str, payload: dict) -> dict:
         """แปะงานที่กำลังรันของแต่ละโมเดลลงไปใน payload — หน้าเว็บจะได้ตามต่อได้หลังรีเฟรช"""
         from . import jobs

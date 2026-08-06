@@ -1270,10 +1270,20 @@ function loadColour(pct) {
 
 function nodeModelsMarkup(name, data) {
   if (!data.reachable) {
+    // ต่อ SSH ได้แต่ไม่มี lmds = ติดตั้งให้จากที่นี่ได้เลย · ต่อ SSH ไม่ได้เป็นคนละเรื่อง
+    // (เครื่องปิด/เน็ตไม่ถึง) ปุ่มติดตั้งกดไปก็ล้ม จึงไม่ควรขึ้น
+    const needsInstall = /ยังไม่ได้ติดตั้ง LMDS|PATH/.test(data.error || "");
     return `<div class="pad" style="border-top:1px solid var(--line)">
       <div class="warn-line" style="color:var(--bad)">Unreachable — ${esc((data.error || "").split("\n")[0])}</div>
-      <div class="dim">The hub reaches nodes over SSH only. Check the machine is on and
-        <code>lmds</code> is on its PATH.</div></div>`;
+      ${needsInstall
+        ? `<div class="field" style="margin-top:8px">
+             <button data-nact="install" data-node="${esc(name)}"
+                     title="git clone + install.sh บนเครื่องนั้นผ่าน SSH">ติดตั้ง LMDS บนเครื่องนี้</button>
+             <span class="dim">ต่อ SSH ได้แล้ว เหลือแค่ตัวโปรแกรม — ใช้เวลาสักครู่ ความคืบหน้าจะขึ้นให้เห็น
+               · ข้ามขั้น docker/toolkit ที่ต้องใช้ sudo (ถ้าเครื่องยังไม่มี Docker ต้องลงเองก่อน)</span>
+           </div>`
+        : `<div class="dim">The hub reaches nodes over SSH only. Check the machine is on and
+             <code>lmds</code> is on its PATH.</div>`}</div>`;
   }
   const models = data.models || [];
   const host = data.host || {};
@@ -1499,6 +1509,15 @@ document.addEventListener("click", async e => {
     openModelMenus.has(key) ? openModelMenus.delete(key) : openModelMenus.add(key);
     const row = nodeRows.get(node);
     if (row && !pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
+    return;
+  }
+  if (nact === "install") {
+    btn.disabled = true;
+    btn.textContent = "กำลังติดตั้ง…";
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/install`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) { btn.disabled = false; btn.textContent = "ติดตั้ง LMDS บนเครื่องนี้"; alert(d.detail || "เริ่มติดตั้งไม่สำเร็จ"); return; }
+    followNodeJob(node, "_install", d.job.id);
     return;
   }
   if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
