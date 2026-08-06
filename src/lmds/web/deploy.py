@@ -210,7 +210,7 @@ def generate(
     approved_assets: Optional[list[str]] = None,
     output: str = "./bundles",
 ) -> dict:
-    """render → 9 gates → checksums → ZIP · ไม่ผ่าน gates = ไม่มี ZIP (เหมือน CLI)"""
+    """render → 11 static gates → checksums → ZIP · ไม่ผ่าน gates = ไม่มี ZIP (เหมือน CLI)"""
     from lmds.brain import apply_asset_approvals, apply_flag_approvals
     from lmds.generator import render_bundle
     from lmds.packager import make_zip, write_checksums

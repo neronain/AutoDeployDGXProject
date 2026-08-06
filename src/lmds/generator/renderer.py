@@ -231,7 +231,8 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
 def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> str:
     """MODEL_PROFILE.yaml — source of truth ภายใน bundle (ตาม template v3.0.0)"""
     profile = {
-        "profile_version": 1,
+        # v2 เพิ่ม model.source เพื่อให้ static gate ตรวจว่า download URL ตรงกับ provenance
+        "profile_version": 2,
         "generated_by": f"lmds {lmds.__version__}",
         "generator": plan.generator,
         "model": {

@@ -247,6 +247,7 @@ def test_model_profile_yaml_valid_and_complete(isolated_config, tmp_path):
     bundle, plan, fit = make_bundle(safetensors_report(), tmp_path=tmp_path)
     profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
     assert profile["model"]["revision"] == "sha-pinned-123"
+    assert profile["profile_version"] == 2
     assert profile["model"]["source"] == "huggingface"
     assert profile["runtime"]["engine"] == "vllm"
     assert profile["serving"]["context"] == plan.serving.context

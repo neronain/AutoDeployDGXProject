@@ -12,6 +12,8 @@
   validate model-layer digest/size, อ่าน header ผ่าน HTTP Range ที่ตรวจ `Content-Range`, pin blob SHA-256
   และให้ controller ดาวน์โหลดจาก registry URL จริง (ไม่ส่ง `HF_TOKEN` ไป origin อื่น) · หน้าเว็บคืน error
   แบบมีชนิดเหมือน CLI · `lmds scan` รู้จัก local Ollama manifest + blob ที่ไม่มีนามสกุลแล้ว
+  · profile v2 เก็บ `model.source` และ gate `model-urls` ตรวจ source/origin/pin แบบ offline เพื่อกัน
+  renderer hardcode host ผิดแล้วยังผ่าน static validation ซ้ำอีก
 - **ขอบเขต Ollama ที่ตั้งใจ**: รอบนี้ยังไม่สร้าง Ollama Modelfile/controller และไม่แปลง template
   layer ของ Ollama เป็น Jinja; ถ้า GGUF ไม่มี embedded chat template ระบบแจ้งตรง ๆ ไม่อ้างว่ามี
 

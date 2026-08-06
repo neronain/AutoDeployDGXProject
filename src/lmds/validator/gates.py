@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -247,7 +249,101 @@ def gate_profile_schema(bundle_dir: Path) -> GateResult:
     revision = data["model"]["revision"]
     if not revision or revision in {"main", "latest"}:
         return GateResult("profile-schema", False, f"revision ไม่ได้ pin: {revision!r}")
+    version = data.get("profile_version", 1)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        return GateResult("profile-schema", False, f"profile_version ไม่ถูกต้อง: {version!r}")
+    if version >= 2:
+        source = data["model"].get("source")
+        if source not in {"huggingface", "ollama"}:
+            return GateResult(
+                "profile-schema", False,
+                "profile v2 ต้องมี model.source เป็น huggingface หรือ ollama",
+            )
     return GateResult("profile-schema", True)
+
+
+_MODEL_URLS = re.compile(r"(?ms)^MODEL_URLS=\(\s*(.*?)^\)")
+
+
+def gate_model_urls(bundle_dir: Path) -> GateResult:
+    """source-of-truth ใน profile ต้องตรงกับ origin + immutable path ของ weight URL
+
+    เคสจริง: Ollama report ถูก pin ถูกทั้ง size/SHA แต่ renderer hardcode URL เป็น Hugging Face;
+    bash/audit/profile/secret gates เขียวทั้งหมด แล้ว `download` ตาย HTTP 401. Gate นี้ตรวจข้าม
+    profile ↔ controller แบบ offline เพื่อให้ regression คลาสนั้นผ่าน static validation ไม่ได้อีก
+    """
+    profile_path = bundle_dir / "MODEL_PROFILE.yaml"
+    if not profile_path.exists():
+        return GateResult("model-urls", True, "n/a (ไม่มี profile — profile-schema จะจับ)")
+    try:
+        data = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return GateResult("model-urls", True, "n/a (profile อ่านไม่ได้ — profile-schema จะจับ)")
+    if not isinstance(data, dict) or not isinstance(data.get("model"), dict):
+        return GateResult("model-urls", True, "n/a (profile ผิดรูป — profile-schema จะจับ)")
+
+    model = data["model"]
+    source = model.get("source")
+    if source is None:
+        return GateResult("model-urls", True, "n/a (legacy profile v1 ไม่มี model.source)")
+    if source not in {"huggingface", "ollama"}:
+        return GateResult("model-urls", False, f"ไม่รู้จัก model.source: {source!r}")
+    if (data.get("runtime") or {}).get("engine") != "llamacpp":
+        return GateResult("model-urls", True, "n/a (runtime ไม่ได้ใช้ MODEL_URLS)")
+
+    scripts = _controllers(bundle_dir)
+    if not scripts:
+        return GateResult("model-urls", False, "ไม่พบ controller ที่มี MODEL_URLS")
+    urls: list[str] = []
+    for script in scripts:
+        text = script.read_text(encoding="utf-8")
+        match = _MODEL_URLS.search(text)
+        if not match:
+            continue
+        try:
+            values = shlex.split(match.group(1), comments=False, posix=True)
+        except ValueError as exc:
+            return GateResult("model-urls", False, f"{script.name}: MODEL_URLS parse ไม่ได้: {exc}")
+        urls.extend(values)
+    if not urls:
+        return GateResult("model-urls", False, "llama.cpp controller ไม่มี MODEL_URLS")
+
+    model_id = model.get("id")
+    revision = model.get("revision")
+    if not isinstance(model_id, str) or not isinstance(revision, str):
+        return GateResult("model-urls", False, "model.id/revision ไม่ใช่ string")
+
+    for raw in urls:
+        try:
+            parsed = urlsplit(raw)
+            hostname = parsed.hostname
+        except ValueError as exc:
+            return GateResult("model-urls", False, f"URL parse ไม่ได้: {exc}")
+        if parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return GateResult("model-urls", False, f"URL ต้องเป็น HTTPS origin ตรง ไม่มี credential/query: {raw}")
+        if source == "huggingface":
+            prefix = f"/{model_id}/resolve/{revision}/"
+            if hostname != "huggingface.co" or not parsed.path.startswith(prefix):
+                return GateResult(
+                    "model-urls", False,
+                    f"source=huggingface แต่ URL ไม่ตรง repo/revision: {raw}",
+                )
+        else:
+            repo_id = model_id.rsplit(":", 1)[0]
+            expected_path = f"/v2/{repo_id}/blobs/sha256:{revision}"
+            if hostname != "registry.ollama.ai" or parsed.path != expected_path:
+                return GateResult(
+                    "model-urls", False,
+                    f"source=ollama แต่ URL ไม่ตรง registry blob digest: {raw}",
+                )
+    if source == "ollama":
+        selected = model.get("selected_gguf")
+        if len(urls) != 1 or selected != f"sha256-{revision}":
+            return GateResult(
+                "model-urls", False,
+                "Ollama bundle ต้องมี model blob เดียวและ selected_gguf ตรง pinned digest",
+            )
+    return GateResult("model-urls", True, f"{source}: {len(urls)} URL ตรง source pin")
 
 
 def gate_secret_scan(bundle_dir: Path) -> GateResult:
@@ -327,6 +423,7 @@ ALL_GATES = [
     gate_stacked_contract,
     gate_multimodal_assets,
     gate_profile_schema,
+    gate_model_urls,
     gate_secret_scan,
     gate_checksums,
 ]

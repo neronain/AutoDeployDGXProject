@@ -5,10 +5,11 @@ from __future__ import annotations
 import zipfile
 
 import pytest
+import yaml
 
 from lmds.packager import make_zip, write_checksums
 from lmds.validator import CHECKSUM_FILE, all_passed, compute_checksums, run_gates
-from tests.test_generator import gguf_report, make_bundle, safetensors_report
+from tests.test_generator import gguf_report, make_bundle, ollama_report, safetensors_report
 
 
 @pytest.fixture
@@ -99,6 +100,66 @@ def test_profile_schema_gate_catches_unpinned_revision(bundle_dir):
     results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
     assert results["profile-schema"].passed is False
     assert "pin" in results["profile-schema"].detail
+
+
+def test_profile_v2_requires_source(bundle_dir):
+    profile = bundle_dir / "MODEL_PROFILE.yaml"
+    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
+    data["model"].pop("source")
+    profile.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["profile-schema"].passed is False
+    assert "model.source" in results["profile-schema"].detail
+
+
+def test_model_url_gate_catches_old_ollama_hf_url_bug(isolated_config, tmp_path):
+    report = ollama_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["model-urls"].passed is True
+
+    controller = bundle.controller
+    text = controller.read_text(encoding="utf-8")
+    text = text.replace(
+        report.gguf_variants[0].download_url,
+        f"https://huggingface.co/{report.repo_id}/resolve/"
+        f"{report.revision_sha}/{report.selected_gguf}",
+    )
+    controller.write_text(text, encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["model-urls"].passed is False
+    assert "source=ollama" in results["model-urls"].detail
+    # พิสูจน์ว่า gate เดิมยังเขียว — regression นี้ต้องถูกจับด้วย model-urls โดยเฉพาะ
+    assert results["bash-syntax"].passed is True
+    assert results["controller-contract"].passed is True
+    assert results["profile-schema"].passed is True
+
+
+def test_model_url_gate_rejects_expiring_resolved_redirect(isolated_config, tmp_path):
+    report = ollama_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    controller = bundle.controller
+    controller.write_text(
+        controller.read_text(encoding="utf-8").replace(
+            report.gguf_variants[0].download_url,
+            "https://example.r2.cloudflarestorage.com/blob?X-Amz-Expires=86400",
+        ),
+        encoding="utf-8",
+    )
+    results = {r.name: r for r in run_gates(bundle.directory, include_checksums=False)}
+    assert results["model-urls"].passed is False
+
+
+def test_model_url_gate_keeps_legacy_profile_v1_compatible(bundle_dir):
+    profile = bundle_dir / "MODEL_PROFILE.yaml"
+    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
+    data["profile_version"] = 1
+    data["model"].pop("source")
+    profile.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    results = {r.name: r for r in run_gates(bundle_dir, include_checksums=False)}
+    assert results["profile-schema"].passed is True
+    assert results["model-urls"].passed is True
+    assert "legacy" in results["model-urls"].detail
 
 
 def test_bash_syntax_gate_catches_broken_script(bundle_dir):
