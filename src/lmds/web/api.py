@@ -251,6 +251,28 @@ def create_app(token: str = "") -> FastAPI:
         return _action(slug, "restart", body)
 
     # ── deploy wizard ──────────────────────────────────────────────────────
+    def _suggest_target(host: dict | None) -> str:
+        """เดา target preset จากฮาร์ดแวร์ที่ตรวจพบของเครื่องนั้น
+
+        deploy สำหรับเครื่องอื่นต้องระบุ target เอง (เครื่องนี้ตรวจตัวเองไม่ได้แทนเขา) —
+        ถ้าไม่แนะนำให้ ผู้ใช้ต้องรู้เองว่าเครื่องปลายทางคือ preset ไหน ซึ่งเดาผิดแล้ว
+        แผนที่ได้จะคำนวณ context จากหน่วยความจำที่ไม่ใช่ของจริง
+        """
+        host = host or {}
+        gpus = host.get("gpus") or []
+        if not gpus:
+            return ""
+        if host.get("memory_model") == "unified":
+            return "dgx-spark-single"
+        name = (gpus[0].get("name") or "").lower().replace("nvidia ", "").strip()
+        from lmds.fit.targets import PRESETS
+
+        slug = name.replace("geforce ", "").replace(" ", "-")
+        for preset in PRESETS:
+            if preset == slug or slug.endswith(preset):
+                return preset
+        return ""
+
     @app.get("/api/targets", dependencies=guarded)
     def targets_list() -> dict:
         from .deploy import targets
@@ -442,7 +464,9 @@ def create_app(token: str = "") -> FastAPI:
         return {"nodes": [
             {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
              "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
-             "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface}
+             "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface,
+             # deploy สำหรับเครื่องอื่นต้องระบุ target เอง — แนะนำจากฮาร์ดแวร์ที่เคยตรวจไว้
+             "suggested_target": _node_target_hint(n.name)}
             for n in load()
         ]}
 
@@ -455,6 +479,10 @@ def create_app(token: str = "") -> FastAPI:
             if job is not None:
                 model["job"] = job.payload()
         return payload
+
+    def _node_target_hint(name: str) -> str:
+        cached = state.STORE.snapshot()["nodes"].get(name)
+        return _suggest_target((cached or {}).get("data", {}).get("host") if cached else None)
 
     @app.get("/api/nodes/{name}/inventory", dependencies=guarded)
     def node_inventory(name: str, refresh: bool = False) -> dict:

@@ -1227,3 +1227,48 @@ def test_node_jobs_are_keyed_per_machine(registered):
 
     assert jobs._key("demo", "spark1") != jobs._key("demo", "spark2")
     assert jobs._key("demo") == "demo", "โมเดลในเครื่องนี้ต้องใช้คีย์เดิม (เข้ากันได้กับของเก่า)"
+
+
+def test_nodes_list_suggests_a_target_preset(registered, monkeypatch):
+    """deploy สำหรับเครื่องอื่นต้องระบุ target เอง (เครื่องนี้ตรวจแทนเขาไม่ได้) —
+    ถ้าไม่แนะนำให้ ผู้ใช้ต้องรู้เองว่าเครื่องปลายทางคือ preset ไหน เดาผิดแล้วแผนที่ได้
+    จะคำนวณ context จากหน่วยความจำที่ไม่ใช่ของจริง
+    """
+    from lmds.web import state
+
+    state.STORE.set_node("spark2", {"host": {"memory_model": "unified",
+                                             "gpus": [{"name": "NVIDIA GB10"}]}, "models": []})
+    rows = {n["name"]: n for n in TestClient(create_app()).get("/api/nodes").json()["nodes"]}
+    assert rows["spark2"]["suggested_target"] == "dgx-spark-single"
+
+
+def test_target_hint_is_empty_when_the_machine_is_unknown(registered):
+    """เดาไม่ได้ต้องบอกว่าเดาไม่ได้ ไม่ใช่เดามั่ว — แผนที่ผิดเงียบ ๆ แย่กว่าให้เลือกเอง"""
+    rows = {n["name"]: n for n in TestClient(create_app()).get("/api/nodes").json()["nodes"]}
+    assert rows["spark2"]["suggested_target"] == ""
+
+
+def test_wizard_can_target_another_machine_from_the_start():
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert 'id="w-machine"' in page, "wizard ต้องเลือกเครื่องปลายทางได้ตั้งแต่ต้น"
+    assert "pushAfterBuild" in page, "เลือกเครื่องไว้แล้วต้องส่งให้เลย ไม่ใช่ให้ไปหาปุ่ม push เอง"
+    assert "bundle ยังอยู่บนเครื่องนี้ครบ" in page, "ส่งไม่ผ่านต้องบอกว่าของยังอยู่ ไม่ใช่หายไป"
+
+
+def test_command_palette_reaches_every_model_and_every_page_action():
+    """หน้านี้ยาวขึ้นตามจำนวนเครื่อง — 3 เครื่อง × 5 โมเดลแล้วการเลื่อนหาเริ่มไม่ไหว"""
+    import re
+
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "function palOpen" in page and "function palCommands" in page
+    assert 'e.key.toLowerCase() === "k"' in page, "ต้องเปิดด้วย ⌘K / Ctrl-K"
+    # palette กดปุ่มบนหน้าแทนผู้ใช้ — ปุ่มที่มันอ้างถึงต้องมีอยู่จริง ไม่งั้นกดแล้วเงียบ
+    palette = page.split("function palCommands")[1].split("function jumpToLocal")[0]
+    for element in set(re.findall(r'getElementById\("([a-z-]+)"\)', palette)):
+        assert f'id="{element}"' in page, f"palette อ้างถึงปุ่ม #{element} ที่ไม่มีอยู่บนหน้า"
+
+
+def test_palette_does_not_steal_the_slash_key_while_typing():
+    """'/' เปิด palette ได้ แต่ต้องไม่แย่งตอนผู้ใช้กำลังพิมพ์ token หรือ path อยู่"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "INPUT|TEXTAREA|SELECT" in page and "!typing" in page

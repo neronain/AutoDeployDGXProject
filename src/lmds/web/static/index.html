@@ -225,6 +225,34 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   background: var(--sunken); font-size: 12.5px;
 }
 .nclus.in-group { border-left: 3px solid var(--g); }
+/* command palette — หน้านี้ยาวขึ้นเรื่อย ๆ ตามจำนวนเครื่อง การเลื่อนหาโมเดลเริ่มไม่ไหว */
+.pal-back {
+  position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center;
+  align-items: flex-start; padding: 12vh 20px 20px;
+  background: rgba(0, 0, 0, .5);
+}
+.pal {
+  width: 100%; max-width: 560px; background: var(--card);
+  border: 1px solid var(--line2); border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.pal input {
+  width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+  padding: 14px 16px; font-size: 15px; background: transparent; box-shadow: none;
+}
+.pal input:focus { border-color: var(--line); background: transparent; }
+.pal-list { max-height: 46vh; overflow-y: auto; }
+.pal-item {
+  display: flex; gap: 10px; align-items: baseline; padding: 9px 16px; cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.pal-item[aria-selected="true"] { background: var(--sunken); border-left-color: var(--c2); }
+.pal-item .where { margin-left: auto; font-size: 11.5px; color: var(--fg3); }
+.pal-empty { padding: 16px; color: var(--fg3); }
+.pal-foot {
+  padding: 8px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--fg3);
+  display: flex; gap: 14px;
+}
 .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-box {
   width: 100%; max-width: 340px; background: var(--card);
@@ -650,19 +678,28 @@ async function load(slug, kind) {
 
 // ── deploy wizard ────────────────────────────────────────────────────────
 const wiz = document.getElementById("wiz");
+const nodeTargets = new Map();   // ชื่อเครื่อง -> target preset ที่แนะนำ
 let sess = null, analyzing = false;
 // Remember what was typed: every follow-up question (pick a GGUF, enter a token) rebuilds
 // the form, and silently losing the target changes the result without the user noticing.
-const draft = { model: "", target: "", no_llm: false };
+const draft = { model: "", target: "", no_llm: false, machine: "" };
 
 function wizForm(msg = "", extra = "") {
   wiz.hidden = false;
   wiz.innerHTML = `<div class="pad">
     <div class="field">
       <input id="w-model" placeholder="Hugging Face link or org/model" autocomplete="off">
-      <select id="w-target"><option value="">This machine (auto-detect)</option></select>
       <button id="w-go">Analyse</button>
       <button id="w-close">Close</button>
+    </div>
+    <div class="field">
+      <label>Run on</label>
+      <select id="w-machine" style="flex:none;min-width:180px">
+        <option value="">This machine</option>
+      </select>
+      <label>Target</label>
+      <select id="w-target"><option value="">Auto-detect</option></select>
+      <span class="dim" id="w-machine-hint"></span>
     </div>
     <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> Skip the LLM (rule-based plan)</label>
     ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
@@ -677,6 +714,59 @@ function wizForm(msg = "", extra = "") {
       `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (untested)"}</option>`));
     sel.value = draft.target;
   });
+  // เครื่องปลายทาง — เลือกได้ตั้งแต่ต้น แล้วระบบตั้ง target ให้ตรงกับฮาร์ดแวร์ของเครื่องนั้น
+  // เดิมต้อง deploy ที่นี่ก่อนแล้วค่อย push ซึ่งอ้อม และต้องรู้เองว่าเครื่องนั้นคือ preset ไหน
+  api("/api/nodes").then(r => r.json()).then(d => {
+    const sel = document.getElementById("w-machine");
+    if (!sel) return;
+    nodeTargets.clear();
+    (d.nodes || []).forEach(n => {
+      nodeTargets.set(n.name, n.suggested_target || "");
+      sel.insertAdjacentHTML("beforeend", `<option value="${esc(n.name)}">${esc(n.name)}</option>`);
+    });
+    sel.value = draft.machine;
+    sel.onchange = () => {
+      draft.machine = sel.value;
+      const hint = document.getElementById("w-machine-hint");
+      const target = document.getElementById("w-target");
+      if (!sel.value) { if (hint) hint.textContent = ""; return; }
+      const suggested = nodeTargets.get(sel.value);
+      if (suggested && target) { target.value = suggested; draft.target = suggested; }
+      if (hint) {
+        hint.textContent = suggested
+          ? `ตั้ง target เป็น ${suggested} ให้ตามฮาร์ดแวร์ของ ${sel.value} · bundle จะถูกส่งไปเครื่องนั้นให้อัตโนมัติ`
+          : `ยังไม่รู้จักฮาร์ดแวร์ของ ${sel.value} — เลือก target เองให้ตรงกับเครื่องนั้น`;
+      }
+    };
+    sel.onchange();
+  });
+}
+
+// สร้างเสร็จแล้วส่งต่อทันที — แต่ถ้าส่งไม่ผ่านต้องบอกว่า bundle ยังอยู่ที่นี่ ไม่ใช่หายไป
+async function pushAfterBuild(built, machine) {
+  const slug = built.slug || (built.bundle || "").split("/").pop();
+  wizBusy(`สร้าง ${slug} เสร็จแล้ว — กำลังส่งไป ${machine}…`);
+  const r = await api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(machine)}`,
+                      { method: "POST" });
+  const d = await r.json();
+  if (r.ok) {
+    wiz.innerHTML = `<div class="pad">
+      <div class="name">ติดตั้ง ${esc(slug)} บน ${esc(machine)} แล้ว</div>
+      <div class="muted">${esc(d.path || "")} · ${d.size_mb} MB</div>
+      <div class="dim" style="margin-top:8px">สั่ง download แล้ว start ได้จากการ์ดของ
+        ${esc(machine)} ด้านล่าง — ความคืบหน้าจะขึ้นให้เห็นระหว่างทำงาน</div>
+      <div class="field" style="margin-top:10px"><button id="w-close">Close</button></div>
+    </div>`;
+    refreshNodes();
+  } else {
+    wiz.innerHTML = `<div class="pad">
+      <div class="warn-line" style="color:var(--bad)">ส่งไป ${esc(machine)} ไม่สำเร็จ: ${esc(d.detail || "")}</div>
+      <div class="dim">bundle ยังอยู่บนเครื่องนี้ครบ — ลองส่งใหม่ได้จาก manage ของโมเดล
+        หรือ <code>lmds node push ${esc(machine)} ${esc(slug)}</code></div>
+      <div class="field" style="margin-top:10px"><button id="w-close">Close</button></div>
+    </div>`;
+    refresh();
+  }
 }
 
 function wizBusy(text) { wiz.innerHTML = `<div class="pad"><div class="muted">${esc(text)}</div></div>`; }
@@ -822,8 +912,11 @@ document.addEventListener("click", async e => {
       body: JSON.stringify({ context: ctx || null, approved_flags: flags }),
     });
     const d = await r.json();
-    if (r.ok) resultView(d);
-    else {
+    if (r.ok) {
+      // เลือกเครื่องปลายทางไว้ตั้งแต่ต้น = ส่งให้เลย ผู้ใช้จะได้ไม่ต้องไปหาปุ่ม push เอง
+      if (draft.machine) { await pushAfterBuild(d, draft.machine); return; }
+      resultView(d);
+    } else {
       const det = d.detail || {};
       wizForm(det.message || "Could not build the bundle",
         (det.gates || []).filter(g => !g.passed).map(g => `<div class="warn-line">${esc(g.name)}: ${esc(g.detail)}</div>`).join(""));
@@ -1860,6 +1953,118 @@ async function boot() {
   refreshNodes();
   startStream();
 }
+
+// ── command palette (⌘K / Ctrl-K) ───────────────────────────────────────
+// หน้านี้ยาวขึ้นตามจำนวนเครื่องและโมเดล — พอมี 3 เครื่อง × 5 โมเดล การเลื่อนหาเริ่มไม่ไหว
+// palette กระโดดไปที่โมเดลใดก็ได้ และสั่งงานที่ใช้บ่อยได้โดยไม่ต้องเลื่อน
+let palIndex = 0, palItems = [];
+
+function palCommands() {
+  const items = [];
+  for (const [slug, m] of models_by_slug) {
+    items.push({ label: slug, hint: `${m.engine || ""}${m.running ? " · running" : ""}`,
+                 where: "เครื่องนี้", run: () => jumpToLocal(slug) });
+  }
+  for (const [name, data] of lastNodeData) {
+    for (const m of (data.models || [])) {
+      items.push({ label: m.slug, hint: `${m.engine || ""}${m.running ? " · running" : ""}`,
+                   where: name, run: () => jumpToNode(name, m.slug) });
+    }
+  }
+  items.push({ label: "Deploy model", hint: "สร้าง bundle ใหม่", where: "หน้าเว็บ",
+               run: () => document.getElementById("new").click() });
+  items.push({ label: "Check cluster", hint: "เครื่องไหน stacked ด้วยกันได้", where: "หน้าเว็บ",
+               run: () => document.getElementById("cluster-check").click() });
+  items.push({ label: "Add machine", hint: "เพิ่มเครื่องเข้าทะเบียน", where: "หน้าเว็บ",
+               run: () => document.getElementById("node-new").click() });
+  items.push({ label: "Scan weights", hint: "weight ที่มีอยู่แล้วบนดิสก์", where: "หน้าเว็บ",
+               run: () => document.getElementById("scan-run")?.click() });
+  return items;
+}
+
+function jumpToLocal(slug) {
+  const row = rows.get(slug);
+  if (!row) return;
+  row.block.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.block.style.transition = "outline-color .8s";
+  row.block.style.outline = "2px solid var(--c2)";
+  setTimeout(() => { row.block.style.outline = "2px solid transparent"; }, 1200);
+}
+
+function jumpToNode(node, slug) {
+  const row = nodeRows.get(node);
+  if (!row) return;
+  // การ์ดที่ย่อไว้ต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
+  if (row.body.classList.contains("collapsed")) row.block.querySelector(".ntoggle")?.click();
+  openModelMenus.add(node + "/" + slug);
+  if (!pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
+  row.block.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function palRender(query) {
+  const q = query.trim().toLowerCase();
+  palItems = palCommands().filter(i =>
+    !q || i.label.toLowerCase().includes(q) || (i.where || "").toLowerCase().includes(q));
+  palIndex = Math.min(palIndex, Math.max(0, palItems.length - 1));
+  const list = document.getElementById("pal-list");
+  if (!list) return;
+  list.innerHTML = palItems.length
+    ? palItems.map((i, n) => `<div class="pal-item" role="option" data-n="${n}"
+        aria-selected="${n === palIndex}"><b style="font-weight:500">${esc(i.label)}</b>
+        <span class="dim">${esc(i.hint || "")}</span>
+        <span class="where">${esc(i.where || "")}</span></div>`).join("")
+    : `<div class="pal-empty">ไม่พบ "${esc(query)}"</div>`;
+  list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+}
+
+function palClose() { document.querySelector(".pal-back")?.remove(); }
+
+function palOpen() {
+  if (document.querySelector(".pal-back")) return;
+  palIndex = 0;
+  const back = document.createElement("div");
+  back.className = "pal-back";
+  back.innerHTML = `<div class="pal" role="dialog" aria-label="Command palette">
+      <input id="pal-q" placeholder="ค้นหาโมเดล เครื่อง หรือคำสั่ง…" autocomplete="off">
+      <div class="pal-list" id="pal-list" role="listbox"></div>
+      <div class="pal-foot"><span>↑↓ เลือก</span><span>Enter ไป</span><span>Esc ปิด</span></div>
+    </div>`;
+  document.body.appendChild(back);
+  back.onclick = e => { if (e.target === back) palClose(); };
+  const input = document.getElementById("pal-q");
+  input.oninput = () => { palIndex = 0; palRender(input.value); };
+  input.onkeydown = e => {
+    if (e.key === "Escape") { palClose(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!palItems.length) return;
+      palIndex = (palIndex + (e.key === "ArrowDown" ? 1 : -1) + palItems.length) % palItems.length;
+      palRender(input.value);
+      return;
+    }
+    if (e.key === "Enter" && palItems[palIndex]) {
+      const item = palItems[palIndex];
+      palClose();
+      item.run();
+    }
+  };
+  document.getElementById("pal-list").onclick = e => {
+    const el = e.target.closest(".pal-item");
+    if (!el) return;
+    const item = palItems[+el.dataset.n];
+    palClose();
+    item?.run();
+  };
+  palRender("");
+  input.focus();
+}
+
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); palOpen(); return; }
+  // "/" เปิดได้เหมือนกัน แต่ต้องไม่แย่งตอนผู้ใช้กำลังพิมพ์อยู่ในช่องกรอก
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if (e.key === "/" && !typing) { e.preventDefault(); palOpen(); }
+});
 
 document.getElementById("signout").onclick = signOut;
 boot();
