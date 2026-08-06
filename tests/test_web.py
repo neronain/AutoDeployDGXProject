@@ -1313,3 +1313,37 @@ def test_page_shows_which_llm_is_in_use():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert 'id="brain"' in page and "function loadProvider" in page
     assert "rule-based" in page, "ไม่ได้ตั้ง LLM ต้องบอกว่าใช้ rule-based แทน ไม่ใช่ปล่อยว่าง"
+
+
+def test_model_list_uses_the_saved_key_when_none_is_typed(isolated_config, monkeypatch):
+    """ผู้ใช้ที่ตั้ง key ไว้แล้วไม่ควรต้องพิมพ์ซ้ำแค่เพื่อดูรายชื่อโมเดล"""
+    used = {}
+    monkeypatch.setattr("lmds.brain.providers.list_models",
+                        lambda name, key, base=None: used.update(key=key, base=base) or ["m1"])
+    client = TestClient(create_app())
+    client.put("/api/provider", json={"name": "openai", "api_key": "sk-saved-9999"})
+    r = client.post("/api/provider/models", json={"name": "openai"})
+    assert r.status_code == 200 and r.json()["models"] == ["m1"]
+    assert used["key"] == "sk-saved-9999"
+
+
+def test_model_list_can_try_a_key_before_it_is_saved(isolated_config, monkeypatch):
+    """ลอง key ก่อนบันทึกได้ — ไม่งั้นต้องบันทึก key ที่ยังไม่รู้ว่าใช้ได้ไหมก่อนถึงจะลองได้"""
+    used = {}
+    monkeypatch.setattr("lmds.brain.providers.list_models",
+                        lambda name, key, base=None: used.update(key=key) or [])
+    r = TestClient(create_app()).post("/api/provider/models",
+                                      json={"name": "openai", "api_key": "sk-typed-0000"})
+    assert r.status_code == 200
+    assert used["key"] == "sk-typed-0000"
+
+
+def test_model_list_failure_is_explained_not_a_stack_trace(isolated_config, monkeypatch):
+    from lmds.brain.providers import ProviderError
+
+    def boom(name, key, base=None):
+        raise ProviderError("key ใช้ไม่ได้ (ถูกปฏิเสธ)")
+
+    monkeypatch.setattr("lmds.brain.providers.list_models", boom)
+    r = TestClient(create_app()).post("/api/provider/models", json={"name": "openai"})
+    assert r.status_code == 422 and "key ใช้ไม่ได้" in r.json()["detail"]

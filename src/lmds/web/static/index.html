@@ -1995,8 +1995,12 @@ function providerForm(message = "") {
         ${(p.choices || []).map(c => `<option value="${esc(c)}"${c === p.name ? " selected" : ""}>${esc(c)}</option>`).join("")}
       </select>
       <label>model</label>
-      <input id="p-model" value="${esc(p.model || "")}" placeholder="ว่าง = default ของ provider">
+      <input id="p-model" value="${esc(p.model || "")}" placeholder="ว่าง = default ของ provider"
+             list="p-models">
+      <datalist id="p-models"></datalist>
+      <button id="p-list" title="ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง">ดูรายชื่อ</button>
     </div>
+    <div class="field" id="p-models-box" hidden></div>
     <div class="field">
       <label>base URL</label>
       <input id="p-url" value="${esc(p.base_url || "")}" placeholder="จำเป็นเฉพาะ openai-compat">
@@ -2012,10 +2016,47 @@ function providerForm(message = "") {
       และไม่เคยถูกส่งกลับมาที่หน้าเว็บ — ช่องนี้จึงว่างเสมอแม้ตั้งไว้แล้ว</div>
   </div>`;
   const defaults = p.defaults || {};
+  document.getElementById("p-list").onclick = () => listProviderModels();
   document.getElementById("p-name").onchange = e => {
     const model = document.getElementById("p-model");
     if (model && !model.value.trim()) model.placeholder = defaults[e.target.value] || "ต้องระบุเอง";
   };
+}
+
+// ถามรายชื่อโมเดลจาก provider — ผู้ใช้ที่ไม่ได้อยู่กับ provider นั้นทุกวันไม่มีทางรู้ชื่อ
+// (vLLM/Ollama/LocalAI ในวงยังพอเดาได้ แต่ของเจ้าใหญ่ ๆ ชื่อเปลี่ยนตลอด)
+async function listProviderModels() {
+  const val = id => (document.getElementById(id) || {}).value || "";
+  const box = document.getElementById("p-models-box");
+  const btn = document.getElementById("p-list");
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = `<span class="muted">กำลังถาม ${esc(val("p-name"))}…</span>`;
+  if (btn) btn.disabled = true;
+  const r = await api("/api/provider/models", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: val("p-name"), base_url: val("p-url"), api_key: val("p-key") }),
+  });
+  const d = await r.json();
+  if (btn) btn.disabled = false;
+  if (!r.ok) {
+    box.innerHTML = `<span class="warn-line" style="color:var(--bad)">${esc(
+      typeof d.detail === "string" ? d.detail : "ขอรายชื่อไม่สำเร็จ")}</span>
+      <span class="dim">พิมพ์ชื่อโมเดลเองได้ตามปกติ</span>`;
+    return;
+  }
+  const models = d.models || [];
+  if (!models.length) {
+    box.innerHTML = `<span class="dim">provider นี้ไม่มีรายชื่อให้ดึง — พิมพ์ชื่อโมเดลเอง</span>`;
+    return;
+  }
+  // เติมทั้ง datalist (พิมพ์แล้วเลือก) และปุ่มลัดของตัวที่น่าจะใช้ — คลิกเดียวจบ
+  const list = document.getElementById("p-models");
+  if (list) list.innerHTML = models.map(m => `<option value="${esc(m)}">`).join("");
+  box.innerHTML = `<span class="dim">${models.length} โมเดลที่ key นี้ใช้ได้ — คลิกเพื่อเลือก:</span>
+    <div class="field" style="width:100%;gap:6px">${models.slice(0, 40).map(m =>
+      `<button data-pick-model="${esc(m)}" style="font-size:12px">${esc(m)}</button>`).join("")}</div>
+    ${models.length > 40 ? `<span class="dim">…และอีก ${models.length - 40} ตัว (พิมพ์ในช่อง model เพื่อค้น)</span>` : ""}`;
 }
 
 // ── command palette (⌘K / Ctrl-K) ───────────────────────────────────────
@@ -2135,6 +2176,12 @@ document.addEventListener("keydown", e => {
 document.getElementById("brain").onclick = () => providerForm();
 
 document.addEventListener("click", async e => {
+  const pick = e.target.closest("button[data-pick-model]");
+  if (pick) {
+    const model = document.getElementById("p-model");
+    if (model) { model.value = pick.dataset.pickModel; model.focus(); }
+    return;
+  }
   if (e.target.id === "p-close") { wiz.hidden = true; wiz.innerHTML = ""; return; }
   if (e.target.id !== "p-save") return;
   const val = id => (document.getElementById(id) || {}).value || "";

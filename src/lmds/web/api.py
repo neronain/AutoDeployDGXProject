@@ -320,6 +320,29 @@ def create_app(token: str = "") -> FastAPI:
             set_secret(provider_name.value, key)
         return provider_get()
 
+    @app.post("/api/provider/models", dependencies=guarded)
+    def provider_models(body: dict) -> dict:
+        """ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง
+
+        ผู้ใช้ที่ไม่ได้อยู่กับ provider นั้นทุกวันไม่มีทางรู้ชื่อโมเดล — พิมพ์ผิดตัวเดียว
+        แล้วรู้ตอน deploy ล้มกลางทาง · key ที่ยังไม่ได้บันทึกก็ลองได้ (ส่งมากับ request)
+        """
+        from lmds.brain.providers import ProviderError, list_models
+        from lmds.config import ProviderName
+        from lmds.secrets import get_secret
+
+        try:
+            name = ProviderName((body.get("name") or "").strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="ไม่รู้จัก provider นี้") from None
+        # ยังไม่กรอก key ใหม่ = ใช้ตัวที่บันทึกไว้ · ไม่มีเลยก็ยังลองได้ (endpoint ในวงมักไม่ต้องใช้)
+        key = (body.get("api_key") or "").strip() or get_secret(name.value)
+        try:
+            models = list_models(name, key, (body.get("base_url") or "").strip() or None)
+        except ProviderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"models": models}
+
     @app.get("/api/targets", dependencies=guarded)
     def targets_list() -> dict:
         from .deploy import targets

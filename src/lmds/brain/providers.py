@@ -238,3 +238,57 @@ def make_provider(config: ProviderConfig, api_key: str | None,
     if config.name is ProviderName.ANTHROPIC:
         raise ProviderError("Anthropic adapter อยู่ใน roadmap เฟส 2 — ใช้ openai/gemini/openai-compat ก่อน")
     return OpenAiCompatProvider(config.name.value, config.model, api_key, client=client)
+
+
+# ── รายชื่อโมเดลที่ key นี้ใช้ได้จริง ────────────────────────────────────────────
+# ผู้ใช้ที่ไม่ได้อยู่กับ provider นั้นทุกวันไม่มีทางรู้ชื่อโมเดล — พิมพ์ผิดตัวเดียวแล้วรู้ตอน
+# deploy ล้มกลางทาง · ถามจาก provider ตรง ๆ ได้ ก็ควรถาม
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+
+_LIST_TIMEOUT = 15.0
+
+
+def list_models(name: ProviderName, api_key: str, base_url: str | None = None) -> list[str]:
+    """ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง — คืนรายชื่อเรียงแล้ว
+
+    รองรับทุกตัวที่มี endpoint รายชื่อ · ตัวไหนไม่มีก็คืนลิสต์ว่าง แล้วให้ผู้ใช้พิมพ์เอง
+    (ว่างเปล่าดีกว่ารายชื่อที่เดาขึ้นมาเอง — ผู้ใช้จะเลือกตัวที่ไม่มีอยู่จริง)
+    """
+    name = ProviderName(name)
+    base = (base_url or "").rstrip("/")
+    try:
+        with httpx.Client(timeout=_LIST_TIMEOUT) as client:
+            if name is ProviderName.GEMINI:
+                resp = client.get(f"{GEMINI_BASE}/models", params={"key": api_key})
+                resp.raise_for_status()
+                return sorted(
+                    m["name"].split("/", 1)[-1]
+                    for m in resp.json().get("models", [])
+                    if "generateContent" in (m.get("supportedGenerationMethods") or [])
+                )
+            if name is ProviderName.ANTHROPIC:
+                resp = client.get(f"{ANTHROPIC_BASE}/models", headers={
+                    "x-api-key": api_key, "anthropic-version": "2023-06-01"})
+                resp.raise_for_status()
+                return sorted(m["id"] for m in resp.json().get("data", []))
+
+            # ที่เหลือพูด /v1/models แบบ OpenAI — รวม vLLM, Ollama, LocalAI, Bifrost
+            root = base or {ProviderName.OPENAI: OPENAI_BASE,
+                            ProviderName.MINIMAX: MINIMAX_BASE}.get(name, "")
+            if not root:
+                return []
+            resp = client.get(f"{root}/models",
+                              headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+            resp.raise_for_status()
+            data = resp.json()
+            rows = data.get("data") if isinstance(data, dict) else data
+            return sorted(str(m.get("id") or m.get("name") or "") for m in (rows or []) if m)
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            raise ProviderError("key ใช้ไม่ได้ (ถูกปฏิเสธ) — ตรวจว่า copy มาครบไหม") from exc
+        if code == 404:
+            raise ProviderError("ปลายทางไม่มี /v1/models — พิมพ์ชื่อโมเดลเองได้เลย") from exc
+        raise ProviderError(f"ขอรายชื่อโมเดลไม่สำเร็จ (HTTP {code})") from exc
+    except httpx.HTTPError as exc:
+        raise ProviderError(f"ต่อไปที่ provider ไม่ได้: {exc}") from exc

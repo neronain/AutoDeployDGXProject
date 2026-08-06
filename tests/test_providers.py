@@ -294,3 +294,75 @@ def test_make_provider_anthropic_phase2():
     config = ProviderConfig(name=ProviderName.ANTHROPIC, model="claude-sonnet-5")
     with pytest.raises(ProviderError, match="เฟส 2"):
         make_provider(config, "k-123")
+
+
+# ── ถามรายชื่อโมเดลจาก provider ────────────────────────────────────────────────
+# ผู้ใช้ที่ไม่ได้อยู่กับ provider นั้นทุกวันไม่มีทางรู้ชื่อโมเดล — พิมพ์ผิดตัวเดียวแล้วรู้ตอน
+# deploy ล้มกลางทาง
+
+def test_openai_compatible_endpoints_are_asked_for_their_model_list(monkeypatch):
+    """vLLM / Ollama / LocalAI / Bifrost พูด /v1/models เหมือนกันหมด"""
+    import httpx
+
+    from lmds.brain.providers import list_models
+    from lmds.config import ProviderName
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"data": [{"id": "aeon-ultimate"}, {"id": "gemma4-26b"}]})
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client",
+                        lambda **kw: real(transport=httpx.MockTransport(handler)))
+    models = list_models(ProviderName.OPENAI_COMPAT, "sk-x", "http://192.168.10.43:8080/v1")
+    assert models == ["aeon-ultimate", "gemma4-26b"]
+    assert seen["url"].endswith("/v1/models") and seen["auth"] == "Bearer sk-x"
+
+
+def test_gemini_keeps_only_models_that_can_generate(monkeypatch):
+    """รายชื่อของ Gemini รวม embedding ด้วย — เอามาให้เลือกก็เลือกตัวที่ใช้ไม่ได้"""
+    import httpx
+
+    from lmds.brain.providers import list_models
+    from lmds.config import ProviderName
+
+    payload = {"models": [
+        {"name": "models/gemini-3-pro", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"]},
+    ]}
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload))))
+    assert list_models(ProviderName.GEMINI, "k") == ["gemini-3-pro"]
+
+
+def test_a_rejected_key_says_so_instead_of_a_bare_status_code(monkeypatch):
+    import httpx
+    import pytest
+
+    from lmds.brain.providers import ProviderError, list_models
+    from lmds.config import ProviderName
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(
+        transport=httpx.MockTransport(lambda r: httpx.Response(401, json={}))))
+    with pytest.raises(ProviderError, match="key ใช้ไม่ได้"):
+        list_models(ProviderName.OPENAI, "bad")
+
+
+def test_an_endpoint_without_a_model_list_is_not_an_error(monkeypatch):
+    """ปลายทางบางตัวไม่มี /v1/models — บอกให้พิมพ์เอง ดีกว่าโยน error ที่อ่านไม่ออก"""
+    import httpx
+    import pytest
+
+    from lmds.brain.providers import ProviderError, list_models
+    from lmds.config import ProviderName
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(
+        transport=httpx.MockTransport(lambda r: httpx.Response(404, json={}))))
+    with pytest.raises(ProviderError, match="พิมพ์ชื่อโมเดลเองได้เลย"):
+        list_models(ProviderName.OPENAI_COMPAT, "", "http://localhost:11434/v1")
