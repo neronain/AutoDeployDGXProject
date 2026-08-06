@@ -50,6 +50,13 @@ ASSET_SHAS=(
 {% endfor %})
 {% endif -%}
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
+{% if extra_env_pairs -%}
+# env ที่รุ่นนี้ต้องใช้ตอนรัน (มาจากสูตรที่รันผ่านจริง / ขั้นวางแผน) — ไม่ใช่ flag ของ engine
+# ผ่าน exact vLLM allowlist + value validator ของ LMDS แล้ว
+EXTRA_ENV=(
+{% for pair in extra_env_pairs %}  {{ pair }}
+{% endfor %})
+{% endif -%}
 # ========================================================================
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -330,6 +337,11 @@ start() {
   )
   if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e "HF_TOKEN=${HF_TOKEN}"); fi
   if [[ -n "$API_KEY" ]]; then docker_args+=(-e "VLLM_API_KEY=${API_KEY}"); fi
+{%- if extra_env_pairs %}
+  # env ของ engine ที่รุ่นนี้ต้องใช้ — เป็นค่าที่ตั้งตอนรันเท่านั้น ทำเป็น flag ไม่ได้
+  local pair
+  for pair in "${EXTRA_ENV[@]}"; do docker_args+=(-e "$pair"); done
+{%- endif %}
 {% if runtime_assets -%}
   verify_assets
   docker_args+=(-v "${PLUGIN_DIR}:${PLUGIN_MOUNT}:ro")

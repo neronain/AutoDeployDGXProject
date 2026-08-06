@@ -278,7 +278,18 @@ def render_bundle(
     fit: FitReport,
     output_root: Path,
 ) -> Bundle:
+    from lmds.brain.allowlists import split_env
     from lmds.brain.rulebased import slugify
+
+    # Defense in depth: เส้นทาง CLI เรียก harden_plan() ก่อนถึงตรงนี้ แต่ renderer เป็น public
+    # Python API และเทส/ผู้เรียกภายในสามารถส่ง plan เข้ามาตรง ๆ ได้ · ห้ามสร้างแม้แต่ directory
+    # ถ้ายังมี env ที่ไม่ผ่าน เพราะ MODEL_PROFILE และ controller ต่างก็ serialize ค่านี้
+    _, rejected_env = split_env(plan.runtime.engine, plan.serving.extra_env)
+    if rejected_env:
+        raise ValueError(
+            "extra_env ไม่ผ่าน per-engine allowlist/value check: "
+            + ", ".join(rejected_env)
+        )
 
     if plan.runtime.engine is Engine.LLAMACPP and not plan.selected_gguf:
         raise ValueError("llama.cpp bundle ต้องเลือกไฟล์ GGUF ก่อน (ใช้ลิงก์ไฟล์ตรง หรือระบุ variant)")

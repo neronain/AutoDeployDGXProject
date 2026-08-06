@@ -61,6 +61,19 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
    แล้ว dispatch ใน `make_provider()` · **ใช้ `_post_with_retry()`** เพื่อให้ได้ backoff เหมือนตัวอื่น
 4. เทสด้วย `httpx.MockTransport` ตามแบบใน `tests/test_providers.py`
 
+### เพิ่มสูตรที่ต้องใช้ env ของ engine
+
+`src/lmds/recipes/catalog.yaml` — ช่อง `env:` ผ่าน **exact per-engine allowlist**
+และ value validator ใน `src/lmds/brain/allowlists.py` ทุกตัว · จะเพิ่ม env ใหม่ต้อง:
+
+1. ยืนยันจาก upstream source ว่าชื่อและค่านั้นถูกต้อง
+2. ยืนยันว่าไม่โหลด plugin/module/config/pickle หรือรับ secret
+3. เพิ่มชื่อใน `_ENV_BY_ENGINE`, validator ที่แคบที่สุด และ negative test
+4. ใส่หลักฐานใน recipe `source`/`validated_on`; มีเทสบังคับว่าทุก env ใน catalog ผ่าน
+
+Prefix กว้างห้ามใช้: `NCCL_` มี `NCCL_ENV_PLUGIN`/`NCCL_NET_PLUGIN` ที่โหลด `.so`
+และ `VLLM_` มี `VLLM_ALLOW_INSECURE_SERIALIZATION` ที่เปิด pickle — prefix จึงไม่ใช่ security boundary
+
 ### แก้ template ของ controller
 
 `src/lmds/generator/templates/*.j2` — หลังแก้ต้องผ่าน quality gates ทั้ง 8 ด่านโดยอัตโนมัติ
