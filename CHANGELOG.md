@@ -225,6 +225,19 @@
   (ไม่งั้นภาพกระตุกตอน `Live` วาดทับ)
 - **`LICENSE`**, **`SECURITY.md`**, **`CONTRIBUTING.md`**, **`CHANGELOG.md`**, **`README.en.md`**
 
+### Fixed
+
+- **`prepare-runtime` ของ llama.cpp แบบ native หา `nvcc` ไม่เจอเมื่อไม่ได้รันจาก login shell**
+  · งานที่รันจาก**หน้าเว็บ, systemd หรือ ssh แบบสั่งคำสั่งตรง ๆ** อาจไม่ได้ PATH
+  ชุดเดียวกับ login shell จึงหา `nvcc` ไม่เจอทั้งที่ไฟล์อยู่ใน CUDA Toolkit
+  แล้วไปตายลึก ๆ ที่ cmake ด้วย `No CMAKE_CUDA_COMPILER could be found` ซึ่งไม่ได้บอกว่าต้องทำอะไร
+  · ตอนนี้เคารพ `CUDACXX`, `CUDA_HOME`, `CUDA_PATH` ก่อน แล้วค่อยหาเองใน
+  PATH, `/usr/local/cuda/bin` และ `/usr/local/cuda-*/bin` ตามลำดับพร้อมเติม PATH ให้
+  ถ้าพบ toolkit แบบระบุเวอร์ชันหลายตัวแต่ไม่มี symlink หลักจะให้ผู้ใช้เลือก ไม่เดาเวอร์ชัน
+  ถ้าไม่มีจริงจึงหยุดพร้อมคำสั่งแก้ (เดิมแค่เตือนแล้วปล่อยให้ build ล้มทีหลัง)
+  · เคสที่รายงาน: DGX Spark มี `/usr/local/cuda/bin/nvcc` อยู่แล้ว แต่ `lmds up`
+  ที่รันผ่าน subprocess หา compiler ไม่พบ
+
 ### Changed
 
 - **help ของ controller เขียนใหม่เป็นภาษาอังกฤษ** แบ่งเป็น COMMANDS / OPTIONS / **API TOKEN** /

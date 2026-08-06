@@ -213,8 +213,65 @@ install_build_dependencies() {
     fi
   fi
 
-  command -v nvcc >/dev/null 2>&1 ||
-    echo "คำเตือน: ไม่พบ nvcc (CUDA Toolkit) — ถ้า build ล้มเหลว ติดตั้ง CUDA Toolkit ก่อน (DGX OS มีมาให้แล้ว)"
+  # nvcc มากับ CUDA Toolkit แต่งานจากหน้าเว็บ, systemd หรือ ssh แบบสั่งคำสั่งตรง ๆ
+  # อาจไม่ได้ PATH ชุดเดียวกับ login shell จึงหา nvcc ไม่เจอทั้งที่ไฟล์อยู่ตรงนั้น
+  # แล้วไปตายลึก ๆ ที่ cmake ด้วย
+  # "No CMAKE_CUDA_COMPILER could be found" ซึ่งไม่ได้บอกว่าต้องทำอะไรต่อเลย
+  local nvcc_candidate="" cuda_bin="" cudacxx_command=""
+  local -a versioned_nvcc=()
+
+  # explicit configuration ต้องชนะ PATH เสมอ เครื่องที่ลงหลาย toolkit จึงไม่เผลอ
+  # build ด้วยเวอร์ชันอื่น หากค่า explicit ใช้ไม่ได้ต้องหยุด ไม่ fallback เงียบ
+  if [[ -n "${CUDACXX:-}" ]]; then
+    # CMake อนุญาตให้ CUDACXX มี compiler options ต่อท้าย จึงตรวจ executable token แรก
+    # โดยไม่ eval string จาก environment
+    read -r cudacxx_command _ <<< "$CUDACXX"
+    if [[ "$cudacxx_command" == */* ]]; then
+      [[ -x "$cudacxx_command" ]] || die "CUDACXX ชี้คอมไพเลอร์ที่รันไม่ได้: ${cudacxx_command}"
+      nvcc_candidate="$cudacxx_command"
+    else
+      nvcc_candidate="$(command -v "$cudacxx_command" 2>/dev/null || true)"
+      [[ -n "$nvcc_candidate" ]] || die "ไม่พบคำสั่งจาก CUDACXX: ${cudacxx_command}"
+    fi
+  elif [[ -n "${CUDA_HOME:-}" ]]; then
+    nvcc_candidate="${CUDA_HOME%/}/bin/nvcc"
+    [[ -x "$nvcc_candidate" ]] || die "CUDA_HOME ไม่มี nvcc ที่รันได้: ${nvcc_candidate}"
+    export CUDACXX="$nvcc_candidate"
+  elif [[ -n "${CUDA_PATH:-}" ]]; then
+    nvcc_candidate="${CUDA_PATH%/}/bin/nvcc"
+    [[ -x "$nvcc_candidate" ]] || die "CUDA_PATH ไม่มี nvcc ที่รันได้: ${nvcc_candidate}"
+    export CUDACXX="$nvcc_candidate"
+  elif nvcc_candidate="$(command -v nvcc 2>/dev/null)" && [[ -n "$nvcc_candidate" ]]; then
+    export CUDACXX="$nvcc_candidate"
+  elif [[ -x /usr/local/cuda/bin/nvcc ]]; then
+    nvcc_candidate=/usr/local/cuda/bin/nvcc
+    export CUDACXX="$nvcc_candidate"
+  else
+    for nvcc_candidate in /usr/local/cuda-*/bin/nvcc; do
+      [[ -x "$nvcc_candidate" ]] && versioned_nvcc+=("$nvcc_candidate")
+    done
+    if [[ {{ '${#versioned_nvcc[@]}' }} -gt 1 ]]; then
+      die "พบ CUDA Toolkit หลายเวอร์ชัน แต่ไม่มี /usr/local/cuda ชี้ตัวเลือกหลัก:
+  ${versioned_nvcc[*]}
+  ตั้ง CUDACXX=/path/to/nvcc หรือ CUDA_HOME=/path/to/cuda แล้วลองใหม่"
+    elif [[ {{ '${#versioned_nvcc[@]}' }} -eq 1 ]]; then
+      nvcc_candidate="${versioned_nvcc[0]}"
+      export CUDACXX="$nvcc_candidate"
+    else
+      nvcc_candidate=""
+    fi
+  fi
+
+  # เดิมแค่เตือนแล้วปล่อยให้ build ล้มทีหลัง — ตายตรงนี้พร้อมบอกทางแก้ดีกว่า
+  # เพราะ template นี้ build ด้วย -DGGML_CUDA=ON เสมอ ไม่มี nvcc ก็ไปต่อไม่ได้อยู่ดี
+  [[ -n "$nvcc_candidate" ]] || die "ไม่พบ nvcc (คอมไพเลอร์ของ CUDA Toolkit) — build llama.cpp แบบ CUDA ไม่ได้
+  ถ้ามีไฟล์ /usr/local/cuda/bin/nvcc อยู่แล้ว สั่ง:  export PATH=/usr/local/cuda/bin:\$PATH
+  ถ้าไม่มี ต้องติดตั้ง CUDA Toolkit ก่อน (DGX OS มีมาให้แล้ว — เครื่องอื่นใช้ apt/ตัวติดตั้งของ NVIDIA)"
+
+  cuda_bin="${nvcc_candidate%/*}"
+  export PATH="${cuda_bin}:${PATH}"
+  export LMDS_NVCC_COMPILER="$nvcc_candidate"
+  echo "ใช้ CUDA compiler: ${CUDACXX} — เพิ่ม ${cuda_bin} เข้า PATH ของ shell นี้"
 }
 
 prepare_runtime() {
@@ -241,6 +298,21 @@ prepare_runtime() {
     commit="$(git -C "$LLAMA_CPP_DIR" rev-parse HEAD)"
   fi
   git -C "$LLAMA_CPP_DIR" checkout --quiet "$commit"
+
+  # CMake ใช้ CUDACXX แค่ configure ครั้งแรก จากนั้น CMakeCache.txt จะ pin compiler ไว้
+  # ห้ามรายงานว่าเลือก toolkit ใหม่สำเร็จทั้งที่ build tree ยังชี้ compiler เก่า
+  local cache_key cached_nvcc=""
+  if [[ -f "${LLAMA_CPP_DIR}/build/CMakeCache.txt" ]]; then
+    while IFS='=' read -r cache_key cached_nvcc; do
+      [[ "$cache_key" == CMAKE_CUDA_COMPILER:* ]] && break
+      cached_nvcc=""
+    done < "${LLAMA_CPP_DIR}/build/CMakeCache.txt"
+    if [[ -n "$cached_nvcc" && ! "$cached_nvcc" -ef "$LMDS_NVCC_COMPILER" ]]; then
+      die "build tree เดิม pin CUDA compiler คนละตัว: ${cached_nvcc}
+  ตัวที่เลือกครั้งนี้: ${LMDS_NVCC_COMPILER}
+  ย้ายหรือลบ ${LLAMA_CPP_DIR}/build แล้วสั่ง prepare-runtime ใหม่"
+    fi
+  fi
 
   echo "build (CUDA arch: ${CUDA_ARCHITECTURES}) — ใช้เวลาหลายนาที..."
   cmake -S "$LLAMA_CPP_DIR" -B "${LLAMA_CPP_DIR}/build" \
