@@ -687,3 +687,22 @@ def test_start_clears_a_dead_container_instead_of_dead_ending(isolated_config, t
     # ต้องแยก `docker ps` (รันอยู่) ออกจาก `docker ps -a` (รวมที่ตายแล้ว) จริง ๆ
     start_block = text.split("start() {")[1][:1400]
     assert 'docker ps --filter "name=^${CONTAINER_NAME}$"' in start_block
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_image_pull_is_visible_not_silent(isolated_config, tmp_path, kind):
+    """image ที่ยังไม่มีถูกดึงเงียบ ๆ ระหว่าง `docker run` ที่ผลถูกเก็บเข้าตัวแปร —
+    progress bar หายเข้าไปในตัวแปร ผู้ใช้เห็นบรรทัดเดิมค้าง 19 นาทีโดยแยกไม่ออกว่า
+    กำลังโหลด (2.4 MB/s จริง) หรือค้างไปแล้ว · image พวกนี้ 20–30 GB
+    """
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "ensure_image()" in text
+    assert "docker pull" in text, "ต้อง pull ตรง ๆ เพื่อให้ progress ออกมาที่ stdout"
+    # ต้องถูกเรียกจริง ไม่ใช่นิยามทิ้งไว้เฉย ๆ
+    assert text.count('ensure_image "$') >= 1
+    # และต้องข้ามถ้ามี image อยู่แล้ว — ไม่งั้น start ทุกครั้งเสียเวลาไปกับการเช็ค registry
+    block = text.split("ensure_image() {")[1][:600]
+    assert "docker image inspect" in block and "return 0" in block

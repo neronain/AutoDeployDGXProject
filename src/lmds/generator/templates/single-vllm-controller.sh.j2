@@ -143,8 +143,22 @@ snapshot_dir() {
   printf '%s/hub/models--%s/snapshots/%s' "$HF_HOME" "${MODEL_ID//\//--}" "$MODEL_REVISION"
 }
 
+ensure_image() {
+  # ดึง image ให้เห็นความคืบหน้า *ก่อน* จะเอาไปใช้ที่อื่น
+  #
+  # เดิม image ที่ยังไม่มีถูกดึงเงียบ ๆ ระหว่าง `docker run` ที่ผลถูกเก็บเข้าตัวแปร
+  # (`out="$(docker run ... 2>&1)"`) — progress bar ของ docker จึงหายเข้าไปในตัวแปร
+  # ผู้ใช้เห็นแค่บรรทัดสุดท้ายค้างอยู่หลายสิบนาที แยกไม่ออกว่ากำลังโหลดหรือค้างไปแล้ว
+  # (image พวกนี้ 20-30 GB · เจอจริงกับ avarok/dgx-vllm-nvfp4-kernel)
+  local image="$1"
+  docker image inspect "$image" >/dev/null 2>&1 && return 0
+  echo "ดึง image ${image} (ยังไม่มีในเครื่อง — ขนาดหลาย GB ใช้เวลาสักครู่)…"
+  docker pull "$image" || die "ดึง image ${image} ไม่สำเร็จ"
+}
+
 check_gpu() {
   need docker
+  ensure_image "${VLLM_IMAGE}"
   local out
   out="$(docker run --rm --gpus all --entrypoint nvidia-smi "$VLLM_IMAGE" -L 2>&1)" ||
     die "GPU ใน container ใช้ไม่ได้: $out"

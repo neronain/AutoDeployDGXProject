@@ -458,3 +458,55 @@ def test_smoke_can_skip_the_download_when_weights_are_there(tmp_path, monkeypatc
     result = runner.invoke(app, ["smoke", "demo", "--skip-download"])
     assert result.exit_code == 0
     assert log.read_text().split() == ["start", "test-text", "stop"]
+
+
+def test_web_enable_writes_a_user_service_that_restarts_itself(tmp_path, monkeypatch, isolated_config):
+    """เครื่องที่ทำหน้าที่ controller ประจำต้องมีหน้าเว็บขึ้นเองหลัง reboot และฟื้นเองถ้าตาย
+    — `-b` อยู่ได้แค่จนกว่าเครื่องจะรีบูต
+    """
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    calls = []
+    monkeypatch.setattr("subprocess.run",
+                        lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(
+                            returncode=0, stdout="", stderr=""))
+
+    result = runner.invoke(app, ["web", "--enable", "--bind", "0.0.0.0", "--token", "tok-ยาวพอ"])
+    assert result.exit_code == 0, result.output
+    unit = daemon.unit_path().read_text(encoding="utf-8")
+    assert "Restart=always" in unit, "ตายแล้วต้องฟื้นเอง"
+    assert "WantedBy=default.target" in unit, "ต้องขึ้นตอนบูต"
+    assert "LMDS_WEB_TOKEN=tok-ยาวพอ" in unit
+    assert ["systemctl", "--user", "enable", "--now", daemon.UNIT_NAME] in calls
+    assert ["loginctl", "enable-linger"] in calls, "ไม่มี linger = ไม่ขึ้นตอนบูตจริง"
+
+
+def test_web_enable_unit_file_is_not_world_readable(tmp_path, monkeypatch, isolated_config):
+    """unit มี token อยู่ข้างใน — ผู้ใช้อื่นบนเครื่องเดียวกันไม่ควรอ่านได้"""
+    import stat
+
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr("subprocess.run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    runner.invoke(app, ["web", "--enable", "--bind", "0.0.0.0", "--token", "s3cret-token"])
+    mode = daemon.unit_path().stat().st_mode
+    assert not mode & (stat.S_IRGRP | stat.S_IROTH)
+
+
+def test_web_enable_says_so_without_systemd(tmp_path, monkeypatch, isolated_config):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    result = runner.invoke(app, ["web", "--enable"])
+    assert result.exit_code == 1 and "ไม่มี systemd" in result.output

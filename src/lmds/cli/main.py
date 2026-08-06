@@ -2136,6 +2136,8 @@ def web(
     restart_web: bool = typer.Option(False, "--restart", help="หยุดตัวที่รันอยู่แล้วเปิดใหม่ (ลิงก์เดิมใช้ได้ต่อ)"),
     status_only: bool = typer.Option(False, "--status", help="บอกว่ามีตัวไหนรันอยู่ + ลิงก์ของมัน"),
     new_token: bool = typer.Option(False, "--new-token", help="สุ่ม token ใหม่ (ลิงก์เดิมใช้ไม่ได้ทันที)"),
+    enable: bool = typer.Option(False, "--enable", help="ให้ขึ้นเองหลัง reboot และฟื้นเองถ้าตาย (systemd user service)"),
+    disable: bool = typer.Option(False, "--disable", help="เลิกให้ขึ้นเอง"),
 ) -> None:
     """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
     from lmds.web import daemon
@@ -2168,6 +2170,52 @@ def web(
         show_running(state, "หน้าเว็บรันอยู่")
         if state.get("token"):
             console.print(f"\n  token: [bold]{state['token']}[/bold]")
+        return
+
+    if disable:
+        import subprocess as _sp
+
+        _sp.run(["systemctl", "--user", "disable", "--now", daemon.UNIT_NAME], capture_output=True)
+        daemon.unit_path().unlink(missing_ok=True)
+        _sp.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        console.print("เลิกให้หน้าเว็บขึ้นเองแล้ว")
+        return
+
+    if enable:
+        import shutil as _shutil
+        import subprocess as _sp
+
+        if _shutil.which("systemctl") is None:
+            err_console.print("[red]เครื่องนี้ไม่มี systemd[/red] — ใช้ lmds web -b แทน "
+                              "(รันจนกว่าเครื่องจะรีบูต)")
+            raise typer.Exit(code=1)
+        token = token or os.environ.get(daemon.TOKEN_ENV) or daemon.remembered_token()
+        if not token and bind not in {"127.0.0.1", "localhost", "::1"}:
+            token = daemon.new_token()
+            daemon.remember_token(token)
+        # ตัวที่รันอยู่แบบ -b จะชนพอร์ตกับ service — หยุดให้ก่อน
+        if daemon.running():
+            daemon.stop()
+            daemon.wait_until_free(bind, port)
+        path = daemon.unit_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(daemon.render_unit(port, bind, token), encoding="utf-8")
+        path.chmod(0o600)     # ไฟล์นี้มี token อยู่ข้างใน
+        _sp.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        result = _sp.run(["systemctl", "--user", "enable", "--now", daemon.UNIT_NAME],
+                         capture_output=True, text=True)
+        if result.returncode != 0:
+            err_console.print(f"[red]เปิดบริการไม่สำเร็จ[/red] {result.stderr.strip()[:300]}")
+            raise typer.Exit(code=1)
+        # ไม่มี linger = service ตายตอน logout และไม่ขึ้นตอนบูต ซึ่งขัดกับเหตุผลที่สั่ง --enable
+        linger = _sp.run(["loginctl", "enable-linger"], capture_output=True, text=True)
+        console.print(f"[green]หน้าเว็บขึ้นเองแล้ว[/green] — ฟื้นเองถ้าตาย ({daemon.UNIT_NAME})")
+        if linger.returncode != 0:
+            console.print("[yellow]แต่ยังไม่ขึ้นตอนบูต[/yellow] — รันเองครั้งเดียว: "
+                          f"[bold]sudo loginctl enable-linger {os.environ.get('USER', '$USER')}[/bold]")
+        if token:
+            console.print(f"\n  token: [bold]{token}[/bold]")
+        console.print("[dim]ดูสถานะ: systemctl --user status lmds-web · เลิก: lmds web --disable[/dim]")
         return
 
     if stop_web or restart_web:

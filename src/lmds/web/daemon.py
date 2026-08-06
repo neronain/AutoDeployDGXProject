@@ -232,3 +232,42 @@ def log_tail(lines: int = 12) -> str:
     except OSError:
         return ""
     return "\n".join(content.rstrip().splitlines()[-lines:])
+
+
+# ── ให้หน้าเว็บขึ้นเองหลัง reboot / ตายแล้วฟื้นเอง ──────────────────────────────
+# รันเบื้องหลังด้วย `-b` อยู่ได้จนกว่าเครื่องจะรีบูตหรือ process ตาย — สำหรับเครื่องที่
+# ทำหน้าที่เป็น controller ประจำ นั่นไม่พอ ต้องเป็นบริการที่ระบบดูแลให้
+#
+# ใช้ **systemd user service** ไม่ใช่ system service เพราะ:
+#   - ไม่ต้อง sudo (system service ต้องใช้ ซึ่ง SSH ไม่มี tty ให้กรอกรหัส)
+#   - หน้าเว็บอ่าน ~/.config/lmds และ ~/.lmds ของผู้ใช้คนนั้นอยู่แล้ว
+#   - `loginctl enable-linger` ทำให้มันขึ้นตั้งแต่บูตโดยไม่ต้องมีใคร login
+UNIT_NAME = "lmds-web.service"
+
+_UNIT = """[Unit]
+Description=LMDS web console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={python} -m lmds.cli.main web --port {port} --bind {bind}
+Environment=LMDS_WEB_TOKEN={token}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def unit_path():
+    from pathlib import Path as _Path
+
+    return _Path.home() / ".config" / "systemd" / "user" / UNIT_NAME
+
+
+def render_unit(port: int, bind: str, token: str) -> str:
+    import sys
+
+    return _UNIT.format(python=sys.executable, port=port, bind=bind, token=token)
