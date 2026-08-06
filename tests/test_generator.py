@@ -670,3 +670,20 @@ def test_tests_refuse_to_grade_another_models_server(isolated_config, tmp_path, 
         body = match.group(2)
         if "/v1/chat/completions" in body:
             assert "assert_our_server" in body, f"{match.group(1)} ยิง API โดยไม่ตรวจว่าเป็นเซิร์ฟเวอร์ของตัวเอง"
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_start_clears_a_dead_container_instead_of_dead_ending(isolated_config, tmp_path, kind):
+    """start ที่ล้ม (โมเดลโหลดไม่ขึ้น) ทิ้งซาก container ไว้ · เดิม start รอบถัดไปปฏิเสธทุกกรณี
+    ทำให้ปิดทางตัวเอง: ปุ่ม start กดอีกกี่ครั้งก็เจอ "มีอยู่แล้ว" และหน้าเว็บไม่มีปุ่ม stop
+    ให้เพราะโมเดลไม่ได้รันอยู่ (ผู้ใช้เจอจริงกับ qwen3-6-35b-a3b-nvfp4-fast)
+    """
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "กำลังรันอยู่ — รัน: $0 stop ก่อน" in text, "ปฏิเสธเฉพาะตอนมันรันอยู่จริง"
+    assert "เก็บซาก container จากรอบก่อน" in text, "ซากของรอบก่อนต้องถูกเก็บกวาดเอง"
+    # ต้องแยก `docker ps` (รันอยู่) ออกจาก `docker ps -a` (รวมที่ตายแล้ว) จริง ๆ
+    start_block = text.split("start() {")[1][:1400]
+    assert 'docker ps --filter "name=^${CONTAINER_NAME}$"' in start_block

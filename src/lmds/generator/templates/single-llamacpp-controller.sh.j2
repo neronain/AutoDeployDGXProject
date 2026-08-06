@@ -330,9 +330,16 @@ start() {
     echo "$!" > "$PID_FILE"
   else
     need docker
-    local existing
-    existing="$(docker ps -a --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
-    [[ -z "$existing" ]] || die "container ${CONTAINER_NAME} มีอยู่แล้ว — รัน: $0 stop ก่อน"
+    # ซากจากรอบก่อนไม่ใช่ของที่กำลังทำงาน — เก็บกวาดเองแล้วไปต่อ (ดูเหตุผลใน vllm controller)
+    local running_now
+    running_now="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
+    [[ -z "$running_now" ]] || die "container ${CONTAINER_NAME} กำลังรันอยู่ — รัน: $0 stop ก่อน"
+    local leftover
+    leftover="$(docker ps -a --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
+    if [[ -n "$leftover" ]]; then
+      echo "เก็บซาก container จากรอบก่อน (${CONTAINER_NAME}) แล้วเริ่มใหม่"
+      docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="/models"
     server_args

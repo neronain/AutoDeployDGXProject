@@ -292,9 +292,18 @@ EOF
 
 start() {
   need docker
-  local existing
-  existing="$(docker ps -a --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
-  [[ -z "$existing" ]] || die "container ${CONTAINER_NAME} มีอยู่แล้ว — รัน: $0 stop ก่อน"
+  # container ที่ตายแล้วเป็นซากของรอบก่อน ไม่ใช่ของที่กำลังทำงานอยู่ — เก็บกวาดเองแล้วไปต่อ
+  # เดิมปฏิเสธทุกกรณี ทำให้ start ที่ล้ม (เช่นโมเดลโหลดไม่ขึ้น) ปิดทางตัวเองไว้:
+  # ปุ่ม start กดอีกกี่ครั้งก็เจอ "มีอยู่แล้ว" และหน้าเว็บไม่มีปุ่ม stop ให้เพราะมันไม่ได้รันอยู่
+  local running_now
+  running_now="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
+  [[ -z "$running_now" ]] || die "container ${CONTAINER_NAME} กำลังรันอยู่ — รัน: $0 stop ก่อน"
+  local leftover
+  leftover="$(docker ps -a --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
+  if [[ -n "$leftover" ]]; then
+    echo "เก็บซาก container จากรอบก่อน (${CONTAINER_NAME}) แล้วเริ่มใหม่"
+    docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  fi
   check_gpu >/dev/null
   verify_files
 
