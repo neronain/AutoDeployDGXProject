@@ -508,7 +508,10 @@ def create_app(token: str = "") -> FastAPI:
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         keep = bool((body or {}).get("keep_weights"))
-        return {"slug": slug, "done": remove_server(server, include_weights=not keep)}
+        from lmds.fleet import removal_failed
+
+        lines = remove_server(server, include_weights=not keep)
+        return {"slug": slug, "done": lines, "failed": removal_failed(lines)}
 
     @app.post("/api/models/{slug}/autostart", dependencies=guarded)
     def autostart(slug: str, body: dict | None = None) -> dict:

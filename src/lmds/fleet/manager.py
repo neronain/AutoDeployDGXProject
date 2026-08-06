@@ -857,10 +857,42 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
                 _shutil.rmtree(item.path)
             else:
                 item.path.unlink(missing_ok=True)
-            done.append(f"ลบ {item.label}: {item.path}")
         except OSError as exc:
             done.append(f"ลบ {item.path} ไม่ได้: {exc}")
+        # ไม่ยอมเชื่อว่า rmtree สำเร็จเพราะมันไม่ throw — ถามดิสก์อีกที
+        # rmtree ลบสิ่งที่ลบได้แล้วค่อยโยน error ตัวเดียว ของที่เหลือจึงยังอยู่จริง
+        # (เคสจริง: weight ที่ container โหลดมาเป็น root — เหลือ 23 GB ทั้งที่รายงานว่าลบเรียบร้อย)
+        if item.path.exists():
+            remaining = _dir_size(item.path) if item.path.is_dir() else item.path.stat().st_size
+            done.append(f"เหลือ {item.label} ที่ลบไม่ได้ ({_human(remaining)}): {item.path}")
+        else:
+            done.append(f"ลบ {item.label}: {item.path}")
     return done
+
+
+def removal_failed(lines: list[str]) -> list[str]:
+    """บรรทัดที่บอกว่าลบไม่สำเร็จ — ผู้เรียกใช้ตัดสินใจว่าจะรายงานว่าสำเร็จไหม"""
+    return [line for line in lines if "ลบไม่ได้" in line or "ไม่สำเร็จ" in line]
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _human(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
 def repair_server(info: ServerInfo) -> int:

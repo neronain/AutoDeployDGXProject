@@ -2111,7 +2111,7 @@ def remove(
 
     `--dry-run` ใช้ดูรายการก่อนตัดสินใจ (และเป็นตัวที่หน้าเว็บเรียกก่อนถามยืนยัน)
     """
-    from lmds.fleet import find, remove_server, removal_plan
+    from lmds.fleet import find, removal_failed, removal_plan, remove_server
 
     server = find(slug)
     if server is None:
@@ -2154,8 +2154,20 @@ def remove(
         console.print("ยกเลิก")
         raise typer.Exit(code=1)
 
-    for line in remove_server(server, include_weights=not keep_weights):
+    lines = remove_server(server, include_weights=not keep_weights)
+    for line in lines:
         console.print(f"  {line}")
+
+    # "เรียบร้อย" ทั้งที่ยังเหลือของอยู่ = คำโกหกที่ผู้ใช้จะรู้ตัวตอนดิสก์ไม่ลด
+    # (เคสจริง: weight ที่ container โหลดมาเป็น root เหลือ 23 GB)
+    failed = removal_failed(lines)
+    if failed:
+        err_console.print(f"\n[red]ลบ {slug} ไม่ครบ — ยังเหลือของที่ลบไม่ได้[/red]")
+        err_console.print("[dim]มักเป็นไฟล์ที่ container เขียนไว้ในนามของ root — ต้องใช้ sudo:[/dim]")
+        for line in failed:
+            path = line.rsplit(": ", 1)[-1]
+            err_console.print(f"  [bold]sudo rm -rf {path}[/bold]")
+        raise typer.Exit(code=2)
     console.print(f"[green]ลบ {slug} เรียบร้อย[/green]")
 
 

@@ -746,3 +746,47 @@ def test_running_context_survives_a_docker_that_says_nothing(monkeypatch):
     monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
         returncode=1, stdout="", stderr="no such container"))
     assert running_context(server) is None
+
+
+def test_remove_does_not_claim_success_when_files_survive(tmp_path, monkeypatch, isolated_config):
+    """rmtree ลบสิ่งที่ลบได้แล้วโยน error ตัวเดียว — ของที่เหลือยังอยู่จริง
+    เดิม CLI พิมพ์ "ลบเรียบร้อย" ทับบรรทัด "ลบไม่ได้" ผู้ใช้จะรู้ตัวตอนดิสก์ไม่ลด
+    (เคสจริง: weight ที่ container โหลดมาเป็น root เหลือ 23 GB)
+    """
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    controller.chmod(0o755)
+    make_meta(tmp_path / "run", "m", controller=str(controller))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    stubborn = tmp_path / "weights"
+    stubborn.mkdir()
+    (stubborn / "big.bin").write_bytes(b"x" * 4096)
+    monkeypatch.setattr("lmds.fleet.manager.removal_plan", lambda info, include_weights=True: [
+        SimpleNamespace(label="weight ของโมเดล", path=stubborn, size_bytes=4096)])
+    monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)   # เงียบ ๆ ไม่ลบจริง
+
+    result = runner.invoke(app, ["remove", "m", "-y"])
+    assert result.exit_code == 2, result.output
+    assert "ไม่ครบ" in result.output
+    assert "sudo rm -rf" in result.output, "ต้องบอกคำสั่งที่ทำให้จบได้จริง"
+    assert "เรียบร้อย" not in result.output
+
+
+def test_remove_reports_success_only_when_everything_is_gone(tmp_path, monkeypatch, isolated_config):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    controller.chmod(0o755)
+    make_meta(tmp_path / "run", "m", controller=str(controller))
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    gone = tmp_path / "weights"
+    gone.mkdir()
+    monkeypatch.setattr("lmds.fleet.manager.removal_plan", lambda info, include_weights=True: [
+        SimpleNamespace(label="weight ของโมเดล", path=gone, size_bytes=0)])
+
+    result = runner.invoke(app, ["remove", "m", "-y"])
+    assert result.exit_code == 0, result.output
+    assert "เรียบร้อย" in result.output
