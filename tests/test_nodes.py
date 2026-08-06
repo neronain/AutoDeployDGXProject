@@ -424,3 +424,36 @@ def test_missing_telemetry_is_none_not_zero(monkeypatch):
     assert gpu.fan_pct is None, "ไม่รายงาน ≠ พัดลมหยุด"
     assert gpu.clock_memory_mhz is None
     assert gpu.clock_graphics_mhz == 208 and gpu.clock_graphics_max_mhz == 3003
+
+
+# ── ชื่อเครื่อง ────────────────────────────────────────────────────────────────
+# ชื่อเป็นของผู้ใช้ตั้ง — บังคับพิมพ์ตัวเล็กทั้งที่ป้ายบนเครื่องเขียน "MSI6" คือกฎที่
+# อธิบายไม่ได้ · แต่ชื่อถูกต่อเป็นคำสั่ง SSH จริง จึงต้องกันของที่ shell ตีความออกไป
+
+@pytest.mark.parametrize("name", [
+    "MSI6", "GPU-Rig-02", "dgx-veerasiam", "spark_head", "node.01",
+    "เครื่องหลัก", "ปลาย-01", "机器2", "1node", "sv-01.local",
+])
+def test_names_people_actually_use_are_accepted(name):
+    from lmds.nodes.registry import name_ok
+
+    assert name_ok(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "", "_start", ".hidden", "-lead", "has space", "a;rm -rf /", "back`tick`",
+    "pipe|it", "dollar$x", "quote'x", 'dq"x', "new\nline", "x" * 64,
+])
+def test_names_that_would_break_a_shell_command_are_refused(name):
+    from lmds.nodes.registry import name_ok
+
+    assert name_ok(name) is False, name
+
+
+def test_thai_names_are_all_or_nothing():
+    """`\\w` ของ Python ไม่นับสระบน/ล่าง — "ปลาย-01" เคยผ่านแต่ "เครื่องหลัก" ตก
+    ซึ่งเป็นกฎที่อธิบายให้ผู้ใช้ไม่ได้เลย
+    """
+    from lmds.nodes.registry import name_ok
+
+    assert name_ok("ปลาย-01") == name_ok("เครื่องหลัก") is True

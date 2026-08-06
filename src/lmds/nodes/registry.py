@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -15,7 +16,28 @@ import yaml
 
 from lmds.config.paths import config_dir, ensure_config_dir
 
-_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+NAME_MAX = 63
+_NAME_EXTRA = "._-"
+
+
+def name_ok(name: str) -> bool:
+    """ชื่อเครื่องใช้ได้ไหม
+
+    ชื่อเป็นของผู้ใช้ตั้ง — ไม่ควรบังคับให้พิมพ์ตัวเล็กทั้งที่ป้ายบนเครื่องเขียน "MSI6"
+    รับตัวอักษรของภาษาไหนก็ได้ (ไทยใช้ได้) ตัวเลข และ `. _ -`
+
+    ที่ยัง **ไม่** รับ: ช่องว่าง (พังตอน `lmds node run <ชื่อ> …`) และอักขระที่ shell ตีความ
+    — ชื่อถูกต่อเป็นคำสั่งจริง จึงต้องปลอดภัยตั้งแต่ตอนรับเข้า ไม่ใช่หวังพึ่ง quote ปลายทาง
+
+    ใช้ฟังก์ชันแทน regex เพราะ ``\\w`` ของ Python ไม่นับสระบน/ล่างของไทย (Unicode category M)
+    ทำให้ "ปลาย-01" ผ่านแต่ "เครื่องหลัก" ตก ซึ่งอธิบายให้ผู้ใช้ไม่ได้
+    """
+    if not name or len(name) > NAME_MAX:
+        return False
+    if not name[0].isalnum():
+        return False
+    return all(ch.isalnum() or ch in _NAME_EXTRA or unicodedata.category(ch).startswith("M")
+               for ch in name)
 
 
 class NodeError(Exception):
@@ -108,9 +130,10 @@ def find(name: str) -> Node | None:
 
 
 def add(node: Node) -> Node:
-    if not _NAME_RE.match(node.name):
+    if not name_ok(node.name):
         raise NodeError(
-            f"ชื่อ '{node.name}' ใช้ไม่ได้ — ใช้ a-z 0-9 . _ - เท่านั้น (ขึ้นต้นด้วยตัวอักษรหรือตัวเลข)"
+            f"ชื่อ '{node.name}' ใช้ไม่ได้ — ใช้ตัวอักษร ตัวเลข และ . _ - "
+            f"(ขึ้นต้นด้วยตัวอักษรหรือตัวเลข · ห้ามมีช่องว่าง · ยาวไม่เกิน 63 ตัว)"
         )
     if not node.host or not node.user:
         raise NodeError("ต้องระบุทั้ง host และ user")
