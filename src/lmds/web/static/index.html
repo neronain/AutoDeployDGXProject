@@ -1194,6 +1194,9 @@ function nodeModelsMarkup(name, data) {
     ${head}
     <div style="margin-top:10px"></div>
     ${models.map(m => {
+      // ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าตัวอื่นรันอยู่บนพอร์ตนี้ ชุดทดสอบของตัวนี้
+      // จะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล (bundle เก่ายังไม่มีตัวตรวจในสคริปต์)
+      const rival = models.find(x => x.slug !== m.slug && x.running && x.port === m.port);
       const state = m.running ? (m.healthy ? "on" : "load") : "";
       const label = m.running ? (m.healthy ? "running" : "loading")
         : (m.downloaded ? "stopped" : "not downloaded");
@@ -1222,7 +1225,9 @@ function nodeModelsMarkup(name, data) {
             <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
             ${m.topology === "stacked" ? `<span class="tag">stacked</span>` : ""}
             ${(m.features || "").includes("image") ? `<span class="tag">vision</span>` : ""}
-            ${autoOn ? `<span class="tag">autostart</span>` : ""}</span>
+            ${autoOn ? `<span class="tag">autostart</span>` : ""}
+            ${rival ? `<span class="tag bad" title="ผลทดสอบจะเป็นของ ${esc(rival.slug)} ไม่ใช่ตัวนี้">
+              พอร์ตชนกับ ${esc(rival.slug)}</span>` : ""}</span>
           <span class="mono muted">:${m.port || "—"}</span>
           <span class="muted">${label}</span>
           ${act ? nbtn(act, act, act === "download" ? "โหลด weight แล้วตรวจไฟล์ให้ (lmds repair)" : "") : ""}
@@ -1274,6 +1279,9 @@ function nodeModelsMarkup(name, data) {
             ${ctl("network-info", "bind กับ endpoint ที่ประกาศออกไป")}
             ${ctl("status", "สถานะ container/process + API")}
             ${m.running ? "" : `<span class="dim">ยังไม่ได้รัน — ชุดทดสอบส่วนใหญ่ต้อง start ก่อน</span>`}
+            ${rival ? `<div class="warn-line" style="color:var(--bad);width:100%">
+              พอร์ต ${m.port} มี <b>${esc(rival.slug)}</b> รันอยู่ — ผลทดสอบที่ได้จะเป็นของตัวนั้น ไม่ใช่ตัวนี้
+              · ตั้ง port ข้างบนให้ต่างกันก่อนแล้วค่อย start</div>` : ""}
           </div>
           ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px">Stacked</div>
           <div class="field" style="width:100%">

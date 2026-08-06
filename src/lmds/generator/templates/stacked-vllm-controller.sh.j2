@@ -112,6 +112,28 @@ WORKER_INIT_WAIT="${WORKER_INIT_WAIT:-12}"
 {% raw %}
 # ─────────────────────────── helpers ───────────────────────────
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+# พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
+# ยึดพอร์ตนี้อยู่ ชุดทดสอบจะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
+# (เจอจริง: test-text ของ gemma-4-31b ได้คำตอบจาก Qwen3-Coder-30B ที่รันอยู่ก่อน)
+assert_our_server() {
+  local seen
+  seen="$(curl -fsS -m 10 "http://127.0.0.1:${API_PORT}/v1/models" \
+    ${API_KEY:+-H "Authorization: Bearer $API_KEY"} 2>/dev/null \
+    | { command -v python3 >/dev/null 2>&1 && python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)["data"]
+except Exception:
+    sys.exit(0)
+print((data[0].get("id") or "").strip() if data else "")
+' || cat; })" || return 0
+  [ -n "$seen" ] || return 0                       # อ่านไม่ได้ = ไม่ฟันธง ปล่อยผ่าน
+  [ "$seen" = "$SERVED_MODEL_NAME" ] && return 0
+  die "พอร์ต ${API_PORT} ตอบมาเป็นโมเดล '${seen}' ไม่ใช่ '${SERVED_MODEL_NAME}'
+     มีเซิร์ฟเวอร์อื่นยึดพอร์ตนี้อยู่ — ผลทดสอบที่ได้จะเป็นของโมเดลนั้น ไม่ใช่ตัวนี้
+     แก้: หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต  $0 restart --port 8001"
+}
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 ssh_at() { local host="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_USER}@${host}" "$@"; }
 # worker ตัวแรก — ใช้กับงานที่อ้างถึง "worker" ตัวเดียวโดยธรรมชาติ
@@ -903,6 +925,7 @@ EOF
 
 # ─────────────────────────── test-text ───────────────────────────
 test_text() {
+  assert_our_server
   # 512 ไม่ใช่ 64: โมเดลสาย reasoning ใช้ budget ไปกับ <think> ก่อน ถ้าให้น้อยจะได้
   # finish_reason "length" โดยยังไม่ทันตอบ ซึ่งดูเหมือนโมเดลพัง
   local response

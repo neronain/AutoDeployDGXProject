@@ -644,3 +644,29 @@ def test_metadata_cap_fits_real_moe_quant_configs():
     from lmds.inspector.hf_api import SMALL_FILE_CAP
 
     assert SMALL_FILE_CAP >= 8 * 1024 * 1024
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_tests_refuse_to_grade_another_models_server(isolated_config, tmp_path, kind):
+    """ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่นยึดพอร์ตอยู่ ชุดทดสอบจะยิงไปโดน
+    ตัวนั้นแล้วรายงานว่า "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
+
+    เจอจริง: test-text ของ gemma-4-31b-it-gguf ได้คำตอบกลับมาพร้อม
+    "model":"Qwen3-Coder-30B-A3B-Instruct" ซึ่งเป็นตัวที่รันอยู่ก่อนบนพอร์ต 8000
+    """
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "assert_our_server()" in text, "ต้องมีตัวตรวจว่าเซิร์ฟเวอร์ที่ตอบคือของ bundle นี้"
+    assert "SERVED_MODEL_NAME" in text.split("assert_our_server()")[1][:900], \
+        "ต้องเทียบกับชื่อโมเดลของ bundle นี้เอง"
+    # ทุกฟังก์ชันที่ยิง /v1/chat/completions ต้องตรวจก่อน
+    for block in text.split("\n")[0:]:
+        pass
+    import re
+
+    for match in re.finditer(r"^(test_[a-z_]+)\(\) \{\n(.*?)\n\}", text, re.S | re.M):
+        body = match.group(2)
+        if "/v1/chat/completions" in body:
+            assert "assert_our_server" in body, f"{match.group(1)} ยิง API โดยไม่ตรวจว่าเป็นเซิร์ฟเวอร์ของตัวเอง"

@@ -1135,3 +1135,13 @@ def test_node_controller_commands_are_allowlisted(registered, monkeypatch):
     # start/stop/download มีทางของมันเองที่จัดการ option แล้ว — ห้ามเข้าทางนี้
     for bad in ("start", "stop", "download", "rm-rf"):
         assert client.post(f"/api/nodes/spark2/models/demo/ctl/{bad}").status_code == 400, bad
+
+
+def test_page_warns_when_another_model_owns_the_port():
+    """bundle ที่สร้างก่อนมีตัวตรวจในสคริปต์จะยังยิงทดสอบไปโดนโมเดลอื่นได้
+    หน้าเว็บจึงต้องเตือนตรงที่ผู้ใช้กำลังจะกดปุ่มทดสอบพอดี
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "const rival = models.find(" in page
+    assert "x.running && x.port === m.port" in page, "ต้องนับเฉพาะตัวที่รันอยู่จริงบนพอร์ตเดียวกัน"
+    assert "ผลทดสอบที่ได้จะเป็นของตัวนั้น" in page
