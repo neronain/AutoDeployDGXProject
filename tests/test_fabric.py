@@ -1,6 +1,7 @@
 """fabric ที่ตั้งผิดแล้ว "ก็ยังรันได้" — กลุ่มปัญหาที่ไล่สาเหตุยากที่สุด
 
-payload ทุกชุดในไฟล์นี้ลอกมาจากเครื่องจริง (DGX Spark GB10, spark1) ไม่ได้แต่งขึ้น:
+ชื่อ interface/HCA และค่าพื้นฐานด้านล่างมาจาก DGX Spark payload; test cases หลายชุดดัดแปลง
+ค่าพื้นฐานอย่างจงใจเพื่อครอบคลุม invalid/stale/mixed-speed input ไม่ใช่ hardware captures:
 
     rocep1s0f0  ==> enp1s0f0np0   (Up, 200000, 10.100.16.1/24)
     rocep1s0f1  ==> enp1s0f1np1   (Down)
@@ -11,8 +12,11 @@ payload ทุกชุดในไฟล์นี้ลอกมาจากเ
 
 from __future__ import annotations
 
+import io
+
+from rich.console import Console
+
 from lmds.nodes import (
-    MESH_NCCL_ENV,
     active_fabric_links,
     fabric_warnings,
     is_mesh,
@@ -46,7 +50,7 @@ TWO_PORT = host(
     OOB,
 )
 
-# ต่อสองพอร์ต = ขึ้นครบสี่ = mesh 3 เครื่องแบบไม่ใช้สวิตช์
+# ขึ้นครบสี่ = local mesh candidate; ปลายสาย/topology ยังไม่ทราบจาก payload เครื่องเดียว
 MESH = host(
     link("enp1s0f0np0", ip="10.100.16.1", rdma_device="rocep1s0f0"),
     link("enP2p1s0f0np0", ip="10.100.17.1", rdma_device="roceP2p1s0f0"),
@@ -78,20 +82,21 @@ def test_two_active_links_is_not_mesh():
     assert not is_mesh(TWO_PORT)
 
 
-def test_four_active_links_is_mesh():
+def test_four_active_links_is_mesh_candidate():
     assert is_mesh(MESH)
+    assert "mesh-topology-unverified" in kinds(MESH)
 
 
 # ── NCCL_IB_HCA ──────────────────────────────────────────────────────────────
 
 def test_hca_lists_every_active_twin():
     """สายเส้นเดียวมีคู่แฝดสองตัว — บอก NCCL ตัวเดียวคือได้แบนด์วิดท์ครึ่งเดียว"""
-    assert nccl_ib_hca(TWO_PORT) == "rocep1s0f0,roceP2p1s0f0"
+    assert nccl_ib_hca(TWO_PORT) == "=rocep1s0f0,roceP2p1s0f0"
 
 
 def test_hca_covers_all_four_in_mesh():
     assert nccl_ib_hca(MESH) == (
-        "rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1"
+        "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1"
     )
 
 
@@ -101,7 +106,20 @@ def test_hca_skips_links_without_a_roce_device():
         link("enp1s0f0np0", ip="10.100.16.1", rdma_device="rocep1s0f0"),
         link("enp2s0", ip="10.100.17.1", rdma_device=""),
     )
-    assert nccl_ib_hca(payload) == "rocep1s0f0"
+    assert nccl_ib_hca(payload) == "=rocep1s0f0"
+
+
+def test_hca_uses_only_equal_fastest_rails_and_exact_match_prefix():
+    payload = host(
+        link("enp1s0f0np0", speed=200, rdma_device="mlx5_1"),
+        link("enp2s0f0np0", speed=25, rdma_device="mlx5_10"),
+    )
+    assert nccl_ib_hca(payload) == "=mlx5_1"
+
+
+def test_hca_matches_controller_when_only_positive_slow_rail_exists():
+    payload = host(link("enp1s0f0np0", speed=10, rdma_device="mlx5_4"))
+    assert nccl_ib_hca(payload) == "=mlx5_4"
 
 
 def test_hca_is_empty_when_nothing_is_up():
@@ -127,7 +145,7 @@ def test_link_up_without_ip_is_reported():
 def test_twins_sharing_one_subnet_is_reported():
     """คู่แฝดต้องคนละวง — วงเดียวกันทำให้ routing สับสน แพ็กเก็ตออกผิดเส้น
 
-    ที่มา: eugr/spark-vllm-docker docs/NETWORKING.md เขียนตัวหนาไว้ว่า
+    ที่มา: eugr/spark-vllm-docker@42b3a793 docs/NETWORKING.md เขียนตัวหนาไว้ว่า
     "DO NOT use the same subnet on both twins"
     """
     payload = host(
@@ -144,22 +162,6 @@ def test_correct_wiring_has_no_subnet_warning():
     assert "shared-subnet" not in kinds(MESH)
 
 
-def test_mtu_is_deliberately_not_warned_about():
-    """คู่มือ setup ทุกฉบับสั่งตั้ง mtu 9000 แต่วัดบนเครื่องจริงแล้วไม่ต่างเลย
-
-    2 × DGX Spark GB10 ผ่าน RoCE (perftest):
-      netdev 1500 (RoCE MTU 1024) → 111.71 Gb/s · 1.98 µs
-      netdev 9000 (RoCE MTU 4096) → 111.71 Gb/s · 1.98 µs
-    คอขวดคือ PCIe 5.0 x4 ต่อ RoCE device ไม่ใช่ขนาดเฟรม · คำเตือนที่ไม่มีผลจริง
-    ทำให้คำเตือนข้ออื่นถูกมองข้ามไปด้วย จึงจงใจไม่เตือน — เทสนี้กันไม่ให้เผลอเพิ่มกลับมา
-    """
-    default_mtu_everywhere = host(
-        link("enp1s0f0np0", ip="10.100.16.1", rdma_device="rocep1s0f0"),
-        link("enP2p1s0f0np0", ip="10.100.17.1", rdma_device="roceP2p1s0f0"),
-    )
-    assert kinds(default_mtu_everywhere) == set()
-
-
 def test_link_without_roce_device_is_reported():
     payload = host(link("enp2s0", ip="10.100.16.1", rdma_device=""))
     assert "no-rdma-device" in kinds(payload)
@@ -173,10 +175,9 @@ def test_healthy_two_port_setup_has_no_warnings():
 # ── mesh: เส้น out-of-band ────────────────────────────────────────────────────
 
 def test_mesh_needs_an_out_of_band_link():
-    """mesh 3 เครื่องต่อเป็นวงแหวน แต่ละคู่เห็นกันเฉพาะคู่ที่มีสายถึงกัน
+    """A local mesh candidate without even a local OOB candidate must be flagged.
 
-    NCCL/Ray ต้องมีเส้นที่ทุกเครื่องเห็นกันหมดไว้ bootstrap — ซึ่งคือ RJ-45 10G
-    ไม่ใช่ QSFP · ไม่มีเส้นนั้นแล้ว init ค้างโดยไม่มี error ที่อ่านรู้เรื่อง
+    This does not prove that an OOB interface found locally is reachable by every peer.
     """
     without_oob = host(*[l for l in MESH["fabric"]["links"] if l["iface"] != "enP7s7"])
     assert "mesh-without-oob" in kinds(without_oob)
@@ -215,20 +216,6 @@ def test_non_mesh_host_is_not_asked_for_out_of_band():
     assert "mesh-without-oob" not in kinds(without_oob)
 
 
-# ── ค่า NCCL ของ mesh ────────────────────────────────────────────────────────
-
-def test_mesh_nccl_settings_match_the_upstream_project():
-    """ค่าสามตัวนี้มาจาก eugr/spark-vllm-docker ที่รัน NCCL all_gather บน mesh จริง
-
-    ล็อกไว้เป็นเทสเพราะเป็น "ความรู้ที่ทดสอบมาแล้ว" ไม่ใช่ค่าที่เดาได้จากเอกสาร NCCL
-    """
-    assert MESH_NCCL_ENV == {
-        "NCCL_NET_PLUGIN": "none",
-        "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
-        "NCCL_IB_MERGE_NICS": "0",
-    }
-
-
 # ── ทนต่อ payload ที่ไม่ครบ ──────────────────────────────────────────────────
 
 def test_empty_payload_does_not_crash():
@@ -246,3 +233,31 @@ def test_payload_from_an_older_node_without_new_fields():
     ]}}
     assert "no-rdma-device" in kinds(old)
     assert nccl_ib_hca(old) == ""
+
+
+def test_untrusted_remote_payload_is_normalized_and_never_raises():
+    hostile = {"gpus": [{"name": "GB10"}], "fabric": {"links": [
+        {"iface": "enp1s0[/dim][bold red]boom", "ip": ["not", "text"],
+         "speed_gbps": "200", "state": {"bad": True}, "connectx": True,
+         "rdma_device": "[red]mlx5_0[/red]"},
+        None,
+        "not-a-link",
+        {"iface": "enp2s0", "ip": "10.0.0.1", "prefix": 24,
+         "speed_gbps": float("nan"), "state": "up", "connectx": True},
+        {"iface": "lo", "ip": "127.0.0.1", "prefix": 8,
+         "speed_gbps": 200, "state": "up", "connectx": True},
+    ]}}
+    assert active_fabric_links(hostile) == []
+    assert fabric_warnings(hostile) == []
+    assert nccl_ib_hca(hostile) == ""
+
+
+def test_cli_escapes_remote_rich_markup(monkeypatch):
+    from lmds.cli import main
+
+    stream = io.StringIO()
+    monkeypatch.setattr(main, "console", Console(file=stream, color_system=None, width=200))
+    main._render_fabric_warnings("[red]remote[/red][blink]", MESH)
+    rendered = stream.getvalue()
+    assert "[red]remote[/red][blink]" in rendered
+    assert "NCCL_IB_HCA='=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1'" in rendered

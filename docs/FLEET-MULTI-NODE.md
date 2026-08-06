@@ -169,30 +169,33 @@ roceP2p1s0f1 port 1 ==> enP2p1s0f1np1 (Down)
 | คู่แฝดสองเส้นอยู่ **วง (subnet) เดียวกัน** | routing สับสน แพ็กเก็ตออกผิดเส้น · ต้องแยกคนละ `/24` |
 | ลิงก์ขึ้นแต่ไม่มี RoCE device คู่กัน | ตั้ง `NCCL_IB_HCA` ไม่ได้ → ตกไปใช้ TCP เงียบ ๆ |
 
-> **MTU: เราวัดแล้วไม่ต้องตั้ง** คู่มือ setup แทบทุกฉบับสั่ง `mtu 9000` แต่วัดบน DGX Spark
-> จริงสองเครื่องผ่าน RoCE (`perftest`) ได้ **เท่ากันเป๊ะ**: netdev 1500 (RoCE MTU 1024) →
-> 111.71 Gb/s / 1.98 µs · netdev 9000 (RoCE MTU 4096) → 111.71 Gb/s / 1.98 µs
-> คอขวดคือ PCIe 5.0 x4 ต่อ RoCE device ไม่ใช่ขนาดเฟรม · LMDS จึง **จงใจไม่เตือน**เรื่อง MTU
-> — คำเตือนที่ไม่มีผลจริงทำให้คำเตือนข้ออื่นถูกมองข้ามไปด้วย
+> **MTU:** LMDS ยังไม่ตรวจหรือเปลี่ยน MTU. branch นี้ไม่มี benchmark artifact/คำสั่ง/driver matrix
+> ที่ทำซ้ำได้เพียงพอจะรับรองค่าเดียวกับทุก firmware และ topology; ให้ตรวจ end-to-end ตามคู่มือของ
+> fabric ที่ใช้งานและวัด collective จริงก่อน production.
 
-### mesh 3 เครื่อง — ต่อกันเองไม่ต้องมีสวิตช์
+### mesh candidate — ต้องยืนยัน topology ข้ามเครื่อง
 
-ต่อ **สองพอร์ต** ต่อเครื่อง (พอร์ต 0 ของเครื่องหนึ่ง → พอร์ต 1 ของอีกเครื่อง วนเป็นวงแหวน)
-แล้วสามเครื่องคุยกันได้โดยไม่ต้องซื้อสวิตช์ QSFP · สังเกตจาก RoCE **ขึ้นครบสี่ตัว**
+RoCE local ขึ้นครบสี่ตัวบอกได้เพียงว่าเครื่องนั้นอาจต่อสองพอร์ต. ข้อมูลจากเครื่องเดียวแยกไม่ได้ว่า
+ปลายสายต่อเป็น direct mesh, ผ่านสวิตช์ หรือไป topology อื่น; UI จึงเรียกผลนี้ว่า `mesh candidate`.
 
-mesh ต้องการสองอย่างที่คลัสเตอร์ปกติไม่ต้อง:
+ก่อนใช้ direct mesh ต้องยืนยันอย่างน้อย:
 
 1. **สายนอกวง (out-of-band) ที่ทุกเครื่องเห็นกันหมด** — พอร์ต RJ-45 10G (หรือ wifi ถ้าจำเป็น)
    เพราะในวงแหวน แต่ละคู่เห็นกันตรง ๆ เฉพาะคู่ที่มีสายถึงกัน แต่ NCCL/Ray ต้อง bootstrap
    ผ่านเส้นที่ทุกเครื่องเห็นพร้อมกัน · ไม่มีเส้นนี้แล้ว init ค้างโดยไม่มี error ที่อ่านรู้เรื่อง
-2. **ค่า NCCL คนละชุด** — controller ตรวจเองแล้วใส่ให้ตอน `start`:
-   `NCCL_NET_PLUGIN=none` · `NCCL_IB_SUBNET_AWARE_ROUTING=1` · `NCCL_IB_MERGE_NICS=0`
-   ไม่ตั้งชุดนี้ NCCL จะพยายาม merge NIC ข้ามวงแล้ว hang ตอน init
+2. **route และ collective ข้ามทุกคู่จริง** — controller ไม่ฉีดค่า NCCL เฉพาะของ third-party image
+   อัตโนมัติ เพราะ local link count ไม่ยืนยัน topology และบางตัวแปรไม่อยู่ใน NCCL contract ทุกเวอร์ชัน
 
-> 3 เครื่องยังติดข้อจำกัด TP เหมือนเดิม (หาร attention head ไม่ลง) — mesh จึงเหมาะกับ
-> pipeline parallel หรือ data parallel มากกว่า · **4 เครื่องต้องใช้สวิตช์** เช่น Mikrotik CRS504/CRS812
+> จำนวน rank ที่ใช้ tensor parallel ได้ขึ้นกับ model config. Generated stacked controller ของ LMDS
+> ยังไม่ได้เปิด pipeline parallel; ห้ามตีความคำเตือนนี้ว่า LMDS deploy PP ให้เอง.
 >
-> ผังการเดินสาย ค่า netplan และผลวัด NCCL ของ mesh: [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker/blob/main/docs/NETWORKING.md) (MIT)
+> NVIDIA มี playbook ทางการสำหรับสามเครื่องที่รวม network validation และ NCCL sanity test:
+> [Connect Three DGX Spark in a Ring Topology](https://build.nvidia.com/spark/connect-three-sparks)
+> (อัปเดต 2026-03-19). ใช้ playbook/version ของ NCCL ที่กำหนดแทนการอนุมานจากจำนวนลิงก์ local.
+>
+> ตัวอย่างผัง/netplan ของโครงการที่ทดสอบ topology ของตัวเอง:
+> [eugr/spark-vllm-docker @ `42b3a793`](https://github.com/eugr/spark-vllm-docker/blob/42b3a7932ee60d9baf0f706c6ab681fdef62d0fe/docs/NETWORKING.md)
+> (MIT). นี่เป็น reference เฉพาะโครงการ ไม่ใช่ NCCL portability guarantee.
 
 ### เงื่อนไขการจับกลุ่ม
 
@@ -231,19 +234,19 @@ lmds node set spark2                                # ดูค่าปัจ�
 ชั้นทะเบียนและการจับกลุ่มรองรับกี่เครื่องก็ได้อยู่แล้ว · controller วน worker ทุกตัวจาก `WORKER_IPS`
 (ค่าเดียว = พฤติกรรมเดิมของ 2 เครื่องเป๊ะ) · ใช้ target preset `dgx-spark-stacked-4` สำหรับ 4 เครื่อง
 
-**ข้อจำกัดที่แท้จริงไม่ใช่โค้ด แต่คือ tensor parallel ต้องหาร attention head ลงตัว:**
+Tensor parallel ต้องหาร attention/KV heads ตาม model config ลงตัว; หน้าจอ cluster ยังไม่รู้โมเดล:
 
 | เครื่อง | world size | ใช้ได้ไหม |
 |---|---|---|
 | 2 | 2 | ✅ TP=2 (ทดสอบแล้ว) |
-| **3** | 3 | ⚠️ TP=3 หาร head ไม่ลง (Llama 3.3 70B มี 64 head) — vLLM ปฏิเสธตั้งแต่ start · ต้องใช้ **TP=2 + pipeline** |
+| **3** | 3 | ⚠️ ขึ้นกับจำนวน attention/KV heads ของโมเดล; LMDS ยังไม่รู้ config ตอนแสดงกลุ่มและไม่ได้เปิด pipeline |
 | 4 | 4 | ✅ TP=4 (64÷4=16) · หน่วยความจำรวม ~512 GB |
 
-`lmds node cluster` บอกให้เองว่ากลุ่มนั้นใช้ TP ตรง ๆ ได้ไหม:
+`lmds node cluster` จึงเตือนให้ตรวจโมเดลแทนการรับรองจากจำนวนเครื่องอย่างเดียว:
 
 ```text
 พร้อม spark1 + spark2 + spark3 — NVIDIA GB10 x1/เครื่อง ·
-world size 3 (TP=2 + pipeline (TP=3 หาร head ไม่ลง)) · 200G RDMA
+world size 3 (TP=3 ต้องตรวจจำนวน attention heads ของโมเดลก่อน) · 200G RDMA
 ```
 
 `--write` เขียน `WORKER_IPS` ครบทุกตัวพร้อม `NNODES` และ `TENSOR_PARALLEL_SIZE` ให้ตรงจำนวนเครื่อง

@@ -259,56 +259,6 @@ def create_app(token: str = "") -> FastAPI:
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.get("/api/models/{slug}/connect", dependencies=guarded)
-    def connect_info(slug: str) -> dict:
-        """ค่าตั้ง Claude Code ของโมเดลนี้ + ผลตรวจว่าผิว Anthropic ใช้ได้จริง
-
-        ใช้ตัวเดียวกับ `lmds connect` — token ไม่ถูกส่งออกมาทาง HTTP เลย
-        (บล็อกที่ได้อ้าง $API_KEY ไม่ใช่ค่าจริง)
-        """
-        import json
-        import subprocess
-
-        import httpx
-
-        from lmds.connect import ConnectError, build_config, env_lines, probe_endpoint
-        from lmds.fleet import find
-
-        server = find(slug)
-        if server is None:
-            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
-        if not server.running:
-            raise HTTPException(status_code=409, detail=f"{slug} ยังไม่ได้รัน — สั่ง start ก่อน")
-        if not server.controller_exists:
-            raise HTTPException(status_code=404, detail=f"ไม่พบ controller ของ {slug}")
-
-        proc = subprocess.run(
-            [server.controller, "client-config"], capture_output=True, text=True, timeout=60
-        )
-        if proc.returncode != 0:
-            raise HTTPException(status_code=502, detail=f"client-config ไม่ผ่าน: {proc.stderr.strip()[:300]}")
-        try:
-            client_config = json.loads(proc.stdout)
-            config = build_config(client_config, port=server.port)
-        except (ValueError, ConnectError) as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-        # หน้าเว็บรอคำตอบอยู่ — ให้ timeout สั้นกว่า CLI จะได้ไม่ค้างจนผู้ใช้กดซ้ำ
-        with httpx.Client(timeout=30.0) as http:
-            probe = probe_endpoint(config, client=http)
-        return {
-            "slug": slug,
-            "base_url": config.base_url,
-            "model": config.model,
-            "needs_token": config.needs_token,
-            "compact_hint": config.compact_hint,
-            "env_lines": env_lines(config),
-            "messages_ok": probe.messages_ok,
-            "tools_ok": probe.tools_ok,
-            "detail": probe.detail,
-            "sample": probe.sample,
-        }
-
     @app.get("/api/jobs/{job_id}", dependencies=guarded)
     def job_status(job_id: str) -> dict:
         from . import jobs
@@ -445,16 +395,22 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.inventory import host_payload
         from lmds.nodes import (
-            NodeError, check_cluster_ip, cluster_groups, fabric_warnings, is_mesh, load,
+            NodeError, active_fabric_links, best_link_speed, check_cluster_ip, cluster_groups, fabric_warnings, is_mesh, load,
             nccl_ib_hca, probe, stack_ready, suggest_cluster_ip,
         )
 
         def row(name, host, cluster_ip, is_self):
-            # ส่งข้อมูลดิบอย่างเดียว — หน้าเว็บเป็นภาษาอังกฤษ จึงเรียบเรียงประโยคฝั่ง JS
+            links = active_fabric_links(host)
+            best = best_link_speed(host)
             return {
                 "name": name, "self": is_self, "reachable": True,
-                "ready": stack_ready(host), "has_gpu": bool(host.get("gpus")),
-                "fabric": host.get("fabric"), "cluster_ip": cluster_ip,
+                "ready": stack_ready(host),
+                "has_gpu": isinstance(host, dict) and isinstance(host.get("gpus"), list)
+                           and any(isinstance(gpu, dict) for gpu in host["gpus"]),
+                # อย่าส่ง raw agent payload เข้า browser; cluster helpers normalize remote JSON first.
+                "fabric": {"best_gbps": best or None,
+                           "tier": "rdma" if links and all(link.get("rdma") for link in links) else "unknown"},
+                "cluster_ip": cluster_ip,
                 "suggested_ip": suggest_cluster_ip(host),
                 "ip": check_cluster_ip(host, cluster_ip),
                 # ชุดเดียวกับที่ CLI ใช้ — หน้าเว็บกับ lmds node cluster ต้องบอกเรื่องเดียวกัน

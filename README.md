@@ -131,8 +131,9 @@ lmds recipes                             # สูตรที่รันผ่�
 - ตรวจ **ConnectX/RDMA/ความเร็วลิงก์** ให้เอง แล้วบอกว่าเครื่องคู่ไหน stacked ด้วยกันได้ ·
   กรอก cluster IP ที่ NCCL จะใช้ แล้วสั่ง `lmds node cluster --write <slug>` เขียนลง bundle ได้เลย
 - **เตือนการเดินสายที่พังเงียบ** — ลิงก์ขึ้นแต่ไม่มี IP · คู่แฝดอยู่วง subnet เดียวกัน · ไม่มี RoCE
-  device คู่กัน (= NCCL ตกไปใช้ TCP) · รองรับผัง **mesh 3 เครื่องแบบไม่ต้องมีสวิตช์** พร้อมค่า NCCL
-  เฉพาะของ mesh ที่ controller ใส่ให้เองตอน start
+  device คู่กัน (= NCCL ตกไปใช้ TCP) · ถ้าเห็นลิงก์ local ครบสองพอร์ตจะติดป้ายเป็น
+  **mesh candidate** ให้ตรวจปลายสาย/route ข้ามทุก node เอง; LMDS ไม่เดา topology หรือฉีดค่า NCCL
+  เฉพาะโครงการอื่นให้กับ runtime ทั่วไป
 
 รายละเอียด: [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
 

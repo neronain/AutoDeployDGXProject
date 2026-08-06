@@ -124,7 +124,7 @@ def _fake_sysfs(tmp_path, monkeypatch, *, speed="200000", driver="mlx5_core",
     (tmp_path / f"sys/bus/pci/drivers/{driver}").mkdir(parents=True)
     (net / "device/driver").symlink_to(tmp_path / f"sys/bus/pci/drivers/{driver}")
     if infiniband:
-        (tmp_path / "sys/class/infiniband/mlx5_0").mkdir(parents=True)
+        (tmp_path / "sys/class/infiniband/mlx5_0/device/net/enp1s0f0np0").mkdir(parents=True)
 
     real_path = profiler.Path
 
@@ -148,6 +148,14 @@ def test_fabric_detects_connectx_rdma(tmp_path, monkeypatch):
     assert fabric["cluster_capable"]
     link = fabric["links"][0]
     assert (link["iface"], link["ip"], link["connectx"]) == ("enp1s0f0np0", "10.10.0.1", True)
+
+
+def test_iface_addresses_prefers_configured_ip_over_link_local(monkeypatch):
+    monkeypatch.setattr(profiler, "_run", lambda *a, **k: (
+        "2: enp1s0 inet 169.254.1.2/16 brd 169.254.255.255 scope link\n"
+        "2: enp1s0 inet 10.10.0.2/24 brd 10.10.0.255 scope global\n"
+    ))
+    assert profiler._iface_addresses()["enp1s0"] == "10.10.0.2/24"
 
 
 def test_fabric_without_rdma_is_only_fast(tmp_path, monkeypatch):
@@ -207,6 +215,14 @@ def test_add_registers_a_machine_without_lmds(monkeypatch):
     assert node is not None
     assert "ยังไม่ได้ติดตั้ง LMDS" in node.last_error
     assert node.last_seen == ""  # ยังไม่เคยอ่านสถานะได้จริง
+
+
+def test_probe_rejects_non_object_agent_json(monkeypatch):
+    from lmds.nodes import ssh
+
+    monkeypatch.setattr(ssh, "run", lambda *a, **k: ssh.Result(0, '["not", "an", "object"]', ""))
+    with pytest.raises(NodeError, match="root ไม่ใช่ object"):
+        ssh.probe(make())
 
 
 # ── HF token ที่เครื่องมีอยู่แล้ว ────────────────────────────────────────────

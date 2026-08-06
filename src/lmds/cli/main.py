@@ -11,6 +11,7 @@ import shlex
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 import lmds
@@ -605,8 +606,9 @@ def _render_fabric_warnings(name: str, host: dict) -> None:
     if is_mesh(host):
         hca = nccl_ib_hca(host)
         console.print(
-            f"  [cyan]{name}: เดินสายแบบ mesh (ต่อสองพอร์ต)[/cyan] — "
-            f"ใช้กับ 3 เครื่องแบบไม่ต้องมีสวิตช์ · NCCL_IB_HCA={hca or '—'}"
+            f"  [cyan]{escape(name)}: พบลิงก์ local สองพอร์ต (mesh candidate)[/cyan] — "
+            f"ต้องยืนยันปลายสาย/route ข้ามทุก node · NCCL_IB_HCA='{escape(hca or '—')}' "
+            "(เครื่องหมาย = นำหน้าคือ exact match)"
         )
 
     for warning in warnings:
@@ -619,13 +621,14 @@ def _render_fabric_warnings(name: str, host: dict) -> None:
                 "routing สับสน แพ็กเก็ตออกผิดเส้น · แยกคนละ /24",
             "no-rdma-device":
                 f"{ifaces} ไม่มี RoCE device คู่กัน — ตั้ง NCCL_IB_HCA ไม่ได้ จะตกไปใช้ TCP",
+            "mesh-topology-unverified":
+                "จำนวนลิงก์ local พอบอกได้เพียงว่าอาจเป็น mesh — ยังไม่ได้ยืนยัน topology/OOB reachability ข้ามเครื่อง",
             "mesh-without-oob":
-                "เดินสาย mesh แต่ไม่มีเส้น out-of-band (RJ-45 10G) ที่ทุกเครื่องเห็นกัน — "
-                "NCCL bootstrap ไม่ผ่าน",
+                "เครื่องนี้ไม่พบ non-ConnectX OOB candidate — ตรวจ management/SSH reachability ตาม playbook ที่ใช้",
             "mesh-oob-wireless":
-                f"เส้น out-of-band ของ mesh เป็น wifi ({ifaces}) — ใช้ได้แต่ไม่แนะนำ",
+                f"OOB candidate เป็น wifi ({ifaces}) — ยังไม่ได้ยืนยันว่า peer ทุกเครื่องเข้าถึงได้",
         }.get(warning["kind"], warning["kind"])
-        console.print(f"    [yellow]⚠ {text}[/yellow]")
+        console.print(f"    [yellow]⚠ {escape(text)}[/yellow]")
 
 
 @node_app.command("cluster")
@@ -648,7 +651,7 @@ def node_cluster(
     """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริงจึงช้ากว่า node list"""
     from lmds.inventory import host_payload
     from lmds.nodes import (
-        NodeError, check_cluster_ip, cluster_groups, cluster_note, fabric_warnings,
+        NodeError, best_link_speed, check_cluster_ip, cluster_groups, cluster_note, fabric_warnings,
         is_mesh, load, probe, stack_ready, suggest_cluster_ip,
     )
 
@@ -663,25 +666,27 @@ def node_cluster(
     table.add_column("stacked ได้")
 
     def add_row(name: str, host: dict, cluster_ip: str) -> None:
-        fabric = host.get("fabric") or {}
-        best = fabric.get("best_gbps")
+        best = best_link_speed(host)
         check = check_cluster_ip(host, cluster_ip)
         ready = stack_ready(host)
         table.add_row(
-            name,
+            escape(name),
             f"{best}G" if best else "—",
-            cluster_ip or f"[yellow]—[/yellow]",
-            "[green]ได้[/green]" if ready else f"[yellow]ไม่ได้[/yellow] {cluster_note(host)[:40]}",
+            escape(cluster_ip) if cluster_ip else f"[yellow]—[/yellow]",
+            "[green]ได้[/green]" if ready else f"[yellow]ไม่ได้[/yellow] {escape(cluster_note(host)[:40])}",
         )
-        if check["state"] in {"mismatch", "slow", "link-local"}:
-            table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
+        if check["state"] in {"mismatch", "down", "slow", "link-local"}:
+            table.add_row("", "", "", f"[yellow]{escape(check['message'])}[/yellow]")
 
     add_row(local_name + " (hub)", local, machines[0]["cluster_ip"])
     for node in load():
         try:
             host = probe(node).get("host") or {}
         except NodeError as exc:
-            table.add_row(node.name, "—", node.cluster_ip or "—", f"[red]ต่อไม่ได้[/red] {str(exc)[:40]}")
+            table.add_row(
+                escape(node.name), "—", escape(node.cluster_ip or "—"),
+                f"[red]ต่อไม่ได้[/red] {escape(str(exc)[:40])}",
+            )
             continue
         machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
         add_row(node.name, host, node.cluster_ip)
@@ -709,9 +714,9 @@ def node_cluster(
         mark = "[green]พร้อม[/green]" if group["ready"] else "[yellow]ยังไม่พร้อม[/yellow]"
         note = group["parallelism"]
         parallel = (f"TP={note['world_size']}" if note["kind"] == "tensor-parallel"
-                    else f"TP={note['largest_tp']} + pipeline (TP={note['world_size']} หาร head ไม่ลง)")
+                    else f"TP={note['world_size']} ต้องตรวจจำนวน attention heads ของโมเดลก่อน")
         console.print(
-            f"  {mark} {names} — {group['gpu']} x{group['gpus_per_node']}/เครื่อง · "
+            f"  {mark} {escape(names)} — {escape(group['gpu'])} x{group['gpus_per_node']}/เครื่อง · "
             f"world size {group['world_size']} ({parallel}) · {group['link_gbps']}G "
             f"{'RDMA' if group['rdma'] else 'ethernet'}"
         )
@@ -720,13 +725,15 @@ def node_cluster(
             text = {
                 "missing-ip": "ยังไม่ได้ตั้ง cluster IP: ",
                 "duplicate-ip": "cluster IP ซ้ำกันระหว่างเครื่อง: ",
+                "invalid-ip": "cluster IP ชี้ไปที่ลิงก์ที่ใช้ไม่ได้: ",
+                "unknown-prefix": "node payload ไม่มี prefix จึงยังยืนยันว่าวงตรงกันไม่ได้: ",
                 "split-fabric": "cluster IP อยู่คนละวง ต่อกันไม่ติด: ",
             }[blocker["kind"]] + names
-            console.print(f"    [yellow]· {text}[/yellow]")
+            console.print(f"    [yellow]· {escape(text)}[/yellow]")
         for member in group["members"]:
             if member["state"] == "unset" and member["suggested_ip"]:
                 console.print(
-                    f"    [dim]lmds node set {member['name']} --cluster-ip {member['suggested_ip']}[/dim]"
+                    f"    [dim]lmds node set {escape(member['name'])} --cluster-ip {escape(member['suggested_ip'])}[/dim]"
                 )
 
     if write:

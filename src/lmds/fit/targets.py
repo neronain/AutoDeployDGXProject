@@ -36,8 +36,8 @@ PRESETS: dict[str, TargetSpec] = {
     "dgx-spark-stacked": TargetSpec(
         "dgx-spark-stacked", MemoryModel.UNIFIED, 128.0, 2, system_ram_gb=None, tested=True
     ),
-    # 4 เครื่อง: TP=4 หาร attention heads ของโมเดลส่วนใหญ่ลงตัว (64/4=16) ต่างจาก 3 เครื่อง
-    # ที่ TP=3 มักหารไม่ลง — ยังไม่ได้ทดสอบจริง จึงคิดแบบ conservative
+    # 4 เครื่อง: preset สำหรับ topology ที่วางแผนไว้; TP ใช้ได้จริงหรือไม่ขึ้นกับ model config.
+    # ยังไม่ได้ทดสอบ hardware จริง จึงคิด budget แบบ conservative.
     "dgx-spark-stacked-4": TargetSpec(
         "dgx-spark-stacked-4", MemoryModel.UNIFIED, 128.0, 4, system_ram_gb=None, tested=False
     ),

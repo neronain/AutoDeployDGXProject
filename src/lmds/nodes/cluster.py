@@ -11,55 +11,135 @@ GPU รุ่นเดียวกัน จำนวนเท่ากัน �
 from __future__ import annotations
 
 import ipaddress
+import re
+from collections import Counter
 from typing import Iterable
 
-# ต่ำกว่านี้ stacked จะช้ากว่ารันแยกเครื่องจนไม่คุ้ม (activation/KV วิ่งข้ามเครื่องทุก token)
+# LMDS product-policy threshold for suggesting a stack, not an NCCL protocol limit or a measured
+# performance boundary.  The UI still reports slower links; it just does not mark them ready.
 MIN_STACK_GBPS = 25
 
-# หมายเหตุ MTU: คู่มือ setup ของ DGX Spark ทุกฉบับสั่งตั้ง mtu 9000 แต่**วัดบนเครื่องจริง
-# แล้วไม่ต่างเลย** (2 × DGX Spark GB10, perftest ผ่าน RoCE):
-#   netdev 1500 (RoCE MTU 1024) → 111.71 Gb/s · latency 1.98 µs
-#   netdev 9000 (RoCE MTU 4096) → 111.71 Gb/s · latency 1.98 µs
-# คอขวดคือ PCIe 5.0 x4 ต่อ RoCE device (~112 Gb/s) ไม่ใช่ขนาดเฟรม · จึงจงใจ**ไม่**เตือน
-# เรื่อง MTU — คำเตือนที่ไม่มีผลจริงทำให้คำเตือนข้ออื่นถูกมองข้ามไปด้วย
-
-# DGX Spark: ConnectX ใบเดียว สายเส้นเดียว = RoCE คู่แฝดสองตัว (PCIe 5.0 x4 ต่อตัว)
-# ต่อสองพอร์ต (mesh 3 เครื่องแบบไม่ใช้สวิตช์) = สี่ตัวขึ้นพร้อมกัน
+# จำนวน netdev เป็นเพียงสัญญาณว่าเครื่อง *อาจ* ต่อสองพอร์ตอยู่ ไม่ใช่หลักฐาน topology:
+# สี่ลิงก์อาจต่อผ่านสวิตช์หรือไปคนละปลายทาง จึงห้ามใช้ค่านี้ฉีด NCCL env อัตโนมัติ.
 MESH_ACTIVE_LINKS = 4
 
-# ค่าที่ mesh 3 เครื่องต้องใช้ ต่างจากคลัสเตอร์ผ่านสวิตช์/สองเครื่อง
-# ที่มา: eugr/spark-vllm-docker (MIT) docs/NETWORKING.md — ผ่าน NCCL all_gather บน mesh จริง
-MESH_NCCL_ENV = {
-    "NCCL_NET_PLUGIN": "none",
-    "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
-    "NCCL_IB_MERGE_NICS": "0",
-}
+_SAFE_IFACE = re.compile(r"^[A-Za-z0-9_.:@-]{1,64}$")
+_SAFE_DEVICE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_MAX_LINKS = 64
+
+
+def _text(value: object, limit: int = 200) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def _number(value: object, *, low: int = 0, high: int = 1_000_000) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = int(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if value == number and low <= number <= high else None
+
+
+def _ipv4(value: object) -> str:
+    text = _text(value, 64)
+    if not text:
+        return ""
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    if parsed.version != 4 or parsed.is_loopback or parsed.is_multicast or parsed.is_unspecified:
+        return ""
+    return str(parsed)
+
+
+def _links(host: object) -> list[dict]:
+    """Normalize untrusted/stale agent JSON before cluster logic or presentation consumes it."""
+    if not isinstance(host, dict):
+        return []
+    fabric = host.get("fabric")
+    raw_links = fabric.get("links") if isinstance(fabric, dict) else None
+    if not isinstance(raw_links, list):
+        return []
+    links = []
+    for raw in raw_links[:_MAX_LINKS]:
+        if not isinstance(raw, dict):
+            continue
+        iface = _text(raw.get("iface"), 64)
+        if iface == "lo" or not _SAFE_IFACE.fullmatch(iface):
+            continue
+        ip = _ipv4(raw.get("ip"))
+        prefix = _number(raw.get("prefix"), low=0, high=32) if ip else None
+        device = _text(raw.get("rdma_device"), 64)
+        if device and not _SAFE_DEVICE.fullmatch(device):
+            device = ""
+        state = _text(raw.get("state"), 16)
+        if state not in {"up", "down", "unknown"}:
+            state = "unknown"
+        links.append({
+            "iface": iface,
+            "ip": ip,
+            "prefix": prefix,
+            "link_local": bool(ip and ipaddress.ip_address(ip).is_link_local),
+            "speed_gbps": _number(raw.get("speed_gbps")),
+            "rdma_device": device,
+            "driver": _text(raw.get("driver"), 64),
+            "state": state,
+            "connectx": raw.get("connectx") is True,
+            "rdma": raw.get("rdma") is True,
+        })
+    return links
 
 
 def machine_signature(host: dict) -> tuple:
     """ลายเซ็นฮาร์ดแวร์ที่ต้องตรงกันทุก rank"""
-    gpus = host.get("gpus") or []
+    host = host if isinstance(host, dict) else {}
+    gpus = host.get("gpus")
+    gpus = [gpu for gpu in gpus if isinstance(gpu, dict)] if isinstance(gpus, list) else []
+    first = gpus[0] if gpus and isinstance(gpus[0], dict) else {}
     return (
-        host.get("arch") or "",
-        host.get("profile") or "",
-        gpus[0].get("name", "") if gpus else "",
+        _text(host.get("arch"), 64),
+        _text(host.get("profile"), 64),
+        _text(first.get("name"), 200),
         len(gpus),
     )
 
 
 def fabric_tier(host: dict) -> str:
-    return (host.get("fabric") or {}).get("tier") or "unknown"
+    active = _active_links(host)
+    fastest = best_link_speed(host)
+    best = [link for link in active if link["speed_gbps"] == fastest]
+    return "rdma" if best and all(link["rdma"] for link in best) else "ethernet"
+
+
+def _active_links(host: object) -> list[dict]:
+    """All physical/virtual links that are up and report a positive speed, after normalization."""
+    return [
+        link for link in _links(host)
+        if link.get("state") == "up" and (link.get("speed_gbps") or 0) > 0
+    ]
+
+
+def best_link_speed(host: object) -> int:
+    """Fastest confirmed-up link in the normalized node payload (zero means unknown)."""
+    return max((link["speed_gbps"] for link in _active_links(host)), default=0)
 
 
 def stack_ready(host: dict) -> bool:
     """เครื่องนี้พร้อมเป็นสมาชิก stack ไหม — ดูแค่ฮาร์ดแวร์ ยังไม่ดูว่าตั้ง cluster IP หรือยัง"""
-    fabric = host.get("fabric") or {}
-    best = fabric.get("best_gbps")
-    return bool(host.get("gpus")) and best is not None and best >= MIN_STACK_GBPS
+    host = host if isinstance(host, dict) else {}
+    gpus = host.get("gpus")
+    valid_gpus = [gpu for gpu in gpus if isinstance(gpu, dict)] if isinstance(gpus, list) else []
+    return bool(valid_gpus) and best_link_speed(host) >= MIN_STACK_GBPS
 
 
 def _is_link_local(ip: str) -> bool:
-    return ip.startswith("169.254.")
+    try:
+        return ipaddress.ip_address(ip).is_link_local
+    except (TypeError, ValueError):
+        return False
 
 
 def fabric_links(host: dict) -> list[dict]:
@@ -69,10 +149,10 @@ def fabric_links(host: dict) -> list[dict]:
     มาเอง ลิงก์ขึ้นและเร็ว 200G เหมือนกัน แต่ยิง NCCL ข้ามเครื่องไม่ถึง — ห้ามเสนอ
     """
     # ตัดสินจาก IP เอง ไม่พึ่งแฟล็ก link_local ของ node — node เวอร์ชันเก่ายังไม่ส่งฟิลด์นี้มา
-    links = (host.get("fabric") or {}).get("links") or []
+    links = _links(host)
     return [
         link for link in links
-        if link.get("ip") and not _is_link_local(link["ip"])
+        if link.get("state") == "up" and link.get("ip") and not _is_link_local(link["ip"])
         and (link.get("speed_gbps") or 0) >= MIN_STACK_GBPS
     ]
 
@@ -83,21 +163,15 @@ def active_fabric_links(host: dict) -> list[dict]:
     ต่างจาก fabric_links() ที่กรองเอาเฉพาะเส้นที่พร้อมใช้ · ตรงนี้ต้องเห็นเส้นที่ขึ้นแต่
     ยังไม่ได้ตั้งค่าด้วย เพราะนั่นคือ "อาการ" ที่ต้องเตือน ไม่ใช่สิ่งที่ควรกรองทิ้งเงียบ ๆ
     """
-    links = (host.get("fabric") or {}).get("links") or []
+    links = _active_links(host)
     return [
         link for link in links
-        if link.get("connectx") and link.get("state") == "up"
-        and (link.get("speed_gbps") or 0) >= MIN_STACK_GBPS
+        if link.get("connectx")
     ]
 
 
 def is_mesh(host: dict) -> bool:
-    """เครื่องนี้เดินสายแบบ mesh (ต่อสองพอร์ต) หรือแบบปกติ (พอร์ตเดียว)
-
-    ConnectX ของ DGX Spark: หนึ่งพอร์ต QSFP = RoCE คู่แฝดสองตัว เพราะ SoC ให้ PCIe 5.0
-    ได้แค่ x4 ต่อ device จึงต้องใช้สอง device ต่อสายหนึ่งเส้นถึงจะได้ 200G
-    ขึ้นครบสี่ = ต่อสองพอร์ต = mesh 3 เครื่องแบบไม่ใช้สวิตช์
-    """
+    """Local signal that this host may be dual-port/mesh; never a topology certificate."""
     return len(active_fabric_links(host)) >= MESH_ACTIVE_LINKS
 
 
@@ -108,18 +182,21 @@ def nccl_ib_hca(host: dict) -> str:
     โดยไม่มีอะไรฟ้อง เพราะงานก็ยังรันได้ (controller ตรวจเองตอน start อยู่แล้ว —
     ตรงนี้ทำให้ hub บอกล่วงหน้าได้โดยไม่ต้องรอถึงตอนรัน)
     """
-    devices = [link.get("rdma_device") or "" for link in active_fabric_links(host)]
-    return ",".join(dict.fromkeys(d for d in devices if d))
+    active = [link for link in active_fabric_links(host) if link.get("rdma_device")]
+    if not active:
+        return ""
+    fastest = max(link.get("speed_gbps") or 0 for link in active)
+    devices = [link["rdma_device"] for link in active if (link.get("speed_gbps") or 0) == fastest]
+    return "=" + ",".join(dict.fromkeys(devices))
 
 
 def oob_link(host: dict) -> dict | None:
-    """สายที่ใช้คุยกันนอกเหนือจาก RoCE (out-of-band) — mesh บังคับว่าต้องไม่ใช่ QSFP
+    """Local non-ConnectX candidate for management/bootstrap traffic.
 
-    mesh 3 เครื่องต่อกันเป็นวงแหวน แต่ละคู่เห็นกันตรง ๆ แค่คู่ที่มีสายถึงกัน · NCCL/Ray
-    ต้องมีเส้นที่ **ทุกเครื่องเห็นกันหมด** ไว้คุยกันตอน bootstrap ซึ่งคือพอร์ต RJ-45 10G
-    (หรือ wifi ถ้าไม่มีจริง ๆ) ไม่ใช่ QSFP
+    A local interface cannot prove that every peer can reach it; callers must present this as a
+    candidate/warning, never as an end-to-end topology certificate.
     """
-    links = (host.get("fabric") or {}).get("links") or []
+    links = _links(host)
     candidates = [
         link for link in links
         if not link.get("connectx") and link.get("state") == "up"
@@ -151,7 +228,7 @@ def fabric_warnings(host: dict) -> list[dict]:
         warnings.append({"kind": "link-without-ip", "ifaces": no_ip})
 
     # 2. สองเส้นอยู่วงเดียวกัน — routing สับสน แพ็กเก็ตออกผิดเส้น
-    #    ที่มา: eugr/spark-vllm-docker docs/NETWORKING.md ("DO NOT use the same subnet on both twins")
+    #    ที่มา: eugr/spark-vllm-docker@42b3a793 docs/NETWORKING.md
     by_network: dict[str, list[str]] = {}
     for link in active:
         network = link_network(link)
@@ -170,8 +247,9 @@ def fabric_warnings(host: dict) -> list[dict]:
     if no_hca:
         warnings.append({"kind": "no-rdma-device", "ifaces": no_hca})
 
-    # 4. mesh ต้องมีเส้น out-of-band ที่ทุกเครื่องเห็นกัน
+    # 4. สี่ลิงก์ local บอกได้แค่ว่าเป็น mesh candidate; topology/OOB reachability ต้องตรวจข้ามเครื่อง
     if is_mesh(host):
+        warnings.append({"kind": "mesh-topology-unverified"})
         oob = oob_link(host)
         if oob is None:
             warnings.append({"kind": "mesh-without-oob"})
@@ -192,19 +270,23 @@ def check_cluster_ip(host: dict, cluster_ip: str) -> dict:
     """ตรวจว่า cluster IP ที่ตั้งไว้ตรงกับการ์ดจริงไหม
 
     คืนทั้ง state (ให้หน้าเว็บเรียบเรียงข้อความเองเป็นอังกฤษ) และ message ภาษาไทยสำหรับ CLI
-    state: ok / unset / mismatch / slow / link-local
+    state: ok / unset / mismatch / down / slow / link-local
     """
     if not cluster_ip:
         suggestion = suggest_cluster_ip(host)
         hint = f" — เสนอ {suggestion}" if suggestion else ""
         return {"state": "unset", "message": f"ยังไม่ได้ตั้ง cluster IP{hint}",
                 "iface": "", "speed_gbps": None}
-    links = (host.get("fabric") or {}).get("links") or []
+    links = _links(host)
     match = next((link for link in links if link.get("ip") == cluster_ip), None)
     if match is None:
         # ไม่ใช่ error เสมอไป: IP อาจอยู่บนการ์ดที่ตรวจไม่ได้ แต่ต้องเตือนเพราะพิมพ์ผิดก็มาทางนี้
         return {"state": "mismatch", "iface": "", "speed_gbps": None,
                 "message": f"{cluster_ip} ไม่ตรงกับการ์ดที่ตรวจพบบนเครื่องนี้ — ตรวจอีกครั้ง"}
+    if match.get("state") != "up":
+        return {"state": "down", "iface": match["iface"],
+                "speed_gbps": match.get("speed_gbps"),
+                "message": f"{cluster_ip} อยู่บน {match['iface']} แต่ลิงก์ไม่ได้ขึ้น — ตรวจสาย/route"}
     if _is_link_local(cluster_ip):
         return {"state": "link-local", "iface": match["iface"],
                 "speed_gbps": match.get("speed_gbps"),
@@ -212,20 +294,17 @@ def check_cluster_ip(host: dict, cluster_ip: str) -> dict:
     speed = match.get("speed_gbps") or 0
     if speed < MIN_STACK_GBPS:
         return {"state": "slow", "iface": match["iface"], "speed_gbps": speed,
-                "message": f"{cluster_ip} อยู่บน {match['iface']} {speed}G — ช้าเกินไปสำหรับ stacked"}
+                "message": f"{cluster_ip} อยู่บน {match['iface']} {speed}G — ต่ำกว่าเกณฑ์แนะนำของ LMDS {MIN_STACK_GBPS}G"}
     return {"state": "ok", "iface": match["iface"], "speed_gbps": speed,
             "message": f"{cluster_ip} บน {match['iface']} {speed}G"}
 
 
 def link_network(link: dict) -> str:
-    """วงของลิงก์นี้ เช่น 10.100.152.0/24 — ว่างเมื่อคำนวณไม่ได้
-
-    node เวอร์ชันเก่ายังไม่ส่ง prefix มา จึงเดาเป็น /24 ซึ่งตรงกับ fabric ของ DGX Spark
-    """
-    ip = link.get("ip") or ""
-    if not ip:
+    """วงของลิงก์นี้ เช่น 10.100.152.0/24 — ว่างเมื่อ IP/prefix ยืนยันไม่ได้."""
+    ip = _ipv4(link.get("ip")) if isinstance(link, dict) else ""
+    prefix = _number(link.get("prefix"), low=0, high=32) if isinstance(link, dict) else None
+    if not ip or prefix is None:
         return ""
-    prefix = link.get("prefix") or 24
     try:
         return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
     except ValueError:
@@ -268,9 +347,8 @@ def shared_fabric(members: list[dict]) -> tuple[str, dict[str, str]]:
 
 
 
-# vLLM ต้องแบ่ง attention head ให้ทุก rank เท่ากัน — TP ที่หาร head ไม่ลงตัวจะถูกปฏิเสธ
-# ตั้งแต่ start โมเดลส่วนใหญ่มี head เป็นเลขยกกำลังสอง (Llama 3.3 70B = 64) จำนวนเครื่อง
-# ที่เป็นเลขยกกำลังสองจึงใช้ tensor-parallel ได้ตรง ๆ ส่วนจำนวนอื่นต้องใช้ pipeline แทน
+# การหาร attention heads เป็นคุณสมบัติของโมเดล ไม่ใช่ topology. Power-of-two เป็นเพียง heuristic;
+# หน้าจอ cluster ยังไม่รู้ model config จึงห้ามอ้างว่า non-power-of-two รองรับ pipeline.
 def tensor_parallel_fits(world_size: int) -> bool:
     return world_size > 0 and (world_size & (world_size - 1)) == 0
 
@@ -282,8 +360,7 @@ def parallelism_note(world_size: int) -> dict:
     """
     if tensor_parallel_fits(world_size):
         return {"kind": "tensor-parallel", "world_size": world_size, "usable": True}
-    # 3, 5, 6, 7 … : TP หารไม่ลง ต้อง pipeline (ช้ากว่าเพราะ token ไหลเป็นทอด)
-    return {"kind": "pipeline-parallel", "world_size": world_size, "usable": True,
+    return {"kind": "model-dependent", "world_size": world_size, "usable": True,
             "largest_tp": 1 << (world_size.bit_length() - 1)}
 
 
@@ -306,7 +383,7 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             continue
         arch, profile, gpu, gpu_count = signature
         tiers = {fabric_tier(m["host"]) for m in members}
-        speeds = [(m["host"].get("fabric") or {}).get("best_gbps") or 0 for m in members]
+        speeds = [best_link_speed(m["host"]) for m in members]
 
         # เสนอ IP จากวงที่ทุกเครื่องมีขาร่วมกัน ไม่ใช่ให้แต่ละเครื่องเลือกเองอิสระ
         network, shared_ips = shared_fabric(members)
@@ -317,6 +394,8 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
                 "name": machine["name"],
                 "cluster_ip": machine.get("cluster_ip", ""),
                 "suggested_ip": shared_ips.get(machine["name"]) or suggest_cluster_ip(machine["host"]),
+                "network": next((link_network(link) for link in _links(machine["host"])
+                                 if link["ip"] == machine.get("cluster_ip", "")), ""),
                 **check,
             })
 
@@ -326,12 +405,22 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
         missing = [d["name"] for d in detail if d["state"] == "unset"]
         if missing:
             blockers.append({"kind": "missing-ip", "names": missing})
-        if len(set(addresses)) != len(addresses):
-            blockers.append({"kind": "duplicate-ip", "names": [d["name"] for d in detail]})
+        duplicate_addresses = {address for address, count in Counter(addresses).items() if count > 1}
+        if duplicate_addresses:
+            blockers.append({"kind": "duplicate-ip", "names": [
+                d["name"] for d in detail if d["cluster_ip"] in duplicate_addresses
+            ]})
+        invalid_ip = [d["name"] for d in detail if d["state"] not in {"ok", "unset"}]
+        if invalid_ip:
+            blockers.append({"kind": "invalid-ip", "names": invalid_ip})
+        unknown_network = [
+            d["name"] for d in detail
+            if d["state"] == "ok" and d["cluster_ip"] and not d["network"]
+        ]
+        if unknown_network:
+            blockers.append({"kind": "unknown-prefix", "names": unknown_network})
         # ตั้งครบแล้วแต่คนละวง = ต่อกันไม่ติด ทั้งที่แต่ละเครื่องดูถูกหมด
-        set_networks = {
-            link_network({"ip": d["cluster_ip"], "prefix": None}) for d in detail if d["cluster_ip"]
-        }
+        set_networks = {d["network"] for d in detail if d["cluster_ip"] and d["network"]}
         if len(addresses) == len(detail) and len(set_networks) > 1:
             blockers.append({"kind": "split-fabric", "names": [d["name"] for d in detail]})
 
@@ -357,7 +446,8 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
 
 def cluster_note(host: dict) -> str:
     """ข้อความสั้น ๆ สำหรับแสดงต่อท้ายเครื่องหนึ่งเครื่อง"""
-    fabric = host.get("fabric") or {}
-    if not host.get("gpus"):
+    host = host if isinstance(host, dict) else {}
+    fabric = host.get("fabric") if isinstance(host.get("fabric"), dict) else {}
+    if not isinstance(host.get("gpus"), list) or not host["gpus"]:
         return "ไม่พบ GPU — stacked ไม่ได้"
-    return fabric.get("summary") or "ตรวจสายเชื่อมไม่ได้"
+    return _text(fabric.get("summary"), 300) or "ตรวจสายเชื่อมไม่ได้"

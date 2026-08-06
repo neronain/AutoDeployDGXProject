@@ -1256,7 +1256,8 @@ function ipHint(m) {
   }
   if (ip.state === "mismatch") return `${m.cluster_ip} does not match any interface found on that machine`;
   if (ip.state === "link-local") return `${m.cluster_ip} is a link-local address (169.254.x.x) — that port has no real IP configured yet`;
-  if (ip.state === "slow") return `${m.cluster_ip} is on ${ip.iface} at ${ip.speed_gbps}G — too slow to stack`;
+  if (ip.state === "down") return `${m.cluster_ip} is assigned to ${ip.iface}, but that link is not up`;
+  if (ip.state === "slow") return `${m.cluster_ip} is on ${ip.iface} at ${ip.speed_gbps}G — below LMDS's stack recommendation policy`;
   return "";
 }
 
@@ -1272,11 +1273,12 @@ function fabricWarningText(w) {
         + `routing gets confused and packets leave through the wrong port. Put them on separate /24s`;
     case "no-rdma-device":
       return `${ifaces} has no matching RoCE device — NCCL_IB_HCA cannot be set, so it falls back to TCP`;
+    case "mesh-topology-unverified":
+      return "The local link count only identifies a mesh candidate; peer wiring, routes, and shared out-of-band reachability are not verified";
     case "mesh-without-oob":
-      return "Wired as a mesh but there is no out-of-band link (10G RJ-45) that every node can see — "
-        + "NCCL bootstrap will not complete";
+      return "No local non-ConnectX OOB candidate was found; verify management and SSH reachability required by the selected ring playbook";
     case "mesh-oob-wireless":
-      return `The mesh out-of-band link is Wi-Fi (${ifaces}) — it works, but it is not recommended`;
+      return `The OOB candidate is Wi-Fi (${ifaces}); reachability from every peer is not verified`;
     default:
       return w.kind;
   }
@@ -1285,9 +1287,9 @@ function fabricWarningText(w) {
 function fabricNotes(m) {
   const rows = [];
   if (m.mesh) {
-    rows.push(`<div class="dim" style="margin:-2px 0 4px 22px">Wired as a mesh (both ports) — `
-      + `usable for 3 nodes without a switch · NCCL_IB_HCA=<span class="mono">`
-      + `${esc(m.nccl_ib_hca || "—")}</span></div>`);
+    rows.push(`<div class="dim" style="margin:-2px 0 4px 22px">Both local ports are active (mesh candidate) — `
+      + `verify peer routes before deployment · NCCL_IB_HCA='<span class="mono">`
+      + `${esc(m.nccl_ib_hca || "—")}</span>' (= prefix intentionally means exact match)</div>`);
   }
   for (const w of m.warnings || []) {
     rows.push(`<div style="margin:-2px 0 4px 22px;color:var(--warn)">⚠ ${esc(fabricWarningText(w))}</div>`);
@@ -1326,13 +1328,14 @@ function clusterGroupRow(g) {
     </div>
     <div class="dim">${esc(g.gpu)} ×${g.gpus_per_node} per node · world size ${g.world_size} ·
       ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
-    ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
-      ? `<div class="warn-line">${g.world_size} GPUs does not divide most models' attention heads —
-         use tensor-parallel ${g.parallelism.largest_tp} plus pipeline stages, not TP ${g.world_size}</div>`
+    ${g.parallelism && g.parallelism.kind === "model-dependent"
+      ? `<div class="warn-line">Tensor parallel ${g.world_size} is model-dependent — verify that the selected model's attention heads divide evenly before start</div>`
       : ""}
     ${g.blockers.map(b => `<div class="warn-line">${esc({
       "missing-ip": "Cluster IP still missing on: ",
       "duplicate-ip": "The same cluster IP is set on more than one machine: ",
+      "invalid-ip": "The configured cluster IP is on an unusable link: ",
+      "unknown-prefix": "The node payload has no prefix, so subnet compatibility is unverified on: ",
       "split-fabric": "These cluster IPs are on different subnets and cannot reach each other: ",
     }[b.kind] + b.names.join(", "))}</div>`).join("")}
     ${g.ready ? `<div class="dim" style="margin-top:6px">Deploy across these:

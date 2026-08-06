@@ -6,9 +6,9 @@ node ล่มหนึ่งเครื่องไม่กระทบเค
 
 from .cluster import (
     MESH_ACTIVE_LINKS,
-    MESH_NCCL_ENV,
     MIN_STACK_GBPS,
     active_fabric_links,
+    best_link_speed,
     check_cluster_ip,
     cluster_groups,
     cluster_note,
@@ -22,6 +22,7 @@ from .cluster import (
     shared_fabric,
     stack_ready,
     suggest_cluster_ip,
+    tensor_parallel_fits,
 )
 from .registry import (
     Node,
@@ -49,6 +50,7 @@ from .ssh import (
 
 __all__ = [
     "active_fabric_links",
+    "best_link_speed",
     "add",
     "check_cluster_ip",
     "check_login",
@@ -60,7 +62,6 @@ __all__ = [
     "is_mesh",
     "link_network",
     "MESH_ACTIVE_LINKS",
-    "MESH_NCCL_ENV",
     "nccl_ib_hca",
     "oob_link",
     "parallelism_note",

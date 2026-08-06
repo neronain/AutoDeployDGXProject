@@ -11,7 +11,7 @@ def host(gpu="NVIDIA GB10", count=1, gbps=200, tier="rdma", ip="10.10.0.1", arch
          profile="dgx_spark"):
     links = []
     if gbps:
-        links.append({"iface": "enp1s0f0np0", "ip": ip, "speed_gbps": gbps,
+        links.append({"iface": "enp1s0f0np0", "ip": ip, "prefix": 24, "speed_gbps": gbps,
                       "driver": "mlx5_core", "state": "up", "connectx": True, "rdma": tier == "rdma"})
     return {
         "arch": arch,
@@ -31,6 +31,13 @@ def test_stack_ready_needs_gpu_and_fast_link():
 def test_slow_link_is_not_stackable():
     """1G ต่อถึงกันได้ก็จริง แต่ stacked จะช้ากว่ารันแยก — ต้องไม่ถูกเสนอ"""
     assert not cl.stack_ready(host(gbps=10, tier="basic"))
+
+
+def test_fast_non_connectx_ethernet_remains_stackable():
+    payload = host(gbps=100, tier="fast")
+    payload["fabric"]["links"][0].update(connectx=False, driver="ice", rdma=False)
+    assert cl.stack_ready(payload)
+    assert cl.best_link_speed(payload) == 100
 
 
 def test_suggest_cluster_ip_picks_fastest_link_with_an_address():
@@ -60,6 +67,36 @@ def test_check_cluster_ip_flags_a_slow_interface():
     check = cl.check_cluster_ip(payload, "192.168.1.5")
     assert check["state"] == "slow"
     assert check["iface"] == "enp1s0f0np0"
+
+
+def test_down_cluster_interface_is_rejected_and_blocks_group():
+    first = host(ip="10.10.0.1")
+    second = host(ip="10.10.0.2")
+    second["fabric"]["links"][0]["state"] = "down"
+    assert cl.check_cluster_ip(second, "10.10.0.2")["state"] == "down"
+    # A different confirmed-up fast interface keeps the machine in the candidate group, while the
+    # configured down interface must still make the group non-ready.
+    second["fabric"]["links"].append({
+        "iface": "enp2s0", "ip": "10.20.0.2", "prefix": 24, "speed_gbps": 100,
+        "driver": "ice", "state": "up", "connectx": False, "rdma": False,
+    })
+    (group,) = cl.cluster_groups([
+        {"name": "head", "host": first, "cluster_ip": "10.10.0.1"},
+        {"name": "worker", "host": second, "cluster_ip": "10.10.0.2"},
+    ])
+    assert not group["ready"]
+    assert next(b for b in group["blockers"] if b["kind"] == "invalid-ip")["names"] == ["worker"]
+
+
+def test_down_fast_link_is_neither_suggested_nor_counted_as_best():
+    payload = host(gbps=200, ip="10.10.0.1")
+    payload["fabric"]["links"][0]["state"] = "down"
+    payload["fabric"]["links"].append({
+        "iface": "enp2s0", "ip": "10.20.0.1", "prefix": 24, "speed_gbps": 100,
+        "driver": "ice", "state": "up", "connectx": False, "rdma": False,
+    })
+    assert cl.suggest_cluster_ip(payload) == "10.20.0.1"
+    assert cl.best_link_speed(payload) == 100
 
 
 def test_two_matching_machines_form_a_group():
@@ -217,6 +254,19 @@ def test_cluster_ips_on_different_subnets_are_blocked():
     assert [b["kind"] for b in group["blockers"]] == ["split-fabric"]
 
 
+def test_cluster_with_configured_ip_but_old_payload_without_prefix_is_not_ready():
+    first = host(ip="10.10.0.1")
+    second = host(ip="10.10.0.2")
+    del second["fabric"]["links"][0]["prefix"]
+    machines = [
+        {"name": "head", "host": first, "cluster_ip": "10.10.0.1"},
+        {"name": "worker", "host": second, "cluster_ip": "10.10.0.2"},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert not group["ready"]
+    assert next(b for b in group["blockers"] if b["kind"] == "unknown-prefix")["names"] == ["worker"]
+
+
 def test_shared_fabric_is_stable_across_calls():
     """สองวงเร็วเท่ากัน — ต้องเลือกเหมือนเดิมทุกครั้ง ไม่งั้นค่าที่เสนอเปลี่ยนไปมา"""
     machines = [
@@ -239,20 +289,20 @@ def test_four_machines_form_one_group():
     assert group["parallelism"]["kind"] == "tensor-parallel"
 
 
-def test_three_machines_need_pipeline_parallel():
-    """TP=3 หาร attention head ของโมเดลส่วนใหญ่ไม่ลงตัว (Llama 3.3 70B = 64 heads)"""
+def test_three_machines_are_model_dependent_not_claimed_as_pipeline():
+    """Cluster inventory has no model config and the generated controller does not enable PP."""
     machines = [
         {"name": f"spark{i}", "host": host(ip=f"10.100.152.{i}"), "cluster_ip": f"10.100.152.{i}"}
         for i in range(1, 4)
     ]
     (group,) = cl.cluster_groups(machines)
     note = group["parallelism"]
-    assert note["kind"] == "pipeline-parallel"
-    assert note["largest_tp"] == 2  # TP=2 แล้วเหลือเครื่องที่สามไว้ทำ pipeline
+    assert note["kind"] == "model-dependent"
+    assert note["largest_tp"] == 2
 
 
 @pytest.mark.parametrize("size, kind", [(2, "tensor-parallel"), (4, "tensor-parallel"),
-                                        (8, "tensor-parallel"), (3, "pipeline-parallel"),
-                                        (6, "pipeline-parallel")])
+                                        (8, "tensor-parallel"), (3, "model-dependent"),
+                                        (6, "model-dependent")])
 def test_parallelism_note_by_size(size, kind):
     assert cl.parallelism_note(size)["kind"] == kind

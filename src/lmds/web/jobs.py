@@ -23,8 +23,6 @@ ALLOWED = {
     # ทดสอบว่าโมเดลตอบจริง — CLI มีมาตลอด เว็บเพิ่งได้
     "test-text", "test-vision", "test-reasoning", "test-tools", "bench", "stress",
     "props", "info", "network-info", "client-config", "status", "wait-health", "doctor",
-    # ขั้นตอนหลัง deploy ทั้งชุด — ชุดเดียวกับ `lmds up` (ไม่รวมขั้น deploy)
-    "up",
 }
 
 # download อย่างเดียวไม่พอที่จะบอกว่า "ไฟล์มาครบ" — CLI ให้รัน verify-files ต่อเสมอ
@@ -32,9 +30,7 @@ ALLOWED = {
 CHAINS = {
     "download": ["download", "verify-files"],
     "repair": ["download", "verify-files"],  # repair = โหลดที่ขาด (resume) แล้วตรวจซ้ำ
-    # "up" ประกอบขึ้นตอนรัน เพราะขั้น prepare-runtime มีเฉพาะ bundle ที่ build เอง — ดู _steps_for()
 }
-_UP_STEPS = ["download", "verify-files", "start", "test-text"]
 _TAIL_LINES = 400
 
 
@@ -119,24 +115,6 @@ def controller_env(options: dict | None) -> dict:
     return env
 
 
-def _steps_for(command: str, controller: Path) -> list[str]:
-    """ขั้นตอนที่จะรันจริงของคำสั่งหนึ่ง
-
-    "up" ต้องดูจาก RUNTIME_MODE ที่ render ลงสคริปต์ ไม่ใช่จากการมี dispatch case ชื่อ
-    prepare-runtime เพราะ template ใส่ case นั้นไว้ทุก mode แม้ mode docker จะไม่ต้องใช้
-    """
-    if command != "up":
-        return CHAINS.get(command, [command])
-    steps = list(_UP_STEPS)
-    try:
-        native = "RUNTIME_MODE:-native" in controller.read_text(encoding="utf-8")
-    except OSError:
-        native = False
-    if native:
-        steps.insert(2, "prepare-runtime")
-    return steps
-
-
 def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:
     if command not in ALLOWED:
         raise JobError(f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
@@ -144,7 +122,7 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
     if not path.is_file():
         raise JobError(f"ไม่พบ controller ของ {slug}")
 
-    steps = _steps_for(command, path)
+    steps = CHAINS.get(command, [command])
     extra_env = controller_env(options)
 
     with _LOCK:

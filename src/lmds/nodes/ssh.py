@@ -181,9 +181,12 @@ def probe(node: Node, timeout: int = 30) -> dict:
             )
         raise NodeError(f"ต่อ {node.target} ไม่ได้: {stderr[:300] or 'ไม่มีข้อความ'}")
     try:
-        return json.loads(result.stdout)
+        payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise NodeError(f"{node.target} ตอบกลับไม่ใช่ JSON — เวอร์ชัน LMDS อาจไม่ตรงกัน") from exc
+    if not isinstance(payload, dict):
+        raise NodeError(f"{node.target} ตอบกลับเป็น JSON แต่ root ไม่ใช่ object — เวอร์ชัน LMDS อาจไม่ตรงกัน")
+    return payload
 
 
 # ติดตั้ง/อัปเดต LMDS บน node — hub ไม่ได้ push โค้ดไปเอง แต่สั่งให้เครื่องนั้น clone จาก GitHub

@@ -235,7 +235,6 @@ def host_summary() -> HostSummary:
 # ใช้ตัดสินว่าเครื่องนี้ "ต่อ stacked ได้ไหม" — stacked (TP ข้ามเครื่อง) ยิง KV/activation
 # ผ่านสายตลอดเวลา ถ้าไม่ใช่ RDMA 100G+ จะช้าจนไม่คุ้มเทียบกับรันแยกเครื่อง
 _MELLANOX_VENDOR = "0x15b3"
-_RDMA_DRIVERS = {"mlx5_core", "mlx4_core", "irdma", "ionic", "bnxt_en"}
 
 
 def _sysfs(path: str) -> str:
@@ -258,7 +257,12 @@ def _iface_addresses() -> dict[str, str]:
         parts = line.split()
         if len(parts) < 4 or parts[2] != "inet":
             continue
-        addresses.setdefault(parts[1], parts[3])  # เก็บ CIDR ไว้ทั้งก้อน เช่น 10.100.152.1/24
+        # Interface may retain a link-local address alongside its configured address.  `ip` order
+        # is not a contract; prefer a non-link-local IPv4 instead of freezing the first row.
+        current = addresses.get(parts[1], "")
+        candidate = parts[3]
+        if not current or (current.startswith("169.254.") and not candidate.startswith("169.254.")):
+            addresses[parts[1]] = candidate  # เก็บ CIDR ไว้ทั้งก้อน เช่น 10.100.152.1/24
     return addresses
 
 
@@ -333,13 +337,14 @@ def detect_fabric() -> dict:
             "driver": driver,
             "state": state,
             "connectx": vendor == _MELLANOX_VENDOR or driver.startswith("mlx"),
-            "rdma": driver in _RDMA_DRIVERS and bool(rdma_devices),
+            # RDMA is per-interface: another HCA elsewhere on the host is not evidence that this
+            # netdev has a verbs device.  rdma_device is the sysfs certificate used by NCCL.
+            "rdma": bool(hca_by_iface.get(name)),
         })
 
     up = [l for l in links if l["state"] == "up" and l["speed_gbps"]]
     best = max((l["speed_gbps"] for l in up), default=None)
-    # เส้นที่ตั้งค่าแล้วมาก่อนเสมอ ต่อให้ link-local จะเร็วเท่ากัน — ยิง NCCL ไป 169.254 ไม่ถึงกัน
-    fastest = max(up, key=lambda l: (not l["link_local"], l["speed_gbps"]), default=None)
+    fastest = max(up, key=lambda l: l["speed_gbps"], default=None)
     has_rdma = bool(rdma_devices) and any(l["rdma"] for l in up)
 
     if best is None:

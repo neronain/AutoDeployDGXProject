@@ -453,40 +453,13 @@ def test_single_cable_reports_both_twins(tmp_path):
     assert sorted(result.stdout.strip().split(",")) == ["roceP2p1s0f0", "rocep1s0f0"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
-def test_two_cables_is_detected_as_mesh(tmp_path):
-    """ต่อสองพอร์ต = RoCE ขึ้นครบสี่ = mesh 3 เครื่องแบบไม่ใช้สวิตช์
-
-    mesh ต้องใช้ค่า NCCL คนละชุด ไม่ตั้งแล้ว NCCL พยายาม merge NIC ข้ามวงจน hang ตอน init
-    """
+def test_local_link_count_never_injects_topology_specific_nccl_env(tmp_path):
+    """จำนวนลิงก์ local ไม่ยืนยัน topology จึงห้ามฉีด env ของ mesh อัตโนมัติ"""
     bundle, _, _ = _stacked_bundle(tmp_path)
-    ib_root = _fake_infiniband(tmp_path / "ib-mesh", {
-        "rocep1s0f0": ("enp1s0f0np0", "up", 200000),
-        "roceP2p1s0f0": ("enP2p1s0f0np0", "up", 200000),
-        "rocep1s0f1": ("enp1s0f1np1", "up", 200000),
-        "roceP2p1s0f1": ("enP2p1s0f1np1", "up", 200000),
-    })
-    assert _call_controller_fn(bundle.controller, "is_mesh_fabric", ib_root).returncode == 0
-
-    env = _call_controller_fn(bundle.controller, "_nccl_env_pairs eth0", ib_root).stdout
-    assert "NCCL_NET_PLUGIN=none" in env
-    assert "NCCL_IB_SUBNET_AWARE_ROUTING=1" in env
-    assert "NCCL_IB_MERGE_NICS=0" in env
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")
-def test_single_cable_does_not_get_mesh_settings(tmp_path):
-    """ค่าของ mesh ใส่ให้คลัสเตอร์ปกติไม่ได้ — NCCL_NET_PLUGIN=none ปิด plugin ที่ควรใช้"""
-    bundle, _, _ = _stacked_bundle(tmp_path)
-    ib_root = _fake_infiniband(tmp_path / "ib-normal", {
-        "rocep1s0f0": ("enp1s0f0np0", "up", 200000),
-        "roceP2p1s0f0": ("enP2p1s0f0np0", "up", 200000),
-    })
-    assert _call_controller_fn(bundle.controller, "is_mesh_fabric", ib_root).returncode != 0
-
-    env = _call_controller_fn(bundle.controller, "_nccl_env_pairs eth0", ib_root).stdout
-    assert "NCCL_NET_PLUGIN" not in env
-    assert "NCCL_IB_MERGE_NICS" not in env
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "is_mesh_fabric" not in text
+    assert "NCCL_IB_SUBNET_AWARE_ROUTING" not in text
+    assert "NCCL_NET_PLUGIN=none" not in text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="ต้องมี bash + sysfs layout")

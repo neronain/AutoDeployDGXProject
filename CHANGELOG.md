@@ -34,8 +34,8 @@
   logs, clear-fi-cache) · ค่าเริ่มต้นของ bundle 2 เครื่องยังเป็น worker เดียวเหมือนเดิมทุกประการ
   · target preset ใหม่ `dgx-spark-stacked-4` · `TargetSpec.node_count` แยก "หลาย GPU ในเครื่องเดียว"
   (RTX dual) ออกจาก "หลายเครื่องเครื่องละใบ" (Spark stacked) ซึ่งเดิมปนกันอยู่ที่ `gpu_count`
-  · `lmds node cluster` เตือนเมื่อจำนวนเครื่องไม่เข้ากับ tensor parallel (3 เครื่อง = TP=3 หาร
-  attention head ไม่ลง ต้องใช้ TP=2 + pipeline)
+  · `lmds node cluster` ติดป้ายจำนวน rank ที่ไม่ใช่ power-of-two ว่า model-dependent และให้ตรวจ
+  attention/KV heads ของโมเดล; ไม่อ้าง pipeline เพราะ generated controller ยังไม่ได้เปิด PP
 - **ที่อยู่สำรองต่อเครื่อง (`node set --alt-host`)** — เครื่องเดียวกันเข้าได้หลายทาง (LAN ที่ออฟฟิศ,
   Tailscale/VPN ตอนออกนอก) · hub ลองที่อยู่หลักก่อน ต่อไม่ถึงจึงค่อยลองสำรอง ไม่ต้องแก้ทะเบียน
   ตอนย้ายที่ทำงาน · **failover เฉพาะเมื่อต่อไม่ถึงจริง** (timeout/no route/refused) คำสั่งที่ต่อได้
@@ -233,11 +233,10 @@
   · **ลิงก์ขึ้นแต่ยังไม่มี IP** — NCCL ใช้เส้นนั้นไม่ได้เลยทั้งที่สายเสียบอยู่ (ของเดิมกรองทิ้งเงียบ ๆ)
   · **คู่แฝดสองเส้นอยู่วง subnet เดียวกัน** — routing สับสน แพ็กเก็ตออกผิดเส้น
   · **ลิงก์ขึ้นแต่ไม่มี RoCE device คู่กัน** — ตั้ง `NCCL_IB_HCA` ไม่ได้ → ตกไปใช้ TCP
-- **รองรับการเดินสายแบบ mesh (3 เครื่องไม่ต้องมีสวิตช์)** — RoCE ขึ้นครบสี่ตัว = ต่อสองพอร์ต
-  · controller ตรวจเองแล้วใส่ `NCCL_NET_PLUGIN=none` + `NCCL_IB_SUBNET_AWARE_ROUTING=1` +
-  `NCCL_IB_MERGE_NICS=0` ให้ตอน `start` (ไม่ตั้งชุดนี้ NCCL พยายาม merge NIC ข้ามวงแล้ว hang ตอน init)
-  · เตือนเมื่อ mesh ไม่มีสาย out-of-band ที่ทุกเครื่องเห็นกัน (RJ-45 10G) ซึ่ง NCCL/Ray ต้องใช้ bootstrap
-  · ที่มาของค่าและผังการเดินสาย: [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (MIT)
+- **ตรวจ mesh candidate แบบไม่เดาเกินข้อมูล** — RoCE local ขึ้นครบสี่ตัวบอกได้เพียงว่า
+  เครื่องอาจต่อสองพอร์ต; CLI/เว็บจะแสดง HCA exact-name และเตือนให้ยืนยันปลายสาย, route และ OOB
+  ข้ามทุก node. Controller ไม่ฉีดค่า NCCL ของ third-party topology อัตโนมัติ เพราะ local link count
+  แยก direct mesh ออกจาก switched fabric ไม่ได้
 - **payload ของเครื่องมีชื่อ RoCE device ต่อ NIC แล้ว** (`rdma_device`) — อ่านจาก sysfs ตรง ๆ
   ได้ข้อมูลเดียวกับ `ibdev2netdev` โดยไม่ต้องมี mlnx-tools · hub จึงบอกค่า `NCCL_IB_HCA`
   ของแต่ละเครื่องได้ล่วงหน้า ไม่ต้องรอถึงตอน start
