@@ -641,7 +641,7 @@ gguf  gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf 25.7 GB               ~/models/gemma4-2
 
 ```bash
 lmds web                          # http://127.0.0.1:8600 — เครื่องนี้เท่านั้น
-lmds web --bind 0.0.0.0           # ให้ทั้งวง network เข้าได้ — สุ่ม token ให้อัตโนมัติ
+lmds web --bind 0.0.0.0           # ให้ทั้งวง network เข้าได้ — ถาม token ก่อน (Enter = สุ่มให้)
 lmds web --background             # รันเบื้องหลัง terminal ว่างใช้ CLI ต่อได้
 lmds web --status                 # ลืมลิงก์/token? ถามตัวที่รันอยู่ได้เลย
 lmds web --restart -b             # เปิดใหม่ (ลิงก์เดิมยังใช้ได้)
