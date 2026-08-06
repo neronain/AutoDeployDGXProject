@@ -574,8 +574,11 @@ def create_app(token: str = "") -> FastAPI:
         return payload
 
     def _node_target_hint(name: str) -> str:
-        cached = state.STORE.snapshot()["nodes"].get(name)
-        return _suggest_target((cached or {}).get("data", {}).get("host") if cached else None)
+        # เครื่องที่ติดต่อไม่ได้มี entry อยู่แต่ data เป็น None — `.get("data", {})` ไม่ช่วย
+        # เพราะ default ใช้เฉพาะตอน "ไม่มีคีย์" ไม่ใช่ตอนค่าเป็น None · เคสนี้ทำให้ /api/nodes
+        # ตอบ 500 แล้วทั้งส่วน Other machines หายไปทั้งก้อน
+        cached = state.STORE.snapshot()["nodes"].get(name) or {}
+        return _suggest_target((cached.get("data") or {}).get("host"))
 
     @app.get("/api/nodes/{name}/inventory", dependencies=guarded)
     def node_inventory(name: str, refresh: bool = False) -> dict:

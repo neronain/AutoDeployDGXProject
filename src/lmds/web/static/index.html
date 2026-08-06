@@ -1435,7 +1435,19 @@ async function loadNode(name) {
 
 async function refreshNodes() {
   const box = document.getElementById("nodes");
-  const d = await (await api("/api/nodes")).json();
+  let d;
+  try {
+    const r = await api("/api/nodes");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    d = await r.json();
+  } catch (err) {
+    // ค้างที่ "Loading…" ตลอดกาลคือบอกผู้ใช้ว่า "รอไปเรื่อย ๆ" ทั้งที่มันจะไม่มาแล้ว
+    box.innerHTML = `<div class="card"><div class="empty">
+      อ่านรายชื่อเครื่องไม่ได้ — ${esc(String(err.message || err))}
+      <br><span class="dim">ดู log ของหน้าเว็บ: <code>tail ~/.lmds/run/web.log</code>
+      แล้วกด refresh อีกครั้ง</span></div></div>`;
+    return;
+  }
   const nodes = d.nodes || [];
   if (!nodes.length) {
     nodeRows.clear();

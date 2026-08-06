@@ -1377,3 +1377,36 @@ def test_install_button_only_shows_when_ssh_works(registered):
 def test_installing_an_unknown_machine_says_so(registered):
     r = TestClient(create_app()).post("/api/nodes/not-a-machine/install")
     assert r.status_code == 404
+
+
+def test_nodes_list_survives_a_machine_that_is_unreachable(registered):
+    """เครื่องที่ติดต่อไม่ได้มี entry ในแคชแต่ `data` เป็น None — เผลออ่านต่อจาก None
+    ทำให้ /api/nodes ตอบ 500 แล้ว **ทั้งส่วน Other machines หายไปทั้งก้อน**
+    ไม่ใช่แค่เครื่องนั้นหาย (ผู้ใช้เจอจริง: หน้าค้างที่ "Loading…")
+    """
+    from lmds.web import state
+
+    state.STORE.set_node("spark2", None, "ต่อไม่ได้")
+    r = TestClient(create_app()).get("/api/nodes")
+    assert r.status_code == 200, r.text
+    row = next(n for n in r.json()["nodes"] if n["name"] == "spark2")
+    assert row["suggested_target"] == ""
+
+
+def test_the_nodes_list_never_breaks_the_whole_page(registered, monkeypatch):
+    """หนึ่งเครื่องมีปัญหาต้องไม่ทำให้รายชื่อทั้งหมดพัง — เป็นหลักที่ยึดมาตั้งแต่ต้น
+    แต่ตัวช่วยที่เพิ่มทีหลังไม่ได้ถูกคลุมด้วยหลักนั้น
+    """
+    from lmds.web import state
+
+    state.STORE.set_node("spark2", {"host": None, "models": []})
+    assert TestClient(create_app()).get("/api/nodes").status_code == 200
+    state.STORE.set_node("spark2", {"models": []})
+    assert TestClient(create_app()).get("/api/nodes").status_code == 200
+
+
+def test_the_page_says_something_when_a_list_cannot_be_read():
+    """ค้างที่ "Loading…" ตลอดกาลคือบอกผู้ใช้ว่า "รอไปเรื่อย ๆ" ทั้งที่มันจะไม่มาแล้ว"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    block = page.split("async function refreshNodes()")[1][:900]
+    assert "catch" in block and "อ่านรายชื่อเครื่องไม่ได้" in block
