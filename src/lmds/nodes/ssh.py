@@ -114,6 +114,24 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int) -> Result:
     return Result(proc.returncode, proc.stdout, proc.stderr)
 
 
+def stream(node: Node, command: str):
+    """เปิด ssh แบบอ่านผลทีละบรรทัด — ใช้กับงานยาว (download หลายสิบ GB) ที่ต้องเห็นความคืบหน้า
+
+    ต่างจาก run() ที่รอจนจบแล้วค่อยคืนทั้งก้อน · คืน Popen ให้ผู้เรียกวนอ่าน stdout เอง
+    """
+    wrapped = f"bash -lc {shlex.quote(command)}"
+    host = node.all_hosts[0]
+    args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port),
+            f"{node.user}@{host}", wrapped]
+    try:
+        return subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as exc:
+        raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
+
+
 def push_file(node: Node, local: str, remote: str, timeout: int = 1800) -> Result:
     """ส่งไฟล์ไปเครื่องปลายทางด้วย scp — ใช้ key เดียวกับ run()
 

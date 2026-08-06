@@ -1197,6 +1197,8 @@ function nodeModelsMarkup(name, data) {
       // ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าตัวอื่นรันอยู่บนพอร์ตนี้ ชุดทดสอบของตัวนี้
       // จะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล (bundle เก่ายังไม่มีตัวตรวจในสคริปต์)
       const rival = models.find(x => x.slug !== m.slug && x.running && x.port === m.port);
+      // งานค้างจากก่อนรีเฟรชหน้า — ตามต่อเองโดยไม่ต้องให้ผู้ใช้กดซ้ำ
+      if (m.job && m.job.running) followNodeJob(name, m.slug, m.job.id);
       const state = m.running ? (m.healthy ? "on" : "load") : "";
       const label = m.running ? (m.healthy ? "running" : "loading")
         : (m.downloaded ? "stopped" : "not downloaded");
@@ -1230,7 +1232,9 @@ function nodeModelsMarkup(name, data) {
               พอร์ตชนกับ ${esc(rival.slug)}</span>` : ""}</span>
           <span class="mono muted">:${m.port || "—"}</span>
           <span class="muted">${label}</span>
-          ${act ? nbtn(act, act, act === "download" ? "โหลด weight แล้วตรวจไฟล์ให้ (lmds repair)" : "") : ""}
+          ${m.job && m.job.running
+            ? `<span class="tag warn">${esc(m.job.command)}…</span>`
+            : (act ? nbtn(act, act, act === "download" ? "โหลด weight แล้วตรวจไฟล์ให้ (lmds repair)" : "") : "")}
           <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                   class="${open ? "on" : ""}" title="ตั้งค่า + คำสั่งทั้งหมด">⋯</button>
         </div>
@@ -1441,6 +1445,9 @@ document.addEventListener("click", async e => {
     btn.disabled = false;
     btn.textContent = original;
     if (!r.ok) { alert(d.detail || "Command failed"); return; }
+
+    // งานยาวคืน job มา — ตามผลแบบสตรีมแทนการรอเงียบ ๆ
+    if (d.job) { followNodeJob(node, slug, d.job.id); return; }
 
     // remove ครั้งแรกคือ --dry-run: server ยังไม่ลบอะไร แค่บอกว่าจะลบอะไรบ้าง
     // ผู้ใช้ต้องเห็นรายการ+ขนาดจริงก่อน แล้วกดยืนยันอีกครั้งถึงจะลบ
@@ -1704,6 +1711,38 @@ function showNodeOutput(node, title, output, extra = "") {
       <span class="grow"></span>${extra}
       <button data-nact="close-output" data-node="${esc(node)}">close</button>
     </div><pre>${esc(output || "(no output)")}</pre>`;
+}
+
+// งานยาวบนเครื่องอื่น (download/start/remove) — สตรีมผลให้เห็นความคืบหน้า
+// เดิมรอใน request เดียวแล้วเงียบเป็นสิบนาที ผู้ใช้แยกไม่ออกว่าคืบหน้าอยู่หรือค้างไปแล้ว
+const watchingNodes = new Map();   // "<node>/<slug>" -> job id
+
+function followNodeJob(node, slug, jobId) {
+  const key = node + "/" + slug;
+  if (watchingNodes.get(key) === jobId) return;
+  watchingNodes.set(key, jobId);
+  const tick = async () => {
+    const r = await api(`/api/jobs/${jobId}`);
+    if (!r.ok) { watchingNodes.delete(key); return; }
+    const d = await r.json();
+    const running = d.running;
+    showNodeOutput(node, `${d.command} · ${slug}${running ? " — กำลังทำงาน…" : ""}`,
+                   d.output || "เริ่มแล้ว…",
+                   running ? `<span class="tag">${esc(d.command)}</span>` : "");
+    const pre = nodeRows.get(node)?.block.querySelector("pre");
+    if (pre) pre.scrollTop = pre.scrollHeight;
+    if (running) { setTimeout(tick, 1200); return; }
+    watchingNodes.delete(key);
+    if (d.exit_code !== 0) {
+      const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
+      showNodeOutput(node, `${d.command} · ${slug} — ไม่สำเร็จ (exit ${d.exit_code})`,
+                     reason || d.output || "ไม่มีผลลัพธ์กลับมา");
+    } else {
+      pinnedOutput.delete(node);
+      loadNode(node);
+    }
+  };
+  tick();
 }
 
 function nodeIsInUse(name) {

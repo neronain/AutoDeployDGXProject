@@ -68,11 +68,20 @@ class Store:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {
+            snap = {
                 "version": self._version,
                 "host": self._local.payload(),
                 "nodes": {name: entry.payload() for name, entry in self._nodes.items()},
             }
+        # งานที่กำลังรันไม่ได้อยู่ในแคช (มันเปลี่ยนทุกวินาที) — แปะทีหลังทุกครั้งที่ส่งออกไป
+        # ไม่งั้นแถบความคืบหน้าจะหายทุกครั้งที่ snapshot มาถึง
+        from lmds.web import jobs
+
+        for name, entry in snap["nodes"].items():
+            for model in ((entry.get("data") or {}).get("models") or []):
+                job = jobs.active_for(model.get("slug", ""), name)
+                model["job"] = job.payload() if job else None
+        return snap
 
     def wait_for_change(self, since: int, timeout: float) -> bool:
         """รอจนกว่าจะมีอะไรเปลี่ยน — SSE ใช้แทนการให้เบราว์เซอร์ถามซ้ำ ๆ"""

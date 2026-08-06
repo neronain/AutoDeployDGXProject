@@ -446,6 +446,16 @@ def create_app(token: str = "") -> FastAPI:
             for n in load()
         ]}
 
+    def _attach_node_jobs(name: str, payload: dict) -> dict:
+        """แปะงานที่กำลังรันของแต่ละโมเดลลงไปใน payload — หน้าเว็บจะได้ตามต่อได้หลังรีเฟรช"""
+        from . import jobs
+
+        for model in payload.get("models") or []:
+            job = jobs.active_for(model.get("slug", ""), name)
+            if job is not None:
+                model["job"] = job.payload()
+        return payload
+
     @app.get("/api/nodes/{name}/inventory", dependencies=guarded)
     def node_inventory(name: str, refresh: bool = False) -> dict:
         """สถานะของ node หนึ่งเครื่อง — เครื่องล่มต้องไม่ทำให้ทั้งหน้าพัง จึงคืน reachable=false"""
@@ -460,8 +470,9 @@ def create_app(token: str = "") -> FastAPI:
             cached = state.STORE.snapshot()["nodes"].get(name)
             if cached and not cached["stale"]:
                 if cached["data"]:
-                    return {"name": name, "reachable": True, "error": "",
-                            "age_seconds": cached["age_seconds"], **cached["data"]}
+                    return _attach_node_jobs(name, {
+                        "name": name, "reachable": True, "error": "",
+                        "age_seconds": cached["age_seconds"], **cached["data"]})
                 return {"name": name, "reachable": False, "error": cached["error"],
                         "age_seconds": cached["age_seconds"], "host": None, "models": []}
         state.STORE.mark_refreshing(name)
@@ -471,7 +482,7 @@ def create_app(token: str = "") -> FastAPI:
             update(name, last_error=str(exc)[:200])
             return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
         update(name, last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
-        return {"name": name, "reachable": True, "error": "", **info}
+        return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **info})
 
     @app.get("/api/scan", dependencies=guarded)
     def scan_weights(all_nodes: bool = False) -> dict:
@@ -669,8 +680,23 @@ def create_app(token: str = "") -> FastAPI:
         parts = ([env] if env else []) + ["lmds", command, shlex.quote(slug)]
         if allowed[command]:
             parts.append(allowed[command])
+        remote = " ".join(parts)
+
+        from . import jobs
+
+        # งานยาว (download หลายสิบ GB, start ที่โหลดโมเดลเป็นนาที) ตอบกลับเป็น job แล้วสตรีมผล
+        # — รอใน request เดียวคือให้ผู้ใช้มองหน้าค้างโดยไม่รู้ว่าคืบหน้าหรือตายไปแล้ว
+        # `remove --dry-run` ไม่นับว่ายาว: มันแค่คิดขนาดไฟล์แล้วจบ
+        long_running = command in jobs.REMOTE_LONG and not (
+            command == "remove" and not (body or {}).get("confirm"))
+        if long_running:
+            try:
+                return {"node": name, "slug": slug, "command": command,
+                        "job": jobs.start_remote(name, slug, command, remote).payload()}
+            except jobs.JobError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
-            result = run(node, " ".join(parts), timeout=1800)
+            result = run(node, remote, timeout=1800)
             state.STORE.force(name)   # สถานะเพิ่งเปลี่ยน — อย่าให้ผู้ใช้เห็นของเก่าอีก 15 วิ
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

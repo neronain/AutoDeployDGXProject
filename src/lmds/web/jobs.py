@@ -39,6 +39,8 @@ class Job:
     id: str
     slug: str
     command: str
+    # ว่าง = โมเดลในเครื่องนี้ · มีค่า = ชื่อเครื่องในทะเบียนที่งานนี้ไปรัน
+    node: str = ""
     steps: list = field(default_factory=list)
     step_index: int = 0
     lines: deque = field(default_factory=lambda: deque(maxlen=_TAIL_LINES))
@@ -55,7 +57,11 @@ class Job:
         if name == "exit_code" and value is not None:
             from lmds.web.state import STORE
 
-            STORE.invalidate_local()
+            # งานบนเครื่องอื่นไม่ได้เปลี่ยนสถานะของเครื่องนี้ — ทิ้งแคชของเครื่องนั้นแทน
+            if getattr(self, "node", ""):
+                STORE.force(self.node)
+            else:
+                STORE.invalidate_local()
 
     @property
     def running(self) -> bool:
@@ -65,6 +71,7 @@ class Job:
         return {
             "id": self.id,
             "slug": self.slug,
+            "node": self.node,
             "command": self.command,
             "steps": self.steps,
             "step": self.steps[self.step_index] if self.step_index < len(self.steps) else "",
@@ -83,9 +90,14 @@ _ACTIVE: dict[str, str] = {}  # slug -> job id
 _LOCK = threading.Lock()
 
 
-def active_for(slug: str) -> Job | None:
+def _key(slug: str, node: str = "") -> str:
+    """หนึ่งงานต่อ (เครื่อง, โมเดล) — slug เดียวกันบนคนละเครื่องคือคนละงาน"""
+    return f"{node}/{slug}" if node else slug
+
+
+def active_for(slug: str, node: str = "") -> Job | None:
     with _LOCK:
-        job = _JOBS.get(_ACTIVE.get(slug, ""))
+        job = _JOBS.get(_ACTIVE.get(_key(slug, node), ""))
     return job if job and job.running else None
 
 
@@ -201,6 +213,48 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
                 job.exit_code = code
                 return
         job.exit_code = 0
+
+    threading.Thread(target=run, daemon=True).start()
+    return job
+
+
+# คำสั่งข้ามเครื่องที่ยาวพอจะต้องเห็นความคืบหน้า — สั้น ๆ อย่าง doctor/logs ตอบตรง ๆ เร็วกว่า
+REMOTE_LONG = {"start", "restart", "repair", "remove"}
+
+
+def start_remote(node_name: str, slug: str, command: str, remote_command: str) -> Job:
+    """รันคำสั่งบนเครื่องอื่นเป็นงานเบื้องหลัง แล้วสตรีมผลกลับมาทีละบรรทัด
+
+    `download` โมเดล 70 GB ใช้เวลาเป็นสิบนาที — ถ้ารอใน HTTP request เดียวผู้ใช้จะเห็น
+    หน้าค้างโดยไม่รู้ว่าคืบหน้าหรือตายไปแล้ว
+    """
+    from lmds.nodes import NodeError, find, stream
+
+    node = find(node_name)
+    if node is None:
+        raise JobError(f"ไม่รู้จักเครื่อง {node_name}")
+
+    key = _key(slug, node_name)
+    with _LOCK:
+        current = _JOBS.get(_ACTIVE.get(key, ""))
+        if current and current.running:
+            raise JobError(f"{slug} บน {node_name} กำลังรัน '{current.command}' อยู่ — รอให้จบก่อน")
+        job = Job(id=uuid.uuid4().hex, slug=slug, node=node_name, command=command, steps=[command])
+        _JOBS[job.id] = job
+        _ACTIVE[key] = job.id
+
+    def run() -> None:
+        try:
+            proc = stream(node, remote_command)
+        except NodeError as exc:
+            job.lines.append(f"{exc}\n")
+            job.exit_code = 127
+            return
+        job.process = proc
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            job.lines.append(line)
+        job.exit_code = proc.wait()
 
     threading.Thread(target=run, daemon=True).start()
     return job

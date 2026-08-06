@@ -31,6 +31,7 @@ from .registry import (
 )
 from .ssh import (
     push_file,
+    stream,
     check_login,
     ensure_key,
     install_key,
@@ -65,6 +66,7 @@ __all__ = [
     "probe",
     "public_key_path",
     "push_file",
+    "stream",
     "remove",
     "run",
     "save",

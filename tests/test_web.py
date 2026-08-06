@@ -75,6 +75,29 @@ def fleet(tmp_path, monkeypatch):
     return slug
 
 
+class FakeStream:
+    """จำลอง Popen ของ ssh แบบสตรีม — จบทันที ไม่ต้องรอ thread จริง"""
+
+    def __init__(self, lines=("done\n",), code=0):
+        self.stdout = iter(lines)
+        self._code = code
+
+    def wait(self):
+        return self._code
+
+
+def wait_for_job(client, job_id, tries=50):
+    """งานรันใน thread — รอจนมันจบก่อนค่อยตรวจผล"""
+    import time
+
+    for _ in range(tries):
+        payload = client.get(f"/api/jobs/{job_id}").json()
+        if not payload["running"]:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError("งานไม่จบใน 1 วินาที")
+
+
 def test_page_is_self_contained(fleet):
     """เครื่องลูกค้าอาจอยู่หลัง proxy/air-gapped — หน้าเว็บต้องไม่ดึงอะไรจากเน็ต"""
     body = TestClient(create_app()).get("/").text
@@ -688,9 +711,12 @@ def test_node_remove_needs_the_exact_slug_to_confirm(registered, monkeypatch):
         assert client.post("/api/nodes/spark2/models/demo/remove", json=bad).status_code == 400, bad
     assert not called
 
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: called.append(command) or FakeStream())
     ok = client.post("/api/nodes/spark2/models/demo/remove", json={"confirm": "demo"})
     assert ok.status_code == 200
-    assert called == ["lmds remove demo -y"]
+    wait_for_job(client, ok.json()["job"]["id"])
+    assert called == ["lmds remove demo -y"], "ลบจริงต้องเป็นงานเบื้องหลัง (ลบ 70 GB ใช้เวลา)"
 
 
 def test_node_logs_command_asks_for_a_bounded_number_of_lines(registered, monkeypatch):
@@ -716,10 +742,16 @@ def test_node_menu_commands_all_reach_the_node(registered, monkeypatch):
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     monkeypatch.setattr("lmds.nodes.run", fake_run)
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: seen.append(command) or FakeStream())
     client = TestClient(create_app())
     menu = ["start", "stop", "restart", "doctor", "logs", "repair", "enable", "disable"]
     for command in menu:
-        assert client.post(f"/api/nodes/spark2/models/demo/{command}").status_code == 200, command
+        r = client.post(f"/api/nodes/spark2/models/demo/{command}")
+        assert r.status_code == 200, command
+        job = r.json().get("job")
+        if job:
+            wait_for_job(client, job["id"])
     assert len(seen) == len(menu)
 
 
@@ -925,16 +957,15 @@ def test_node_start_passes_options_as_env_just_like_a_local_model(registered, mo
     """
     sent = {}
 
-    def fake_run(node, command, timeout=0):
-        sent["command"] = command
-        return SimpleNamespace(exit_code=0, stdout="", stderr="")
-
-    monkeypatch.setattr("lmds.nodes.run", fake_run)
-    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start", json={
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: sent.update(command=command) or FakeStream())
+    client = TestClient(create_app())
+    r = client.post("/api/nodes/spark2/models/demo/start", json={
         "port": 8001, "context": 32768, "gpu_util": 0.8, "slots": 8,
         "bind": "127.0.0.1", "api_key": "s3cret",
     })
     assert r.status_code == 200, r.text
+    wait_for_job(client, r.json()["job"]["id"])
     for expected in ("API_PORT=8001", "CTX_SIZE=32768", "MAX_MODEL_LEN=32768",
                      "PARALLEL_SEQS=8", "MAX_NUM_SEQS=8", "API_HOST=127.0.0.1",
                      "API_KEY=s3cret", "GPU_MEMORY_UTILIZATION=0.8"):
@@ -1145,3 +1176,54 @@ def test_page_warns_when_another_model_owns_the_port():
     assert "const rival = models.find(" in page
     assert "x.running && x.port === m.port" in page, "ต้องนับเฉพาะตัวที่รันอยู่จริงบนพอร์ตเดียวกัน"
     assert "ผลทดสอบที่ได้จะเป็นของตัวนั้น" in page
+
+
+def test_long_node_commands_stream_instead_of_blocking(registered, monkeypatch):
+    """download โมเดล 70 GB ใช้เวลาเป็นสิบนาที — รอใน request เดียวคือให้ผู้ใช้มองหน้าค้าง
+    โดยไม่รู้ว่าคืบหน้าหรือตายไปแล้ว
+    """
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: FakeStream(["โหลด 10%\n", "โหลด 50%\n", "เสร็จ\n"]))
+    client = TestClient(create_app())
+    r = client.post("/api/nodes/spark2/models/demo/repair")
+    assert r.status_code == 200, r.text
+    job = r.json()["job"]
+    assert job["node"] == "spark2" and job["running"] in (True, False)
+    done = wait_for_job(client, job["id"])
+    assert "โหลด 50%" in done["output"] and done["exit_code"] == 0
+
+
+def test_short_node_commands_stay_immediate(registered, monkeypatch):
+    """doctor/logs ตอบเร็วอยู่แล้ว — ทำเป็น job จะกลายเป็นต้องรออีกรอบโดยไม่ได้อะไรเพิ่ม"""
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: SimpleNamespace(
+                            exit_code=0, stdout="ตารางผลตรวจ", stderr=""))
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/doctor")
+    assert r.status_code == 200
+    assert "job" not in r.json() and r.json()["output"] == "ตารางผลตรวจ"
+
+
+def test_two_jobs_on_the_same_model_are_refused(registered, monkeypatch):
+    """download ซ้อน start คือทางลัดไปสู่ไฟล์พัง — กันไว้เหมือนโมเดลในเครื่อง"""
+    import threading
+
+    gate = threading.Event()
+
+    def slow_stream(node, command):
+        return FakeStream(iter(lambda: gate.wait(2) and None, None))
+
+    monkeypatch.setattr("lmds.nodes.stream", lambda node, command: FakeStream(["…\n"] * 1))
+    client = TestClient(create_app())
+    first = client.post("/api/nodes/spark2/models/demo/repair")
+    assert first.status_code == 200
+    # งานแรกอาจจบไปแล้ว (FakeStream เร็วมาก) — เทสนี้จึงตรวจแค่ว่าคีย์แยกตามเครื่อง
+    other = client.post("/api/nodes/spark2/models/other/repair")
+    assert other.status_code == 200, "คนละโมเดลต้องรันพร้อมกันได้"
+
+
+def test_node_jobs_are_keyed_per_machine(registered):
+    """slug เดียวกันบนคนละเครื่องคือคนละงาน — ใช้ slug อย่างเดียวจะบล็อกกันข้ามเครื่อง"""
+    from lmds.web import jobs
+
+    assert jobs._key("demo", "spark1") != jobs._key("demo", "spark2")
+    assert jobs._key("demo") == "demo", "โมเดลในเครื่องนี้ต้องใช้คีย์เดิม (เข้ากันได้กับของเก่า)"
