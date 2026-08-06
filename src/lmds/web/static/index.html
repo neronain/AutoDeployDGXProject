@@ -1155,7 +1155,9 @@ function nodeModelsMarkup(name, data) {
       const state = m.running ? (m.healthy ? "on" : "load") : "";
       const label = m.running ? (m.healthy ? "running" : "loading")
         : (m.downloaded ? "stopped" : "not downloaded");
-      const act = m.running ? "stop" : (m.downloaded ? "start" : "");
+      // ยังไม่มี weight = ปุ่มหลักคือ "โหลดไฟล์" ไม่ใช่ปล่อยว่างจนผู้ใช้ไม่รู้จะทำอะไรต่อ
+      // (start ทั้งที่ไม่มีไฟล์ล้มแน่ ๆ จึงไม่ให้กด)
+      const act = m.running ? "stop" : (m.downloaded ? "start" : "download");
       const key = name + "/" + m.slug;
       const open = openModelMenus.has(key);
       const o = nodeOpts(key);
@@ -1168,7 +1170,11 @@ function nodeModelsMarkup(name, data) {
         m.running ? ["restart", "หยุดแล้วเปิดใหม่"] : null,
         ["doctor", "ตรวจว่าทำไมยัง start ไม่ได้"],
         ["logs", "log ล่าสุด 300 บรรทัด"],
-        m.downloaded ? ["repair", "โหลดไฟล์ที่ขาดกลับมา + ตรวจซ้ำ"] : null,
+        // `lmds repair` = download (resume) → verify-files · ตอน "ยังไม่มีไฟล์" คือตอนที่
+        // ต้องใช้มากที่สุด เงื่อนไขเดิมกลับด้าน ทำให้ doctor บอกให้ไป cd เข้า bundle เอง
+        // ทั้งที่ปุ่มควรอยู่ตรงนี้
+        m.downloaded ? ["repair", "ตรวจไฟล์ซ้ำ + โหลดส่วนที่ขาดกลับมา"]
+                     : ["repair", "โหลด weight (resume ได้) แล้วตรวจไฟล์ให้อัตโนมัติ"],
         // n/a = เครื่องนั้นไม่มี systemd — ปุ่มที่กดแล้วล้มแน่ ๆ ไม่ควรมี
         auto === "n/a" ? null
           : autoOn ? ["disable", "เลิก autostart หลัง reboot"]
@@ -1183,7 +1189,8 @@ function nodeModelsMarkup(name, data) {
             ${autoOn ? `<span class="tag">autostart</span>` : ""}</span>
           <span class="mono muted">:${m.port || "—"}</span>
           <span class="muted">${label}</span>
-          ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}">${act}</button>` : ""}
+          ${act ? `<button data-nact="model:${act}" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                  title="${act === "download" ? "โหลด weight แล้วตรวจไฟล์ให้ (lmds repair)" : ""}">${act}</button>` : ""}
           <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                   class="${open ? "on" : ""}" title="คำสั่งอื่น">⋯</button>
         </div>
@@ -1312,7 +1319,9 @@ document.addEventListener("click", async e => {
     return;
   }
   if (nact.startsWith("model:")) {
-    const command = nact.slice(6);
+    // ปุ่มชื่อ download แต่คำสั่งจริงคือ repair (download resume → verify-files)
+    // ชื่อปุ่มพูดกับผู้ใช้ ส่วนคำสั่งพูดกับ CLI — ไม่ต้องเหมือนกัน แต่ต้องไม่ขัดกัน
+    const command = nact.slice(6) === "download" ? "repair" : nact.slice(6);
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = command + "…";

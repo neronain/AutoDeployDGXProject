@@ -1032,3 +1032,36 @@ def test_cluster_ip_is_shown_on_the_machine_it_belongs_to():
     assert "function layoutClusterGroups" in page, "เครื่องกลุ่มเดียวกันต้องถูกจัดให้อยู่ติดกัน"
     assert '<div class="card" id="cluster">' not in page, "การ์ด cluster ล่างสุดต้องไม่เหลือไว้ให้สับสน"
     assert "⇄" in page, "ต้องบอกชื่อคู่ของเครื่องนั้นตรง ๆ"
+
+
+def test_a_model_without_weights_still_offers_a_way_to_get_them():
+    """doctor บอกว่า weight หาย แล้วให้คำสั่งแก้ — แต่เมนูกลับไม่มีปุ่มนั้นให้กด
+    ผู้ใช้ต้อง ssh เข้าเครื่องนั้นไป cd bundles/... เอง ซึ่งขัดกับเหตุผลที่มีหน้าเว็บ
+    (ผู้ใช้เจอจริงกับ qwen3-coder-next-gguf บน dgx-veerasiam)
+
+    เงื่อนไขเดิมกลับด้าน: repair ขึ้นเฉพาะตอน downloaded ซึ่งเป็นตอนที่ไม่ต้องใช้
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert 'm.downloaded ? ["repair"' in page and ': ["repair"' in page, \
+        "repair ต้องมีทั้งสองสถานะ — ยังไม่มีไฟล์คือตอนที่ต้องใช้มากที่สุด"
+    assert '(m.downloaded ? "start" : "download")' in page, \
+        "ยังไม่มี weight ปุ่มหลักต้องเป็น download ไม่ใช่ปล่อยว่าง"
+
+
+def test_doctor_fixes_point_at_commands_the_web_can_actually_run(tmp_path, monkeypatch):
+    """คำแนะนำที่ทำตามไม่ได้จากที่ที่ผู้ใช้อ่านมัน ก็เท่ากับไม่มีคำแนะนำ
+
+    `weights` เคยบอกให้ `cd bundles/<slug> && ./<slug>-single.sh download` ซึ่งคนที่อ่าน
+    doctor จากหน้าเว็บทำตามไม่ได้เลยโดยไม่ ssh เข้าเครื่องนั้น
+    """
+    from lmds.doctor import checks
+
+    src = (Path(checks.__file__)).read_text(encoding="utf-8")
+    assert "cd bundles/{slug} && ./{slug}-single.sh download" not in src
+    # allowlist ของคำสั่งข้ามเครื่อง — คำสั่งที่ doctor แนะนำต้องอยู่ในนี้
+    import re
+
+    api_src = (Path(__file__).resolve().parents[1] / "src/lmds/web/api.py").read_text(encoding="utf-8")
+    allowed = set(re.findall(r'"(\w[\w-]*)": "[^"]*",', api_src.split("allowed = {")[1].split("}")[0]))
+    for command in re.findall(r'f"lmds (\w+) \{slug\}', src):
+        assert command in allowed, f"doctor แนะนำ `lmds {command}` แต่หน้าเว็บสั่งข้ามเครื่องไม่ได้"

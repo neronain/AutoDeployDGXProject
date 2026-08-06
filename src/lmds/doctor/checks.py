@@ -156,8 +156,11 @@ def _projectors(profile: dict) -> list[str]:
 def _check_weights(profile: dict, slug: str) -> list[Finding]:
     directory, wanted = _weight_paths(profile, slug)
     if not directory.is_dir():
+        # บอกคำสั่งระดับ lmds ก่อนเสมอ — ใช้ได้จากที่ไหนก็ได้ และเป็นปุ่มเดียวกับที่มีบนหน้าเว็บ
+        # เดิมบอกให้ cd เข้า bundle ทั้งที่ `lmds repair` ทำงานเดียวกัน (download resume + verify)
+        # ผู้ใช้ที่อ่าน doctor จากหน้าเว็บจึงไม่มีทางทำตามได้โดยไม่ ssh เข้าเครื่องนั้น
         return [Finding("weights", Status.FAIL, f"ยังไม่มีไฟล์โมเดลที่ {directory}",
-                        f"cd bundles/{slug} && ./{slug}-single.sh download")]
+                        f"lmds repair {slug}  (โหลด resume ได้ แล้วตรวจไฟล์ให้)")]
 
     missing = [name for name in wanted if not (directory / name).exists()]
     if missing:
