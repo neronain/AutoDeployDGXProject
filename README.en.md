@@ -119,15 +119,23 @@ Details: [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
 
 ```bash
 lmds web                              # http://127.0.0.1:8600 — this machine only
-lmds web --bind 0.0.0.0               # reachable on the LAN; a token is generated for you
+lmds web --bind 0.0.0.0               # reachable on the LAN; asks you to set a token first
 ```
 
 ```bash
 lmds web --background                 # run detached; the terminal stays free for the CLI
 lmds web --status                     # forgot the link? ask the running server
-lmds web --restart -b                 # restart with a fresh token
+lmds web --restart -b                 # restart; the existing link keeps working
+lmds web -b --new-token               # rotate the token
 lmds web --stop
 ```
+
+Opening the link shows a **login screen**: enter the token once and the browser remembers it. On the
+first run that binds to the network, LMDS **asks** whether you want to set your own token (press Enter
+for a generated one; your own must be at least 8 characters, any characters). It is stored in
+`~/.config/lmds/web-token`, so the link stays valid across restarts. `$LMDS_WEB_TOKEN` works too, for
+machines started by systemd or compose. The printed link never carries the token — URLs end up in
+browser history, proxy logs and referrers.
 
 One English-language page covering the whole workflow: host status (CPU, memory, VRAM, disk,
 running-model count), other machines with their live resources, cluster fabric, deploy wizard, download

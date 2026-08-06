@@ -63,9 +63,14 @@
    `Expected 7 but got 8 arguments` → cudagraph PIECEWISE · `LocalEntryNotFoundError` →
    HF_HUB_CACHE) · `lmds doctor` จับได้เฉพาะอาการที่รู้จักล่วงหน้า ส่วน LLM อ่าน log จริงได้
 3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
-4. ~~**Web UI หน้าเดียว**~~ — ✅ **ทำแล้ว (2026-08-04/05)** `lmds web` · host stats, deploy wizard,
-   fleet หลายเครื่อง, cluster fabric, scan, recipes · งานต่อยอด: `node install` / `--alt-host` /
-   deploy wizard ยังต้องใช้ CLI
+4. ~~**Web UI หน้าเดียว**~~ — ✅ **ทำแล้ว (2026-08-04/06)** `lmds web` · host stats, deploy wizard,
+   fleet หลายเครื่อง, cluster fabric, scan, recipes
+   · **รอบ 2026-08-06 (จากการใช้จริงบน controller)**: SSE แทน polling · เกจ CPU/RAM/VRAM/Disk +
+   telemetry ของ GPU · เมนู ⋯ ต่อโมเดลบนเครื่องอื่น (restart/doctor/logs/repair/autostart/remove)
+   · ตั้ง port/context/gpu-util ตอนสั่งรันข้ามเครื่อง · **หน้า login + token ที่อยู่ยาว**
+   · cluster IP ย้ายไปอยู่ในการ์ดของเครื่องนั้น + รั้วสีจับคู่ที่ stacked ได้
+   · งานต่อยอด: **job progress / log สด**, แท็บ tests+manage สำหรับโมเดลบนเครื่องอื่น,
+   command palette (⌘K), `node install` / deploy wizard ยังต้องใช้ CLI
 5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
 6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
    ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
