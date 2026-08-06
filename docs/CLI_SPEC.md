@@ -139,7 +139,7 @@ lmds logs <slug> [-n N] [-f]  # ดู log · -f = ตาม realtime (docker lo
 lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
 lmds disable <slug>           # ยกเลิก autostart
 lmds repair <slug>            # download (resume) → verify-files
-lmds connect <slug> [--write] [--stdin] [-y]   # ตรวจผิว Anthropic แล้วให้ค่าตั้ง Claude Code
+lmds connect <slug> [--write] [--stdin] [-y]   # ตรวจ Anthropic SSE+tool แล้วให้ค่าตั้ง Claude Code
 lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างที่เกี่ยวข้อง (แสดงรายการ+ขนาดก่อนถามยืนยัน)
 ```
 

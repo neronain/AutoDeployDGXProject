@@ -87,7 +87,7 @@ lmds restart <ชื่อ>       # restart (ใช้ตอนเปลี่�
 lmds logs <ชื่อ> -f       # ตาม log แบบ realtime (-n 500 = ย้อนหลัง)
 lmds enable <ชื่อ>        # ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (systemd autostart) · disable = ยกเลิก
 lmds doctor <ชื่อ>       # ตรวจว่าทำไมยัง download/start ไม่ผ่าน + คำสั่งแก้
-lmds connect <ชื่อ>      # ต่อ Claude Code เข้ากับโมเดลนี้ — ตรวจให้ก่อนแล้วให้ค่าที่ copy ไปวางได้เลย
+lmds connect <ชื่อ>      # ตรวจ SSE + tool call แล้วให้ค่าต่อ Claude Code กับ endpoint นี้
 lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
 lmds remove <ชื่อ>        # ลบออกจากเครื่องทั้งหมด (--keep-weights = เก็บ weight ไว้)
 ```

@@ -16,8 +16,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -27,18 +32,46 @@ PROBE_TIMEOUT = 60.0
 # ตัวแปรที่ผู้ใช้ตั้งตอน start controller — ใช้ชื่อเดียวกันเพื่อไม่ให้ต้องจำสองชื่อ
 KEY_ENV_VAR = "API_KEY"
 TOKEN_ENV_KEY = "ANTHROPIC_AUTH_TOKEN"
+NO_AUTH_TOKEN = "lmds-local-no-key"
 
 # Claude Code clamp ค่านี้ไว้ที่อย่างน้อย 100,000 — โมเดล local ส่วนใหญ่ context เล็กกว่านั้น
 # ใส่ไปก็ถูกดันขึ้นเป็น 100,000 เท่ากับไม่มีผล จึงไม่ใส่ให้ดีกว่าใส่บรรทัดที่หลอกผู้ใช้
 AUTO_COMPACT_MIN = 100_000
 
-# Claude Code ไม่ได้ยิงโมเดลเดียว — สี่ช่องนี้ต้องชี้โมเดลเดียวกันทั้งหมด
+# Claude Code มี main/alias/fallback/subagent หลายช่อง — ทุกช่องต้องชี้ local model เดียวกัน
 MODEL_ENV_KEYS = (
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 )
+
+# Claude Code เลือก provider กลุ่มนี้ก่อน ANTHROPIC_BASE_URL. บล็อก shell ต้อง unset และ
+# --write ต้องเอาค่าที่ค้างใน user settings ออก ไม่เช่นนั้นค่าต่อ local ดูถูกแต่ client ไป cloud จริง
+PROVIDER_ENV_KEYS = (
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+# คีย์ที่คำสั่งนี้เป็นเจ้าของ ต้องลบค่ารอบเก่าก่อน merge รอบใหม่ เช่น compact-window ของ
+# โมเดล 128k ต้องไม่ค้างเมื่อสลับไปโมเดล 32k
+MANAGED_ENV_KEYS = frozenset(
+    (*MODEL_ENV_KEYS, *PROVIDER_ENV_KEYS, "ANTHROPIC_BASE_URL", TOKEN_ENV_KEY,
+     "ANTHROPIC_SMALL_FAST_MODEL",
+     "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+     "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK", "CLAUDE_CODE_DISABLE_THINKING",
+     "DISABLE_PROMPT_CACHING", "MAX_THINKING_TOKENS")
+)
+
+# export block ต้องล้างค่า LMDS รอบเก่าที่ config รอบใหม่ไม่ได้เขียนด้วย (เช่น compact
+# ของโมเดลใหญ่) และล้าง x-api-key เพื่อให้ส่ง credential แบบ Bearer เพียงทางเดียว
+SHELL_UNSET_KEYS = tuple(sorted((*MANAGED_ENV_KEYS, "ANTHROPIC_API_KEY")))
 
 
 class ConnectError(Exception):
@@ -85,33 +118,89 @@ def _origin(base_url: str, port: int) -> str:
 
     bundle รุ่นก่อนที่ client-config ยังไม่มี anthropic_base_url ก็ยังใช้ได้
     """
+    if base_url is not None and not isinstance(base_url, str):
+        raise ConnectError("client-config มี base URL ที่ไม่ใช่ข้อความ")
     url = (base_url or "").rstrip("/")
     if url.endswith("/v1"):
         url = url[: -len("/v1")]
-    return url or f"http://127.0.0.1:{port}"
+    url = url or f"http://127.0.0.1:{port}"
+    try:
+        parsed = urlsplit(url)
+        parsed.port  # validate malformed/out-of-range ports too
+    except ValueError as exc:
+        raise ConnectError(f"client-config มี base URL ที่ใช้ไม่ได้: {url!r}") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in url)
+    ):
+        raise ConnectError(f"client-config มี base URL ที่ใช้ไม่ได้: {url!r}")
+    return url
+
+
+def _positive_int(client_config: dict, *names: str) -> int:
+    for name in names:
+        value = client_config.get(name)
+        if value in (None, ""):
+            continue
+        if isinstance(value, bool):
+            raise ConnectError(f"client-config มี {name} ที่ไม่ใช่จำนวนเต็มบวก")
+        if isinstance(value, int):
+            number = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            number = int(value.strip())
+        else:
+            raise ConnectError(f"client-config มี {name} ที่ไม่ใช่จำนวนเต็มบวก")
+        if number <= 0:
+            raise ConnectError(f"client-config มี {name} ที่ไม่ใช่จำนวนเต็มบวก")
+        return number
+    return 0
 
 
 def build_config(client_config: dict, port: int = 0, api_key: str = "") -> ClaudeCodeConfig:
     """แปลงผลของ `client-config` เป็นค่าตั้งของ Claude Code"""
-    model = (client_config.get("model") or "").strip()
-    if not model:
+    raw_model = client_config.get("model")
+    model = raw_model.strip() if isinstance(raw_model, str) else ""
+    if not model or any(ord(ch) < 32 or ord(ch) == 127 for ch in model):
         raise ConnectError("client-config ไม่มีชื่อโมเดล — bundle เสียหรือเก่าเกินไป")
 
-    base = client_config.get("anthropic_base_url") or _origin(client_config.get("base_url", ""), port)
+    raw_base = client_config.get("anthropic_base_url") or client_config.get("base_url", "")
+    base = _origin(raw_base, port)
 
-    # llama.cpp ใช้ server_context_total (แบ่งต่อ slot) ส่วน vLLM ใช้ server_context
-    context = int(client_config.get("server_context_total") or client_config.get("server_context") or 0)
-    max_output = int(client_config.get("max_output_tokens") or 0)
+    # max_input_tokens คือ budget ที่ controller หัก output/template overhead แล้วและปลอดภัยสุด
+    # สำหรับ llama.cpp ต้องใช้ context_per_slot ไม่ใช่ server_context_total ซึ่งถูกหารให้หลาย slot
+    context = _positive_int(
+        client_config, "max_input_tokens", "context_per_slot", "server_context", "server_context_total"
+    )
+    max_output = _positive_int(client_config, "max_output_tokens")
 
     key = api_key or client_config.get("api_key") or ""
+    if not isinstance(key, str):
+        raise ConnectError("client-config มี API key ที่ไม่ใช่ข้อความ")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in key):
+        raise ConnectError("client-config มี API key ที่ใช้เป็น HTTP header ไม่ได้")
     if key == "not-required":
         key = ""
 
-    env = {"ANTHROPIC_BASE_URL": base}
-    if key:
-        # AUTH_TOKEN ไป Authorization: Bearer ซึ่งไม่ต้องกดอนุมัติตอนเปิด Claude Code
-        # ต่างจาก ANTHROPIC_API_KEY ที่ต้องอนุมัติหนึ่งครั้ง — เลือกตัวที่สะดุดน้อยกว่า
-        env[TOKEN_ENV_KEY] = key
+    env = {
+        "ANTHROPIC_BASE_URL": base,
+        # ต้องตั้ง credential แม้ endpoint ไม่บังคับ key มิฉะนั้น Claude Code ที่ login อยู่จะส่ง
+        # credential subscription ไปยัง custom base URL. ค่าคงที่นี้ไม่ใช่ secret และ server no-auth ignore
+        TOKEN_ENV_KEY: key or NO_AUTH_TOKEN,
+        # local vLLM/llama.cpp เป็น Anthropic-compatible subset ไม่ใช่ Claude API เต็มรูปแบบ
+        "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        # ถ้า stream ขาดกลาง tool call ห้าม fallback ไปยิง non-streaming ซ้ำ เพราะอาจทำ tool ซ้ำ
+        "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1",
+        # ตัวใหม่ตรงกว่า MAX_THINKING_TOKENS=0; เก็บทั้งคู่เพื่อรองรับ Claude Code รุ่นก่อนหน้า
+        "CLAUDE_CODE_DISABLE_THINKING": "1",
+        "DISABLE_PROMPT_CACHING": "1",
+        "MAX_THINKING_TOKENS": "0",
+    }
     for name in MODEL_ENV_KEYS:
         env[name] = model
     if context >= AUTO_COMPACT_MIN:
@@ -127,22 +216,23 @@ def build_config(client_config: dict, port: int = 0, api_key: str = "") -> Claud
 def env_lines(config: ClaudeCodeConfig, *, literal_token: bool = False) -> list[str]:
     """บล็อก export สำหรับ copy ไปวาง
 
-    ค่า token อ้าง `$API_KEY` ไม่ใช่ค่าจริง — จะได้ไม่มี secret ขึ้นจอหรือค้างใน
-    ประวัติเชลล์ · ผู้ใช้ต้องตั้ง API_KEY อยู่แล้วตอน start controller จึงเป็นค่าที่มีอยู่
+    endpoint ที่มี token จะอ้าง `$API_KEY` ไม่ใช่ค่าจริง — จะได้ไม่มี secret ขึ้นจอหรือค้างใน
+    ประวัติเชลล์ · endpoint no-auth พิมพ์ dummy credential ที่ไม่ใช่ secret ได้ตรง ๆ
     """
-    lines = []
+    lines = ["unset " + " ".join(SHELL_UNSET_KEYS)]
     for name, value in config.env.items():
-        if name == TOKEN_ENV_KEY and not literal_token:
+        if name == TOKEN_ENV_KEY and config.needs_token and not literal_token:
             lines.append(f'export {name}="${KEY_ENV_VAR}"')
         else:
-            lines.append(f"export {name}={value}")
+            lines.append(f"export {name}={shlex.quote(value)}")
     return lines
 
 
 def _headers(config: ClaudeCodeConfig) -> dict[str, str]:
     headers = {"anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
-    if config.api_key:
-        headers["x-api-key"] = config.api_key
+    # Claude Code ใช้ ANTHROPIC_AUTH_TOKEN เป็น Bearer และ vLLM's VLLM_API_KEY ป้องกัน /v1
+    # ด้วย Bearer เช่นกัน จึง probe auth path เดียวกับ client จริง ไม่ใช่ x-api-key คนละทาง
+    headers["authorization"] = f"Bearer {config.api_key or NO_AUTH_TOKEN}"
     return headers
 
 
@@ -153,18 +243,50 @@ def _text_blocks(payload: dict) -> str:
     return "".join(
         block.get("text") or ""
         for block in (payload.get("content") or [])
-        if isinstance(block, dict) and block.get("type") == "text"
+        if isinstance(block, dict) and block.get("type") in {"text", "text_delta"}
     ).strip()
 
 
-def probe_endpoint(config: ClaudeCodeConfig, client: httpx.Client | None = None) -> ProbeResult:
-    """ยิงจริงสองครั้ง: ตอบข้อความได้ไหม และเรียก tool เป็นไหม
+def _sse_blocks(response: httpx.Response) -> list[dict]:
+    """อ่าน content blocks/deltas จาก Anthropic SSE; Claude Code ใช้ streaming จริง"""
+    content_type = response.headers.get("content-type", "").lower()
+    if not content_type.startswith("text/event-stream"):
+        raise ConnectError(f"stream probe ได้ Content-Type {content_type or '(ไม่มี)'}")
+    blocks: list[dict] = []
+    for line in response.text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        raw = line[len("data:"):].strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except ValueError as exc:
+            raise ConnectError("stream probe มี SSE data ที่ไม่ใช่ JSON") from exc
+        if not isinstance(event, dict):
+            continue
+        block = event.get("content_block")
+        if isinstance(block, dict):
+            blocks.append(block)
+        delta = event.get("delta")
+        if isinstance(delta, dict):
+            blocks.append(delta)
+    return blocks
 
-    ตรวจ tool ด้วยเพราะ Claude Code ใช้ tool แทบทุกเทิร์น — endpoint ที่ตอบข้อความได้
-    แต่ไม่ออก tool_use block จะ "ต่อติดแต่ทำงานไม่ได้" ซึ่งหาสาเหตุยากกว่าต่อไม่ติด
-    """
-    http = client or httpx.Client(timeout=PROBE_TIMEOUT)
-    url = f"{config.base_url}/v1/messages"
+
+def _safe_detail(text: str, config: ClaudeCodeConfig, limit: int = 200) -> str:
+    """ข้อความ server เป็น untrusted; ห้ามสะท้อน bearer token กลับ terminal"""
+    value = text
+    if config.api_key:
+        value = value.replace(config.api_key, "***")
+    value = value[:limit]
+    # Rich markup ถูกปิดที่ caller แล้ว แต่ C0/DEL (โดยเฉพาะ ESC) ยังควบคุม terminal ได้
+    return "".join(ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in value)
+
+
+def _probe_with_client(config: ClaudeCodeConfig, http: httpx.Client) -> ProbeResult:
+    # Claude Code ส่ง inference ที่ path นี้พร้อม beta=true และต้องรับ SSE stream
+    url = f"{config.base_url}/v1/messages?beta=true"
     result = ProbeResult()
 
     try:
@@ -174,11 +296,12 @@ def probe_endpoint(config: ClaudeCodeConfig, client: httpx.Client | None = None)
             json={
                 "model": config.model,
                 "max_tokens": 256,
+                "stream": True,
                 "messages": [{"role": "user", "content": "ตอบสั้น ๆ ว่า OK"}],
             },
         )
     except httpx.HTTPError as exc:
-        result.detail = f"ต่อ {url} ไม่ได้ — {type(exc).__name__}: {exc}"
+        result.detail = _safe_detail(f"ต่อ {url} ไม่ได้ — {type(exc).__name__}: {exc}", config)
         return result
 
     if resp.status_code == 404:
@@ -191,17 +314,20 @@ def probe_endpoint(config: ClaudeCodeConfig, client: httpx.Client | None = None)
         )
         return result
     if resp.status_code != 200:
-        result.detail = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        result.detail = f"HTTP {resp.status_code}: {_safe_detail(resp.text, config)}"
         return result
 
     try:
-        body = resp.json()
-    except ValueError as exc:
-        result.detail = f"ตอบกลับไม่ใช่ JSON ({exc}) — มี proxy คั่นอยู่หรือเปล่า"
+        blocks = _sse_blocks(resp)
+    except ConnectError as exc:
+        result.detail = str(exc)
         return result
 
+    result.sample = _safe_detail(_text_blocks({"content": blocks}), config, 120)
+    if not result.sample:
+        result.detail = "HTTP 200 แต่ไม่มี text block — ยังพิสูจน์ไม่ได้ว่าโมเดลตอบข้อความได้"
+        return result
     result.messages_ok = True
-    result.sample = _text_blocks(body)[:120]
 
     try:
         tool_resp = http.post(
@@ -210,6 +336,7 @@ def probe_endpoint(config: ClaudeCodeConfig, client: httpx.Client | None = None)
             json={
                 "model": config.model,
                 "max_tokens": 512,
+                "stream": True,
                 "tools": [
                     {
                         "name": "read_file",
@@ -221,23 +348,72 @@ def probe_endpoint(config: ClaudeCodeConfig, client: httpx.Client | None = None)
                         },
                     }
                 ],
+                "tool_choice": {"type": "tool", "name": "read_file"},
                 "messages": [{"role": "user", "content": "Read /etc/hostname using the tool."}],
             },
         )
-    except httpx.HTTPError:
-        return result  # ตอบข้อความได้แล้ว — แค่ตรวจ tool ไม่สำเร็จ ไม่ใช่ต่อไม่ได้
+    except httpx.HTTPError as exc:
+        result.detail = _safe_detail(f"ตรวจ tool ไม่สำเร็จ — {type(exc).__name__}: {exc}", config)
+        return result
 
     if tool_resp.status_code == 200:
         try:
-            blocks = tool_resp.json().get("content") or []
-        except ValueError:
+            blocks = _sse_blocks(tool_resp)
+        except ConnectError as exc:
+            result.detail = str(exc)
             return result
         result.tools_ok = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks)
+        if not result.tools_ok:
+            result.detail = "tool probe ไม่คืน tool_use block แม้บังคับ tool_choice แล้ว"
+    else:
+        result.detail = (
+            f"tool probe ตอบ HTTP {tool_resp.status_code}: "
+            f"{_safe_detail(tool_resp.text, config)}"
+        )
     return result
 
 
+def probe_endpoint(config: ClaudeCodeConfig, client: httpx.Client | None = None) -> ProbeResult:
+    """ยิงจริงสองครั้ง: ตอบ SSE ได้ไหม และ forced tool call ได้ไหม
+
+    ตรวจ tool ด้วยเพราะ Claude Code ใช้ tool แทบทุกเทิร์น — endpoint ที่ตอบข้อความได้
+    แต่ไม่ออก tool_use block จะ "ต่อติดแต่ทำงานไม่ได้" ซึ่งหาสาเหตุยากกว่าต่อไม่ติด
+    """
+    owned = client is None
+    http = client or httpx.Client(timeout=PROBE_TIMEOUT)
+    try:
+        return _probe_with_client(config, http)
+    finally:
+        if owned:
+            http.close()
+
+
 def settings_path() -> Path:
-    return Path.home() / ".claude" / "settings.json"
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    root = Path(configured).expanduser() if configured else Path.home() / ".claude"
+    return root / "settings.json"
+
+
+def _write_private_atomic(target: Path, text: str) -> None:
+    """เขียนไฟล์ 0600 ใน directory เดียวแล้ว os.replace; failure ไม่แตะไฟล์เดิม"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.lmds-", dir=target.parent)
+    tmp = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            fd = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def write_settings(config: ClaudeCodeConfig, path: Path | None = None) -> tuple[Path, Path | None]:
@@ -247,11 +423,16 @@ def write_settings(config: ClaudeCodeConfig, path: Path | None = None) -> tuple[
     เป็นค่าจริง (Claude Code อ่านโดยไม่ผ่านเชลล์) จึงห้ามเอาไป commit
     """
     target = path or settings_path()
+    effective_target = target.resolve(strict=False) if target.is_symlink() else target
     backup: Path | None = None
+    original_raw: str | None = None
 
     data: dict = {}
     if target.exists():
+        if not target.is_file():
+            raise ConnectError(f"{target} ไม่ใช่ regular file — ไม่เขียนทับให้")
         raw = target.read_text(encoding="utf-8")
+        original_raw = raw
         try:
             data = json.loads(raw) if raw.strip() else {}
         except ValueError as exc:
@@ -260,15 +441,28 @@ def write_settings(config: ClaudeCodeConfig, path: Path | None = None) -> tuple[
             )
         if not isinstance(data, dict):
             raise ConnectError(f"{target} ระดับบนสุดไม่ใช่ object — ไม่เขียนทับให้")
-        backup = target.with_name(target.name + ".lmds-bak")
-        backup.write_text(raw, encoding="utf-8")
+        # ชื่อไม่ซ้ำเพื่อให้ connect หลายครั้งไม่ทำลาย backup ต้นฉบับ; mode 0600 เพราะ
+        # settings เดิมอาจมี token/credential ของผู้ใช้
+        backup = target.with_name(f"{target.name}.lmds-bak.{time.time_ns()}")
+        _write_private_atomic(backup, raw)
 
     env = data.get("env")
     if env is not None and not isinstance(env, dict):
         raise ConnectError(f"{target} มี env ที่ไม่ใช่ object — ไม่เขียนทับให้")
-    data["env"] = {**(env or {}), **config.env}
+    merged_env = dict(env or {})
+    for name in MANAGED_ENV_KEYS:
+        merged_env.pop(name, None)
+    merged_env.update(config.env)
+    data["env"] = merged_env
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    target.chmod(0o600)  # มี token อยู่ข้างใน
+    # อย่าทับการแก้ของ Claude Code/editor ที่เกิดหลังเราอ่านไฟล์และสร้าง backup
+    if original_raw is None:
+        if target.exists():
+            raise ConnectError(f"{target} ถูกสร้างขึ้นระหว่างคำสั่ง — ไม่เขียนทับให้")
+    elif not target.exists() or target.read_text(encoding="utf-8") != original_raw:
+        raise ConnectError(f"{target} เปลี่ยนระหว่างคำสั่ง — ไม่เขียนทับให้")
+
+    _write_private_atomic(
+        effective_target, json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    )
     return target, backup

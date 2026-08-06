@@ -1728,15 +1728,15 @@ def start(
 @app.command()
 def connect(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps", autocompletion=_complete_slug),
-    write: bool = typer.Option(False, "--write", help="เขียนลง ~/.claude/settings.json ให้เลย (สำรองของเดิมก่อน)"),
+    write: bool = typer.Option(False, "--write", help="เขียนลง user settings ของ Claude Code (สำรองก่อน)"),
     stdin_key: bool = typer.Option(False, "--stdin", help="อ่าน API key จาก stdin (สำหรับ scripting)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ต้องถามยืนยันตอน --write"),
 ) -> None:
     """ต่อ Claude Code เข้ากับโมเดลที่รันอยู่ — ตรวจให้ก่อน แล้วให้ค่าที่ copy ไปวางได้เลย
 
-    endpoint เดียวเสิร์ฟทั้งผิว OpenAI (/v1/chat/completions) และผิว Anthropic
-    (/v1/messages) — คำสั่งนี้ยิงผิว Anthropic จริงสองครั้ง (ตอบข้อความ + เรียก tool)
-    แล้วค่อยบอกค่าตั้ง จะได้ไม่ต้องไปเดาว่าพังตรงไหนทีหลัง
+    runtime ที่มีผิว Anthropic-compatible เสิร์ฟ /v1/messages ได้โดยไม่ต้องเพิ่ม proxy —
+    คำสั่งนี้ยิง SSE จริงสองครั้ง (ตอบข้อความ + forced tool call) แล้วค่อยบอกค่าตั้ง
+    ถ้า image/build ไม่มีผิวนี้หรือ tool parser ใช้ไม่ได้ จะหยุดโดยไม่เขียน user settings
 
     token: อ่านจาก env API_KEY ตัวเดียวกับที่ใช้ตอน start (หรือ --stdin)
     · ไม่รับเป็น flag เพราะค่าใน argv โผล่ใน ps ของทั้งเครื่อง
@@ -1748,35 +1748,60 @@ def connect(
     import subprocess
     import sys
 
+    from rich.markup import escape
+    from rich.text import Text
+
     from lmds.connect import (
         KEY_ENV_VAR,
+        PROVIDER_ENV_KEYS,
         ConnectError,
         build_config,
         env_lines,
         probe_endpoint,
-        write_settings,
     )
     from lmds.fleet import find
-    from lmds.secrets.redact import mask_preview
+    from lmds.secrets.redact import mask_preview, redact
+
+    def terminal_safe(value: object) -> str:
+        return "".join(
+            ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in str(value)
+        )
 
     server = find(slug)
     if server is None:
-        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list")
+        err_console.print(
+            f"[red]ไม่พบ: {escape(terminal_safe(slug))}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list"
+        )
         raise typer.Exit(code=1)
     if not server.running:
-        err_console.print(f"[red]{slug} ยังไม่ได้รัน[/red] — สั่ง: lmds start {slug}")
+        safe_slug = escape(terminal_safe(slug))
+        err_console.print(f"[red]{safe_slug} ยังไม่ได้รัน[/red] — สั่ง: lmds start {safe_slug}")
         raise typer.Exit(code=1)
     if not server.controller_exists:
-        err_console.print(f"[red]ไม่พบ controller ของ {slug}[/red] — bundle ถูกย้าย/ลบไปแล้ว?")
+        err_console.print(
+            f"[red]ไม่พบ controller ของ {escape(terminal_safe(slug))}[/red] — "
+            "bundle ถูกย้าย/ลบไปแล้ว?"
+        )
         raise typer.Exit(code=1)
 
     api_key = sys.stdin.readline().strip() if stdin_key else os.environ.get(KEY_ENV_VAR, "")
 
-    proc = subprocess.run(
-        [server.controller, "client-config"], capture_output=True, text=True, timeout=60
-    )
+    try:
+        proc = subprocess.run(
+            [server.controller, "client-config"], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        err_console.print(
+            f"[red]เรียก client-config ไม่สำเร็จ:[/red] {escape(terminal_safe(exc))}"
+        )
+        raise typer.Exit(code=2)
     if proc.returncode != 0:
-        err_console.print(f"[red]client-config ของ {slug} ไม่ผ่าน[/red] — {proc.stderr.strip()[:300]}")
+        # redact ก่อน truncate มิฉะนั้น key ที่คร่อมขอบ 300 ตัวอักษรจะเหลือ prefix ใน terminal
+        detail = terminal_safe(redact(proc.stderr.strip(), [api_key])[:300])
+        err_console.print(
+            f"[red]client-config ของ {escape(terminal_safe(slug))} ไม่ผ่าน[/red] — "
+            f"{escape(detail)}"
+        )
         raise typer.Exit(code=2)
     try:
         client_config = json.loads(proc.stdout)
@@ -1787,10 +1812,27 @@ def connect(
     try:
         config = build_config(client_config, port=server.port, api_key=api_key)
     except ConnectError as exc:
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[red]{escape(terminal_safe(exc))}[/red]")
         raise typer.Exit(code=2)
 
-    console.print(f"ตรวจผิว Anthropic ของ {slug} …")
+    # user settings ลบ provider flag ที่ค้างในไฟล์ได้ แต่ลบค่าที่ parent shell ส่งให้
+    # claude ไม่ได้; ถ้าปล่อยผ่านจะเขียนสำเร็จแต่ client ยัง route ไป cloud อีกทาง
+    if write:
+        active_providers = [
+            name
+            for name in PROVIDER_ENV_KEYS
+            if os.environ.get(name, "").strip().lower() not in {"", "0", "false", "no", "off"}
+        ]
+        if active_providers:
+            names = " ".join(active_providers)
+            err_console.print(
+                "[red]ยังเขียนไม่ได้[/red] — shell นี้เปิด provider อื่นอยู่: "
+                f"{names}\nรัน [cyan]unset {names}[/cyan] แล้วสั่งใหม่; settings.json "
+                "ไม่สามารถลบ env ที่ parent shell ส่งมาได้"
+            )
+            raise typer.Exit(code=2)
+
+    console.print(Text(f"ตรวจผิว Anthropic ของ {terminal_safe(slug)} …"))
     probe = probe_endpoint(config)
 
     table = Table(show_header=True)
@@ -1800,41 +1842,54 @@ def connect(
     table.add_row(
         "[green]✅[/green]" if probe.messages_ok else "[red]❌[/red]",
         "/v1/messages ตอบข้อความ",
-        probe.sample or probe.detail or "-",
+        Text(probe.sample or probe.detail or "-"),
     )
     if probe.messages_ok:
         table.add_row(
             "[green]✅[/green]" if probe.tools_ok else "[yellow]⚠️ [/yellow]",
             "เรียก tool ได้",
-            "ได้ tool_use block" if probe.tools_ok
-            else "ไม่ออก tool_use — Claude Code ใช้ tool แทบทุกเทิร์น จะใช้งานได้ไม่เต็มที่",
+            Text("ได้ tool_use block" if probe.tools_ok else (probe.detail or "ไม่ออก tool_use block")),
         )
     console.print(table)
 
     if not probe.messages_ok:
-        err_console.print(f"[red]ยังต่อไม่ได้[/red] — {probe.detail}")
+        err_console.print(f"[red]ยังต่อไม่ได้[/red] — {escape(probe.detail)}")
+        raise typer.Exit(code=2)
+    if not probe.tools_ok:
+        err_console.print(
+            "[red]ยังไม่พร้อมใช้กับ Claude Code[/red] — forced tool probe ไม่คืน tool_use; "
+            "ตรวจ tool parser/template ของ engine ก่อน"
+        )
         raise typer.Exit(code=2)
 
     if write:
         target = _connect_write(config, yes)
-        console.print(f"\n[green]เขียนแล้ว[/green] — เปิด claude ที่ไหนก็ได้ ไม่ต้อง export อะไรเพิ่ม")
-        console.print(f"  ไฟล์: {target}")
+        console.print("\n[green]เขียนแล้ว[/green] — ค่านี้มีผลกับ Claude Code ทุก project ของผู้ใช้นี้")
+        console.print(Text(f"  ไฟล์: {target}"))
         if config.needs_token:
-            console.print(f"  token ในไฟล์: {mask_preview(config.api_key)} — [yellow]อย่าเอาไฟล์นี้ไป commit[/yellow]")
+            preview = Text("  token ในไฟล์: ")
+            preview.append(mask_preview(config.api_key))
+            preview.append(" — อย่าเอาไฟล์นี้ไป commit", style="yellow")
+            console.print(preview)
         return
 
     console.print("\n[bold]copy ไปวางในเชลล์ที่จะเปิด claude[/bold]")
     for line in env_lines(config):
-        console.print(f"  [cyan]{line}[/cyan]")
+        console.print(Text("  " + line, style="cyan"))
     console.print("  [cyan]claude[/cyan]")
     if config.compact_hint:
         console.print(f"\n{config.compact_hint}")
     if config.needs_token:
-        console.print(
-            f"\nบล็อกนี้อ้าง [cyan]${KEY_ENV_VAR}[/cyan] ไม่ใช่ค่าจริง — เปิดในเชลล์เดียวกับที่ตั้ง "
-            f"{KEY_ENV_VAR} ไว้ตอน start (ตอนนี้: {mask_preview(config.api_key)})"
+        note = Text("\nบล็อกนี้อ้าง ")
+        note.append(f"${KEY_ENV_VAR}", style="cyan")
+        note.append(
+            f" ไม่ใช่ค่าจริง — เปิดในเชลล์เดียวกับที่ตั้ง {KEY_ENV_VAR} ไว้ตอน start "
+            f"(ตอนนี้: {mask_preview(config.api_key)})"
         )
-    console.print(f"หรือให้เขียนลง settings.json ให้เลย: [cyan]lmds connect {slug} --write[/cyan]")
+        console.print(note)
+    write_hint = Text("หรือให้เขียนลง settings.json ให้เลย: ")
+    write_hint.append(f"lmds connect {terminal_safe(slug)} --write", style="cyan")
+    console.print(write_hint)
 
 
 def _connect_write(config, yes: bool):
@@ -1848,19 +1903,31 @@ def _connect_write(config, yes: bool):
     target = settings_path()
     if not yes:
         action = "แก้" if target.exists() else "สร้าง"
-        console.print(f"\nจะ{action} {target} (เพิ่มเฉพาะคีย์ env — คีย์อื่นไม่แตะ)")
+        console.print(
+            Text(
+                f"\nจะ{action} {target} (แทนที่เฉพาะ env ที่ LMDS/Claude routing ใช้; "
+                "คีย์และ env อื่นไม่แตะ)"
+            )
+        )
         if target.exists():
-            console.print(f"สำรองของเดิมไว้ที่ {target.name}.lmds-bak ก่อน")
+            console.print("จะสร้าง backup ชื่อไม่ซ้ำ mode 0600 ก่อนสลับไฟล์แบบ atomic")
         if not typer.confirm("ดำเนินการต่อ?", default=False):
             err_console.print("ยกเลิก")
             raise typer.Exit(code=1)
     try:
         written, backup = write_settings(config)
     except (ConnectError, OSError) as exc:
-        err_console.print(f"[red]เขียนไม่สำเร็จ: {exc}[/red]")
+        from rich.markup import escape
+
+        detail = "".join(
+            ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in str(exc)
+        )
+        err_console.print(f"[red]เขียนไม่สำเร็จ: {escape(detail)}[/red]")
         raise typer.Exit(code=2)
     if backup is not None:
-        console.print(f"สำรองของเดิมไว้ที่ {backup}")
+        from rich.text import Text
+
+        console.print(Text(f"สำรองของเดิมไว้ที่ {backup}"))
     return written
 
 

@@ -2,6 +2,7 @@
 
 from .claude_code import (
     KEY_ENV_VAR,
+    PROVIDER_ENV_KEYS,
     ClaudeCodeConfig,
     ConnectError,
     ProbeResult,
@@ -14,6 +15,7 @@ from .claude_code import (
 
 __all__ = [
     "KEY_ENV_VAR",
+    "PROVIDER_ENV_KEYS",
     "ClaudeCodeConfig",
     "ConnectError",
     "ProbeResult",

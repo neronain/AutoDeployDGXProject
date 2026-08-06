@@ -143,29 +143,40 @@ cd bundles/qwen3-0-6b-gguf
 
 ### ต่อ Claude Code เข้ากับโมเดลที่รันอยู่
 
-endpoint เดียวเสิร์ฟสองผิว: `/v1/chat/completions` (OpenAI SDK, LangChain, Open WebUI) และ
-`/v1/messages` (Anthropic SDK, **Claude Code**) — ใช้พอร์ตเดียวกันและ `API_KEY` ตัวเดียวกัน
-**ไม่ต้องมี proxy** เพราะ engine พูด Messages API ได้เอง
+runtime รุ่นที่มี Anthropic-compatible surface อาจเสิร์ฟทั้ง `/v1/chat/completions` (OpenAI SDK,
+LangChain, Open WebUI) และ `/v1/messages` (Claude Code) บนพอร์ตเดียวกันได้ จึงไม่ต้องเพิ่ม proxy
+เฉพาะเมื่อ image/build ที่กำลังรันรองรับ surface นี้จริง คำสั่งด้านล่างตรวจให้ก่อนและหยุดเมื่อไม่รองรับ
 
 ```bash
 lmds connect <ชื่อ>            # ตรวจแล้วพิมพ์บล็อก export ให้ copy
-lmds connect <ชื่อ> --write    # เขียนลง ~/.claude/settings.json ให้เลย (ถามยืนยันก่อน)
+lmds connect <ชื่อ> --write    # เขียน user settings ให้เลย (ถามยืนยันก่อน)
 ```
 
-ตรวจให้จริงสองอย่างก่อนบอกค่า — ยิง `/v1/messages` ว่าตอบข้อความได้ไหม และส่ง tool ไปว่า
-ออก `tool_use` block ไหม (Claude Code ใช้ tool แทบทุกเทิร์น endpoint ที่ตอบข้อความได้แต่
-เรียก tool ไม่เป็นจะ "ต่อติดแต่ทำงานไม่ได้" ซึ่งหาสาเหตุยากกว่าต่อไม่ติด)
+ตรวจให้จริงสองอย่างก่อนบอกค่า — ยิง path เดียวกับ client คือ `/v1/messages?beta=true`, บังคับ
+`stream=true` และรับเฉพาะ SSE ที่มีข้อความ จากนั้นบังคับ named `tool_choice` และต้องได้
+`tool_use` block; ตอบ JSON 200 แบบ non-streaming หรือไม่ออก tool จะไม่ผ่าน
 
 ค่าที่ได้จะครบทุกจุดที่พลาดกันบ่อย: base URL **ไม่มี** `/v1` ต่อท้าย (client เติม
-`/v1/messages` เอง), ชื่อโมเดลครบสี่ช่อง (opus/sonnet/haiku/subagent — ตั้งช่องเดียวแล้ว
-งานเบื้องหลังจะยิงชื่อโมเดลของ Anthropic มาที่เครื่องเรา) และเพดาน output ตาม bundle
+`/v1/messages` เอง), ชื่อโมเดลครบ main/fable/opus/sonnet/haiku/subagent, input/output budget
+ตาม `client-config`, bearer auth path เดียวกับ client และ compatibility flags ที่ตัด field
+beta/thinking/prompt-cache ที่ endpoint local มักไม่รู้จัก ค่าจาก cloud provider mode ที่ค้างใน
+settings จะถูกถอด; ถ้าค่านั้นมาจาก shell `--write` จะปฏิเสธพร้อมคำสั่ง `unset` แทนการรายงานสำเร็จผิด ๆ
 
 > token: อ่านจาก env `API_KEY` ตัวเดียวกับที่ใช้ตอน start (หรือ `--stdin` สำหรับ script) —
 > ไม่รับเป็น flag เพราะค่าใน argv โผล่ใน `ps` ของทั้งเครื่อง · บล็อกที่พิมพ์ออกมาอ้าง
-> `$API_KEY` ไม่ใช่ค่าจริง จะได้ไม่มี token ค้างในประวัติเชลล์
+> `$API_KEY` ไม่ใช่ค่าจริง จะได้ไม่มี token ค้างในประวัติเชลล์ · endpoint ที่ไม่บังคับ key
+> ใช้ dummy bearer ที่ไม่ใช่ secret เพื่อไม่ส่ง credential ของ Claude subscription ไปที่ custom URL
 >
-> `--write` ใส่ค่าจริงลง `settings.json` (Claude Code อ่านโดยไม่ผ่านเชลล์) — สำรองของเดิม
-> ไว้ก่อนเสมอ ตั้งสิทธิ์ไฟล์เป็น 0600 และ**ห้ามเอาไฟล์นั้นไป commit**
+> `--write` มีผลทั่วทุก project ของ user และใช้ `$CLAUDE_CONFIG_DIR/settings.json` ถ้าตั้งตัวแปรนี้
+> (ไม่เช่นนั้น `~/.claude/settings.json`) · คีย์ top-level และ env ที่ไม่เกี่ยวข้องอยู่ครบ แต่ routing env
+> ของ LMDS รอบเก่าถูกแทนที่ · ก่อนสลับไฟล์แบบ atomic จะสร้าง backup ชื่อไม่ซ้ำ mode 0600 และพิมพ์
+> path ให้ ถ้าต้องย้อนให้ปิด Claude Code แล้ว copy backup นั้นทับ settings เดิม · ทั้ง settings และ backup
+> อาจมี token จริง จึง**ห้าม commit หรือส่งต่อ**
+>
+> ขอบเขตการรับรอง: probe พิสูจน์เพียง request/stream/tool ขั้นพื้นฐาน ณ เวลาที่รัน ไม่พิสูจน์ long
+> context, compact, resume, subagent หรือ Claude Code release ถัดไป และ Anthropic ระบุว่าไม่ support
+> การ route Claude Code ไป non-Claude model; หลังตั้งค่าให้เริ่ม session ใหม่และตรวจ provider/model ใน
+> `/status` ก่อนใช้กับงานจริง
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
 > `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด

@@ -8,19 +8,26 @@
 
 ### Added
 
-- **`lmds connect <ชื่อ>` — ต่อ Claude Code เข้ากับโมเดลที่รันอยู่โดยไม่ต้องรู้อะไรเลย**
-  · ยิง `/v1/messages` จริงสองครั้ง (ตอบข้อความ + เรียก tool) ก่อนบอกค่าตั้ง จะได้ไม่ต้องเดา
+- **`lmds connect <ชื่อ>` — ตรวจและสร้างค่าต่อ Claude Code กับ endpoint ที่รันอยู่**
+  · ยิง `/v1/messages?beta=true` แบบ SSE จริงสองครั้ง (ตอบข้อความ + forced tool call) ก่อนบอกค่าตั้ง
+  จะได้ไม่ต้องเดา
   ว่าพังตรงไหนทีหลัง — endpoint ที่ตอบข้อความได้แต่ไม่ออก `tool_use` block คือ "ต่อติดแต่
   ทำงานไม่ได้" ซึ่งหาสาเหตุยากกว่าต่อไม่ติด
-  · ค่าที่ได้ครบทุกจุดที่พลาดกันบ่อย: base URL **ไม่มี** `/v1`, ชื่อโมเดลครบสี่ช่อง
-  (opus/sonnet/haiku/subagent), เพดาน output ตาม bundle
+  · ค่าที่ได้ครบทุกจุดที่พลาดกันบ่อย: base URL **ไม่มี** `/v1`, ชื่อโมเดลครบหกช่อง
+  (main/fable/opus/sonnet/haiku/subagent), เพดาน output ตาม bundle และ compatibility flags
+  ที่ตัด beta/thinking/prompt-cache fields ซึ่ง local endpoint มักไม่รองรับ
   · **ไม่ใส่ `CLAUDE_CODE_AUTO_COMPACT_WINDOW` เมื่อ context ต่ำกว่า 100,000** เพราะ
   Claude Code clamp ค่านี้ขึ้นเป็น 100,000 อยู่ดี — ใส่ไปคือบรรทัดที่ไม่มีผล บอกให้ใช้
   `/compact` แทน
   · token อ่านจาก env `API_KEY` หรือ `--stdin` ไม่รับเป็น flag (argv โผล่ใน `ps`) และบล็อกที่
   พิมพ์ออกมาอ้าง `$API_KEY` ไม่ใช่ค่าจริง
-  · `--write` รวมค่าลง `~/.claude/settings.json` เฉพาะคีย์ `env` — ถามยืนยันก่อน สำรอง
-  ของเดิมไว้ และตั้งสิทธิ์ไฟล์เป็น 0600 เพราะมี token อยู่ข้างใน
+  · endpoint ที่ไม่ต้องใช้ key ยังได้ dummy bearer ที่ไม่ใช่ secret ป้องกันไม่ให้ Claude Code ส่ง
+  credential ของ subscription ไป custom base URL
+  · `--write` ใช้ user settings ใต้ `CLAUDE_CONFIG_DIR` (default `~/.claude/settings.json`) —
+  ถามยืนยัน, backup ชื่อไม่ซ้ำ mode 0600, ตรวจ concurrent change และสลับไฟล์แบบ atomic;
+  เก็บคีย์/env อื่นไว้ แต่แทนที่ routing env ที่คำสั่งนี้เป็นเจ้าของ
+  · เป็น basic compatibility check ไม่ใช่คำรับรองว่า non-Claude model รองรับ Claude Code ครบ;
+  Anthropic ไม่ support use case นี้ และ API surface เปลี่ยนตาม Claude Code release
 - **คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)** — เครื่องที่คุณใช้เป็น *hub* คุมเครื่องอื่นผ่าน SSH
   · `lmds node add <ip> --user <u>` ถามรหัสผ่าน **ครั้งเดียว** เพื่อติดตั้ง SSH key ของ LMDS แล้วทิ้งทันที
   — **ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ** (มีเทสกันไม่ให้เผลอเพิ่มกลับเข้ามา)
