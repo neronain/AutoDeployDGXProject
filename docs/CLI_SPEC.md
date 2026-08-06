@@ -256,26 +256,32 @@ gguf  gemma-4-26B-A4B-it-UD-Q8.gguf     25.7 GB    —   ~/models/…
 `hardware-validated` ได้ (กฎข้อ 3: ห้ามอ้างโดยไม่ได้รันจริง)
 
 ```text
-download → verify-files → [prepare-runtime] → start (รอ /health) → test-* ทุกตัวที่มี → stop
+single:  download → [prepare-runtime] → verify-files → start → test-* → stop
+stacked: prepare-runtime → download → verify-files → sync-worker → verify-worker → start → test-* → stop
 ```
 
 - **`test-*` อ่านจาก dispatch ของ controller จริง** ไม่ใช่รายการที่ hardcode ไว้ — แต่ละ bundle
   มีไม่เท่ากัน (llama.cpp มีแค่ `test-text` · vLLM มี `test-reasoning`/`test-tools` เมื่อ plan เปิดไว้)
   · ถ้า hardcode ไว้ controller จะตอบ usage แล้ว exit 0 = **รายงานว่าผ่านทั้งที่ไม่เคยทดสอบ**
   · test ที่เพิ่มเข้า template ทีหลังถูกรันเองโดยไม่ต้องกลับมาแก้
-- **`stop` รันเสมอเมื่อ start ไปแล้ว** แม้ test จะตก — ไม่งั้นเซิร์ฟเวอร์ค้างกินหน่วยความจำ
+  · `test-anthropic` exit 2 = skipped capability; ไม่หยุดลำดับและไม่นับเป็น failure
+  (`test-text` และขั้นบังคับอื่น exit 2 ยังเป็น failure)
+- **`stop` รันเสมอเมื่อเคยพยายาม start** แม้ start/test จะตก และ stopล้มทำให้ smokeล้มด้วย
+  — ไม่งั้นเซิร์ฟเวอร์ค้างกินหน่วยความจำ
   แล้ว smoke รอบถัดไปชน port ตัวเอง จนดูเหมือน "โมเดลนี้รันไม่ได้"
-- **`prepare-runtime` ใส่ให้เฉพาะ native build** — ดูจาก `RUNTIME_MODE` ที่ render ลงสคริปต์
-  ไม่ใช่จากการมี dispatch case (template ใส่ case นั้นไว้ทุก mode)
+- **`prepare-runtime` มาก่อน `verify-files`** เมื่อเป็น native build/runtime asset; stackedรวม
+  `sync-worker`/`verify-worker` ตาม controller contract
 
 ผลเก็บที่ `~/.lmds/run/<slug>/smoke.json` — **ไม่ใช่ในโฟลเดอร์ bundle** เพราะสองเหตุผล:
 เพิ่มไฟล์ในนั้นทำให้ gate `checksums` ตกทันที · และ `hardware-validated` เป็นคุณสมบัติของ
 (bundle × เครื่อง) ไม่ใช่ของ bundle เดี่ยว ๆ — ส่ง ZIP ไปเครื่องอื่นแล้วสถานะต้องไม่ตามไปด้วย
+ไฟล์มีเฉพาะ source evidence (step/exit/fingerprint), ไม่มี field `status`/`passed` ซ้ำที่ค้างเก่าได้;
+เขียนแบบ atomic และ smoke slugเดียวกันรันพร้อมกันไม่ได้
 
 **สถานะถูกเพิกถอนเองเมื่อ controller เปลี่ยน** — ผลผูกกับ sha256 ของสคริปต์ที่รัน ใครแก้
 context/flag ทีหลัง `lmds doctor` จะกลับไปรายงาน `static-validated` โดยไม่ต้องมีใครไปจำ
 
-Exit codes: 0 ผ่านครบ · นอกนั้นคือ exit code ของขั้นที่ตก
+Exit codes: 0 ผ่านขั้นบังคับครบ (optional capability อาจ skipped) · นอกนั้นคือ exit codeของขั้น/stopที่ตก
 
 ## `lmds doctor <slug>`
 

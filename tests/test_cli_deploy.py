@@ -281,7 +281,7 @@ def test_up_does_not_pretend_to_handle_stacked(isolated_config, tmp_path, monkey
         monkeypatch, tmp_path, big_safetensors(), "dgx-spark-stacked",
         "nvidia/DeepSeek-V4-Flash-NVFP4",
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert fake.calls == []
     assert "stacked" in result.output
     assert "README" in result.output

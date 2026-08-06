@@ -655,10 +655,12 @@ lmds up <ลิงก์> --smoke         # deploy ใหม่แล้วท�
 เดินให้ตามลำดับนี้แล้ว **`stop` ให้ตอนจบ** (ไม่ทิ้งเซิร์ฟเวอร์ค้างกินหน่วยความจำ):
 
 ```text
-download → verify-files → [prepare-runtime] → start (รอ /health) → test ทุกตัวที่ bundle มี → stop
+single:  download → [prepare-runtime] → verify-files → start → test ทุกตัวที่ bundle มี → stop
+stacked: prepare-runtime → download → verify-files → sync-worker → verify-worker → start → test → stop
 ```
 
-ผ่านครบทุกขั้น = **`hardware-validated`** · ดูสถานะได้ที่ `lmds doctor <ชื่อ>`
+ผ่านขั้นบังคับครบและ stopสำเร็จ = **`hardware-validated`** · optional `test-anthropic` ที่ไม่มี
+capabilityจะแสดง skippedและไม่บัง testถัดไป · ดูสถานะจริงของเครื่องที่ `lmds doctor <ชื่อ>`
 
 | | ตรวจอะไร | ได้สถานะอะไร |
 |---|---|---|
@@ -668,11 +670,15 @@ download → verify-files → [prepare-runtime] → start (รอ /health) → t
 - **test ที่รันมาจาก bundle จริง ไม่ใช่รายการตายตัว** — llama.cpp มีแค่ `test-text` ส่วน vLLM
   มี `test-reasoning`/`test-tools` เมื่อ plan เปิดไว้ · สั่ง test ที่ bundle ไม่มี controller จะตอบ
   help แล้ว exit 0 = **รายงานว่าผ่านทั้งที่ไม่เคยทดสอบอะไร**
+- `test-anthropic` exit 2 สงวนให้ “ไม่มี optional capability” และไม่ทำให้ smokeล้ม;
+  `test-text`/ขั้นบังคับยังต้องผ่านจริง
 - **แก้ controller ทีหลัง สถานะตกกลับเอง** — ผลผูกกับ sha256 ของสคริปต์ที่รันจริง
   ไม่ต้องมีใครไปจำว่าเคยแก้อะไรไว้
 - ผลอยู่ที่ `~/.lmds/run/<ชื่อ>/smoke.json` **ไม่ได้อยู่ในโฟลเดอร์ bundle** — เพราะ
   `hardware-validated` เป็นคุณสมบัติของ (bundle × เครื่อง) ส่ง ZIP ไปเครื่องอื่นแล้ว
   สถานะต้องไม่ตามไปด้วย ต้องรัน `lmds smoke` บนเครื่องนั้นเอง
+- README ใน bundleจงใจคง `static-validated` เพราะอยู่ใต้ checksum; `smoke.json`เขียน atomicและ
+  ไม่เก็บ derived `status`/`passed` ซ้ำ — `lmds doctor`คำนวณสถานะจาก step+fingerprintทุกครั้ง
 
 > ใช้ตอนไหนคุ้มที่สุด: หลังอัปเดต driver/Docker, หลัง `lmds repair`, หรือก่อนส่งมอบให้ลูกค้า
 > — คำสั่งเดียวตอบได้ว่าเครื่องนี้ยังรันโมเดลตัวนี้ได้อยู่ไหม

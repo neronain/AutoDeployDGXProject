@@ -1491,7 +1491,7 @@ def up(
             "\n[yellow]bundle นี้เป็น stacked (หลายเครื่อง)[/yellow] — ขั้น sync-worker/verify-worker "
             "ต้องตัดสินใจเรื่องเครื่องปลายทางเอง · ทำตาม README ของ bundle ต่อ"
         )
-        return
+        raise typer.Exit(code=1)
 
     if smoke:
         raise typer.Exit(code=_run_smoke(controller, slug))
@@ -1530,11 +1530,25 @@ def _render_smoke(record) -> None:
     table.add_column("")
     table.add_column("เวลา", justify="right")
     for index, step in enumerate(record.steps, start=1):
+        outcome = (
+            "[yellow]ข้าม (ไม่มี capability)[/yellow]"
+            if step.skipped
+            else "[green]ผ่าน[/green]" if step.ok
+            else f"[red]ตก (exit {step.code})[/red]"
+        )
         table.add_row(
             str(index),
             f"{step.command}  [dim]{step.label}[/dim]",
-            "[green]ผ่าน[/green]" if step.ok else f"[red]ตก (exit {step.code})[/red]",
+            outcome,
             f"{step.seconds:.0f}s",
+        )
+    if record.stop_code is not None:
+        table.add_row(
+            str(len(record.steps) + 1),
+            "stop  [dim]หยุดเซิร์ฟเวอร์และคืนทรัพยากร[/dim]",
+            "[green]ผ่าน[/green]" if record.stop_code == 0
+            else f"[red]ตก (exit {record.stop_code})[/red]",
+            f"{record.stop_seconds:.0f}s",
         )
     console.print(table)
 
@@ -1543,12 +1557,10 @@ def _render_smoke(record) -> None:
             f"\n[green]{STATUS_HARDWARE}[/green] — รันจริงบนเครื่องนี้ผ่านครบทุกขั้น "
             f"({record.seconds:.0f} วินาที)"
         )
-        if not record.stopped:
-            console.print("[yellow]แต่หยุดเซิร์ฟเวอร์ไม่สำเร็จ[/yellow] — ตรวจด้วย lmds ps")
         return
 
     failed = record.failed_step
-    where = failed.command if failed else "?"
+    where = failed.command if failed else ("stop" if record.stop_code not in (None, 0) else "?")
     err_console.print(
         f"\n[red]smoke test ไม่ผ่าน — ตกที่ {where}[/red]\n"
         f"  ดูสาเหตุ:  lmds doctor {record.slug}\n"
@@ -1559,15 +1571,18 @@ def _render_smoke(record) -> None:
 
 def _run_smoke(controller: str, slug: str) -> int:
     """เดิน acceptance เต็ม + stop แล้วสรุปผล — คืน exit code ของขั้นที่ตก (0 = ผ่านหมด)"""
-    from lmds.smoke import run_smoke
+    from lmds.smoke import SmokeError, run_smoke
 
     def announce(index: int, total: int, command: str, label: str) -> None:
         console.print(f"\n[bold cyan][{index}/{total}] {label}[/bold cyan]  [dim]({command})[/dim]")
 
-    record = run_smoke(controller, slug, on_step=announce)
+    try:
+        record = run_smoke(controller, slug, on_step=announce)
+    except SmokeError as exc:
+        err_console.print(f"[red]รัน smoke ไม่ได้:[/red] {exc}")
+        return 1
     _render_smoke(record)
-    failed = record.failed_step
-    return failed.code if failed else 0
+    return record.failure_code
 
 
 @app.command()
@@ -1582,7 +1597,7 @@ def smoke(
 
     ผลผูกกับ sha256 ของ controller ที่รัน — แก้สคริปต์ทีหลังแล้วสถานะตกกลับเองอัตโนมัติ
 
-    Exit code: 0 ผ่านหมด · นอกนั้นคือ exit code ของขั้นที่ตก
+    Exit code: 0 ผ่านครบหรือข้ามเฉพาะ capability ที่ไม่มี · นอกนั้นคือ exit code ของขั้นที่ตก
     """
     from lmds.fleet import find
 

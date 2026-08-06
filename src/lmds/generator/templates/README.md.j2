@@ -1,7 +1,7 @@
 # {{ plan.model_id }} — Deployment Bundle
 
 สร้างโดย LMDS {{ lmds_version }} ({{ plan.generator }}) | มาตรฐาน controller v3.0.0
-สถานะการตรวจสอบ: **{{ validation_status }}**
+สถานะของไฟล์ bundle: **static-validated** · สถานะที่รันจริงเป็นข้อมูลเฉพาะเครื่องและไม่ฝังใน bundle
 
 | | |
 |---|---|
@@ -119,19 +119,18 @@ lmds disable {{ slug }}         # ยกเลิก
 
 ## Validation scope
 
-- **{{ validation_status }}**
-- static validation: `bash -n` + LMDS quality gates ผ่านแล้ว
-- hardware validation: {{ "ผ่านแล้ว" if hardware_validated else "ยังไม่ได้รันบนเครื่องจริง" }}
-{% if not hardware_validated %}
-พิสูจน์บนเครื่องนี้ด้วยคำสั่งเดียว — เดิน acceptance ทั้งลำดับให้แล้ว stop ให้ตอนจบ:
+- bundle artifact: **static-validated** — `bash -n` + LMDS quality gates ผ่านแล้ว
+- machine-local hardware status: ดูค่าปัจจุบันด้วย `lmds doctor {{ slug }}`
+
+รันครั้งแรกหรือทดสอบซ้ำบนเครื่องนี้ด้วยคำสั่งเดียว — เดิน acceptance ทั้งลำดับและ stop ให้ตอนจบ:
 
 ```bash
 lmds smoke {{ slug }}
 ```
 
-ผ่านครบทุกขั้น = `hardware-validated` · ผลผูกกับ sha256 ของ controller ตัวนี้
-แก้สคริปต์ทีหลังแล้วสถานะตกกลับเป็น `static-validated` เอง · ดูสถานะได้ที่ `lmds doctor {{ slug }}`
-{% endif %}
+ผล machine-local เก็บนอก bundleและผูกกับ sha256 ของ controller ตัวนี้; แก้ controller แล้ว
+`lmds doctor {{ slug }}` จะลดสถานะกลับเป็น `static-validated` โดยอัตโนมัติ. README นี้เป็น artifact
+ที่อยู่ใต้ checksum จึงจงใจไม่เขียนสถานะ runtimeทับลงไป.
 
 {% if plan.warnings %}## Warnings จากขั้นวางแผน
 
@@ -140,4 +139,3 @@ lmds smoke {{ slug }}
 
 ---
 *สร้างด้วย LMDS (Local Model Deploy Studio) โดย **neronain** — [fb.com/neronain.minidev](https://www.facebook.com/neronain.minidev)*
-

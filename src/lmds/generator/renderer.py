@@ -210,8 +210,6 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "context_env": "MAX_MODEL_LEN" if not is_gguf else "CTX_SIZE",
         "disk_gb": disk_gb,
         "health_timeout": health_timeout,
-        "validation_status": "static-validated",
-        "hardware_validated": False,
     }
 
 

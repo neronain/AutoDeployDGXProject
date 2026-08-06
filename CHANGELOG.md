@@ -10,21 +10,24 @@
 
 - **`lmds smoke <ชื่อ>` / `lmds up --smoke` — พิสูจน์ว่ารันได้จริง แล้วยกสถานะเป็น
   `hardware-validated`** (roadmap เฟส 2 ข้อ 5) · gates ทั้งหมดตรวจได้แค่ว่าสคริปต์ *ถูกต้อง*
-  bundle จึงเป็น `static-validated` เสมอ และ README ที่ generate ออกมาก็เขียนค้างไว้ว่า
-  "สถานะจะอัปเดตเมื่อรัน acceptance tests" **โดยไม่เคยมีคำสั่งไหนอัปเดตให้**
-  · เดิน `download → verify-files → [prepare-runtime] → start (รอ /health) → test ทุกตัวที่
+  bundle artifact จึงเป็น `static-validated` เสมอ ส่วนผลที่รันจริงเก็บเป็น machine-local evidence
+  และดูผ่าน `lmds doctor` (ไม่เขียนทับ README ที่อยู่ใต้ checksum)
+  · เดิน `download → [prepare-runtime] → verify-files → start (รอ /health) → test ทุกตัวที่
   bundle มี → stop` แล้วสรุปผลเป็นตารางพร้อมเวลาต่อขั้น
   · **test อ่านจาก dispatch ของ controller จริง ไม่ใช่รายการที่ hardcode ไว้** — แต่ละ bundle
   มีไม่เท่ากัน (llama.cpp มีแค่ `test-text`) และการสั่ง test ที่ไม่มีจะได้ usage + exit 0
   = รายงานว่าผ่านทั้งที่ไม่เคยทดสอบอะไรเลย · test ที่เพิ่มเข้า template ทีหลังถูกรันเอง
-  · **`stop` รันเสมอเมื่อ start ไปแล้ว** แม้ test จะตก — ไม่งั้นเซิร์ฟเวอร์ค้างกินหน่วยความจำ
+  · `test-anthropic` exit 2 หมายถึง capability ไม่มีและถูกบันทึกเป็น skipped; testบังคับรวม
+  `test-text` ยังถือ exit 2 เป็น failure · testหลัง skippedยังรันต่อ
+  · **`stop` รันเสมอเมื่อเคยพยายาม start** แม้ start/testจะตก — ไม่งั้นเซิร์ฟเวอร์ค้างกินหน่วยความจำ
   แล้ว smoke รอบถัดไปชน port ตัวเองจนดูเหมือน "โมเดลนี้รันไม่ได้"
   · **สถานะถูกเพิกถอนเองเมื่อ controller เปลี่ยน** — ผลผูกกับ sha256 ของสคริปต์ที่รันจริง
   ใครแก้ context/flag ทีหลัง `lmds doctor` กลับไปรายงาน `static-validated` ทันที
   โดยไม่ต้องมีใครไปจำ (กฎข้อ 3: ห้ามอ้าง hardware-validated โดยไม่ได้รันจริง)
   · ผลเก็บที่ `~/.lmds/run/<ชื่อ>/smoke.json` **ไม่ใช่ในโฟลเดอร์ bundle** — เพิ่มไฟล์ในนั้น
   ทำให้ gate `checksums` ตกทันที และสถานะนี้เป็นคุณสมบัติของ (bundle × เครื่อง)
-  ไม่ใช่ของ bundle เดี่ยว ๆ · ส่ง ZIP ไปเครื่องอื่นแล้วต้องรัน `lmds smoke` บนเครื่องนั้นเอง
+  ไม่ใช่ของ bundle เดี่ยว ๆ · เขียนแบบ atomic, ไม่เก็บ `status`/`passed` ซ้ำและ serialize smoke
+  ต่อ slug เพื่อไม่ให้ lifecycleสองรอบชนกัน · ส่ง ZIP ไปเครื่องอื่นแล้วต้องรันใหม่บนเครื่องนั้นเอง
 - **`lmds up <ลิงก์>` — ลิงก์เดียวจบถึงเซิร์ฟเวอร์ตอบได้จริง** · `lmds deploy` หยุดที่ bundle
   แล้วให้ผู้ใช้ไปพิมพ์ต่ออีก 4-5 คำสั่ง**ตามลำดับที่ถูกต้อง** ซึ่งเป็นจุดที่คนใช้ครั้งแรกหลุดบ่อยที่สุด
   (start ก่อน download = ไม่มีไฟล์ · ข้าม verify-files = ไฟล์ครึ่งเดียวแล้วไปตายตอนโหลดโมเดล)

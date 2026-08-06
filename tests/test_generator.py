@@ -185,6 +185,9 @@ def test_readme_has_delivery_contract_sections(isolated_config, tmp_path):
     ]:
         assert section in readme, f"README ขาด section: {section}"
     assert "static-validated" in readme
+    assert "สถานะที่รันจริงเป็นข้อมูลเฉพาะเครื่อง" in readme
+    assert "README นี้เป็น artifact" in readme
+    assert "ยังไม่ได้รันบนเครื่องจริง" not in readme
     assert "sha-pinned-123" in readme
 
 
