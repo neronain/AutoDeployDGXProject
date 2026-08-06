@@ -80,6 +80,8 @@ lmds --help
 ```bash
 lmds ps                  # ใครรันอยู่บ้าง: ชื่อ, โมเดล, engine, port, สถานะ ● running / ◐ loading / ○ stopped
 lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context/ฟีเจอร์ + autostart
+lmds smoke <ชื่อ>         # พิสูจน์ว่ารันได้จริง: download → verify → start → test-text → stop
+lmds rebuild <ชื่อ>       # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน (image เสีย/template อัปเดต)
 lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
 lmds start <ชื่อ> --port 8001   # flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller เลย
 lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม่ต้อง cd ไปหา ./xxx.sh stop · stop --all = หยุดทุกตัว

@@ -139,6 +139,8 @@ lmds logs <slug> [-n N] [-f]  # ดู log · -f = ตาม realtime (docker lo
 lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
 lmds disable <slug>           # ยกเลิก autostart
 lmds repair <slug>            # download (resume) → verify-files
+lmds rebuild <slug>           # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน (เก็บค่าเดิม ไม่เรียก LLM ซ้ำ)
+lmds smoke <slug> [--on N]    # พิสูจน์ว่ารันได้จริง: download → verify → start → test-text → stop
 lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างที่เกี่ยวข้อง (แสดงรายการ+ขนาดก่อนถามยืนยัน)
 ```
 
