@@ -8,6 +8,8 @@ import os
 import sys
 
 import shlex
+import subprocess
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -1381,6 +1383,91 @@ def rebuild(
                      stacked=plan.topology.value == "stacked",
                      assets=bool(plan.runtime_assets))
     console.print(f"\n[dim]ส่งไปเครื่องอื่น: [bold]lmds node push <เครื่อง> {slug}[/bold][/dim]")
+
+
+# ขั้นของ smoke test — เรียงตามที่ต้องเป็นจริง ล้มขั้นไหนก็หยุดตรงนั้น
+# (verify ไฟล์ที่โหลดไม่จบ หรือ test-text กับ server ที่ยังไม่ขึ้น ไม่มีความหมาย)
+SMOKE_STEPS = [
+    ("download", "โหลด weight (resume ได้)"),
+    ("verify-files", "ตรวจไฟล์ครบและถูกต้อง"),
+    ("start", "สตาร์ต server"),
+    ("test-text", "ถามจริงแล้วดูว่าตอบไหม"),
+]
+
+
+@app.command()
+def smoke(
+    slug: str = typer.Argument(..., help="ชื่อ bundle", autocompletion=_complete_slug),
+    node: str = typer.Option("", "--on", help="รันบนเครื่องอื่นในทะเบียน (ว่าง = เครื่องนี้)",
+                             autocompletion=_complete_node),
+    keep: bool = typer.Option(False, "--keep", help="ไม่ต้อง stop ตอนจบ (ปล่อยให้รันต่อ)"),
+    skip_download: bool = typer.Option(False, "--skip-download", help="ข้ามขั้นโหลด (ไฟล์ครบแล้ว)"),
+) -> None:
+    """พิสูจน์ว่า bundle นี้รันได้จริง: download → verify → start → test-text → stop
+
+    gate ทั้ง 10 ด่านตรวจได้แค่ว่า *สคริปต์ถูกต้อง* — ไม่ได้บอกว่ารันแล้วได้คำตอบจริง
+    ทุกบั๊กใหญ่ที่เจอในรอบนี้ (image ที่ tag ไม่มีอยู่, head container ไม่เคยขึ้น,
+    ชุดทดสอบไปโดนโมเดลอื่น) ผ่าน gate หมดแล้วไปตายตอนรัน
+
+    exit 0 ผ่านทุกขั้น · 2 ล้มบางขั้น (บอกว่าขั้นไหนและ log ท้าย)
+    """
+    steps = [s for s in SMOKE_STEPS if not (skip_download and s[0] in ("download", "verify-files"))]
+    where = node or "เครื่องนี้"
+    console.print(f"[bold]smoke test {slug}[/bold] บน {where} — {len(steps)} ขั้น")
+
+    def run_step(command: str) -> tuple[int, str]:
+        if node:
+            from lmds.nodes import NodeError, find, run as run_remote
+
+            target = find(node)
+            if target is None:
+                err_console.print(f"[red]ไม่รู้จักเครื่อง '{node}'[/red]")
+                raise typer.Exit(code=1)
+            quoted = shlex.quote(slug)
+            script = (
+                f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\"; "
+                f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug} บน {node}' >&2; exit 1; }}; "
+                f"cd \"$dir\" && ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\" && "
+                f"\"$ctl\" {shlex.quote(command)}"
+            )
+            try:
+                result = run_remote(target, script, timeout=7200)
+            except NodeError as exc:
+                return 1, str(exc)
+            return result.exit_code, result.stdout + result.stderr
+        from lmds.fleet import find
+
+        server = find(slug)
+        if server is None or not server.controller:
+            err_console.print(f"[red]ไม่พบ bundle: {slug}[/red]")
+            raise typer.Exit(code=1)
+        proc = subprocess.run([server.controller, command], cwd=str(Path(server.controller).parent),
+                              capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    failed_at = ""
+    for index, (command, what) in enumerate(steps, 1):
+        console.print(f"\n[bold]{index}/{len(steps)}[/bold] {command} — [dim]{what}[/dim]")
+        code, output = run_step(command)
+        tail = "\n".join(l for l in output.strip().splitlines() if l.strip())[-1200:]
+        if code != 0:
+            failed_at = command
+            err_console.print(f"[red]ล้มที่ขั้น '{command}' (exit {code})[/red]")
+            if tail:
+                err_console.print(f"[dim]{tail}[/dim]")
+            break
+        last = tail.splitlines()[-1] if tail else ""
+        console.print(f"[green]ผ่าน[/green] [dim]{last[:110]}[/dim]")
+
+    # หยุด server เสมอแม้ขั้นก่อนหน้าจะล้ม — ไม่งั้น smoke test ทิ้งของค้างไว้บนเครื่อง
+    if not keep and any(c == "start" for c, _ in steps):
+        console.print("\n[dim]stop — คืนเครื่องให้อยู่สภาพเดิม (ใช้ --keep ถ้าอยากให้รันต่อ)[/dim]")
+        run_step("stop")
+
+    if failed_at:
+        err_console.print(f"\n[red]smoke test ไม่ผ่าน — ติดที่ '{failed_at}'[/red]")
+        raise typer.Exit(code=2)
+    console.print(f"\n[green]smoke test ผ่านทุกขั้น[/green] — {slug} รันได้จริงบน {where}")
 
 
 def _render_and_package(deployment_plan, report, fit, output: str):

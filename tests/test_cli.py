@@ -392,3 +392,69 @@ def test_printed_link_never_carries_the_token(tmp_path, monkeypatch):
     for line in result.output.splitlines():
         if "http://" in line:
             assert "token=" not in line, f"ลิงก์ยังพก token: {line}"
+
+
+# ── smoke test: พิสูจน์ว่า bundle รันได้จริง ──────────────────────────────────
+# gate ทั้ง 10 ด่านตรวจได้แค่ว่าสคริปต์ถูกต้อง · ทุกบั๊กใหญ่ของรอบนี้ (image ที่ tag
+# ไม่มีอยู่, head container ไม่เคยขึ้น, ชุดทดสอบไปโดนโมเดลอื่น) ผ่าน gate หมดแล้วไปตายตอนรัน
+
+def _smoke_bundle(tmp_path, monkeypatch, script="#!/bin/bash\nexit 0\n"):
+    from lmds.fleet import run_root
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    controller = tmp_path / "demo-single.sh"
+    controller.write_text(script, encoding="utf-8")
+    controller.chmod(0o755)
+    run_dir = run_root() / "demo"
+    run_dir.mkdir(parents=True)
+    (run_dir / "server.meta").write_text(
+        f"slug=demo\nengine=vllm\nmode=docker\nport=8000\ncontroller={controller}\nstarted_at=\n",
+        encoding="utf-8")
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+    return controller
+
+
+def test_smoke_runs_every_step_in_order(tmp_path, monkeypatch, isolated_config):
+    log = tmp_path / "calls.txt"
+    _smoke_bundle(tmp_path, monkeypatch, f'#!/bin/bash\necho "$1" >> {log}\nexit 0\n')
+    result = runner.invoke(app, ["smoke", "demo"])
+    assert result.exit_code == 0, result.output
+    assert log.read_text().split() == ["download", "verify-files", "start", "test-text", "stop"]
+    assert "ผ่านทุกขั้น" in result.output
+
+
+def test_smoke_stops_at_the_first_failing_step(tmp_path, monkeypatch, isolated_config):
+    """verify ไฟล์ที่โหลดไม่จบ หรือ test-text กับ server ที่ยังไม่ขึ้น ไม่มีความหมาย"""
+    log = tmp_path / "calls.txt"
+    _smoke_bundle(tmp_path, monkeypatch,
+                  f'#!/bin/bash\necho "$1" >> {log}\n[ "$1" = download ] && exit 3\nexit 0\n')
+    result = runner.invoke(app, ["smoke", "demo"])
+    assert result.exit_code == 2
+    assert "ติดที่ 'download'" in result.output
+    assert "verify-files" not in log.read_text(), "ล้มแล้วต้องไม่ทำขั้นถัดไป"
+
+
+def test_smoke_always_stops_the_server_it_started(tmp_path, monkeypatch, isolated_config):
+    """ล้มกลางทางแล้วทิ้ง server ค้างไว้ = smoke test ที่ทำให้เครื่องสกปรกกว่าเดิม"""
+    log = tmp_path / "calls.txt"
+    _smoke_bundle(tmp_path, monkeypatch,
+                  f'#!/bin/bash\necho "$1" >> {log}\n[ "$1" = test-text ] && exit 1\nexit 0\n')
+    result = runner.invoke(app, ["smoke", "demo"])
+    assert result.exit_code == 2
+    assert log.read_text().split()[-1] == "stop"
+
+
+def test_smoke_keep_leaves_the_server_running(tmp_path, monkeypatch, isolated_config):
+    log = tmp_path / "calls.txt"
+    _smoke_bundle(tmp_path, monkeypatch, f'#!/bin/bash\necho "$1" >> {log}\nexit 0\n')
+    result = runner.invoke(app, ["smoke", "demo", "--keep"])
+    assert result.exit_code == 0
+    assert "stop" not in log.read_text().split()
+
+
+def test_smoke_can_skip_the_download_when_weights_are_there(tmp_path, monkeypatch, isolated_config):
+    log = tmp_path / "calls.txt"
+    _smoke_bundle(tmp_path, monkeypatch, f'#!/bin/bash\necho "$1" >> {log}\nexit 0\n')
+    result = runner.invoke(app, ["smoke", "demo", "--skip-download"])
+    assert result.exit_code == 0
+    assert log.read_text().split() == ["start", "test-text", "stop"]
