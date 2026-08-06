@@ -73,7 +73,10 @@
    โมเดลในเครื่อง (env ชุดเดียวกัน) · ~~ส่ง bundle ไปเครื่องอื่น~~ **ทำแล้ว** `lmds node push`
    · งานต่อยอด: **job progress / log สด**, command palette (⌘K), deploy wizard เลือกเครื่อง
    ปลายทางได้ตั้งแต่ต้น (ตอนนี้ต้อง deploy แล้วค่อย push)
-5. **Runtime smoke test อัตโนมัติ** บนเครื่องเป้าหมาย (download → start → /health → test-text → stop)
+5. ~~**Runtime smoke test อัตโนมัติ**~~ — ✅ **ทำแล้ว (2026-08-06)** `lmds smoke <slug> [--on เครื่อง]`
+   download → verify-files → start → test-text → stop · หยุด server เสมอแม้ล้มกลางทาง
+   · **เหตุผลที่ต้องมี**: บั๊กที่เจ็บที่สุดทุกตัวของรอบ 0.2.0 ผ่าน gate แบบ static ทั้งหมด
+   แล้วไปตายตอนรันจริง · งานต่อยอด: ให้รันอัตโนมัติหลัง deploy (ตอนนี้ต้องสั่งเอง)
 6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
    ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
    ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ)
