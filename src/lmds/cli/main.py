@@ -793,6 +793,75 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
 
 # flag ของคำสั่งปลายทางต้องผ่านไปทั้งดุ้น — ไม่งั้น `node run x logs y -n 100`
 # จะโดน typer กินไปเป็น option ของ node run เอง
+@node_app.command("push")
+def node_push(
+    name: str = typer.Argument(..., help="ชื่อเครื่องปลายทาง", autocompletion=_complete_node),
+    slug: str = typer.Argument(..., help="ชื่อ bundle ในเครื่องนี้", autocompletion=_complete_slug),
+    start: bool = typer.Option(False, "--start", help="สั่ง start ต่อทันทีหลังส่งถึง"),
+    download: bool = typer.Option(False, "--download", help="สั่งโหลด weight ต่อทันที (ใช้เวลานาน)"),
+) -> None:
+    """ส่ง bundle ที่สร้างไว้ในเครื่องนี้ไปติดตั้งบนเครื่องอื่น
+
+    ใช้ตอนที่เครื่องที่คุณนั่งอยู่ไม่ใช่เครื่องที่จะรันโมเดล (เช่น controller ที่ไม่มี GPU)
+    — สร้าง bundle ที่นี่ ตรวจแผนที่นี่ แล้วส่ง **ตัวเดียวกันนั้น** ไปรันที่เครื่องเป้าหมาย
+
+    ต่างจาก `lmds node run <name> deploy ...` ตรงที่อันนั้นสั่งให้เครื่องปลายทาง**วางแผนใหม่เอง**
+    ซึ่งอาจได้คนละค่ากับที่คุณเพิ่งอนุมัติไป
+    """
+    from lmds.fleet import bundle_roots
+    from lmds.nodes import NodeError, find, push_file, run
+
+    node = find(name)
+    if node is None:
+        err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
+        raise typer.Exit(code=1)
+
+    zips = [root / f"{slug}.zip" for root in bundle_roots()]
+    archive = next((z for z in zips if z.is_file()), None)
+    if archive is None:
+        err_console.print(f"[red]ไม่พบ {slug}.zip ในเครื่องนี้[/red] — ดูรายชื่อ: lmds list")
+        err_console.print(f"[dim]ที่ค้นหา: {', '.join(str(z) for z in zips)}[/dim]")
+        raise typer.Exit(code=1)
+
+    size_mb = archive.stat().st_size / 1024**2
+    console.print(f"ส่ง [bold]{archive.name}[/bold] ({size_mb:.1f} MB) → {name}…")
+    try:
+        result = push_file(node, str(archive), f"/tmp/{slug}.zip")
+        if not result.ok:
+            err_console.print(f"[red]ส่งไฟล์ไม่สำเร็จ[/red] {result.stderr.strip()[:300]}")
+            raise typer.Exit(code=1)
+        # แตกไฟล์ลง ~/bundles บนเครื่องนั้น แล้วลบ zip ชั่วคราวทิ้ง
+        unpack = (
+            f"mkdir -p ~/bundles && cd ~/bundles && "
+            f"unzip -oq /tmp/{shlex.quote(slug)}.zip && rm -f /tmp/{shlex.quote(slug)}.zip && "
+            f"chmod +x ~/bundles/{shlex.quote(slug)}/*.sh 2>/dev/null; "
+            f"ls -d ~/bundles/{shlex.quote(slug)}"
+        )
+        unpacked = run(node, unpack, timeout=300)
+        if not unpacked.ok:
+            err_console.print(f"[red]แตกไฟล์บน {name} ไม่สำเร็จ[/red] {unpacked.stderr.strip()[:300]}")
+            raise typer.Exit(code=1)
+        console.print(f"[green]ติดตั้งแล้วที่[/green] {unpacked.stdout.strip()}")
+
+        for flag, command, note in ((download, "repair", "โหลด weight"), (start, "start", "สั่งรัน")):
+            if not flag:
+                continue
+            console.print(f"{note} บน {name}…")
+            step = run(node, f"lmds {command} {shlex.quote(slug)}", timeout=7200)
+            if step.stdout:
+                print(step.stdout, end="")
+            if not step.ok:
+                err_console.print(step.stderr.rstrip()[:600])
+                raise typer.Exit(code=step.exit_code)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[dim]ต่อจากนี้สั่งจากที่นี่ได้เลย: "
+                  f"[bold]lmds node run {name} doctor {slug}[/bold] · "
+                  f"[bold]lmds node run {name} start {slug}[/bold][/dim]")
+
+
 @node_app.command(
     "run",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},

@@ -18,6 +18,7 @@ import shutil
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from lmds.config.paths import config_dir, ensure_config_dir
 
@@ -111,6 +112,32 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int) -> Result:
     except subprocess.TimeoutExpired:
         return Result(124, "", f"หมดเวลา {timeout}s — เครื่องอาจปิดอยู่หรือเน็ตช้า")
     return Result(proc.returncode, proc.stdout, proc.stderr)
+
+
+def push_file(node: Node, local: str, remote: str, timeout: int = 1800) -> Result:
+    """ส่งไฟล์ไปเครื่องปลายทางด้วย scp — ใช้ key เดียวกับ run()
+
+    ทำไมต้องส่งไฟล์: bundle ที่ผู้ใช้ตรวจแผนแล้วอนุมัติต้องเป็น *ตัวเดียวกัน* กับที่ไปรัน
+    ถ้าไปสั่ง `lmds deploy` ซ้ำบนเครื่องปลายทาง มันจะวางแผนใหม่เองซึ่งอาจได้คนละค่า
+    — ผู้ใช้อนุมัติแผนหนึ่งแล้วได้อีกแผนหนึ่งไปรัน
+    """
+    source = Path(local)
+    if not source.is_file():
+        raise NodeError(f"ไม่พบไฟล์ที่จะส่ง: {local}")
+    for host in node.all_hosts:
+        args = ["scp", *_SSH_BASE, "-i", key_path(), "-P", str(node.port),
+                str(source), f"{node.user}@{host}:{remote}"]
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                                  stdin=subprocess.DEVNULL)
+        except FileNotFoundError as exc:
+            raise NodeError("ไม่พบคำสั่ง scp — ติดตั้ง openssh-client ก่อน") from exc
+        except subprocess.TimeoutExpired:
+            return Result(124, "", f"หมดเวลา {timeout}s ระหว่างส่งไฟล์")
+        result = Result(proc.returncode, proc.stdout, proc.stderr)
+        if result.ok or not _looks_unreachable(result):
+            return result
+    return result
 
 
 def install_key(host: str, user: str, password: str, port: int = 22) -> None:

@@ -552,6 +552,15 @@ function manageMarkup(m) {
       ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
 
+    <div class="sec" style="margin:16px 0 6px">Run on another machine</div>
+    <div class="field">
+      <select class="o-node" style="flex:none;min-width:190px"><option value="">Loading machines…</option></select>
+      ${btn("push", "Send bundle there")}
+      <span class="dim">ส่ง bundle ตัวนี้ (แผนที่คุณอนุมัติไปแล้ว) ไปติดตั้งบนเครื่องนั้น
+        แล้วสั่ง download / start จากการ์ดของเครื่องนั้นได้เลย</span>
+    </div>
+    <div id="push-${esc(m.slug)}"></div>
+
     <div class="sec" style="margin:16px 0 6px">Repair / remove</div>
     <div class="field">
       ${btn("job:repair", "repair")}
@@ -828,9 +837,39 @@ document.addEventListener("click", async e => {
   const model = models_by_slug.get(slug) || { slug };
 
   if (act === "tests") { togglePanel(slug, "tests", () => testsMarkup(model)); return; }
-  if (act === "opts") { togglePanel(slug, "opts", () => manageMarkup(model)); return; }
+  if (act === "opts") {
+    togglePanel(slug, "opts", () => manageMarkup(model));
+    // เครื่องปลายทางมาจากทะเบียนจริง ไม่ใช่ให้พิมพ์ชื่อเอง — พิมพ์ผิดแล้วรู้ตอนกดส่ง
+    const sel = document.querySelector(`#panel-${CSS.escape(slug)} .o-node`);
+    if (sel) api("/api/nodes").then(r => r.json()).then(d => {
+      const nodes = d.nodes || [];
+      sel.innerHTML = nodes.length
+        ? nodes.map(n => `<option value="${esc(n.name)}">${esc(n.name)}</option>`).join("")
+        : `<option value="">ยังไม่มีเครื่องอื่นในทะเบียน</option>`;
+    }).catch(() => {});
+    return;
+  }
   if (act === "doctor" || act === "logs") {
     if (togglePanel(slug, act)) await load(slug, act);
+    return;
+  }
+
+  if (act === "push") {
+    const box = document.getElementById("push-" + slug);
+    const sel = document.querySelector(`#panel-${CSS.escape(slug)} .o-node`);
+    const target = sel && sel.value;
+    if (!target) { box.innerHTML = `<div class="warn-line">เลือกเครื่องปลายทางก่อน</div>`; return; }
+    e.target.disabled = true;
+    box.innerHTML = `<div class="muted">กำลังส่ง ${esc(slug)} ไป ${esc(target)}…</div>`;
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(target)}`,
+                        { method: "POST" });
+    const d = await r.json();
+    e.target.disabled = false;
+    box.innerHTML = r.ok
+      ? `<div class="warn-line" style="color:var(--ok)">ติดตั้งแล้วที่ ${esc(target)}:${esc(d.path || "")}
+          (${d.size_mb} MB) — เลื่อนลงไปที่การ์ดของเครื่องนั้นเพื่อสั่ง download / start</div>`
+      : `<div class="warn-line" style="color:var(--bad)">${esc(d.detail || "ส่งไม่สำเร็จ")}</div>`;
+    if (r.ok) refreshNodes();
     return;
   }
 

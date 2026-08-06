@@ -1065,3 +1065,39 @@ def test_doctor_fixes_point_at_commands_the_web_can_actually_run(tmp_path, monke
     allowed = set(re.findall(r'"(\w[\w-]*)": "[^"]*",', api_src.split("allowed = {")[1].split("}")[0]))
     for command in re.findall(r'f"lmds (\w+) \{slug\}', src):
         assert command in allowed, f"doctor แนะนำ `lmds {command}` แต่หน้าเว็บสั่งข้ามเครื่องไม่ได้"
+
+
+def test_bundle_can_be_pushed_to_the_machine_that_will_run_it(registered, monkeypatch, tmp_path):
+    """wizard สร้าง bundle ลงเครื่องที่เปิดหน้าเว็บอยู่เสมอ — บน controller ที่ไม่มี GPU
+    มันจึงรันไม่ได้ และไม่มีทางบอกให้ไปรันที่เครื่องอื่นจากหน้าเว็บเลย (ผู้ใช้เจอจริง)
+    """
+    archive = tmp_path / "demo.zip"
+    archive.write_bytes(b"PK\x03\x04" + b"0" * 2048)
+    monkeypatch.setattr("lmds.fleet.bundle_roots", lambda: [tmp_path])
+
+    sent, ran = {}, {}
+    monkeypatch.setattr("lmds.nodes.push_file",
+                        lambda node, local, remote, timeout=0: sent.update(local=local, remote=remote)
+                        or SimpleNamespace(ok=True, exit_code=0, stdout="", stderr=""))
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: ran.update(cmd=command)
+                        or SimpleNamespace(ok=True, exit_code=0, stdout="/home/u/bundles/demo", stderr=""))
+
+    r = TestClient(create_app()).post("/api/models/demo/push/spark2")
+    assert r.status_code == 200, r.text
+    assert sent["local"].endswith("demo.zip") and sent["remote"] == "/tmp/demo.zip"
+    assert "unzip" in ran["cmd"] and "~/bundles" in ran["cmd"]
+    assert r.json()["path"] == "/home/u/bundles/demo"
+
+
+def test_pushing_a_bundle_that_does_not_exist_says_so(registered, monkeypatch, tmp_path):
+    monkeypatch.setattr("lmds.fleet.bundle_roots", lambda: [tmp_path])
+    r = TestClient(create_app()).post("/api/models/missing/push/spark2")
+    assert r.status_code == 404
+    assert "missing.zip" in r.json()["detail"]
+
+
+def test_pushing_to_an_unknown_machine_says_so(registered, tmp_path, monkeypatch):
+    monkeypatch.setattr("lmds.fleet.bundle_roots", lambda: [tmp_path])
+    r = TestClient(create_app()).post("/api/models/demo/push/not-a-machine")
+    assert r.status_code == 404

@@ -295,6 +295,41 @@ def create_app(token: str = "") -> FastAPI:
         except DeployError as exc:
             raise _deploy_error(exc) from exc
 
+    @app.post("/api/models/{slug}/push/{name}", dependencies=guarded)
+    def push_bundle(slug: str, name: str) -> dict:
+        """ส่ง bundle ที่สร้าง+ตรวจแผนไว้ในเครื่องนี้ ไปติดตั้งบนเครื่องอื่น
+
+        ทำไมส่ง ZIP แทนการสั่งให้ปลายทาง `lmds deploy` เอง: ผู้ใช้ตรวจแผนและอนุมัติ flag
+        ไปแล้วบน bundle *ตัวนี้* — ให้ปลายทางวางแผนใหม่เองอาจได้คนละค่า กลายเป็นอนุมัติ
+        แผนหนึ่งแล้วได้อีกแผนหนึ่งไปรัน
+        """
+        from lmds.fleet import bundle_roots
+        from lmds.nodes import NodeError, find, push_file, run
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        archive = next((r / f"{slug}.zip" for r in bundle_roots() if (r / f"{slug}.zip").is_file()), None)
+        if archive is None:
+            raise HTTPException(status_code=404, detail=f"ไม่พบ {slug}.zip ในเครื่องนี้")
+        try:
+            sent = push_file(node, str(archive), f"/tmp/{slug}.zip")
+            if not sent.ok:
+                raise HTTPException(status_code=409, detail=(sent.stderr or "ส่งไฟล์ไม่สำเร็จ")[:300])
+            quoted = shlex.quote(slug)
+            unpacked = run(node, (
+                f"mkdir -p ~/bundles && cd ~/bundles && unzip -oq /tmp/{quoted}.zip && "
+                f"rm -f /tmp/{quoted}.zip && chmod +x ~/bundles/{quoted}/*.sh 2>/dev/null; "
+                f"ls -d ~/bundles/{quoted}"
+            ), timeout=300)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not unpacked.ok:
+            raise HTTPException(status_code=409, detail=(unpacked.stderr or "แตกไฟล์ไม่สำเร็จ")[:300])
+        state.STORE.force(name)
+        return {"node": name, "slug": slug, "path": unpacked.stdout.strip(),
+                "size_mb": round(archive.stat().st_size / 1024**2, 1)}
+
     # ── งานที่ใช้เวลานาน: download / start / verify ────────────────────────
     @app.post("/api/models/{slug}/run/{command}", dependencies=guarded)
     def run_command(slug: str, command: str, body: dict | None = None) -> dict:

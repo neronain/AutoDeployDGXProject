@@ -30,6 +30,7 @@ from .registry import (
     validate_cluster_ip,
 )
 from .ssh import (
+    push_file,
     check_login,
     ensure_key,
     install_key,
@@ -63,6 +64,7 @@ __all__ = [
     "nodes_file",
     "probe",
     "public_key_path",
+    "push_file",
     "remove",
     "run",
     "save",
