@@ -10,8 +10,12 @@ audit rules ที่เช็คที่นี่สะท้อน audit-cont
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 import yaml
@@ -43,7 +47,56 @@ REQUIRED_COMMANDS = [
     "client-config",
     "network-info",
     "test-text",
+    "test-anthropic",
 ]
+
+
+def _sse(*events):
+    return "".join(
+        f"event: {event.get('type', 'message')}\ndata: {json.dumps(event)}\n\n"
+        for event in events
+    ).encode()
+
+
+def _http_server(responses):
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _respond(self, body):
+            response = responses[min(len(received) - 1, len(responses) - 1)]
+            status, content_type, payload = response[:3]
+            extra_headers = response[3] if len(response) > 3 else {}
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            for name, value in extra_headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = self.rfile.read(length)
+            received.append((self.path, dict(self.headers), json.loads(body) if body else None))
+            self._respond(body)
+
+        def do_GET(self):
+            received.append((self.path, dict(self.headers), None))
+            self._respond(None)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, received
+
+
+def _stop_http_server(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
 
 
 def safetensors_report(**overrides) -> ModelReport:
@@ -195,10 +248,164 @@ def test_controller_serves_anthropic_surface(isolated_config, tmp_path, kind):
     bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
     assert "test-anthropic)" in text
-    assert "/v1/messages" in text
-    assert "anthropic-version: 2023-06-01" in text
-    # ต้องอ่านเฉพาะ block ชนิด text — โมเดล reasoning ส่ง block ชนิด thinking มาด้วย
-    assert 'b.get("type") == "text"' in text
+    assert "/v1/messages?beta=true" in text
+    assert '"anthropic-version": "2023-06-01"' in text
+    assert '"Authorization": "Bearer " + token' in text
+    assert '"stream": True' in text
+    assert '"tool_choice": {"type": "tool", "name": "read_file"}' in text
+    assert 'event.get("type") == "message_stop"' in text
+    assert "ProxyHandler({})" in text
+    assert "NoRedirect" in text
+    assert "MAX_RESPONSE_BYTES" in text
+    assert "raise SystemExit(2)" in text
+    assert '3<<<"$API_KEY"' in text
+    assert "x-api-key" not in text
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+@pytest.mark.parametrize(
+    ("api_key", "expected_auth"),
+    [("probe-secret", "Bearer probe-secret"), ("", "Bearer lmds-local-no-key")],
+)
+def test_anthropic_probe_executes_exact_sse_and_tool_contract(
+    isolated_config, tmp_path, kind, api_key, expected_auth
+):
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text_body = _sse(
+        {"type": "content_block_start", "content_block": {"type": "text", "text": "OK"}},
+        {"type": "message_stop"},
+    )
+    tool_body = _sse(
+        {
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}},
+        },
+        {"type": "message_stop"},
+    )
+    target, target_thread, received = _http_server(
+        [(200, "text/event-stream", text_body), (200, "text/event-stream", tool_body)]
+    )
+    proxy, proxy_thread, proxy_received = _http_server(
+        [(502, "text/plain", b"proxy must not receive loopback probe")]
+    )
+    try:
+        env = {
+            **os.environ,
+            "API_PORT": str(target.server_port),
+            "API_KEY": api_key,
+            "http_proxy": f"http://127.0.0.1:{proxy.server_port}",
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy.server_port}",
+            "no_proxy": "",
+            "NO_PROXY": "",
+        }
+        result = subprocess.run(
+            ["bash", str(bundle.controller), "test-anthropic"],
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        _stop_http_server(target, target_thread)
+        _stop_http_server(proxy, proxy_thread)
+
+    assert result.returncode == 0, result.stderr
+    assert "PASS" in result.stdout
+    assert proxy_received == []
+    assert len(received) == 2
+    for path, headers, body in received:
+        assert path == "/v1/messages?beta=true"
+        assert headers["Authorization"] == expected_auth
+        assert headers["Anthropic-Version"] == "2023-06-01"
+        assert body["stream"] is True
+    assert received[1][2]["tool_choice"] == {"type": "tool", "name": "read_file"}
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_code", "error"),
+    [
+        ([(404, "application/json", b'{"error":"not found"}')], 2, "ไม่มี /v1/messages"),
+        ([(200, "application/json", b'{}')], 1, "text/event-stream"),
+        ([(200, "text/event-stream", b"data: not-json\n\n")], 1, "SSE data"),
+        (
+            [
+                (200, "text/event-stream", _sse(
+                    {"type": "content_block_start", "content_block": {"type": "text", "text": "OK"}},
+                    {"type": "message_stop"},
+                )),
+                (200, "text/event-stream", _sse(
+                    {"type": "content_block_start", "content_block": {"type": "text", "text": "no tool"}},
+                    {"type": "message_stop"},
+                )),
+            ],
+            2,
+            "tool_use",
+        ),
+        (
+            [
+                (200, "text/event-stream", _sse(
+                    {"type": "content_block_start", "content_block": {"type": "text", "text": "OK"}},
+                    {"type": "message_stop"},
+                )),
+                (400, "application/json", b'{"error":"tool_choice unsupported"}'),
+            ],
+            2,
+            "ไม่รับ forced tool",
+        ),
+    ],
+)
+def test_anthropic_probe_classifies_failure_vs_unsupported(
+    isolated_config, tmp_path, responses, expected_code, error
+):
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    server, thread, _ = _http_server(responses)
+    try:
+        result = subprocess.run(
+            ["bash", str(bundle.controller), "test-anthropic"],
+            text=True,
+            capture_output=True,
+            env={**os.environ, "API_PORT": str(server.server_port)},
+            timeout=10,
+            check=False,
+        )
+    finally:
+        _stop_http_server(server, thread)
+    assert result.returncode == expected_code
+    assert error in result.stderr
+
+
+def test_anthropic_probe_refuses_redirect_without_forwarding_key(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    attacker, attacker_thread, attacker_received = _http_server(
+        [(200, "text/plain", b"stolen")]
+    )
+    target, target_thread, _ = _http_server(
+        [
+            (
+                302,
+                "text/plain",
+                b"redirect",
+                {"Location": f"http://127.0.0.1:{attacker.server_port}/steal"},
+            )
+        ]
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(bundle.controller), "test-anthropic"],
+            text=True,
+            capture_output=True,
+            env={**os.environ, "API_PORT": str(target.server_port), "API_KEY": "probe-secret"},
+            timeout=10,
+            check=False,
+        )
+    finally:
+        _stop_http_server(target, target_thread)
+        _stop_http_server(attacker, attacker_thread)
+    assert result.returncode != 0
+    assert "HTTP 302" in result.stderr
+    assert attacker_received == []
 
 
 @pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
@@ -225,12 +432,85 @@ def test_readme_documents_both_client_surfaces(isolated_config, tmp_path):
     assert "ANTHROPIC_AUTH_TOKEN" in readme
     # Claude Code ยิงหลายช่องโมเดล (หลัก/เบื้องหลัง/subagent) — map ไม่ครบแล้วงานเบื้องหลังพัง
     for env in (
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "CLAUDE_CODE_SUBAGENT_MODEL",
     ):
         assert env in readme, f"README ขาดการ map โมเดลช่อง {env}"
+    assert "lmds-local-no-key" in readme
+    assert "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK" in readme
+    assert "Anthropic ไม่ support" in readme
+    assert "exit 2 (unsupported)" in readme
+    assert "ไม่พิสูจน์ว่า proxy/engine flush" in readme
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_readme_claude_shell_block_uses_live_config_and_clears_stale_routes(
+    isolated_config, tmp_path, kind
+):
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Claude Code", 1)[1]
+    block = section.split("```bash\n", 1)[1].split("\n```", 1)[0]
+    block = block.replace("\n  claude\n", "\n  :\n")
+    block += r'''
+printf '%s\n' "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN" "$LMDS_MODEL" \
+  "$CLAUDE_CODE_MAX_OUTPUT_TOKENS" "${ANTHROPIC_API_KEY-unset}" \
+  "${CLAUDE_CODE_AUTO_COMPACT_WINDOW-unset}" "${CLAUDE_CODE_USE_BEDROCK-unset}"
+'''
+    result = subprocess.run(
+        ["bash", "-c", block],
+        cwd=bundle.directory,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "ADVERTISE_IP": "127.0.0.1",
+            "API_PORT": "8765",
+            "API_KEY": "live-secret",
+            "CLIENT_OUTPUT": "2048",
+            "ANTHROPIC_API_KEY": "stale-cloud-key",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "999999",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+        },
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "http://127.0.0.1:8765",
+        "live-secret",
+        plan.served_model_name,
+        "2048",
+        "unset",
+        "unset",
+        "unset",
+    ]
+
+
+def test_readme_claude_shell_block_does_not_launch_after_client_config_failure(
+    isolated_config, tmp_path
+):
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Claude Code", 1)[1]
+    block = section.split("```bash\n", 1)[1].split("\n```", 1)[0]
+    block = block.replace("\n  claude\n", "\n  echo CLAUDE_RAN\n")
+    result = subprocess.run(
+        ["bash", "-c", block],
+        cwd=bundle.directory,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "ADVERTISE_IP": "127.0.0.1"},
+        timeout=10,
+        check=False,
+    )
+    assert "CLAUDE_RAN" not in result.stdout
+    assert "client-config ไม่ผ่าน" in result.stderr
 
 
 def test_approved_flags_rendered_but_unapproved_not(isolated_config, tmp_path):

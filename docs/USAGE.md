@@ -138,15 +138,18 @@ cd bundles/qwen3-0-6b-gguf
 | `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง (ผิว OpenAI) |
-| `test-anthropic` | ทดสอบผ่าน `/v1/messages` (ผิว Anthropic — สำหรับ Claude Code / Anthropic SDK) |
+| `test-anthropic` | compatibility probe สำหรับ Claude Code: exact `/v1/messages?beta=true`, SSE text + forced tool |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 
-**endpoint เดียวเสิร์ฟสองผิว** — `/v1/chat/completions` (OpenAI SDK, LangChain, Open WebUI)
-และ `/v1/messages` (Anthropic SDK, Claude Code) ใช้พอร์ตเดียวกันและ `API_KEY` ตัวเดียวกัน
-· `client-config` คืนทั้ง `base_url` (ลงท้าย `/v1`) และ `anthropic_base_url` (ไม่มี `/v1` —
-client สาย Anthropic เติม `/v1/messages` ให้เอง) · สูตรต่อ Claude Code แบบเต็มอยู่ใน
-README ของ bundle หัวข้อ "ต่อ client" — **ไม่ต้องมี proxy** เพราะ engine พูด Messages API เอง
+`client-config` คืนทั้ง `base_url` (ลงท้าย `/v1`) และ `anthropic_base_url` (ไม่มี `/v1`).
+บาง engine image/build เสิร์ฟ Anthropic-compatible surface โดยตรง แต่ **ต้องรัน `test-anthropic`**:
+คำสั่งจำลอง contract ปัจจุบันของ Claude Code ด้วย Bearer auth, `anthropic-version: 2023-06-01`,
+SSE text และ forced tool. ผ่านครบ exit 0; endpoint/tool capability ไม่มี exit 2; runtime/auth/SSE
+เสีย exit 1. probe สั้นตรวจรูปแบบ SSE แต่ไม่พิสูจน์ incremental flush timing.
+สูตรตั้งค่าและข้อจำกัดอยู่ใน README ของ bundle หัวข้อ "ต่อ client". Anthropic ระบุว่าไม่ support
+การ route Claude Code ไป non-Claude model; ผลผ่านเป็น compatibility ของ exact engine/model/template
+tuple นี้ ไม่ใช่คำรับรอง universal Anthropic SDK/Claude Code support.
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
 > `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด

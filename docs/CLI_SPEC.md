@@ -167,7 +167,7 @@ lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / -
 lmds node remove <name> [-y]      # ออกจากทะเบียนอย่างเดียว ไม่แตะเครื่องนั้น
 lmds node run <name> <cmd...>          # รันคำสั่ง *ของ lmds* บนเครื่องนั้น (ps/start/stop/logs/deploy)
 lmds node ctl <name> <slug> <cmd...>   # รัน *สคริปต์ controller* ในตัว bundle บนเครื่องนั้น
-                                       #   (prepare-runtime, download, sync-worker, test-text, test-anthropic …)
+                                       #   (prepare-runtime, download, sync-worker, test-text, test-anthropic[SSE+tool] …)
 lmds node cluster [--write SLUG] [--worker NAME]   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
 lmds ps --all                     # โมเดลของทุกเครื่องรวมกัน
 ```

@@ -8,16 +8,18 @@
 
 ### Added
 
-- **endpoint ที่ deploy ออกมาใช้กับ Claude Code / Anthropic SDK ได้** — ผิว `/v1/messages` มีอยู่แล้ว
-  ในตัว engine (vLLM มี `AnthropicServingMessages`, llama.cpp มี endpoint นี้ในตัว) แต่เดิมไม่มีใครบอก
-  · **ไม่ได้เพิ่ม proxy หรือ dependency ใด ๆ** — แค่เปิดเผย ทดสอบ และเขียนเอกสาร
-  · `test-anthropic` ยิง `/v1/messages` จริงหนึ่งครั้ง แยก `404` (image เก่าไม่มี path นี้)
-  ออกจาก "โมเดลตอบไม่ได้" และอ่านเฉพาะ content block ชนิด `text` เพราะโมเดลสาย reasoning
-  ส่ง block ชนิด `thinking` มาด้วยซึ่งไม่มี key `text`
+- **ตรวจ Anthropic-compatible surface ของ engine ก่อนต่อ Claude Code** — บาง vLLM/llama.cpp
+  image/build มี `/v1/messages` แต่ support ขึ้นกับ version, template และ tool parser; ไม่อนุมานจากชื่อ engine
+  · `test-anthropic` ยิง exact `/v1/messages?beta=true` สองครั้ง ตรวจ SSE response: text และ forced
+  `tool_use`; ตรวจ `message_stop`, Content-Type, JSON, Bearer auth และ `anthropic-version: 2023-06-01`
+  ทุกข้อผ่านจึง exit 0; ไม่มี endpoint/tool capability แยกเป็น exit 2; runtime/auth/SSE พังเป็น exit 1
+  · loopback probe ปิด proxy env และ redirect โดยตรง ป้องกัน `Authorization`/API key ไหลออก
+  corporate proxy หรือ redirect target
+  · เป็น compatibility probe สำหรับ exact runtime/model tuple ไม่ใช่ Anthropic support certification
   · `client-config` เพิ่ม `anthropic_base_url` ที่**ไม่มี `/v1`** ต่อท้าย — client สาย Anthropic
   เติม `/v1/messages` ให้เอง ใส่ไปด้วยจะได้ `/v1/v1/messages` แล้ว 404
-  · README ของ bundle มีหัวข้อ "ต่อ client" พร้อมสูตร Claude Code ที่ map ชื่อโมเดลครบสี่ช่อง
-  (opus/sonnet/haiku/subagent) — ตั้งช่องเดียวแล้วงานเบื้องหลังจะยิงชื่อโมเดลของ Anthropic มาที่เครื่องเรา
+  · README ของ bundle มีหัวข้อ "ต่อ client" พร้อมสูตร Claude Code ที่ map ชื่อโมเดลครบหกช่อง,
+  ใช้ dummy Bearer สำหรับ no-auth endpoint และปิด beta/thinking/cache fields ที่ subset มักไม่รองรับ
 - **คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)** — เครื่องที่คุณใช้เป็น *hub* คุมเครื่องอื่นผ่าน SSH
   · `lmds node add <ip> --user <u>` ถามรหัสผ่าน **ครั้งเดียว** เพื่อติดตั้ง SSH key ของ LMDS แล้วทิ้งทันที
   — **ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ** (มีเทสกันไม่ให้เผลอเพิ่มกลับเข้ามา)

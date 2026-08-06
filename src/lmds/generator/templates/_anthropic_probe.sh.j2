@@ -1,0 +1,166 @@
+# Claude Code ใช้ exact path ?beta=true และบังคับ streaming SSE; probe ทั้ง text และ forced tool
+# ด้วย credential path เดียวกับ ANTHROPIC_AUTH_TOKEN (Authorization: Bearer).
+test_anthropic() {
+  need python3
+  # ส่ง API key ผ่าน fd 3 ไม่ใส่ argv; endpoint no-auth ยังได้ dummy bearer เพื่อไม่ให้ client
+  # ที่ login Claude ไว้ fallback ไปส่ง subscription credential มาที่ custom host
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" 3<<<"$API_KEY" <<'PYEOF'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+port, model = int(sys.argv[1]), sys.argv[2]
+with os.fdopen(3) as key_file:
+    api_key = key_file.read().rstrip("\n")
+token = api_key or "lmds-local-no-key"
+url = f"http://127.0.0.1:{port}/v1/messages?beta=true"
+# Loopback probe ต้องไม่อ่าน http_proxy/https_proxy จาก shell: มิฉะนั้น Bearer key อาจถูกส่ง
+# ออก corporate proxy. no_proxy=localhost ก็ไม่ครอบ URL ที่ใช้ 127.0.0.1 เสมอไป.
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+def safe_detail(value, limit=300):
+    text = str(value)
+    if api_key:
+        text = text.replace(api_key, "***")
+    return "".join(ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in text)[:limit]
+
+
+def fail(message):
+    print("test-anthropic: FAIL — " + safe_detail(message), file=sys.stderr)
+    raise SystemExit(1)
+
+
+def unsupported(message):
+    print("test-anthropic: SKIP — " + safe_detail(message), file=sys.stderr)
+    raise SystemExit(2)
+
+
+def read_limited(response, label):
+    body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        fail(f"{label} ใหญ่เกิน {MAX_RESPONSE_BYTES} bytes")
+    return body.decode("utf-8", "replace")
+
+
+def parse_sse(body):
+    raw_events = []
+    data_lines = []
+    for line in body.splitlines():
+        if not line:
+            if data_lines:
+                raw_events.append("\n".join(data_lines))
+                data_lines = []
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if data_lines:
+        raw_events.append("\n".join(data_lines))
+
+    events = []
+    for raw in raw_events:
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except ValueError as exc:
+            fail(f"SSE data ไม่ใช่ JSON: {exc}")
+        if isinstance(event, dict):
+            events.append(event)
+    if not any(event.get("type") == "message_stop" for event in events):
+        fail("SSE จบโดยไม่มี message_stop")
+    return events
+
+
+def post(payload, label):
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        headers={
+            "Authorization": "Bearer " + token,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with opener.open(request, timeout=300) as response:
+            content_type = response.headers.get_content_type()
+            body = read_limited(response, label)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(4096).decode("utf-8", "replace")
+        if exc.code == 404:
+            unsupported("engine ไม่มี /v1/messages?beta=true (HTTP 404)")
+        if label == "tool probe" and exc.code in (400, 405, 422, 501):
+            unsupported(f"engine/model ไม่รับ forced tool request (HTTP {exc.code}): {detail}")
+        if exc.code in (401, 403):
+            fail(f"{label} ปฏิเสธ Bearer token (HTTP {exc.code})")
+        fail(f"{label} ตอบ HTTP {exc.code}: {detail}")
+    except (OSError, urllib.error.URLError) as exc:
+        fail(f"ต่อ {label} ไม่ได้: {type(exc).__name__}: {exc}")
+    if content_type != "text/event-stream":
+        fail(f"{label} ต้องตอบ text/event-stream แต่ได้ {content_type or '(ไม่มี)'}")
+    return parse_sse(body)
+
+
+text_events = post(
+    {
+        "model": model,
+        "max_tokens": 512,
+        "stream": True,
+        "messages": [{"role": "user", "content": "ตอบสั้น ๆ ว่า OK"}],
+    },
+    "text probe",
+)
+text_parts = []
+for event in text_events:
+    for key in ("content_block", "delta"):
+        block = event.get(key)
+        if isinstance(block, dict) and block.get("type") in ("text", "text_delta"):
+            text_parts.append(block.get("text") or "")
+answer = "".join(text_parts).strip()
+if not answer:
+    fail("HTTP 200/SSE สมบูรณ์แต่ไม่มี text block")
+
+tool_events = post(
+    {
+        "model": model,
+        "max_tokens": 512,
+        "stream": True,
+        "tools": [
+            {
+                "name": "read_file",
+                "description": "Read a file from disk",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            }
+        ],
+        "tool_choice": {"type": "tool", "name": "read_file"},
+        "messages": [{"role": "user", "content": "Read /etc/hostname using the tool."}],
+    },
+    "tool probe",
+)
+if not any(
+    isinstance(event.get("content_block"), dict)
+    and event["content_block"].get("type") == "tool_use"
+    for event in tool_events
+):
+    unsupported("forced tool probe ไม่คืน tool_use block — engine/model/template นี้ไม่มี tool capability ที่ต้องใช้")
+
+print("test-anthropic: PASS — SSE text + forced tool_use")
+print("  sample: " + safe_detail(answer, 120))
+PYEOF
+}

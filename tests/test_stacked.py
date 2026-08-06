@@ -26,7 +26,7 @@ from lmds.validator.gates import gate_stacked_contract
 REQUIRED_FLAGS = ["--context", "--port", "--bind", "--advertise-ip", "--interface",
                   "--client-input", "--client-output"]
 REQUIRED_COMMANDS = ["download", "verify-files", "start", "stop", "restart", "status",
-                     "logs", "client-config", "network-info"]
+                     "logs", "client-config", "network-info", "test-anthropic"]
 MULTINODE_MARKERS = ["--nnodes", "--node-rank", "--headless", "--distributed-executor-backend",
                      "sync-worker)", "verify-worker)", "prepare-runtime)", "ssh_worker"]
 
@@ -107,8 +107,12 @@ def test_stacked_controller_serves_anthropic_surface(tmp_path):
     bundle, _, _ = _stacked_bundle(tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
     assert "test-anthropic)" in text
-    assert "/v1/messages" in text
+    assert "/v1/messages?beta=true" in text
     assert '"anthropic_base_url"' in text
+    assert '"stream": True' in text
+    assert '"tool_choice": {"type": "tool", "name": "read_file"}' in text
+    assert '"Authorization": "Bearer " + token' in text
+    assert "ProxyHandler({})" in text
 
 
 def test_stacked_controller_has_multinode_machinery(tmp_path):
