@@ -568,6 +568,11 @@ function manageMarkup(m) {
       </select>
     </div>
     <div class="field">
+      <label>image</label>
+      <input class="o-image" value="${esc(o.image || "")}" placeholder="empty = the image the bundle pins"
+             title="Use when the bundle's image cannot be pulled (bad tag, withdrawn) — no redeploy needed">
+    </div>
+    <div class="field">
       <label>API key</label>
       <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="empty = no authentication">
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
@@ -984,7 +989,8 @@ document.addEventListener("click", async e => {
     const panel = document.getElementById("panel-" + slug);
     const val = sel => (panel.querySelector(sel) || {}).value || "";
     setOpts(slug, { port: +val(".o-port") || null, context: +val(".o-ctx") || null,
-                    slots: +val(".o-slots") || null, bind: val(".o-bind"), api_key: val(".o-key") });
+                    slots: +val(".o-slots") || null, bind: val(".o-bind"), api_key: val(".o-key"),
+                    image: val(".o-image") || null });
     btn.textContent = "Saved";
     setTimeout(() => { btn.textContent = "Save"; }, 1500);
     return;
@@ -1157,6 +1163,7 @@ function readNodeOpts(node, slug) {
   const o = {
     port: num(".n-port"), context: num(".n-ctx"), gpu_util: num(".n-gpu"),
     slots: num(".n-slots"), bind: num(".n-bind"), api_key: num(".n-key"),
+    image: num(".n-image"),
   };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
   localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(o));
@@ -1378,6 +1385,13 @@ function nodeModelsMarkup(name, data) {
             <input type="password" class="n-key" value="${esc(o.api_key ?? "")}"
                    placeholder="ว่าง = ไม่ต้องยืนยันตัวตน" style="min-width:180px">
             <span class="dim">เก็บในเบราว์เซอร์นี้ ไม่ได้เขียนลง bundle ปลายทาง</span>
+          </div>
+          <div class="field" style="width:100%">
+            <label>image</label>
+            <input class="n-image" value="${esc(o.image ?? "")}"
+                   placeholder="ว่าง = ใช้ image ที่ bundle กำหนด" style="min-width:280px"
+                   title="ใช้ตอน image ของ bundle ใช้ไม่ได้ (tag ผิด/ถูกถอน) — ไม่ต้อง deploy ใหม่">
+            <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
           </div>
 
           <div class="sec" style="width:100%;margin:6px 0 2px">ทดสอบ</div>

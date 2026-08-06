@@ -1410,3 +1410,38 @@ def test_the_page_says_something_when_a_list_cannot_be_read():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     block = page.split("async function refreshNodes()")[1][:900]
     assert "catch" in block and "อ่านรายชื่อเครื่องไม่ได้" in block
+
+
+def test_the_image_can_be_overridden_without_a_redeploy(registered, monkeypatch):
+    """bundle ที่ image ใช้ไม่ได้ (tag ผิด/ถูกถอน) เคยแก้ไม่ได้เลยนอกจาก deploy ใหม่ทั้งชุด
+    — ทุก knob อื่นเปลี่ยนผ่าน env ได้ แต่ image ถูก hardcode ไว้ตัวเดียว
+    """
+    from lmds.brain import registry
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: True)
+    sent = {}
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: sent.update(command=command) or FakeStream())
+    client = TestClient(create_app())
+    r = client.post("/api/nodes/spark2/models/demo/start",
+                    json={"image": "nvcr.io/nvidia/vllm:26.05-py3"})
+    assert r.status_code == 200, r.text
+    wait_for_job(client, r.json()["job"]["id"])
+    assert "VLLM_IMAGE=nvcr.io/nvidia/vllm:26.05-py3" in sent["command"]
+
+
+def test_an_image_from_outside_the_allowlist_is_refused(registered):
+    """ค่านี้กลายเป็น `docker run <image>` บนเครื่องปลายทาง — รับอะไรก็ได้ไม่ได้"""
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start",
+                                      json={"image": "evil/backdoor:latest"})
+    assert r.status_code == 400 and "registry ที่ยอมรับ" in r.json()["detail"]
+
+
+def test_an_image_whose_tag_is_missing_is_refused(registered, monkeypatch):
+    from lmds.brain import registry
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: False)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start",
+                                      json={"image": "vllm/vllm-openai:v0.6.3.ss"})
+    assert r.status_code == 400 and "ไม่มีอยู่จริง" in r.json()["detail"]

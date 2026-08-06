@@ -17,7 +17,9 @@ SERVED_MODEL_NAME="{{ plan.served_model_name }}"
 
 # runtime mode: docker (RTX x86_64, image ทางการ) | native (DGX Spark ARM64 — build จาก source)
 RUNTIME_MODE="${RUNTIME_MODE:-{{ runtime_mode }}}"
-LLAMACPP_IMAGE="{{ plan.runtime.image_ref }}"
+# image เปลี่ยนผ่าน env ได้เหมือน knob อื่น ๆ — bundle ที่ image ใช้ไม่ได้ (tag ผิด/ถูกถอน)
+# จะได้แก้ได้โดยไม่ต้อง deploy ใหม่ทั้งชุด · stacked ทำแบบนี้อยู่แล้ว single ตกไป
+LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-{{ plan.runtime.image_ref }}}"
 LLAMA_CPP_REPO="${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp.git}"
 LLAMA_CPP_REF="${LLAMA_CPP_REF:-master}"
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-${HOME}/src/llama.cpp}"

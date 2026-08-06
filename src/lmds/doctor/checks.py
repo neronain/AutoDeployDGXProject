@@ -98,6 +98,17 @@ def _check_image(profile: dict, server: ServerInfo) -> list[Finding]:
         return []
     code, _ = _run(["docker", "image", "inspect", image])
     if code != 0:
+        # "ยังไม่ได้ pull" กับ "ไม่มี tag นี้อยู่จริง" ต่างกันคนละเรื่อง — ข้อความเดิมบอกเหมือนกัน
+        # ผู้ใช้จึงกด start ซ้ำแล้วเจอ "manifest unknown" โดยไม่รู้ว่าปัญหาอยู่ตรงไหน
+        from lmds.brain.registry import tag_exists
+
+        if tag_exists(image) is False:
+            return [Finding(
+                "runtime-image", Status.FAIL,
+                f"image '{image}' ไม่มีอยู่จริงบน registry — pull ไม่ได้แน่นอน",
+                f"เปลี่ยน image ตอน start: VLLM_IMAGE=<image ที่มีจริง> lmds start {server.slug}"
+                f"  ·  หรือ deploy ใหม่เพื่อให้ระบบเลือก image ให้",
+            )]
         return [Finding("runtime-image", Status.WARN, f"ยังไม่มี image ในเครื่อง: {image}",
                         f"ดึงล่วงหน้าได้: docker pull {image} (ไม่ดึงเองก็ได้ start จะ pull ให้)")]
     return [Finding("runtime-image", Status.OK, image)]

@@ -126,6 +126,9 @@ def controller_env(options: dict | None) -> dict:
         env["PARALLEL_SEQS"] = env["MAX_NUM_SEQS"] = str(int(options["slots"]))
     if options.get("gpu_util"):
         env["GPU_MEMORY_UTILIZATION"] = str(float(options["gpu_util"]))
+    if options.get("image"):
+        # controller อ่านคนละชื่อตาม engine — ตั้งทั้งคู่ ตัวที่เกินมาไม่มีผล
+        env["VLLM_IMAGE"] = env["LLAMACPP_IMAGE"] = str(options["image"])
     return env
 
 
@@ -165,7 +168,29 @@ def clean_options(options: dict | None) -> dict:
         if any(ch.isspace() or ord(ch) < 32 for ch in key):
             raise ValueError("API key ต้องไม่มีช่องว่างหรือตัวควบคุม")
         cleaned["api_key"] = key
+    if options.get("image"):
+        cleaned["image"] = _clean_image(str(options["image"]))
     return cleaned
+
+
+def _clean_image(image: str) -> str:
+    """image ที่ผู้ใช้พิมพ์เอง — ต้องอยู่ใน registry ที่ยอมรับ และ tag ต้องมีอยู่จริง
+
+    ค่านี้กลายเป็น `docker run <image>` บนเครื่องปลายทาง จะรับอะไรก็ได้ไม่ได้ ·
+    ใช้ allowlist ตัวเดียวกับที่ใช้ตอน harden แผน จะได้ไม่มีสองมาตรฐาน
+    """
+    image = image.strip()
+    if any(ch.isspace() or ord(ch) < 32 for ch in image):
+        raise ValueError("ชื่อ image ต้องไม่มีช่องว่าง")
+    from lmds.brain.allowlists import KNOWN_IMAGE_REPOS, image_repo
+    from lmds.brain.registry import tag_exists
+
+    allowed = set().union(*KNOWN_IMAGE_REPOS.values())
+    if image_repo(image) not in allowed:
+        raise ValueError(f"image '{image}' ไม่อยู่ใน registry ที่ยอมรับ")
+    if tag_exists(image) is False:
+        raise ValueError(f"tag ของ '{image}' ไม่มีอยู่จริงบน registry")
+    return image
 
 
 def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:

@@ -246,3 +246,37 @@ def test_weights_accept_a_snapshot_under_another_revision(tmp_path, monkeypatch)
     actual.mkdir(parents=True)
     directory, _ = _weight_paths(profile, "m")
     assert directory == actual
+
+
+def test_an_image_tag_that_does_not_exist_is_a_hard_fail(tmp_path, monkeypatch):
+    """"ยังไม่ได้ pull" กับ "ไม่มี tag นี้อยู่จริง" ต่างกันคนละเรื่อง — ข้อความเดิมบอกเหมือนกัน
+    ผู้ใช้จึงกด start ซ้ำแล้วเจอ "manifest unknown" โดยไม่รู้ว่าปัญหาอยู่ตรงไหน
+    (เจอจริงกับ vllm/vllm-openai:v0.6.3.ss ที่ LLM มโนขึ้นมา)
+    """
+    from lmds.brain import registry
+
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr("lmds.doctor.checks.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr("lmds.doctor.checks._run", lambda *a, **k: (1, "no such image"))
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: False)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    finding = next(f for f in diagnose(slug).findings if f.name == "runtime-image")
+    assert finding.status is Status.FAIL
+    assert "ไม่มีอยู่จริงบน registry" in finding.detail
+    assert "VLLM_IMAGE=" in finding.fix, "ต้องบอกทางออกที่ทำได้จริงโดยไม่ต้อง deploy ใหม่"
+
+
+def test_an_image_that_is_merely_not_pulled_stays_a_warning(tmp_path, monkeypatch):
+    """ยังไม่ pull ไม่ใช่ปัญหา — start จะ pull ให้เอง · ทำเป็น FAIL คือขวางโดยไม่จำเป็น"""
+    from lmds.brain import registry
+
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr("lmds.doctor.checks.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr("lmds.doctor.checks._run", lambda *a, **k: (1, "no such image"))
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: None)
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    finding = next(f for f in diagnose(slug).findings if f.name == "runtime-image")
+    assert finding.status is Status.WARN
