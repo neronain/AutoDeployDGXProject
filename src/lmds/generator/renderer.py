@@ -82,6 +82,10 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
                     "basename": part.filename.rsplit("/", 1)[-1],
                     "size_bytes": part.size_bytes,
                     "sha256": part.sha256,
+                    "download_url": part.download_url or (
+                        f"https://huggingface.co/{plan.model_id}/resolve/"
+                        f"{plan.revision}/{part.filename}"
+                    ),
                 }
                 for part in selected_variant.all_parts
             ]
@@ -92,6 +96,10 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
                     "basename": plan.selected_gguf.rsplit("/", 1)[-1],
                     "size_bytes": None,
                     "sha256": None,
+                    "download_url": (
+                        f"https://huggingface.co/{plan.model_id}/resolve/"
+                        f"{plan.revision}/{plan.selected_gguf}"
+                    ),
                 }
             ]
 
@@ -112,6 +120,11 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
                     "basename": base,
                     "size_bytes": variant.size_bytes if variant is not None else None,
                     "sha256": variant.sha256 if variant is not None else None,
+                    "download_url": (
+                        variant.download_url if variant is not None and variant.download_url
+                        else f"https://huggingface.co/{plan.model_id}/resolve/{plan.revision}/"
+                        f"{variant.filename if variant is not None else name}"
+                    ),
                 }
             )
     # ต่อท้ายเสมอ — MODEL_FILE ของ controller คือ MODEL_FILES[0] ซึ่งต้องเป็น weight ไม่ใช่ mmproj
@@ -223,6 +236,7 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
         "generator": plan.generator,
         "model": {
             "id": plan.model_id,
+            "source": report.source_kind,
             "revision": plan.revision,
             "served_name": plan.served_model_name,
             "artifact_type": plan.artifact_type.value,

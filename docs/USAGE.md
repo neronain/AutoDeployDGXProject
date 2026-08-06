@@ -758,12 +758,13 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | `permission denied ... docker.sock` | user ไม่อยู่ใน group docker | INSTALL.md ส่วน 1.3 + logout/login |
 | `HTTP 429 ... quota` จาก provider | โควตา LLM หมด | ระบบสลับ rule-based ให้อัตโนมัติ — งานเดินต่อได้; ระยะยาว: เติมโควตา หรือสลับไปใช้ Local AI (`set-provider openai-compat`) |
 | อยากใช้ Ollama/vLLM local เป็นสมอง | — | `lmds config set-provider openai-compat --base-url http://<ip>:11434/v1 --model gpt-oss:20b` (Ollama) หรือ `--base-url http://<ip>:8000/v1` (vLLM) — ไม่มี key ก็ใช้ได้ · ตั้งไม่ติดดู [INSTALL §3.2.1](INSTALL.md) |
+| ลิงก์ `ollama.com/<namespace>/<model>:<tag>` | — | ใช้กับ `lmds inspect/plan/deploy` ได้ ระบบ pin model blob จาก registry แล้วสร้าง llama.cpp bundle; ยังไม่สร้าง Ollama Modelfile/controller |
 | `download` พังกลางคัน / `No space left on device` | ดิสก์เต็ม | `df -h ~` · ย้ายที่เก็บ: `HF_HOME=/data/hf-cache` (vLLM) หรือ `MODEL_DIR=/data/models` (GGUF) แล้ว download ใหม่ (resume ต่อได้) |
 | `start` ครั้งแรกค้างนานผิดปกติ ยังไม่ขึ้น log อะไร | Docker กำลัง pull image (~10–20 GB) | ปกติ — ดูความคืบหน้าด้วย `docker pull vllm/vllm-openai:latest` แยกอีก terminal · ดึงล่วงหน้าได้ตาม [INSTALL §1.7](INSTALL.md) |
 | `docker pull` ล้ม / `TLS handshake timeout` | เครื่องอยู่หลัง proxy หรือโดน rate limit | ตั้ง proxy ให้ **docker daemon** ด้วย ไม่ใช่แค่ shell ([INSTALL §1.7](INSTALL.md)) |
 | `prepare-runtime` build ล้มบน DGX Spark | ขาด CUDA Toolkit หรือ CUDA arch ไม่ตรง | ดูบรรทัดเตือน `ไม่พบ nvcc` · override ได้: `CUDA_ARCHITECTURES=121 ./xxx-single.sh prepare-runtime` |
 | `ยังไม่มี llama-server — รัน: ... prepare-runtime` | ข้ามขั้น prepare-runtime บนเครื่อง ARM64 | รัน `./xxx-single.sh prepare-runtime` ก่อน start (ดู §2) |
-| ลิงก์ `ollama.com/...` แจ้งว่าเป็นของ Hugging Face | ref แบบ `ollama.com/hf.co/<org>/<model>:<quant>` ชี้ไป HF ไม่ใช่ registry ของ Ollama — tag ตรงนั้นคือ quant ไม่ใช่ชื่อไฟล์ ระบบจึงไม่เดาให้ | ใช้ลิงก์ HF ของไฟล์ GGUF ตัวนั้นตรง ๆ |
+| ลิงก์ `ollama.com/hf.co/...` ใช้ไม่ได้ | ref แบบนี้ชี้ไป HF ไม่ใช่ model blob ใน registry ของ Ollama — tag ตรงนั้นคือ quant ไม่ใช่ชื่อไฟล์ ระบบจึงไม่เดาให้ | ใช้ลิงก์ HF ของ repo GGUF ตัวนั้นตรง ๆ แล้วเลือกไฟล์ quant |
 | ลิงก์ NGC (`catalog.ngc.nvidia.com/...`) ใช้ไม่ได้ | ยังไม่รองรับ (roadmap เฟส 2) | ใช้ลิงก์ HF หรือ `ollama.com` ของโมเดลตัวเดียวกันแทน |
 | `verify-files` แจ้ง shard หาย / ขนาดไม่ตรง | download ไม่ครบ หรือไฟล์ใน cache ถูกลบ | `lmds repair <ชื่อ>` (โหลดเฉพาะส่วนที่ขาด) |
 | `lmds list` ขึ้น ⚠ (ไฟล์ controller หาย) | โฟลเดอร์ bundle ถูกลบ/ย้าย | `lmds deploy` ลิงก์เดิมเพื่อสร้าง bundle ใหม่ — weight เดิมใช้ต่อได้ · หรือ `lmds remove <ชื่อ>` ถ้าไม่ใช้แล้ว |

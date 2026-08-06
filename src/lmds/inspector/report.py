@@ -22,12 +22,16 @@ class GgufPart(BaseModel):
     filename: str
     size_bytes: Optional[int] = None
     sha256: Optional[str] = None
+    # URL ตรงของ artifact ที่ไม่ได้อยู่บน Hugging Face (เช่น Ollama registry blob)
+    # ถ้าเป็น None renderer จะสร้าง URL จาก repo/revision ของ Hugging Face ตามเดิม
+    download_url: Optional[str] = None
 
 
 class GgufVariant(BaseModel):
     filename: str  # ไฟล์เดียว หรือ part แรก (-00001-of-N) ของ split GGUF
     size_bytes: Optional[int] = None  # split: ขนาดรวมทุก part
     sha256: Optional[str] = None  # จาก lfs.oid ของ Hub — ใช้ทำ exact hash check ใน controller
+    download_url: Optional[str] = None
     is_mmproj: bool = False
     parts: list[GgufPart] = []  # ว่าง = ไฟล์เดียว; split = ทุก part เรียงลำดับ
 
@@ -35,7 +39,12 @@ class GgufVariant(BaseModel):
     def all_parts(self) -> list[GgufPart]:
         if self.parts:
             return self.parts
-        return [GgufPart(filename=self.filename, size_bytes=self.size_bytes, sha256=self.sha256)]
+        return [GgufPart(
+            filename=self.filename,
+            size_bytes=self.size_bytes,
+            sha256=self.sha256,
+            download_url=self.download_url,
+        )]
 
 
 class KvDims(BaseModel):
@@ -58,6 +67,7 @@ class ShardFile(BaseModel):
 
 class ModelReport(BaseModel):
     repo_id: str
+    source_kind: str = "huggingface"
     revision_requested: Optional[str] = None
     revision_sha: str  # pin จริง — commit SHA ณ เวลา inspect
     gated: bool = False

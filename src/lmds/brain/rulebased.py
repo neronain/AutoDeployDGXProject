@@ -79,14 +79,15 @@ def topology_for_target(target_name: str) -> Topology:
 
 
 def build_facts(report: ModelReport) -> list[Fact]:
+    source_name = "ollama-registry" if report.source_kind == "ollama" else "hub-api"
     facts = [
-        Fact(claim=f"artifact เป็น {report.artifact_type.value}", source="hub-api", confidence=Confidence.VERIFIED),
-        Fact(claim=f"revision pinned: {report.revision_sha}", source="hub-api", confidence=Confidence.VERIFIED),
+        Fact(claim=f"artifact เป็น {report.artifact_type.value}", source=source_name, confidence=Confidence.VERIFIED),
+        Fact(claim=f"revision pinned: {report.revision_sha}", source=source_name, confidence=Confidence.VERIFIED),
     ]
     if report.weight_bytes:
         facts.append(Fact(
             claim=f"ขนาด weight รวม {report.weight_bytes / 1e9:.1f} GB",
-            source="hub-api file sizes", confidence=Confidence.VERIFIED,
+            source=f"{source_name} file sizes", confidence=Confidence.VERIFIED,
         ))
     if report.context_length:
         facts.append(Fact(
@@ -94,7 +95,7 @@ def build_facts(report: ModelReport) -> list[Fact]:
             source="config.json/gguf-header", confidence=Confidence.VERIFIED,
         ))
     if report.license:
-        facts.append(Fact(claim=f"license: {report.license}", source="hub-api", confidence=Confidence.VERIFIED))
+        facts.append(Fact(claim=f"license: {report.license}", source=source_name, confidence=Confidence.VERIFIED))
     if report.quantization:
         facts.append(Fact(
             claim=f"quantization: {report.quantization}",

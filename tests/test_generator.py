@@ -10,6 +10,7 @@ audit rules ที่เช็คที่นี่สะท้อน audit-cont
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 
@@ -85,6 +86,32 @@ def gguf_report(**overrides) -> ModelReport:
     return ModelReport(**base)
 
 
+def ollama_report(**overrides) -> ModelReport:
+    payload = b"GGUF-test"
+    digest = hashlib.sha256(payload).hexdigest()
+    base = dict(
+        repo_id="library/qwen3:8b",
+        source_kind="ollama",
+        revision_requested="8b",
+        revision_sha=digest,
+        artifact_type=ArtifactType.GGUF,
+        weight_bytes=len(payload),
+        selected_gguf=f"sha256-{digest}",
+        gguf_variants=[GgufVariant(
+            filename=f"sha256-{digest}",
+            size_bytes=len(payload),
+            sha256=digest,
+            download_url=(
+                "https://registry.ollama.ai/v2/library/qwen3/blobs/"
+                f"sha256:{digest}"
+            ),
+        )],
+        has_chat_template=True,
+    )
+    base.update(overrides)
+    return ModelReport(**base)
+
+
 def make_bundle(report, target="dgx-spark-single", tmp_path=None):
     fit = analyze(report, PRESETS[target])
     plan = build_plan(report, fit, provider=None)
@@ -139,6 +166,64 @@ def test_llamacpp_controller_exact_verification(isolated_config, tmp_path):
     assert "--jinja" in text  # chat template ฝังใน GGUF
 
 
+def test_ollama_controller_uses_pinned_registry_blob_and_origin_scoped_auth(
+    isolated_config, tmp_path,
+):
+    report = ollama_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    variant = report.gguf_variants[0]
+
+    assert variant.download_url in text
+    assert "https://huggingface.co/library/qwen3:8b" not in text
+    assert '== https://huggingface.co/*' in text
+    assert "curl_args+=(--location-trusted)" not in text
+    assert variant.sha256 in text
+    readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
+    assert "| Source | `ollama` |" in readme
+    assert "lmds scan" in readme
+    assert "MODEL_DIR" in readme
+
+    result = subprocess.run(["bash", "-n", str(bundle.controller)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_ollama_download_does_not_send_hf_token_to_registry(isolated_config, tmp_path):
+    report = ollama_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    curl_log = tmp_path / "curl-args"
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$CURL_LOG\"\n"
+        "while (($#)); do\n"
+        "  if [[ $1 == -o ]]; then printf 'GGUF-test' > \"$2\"; break; fi\n"
+        "  shift\n"
+        "done\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    model_dir = tmp_path / "model"
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "MODEL_DIR": str(model_dir),
+        "HF_TOKEN": "hf_MUST_NOT_LEAK",
+        "CURL_LOG": str(curl_log),
+    }
+
+    result = subprocess.run(
+        [str(bundle.controller), "download"], env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    args = curl_log.read_text(encoding="utf-8")
+    assert report.gguf_variants[0].download_url in args
+    assert "hf_MUST_NOT_LEAK" not in args
+    assert "Authorization" not in args
+
+
 def test_llamacpp_without_selected_gguf_rejected(isolated_config, tmp_path):
     report = gguf_report(selected_gguf=None)
     fit = analyze(report, PRESETS["dgx-spark-single"])
@@ -162,6 +247,7 @@ def test_model_profile_yaml_valid_and_complete(isolated_config, tmp_path):
     bundle, plan, fit = make_bundle(safetensors_report(), tmp_path=tmp_path)
     profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
     assert profile["model"]["revision"] == "sha-pinned-123"
+    assert profile["model"]["source"] == "huggingface"
     assert profile["runtime"]["engine"] == "vllm"
     assert profile["serving"]["context"] == plan.serving.context
     assert profile["validation"] == {"static": True, "hardware": False}
@@ -210,7 +296,7 @@ def test_no_secrets_in_bundle(isolated_config, tmp_path, monkeypatch):
         assert "hf_SECRETTOKEN123456789" not in content
     # token ใช้ผ่าน env เท่านั้น
     text = bundle.controller.read_text(encoding="utf-8")
-    assert 'HF_TOKEN:+' in text
+    assert 'HF_TOKEN:-' in text
 
 
 @pytest.mark.parametrize("target", ["dgx-spark-single", "rtx-pro-4000-dual"])

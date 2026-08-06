@@ -10,26 +10,36 @@ HF cache มีสองเลย์เอาต์ (`$HF_HOME/hub/models--X` �
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 # ที่ที่โมเดลไปโผล่ได้จริงบนเครื่องที่ไม่เคยจัดระเบียบ
-_ENV_ROOTS = ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "MODEL_DIR", "LLAMA_CACHE")
+_ENV_ROOTS = (
+    "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "MODEL_DIR", "LLAMA_CACHE",
+    "OLLAMA_MODELS",
+)
 _COMMON_ROOTS = (
     "~/.cache/huggingface", "~/.cache/huggingface/hub", "~/models", "~/data/models",
     "/models", "/opt/models", "/srv/models", "/data/models", "/mnt/models",
+    # Ollama desktop/user install และ Linux service install ตามลำดับ
+    "~/.ollama/models", "/usr/share/ollama/.ollama/models",
 )
 # ไฟล์เล็กที่ไม่ควรถูกนับเป็น weight (โหลดไม่ครบ/ไฟล์ตัวอย่าง)
 _MIN_GGUF_BYTES = 32 * 1024 * 1024
+_OLLAMA_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_OLLAMA_MANIFEST_CAP = 4 * 1024 * 1024
+_OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 
 
 @dataclass
 class FoundModel:
     """โมเดลหนึ่งตัวที่เจอบนดิสก์ — path เป็นของจริงที่ชี้ไปได้เลย"""
 
-    kind: str  # "hf" | "gguf"
-    name: str  # org/model สำหรับ hf · ชื่อไฟล์สำหรับ gguf
+    kind: str  # "hf" | "gguf" | "ollama"
+    name: str  # org/model สำหรับ hf · ชื่อไฟล์สำหรับ gguf · namespace/model:tag สำหรับ ollama
     path: str
     size_bytes: int = 0
     revisions: list[str] = field(default_factory=list)
@@ -37,6 +47,7 @@ class FoundModel:
     # เลย์เอาต์ของ HF cache ที่พบ: "hub" (ปัจจุบัน) หรือ "root" (เก่า) — ต่างกันตอนบอก
     # HF_HUB_CACHE ให้คอนเทนเนอร์ ถ้าบอกผิดจะได้ LocalEntryNotFoundError ทั้งที่ไฟล์ครบ
     layout: str = ""
+    aliases: list[str] = field(default_factory=list)
 
     @property
     def size_gb(self) -> float:
@@ -130,6 +141,58 @@ def _scan_gguf_root(root: Path, max_depth: int = 3) -> list[FoundModel]:
     return found
 
 
+def _scan_ollama_root(root: Path) -> list[FoundModel]:
+    """จับคู่ local manifest กับ content-addressed blob ที่ไม่มีนามสกุล
+
+    Ollama เก็บ manifest เป็น
+    manifests/registry.ollama.ai/<namespace>/<model>/<tag> และ blob เป็น
+    blobs/sha256-<hex> จึงห้ามใช้ rglob ไฟล์ไร้นามสกุลทั่ว root (ทั้งช้าและ false-positive สูง)
+    """
+    manifest_root = root / "manifests" / "registry.ollama.ai"
+    blob_root = root / "blobs"
+    if not manifest_root.is_dir() or not blob_root.is_dir():
+        return []
+
+    found: list[FoundModel] = []
+    for path in sorted(manifest_root.glob("*/*/*")):
+        try:
+            rel = path.relative_to(manifest_root)
+            namespace, model, tag = rel.parts
+            if not path.is_file() or path.stat().st_size > _OLLAMA_MANIFEST_CAP:
+                continue
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            layers = doc.get("layers") if isinstance(doc, dict) else None
+            if not isinstance(layers, list):
+                continue
+            model_layers = [
+                layer for layer in layers
+                if isinstance(layer, dict) and layer.get("mediaType") == _OLLAMA_MODEL_LAYER
+            ]
+            if len(model_layers) != 1:
+                continue
+            layer = model_layers[0]
+            digest = layer.get("digest")
+            expected_size = layer.get("size")
+            if not isinstance(digest, str) or not _OLLAMA_DIGEST_RE.fullmatch(digest):
+                continue
+            if isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size <= 0:
+                continue
+            blob = blob_root / digest.replace(":", "-", 1)
+            actual_size = blob.stat().st_size
+            if not blob.is_file() or actual_size != expected_size:
+                continue
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        found.append(FoundModel(
+            kind="ollama",
+            name=f"{namespace}/{model}:{tag}",
+            path=str(blob),
+            size_bytes=actual_size,
+            revisions=[digest],
+        ))
+    return found
+
+
 def scan(extra_roots: list[str] | None = None) -> list[FoundModel]:
     """weight ทั้งหมดที่เจอบนเครื่องนี้ เรียงจากใหญ่ไปเล็ก
 
@@ -137,15 +200,35 @@ def scan(extra_roots: list[str] | None = None) -> list[FoundModel]:
     """
     results: dict[str, FoundModel] = {}
     for root in candidate_roots(extra_roots):
-        for model in _scan_hf_root(root) + _scan_gguf_root(root):
-            results.setdefault(model.path, model)
+        for model in _scan_hf_root(root) + _scan_gguf_root(root) + _scan_ollama_root(root):
+            existing = results.setdefault(model.path, model)
+            if model.name != existing.name and model.name not in existing.aliases:
+                existing.aliases.append(model.name)
     return sorted(results.values(), key=lambda m: -m.size_bytes)
 
 
-def find_model(repo_id: str, extra_roots: list[str] | None = None) -> FoundModel | None:
+def find_model(
+    repo_id: str,
+    extra_roots: list[str] | None = None,
+    *,
+    revision: str | None = None,
+    digest: str | None = None,
+) -> FoundModel | None:
     """หาโมเดลตัวหนึ่งโดยเฉพาะ — ใช้ตอบว่า "ต้องโหลดใหม่ไหม" ก่อน download หลายสิบ GB"""
     wanted = repo_id.lower()
     for model in scan(extra_roots):
         if model.kind == "hf" and model.name.lower() == wanted:
             return model
+        if model.kind == "ollama":
+            names = [model.name, *model.aliases]
+            if revision:
+                names = [name for name in names if name.lower() == f"{wanted}:{revision.lower()}"]
+            else:
+                names = [name for name in names if name.rsplit(":", 1)[0].lower() == wanted]
+            if names and (
+                digest is None
+                or digest.removeprefix("sha256:").lower()
+                in {value.removeprefix("sha256:").lower() for value in model.revisions}
+            ):
+                return model
     return None

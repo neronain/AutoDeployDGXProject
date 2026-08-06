@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 
 _HF_HOSTS = {"huggingface.co", "www.huggingface.co", "hf.co"}
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*$")
+_OLLAMA_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$")
+_OLLAMA_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$")
 
 
 class SourceError(ValueError):
@@ -108,7 +110,7 @@ def _parse_ollama_path(path: str) -> ModelSource:
     if parts[0] == "v2":
         if len(parts) != 5 or parts[3] != "manifests":
             raise SourceError(f"ไม่เข้าใจ path ของ registry API: {path}")
-        return ModelSource(kind="ollama", repo_id=f"{parts[1]}/{parts[2]}", revision=parts[4])
+        return _ollama_source(parts[1], parts[2], parts[4])
 
     if parts[0] == "search":
         raise SourceError("ลิงก์เป็นหน้าค้นหา — ใส่ลิงก์ของโมเดลตัวใดตัวหนึ่ง")
@@ -133,4 +135,19 @@ def _parse_ollama_path(path: str) -> ModelSource:
     if not name:
         raise SourceError("ลิงก์ Ollama ไม่มีชื่อโมเดล")
 
-    return ModelSource(kind="ollama", repo_id=f"{namespace}/{name}", revision=tag or "latest")
+    return _ollama_source(namespace, name, tag or "latest")
+
+
+def _ollama_source(namespace: str, name: str, tag: str) -> ModelSource:
+    """validate ตาม Ollama types/model.Name ก่อนประกอบ registry path
+
+    ไม่ใช่ขอบเขต security (origin ถูกตรึงไว้แล้ว) แต่ช่วยให้ input เสียจบเป็น SourceError
+    แทน HTTP/manifest error ที่ชวนเข้าใจผิดภายหลัง
+    """
+    if not _OLLAMA_NAMESPACE_RE.fullmatch(namespace):
+        raise SourceError(f"Ollama namespace ไม่ถูกต้อง: {namespace!r}")
+    if not _OLLAMA_NAME_RE.fullmatch(name):
+        raise SourceError(f"Ollama model name ไม่ถูกต้อง: {name!r}")
+    if not _OLLAMA_NAME_RE.fullmatch(tag):
+        raise SourceError(f"Ollama tag ไม่ถูกต้อง: {tag!r}")
+    return ModelSource(kind="ollama", repo_id=f"{namespace}/{name}", revision=tag)

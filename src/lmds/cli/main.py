@@ -404,7 +404,7 @@ def scan_models(
         return [
             {"kind": m.kind, "name": m.name, "path": m.path, "size_gb": m.size_gb,
              "shards": m.shard_count, "layout": m.layout, "revisions": m.revisions,
-             "hub_cache_root": m.hub_cache_root}
+             "aliases": m.aliases, "hub_cache_root": m.hub_cache_root}
             for m in models
         ]
 
@@ -832,7 +832,7 @@ def version() -> None:
 
 @app.command()
 def inspect(
-    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face/Ollama หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision", help="branch/tag/commit ที่ต้องการ"),
     targets: list[str] = typer.Option(
         [], "--target", help="ประเมิน fit กับ target ที่ระบุ (ซ้ำได้) เช่น rtx-pro-4000 — ค่าว่าง = เครื่องนี้ + dgx-spark-single",
@@ -1102,7 +1102,7 @@ def _render_report(report) -> None:
 
 @app.command()
 def plan(
-    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face/Ollama หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
     target: Optional[str] = typer.Option(
         None, "--target", help="target preset (เช่น dgx-spark-single) — ว่าง = เครื่องนี้ หรือ dgx-spark-single",
@@ -1200,7 +1200,7 @@ def _render_plan(deployment_plan, fit) -> None:
 
 @app.command()
 def generate(
-    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face/Ollama หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
     target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)", autocompletion=_complete_target),
     output: str = typer.Option("./bundles", "--output", help="โฟลเดอร์ output ของ bundle"),
@@ -1319,7 +1319,7 @@ def _render_gates(results) -> None:
 
 @app.command()
 def deploy(
-    model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),
+    model: str = typer.Argument(..., help="ลิงก์ Hugging Face/Ollama หรือ org/model"),
     revision: Optional[str] = typer.Option(None, "--revision"),
     target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)", autocompletion=_complete_target),
     output: str = typer.Option("./bundles", "--output"),

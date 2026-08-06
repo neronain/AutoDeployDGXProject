@@ -359,7 +359,8 @@ def create_app(token: str = "") -> FastAPI:
 
         def rows(models) -> list[dict]:
             return [{"kind": m.kind, "name": m.name, "path": m.path, "size_gb": m.size_gb,
-                     "shards": m.shard_count, "layout": m.layout} for m in models]
+                     "shards": m.shard_count, "layout": m.layout,
+                     "aliases": m.aliases} for m in models]
 
         payload = {"host": rows(scan())}
         if all_nodes:

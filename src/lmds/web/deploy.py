@@ -105,6 +105,7 @@ def analyze(
     from lmds.fit import PRESETS, Verdict, analyze as analyze_fit
     from lmds.fit.targets import from_hardware_report
     from lmds.inspector import AuthRequired, HfClient, HfError, RepoNotFound, inspect_model
+    from lmds.inspector.ollama_api import ManifestNotFound, OllamaError
     from lmds.resolver import SourceError, parse_source
 
     try:
@@ -125,6 +126,10 @@ def analyze(
         raise DeployError("gated", str(exc)) from exc
     except RepoNotFound as exc:
         raise DeployError("not-found", str(exc)) from exc
+    except ManifestNotFound as exc:
+        raise DeployError("not-found", str(exc)) from exc
+    except OllamaError as exc:
+        raise DeployError("registry", str(exc)) from exc
     except HfError as exc:
         raise DeployError("hub", str(exc)) from exc
 

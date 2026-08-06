@@ -211,6 +211,29 @@ def test_single_variant_gguf_needs_no_question(monkeypatch):
     assert result["plan"]["selected_gguf"] == "Qwen3-8B-Q4_K_M.gguf"
 
 
+@pytest.mark.parametrize("error, kind", [
+    pytest.param("not-found", "not-found", id="manifest-404"),
+    pytest.param("registry", "registry", id="registry-500"),
+    pytest.param("no-layer", "registry", id="manifest-no-model-layer"),
+])
+def test_ollama_registry_error_is_a_structured_deploy_error(monkeypatch, error, kind):
+    from lmds.inspector.ollama_api import ManifestNotFound, NoModelLayer, OllamaError
+    from lmds.web import deploy as dep
+
+    def fail(source, client):
+        if error == "not-found":
+            raise ManifestNotFound("library/qwen3", "latest")
+        if error == "no-layer":
+            raise NoModelLayer("no model layer")
+        raise OllamaError("registry offline")
+
+    monkeypatch.setattr("lmds.inspector.inspect_model", fail)
+    with pytest.raises(dep.DeployError) as err:
+        dep.analyze("ollama.com/qwen3", target="dgx-spark-single", no_llm=True)
+    assert err.value.kind == kind
+    assert err.value.message
+
+
 def test_no_fit_returns_alternatives(monkeypatch):
     """โมเดลใหญ่เกินเครื่อง — ต้องบอกทางเลือก ไม่ใช่ปล่อยให้ผู้ใช้เดา"""
     from tests.test_generator import safetensors_report

@@ -31,7 +31,7 @@ DeploymentPlan JSON schema:
 {schema}
 """
 
-USER_TEMPLATE = """EVIDENCE (deterministic, gathered from Hugging Face Hub and fit analysis):
+USER_TEMPLATE = """EVIDENCE (deterministic, gathered from the model source and fit analysis):
 {evidence}
 
 TASK: Produce the DeploymentPlan JSON for deploying this model on target `{target}`.

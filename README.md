@@ -4,14 +4,20 @@
 >
 > 🇬🇧 English summary: [README.en.md](README.en.md)
 
-โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล Hugging Face** (repo, ลิงก์ไฟล์ `.gguf` ตรง) แล้วใช้ **LLM API** (OpenAI, Gemini, MiniMax หรือ OpenAI-compatible endpoint — รวมถึงโมเดล local ของคุณเอง) เป็นสมองในการวิเคราะห์และ**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
+โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล Hugging Face** (repo, ลิงก์ไฟล์ `.gguf` ตรง)
+หรือ **ลิงก์ Ollama registry** แล้วใช้ **LLM API** (OpenAI, Gemini, MiniMax หรือ
+OpenAI-compatible endpoint — รวมถึงโมเดล local ของคุณเอง) เป็นสมองในการวิเคราะห์และ
+**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
 
 - **NVIDIA DGX Spark** — เครื่องเดี่ยว หรือ stacked หลายเครื่อง
 - **Ubuntu + RTX GPU** — local AI server ทั่วไป (x86_64)
 
 สืบทอดมาตรฐานจาก [dgx-spark-all-controllers v3.0.0](https://github.com/neronain/dgx-spark-all-controllers) และ skill pack `dgx-spark-model-deployer-team-pack-v3.0.0` ซึ่งมี controller ที่รันจริงแล้วกว่า 12 โมเดล
 
-> **แหล่งโมเดลที่รองรับตอนนี้: Hugging Face เท่านั้น** — ลิงก์ Ollama (`ollama.com/...`) และ NVIDIA NGC อยู่ใน roadmap เฟส 2 (ใส่แล้วระบบจะแจ้งว่ายังไม่รองรับ พร้อมแนะให้ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน) · provider `anthropic` ตั้งค่าได้แล้วแต่ adapter ยังอยู่ในเฟส 2
+> **แหล่งโมเดลที่รองรับตอนนี้: Hugging Face + Ollama registry** — ลิงก์
+> `ollama.com/<namespace>/<model>:<tag>` ถูก pin ด้วย blob digest แล้วสร้าง llama.cpp bundle;
+> ยังไม่สร้าง Ollama Modelfile/controller และ NVIDIA NGC ยังอยู่ใน roadmap เฟส 2 · provider
+> `anthropic` ตั้งค่าได้แล้วแต่ adapter ยังอยู่ในเฟส 2
 
 ## สถานะโปรเจกต์
 

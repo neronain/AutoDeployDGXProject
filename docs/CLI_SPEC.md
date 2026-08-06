@@ -38,8 +38,8 @@ lmds repair <BUNDLE_DIR> --log <FILE|->  ❌ # repair จาก log ความ
 lmds deploy <MODEL_URL_OR_ID> [OPTIONS]
 
 Arguments:
-  MODEL_URL_OR_ID   ลิงก์ HF เต็ม | org/model | ลิงก์ไฟล์ .gguf ตรง
-                    (❌ ollama.com / NGC / GitHub release = เฟส 2 — ตอนนี้แจ้ง UnsupportedSource)
+  MODEL_URL_OR_ID   ลิงก์ HF เต็ม | org/model | ลิงก์ไฟล์ .gguf ตรง | ลิงก์ ollama.com
+                    (Ollama resolve registry blob → llama.cpp; ❌ NGC / GitHub release = เฟส 2)
 
 Options:
   --target PROFILE        dgx-spark-single | dgx-spark-stacked | rtx-* | auto (default: auto = ตรวจเครื่องปัจจุบัน)
@@ -326,8 +326,8 @@ Output: ตาราง pass/fail ต่อ gate + exit code `0/2`
 src/lmds/
 ├── cli/                 # main.py (typer commands ทั้งหมด), banner.py
 ├── config/              # settings.py (config.yaml + provider), paths.py
-├── resolver/            # parse.py — HF เท่านั้น (Ollama/NGC โยน UnsupportedSource)
-├── inspector/           # inspect.py, hf_api.py, gguf.py (header ผ่าน HTTP Range), report.py
+├── resolver/            # parse.py — Hugging Face + Ollama (NGC โยน UnsupportedSource)
+├── inspector/           # inspect.py, hf_api.py, ollama_api.py, gguf.py (header ผ่าน HTTP Range), report.py
 ├── hardware/            # profiler.py (nvidia-smi/docker), profiles.py (GPU allowlist)
 ├── fit/                 # analyzer.py (memory/KV cache), targets.py (target presets)
 ├── brain/               # providers.py, orchestrator.py, plan_schema.py, prompts.py,

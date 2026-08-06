@@ -54,6 +54,17 @@ def test_ollama_link_resolves_to_registry_ref():
     assert src.revision == "32b"
 
 
+@pytest.mark.parametrize("value", [
+    "ollama.com/bad%20name",
+    "ollama.com/library/name:bad%2Ftag",
+    "registry.ollama.ai/v2/bad.name/qwen3/manifests/latest",
+    "ollama.com/" + "a" * 81,
+])
+def test_invalid_ollama_name_parts_fail_before_network(value):
+    with pytest.raises(SourceError, match="Ollama"):
+        parse_source(value)
+
+
 def test_ngc_rejected_with_clear_message():
     with pytest.raises(UnsupportedSource, match="NGC"):
         parse_source("https://catalog.ngc.nvidia.com/models/foo")

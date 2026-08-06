@@ -5,16 +5,18 @@
 > 🇹🇭 ภาษาไทย: [README.md](README.md) — the Thai README and `docs/` are the primary documentation.
 > This page is a summary for English readers; the CLI itself speaks Thai.
 
-A CLI for Ubuntu that takes a **Hugging Face model link** (repo or direct `.gguf` file) and uses an
+A CLI for Ubuntu that takes a **Hugging Face model link** (repo or direct `.gguf` file) or an
+**Ollama registry link**, and uses an
 **LLM API** (OpenAI, Gemini, MiniMax, or any OpenAI-compatible endpoint — including your own local
 model) as its "brain" to analyse the model and produce a **validated deployment bundle** for:
 
 - **NVIDIA DGX Spark** — single node or stacked (multi-node)
 - **Ubuntu + RTX GPU** — ordinary local AI servers (x86_64)
 
-> **Supported model sources today: Hugging Face only.** Ollama and NVIDIA NGC links are phase 2 —
-> passing one produces a clear "not supported yet" message. The `anthropic` provider can be
-> configured but its adapter is also phase 2.
+> **Supported model sources today: Hugging Face and the Ollama registry.** An
+> `ollama.com/<namespace>/<model>:<tag>` link is pinned to its model-blob digest and rendered as a
+> llama.cpp bundle. Ollama Modelfile/controller output and NVIDIA NGC remain phase 2. The
+> `anthropic` provider can be configured but its adapter is also phase 2.
 
 ## Core design principle
 

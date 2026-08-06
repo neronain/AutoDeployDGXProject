@@ -62,7 +62,8 @@
    อ่านได้จาก traceback ตรง ๆ (`only supports fp8 kv-cache` → kv-cache-dtype ·
    `Expected 7 but got 8 arguments` → cudagraph PIECEWISE · `LocalEntryNotFoundError` →
    HF_HUB_CACHE) · `lmds doctor` จับได้เฉพาะอาการที่รู้จักล่วงหน้า ส่วน LLM อ่าน log จริงได้
-3. **Ollama + NGC source** + ทางเลือก output แบบ Ollama Modelfile (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
+3. **Ollama source → llama.cpp bundle** — ✅ resolve registry manifest/blob + pin SHA-256 แล้ว
+   · งานต่อยอด: output แบบ Ollama Modelfile/controller และ **NGC source** (รอคำตอบคำถามเปิดข้อ 1 ใน PRD)
 4. ~~**Web UI หน้าเดียว**~~ — ✅ **ทำแล้ว (2026-08-04/05)** `lmds web` · host stats, deploy wizard,
    fleet หลายเครื่อง, cluster fabric, scan, recipes · งานต่อยอด: `node install` / `--alt-host` /
    deploy wizard ยังต้องใช้ CLI

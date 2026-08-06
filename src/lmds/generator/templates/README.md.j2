@@ -6,6 +6,7 @@
 | | |
 |---|---|
 | Model | `{{ plan.model_id }}` |
+| Source | `{{ report.source_kind }}` |
 | Revision (pinned) | `{{ plan.revision }}` |
 | Runtime | {{ plan.runtime.engine.value }} — `{{ plan.runtime.image_ref }}` |
 | Topology | {{ plan.topology.value }} (target: {{ fit.target_name }}) |
@@ -35,6 +36,11 @@
 {% if plan.runtime.engine.value == "vllm" %}- โมเดลเก็บใน HF cache: `${HF_HOME:-~/.cache/huggingface}` (symlink-based, resume ได้)
 {% else %}- โมเดลเก็บใน: `${MODEL_DIR:-~/models/{{ slug }}}`
 {% endif %}- แก้ path ได้ผ่าน env โดยไม่ต้องแก้สคริปต์
+{% if report.source_kind == "ollama" %}
+- ถ้าเครื่องนี้เคย `ollama pull` blob เดียวกันแล้ว รัน `lmds scan` เพื่อดู path; ตั้ง
+  `MODEL_DIR` เป็นโฟลเดอร์ `.../models/blobs` ที่รายงาน แล้วข้าม `download` ไป `verify-files` ได้
+  (ชื่อไฟล์ content-addressed ตรงกับ `{{ plan.selected_gguf }}`)
+{% endif %}
 
 ## Runtime pin
 
@@ -130,4 +136,3 @@ lmds disable {{ slug }}         # ยกเลิก
 
 ---
 *สร้างด้วย LMDS (Local Model Deploy Studio) โดย **neronain** — [fb.com/neronain.minidev](https://www.facebook.com/neronain.minidev)*
-

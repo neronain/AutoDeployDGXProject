@@ -91,17 +91,23 @@ def _inspect_ollama(source: ModelSource, client: OllamaClient) -> ModelReport:
     filename = f"sha256-{sha256}"
     report = ModelReport(
         repo_id=f"{source.repo_id}:{tag}",
+        source_kind="ollama",
         revision_requested=tag,
         revision_sha=sha256,
         artifact_type=ArtifactType.GGUF,
         weight_bytes=size or None,
         file_count=len(layers),
         selected_gguf=filename,
-        gguf_variants=[GgufVariant(filename=filename, size_bytes=size or None, sha256=sha256)],
+        gguf_variants=[GgufVariant(
+            filename=filename,
+            size_bytes=size,
+            sha256=sha256,
+            download_url=f"https://registry.ollama.ai/v2/{source.repo_id}/blobs/{digest}",
+        )],
     )
 
     try:
-        gguf = parse_gguf(client.blob_range_source(source.repo_id, digest))
+        gguf = parse_gguf(client.blob_range_source(source.repo_id, digest, size))
     except (GgufParseError, BudgetExceeded, OllamaError, EOFError) as exc:
         report.warnings.append(f"อ่าน GGUF header ไม่สำเร็จ: {exc}")
         return report
@@ -109,11 +115,17 @@ def _inspect_ollama(source: ModelSource, client: OllamaClient) -> ModelReport:
     report.architecture = gguf.architecture
     report.context_length = gguf.context_length
     report.kv_dims = _kv_dims_from_gguf(gguf)
-    # ชั้น template ของ Ollama เก็บ chat template ไว้แยกจาก GGUF — มีอย่างใดอย่างหนึ่งก็ถือว่ามี
-    report.has_chat_template = (
-        gguf.chat_template is not None
-        or "application/vnd.ollama.image.template" in media_types
-    )
+    # controller ใช้ blob GGUF โดยตรงและไม่ได้แปลง Go template ชั้นแยกของ Ollama เป็น Jinja
+    # ดังนั้นมี external template อย่างเดียวไม่ใช่หลักฐานว่า llama.cpp --jinja ใช้ได้
+    report.has_chat_template = gguf.chat_template is not None
+    if (
+        not report.has_chat_template
+        and "application/vnd.ollama.image.template" in media_types
+    ):
+        report.warnings.append(
+            "Ollama manifest มี template แยก แต่ GGUF ไม่มี embedded Jinja chat template — "
+            "LMDS ยังไม่ import/แปลง template ชั้นนั้น"
+        )
     if gguf.file_type is not None:
         # ชื่อ quant อ่านจาก header ไม่ใช่เดาจากชื่อไฟล์ — Ollama ไม่มีชื่อไฟล์ให้เดาอยู่แล้ว
         report.quantization = f"gguf-file-type-{gguf.file_type}"

@@ -36,7 +36,7 @@ MODEL_FILES=(
 {% for part in gguf_parts %}  "{{ part.basename }}"
 {% endfor %})
 MODEL_URLS=(
-{% for part in gguf_parts %}  "https://huggingface.co/{{ plan.model_id }}/resolve/{{ plan.revision }}/{{ part.filename }}"
+{% for part in gguf_parts %}  "{{ part.download_url }}"
 {% endfor %})
 EXPECTED_SIZES=(
 {% for part in gguf_parts %}  "{{ part.size_bytes if part.size_bytes is not none else '' }}"
@@ -138,8 +138,13 @@ download() {
   local i
   for i in "${!MODEL_FILES[@]}"; do
     echo "download [$(( i + 1 ))/{{ '${#MODEL_FILES[@]}' }}]: ${MODEL_URLS[$i]}"
-    curl -fL --retry 5 -C - \
-      ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} \
+    local curl_args=(-fL --retry 5 -C -)
+    # HF_TOKEN ส่งให้ Hugging Face origin เท่านั้น — direct URL ของ registry อื่นห้ามรับ secret นี้
+    # curl -L ถอด Authorization เมื่อ redirect ข้าม host อยู่แล้ว; ไม่ใช้ --location-trusted
+    if [[ "${MODEL_URLS[$i]}" == https://huggingface.co/* && -n "${HF_TOKEN:-}" ]]; then
+      curl_args+=(-H "Authorization: Bearer ${HF_TOKEN}")
+    fi
+    curl {{ '"${curl_args[@]}"' }} \
       -o "${MODEL_DIR}/${MODEL_FILES[$i]}" \
       "${MODEL_URLS[$i]}"
   done
