@@ -296,6 +296,49 @@ def _cmdline_value(cmdline: str, flag: str) -> str:
     return ""
 
 
+# ธงที่บอก context จริงของแต่ละ engine — ค่าที่ *กำลังรัน* ไม่ใช่ค่าที่ bundle ตั้งไว้
+_CONTEXT_FLAGS = ("--ctx-size", "--max-model-len")
+
+
+def running_context(info: "ServerInfo") -> int | None:
+    """context ที่ server ตัวนี้รันอยู่จริง — None ถ้าอ่านไม่ได้
+
+    ทำไมต้องมี: ผู้ใช้ตั้ง context ตอน start (65,600) แต่หน้าเว็บโชว์ค่าใน bundle (16,384)
+    ต่อไปเรื่อย ๆ — ดูแล้วเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ทำงานถูกต้อง
+    ค่าที่แสดงต้องเป็นค่าที่ใช้จริง ไม่ใช่ค่าที่ตั้งใจไว้
+    """
+    if not info.running:
+        return None
+    words: list[str] = []
+    if info.mode == "docker" and info.container:
+        try:
+            proc = subprocess.run(
+                ["docker", "inspect", info.container, "--format", "{{join .Args \" \"}}"],
+                capture_output=True, text=True, timeout=10)
+            words = proc.stdout.split() if proc.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired):
+            words = []
+    else:
+        pid = info.pid
+        if not pid and info.pid_file:
+            try:
+                pid = int(Path(info.pid_file).read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                pid = 0
+        if pid:
+            try:
+                words = Path(f"/proc/{pid}/cmdline").read_bytes().decode(
+                    "utf-8", "replace").split("\0")
+            except OSError:
+                words = []
+    for flag in _CONTEXT_FLAGS:
+        if flag in words:
+            index = words.index(flag)
+            if index + 1 < len(words) and words[index + 1].isdigit():
+                return int(words[index + 1])
+    return None
+
+
 def _in_container(pid: int) -> bool:
     """process ใน container มองเห็นได้จาก process table ของ host ด้วย
 

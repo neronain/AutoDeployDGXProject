@@ -1350,6 +1350,8 @@ function nodeModelsMarkup(name, data) {
           <span class="dot ${state}"></span>
           <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
             <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+            ${m.running && m.context_configured && m.context !== m.context_configured
+              ? `<span class="tag" title="ค่าใน bundle คือ ${m.context_configured.toLocaleString()} — ตัวที่รันอยู่ใช้ค่าที่คุณตั้งตอน start">ตั้งเอง</span>` : ""}
             ${m.topology === "stacked" ? `<span class="tag">stacked</span>` : ""}
             ${(m.features || "").includes("image") ? `<span class="tag">vision</span>` : ""}
             ${autoOn ? `<span class="tag">autostart</span>` : ""}
@@ -1372,7 +1374,7 @@ function nodeModelsMarkup(name, data) {
                    placeholder="${esc(m.port ?? 8000)}" style="flex:none;width:100px">
             <label>context</label>
             <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
-                   placeholder="${esc(m.context ?? "")}" style="flex:none;width:120px"
+                   placeholder="${esc(m.context_configured ?? m.context ?? "")}" style="flex:none;width:120px"
                    title="tokens — เกินที่หน่วยความจำรับไหว vLLM จะไม่ขึ้น">
             <label>slots</label>
             <input type="number" class="n-slots" value="${esc(o.slots ?? "")}"

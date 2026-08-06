@@ -99,7 +99,13 @@ def host_payload() -> dict:
 
 
 def model_payload(server, active_job: dict | None = None) -> dict:
-    from lmds.fleet import autostart_status, bundle_profile, feature_summary, profile_context
+    from lmds.fleet import (
+        autostart_status,
+        bundle_profile,
+        feature_summary,
+        profile_context,
+        running_context,
+    )
 
     profile = bundle_profile(server.controller)
     return {
@@ -114,7 +120,10 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         "external": server.external,
         "controller_exists": server.controller_exists,
         "endpoint": server.endpoint,
-        "context": profile_context(profile),
+        # ค่าที่ *กำลังรัน* ชนะค่าที่ bundle ตั้งไว้เสมอ — ผู้ใช้ตั้ง context ตอน start แล้ว
+        # หน้าเว็บโชว์ค่าเก่าต่อไป ดูเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ทำงานถูกต้อง
+        "context": running_context(server) or profile_context(profile),
+        "context_configured": profile_context(profile),
         "features": feature_summary(profile),
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),

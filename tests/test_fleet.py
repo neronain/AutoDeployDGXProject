@@ -706,3 +706,43 @@ def test_logs_explains_a_model_that_never_ran(tmp_path, monkeypatch, isolated_co
     assert "ยังไม่เคยรัน" in result.output
     assert "lmds start m" in result.output
     assert not called, "ไม่ควรไปเรียก controller ให้ tail ไฟล์ที่ไม่มี"
+
+
+def test_running_context_beats_the_bundle_value(tmp_path, monkeypatch, isolated_config):
+    """ผู้ใช้ตั้ง context ตอน start (65,600) แต่หน้าเว็บโชว์ค่าใน bundle (16,384) ต่อไปเรื่อย ๆ
+    — ดูแล้วเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ค่าไปถึง llama-server ถูกต้อง (ผู้ใช้เจอจริง)
+    """
+    from lmds.fleet import running_context
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
+    make_meta(tmp_path, "m", mode="docker")
+    server = SimpleNamespace(running=True, mode="docker", container="lmds-m", pid=0, pid_file="")
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="--ctx-size 65600 --parallel 1", stderr=""))
+    assert running_context(server) == 65600
+
+
+def test_running_context_reads_vllm_flag_too(monkeypatch):
+    from lmds.fleet import running_context
+
+    server = SimpleNamespace(running=True, mode="docker", container="lmds-m", pid=0, pid_file="")
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="--max-model-len 32768", stderr=""))
+    assert running_context(server) == 32768
+
+
+def test_running_context_is_none_when_stopped():
+    """ไม่ได้รันอยู่ = ไม่มีค่าที่ "กำลังใช้" ให้รายงาน · ต้องตกไปใช้ค่าใน bundle"""
+    from lmds.fleet import running_context
+
+    assert running_context(SimpleNamespace(running=False, mode="docker", container="x",
+                                           pid=0, pid_file="")) is None
+
+
+def test_running_context_survives_a_docker_that_says_nothing(monkeypatch):
+    from lmds.fleet import running_context
+
+    server = SimpleNamespace(running=True, mode="docker", container="lmds-m", pid=0, pid_file="")
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=1, stdout="", stderr="no such container"))
+    assert running_context(server) is None
