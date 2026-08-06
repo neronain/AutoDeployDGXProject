@@ -367,6 +367,7 @@ def test_web_rejects_a_token_that_is_too_short(tmp_path, monkeypatch):
 
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
     monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(daemon, "port_busy", lambda *a, **k: True)   # แม้พอร์ตไม่ว่างก็ต้องบอกเรื่อง token ก่อน
     result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0", "--token", "1234"])
     assert result.exit_code == 1
     assert "อย่างน้อย" in result.output

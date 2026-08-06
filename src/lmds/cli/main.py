@@ -1915,6 +1915,16 @@ def web(
     """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
     from lmds.web import daemon
 
+    # ค่าที่ผู้ใช้พิมพ์มาเองต้องถูกตรวจก่อนอย่างอื่น — flag ที่ผิดควรถูกบอกทันที
+    # ไม่ใช่ไปโผล่ทีหลังหรือถูกบังด้วยข้อความเรื่องพอร์ตซึ่งไม่เกี่ยวกัน
+    for value, where in ((token, "--token"), (os.environ.get(daemon.TOKEN_ENV, ""), f"${daemon.TOKEN_ENV}")):
+        if value:
+            try:
+                daemon.validate_token(value)
+            except daemon.TokenError as exc:
+                err_console.print(f"[red]{where}: {exc}[/red]")
+                raise typer.Exit(code=1)
+
     def show_running(state: dict, prefix: str) -> None:
         """พิมพ์ลิงก์ของ *ตัวที่เสิร์ฟจริง* — ลิงก์ที่ใช้ไม่ได้แย่กว่าไม่พิมพ์เลย"""
         from lmds.hardware.profiler import primary_ip
@@ -1985,17 +1995,9 @@ def web(
     #   1. --token   2. $LMDS_WEB_TOKEN   3. ที่จำไว้ในเครื่อง   4. ถามตอนสตาร์ต   5. สุ่มให้
     source = "--token"
     if token:
-        try:
-            token = daemon.validate_token(token)
-        except daemon.TokenError as exc:
-            err_console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
+        token = daemon.validate_token(token)
     elif os.environ.get(daemon.TOKEN_ENV):
-        try:
-            token = daemon.validate_token(os.environ[daemon.TOKEN_ENV])
-        except daemon.TokenError as exc:
-            err_console.print(f"[red]${daemon.TOKEN_ENV}: {exc}[/red]")
-            raise typer.Exit(code=1)
+        token = daemon.validate_token(os.environ[daemon.TOKEN_ENV])
         source = f"${daemon.TOKEN_ENV}"
     elif exposed and daemon.remembered_token():
         token, source = daemon.remembered_token(), "ที่จำไว้ในเครื่อง"
