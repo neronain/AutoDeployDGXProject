@@ -1314,6 +1314,75 @@ def generate(
                      assets=bool(deployment_plan.runtime_assets))
 
 
+@app.command()
+def rebuild(
+    slug: str = typer.Argument(..., help="ชื่อ bundle ที่จะสร้างใหม่", autocompletion=_complete_slug),
+    output: str = typer.Option("./bundles", "--output"),
+) -> None:
+    """สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน — เก็บค่าที่เคยตัดสินใจไว้ ไม่ต้องเดินผ่าน wizard อีก
+
+    ใช้เมื่อ bundle เก่าใช้ไม่ได้เพราะสิ่งที่อยู่นอกเหนือค่าที่ตั้ง เช่น image ที่ tag หายไป
+    หรือ template รุ่นใหม่มีคำสั่ง/ตัวกันพลาดที่ของเก่าไม่มี
+
+    ค่าที่เก็บไว้ (context, flags, ฟีเจอร์, target) ถูกนำกลับมาใช้ · ส่วนที่ระบบเลือกเอง
+    (image, ตัวกันพลาดในสคริปต์) คำนวณใหม่ตามตรรกะปัจจุบัน — ไม่เรียก LLM ซ้ำ
+    """
+    from lmds.fleet import bundle_profile, find
+
+    server = find(slug)
+    if server is None or not server.controller:
+        err_console.print(f"[red]ไม่พบ bundle: {slug}[/red] — ดูรายชื่อ: lmds list")
+        raise typer.Exit(code=1)
+    profile = bundle_profile(server.controller)
+    if not profile:
+        err_console.print(f"[red]อ่าน MODEL_PROFILE.yaml ของ {slug} ไม่ได้[/red] — สร้างใหม่ด้วย lmds deploy")
+        raise typer.Exit(code=1)
+
+    model = (profile.get("model") or {})
+    model_id, revision = model.get("id") or "", model.get("revision") or None
+    target = (profile.get("target") or {}).get("name") or ""
+    if not model_id:
+        err_console.print("[red]profile ไม่มี model.id — สร้างใหม่ด้วย lmds deploy[/red]")
+        raise typer.Exit(code=1)
+
+    old_image = (profile.get("runtime") or {}).get("image") or ""
+    console.print(f"สร้าง [bold]{slug}[/bold] ใหม่จากค่าเดิม — {model_id} · target {target or 'อัตโนมัติ'}")
+
+    source, report = _resolve_and_inspect(model_id, revision, interactive_ok=True)
+    if model.get("selected_gguf"):
+        report.selected_gguf = model["selected_gguf"]
+    report = _ensure_gguf_selected(source, report, interactive=False)
+    fit = _compute_fits(report, [target] if target else [], 1)[0]
+
+    # ไม่เรียก LLM ซ้ำ — แผนเดิมถูกตรวจและอนุมัติไปแล้ว เอาค่ากลับมาแล้วให้ harden จัดการ
+    # ส่วนที่ระบบเป็นเจ้าของ (image, topology, ตัวกันพลาด) ตามตรรกะปัจจุบัน
+    from lmds.brain import build_plan
+    from lmds.brain.orchestrator import harden_plan
+
+    plan = build_plan(report, fit, None)
+    serving = profile.get("serving") or {}
+    if serving.get("context"):
+        plan.serving.context = int(serving["context"])
+    if serving.get("max_num_seqs"):
+        plan.serving.max_num_seqs = int(serving["max_num_seqs"])
+    if serving.get("extra_flags"):
+        plan.serving.extra_flags = list(serving["extra_flags"])
+    plan = harden_plan(plan, report, fit)
+
+    if plan.runtime.image_ref != old_image:
+        console.print(f"[yellow]image เปลี่ยน:[/yellow] {old_image or '(ไม่มี)'} → "
+                      f"[bold]{plan.runtime.image_ref}[/bold]")
+    for warning in plan.warnings:
+        console.print(f"[dim]· {warning}[/dim]")
+
+    bundle, results, delivered = _render_and_package(plan, report, fit, output)
+    _render_gates(results)
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(plan, fit),
+                     stacked=plan.topology.value == "stacked",
+                     assets=bool(plan.runtime_assets))
+    console.print(f"\n[dim]ส่งไปเครื่องอื่น: [bold]lmds node push <เครื่อง> {slug}[/bold][/dim]")
+
+
 def _render_and_package(deployment_plan, report, fit, output: str):
     """render → gates → checksums → zip — ใช้ร่วมกันระหว่าง generate และ deploy"""
     from pathlib import Path

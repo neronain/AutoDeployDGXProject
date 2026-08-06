@@ -191,3 +191,37 @@ def test_approved_flag_survives_into_script(isolated_config, tmp_path):
     bundle = render_bundle(plan, report, fit, tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
     assert "--no-mmap" in text
+
+
+def test_rebuild_reuses_the_stored_plan_and_fixes_the_image(tmp_path, monkeypatch, isolated_config):
+    """bundle ที่ image ใช้ไม่ได้ (tag หายไป) แก้ไม่ได้เลยนอกจากเดินผ่าน wizard ใหม่ทั้งชุด
+    — ทั้งที่ MODEL_PROFILE.yaml เก็บทุกอย่างที่ต้องใช้ไว้แล้ว (เจอจริงกับ v0.6.3.ss)
+    """
+    from lmds.brain import registry
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    _patch_inspect(monkeypatch, gguf_report())
+    first = runner.invoke(app, ["deploy", "unsloth/Qwen3-8B-GGUF", "--no-llm",
+                                "--target", "dgx-spark-single", "--output", str(tmp_path), "--yes"])
+    assert first.exit_code == 0, first.output
+
+    bundle_dir = tmp_path / "qwen3-8b-gguf"
+    profile = bundle_dir / "MODEL_PROFILE.yaml"
+    text = profile.read_text(encoding="utf-8")
+    current = text.split("  image: ")[1].split("\n")[0]
+    profile.write_text(text.replace(current, "vllm/vllm-openai:v0.6.3.ss"), encoding="utf-8")
+
+    monkeypatch.setattr(registry, "tag_exists",
+                        lambda ref, client=None: False if "v0.6.3.ss" in ref else True)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    result = runner.invoke(app, ["rebuild", "qwen3-8b-gguf", "--output", str(tmp_path / "out")])
+    assert result.exit_code == 0, result.output
+    rebuilt = (tmp_path / "out" / "qwen3-8b-gguf" / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")
+    assert "v0.6.3.ss" not in rebuilt, "image ที่ใช้ไม่ได้ต้องถูกแทนตอน rebuild"
+
+
+def test_rebuild_says_so_when_there_is_no_profile(tmp_path, monkeypatch, isolated_config):
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    result = runner.invoke(app, ["rebuild", "not-a-bundle"])
+    assert result.exit_code == 1
+    assert "ไม่พบ bundle" in result.output
