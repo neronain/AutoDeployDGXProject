@@ -859,10 +859,28 @@ def test_gpu_telemetry_hides_values_the_card_does_not_report():
 
 
 def test_temperature_is_colour_coded():
-    """อุณหภูมิเป็นค่าเดียวที่ 'สูง = อันตราย' จริง — ต้องเห็นได้โดยไม่ต้องอ่านตัวเลข"""
+    """อุณหภูมิเป็นค่าเดียวที่ 'สูง = อันตราย' จริง — ต้องเห็นได้โดยไม่ต้องอ่านตัวเลข
+
+    สีเปลี่ยนเป็นไล่เฉดเพื่อให้เข้าชุดกับทั้งหน้าได้ แต่ระดับอันตรายต้องยังแยกออกจากกัน
+    """
     body = TestClient(create_app()).get("/").text
     assert "function tempColour(" in body
-    assert "var(--bad)" in body.split("function tempColour(")[1][:200]
+    block = body.split("function tempColour(")[1][:300]
+    assert "gr-bad" in block and "gr-warn" in block and "gr-ok" in block
+    assert 'id="gr-bad"' in body, "gradient ที่อ้างถึงต้องถูกนิยามไว้ในหน้าจริง"
+
+
+def test_every_gradient_referenced_by_a_gauge_is_defined():
+    """url(#id) ที่ไม่มี <linearGradient> รองรับ = เส้นเกจหายไปเฉย ๆ ไม่มี error ให้เห็น"""
+    import re
+
+    body = TestClient(create_app()).get("/").text
+    # คอมเมนต์ไม่ได้ถูกเรนเดอร์ — ตัวอย่างที่เขียนไว้ในนั้นไม่ใช่การอ้างถึงจริง
+    live = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    used = set(re.findall(r"url\(#([a-z-]+)\)", live))
+    defined = set(re.findall(r'<linearGradient id="([a-z-]+)"', body))
+    assert used, "หน้านี้ควรใช้ gradient กับเกจ"
+    assert used <= defined, f"อ้างถึงแต่ไม่ได้นิยาม: {used - defined}"
 
 
 def test_command_output_is_not_wiped_by_live_updates():

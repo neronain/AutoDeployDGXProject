@@ -20,9 +20,17 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
+  /* ตระกูลสีเดียวทั้งหน้า: ฟ้า → คราม → ม่วง → ชมพู · ใช้ไล่เฉด ไม่ใช่สีทึบ
+     เพื่อให้หน้าไม่จืด แต่ยังคุมโทนเดียวกันทุกจุด ไม่ใช่สีมั่วคนละที่ */
+  --c1: #06b6d4; --c2: #3b82f6; --c3: #8b5cf6; --c4: #ec4899;
+  --g-cool: linear-gradient(135deg, var(--c1), var(--c2));
+  --g-warm: linear-gradient(135deg, var(--c3), var(--c4));
+  --g-mix: linear-gradient(135deg, var(--c2), var(--c3));
+
   --r-sm: 6px; --r: 10px; --r-lg: 14px;
   --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
   --shadow-lg: 0 4px 12px rgba(16, 24, 40, .07);
+  --glow: .05;   /* ความเข้มของแสงพื้นหลัง — โหมดมืดเพิ่มได้ โหมดสว่างต้องเบามาก */
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -35,6 +43,7 @@
     --meter: #5b8cdd; --meter-track: #222834;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4);
     --shadow-lg: 0 6px 18px rgba(0, 0, 0, .45);
+    --glow: .16;
   }
 }
 
@@ -44,6 +53,15 @@ body {
   margin: 0; padding: 0 20px 64px; background: var(--bg); color: var(--fg);
   font: 400 14px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+/* แสงจาง ๆ สองมุม — ทำให้พื้นหลังมีมิติโดยไม่แย่งสายตาไปจากตัวเลข
+   fixed + -1 คือมันไม่เลื่อนตามและไม่กินคลิก */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(58vw 46vh at 8% -6%, color-mix(in srgb, var(--c3) calc(var(--glow) * 100%), transparent), transparent 70%),
+    radial-gradient(52vw 42vh at 100% 104%, color-mix(in srgb, var(--c1) calc(var(--glow) * 100%), transparent), transparent 70%);
 }
 .wrap { max-width: 1080px; margin: 0 auto; }
 
@@ -55,6 +73,10 @@ body {
   border-bottom: 1px solid var(--line);
 }
 .topbar .wrap { display: flex; align-items: center; gap: 14px; }
+.topbar h1 {
+  background: var(--g-mix); -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+}
 h1 {
   font: 600 15px/1 var(--mono); letter-spacing: .14em; margin: 0;
   padding-right: 14px; border-right: 1px solid var(--line2);
@@ -93,11 +115,21 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .pad { padding: 16px 18px; }
 
 /* ── stat tiles: read like instrument panels ────────────────────────── */
+.sec::before {
+  content: ""; display: inline-block; width: 3px; height: 13px; border-radius: 2px;
+  background: var(--g-mix); margin-right: 9px; vertical-align: -2px;
+}
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin: 18px 0 4px; }
 .stat {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
   padding: 13px 15px 14px; box-shadow: var(--shadow);
 }
+/* การ์ดเด่น — ตัวเลขที่คนดูก่อนเสมอ ควรอ่านได้จากอีกฝั่งห้อง */
+.stat.hero { border: 0; color: #fff; box-shadow: var(--shadow-lg); }
+.stat.hero.cool { background: var(--g-cool); }
+.stat.hero.warm { background: var(--g-warm); }
+.stat.hero > .muted:first-child, .stat.hero .dim { color: rgba(255, 255, 255, .82); }
+.stat.hero b { color: #fff; }
 .stat > .muted:first-child {
   display: block; font-size: 11px; font-weight: 600; letter-spacing: .07em;
   text-transform: uppercase; color: var(--fg3);
@@ -150,6 +182,12 @@ button:hover:not(:disabled) { background: var(--sunken); border-color: var(--fg3
 button:active:not(:disabled) { transform: translateY(.5px); }
 button:disabled { opacity: .4; cursor: default; }
 /* ปุ่มที่ลบของ: เงียบไว้ก่อน เด่นตอนจะกดจริง — ไม่ควรดึงสายตาไปกว่าปุ่มที่ใช้ทุกวัน */
+/* ปุ่มหลักของหน้า — เด่นได้ เพราะมีปุ่มเดียว */
+#new {
+  background: var(--g-mix); color: #fff; border-color: transparent; font-weight: 600;
+}
+#new:hover:not(:disabled) { filter: brightness(1.08); border-color: transparent; }
+#tok-go { background: var(--g-mix); color: #fff; border-color: transparent; font-weight: 600; }
 button.danger { color: var(--fg2); border-color: var(--line2); }
 button.danger:hover:not(:disabled) {
   color: var(--bad); border-color: var(--bad); background: var(--bad-bg);
@@ -226,6 +264,12 @@ pre {
 
 /* ── GPU telemetry ─────────────────────────────────────────────────── */
 .gpu { border-top: 1px solid var(--line); padding: 14px 18px; }
+/* เส้นไล่เฉดบางบนหัวการ์ด — ให้การ์ดไม่จมหายไปกับพื้นหลัง */
+.card, .machine { position: relative; overflow: hidden; }
+.card::before, .machine::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 2px;
+  background: var(--g-mix); opacity: .5;
+}
 .gpu-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .gpu-name { font-weight: 600; font-size: 13.5px; }
 .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
@@ -237,7 +281,7 @@ pre {
   text-transform: uppercase; letter-spacing: .06em; }
 .gauge-sub { font-size: 10.5px; color: var(--fg3); margin-top: 2px;
   font-variant-numeric: tabular-nums; }
-.gauge-track { stroke: var(--meter-track); }
+.gauge-track { stroke: var(--meter-track); opacity: .55; }
 .clocks { margin-top: 12px; display: grid; gap: 7px; }
 .clock-row { display: grid; grid-template-columns: 1fr 68px; gap: 10px; align-items: center;
   font-size: 12px; }
@@ -284,6 +328,19 @@ pre {
 </style>
 </head>
 <body>
+<!-- gradient ของ SVG ต้องนิยามในเอกสาร แล้วอ้างด้วย url(#id) — ประกาศครั้งเดียวใช้ได้ทุกเกจ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gr-cool" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0%" stop-color="#06b6d4"/><stop offset="100%" stop-color="#3b82f6"/></linearGradient>
+  <linearGradient id="gr-warm" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#ec4899"/></linearGradient>
+  <linearGradient id="gr-ok" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0%" stop-color="#10b981"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient>
+  <linearGradient id="gr-warn" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#ec4899"/></linearGradient>
+  <linearGradient id="gr-bad" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0%" stop-color="#f43f5e"/><stop offset="100%" stop-color="#f59e0b"/></linearGradient>
+</defs></svg>
 <header class="topbar">
   <div class="wrap">
     <h1>LMDS</h1>
@@ -349,9 +406,9 @@ const gb = v => v == null ? "—" : Math.round(v) + " GB";
 const open = new Set();
 let busy = null;
 
-function statCard(label, value, sub, colour) {
-  return `<div class="stat"><span class="muted">${esc(label)}</span>
-    <b${colour ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
+function statCard(label, value, sub, colour, hero = "") {
+  return `<div class="stat${hero ? " hero " + hero : ""}"><span class="muted">${esc(label)}</span>
+    <b${colour && !hero ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
 }
 
 
@@ -363,7 +420,8 @@ function renderHost(h, models) {
 
   cards.push(gpu
     ? statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
-        `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`)
+        `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`,
+        "", "cool")
     : statCard("GPU", "not found", "check nvidia-smi"));
 
   // llama.cpp can serve several models at once, so this is a count, not a yes/no
@@ -371,8 +429,7 @@ function renderHost(h, models) {
     const running = models.filter(m => m.running).length;
     const healthy = models.filter(m => m.healthy).length;
     cards.push(statCard("Models running", `${running} / ${models.length}`,
-      running ? `${healthy} serving` : "none started",
-      running ? "var(--ok)" : ""));
+      running ? `${healthy} serving` : "none started", "", "warm"));
   }
 
   const ready = h.docker && h.toolkit;
@@ -914,23 +971,23 @@ function gpuCard(g) {
       ${link}<span class="grow"></span>${vram}
     </div>
     <div class="gauges">
-      ${gauge(busy, 100, "Compute", "%", "var(--meter)")}
-      ${gauge(g.power_w, g.power_limit_w || Math.max(g.power_w || 0, 100), "Power", "W", "var(--ok)")}
+      ${gauge(busy, 100, "Compute", "%", "url(#gr-warm)")}
+      ${gauge(g.power_w, g.power_limit_w || Math.max(g.power_w || 0, 100), "Power", "W", "url(#gr-ok)")}
       ${gauge(g.temperature_c, 100, "Temp", "°C", tempColour(g.temperature_c))}
-      ${gauge(g.fan_pct, 100, "Fan", "%", "var(--accent)")}
+      ${gauge(g.fan_pct, 100, "Fan", "%", "url(#gr-cool)")}
     </div>
     <div class="clocks">
-      ${clockRow("Graphics", g.clock_graphics_mhz, g.clock_graphics_max_mhz, "#a855f7")}
-      ${clockRow("Memory", g.clock_memory_mhz, g.clock_memory_mhz, "var(--meter)")}
-      ${clockRow("Streaming Multiprocessor", g.clock_sm_mhz, g.clock_graphics_max_mhz, "#f59e0b")}
+      ${clockRow("Graphics", g.clock_graphics_mhz, g.clock_graphics_max_mhz, "var(--g-warm)")}
+      ${clockRow("Memory", g.clock_memory_mhz, g.clock_memory_mhz, "var(--g-cool)")}
+      ${clockRow("Streaming Multiprocessor", g.clock_sm_mhz, g.clock_graphics_max_mhz, "var(--g-mix)")}
     </div>
   </div>`;
 }
 
 // อุณหภูมิเป็นค่าเดียวที่ "สูง = อันตราย" จริง ๆ — ใช้สีบอกโดยไม่ต้องอ่านตัวเลข
 function tempColour(c) {
-  if (c == null) return "var(--meter)";
-  return c >= 85 ? "var(--bad)" : c >= 70 ? "var(--warn)" : "var(--ok)";
+  if (c == null) return "url(#gr-cool)";
+  return c >= 85 ? "url(#gr-bad)" : c >= 70 ? "url(#gr-warn)" : "url(#gr-ok)";
 }
 
 // ── fleet across machines ────────────────────────────────────────────────
@@ -1054,8 +1111,8 @@ function systemCard(host) {
 // เต็มใกล้ 100% = ของจะไม่พอ — บอกด้วยสีก่อนที่ผู้ใช้จะไปเจอตอน start ไม่ขึ้น
 // ดิสก์กลับด้าน: เหลือน้อย = แย่ · โมเดลเดียวกินได้เป็นร้อย GB
 function freeColour(pct) {
-  if (pct == null) return "var(--meter)";
-  return pct <= 5 ? "var(--bad)" : pct <= 15 ? "var(--warn)" : "var(--meter)";
+  if (pct == null) return "url(#gr-cool)";
+  return pct <= 5 ? "url(#gr-bad)" : pct <= 15 ? "url(#gr-warn)" : "url(#gr-ok)";
 }
 
 function loadColour(pct) {
