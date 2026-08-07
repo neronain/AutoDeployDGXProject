@@ -677,16 +677,22 @@ def create_app(token: str = "") -> FastAPI:
 
         เรียกเมื่อผู้ใช้กดเท่านั้น ไม่รวมอยู่ใน poll ปกติ
         """
+        from lmds.config import Settings
         from lmds.inventory import host_payload
         from lmds.nodes import (
             NodeError, check_cluster_ip, cluster_groups, load, probe, stack_ready,
             suggest_cluster_ip,
         )
 
-        def row(name, host, cluster_ip, is_self):
+        def row(name, host, cluster_ip, is_self, stack):
             # ส่งข้อมูลดิบอย่างเดียว — หน้าเว็บเป็นภาษาอังกฤษ จึงเรียบเรียงประโยคฝั่ง JS
             return {
                 "name": name, "self": is_self, "reachable": True,
+                # ผู้ใช้สั่งไว้ว่าเครื่องนี้เอาไปจับกลุ่มได้ไหม — ต่างจาก ready ที่มาจากการตรวจ
+                "stack": stack,
+                # ชื่อจริงของเครื่อง — ต่างจากชื่อในทะเบียน จึงเป็นทางเดียวที่ผู้ใช้จะเห็นว่า
+                # สองรายการนี้คือเครื่องเดียวกันที่ถูกเพิ่มไว้สองชื่อ
+                "hostname": host.get("hostname") or "",
                 "ready": stack_ready(host), "has_gpu": bool(host.get("gpus")),
                 "fabric": host.get("fabric"), "cluster_ip": cluster_ip,
                 "suggested_ip": suggest_cluster_ip(host),
@@ -696,20 +702,36 @@ def create_app(token: str = "") -> FastAPI:
         local = host_payload()
         local_name = local.get("hostname") or "this machine"
         # hub เองไม่ได้อยู่ในทะเบียน จึงยังไม่มีที่เก็บ cluster IP ของตัวเอง — เสนอจากการ์ดที่ตรวจพบ
-        machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local)}]
-        rows = [row(local_name, local, machines[0]["cluster_ip"], True)]
+        # ส่วน "เอาเข้ากลุ่มไหม" เก็บใน config.yaml (ทะเบียนไม่มีแถวของ hub ให้เก็บ)
+        stack_self = Settings.load().cluster.stack_self
+        machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
+                     "stack": stack_self}]
+        rows = [row(local_name, local, machines[0]["cluster_ip"], True, stack_self)]
         for node in load():
             try:
                 host = (probe(node).get("host")) or {}
             except NodeError as exc:
                 rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
-                             "has_gpu": False, "error": str(exc)[:200], "fabric": None,
-                             "cluster_ip": node.cluster_ip, "suggested_ip": "",
+                             "hostname": "", "has_gpu": False, "error": str(exc)[:200], "fabric": None,
+                             "stack": node.stack, "cluster_ip": node.cluster_ip, "suggested_ip": "",
                              "ip": {"state": "unset", "iface": "", "speed_gbps": None}})
                 continue
-            machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
-            rows.append(row(node.name, host, node.cluster_ip, False))
+            machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip,
+                             "stack": node.stack})
+            rows.append(row(node.name, host, node.cluster_ip, False, node.stack))
         return {"machines": rows, "groups": cluster_groups(machines)}
+
+    @app.patch("/api/cluster/self", dependencies=guarded)
+    def cluster_self_patch(body: dict) -> dict:
+        """เปิด/ปิดการเอา hub เองเข้ากลุ่ม stacked — node อื่นใช้ PATCH /api/nodes/{name}"""
+        from lmds.config import Settings
+
+        if "stack" not in body:
+            raise HTTPException(status_code=400, detail="ต้องระบุฟิลด์ stack (true/false)")
+        settings = Settings.load()
+        settings.cluster.stack_self = bool(body["stack"])
+        settings.save()
+        return {"stack": settings.cluster.stack_self}
 
     @app.patch("/api/nodes/{name}", dependencies=guarded)
     def node_patch(name: str, body: dict) -> dict:
@@ -718,7 +740,7 @@ def create_app(token: str = "") -> FastAPI:
 
         if find(name) is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note") if k in body}
+        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note", "stack") if k in body}
         if not changes:
             raise HTTPException(status_code=400, detail="ไม่มีฟิลด์ที่แก้ได้ในคำขอนี้")
         try:
@@ -726,7 +748,7 @@ def create_app(token: str = "") -> FastAPI:
         except NodeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"name": node.name, "cluster_ip": node.cluster_ip,
-                "cluster_iface": node.cluster_iface, "note": node.note}
+                "cluster_iface": node.cluster_iface, "note": node.note, "stack": node.stack}
 
     @app.post("/api/nodes", dependencies=guarded)
     def node_add(body: dict) -> dict:

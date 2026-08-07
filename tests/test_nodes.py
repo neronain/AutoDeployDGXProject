@@ -100,6 +100,22 @@ def test_blank_cluster_ip_is_allowed():
     assert validate_cluster_ip("  10.10.0.2 ") == "10.10.0.2"
 
 
+def test_stack_defaults_to_true_and_can_be_turned_off():
+    """กลุ่ม stacked เป็นสิ่งที่ระบบเสนอเอง — ต้องสั่งไม่เอาเครื่องนี้เข้ากลุ่มได้"""
+    add(make())
+    assert find("spark1").stack is True
+    assert update("spark1", stack=False).stack is False
+    assert find("spark1").stack is False        # อ่านกลับจากไฟล์แล้วยังปิดอยู่
+
+
+def test_registry_without_the_stack_field_still_joins():
+    """ทะเบียนที่เขียนไว้ก่อนมีฟิลด์นี้ (หรือแก้มือเป็น null) ต้องไม่กลายเป็นปิดทั้งฟลีต"""
+    add(make())
+    nodes_file().write_text("nodes:\n- name: spark1\n  host: 10.0.0.5\n  user: ops\n  stack: null\n",
+                            encoding="utf-8")
+    assert load()[0].stack is True
+
+
 @pytest.mark.parametrize(
     "host, expected",
     [("10.0.0.5", "node-10-0-0-5"), ("spark1.local", "spark1"), ("SPARK-A", "spark-a")],

@@ -683,6 +683,53 @@ def test_cluster_view_groups_matching_machines(registered, monkeypatch):
     assert group["world_size"] == 2
 
 
+def test_node_opted_out_of_stacking_is_not_grouped(registered, monkeypatch):
+    """สั่ง "ไม่เอาเข้ากลุ่ม" แล้วต้องไม่ถูกเสนอเข้าคลัสเตอร์อีก แม้ฮาร์ดแวร์จะตรงเป๊ะ"""
+    from lmds.inventory import host_payload as real_host_payload
+
+    hub = dict(real_host_payload())
+    hub.update(registered["host"], hostname="spark1")
+    monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
+    client = TestClient(create_app())
+    assert client.get("/api/cluster").json()["groups"], "ก่อนปิดต้องยังจับกลุ่มได้"
+
+    assert client.patch("/api/nodes/spark2", json={"stack": False}).json()["stack"] is False
+    data = client.get("/api/cluster").json()
+    assert data["groups"] == []
+    assert next(m for m in data["machines"] if m["name"] == "spark2")["stack"] is False
+
+
+def test_hub_can_opt_itself_out_of_stacking(registered, monkeypatch):
+    """hub ไม่ได้อยู่ในทะเบียน — ค่าของมันจึงต้องเก็บใน config ไม่ใช่หายไปตอนรีสตาร์ต"""
+    from lmds.config import Settings
+    from lmds.inventory import host_payload as real_host_payload
+
+    hub = dict(real_host_payload())
+    hub.update(registered["host"], hostname="spark1")
+    monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
+    client = TestClient(create_app())
+
+    assert client.patch("/api/cluster/self", json={"stack": False}).status_code == 200
+    assert Settings.load().cluster.stack_self is False
+    data = client.get("/api/cluster").json()
+    assert data["groups"] == []
+    assert next(m for m in data["machines"] if m["self"])["stack"] is False
+
+    client.patch("/api/cluster/self", json={"stack": True})
+    assert client.get("/api/cluster").json()["groups"], "เปิดคืนแล้วต้องกลับมาจับกลุ่มได้"
+
+
+def test_cluster_self_patch_needs_the_field(registered):
+    assert TestClient(create_app()).patch("/api/cluster/self", json={}).status_code == 400
+
+
+def test_page_can_toggle_stacking_for_the_hub_itself():
+    """hub ไม่มีการ์ดในลิสต์ ปุ่มของมันจึงต้องอยู่ที่อื่น — ไม่งั้นปิดแล้วกลุ่มหาย = เปิดคืนไม่ได้"""
+    page = TestClient(create_app()).get("/").text
+    assert 'data-cact="toggle-stack"' in page
+    assert "hubstack" in page and "/api/cluster/self" in page
+
+
 def test_node_command_allowlist_blocks_anything_else(registered, monkeypatch):
     """ปุ่มบนหน้าเว็บสั่งข้ามเครื่องได้ — ต้องจำกัดคำสั่งไว้เท่าที่จำเป็น"""
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/rm-rf")

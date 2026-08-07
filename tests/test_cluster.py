@@ -8,7 +8,7 @@ from lmds.nodes import cluster as cl
 
 
 def host(gpu="NVIDIA GB10", count=1, gbps=200, tier="rdma", ip="10.10.0.1", arch="aarch64",
-         profile="dgx_spark"):
+         profile="dgx_spark", hostname=""):
     links = []
     if gbps:
         links.append({"iface": "enp1s0f0np0", "ip": ip, "speed_gbps": gbps,
@@ -16,6 +16,7 @@ def host(gpu="NVIDIA GB10", count=1, gbps=200, tier="rdma", ip="10.10.0.1", arch
     return {
         "arch": arch,
         "profile": profile,
+        "hostname": hostname,
         "gpus": [{"name": gpu} for _ in range(count)],
         "fabric": {"links": links, "rdma_devices": ["mlx5_0"] if tier == "rdma" else [],
                    "best_gbps": gbps, "tier": tier, "cluster_capable": bool(gbps and gbps >= 25)},
@@ -256,3 +257,108 @@ def test_three_machines_need_pipeline_parallel():
                                         (6, "pipeline-parallel")])
 def test_parallelism_note_by_size(size, kind):
     assert cl.parallelism_note(size)["kind"] == kind
+
+
+# ── เครื่องที่ "ดูเหมือนเข้ากลุ่มได้" แต่เข้าไม่ได้จริง ─────────────────────────
+# เคสจากหน้างาน: เครื่องที่สามถูกนับเข้า CLUSTER A ทั้งที่คุยกับใครไม่ได้ world size จึงกลาย
+# เป็น 3 แล้วระบบสั่งให้ใช้ pipeline ทั้งที่จริง ๆ สองเครื่องที่เหลือใช้ TP=2 ได้สบาย
+def test_fast_port_without_a_real_ip_is_not_stack_ready():
+    """200G ที่ยังไม่ได้ตั้ง IP (169.254.x.x) ยิง NCCL ข้ามเครื่องไม่ถึง — ห้ามนับว่าพร้อม"""
+    payload = host(ip="169.254.31.110")
+    assert payload["fabric"]["best_gbps"] == 200   # ลิงก์ขึ้นและเร็วจริง
+    assert not cl.stack_ready(payload)             # แต่ยังใช้ stacked ไม่ได้
+
+
+def test_unconfigured_machine_never_joins_a_group():
+    machines = [
+        {"name": "spark-head", "host": host(ip="10.100.152.1"), "cluster_ip": "10.100.152.1"},
+        {"name": "spark-worker", "host": host(ip="10.100.152.2"), "cluster_ip": "10.100.152.2"},
+        {"name": "msi-5", "host": host(ip="169.254.9.9"), "cluster_ip": ""},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert [m["name"] for m in group["members"]] == ["spark-head", "spark-worker"]
+    assert group["world_size"] == 2
+    assert group["parallelism"]["kind"] == "tensor-parallel"
+    assert group["ready"]
+
+
+def test_machine_on_another_subnet_is_excluded_not_counted():
+    """ฮาร์ดแวร์ตรงกันแต่ไม่มีวงร่วม = stacked ด้วยกันไม่ได้ ต้องไม่ไปเปลี่ยนแผน parallel ของกลุ่ม"""
+    machines = [
+        {"name": "spark-head", "host": host(ip="10.100.152.1"), "cluster_ip": "10.100.152.1"},
+        {"name": "spark-worker", "host": host(ip="10.100.152.2"), "cluster_ip": "10.100.152.2"},
+        {"name": "msi-5", "host": host(ip="192.168.30.5"), "cluster_ip": "192.168.30.5"},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert group["world_size"] == 2
+    assert group["excluded"] == [{"name": "msi-5", "reason": "no-shared-fabric"}]
+    # เครื่องนอกกลุ่มไม่ใช่ปัญหาของกลุ่มนี้ — กลุ่มนี้ยัง stacked ได้ตามปกติ
+    assert group["ready"] and group["blockers"] == []
+
+
+def test_one_machine_registered_twice_is_counted_once():
+    """เครื่องเดิมที่เพิ่มด้วยที่อยู่อีกทาง (Tailscale/DNS) ทะเบียนกันซ้ำไม่ได้ — ต้องมาจับที่นี่"""
+    twin = host(ip="10.100.152.2", hostname="spark-worker")
+    machines = [
+        {"name": "spark-head", "host": host(ip="10.100.152.1", hostname="spark-head"),
+         "cluster_ip": "10.100.152.1"},
+        {"name": "spark-worker", "host": twin, "cluster_ip": "10.100.152.2"},
+        {"name": "worker-tailscale", "host": dict(twin), "cluster_ip": "10.100.152.2"},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert group["world_size"] == 2
+    assert group["excluded"] == [
+        {"name": "worker-tailscale", "reason": "same-machine", "same_as": "spark-worker"}
+    ]
+    # ไม่ใช่ cluster IP ซ้ำ — มันคือเครื่องเดียวกัน บอกผิดแล้วผู้ใช้ไปแก้ IP ทั้งที่ต้องลบเครื่อง
+    assert [b["kind"] for b in group["blockers"]] == []
+
+
+def test_same_hostname_on_different_machines_still_counts_twice():
+    """ชื่อเครื่องซ้ำกันได้ (image เดียวกัน) — ห้ามยุบทิ้งถ้า IP บนสายเร็วคนละชุด"""
+    machines = [
+        {"name": "a", "host": host(ip="10.100.152.1", hostname="spark"), "cluster_ip": "10.100.152.1"},
+        {"name": "b", "host": host(ip="10.100.152.2", hostname="spark"), "cluster_ip": "10.100.152.2"},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert group["world_size"] == 2 and group["excluded"] == []
+
+
+def test_usable_world_size_counts_only_configured_members():
+    machines = [
+        {"name": "a", "host": host(ip="10.100.152.1"), "cluster_ip": "10.100.152.1"},
+        {"name": "b", "host": host(ip="10.100.152.2"), "cluster_ip": ""},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    # แผนที่จะได้เมื่อตั้งครบคือ 2 — แต่ตอนนี้ยังใช้ได้จริงแค่ 1
+    assert group["world_size"] == 2 and group["usable_world_size"] == 1
+
+
+def test_opted_out_machine_is_never_grouped():
+    """กลุ่มเป็นสิ่งที่ระบบเสนอเอง — เจตนาของคนต้องชนะการตรวจอัตโนมัติเสมอ"""
+    machines = [
+        {"name": "spark-head", "host": host(ip="10.100.152.1"), "cluster_ip": "10.100.152.1"},
+        {"name": "spark-worker", "host": host(ip="10.100.152.2"), "cluster_ip": "10.100.152.2"},
+        # ฮาร์ดแวร์ตรงเป๊ะ ตั้ง IP ถูกวงด้วย — แต่เจ้าของบอกว่าไม่เอาเข้ากลุ่ม
+        {"name": "msi-5", "host": host(ip="10.100.152.3"), "cluster_ip": "10.100.152.3",
+         "stack": False},
+    ]
+    (group,) = cl.cluster_groups(machines)
+    assert [m["name"] for m in group["members"]] == ["spark-head", "spark-worker"]
+    assert group["world_size"] == 2
+    # ไม่ใช่ "เข้ากลุ่มไม่ได้" จึงไม่ต้องไปขึ้นเป็นเหตุผลใน excluded ให้รก
+    assert group["excluded"] == []
+
+
+def test_stack_flag_defaults_to_joining():
+    """ทะเบียนเก่าไม่มีฟิลด์นี้ — ไม่มีค่า = เข้ากลุ่มได้ตามเดิม ห้ามกลายเป็นปิดทั้งฟลีต"""
+    machines = [
+        {"name": "a", "host": host(ip="10.100.152.1"), "cluster_ip": "10.100.152.1"},
+        {"name": "b", "host": host(ip="10.100.152.2"), "cluster_ip": "10.100.152.2"},
+    ]
+    assert cl.cluster_groups(machines)[0]["world_size"] == 2
+
+
+def test_cluster_note_separates_slow_link_from_unconfigured_link():
+    assert "ยังไม่ได้ตั้ง IP จริง" in cl.cluster_note(host(ip="169.254.31.110"))
+    assert "ไม่พบ GPU" in cl.cluster_note(host(count=0))

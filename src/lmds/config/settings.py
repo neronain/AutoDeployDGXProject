@@ -40,9 +40,20 @@ class Defaults(BaseModel):
     output_dir: str = "./bundles"
 
 
+class Cluster(BaseModel):
+    """ค่าเกี่ยวกับ stacked ของ "เครื่องนี้" เอง
+
+    node อื่นเก็บค่าแบบเดียวกันไว้ในทะเบียน (`Node.stack`) แต่ hub ไม่ได้อยู่ในทะเบียน
+    จึงต้องมีที่เก็บของตัวเอง — hub มักเป็นเครื่องที่มีงานของมันอยู่แล้ว ไม่ได้ตั้งใจเอาไป stacked
+    """
+
+    stack_self: bool = True
+
+
 class Settings(BaseModel):
     provider: Optional[ProviderConfig] = None
     defaults: Defaults = Field(default_factory=Defaults)
+    cluster: Cluster = Field(default_factory=Cluster)
 
     @classmethod
     def load(cls) -> "Settings":

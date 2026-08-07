@@ -547,8 +547,12 @@ def node_set(
         None, "--alt-host",
         help="ที่อยู่สำรองของเครื่องเดียวกัน เช่น Tailscale (คั่นด้วย , ได้ · ว่าง = ลบทิ้ง)",
     ),
+    stack: Optional[bool] = typer.Option(
+        None, "--stack/--no-stack",
+        help="ยอมให้เครื่องนี้ถูกเสนอเข้ากลุ่ม stacked ไหม (--no-stack = ไม่เอาเข้ากลุ่มไม่ว่าฮาร์ดแวร์จะตรงแค่ไหน)",
+    ),
 ) -> None:
-    """แก้ค่าของเครื่องในทะเบียน — cluster IP/interface, ที่อยู่สำรอง และโน้ต
+    """แก้ค่าของเครื่องในทะเบียน — cluster IP/interface, ที่อยู่สำรอง, โน้ต และเอาเข้ากลุ่มหรือไม่
 
     เปลี่ยน host/user/port ไม่ได้ที่นี่โดยตั้งใจ: ที่อยู่เปลี่ยน = คนละเครื่อง ให้ remove แล้ว add ใหม่
     """
@@ -560,7 +564,8 @@ def node_set(
         raise typer.Exit(code=1)
 
     changes = {k: v for k, v in
-               (("cluster_ip", cluster_ip), ("cluster_iface", cluster_iface), ("note", note))
+               (("cluster_ip", cluster_ip), ("cluster_iface", cluster_iface), ("note", note),
+                ("stack", stack))
                if v is not None}
     if alt_host is not None:
         changes["alt_hosts"] = [h.strip() for h in alt_host.split(",") if h.strip()]
@@ -568,6 +573,7 @@ def node_set(
         console.print(f"[bold]{node.name}[/bold] — {node.target}:{node.port}")
         console.print(f"cluster IP: {node.cluster_ip or '—'}  interface: {node.cluster_iface or '—'}")
         console.print(f"ที่อยู่: {' → '.join(node.all_hosts)}")
+        console.print("เข้ากลุ่ม stacked: " + ("ได้" if node.stack else "[yellow]ไม่เอาเข้ากลุ่ม[/yellow]"))
         try:
             suggestion = suggest_cluster_ip(probe(node).get("host") or {})
         except NodeError:
@@ -583,7 +589,8 @@ def node_set(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     console.print(f"อัปเดต '{node.name}' แล้ว — cluster IP: {node.cluster_ip or '—'} · "
-                  f"ที่อยู่: {' → '.join(node.all_hosts)}")
+                  f"ที่อยู่: {' → '.join(node.all_hosts)}"
+                  + ("" if node.stack else " · [yellow]ไม่เอาเข้ากลุ่ม stacked[/yellow]"))
 
 
 
@@ -648,17 +655,29 @@ def node_cluster(
         None, "--on", metavar="NODE",
         help="เขียน cluster.env ลง bundle ที่อยู่บนเครื่องนั้นแทนเครื่องนี้ (bundle อยู่กับเครื่องที่รันจริง)",
     ),
+    self_stack: Optional[bool] = typer.Option(
+        None, "--self-stack/--no-self-stack",
+        help="เอา 'เครื่องนี้' (hub) เข้ากลุ่ม stacked ด้วยไหม — จำค่าไว้ใน config (node อื่นใช้ node set --no-stack)",
+    ),
 ) -> None:
     """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริงจึงช้ากว่า node list"""
+    from lmds.config import Settings
     from lmds.inventory import host_payload
     from lmds.nodes import (
         NodeError, check_cluster_ip, cluster_groups, cluster_note, load, probe,
         stack_ready, suggest_cluster_ip,
     )
 
+    settings = Settings.load()
+    if self_stack is not None and self_stack != settings.cluster.stack_self:
+        settings.cluster.stack_self = self_stack
+        settings.save()
+    stack_self = settings.cluster.stack_self
+
     local = host_payload()
     local_name = local.get("hostname") or "เครื่องนี้"
-    machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local)}]
+    machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
+                 "stack": stack_self}]
 
     table = Table(title="สายเชื่อมของแต่ละเครื่อง")
     table.add_column("เครื่อง")
@@ -666,37 +685,46 @@ def node_cluster(
     table.add_column("cluster IP")
     table.add_column("stacked ได้")
 
-    def add_row(name: str, host: dict, cluster_ip: str) -> None:
+    def add_row(name: str, host: dict, cluster_ip: str, stack: bool = True) -> None:
         fabric = host.get("fabric") or {}
         best = fabric.get("best_gbps")
         check = check_cluster_ip(host, cluster_ip)
         ready = stack_ready(host)
-        table.add_row(
-            name,
-            f"{best}G" if best else "—",
-            cluster_ip or f"[yellow]—[/yellow]",
-            "[green]ได้[/green]" if ready else f"[yellow]ไม่ได้[/yellow] {cluster_note(host)[:40]}",
-        )
-        if check["state"] in {"mismatch", "slow", "link-local"}:
+        # ผู้ใช้สั่งไม่เอาเข้ากลุ่ม = คนละเรื่องกับ "เครื่องไม่พร้อม" ต้องอ่านแล้วแยกออกทันที
+        if not stack:
+            verdict = "[dim]ไม่เอาเข้ากลุ่ม (ตั้งไว้เอง)[/dim]"
+        elif ready:
+            verdict = "[green]ได้[/green]"
+        else:
+            verdict = f"[yellow]ไม่ได้[/yellow] {cluster_note(host)[:40]}"
+        table.add_row(name, f"{best}G" if best else "—", cluster_ip or "[yellow]—[/yellow]", verdict)
+        if stack and check["state"] in {"mismatch", "slow", "link-local"}:
             table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
 
-    add_row(local_name + " (hub)", local, machines[0]["cluster_ip"])
+    add_row(local_name + " (hub)", local, machines[0]["cluster_ip"], stack_self)
     for node in load():
         try:
             host = probe(node).get("host") or {}
         except NodeError as exc:
             table.add_row(node.name, "—", node.cluster_ip or "—", f"[red]ต่อไม่ได้[/red] {str(exc)[:40]}")
             continue
-        machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip})
-        add_row(node.name, host, node.cluster_ip)
+        machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip,
+                         "stack": node.stack})
+        add_row(node.name, host, node.cluster_ip, node.stack)
 
     console.print(table)
+    opted_out = [m["name"] for m in machines if m.get("stack") is False]
+    if opted_out:
+        console.print(f"[dim]ไม่เอาเข้ากลุ่มตามที่ตั้งไว้: {', '.join(opted_out)} — "
+                      f"เปิดคืนด้วย `lmds node set <ชื่อ> --stack` "
+                      f"(เครื่องนี้เอง: `lmds node cluster --self-stack`)[/dim]")
 
     groups = cluster_groups(machines)
     if not groups:
         console.print(
             "\n[dim]ยังไม่มีคู่ที่ stacked ได้ — ต้องมีอย่างน้อย 2 เครื่องที่ GPU รุ่นเดียวกัน "
-            "จำนวนเท่ากัน และมีสายเร็วอย่างน้อย 25G[/dim]"
+            "จำนวนเท่ากัน มีสายเร็วอย่างน้อย 25G ที่ตั้ง IP จริงแล้ว (ไม่ใช่ 169.254.x.x) "
+            "และ IP นั้นต้องอยู่ subnet เดียวกัน[/dim]"
         )
         return
 
@@ -707,11 +735,20 @@ def node_cluster(
         note = group["parallelism"]
         parallel = (f"TP={note['world_size']}" if note["kind"] == "tensor-parallel"
                     else f"TP={note['largest_tp']} + pipeline (TP={note['world_size']} หาร head ไม่ลง)")
+        usable = group.get("usable_world_size")
+        usable_text = (f" · ตั้ง cluster IP ครบแล้ว {usable}"
+                       if usable is not None and usable != group["world_size"] else "")
         console.print(
             f"  {mark} {names} — {group['gpu']} x{group['gpus_per_node']}/เครื่อง · "
-            f"world size {group['world_size']} ({parallel}) · {group['link_gbps']}G "
+            f"world size {group['world_size']} ({parallel}){usable_text} · {group['link_gbps']}G "
             f"{'RDMA' if group['rdma'] else 'ethernet'}"
         )
+        # ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่ใช่ blocker แต่ต้องบอก ไม่งั้นดูเหมือนเครื่องหาย
+        for gone in group.get("excluded", []):
+            text = (f"{gone['name']} คือเครื่องเดียวกับ {gone.get('same_as')} ที่ถูกเพิ่มไว้สองชื่อ — นับครั้งเดียว"
+                    if gone["reason"] == "same-machine"
+                    else f"{gone['name']} ฮาร์ดแวร์ตรงกัน แต่ไม่มี subnet ร่วมกับกลุ่มนี้ — ไม่ถูกนับใน world size")
+            console.print(f"    [dim]· {text}[/dim]")
         for blocker in group["blockers"]:
             names = ", ".join(blocker["names"])
             text = {

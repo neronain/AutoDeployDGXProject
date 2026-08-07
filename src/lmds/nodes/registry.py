@@ -64,6 +64,10 @@ class Node:
     # ที่อยู่สำรองของ "เครื่องเดียวกัน" — เช่น Tailscale/VPN ที่ใช้ตอนออกนอกออฟฟิศ
     # ต่างจากการเปลี่ยน host (= คนละเครื่อง) ตรงที่นี่คือทางเข้าอีกทางของเครื่องเดิม
     alt_hosts: list[str] = field(default_factory=list)
+    # ยอมให้เครื่องนี้ถูกจับกลุ่ม stacked ไหม — กลุ่มเป็นสิ่งที่ระบบ "เสนอ" จากฮาร์ดแวร์ที่ตรงกัน
+    # ไม่ใช่สิ่งที่ประกาศไว้ เครื่องที่ตั้งใจให้รันงานของตัวเองจึงต้องปิดได้ ไม่งั้นพอวันหนึ่ง
+    # มันถูกตั้ง IP บนวงเดียวกันก็จะเด้งเข้ากลุ่มเองแล้วเปลี่ยนแผน parallel ของทั้งกลุ่ม
+    stack: bool = True
 
     @property
     def all_hosts(self) -> list[str]:
@@ -96,6 +100,9 @@ def load() -> list[Node]:
         known = {f: entry.get(f) for f in Node.__dataclass_fields__ if f in entry}
         known.setdefault("host", "")
         known.setdefault("user", "")
+        # `stack: null` ในไฟล์ที่แก้ด้วยมือต้องแปลว่า "ค่าเริ่มต้น" ไม่ใช่ "ห้าม stacked"
+        if known.get("stack") is None:
+            known.pop("stack", None)
         out.append(Node(**known))
     return out
 
@@ -169,6 +176,8 @@ def update(name: str, **changes) -> Node:
             continue  # เปลี่ยนที่อยู่ต้องลบแล้วเพิ่มใหม่ ไม่ใช่แก้เงียบ ๆ
         if key == "cluster_ip":
             value = validate_cluster_ip(value)
+        if key == "stack":
+            value = bool(value)
         if key in Node.__dataclass_fields__:
             setattr(target, key, value)
     save(existing)

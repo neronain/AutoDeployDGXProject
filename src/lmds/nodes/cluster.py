@@ -33,10 +33,13 @@ def fabric_tier(host: dict) -> str:
 
 
 def stack_ready(host: dict) -> bool:
-    """เครื่องนี้พร้อมเป็นสมาชิก stack ไหม — ดูแค่ฮาร์ดแวร์ ยังไม่ดูว่าตั้ง cluster IP หรือยัง"""
-    fabric = host.get("fabric") or {}
-    best = fabric.get("best_gbps")
-    return bool(host.get("gpus")) and best is not None and best >= MIN_STACK_GBPS
+    """เครื่องนี้พร้อมเป็นสมาชิก stack ไหม — ยังไม่ดูว่าเลือก cluster IP ตัวไหนแล้ว
+
+    ต้องมี "สายที่ยิง NCCL ถึงกันได้จริง" ไม่ใช่แค่ลิงก์เร็ว: `best_gbps` นับพอร์ตที่ลิงก์ขึ้น
+    ทุกเส้นรวมเส้นที่ยังไม่ได้ตั้ง IP (169.254.x.x) ด้วย เครื่องที่มีแต่พอร์ตแบบนั้นจึงเคยถูก
+    นับเข้ากลุ่มแล้วไปโผล่เป็นเตือน "ยังไม่ได้ตั้ง cluster IP" ทั้งที่ยังจับคู่กับใครไม่ได้เลย
+    """
+    return bool(host.get("gpus")) and bool(fabric_links(host))
 
 
 def _is_link_local(ip: str) -> bool:
@@ -110,20 +113,39 @@ def link_network(link: dict) -> str:
         return ""
 
 
+def networks_of(host: dict) -> dict[str, dict]:
+    """วง → ลิงก์ที่พาไปวงนั้น (เอาเส้นแรกที่เจอต่อหนึ่งวง)"""
+    by_network: dict[str, dict] = {}
+    for link in fabric_links(host):
+        network = link_network(link)
+        if network:
+            by_network.setdefault(network, link)
+    return by_network
+
+
+def machine_identity(host: dict) -> tuple:
+    """ตัวตนของ "เครื่องจริง" — ใช้จับกรณีเครื่องเดียวถูกลงทะเบียนไว้สองชื่อ
+
+    ทะเบียนกันซ้ำได้แค่คู่ host+user ที่พิมพ์เหมือนกันเป๊ะ เครื่องเดิมที่เพิ่มด้วยที่อยู่อีกทาง
+    (Tailscale/ชื่อ DNS/IP) จึงเข้ามาเป็นสมาชิกที่สองได้ แล้ว world size ก็บวกเกินไปหนึ่ง
+
+    hostname อย่างเดียวไม่พอเพราะตั้งชื่อซ้ำกันได้ จึงผูกกับชุด IP บนสายเร็วด้วย
+    คืน () เมื่อข้อมูลไม่พอจะตัดสิน — ถือว่าเป็นคนละเครื่อง ดีกว่าเดาแล้วยุบเครื่องจริงทิ้ง
+    """
+    hostname = (host.get("hostname") or "").strip().lower()
+    addresses = tuple(sorted(link["ip"] for link in fabric_links(host)))
+    if not hostname or not addresses:
+        return ()
+    return (hostname, addresses)
+
+
 def shared_fabric(members: list[dict]) -> tuple[str, dict[str, str]]:
     """วงที่ทุกเครื่องในกลุ่มมีขาอยู่ด้วยกัน → (ชื่อวง, {ชื่อเครื่อง: IP ในวงนั้น})
 
     DGX Spark มี fabric มากกว่าหนึ่งวง (เช่น 10.100.152.0/24 กับ 10.100.153.0/24)
     ถ้าปล่อยให้แต่ละเครื่องเลือกเองอาจได้คนละวง — ต่อกันไม่ติดทั้งที่ทุกอย่างดูถูก
     """
-    per_machine: list[dict[str, dict]] = []
-    for machine in members:
-        by_network = {}
-        for link in fabric_links(machine["host"]):
-            network = link_network(link)
-            if network:
-                by_network.setdefault(network, link)
-        per_machine.append(by_network)
+    per_machine: list[dict[str, dict]] = [networks_of(machine["host"]) for machine in members]
 
     if not per_machine:
         return "", {}
@@ -165,21 +187,70 @@ def parallelism_note(world_size: int) -> dict:
             "largest_tp": 1 << (world_size.bit_length() - 1)}
 
 
+def drop_duplicate_machines(members: list[dict]) -> tuple[list[dict], list[dict]]:
+    """เครื่องเดียวที่ถูกลงทะเบียนหลายชื่อ → เก็บชื่อแรก ที่เหลือคืนออกมาเป็นตัวซ้ำ"""
+    seen: dict[tuple, str] = {}
+    kept, twins = [], []
+    for machine in members:
+        identity = machine_identity(machine["host"])
+        first = seen.get(identity) if identity else None
+        if first is not None:
+            twins.append({"name": machine["name"], "reason": "same-machine", "same_as": first})
+            continue
+        if identity:
+            seen[identity] = machine["name"]
+        kept.append(machine)
+    return kept, twins
+
+
+def connected_subset(members: list[dict]) -> tuple[list[dict], list[dict]]:
+    """กลุ่มย่อยที่ใหญ่ที่สุดซึ่ง "มีขาอยู่ในวงเดียวกัน" → (สมาชิก, เครื่องที่ไม่มีวงร่วม)
+
+    ฮาร์ดแวร์ตรงกันไม่ได้แปลว่าคุยกันได้ — เครื่องที่ไม่มีวงร่วมกับใครเลยต้องไม่ถูกนับเข้า
+    world size เพราะมันเปลี่ยนแผน parallel ทั้งกลุ่ม (2 เครื่องใช้ TP=2 ได้ พอนับเป็น 3
+    กลายเป็นต้อง pipeline ทั้งที่เครื่องที่สามเข้าร่วมไม่ได้จริง)
+    """
+    by_network: dict[str, list[str]] = {}
+    for machine in members:
+        for network in networks_of(machine["host"]):
+            by_network.setdefault(network, []).append(machine["name"])
+    if not by_network:
+        return [], list(members)
+
+    # วงที่มีสมาชิกมากที่สุด — เท่ากันเอาเลขวงน้อยสุดเพื่อให้ผลคงที่ทุกครั้งที่เรียก
+    def rank(network: str) -> tuple:
+        return (len(by_network[network]), [-int(part) for part in network.split("/")[0].split(".")])
+
+    inside = set(by_network[max(by_network, key=rank)])
+    return ([m for m in members if m["name"] in inside],
+            [m for m in members if m["name"] not in inside])
+
+
 def cluster_groups(machines: Iterable[dict]) -> list[dict]:
     """จัดกลุ่มเครื่องที่ stacked ด้วยกันได้
 
-    machines: [{"name": str, "host": host payload, "cluster_ip": str}] — รวมเครื่อง hub เองได้
+    machines: [{"name": str, "host": host payload, "cluster_ip": str, "stack": bool}]
+    — รวมเครื่อง hub เองได้ · `stack=False` = ผู้ใช้สั่งไม่ให้จับกลุ่มเครื่องนี้ (ค่าเริ่มต้นคือจับ)
     คืนเฉพาะกลุ่มที่มีสมาชิก >= 2 เพราะกลุ่มเครื่องเดียว stacked ไม่ได้อยู่แล้ว
+
+    เข้ากลุ่มต้องครบสามอย่าง: ฮาร์ดแวร์ตรงกัน · เป็นคนละเครื่องจริง ๆ · มีขาอยู่ในวงเดียวกัน
+    เครื่องที่ตกข้อหลังไปอยู่ใน "excluded" — บอกให้เห็นว่าทำไมไม่ถูกนับ ไม่ใช่หายเงียบ
     """
     buckets: dict[tuple, list[dict]] = {}
     for machine in machines:
         host = machine.get("host") or {}
+        # ปิดไว้ = ไม่ต้องเสนอเลย แม้ฮาร์ดแวร์จะตรงเป๊ะ — เจตนาของคนต้องชนะการตรวจอัตโนมัติ
+        if machine.get("stack") is False:
+            continue
         if not stack_ready(host):
             continue
         buckets.setdefault(machine_signature(host), []).append(machine)
 
     groups = []
-    for signature, members in buckets.items():
+    for signature, bucket in buckets.items():
+        candidates, excluded = drop_duplicate_machines(bucket)
+        members, outsiders = connected_subset(candidates)
+        excluded += [{"name": m["name"], "reason": "no-shared-fabric"} for m in outsiders]
         if len(members) < 2:
             continue
         arch, profile, gpu, gpu_count = signature
@@ -215,6 +286,8 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
 
         groups.append({
             "members": detail,
+            # ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่นับใน world size และไม่ทำให้กลุ่ม "ไม่พร้อม"
+            "excluded": excluded,
             "arch": arch,
             "profile": profile,
             "gpu": gpu,
@@ -224,6 +297,8 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             "rdma": tiers == {"rdma"},
             "quality": "rdma" if tiers == {"rdma"} else "ethernet",
             "world_size": gpu_count * len(members),
+            # เครื่องที่ตั้ง cluster IP ถูกต้องแล้วจริง ๆ — ต่างจาก world size ตอนที่ยังตั้งไม่ครบ
+            "usable_world_size": gpu_count * sum(1 for d in detail if d["state"] == "ok"),
             "fabric_network": network,
             "parallelism": parallelism_note(gpu_count * len(members)),
             "blockers": blockers,
@@ -238,4 +313,8 @@ def cluster_note(host: dict) -> str:
     fabric = host.get("fabric") or {}
     if not host.get("gpus"):
         return "ไม่พบ GPU — stacked ไม่ได้"
+    best = fabric.get("best_gbps") or 0
+    # แยกให้ชัดระหว่าง "สายช้าเกินไป" กับ "สายเร็วพอแต่ยังไม่ได้ตั้ง IP" — คนละวิธีแก้กันคนละเรื่อง
+    if best >= MIN_STACK_GBPS and not fabric_links(host):
+        return f"มีสาย {best}G แต่ยังไม่ได้ตั้ง IP จริง (ได้แต่ 169.254.x.x) — stacked ไม่ได้จนกว่าจะตั้ง"
     return fabric.get("summary") or "ตรวจสายเชื่อมไม่ได้"

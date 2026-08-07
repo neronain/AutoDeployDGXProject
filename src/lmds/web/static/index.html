@@ -1726,9 +1726,14 @@ function clusterStrip(m, group, index) {
   const hint = m.reachable ? ipHint(m) : (m.error || "");
   // คู่ของเครื่องนี้ — บอกชื่อตรง ๆ ดีกว่าให้ไปไล่หาเองว่าใครอยู่กลุ่มเดียวกัน
   const partners = group ? group.members.filter(x => x.name !== m.name).map(x => x.name) : [];
+  // ชื่อจริงของเครื่อง — โชว์เมื่อไม่ตรงกับชื่อในทะเบียน เพราะนั่นคือทางเดียวที่จะเห็นว่า
+  // สองรายการชี้ไปเครื่องเดียวกัน (เพิ่มไว้คนละที่อยู่ ทะเบียนกันซ้ำไม่ได้)
+  const realName = m.hostname && m.hostname !== m.name ? m.hostname : "";
   return `<div class="field">
       ${group ? `<span class="gtag" style="--g:${GROUP_COLOURS[index % GROUP_COLOURS.length]}">
         Cluster ${String.fromCharCode(65 + index)}</span>` : ""}
+      ${realName ? `<span class="dim">hostname</span>
+        <span class="mono muted">${esc(realName)}</span>` : ""}
       <span class="dim">fabric</span>
       <span class="mono" style="color:${colour}">${esc(link)}</span>
       <span class="dim">cluster IP</span>
@@ -1740,17 +1745,29 @@ function clusterStrip(m, group, index) {
            ${m.self ? '<span class="dim">(hub — ตรวจให้ ไม่ได้เก็บไว้)</span>' : ""}`}
       <span class="grow"></span>
       ${partners.length ? `<span class="dim">⇄ ${esc(partners.join(", "))}</span>` : ""}
+      ${m.reachable ? `<button data-cact="toggle-stack" data-node="${esc(m.name)}"
+        data-self="${m.self ? "1" : ""}" data-stack="${m.stack === false ? "" : "1"}"
+        title="กลุ่มเป็นสิ่งที่ระบบเสนอจากฮาร์ดแวร์ที่ตรงกัน — ปิดไว้ถ้าเครื่องนี้ไม่ได้ตั้งใจเอาไป stacked"
+        >${m.stack === false ? "เอาเข้ากลุ่ม" : "ไม่เอาเข้ากลุ่ม"}</button>` : ""}
     </div>
-    ${hint ? `<div class="dim" style="margin-top:4px">${esc(hint)}</div>` : ""}`;
+    ${m.stack === false ? `<div class="dim" style="margin-top:4px">ตั้งไว้ว่าไม่เอาเครื่องนี้เข้ากลุ่ม stacked — จะไม่ถูกเสนอเข้าคลัสเตอร์ไม่ว่าฮาร์ดแวร์จะตรงแค่ไหน</div>`
+      : hint ? `<div class="dim" style="margin-top:4px">${esc(hint)}</div>` : ""}`;
 }
 
 // หัวกลุ่ม: บอกว่ากลุ่มนี้คือเครื่องอะไรบ้าง พร้อมสิ่งที่ยังขาด — อยู่เหนือเครื่องที่มันพูดถึง
 function groupHeader(g, index) {
-  const blockers = g.blockers.map(b => `<div class="warn-line">${esc({
+  const blockers = g.blockers.map(b => `<div class="warn-line">${esc(({
     "missing-ip": "ยังไม่ได้ตั้ง cluster IP ที่: ",
     "duplicate-ip": "cluster IP ซ้ำกันมากกว่าหนึ่งเครื่อง: ",
     "split-fabric": "cluster IP อยู่คนละ subnet คุยกันไม่ได้: ",
-  }[b.kind] + b.names.join(", "))}</div>`).join("");
+  }[b.kind] || (b.kind + ": ")) + b.names.join(", "))}</div>`).join("");
+  // เครื่องที่ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่ใช่ blocker ของกลุ่มนี้ (กลุ่มยัง stacked ได้)
+  // แต่ต้องบอก ไม่งั้นผู้ใช้จะงงว่าทำไมเครื่องนั้นไม่โผล่มาในคลัสเตอร์
+  const excluded = (g.excluded || []).map(x => `<div class="dim gsub">${esc(
+    x.reason === "same-machine"
+      ? `${x.name} คือเครื่องเดียวกับ ${x.same_as} ที่ถูกเพิ่มไว้สองชื่อ — นับครั้งเดียว`
+      : `${x.name} ฮาร์ดแวร์ตรงกัน แต่ไม่มี subnet ร่วมกับกลุ่มนี้ — ยังไม่ถูกนับเข้า world size`
+  )}</div>`).join("");
   return `<div class="ghead">
       <span class="gtag" style="--g:${GROUP_COLOURS[index % GROUP_COLOURS.length]}">
         Cluster ${String.fromCharCode(65 + index)}</span>
@@ -1758,12 +1775,14 @@ function groupHeader(g, index) {
       <span class="grow"></span>
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "stacked ได้" : "ยังไม่พร้อม"}</span>
     </div>
-    <div class="dim gsub">${esc(g.gpu)} ×${g.gpus_per_node} ต่อเครื่อง · world size ${g.world_size} ·
+    <div class="dim gsub">${esc(g.gpu)} ×${g.gpus_per_node} ต่อเครื่อง · world size ${g.world_size}${
+      g.usable_world_size !== undefined && g.usable_world_size !== g.world_size
+        ? ` (ตั้ง cluster IP ครบแล้ว ${g.usable_world_size})` : ""} ·
       ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
     ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
       ? `<div class="warn-line">${g.world_size} GPU หารจำนวน attention head ของโมเดลส่วนใหญ่ไม่ลงตัว —
          ใช้ tensor-parallel ${g.parallelism.largest_tp} + pipeline stage แทน TP ${g.world_size}</div>` : ""}
-    ${blockers}
+    ${blockers}${excluded}
     ${g.ready ? `<div class="dim gsub">deploy ข้ามเครื่องกลุ่มนี้:
       <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> บน
       <b style="font-weight:500">${esc(g.members[0].name)}</b> แล้ว
@@ -1779,11 +1798,30 @@ function layoutClusterGroups() {
     while (wrap.children.length > 1) box.appendChild(wrap.children[1]);
     wrap.remove();
   }
+  // แถวของ hub เอง — hub ไม่มีการ์ดในลิสต์นี้ ปุ่ม "ไม่เอาเข้ากลุ่ม" ของมันจึงต้องมีที่อยู่ของตัวเอง
+  // และต้องอยู่ตรงนี้เสมอ ไม่ใช่ในหัวกลุ่ม ไม่งั้นพอปิดแล้วกลุ่มหาย = กดเปิดคืนไม่ได้
+  box.querySelector(".hubstack")?.remove();
+  // ข้อความ "ยังไม่มีคู่ที่ stacked ได้" ของรอบก่อน — ต้องล้างทุกครั้ง ไม่งั้นพอกดเปิดกลุ่มคืน
+  // ข้อความเก่าจะค้างอยู่เหนือกลุ่มที่เพิ่งโผล่มา
+  box.querySelector(".gnone")?.remove();
   for (const row of nodeRows.values()) row.block.querySelector(".nclus").hidden = true;
   if (!clusterData) return;
 
   const byName = new Map((clusterData.machines || []).map(m => [m.name, m]));
   const groups = clusterData.groups || [];
+
+  const hub = (clusterData.machines || []).find(m => m.self);
+  if (hub) {
+    const line = document.createElement("div");
+    line.className = "hubstack dim";
+    line.style.margin = "0 0 10px";
+    line.innerHTML = `เครื่องนี้ (hub) <b style="font-weight:500">${esc(hub.name)}</b> —
+      ${hub.stack === false ? "ไม่ถูกเสนอเข้ากลุ่ม stacked" : "ถูกนับเป็นผู้สมัครเข้ากลุ่ม stacked ด้วย"}
+      <button data-cact="toggle-stack" data-node="${esc(hub.name)}" data-self="1"
+        data-stack="${hub.stack === false ? "" : "1"}" style="font-size:12px"
+        >${hub.stack === false ? "เอาเข้ากลุ่ม" : "ไม่เอาเข้ากลุ่ม"}</button>`;
+    box.prepend(line);
+  }
   const groupOf = new Map();
   groups.forEach((g, i) => g.members.forEach(m => groupOf.set(m.name, i)));
 
@@ -1839,6 +1877,27 @@ async function loadCluster() {
 
 document.addEventListener("click", async e => {
   if (e.target.id === "cluster-check") { loadCluster(); return; }
+
+  // เอาเข้า/ไม่เอาเข้ากลุ่ม — hub เก็บใน config, node อื่นเก็บในทะเบียน จึงคนละ endpoint
+  const toggle = e.target.closest('button[data-cact="toggle-stack"]');
+  if (toggle) {
+    const stack = !toggle.dataset.stack;
+    toggle.disabled = true;
+    const r = await api(toggle.dataset.self ? "/api/cluster/self"
+      : `/api/nodes/${encodeURIComponent(toggle.dataset.node)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ stack }),
+    });
+    toggle.disabled = false;
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || "Could not change that setting");
+      return;
+    }
+    loadCluster();
+    return;
+  }
+
   const btn = e.target.closest('button[data-cact="save-ip"]');
   if (!btn) return;
   const name = btn.dataset.node;
