@@ -1292,13 +1292,15 @@ function nodeModelsMarkup(name, data) {
   if (!data.reachable) {
     // ต่อ SSH ได้แต่ไม่มี lmds = ติดตั้งให้จากที่นี่ได้เลย · ต่อ SSH ไม่ได้เป็นคนละเรื่อง
     // (เครื่องปิด/เน็ตไม่ถึง) ปุ่มติดตั้งกดไปก็ล้ม จึงไม่ควรขึ้น
-    const needsInstall = /ยังไม่ได้ติดตั้ง LMDS|PATH/.test(data.error || "");
+    // "เก่าเกินไป" แก้ได้ด้วยปุ่มเดียวกับ "ยังไม่ได้ติดตั้ง" — ทั้งคู่คือ `lmds node install`
+    const needsInstall = /ยังไม่ได้ติดตั้ง LMDS|PATH|เก่าเกินไป/.test(data.error || "");
     return `<div class="pad" style="border-top:1px solid var(--line)">
       <div class="warn-line" style="color:var(--bad)">Unreachable — ${esc((data.error || "").split("\n")[0])}</div>
       ${needsInstall
         ? `<div class="field" style="margin-top:8px">
              <button data-nact="install" data-node="${esc(name)}"
-                     title="git clone + install.sh บนเครื่องนั้นผ่าน SSH">ติดตั้ง LMDS บนเครื่องนี้</button>
+                     title="git clone + install.sh บนเครื่องนั้นผ่าน SSH">${
+                       /เก่าเกินไป/.test(data.error || "") ? "อัปเดต LMDS บนเครื่องนี้" : "ติดตั้ง LMDS บนเครื่องนี้"}</button>
              <span class="dim">ต่อ SSH ได้แล้ว เหลือแค่ตัวโปรแกรม — ใช้เวลาสักครู่ ความคืบหน้าจะขึ้นให้เห็น
                · ข้ามขั้น docker/toolkit ที่ต้องใช้ sudo (ถ้าเครื่องยังไม่มี Docker ต้องลงเองก่อน)</span>
            </div>`

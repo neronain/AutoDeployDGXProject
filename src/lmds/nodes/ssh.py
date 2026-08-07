@@ -220,10 +220,22 @@ def probe(node: Node, timeout: int = 30) -> dict:
     result = run(node, "lmds agent info", timeout=timeout)
     if not result.ok:
         stderr = (result.stderr or result.stdout).strip()
-        if "command not found" in stderr or "not found" in stderr:
+        # แยกสามอย่างที่ต่างกันคนละเรื่อง — บอกผิดแล้วผู้ใช้ไปแก้ผิดที่
+        #   1. ต่อ SSH ไม่ได้เลย (เครื่องปิด/เน็ตไม่ถึง)
+        #   2. ต่อได้แต่ไม่มี lmds
+        #   3. ต่อได้ มี lmds แต่ **เวอร์ชันเก่าเกินไป** — ไม่มีคำสั่ง agent จึงพิมพ์ usage ออกมา
+        #      เคสนี้เดิมถูกรายงานว่า "ต่อไม่ได้" ทั้งที่ต่อได้สบาย (เจอจริงกับเครื่องที่มี 0.1.0)
+        if "command not found" in stderr or "No such file" in stderr:
             raise NodeError(
                 f"{node.target} ยังไม่ได้ติดตั้ง LMDS (หรือ lmds ไม่อยู่ใน PATH ของ SSH session)\n"
                 "ติดตั้งบนเครื่องนั้น: git clone …/AutoDeployDGXProject && ./install.sh"
+            )
+        if "Usage: lmds" in stderr or "No such command" in stderr:
+            version = run(node, "lmds version 2>/dev/null | head -1", timeout=20).stdout.strip()
+            raise NodeError(
+                f"{node.target} มี LMDS แต่เก่าเกินไป ({version or 'ไม่ทราบเวอร์ชัน'}) — "
+                f"ยังไม่มีคำสั่ง `agent` ที่ hub ใช้อ่านสถานะ\n"
+                f"อัปเดตจากที่นี่ได้เลย: lmds node install {node.name}"
             )
         raise NodeError(f"ต่อ {node.target} ไม่ได้: {stderr[:300] or 'ไม่มีข้อความ'}")
     try:

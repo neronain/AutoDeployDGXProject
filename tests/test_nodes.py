@@ -614,3 +614,28 @@ def test_a_wrong_password_fails_loudly_when_the_step_is_needed(monkeypatch):
     outcomes = run_privileged(Node(name="n", host="h", user="u"), "รหัสผิด")
     assert outcomes[0]["ok"] is False
     assert "incorrect password" in outcomes[0]["detail"]
+
+
+def test_an_old_lmds_is_not_reported_as_unreachable(monkeypatch):
+    """เครื่องที่มี lmds เก่า (ไม่มีคำสั่ง agent) พิมพ์ usage ออกมา — เดิมถูกรายงานว่า
+    "ต่อ … ไม่ได้" ทั้งที่ SSH ต่อได้สบาย ผู้ใช้จึงไปไล่หาปัญหาเครือข่ายผิดที่
+    (เจอจริงกับ AiTop100 ที่มี 0.1.0)
+    """
+    import pytest
+    from types import SimpleNamespace
+
+    from lmds.nodes import Node, NodeError, probe
+
+    def fake_run(node, command, timeout=30, stdin_text=""):
+        if "agent info" in command:
+            return SimpleNamespace(ok=False, exit_code=2, stdout="",
+                                   stderr="Usage: lmds [OPTIONS] COMMAND [ARGS]...")
+        return SimpleNamespace(ok=True, exit_code=0, stdout="lmds 0.1.0", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    with pytest.raises(NodeError) as caught:
+        probe(Node(name="aitop100", host="h", user="u"))
+    message = str(caught.value)
+    assert "เก่าเกินไป" in message and "0.1.0" in message
+    assert "lmds node install aitop100" in message, "ต้องบอกคำสั่งที่แก้ได้จริง"
+    assert "ต่อ" not in message.split("\n")[0], "ต้องไม่บอกว่าต่อไม่ได้"
