@@ -706,3 +706,38 @@ def test_image_pull_is_visible_not_silent(isolated_config, tmp_path, kind):
     # และต้องข้ามถ้ามี image อยู่แล้ว — ไม่งั้น start ทุกครั้งเสียเวลาไปกับการเช็ค registry
     block = text.split("ensure_image() {")[1][:600]
     assert "docker image inspect" in block and "return 0" in block
+
+
+def test_bundle_can_run_its_own_client_config(isolated_config, tmp_path):
+    """bundle ที่ขัดแย้งกับตัวเองไม่ควรออกจากโรงงาน — เจอจริง: context 16,384 · slots 4 ·
+    output 8,192 ผ่าน gate ทุกด่านแล้ว `client-config` ของตัวเองปฏิเสธว่า
+    "context ต่อ slot เล็กเกิน (4096 = 16384/4)"
+    """
+    import re
+
+    bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    def value(var):
+        return int(re.search(rf'^{var}="\$\{{{var}:-(\d+)\}}"', text, re.M).group(1))
+
+    per_slot = value("CTX_SIZE") // value("PARALLEL_SEQS")
+    budget = per_slot - value("CLIENT_OUTPUT") - 2048       # TEMPLATE_OVERHEAD_TOKENS
+    assert budget > 0, f"input budget {budget} — client-config จะ die ทันที"
+
+
+def test_the_gate_catches_an_inconsistent_bundle(isolated_config, tmp_path):
+    """gate ต้องจับได้เอง ไม่ใช่หวังว่า planner จะไม่พลาด"""
+    import re
+
+    from lmds.validator.gates import gate_serving_consistent
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    broken = re.sub(r'^CLIENT_OUTPUT="\$\{CLIENT_OUTPUT:-\d+\}"',
+                    'CLIENT_OUTPUT="${CLIENT_OUTPUT:-999999}"', text, flags=re.M)
+    bundle.controller.write_text(broken, encoding="utf-8")
+
+    result = gate_serving_consistent(bundle.directory)
+    assert result.passed is False
+    assert "client-config" in result.detail

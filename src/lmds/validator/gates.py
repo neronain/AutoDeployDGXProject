@@ -317,7 +317,44 @@ def gate_template_rendered(bundle_dir: Path) -> GateResult:
     return GateResult("template-rendered", True)
 
 
+def gate_serving_consistent(bundle_dir: Path) -> GateResult:
+    """context / slots / max_output_tokens ต้องเป็นค่าที่เป็นไปได้จริงพร้อมกัน
+
+    llama.cpp แบ่ง `--ctx-size` เท่า ๆ กันให้ทุก slot — output ที่ใหญ่กว่า context ต่อ slot
+    คือค่าที่เป็นไปไม่ได้ · เจอจริง: context 16,384 · slots 4 · output 8,192 ผ่าน gate
+    ทุกด่านแล้วไปตายที่ `client-config` ของ bundle ตัวเอง ("context ต่อ slot เล็กเกิน")
+    """
+    name = "serving-consistent"
+    scripts = _controllers(bundle_dir)
+    if not scripts:
+        return GateResult(name, True, "ไม่มี controller ให้ตรวจ")
+    text = scripts[0].read_text(encoding="utf-8")
+    if "PARALLEL_SEQS" not in text:
+        return GateResult(name, True, "ไม่ใช่ llama.cpp")
+
+    def value(var: str) -> int | None:
+        match = re.search(rf'^{var}="\$\{{{var}:-(\d+)\}}"', text, re.M)
+        return int(match.group(1)) if match else None
+
+    context, slots, output = value("CTX_SIZE"), value("PARALLEL_SEQS"), value("CLIENT_OUTPUT")
+    overhead = 2048
+    if None in (context, slots, output) or slots <= 0:
+        return GateResult(name, True, "อ่านค่าไม่ครบ — ข้าม")
+    # เงื่อนไขเดียวกับที่ controller ใช้เป๊ะ ๆ: input_budget = ต่อslot - output - overhead > 0
+    per_slot = context // slots
+    input_budget = per_slot - output - overhead
+    if input_budget <= 0:
+        return GateResult(
+            name, False,
+            f"context ต่อ slot {per_slot:,} ({context:,}/{slots}) − output {output:,} − "
+            f"overhead {overhead:,} = {input_budget:,} — bundle นี้รัน client-config "
+            f"ของตัวเองไม่ผ่าน",
+        )
+    return GateResult(name, True, f"input {input_budget:,} ต่อ slot")
+
+
 ALL_GATES = [
+    gate_serving_consistent,
     gate_bash_syntax,
     gate_template_rendered,
     gate_numeric_underscore,

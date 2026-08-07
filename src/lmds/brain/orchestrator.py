@@ -43,6 +43,52 @@ def _strip_fences(raw: str) -> str:
     return text
 
 
+# llama.cpp แบ่ง --ctx-size เท่า ๆ กันให้ทุก slot (--parallel) — output ที่ใหญ่กว่า
+# context ต่อ slot คือค่าที่เป็นไปไม่ได้ · ค่าเดียวกับ TEMPLATE_OVERHEAD_TOKENS ในสคริปต์
+_TEMPLATE_OVERHEAD_TOKENS = 2048
+_MIN_OUTPUT_TOKENS = 512
+# ต้องเหลือที่ให้ *คำถาม* ด้วย — ตั้ง output จนพอดีเป๊ะแปลว่า input ได้ 0 token
+# ซึ่ง controller ปฏิเสธเหมือนกัน (`input_budget > 0`)
+_MIN_INPUT_TOKENS = 1024
+
+
+def _fit_output_into_slots(plan: DeploymentPlan) -> None:
+    """ทำให้ context / slots / max_output_tokens สอดคล้องกันจริง
+
+    เคสจริง: context 16,384 · slots 4 · output 8,192 — bundle ผ่าน gate ทุกด่าน แต่
+    `client-config` ของตัวมันเองปฏิเสธทันทีว่า "context ต่อ slot เล็กเกิน (4096 = 16384/4)"
+    เพราะ 4,096 - 8,192 ติดลบ · bundle ที่ขัดแย้งกับตัวเองไม่ควรออกจากโรงงานตั้งแต่แรก
+    """
+    if plan.runtime.engine is not Engine.LLAMACPP:
+        return          # vLLM แชร์ KV cache แบบ dynamic ไม่ได้หารตาม slot
+    slots = max(1, plan.serving.max_num_seqs)
+    per_slot = plan.serving.context // slots
+    usable = per_slot - _TEMPLATE_OVERHEAD_TOKENS - _MIN_INPUT_TOKENS
+    if usable > plan.serving.max_output_tokens:
+        return
+
+    # ลด output ก่อน — ผู้ใช้ปรับ slots เองได้ตอน start แต่ output ที่เป็นไปไม่ได้แก้ไม่ได้
+    if usable >= _MIN_OUTPUT_TOKENS:
+        plan.warnings.append(
+            f"ลด max_output_tokens จาก {plan.serving.max_output_tokens:,} เหลือ {usable:,} — "
+            f"context ต่อ slot มีแค่ {per_slot:,} ({plan.serving.context:,}/{slots})"
+        )
+        plan.serving.max_output_tokens = usable
+        return
+
+    # เหลือน้อยจนแม้แต่ output ขั้นต่ำก็ไม่พอ = จำนวน slot มากเกินไปสำหรับ context เท่านี้
+    fits = max(1, plan.serving.context // (
+        _MIN_OUTPUT_TOKENS + _TEMPLATE_OVERHEAD_TOKENS + _MIN_INPUT_TOKENS))
+    plan.warnings.append(
+        f"ลด slots จาก {slots} เหลือ {fits} — context {plan.serving.context:,} "
+        f"แบ่ง {slots} slot แล้วเหลือไม่พอสำหรับคำตอบ"
+    )
+    plan.serving.max_num_seqs = fits
+    plan.serving.max_output_tokens = max(
+        _MIN_OUTPUT_TOKENS,
+        plan.serving.context // fits - _TEMPLATE_OVERHEAD_TOKENS - _MIN_INPUT_TOKENS)
+
+
 def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> DeploymentPlan:
     """บังคับข้อเท็จจริงกลับเข้า plan — LLM output เป็น untrusted input (PRD §9.3)"""
     if plan.revision != report.revision_sha:
@@ -84,6 +130,8 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
             )
             plan.runtime.image_ref = fallback
             plan.runtime.image_pin = None
+
+    _fit_output_into_slots(plan)
 
     if fit.recommended_context and plan.serving.context > fit.recommended_context:
         plan.warnings.append(
