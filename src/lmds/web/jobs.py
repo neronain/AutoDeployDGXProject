@@ -268,6 +268,8 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
         _JOBS[job.id] = job
         _ACTIVE[key] = job.id
 
+    self_node = node_name
+
     def run() -> None:
         try:
             proc = stream(node, remote_command)
@@ -279,7 +281,16 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
         assert proc.stdout is not None
         for line in proc.stdout:
             job.lines.append(line)
-        job.exit_code = proc.wait()
+        code = proc.wait()
+        # error ของ git อ่านแล้วไม่รู้ว่าต้องทำอะไร — แปลให้ตรงจุดก่อนจบงาน
+        if code != 0 and self_node:
+            from lmds.nodes import explain_install_failure, find
+
+            target = find(self_node)
+            hint = explain_install_failure("".join(job.lines), target) if target else ""
+            if hint:
+                job.lines.append("\n" + hint + "\n")
+        job.exit_code = code
 
     threading.Thread(target=run, daemon=True).start()
     return job

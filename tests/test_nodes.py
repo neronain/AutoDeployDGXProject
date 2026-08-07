@@ -639,3 +639,23 @@ def test_an_old_lmds_is_not_reported_as_unreachable(monkeypatch):
     assert "เก่าเกินไป" in message and "0.1.0" in message
     assert "lmds node install aitop100" in message, "ต้องบอกคำสั่งที่แก้ได้จริง"
     assert "ต่อ" not in message.split("\n")[0], "ต้องไม่บอกว่าต่อไม่ได้"
+
+
+def test_a_private_repo_failure_says_what_to_do():
+    """"could not read Username for 'https://github.com'" อ่านแล้วไม่รู้เลยว่าต้องทำอะไร
+    ความหมายจริงคือ repo เป็น private และเครื่องนั้นไม่มีสิทธิ์ (ผู้ใช้เจอกับ AiTop100)
+    """
+    from lmds.nodes import Node, explain_install_failure
+
+    hint = explain_install_failure(
+        "fatal: could not read Username for 'https://github.com': No such device or address",
+        Node(name="aitop100", host="h", user="u"))
+    assert "private" in hint and "deploy key" in hint.lower()
+    assert "LMDS_REPO_URL" in hint
+
+
+def test_a_normal_failure_gets_no_made_up_explanation():
+    """เดาความหมายผิดแล้วพาไปแก้ผิดที่ — ไม่รู้ก็ไม่ต้องเดา"""
+    from lmds.nodes import Node, explain_install_failure
+
+    assert explain_install_failure("disk full", Node(name="n", host="h", user="u")) == ""

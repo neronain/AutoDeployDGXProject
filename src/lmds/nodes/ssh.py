@@ -320,6 +320,25 @@ def install_script(with_prereq: bool = False) -> str:
     )
 
 
+def explain_install_failure(output: str, node: Node) -> str:
+    """แปล error ของ git ให้เป็นสิ่งที่ทำต่อได้
+
+    "could not read Username for 'https://github.com'" อ่านแล้วไม่รู้เลยว่าต้องทำอะไร —
+    ความหมายจริงคือ repo เป็น private และเครื่องนั้นไม่มีสิทธิ์เข้าถึง
+    """
+    text = output or ""
+    if "could not read Username" in text or "Authentication failed" in text:
+        return (
+            f"{node.name} เข้าถึง repo ไม่ได้ — repo เป็น private และเครื่องนั้นยังไม่มีสิทธิ์\n"
+            "แก้ได้สองทาง:\n"
+            f"  1. ใส่ deploy key บน {node.name} แล้วชี้ remote ไป SSH:\n"
+            f"     ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_lmds_github   (บนเครื่องนั้น)\n"
+            "     เอา .pub ไปใส่ที่ GitHub → repo → Settings → Deploy keys\n"
+            "  2. ตั้ง $LMDS_REPO_URL ให้ชี้ SSH remote หรือ mirror ภายใน แล้วสั่งใหม่"
+        )
+    return ""
+
+
 def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False) -> Result:
     """ติดตั้งหรืออัปเดต LMDS บน node ผ่าน SSH
 

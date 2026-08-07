@@ -30,6 +30,7 @@ from .registry import (
     validate_cluster_ip,
 )
 from .ssh import (
+    explain_install_failure,
     install_script,
     run_privileged,
     push_file,
@@ -60,6 +61,7 @@ __all__ = [
     "install_key",
     "install_lmds",
     "install_script",
+    "explain_install_failure",
     "key_path",
     "load",
     "MIN_STACK_GBPS",

@@ -253,6 +253,7 @@ Wants=network-online.target
 Type=simple
 ExecStart={python} -m lmds.cli.main web --port {port} --bind {bind}
 Environment=LMDS_WEB_TOKEN={token}
+{extra_env}
 Restart=always
 RestartSec=3
 # SSE ถือ connection ค้างไว้ (หน้าเว็บที่เปิดอยู่ทุกแท็บ) — uvicorn รอให้มันปิดก่อนถึงจะจบ
@@ -271,10 +272,18 @@ def unit_path():
     return _Path.home() / ".config" / "systemd" / "user" / UNIT_NAME
 
 
+# env ที่ service ต้องถือไปด้วย — ปุ่มในหน้าเว็บทำงานในบริบทของ service ไม่ใช่ของ shell
+# ที่ผู้ใช้ export ไว้ · ไม่ส่งต่อ = `node install` จากหน้าเว็บใช้ repo ผิดตัวเงียบ ๆ
+_FORWARD_ENV = ("LMDS_REPO_URL",)
+
+
 def render_unit(port: int, bind: str, token: str) -> str:
+    import os
     import sys
 
-    return _UNIT.format(python=sys.executable, port=port, bind=bind, token=token)
+    extra = "\n".join(f"Environment={key}={os.environ[key]}"
+                       for key in _FORWARD_ENV if os.environ.get(key))
+    return _UNIT.format(python=sys.executable, port=port, bind=bind, token=token, extra_env=extra)
 
 
 def service_active() -> bool:

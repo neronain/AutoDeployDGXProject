@@ -518,8 +518,14 @@ def node_install(
     for line in tail:
         console.print(f"[dim]{line}[/dim]")
     if not result.ok:
-        err_console.print((result.stderr or "").strip()[-600:])
+        from lmds.nodes import explain_install_failure
+
+        combined = (result.stdout or "") + (result.stderr or "")
+        hint = explain_install_failure(combined, node)
+        err_console.print(combined.strip()[-600:])
         err_console.print(f"[red]ติดตั้งไม่สำเร็จบน {node.target}[/red]")
+        if hint:
+            err_console.print(f"\n[yellow]{hint}[/yellow]")
         raise typer.Exit(code=1)
 
     try:
