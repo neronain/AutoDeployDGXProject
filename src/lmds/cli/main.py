@@ -1991,21 +1991,45 @@ def enable(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds ps / lmds list", autocompletion=_complete_slug),
     now: bool = typer.Option(False, "--now", help="สั่ง start ทันทีด้วย (ไม่รอ reboot)"),
     timeout: int = typer.Option(1800, "--timeout", help="วินาทีที่รอตอน start ใน service (โมเดลใหญ่ควรเพิ่ม)"),
+    system_scope: bool = typer.Option(False, "--system", help="ติดตั้งเป็น system service (ต้อง sudo — ให้สิทธิ์เท่ากับ root)"),
 ) -> None:
-    """ตั้งให้โมเดลกลับมาทำงานเองหลังเปิด-ปิดเครื่อง (systemd autostart) — ใช้ sudo"""
+    """ตั้งให้โมเดลกลับมาทำงานเองหลังเปิด-ปิดเครื่อง (systemd autostart)
+
+    ค่าเริ่มต้นเป็น **user service ซึ่งไม่ต้องใช้ sudo เลย** — hub สั่งข้ามเครื่องผ่าน SSH
+    ที่ไม่มี tty ให้กรอกรหัส การพึ่ง sudo จึงทำให้ปุ่มบนหน้าเว็บล้มเสมอ
+
+    `--system` เขียนลง /etc/systemd/system ซึ่งต้อง sudo · ทางนั้นให้สิทธิ์เท่ากับ root
+    เพราะ systemd unit รันคำสั่งอะไรก็ได้ในนามของ root
+    """
     from lmds.fleet import FleetError, enable_autostart, find, unit_name
 
     server = find(slug)
     if server is None:
         err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list")
         raise typer.Exit(code=1)
-    console.print(f"ติดตั้ง autostart สำหรับ [bold]{slug}[/bold] (จะขอ sudo เพื่อเขียน systemd unit)…")
+    scope = "system" if system_scope else "user"
+    password = ""
+    if system_scope:
+        console.print("[yellow]--system เขียน unit ของระบบ ต้องใช้ sudo[/yellow] "
+                      "[dim](unit ของระบบรันคำสั่งอะไรก็ได้ในนามของ root)[/dim]")
+        if sys.stdin.isatty():
+            # ถามตรงนี้ ใช้ครั้งเดียว ไม่เก็บที่ไหน — ทะเบียน node ไม่มีฟิลด์รหัสผ่านโดยตั้งใจ
+            password = typer.prompt("รหัสผ่าน sudo (Enter = ให้ sudo ถามเอง)",
+                                    default="", hide_input=True, show_default=False)
+    console.print(f"ติดตั้ง autostart สำหรับ [bold]{slug}[/bold] ({scope} service)…")
     try:
-        name = enable_autostart(server, timeout=timeout, start_now=now)
+        name = enable_autostart(server, timeout=timeout, start_now=now, scope=scope, password=password)
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[green]✅ เปิด autostart แล้ว[/green] ({name}) — โมเดลจะกลับมาเองหลัง reboot")
+    if scope == "user":
+        from lmds.fleet.manager import _linger_on
+
+        if not _linger_on():
+            console.print("[yellow]แต่ยังไม่ขึ้นตอนบูตจนกว่าจะเปิด linger[/yellow] — "
+                          "รันครั้งเดียวบนเครื่องนั้น: "
+                          f"[bold]sudo loginctl enable-linger {os.environ.get('USER', '$USER')}[/bold]")
     console.print(f"[dim]เช็ก: systemctl status {name} | ปิด: lmds disable {slug}[/dim]")
     if not now:
         console.print(f"[dim]start เดี๋ยวนี้เลย: lmds start {slug}  (หรือ lmds enable {slug} --now)[/dim]")

@@ -521,3 +521,15 @@ def test_node_install_all_reports_which_ones_failed(tmp_path, monkeypatch, isola
     result = CliRunner().invoke(app, ["node", "install", "--all"])
     assert result.exit_code == 1
     assert "bad" in result.output and "พร้อมแล้ว" in result.output
+
+
+def test_registry_still_has_no_password_field():
+    """ผู้ใช้เสนอให้เก็บรหัสผ่านไว้ใช้ตอนต้องใช้สิทธิ์ — คำตอบคือถามใหม่ตอนนั้น ไม่ใช่เก็บไว้
+    ทะเบียนต้องไม่มีที่ให้เก็บ ไม่งั้นวันหนึ่งจะมีคนใส่ลงไป
+    """
+    from dataclasses import fields
+
+    from lmds.nodes import Node
+
+    names = {f.name for f in fields(Node)}
+    assert not {"password", "passwd", "sudo_password", "secret"} & names

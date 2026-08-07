@@ -26,6 +26,23 @@ def systemd_dir() -> Path:
     return Path(os.environ.get("LMDS_SYSTEMD_DIR", "/etc/systemd/system"))
 
 
+def user_systemd_dir() -> Path:
+    """ที่เก็บ unit ของผู้ใช้ — เขียนได้โดยไม่ต้อง sudo"""
+    return Path(os.environ.get("LMDS_USER_SYSTEMD_DIR", str(Path.home() / ".config/systemd/user")))
+
+
+def _linger_on() -> bool:
+    """service ของผู้ใช้จะขึ้นตอนบูตก็ต่อเมื่อเปิด linger ไว้ — ไม่งั้นขึ้นตอน login เท่านั้น"""
+    import getpass
+
+    try:
+        proc = subprocess.run(["loginctl", "show-user", getpass.getuser(), "-p", "Linger"],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "Linger=yes" in proc.stdout
+
+
 def unit_name(slug: str) -> str:
     return f"lmds-{slug}.service"
 
@@ -85,9 +102,18 @@ def render_unit(info: "ServerInfo", timeout: int = 1800) -> str:
 
 
 def autostart_status(slug: str) -> str:
-    """คืน 'enabled' | 'disabled' | 'absent' (ไม่มี unit) | 'n/a' (ไม่มี systemd)"""
+    """คืน 'enabled' | 'disabled' | 'absent' (ไม่มี unit) | 'n/a' (ไม่มี systemd)
+
+    ดูทั้ง user unit และ system unit — เปิดแบบ user แล้วรายงานว่า absent คือบอกผิด
+    """
     if not have_systemctl():
         return "n/a"
+    name = unit_name(slug)
+    if (user_systemd_dir() / name).exists():
+        proc = subprocess.run(["systemctl", "--user", "is-enabled", name],
+                              capture_output=True, text=True)
+        out = proc.stdout.strip()
+        return out if out in {"enabled", "disabled"} else ("enabled" if proc.returncode == 0 else "disabled")
     if not (systemd_dir() / unit_name(slug)).exists():
         return "absent"
     try:
@@ -129,11 +155,52 @@ def _render_docker_unit(info: "ServerInfo") -> str:
     ])
 
 
-def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = False) -> str:
-    """ติดตั้ง + enable systemd unit (ต้องใช้ sudo) — คืนชื่อ unit ที่ติดตั้ง
+def _enable_user_unit(info, name: str, timeout: int, start_now: bool, adopted: bool) -> str:
+    """autostart แบบ **ไม่ต้องใช้ sudo เลย** — systemd user service
 
-    เขียนไฟล์ unit ลง bundle dir ก่อน (ไม่ใช้ sudo) แล้ว sudo ติดตั้งเข้า /etc/systemd/system
-    ถ้า sudo/systemctl ล้มเหลว → FleetError พร้อมคำสั่งให้รันมือ
+    ทำไมเป็นค่าเริ่มต้น: hub สั่งข้ามเครื่องผ่าน SSH ซึ่งไม่มี tty ให้กรอกรหัส sudo
+    ปุ่ม enable บนหน้าเว็บจึงล้มเสมอบนเครื่องที่ sudo ต้องใช้รหัสผ่าน (ซึ่งคือค่าปกติ)
+    · และการเปิดทาง sudo ให้เขียน unit ของ **ระบบ** ได้ = ให้สิทธิ์เท่ากับ root
+      เพราะ unit รันคำสั่งอะไรก็ได้ในนามของ root — ไม่ใช่สิทธิ์แคบอย่างที่ดูเผิน ๆ
+    """
+    directory = user_systemd_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    unit = render_unit(info, timeout).replace("WantedBy=multi-user.target", "WantedBy=default.target")
+    (directory / name).write_text(unit, encoding="utf-8")
+
+    steps = [["systemctl", "--user", "daemon-reload"],
+             ["systemctl", "--user", "enable", name]]
+    if start_now:
+        steps.append(["systemctl", "--user", "start", name])
+    for cmd in steps:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise FleetError(
+                f"เปิด autostart (user service) ไม่สำเร็จ: {' '.join(cmd)}\n"
+                f"{(proc.stderr or '').strip()[:300]}"
+            )
+    return name
+
+
+def _sudo(cmd: list[str], password: str = ""):
+    """รัน sudo — ส่งรหัสผ่านทาง stdin ถ้ามี (ใช้ครั้งเดียว ไม่เก็บที่ไหน)
+
+    `sudo -S` อ่านรหัสจาก stdin แทน tty · เป็นทางเดียวที่ทำงานได้ผ่าน SSH
+    รหัสผ่านอยู่แค่ในหน่วยความจำของ process นี้จนกว่ามันจะจบ ไม่ถูกเขียนลงดิสก์
+    และไม่ถูกใส่ใน argv (ซึ่งคนอื่นบนเครื่องเดียวกันอ่านได้จาก /proc)
+    """
+    if not password:
+        return subprocess.run(cmd)
+    with_stdin = [cmd[0], "-S", "-p", "", *cmd[1:]] if cmd[0] == "sudo" else cmd
+    return subprocess.run(with_stdin, input=password + "\n", capture_output=True, text=True)
+
+
+def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = False,
+                     scope: str = "user", password: str = "") -> str:
+    """ติดตั้ง + enable systemd unit — คืนชื่อ unit ที่ติดตั้ง
+
+    `scope="user"` (ค่าเริ่มต้น) ไม่ต้องใช้ sudo เลย · `scope="system"` เขียนลง
+    /etc/systemd/system ซึ่งต้อง sudo และเท่ากับให้สิทธิ์ root
     """
     if not have_systemctl():
         raise FleetError("เครื่องนี้ไม่มี systemd (systemctl) — autostart รองรับเฉพาะระบบ systemd")
@@ -144,6 +211,8 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
         )
 
     name = unit_name(info.slug)
+    if scope == "user":
+        return _enable_user_unit(info, name, timeout, start_now, adopted)
     if adopted:
         # container ที่ไม่ได้มาจาก lmds ไม่มี bundle dir ให้ stage — ใช้ run dir ของ fleet แทน
         stage_dir = run_root() / info.slug
@@ -161,7 +230,7 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
     if start_now:
         steps.append(["sudo", "systemctl", "start", name])
     for cmd in steps:
-        proc = subprocess.run(cmd)
+        proc = _sudo(cmd, password)
         if proc.returncode != 0:
             manual = "\n  ".join(" ".join(c) for c in steps)
             raise FleetError(
@@ -171,7 +240,7 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
     return name
 
 
-def disable_autostart(info_or_slug) -> str:
+def disable_autostart(info_or_slug, password: str = "") -> str:
     """disable + ลบ systemd unit (ต้องใช้ sudo) — รับ ServerInfo หรือ slug
 
     ตรวจผลลัพธ์จริงหลังรัน ไม่ใช่เชื่อว่า sudo สำเร็จ · เดิมกลืน error ทุกตัวแล้วรายงานว่า
@@ -184,6 +253,16 @@ def disable_autostart(info_or_slug) -> str:
     name = unit_name(slug)
     if autostart_status(slug) == "absent":
         raise FleetError(f"ไม่ได้ตั้ง autostart ของ {slug} ไว้อยู่แล้ว (ไม่มี {name})")
+
+    # เปิดแบบ user ก็ต้องปิดแบบ user — ไม่งั้นสั่ง disable แล้วมันยังขึ้นเองอยู่
+    user_unit = user_systemd_dir() / name
+    if user_unit.exists():
+        subprocess.run(["systemctl", "--user", "disable", "--now", name], capture_output=True)
+        user_unit.unlink(missing_ok=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        if autostart_status(slug) != "absent":
+            raise FleetError(f"ปิด autostart ไม่สำเร็จ — unit {name} ยังอยู่")
+        return name
     steps = [
         ["sudo", "systemctl", "disable", "--now", name],
         ["sudo", "rm", "-f", str(systemd_dir() / name)],
@@ -191,7 +270,7 @@ def disable_autostart(info_or_slug) -> str:
     ]
     for cmd in steps:
         # ตัว disable เองอาจ error ถ้า unit ไม่ได้ enable ไว้ — ไม่ fatal จึงไม่หยุดตรงนี้
-        subprocess.run(cmd)
+        _sudo(cmd, password)
     # เกณฑ์เดียวที่นับ: สุดท้ายมันหายไปจริงไหม
     if autostart_status(slug) != "absent":
         manual = "\n  ".join(" ".join(c) for c in steps)
