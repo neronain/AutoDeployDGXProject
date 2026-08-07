@@ -1402,6 +1402,9 @@ def rebuild(
         plan.serving.max_num_seqs = int(serving["max_num_seqs"])
     if serving.get("extra_flags"):
         plan.serving.extra_flags = list(serving["extra_flags"])
+    # build_plan harden ไปรอบหนึ่งแล้วด้วยค่าที่มันคิดเอง — warning จากรอบนั้นพูดถึงตัวเลข
+    # ที่เราเพิ่งเขียนทับไป การแสดงมันต่อคือเล่าการตัดสินใจที่ไม่ได้เกิดขึ้นจริง
+    plan.warnings = []
     plan = harden_plan(plan, report, fit)
 
     if plan.runtime.image_ref != old_image:

@@ -367,3 +367,19 @@ def test_a_corrected_image_matches_the_target_machine(isolated_config, monkeypat
         runtime={"engine": "vllm", "image_ref": "vllm/vllm-openai:nope", "rationale": "x"}))
     hardened = harden_plan(plan, report, spark_fit(report))
     assert hardened.runtime.image_ref.startswith("nvcr.io/nvidia/vllm")
+
+
+def test_no_warning_when_nothing_actually_changed(isolated_config):
+    """"ลด max_output_tokens จาก 1,024 เหลือ 1,024" ไม่ได้บอกอะไรใคร — และทำให้
+    ผู้ใช้ไล่หาว่าอะไรเปลี่ยนทั้งที่ไม่มีอะไรเปลี่ยน
+    """
+    report = qwen_report(artifact_type=ArtifactType.GGUF, weight_bytes=8 * GIB,
+                         selected_gguf="m-Q8.gguf", kv_dims=None)
+    plan = DeploymentPlan.model_validate(valid_plan_dict(
+        artifact_type="gguf",
+        runtime={"engine": "llamacpp", "image_ref": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+                 "rationale": "x"},
+        serving={"context": 16384, "max_output_tokens": 1024, "max_num_seqs": 4,
+                 "extra_flags": []}))
+    hardened = harden_plan(plan, report, spark_fit(report))
+    assert not [w for w in hardened.warnings if "max_output_tokens" in w and "1,024 เหลือ 1,024" in w]

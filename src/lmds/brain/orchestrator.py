@@ -69,6 +69,8 @@ def _fit_output_into_slots(plan: DeploymentPlan) -> None:
 
     # ลด output ก่อน — ผู้ใช้ปรับ slots เองได้ตอน start แต่ output ที่เป็นไปไม่ได้แก้ไม่ได้
     if usable >= _MIN_OUTPUT_TOKENS:
+        if usable == plan.serving.max_output_tokens:
+            return          # เท่าเดิมอยู่แล้ว — "ลด 1,024 เหลือ 1,024" ไม่ได้บอกอะไรใคร
         plan.warnings.append(
             f"ลด max_output_tokens จาก {plan.serving.max_output_tokens:,} เหลือ {usable:,} — "
             f"context ต่อ slot มีแค่ {per_slot:,} ({plan.serving.context:,}/{slots})"
