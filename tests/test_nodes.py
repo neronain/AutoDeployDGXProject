@@ -567,11 +567,50 @@ def test_the_sudo_password_goes_through_stdin_not_the_command_line(monkeypatch):
 
     def fake_run(node, command, timeout=60, stdin_text=""):
         seen.append((command, stdin_text))
-        return SimpleNamespace(ok=True, exit_code=0, stdout="", stderr="")
+        # ตัวตรวจต้องบอกว่ายังไม่เรียบร้อย ไม่งั้นขั้นนั้นถูกข้ามไปเลย
+        return SimpleNamespace(ok=bool(stdin_text), exit_code=0, stdout="", stderr="")
 
     monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
     run_privileged(Node(name="n", host="h", user="u"), "s3cret")
-    command, stdin_text = seen[0]
+    command, stdin_text = next((c, s) for c, s in seen if s)
     assert "s3cret" not in command, "รหัสผ่านต้องไม่อยู่ในคำสั่ง"
     assert stdin_text.strip() == "s3cret"
     assert "sudo -S" in command, "ต้องบอก sudo ให้อ่านรหัสจาก stdin"
+
+
+def test_a_wrong_password_does_not_get_a_tick_from_a_step_that_was_already_done(monkeypatch):
+    """สถานะถูกอยู่ก่อนแล้ว + รหัสผ่านผิด = ขึ้น ✓ ซึ่งชวนให้เข้าใจว่ารหัสผ่านใช้ได้
+    ทั้งที่ไม่ได้ถูกใช้เลย (ผู้ใช้เจอจริงกับ msi-6 ที่เปิด linger ไว้เองแล้ว)
+    """
+    from types import SimpleNamespace
+
+    from lmds.nodes import Node, run_privileged
+
+    used_sudo = []
+
+    def fake_run(node, command, timeout=60, stdin_text=""):
+        if stdin_text:
+            used_sudo.append(command)
+        return SimpleNamespace(ok=True, exit_code=0, stdout="Linger=yes", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    outcomes = run_privileged(Node(name="n", host="h", user="u"), "รหัสผิด")
+    assert outcomes[0]["skipped"] is True, "เรียบร้อยอยู่แล้วต้องบอกว่าข้าม ไม่ใช่บอกว่าทำสำเร็จ"
+    assert not used_sudo, "ไม่มีอะไรต้องทำก็ไม่ควรแตะ sudo เลย"
+
+
+def test_a_wrong_password_fails_loudly_when_the_step_is_needed(monkeypatch):
+    from types import SimpleNamespace
+
+    from lmds.nodes import Node, run_privileged
+
+    def fake_run(node, command, timeout=60, stdin_text=""):
+        if stdin_text:
+            return SimpleNamespace(ok=False, exit_code=1, stdout="",
+                                   stderr="sudo: 1 incorrect password attempt")
+        return SimpleNamespace(ok=False, exit_code=1, stdout="Linger=no", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    outcomes = run_privileged(Node(name="n", host="h", user="u"), "รหัสผิด")
+    assert outcomes[0]["ok"] is False
+    assert "incorrect password" in outcomes[0]["detail"]

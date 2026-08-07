@@ -282,6 +282,12 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False) -> list
             "docker info >/dev/null 2>&1",
         ))
     for command, what, verify in steps:
+        # ตรวจ *ก่อน* ทำ — ถ้าเรียบร้อยอยู่แล้วก็ไม่ต้องแตะ sudo เลย
+        # และที่สำคัญกว่า: รหัสผ่านผิดจะได้ไม่ขึ้น ✓ เพราะบังเอิญสถานะถูกอยู่ก่อนแล้ว
+        # (ซึ่งชวนให้เข้าใจว่ารหัสผ่านใช้ได้ ทั้งที่ไม่ได้ใช้)
+        if run(node, verify, timeout=60).ok:
+            results.append({"step": what, "ok": True, "detail": "", "skipped": True})
+            continue
         outcome = run(node, command, timeout=1800, stdin_text=password + "\n")
         # ไม่เชื่อ exit code อย่างเดียว — ตรวจผลจริงอีกที (sudo ที่รหัสผิดคืน 1 เหมือนกัน
         # กับคำสั่งที่ล้มด้วยเหตุอื่น และบางคำสั่งคืน 0 ทั้งที่ไม่ได้ทำอะไร)
@@ -289,6 +295,7 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False) -> list
         results.append({
             "step": what,
             "ok": confirmed,
+            "skipped": False,
             "detail": "" if confirmed else (outcome.stderr or outcome.stdout).strip()[-300:],
         })
     return results

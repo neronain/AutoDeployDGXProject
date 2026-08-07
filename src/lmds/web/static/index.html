@@ -1608,8 +1608,10 @@ document.addEventListener("click", async e => {
       return;
     }
     if (out) out.innerHTML = (d.steps || []).map(s =>
-      `<div class="warn-line" style="color:${s.ok ? "var(--ok)" : "var(--bad)"}">
-        ${s.ok ? "✓" : "✕"} ${esc(s.step)}${s.detail ? " — " + esc(s.detail) : ""}</div>`).join("")
+      `<div class="warn-line" style="color:${s.ok ? (s.skipped ? "var(--fg2)" : "var(--ok)") : "var(--bad)"}">
+        ${s.ok ? (s.skipped ? "•" : "✓") : "✕"} ${esc(s.step)}${
+          s.skipped ? " — เรียบร้อยอยู่แล้ว ไม่ได้แตะอะไร" : ""}${
+          s.detail ? " — " + esc(s.detail) : ""}</div>`).join("")
       + (d.ok ? `<div class="dim" style="margin-top:6px">เสร็จแล้ว</div>` : "");
     return;
   }

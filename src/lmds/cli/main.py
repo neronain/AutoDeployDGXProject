@@ -935,7 +935,9 @@ def node_setup(
             err_console.print(f"  [red]{exc}[/red]")
             continue
         for outcome in outcomes:
-            if outcome["ok"]:
+            if outcome.get("skipped"):
+                console.print(f"  [dim]• {outcome['step']} — เรียบร้อยอยู่แล้ว[/dim]")
+            elif outcome["ok"]:
                 console.print(f"  [green]✓[/green] {outcome['step']}")
             else:
                 failed.append(node.name)
