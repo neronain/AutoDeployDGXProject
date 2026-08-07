@@ -897,6 +897,57 @@ def node_push(
                   f"[bold]lmds node run {name} start {slug}[/bold][/dim]")
 
 
+@node_app.command("setup")
+def node_setup(
+    name: str = typer.Argument("", autocompletion=_complete_node,
+                               help="ชื่อเครื่อง (เว้นว่างคู่กับ --all = ทุกเครื่อง)"),
+    all_nodes: bool = typer.Option(False, "--all", help="ทำกับทุกเครื่องในทะเบียน"),
+    with_prereq: bool = typer.Option(False, "--with-prereq",
+                                     help="ติดตั้ง Docker / NVIDIA toolkit ด้วย (ใช้เวลานาน)"),
+) -> None:
+    """ตั้งค่าที่ต้องใช้สิทธิ์ root บนเครื่องปลายทาง — ถามรหัสผ่านตอนนี้ ใช้ครั้งเดียว
+
+    ขั้นพวกนี้ทำผ่าน SSH ตามปกติไม่ได้เพราะ sudo ไม่มี tty ให้กรอกรหัส เดิมจึงได้แค่
+    พิมพ์คำสั่งให้ไป ssh ทำเอง ซึ่งขัดกับเหตุผลที่มี hub ตั้งแต่แรก
+
+    **รหัสผ่านไม่ถูกเก็บ** — ส่งทาง stdin ของ ssh ใช้ครั้งเดียวแล้วหายไปกับ process
+    ไม่เขียนลงดิสก์ ไม่อยู่ใน argv และทะเบียน node ไม่มีฟิลด์ให้เก็บ
+    """
+    from lmds.nodes import NodeError, find, load, run_privileged
+
+    targets = load() if all_nodes else ([find(name)] if name else [])
+    targets = [n for n in targets if n is not None]
+    if not targets:
+        err_console.print("[red]ต้องระบุชื่อเครื่อง[/red] หรือใช้ --all")
+        raise typer.Exit(code=1)
+
+    console.print(f"ตั้งค่าที่ต้องใช้ root บน {len(targets)} เครื่อง — "
+                  "[dim]รหัสผ่านใช้ครั้งเดียว ไม่ถูกเก็บที่ไหน[/dim]")
+    password = typer.prompt("รหัสผ่าน sudo ของ user บนเครื่องนั้น", hide_input=True)
+
+    failed = []
+    for node in targets:
+        console.print(f"\n[bold]{node.name}[/bold]")
+        try:
+            outcomes = run_privileged(node, password, with_prereq=with_prereq)
+        except NodeError as exc:
+            failed.append(node.name)
+            err_console.print(f"  [red]{exc}[/red]")
+            continue
+        for outcome in outcomes:
+            if outcome["ok"]:
+                console.print(f"  [green]✓[/green] {outcome['step']}")
+            else:
+                failed.append(node.name)
+                err_console.print(f"  [red]✕[/red] {outcome['step']} — {outcome['detail']}")
+
+    if failed:
+        err_console.print(f"\n[red]ไม่สำเร็จ:[/red] {', '.join(sorted(set(failed)))}")
+        err_console.print("[dim]รหัสผ่านผิด หรือ user นั้นไม่อยู่ในกลุ่ม sudo[/dim]")
+        raise typer.Exit(code=1)
+    console.print("\n[green]ตั้งค่าครบทุกเครื่องแล้ว[/green]")
+
+
 @node_app.command(
     "run",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},

@@ -68,7 +68,7 @@ class Result:
         return self.exit_code == 0
 
 
-def run(node: Node, command: str, timeout: int = 60) -> Result:
+def run(node: Node, command: str, timeout: int = 60, stdin_text: str = "") -> Result:
     """รันคำสั่งบน node ด้วย key — ไม่ถามรหัสผ่าน (BatchMode) ถ้า key ใช้ไม่ได้จะล้มทันที
 
     ห่อด้วย `bash -lc` เพราะ `ssh host cmd` เป็น shell แบบ non-interactive ที่ไม่อ่าน
@@ -81,7 +81,7 @@ def run(node: Node, command: str, timeout: int = 60) -> Result:
     hosts = getattr(node, "all_hosts", [node.host])
     last: Result | None = None
     for index, host in enumerate(hosts):
-        result = _run_ssh(f"{node.user}@{host}", node.port, wrapped, timeout)
+        result = _run_ssh(f"{node.user}@{host}", node.port, wrapped, timeout, stdin_text)
         if result.ok or not _looks_unreachable(result):
             return result
         last = result
@@ -100,12 +100,13 @@ def _looks_unreachable(result: Result) -> bool:
     return result.exit_code == 124 or any(m in text for m in markers) or not text
 
 
-def _run_ssh(target: str, port: int, wrapped: str, timeout: int) -> Result:
+def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str = "") -> Result:
     args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(port), target, wrapped]
     try:
         proc = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL,  # ไม่งั้น ssh ไปกิน stdin ของคนเรียกแล้วค้าง
+            # ไม่มี stdin_text = DEVNULL ไม่งั้น ssh ไปกิน stdin ของคนเรียกแล้วค้าง
+            **({"input": stdin_text} if stdin_text else {"stdin": subprocess.DEVNULL}),
         )
     except FileNotFoundError as exc:
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
@@ -251,6 +252,46 @@ fi
 LMDS_ASSUME_YES=1 {skip}./install.sh
 "$HOME/.local/bin/lmds" version
 """
+
+
+# ขั้นที่ต้องใช้สิทธิ์ root บนเครื่องปลายทาง — ทำครั้งเดียวต่อเครื่อง
+# แต่ละขั้นเป็น (คำสั่ง, คำอธิบาย, ตัวตรวจว่าสำเร็จจริง)
+def privileged_steps(user: str) -> list[tuple[str, str, str]]:
+    return [
+        (f"sudo -S -p '' loginctl enable-linger {shlex.quote(user)}",
+         "ให้ service ของผู้ใช้ขึ้นตั้งแต่บูต (ไม่ต้องรอ login)",
+         f"loginctl show-user {shlex.quote(user)} -p Linger | grep -q Linger=yes"),
+    ]
+
+
+def run_privileged(node: Node, password: str, with_prereq: bool = False) -> list[dict]:
+    """ทำขั้นที่ต้องใช้ root บนเครื่องปลายทาง — รหัสผ่านส่งทาง stdin ใช้ครั้งเดียว
+
+    ทำไมต้องมี: ขั้นพวกนี้ทำผ่าน SSH ไม่ได้เพราะ sudo ไม่มี tty ให้กรอกรหัส เดิมจึงได้แค่
+    พิมพ์คำสั่งให้ผู้ใช้ไป ssh ทำเอง — ซึ่งขัดกับเหตุผลที่มี hub ตั้งแต่แรก
+
+    รหัสผ่านไม่ถูกเขียนลงดิสก์ ไม่อยู่ใน argv (คนอื่นบนเครื่องอ่าน /proc ได้) และไม่ถูก
+    เก็บในทะเบียน — ทะเบียนไม่มีฟิลด์ให้เก็บด้วยซ้ำ
+    """
+    results = []
+    steps = privileged_steps(node.user)
+    if with_prereq:
+        steps.append((
+            "sudo -S -p '' bash -c 'cd ~/AutoDeployDGXProject && LMDS_ASSUME_YES=1 ./install.sh'",
+            "ติดตั้ง Docker / NVIDIA container toolkit",
+            "docker info >/dev/null 2>&1",
+        ))
+    for command, what, verify in steps:
+        outcome = run(node, command, timeout=1800, stdin_text=password + "\n")
+        # ไม่เชื่อ exit code อย่างเดียว — ตรวจผลจริงอีกที (sudo ที่รหัสผิดคืน 1 เหมือนกัน
+        # กับคำสั่งที่ล้มด้วยเหตุอื่น และบางคำสั่งคืน 0 ทั้งที่ไม่ได้ทำอะไร)
+        confirmed = run(node, verify, timeout=60).ok
+        results.append({
+            "step": what,
+            "ok": confirmed,
+            "detail": "" if confirmed else (outcome.stderr or outcome.stdout).strip()[-300:],
+        })
+    return results
 
 
 def install_script(with_prereq: bool = False) -> str:

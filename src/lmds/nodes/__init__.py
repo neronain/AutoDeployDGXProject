@@ -31,6 +31,7 @@ from .registry import (
 )
 from .ssh import (
     install_script,
+    run_privileged,
     push_file,
     stream,
     check_login,
@@ -71,6 +72,7 @@ __all__ = [
     "stream",
     "remove",
     "run",
+    "run_privileged",
     "save",
     "stack_ready",
     "suggest_cluster_ip",

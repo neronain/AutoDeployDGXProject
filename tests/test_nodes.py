@@ -287,7 +287,7 @@ def test_failover_only_happens_when_unreachable(monkeypatch):
 
     tried = []
 
-    def fake(target, port, wrapped, timeout):
+    def fake(target, port, wrapped, timeout, stdin_text=""):
         tried.append(target)
         return ssh.Result(1, "", "boom")   # ต่อได้ แต่คำสั่งล้ม
 
@@ -301,7 +301,7 @@ def test_failover_happens_on_timeout(monkeypatch):
 
     tried = []
 
-    def fake(target, port, wrapped, timeout):
+    def fake(target, port, wrapped, timeout, stdin_text=""):
         tried.append(target)
         if target.endswith("@a"):
             return ssh.Result(124, "", "หมดเวลา 60s")
@@ -533,3 +533,45 @@ def test_registry_still_has_no_password_field():
 
     names = {f.name for f in fields(Node)}
     assert not {"password", "passwd", "sudo_password", "secret"} & names
+
+
+def test_privileged_steps_verify_the_result_not_the_exit_code(monkeypatch, tmp_path):
+    """sudo ที่รหัสผิดคืน 1 เหมือนกับคำสั่งที่ล้มด้วยเหตุอื่น และบางคำสั่งคืน 0 ทั้งที่ไม่ได้ทำอะไร
+    — ต้องตรวจผลจริงอีกที ไม่ใช่เชื่อ exit code
+    """
+    from types import SimpleNamespace
+
+    from lmds.nodes import Node, run_privileged
+
+    seen = []
+
+    def fake_run(node, command, timeout=60, stdin_text=""):
+        seen.append((command, stdin_text))
+        if "enable-linger" in command:
+            return SimpleNamespace(ok=False, exit_code=1, stdout="", stderr="sudo: wrong password")
+        return SimpleNamespace(ok=True, exit_code=0, stdout="Linger=yes", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    outcomes = run_privileged(Node(name="n", host="h", user="u"), "รหัสผ่าน")
+    # คำสั่งล้ม แต่ตัวตรวจบอกว่าสำเร็จ → เชื่อตัวตรวจ (เช่น linger เปิดอยู่ก่อนแล้ว)
+    assert outcomes[0]["ok"] is True
+
+
+def test_the_sudo_password_goes_through_stdin_not_the_command_line(monkeypatch):
+    """รหัสผ่านใน argv = คนอื่นบนเครื่องเดียวกันอ่านได้จาก /proc"""
+    from types import SimpleNamespace
+
+    from lmds.nodes import Node, run_privileged
+
+    seen = []
+
+    def fake_run(node, command, timeout=60, stdin_text=""):
+        seen.append((command, stdin_text))
+        return SimpleNamespace(ok=True, exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    run_privileged(Node(name="n", host="h", user="u"), "s3cret")
+    command, stdin_text = seen[0]
+    assert "s3cret" not in command, "รหัสผ่านต้องไม่อยู่ในคำสั่ง"
+    assert stdin_text.strip() == "s3cret"
+    assert "sudo -S" in command, "ต้องบอก sudo ให้อ่านรหัสจาก stdin"

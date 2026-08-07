@@ -1463,3 +1463,26 @@ def test_the_collapsed_summary_uses_the_same_colour_thresholds():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     summary = page.split("function summaryMarkup")[1].split("function paintSummary")[0]
     assert "pct >= 90" in summary and "pct >= 75" in summary
+
+
+def test_setup_endpoint_never_stores_the_password(registered, monkeypatch):
+    """ผู้ใช้ยอมให้ถามรหัสผ่านตอนที่ต้องใช้ — แต่ "ถามตอนนั้น" ต้องแปลว่าไม่เก็บจริง ๆ"""
+    seen = {}
+    monkeypatch.setattr("lmds.nodes.run_privileged",
+                        lambda node, password, with_prereq=False: seen.update(pw=password)
+                        or [{"step": "linger", "ok": True, "detail": ""}])
+    client = TestClient(create_app())
+    r = client.post("/api/nodes/spark2/setup", json={"password": "s3cret-value"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert seen["pw"] == "s3cret-value"
+
+    # ต้องไม่โผล่กลับมาที่ client และไม่ค้างในทะเบียน
+    assert "s3cret-value" not in r.text
+    from lmds.nodes import nodes_file
+
+    assert "s3cret-value" not in nodes_file().read_text(encoding="utf-8")
+
+
+def test_setup_without_a_password_says_so(registered):
+    r = TestClient(create_app()).post("/api/nodes/spark2/setup", json={})
+    assert r.status_code == 400 and "รหัสผ่าน" in r.json()["detail"]

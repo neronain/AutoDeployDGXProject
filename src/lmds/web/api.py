@@ -566,6 +566,29 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "job": job.payload()}
 
+    @app.post("/api/nodes/{name}/setup", dependencies=guarded)
+    def node_setup(name: str, body: dict) -> dict:
+        """ตั้งค่าที่ต้องใช้ root บนเครื่องนั้น — รหัสผ่านมากับ request นี้ ใช้ครั้งเดียว
+
+        **ไม่เก็บรหัสผ่าน**: ไม่เขียนลงดิสก์ ไม่ใส่ใน argv (ส่งทาง stdin ของ ssh)
+        ไม่ log และทะเบียน node ไม่มีฟิลด์ให้เก็บ · ผู้ใช้ต้องกรอกใหม่ทุกครั้งที่ต้องใช้
+        """
+        from lmds.nodes import NodeError, find, run_privileged
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        password = (body or {}).get("password") or ""
+        if not password:
+            raise HTTPException(status_code=400, detail="ต้องใส่รหัสผ่าน sudo ของ user บนเครื่องนั้น")
+        try:
+            outcomes = run_privileged(node, password, with_prereq=bool((body or {}).get("with_prereq")))
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        state.STORE.force(name)
+        return {"node": name, "steps": outcomes,
+                "ok": all(step["ok"] for step in outcomes)}
+
     def _attach_node_jobs(name: str, payload: dict) -> dict:
         """แปะงานที่กำลังรันของแต่ละโมเดลลงไปใน payload — หน้าเว็บจะได้ตามต่อได้หลังรีเฟรช"""
         from . import jobs

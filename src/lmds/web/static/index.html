@@ -1216,6 +1216,8 @@ function nodeCard(node) {
       </div>
       <span class="nsum"></span>
       <span class="mono muted nver"></span>
+      <button data-nact="setup" data-node="${esc(node.name)}"
+              title="ตั้งค่าที่ต้องใช้สิทธิ์ root บนเครื่องนั้น (ถามรหัสผ่านตอนนั้น ไม่เก็บ)">setup</button>
       <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
     </div>
@@ -1550,6 +1552,30 @@ document.addEventListener("click", async e => {
     if (row && !pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
     return;
   }
+  if (nact === "setup") {
+    // รหัสผ่านอยู่ในหน่วยความจำของหน้านี้ชั่วคราวเท่านั้น — ไม่เก็บลง localStorage
+    // ไม่ใส่ใน URL และ server ก็ไม่เก็บต่อ · ต้องกรอกใหม่ทุกครั้งที่ต้องใช้
+    const password = prompt(
+      `ตั้งค่าที่ต้องใช้ root บน ${node}\n\n` +
+      "• ให้ service ขึ้นตั้งแต่บูต (loginctl enable-linger)\n\n" +
+      "รหัสผ่าน sudo ของ user บนเครื่องนั้น (ใช้ครั้งเดียว ไม่ถูกเก็บ):");
+    if (!password) return;
+    btn.disabled = true;
+    btn.textContent = "setup…";
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/setup`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const d = await r.json();
+    btn.disabled = false;
+    btn.textContent = "setup";
+    if (!r.ok) { alert(d.detail || "ตั้งค่าไม่สำเร็จ"); return; }
+    showNodeOutput(node, `setup · ${node}`,
+      (d.steps || []).map(s => `${s.ok ? "✓" : "✕"} ${s.step}${s.detail ? " — " + s.detail : ""}`)
+        .join("\n") || "ไม่มีขั้นตอนให้ทำ");
+    return;
+  }
+
   if (nact === "install") {
     btn.disabled = true;
     btn.textContent = "กำลังติดตั้ง…";
