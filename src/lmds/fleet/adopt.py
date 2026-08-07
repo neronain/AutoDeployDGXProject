@@ -137,6 +137,18 @@ SLUG="{slug}"
 
 die() {{ echo "ERROR: $*" >&2; exit 1; }}
 
+# ชื่อโมเดลที่ server เสิร์ฟอยู่จริง — /v1/models มีคีย์ "id" หลายตัว (ของ permission ด้วย)
+# regex แบบ greedy จะคว้าตัวสุดท้ายมา แล้วขอ completion ด้วยชื่อที่ server ไม่รู้จัก → 404
+served_model() {{
+  local body
+  body="$(curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models")" || return 1
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
+  else
+    printf '%s' "$body" | sed -E 's/^[^"]*"object":"list".*?"id":"([^"]+)".*/\\1/;q'
+  fi
+}}
+
 banner() {{
   echo "LMDS adopted · {slug} · v${{SCRIPT_VERSION}}"
   echo "container: ${{CONTAINER_NAME}} · image: ${{IMAGE}}"
@@ -183,8 +195,7 @@ logs() {{ docker logs --tail "${{1:-300}}" "${{CONTAINER_NAME}}"; }}
 
 test_text() {{
   local served
-  served="$(curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models" | sed -E 's/.*"id":"([^"]+)".*/\\1/')" \\
-    || die "เรียก /v1/models ไม่ได้ — server ขึ้นหรือยัง? ดู: $0 logs"
+  served="$(served_model)" || die "เรียก /v1/models ไม่ได้ — server ขึ้นหรือยัง? ดู: $0 logs"
   curl -fsS "http://127.0.0.1:${{API_PORT}}/v1/chat/completions" \\
     -H "Content-Type: application/json" \\
     -d "{{\\"model\\": \\"$served\\", \\"messages\\": [{{\\"role\\": \\"user\\", \\"content\\": \\"ตอบสั้น ๆ: 2+2 เท่ากับเท่าไร\\"}}], \\"max_tokens\\": 256}}" \\
@@ -194,7 +205,7 @@ test_text() {{
 
 client_config() {{
   local served
-  served="$(curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models" | sed -E 's/.*"id":"([^"]+)".*/\\1/')" || served="{slug}"
+  served="$(served_model)" || served="{slug}"
   echo "{{"
   echo "  \\"base_url\\": \\"http://$(hostname -I | awk '{{print $1}}'):${{API_PORT}}/v1\\","
   echo "  \\"model\\": \\"$served\\","

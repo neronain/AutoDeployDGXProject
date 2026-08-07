@@ -843,3 +843,16 @@ def test_repair_points_an_external_container_at_adopt(tmp_path, monkeypatch, iso
                              container="ext-container")
     with pytest.raises(FleetError, match="lmds adopt"):
         repair_server(server)
+
+
+def test_adopted_controller_reads_the_real_model_name(tmp_path):
+    """/v1/models มีคีย์ "id" หลายตัว (ของ permission ด้วย) — regex แบบ greedy คว้าตัวสุดท้าย
+    ได้ `modelperm-…` แล้วขอ completion ด้วยชื่อที่ server ไม่รู้จัก → 404 (เจอจริงบน msi-6)
+    """
+    from lmds.fleet.adopt import Adopted, render_controller
+
+    script = render_controller(Adopted(container="c", image="i", env=["PORT=8000"]), "demo")
+    assert "served_model()" in script
+    assert 'json.load(sys.stdin)["data"][0]["id"]' in script, "ต้อง parse JSON ไม่ใช่ regex"
+    # test-text และ client-config ต้องใช้ตัวเดียวกัน ไม่ใช่ต่างคนต่างเดา
+    assert script.count('served="$(served_model)"') == 2
