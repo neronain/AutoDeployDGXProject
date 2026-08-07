@@ -544,3 +544,13 @@ def test_web_status_sees_the_systemd_service(tmp_path, monkeypatch, isolated_con
     result = runner.invoke(app, ["web", "--status"])
     assert result.exit_code == 0
     assert "systemd" in result.output and "tok-ที่จำไว้" in result.output
+
+
+def test_web_unit_has_a_stop_deadline(tmp_path, monkeypatch, isolated_config):
+    """SSE ถือ connection ค้างไว้ (ทุกแท็บที่เปิดหน้าเว็บอยู่) — uvicorn รอให้ปิดก่อนถึงจะจบ
+    ไม่มีเส้นตายก็ค้างที่ deactivating แล้ว restart ไม่กลับมา (เจอจริง 2 ครั้งบน controller)
+    """
+    from lmds.web import daemon
+
+    unit = daemon.render_unit(8600, "0.0.0.0", "tok")
+    assert "TimeoutStopSec=" in unit and "KillMode=" in unit

@@ -255,6 +255,10 @@ ExecStart={python} -m lmds.cli.main web --port {port} --bind {bind}
 Environment=LMDS_WEB_TOKEN={token}
 Restart=always
 RestartSec=3
+# SSE ถือ connection ค้างไว้ (หน้าเว็บที่เปิดอยู่ทุกแท็บ) — uvicorn รอให้มันปิดก่อนถึงจะจบ
+# ไม่มีเส้นตายก็ค้างที่ deactivating ไปเรื่อย ๆ แล้ว restart ไม่กลับมา (เจอจริง 2 ครั้ง)
+TimeoutStopSec=10
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
