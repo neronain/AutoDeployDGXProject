@@ -1182,6 +1182,8 @@ function readNodeOpts(node, slug) {
 const openModelMenus = new Set();
 // payload ล่าสุดของแต่ละเครื่อง — ใช้วาดใหม่ตอนพับ/กางเมนูโดยไม่ต้องยิง SSH ซ้ำ
 const lastNodeData = new Map();
+// ทะเบียนของแต่ละเครื่อง (user/host/port) — ฟอร์มที่ต้องบอกว่า "ใช้ user ไหน" อ่านจากตรงนี้
+const lastNodeRegistry = new Map();
 
 function nodeAddForm() {
   const box = document.getElementById("nodes");
@@ -1487,6 +1489,7 @@ async function refreshNodes() {
   const seen = new Set();
   for (const node of nodes) {
     seen.add(node.name);
+    lastNodeRegistry.set(node.name, node);
     if (!nodeRows.has(node.name)) {
       const block = nodeCard(node);
       box.appendChild(block);
@@ -1553,26 +1556,61 @@ document.addEventListener("click", async e => {
     return;
   }
   if (nact === "setup") {
-    // รหัสผ่านอยู่ในหน่วยความจำของหน้านี้ชั่วคราวเท่านั้น — ไม่เก็บลง localStorage
-    // ไม่ใส่ใน URL และ server ก็ไม่เก็บต่อ · ต้องกรอกใหม่ทุกครั้งที่ต้องใช้
-    const password = prompt(
-      `ตั้งค่าที่ต้องใช้ root บน ${node}\n\n` +
-      "• ให้ service ขึ้นตั้งแต่บูต (loginctl enable-linger)\n\n" +
-      "รหัสผ่าน sudo ของ user บนเครื่องนั้น (ใช้ครั้งเดียว ไม่ถูกเก็บ):");
-    if (!password) return;
+    // ใช้ฟอร์มในหน้า ไม่ใช่ prompt() ของเบราว์เซอร์ — prompt() แสดงรหัสผ่านเป็นตัวอักษรล้วน
+    // ปิดไม่ได้ และคนที่ยืนอยู่ข้างหลังอ่านได้หมด
+    showNodeOutput(node, `setup · ${node}`, "");
+    const row = nodeRows.get(node);
+    if (!row) return;
+    const user = (lastNodeRegistry.get(node) || {}).user || "user บนเครื่องนั้น";
+    row.body.innerHTML = `<div class="pad">
+      <div class="name">ตั้งค่าที่ต้องใช้สิทธิ์ root บน ${esc(node)}</div>
+      <div class="dim" style="margin:6px 0 12px">จะทำ: ให้ service ขึ้นตั้งแต่บูต
+        (<code>loginctl enable-linger</code>)</div>
+      <div class="field">
+        <label>user</label>
+        <span class="mono">${esc(user)}</span>
+        <span class="dim">— user เดียวกับที่ใช้ต่อ SSH อยู่แล้ว ไม่ต้องกรอก</span>
+      </div>
+      <div class="field">
+        <label>รหัสผ่าน sudo</label>
+        <input id="setup-pw" type="password" autocomplete="current-password"
+               placeholder="ใช้ครั้งเดียว ไม่ถูกเก็บ" style="min-width:240px">
+        <button data-nact="setup-go" data-node="${esc(node)}">ตั้งค่า</button>
+        <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
+      </div>
+      <div class="dim">รหัสผ่านถูกส่งทาง stdin ของ ssh — ไม่เขียนลงดิสก์ ไม่อยู่ในคำสั่ง
+        และไม่ถูกเก็บในทะเบียน · ต้องกรอกใหม่ทุกครั้งที่ต้องใช้</div>
+      <div id="setup-out-${esc(node)}" style="margin-top:10px"></div>
+    </div>`;
+    row.body.querySelector("#setup-pw")?.focus();
+    return;
+  }
+
+  if (nact === "setup-go") {
+    const row = nodeRows.get(node);
+    const input = row && row.body.querySelector("#setup-pw");
+    const out = row && row.body.querySelector(`#setup-out-${CSS.escape(node)}`);
+    const password = input && input.value;
+    if (!password) { if (out) out.innerHTML = `<div class="warn-line">ใส่รหัสผ่านก่อน</div>`; return; }
     btn.disabled = true;
-    btn.textContent = "setup…";
+    btn.textContent = "กำลังตั้งค่า…";
     const r = await api(`/api/nodes/${encodeURIComponent(node)}/setup`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ password }),
     });
     const d = await r.json();
+    if (input) input.value = "";          // ไม่ทิ้งรหัสผ่านค้างไว้ใน DOM
     btn.disabled = false;
-    btn.textContent = "setup";
-    if (!r.ok) { alert(d.detail || "ตั้งค่าไม่สำเร็จ"); return; }
-    showNodeOutput(node, `setup · ${node}`,
-      (d.steps || []).map(s => `${s.ok ? "✓" : "✕"} ${s.step}${s.detail ? " — " + s.detail : ""}`)
-        .join("\n") || "ไม่มีขั้นตอนให้ทำ");
+    btn.textContent = "ตั้งค่า";
+    if (!r.ok) {
+      if (out) out.innerHTML = `<div class="warn-line" style="color:var(--bad)">${esc(
+        typeof d.detail === "string" ? d.detail : "ตั้งค่าไม่สำเร็จ")}</div>`;
+      return;
+    }
+    if (out) out.innerHTML = (d.steps || []).map(s =>
+      `<div class="warn-line" style="color:${s.ok ? "var(--ok)" : "var(--bad)"}">
+        ${s.ok ? "✓" : "✕"} ${esc(s.step)}${s.detail ? " — " + esc(s.detail) : ""}</div>`).join("")
+      + (d.ok ? `<div class="dim" style="margin-top:6px">เสร็จแล้ว</div>` : "");
     return;
   }
 

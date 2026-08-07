@@ -510,3 +510,37 @@ def test_web_enable_says_so_without_systemd(tmp_path, monkeypatch, isolated_conf
     monkeypatch.setattr("shutil.which", lambda name: None)
     result = runner.invoke(app, ["web", "--enable"])
     assert result.exit_code == 1 and "ไม่มี systemd" in result.output
+
+
+def test_web_restart_goes_through_systemd_when_the_service_owns_it(tmp_path, monkeypatch, isolated_config):
+    """ตัวที่ systemd ดูแลไม่ได้เขียน web.json — CLI จึงมองไม่เห็นแล้วบ่นว่า "พอร์ตไม่ว่าง
+    มีโปรแกรมอื่นยึดอยู่ (ไม่ใช่ของ lmds)" ทั้งที่มันคือของ lmds เอง
+    ผลคือแก้โค้ดแล้ว restart แต่ server ยังรันของเก่า → endpoint ใหม่ตอบ 404 (เจอจริง)
+    """
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr(daemon, "service_active", lambda: True)
+    acted = []
+    monkeypatch.setattr(daemon, "service_control", lambda action: acted.append(action) or True)
+
+    result = runner.invoke(app, ["web", "--restart", "-b", "--bind", "0.0.0.0"])
+    assert result.exit_code == 0, result.output
+    assert acted == ["restart"], "ต้องสั่งผ่าน systemd ไม่ใช่ไปสตาร์ตซ้อน"
+    assert "systemd" in result.output
+
+
+def test_web_status_sees_the_systemd_service(tmp_path, monkeypatch, isolated_config):
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    daemon.remember_token("tok-ที่จำไว้")
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr(daemon, "service_active", lambda: True)
+
+    result = runner.invoke(app, ["web", "--status"])
+    assert result.exit_code == 0
+    assert "systemd" in result.output and "tok-ที่จำไว้" in result.output

@@ -1486,3 +1486,26 @@ def test_setup_endpoint_never_stores_the_password(registered, monkeypatch):
 def test_setup_without_a_password_says_so(registered):
     r = TestClient(create_app()).post("/api/nodes/spark2/setup", json={})
     assert r.status_code == 400 and "รหัสผ่าน" in r.json()["detail"]
+
+
+def test_sudo_password_is_never_typed_into_a_browser_prompt():
+    """`prompt()` ของเบราว์เซอร์แสดงรหัสผ่านเป็นตัวอักษรล้วน ปิดไม่ได้ และคนที่ยืนอยู่
+    ข้างหลังอ่านได้หมด (ผู้ใช้เจอจริง — รหัสผ่านโผล่เต็ม ๆ ในกล่องโต้ตอบ)
+    """
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    import re
+
+    setup = page.split('if (nact === "setup")')[1].split('if (nact === "install")')[0]
+    # คอมเมนต์ไม่ได้ถูกรัน — ที่อธิบายว่า "ไม่ใช้ prompt()" ไม่ใช่การเรียก prompt()
+    code = re.sub(r"//.*", "", setup)
+    assert "prompt(" not in code, "ต้องใช้ฟอร์มในหน้าที่ปิดรหัสได้"
+    assert 'id="setup-pw" type="password"' in setup
+    assert 'input.value = ""' in page, "ส่งเสร็จต้องล้างช่อง ไม่ทิ้งรหัสค้างใน DOM"
+
+
+def test_setup_form_says_which_user_it_will_use():
+    """ผู้ใช้ถามว่า "จะรู้ได้ยังไงว่า user ไหน" — ต้องบอก ไม่ใช่ให้เดา"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "lastNodeRegistry" in page
+    setup = page.split('if (nact === "setup")')[1].split('if (nact === "setup-go")')[0]
+    assert "user เดียวกับที่ใช้ต่อ SSH" in setup

@@ -271,3 +271,34 @@ def render_unit(port: int, bind: str, token: str) -> str:
     import sys
 
     return _UNIT.format(python=sys.executable, port=port, bind=bind, token=token)
+
+
+def service_active() -> bool:
+    """หน้าเว็บถูกดูแลโดย systemd อยู่หรือเปล่า
+
+    ถ้าใช่ `-b` / `--stop` / `--restart` จะไปคนละทางกับตัวที่เสิร์ฟจริง — ตัวที่รันด้วย
+    systemd ไม่ได้เขียน web.json ไว้ CLI จึงมองไม่เห็นแล้วไปบ่นว่า "พอร์ตไม่ว่าง มีโปรแกรม
+    อื่นยึดอยู่ (ไม่ใช่ของ lmds)" ทั้งที่มันคือของ lmds เอง
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("systemctl") is None:
+        return False
+    try:
+        proc = subprocess.run(["systemctl", "--user", "is-active", UNIT_NAME],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.stdout.strip() == "active"
+
+
+def service_control(action: str) -> bool:
+    """สั่ง systemd แทนการไปยุ่งกับ process ตรง ๆ"""
+    import subprocess
+
+    try:
+        return subprocess.run(["systemctl", "--user", action, UNIT_NAME],
+                              capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False

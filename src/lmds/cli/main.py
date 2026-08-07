@@ -2287,12 +2287,42 @@ def web(
 
     if status_only:
         state = daemon.running()
+        if state is None and daemon.service_active():
+            token_now = daemon.remembered_token() or os.environ.get(daemon.TOKEN_ENV, "")
+            console.print(f"หน้าเว็บรันอยู่ [dim](systemd — {daemon.UNIT_NAME})[/dim]")
+            from lmds.hardware.profiler import primary_ip
+
+            for host in dict.fromkeys(h for h in (primary_ip(), "127.0.0.1") if h):
+                console.print(f"  [bold]http://{host}:{port}/[/bold]")
+            if token_now:
+                console.print(f"\n  token: [bold]{token_now}[/bold]")
+            console.print(f"[dim]เปิดใหม่: lmds web --restart · หยุด: lmds web --stop · "
+                          f"เลิกให้ขึ้นเอง: lmds web --disable[/dim]")
+            return
         if state is None:
             console.print("ไม่มีหน้าเว็บที่รันเบื้องหลังอยู่ — เปิดด้วย: [bold]lmds web -b --bind 0.0.0.0[/bold]")
             return
         show_running(state, "หน้าเว็บรันอยู่")
         if state.get("token"):
             console.print(f"\n  token: [bold]{state['token']}[/bold]")
+        return
+
+    # หน้าเว็บที่ systemd ดูแลอยู่ต้องสั่งผ่าน systemd — ไม่งั้น --restart ไปไม่ถึงตัวที่เสิร์ฟจริง
+    # แล้วบ่นว่า "พอร์ตไม่ว่าง มีโปรแกรมอื่นยึดอยู่" ทั้งที่มันคือของเราเอง (เจอจริง: แก้โค้ดแล้ว
+    # restart แต่ server ยังรันของเก่า → endpoint ใหม่ตอบ 404)
+    if (stop_web or restart_web) and daemon.service_active():
+        action = "stop" if stop_web else "restart"
+        if not daemon.service_control(action):
+            err_console.print(f"[red]สั่ง systemd {action} ไม่สำเร็จ[/red] — "
+                              f"ดู: systemctl --user status {daemon.UNIT_NAME}")
+            raise typer.Exit(code=1)
+        console.print(f"{'หยุด' if stop_web else 'เปิดใหม่'}หน้าเว็บแล้ว "
+                      f"[dim](ผ่าน systemd — {daemon.UNIT_NAME})[/dim]")
+        if restart_web:
+            state = daemon.running() or {}
+            token_now = state.get("token") or daemon.remembered_token()
+            if token_now:
+                console.print(f"\n  token: [bold]{token_now}[/bold]")
         return
 
     if disable:
