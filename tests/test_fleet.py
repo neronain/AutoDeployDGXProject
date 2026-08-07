@@ -790,3 +790,56 @@ def test_remove_reports_success_only_when_everything_is_gone(tmp_path, monkeypat
     result = runner.invoke(app, ["remove", "m", "-y"])
     assert result.exit_code == 0, result.output
     assert "เรียบร้อย" in result.output
+
+
+def test_adopt_reproduces_the_running_container(tmp_path, monkeypatch, isolated_config):
+    """ลูกค้าที่มี vLLM รันอยู่ก่อนแล้วเพิ่งติดตั้ง LMDS — `lmds ps` เห็น container นั้นแต่
+    ทำอะไรไม่ได้เลยเพราะไม่มี controller (ผู้ใช้เจอจริงกับ qwen3-coder-next บน msi-6)
+    """
+    import json as json_module
+
+    from lmds.fleet.adopt import adopt
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    payload = [{
+        "Name": "/qwen3-coder-next-nvfp4-gb10",
+        "Args": ["serve"],
+        "Config": {
+            "Image": "avarok/dgx-vllm-nvfp4-kernel:v23",
+            "Entrypoint": ["/entrypoint.sh"],
+            "Env": ["PATH=/usr/bin", "PORT=8000", "MODEL=/models/qwen3-coder-next",
+                    "MAX_MODEL_LEN=262144", "VLLM_EXTRA_ARGS=--kv-cache-dtype fp8"],
+        },
+        "HostConfig": {
+            "Binds": ["/home/u/models:/models"],
+            "PortBindings": {"8000/tcp": [{"HostPort": "8000"}]},
+            "NetworkMode": "default", "Runtime": "nvidia",
+        },
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    path = adopt("qwen3-coder-next-nvfp4-gb10", output=tmp_path / "bundles")
+    script = path.read_text(encoding="utf-8")
+
+    assert "avarok/dgx-vllm-nvfp4-kernel:v23" in script
+    assert "--gpus all" in script, "container ใช้ nvidia runtime ต้องรันซ้ำด้วย GPU"
+    assert "/home/u/models:/models" in script, "mount ต้องเหมือนเดิม"
+    assert "MAX_MODEL_LEN=262144" in script
+    assert "PATH=/usr/bin" not in script, "env ของ image เองไม่ควรถูกลากมาด้วย"
+    # weight เป็น path ของผู้ใช้ — ไม่มีอะไรให้โหลดหรือตรวจ จึงต้องไม่แกล้งทำเป็นมี
+    assert "download)" not in script and "verify-files)" not in script
+
+
+def test_repair_points_an_external_container_at_adopt(tmp_path, monkeypatch, isolated_config):
+    """"bundle ถูกลบไปแล้ว" เป็นการเดาที่ผิดสำหรับ container ที่ไม่เคยมี bundle
+    และพาไปทางที่ไม่ใช่ (deploy ใหม่ทั้งที่ของรันอยู่ดี ๆ)
+    """
+    import pytest
+
+    from lmds.fleet import FleetError, repair_server
+
+    server = SimpleNamespace(slug="ext", controller_exists=False, external=True,
+                             container="ext-container")
+    with pytest.raises(FleetError, match="lmds adopt"):
+        repair_server(server)

@@ -1403,6 +1403,40 @@ def generate(
 
 
 @app.command()
+def adopt(
+    container: str = typer.Argument(..., help="ชื่อ container ที่รันอยู่ (ดูจาก docker ps)"),
+    slug: str = typer.Option("", "--slug", help="ชื่อที่จะใช้ใน lmds (ว่าง = ใช้ชื่อ container)"),
+    output: str = typer.Option("./bundles", "--output"),
+) -> None:
+    """รับ container ที่รันอยู่ก่อน LMDS เข้ามาอยู่ในระบบ — สร้าง controller จากของที่รันจริง
+
+    ลูกค้าที่มี vLLM/llama.cpp รันอยู่ก่อนแล้วเพิ่งมาติดตั้ง LMDS: `lmds ps` เห็น container
+    พวกนั้นและ stop/restart/logs ได้ แต่ทำอย่างอื่นไม่ได้เพราะไม่มี controller
+
+    อ่าน image/env/mount/port/args จาก container ที่รันอยู่ แล้วเขียนเป็นสคริปต์ที่
+    **รันคำสั่งเดิมซ้ำได้เป๊ะ** · ของที่รันอยู่ตอนนี้ไม่ถูกแตะต้อง
+    """
+    from lmds.fleet import FleetError
+    from lmds.fleet.adopt import adopt as adopt_container, inspect_container
+
+    try:
+        info = inspect_container(container)
+        path = adopt_container(container, slug=slug, output=Path(output))
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    name = slug or info.container.replace("_", "-").lower()
+    console.print(f"[green]รับ {info.container} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
+    console.print(f"[dim]image:   {info.image}[/dim]")
+    console.print(f"[dim]model:   {info.model or '(ไม่ระบุใน env)'}[/dim]")
+    console.print(f"[dim]port:    {info.port} · context: {info.context or 'ไม่ระบุ'}[/dim]")
+    console.print(f"[dim]sคริปต์: {path}[/dim]")
+    console.print("\n[dim]ทำได้: start · stop · restart · status · logs · test-text · client-config[/dim]")
+    console.print("[dim]ไม่มี download/verify-files — weight ของ container นี้เป็น path ที่คุณจัดการเอง[/dim]")
+
+
+@app.command()
 def rebuild(
     slug: str = typer.Argument(..., help="ชื่อ bundle ที่จะสร้างใหม่", autocompletion=_complete_slug),
     output: str = typer.Option("./bundles", "--output"),

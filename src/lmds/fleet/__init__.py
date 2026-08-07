@@ -1,3 +1,4 @@
+from .adopt import adopt, inspect_container
 from .manager import (
     FleetError,
     ServerInfo,
@@ -27,6 +28,8 @@ from .manager import (
 )
 
 __all__ = [
+    "adopt",
+    "inspect_container",
     "FleetError",
     "ServerInfo",
     "autostart_status",

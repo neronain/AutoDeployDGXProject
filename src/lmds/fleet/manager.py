@@ -977,6 +977,14 @@ def _human(size: int) -> str:
 def repair_server(info: ServerInfo) -> int:
     """ดาวน์โหลดไฟล์ที่ขาด/เสียใหม่ แล้วตรวจซ้ำ — download ของทุก controller resume ได้"""
     if not info.controller_exists:
+        # container ที่ไม่ได้มาจาก LMDS ไม่เคยมี bundle เลย — บอกว่า "ถูกลบไปแล้ว" คือเดาผิด
+        # และพาไปทางที่ไม่ใช่ (deploy ใหม่ทั้งที่ของรันอยู่ดี ๆ)
+        if info.external or info.container:
+            raise FleetError(
+                f"{info.slug} เป็น container ที่ไม่ได้ deploy ผ่าน LMDS — ไม่มี controller ให้ซ่อม\n"
+                f"รับเข้าระบบก่อนเพื่อให้สั่งงานได้ครบ: lmds adopt {info.container or info.slug}\n"
+                f"(อ่านคำสั่งที่มันรันอยู่จริงมาทำเป็นสคริปต์ — ตัวที่รันอยู่ไม่ถูกแตะต้อง)"
+            )
         raise FleetError(
             f"ไม่พบ controller ของ {info.slug} — bundle ถูกลบไปแล้ว ซ่อมไม่ได้\n"
             f"สร้างใหม่ด้วย: lmds deploy <ลิงก์โมเดลเดิม>  (weight ที่โหลดไว้ยังใช้ต่อได้ ไม่ต้องโหลดซ้ำ)"
