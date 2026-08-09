@@ -287,13 +287,34 @@ def node_remove(
 @app.command("recipes")
 def list_recipes(
     model: Optional[str] = typer.Argument(None, help="ดูสูตรของโมเดลนี้ (ว่าง = ทั้งหมด)"),
+    sync: bool = typer.Option(False, "--sync", help="ดึงสูตรใหม่จากรีโป controller ของทีมก่อนแสดง"),
+    repo: Optional[str] = typer.Option(None, "--repo", help="รีโป controller (ค่าเริ่มต้นคือของทีม)"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="branch/tag ที่จะดึง (ค่าเริ่มต้น main)"),
 ) -> None:
     """สูตรที่รันผ่านจริงแล้ว — ใช้อัตโนมัติเมื่อไม่มี LLM provider
 
     เครื่องที่ไม่มี API key จะได้ค่าเหล่านี้แทนการเดา: image ที่ถูกรุ่น, parser, และข้อบังคับ
     ของ quantization ที่ไม่ตั้งแล้ว start ไม่ขึ้น
+
+    `--sync` ดึงจากรีโป controller ของทีมมาเพิ่ม (อ่านไฟล์อย่างเดียว ไม่รันสคริปต์) —
+    แก้ที่รีโปแล้ว push จากนั้นสั่ง sync ที่ hub ทุกเครื่องก็ได้ชุดเดียวกัน
     """
     from lmds.recipes import find_recipe, load_catalog
+    from lmds.recipes.sync import DEFAULT_REF, DEFAULT_REPO, SyncError
+    from lmds.recipes.sync import sync as sync_recipes
+    from lmds.recipes.sync import synced_source
+
+    if sync:
+        try:
+            result = sync_recipes(repo or DEFAULT_REPO, ref or DEFAULT_REF, now=_now())
+        except SyncError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        console.print(f"[green]ดึงมาแล้ว {result['count']} สูตร[/green] จาก "
+                      f"{result['repo']} @ {result['commit']}")
+        for line in result["skipped"]:
+            console.print(f"  [yellow]ข้าม[/yellow] {line}")
+        console.print()
 
     if model:
         recipe = find_recipe(model)
@@ -335,7 +356,22 @@ def list_recipes(
         table.add_row(recipe.label or recipe.match, recipe.engine, ", ".join(sets),
                       recipe.validated_on or "—")
     console.print(table)
-    console.print("[dim]ใช้อัตโนมัติตอน deploy เมื่อไม่มี LLM provider · ดูรายตัว: lmds recipes <model>[/dim]")
+
+    # คำสั่งที่ก๊อปไปใช้ต่อได้เลย — เดิมตารางบอกว่ามีสูตรอะไร แต่ไม่บอกว่าจะใช้ยังไง
+    console.print("\n[bold]ใช้สูตรไหนก็สั่งได้เลย[/bold] (ไม่ต้องมี LLM):")
+    for recipe in catalog[:5]:
+        console.print(f"  [dim]lmds deploy {recipe.match} --no-llm[/dim]")
+    if len(catalog) > 5:
+        console.print(f"  [dim]… อีก {len(catalog) - 5} รุ่น — ดูรายตัว: lmds recipes <model>[/dim]")
+
+    source = synced_source()
+    if source:
+        console.print(f"\n[dim]{source.get('count', 0)} สูตรมาจาก {source.get('repo', '?')} "
+                      f"@ {source.get('commit', '?')} · ดึงเมื่อ {source.get('synced_at') or '—'} · "
+                      f"ดึงใหม่: lmds recipes --sync[/dim]")
+    else:
+        console.print(f"\n[dim]ดึงสูตรจากรีโป controller ของทีมเพิ่มได้: lmds recipes --sync "
+                      f"(ค่าเริ่มต้น {DEFAULT_REPO})[/dim]")
 
 
 @app.command("prune")

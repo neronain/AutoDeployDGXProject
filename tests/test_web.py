@@ -804,6 +804,33 @@ def test_cluster_members_follow_the_saved_order(registered, monkeypatch):
     assert [m["name"] for m in group["members"]] == ["spark1", "spark3", "spark2"]
 
 
+def test_recipes_are_offered_in_the_deploy_box_not_only_in_a_panel():
+    """คนที่ยังไม่ได้ตั้ง LLM ต้องเลือกสูตรได้จากในกล่อง deploy — เดิมมีแค่ช่องพิมพ์ลิงก์ HF"""
+    page = TestClient(create_app()).get("/").text
+    assert 'id="w-recipes"' in page and "renderRecipePicker" in page
+    assert "data-recipe=" in page                       # ชิปให้กดเลือก
+    assert "/api/recipes/sync" in page                  # ปุ่มดึงจากรีโปของทีม
+
+
+def test_recipes_endpoint_reports_where_the_recipes_came_from():
+    data = TestClient(create_app()).get("/api/recipes").json()
+    assert data["recipes"] and "default_repo" in data
+    assert "dgx-spark-all-controllers" in data["default_repo"]
+    assert data["source"] == {}                          # ยังไม่เคย sync บนเครื่องเทส
+
+
+def test_recipe_sync_reports_a_readable_error(monkeypatch):
+    """ดึงไม่ได้ (เน็ต/สิทธิ์/ชื่อ ref ผิด) ต้องบอกเป็นข้อความ ไม่ใช่ 500 เปล่า ๆ"""
+    from lmds.recipes import sync as sync_module
+
+    def boom(*args, **kwargs):
+        raise sync_module.SyncError("ต่อ github.com ไม่ได้")
+
+    monkeypatch.setattr(sync_module, "sync", boom)
+    r = TestClient(create_app()).post("/api/recipes/sync", json={})
+    assert r.status_code == 400 and "github.com" in r.json()["detail"]
+
+
 def test_theme_is_chosen_by_the_user_not_only_by_the_os():
     """เดิมหน้าเว็บมืดตาม prefers-color-scheme อย่างเดียว เครื่องที่ตั้ง OS เป็นมืดจึงเลือกสว่างไม่ได้"""
     page = TestClient(create_app()).get("/").text

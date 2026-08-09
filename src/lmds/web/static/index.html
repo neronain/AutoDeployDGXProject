@@ -312,6 +312,11 @@ pre {
   font-size: 12.5px; color: var(--warn); padding: 5px 10px; margin: 4px 0;
   background: var(--warn-bg); border-radius: var(--r-sm);
 }
+/* ตรงข้ามกับ warn-line — บอกว่าค่าที่เห็นมาจากของที่รันผ่านจริง ไม่ใช่ค่าตั้งต้นที่เดาให้ */
+.ok-line {
+  font-size: 12.5px; color: var(--ok); padding: 5px 10px; margin: 4px 0;
+  background: var(--ok-bg); border-radius: var(--r-sm);
+}
 .empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: 13.5px; }
 
 /* ── GPU telemetry ─────────────────────────────────────────────────── */
@@ -756,11 +761,13 @@ function wizForm(msg = "", extra = "") {
       <span class="dim" id="w-machine-hint"></span>
     </div>
     <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> Skip the LLM (rule-based plan)</label>
+    <div id="w-recipes"></div>
     ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
     ${extra}
   </div>`;
   document.getElementById("w-model").value = draft.model;
   document.getElementById("w-nollm").checked = draft.no_llm;
+  renderRecipePicker();
   api("/api/targets").then(r => r.json()).then(d => {
     const sel = document.getElementById("w-target");
     if (!sel) return;
@@ -794,6 +801,54 @@ function wizForm(msg = "", extra = "") {
     };
     sel.onchange();
   });
+}
+
+// ── เลือกจากสูตรที่รันผ่านแล้ว ────────────────────────────────────────────
+// คนที่ยังไม่ได้ตั้ง LLM คือกลุ่มที่ต้องพึ่งสูตรมากที่สุด แต่เดิมกล่องนี้มีแค่ช่องพิมพ์ลิงก์ HF
+// เปล่า ๆ — ของที่ทีมรันผ่านมาแล้วถูกซ่อนอยู่ในแผงล่างสุดของหน้าที่ต้องกด Show ก่อน
+function renderRecipePicker() {
+  const box = document.getElementById("w-recipes");
+  if (!box) return;
+  const noLlm = !(providerState && providerState.configured && providerState.has_key);
+  if (!recipeList.length) {
+    box.innerHTML = `<div class="dim" style="margin-top:6px">กำลังอ่านสูตรที่รันผ่านแล้ว…</div>`;
+    fetchRecipes().then(renderRecipePicker).catch(() => { box.innerHTML = ""; });
+    return;
+  }
+  box.innerHTML = `<details style="margin-top:8px"${noLlm ? " open" : ""}>
+    <summary style="cursor:pointer" class="dim">เลือกจากสูตรที่รันผ่านแล้ว (${recipeList.length} รุ่น)${
+      noLlm ? " — ยังไม่ได้ตั้ง LLM ใช้ทางนี้ได้เลย" : ""}</summary>
+    <div class="npills" style="margin-top:8px">${recipeList.map((r, i) =>
+      `<button class="npill" data-recipe="${i}" title="${esc(r.match)}${
+        r.validated_on ? " · " + esc(r.validated_on) : ""}">${esc(r.label || r.match)}</button>`).join("")}</div>
+    <div class="dim" id="w-recipe-hint" style="margin-top:6px"></div>
+  </details>`;
+}
+
+function pickRecipe(index) {
+  const r = recipeList[index];
+  if (!r) return;
+  const model = document.getElementById("w-model");
+  const nollm = document.getElementById("w-nollm");
+  if (model) { model.value = r.match; draft.model = r.match; }
+  // สูตรคือสิ่งที่ใช้แทน LLM อยู่แล้ว — ติ๊กให้เลย ไม่ต้องรอ LLM ที่อาจยังไม่ได้ตั้ง
+  if (nollm) { nollm.checked = true; draft.no_llm = true; }
+  const hint = document.getElementById("w-recipe-hint");
+  if (hint) {
+    hint.innerHTML = `<b style="font-weight:500">${esc(r.label || r.match)}</b> — ${esc(r.engine || "?")}${
+      r.image ? " · image " + esc(r.image) : ""}${r.topology ? " · " + esc(r.topology) : ""}
+      <br>ทดสอบบน ${esc(r.validated_on || "—")}${r.controller ? " · จาก " + esc(r.controller) : ""}`;
+  }
+}
+
+// เปิดกล่อง Deploy พร้อมเติมรุ่นจากสูตรที่กดเลือกในแผงด้านล่าง
+function startDeployWithRecipe(match) {
+  draft.model = match;
+  draft.no_llm = true;
+  wizForm();
+  const index = recipeList.findIndex(r => r.match === match);
+  if (index >= 0) pickRecipe(index);
+  wiz.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // สร้างเสร็จแล้วส่งต่อทันที — แต่ถ้าส่งไม่ผ่านต้องบอกว่า bundle ยังอยู่ที่นี่ ไม่ใช่หายไป
@@ -838,6 +893,9 @@ function planView(d) {
       ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
       <span>planner</span><span>${esc(p.generator)}</span>
     </div>
+    ${p.recipe ? `<div class="ok-line">ใช้สูตรที่รันผ่านจริง: <b style="font-weight:500">${
+      esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · ทดสอบบน " + esc(p.recipe.validated_on) : ""}${
+      p.recipe.controller ? " · จาก " + esc(p.recipe.controller) : ""}</div>` : ""}
     ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
     <div class="field" style="margin-top:12px">
       <label>context</label>
@@ -950,6 +1008,8 @@ document.addEventListener("click", async e => {
     Object.assign(draft, { model: "", target: "", no_llm: false });
     return;
   }
+  const chip = e.target.closest("button[data-recipe]");
+  if (chip) { pickRecipe(+chip.dataset.recipe); return; }
   if (id === "w-go") { analyzeNow(); return; }
   if (id === "w-gguf") {
     const picked = document.querySelector('input[name="gguf"]:checked');
@@ -2064,27 +2124,68 @@ async function loadScan() {
   box.innerHTML = `<div class="pad">${blocks.join("")}</div>`;
 }
 
+// สูตรล่าสุดที่โหลดมา — ใช้ทั้งในแผงด้านล่างและในตัวเลือกของกล่อง Deploy
+let recipeList = [];
+
+async function fetchRecipes() {
+  const data = await (await api("/api/recipes")).json();
+  recipeList = data.recipes || [];
+  return data;
+}
+
 async function loadRecipes() {
   const box = document.getElementById("recipes");
   box.innerHTML = `<div class="empty">Loading…</div>`;
-  const { recipes } = await (await api("/api/recipes")).json();
-  box.innerHTML = `<div class="pad">${recipes.map(r => {
+  const { recipes, source, default_repo } = await fetchRecipes();
+  // ที่มาของสูตร: ต้องเห็นว่าชุดนี้ดึงมาจากรีโปไหน commit ไหน ไม่งั้นไม่มีทางรู้ว่าอันไหนเก่า
+  const origin = source && source.repo
+    ? `${recipes.length} สูตร · ${source.count} ตัวมาจาก ${esc(source.repo)} @ ${esc(source.commit || "?")}
+       ${source.synced_at ? "· ดึงเมื่อ " + esc(source.synced_at) : ""}`
+    : `${recipes.length} สูตรที่มากับ LMDS · ยังไม่เคยดึงจากรีโป controller ของทีม
+       <span class="dim">(${esc(default_repo || "")})</span>`;
+  box.innerHTML = `<div class="pad">
+    <div class="row between" style="margin-bottom:10px">
+      <span class="dim">${origin}</span>
+      <button id="recipes-sync">ดึงจาก GitHub</button>
+    </div>
+    ${recipes.map(r => {
     const sets = [r.image ? "image" : "", ...Object.keys(r.serving || {}),
                   r.tools ? "tools:" + r.tools : "", r.reasoning ? "reasoning:" + r.reasoning : ""]
                  .filter(Boolean);
     return `<div style="margin-bottom:12px">
       <div class="row between"><b style="font-weight:500">${esc(r.label || r.match)}</b>
-        <span class="dim">${esc(r.engine)}</span></div>
+        <span class="dim">${esc(r.engine)}${r.topology ? " · " + esc(r.topology) : ""}</span></div>
+      <div class="mono dim" style="font-size:12px">${esc(r.match)}</div>
       <div class="npills" style="margin:4px 0">${sets.map(s => `<span class="npill">${esc(s)}</span>`).join("")}</div>
       <div class="dim">verified on ${esc(r.validated_on || "—")} ·
-        <a href="${esc(r.source)}" target="_blank" rel="noopener">source</a></div>
+        ${r.source && r.source.startsWith("http")
+          ? `<a href="${esc(r.source)}" target="_blank" rel="noopener">source</a>`
+          : esc(r.source || "—")}</div>
+      <button data-usemodel="${esc(r.match)}" style="font-size:12px;margin-top:4px">ใช้สูตรนี้ deploy</button>
     </div>`;
   }).join("")}</div>`;
+}
+
+async function syncRecipes(button) {
+  const label = button.textContent;
+  button.disabled = true; button.textContent = "กำลังดึง…";
+  const r = await api("/api/recipes/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const d = await r.json().catch(() => ({}));
+  button.disabled = false; button.textContent = label;
+  if (!r.ok) { alert(d.detail || "ดึงสูตรจากรีโปไม่สำเร็จ"); return; }
+  // ข้ามอะไรไปบ้างต้องบอก ไม่งั้น controller ตัวใหม่ที่ยังอ่านไม่ได้จะหายเงียบ
+  const skipped = (d.skipped || []).length ? `\n\nข้าม ${d.skipped.length} ไฟล์:\n· ${d.skipped.join("\n· ")}` : "";
+  alert(`ดึงมาแล้ว ${d.count} สูตร จาก ${d.repo} @ ${d.commit}${skipped}`);
+  loadRecipes();
 }
 
 document.addEventListener("click", e => {
   if (e.target.id === "scan-run") loadScan();
   if (e.target.id === "recipes-load") loadRecipes();
+  if (e.target.id === "recipes-sync") syncRecipes(e.target);
+  // "ใช้สูตรนี้ deploy" — เปิดกล่อง Deploy พร้อมเติมรุ่นให้ ไม่ต้องก๊อปชื่อโมเดลไปวางเอง
+  const use = e.target.closest("button[data-usemodel]");
+  if (use) startDeployWithRecipe(use.dataset.usemodel);
 });
 
 async function refresh() {

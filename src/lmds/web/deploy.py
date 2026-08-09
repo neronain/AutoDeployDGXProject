@@ -53,8 +53,20 @@ def targets() -> list[dict]:
 
 
 def _plan_payload(session: Session) -> dict:
+    from lmds.recipes import find_recipe
+
     plan, fit, report = session.plan, session.fit, session.report
+    # สูตรถูกเติมลงแผนแบบเงียบ ๆ มาตลอด ผู้ใช้จึงไม่รู้ว่าค่าที่เห็นมาจากของที่เคยรันผ่านจริง
+    # หรือมาจากค่าตั้งต้น — ต่างกันมากตอนตัดสินใจว่าจะเชื่อแผนนี้ไหม
+    recipe = find_recipe(plan.model_id)
     return {
+        "recipe": None if recipe is None else {
+            "label": recipe.label or recipe.match,
+            "match": recipe.match,
+            "validated_on": recipe.validated_on,
+            "source": recipe.source,
+            "controller": recipe.controller,
+        },
         "model_id": plan.model_id,
         "revision": plan.revision,
         "served_model_name": plan.served_model_name,

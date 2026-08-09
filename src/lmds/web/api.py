@@ -699,14 +699,30 @@ def create_app(token: str = "") -> FastAPI:
     def recipes_list() -> dict:
         """สูตรที่รันผ่านจริง — สิ่งที่ใช้แทน LLM เมื่อเครื่องไม่มี provider"""
         from lmds.recipes import load_catalog
+        from lmds.recipes.sync import DEFAULT_REPO, synced_source
 
         return {"recipes": [
             {"match": r.match, "label": r.label, "engine": r.engine, "image": r.image,
              "serving": r.serving, "tools": r.tool_calling.get("parser"),
              "reasoning": r.reasoning.get("parser"), "notes": r.notes,
-             "source": r.source, "validated_on": r.validated_on}
+             "source": r.source, "validated_on": r.validated_on,
+             # สูตรที่ดึงมาจากรีโป controller ของทีม — บอกที่มาให้เห็นว่าไม่ใช่ของที่ฝังมากับโปรแกรม
+             "controller": r.controller, "topology": r.topology}
             for r in load_catalog()
-        ]}
+        ], "source": synced_source(), "default_repo": DEFAULT_REPO}
+
+    @app.post("/api/recipes/sync", dependencies=guarded)
+    def recipes_sync(body: dict | None = None) -> dict:
+        """ดึงสูตรใหม่จากรีโป controller ของทีม — อ่านไฟล์อย่างเดียว ไม่รันสคริปต์"""
+        from lmds.recipes.sync import DEFAULT_REF, DEFAULT_REPO, SyncError
+        from lmds.recipes.sync import sync as sync_recipes
+
+        body = body or {}
+        try:
+            return sync_recipes(body.get("repo") or DEFAULT_REPO,
+                                body.get("ref") or DEFAULT_REF, now=_timestamp())
+        except SyncError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/cluster", dependencies=guarded)
     def cluster_view() -> dict:
