@@ -8,3 +8,6 @@ build/
 .coverage
 bundles/
 .DS_Store
+
+# ประทับตอน install.sh — เป็นของแต่ละเครื่อง ไม่ใช่ของ repo
+src/lmds/_build.py

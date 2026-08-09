@@ -73,14 +73,22 @@ def source_commit() -> str:
     import lmds
 
     root = Path(lmds.__file__).resolve().parents[2]
-    if not (root / ".git").exists():
-        return ""
+    if (root / ".git").exists():
+        try:
+            done = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                                  capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    # ติดตั้งแบบปกติ (node ทุกเครื่องเป็นแบบนี้) โค้ดไม่ได้อยู่ใน git checkout แล้ว —
+    # ใช้ commit ที่ install.sh ประทับไว้ตอนติดตั้งแทน ซึ่งตรงกับโค้ดที่กำลังรันจริง
     try:
-        done = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
+        from lmds._build import COMMIT
+
+        return str(COMMIT or "")
+    except Exception:
         return ""
-    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 def host_payload() -> dict:

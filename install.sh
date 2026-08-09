@@ -73,6 +73,14 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 python3 -m venv --clear "${INSTALL_DIR}/venv" ||
   die "สร้าง venv ที่ ${INSTALL_DIR}/venv ไม่ได้ — ลบทิ้งแล้วลองใหม่: rm -rf '${INSTALL_DIR}/venv'"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
+
+# ประทับ commit ที่กำลังติดตั้งลงไปในแพ็กเกจ — ติดตั้งแบบปกติ (ไม่ใช่ editable) ทำให้โค้ดที่รัน
+# อยู่ไม่ได้อยู่ใน git checkout อีกต่อไป จึงถามภายหลังไม่ได้ว่านี่คือโค้ดรุ่นไหน · เลข version
+# ไม่ขยับทุกคอมมิต ฝั่ง hub เลยแยกไม่ออกว่า node ไหนตามหลัง (เจอจริงกับ msi-6)
+BUILD_COMMIT="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+printf '# สร้างโดย install.sh — commit ที่ติดตั้งไว้ ณ ตอนนั้น\nCOMMIT = "%s"\n' \
+  "$BUILD_COMMIT" > "${REPO_DIR}/src/lmds/_build.py"
+
 "${INSTALL_DIR}/venv/bin/pip" install --quiet "$REPO_DIR"
 
 # keyring เป็น optional extra — ถ้าลงได้ key จะไปอยู่ใน keyring ของ OS แทนไฟล์ 0600

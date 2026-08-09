@@ -1751,6 +1751,23 @@ def test_node_payload_carries_the_commit_it_runs():
     assert "lmds_commit" in host_payload()
 
 
+def test_commit_is_known_even_when_installed_outside_a_git_checkout(monkeypatch, tmp_path):
+    """node ติดตั้งแบบปกติ (ไม่ใช่ editable) โค้ดจึงไม่ได้อยู่ใน git checkout —
+    ถ้าอ่าน commit ไม่ได้เลย ป้าย "โค้ดเก่า" จะไม่มีวันขึ้นบนเครื่องที่ต้องขึ้นที่สุด
+    """
+    import sys
+    import types
+
+    from lmds import inventory
+
+    fake = tmp_path / "site-packages" / "lmds" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.setattr("lmds.__file__", str(fake))
+    monkeypatch.setitem(sys.modules, "lmds._build", types.SimpleNamespace(COMMIT="abc1234"))
+    assert inventory.source_commit() == "abc1234"
+
+
 def test_page_flags_nodes_running_older_code():
     page = TestClient(create_app()).get("/").text
     assert "paintNodeVersion" in page and "lmds_commit" in page
