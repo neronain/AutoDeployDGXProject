@@ -31,6 +31,10 @@ path = "src/lmds/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lmds"]
+# _build.py ถูก .gitignore ไว้ (เป็นของแต่ละเครื่อง ไม่ใช่ของ repo) และ hatchling ตัดไฟล์ที่
+# VCS ignore ออกจาก wheel โดยอัตโนมัติ — ต้องบอกให้เอากลับเข้าไป ไม่งั้น node ที่ติดตั้งแบบ
+# ปกติจะไม่มีวันรู้ว่าตัวเองรัน commit ไหน
+artifacts = ["src/lmds/_build.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
