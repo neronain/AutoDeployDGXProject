@@ -403,11 +403,18 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.nodes import NodeError, find, run
 
+        from . import jobs
+
         allowed = {
             "test-text", "test-vision", "test-reasoning", "test-tools",
             "bench", "stress", "client-config", "network-info", "status", "props",
             "verify-files", "prepare-runtime", "sync-worker", "verify-worker", "clear-fi-cache",
         }
+        # คำสั่งที่กินเวลาเป็นสิบนาทีขึ้นไป — sync-worker คัดลอก weight ทั้งก้อนข้ามเครื่อง,
+        # prepare-runtime สร้าง/ดึง image, stress ยิงโหลดยาว · รอใน HTTP request เดียวแปลว่า
+        # ผู้ใช้เห็นปุ่มค้างเงียบ ๆ แล้วสายมักถูกตัดกลางทางก่อนงานจบด้วย (เจอจริงกับ sync-worker)
+        long_running = {"prepare-runtime", "sync-worker", "verify-worker", "verify-files",
+                        "clear-fi-cache", "bench", "stress"}
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
         node = find(name)
@@ -422,8 +429,16 @@ def create_app(token: str = "") -> FastAPI:
             f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
             f"\"$ctl\" {shlex.quote(command)}"
         )
+        if command in long_running:
+            try:
+                return {"node": name, "slug": slug, "command": command,
+                        "job": jobs.start_remote(name, slug, command, script).payload()}
+            except jobs.JobError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
-            result = run(node, script, timeout=3600)
+            # คำสั่งที่เหลือเป็นชุดทดสอบสั้น ๆ กับการอ่านสถานะ — 10 นาทีเหลือเฟือ
+            # (เดิมตั้งไว้ 1 ชั่วโมง ซึ่งแปลว่ายึด thread ของเว็บไว้ได้นานขนาดนั้นด้วย)
+            result = run(node, script, timeout=600)
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "slug": slug, "command": command,

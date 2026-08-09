@@ -1350,6 +1350,50 @@ def test_node_controller_commands_are_allowlisted(registered, monkeypatch):
         assert client.post(f"/api/nodes/spark2/models/demo/ctl/{bad}").status_code == 400, bad
 
 
+def test_long_controller_commands_run_as_a_job_not_in_the_request(registered, monkeypatch):
+    """เจอจริง: กด sync-worker แล้ว "เงียบ" — มันคัดลอก weight ข้ามเครื่องเป็นสิบนาที
+    แต่ endpoint รอให้จบใน request เดียว ปุ่มจึงค้างเป็น "sync-worker…" จนสายหลุด
+    """
+    from lmds.web import jobs
+
+    started, blocking = [], []
+    monkeypatch.setattr(jobs, "start_remote",
+                        lambda node, slug, command, remote: started.append((node, slug, command))
+                        or SimpleNamespace(payload=lambda: {"id": "job-1", "command": command}))
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: blocking.append(command)
+                        or SimpleNamespace(exit_code=0, stdout="ok", stderr=""))
+    client = TestClient(create_app())
+
+    for command in ("sync-worker", "prepare-runtime", "verify-worker", "verify-files", "stress"):
+        payload = client.post(f"/api/nodes/spark2/models/demo/ctl/{command}").json()
+        assert payload["job"]["id"] == "job-1", command
+    assert [c for _, _, c in started] == ["sync-worker", "prepare-runtime", "verify-worker",
+                                          "verify-files", "stress"]
+    assert blocking == [], "คำสั่งยาวต้องไม่ไปค้างอยู่ใน HTTP request"
+
+
+def test_short_controller_commands_still_answer_directly(registered, monkeypatch):
+    """ชุดทดสอบสั้น ๆ ยังตอบผลกลับมาในคำขอเดียวเหมือนเดิม — ไม่ต้องไปตามผ่าน job ให้ยุ่ง"""
+    monkeypatch.setattr("lmds.nodes.run",
+                        lambda node, command, timeout=0: SimpleNamespace(
+                            exit_code=0, stdout="ตอบแล้ว", stderr=""))
+    payload = TestClient(create_app()).post("/api/nodes/spark2/models/demo/ctl/status").json()
+    assert payload["output"] == "ตอบแล้ว" and "job" not in payload
+
+
+def test_no_button_can_be_left_stuck_when_a_request_fails():
+    """ปุ่มถูก disable + เปลี่ยนข้อความเป็น "…" ถ้า fetch พังแล้วไม่มีใครคืนสถานะ = กดแล้วเงียบ"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "async function withButton(" in page
+    assert "} finally {" in page.split("async function withButton(")[1][:900]
+    # ตาข่ายรับท้ายสำหรับปุ่มที่ยังไม่ได้ย้ายมาใช้ withButton
+    assert 'addEventListener("unhandledrejection"' in page
+    # ปุ่ม ctl ที่ได้ job กลับมาต้องไปตามผลแบบสตรีม ไม่ใช่รอเงียบ ๆ
+    ctl_branch = page.split('if (nact.startsWith("ctl:"))')[1][:700]
+    assert "withButton" in ctl_branch and "followNodeJob" in ctl_branch
+
+
 def test_page_warns_when_another_model_owns_the_port():
     """bundle ที่สร้างก่อนมีตัวตรวจในสคริปต์จะยังยิงทดสอบไปโดนโมเดลอื่นได้
     หน้าเว็บจึงต้องเตือนตรงที่ผู้ใช้กำลังจะกดปุ่มทดสอบพอดี

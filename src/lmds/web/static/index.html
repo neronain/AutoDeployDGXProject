@@ -490,6 +490,41 @@ let token = localStorage.getItem(TOKEN_KEY) || "";
 }
 const api = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), ...(token ? { "x-lmds-token": token } : {}) } });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// กดปุ่มแล้ว "เงียบ" คือบั๊กที่เจอจริง: ปุ่มถูก disable + เปลี่ยนข้อความเป็น "…" แล้วถ้า fetch
+// พังกลางทาง (สายหลุด/เซิร์ฟเวอร์รีสตาร์ต/งานยาวเกินจนถูกตัด) จะไม่มีใครคืนสถานะปุ่มและ
+// ไม่มีใครบอกผู้ใช้เลย · ทุกปุ่มที่ยิง API ต้องผ่านตัวนี้ — คืนสถานะใน finally เสมอ
+// คืน payload เมื่อสำเร็จ · คืน null เมื่อพลาด (ผู้เรียกแค่ return ต่อได้เลย)
+async function withButton(button, busyLabel, call) {
+  const label = button ? button.textContent : "";
+  if (button) { button.disabled = true; if (busyLabel) button.textContent = busyLabel; }
+  try {
+    const r = await call();
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(typeof d.detail === "string" ? d.detail : `ทำคำสั่งไม่สำเร็จ (HTTP ${r.status})`);
+      return null;
+    }
+    return d;
+  } catch (err) {
+    alert(`ติดต่อ LMDS ไม่ได้ — ${String(err && err.message || err)}`);
+    return null;
+  } finally {
+    if (button) { button.disabled = false; button.textContent = label; }
+  }
+}
+
+// ตาข่ายรับท้าย: ปุ่มที่ยังไม่ได้ย้ายมาใช้ withButton ถ้า fetch พังจะทิ้ง promise ที่ไม่มีใครรับ
+// ผลคือหน้าเว็บเงียบสนิทและปุ่มค้างเป็น "…" ตลอดไป · อย่างน้อยต้องบอกผู้ใช้และปลดปุ่มคืน
+window.addEventListener("unhandledrejection", event => {
+  // ปุ่มที่กำลังทำงานอยู่ใช้ข้อความลงท้ายด้วย "…" เป็นธรรมเนียมทั้งหน้า — ปลดเฉพาะพวกนั้น
+  // ปุ่มที่ถูกปิดด้วยเหตุผลอื่น (เช่นยังไม่พร้อมใช้) ต้องไม่ถูกปลดตามไปด้วย
+  for (const b of document.querySelectorAll("button:disabled")) {
+    if (b.textContent.trim().endsWith("…")) b.disabled = false;
+  }
+  const reason = event.reason;
+  alert(`คำสั่งไม่สำเร็จ — ${String((reason && reason.message) || reason || "ไม่ทราบสาเหตุ")}`);
+});
 const gb = v => v == null ? "—" : Math.round(v) + " GB";
 const open = new Set();
 let busy = null;
@@ -1066,17 +1101,14 @@ document.addEventListener("click", async e => {
     const sel = document.querySelector(`#panel-${CSS.escape(slug)} .o-node`);
     const target = sel && sel.value;
     if (!target) { box.innerHTML = `<div class="warn-line">เลือกเครื่องปลายทางก่อน</div>`; return; }
-    e.target.disabled = true;
     box.innerHTML = `<div class="muted">กำลังส่ง ${esc(slug)} ไป ${esc(target)}…</div>`;
-    const r = await api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(target)}`,
-                        { method: "POST" });
-    const d = await r.json();
-    e.target.disabled = false;
-    box.innerHTML = r.ok
-      ? `<div class="warn-line" style="color:var(--ok)">ติดตั้งแล้วที่ ${esc(target)}:${esc(d.path || "")}
-          (${d.size_mb} MB) — เลื่อนลงไปที่การ์ดของเครื่องนั้นเพื่อสั่ง download / start</div>`
-      : `<div class="warn-line" style="color:var(--bad)">${esc(d.detail || "ส่งไม่สำเร็จ")}</div>`;
-    if (r.ok) refreshNodes();
+    // ส่ง ZIP ข้ามเครื่องผ่าน SSH — ช้าและพลาดได้ ปุ่มต้องกลับมากดได้เสมอไม่ว่าจบยังไง
+    const d = await withButton(e.target, "", () =>
+      api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(target)}`, { method: "POST" }));
+    if (!d) { box.innerHTML = ""; return; }
+    box.innerHTML = `<div class="warn-line" style="color:var(--ok)">ติดตั้งแล้วที่ ${esc(target)}:${esc(d.path || "")}
+          (${d.size_mb} MB) — เลื่อนลงไปที่การ์ดของเครื่องนั้นเพื่อสั่ง download / start</div>`;
+    refreshNodes();
     return;
   }
 
@@ -1721,11 +1753,9 @@ document.addEventListener("click", async e => {
   }
 
   if (nact === "install") {
-    btn.disabled = true;
-    btn.textContent = "กำลังติดตั้ง…";
-    const r = await api(`/api/nodes/${encodeURIComponent(node)}/install`, { method: "POST" });
-    const d = await r.json();
-    if (!r.ok) { btn.disabled = false; btn.textContent = "ติดตั้ง LMDS บนเครื่องนี้"; alert(d.detail || "เริ่มติดตั้งไม่สำเร็จ"); return; }
+    const d = await withButton(btn, "กำลังติดตั้ง…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/install`, { method: "POST" }));
+    if (!d) return;
     followNodeJob(node, "_install", d.job.id);
     return;
   }
@@ -1740,15 +1770,12 @@ document.addEventListener("click", async e => {
   }
   if (nact.startsWith("ctl:")) {
     const command = nact.slice(4);
-    btn.disabled = true;
-    const original = btn.textContent;
-    btn.textContent = command + "…";
-    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/ctl/${command}`,
-                        { method: "POST" });
-    const d = await r.json();
-    btn.disabled = false;
-    btn.textContent = original;
-    if (!r.ok) { alert(d.detail || "Command failed"); return; }
+    const d = await withButton(btn, command + "…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/ctl/${command}`,
+          { method: "POST" }));
+    if (!d) return;
+    // งานยาว (sync-worker, prepare-runtime, …) คืน job มา — ตามผลแบบสตรีม ไม่ใช่รอจนสายหลุด
+    if (d.job) { followNodeJob(node, slug, d.job.id); return; }
     // ชุดทดสอบมีค่าที่ผลลัพธ์เท่านั้น — ต้องโชว์เสมอ ไม่ว่าจะผ่านหรือไม่ผ่าน
     showNodeOutput(node, `${command} · ${slug}`, d.output);
     return;
@@ -1758,20 +1785,15 @@ document.addEventListener("click", async e => {
     // ปุ่มชื่อ download แต่คำสั่งจริงคือ repair (download resume → verify-files)
     // ชื่อปุ่มพูดกับผู้ใช้ ส่วนคำสั่งพูดกับ CLI — ไม่ต้องเหมือนกัน แต่ต้องไม่ขัดกัน
     const command = nact.slice(6) === "download" ? "repair" : nact.slice(6);
-    btn.disabled = true;
-    const original = btn.textContent;
-    btn.textContent = command + "…";
     const withOpts = command === "start" || command === "restart";
     const body = withOpts ? readNodeOpts(node, slug)
       : (command === "remove" && btn.dataset.confirm ? { confirm: slug } : null);
-    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/${command}`,
-                        body ? { method: "POST", headers: { "content-type": "application/json" },
-                                 body: JSON.stringify(body) }
-                             : { method: "POST" });
-    const d = await r.json();
-    btn.disabled = false;
-    btn.textContent = original;
-    if (!r.ok) { alert(d.detail || "Command failed"); return; }
+    const d = await withButton(btn, command + "…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/${command}`,
+          body ? { method: "POST", headers: { "content-type": "application/json" },
+                   body: JSON.stringify(body) }
+               : { method: "POST" }));
+    if (!d) return;
 
     // งานยาวคืน job มา — ตามผลแบบสตรีมแทนการรอเงียบ ๆ
     if (d.job) { followNodeJob(node, slug, d.job.id); return; }
@@ -2167,12 +2189,9 @@ async function loadRecipes() {
 }
 
 async function syncRecipes(button) {
-  const label = button.textContent;
-  button.disabled = true; button.textContent = "กำลังดึง…";
-  const r = await api("/api/recipes/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  const d = await r.json().catch(() => ({}));
-  button.disabled = false; button.textContent = label;
-  if (!r.ok) { alert(d.detail || "ดึงสูตรจากรีโปไม่สำเร็จ"); return; }
+  const d = await withButton(button, "กำลังดึง…", () =>
+    api("/api/recipes/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+  if (!d) return;
   // ข้ามอะไรไปบ้างต้องบอก ไม่งั้น controller ตัวใหม่ที่ยังอ่านไม่ได้จะหายเงียบ
   const skipped = (d.skipped || []).length ? `\n\nข้าม ${d.skipped.length} ไฟล์:\n· ${d.skipped.join("\n· ")}` : "";
   alert(`ดึงมาแล้ว ${d.count} สูตร จาก ${d.repo} @ ${d.commit}${skipped}`);
@@ -2476,18 +2495,21 @@ async function listProviderModels() {
   if (!box) return;
   box.hidden = false;
   box.innerHTML = `<span class="muted">กำลังถาม ${esc(val("p-name"))}…</span>`;
-  if (btn) btn.disabled = true;
-  const r = await api("/api/provider/models", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name: val("p-name"), base_url: val("p-url"), api_key: val("p-key") }),
-  });
-  const d = await r.json();
-  if (btn) btn.disabled = false;
-  if (!r.ok) {
-    box.innerHTML = `<span class="warn-line" style="color:var(--bad)">${esc(
-      typeof d.detail === "string" ? d.detail : "ขอรายชื่อไม่สำเร็จ")}</span>
+  // ถาม provider ข้ามอินเทอร์เน็ต — ล่ม/ช้าได้ ปุ่มต้องไม่ค้างและต้องบอกว่าเกิดอะไรขึ้น
+  let d = null;
+  try {
+    const r = await api("/api/provider/models", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: val("p-name"), base_url: val("p-url"), api_key: val("p-key") }),
+    });
+    d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "ขอรายชื่อไม่สำเร็จ");
+  } catch (err) {
+    box.innerHTML = `<span class="warn-line" style="color:var(--bad)">${esc(String(err.message || err))}</span>
       <span class="dim">พิมพ์ชื่อโมเดลเองได้ตามปกติ</span>`;
     return;
+  } finally {
+    if (btn) btn.disabled = false;
   }
   const models = d.models || [];
   if (!models.length) {
