@@ -8,7 +8,11 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 
-from .paths import config_file, ensure_config_dir
+from .paths import config_file, ensure_config_dir, write_atomic
+
+
+class SettingsError(Exception):
+    """config.yaml อ่านไม่ได้ — ข้อความต้องบอกไฟล์และวิธีแก้ ไม่ใช่แค่ว่า parse ไม่ผ่าน"""
 
 
 class ProviderName(str, Enum):
@@ -71,17 +75,23 @@ class Settings(BaseModel):
         path = config_file()
         if not path.exists():
             return cls()
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            # ไม่เดาว่าผู้ใช้ตั้งใจอะไรและไม่ลบไฟล์ให้เอง (มี provider/คีย์ตั้งค่าอยู่) —
+            # แต่ต้องบอกให้ชัดว่าไฟล์ไหนและทำอะไรต่อ ไม่ใช่โยน stack trace ให้เดา
+            raise SettingsError(
+                f"อ่าน {path} ไม่ได้ — ไฟล์เสีย: {exc}\n"
+                f"แก้ไฟล์นี้ให้ถูกต้อง หรือลบทิ้งเพื่อเริ่มจากค่าเริ่มต้น (จะเสียค่า provider ที่ตั้งไว้)"
+            ) from exc
         return cls.model_validate(data)
 
     def save(self) -> None:
         ensure_config_dir()
-        path = config_file()
-        path.write_text(
+        write_atomic(
+            config_file(),
             yaml.safe_dump(self.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
         )
-        path.chmod(0o600)
 
     def set_provider(self, name: ProviderName, model: str = "", base_url: str | None = None) -> ProviderConfig:
         # ปฏิเสธตั้งแต่ตอนตั้งค่า ดีกว่าปล่อยให้ผ่านแล้วไปพังตอน deploy จริง

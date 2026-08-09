@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -27,6 +28,30 @@ def profile_file() -> Path:
 
 def sessions_dir() -> Path:
     return config_dir() / "sessions"
+
+
+def write_atomic(path: Path, text: str, mode: int = 0o600) -> Path:
+    """เขียนไฟล์ config แบบ "เห็นได้ทีเดียวทั้งไฟล์" — เขียนลงไฟล์ชั่วคราวแล้ว replace
+
+    หน้าเว็บรัน endpoint แบบ sync ใน threadpool สองคำขอที่บันทึกไฟล์เดียวกันพร้อมกัน
+    (เช่นลากจัดลำดับเครื่องสองครั้งติด ๆ) จะเขียนทับกันกลางคัน ได้ไฟล์ที่เป็นเนื้อของ
+    ครั้งใหม่ต่อด้วยหางของครั้งเก่า — YAML พังทั้งไฟล์แล้วหน้าเว็บ 500 ทั้งหน้า (เจอจริง)
+
+    os.replace เป็น atomic บนไฟล์ระบบเดียวกัน คนอ่านจึงเห็นของเก่าหรือของใหม่เท่านั้น
+    ไฟล์ชั่วคราวอยู่โฟลเดอร์เดียวกันเพื่อไม่ให้ข้ามไฟล์ระบบ (ข้ามแล้ว replace ไม่ atomic)
+    """
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    temporary.chmod(mode)
+    os.replace(temporary, path)
+    return path
 
 
 def ensure_config_dir() -> Path:

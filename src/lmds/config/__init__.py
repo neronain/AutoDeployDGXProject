@@ -1,4 +1,11 @@
-from .paths import config_dir, config_file, credentials_file, ensure_config_dir, profile_file
+from .paths import (
+    config_dir,
+    config_file,
+    credentials_file,
+    ensure_config_dir,
+    profile_file,
+    write_atomic,
+)
 from .settings import (
     DEFAULT_MODELS,
     Cluster,
@@ -6,6 +13,7 @@ from .settings import (
     ProviderConfig,
     ProviderName,
     Settings,
+    SettingsError,
     Ui,
 )
 
@@ -16,10 +24,12 @@ __all__ = [
     "ProviderConfig",
     "ProviderName",
     "Settings",
+    "SettingsError",
     "Ui",
     "config_dir",
     "config_file",
     "credentials_file",
     "ensure_config_dir",
     "profile_file",
+    "write_atomic",
 ]

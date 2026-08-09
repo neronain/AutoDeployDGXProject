@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 import lmds
+from lmds.config import SettingsError
 from lmds.web import state
 
 STATIC = Path(__file__).parent / "static"
@@ -91,6 +92,11 @@ class _Attempts:
 def create_app(token: str = "") -> FastAPI:
     app = FastAPI(title="LMDS", docs_url=None, redoc_url=None, openapi_url=None)
     attempts = _Attempts()
+
+    @app.exception_handler(SettingsError)
+    def _settings_broken(request: Request, exc: SettingsError):
+        """config.yaml เสีย = ทุกหน้าพังพร้อมกัน — อย่างน้อยต้องบอกว่าไฟล์ไหนและแก้ยังไง"""
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     def _client_ip(request: Request) -> str:
         return request.client.host if request.client else "?"

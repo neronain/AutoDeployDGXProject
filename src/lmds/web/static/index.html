@@ -1480,7 +1480,11 @@ async function refreshNodes() {
   let d;
   try {
     const r = await api("/api/nodes");
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    // เอาเหตุผลจริงจากเซิร์ฟเวอร์มาโชว์ด้วย — "HTTP 500" เฉย ๆ ไม่บอกว่าต้องไปแก้อะไร
+    if (!r.ok) {
+      const detail = (await r.json().catch(() => ({}))).detail;
+      throw new Error(detail ? `${detail}` : `HTTP ${r.status}`);
+    }
     d = await r.json();
   } catch (err) {
     // ค้างที่ "Loading…" ตลอดกาลคือบอกผู้ใช้ว่า "รอไปเรื่อย ๆ" ทั้งที่มันจะไม่มาแล้ว

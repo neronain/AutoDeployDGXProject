@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from lmds.config.paths import config_dir, ensure_config_dir
+from lmds.config.paths import config_dir, ensure_config_dir, write_atomic
 
 NAME_MAX = 63
 _NAME_EXTRA = "._-"
@@ -109,11 +109,11 @@ def load() -> list[Node]:
 
 def save(nodes: list[Node]) -> Path:
     ensure_config_dir()
-    path = nodes_file()
     payload = {"nodes": [asdict(n) for n in nodes]}
-    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    path.chmod(0o600)  # มีชื่อ user/host ของเครื่องภายใน — ไม่ควรให้ user อื่นอ่าน
-    return path
+    # เขียนแบบ atomic — สองคำขอจากหน้าเว็บที่บันทึกพร้อมกันเคยเขียนทับกันกลางคันจนไฟล์พัง
+    # สิทธิ์ 0600 เพราะมีชื่อ user/host ของเครื่องภายใน — ไม่ควรให้ user อื่นอ่าน
+    return write_atomic(nodes_file(),
+                        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
 
 
 def validate_cluster_ip(value: str) -> str:
