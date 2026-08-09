@@ -276,7 +276,31 @@ def privileged_steps(user: str) -> list[tuple[str, str, str]]:
     ]
 
 
-def run_privileged(node: Node, password: str, with_prereq: bool = False) -> list[dict]:
+def ownership_steps(user: str) -> list[tuple[str, str, str]]:
+    """คืนแคชโมเดลให้เป็นของ user — แก้เคส "container เคยรันเป็น root แล้วโหลด weight ลงมา"
+
+    ผลของเคสนั้นคือไฟล์ในแคชเป็นของ root ปนอยู่ · รันบนเครื่องเดียวยังผ่านเพราะข้างใน
+    container เป็น root อยู่แล้ว แต่ `sync-worker` คัดลอกในฐานะ user ผ่าน SSH เจอไฟล์
+    โหมด 600 ของ root ก็ตายทันที (rsync exit 23) — เจอจริงกับ DeepSeek-V4-Flash บน spark-head
+
+    แตะเฉพาะแคชโมเดลใน home ของ user เอง ไม่ยุ่งกับอย่างอื่นบนเครื่อง
+    """
+    quoted = shlex.quote(user)
+    # `find ... -print -quit` = หยุดทันทีที่เจอไฟล์แรกที่ไม่ใช่ของ user — แคชใหญ่มาก
+    # ไล่ทั้งต้นไม้ทุกครั้งช้าเกินจำเป็น · verify ผ่านเมื่อ "ไม่เหลือของ root แล้ว"
+    verify = (
+        "! find ~/.cache/huggingface ~/.cache/flashinfer -maxdepth 6 "
+        f"! -user {quoted} -print -quit 2>/dev/null | grep -q ."
+    )
+    return [(
+        f"sudo -S -p '' chown -R {quoted}:{quoted} ~/.cache/huggingface ~/.cache/flashinfer",
+        "คืนสิทธิ์แคชโมเดล (~/.cache/huggingface, ~/.cache/flashinfer) ให้เป็นของผู้ใช้",
+        verify,
+    )]
+
+
+def run_privileged(node: Node, password: str, with_prereq: bool = False,
+                   steps: list[tuple[str, str, str]] | None = None) -> list[dict]:
     """ทำขั้นที่ต้องใช้ root บนเครื่องปลายทาง — รหัสผ่านส่งทาง stdin ใช้ครั้งเดียว
 
     ทำไมต้องมี: ขั้นพวกนี้ทำผ่าน SSH ไม่ได้เพราะ sudo ไม่มี tty ให้กรอกรหัส เดิมจึงได้แค่
@@ -286,7 +310,8 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False) -> list
     เก็บในทะเบียน — ทะเบียนไม่มีฟิลด์ให้เก็บด้วยซ้ำ
     """
     results = []
-    steps = privileged_steps(node.user)
+    # ผู้เรียกระบุขั้นตอนเองได้ (เช่นแก้สิทธิ์ไฟล์อย่างเดียว) — ไม่ระบุ = ชุดตั้งค่าปกติ
+    steps = list(steps) if steps is not None else privileged_steps(node.user)
     if with_prereq:
         steps.append((
             "sudo -S -p '' bash -c 'cd ~/AutoDeployDGXProject && LMDS_ASSUME_YES=1 ./install.sh'",

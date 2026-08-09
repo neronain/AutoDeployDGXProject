@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,29 @@ def test_unwritable_cache_is_reported_with_chown(tmp_path, monkeypatch):
     perms = next(f for f in diagnose(slug).findings if f.name == "permissions")
     assert perms.status is Status.FAIL
     assert "chown" in perms.fix
+
+
+def test_root_owned_file_inside_a_writable_cache_is_caught(tmp_path, monkeypatch):
+    """โฟลเดอร์เขียนได้ แต่มีไฟล์ของ root โหมด 600 ปนอยู่ — รันเครื่องเดียวผ่าน แต่
+    sync-worker ที่คัดลอกในฐานะ user ตายด้วย rsync exit 23 (เจอจริงกับ DeepSeek-V4-Flash)
+    """
+    slug = _setup(tmp_path, monkeypatch)
+    blocked = tmp_path / "models" / slug / "demo-Q8.gguf"      # ไฟล์ weight ที่ rsync ต้องอ่าน
+
+    real_access = os.access
+    monkeypatch.setattr("lmds.doctor.checks.os.access",
+                        lambda path, mode: False if (mode == os.R_OK and str(path) == str(blocked))
+                        else real_access(path, mode))
+    perms = next(f for f in diagnose(slug).findings if f.name == "permissions")
+    assert perms.status is Status.FAIL
+    assert "อ่านไฟล์ไม่ได้" in perms.detail and blocked.name in perms.detail
+    assert "chown -R" in perms.fix
+
+
+def test_readable_cache_passes(tmp_path, monkeypatch):
+    slug = _setup(tmp_path, monkeypatch)
+    perms = next(f for f in diagnose(slug).findings if f.name == "permissions")
+    assert perms.status is Status.OK
 
 
 def test_unknown_slug_says_so(tmp_path, monkeypatch):

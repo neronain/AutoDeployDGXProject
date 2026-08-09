@@ -631,6 +631,27 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "steps": outcomes,
                 "ok": all(step["ok"] for step in outcomes)}
 
+    @app.post("/api/nodes/{name}/fix-permissions", dependencies=guarded)
+    def node_fix_permissions(name: str, body: dict) -> dict:
+        """คืนสิทธิ์แคชโมเดลบนเครื่องนั้นให้เป็นของ user — ทางเดียวกับปุ่ม setup (รหัสใช้ครั้งเดียว)
+
+        เคสจริง: container ที่รันเป็น root โหลด weight ลงแคช พอสั่ง sync-worker ซึ่งคัดลอก
+        ในฐานะ user ผ่าน SSH ก็เจอไฟล์ของ root โหมด 600 แล้ว rsync ตายด้วย exit 23
+        """
+        from lmds.nodes import NodeError, find, ownership_steps, run_privileged
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        password = (body or {}).get("password") or ""
+        if not password:
+            raise HTTPException(status_code=400, detail="ต้องใส่รหัสผ่าน sudo ของ user บนเครื่องนั้น")
+        try:
+            outcomes = run_privileged(node, password, steps=ownership_steps(node.user))
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "steps": outcomes, "ok": all(step["ok"] for step in outcomes)}
+
     def _attach_node_jobs(name: str, payload: dict) -> dict:
         """แปะงานที่กำลังรันของแต่ละโมเดลลงไปใน payload — หน้าเว็บจะได้ตามต่อได้หลังรีเฟรช"""
         from . import jobs

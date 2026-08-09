@@ -1348,6 +1348,8 @@ function nodeCard(node) {
       <span class="mono muted nver"></span>
       <button data-nact="setup" data-node="${esc(node.name)}"
               title="ตั้งค่าที่ต้องใช้สิทธิ์ root บนเครื่องนั้น (ถามรหัสผ่านตอนนั้น ไม่เก็บ)">setup</button>
+      <button data-nact="fix-perms" data-node="${esc(node.name)}"
+              title="คืนสิทธิ์แคชโมเดลให้เป็นของ user — ใช้เมื่อ container เคยรันเป็น root แล้ว sync-worker/start ตายเพราะ Permission denied">แก้สิทธิ์</button>
       <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
     </div>
@@ -1691,17 +1693,22 @@ document.addEventListener("click", async e => {
     if (row && !pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
     return;
   }
-  if (nact === "setup") {
+  if (nact === "setup" || nact === "fix-perms") {
     // ใช้ฟอร์มในหน้า ไม่ใช่ prompt() ของเบราว์เซอร์ — prompt() แสดงรหัสผ่านเป็นตัวอักษรล้วน
     // ปิดไม่ได้ และคนที่ยืนอยู่ข้างหลังอ่านได้หมด
-    showNodeOutput(node, `setup · ${node}`, "");
+    const perms = nact === "fix-perms";
+    showNodeOutput(node, `${perms ? "แก้สิทธิ์ไฟล์" : "setup"} · ${node}`, "");
     const row = nodeRows.get(node);
     if (!row) return;
     const user = (lastNodeRegistry.get(node) || {}).user || "user บนเครื่องนั้น";
     row.body.innerHTML = `<div class="pad">
-      <div class="name">ตั้งค่าที่ต้องใช้สิทธิ์ root บน ${esc(node)}</div>
-      <div class="dim" style="margin:6px 0 12px">จะทำ: ให้ service ขึ้นตั้งแต่บูต
-        (<code>loginctl enable-linger</code>)</div>
+      <div class="name">${perms ? `คืนสิทธิ์แคชโมเดลบน ${esc(node)}`
+                                 : `ตั้งค่าที่ต้องใช้สิทธิ์ root บน ${esc(node)}`}</div>
+      <div class="dim" style="margin:6px 0 12px">${perms
+        ? `จะทำ: <code>chown -R ${esc(user)} ~/.cache/huggingface ~/.cache/flashinfer</code>
+           — ใช้เมื่อ container เคยรันเป็น root แล้วทิ้งไฟล์ของ root ไว้ในแคช
+           จนคัดลอกไป worker ไม่ได้ (rsync exit 23)`
+        : `จะทำ: ให้ service ขึ้นตั้งแต่บูต (<code>loginctl enable-linger</code>)`}</div>
       <div class="field">
         <label>user</label>
         <span class="mono">${esc(user)}</span>
@@ -1711,7 +1718,8 @@ document.addEventListener("click", async e => {
         <label>รหัสผ่าน sudo</label>
         <input id="setup-pw" type="password" autocomplete="current-password"
                placeholder="ใช้ครั้งเดียว ไม่ถูกเก็บ" style="min-width:240px">
-        <button data-nact="setup-go" data-node="${esc(node)}">ตั้งค่า</button>
+        <button data-nact="setup-go" data-node="${esc(node)}"
+                data-perms="${perms ? "1" : ""}">${perms ? "แก้สิทธิ์" : "ตั้งค่า"}</button>
         <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
       </div>
       <div class="dim">รหัสผ่านถูกส่งทาง stdin ของ ssh — ไม่เขียนลงดิสก์ ไม่อยู่ในคำสั่ง
@@ -1728,21 +1736,15 @@ document.addEventListener("click", async e => {
     const out = row && row.body.querySelector(`#setup-out-${CSS.escape(node)}`);
     const password = input && input.value;
     if (!password) { if (out) out.innerHTML = `<div class="warn-line">ใส่รหัสผ่านก่อน</div>`; return; }
-    btn.disabled = true;
-    btn.textContent = "กำลังตั้งค่า…";
-    const r = await api(`/api/nodes/${encodeURIComponent(node)}/setup`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
-    const d = await r.json();
+    // ฟอร์มเดียวใช้ได้สองงาน — ตั้งค่าเครื่อง กับคืนสิทธิ์แคชโมเดล (ทั้งคู่ต้องรหัส sudo)
+    const endpoint = btn.dataset.perms ? "fix-permissions" : "setup";
+    const d = await withButton(btn, "กำลังทำ…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/${endpoint}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password }),
+      }));
     if (input) input.value = "";          // ไม่ทิ้งรหัสผ่านค้างไว้ใน DOM
-    btn.disabled = false;
-    btn.textContent = "ตั้งค่า";
-    if (!r.ok) {
-      if (out) out.innerHTML = `<div class="warn-line" style="color:var(--bad)">${esc(
-        typeof d.detail === "string" ? d.detail : "ตั้งค่าไม่สำเร็จ")}</div>`;
-      return;
-    }
+    if (!d) return;
     if (out) out.innerHTML = (d.steps || []).map(s =>
       `<div class="warn-line" style="color:${s.ok ? (s.skipped ? "var(--fg2)" : "var(--ok)") : "var(--bad)"}">
         ${s.ok ? (s.skipped ? "•" : "✓") : "✕"} ${esc(s.step)}${

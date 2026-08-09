@@ -1721,7 +1721,8 @@ def test_sudo_password_is_never_typed_into_a_browser_prompt():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     import re
 
-    setup = page.split('if (nact === "setup")')[1].split('if (nact === "install")')[0]
+    # ฟอร์มนี้ใช้ร่วมกับ "แก้สิทธิ์ไฟล์" แล้ว — เงื่อนไขเดียวกันคุมทั้งสองงาน
+    setup = page.split('if (nact === "setup" || nact === "fix-perms")')[1].split('if (nact === "install")')[0]
     # คอมเมนต์ไม่ได้ถูกรัน — ที่อธิบายว่า "ไม่ใช้ prompt()" ไม่ใช่การเรียก prompt()
     code = re.sub(r"//.*", "", setup)
     assert "prompt(" not in code, "ต้องใช้ฟอร์มในหน้าที่ปิดรหัสได้"
@@ -1729,9 +1730,52 @@ def test_sudo_password_is_never_typed_into_a_browser_prompt():
     assert 'input.value = ""' in page, "ส่งเสร็จต้องล้างช่อง ไม่ทิ้งรหัสค้างใน DOM"
 
 
+def test_fix_permissions_only_touches_the_model_cache(registered, monkeypatch):
+    """เคสจริง: container รันเป็น root แล้วโหลด weight ลงแคช → sync-worker ตาย exit 23
+
+    ปุ่มนี้สั่ง sudo บนเครื่องจริง จึงต้องแตะเฉพาะแคชโมเดลใน home ของ user เท่านั้น
+    """
+    ran = []
+
+    def fake_run(node, command, timeout=0, stdin_text=None):
+        ran.append(command)
+        # ตรวจก่อนทำต้องไม่ผ่าน (ยังมีไฟล์ของ root) · ตรวจหลัง chown ต้องผ่าน
+        ok = "chown" in command or any("chown" in c for c in ran[:-1])
+        return SimpleNamespace(ok=ok, exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    client = TestClient(create_app())
+    payload = client.post("/api/nodes/spark2/fix-permissions", json={"password": "s3cret"}).json()
+
+    chown = next(c for c in ran if "chown" in c)
+    assert "chown -R ops:ops ~/.cache/huggingface ~/.cache/flashinfer" in chown
+    assert "sudo -S -p ''" in chown          # รหัสผ่านไปทาง stdin ไม่ใช่ใน argv
+    assert "/" not in chown.split("chown -R ops:ops")[1].split("~")[0]   # ไม่มีพาธนอก home
+    assert payload["steps"][0]["ok"] is True
+    # รหัสผ่านต้องไม่โผล่ในคำสั่งใด ๆ ที่ถูกส่งไปเครื่องปลายทาง
+    assert not any("s3cret" in c for c in ran)
+
+
+def test_fix_permissions_needs_a_password():
+    assert TestClient(create_app()).post("/api/nodes/spark2/fix-permissions",
+                                         json={}).status_code in (400, 404)
+
+
+def test_rsync_permission_failure_explains_the_fix():
+    """log ของ rsync อ่านแล้วไม่รู้ว่าต้องทำอะไร — ต้องบอกวิธีแก้ต่อท้ายให้เลย"""
+    from lmds.web.jobs import explain_failure
+
+    hint = explain_failure(
+        'rsync: [sender] send_files failed to open "/home/neronain/.cache/huggingface/'
+        'models--nvidia--DeepSeek-V4-Flash-NVFP4/trees/e3cd.json": Permission denied (13)\n'
+        "rsync error: some files/attrs were not transferred (code 23)")
+    assert "แก้สิทธิ์ไฟล์" in hint and "chown -R" in hint
+    assert explain_failure("rsync ok, nothing wrong") == ""
+
+
 def test_setup_form_says_which_user_it_will_use():
     """ผู้ใช้ถามว่า "จะรู้ได้ยังไงว่า user ไหน" — ต้องบอก ไม่ใช่ให้เดา"""
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert "lastNodeRegistry" in page
-    setup = page.split('if (nact === "setup")')[1].split('if (nact === "setup-go")')[0]
+    setup = page.split('if (nact === "setup" || nact === "fix-perms")')[1].split('if (nact === "setup-go")')[0]
     assert "user เดียวกับที่ใช้ต่อ SSH" in setup

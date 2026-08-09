@@ -247,6 +247,19 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
 REMOTE_LONG = {"start", "restart", "repair", "remove"}
 
 
+def explain_failure(output: str) -> str:
+    """แปล error ที่เจอบ่อยให้เป็นสิ่งที่กดทำต่อได้ — ไม่ใช่ให้ไปนั่งอ่าน log ของ rsync เอง"""
+    text = output or ""
+    if "Permission denied" in text and ("rsync" in text or "failed to open" in text):
+        return (
+            "แก้ยังไง: ไฟล์ในแคชโมเดลบางส่วนเป็นของ root (มักเกิดจาก container ที่รันเป็น root "
+            "แล้วโหลด weight ลงมา) — คัดลอกไป worker ในฐานะ user จึงอ่านไม่ได้\n"
+            "กดปุ่ม \"แก้สิทธิ์ไฟล์\" ที่การ์ดของเครื่องนี้ (ถามรหัส sudo ครั้งเดียว) "
+            "หรือรันบนเครื่องนั้นเอง: sudo chown -R $USER:$USER ~/.cache/huggingface"
+        )
+    return ""
+
+
 def start_remote(node_name: str, slug: str, command: str, remote_command: str) -> Job:
     """รันคำสั่งบนเครื่องอื่นเป็นงานเบื้องหลัง แล้วสตรีมผลกลับมาทีละบรรทัด
 
@@ -282,12 +295,13 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
         for line in proc.stdout:
             job.lines.append(line)
         code = proc.wait()
-        # error ของ git อ่านแล้วไม่รู้ว่าต้องทำอะไร — แปลให้ตรงจุดก่อนจบงาน
+        # error ของ git/rsync อ่านแล้วไม่รู้ว่าต้องทำอะไร — แปลให้ตรงจุดก่อนจบงาน
         if code != 0 and self_node:
             from lmds.nodes import explain_install_failure, find
 
             target = find(self_node)
-            hint = explain_install_failure("".join(job.lines), target) if target else ""
+            output = "".join(job.lines)
+            hint = (explain_install_failure(output, target) if target else "") or explain_failure(output)
             if hint:
                 job.lines.append("\n" + hint + "\n")
         job.exit_code = code

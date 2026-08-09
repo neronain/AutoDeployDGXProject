@@ -203,16 +203,48 @@ def _check_permissions(profile: dict, slug: str) -> list[Finding]:
     directory, _ = _weight_paths(profile, slug)
     candidates = [d for d in {directory, _hf_home(), Path.home() / ".cache" / "flashinfer"} if d.exists()]
     unwritable = [str(d) for d in candidates if not os.access(d, os.W_OK)]
+    uid, gid = os.getuid(), os.getgid()
     if unwritable:
-        uid, gid = os.getuid(), os.getgid()
         findings.append(Finding(
             "permissions", Status.FAIL,
             f"เขียนไม่ได้: {', '.join(unwritable)} (มักเกิดจาก container เคยสร้างเป็น root)",
             f"sudo chown -R {uid}:{gid} {unwritable[0]}",
         ))
+        return findings
+
+    # โฟลเดอร์เขียนได้ไม่ได้แปลว่าไฟล์ข้างในอ่านได้ทุกตัว — container ที่รันเป็น root ทิ้ง
+    # ไฟล์โหมด 600 ของ root ไว้ได้ในโฟลเดอร์ที่เราเขียนได้ · รันเครื่องเดียวไม่เจอ แต่
+    # `sync-worker` ที่คัดลอกในฐานะ user จะตายด้วย rsync exit 23 (เจอจริงกับ DeepSeek-V4-Flash)
+    blocked = _first_unreadable(candidates)
+    if blocked:
+        findings.append(Finding(
+            "permissions", Status.FAIL,
+            f"อ่านไฟล์ไม่ได้: {blocked} (มักเกิดจาก container เคยรันเป็น root) — "
+            f"คัดลอกไป worker ไม่ได้",
+            f"sudo chown -R {uid}:{gid} {_hf_home()}",
+        ))
     else:
-        findings.append(Finding("permissions", Status.OK, "cache dir เขียนได้ทั้งหมด"))
+        findings.append(Finding("permissions", Status.OK, "cache dir เขียนได้และอ่านไฟล์ได้ครบ"))
     return findings
+
+
+# แคชโมเดลมีไฟล์เป็นหมื่น — ไล่ทั้งต้นไม้ทุกครั้งช้าเกินไปสำหรับคำสั่งที่ควรตอบทันที
+# หยุดทันทีที่เจอไฟล์แรกที่อ่านไม่ได้ และมีเพดานจำนวนไฟล์กันเคสแคชใหญ่ผิดปกติ
+_READ_SCAN_LIMIT = 20_000
+
+
+def _first_unreadable(roots: list[Path]) -> str:
+    seen = 0
+    for root in roots:
+        for path, _, files in os.walk(root, onerror=lambda _e: None):
+            for name in files:
+                seen += 1
+                if seen > _READ_SCAN_LIMIT:
+                    return ""
+                full = os.path.join(path, name)
+                if not os.access(full, os.R_OK):
+                    return full
+    return ""
 
 
 def _check_disk(profile: dict, slug: str) -> list[Finding]:
