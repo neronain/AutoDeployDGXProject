@@ -348,7 +348,7 @@ pre {
    ช่องกรอก cluster IP อยู่ กดแล้วต้องได้คลิกตามปกติ ไม่ใช่กลายเป็นลาก */
 .ngrip {
   cursor: grab; user-select: none; touch-action: none; flex: none;
-  color: var(--fg2); opacity: .45; font-size: 14px; line-height: 1; padding: 4px 2px;
+  color: var(--fg2); opacity: .6; font-size: 16px; line-height: 1; padding: 8px 5px;
 }
 .ngrip:hover { opacity: 1; }
 .machine.dragging { opacity: .65; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); cursor: grabbing; }
@@ -1770,11 +1770,12 @@ document.addEventListener("pointerdown", e => {
   const box = document.getElementById("nodes");
   if (!block || !box) return;
   e.preventDefault();                       // กันการลากแล้วกลายเป็นเลือกข้อความ
-  // จับ pointer ไว้กับที่จับ เพื่อให้ลากออกนอกการ์ดแล้วยังตามอยู่ · ไม่ได้ก็ลากต่อได้ตามปกติ
-  try { grip.setPointerCapture(e.pointerId); } catch { /* pointer หายไปแล้ว */ }
   draggingName = [...nodeRows].find(([, row]) => row.block === block)?.[0] || "";
   block.classList.add("dragging");
 
+  // ฟังที่ document ไม่ใช่ที่ตัวที่จับ — และไม่ใช้ setPointerCapture ด้วย เพราะทุกครั้งที่เรา
+  // ย้ายการ์ดใน DOM ตัวที่จับถูกถอดออกแล้วใส่กลับ เบราว์เซอร์จึงปล่อย capture ทิ้งทันที
+  // (จับที่ที่จับแล้วลากจริงจะขยับได้ก้าวเดียวแล้วค้าง — เจอตอนลองใช้จริง)
   const move = ev => {
     // ย้ายการ์ดจริงตามนิ้วเลย ไม่ต้องมีเส้นบอกตำแหน่ง — เห็นผลลัพธ์จริงระหว่างลาก
     const target = cardAfterPoint(box, ev.clientY, block);
@@ -1783,17 +1784,17 @@ document.addEventListener("pointerdown", e => {
     else box.appendChild(block);
   };
   const done = async () => {
-    grip.removeEventListener("pointermove", move);
-    grip.removeEventListener("pointerup", done);
-    grip.removeEventListener("pointercancel", done);
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", done);
+    document.removeEventListener("pointercancel", done);
     block.classList.remove("dragging");
     draggingName = null;
     await saveNodeOrder();
     layoutClusterGroups();                  // จัดรั้วกลุ่มใหม่ตามลำดับที่เพิ่งวาง
   };
-  grip.addEventListener("pointermove", move);
-  grip.addEventListener("pointerup", done);
-  grip.addEventListener("pointercancel", done);
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", done);
+  document.addEventListener("pointercancel", done);
 });
 
 // สีประจำกลุ่ม — คนดูต้องบอกได้ว่า "เครื่องนี้อยู่กลุ่มเดียวกับเครื่องไหน" โดยไม่ต้องอ่านชื่อ

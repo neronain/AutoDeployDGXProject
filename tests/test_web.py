@@ -810,6 +810,18 @@ def test_page_has_a_drag_handle_for_reordering():
     assert "/api/nodes/order" in page
 
 
+def test_drag_listens_on_the_document_not_the_handle():
+    """เจอตอนใช้จริง: ผูก pointermove ไว้กับตัวที่จับแล้วลากได้ก้าวเดียวก็ค้าง
+
+    เพราะทุกครั้งที่ย้ายการ์ดใน DOM ตัวที่จับถูกถอดออกแล้วใส่กลับ เบราว์เซอร์จึงปล่อย
+    pointer capture ทิ้ง event ที่เหลือเลยไม่วิ่งมาที่ที่จับอีก — ต้องฟังที่ document
+    """
+    page = TestClient(create_app()).get("/").text
+    assert 'document.addEventListener("pointermove"' in page
+    assert 'document.addEventListener("pointerup"' in page
+    assert ".setPointerCapture(" not in page          # ชื่อในคอมเมนต์ได้ แต่ห้ามเรียกจริง
+
+
 def test_page_can_toggle_stacking_for_the_hub_itself():
     """hub ไม่มีการ์ดในลิสต์ ปุ่มของมันจึงต้องอยู่ที่อื่น — ไม่งั้นปิดแล้วกลุ่มหาย = เปิดคืนไม่ได้"""
     page = TestClient(create_app()).get("/").text
