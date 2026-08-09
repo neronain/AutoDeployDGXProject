@@ -1730,6 +1730,49 @@ def test_sudo_password_is_never_typed_into_a_browser_prompt():
     assert 'input.value = ""' in page, "ส่งเสร็จต้องล้างช่อง ไม่ทิ้งรหัสค้างใน DOM"
 
 
+def test_deploy_form_has_an_optional_token_field():
+    """ลูกค้าบางรายมี token ของตัวเอง — ต้องมีที่ให้กรอกตั้งแต่แรก ไม่ใช่รอให้ 401 ก่อน"""
+    page = TestClient(create_app()).get("/").text
+    assert 'id="w-hf" type="password"' in page          # ไม่โชว์เป็นตัวอักษรล้วน
+    assert "ไม่บังคับ" in page
+    assert "hf_token: hfToken" in page                  # ส่งไปกับคำขอวิเคราะห์
+    assert 'id="w-hf-save"' in page and "/api/secrets/hf" in page
+
+
+def test_saving_the_token_never_echoes_it_back(monkeypatch):
+    """token ต้องไม่ถูกส่งกลับออกไปทาง API ไม่ว่ากรณีใด — เก็บแล้วบอกแค่ว่าเก็บที่ไหน"""
+    saved = {}
+    monkeypatch.setattr("lmds.secrets.set_secret",
+                        lambda name, value: saved.setdefault(name, value) and "file" or "file")
+    r = TestClient(create_app()).post("/api/secrets/hf", json={"token": "hf_abc123"})
+    assert r.status_code == 200 and r.json() == {"saved": True, "backend": "file"}
+    assert saved == {"hf": "hf_abc123"}
+    assert "hf_abc123" not in r.text
+
+
+def test_saving_an_empty_token_is_refused():
+    assert TestClient(create_app()).post("/api/secrets/hf", json={"token": "  "}).status_code == 400
+
+
+def test_adopted_bundle_is_not_told_to_download(registered, monkeypatch):
+    """bundle จาก `lmds adopt` ชี้ไปที่ path ในคอนเทนเนอร์ — LMDS โหลด/ตรวจไฟล์ให้ไม่ได้
+
+    เดิมขึ้น "not downloaded" ตลอดกาลแล้วยื่นปุ่ม download ที่กดไปก็ล้มแน่นอน
+    (เจอกับ qwen3-coder-next-nvfp4-gb10 บน msi-6)
+    """
+    from lmds.inventory import self_managed_weights, weights_present
+
+    adopted = {"adopted": True, "model": {"id": "/models/qwen3-coder-next"},
+               "runtime": {"engine": "vllm"}}
+    assert self_managed_weights(adopted) is True
+    assert weights_present(SimpleNamespace(slug="demo"), adopted) is True   # ไม่ใช่ "ยังไม่โหลด"
+    # profile ปกติของ HF ยังตรวจตามเดิม
+    assert self_managed_weights({"model": {"id": "org/model"}}) is False
+
+    page = TestClient(create_app()).get("/").text
+    assert "self_managed_weights" in page and "weight จัดการเอง" in page
+
+
 def test_fix_permissions_only_touches_the_model_cache(registered, monkeypatch):
     """เคสจริง: container รันเป็น root แล้วโหลด weight ลงแคช → sync-worker ตาย exit 23
 

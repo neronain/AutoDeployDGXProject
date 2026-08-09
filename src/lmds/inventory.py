@@ -31,12 +31,30 @@ def controller_commands(controller: str) -> list[str]:
     return sorted({m for m in _COMMAND_RE.findall(text) if m in KNOWN_COMMANDS})
 
 
+def self_managed_weights(profile) -> bool:
+    """bundle นี้เป็นแบบที่ผู้ใช้ดูแล weight เอง ไม่ใช่ของที่ LMDS โหลดมาไหม
+
+    bundle ที่มาจาก `lmds adopt` ชี้ไปที่ path *ในคอนเทนเนอร์* (เช่น /models/xxx) ซึ่งบน
+    เครื่องโฮสต์ไม่มีอยู่จริง — เอาไปคิดเป็น repo id ของ Hugging Face ไม่ได้ ผลคือหน้าเว็บ
+    ขึ้น "not downloaded" ตลอดกาลและยื่นปุ่ม download ที่กดไปก็ล้มแน่นอน (เจอกับ
+    qwen3-coder-next-nvfp4-gb10 บน msi-6) · adopt ตั้งใจไม่รองรับ download อยู่แล้ว
+    """
+    model = (profile or {}).get("model") or {}
+    identifier = str(model.get("id") or "")
+    # repo id ของ HF เป็น "org/name" เสมอ — ขึ้นต้นด้วย / หรือ ~ คือ path ไม่ใช่ repo
+    return bool((profile or {}).get("adopted")) or identifier.startswith(("/", "~", "./"))
+
+
 def weights_present(server, profile) -> bool:
     """โหลด weight มาแล้วหรือยัง — ใช้ตัวตรวจชุดเดียวกับ lmds doctor ไม่คำนวณซ้ำคนละทาง"""
     from lmds.doctor.checks import _weight_paths
 
     if not profile:
         return False
+    # weight ที่ผู้ใช้ดูแลเอง: ตอบว่า "ไม่รู้" ไม่ได้ จึงถือว่าพร้อม — ปุ่มที่ควรได้คือ start
+    # ไม่ใช่ download ที่ทำอะไรไม่ได้จริง · ความจริงว่ามันมีไฟล์ครบไหม รู้ได้ตอน start เท่านั้น
+    if self_managed_weights(profile):
+        return True
     directory, wanted = _weight_paths(profile, server.slug)
     if not directory.is_dir():
         return False
@@ -131,6 +149,8 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         "commands": controller_commands(server.controller) if server.controller_exists else [],
         "started_at": server.started_at,
         "downloaded": weights_present(server, profile),
+        # หน้าเว็บต้องแยกได้ว่า "โหลดครบแล้ว" กับ "weight ไม่ได้อยู่ในมือ LMDS" คนละเรื่อง
+        "self_managed_weights": self_managed_weights(profile),
         "job": active_job,
     }
 

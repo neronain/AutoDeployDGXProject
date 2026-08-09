@@ -631,6 +631,24 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "steps": outcomes,
                 "ok": all(step["ok"] for step in outcomes)}
 
+    @app.post("/api/secrets/hf", dependencies=guarded)
+    def save_hf_token(body: dict) -> dict:
+        """เก็บ HF token ไว้ที่ hub — ใช้กับรุ่น gated/private ครั้งต่อ ๆ ไปโดยไม่ต้องพิมพ์ซ้ำ
+
+        เก็บผ่าน keyring ของเครื่องถ้ามี ไม่มีก็ไฟล์สิทธิ์ 0600 · **ไม่เคยเขียนลง bundle**
+        และไม่ตอบค่ากลับออกไป — คืนแค่ว่าเก็บไว้ที่ backend ไหน
+        """
+        from lmds.secrets import set_secret
+
+        token = (body or {}).get("token") or ""
+        if not token.strip():
+            raise HTTPException(status_code=400, detail="ต้องใส่ token ก่อน")
+        try:
+            backend = set_secret("hf", token.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"saved": True, "backend": backend}
+
     @app.post("/api/nodes/{name}/fix-permissions", dependencies=guarded)
     def node_fix_permissions(name: str, body: dict) -> dict:
         """คืนสิทธิ์แคชโมเดลบนเครื่องนั้นให้เป็นของ user — ทางเดียวกับปุ่ม setup (รหัสใช้ครั้งเดียว)

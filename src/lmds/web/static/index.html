@@ -776,7 +776,9 @@ const nodeTargets = new Map();   // ชื่อเครื่อง -> target 
 let sess = null, analyzing = false;
 // Remember what was typed: every follow-up question (pick a GGUF, enter a token) rebuilds
 // the form, and silently losing the target changes the result without the user noticing.
-const draft = { model: "", target: "", no_llm: false, machine: "" };
+// hf_token อยู่ในนี้เพื่อไม่ให้หายตอนฟอร์มถูกวาดใหม่ (เช่นตอนต้องเลือกไฟล์ GGUF ก่อน)
+// — เก็บในหน่วยความจำของหน้าเท่านั้น ไม่ลง localStorage ไม่ขึ้น URL
+const draft = { model: "", target: "", no_llm: false, machine: "", hf_token: "", hf_save: false };
 
 function wizForm(msg = "", extra = "") {
   wiz.hidden = false;
@@ -796,6 +798,15 @@ function wizForm(msg = "", extra = "") {
       <span class="dim" id="w-machine-hint"></span>
     </div>
     <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> Skip the LLM (rule-based plan)</label>
+    <div class="field" style="width:100%">
+      <label>HF token</label>
+      <input id="w-hf" type="password" autocomplete="off" value="${esc(draft.hf_token || "")}"
+             placeholder="ไม่บังคับ — ใส่เมื่อรุ่นนั้นเป็น gated/private" style="min-width:240px">
+      <label style="flex:none"><input type="checkbox" id="w-hf-save" style="min-width:auto;flex:none"
+        ${draft.hf_save ? "checked" : ""}> เก็บไว้ที่ hub</label>
+      <span class="dim">ไม่ติ๊ก = ใช้เฉพาะรอบนี้ ไม่ถูกเก็บที่ไหน · ติ๊ก = เก็บใน keyring/ไฟล์
+        สิทธิ์ 0600 ของ hub แล้วใช้กับรุ่น gated ครั้งต่อ ๆ ไปเอง</span>
+    </div>
     <div id="w-recipes"></div>
     ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
     ${extra}
@@ -968,14 +979,21 @@ async function analyzeNow(overrides = {}) {
   const model = (el("w-model") || {}).value || draft.model;
   const target = el("w-target") ? el("w-target").value : draft.target;
   const noLlm = el("w-nollm") ? el("w-nollm").checked : draft.no_llm;
+  const hfToken = el("w-hf") ? el("w-hf").value.trim() : draft.hf_token;
+  const hfSave = el("w-hf-save") ? el("w-hf-save").checked : draft.hf_save;
   if (!model) return;
-  Object.assign(draft, { model, target, no_llm: noLlm });
+  Object.assign(draft, { model, target, no_llm: noLlm, hf_token: hfToken, hf_save: hfSave });
+  // เก็บก่อนวิเคราะห์ — จะได้ใช้ทั้งรอบนี้และรอบหน้าโดยไม่ต้องพิมพ์ซ้ำ
+  if (hfToken && hfSave) {
+    await api("/api/secrets/hf", { method: "POST", headers: { "content-type": "application/json" },
+                                   body: JSON.stringify({ token: hfToken }) }).catch(() => {});
+  }
   analyzing = true;
   wizBusy("Analysing… (fetching metadata, computing fit, planning — this can take a moment)");
   try {
     const r = await api("/api/deploy/analyze", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, target, no_llm: noLlm, ...overrides }),
+      body: JSON.stringify({ model, target, no_llm: noLlm, hf_token: hfToken, ...overrides }),
     });
     const d = await r.json();
     if (r.ok) { planView(d); return; }
@@ -1462,7 +1480,8 @@ function nodeModelsMarkup(name, data) {
       if (m.job && m.job.running) followNodeJob(name, m.slug, m.job.id);
       const state = m.running ? (m.healthy ? "on" : "load") : "";
       const label = m.running ? (m.healthy ? "running" : "loading")
-        : (m.downloaded ? "stopped" : "not downloaded");
+        : (m.self_managed_weights ? "stopped · weight จัดการเอง"
+          : m.downloaded ? "stopped" : "not downloaded");
       // ยังไม่มี weight = ปุ่มหลักคือ "โหลดไฟล์" ไม่ใช่ปล่อยว่างจนผู้ใช้ไม่รู้จะทำอะไรต่อ
       // (start ทั้งที่ไม่มีไฟล์ล้มแน่ ๆ จึงไม่ให้กด)
       const act = m.running ? "stop" : (m.downloaded ? "start" : "download");
@@ -1570,12 +1589,16 @@ function nodeModelsMarkup(name, data) {
             ${m.running ? nbtn("restart", "restart", "หยุดแล้วเปิดใหม่ด้วยค่าข้างบน") : ""}
             ${nbtn("doctor", "doctor", "ตรวจว่าทำไมยัง start ไม่ได้")}
             ${nbtn("logs", "logs", "log ล่าสุด 300 บรรทัด")}
-            ${nbtn("repair", "repair", m.downloaded ? "ตรวจไฟล์ซ้ำ + โหลดส่วนที่ขาด" : "โหลด weight (resume ได้)")}
-            ${ctl("verify-files", "ตรวจ checksum ของไฟล์ที่โหลดมา")}
+            ${m.self_managed_weights ? "" :
+              nbtn("repair", "repair", m.downloaded ? "ตรวจไฟล์ซ้ำ + โหลดส่วนที่ขาด" : "โหลด weight (resume ได้)")}
+            ${m.self_managed_weights ? "" : ctl("verify-files", "ตรวจ checksum ของไฟล์ที่โหลดมา")}
             ${auto === "n/a" ? `<span class="dim">เครื่องนี้ไม่มี systemd — ตั้ง autostart ไม่ได้</span>`
               : autoOn ? nbtn("disable", "disable autostart", "เลิกให้ขึ้นเองหลัง reboot")
                        : nbtn("enable", "enable autostart", "ให้ขึ้นเองหลัง reboot (ต้อง sudo บนเครื่องนั้น)")}
             ${nbtn("remove", "remove", "ลบออกจากเครื่องนั้น — แสดงรายการ+ขนาดก่อนถามยืนยัน", "danger")}
+            ${m.self_managed_weights ? `<span class="dim" style="width:100%">bundle นี้มาจาก
+              <code>lmds adopt</code> — weight ชี้ไปที่ path ของคอนเทนเนอร์เดิม LMDS จึงโหลด/ตรวจไฟล์ให้ไม่ได้
+              · ถ้าอยากให้จัดการเต็มรูปแบบ ให้ deploy ใหม่จากรุ่นบน Hugging Face</span>` : ""}
           </div>
         </div>` : ""}
       </div>`;
