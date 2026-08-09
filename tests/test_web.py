@@ -1730,6 +1730,35 @@ def test_sudo_password_is_never_typed_into_a_browser_prompt():
     assert 'input.value = ""' in page, "ส่งเสร็จต้องล้างช่อง ไม่ทิ้งรหัสค้างใน DOM"
 
 
+def test_version_endpoint_reports_the_commit_not_just_the_number():
+    """เลข version ไม่ขยับทุกคอมมิต — ถ้าไม่มี commit ก็บอกไม่ได้ว่าเครื่องไหนรันโค้ดเก่า"""
+    d = TestClient(create_app()).get("/api/version").json()
+    assert d["version"] and "commit" in d and d["upstream"] == ""   # ไม่ถาม remote ถ้าไม่สั่ง
+
+
+def test_version_endpoint_can_ask_the_repo(monkeypatch):
+    from lmds.web import api as api_module
+
+    monkeypatch.setattr(api_module, "create_app", api_module.create_app)   # กันการ import ผิดตัว
+    d = TestClient(create_app()).get("/api/version?check_repo=true").json()
+    assert "upstream" in d          # ต่อ GitHub ไม่ได้ก็ต้องเป็นสตริงว่าง ไม่ใช่ระเบิด
+
+
+def test_node_payload_carries_the_commit_it_runs():
+    """สถานะโมเดลทุกอย่างคำนวณด้วยโค้ดของ *เครื่องนั้น* — ต้องรู้ว่ามันรัน commit ไหน"""
+    from lmds.inventory import host_payload
+
+    assert "lmds_commit" in host_payload()
+
+
+def test_page_flags_nodes_running_older_code():
+    page = TestClient(create_app()).get("/").text
+    assert "paintNodeVersion" in page and "lmds_commit" in page
+    assert "โค้ดเก่า" in page                      # ป้ายเตือนบนการ์ดเครื่อง
+    assert 'data-nact="install"' in page          # ปุ่ม update ใช้ทางติดตั้งเดิมที่สตรีมผลอยู่แล้ว
+    assert "check_repo=true" in page              # หน้าเว็บถาม GitHub ให้ hub ด้วย
+
+
 def test_deploy_form_has_an_optional_token_field():
     """ลูกค้าบางรายมี token ของตัวเอง — ต้องมีที่ให้กรอกตั้งแต่แรก ไม่ใช่รอให้ 401 ก่อน"""
     page = TestClient(create_app()).get("/").text

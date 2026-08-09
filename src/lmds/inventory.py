@@ -61,6 +61,28 @@ def weights_present(server, profile) -> bool:
     return all((directory / name).exists() for name in wanted)
 
 
+def source_commit() -> str:
+    """commit ของซอร์สที่ *ถูก import อยู่จริง* — ว่างเมื่อไม่ได้ติดตั้งจาก git checkout
+
+    เลข version ไม่ขยับทุกคอมมิต (0.2.0 มาหลายสิบคอมมิตแล้ว) จึงบอกไม่ได้เลยว่าเครื่องไหน
+    รันโค้ดเก่า — เคสจริง: แก้บั๊กบน hub แล้วเข้าใจว่าทั้งฟลีตได้ของใหม่ ทั้งที่ `lmds agent info`
+    ที่คำนวณสถานะทุกอย่างรันด้วยโค้ดของ *เครื่องนั้น* ซึ่งยังเก่าอยู่
+    """
+    import subprocess
+
+    import lmds
+
+    root = Path(lmds.__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        return ""
+    try:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
 def host_payload() -> dict:
     import lmds
     from lmds.fit.targets import from_hardware_report
@@ -74,6 +96,8 @@ def host_payload() -> dict:
     fabric = detect_fabric()
     return {
         "lmds_version": lmds.__version__,
+        # commit ของโค้ดที่เครื่องนี้รันอยู่ — hub เอาไปเทียบว่า node ไหนตามหลังแล้วต้องอัปเดต
+        "lmds_commit": source_commit(),
         "hostname": summary.hostname,
         "ip": summary.ip,
         "arch": report.arch,

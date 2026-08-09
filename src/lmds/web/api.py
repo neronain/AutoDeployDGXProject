@@ -135,8 +135,39 @@ def create_app(token: str = "") -> FastAPI:
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
 
     @app.get("/api/version", dependencies=guarded)
-    def version() -> dict:
-        return {"version": lmds.__version__}
+    def version(check_repo: bool = False) -> dict:
+        """เวอร์ชันของ hub — พร้อม commit เพื่อให้เทียบกับ node ได้
+
+        เลข version ไม่ขยับทุกคอมมิต จึงบอกไม่ได้ว่าใครรันโค้ดเก่า · `check_repo=true`
+        ไปถาม GitHub ด้วยว่ามีของใหม่กว่าที่ hub ถืออยู่ไหม (ช้ากว่า จึงไม่ทำทุกครั้ง)
+        """
+        from lmds.inventory import source_commit
+
+        payload = {"version": lmds.__version__, "commit": source_commit(), "upstream": ""}
+        if check_repo:
+            payload["upstream"] = _upstream_commit()
+        return payload
+
+    def _upstream_commit() -> str:
+        """commit ล่าสุดบน remote — ว่างเมื่อถามไม่ได้ (ไม่มีเน็ต/ไม่ใช่ git checkout)
+
+        ใช้ `git ls-remote` ไม่ใช่ `git fetch` — แค่ถามว่าปลายทางอยู่ที่ไหน ไม่แตะ working tree
+        ของเครื่องที่กำลังให้บริการอยู่
+        """
+        import subprocess
+        from pathlib import Path as _Path
+
+        root = _Path(lmds.__file__).resolve().parents[2]
+        if not (root / ".git").exists():
+            return ""
+        try:
+            done = subprocess.run(["git", "-C", str(root), "ls-remote", "origin", "HEAD"],
+                                  capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if done.returncode != 0 or not done.stdout.strip():
+            return ""
+        return done.stdout.split()[0][:7]
 
     @app.get("/api/host", dependencies=guarded)
     def host() -> dict:

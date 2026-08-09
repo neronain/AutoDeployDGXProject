@@ -1606,13 +1606,33 @@ function nodeModelsMarkup(name, data) {
   </div>`;
 }
 
+// ── เวอร์ชันของโค้ดที่แต่ละเครื่องรันอยู่ ────────────────────────────────────
+// เลข version ไม่ขยับทุกคอมมิต (0.2.0 มาหลายสิบคอมมิตแล้ว) — เทียบ commit เท่านั้นถึงจะรู้ว่า
+// เครื่องไหนตามหลัง · สำคัญเพราะสถานะทุกอย่างของโมเดล (downloaded, commands, …) คำนวณด้วย
+// โค้ดของ *เครื่องนั้น* ไม่ใช่ของ hub — อัปเดตแต่ hub แล้วเข้าใจว่าทั้งฟลีตได้ของใหม่คือเข้าใจผิด
+let hubBuild = { version: "", commit: "", upstream: "" };
+
+function paintNodeVersion(row, d, name) {
+  if (!row) return;
+  if (!d.reachable) { row.version.textContent = "offline"; return; }
+  const host = d.host || {};
+  const version = host.lmds_version ? "v" + host.lmds_version : "";
+  const commit = host.lmds_commit || "";
+  const stale = commit && hubBuild.commit && commit !== hubBuild.commit;
+  row.version.innerHTML = `${esc(version)}${commit ? ` <span class="dim">${esc(commit)}</span>` : ""}`
+    + (stale ? ` <span class="tag warn" title="เครื่องนี้รัน ${esc(commit)} ส่วน hub อยู่ที่ ${esc(hubBuild.commit)}
+        — สถานะโมเดลคำนวณด้วยโค้ดของเครื่องนี้ ไม่ใช่ของ hub">โค้ดเก่า</span>
+       <button data-nact="install" data-node="${esc(name || "")}" style="font-size:12px"
+         title="ดึงโค้ดใหม่จาก GitHub แล้วติดตั้งบนเครื่องนี้ (ไม่แตะโมเดลที่รันอยู่)">update</button>` : "");
+}
+
 async function loadNode(name) {
   const row = nodeRows.get(name);
   if (!row) return;
   row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><span class="muted">Contacting ${esc(name)}…</span></div>`;
   const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`)).json();
   row.dot.className = "dot " + (d.reachable ? "on" : "");
-  row.version.textContent = d.reachable ? (d.host && d.host.lmds_version ? "v" + d.host.lmds_version : "") : "offline";
+  paintNodeVersion(row, d, name);
   lastNodeData.set(name, d);
   paintSummary(name, d.host);
   row.body.innerHTML = nodeModelsMarkup(name, d);
@@ -2249,7 +2269,20 @@ async function refresh() {
   }
 }
 
-api("/api/version").then(r => r.json()).then(d => document.getElementById("ver").textContent = "v" + d.version).catch(() => {});
+// ถาม GitHub ด้วยว่ามีของใหม่กว่าที่ hub ถืออยู่ไหม — ครั้งเดียวตอนเปิดหน้า ไม่ใช่ทุกรอบ poll
+api("/api/version?check_repo=true").then(r => r.json()).then(d => {
+  hubBuild = { version: d.version || "", commit: d.commit || "", upstream: d.upstream || "" };
+  const el = document.getElementById("ver");
+  const behind = hubBuild.upstream && hubBuild.commit && hubBuild.upstream !== hubBuild.commit;
+  el.innerHTML = `v${esc(hubBuild.version)}${hubBuild.commit ? " · " + esc(hubBuild.commit) : ""}`
+    + (behind ? ` <span class="tag warn" title="บน GitHub อยู่ที่ ${esc(hubBuild.upstream)} —
+        อัปเดต hub: cd ~/AutoDeployDGXProject && git pull แล้ว restart บริการ">มีอัปเดต</span>` : "");
+  // node ที่โหลดไปก่อนหน้านี้ยังไม่รู้ commit ของ hub — วาดป้าย "โค้ดเก่า" ใหม่ให้ครบ
+  for (const [name, row] of nodeRows) {
+    const cached = lastNodeData.get(name);
+    if (cached) paintNodeVersion(row, cached, name);
+  }
+}).catch(() => {});
 
 // ── live updates ────────────────────────────────────────────────────────
 // เดิม poll ทุก 5 วิ = SSH ไปทุกเครื่องทุกรอบ · ผ่าน relay 150ms ต่อเครื่องแล้วกระตุก
@@ -2368,8 +2401,7 @@ function applySnapshot(snap) {
     lastNodeData.set(name, payload);
     paintSummary(name, (entry.data || {}).host);
     row.dot.className = "dot " + (entry.data ? "on" : "");
-    row.version.textContent = entry.data && entry.data.host
-      ? "v" + (entry.data.host.lmds_version || "") : "offline";
+    paintNodeVersion(row, { reachable: !!entry.data, host: (entry.data || {}).host }, name);
     row.body.innerHTML = nodeModelsMarkup(name, payload);
   }
 }
