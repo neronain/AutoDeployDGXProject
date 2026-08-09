@@ -34,19 +34,24 @@
      เข้มกว่านี้แล้วพื้นกับช่องกรอกกลืนกัน คนกรอกผิดช่องได้ */
   --glow: .025;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e1116; --card: #161a21; --sunken: #10141a;
-    --line: #262c36; --line2: #3a424f;
-    --fg: #e8eaee; --fg2: #9aa4b2; --fg3: #6b7480;
+/* ธีมมืดผูกกับ data-theme ไม่ใช่ media query โดยตรง — สคริปต์เล็ก ๆ ท้าย <style> เป็นคนตัดสิน
+   ว่าจะมืดไหม (ค่าที่ผู้ใช้เลือกไว้ก่อน ถ้าเลือกว่า "ตามเครื่อง" ค่อยไปดู prefers-color-scheme)
+   เก็บชุดสีมืดไว้ที่เดียวแบบนี้จะไม่มีปัญหาสองชุดหลุดกัน · ไม่มี JS = ได้ธีมสว่างซึ่งเป็นค่าตั้งต้น */
+:root[data-theme="dark"] {
+  --bg: #0e1116; --card: #161a21; --sunken: #10141a;
+  --line: #262c36; --line2: #3a424f;
+  --fg: #e8eaee; --fg2: #9aa4b2; --fg3: #6b7480;
 
-    --ok: #56d38a; --warn: #f0b45c; --bad: #f78d99; --accent: #7fb0f5;
-    --ok-bg: #10291c; --warn-bg: #2e2205; --bad-bg: #2e1519; --accent-bg: #0f1f33;
-    --meter: #5b8cdd; --meter-track: #222834;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
-    --shadow-lg: 0 6px 18px rgba(0, 0, 0, .45);
-    --glow: .07;
-  }
+  --ok: #56d38a; --warn: #f0b45c; --bad: #f78d99; --accent: #7fb0f5;
+  --ok-bg: #10291c; --warn-bg: #2e2205; --bad-bg: #2e1519; --accent-bg: #0f1f33;
+  --meter: #5b8cdd; --meter-track: #222834;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-lg: 0 6px 18px rgba(0, 0, 0, .45);
+  --glow: .07;
+}
+/* ปุ่มสลับธีมบนแถบหัว — เล็กและไม่แย่งสายตาจากปุ่ม Deploy */
+.theme {
+  font-size: 13px; line-height: 1; padding: 6px 9px; flex: none;
 }
 
 * { box-sizing: border-box; }
@@ -382,6 +387,26 @@ pre {
   .pad { padding: 14px; }
 }
 </style>
+<script>
+// ตัดสินธีมก่อนวาดหน้า ไม่งั้นจะเห็นหน้าขาววาบก่อนแล้วค่อยเปลี่ยนเป็นมืด
+// ค่าที่เก็บไว้: "light" | "dark" | "auto" · ไม่เคยเลือก = สว่าง (ค่าตั้งต้นของหน้านี้)
+// "auto" เท่านั้นที่ไปดูค่าของเครื่อง — ใครเลือกเองไว้แล้ว ระบบปฏิบัติการไม่มีสิทธิ์มาแย้ง
+(() => {
+  const stored = () => { try { return localStorage.getItem("lmds-theme"); } catch { return null; } };
+  const systemDark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
+  window.themeMode = stored() || "light";
+  window.applyTheme = () => {
+    const dark = window.themeMode === "dark" || (window.themeMode === "auto" && systemDark());
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    const button = document.getElementById("theme");
+    if (button) button.textContent = {light: "☀︎ Light", dark: "☾ Dark", auto: "⌁ Auto"}[window.themeMode];
+  };
+  window.applyTheme();
+  // อยู่โหมดตามเครื่องแล้วผู้ใช้สลับธีมของ OS ระหว่างเปิดหน้าค้างไว้ ต้องเปลี่ยนตามทันที
+  window.matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", () => { if (window.themeMode === "auto") window.applyTheme(); });
+})();
+</script>
 </head>
 <body>
 <!-- gradient ของ SVG ต้องนิยามในเอกสาร แล้วอ้างด้วย url(#id) — ประกาศครั้งเดียวใช้ได้ทุกเกจ -->
@@ -403,6 +428,7 @@ pre {
     <span class="muted grow" id="host">…</span>
     <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
     <span class="dim" id="ver"></span>
+    <button id="theme" class="theme" title="สลับธีม สว่าง / มืด / ตามเครื่อง">…</button>
     <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้">Sign out</button>
     <button id="new">+ Deploy model</button>
   </div>
@@ -2518,6 +2544,16 @@ document.addEventListener("click", async e => {
 });
 
 document.getElementById("signout").onclick = signOut;
+
+// วนสว่าง → มืด → ตามเครื่อง · จำไว้ในเบราว์เซอร์นี้ (เป็นความชอบของคนดู ไม่ใช่ค่าของ hub
+// อย่างลำดับการ์ด — คนละคนเปิดจากคนละจอ ไม่ควรบังคับให้เหมือนกัน)
+document.getElementById("theme").onclick = () => {
+  window.themeMode = {light: "dark", dark: "auto", auto: "light"}[window.themeMode] || "light";
+  try { localStorage.setItem("lmds-theme", window.themeMode); } catch { /* โหมดส่วนตัว */ }
+  window.applyTheme();
+};
+window.applyTheme();          // ตั้งข้อความบนปุ่มให้ตรงกับธีมที่ใช้อยู่ตอนโหลดหน้า
+
 boot();
 </script>
 </body>

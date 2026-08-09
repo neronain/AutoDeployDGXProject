@@ -804,6 +804,16 @@ def test_cluster_members_follow_the_saved_order(registered, monkeypatch):
     assert [m["name"] for m in group["members"]] == ["spark1", "spark3", "spark2"]
 
 
+def test_theme_is_chosen_by_the_user_not_only_by_the_os():
+    """เดิมหน้าเว็บมืดตาม prefers-color-scheme อย่างเดียว เครื่องที่ตั้ง OS เป็นมืดจึงเลือกสว่างไม่ได้"""
+    page = TestClient(create_app()).get("/").text
+    assert 'id="theme"' in page                       # ปุ่มสลับธีมบนแถบหัว
+    assert 'lmds-theme' in page                       # จำค่าที่เลือกไว้ในเบราว์เซอร์
+    assert ':root[data-theme="dark"]' in page         # ธีมมืดผูกกับ attribute
+    # ชุดสีมืดต้องมีที่เดียว — ถ้ามี media query คุม :root ด้วย สองชุดจะหลุดกันเมื่อแก้สีทีหลัง
+    assert "@media (prefers-color-scheme: dark)" not in page
+
+
 def test_page_has_a_drag_handle_for_reordering():
     page = TestClient(create_app()).get("/").text
     assert 'class="ngrip"' in page and "pointerdown" in page
@@ -932,11 +942,10 @@ def test_page_stays_readable_in_both_themes():
     """หน้าเว็บรันบนเครื่องลูกค้าที่ตั้ง theme มาแล้ว — ต้องอ่านออกทั้งสองโหมด
     ไม่ใช่ออกแบบให้สวยเฉพาะโหมดที่เราใช้เอง"""
     body = TestClient(create_app()).get("/").text
-    assert "prefers-color-scheme: dark" in body
+    # ธีมมืดผูกกับ attribute แล้ว (ผู้ใช้เลือกเองได้) แต่ยังต้องมีชุด token ครบเหมือนเดิม
+    assert "prefers-color-scheme: dark" in body      # โหมด "ตามเครื่อง" ยังอ่านค่าของ OS
     # สีทุกตัวต้องมาจาก token — hex ที่ hard-code ในกฎ CSS จะเพี้ยนในอีกโหมดหนึ่ง
-    import re
-
-    inside_dark = body.split("prefers-color-scheme: dark")[1].split("}\n}")[0]
+    inside_dark = body.split(':root[data-theme="dark"] {')[1].split("}")[0]
     assert "--bg:" in inside_dark and "--fg:" in inside_dark
 
 
