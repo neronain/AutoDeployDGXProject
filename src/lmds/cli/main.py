@@ -221,10 +221,11 @@ def node_add(
 def node_list(
     check: bool = typer.Option(False, "--check", help="ต่อจริงเพื่อดูว่าเครื่องยังตอบไหม (ช้ากว่า)"),
 ) -> None:
-    """เครื่องทั้งหมดที่อยู่ในทะเบียน"""
-    from lmds.nodes import NodeError, load, probe, update
+    """เครื่องทั้งหมดที่อยู่ในทะเบียน — เรียงตามลำดับที่ลากจัดไว้ในหน้าเว็บ"""
+    from lmds.config import Settings
+    from lmds.nodes import NodeError, in_saved_order, load, probe, update
 
-    nodes = load()
+    nodes = in_saved_order(load(), Settings.load().ui.node_order)
     if not nodes:
         console.print("ยังไม่มีเครื่องในทะเบียน — เพิ่มด้วย: lmds node add <ip> --user <ชื่อ>")
         return
@@ -664,7 +665,7 @@ def node_cluster(
     from lmds.config import Settings
     from lmds.inventory import host_payload
     from lmds.nodes import (
-        NodeError, check_cluster_ip, cluster_groups, cluster_note, load, probe,
+        NodeError, check_cluster_ip, cluster_groups, cluster_note, in_saved_order, load, probe,
         stack_ready, suggest_cluster_ip,
     )
 
@@ -702,7 +703,8 @@ def node_cluster(
             table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
 
     add_row(local_name + " (hub)", local, machines[0]["cluster_ip"], stack_self)
-    for node in load():
+    # ลำดับเดียวกับที่ลากจัดไว้ในหน้าเว็บ — สมาชิกตัวแรกของกลุ่มคือเครื่องที่ถูกเสนอเป็น head
+    for node in in_saved_order(load(), settings.ui.node_order):
         try:
             host = probe(node).get("host") or {}
         except NodeError as exc:

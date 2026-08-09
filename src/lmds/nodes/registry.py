@@ -184,6 +184,16 @@ def update(name: str, **changes) -> Node:
     return target
 
 
+def in_saved_order(nodes: list[Node], order: list[str]) -> list[Node]:
+    """เรียงเครื่องตามลำดับที่ผู้ใช้จัดไว้เอง (ลากในหน้าเว็บ) — ที่เหลือต่อท้ายตามเดิม
+
+    ลำดับที่เก็บไว้กับทะเบียนไม่จำเป็นต้องตรงกัน: เครื่องที่เพิ่งเพิ่มยังไม่มีในลำดับ และ
+    เครื่องที่ลบไปแล้วยังค้างชื่ออยู่ — ทั้งสองกรณีต้องไม่ทำให้ลิสต์หายหรือซ้ำ
+    """
+    rank = {name: index for index, name in enumerate(order)}
+    return sorted(nodes, key=lambda node: rank.get(node.name, len(rank)))
+
+
 def suggest_name(host: str, taken: set[str] | None = None) -> str:
     """ตั้งชื่อเริ่มต้นจาก host — 10.0.0.5 → node-10-0-0-5, spark1.local → spark1"""
     taken = taken or {n.name for n in load()}

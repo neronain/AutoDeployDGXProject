@@ -13,6 +13,7 @@ from lmds.nodes import (
     NodeError,
     add,
     find,
+    in_saved_order,
     load,
     nodes_file,
     remove,
@@ -114,6 +115,18 @@ def test_registry_without_the_stack_field_still_joins():
     nodes_file().write_text("nodes:\n- name: spark1\n  host: 10.0.0.5\n  user: ops\n  stack: null\n",
                             encoding="utf-8")
     assert load()[0].stack is True
+
+
+def test_saved_order_puts_unknown_names_last_and_ignores_stale_ones():
+    """ลำดับที่เก็บไว้กับทะเบียนไม่ตรงกันเป็นเรื่องปกติ — เครื่องใหม่ต่อท้าย ชื่อที่ลบไปแล้วข้าม"""
+    nodes = [make(name=n, host=f"10.0.0.{i}") for i, n in enumerate(["a", "b", "c"], start=1)]
+    ordered = in_saved_order(nodes, ["c", "ลบไปแล้ว", "a"])
+    assert [n.name for n in ordered] == ["c", "a", "b"]
+
+
+def test_saved_order_of_nothing_keeps_registry_order():
+    nodes = [make(name=n, host=f"10.0.0.{i}") for i, n in enumerate(["a", "b"], start=1)]
+    assert [n.name for n in in_saved_order(nodes, [])] == ["a", "b"]
 
 
 @pytest.mark.parametrize(

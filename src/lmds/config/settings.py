@@ -50,10 +50,21 @@ class Cluster(BaseModel):
     stack_self: bool = True
 
 
+class Ui(BaseModel):
+    """ลำดับการ์ดเครื่องที่ผู้ใช้ลากจัดเอง
+
+    เก็บที่ hub ไม่ใช่ในเบราว์เซอร์ — เปิดจากเครื่องไหน/บราว์เซอร์ไหนก็เห็นลำดับเดียวกัน
+    และ CLI เรียงตามลำดับเดียวกันด้วย · ชื่อที่ไม่มีในทะเบียนแล้วถูกข้าม เครื่องใหม่ต่อท้าย
+    """
+
+    node_order: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     provider: Optional[ProviderConfig] = None
     defaults: Defaults = Field(default_factory=Defaults)
     cluster: Cluster = Field(default_factory=Cluster)
+    ui: Ui = Field(default_factory=Ui)
 
     @classmethod
     def load(cls) -> "Settings":

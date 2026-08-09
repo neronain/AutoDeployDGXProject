@@ -532,16 +532,37 @@ def create_app(token: str = "") -> FastAPI:
     # ── fleet หลายเครื่อง — hub คุม node อื่นผ่าน SSH ────────────────────────
     @app.get("/api/nodes", dependencies=guarded)
     def nodes_list() -> dict:
-        from lmds.nodes import load
-
         return {"nodes": [
             {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
              "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
              "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface,
              # deploy สำหรับเครื่องอื่นต้องระบุ target เอง — แนะนำจากฮาร์ดแวร์ที่เคยตรวจไว้
              "suggested_target": _node_target_hint(n.name)}
-            for n in load()
+            # ลำดับที่ผู้ใช้ลากจัดเอง — หน้าเว็บวางการ์ดตามลำดับที่ได้รับ ไม่ต้องเรียงเองอีก
+            for n in _ordered_nodes()
         ]}
+
+    @app.put("/api/nodes/order", dependencies=guarded)
+    def nodes_reorder(body: dict) -> dict:
+        """บันทึกลำดับการ์ดที่ผู้ใช้ลากจัด — เก็บที่ hub ไม่ใช่ในเบราว์เซอร์
+
+        เก็บเฉพาะชื่อที่มีในทะเบียนจริง ไม่งั้นลิสต์จะโตขึ้นเรื่อย ๆ ทุกครั้งที่ลบเครื่อง
+        """
+        from lmds.config import Settings
+        from lmds.nodes import load
+
+        names = body.get("names")
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise HTTPException(status_code=400, detail="ต้องส่ง names เป็นลิสต์ของชื่อเครื่อง")
+        known = {n.name for n in load()}
+        seen: list[str] = []
+        for name in names:
+            if name in known and name not in seen:
+                seen.append(name)
+        settings = Settings.load()
+        settings.ui.node_order = seen
+        settings.save()
+        return {"names": seen}
 
     @app.post("/api/nodes/{name}/install", dependencies=guarded)
     def node_install(name: str, body: dict | None = None) -> dict:
@@ -598,6 +619,16 @@ def create_app(token: str = "") -> FastAPI:
             if job is not None:
                 model["job"] = job.payload()
         return payload
+
+    def _ordered_nodes():
+        """ทะเบียนเรียงตามลำดับที่ผู้ใช้ลากจัดไว้ — ใช้ให้เหมือนกันทุกที่ที่แสดงรายชื่อเครื่อง
+
+        รวมถึงลำดับสมาชิกในกลุ่ม stacked ด้วย เพราะสมาชิกตัวแรกคือเครื่องที่ถูกเสนอเป็น head
+        """
+        from lmds.config import Settings
+        from lmds.nodes import in_saved_order, load
+
+        return in_saved_order(load(), Settings.load().ui.node_order)
 
     def _node_target_hint(name: str) -> str:
         # เครื่องที่ติดต่อไม่ได้มี entry อยู่แต่ data เป็น None — `.get("data", {})` ไม่ช่วย
@@ -680,7 +711,7 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.config import Settings
         from lmds.inventory import host_payload
         from lmds.nodes import (
-            NodeError, check_cluster_ip, cluster_groups, load, probe, stack_ready,
+            NodeError, check_cluster_ip, cluster_groups, probe, stack_ready,
             suggest_cluster_ip,
         )
 
@@ -707,7 +738,7 @@ def create_app(token: str = "") -> FastAPI:
         machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
                      "stack": stack_self}]
         rows = [row(local_name, local, machines[0]["cluster_ip"], True, stack_self)]
-        for node in load():
+        for node in _ordered_nodes():
             try:
                 host = (probe(node).get("host")) or {}
             except NodeError as exc:

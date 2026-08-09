@@ -344,6 +344,15 @@ pre {
   font-size: 15px; line-height: 1; color: var(--fg2);
 }
 .nbody.collapsed { display: none; }
+/* ที่จับสำหรับลากจัดลำดับ — ต้องเป็นที่จับแยก ไม่ใช่ลากทั้งการ์ด เพราะในหัวการ์ดมีปุ่มและ
+   ช่องกรอก cluster IP อยู่ กดแล้วต้องได้คลิกตามปกติ ไม่ใช่กลายเป็นลาก */
+.ngrip {
+  cursor: grab; user-select: none; touch-action: none; flex: none;
+  color: var(--fg2); opacity: .45; font-size: 14px; line-height: 1; padding: 4px 2px;
+}
+.ngrip:hover { opacity: 1; }
+.machine.dragging { opacity: .65; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); cursor: grabbing; }
+.machine.dragging .ngrip { cursor: grabbing; }
 /* หนึ่งเครื่อง = หนึ่งการ์ด — เดิมหัวเครื่องกับเนื้อหาของอีกเครื่องอยู่ระดับเดียวกันจนแยกไม่ออก */
 .machine {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -1210,6 +1219,7 @@ function nodeCard(node) {
   const block = document.createElement("div");
   block.className = "machine";
   block.innerHTML = `<div class="item">
+      <span class="ngrip" title="ลากเพื่อจัดลำดับเครื่อง">⠿</span>
       <button class="ntoggle" title="ย่อ/ขยาย">−</button>
       <span class="dot"></span>
       <div class="grow">
@@ -1481,6 +1491,8 @@ async function refreshNodes() {
     return;
   }
   const nodes = d.nodes || [];
+  // เซิร์ฟเวอร์ส่งมาตามลำดับที่ผู้ใช้จัดไว้แล้ว — ฝั่งนี้แค่วางการ์ดตามนั้น ไม่เรียงเอง
+  if (!draggingName) nodeOrder = nodes.map(n => n.name);
   if (!nodes.length) {
     nodeRows.clear();
     box.innerHTML = `<div class="card"><div class="empty">No other machines registered — add one to control it from here<br>
@@ -1517,8 +1529,8 @@ async function refreshNodes() {
   for (const [name, row] of nodeRows) {
     if (!seen.has(name)) { row.block.remove(); nodeRows.delete(name); }
   }
-  // การ์ดที่เพิ่ง append ไปต่อท้าย box ต้องถูกดึงกลับเข้ารั้วกลุ่มของมัน
-  if (clusterData) layoutClusterGroups();
+  // การ์ดที่เพิ่ง append ไปต่อท้าย box ต้องถูกดึงกลับเข้าลำดับที่จัดไว้และรั้วกลุ่มของมัน
+  layoutClusterGroups();
 }
 
 document.addEventListener("click", async e => {
@@ -1713,6 +1725,77 @@ function ipHint(m) {
 // ข้อมูล cluster ล่าสุด — เก็บไว้เพราะการตรวจต้องต่อ SSH ทุกเครื่อง จึงทำเมื่อผู้ใช้สั่งเท่านั้น
 let clusterData = null;
 
+// ── ลำดับการ์ดที่ผู้ใช้ลากจัดเอง ─────────────────────────────────────────────
+// ลำดับถูกเก็บที่ hub (config.yaml) ไม่ใช่ในเบราว์เซอร์ — เปิดจากเครื่องไหนก็เห็นเหมือนกัน
+// และ CLI (`lmds node list`, `node cluster`) เรียงตามลำดับเดียวกัน
+let nodeOrder = [];        // ชื่อเครื่องตามลำดับล่าสุดที่ /api/nodes ส่งมา
+let draggingName = null;   // กำลังลากอยู่ — ห้ามให้ refresh 5 วิมาจัดลำดับทับ
+
+function applyNodeOrder(box) {
+  if (draggingName) return;
+  for (const name of nodeOrder) {
+    const row = nodeRows.get(name);
+    if (row) box.appendChild(row.block);
+  }
+}
+
+// ตำแหน่งที่จะวาง: การ์ดใบแรกที่จุดกึ่งกลางอยู่ใต้ปลายนิ้ว/เมาส์ — วางไว้ก่อนใบนั้น
+function cardAfterPoint(box, y, dragged) {
+  return [...box.querySelectorAll(".machine")]
+    .filter(el => el !== dragged)
+    .find(el => {
+      const rect = el.getBoundingClientRect();
+      return y < rect.top + rect.height / 2;
+    }) || null;
+}
+
+async function saveNodeOrder() {
+  const box = document.getElementById("nodes");
+  const names = [...box.querySelectorAll(".machine")]
+    .map(el => [...nodeRows].find(([, row]) => row.block === el)?.[0])
+    .filter(Boolean);
+  if (!names.length) return;
+  nodeOrder = names;
+  const r = await api("/api/nodes/order", {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ names }),
+  });
+  if (!r.ok) alert("Could not save the new order");
+}
+
+document.addEventListener("pointerdown", e => {
+  const grip = e.target.closest(".ngrip");
+  if (!grip) return;
+  const block = grip.closest(".machine");
+  const box = document.getElementById("nodes");
+  if (!block || !box) return;
+  e.preventDefault();                       // กันการลากแล้วกลายเป็นเลือกข้อความ
+  // จับ pointer ไว้กับที่จับ เพื่อให้ลากออกนอกการ์ดแล้วยังตามอยู่ · ไม่ได้ก็ลากต่อได้ตามปกติ
+  try { grip.setPointerCapture(e.pointerId); } catch { /* pointer หายไปแล้ว */ }
+  draggingName = [...nodeRows].find(([, row]) => row.block === block)?.[0] || "";
+  block.classList.add("dragging");
+
+  const move = ev => {
+    // ย้ายการ์ดจริงตามนิ้วเลย ไม่ต้องมีเส้นบอกตำแหน่ง — เห็นผลลัพธ์จริงระหว่างลาก
+    const target = cardAfterPoint(box, ev.clientY, block);
+    // การ์ดอาจอยู่ในรั้วกลุ่ม — แทรกในพ่อของเป้าหมาย ไม่ใช่ในกล่องใหญ่เสมอไป
+    if (target) target.parentNode.insertBefore(block, target);
+    else box.appendChild(block);
+  };
+  const done = async () => {
+    grip.removeEventListener("pointermove", move);
+    grip.removeEventListener("pointerup", done);
+    grip.removeEventListener("pointercancel", done);
+    block.classList.remove("dragging");
+    draggingName = null;
+    await saveNodeOrder();
+    layoutClusterGroups();                  // จัดรั้วกลุ่มใหม่ตามลำดับที่เพิ่งวาง
+  };
+  grip.addEventListener("pointermove", move);
+  grip.addEventListener("pointerup", done);
+  grip.addEventListener("pointercancel", done);
+});
+
 // สีประจำกลุ่ม — คนดูต้องบอกได้ว่า "เครื่องนี้อยู่กลุ่มเดียวกับเครื่องไหน" โดยไม่ต้องอ่านชื่อ
 const GROUP_COLOURS = ["var(--accent)", "#f59e0b", "#a855f7", "#14b8a6"];
 
@@ -1794,6 +1877,8 @@ function groupHeader(g, index) {
 function layoutClusterGroups() {
   const box = document.getElementById("nodes");
   if (!box) return;
+  // กำลังลากการ์ดอยู่ — refresh ทุก 5 วิห้ามมาแกะรั้ว/จัดใหม่กลางคัน ไม่งั้นการ์ดจะกระโดดหนีนิ้ว
+  if (draggingName) return;
   for (const wrap of [...box.querySelectorAll(".gwrap")]) {
     while (wrap.children.length > 1) box.appendChild(wrap.children[1]);
     wrap.remove();
@@ -1804,11 +1889,23 @@ function layoutClusterGroups() {
   // ข้อความ "ยังไม่มีคู่ที่ stacked ได้" ของรอบก่อน — ต้องล้างทุกครั้ง ไม่งั้นพอกดเปิดกลุ่มคืน
   // ข้อความเก่าจะค้างอยู่เหนือกลุ่มที่เพิ่งโผล่มา
   box.querySelector(".gnone")?.remove();
+  // ลำดับที่ผู้ใช้ลากจัดเองมาก่อน แล้วค่อยเอากลุ่มมาคร่อม — ต้องทำหลังแกะรั้วออก
+  // เพราะการแกะรั้วโยนการ์ดไปต่อท้ายกล่อง
+  applyNodeOrder(box);
   for (const row of nodeRows.values()) row.block.querySelector(".nclus").hidden = true;
   if (!clusterData) return;
 
   const byName = new Map((clusterData.machines || []).map(m => [m.name, m]));
-  const groups = clusterData.groups || [];
+  // สมาชิกในกลุ่มเรียงตามลำดับที่ผู้ใช้จัดไว้ด้วย — ตัวแรกคือเครื่องที่ถูกเสนอเป็น head
+  // hub มาก่อนเสมอ (ไม่มีการ์ดให้ลาก) ให้ตรงกับลำดับที่ฝั่งเซิร์ฟเวอร์ใช้ตอน --write
+  const rank = new Map(nodeOrder.map((name, index) => [name, index]));
+  // สมาชิกของกลุ่มเป็นข้อมูลคนละก้อนกับ machines จึงไม่มีธง self มาด้วย — เทียบด้วยชื่อ
+  const selfName = (clusterData.machines || []).find(m => m.self)?.name;
+  const rankOf = m => m.name === selfName ? -1 : (rank.get(m.name) ?? Infinity);
+  const groups = (clusterData.groups || []).map(g => ({
+    ...g,
+    members: [...g.members].sort((a, b) => rankOf(a) - rankOf(b)),
+  }));
 
   const hub = (clusterData.machines || []).find(m => m.self);
   if (hub) {

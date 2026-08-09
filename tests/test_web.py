@@ -723,6 +723,93 @@ def test_cluster_self_patch_needs_the_field(registered):
     assert TestClient(create_app()).patch("/api/cluster/self", json={}).status_code == 400
 
 
+# ── ลำดับการ์ดที่ผู้ใช้ลากจัดเอง ────────────────────────────────────────────
+@pytest.fixture
+def three_nodes():
+    from lmds.nodes import Node, add
+
+    for index, name in enumerate(["alpha", "beta", "gamma"], start=1):
+        add(Node(name=name, host=f"10.0.0.{index}", user="ops"))
+
+
+def test_saved_order_drives_the_node_list(three_nodes):
+    client = TestClient(create_app())
+    assert [n["name"] for n in client.get("/api/nodes").json()["nodes"]] == \
+        ["alpha", "beta", "gamma"]
+
+    r = client.put("/api/nodes/order", json={"names": ["gamma", "alpha", "beta"]})
+    assert r.status_code == 200 and r.json()["names"] == ["gamma", "alpha", "beta"]
+    assert [n["name"] for n in client.get("/api/nodes").json()["nodes"]] == \
+        ["gamma", "alpha", "beta"]
+
+
+def test_order_survives_a_restart(three_nodes):
+    """ลำดับต้องอยู่ที่ hub ไม่ใช่ในเบราว์เซอร์ — เปิดจากเครื่องไหนก็ต้องเห็นเหมือนกัน"""
+    from lmds.config import Settings
+
+    TestClient(create_app()).put("/api/nodes/order", json={"names": ["beta", "gamma", "alpha"]})
+    assert Settings.load().ui.node_order == ["beta", "gamma", "alpha"]
+    # แอปตัวใหม่ = เหมือนรีสตาร์ต service แล้วเปิดหน้าใหม่
+    assert [n["name"] for n in TestClient(create_app()).get("/api/nodes").json()["nodes"]] == \
+        ["beta", "gamma", "alpha"]
+
+
+def test_order_drops_stale_names_and_keeps_new_machines(three_nodes):
+    """เครื่องที่ลบไปแล้วต้องไม่ค้างในลิสต์ · เครื่องที่ยังไม่มีในลำดับต้องไม่หายไปจากหน้า"""
+    from lmds.nodes import Node, add
+
+    client = TestClient(create_app())
+    saved = client.put("/api/nodes/order",
+                       json={"names": ["gamma", "ลบไปแล้ว", "alpha", "gamma"]}).json()["names"]
+    assert saved == ["gamma", "alpha"]          # ชื่อแปลกปลอมและชื่อซ้ำถูกตัดทิ้ง
+
+    add(Node(name="delta", host="10.0.0.9", user="ops"))
+    assert [n["name"] for n in client.get("/api/nodes").json()["nodes"]] == \
+        ["gamma", "alpha", "beta", "delta"]     # ที่ไม่ได้จัดลำดับต่อท้ายตามทะเบียน
+
+
+def test_order_rejects_a_bad_payload(three_nodes):
+    assert TestClient(create_app()).put("/api/nodes/order", json={"names": "alpha"}).status_code == 400
+
+
+def test_cluster_members_follow_the_saved_order(registered, monkeypatch):
+    """สมาชิกตัวแรกของกลุ่มคือเครื่องที่ถูกเสนอเป็น head — ลำดับที่ลากจึงต้องมีผลถึงตรงนี้"""
+    import copy
+
+    from lmds.inventory import host_payload as real_host_payload
+    from lmds.nodes import Node, add
+
+    add(Node(name="spark3", host="10.0.0.7", user="ops", cluster_ip="10.10.0.3"))
+
+    # แต่ละเครื่องต้องเป็นคนละเครื่องจริง ๆ ไม่งั้นโดนยุบเป็นตัวเดียว (same-machine)
+    addresses = {"spark2": "10.10.0.2", "spark3": "10.10.0.3"}
+
+    def probe_each(node):
+        data = copy.deepcopy(registered)
+        data["host"]["hostname"] = node.name
+        data["host"]["fabric"]["links"][0]["ip"] = addresses[node.name]
+        return data
+
+    monkeypatch.setattr("lmds.nodes.probe", probe_each)
+    monkeypatch.setattr("lmds.nodes.ssh.probe", probe_each)
+
+    hub = dict(real_host_payload())
+    hub.update(copy.deepcopy(registered["host"]), hostname="spark1")
+    monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
+
+    client = TestClient(create_app())
+    client.put("/api/nodes/order", json={"names": ["spark3", "spark2"]})
+    (group,) = client.get("/api/cluster").json()["groups"]
+    # hub มาก่อนเสมอ (ไม่มีการ์ดให้ลาก) แล้วตามด้วยลำดับที่จัดไว้
+    assert [m["name"] for m in group["members"]] == ["spark1", "spark3", "spark2"]
+
+
+def test_page_has_a_drag_handle_for_reordering():
+    page = TestClient(create_app()).get("/").text
+    assert 'class="ngrip"' in page and "pointerdown" in page
+    assert "/api/nodes/order" in page
+
+
 def test_page_can_toggle_stacking_for_the_hub_itself():
     """hub ไม่มีการ์ดในลิสต์ ปุ่มของมันจึงต้องอยู่ที่อื่น — ไม่งั้นปิดแล้วกลุ่มหาย = เปิดคืนไม่ได้"""
     page = TestClient(create_app()).get("/").text
