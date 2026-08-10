@@ -2368,7 +2368,19 @@ function summaryMarkup(host) {
   return chip("CPU", cpu == null ? null : Math.min(cpu, 100))
     + chip(unified ? "MEM" : "RAM", mem, used != null ? `${Math.round(used)}/${gb(total)}` : "")
     + chip("VRAM", vram)
-    + chip("GPU", busy);
+    + chip("GPU", busy)
+    + cacheChip(host.cache);
+}
+
+// แคชโมเดลที่กลายเป็นของ root ทำให้ download/remove/sync ล้มโดยไม่มีสาเหตุที่มองเห็น
+// ปุ่ม "แก้สิทธิ์" มีมาก่อนแล้ว แต่ไม่มีอะไรบอกว่าเมื่อไหร่ต้องกด — ชิปนี้คือตัวบอก
+function cacheChip(cache) {
+  if (!cache || !cache.exists || cache.owner_ok !== false) return "";
+  const why = cache.writable === false
+    ? "แคชโมเดลเป็นของ root และ user เขียนไม่ได้ — โหลดโมเดลใหม่ไม่ลง"
+    : "มีไฟล์ของ root ปนอยู่ในแคชโมเดล — remove/sync-worker จะล้ม";
+  return `<span class="chip" style="--c:var(--bad)" title="${esc(why)} · กดปุ่ม “แก้สิทธิ์”">
+            สิทธิ์แคช <b>ต้องแก้</b></span>`;
 }
 
 function paintSummary(name, host) {

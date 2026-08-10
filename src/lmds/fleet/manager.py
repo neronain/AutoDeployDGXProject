@@ -871,8 +871,13 @@ def weights_path(info: ServerInfo) -> Path | None:
     if not model_id or "/" not in model_id:
         return None
     hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-    candidate = hf_home / "hub" / f"models--{model_id.replace('/', '--')}"
-    return candidate if candidate.is_dir() else None
+    slug = f"models--{model_id.replace('/', '--')}"
+    # HF cache มีสองเลย์เอาต์ — เลย์เอาต์เก่า ($HF_HOME/models--X) คือที่ที่ weight ซึ่งผู้ใช้
+    # โหลดเองมักไปอยู่ · รู้จักแค่ hub/ แปลว่า `remove` รายงานว่าไม่มี weight แล้วทิ้งไว้ทั้งก้อน
+    for candidate in (hf_home / "hub" / slug, hf_home / slug):
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 @dataclass

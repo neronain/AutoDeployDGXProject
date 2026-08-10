@@ -141,8 +141,31 @@ network_info() {
   echo "Context:   ${MAX_MODEL_LEN}"
 }
 
+# HF cache มีสองเลย์เอาต์: $HF_HOME/hub/models--X (ปัจจุบัน) และ $HF_HOME/models--X (เก่า)
+# เดิมที่นี่รู้จักแค่แบบแรก — โมเดลที่ผู้ใช้โหลดเองด้วยเครื่องมือรุ่นเก่าจึงถูกมองว่า
+# "ยังไม่ได้ download" ทั้งที่ไฟล์ครบ แล้ว repair/download ก็โหลดซ้ำลง hub/ อีกหลายสิบ GB
+# (แบบ stacked รองรับสองเลย์เอาต์อยู่ก่อนแล้ว — ตรงนี้ตามให้เท่ากัน)
+_model_cache_dir() {
+  local slug="${MODEL_ID//\//--}" candidate
+  for candidate in "${HF_HOME}/hub/models--${slug}" "${HF_HOME}/models--${slug}"; do
+    [[ -d "${candidate}/snapshots" ]] && { printf '%s' "$candidate"; return 0; }
+  done
+  printf '%s/hub/models--%s' "$HF_HOME" "$slug"
+}
+
 snapshot_dir() {
-  printf '%s/hub/models--%s/snapshots/%s' "$HF_HOME" "${MODEL_ID//\//--}" "$MODEL_REVISION"
+  printf '%s/snapshots/%s' "$(_model_cache_dir)" "$MODEL_REVISION"
+}
+
+# path ที่ HF ควรใช้เป็น hub cache *ฝั่งคอนเทนเนอร์* (host $HF_HOME ถูก mount ไว้ที่ /cache)
+# เลย์เอาต์เก่าวางโมเดลไว้ที่รากพอดี ชี้ /cache/hub จะหาไม่เจอแล้วโหลดใหม่ทั้งก้อน
+_container_hub_cache() {
+  local slug="${MODEL_ID//\//--}"
+  if [[ -d "${HF_HOME}/models--${slug}/snapshots" && ! -d "${HF_HOME}/hub/models--${slug}/snapshots" ]]; then
+    printf '/cache'
+  else
+    printf '/cache/hub'
+  fi
 }
 
 ensure_image() {
@@ -185,7 +208,7 @@ download() {
     local disable_xet="$1"
     docker run --rm \
       --user "$(id -u):$(id -g)" \
-      -e HOME=/tmp -e HF_HOME=/cache \
+      -e HOME=/tmp -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
       ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
       -v "${HF_HOME}:/cache" \
@@ -353,8 +376,19 @@ start() {
   local docker_args=(
     run -d --name "$CONTAINER_NAME"
     --network host --ipc host --gpus all
-    -v "${HF_HOME}:/root/.cache/huggingface"
+    -v "${HF_HOME}:/cache"
+    -e HF_HOME=/cache -e "HF_HUB_CACHE=$(_container_hub_cache)" -e HOME=/tmp
   )
+  # รันในฐานะ user เดียวกับที่สั่ง ไม่ใช่ root
+  #
+  # เดิม container เป็น root และ mount แคชเข้าไปตรง ๆ — ทุกไฟล์ที่มันเขียน (tokenizer,
+  # .locks, ไฟล์ที่ขาดแล้วดึงเพิ่ม) จึงกลายเป็นของ root ในแคชของ user · ผลที่ตามมาคือ
+  # โมเดลตัวถัดไป download ไม่ลง, `remove` ลบไม่ออก, `sync-worker` ตาย rsync exit 23
+  # เจอจริงบน msi-5: ~/.cache/huggingface/hub ทั้งก้อน 73 GB เป็นของ root
+  # (ทางเดิน download ใช้ --user อยู่ก่อนแล้ว — ตรงนี้ตามให้เท่ากัน)
+  if [[ -z "${LMDS_RUN_AS_ROOT:-}" ]]; then
+    docker_args+=(--user "$(id -u):$(id -g)")
+  fi
   if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e "HF_TOKEN=${HF_TOKEN}"); fi
   if [[ -n "$API_KEY" ]]; then docker_args+=(-e "VLLM_API_KEY=${API_KEY}"); fi
 {% if runtime_assets -%}

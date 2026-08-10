@@ -6,6 +6,7 @@ node จึงไม่ต้องรัน daemon อะไรเลย แล
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -91,6 +92,44 @@ def source_commit() -> str:
         return ""
 
 
+def cache_health() -> dict:
+    """แคชโมเดลบนเครื่องนี้ยังเป็นของ user อยู่ไหม — root-owned = โหลด/ลบ/ซิงก์ไม่ได้
+
+    เจอจริงบน msi-5: `docker run` ที่ไม่ได้ใส่ `--user` โหลด weight ลงแคชในฐานะ root
+    ผลคือ `~/.cache/huggingface/hub` ทั้งก้อน (73 GB) เป็นของ root — user เขียนไม่ได้
+    โมเดลตัวถัดไปจึงโหลดไม่ลง, `remove` ลบไม่ออก, `sync-worker` ตายด้วย rsync exit 23
+
+    เดิมอาการนี้เงียบสนิท: มีปุ่ม "แก้สิทธิ์" อยู่แล้วแต่ไม่มีอะไรบอกว่าต้องกด ผู้ใช้เห็นแค่
+    คำสั่งที่ล้มโดยไม่มีสาเหตุ · ตรวจให้เห็นตั้งแต่หน้ารวมเครื่องแทน
+
+    ค่าที่คืน `owner_ok=None` แปลว่ายังไม่มีแคช (เครื่องใหม่) ไม่ใช่ว่ามีปัญหา
+    """
+    root = Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface")
+    if not root.is_dir():
+        return {"path": str(root), "exists": False, "owner_ok": None, "writable": None}
+    me = os.getuid()
+    foreign = 0
+    # ไล่ทั้งต้นไม้ไม่ไหว (แคชเป็นแสนไฟล์) — ระดับบนพอบอกได้แล้วว่ามีของ root ปนอยู่
+    for base in (root, root / "hub"):
+        if not base.is_dir():
+            continue
+        for entry in [base, *list(base.glob("models--*"))]:
+            try:
+                if entry.stat().st_uid != me:
+                    foreign += 1
+            except OSError:
+                foreign += 1
+    hub = root / "hub"
+    writable = os.access(hub if hub.is_dir() else root, os.W_OK)
+    return {
+        "path": str(root),
+        "exists": True,
+        "owner_ok": foreign == 0,
+        "foreign_entries": foreign,
+        "writable": writable,
+    }
+
+
 def host_payload() -> dict:
     import lmds
     from lmds.fit.targets import from_hardware_report
@@ -116,6 +155,8 @@ def host_payload() -> dict:
         "disk_total_gb": report.disk_total_gb,
         "docker": report.docker,
         "toolkit": report.nvidia_container_toolkit,
+        # แคชโมเดลเป็นของ user อยู่ไหม — root-owned ทำให้ download/remove/sync ล้มเงียบ ๆ
+        "cache": cache_health(),
         "cpu": cpu,
         # ConnectX/200G — ใช้บอกว่าเครื่องนี้จับคู่ stacked กับเครื่องอื่นได้ไหม
         "fabric": fabric,
