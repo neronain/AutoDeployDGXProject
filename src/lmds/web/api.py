@@ -148,6 +148,39 @@ def create_app(token: str = "") -> FastAPI:
             payload["upstream"] = _upstream_commit()
         return payload
 
+    @app.post("/api/update", dependencies=guarded)
+    def self_update(body: dict | None = None) -> dict:
+        """อัปเดตตัว hub เอง — git pull + ติดตั้ง + restart บริการ
+
+        เดิมทำได้เฉพาะ node · ตัว hub ขึ้นได้แค่ป้าย "มีอัปเดต" พร้อมคำสั่งให้ไปพิมพ์เอง
+        ผลคือ hub ค้างที่ commit เก่า node ทุกเครื่องจึง "ตรงกับ hub" และไม่มีปุ่ม update ขึ้น
+        ทั้งที่ของจริงบน GitHub ไปไกลแล้ว
+        """
+        from . import jobs, selfupdate
+
+        root = selfupdate.source_root()
+        if root is None:
+            raise HTTPException(
+                status_code=409,
+                detail="hub ตัวนี้ไม่ได้ติดตั้งจาก git checkout — อัปเดตจากหน้าเว็บไม่ได้\n"
+                       "ติดตั้งใหม่จาก: git clone https://github.com/neronain/AutoDeployDGXProject",
+            )
+        dirty = selfupdate.dirty_files(root)
+        if dirty and not (body or {}).get("force"):
+            # กลืนงานที่ยังไม่ได้ commit ของใครสักคนไปเงียบ ๆ แย่กว่าล้มแล้วบอก
+            raise HTTPException(
+                status_code=409,
+                detail=f"มีไฟล์ที่แก้ค้างไว้ใน {root} — `git pull --ff-only` จะล้ม\n"
+                       + "\n".join(f"  · {name}" for name in dirty[:10])
+                       + ("\n  …" if len(dirty) > 10 else ""),
+            )
+        try:
+            job = jobs.start_shell("_hub", "update",
+                                   selfupdate.update_script(restart=True), cwd=str(root))
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job": job.payload()}
+
     def _upstream_commit() -> str:
         """commit ล่าสุดบน remote — ว่างเมื่อถามไม่ได้ (ไม่มีเน็ต/ไม่ใช่ git checkout)
 

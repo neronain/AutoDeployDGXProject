@@ -86,6 +86,13 @@ class FakeStream:
         return self._code
 
 
+class FakeJob:
+    """งานที่จบไปแล้ว — endpoint แค่ต้องคืน payload ของมัน ไม่ต้องรัน bash จริง"""
+
+    def payload(self):
+        return {"id": "fake", "running": False, "exit_code": 0, "output": ""}
+
+
 def wait_for_job(client, job_id, tries=50):
     """งานรันใน thread — รอจนมันจบก่อนค่อยตรวจผล"""
     import time
@@ -1891,3 +1898,55 @@ def test_a_served_name_with_spaces_is_refused(registered):
     r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start",
                                       json={"served_name": "มี ช่องว่าง"})
     assert r.status_code == 400
+
+
+# ── อัปเดตตัว hub เองจากหน้าเว็บ ────────────────────────────────────────────
+def test_update_refuses_when_the_hub_is_not_a_git_checkout(monkeypatch):
+    """ติดตั้งแบบไม่ผ่าน git แล้ว `git pull` ไม่มีความหมาย — บอกทางที่ใช้ได้จริงแทน"""
+    from lmds.web import selfupdate
+
+    monkeypatch.setattr(selfupdate, "source_root", lambda: None)
+    r = TestClient(create_app()).post("/api/update", json={})
+    assert r.status_code == 409
+    assert "git checkout" in r.json()["detail"]
+
+
+def test_update_refuses_to_run_over_uncommitted_work(monkeypatch, tmp_path):
+    """`git pull --ff-only` จะล้มอยู่แล้ว — ล้มแล้วบอกว่าไฟล์ไหนค้าง ดีกว่าไปตายกลาง log
+
+    และที่สำคัญกว่า: ห้าม reset/merge ทับงานที่ยังไม่ได้ commit ของใครสักคนเงียบ ๆ
+    """
+    from lmds.web import selfupdate
+
+    monkeypatch.setattr(selfupdate, "source_root", lambda: tmp_path)
+    monkeypatch.setattr(selfupdate, "dirty_files", lambda root: ["src/lmds/web/api.py"])
+    r = TestClient(create_app()).post("/api/update", json={})
+    assert r.status_code == 409
+    assert "src/lmds/web/api.py" in r.json()["detail"]
+
+
+def test_update_streams_a_job_and_restarts_the_service(monkeypatch, tmp_path):
+    """อัปเดตกินเวลาเป็นนาที — ต้องเป็นงานที่ตามดู log ได้ ไม่ใช่ HTTP ที่ค้างรอ"""
+    from lmds.web import selfupdate
+
+    monkeypatch.setattr(selfupdate, "source_root", lambda: tmp_path)
+    monkeypatch.setattr(selfupdate, "dirty_files", lambda root: [])
+    sent = {}
+    monkeypatch.setattr("lmds.web.jobs.start_shell",
+                        lambda slug, command, script, cwd="": sent.update(
+                            slug=slug, script=script, cwd=cwd) or FakeJob())
+    r = TestClient(create_app()).post("/api/update", json={})
+    assert r.status_code == 200
+    assert "git pull --ff-only" in sent["script"]
+    # restart ต้องหลุดจาก process ของเว็บ ไม่งั้น systemd ฆ่าตัวที่สั่ง restart ไปพร้อมกัน
+    assert "setsid" in sent["script"] and "lmds-web.service" in sent["script"]
+    # ห้าม reset/merge — เครื่องที่มีของแก้ค้างต้องล้ม ไม่ใช่ถูกกลืน
+    assert "reset --hard" not in sent["script"] and "git merge" not in sent["script"]
+
+
+def test_the_update_script_pulls_only_from_the_configured_remote():
+    """ไม่รับ URL จาก request — ไม่งั้นใครยิง endpoint นี้ได้ก็สั่งติดตั้งโค้ดจากที่ไหนก็ได้"""
+    from lmds.web import selfupdate
+
+    script = selfupdate.update_script()
+    assert "https://" not in script and "git@" not in script

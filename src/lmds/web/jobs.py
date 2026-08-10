@@ -330,3 +330,42 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
 
     threading.Thread(target=run, daemon=True).start()
     return job
+
+
+def start_shell(slug: str, command: str, script: str, cwd: str = "") -> Job:
+    """รันสคริปต์บน hub เองเป็นงานเบื้องหลัง แล้วสตรีมผลกลับมาทีละบรรทัด
+
+    ใช้กับงานที่ไม่ใช่ controller ของโมเดล — ตอนนี้มีอยู่ตัวเดียวคือ "อัปเดตตัว hub เอง"
+    (`git pull` + `install.sh` ซึ่งกินเวลาเป็นนาทีและ log ยาว)
+    """
+    with _LOCK:
+        current = _JOBS.get(_ACTIVE.get(slug, ""))
+        if current and current.running:
+            raise JobError(f"{slug} กำลังรัน '{current.command}' อยู่ — รอให้จบก่อน")
+        job = Job(id=uuid.uuid4().hex, slug=slug, command=command, steps=[command])
+        _JOBS[job.id] = job
+        _ACTIVE[slug] = job.id
+
+    def run() -> None:
+        import os
+
+        try:
+            proc = subprocess.Popen(
+                ["bash", "-s"], cwd=cwd or None, env=os.environ.copy(),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except OSError as exc:
+            job.lines.append(f"รันไม่ได้: {exc}\n")
+            job.exit_code = 127
+            return
+        job.process = proc
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(script)
+        proc.stdin.close()
+        for line in proc.stdout:
+            job.lines.append(line)
+        job.exit_code = proc.wait()
+
+    threading.Thread(target=run, daemon=True).start()
+    return job

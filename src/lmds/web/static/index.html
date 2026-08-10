@@ -195,6 +195,8 @@ button:disabled { opacity: .4; cursor: default; }
 }
 #new:hover:not(:disabled) { filter: brightness(1.08); border-color: transparent; }
 #tok-go { background: var(--g-mix); color: #fff; border-color: transparent; font-weight: 600; }
+/* ปุ่มที่ "ควรกด" — ตามหลังอยู่จริงถึงเน้น ไม่ใช่เน้นทุกใบจนไม่รู้ว่าใบไหนสำคัญ */
+button.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
 button.danger { color: var(--fg2); border-color: var(--line2); }
 button.danger:hover:not(:disabled) {
   color: var(--bad); border-color: var(--bad); background: var(--bad-bg);
@@ -295,6 +297,18 @@ input { flex: 1; min-width: 200px; }
 input::placeholder { color: var(--fg3); }
 label { font-size: 13px; color: var(--fg2); }
 .field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+
+
+/* ── กล่องอัปเดต: งานที่กินทั้งฟลีต ต้องอ่านได้โดยไม่ต้องเลื่อนหาว่าไปถึงไหนแล้ว ── */
+#upbox[hidden] { display: none; }
+#upbox {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(3px);
+}
+#upbox > .card { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; }
+#up-steps { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin: 8px 0 2px; }
+#up-steps div { display: flex; gap: 8px; align-items: baseline; }
+#up-steps b { font-weight: 500; min-width: 132px; }
 
 /* ── output ─────────────────────────────────────────────────────────── */
 pre {
@@ -427,12 +441,27 @@ pre {
   <linearGradient id="gr-bad" x1="0" y1="1" x2="1" y2="0">
     <stop offset="0%" stop-color="#f43f5e"/><stop offset="100%" stop-color="#f59e0b"/></linearGradient>
 </defs></svg>
+<div id="upbox" hidden>
+  <div class="card">
+    <div class="pad">
+      <div class="field" style="margin:0">
+        <b class="grow" id="up-title">อัปเดต LMDS</b>
+        <button id="up-close">ปิด</button>
+      </div>
+      <div class="dim" id="up-note"></div>
+      <div id="up-steps"></div>
+    </div>
+    <pre id="up-log" hidden></pre>
+  </div>
+</div>
+
 <header class="topbar">
   <div class="wrap">
     <h1>LMDS</h1>
     <span class="muted grow" id="host">…</span>
     <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
     <span class="dim" id="ver"></span>
+    <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้">อัปเดต</button>
     <button id="theme" class="theme" title="สลับธีม สว่าง / มืด / ตามเครื่อง">…</button>
     <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้">Sign out</button>
     <button id="new">+ Deploy model</button>
@@ -1635,9 +1664,12 @@ function paintNodeVersion(row, d, name) {
   const stale = commit && hubBuild.commit && commit !== hubBuild.commit;
   row.version.innerHTML = `${esc(version)}${commit ? ` <span class="dim">${esc(commit)}</span>` : ""}`
     + (stale ? ` <span class="tag warn" title="เครื่องนี้รัน ${esc(commit)} ส่วน hub อยู่ที่ ${esc(hubBuild.commit)}
-        — สถานะโมเดลคำนวณด้วยโค้ดของเครื่องนี้ ไม่ใช่ของ hub">โค้ดเก่า</span>
-       <button data-nact="install" data-node="${esc(name || "")}" style="font-size:12px"
-         title="ดึงโค้ดใหม่จาก GitHub แล้วติดตั้งบนเครื่องนี้ (ไม่แตะโมเดลที่รันอยู่)">update</button>` : "");
+        — สถานะโมเดลคำนวณด้วยโค้ดของเครื่องนี้ ไม่ใช่ของ hub">โค้ดเก่า</span>` : "")
+    // ปุ่มขึ้นเสมอ ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง" — commit เทียบไม่ได้ (hub ไม่ใช่ git checkout
+    // หรือ node ยังตอบ commit ไม่ได้) ก็ยังต้องกดอัปเดตเครื่องนั้นได้อยู่ดี
+    + ` <button data-nact="install" data-node="${esc(name || "")}" style="font-size:12px"
+          class="${stale ? "warn" : ""}"
+          title="ดึงโค้ดใหม่จาก GitHub แล้วติดตั้งบนเครื่องนี้ (ไม่แตะโมเดลที่รันอยู่)">update</button>`;
 }
 
 async function loadNode(name) {
@@ -2289,14 +2321,143 @@ api("/api/version?check_repo=true").then(r => r.json()).then(d => {
   const el = document.getElementById("ver");
   const behind = hubBuild.upstream && hubBuild.commit && hubBuild.upstream !== hubBuild.commit;
   el.innerHTML = `v${esc(hubBuild.version)}${hubBuild.commit ? " · " + esc(hubBuild.commit) : ""}`
-    + (behind ? ` <span class="tag warn" title="บน GitHub อยู่ที่ ${esc(hubBuild.upstream)} —
-        อัปเดต hub: cd ~/AutoDeployDGXProject && git pull แล้ว restart บริการ">มีอัปเดต</span>` : "");
+    + (behind ? ` <span class="tag warn" title="บน GitHub อยู่ที่ ${esc(hubBuild.upstream)}">มีอัปเดต</span>` : "");
+  // ปุ่มอัปเดตขึ้นเสมอเมื่อ hub ติดตั้งจาก git checkout — ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง"
+  // เพราะ upstream อ่านไม่ได้ (ไม่มีเน็ต/ถามไม่ทัน) ก็ยังต้องกดอัปเดตได้อยู่ดี
+  const btn = document.getElementById("update");
+  if (hubBuild.commit) {
+    btn.hidden = false;
+    btn.className = behind ? "warn" : "";
+  }
   // node ที่โหลดไปก่อนหน้านี้ยังไม่รู้ commit ของ hub — วาดป้าย "โค้ดเก่า" ใหม่ให้ครบ
   for (const [name, row] of nodeRows) {
     const cached = lastNodeData.get(name);
     if (cached) paintNodeVersion(row, cached, name);
   }
 }).catch(() => {});
+
+
+// ── อัปเดตทั้งฟลีต: hub ก่อน แล้วค่อยไล่ node ─────────────────────────────
+//
+// ลำดับนี้สำคัญ ไม่ใช่แค่ความเรียบร้อย: ป้าย "โค้ดเก่า" ของ node เทียบกับ commit ของ *hub*
+// อัปเดต node ก่อนจึงทำให้ node ล้ำหน้า hub แล้วป้ายก็หายไปทั้งที่ยังไม่ตรงกันจริง
+// (เดิม hub อัปเดตจากหน้าเว็บไม่ได้เลย ทั้งฟลีตจึงไม่เคยอยู่ที่ commit เดียวกันสักที)
+const upbox = document.getElementById("upbox");
+const upSteps = document.getElementById("up-steps");
+const upLog = document.getElementById("up-log");
+
+function upShow(title, note) {
+  document.getElementById("up-title").textContent = title;
+  document.getElementById("up-note").textContent = note || "";
+  upSteps.innerHTML = "";
+  upLog.hidden = true;
+  upLog.textContent = "";
+  upbox.hidden = false;
+}
+
+function upStep(key, label, state, detail) {
+  let row = upSteps.querySelector(`[data-k="${key}"]`);
+  if (!row) {
+    row = document.createElement("div");
+    row.dataset.k = key;
+    upSteps.appendChild(row);
+  }
+  const mark = { run: "⏳", ok: "✓", bad: "✗", wait: "·" }[state] || "·";
+  const colour = state === "bad" ? "var(--bad)" : state === "ok" ? "var(--ok)" : "var(--fg2)";
+  row.innerHTML = `<span style="color:${colour}">${mark}</span><b>${esc(label)}</b>
+                   <span class="dim">${esc(detail || "")}</span>`;
+}
+
+document.getElementById("up-close").addEventListener("click", () => { upbox.hidden = true; });
+
+// รอให้เซิร์ฟเวอร์กลับมาหลัง restart แล้วคืน commit ใหม่ — คืน "" ถ้ารอจนหมดเวลา
+async function waitForHub(previous, seconds = 120) {
+  const until = Date.now() + seconds * 1000;
+  while (Date.now() < until) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const r = await api("/api/version");
+      if (r.ok) {
+        const d = await r.json();
+        if (d.commit && d.commit !== previous) return d.commit;
+      }
+    } catch { /* ยังไม่ขึ้น — รอต่อ */ }
+  }
+  return "";
+}
+
+// ตามงานที่รันอยู่จนจบ แล้วคืน exit code · null = ติดต่อไม่ได้ (เซิร์ฟเวอร์ถูก restart ไปแล้ว)
+async function followInto(jobId, target) {
+  for (;;) {
+    let d;
+    try {
+      const r = await api(`/api/jobs/${jobId}`);
+      if (!r.ok) return null;
+      d = await r.json();
+    } catch { return null; }
+    target.hidden = false;
+    target.textContent = d.output || "เริ่มแล้ว…";
+    target.scrollTop = target.scrollHeight;
+    if (!d.running) return d.exit_code;
+    await new Promise(r => setTimeout(r, 1200));
+  }
+}
+
+async function updateEverything() {
+  const before = hubBuild.commit;
+  upShow("อัปเดต LMDS", "ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่ hub ก่อน แล้วไล่อัปเดตเครื่องอื่นตาม");
+  upStep("hub", "hub (เครื่องนี้)", "run", "กำลังดึงโค้ด…");
+
+  const r = await api("/api/update", { method: "POST", headers: { "content-type": "application/json" },
+                                       body: JSON.stringify({}) });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    upStep("hub", "hub (เครื่องนี้)", "bad", "");
+    upLog.hidden = false;
+    upLog.textContent = d.detail || "อัปเดตไม่สำเร็จ";
+    return;
+  }
+  const job = (await r.json()).job;
+  // งานนี้จบด้วยการ restart ตัวเอง — การเชื่อมต่อขาดกลางคันคือเรื่องปกติ ไม่ใช่ความล้มเหลว
+  const code = await followInto(job.id, upLog);
+  if (code !== null && code !== 0) {
+    upStep("hub", "hub (เครื่องนี้)", "bad", `exit ${code}`);
+    return;
+  }
+  upStep("hub", "hub (เครื่องนี้)", "run", "restart บริการ — รอเซิร์ฟเวอร์กลับมา…");
+  const now = await waitForHub(before);
+  if (!now) {
+    upStep("hub", "hub (เครื่องนี้)", "bad", "เซิร์ฟเวอร์ยังไม่กลับมา — ลองรีเฟรชหน้านี้");
+    return;
+  }
+  hubBuild.commit = now;
+  upStep("hub", "hub (เครื่องนี้)", "ok", `${before || "?"} → ${now}`);
+
+  const names = (await (await api("/api/nodes")).json()).nodes.map(n => n.name);
+  for (const name of names) upStep("n:" + name, name, "wait", "รอคิว");
+  for (const name of names) {
+    upStep("n:" + name, name, "run", "กำลังติดตั้ง…");
+    let jr;
+    try {
+      jr = await api(`/api/nodes/${encodeURIComponent(name)}/install`, { method: "POST" });
+    } catch { upStep("n:" + name, name, "bad", "ติดต่อ hub ไม่ได้"); continue; }
+    if (!jr.ok) {
+      const d = await jr.json().catch(() => ({}));
+      upStep("n:" + name, name, "bad", (d.detail || "").split("\n")[0] || `HTTP ${jr.status}`);
+      continue;
+    }
+    const nodeJob = (await jr.json()).job;
+    const nodeCode = await followInto(nodeJob.id, upLog);
+    upStep("n:" + name, name, nodeCode === 0 ? "ok" : "bad",
+           nodeCode === 0 ? "ตรงกับ hub แล้ว" : `exit ${nodeCode}`);
+  }
+  document.getElementById("up-note").textContent =
+    "เสร็จแล้ว — ปิดหน้าต่างนี้ได้ · เครื่องที่ยังขึ้นว่าไม่สำเร็จ ดู log ด้านล่าง";
+  nodeRows.clear();
+  refreshNodes();
+}
+
+document.getElementById("update").addEventListener("click", updateEverything);
 
 // ── live updates ────────────────────────────────────────────────────────
 // เดิม poll ทุก 5 วิ = SSH ไปทุกเครื่องทุกรอบ · ผ่าน relay 150ms ต่อเครื่องแล้วกระตุก
