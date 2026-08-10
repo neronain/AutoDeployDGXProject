@@ -109,16 +109,26 @@ def cache_health() -> dict:
         return {"path": str(root), "exists": False, "owner_ok": None, "writable": None}
     me = os.getuid()
     foreign = 0
-    # ไล่ทั้งต้นไม้ไม่ไหว (แคชเป็นแสนไฟล์) — ระดับบนพอบอกได้แล้วว่ามีของ root ปนอยู่
-    for base in (root, root / "hub"):
+    # ไล่ทั้งต้นไม้ไม่ไหว (แคชเป็นแสนไฟล์) — ดูถึงชั้นลูกของ models--X ก็พอ
+    # ต้องลงถึงชั้นนั้นจริง ๆ: เคสที่เจอบ่อยคือตัวโฟลเดอร์โมเดลเป็นของ user แต่ refs/,
+    # .no_exist/, .locks/ ข้างในเป็นของ root — พอสั่ง remove ก็ลบไม่ออกทั้งก้อน
+    targets: list[Path] = []
+    for base in (root, root / "hub", root / ".locks"):
         if not base.is_dir():
             continue
-        for entry in [base, *list(base.glob("models--*"))]:
+        targets.append(base)
+        for model in base.glob("models--*"):
+            targets.append(model)
             try:
-                if entry.stat().st_uid != me:
-                    foreign += 1
+                targets.extend(model.iterdir())
             except OSError:
                 foreign += 1
+    for entry in targets:
+        try:
+            if entry.stat().st_uid != me:
+                foreign += 1
+        except OSError:
+            foreign += 1
     hub = root / "hub"
     writable = os.access(hub if hub.is_dir() else root, os.W_OK)
     return {
