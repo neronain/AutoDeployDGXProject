@@ -856,3 +856,23 @@ def test_adopted_controller_reads_the_real_model_name(tmp_path):
     assert 'json.load(sys.stdin)["data"][0]["id"]' in script, "ต้อง parse JSON ไม่ใช่ regex"
     # test-text และ client-config ต้องใช้ตัวเดียวกัน ไม่ใช่ต่างคนต่างเดา
     assert script.count('served="$(served_model)"') == 2
+
+
+def test_repair_explains_itself_on_a_self_managed_bundle(tmp_path, monkeypatch):
+    """repair = download + verify-files — bundle ที่ผู้ใช้ดูแล weight เองไม่มีสองคำสั่งนั้น
+
+    เดิมสั่งไปแล้วได้ usage ของ bash กลับมา ผู้ใช้จึงรายงานว่า "กด repair แล้วไม่ทำงาน"
+    ทั้งที่มันแค่ไม่ใช่เรื่องของ bundle แบบนี้ — ต้องบอกให้ชัดแทนที่จะรันคำสั่งที่ไม่มีอยู่
+    """
+    from lmds.fleet import manager
+
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("case $1 in\n  start)  start ;;\n  logs)   logs ;;\nesac\n")
+    info = SimpleNamespace(slug="adopted", controller=str(controller), controller_exists=True,
+                           external=False, container="")
+    ran = []
+    monkeypatch.setattr(manager, "_run_controller", lambda *a: ran.append(a) or 0)
+    with pytest.raises(manager.FleetError) as caught:
+        manager.repair_server(info)
+    assert "lmds start adopted" in str(caught.value)
+    assert ran == []

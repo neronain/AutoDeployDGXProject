@@ -994,6 +994,20 @@ def repair_server(info: ServerInfo) -> int:
             f"ไม่พบ controller ของ {info.slug} — bundle ถูกลบไปแล้ว ซ่อมไม่ได้\n"
             f"สร้างใหม่ด้วย: lmds deploy <ลิงก์โมเดลเดิม>  (weight ที่โหลดไว้ยังใช้ต่อได้ ไม่ต้องโหลดซ้ำ)"
         )
+    # bundle ที่ผู้ใช้ดูแล weight เอง (มาจาก `lmds adopt` หรือชี้ไปที่ path ตรง ๆ) ไม่มี
+    # download/verify-files ในสคริปต์ — เดิมสั่งไปแล้วได้ usage ของ bash กลับมา ซึ่งอ่านไม่รู้เรื่อง
+    # และทำให้เข้าใจว่า repair พัง ทั้งที่มันแค่ไม่ใช่เรื่องของ bundle แบบนี้
+    from lmds.inventory import controller_commands
+
+    commands = controller_commands(info.controller)
+    # อ่าน dispatch table ไม่ออก (สคริปต์เขียนคนละสไตล์) = ไม่ฟันธง ปล่อยให้ลองรันไปตามเดิม
+    if commands and "download" not in commands:
+        raise FleetError(
+            f"{info.slug} เป็น bundle ที่ weight อยู่ในความดูแลของคุณเอง — LMDS ไม่ได้เป็นคนโหลดมา\n"
+            f"จึงไม่มีอะไรให้ซ่อม: ไม่รู้ว่าไฟล์ครบชุดคืออะไร และไม่รู้จะโหลดมาจากไหน\n"
+            f"ตรวจว่ามันรันได้ไหมด้วย: lmds start {info.slug}   (ดูสาเหตุจริงจาก log ถ้าไม่ขึ้น)\n"
+            f"อยากให้ LMDS ดูแล weight ให้: lmds deploy <ลิงก์โมเดลบน Hugging Face>"
+        )
     code = _run_controller(info, "download")
     if code != 0:
         return code

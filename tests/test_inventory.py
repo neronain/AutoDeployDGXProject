@@ -19,3 +19,28 @@ def test_cache_health_is_quiet_on_a_fresh_machine(tmp_path, monkeypatch):
     """เครื่องที่ยังไม่มีแคช ไม่ใช่เครื่องที่มีปัญหา — ต้องไม่ขึ้นเตือน"""
     monkeypatch.setenv("HF_HOME", str(tmp_path / "nope"))
     assert inventory.cache_health()["owner_ok"] is None
+
+
+def _server(controller):
+    from lmds.fleet.manager import ServerInfo
+    import inspect
+    kwargs = {}
+    for name, param in inspect.signature(ServerInfo).parameters.items():
+        if param.default is inspect.Parameter.empty:
+            kwargs[name] = ""
+    kwargs.update(slug="demo", controller=str(controller))
+    return ServerInfo(**kwargs)
+
+
+def test_a_controller_without_download_is_treated_as_self_managed(tmp_path):
+    """สคริปต์เองคือความจริงสุดท้าย — ไม่มี `download` แปลว่า LMDS โหลด weight ให้ไม่ได้
+
+    bundle ที่ adopt มาบางตัวมี model id เป็นรูป org/name ตามปกติ จึงหลุดตัวกรองที่เดาจาก
+    profile แล้วหน้าเว็บยื่นปุ่ม download/repair ที่กดไปเจอ usage ของ bash (ผู้ใช้รายงานว่า
+    "กด repair แล้วไม่ทำงาน" หลังแอด node ที่มี vllm อยู่ก่อน)
+    """
+    controller = tmp_path / "ctl.sh"
+    controller.write_text("case $1 in\n  start)  start ;;\n  logs)   logs ;;\nesac\n")
+    payload = inventory.model_payload(_server(controller))
+    assert payload["self_managed_weights"] is True
+    assert payload["downloaded"] is True     # ปุ่มที่ควรได้คือ start ไม่ใช่ download

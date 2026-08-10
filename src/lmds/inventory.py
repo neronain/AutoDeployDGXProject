@@ -209,6 +209,13 @@ def model_payload(server, active_job: dict | None = None) -> dict:
     )
 
     profile = bundle_profile(server.controller)
+    commands = controller_commands(server.controller) if server.controller_exists else []
+    # ตัวสคริปต์เองคือความจริงสุดท้าย: ไม่มี `download` = LMDS โหลด weight ให้ไม่ได้ จบ
+    # เดาจาก profile อย่างเดียวไม่พอ — bundle ที่ adopt มาแล้ว model id บังเอิญเป็นรูป org/name
+    # จะหลุดตัวกรอง แล้วหน้าเว็บก็ยื่นปุ่ม download/repair ที่กดไปเจอ usage ของ bash
+    self_managed = self_managed_weights(profile) or (
+        bool(commands) and "download" not in commands
+    )
     return {
         "slug": server.slug,
         "model_id": server.model_id or server.model,
@@ -229,11 +236,11 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),
         "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
-        "commands": controller_commands(server.controller) if server.controller_exists else [],
+        "commands": commands,
         "started_at": server.started_at,
-        "downloaded": weights_present(server, profile),
+        "downloaded": True if self_managed else weights_present(server, profile),
         # หน้าเว็บต้องแยกได้ว่า "โหลดครบแล้ว" กับ "weight ไม่ได้อยู่ในมือ LMDS" คนละเรื่อง
-        "self_managed_weights": self_managed_weights(profile),
+        "self_managed_weights": self_managed,
         "job": active_job,
     }
 
