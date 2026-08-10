@@ -651,6 +651,12 @@ function manageMarkup(m) {
       </select>
     </div>
     <div class="field">
+      <label>model ID</label>
+      <input class="o-served" value="${esc(o.served_name || "")}"
+             placeholder="empty = the name the bundle sets"
+             title="The name the API serves — set this when clients expect an existing name">
+    </div>
+    <div class="field">
       <label>image</label>
       <input class="o-image" value="${esc(o.image || "")}" placeholder="empty = the image the bundle pins"
              title="Use when the bundle's image cannot be pulled (bad tag, withdrawn) — no redeploy needed">
@@ -1143,7 +1149,8 @@ document.addEventListener("click", async e => {
     const val = sel => (panel.querySelector(sel) || {}).value || "";
     setOpts(slug, { port: +val(".o-port") || null, context: +val(".o-ctx") || null,
                     slots: +val(".o-slots") || null, bind: val(".o-bind"), api_key: val(".o-key"),
-                    image: val(".o-image") || null });
+                    image: val(".o-image") || null,
+                    served_name: val(".o-served") || null });
     btn.textContent = "Saved";
     setTimeout(() => { btn.textContent = "Save"; }, 1500);
     return;
@@ -1316,7 +1323,7 @@ function readNodeOpts(node, slug) {
   const o = {
     port: num(".n-port"), context: num(".n-ctx"), gpu_util: num(".n-gpu"),
     slots: num(".n-slots"), bind: num(".n-bind"), api_key: num(".n-key"),
-    image: num(".n-image"),
+    image: num(".n-image"), served_name: num(".n-served"),
   };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
   localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(o));
@@ -1551,6 +1558,13 @@ function nodeModelsMarkup(name, data) {
             <input type="password" class="n-key" value="${esc(o.api_key ?? "")}"
                    placeholder="ว่าง = ไม่ต้องยืนยันตัวตน" style="min-width:180px">
             <span class="dim">เก็บในเบราว์เซอร์นี้ ไม่ได้เขียนลง bundle ปลายทาง</span>
+          </div>
+          <div class="field" style="width:100%">
+            <label>model ID</label>
+            <input class="n-served" value="${esc(o.served_name ?? "")}"
+                   placeholder="ว่าง = ชื่อที่ bundle กำหนด" style="min-width:240px"
+                   title="ชื่อที่ API เสิร์ฟออกไป — ย้ายมาจากระบบเดิมแล้วต้องใช้ชื่อเดิม ตั้งตรงนี้">
+            <span class="dim">ชื่อที่ client เรียกใช้ (field "model" ใน request)</span>
           </div>
           <div class="field" style="width:100%">
             <label>image</label>

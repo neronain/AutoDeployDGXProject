@@ -741,3 +741,16 @@ def test_the_gate_catches_an_inconsistent_bundle(isolated_config, tmp_path):
     result = gate_serving_consistent(bundle.directory)
     assert result.passed is False
     assert "client-config" in result.detail
+
+
+@pytest.mark.parametrize("kind", ["vllm", "llamacpp"])
+def test_served_model_name_can_be_set_at_start(isolated_config, tmp_path, kind):
+    """ลูกค้าที่ย้ายมาจากระบบเดิมต้องใช้ชื่อโมเดลเดิมเป๊ะ ไม่งั้น client ทุกตัวต้องแก้ตาม
+    — เดิมชื่อถูก hardcode ไว้ในสคริปต์ เปลี่ยนไม่ได้เลยนอกจาก deploy ใหม่
+    """
+    import re
+
+    report = safetensors_report() if kind == "vllm" else gguf_report()
+    bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert re.search(r'^SERVED_MODEL_NAME="\$\{SERVED_MODEL_NAME:-', text, re.M)

@@ -20,7 +20,9 @@ RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
 MODEL_FEATURES="${MODEL_FEATURES:-{{ model_features }}}"
 MODEL_ID="{{ plan.model_id }}"
 MODEL_REVISION="{{ plan.revision }}"
-SERVED_MODEL_NAME="{{ plan.served_model_name }}"
+# ชื่อโมเดลที่ API เสิร์ฟออกไป — ตั้งเองได้ผ่าน env เหมือน knob อื่น ๆ
+# ลูกค้าที่ย้ายมาจากระบบเดิมมักต้องใช้ชื่อเดิมเป๊ะ ไม่งั้น client ทุกตัวต้องแก้ตาม
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 VLLM_IMAGE="${VLLM_IMAGE:-{{ plan.runtime.image_ref }}}"
 MASTER_CONTAINER="${MASTER_CONTAINER:-lmds-{{ slug }}-head}"
 WORKER_CONTAINER="${WORKER_CONTAINER:-lmds-{{ slug }}-worker}"

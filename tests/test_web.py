@@ -1868,3 +1868,26 @@ def test_setup_form_says_which_user_it_will_use():
     assert "lastNodeRegistry" in page
     setup = page.split('if (nact === "setup" || nact === "fix-perms")')[1].split('if (nact === "setup-go")')[0]
     assert "user เดียวกับที่ใช้ต่อ SSH" in setup
+
+
+def test_served_name_reaches_the_controller(registered, monkeypatch):
+    """ชื่อที่ client เรียกใช้ต้องตั้งได้จากหน้าเว็บ ไม่ใช่ต้อง deploy ใหม่"""
+    from lmds.brain import registry
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: True)
+    sent = {}
+    monkeypatch.setattr("lmds.nodes.stream",
+                        lambda node, command: sent.update(command=command) or FakeStream())
+    client = TestClient(create_app())
+    r = client.post("/api/nodes/spark2/models/demo/start",
+                    json={"served_name": "vllm-msi-03/aeon-ultimate"})
+    assert r.status_code == 200, r.text
+    wait_for_job(client, r.json()["job"]["id"])
+    assert "SERVED_MODEL_NAME=vllm-msi-03/aeon-ultimate" in sent["command"]
+
+
+def test_a_served_name_with_spaces_is_refused(registered):
+    """ค่านี้ถูกต่อเป็นคำสั่งที่รันผ่าน SSH — ช่องว่างทำให้คำสั่งแตกเป็นคนละคำ"""
+    r = TestClient(create_app()).post("/api/nodes/spark2/models/demo/start",
+                                      json={"served_name": "มี ช่องว่าง"})
+    assert r.status_code == 400

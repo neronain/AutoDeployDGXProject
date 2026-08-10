@@ -126,6 +126,10 @@ def controller_env(options: dict | None) -> dict:
         env["PARALLEL_SEQS"] = env["MAX_NUM_SEQS"] = str(int(options["slots"]))
     if options.get("gpu_util"):
         env["GPU_MEMORY_UTILIZATION"] = str(float(options["gpu_util"]))
+    if options.get("served_name"):
+        env["SERVED_MODEL_NAME"] = str(options["served_name"])
+    if options.get("served_name"):
+        env["SERVED_MODEL_NAME"] = str(options["served_name"])
     if options.get("image"):
         # controller อ่านคนละชื่อตาม engine — ตั้งทั้งคู่ ตัวที่เกินมาไม่มีผล
         env["VLLM_IMAGE"] = env["LLAMACPP_IMAGE"] = str(options["image"])
@@ -170,7 +174,25 @@ def clean_options(options: dict | None) -> dict:
         cleaned["api_key"] = key
     if options.get("image"):
         cleaned["image"] = _clean_image(str(options["image"]))
+    if options.get("served_name"):
+        cleaned["served_name"] = _clean_served_name(str(options["served_name"]))
     return cleaned
+
+
+def _clean_served_name(name: str) -> str:
+    """ชื่อโมเดลที่ API เสิร์ฟ — ผู้ใช้ตั้งเองได้แทบทุกอย่าง แต่ต้องไม่พังคำสั่ง/URL
+
+    ลูกค้าที่ย้ายมาจากระบบเดิมต้องใช้ชื่อเดิมเป๊ะ (เช่น `vllm-msi-03/aeon-ultimate`
+    ที่มี `/` อยู่ข้างใน) — บังคับรูปแบบแคบเกินไปจะใช้กับของจริงไม่ได้
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("ชื่อโมเดลว่างไม่ได้")
+    if len(name) > 200:
+        raise ValueError("ชื่อโมเดลยาวเกิน 200 ตัว")
+    if any(ch.isspace() or ord(ch) < 32 for ch in name):
+        raise ValueError("ชื่อโมเดลต้องไม่มีช่องว่างหรือตัวควบคุม")
+    return name
 
 
 def _clean_image(image: str) -> str:
