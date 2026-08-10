@@ -27,9 +27,27 @@ import lmds
 
 
 def source_root() -> Path | None:
-    """git checkout ที่โค้ดที่กำลังรันอยู่มาจาก — None เมื่อไม่ได้ติดตั้งจาก checkout"""
-    root = Path(lmds.__file__).resolve().parents[2]
-    return root if (root / ".git").is_dir() else None
+    """git checkout ที่โค้ดที่กำลังรันอยู่มาจาก — None เมื่อไม่ได้ติดตั้งจาก checkout
+
+    เดาจากตำแหน่งของโมดูลไม่ได้: ติดตั้งแบบปกติแล้วโค้ดอยู่ใน site-packages ของ venv
+    ซึ่งไม่มี `.git` อยู่ใกล้ ๆ เลย — เครื่องจริงทุกเครื่องเป็นแบบนี้ `install.sh` จึงประทับ
+    ที่อยู่ของ checkout ไว้ให้ตอนติดตั้ง
+    """
+    candidates: list[Path] = []
+    try:                                  # ติดตั้งปกติ — ค่าที่ install.sh ประทับไว้
+        from lmds._build import SOURCE
+
+        if SOURCE:
+            candidates.append(Path(SOURCE))
+    except Exception:
+        pass
+    # รันจาก checkout ตรง ๆ (นักพัฒนา) และค่าเผื่อสำหรับเครื่องที่ติดตั้งไว้ก่อนจะมี SOURCE
+    candidates.append(Path(lmds.__file__).resolve().parents[2])
+    candidates.append(Path.home() / "AutoDeployDGXProject")
+    for root in candidates:
+        if (root / ".git").is_dir() and (root / "install.sh").is_file():
+            return root
+    return None
 
 
 def dirty_files(root: Path) -> list[str]:

@@ -1950,3 +1950,35 @@ def test_the_update_script_pulls_only_from_the_configured_remote():
 
     script = selfupdate.update_script()
     assert "https://" not in script and "git@" not in script
+
+
+def test_source_root_uses_the_path_install_sh_stamped(monkeypatch, tmp_path):
+    """เดาจากตำแหน่งโมดูลไม่ได้ — ติดตั้งจริงแล้วโค้ดอยู่ใน site-packages ที่ไม่มี .git ใกล้ ๆ
+
+    เจอตอนทดสอบบนเครื่องจริง: ปุ่มอัปเดตตอบว่า "ไม่ได้ติดตั้งจาก git checkout" ทุกครั้ง
+    ทั้งที่ checkout อยู่ที่ ~/AutoDeployDGXProject เรียบร้อย
+    """
+    import sys
+    import types
+
+    from lmds.web import selfupdate
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "install.sh").write_text("#!/bin/sh\n")
+    monkeypatch.setitem(sys.modules, "lmds._build",
+                        types.SimpleNamespace(COMMIT="abc1234", SOURCE=str(tmp_path)))
+    assert selfupdate.source_root() == tmp_path
+
+
+def test_source_root_is_none_when_nothing_looks_like_a_checkout(monkeypatch, tmp_path):
+    """ไม่มี checkout จริง = ต้องตอบ None ไม่ใช่คืน path มั่ว ๆ ให้ไป git pull ทับ"""
+    import sys
+    import types
+
+    from lmds.web import selfupdate
+
+    monkeypatch.setitem(sys.modules, "lmds._build",
+                        types.SimpleNamespace(COMMIT="", SOURCE=""))
+    monkeypatch.setattr(selfupdate.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(selfupdate.lmds, "__file__", str(tmp_path / "a" / "b" / "lmds" / "__init__.py"))
+    assert selfupdate.source_root() is None
