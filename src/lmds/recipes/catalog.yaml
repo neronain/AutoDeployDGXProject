@@ -126,8 +126,19 @@ recipes:
     image: vllm/vllm-openai:latest
     serving:
       dtype: bfloat16
+    tool_calling:
+      enabled: true
+      parser: gemma4
+    reasoning:
+      # chat template มี <think> — ไม่ตั้ง parser แล้วความคิดจะปนมาในคำตอบ
+      # ทุกฝั่งที่เอาไปแสดงต้องมาตัดเอง ซึ่งเดาผิดได้เสมอ
+      enabled: true
+      parser: gemma4
+    notes:
+      - multimodal (text + image) — vision_config อยู่ใน config.json
+      - เดิม entry นี้มีแค่ image/dtype · bundle จึงออกมาไม่มี parser ทั้งที่ image มีให้ครบ
     source: https://github.com/neronain/Gemma-4-31B-it-on-DGX-Spark-128G-with-vLLM
-    validated_on: DGX Spark (GB10) 128 GB เครื่องเดียว
+    validated_on: DGX Spark (GB10) 128 GB เครื่องเดียว · parser เติม 13 ส.ค. 2569
 
   - match: nvidia/NVIDIA-Nemotron-3-Super
     label: Nemotron-3-Super (120B)
