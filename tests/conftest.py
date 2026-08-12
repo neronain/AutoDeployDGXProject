@@ -56,21 +56,23 @@ def no_registry_lookups(monkeypatch):
     yield
 
 
-def _real_config_files() -> dict[str, str]:
-    """Checksums of the operator's real config, if any exists on this machine."""
-    import hashlib
+def _real_config_files() -> dict[str, bytes]:
+    """Contents of the operator's real config, if any exists on this machine.
 
+    Contents rather than checksums: a checksum tells you the file changed, the
+    bytes let you put it back. The directory is a few kilobytes.
+    """
     real = Path.home() / ".config" / "lmds"
     if not real.is_dir():
         return {}
-    digests: dict[str, str] = {}
+    snapshot: dict[str, bytes] = {}
     for path in sorted(real.rglob("*")):
         if path.is_file():
             try:
-                digests[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+                snapshot[str(path)] = path.read_bytes()
             except OSError:
                 continue
-    return digests
+    return snapshot
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -87,12 +89,23 @@ def never_touch_the_real_config():
     if before == after:
         return
 
-    changed = sorted(
-        {*before, *after},
-        key=lambda p: (before.get(p) == after.get(p), p),
-    )
-    damaged = [p for p in changed if before.get(p) != after.get(p)]
+    damaged = sorted({*before, *after}, key=str)
+    restored: list[str] = []
+    for name in damaged:
+        original = before.get(name)
+        if original is None:
+            continue  # เทสสร้างไฟล์ใหม่ — ปล่อยไว้ให้เห็น ไม่ใช่ของเดิมที่หาย
+        if after.get(name) == original:
+            continue
+        try:
+            path = Path(name)
+            path.write_bytes(original)
+            path.chmod(0o600)
+            restored.append(name)
+        except OSError:  # noqa: PERF203
+            pass
+
     raise AssertionError(
-        "เทสไปแก้ config จริงของเครื่องนี้ — ต้อง isolate ให้ครบก่อนรันอีก:\n  "
-        + "\n  ".join(damaged)
+        "เทสไปแก้ config จริงของเครื่องนี้ — กู้คืนให้แล้ว แต่ต้องอุดรูก่อนรันอีก:\n  "
+        + "\n  ".join(restored or [n for n in damaged if n in before])
     )

@@ -76,8 +76,28 @@ def synced_path() -> Path:
     return config_dir() / "recipes-synced.yaml"
 
 
-@lru_cache(maxsize=1)
+# ความสามารถของโมเดล ไม่ใช่การตั้งค่าของเครื่อง — สูตรที่ดึงมาทับได้ถ้ามันระบุเอง
+# แต่ถ้าเงียบ ต้องไม่ไปลบของที่ catalog รู้อยู่แล้ว (ดูเหตุผลใน load_catalog)
+CAPABILITY_FIELDS = ("tool_calling", "reasoning")
+
+
 def load_catalog() -> list[Recipe]:
+    """สูตรทั้งหมด — cache ตามไฟล์ที่อ่านจริง ไม่ใช่ cache ตลอดอายุ process
+
+    ของเดิมเป็น lru_cache แบบไม่มี argument จึงจำคำตอบแรกไว้ตลอด: แก้
+    recipes-synced.yaml แล้ว daemon ที่รันอยู่ไม่เห็น และเทสที่สลับ
+    LMDS_CONFIG_DIR ก็อ่านของเทสก่อนหน้า ทำให้ผลเทสไม่คงที่
+    """
+    path = synced_path()
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    return _load_catalog_cached(str(path), stamp)
+
+
+@lru_cache(maxsize=8)
+def _load_catalog_cached(synced: str, stamp: float) -> list[Recipe]:
     """สูตรทั้งหมด = ที่มากับ LMDS + ที่ดึงมาจากรีโป controller ของทีม
 
     ของที่ดึงมาชนะของที่มากับตัวโปรแกรมเมื่อชนกัน — รีโปของทีมคือต้นทางที่รันจริง
@@ -85,8 +105,23 @@ def load_catalog() -> list[Recipe]:
     """
     known = set(Recipe.__dataclass_fields__)
     merged: dict[str, dict] = {}
-    for entry in [*_read(CATALOG_PATH), *_read(synced_path())]:
-        merged[str(entry["match"]).lower()] = entry
+    for entry in [*_read(CATALOG_PATH), *_read(Path(synced))]:
+        key = str(entry["match"]).lower()
+        previous = merged.get(key)
+        if previous:
+            # ของที่ดึงมาชนะทุกอย่างที่มันพูดถึง (ตามเดิม) แต่ "ความสามารถของโมเดล"
+            # ที่มันเงียบไว้ ต้องไม่หายไป — สูตรที่ดึงมาสร้างจากสคริปต์ controller
+            # จึงบอกว่า "สั่งรันยังไง" ส่วน catalog บอกว่า "โมเดลทำอะไรได้"
+            #
+            # ของจริง: สูตรที่ดึงมาของ ucbye/Qwen3-Coder-Next-NVFP4-GB10 เขียน
+            # "tools (qwen3_coder)" ไว้ใน notes ซึ่งเป็นข้อความให้คนอ่าน ไม่มี
+            # field tool_calling · พอทับทั้งก้อน สิ่งที่ catalog ยืนยันไว้ก็หาย
+            # โมเดลจึง deploy ออกมาโดยไม่มี --enable-auto-tool-choice
+            entry = dict(entry)
+            for field_name in CAPABILITY_FIELDS:
+                if not entry.get(field_name) and previous.get(field_name):
+                    entry[field_name] = previous[field_name]
+        merged[key] = entry
     return [Recipe(**{k: v for k, v in entry.items() if k in known}) for entry in merged.values()]
 
 
