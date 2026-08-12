@@ -44,6 +44,25 @@ pytest -k stacked           # เฉพาะที่ชื่อตรง
 CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บน Python 3.10/3.11/3.12,
 `bash -n` + shellcheck สคริปต์ในรีโป, และ secret scan
 
+### เทสรันใน sandbox — `~` ไม่ใช่ home จริง
+
+`tests/conftest.py` ย้าย `HOME`, `LMDS_CONFIG_DIR` และ `LMDS_RUN_ROOT` ไปโฟลเดอร์ชั่วคราว
+ตั้งแต่ตอน import (ก่อน pytest collect) · เทสจึงเขียนทับ `~/.config/lmds` ของเครื่องที่รันไม่ได้
+แม้แต่โค้ดที่ resolve home เอง — เคยลบ `nodes.yaml` ของผู้ใช้มาแล้วสองครั้ง
+
+สิ่งที่ต้องรู้เวลาเขียนเทส:
+
+- **อย่าใช้ `Path.home()` เพื่อหมายถึง "ของจริง"** — มันคืน sandbox · ถ้าต้องเทียบกับของจริง
+  ให้ import `REAL_HOME` / `REAL_CONFIG_DIR` / `REAL_RUN_ROOT` จาก `tests.conftest`
+  ซึ่งจำค่าไว้ตั้งแต่ก่อนย้าย
+- **ห้ามชี้ env กลับไปที่ของจริง** — มีด่านตรวจก่อนและหลังทุกเทส ถ้าชี้กลับจะ fail ตรงเทสนั้น
+  พร้อมบอกว่า path ไหนหลุด
+- เทสไม่คุยกับ systemd และ registry จริง (`no_systemd_lookups`, `no_registry_lookups`) —
+  เทสที่ตั้งใจทดสอบสายนั้น patch ทับเองได้ตามปกติ
+
+`lmds web` ที่รันค้างอยู่บนเครื่อง dev เขียน `nodes.yaml` ทุก 1-3 วิ — เทสไม่สนใจมันแล้ว
+และมันก็ไม่ทำให้เทสล้ม (เดิมล้ม เพราะด่านเก่าเทียบไฟล์จริงก่อน/หลัง session)
+
 ## งานที่ทำบ่อย
 
 ### เพิ่ม target preset (GPU รุ่นใหม่)
