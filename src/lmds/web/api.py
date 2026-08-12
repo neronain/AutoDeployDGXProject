@@ -413,6 +413,68 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"models": models}
 
+    @app.get("/api/assistant", dependencies=guarded)
+    def assistant_status() -> dict:
+        """หน้าเว็บถามก่อนวาดว่าจะมีกล่องแชทไหม
+
+        LMDS ทำงานได้เต็มที่ในโหมด rule-based การไม่มี provider จึงไม่ใช่ error
+        แค่แปลว่าไม่มีอะไรให้คุย — ซ่อนกล่องไปดีกว่าโชว์กล่องที่ตอบไม่ได้
+        """
+        from lmds.web import assistant
+
+        ok, reason = assistant.available()
+        brain = assistant.gather_state().get("brain") if ok else None
+        return {"available": ok, "reason": reason, "brain": brain}
+
+    @app.post("/api/assistant/chat", dependencies=guarded)
+    def assistant_chat(body: dict) -> StreamingResponse:
+        """คุยกับผู้ช่วย — สตรีมกลับเป็น SSE เสมอ
+
+        provider ที่สตรีมไม่ได้ (Gemini/MiniMax) จะได้ก้อนเดียวจบ ฝั่งหน้าเว็บ
+        จึงเขียนทางเดียว ไม่ต้องรู้ว่าหลังบ้านเป็นตัวไหน
+        """
+        from lmds.brain.providers import ProviderError, make_provider
+        from lmds.config import Settings
+        from lmds.secrets import get_secret
+        from lmds.web import assistant
+
+        ok, reason = assistant.available()
+        if not ok:
+            raise HTTPException(status_code=503, detail=reason)
+
+        history = [
+            {"role": m.get("role"), "content": str(m.get("content") or "")}
+            for m in (body.get("messages") or [])
+            if m.get("role") in ("user", "assistant")
+        ]
+        if not history:
+            raise HTTPException(status_code=400, detail="ไม่มีข้อความ")
+        if any(len(m["content"]) > assistant.MAX_MESSAGE_CHARS for m in history):
+            raise HTTPException(
+                status_code=400,
+                detail=f"ข้อความยาวเกิน {assistant.MAX_MESSAGE_CHARS} ตัวอักษร",
+            )
+
+        provider_config = Settings.load().provider
+        provider = make_provider(
+            provider_config, get_secret(provider_config.name.value) or None
+        )
+        system, messages = assistant.build_messages(history)
+
+        def stream():
+            try:
+                for piece in provider.stream_chat(system, messages):
+                    yield f"data: {json.dumps({'delta': piece}, ensure_ascii=False)}\n\n"
+            except ProviderError as exc:
+                # ส่ง error ลงไปใน stream แทนการตัดสาย: หน้าเว็บได้ขึ้นข้อความจริง
+                # แทนที่จะเห็นแค่ connection ขาดแล้วเดาเอาเองว่าเกิดอะไรขึ้น
+                yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
+
     @app.get("/api/targets", dependencies=guarded)
     def targets_list() -> dict:
         from .deploy import targets

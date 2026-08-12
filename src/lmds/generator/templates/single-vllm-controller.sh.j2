@@ -58,6 +58,10 @@ ASSET_SHAS=(
 #   ./controller restart --tool-parser hermes
 # Empty = off, which is what a model with no known parser should stay.
 TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-{% if plan.tool_calling.enabled %}{{ plan.tool_calling.parser }}{% endif %}}"
+# Same story for reasoning. Without this flag vLLM still runs, but the model's
+# chain of thought lands in `content` instead of `reasoning_content`, so every
+# consumer has to strip the narration by guesswork. Empty = off.
+REASONING_PARSER="${REASONING_PARSER:-{% if plan.reasoning.enabled %}{{ plan.reasoning.parser }}{% endif %}}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # ========================================================================
 
@@ -135,6 +139,8 @@ parse_options() {
       --client-output=*) CLIENT_OUTPUT="${1#*=}"; shift ;;
       --tool-parser)    TOOL_CALL_PARSER="$2"; shift 2 ;;
       --tool-parser=*)  TOOL_CALL_PARSER="${1#*=}"; shift ;;
+      --reasoning-parser)    REASONING_PARSER="$2"; shift 2 ;;
+      --reasoning-parser=*)  REASONING_PARSER="${1#*=}"; shift ;;
       *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
@@ -376,9 +382,9 @@ start() {
   if [[ -n "$TOOL_CALL_PARSER" ]]; then
     serve_args+=(--enable-auto-tool-choice --tool-call-parser "$TOOL_CALL_PARSER")
   fi
-{% if plan.reasoning.enabled and plan.reasoning.parser %}
-  serve_args+=(--reasoning-parser "{{ plan.reasoning.parser }}")
-{% endif %}
+  if [[ -n "$REASONING_PARSER" ]]; then
+    serve_args+=(--reasoning-parser "$REASONING_PARSER")
+  fi
 
   local docker_args=(
     run -d --name "$CONTAINER_NAME"
@@ -522,9 +528,9 @@ else:
   fi
 }
 
-{% if plan.reasoning.enabled %}
-# controller ส่ง --reasoning-parser {{ plan.reasoning.parser }} ให้ vLLM — ต้องมีทางพิสูจน์ว่าใช้ได้จริง
-# ไม่งั้น parser ผิดตัวจะเงียบจนกว่าลูกค้าจะเจอเอง
+# ติดมาทุก bundle ไม่ใช่เฉพาะที่เปิด reasoning ไว้ตอนสร้าง — ให้สวิตช์เปิดได้แต่ไม่มี
+# ทางพิสูจน์ว่าได้ผล คือย้ายจุดบอดไปที่ใหม่เฉย ๆ · parser ผิดตัวไม่ error มันแค่เงียบ
+# แล้วปล่อยให้ chain-of-thought ปนอยู่ในคำตอบจนกว่าจะมีคนสังเกตเอง
 test_reasoning() {
   assert_our_server
   need curl
@@ -553,7 +559,7 @@ if not think:
 print(f"PASS: 1591 ถูกต้อง · reasoning {len(think)} ตัวอักษร · answer {len(answer)} ตัวอักษร")
 PYEOF
 }
-{% endif %}
+
 # controller ส่ง --tool-call-parser {{ plan.tool_calling.parser }} + --enable-auto-tool-choice
 test_tools() {
   assert_our_server
@@ -609,8 +615,8 @@ COMMANDS
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
   test-text         Send one chat completion request to verify the model answers
-{% if plan.reasoning.enabled %}  test-reasoning   ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
-{% endif %}  test-tools [required|auto]  ตรวจว่า --tool-call-parser แปลงเป็น tool_calls ได้จริง
+  test-reasoning    ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
+  test-tools [required|auto]  ตรวจว่า --tool-call-parser แปลงเป็น tool_calls ได้จริง
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port to serve on                          [default: ${API_PORT}]
@@ -629,6 +635,13 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
                           $0 restart --tool-parser hermes
                         Prove it works with:  $0 test-tools
                         Empty disables tool calling.
+  --reasoning-parser NAME  Separate chain-of-thought into reasoning_content
+                                                                [default: ${REASONING_PARSER:-off}]
+                        Without it the model narrates inside the answer and every
+                        client has to strip it by guesswork. Set, then restart:
+                          $0 restart --reasoning-parser deepseek_r1
+                        Prove it works with:  $0 test-reasoning
+                        Empty disables it.
 
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
@@ -718,8 +731,8 @@ case "${1:-help}" in
   restart)      stop; start ;;
   status)       status ;;
   logs)         logs "${2:-300}" ;;
-{% if plan.reasoning.enabled %}  test-reasoning)  test_reasoning ;;
-{% endif %}  test-tools)      test_tools "${2:-required}" ;;
+  test-reasoning)  test_reasoning ;;
+  test-tools)      test_tools "${2:-required}" ;;
   client-config) client_config ;;
   info|banner) info ;;
   network-info) network_info ;;

@@ -6,6 +6,7 @@ Gemini ใช้ REST ของ Google โดยตรง — Anthropic เต�
 
 from __future__ import annotations
 
+import json
 import time
 from abc import ABC, abstractmethod
 
@@ -109,6 +110,22 @@ class LlmProvider(ABC):
     def complete_json(self, system: str, user: str) -> str:
         """เรียก LLM ขอคำตอบเป็น JSON string — ผู้เรียกเป็นคน parse/validate เอง"""
 
+    def complete_chat(self, system: str, messages: list[dict]) -> str:
+        """คุยแบบข้อความธรรมดาหลาย turn — ไม่บังคับ JSON
+
+        ค่าตั้งต้นใช้ complete_json() ไม่ได้ เพราะ JSON mode จะได้ object กลับมา
+        ไม่ใช่ประโยคที่คนอ่าน · provider ตัวไหนยังไม่รองรับก็บอกไปตรง ๆ ดีกว่า
+        ให้กล่องแชทได้ก้อน JSON แปลก ๆ ไปแสดง
+        """
+        raise ProviderError(f"{self.name} ยังไม่รองรับโหมดแชท")
+
+    def stream_chat(self, system: str, messages: list[dict]):
+        """สตรีมทีละชิ้น — ตัวที่สตรีมไม่ได้ก็ส่งก้อนเดียวจบ
+
+        ผู้เรียกจึงเขียนทางเดียวได้ ไม่ต้องแยกว่า provider ไหนสตรีมได้
+        """
+        yield self.complete_chat(system, messages)
+
 
 class OpenAiCompatProvider(LlmProvider):
     """ใช้ได้ทั้ง api.openai.com และทุก endpoint ที่พูด /chat/completions"""
@@ -154,6 +171,64 @@ class OpenAiCompatProvider(LlmProvider):
             raise ProviderError(f"รูปแบบคำตอบของ {self.name} ผิดปกติ: {exc}")
 
 
+    def complete_chat(self, system: str, messages: list[dict]) -> str:
+        resp = _post_with_retry(
+            self._client,
+            f"{self._base}/chat/completions",
+            headers={"Authorization": f"Bearer {self._key}"} if self._key else {},
+            payload=self._chat_payload(system, messages, stream=False),
+            provider_name=self.name,
+        )
+        if resp.status_code != 200:
+            raise ProviderError(f"{self.name} ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
+        try:
+            return resp.json()["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, ValueError) as exc:
+            raise ProviderError(f"รูปแบบคำตอบของ {self.name} ผิดปกติ: {exc}")
+
+    def stream_chat(self, system: str, messages: list[dict]):
+        """สตรีมจริงผ่าน SSE — คำตอบยาว ๆ จะได้ทยอยขึ้นแทนที่จะเงียบไป 30 วินาที
+
+        ไม่ใช้ _post_with_retry เพราะ retry กลาง stream แปลว่าผู้ใช้เห็นคำตอบซ้ำ
+        ต่อไม่ติดตั้งแต่แรกค่อยตกไปเป็นแบบไม่สตรีม (ผู้เรียกจับ ProviderError)
+        """
+        headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
+        payload = self._chat_payload(system, messages, stream=True)
+        try:
+            with self._client.stream(
+                "POST", f"{self._base}/chat/completions", headers=headers, json=payload
+            ) as resp:
+                if resp.status_code != 200:
+                    resp.read()
+                    raise ProviderError(
+                        f"{self.name} ตอบ HTTP {resp.status_code}: {resp.text[:300]}"
+                    )
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        return
+                    try:
+                        delta = json.loads(chunk)["choices"][0]["delta"]
+                    except (KeyError, IndexError, ValueError):
+                        continue  # keepalive หรือ chunk ที่ไม่มี delta — ข้ามไป
+                    piece = delta.get("content")
+                    if piece:
+                        yield piece
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"{self.name} สตรีมไม่สำเร็จ: {exc}") from exc
+
+    def _chat_payload(self, system: str, messages: list[dict], *, stream: bool) -> dict:
+        return {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, *messages],
+            "temperature": 0.3,
+            "max_tokens": 1500,
+            "stream": stream,
+        }
+
+
 class GeminiProvider(LlmProvider):
     def __init__(self, model: str, api_key: str, client: httpx.Client | None = None):
         self.name = "gemini"
@@ -170,6 +245,31 @@ class GeminiProvider(LlmProvider):
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
                 "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+            },
+            provider_name=self.name,
+        )
+        if resp.status_code != 200:
+            raise ProviderError(f"gemini ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
+        try:
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, ValueError) as exc:
+            raise ProviderError(f"รูปแบบคำตอบของ gemini ผิดปกติ: {exc}")
+
+
+    def complete_chat(self, system: str, messages: list[dict]) -> str:
+        resp = _post_with_retry(
+            self._client,
+            f"{GEMINI_BASE}/models/{self.model}:generateContent",
+            headers={"x-goog-api-key": self._key},
+            payload={
+                "systemInstruction": {"parts": [{"text": system}]},
+                # Gemini เรียก assistant ว่า "model" — role อื่นจะโดนปฏิเสธทั้งคำขอ
+                "contents": [
+                    {"role": "model" if m["role"] == "assistant" else "user",
+                     "parts": [{"text": m["content"]}]}
+                    for m in messages
+                ],
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1500},
             },
             provider_name=self.name,
         )
@@ -204,6 +304,31 @@ class MiniMaxProvider(LlmProvider):
                     {"role": "user", "content": user},
                 ],
                 "temperature": 0.2,
+            },
+            provider_name=self.name,
+        )
+        if resp.status_code != 200:
+            raise ProviderError(f"minimax ตอบ HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        base_resp = data.get("base_resp") or {}
+        if base_resp.get("status_code") not in (None, 0):
+            raise ProviderError(f"minimax error: {base_resp.get('status_msg', 'unknown')}")
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}")
+
+
+    def complete_chat(self, system: str, messages: list[dict]) -> str:
+        resp = _post_with_retry(
+            self._client,
+            f"{self._base}/text/chatcompletion_v2",
+            headers={"Authorization": f"Bearer {self._key}"},
+            payload={
+                "model": self.model,
+                "messages": [{"role": "system", "content": system}, *messages],
+                "temperature": 0.3,
+                "max_tokens": 1500,
             },
             provider_name=self.name,
         )

@@ -140,6 +140,7 @@ cd bundles/qwen3-0-6b-gguf
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
 | `test-tools` | ตรวจว่า `--tool-call-parser` แปลงคำตอบเป็น `tool_calls` ได้จริง — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง |
+| `test-reasoning` | ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง — ใช้ได้ทุก bundle เช่นกัน |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
@@ -163,6 +164,46 @@ cd bundles/qwen3-0-6b-gguf
 ./xxx-single.sh client-config --client-output 4096 # ปรับ token budget
 ./xxx-single.sh restart --tool-parser qwen3_coder  # เปิด tool calling (ดูหัวข้อถัดไป)
 ```
+
+### แยกความคิดออกจากคำตอบทีหลัง (`--reasoning-parser`)
+
+เรื่องเดียวกับ `--tool-parser` ต่างแค่ flag · โมเดลสายคิด (Qwen3, DeepSeek-R1, GLM
+และอื่น ๆ) จะคิดเป็นขั้นตอนก่อนตอบ ถ้า vLLM ไม่ได้รับ `--reasoning-parser` ตอน start
+ความคิดทั้งก้อนจะไปอยู่ใน `content` แทนที่จะอยู่ใน `reasoning_content`
+
+**อาการไม่ใช่ error** — เซิร์ฟเวอร์รันปกติ แต่ทุกอย่างที่เอาคำตอบไปแสดงจะได้กระบวนการคิด
+ติดมาด้วย:
+
+```
+Thinking Process:
+1. ผู้ใช้ถามว่า...
+2. ดูจากข้อมูลที่มี...
+</think>
+
+คำตอบจริงอยู่ตรงนี้
+```
+
+ฝั่งที่รับไปแสดงจึงต้องมานั่งเดาว่าตรงไหนคือคำตอบ ซึ่งเดาผิดได้เสมอ · ทางแก้จริงคือ flag
+ไม่ใช่การตัดข้อความ:
+
+```bash
+./xxx-single.sh restart --reasoning-parser deepseek_r1   # ครั้งนี้
+REASONING_PARSER=deepseek_r1 ./xxx-single.sh start       # ถาวร (ใส่ใน env/unit)
+./xxx-single.sh test-reasoning                           # พิสูจน์ว่าได้ผลจริง (37×43=1591)
+```
+
+ค่าว่าง = ปิด ซึ่งยังเป็นค่าตั้งต้นของโมเดลที่ไม่ใช่สายคิด
+
+**เลือก parser ตัวไหน** — เหมือน tool parser คือแยกตามตระกูลโมเดล ใส่ผิดไม่ error
+แต่จะไม่แยกอะไรออกมาเลย ที่ใช้บ่อย: `deepseek_r1` (DeepSeek-R1 และ Qwen3 ที่ใช้
+`<think>`), `qwen3`, `granite` · ดูรายชื่อที่ image รองรับ:
+
+```bash
+docker exec <container> ls /usr/local/lib/python3*/dist-packages/vllm/reasoning/
+```
+
+> **ถ้าใช้ LiteGate อยู่ด้วย** ชุดทดสอบของมันจะรายงานเองว่า `reasoning_not_separated`
+> พร้อมคำสั่งข้างบน — ไม่ต้องรอให้ผู้ใช้มาบ่นว่าคำตอบแปลก
 
 ### เปิด tool calling ทีหลัง (`--tool-parser`)
 

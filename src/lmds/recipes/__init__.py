@@ -125,6 +125,11 @@ def _load_catalog_cached(synced: str, stamp: float) -> list[Recipe]:
     return [Recipe(**{k: v for k, v in entry.items() if k in known}) for entry in merged.values()]
 
 
+# เดิม load_catalog เป็น lru_cache เอง จึงมี cache_clear ให้เรียก · การเปลี่ยน
+# วิธี cache ข้างในไม่ควรทำให้ชื่อสาธารณะหายไป เทสที่ล้างแคชก่อนเขียนไฟล์เรียกผ่านชื่อนี้
+load_catalog.cache_clear = _load_catalog_cached.cache_clear
+
+
 def find_recipe(repo_id: str) -> Recipe | None:
     """สูตรของโมเดลนี้ — เทียบแบบไม่สนตัวพิมพ์ และยอมให้ `match` เป็น prefix
 

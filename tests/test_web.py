@@ -995,7 +995,7 @@ def test_destructive_button_is_quiet_until_hovered():
     """ปุ่มลบไม่ควรดึงสายตาไปกว่าปุ่มที่ใช้ทุกวัน — เด่นตอนจะกดจริงก็พอ"""
     body = TestClient(create_app()).get("/").text
     assert "button.danger { color: var(--fg2)" in body
-    assert 'class="danger">forget</button>' in body
+    assert 'class="danger">Forget</button>' in body
 
 
 def test_events_endpoint_exists_as_a_stream():

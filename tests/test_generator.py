@@ -579,7 +579,10 @@ def test_features_off_keeps_controller_clean(tmp_path):
     """
     bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
     script = bundle.controller.read_text(encoding="utf-8")
-    assert "test_reasoning" not in script
+    # test_reasoning ยังต้องมี — เหมือน test_tools · การให้สวิตช์เปิด parser ได้ทีหลัง
+    # แต่ไม่มีทางพิสูจน์ว่าเปิดแล้วได้ผล คือย้ายจุดบอดไปที่ใหม่เฉย ๆ
+    # สิ่งที่ต้อง "สะอาด" คือ flag ที่ส่งให้ vLLM ไม่ใช่คำสั่งที่ผู้ใช้เรียกได้
+    assert 'REASONING_PARSER="${REASONING_PARSER:-}"' in script
     assert not audit_script(script)
 
 

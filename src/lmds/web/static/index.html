@@ -405,6 +405,81 @@ pre {
   .item { padding: 12px 14px; }
   .pad { padding: 14px; }
 }
+/* ── ผู้ช่วย ─────────────────────────────────────────────────────────────── */
+/* ลอยอยู่มุมขวาล่าง ไม่แย่งที่กับเนื้อหา — คนเปิดหน้านี้มาดูสถานะ ไม่ได้มาคุย */
+.chat-fab {
+  position: fixed; right: 20px; bottom: 20px; z-index: 60;
+  width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--g-cool); color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .22);
+}
+.chat-fab:hover { transform: translateY(-1px); }
+.chat-fab .ai-mark { width: 22px; height: 22px; }
+.chat-title { display: flex; align-items: center; gap: 6px; }
+.chat-title .ai-mark { width: 15px; height: 15px; opacity: .8; }
+.chat-panel {
+  position: fixed; right: 20px; bottom: 20px; z-index: 61;
+  width: min(400px, calc(100vw - 40px)); height: min(560px, calc(100vh - 40px));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .28);
+}
+.chat-panel::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 2px;
+  background: var(--g-cool); opacity: .6;
+}
+.chat-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--sunken);
+}
+.chat-head b { flex: none; }
+/* ชื่อโมเดลยอมหดและตัดด้วย … ได้ · ปุ่มปิดยอมไม่ได้ */
+#chat-brain {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-head b { font-size: 13px; }
+.chat-head .grow { flex: 1; }
+/* ปุ่มไอคอนมุมขวา ไม่ใช่ตัวอักษรลอย ๆ — กดโดนง่ายขึ้นและเข้าชุดกับปุ่มอื่นในหน้า */
+.chat-icon {
+  width: 26px; height: 26px; padding: 0; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: none; color: var(--fg3); cursor: pointer;
+  font-size: 13px; line-height: 1;
+}
+.chat-icon:hover { background: var(--sunken); border-color: var(--line); color: var(--fg); }
+.chat-foot {
+  margin: 0; padding: 0 12px 11px; font-size: 11px; line-height: 1.5;
+}
+.chat-log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.chat-msg {
+  max-width: 88%; padding: 8px 11px; border-radius: var(--r);
+  font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.chat-msg.user { align-self: flex-end; background: var(--accent-bg); color: var(--fg); }
+.chat-msg.bot { align-self: flex-start; background: var(--sunken); border: 1px solid var(--line); }
+.chat-msg.bad { background: var(--bad-bg); border-color: var(--bad); }
+.chat-msg pre {
+  margin: 6px 0 0; padding: 8px; overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 12px;
+}
+.chat-form { display: flex; gap: 6px; padding: 10px 12px 8px; border-top: 1px solid var(--line); align-items: flex-end; }
+.chat-form textarea {
+  flex: 1; resize: none; height: 52px; padding: 8px 10px; font: inherit; font-size: 13px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line2); border-radius: var(--r-sm);
+}
+.chat-form button { padding: 0 14px; }
+@media (max-width: 560px) {
+  .chat-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); }
+}
+/* ไอคอนหน้าหัวข้อ: ป้ายเป็นอังกฤษทั้งหน้าเพื่อให้อ่านได้ทุกที่ที่เอาไปติดตั้ง
+   ส่วนไอคอนคือสิ่งที่คนจำได้เร็วกว่าคำ และอยู่รอดข้ามภาษา */
+.sec i {
+  font-style: normal; margin-right: 6px; opacity: .6;
+  font-size: 11px; vertical-align: baseline;
+}
 </style>
 <script>
 // ตัดสินธีมก่อนวาดหน้า ไม่งั้นจะเห็นหน้าขาววาบก่อนแล้วค่อยเปลี่ยนเป็นมืด
@@ -445,8 +520,8 @@ pre {
   <div class="card">
     <div class="pad">
       <div class="field" style="margin:0">
-        <b class="grow" id="up-title">อัปเดต LMDS</b>
-        <button id="up-close">ปิด</button>
+        <b class="grow" id="up-title">Update LMDS</b>
+        <button id="up-close">Close</button>
       </div>
       <div class="dim" id="up-note"></div>
       <div id="up-steps"></div>
@@ -461,7 +536,7 @@ pre {
     <span class="muted grow" id="host">…</span>
     <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
     <span class="dim" id="ver"></span>
-    <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้">อัปเดต</button>
+    <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้">Update</button>
     <button id="theme" class="theme" title="สลับธีม สว่าง / มืด / ตามเครื่อง">…</button>
     <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้">Sign out</button>
     <button id="new">+ Deploy model</button>
@@ -475,7 +550,7 @@ pre {
   <div class="card" id="hostcard"></div>
   <div class="card" id="wiz" hidden></div>
 
-  <div class="sec">Models on this machine</div>
+  <div class="sec"><i>▦</i>Models on this machine</div>
   <div class="card" id="fleet"><div class="empty">Loading…</div></div>
 
   <div class="sec row between" style="align-items:baseline">
@@ -614,14 +689,14 @@ function rowMarkup(m) {
 function actionsMarkup(m) {
   if (m.job) return `<span class="tag warn">${esc(m.job.command)}…</span>`;
   if (m.running) {
-    return `<button data-act="stop" data-slug="${esc(m.slug)}">stop</button>
-       <button data-act="restart" data-slug="${esc(m.slug)}">restart</button>`;
+    return `<button data-act="stop" data-slug="${esc(m.slug)}">Stop</button>
+       <button data-act="restart" data-slug="${esc(m.slug)}">Restart</button>`;
   }
-  if (!m.controller_exists) return `<button disabled>start</button>`;
+  if (!m.controller_exists) return `<button disabled>Start</button>`;
   // Starting without weights always fails — send the user to download first
   return m.downloaded
-    ? `<button data-act="start" data-slug="${esc(m.slug)}">start</button>`
-    : `<button data-act="job:download" data-slug="${esc(m.slug)}">download</button>`;
+    ? `<button data-act="start" data-slug="${esc(m.slug)}">Start</button>`
+    : `<button data-act="job:download" data-slug="${esc(m.slug)}">Download</button>`;
 }
 
 // Per-model options, stored in the browser. The API key never reaches the server's disk.
@@ -696,7 +771,7 @@ function manageMarkup(m) {
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
     </div>
 
-    <div class="sec" style="margin:16px 0 6px">Autostart after reboot</div>
+    <div class="sec" style="margin:16px 0 6px"><i>↻</i>Autostart after reboot</div>
     <div class="field">
       <span class="muted">status: ${esc(auto || "—")}</span>
       ${auto === "n/a" ? `<span class="dim">This machine has no systemd — autostart is not available.</span>`
@@ -704,12 +779,12 @@ function manageMarkup(m) {
       <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>`}
     </div>
 
-    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px">Stacked (2 nodes)</div>
+    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><i>⧉</i>Stacked (2 nodes)</div>
     <div class="field">
       ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
 
-    <div class="sec" style="margin:16px 0 6px">Run on another machine</div>
+    <div class="sec" style="margin:16px 0 6px"><i>⇄</i>Run on another machine</div>
     <div class="field">
       <select class="o-node" style="flex:none;min-width:190px"><option value="">Loading machines…</option></select>
       ${btn("push", "Send bundle there")}
@@ -718,7 +793,7 @@ function manageMarkup(m) {
     </div>
     <div id="push-${esc(m.slug)}"></div>
 
-    <div class="sec" style="margin:16px 0 6px">Repair / remove</div>
+    <div class="sec" style="margin:16px 0 6px"><i>⚑</i>Repair / remove</div>
     <div class="field">
       ${btn("job:repair", "repair")}
       ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
@@ -748,10 +823,10 @@ function renderFleet(models) {
           <div class="grow"></div>
           <span class="mono muted port"></span>
           <span class="acts"></span>
-          <button data-act="tests" data-slug="${esc(m.slug)}">tests</button>
-          <button data-act="opts" data-slug="${esc(m.slug)}">manage</button>
-          <button data-act="doctor" data-slug="${esc(m.slug)}">doctor</button>
-          <button data-act="logs" data-slug="${esc(m.slug)}">logs</button>
+          <button data-act="tests" data-slug="${esc(m.slug)}">Tests</button>
+          <button data-act="opts" data-slug="${esc(m.slug)}">Manage</button>
+          <button data-act="doctor" data-slug="${esc(m.slug)}">Doctor</button>
+          <button data-act="logs" data-slug="${esc(m.slug)}">Logs</button>
         </div>
         <div id="panel-${esc(m.slug)}"></div>`;
       el.appendChild(block);
@@ -1404,8 +1479,8 @@ function nodeCard(node) {
               title="ตั้งค่าที่ต้องใช้สิทธิ์ root บนเครื่องนั้น (ถามรหัสผ่านตอนนั้น ไม่เก็บ)">setup</button>
       <button data-nact="fix-perms" data-node="${esc(node.name)}"
               title="คืนสิทธิ์แคชโมเดลให้เป็นของ user — ใช้เมื่อ container เคยรันเป็น root แล้ว sync-worker/start ตายเพราะ Permission denied">แก้สิทธิ์</button>
-      <button data-nact="refresh" data-node="${esc(node.name)}">refresh</button>
-      <button data-nact="forget" data-node="${esc(node.name)}" class="danger">forget</button>
+      <button data-nact="refresh" data-node="${esc(node.name)}">Refresh</button>
+      <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Forget</button>
     </div>
     <div class="nclus" hidden></div>
     <div class="nbody"></div>`;
@@ -1603,7 +1678,7 @@ function nodeModelsMarkup(name, data) {
             <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
           </div>
 
-          <div class="sec" style="width:100%;margin:6px 0 2px">ทดสอบ</div>
+          <div class="sec" style="width:100%;margin:6px 0 2px"><i>◇</i>Tests</div>
           <div class="field" style="width:100%">
             ${ctl("test-text", "ถามสั้น ๆ แล้วดูว่าตอบไหม")}
             ${ctl("test-vision", "ส่งภาพสีแดงไปถามว่าเห็นสีอะไร")}
@@ -1619,7 +1694,7 @@ function nodeModelsMarkup(name, data) {
               พอร์ต ${m.port} มี <b>${esc(rival.slug)}</b> รันอยู่ — ผลทดสอบที่ได้จะเป็นของตัวนั้น ไม่ใช่ตัวนี้
               · ตั้ง port ข้างบนให้ต่างกันก่อนแล้วค่อย start</div>` : ""}
           </div>
-          ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px">Stacked</div>
+          ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px"><i>⧉</i>Stacked</div>
           <div class="field" style="width:100%">
             ${ctl("prepare-runtime", "เตรียม runtime บนทุกเครื่องในกลุ่ม")}
             ${ctl("sync-worker", "ซิงก์ไฟล์ไป worker")}
@@ -1627,7 +1702,7 @@ function nodeModelsMarkup(name, data) {
             ${ctl("clear-fi-cache", "ล้างแคชของ FlashInfer")}
           </div>` : ""}
 
-          <div class="sec" style="width:100%;margin:6px 0 2px">จัดการ</div>
+          <div class="sec" style="width:100%;margin:6px 0 2px"><i>⚙</i>Manage</div>
           <div class="field" style="width:100%">
             ${m.running ? nbtn("restart", "restart", "หยุดแล้วเปิดใหม่ด้วยค่าข้างบน") : ""}
             ${nbtn("doctor", "doctor", "ตรวจว่าทำไมยัง start ไม่ได้")}
@@ -1809,7 +1884,7 @@ document.addEventListener("click", async e => {
                placeholder="ใช้ครั้งเดียว ไม่ถูกเก็บ" style="min-width:240px">
         <button data-nact="setup-go" data-node="${esc(node)}"
                 data-perms="${perms ? "1" : ""}">${perms ? "แก้สิทธิ์" : "ตั้งค่า"}</button>
-        <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
+        <button data-nact="close-output" data-node="${esc(node)}">Dismiss</button>
       </div>
       <div class="dim">รหัสผ่านถูกส่งทาง stdin ของ ssh — ไม่เขียนลงดิสก์ ไม่อยู่ในคำสั่ง
         และไม่ถูกเก็บในทะเบียน · ต้องกรอกใหม่ทุกครั้งที่ต้องใช้</div>
@@ -2027,7 +2102,7 @@ function clusterStrip(m, group, index) {
       ${editable
         ? `<input class="ipedit" data-ipfor="${esc(m.name)}" value="${esc(m.cluster_ip || "")}"
              placeholder="${esc(m.suggested_ip || "cluster IP")}" title="IP บนสายเร็ว ใช้โดย NCCL">
-           <button data-cact="save-ip" data-node="${esc(m.name)}">save</button>`
+           <button data-cact="save-ip" data-node="${esc(m.name)}">Save</button>`
         : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>
            ${m.self ? '<span class="dim">(hub — ตรวจให้ ไม่ได้เก็บไว้)</span>' : ""}`}
       <span class="grow"></span>
@@ -2259,7 +2334,7 @@ async function loadRecipes() {
   box.innerHTML = `<div class="pad">
     <div class="row between" style="margin-bottom:10px">
       <span class="dim">${origin}</span>
-      <button id="recipes-sync">ดึงจาก GitHub</button>
+      <button id="recipes-sync">Sync from GitHub</button>
     </div>
     ${recipes.map(r => {
     const sets = [r.image ? "image" : "", ...Object.keys(r.serving || {}),
@@ -2274,7 +2349,7 @@ async function loadRecipes() {
         ${r.source && r.source.startsWith("http")
           ? `<a href="${esc(r.source)}" target="_blank" rel="noopener">source</a>`
           : esc(r.source || "—")}</div>
-      <button data-usemodel="${esc(r.match)}" style="font-size:12px;margin-top:4px">ใช้สูตรนี้ deploy</button>
+      <button data-usemodel="${esc(r.match)}" style="font-size:12px;margin-top:4px">Deploy this</button>
     </div>`;
   }).join("")}</div>`;
 }
@@ -2474,7 +2549,7 @@ function showNodeOutput(node, title, output, extra = "") {
   row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">${esc(title)}</b>
       <span class="grow"></span>${extra}
-      <button data-nact="close-output" data-node="${esc(node)}">close</button>
+      <button data-nact="close-output" data-node="${esc(node)}">Close</button>
     </div><pre>${esc(output || "(no output)")}</pre>`;
 }
 
@@ -2620,7 +2695,7 @@ function loginScreen(message = "") {
         <input id="tok" type="password" autocomplete="current-password" autofocus
                placeholder="วาง token ที่ lmds web พิมพ์ออกมา">
         <div id="tok-err" class="warn-line" style="color:var(--bad);min-height:18px">${esc(message)}</div>
-        <button id="tok-go" style="width:100%">เข้าใช้งาน</button>
+        <button id="tok-go" style="width:100%">Sign in</button>
         <p class="dim" style="margin-top:14px">ลืม token? รันบนเครื่องนั้น: <code>lmds web --status</code></p>
       </div>
     </div>`;
@@ -2705,7 +2780,7 @@ function providerForm(message = "") {
       <input id="p-model" value="${esc(p.model || "")}" placeholder="ว่าง = default ของ provider"
              list="p-models">
       <datalist id="p-models"></datalist>
-      <button id="p-list" title="ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง">ดูรายชื่อ</button>
+      <button id="p-list" title="ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง">List models</button>
     </div>
     <div class="field" id="p-models-box" hidden></div>
     <div class="field">
@@ -2921,7 +2996,175 @@ document.getElementById("theme").onclick = () => {
 };
 window.applyTheme();          // ตั้งข้อความบนปุ่มให้ตรงกับธีมที่ใช้อยู่ตอนโหลดหน้า
 
-boot();
+// ── ผู้ช่วย ─────────────────────────────────────────────────────────────────
+// ประวัติอยู่ใน sessionStorage เท่านั้น — ปิดแท็บแล้วหาย ไม่มีอะไรขึ้น server
+// สถานะของ fleet เปลี่ยนตลอด บทสนทนาเมื่อวานจึงพูดถึงเครื่องที่ไม่ใช่สภาพเดิมแล้ว
+const CHAT_KEY = "lmds_chat";
+let chatHistory = [];
+try { chatHistory = JSON.parse(sessionStorage.getItem(CHAT_KEY) || "[]"); } catch { /* โหมดส่วนตัว */ }
+
+function chatStripThinking(text) {
+  // โมเดลสายคิดจะเล่ากระบวนการก่อนตอบ แม้จะสั่งไม่ให้เล่า · ทางแก้จริงอยู่ที่
+  // ฝั่ง server (vLLM ต้องมี --reasoning-parser คำตอบถึงจะแยก reasoning_content
+  // ออกมา) ที่ทำตรงนี้คือกู้เท่าที่กู้ได้ระหว่างที่ยังไม่ได้แก้
+  //
+  // ห้ามตัดจนไม่เหลืออะไร — ทุกทางต้องคืนข้อความเดิมถ้าตัดแล้วว่าง
+  const raw = String(text);
+
+  // ปิดแท็กคือตัวที่เชื่อถือได้ · template ของ Qwen3 และ DeepSeek-R1 ใส่ <think>
+  // ให้เองใน prompt ตัวเปิดจึงไม่เคยมาถึงคำตอบ มีแต่ </think> ตัวปิด
+  const closed = raw.lastIndexOf("</think>");
+  if (closed !== -1) {
+    const after = raw.slice(closed + 8).trim();
+    if (after) return after;
+  }
+  const narrated = raw.match(/^\s*Thinking Process:[\s\S]*\n\s*\n([\s\S]*)$/i);
+  if (narrated) return narrated[1].trimStart() || raw;
+  return raw;
+}
+
+function chatRender(text) {
+  // code block กลายเป็น <pre> ที่เหลือ escape ทั้งหมด — ไม่ใช้ตัว render markdown
+  // เพราะคำตอบของโมเดลคือ input ที่เชื่อไม่ได้ของหน้านี้
+  const parts = chatStripThinking(text).split(/```(?:[a-z]*)\n?/);
+  return parts.map((part, i) => (i % 2
+    ? `<pre>${esc(part.replace(/\n$/, ""))}</pre>`
+    : esc(part))).join("");
+}
+
+function chatDraw() {
+  const log = document.getElementById("chat-log");
+  log.innerHTML = chatHistory.map(m =>
+    `<div class="chat-msg ${m.role === "user" ? "user" : m.bad ? "bot bad" : "bot"}">${
+      m.role === "user" ? esc(m.content) : chatRender(m.content)}</div>`).join("");
+  log.scrollTop = log.scrollHeight;
+}
+
+function chatSave() {
+  try { sessionStorage.setItem(CHAT_KEY, JSON.stringify(chatHistory.slice(-24))); } catch { /* เต็ม */ }
+}
+
+async function chatSend(question) {
+  const send = document.getElementById("chat-send");
+  chatHistory.push({ role: "user", content: question });
+  chatHistory.push({ role: "assistant", content: "" });
+  chatDraw();
+  send.disabled = true;
+
+  const bubble = document.querySelector("#chat-log .chat-msg:last-child");
+  bubble.innerHTML = '<span class="dim">กำลังคิด…</span>';
+  const reply = chatHistory[chatHistory.length - 1];
+
+  try {
+    const response = await api("/api/assistant/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: chatHistory.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();                     // บรรทัดสุดท้ายอาจยังมาไม่ครบ
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const chunk = line.slice(5).trim();
+        if (!chunk || chunk === "[DONE]") continue;
+        let payload;
+        try { payload = JSON.parse(chunk); } catch { continue; }
+        if (payload.error) { reply.bad = true; reply.content += payload.error; }
+        else if (payload.delta) reply.content += payload.delta;
+        // ระหว่างสตรีมยังตัดคำนำไม่ได้ (ตัวปิด </think> ยังมาไม่ถึง) — โชว์ไปก่อน
+        // ดีกว่ากล่องว่าง แล้วมันจะเปลี่ยนเป็นคำตอบจริงเองตอนจบ
+        const shown = chatRender(reply.content);
+        bubble.innerHTML = shown.trim() ? shown : '<span class="dim">กำลังคิด…</span>';
+        bubble.className = reply.bad ? "chat-msg bot bad" : "chat-msg bot";
+        document.getElementById("chat-log").scrollTop = 1e9;
+      }
+    }
+    if (!reply.content.trim()) { reply.bad = true; reply.content = "ไม่มีคำตอบกลับมา"; }
+  } catch (err) {
+    reply.bad = true;
+    reply.content = String(err.message || err);
+  } finally {
+    send.disabled = false;
+    chatDraw();
+    chatSave();
+  }
+}
+
+async function chatBoot() {
+  // ถามก่อนวาด: ไม่มี provider = ไม่มีอะไรให้คุย · LMDS ยังทำงานได้เต็มที่ในโหมด
+  // rule-based กล่องแชทที่ตอบว่า "ยังไม่ได้ตั้ง provider" ทุกครั้งแย่กว่าไม่มีกล่อง
+  let status;
+  try {
+    const response = await api("/api/assistant");
+    if (!response.ok) return;
+    status = await response.json();
+  } catch { return; }
+  if (!status.available) return;
+
+  const fab = document.getElementById("chat-open");
+  const panel = document.getElementById("chat-panel");
+  fab.hidden = false;
+  document.getElementById("chat-brain").textContent =
+    status.brain ? `${status.brain.provider} · ${status.brain.model}` : "";
+
+  const open = (shown) => { panel.hidden = !shown; fab.hidden = shown; if (shown) document.getElementById("chat-text").focus(); };
+  fab.onclick = () => { open(true); chatDraw(); };
+  document.getElementById("chat-close").onclick = () => open(false);
+  document.getElementById("chat-clear").onclick = () => {
+    chatHistory = [];
+    chatSave();
+    chatDraw();
+  };
+
+  const text = document.getElementById("chat-text");
+  document.getElementById("chat-form").onsubmit = (event) => {
+    event.preventDefault();
+    const question = text.value.trim();
+    if (!question || document.getElementById("chat-send").disabled) return;
+    text.value = "";
+    chatSend(question);
+  };
+  // Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่ — คนพิมพ์คำถามสั้น ๆ ไม่ควรต้องเอื้อมไปกดปุ่ม
+  text.onkeydown = (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      document.getElementById("chat-form").requestSubmit();
+    }
+  };
+}
+
+boot().then(chatBoot).catch(chatBoot);
 </script>
+<button id="chat-open" class="chat-fab" hidden title="Ask the assistant" aria-label="Ask the assistant"><svg class="ai-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2.5l1.55 4.7a3 3 0 0 0 1.9 1.9l4.7 1.55-4.7 1.55a3 3 0 0 0-1.9 1.9L11 18.8l-1.55-4.7a3 3 0 0 0-1.9-1.9L2.85 10.65l4.7-1.55a3 3 0 0 0 1.9-1.9L11 2.5z"/><path d="M18.4 14.2l.62 1.88a1.2 1.2 0 0 0 .76.76l1.88.62-1.88.62a1.2 1.2 0 0 0-.76.76l-.62 1.88-.62-1.88a1.2 1.2 0 0 0-.76-.76l-1.88-.62 1.88-.62a1.2 1.2 0 0 0 .76-.76z"/></svg></button>
+<div id="chat-panel" class="chat-panel" hidden>
+  <div class="chat-head">
+    <b class="chat-title"><svg class="ai-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2.5l1.55 4.7a3 3 0 0 0 1.9 1.9l4.7 1.55-4.7 1.55a3 3 0 0 0-1.9 1.9L11 18.8l-1.55-4.7a3 3 0 0 0-1.9-1.9L2.85 10.65l4.7-1.55a3 3 0 0 0 1.9-1.9L11 2.5z"/><path d="M18.4 14.2l.62 1.88a1.2 1.2 0 0 0 .76.76l1.88.62-1.88.62a1.2 1.2 0 0 0-.76.76l-.62 1.88-.62-1.88a1.2 1.2 0 0 0-.76-.76l-1.88-.62 1.88-.62a1.2 1.2 0 0 0 .76-.76z"/></svg>Assistant</b>
+    <span id="chat-brain" class="dim"></span>
+    <button id="chat-clear" class="chat-icon" title="Clear this conversation" aria-label="Clear this conversation">&#8635;</button>
+    <button id="chat-close" class="chat-icon" title="Close" aria-label="Close">&#10005;</button>
+  </div>
+  <div id="chat-log" class="chat-log"></div>
+  <form id="chat-form" class="chat-form">
+    <textarea id="chat-text" rows="2" placeholder="ถามเรื่องเครื่องและโมเดลในระบบนี้ได้เลย…"></textarea>
+    <button type="submit" id="chat-send">Send</button>
+  </form>
+  <p class="chat-foot dim">
+    ตอบจากสถานะจริงของ fleet นี้ ผ่าน LLM ที่คุณตั้งไว้เอง — ประวัติอยู่ในแท็บนี้เท่านั้น
+  </p>
+</div>
 </body>
 </html>
