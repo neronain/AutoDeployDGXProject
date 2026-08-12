@@ -705,6 +705,62 @@ stacked controller จะ source ไฟล์นี้**ก่อน default ท
 
 รายละเอียดทั้งหมด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
 
+## 4.4.5 โมเดลนี้ทำอะไรได้บ้าง — ตรวจก่อนดาวน์โหลด
+
+`lmds inspect <repo>` และหน้า Deploy บอกความสามารถ 6 อย่างตั้งแต่ก่อนโหลดไฟล์:
+
+```
+│ Tool calling   │ 🟡 chat template มีที่ทางสำหรับ tools              │
+│ Vision         │ ✅ config.json มี vision_config (gemma4_vision)   │
+│ Reasoning      │ 🟡 chat template มีร่องรอยของ thinking             │
+│ System prompt  │ ✅ chat template รองรับ role 'system'             │
+│ JSON mode      │ ⚙️ vLLM guided decoding · llama.cpp GBNF grammar  │
+│ Streaming      │ ⚙️ ทำได้กับทุกโมเดล                                │
+```
+
+**🟡 ไม่ใช่การเลี่ยงตอบ** — มันคือ "โมเดลรับได้ แต่ยังต้องตั้งค่าและพิสูจน์ตอนรัน"
+ซึ่งเป็นความจริงคนละอย่างกับ ✅ · chat template ที่รับ tool ได้ ไม่ได้แปลว่า
+เซิร์ฟเวอร์จะแปลงคำตอบเป็น `tool_calls` ให้ ต้องมี `--tool-call-parser` ที่ตรง
+ตระกูลด้วย · ยุบเป็นติ๊กเดียวเมื่อไหร่ คนก็ไปวางแผนงานบนของที่ยังไม่ได้เปิด
+
+| เครื่องหมาย | แปลว่า |
+|---|---|
+| ✅ | ไฟล์ยืนยันชัด |
+| 🟡 | มีทางเป็นไปได้ แต่ต้องตั้งค่าเพิ่มและพิสูจน์ตอนรัน |
+| ❌ | ไฟล์บอกว่าไม่มี — เปิด parser ก็ไม่ช่วย |
+| ⚙️ | เป็นความสามารถของ**เซิร์ฟเวอร์** ไม่ใช่ของโมเดล |
+
+**อ่านจากอะไร** — `chat_template` เป็นหลักฐานหลัก เพราะมันกำหนดว่าโมเดลจะ*ถูกป้อน*
+tool/system/thinking ยังไง · ส่วน vision อ่านจาก `vision_config` ใน config.json
+หรือไฟล์ mmproj (GGUF)
+
+**สิ่งที่ตอบจากไฟล์ไม่ได้** JSON mode กับ streaming เป็นของเซิร์ฟเวอร์ — vLLM และ
+llama.cpp ทำได้กับทุกโมเดล การไปบอกว่า "โมเดลนี้ทำ JSON mode ไม่ได้" ผิดตั้งแต่
+ตั้งคำถาม
+
+### รันไทม์โหลดสถาปัตยกรรมนี้ได้ไหม
+
+โมเดลที่ออกใหม่กว่า image เป็นเรื่องปกติ แต่จบด้วย container ที่ตายเงียบ ๆ หลังโหลด
+weight มาแล้วหลายสิบกิกะ:
+
+```
+The checkpoint you are trying to load has model type `muse_glimmer`
+but Transformers does not recognize this architecture.
+```
+
+`lmds doctor <slug>` และตัว `start` เองถามคำถามนี้ก่อนแล้ว ใช้เวลาไม่กี่วินาที
+เทียบกับ health timeout ที่ตั้งไว้เป็นหลักสิบนาทีเพราะโมเดลใหญ่โหลดช้า:
+
+```
+│ ❌ │ architecture │ image นี้ไม่รู้จักสถาปัตยกรรม 'muse_glimmer'
+│    │              │ (transformers 5.6.0) — start แล้ว container จะตาย
+│    │              │ ทันทีที่โหลด config
+```
+
+ทั้งสองจุด**เงียบเมื่อไม่แน่ใจ** — ยังไม่มี config.json, image ยังไม่ได้ pull,
+native mode หรือถาม image ไม่ได้ ก็ปล่อยผ่านให้ vLLM ตัดสินเอง · การบล็อกคนที่ยัง
+พอทำงานได้ แย่กว่าปล่อยให้เจอ error จริงของมันเอง
+
 ## 4.5.1 ไม่มี API key ของ LLM ก็ deploy ได้ — `lmds recipes`
 
 `lmds deploy --no-llm` ใช้ได้อยู่แล้ว แต่ rule-based รู้แค่ "GGUF → llama.cpp, safetensors → vLLM"
