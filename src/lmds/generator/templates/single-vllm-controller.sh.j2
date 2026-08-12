@@ -348,6 +348,49 @@ started_at=$(date +%Y-%m-%dT%H:%M:%S)
 EOF
 }
 
+# รันไทม์รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม — ถามก่อน ไม่ใช่รอให้ตายตอนโหลด
+#
+# โมเดลที่ออกใหม่กว่า image เป็นเรื่องปกติ แต่มันจบด้วย container ที่ตายเงียบ ๆ
+# แล้วขึ้นแค่ "หยุดก่อน health ผ่าน" ซึ่งไม่ได้บอกอะไรเลย · ถามตรง ๆ ใช้เวลาไม่กี่
+# วินาที เทียบกับ health timeout ที่ตั้งไว้เป็นหลักสิบนาทีเพราะโมเดลใหญ่โหลดช้า
+#
+# ไม่แน่ใจ = ปล่อยผ่าน · ถาม image ไม่ได้หรือไม่มี config.json ให้ vLLM ตัดสินเอง
+# การบล็อกคนที่ยังพอทำงานได้ แย่กว่าปล่อยให้เจอ error จริงของมัน
+check_architecture() {
+  local snapshot config model_type verdict
+  snapshot="$(snapshot_dir 2>/dev/null || true)"
+  config="${snapshot}/config.json"
+  [[ -n "$snapshot" && -f "$config" ]] || return 0
+
+  model_type="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('model_type',''))" "$config" 2>/dev/null || true)"
+  [[ -n "$model_type" ]] || return 0
+
+  verdict="$(docker run --rm --entrypoint python3 "$VLLM_IMAGE" -c "
+import sys
+try:
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+    import transformers
+except Exception:
+    sys.exit(0)
+print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformers.__version__)
+" "$model_type" 2>/dev/null | tail -1 || true)"
+
+  case "$verdict" in
+    UNKNOWN*)
+      echo "ERROR: image นี้ไม่รู้จักสถาปัตยกรรม '${model_type}' (${verdict#UNKNOWN })" >&2
+      echo "  โมเดลใหม่กว่ารันไทม์ — start ไปก็ตายตอนอ่าน config" >&2
+      echo "  ลอง image ที่ใหม่กว่า:  VLLM_IMAGE=<image> $0 start" >&2
+      echo "  เช็คก่อนได้ว่าตัวไหนรู้จัก:" >&2
+      echo "    docker run --rm --entrypoint python3 <image> -c \\" >&2
+      echo "      \"from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m; print('${model_type}' in m)\"" >&2
+      exit 1
+      ;;
+    KNOWN*)
+      echo "architecture: ${model_type} — รองรับ (transformers ${verdict#KNOWN })"
+      ;;
+  esac
+}
+
 start() {
   need docker
   # container ที่ตายแล้วเป็นซากของรอบก่อน ไม่ใช่ของที่กำลังทำงานอยู่ — เก็บกวาดเองแล้วไปต่อ
@@ -364,6 +407,7 @@ start() {
   fi
   check_gpu >/dev/null
   verify_files
+  check_architecture
 
   # สร้าง argument เป็น array ทั้งหมด — ห้ามใช้ line continuation คร่อม template block
   local serve_args=(

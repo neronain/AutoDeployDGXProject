@@ -781,3 +781,45 @@ def test_served_model_name_can_be_set_at_start(isolated_config, tmp_path, kind):
     bundle, _, _ = make_bundle(report, tmp_path=tmp_path)
     text = bundle.controller.read_text(encoding="utf-8")
     assert re.search(r'^SERVED_MODEL_NAME="\$\{SERVED_MODEL_NAME:-', text, re.M)
+
+# ---------------------------------------------------------------------------
+# รันไทม์รู้จักสถาปัตยกรรมนี้ไหม
+# ---------------------------------------------------------------------------
+def test_the_controller_checks_the_architecture_before_starting(isolated_config, tmp_path):
+    """muse-glimmer-30b ผ่านทุกด่านแล้วตายตอนอ่าน config
+
+    ผู้ใช้เห็นแค่ "container หยุดก่อน health ผ่าน" — บรรทัดจริงอยู่ลึกใน log
+    และกว่าจะรู้ก็รอ health timeout ที่ตั้งไว้เป็นหลักสิบนาทีไปแล้ว
+    """
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "check_architecture() {" in text
+    # ต้องถามก่อนสตาร์ท ไม่ใช่หลัง — ไม่งั้นก็ไม่ได้ประหยัดอะไร
+    assert text.index("  check_architecture") > text.index("  verify_files")
+    assert text.index("  check_architecture") < text.index("local serve_args")
+
+
+def test_an_unknown_architecture_names_the_way_out(isolated_config, tmp_path):
+    """บอกว่าอะไรผิดอย่างเดียวไม่พอ ต้องบอกด้วยว่าลองอะไรต่อ"""
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "VLLM_IMAGE=<image>" in text
+    assert "ตายตอนอ่าน config" in text
+
+
+def test_the_check_does_not_block_when_it_cannot_be_sure(isolated_config, tmp_path):
+    """ไม่มี config.json / ถาม image ไม่ได้ = ปล่อยผ่าน ให้ vLLM ตัดสินเอง
+
+    การหยุดคนที่ยังพอทำงานได้ แย่กว่าปล่อยให้เจอ error จริงของมันเอง
+    """
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    body = text[text.index("check_architecture() {"):text.index("start() {")]
+
+    # ทางออกแบบเงียบ ๆ ต้องมีก่อนถึงจุดที่ตัดสินใจ
+    assert body.count("|| return 0") >= 1
+    assert "[[ -n \"$model_type\" ]] || return 0" in body
+    # และ exit 1 ต้องอยู่ใต้ UNKNOWN เท่านั้น
+    assert body.index("UNKNOWN*)") < body.index("exit 1")
