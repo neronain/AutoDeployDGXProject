@@ -139,6 +139,7 @@ cd bundles/qwen3-0-6b-gguf
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
+| `test-tools` | ตรวจว่า `--tool-call-parser` แปลงคำตอบเป็น `tool_calls` ได้จริง — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
@@ -160,7 +161,43 @@ cd bundles/qwen3-0-6b-gguf
 ./xxx-single.sh start --advertise-ip 10.0.0.5      # IP ที่ประกาศให้ client (ไม่ใช่ bind)
 ./xxx-single.sh start --interface eth1             # เลือก interface ที่ใช้ประกาศ IP
 ./xxx-single.sh client-config --client-output 4096 # ปรับ token budget
+./xxx-single.sh restart --tool-parser qwen3_coder  # เปิด tool calling (ดูหัวข้อถัดไป)
 ```
+
+### เปิด tool calling ทีหลัง (`--tool-parser`)
+
+โมเดลจำนวนมากเรียก tool ได้ แต่ vLLM จะไม่เปิดให้ถ้าไม่ได้รับ
+`--enable-auto-tool-choice` กับ `--tool-call-parser` ตอน start — และถ้า bundle
+ถูกสร้างตอนที่ยังไม่มีข้อมูลว่าโมเดลตัวนั้นเรียก tool ได้ ก็จะไม่ได้ flag พวกนี้
+อาการคือทุก request ที่ส่ง `tools` มาโดน 400:
+
+```
+"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set
+```
+
+เดิมต้อง generate bundle ใหม่ทั้งชุด ตอนนี้ parser เป็น knob เหมือน port/context:
+
+```bash
+./xxx-single.sh restart --tool-parser qwen3_coder   # ครั้งนี้
+TOOL_CALL_PARSER=qwen3_coder ./xxx-single.sh start  # ถาวร (ใส่ใน env/unit)
+./xxx-single.sh test-tools                          # พิสูจน์ว่าได้ผลจริง
+```
+
+ค่าว่าง = ปิด ซึ่งยังเป็นค่าตั้งต้นของโมเดลที่ไม่รู้ parser
+
+**เลือก parser ตัวไหน** — vLLM มี parser แยกตามตระกูลโมเดล ใส่ผิดจะไม่ error
+แต่จะไม่คืน `tool_calls` เลย ดูรายชื่อที่ image นั้นรองรับได้จาก:
+
+```bash
+docker exec <container> ls /usr/local/lib/python3*/dist-packages/vllm/tool_parsers/
+```
+
+ที่ใช้บ่อย: `qwen3_coder` (Qwen3-Coder), `hermes` (Qwen ทั่วไป),
+`llama3_json`, `mistral`, `deepseek_v3`
+
+> **หมายเหตุ** `test-tools` ติดมากับทุก bundle แล้ว ไม่ใช่เฉพาะที่เปิด tool ไว้
+> ตอนสร้าง — การให้สวิตช์เปิดได้แต่ไม่มีทางพิสูจน์ว่าได้ผล คือย้ายจุดบอด
+> ไปที่ใหม่เฉย ๆ
 
 ### env ที่ควรรู้ (ใส่นำหน้าคำสั่ง หรือ export ไว้ก่อน)
 
@@ -176,6 +213,7 @@ cd bundles/qwen3-0-6b-gguf
 | `RUNTIME_MODE` | ตามเครื่อง | `docker` หรือ `native` (llama.cpp เท่านั้น) |
 | `HF_TOKEN` | *(ว่าง)* | ใช้ตอน `download` repo gated |
 | `HEALTH_TIMEOUT` | ตามขนาดโมเดล | วินาทีที่รอ `/health` ตอน start |
+| `TOOL_CALL_PARSER` | *(ว่าง = ปิด)* | parser ของ vLLM สำหรับ tool calling (เท่ากับ `--tool-parser`) |
 | `GPU_MEMORY_UTILIZATION` | ตามแผน | สัดส่วน VRAM ที่ vLLM จองได้ (ลดถ้าแชร์ GPU กับงานอื่น) |
 | `MAX_NUM_SEQS` | ตามแผน | จำนวน request พร้อมกันสูงสุด |
 | `CONTAINER_NAME` | `lmds-<slug>` | ชื่อ container |
