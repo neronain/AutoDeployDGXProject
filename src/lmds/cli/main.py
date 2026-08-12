@@ -1323,6 +1323,33 @@ def _render_report(report) -> None:
         table.add_row("Quantization", report.quantization)
     if report.has_chat_template is not None:
         table.add_row("Chat template", "✅ มี" if report.has_chat_template else "❌ ไม่พบ")
+    if report.capabilities:
+        # อยู่ในตารางเดียวกับที่เหลือ ไม่แยกออกไป — คนอ่านตรงนี้เพื่อตัดสินใจว่าจะเอา
+        # โมเดลนี้ไหม และความสามารถคือเหตุผลหลักที่เขาจะเอาหรือไม่เอา
+        marks = {"yes": "✅", "likely": "🟡", "no": "❌", "server": "⚙️", "unknown": "❔"}
+        order = ("tool_calling", "vision", "reasoning", "system_prompt", "json_mode", "streaming")
+        labels = {
+            "tool_calling": "Tool calling", "vision": "Vision", "reasoning": "Reasoning",
+            "system_prompt": "System prompt", "json_mode": "JSON mode", "streaming": "Streaming",
+        }
+        for name in order:
+            cap = report.capabilities.get(name)
+            if not cap:
+                continue
+            table.add_row(labels[name], f"{marks.get(cap['status'], '·')} {cap['evidence']}")
+        # 🟡 คือ "ต้องมีอะไรบางอย่างเพิ่ม" ซึ่งเป็นข้อมูลที่ตัดสินใจได้จริงกว่าเครื่องหมาย
+        caveats = [
+            f"  {labels[n]}: {report.capabilities[n]['caveat']}"
+            for n in order
+            if report.capabilities.get(n, {}).get("caveat")
+            and report.capabilities[n]["status"] in ("likely", "yes", "no")
+        ]
+        if caveats:
+            console.print(table)
+            console.print("[dim]อ่านจากไฟล์ของโมเดล ยังไม่ได้รัน — สิ่งที่ต้องยืนยันตอนรัน:[/dim]")
+            for line in caveats:
+                console.print(f"[dim]{line}[/dim]")
+            return
     if report.artifact_type in (ArtifactType.GGUF, ArtifactType.MIXED) and report.gguf_variants:
         variants = [v for v in report.gguf_variants if not v.is_mmproj]
         mmproj = [v for v in report.gguf_variants if v.is_mmproj]

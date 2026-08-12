@@ -173,11 +173,25 @@ def _inspect_safetensors(
         report.quantization = str(quant_cfg.get("quant_algo") or "modelopt")
 
     tokenizer_config = _fetch_json(client, source.repo_id, revision, "tokenizer_config.json")
+    template_text = ""
     if tokenizer_config is not None and tokenizer_config.get("chat_template"):
         report.has_chat_template = True
+        template_text = str(tokenizer_config.get("chat_template") or "")
     else:
         template = client.fetch_small_file(source.repo_id, revision, "chat_template.jinja")
         report.has_chat_template = template is not None if tokenizer_config is not None else None
+        template_text = template or ""
+
+    # เนื้อ template คือหลักฐานว่าโมเดลรับ tool / system / thinking ได้ไหม · เดิมดึงมา
+    # แล้วดูแค่ว่ามีไฟล์หรือเปล่า แล้วทิ้ง ทั้งที่คำตอบอยู่ในนั้นและตอบได้ก่อนดาวน์โหลด
+    from lmds.inspector.capabilities import detect
+
+    has_mmproj = None
+    if report.gguf_variants:
+        has_mmproj = any(v.is_mmproj for v in report.gguf_variants)
+    report.capabilities = detect(
+        config if config is not None else {}, template_text, has_mmproj=has_mmproj
+    ).to_dict()
 
 
 def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -> list[GgufVariant]:

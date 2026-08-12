@@ -80,6 +80,9 @@ class ModelReport(BaseModel):
     quantization: Optional[str] = None
     kv_dims: Optional[KvDims] = None
     has_chat_template: Optional[bool] = None
+    # ความสามารถที่อ่านได้จากไฟล์ ก่อน deploy — ดู inspector/capabilities.py ว่าอะไร
+    # ตอบได้จริงและอะไรต้องรอวัดตอนรัน
+    capabilities: dict = Field(default_factory=dict)
     trust_remote_code_files: list[str] = Field(default_factory=list)  # configuration_*.py, modeling_*.py
 
     gguf_variants: list[GgufVariant] = Field(default_factory=list)
