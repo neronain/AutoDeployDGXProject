@@ -571,12 +571,36 @@ def test_enabled_parsers_get_an_acceptance_test(tmp_path):
 
 
 def test_features_off_keeps_controller_clean(tmp_path):
-    """โมเดลที่ไม่เปิด parser ต้องไม่มีคำสั่งทดสอบที่ใช้ไม่ได้ติดมา"""
+    """reasoning ที่ไม่ได้เปิด ต้องไม่มีคำสั่งทดสอบติดมา
+
+    tool calling ไม่อยู่ในกฎนี้แล้ว: parser ตั้งได้ตอน runtime (--tool-parser)
+    ดังนั้น bundle ที่สร้างตอนยังไม่รู้ว่าโมเดลเรียก tool ได้ ก็ยังเปิดทีหลังได้
+    ถ้าให้ flag เปิดได้แต่ไม่มีคำสั่งพิสูจน์ ก็แค่ย้ายจุดบอดไปที่ใหม่
+    """
     bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
     script = bundle.controller.read_text(encoding="utf-8")
     assert "test_reasoning" not in script
-    assert "test_tools" not in script
     assert not audit_script(script)
+
+
+def test_tool_calling_can_be_switched_on_after_deploy(tmp_path):
+    """bundle ที่สร้างตอน tool_calling ปิด ต้องเปิดทีหลังได้ ไม่ต้อง generate ใหม่
+
+    เคสจริง: MSI-6 เสิร์ฟโมเดลโค้ดที่ปฏิเสธทุก tool request เพราะ vLLM ไม่ได้รับ
+    --enable-auto-tool-choice และ controller ที่ deploy ไปแล้วไม่มี option เปิดเลย
+    ทางแก้เดียวคือ generate ใหม่ทั้งชุด
+    """
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    # ปิดอยู่ตอนสร้าง: ไม่มี parser จึงไม่ส่ง flag ให้ vLLM
+    assert 'TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-}"' in script
+    # แต่เปิดได้ทั้งทาง option และ env
+    assert "--tool-parser)" in script
+    assert 'if [[ -n "$TOOL_CALL_PARSER" ]]; then' in script
+    assert "--enable-auto-tool-choice --tool-call-parser" in script
+    # และมีคำสั่งพิสูจน์เสมอ ไม่ใช่เฉพาะตอนเปิดไว้แต่แรก
+    assert "test-tools)" in script and "test_tools()" in script
 
 
 def test_multimodal_bundle_can_prove_vision_works(tmp_path):

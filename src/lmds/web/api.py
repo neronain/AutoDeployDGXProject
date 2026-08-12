@@ -780,13 +780,25 @@ def create_app(token: str = "") -> FastAPI:
                         "age_seconds": cached["age_seconds"], **cached["data"]})
                 return {"name": name, "reachable": False, "error": cached["error"],
                         "age_seconds": cached["age_seconds"], "host": None, "models": []}
+        def remember(**changes: str) -> None:
+            """บันทึกสถานะกลับ registry — ล้มเหลวได้ ห้ามลามไปล้มคำตอบของผู้ใช้
+
+            update() โยน NodeError ถ้าหาเครื่องไม่เจอตอนนั้น ซึ่งเกิดได้จริงเพราะ
+            ระหว่าง find() กับตรงนี้มี probe() คั่นอยู่หลายวินาที และ nodes.yaml
+            ถูก read-modify-write ร่วมกันทุกคำขอ เคยทำให้ web daemon ล้มมาแล้ว
+            """
+            try:
+                update(name, **changes)
+            except NodeError:
+                pass
+
         state.STORE.mark_refreshing(name)
         try:
             info = probe(node)
         except NodeError as exc:
-            update(name, last_error=str(exc)[:200])
+            remember(last_error=str(exc)[:200])
             return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
-        update(name, last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
+        remember(last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
         return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **info})
 
     @app.get("/api/scan", dependencies=guarded)
