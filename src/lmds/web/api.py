@@ -298,6 +298,10 @@ def create_app(token: str = "") -> FastAPI:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+            # ทิ้งแคชหลังคำสั่งจบ ไม่ใช่ก่อนเริ่ม — ทิ้งก่อนแล้ว refresher มีเวลาทั้งช่วงที่
+            # คำสั่งกำลังทำงานให้เอาภาพเดิมกลับเข้าแคช · อยู่ใน finally เพราะคำสั่งที่ล้ม
+            # กลางคันก็เปลี่ยนสถานะไปแล้วบางส่วน แคชเก่าจึงเชื่อไม่ได้เหมือนกัน
+            state.STORE.invalidate_local()
         # start คืน exit code (int) ส่วน stop/restart คืนวิธีที่ใช้ (str)
         ok = outcome == 0 if isinstance(outcome, int) else True
         return JSONResponse(
@@ -307,17 +311,14 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/start", dependencies=guarded)
     def start(slug: str, body: dict | None = None) -> JSONResponse:
-        state.STORE.invalidate_local()
         return _action(slug, "start", body)
 
     @app.post("/api/models/{slug}/stop", dependencies=guarded)
     def stop(slug: str, body: dict | None = None) -> JSONResponse:
-        state.STORE.invalidate_local()
         return _action(slug, "stop", body)
 
     @app.post("/api/models/{slug}/restart", dependencies=guarded)
     def restart(slug: str, body: dict | None = None) -> JSONResponse:
-        state.STORE.invalidate_local()
         return _action(slug, "restart", body)
 
     # ── deploy wizard ──────────────────────────────────────────────────────
@@ -648,7 +649,6 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/remove", dependencies=guarded)
     def remove(slug: str, body: dict | None = None) -> dict:
-        state.STORE.invalidate_local()
         from lmds.fleet import find, remove_server
 
         server = find(slug)
@@ -657,12 +657,15 @@ def create_app(token: str = "") -> FastAPI:
         keep = bool((body or {}).get("keep_weights"))
         from lmds.fleet import removal_failed
 
-        lines = remove_server(server, include_weights=not keep)
+        try:
+            lines = remove_server(server, include_weights=not keep)
+        finally:
+            # หลังลบเสร็จเท่านั้น — ลบไปแล้วบางส่วนก็ยังต้องทิ้งแคช ไม่งั้นหน้าเว็บโชว์ของที่ไม่มีอยู่
+            state.STORE.invalidate_local()
         return {"slug": slug, "done": lines, "failed": removal_failed(lines)}
 
     @app.post("/api/models/{slug}/autostart", dependencies=guarded)
     def autostart(slug: str, body: dict | None = None) -> dict:
-        state.STORE.invalidate_local()
         from lmds.fleet import FleetError, disable_autostart, enable_autostart, find
 
         server = find(slug)
@@ -674,6 +677,8 @@ def create_app(token: str = "") -> FastAPI:
             name = enable_autostart(server) if enabled else disable_autostart(server)
         except FleetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        finally:
+            state.STORE.invalidate_local()
         return {"slug": slug, "unit": name, "enabled": enabled}
 
     # ── fleet หลายเครื่อง — hub คุม node อื่นผ่าน SSH ────────────────────────

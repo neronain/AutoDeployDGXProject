@@ -58,6 +58,8 @@ class Store:
         self._local = Entry(interval=LOCAL_INTERVAL)
         self._nodes: dict[str, Entry] = {}
         self._version = 0
+        # นับว่าแคชของเครื่องนี้ถูกทิ้งไปกี่ครั้ง — ใช้ตัดผลของ refresh ที่ออกตัวก่อนของจะเปลี่ยน
+        self._local_epoch = 0
         self._changed = threading.Event()
 
     # ── อ่าน ────────────────────────────────────────────────────────────
@@ -65,6 +67,12 @@ class Store:
     def version(self) -> int:
         with self._lock:
             return self._version
+
+    @property
+    def local_epoch(self) -> int:
+        """เลขรุ่นของแคชเครื่องนี้ — refresher อ่านไว้ *ก่อน* ไปสำรวจ แล้วส่งคืนตอนเขียน"""
+        with self._lock:
+            return self._local_epoch
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -95,12 +103,24 @@ class Store:
         self._version += 1
         self._changed.set()
 
-    def set_local(self, data: dict | None, error: str = "") -> None:
+    def set_local(self, data: dict | None, error: str = "", *, epoch: int | None = None) -> bool:
+        """เขียนผลสำรวจเครื่องนี้ลงแคช — คืน False ถ้าผลนั้นเก่าเกินกว่าจะเชื่อได้แล้ว
+
+        `epoch` คือเลขรุ่นที่ผู้เรียกอ่านไว้ *ก่อน* เริ่มสำรวจ · ถ้าระหว่างที่สำรวจอยู่มีคำสั่ง
+        ที่เปลี่ยนสถานะจริงมาทิ้งแคช (invalidate_local) เลขจะไม่ตรงกัน แปลว่าสิ่งที่ถืออยู่
+        เป็นภาพก่อนการเปลี่ยนแปลง — ต้องทิ้ง ไม่ใช่เขียนทับ
+
+        เดิมเขียนทับเสมอ จึงมีจังหวะที่ refresher สำรวจเสร็จ *ก่อน* ผู้ใช้กดลบ แล้วมาเขียน
+        ผลเก่าลงแคช *หลัง* ลบเสร็จ — โมเดลที่ลบไปแล้วโผล่กลับมาในหน้าเว็บจนกว่าจะครบรอบถัดไป
+        """
         with self._lock:
+            if epoch is not None and epoch != self._local_epoch:
+                return False
             self._local.data, self._local.error = data, error
             self._local.updated_at = time.time()
             self._local.refreshing = False
             self._bump()
+            return True
 
     def set_node(self, name: str, data: dict | None, error: str = "") -> None:
         with self._lock:
@@ -138,10 +158,15 @@ class Store:
 
         ต่างจาก force() ตรงที่ force แค่ "ถึงกำหนดแล้ว" ซึ่งยังอ่านค่าเก่าได้จนกว่า refresher
         จะวน · อันนี้ลบทิ้งเลย คำขอถัดไปจึงคำนวณสด ผู้ใช้ไม่มีทางเห็นของที่เพิ่งลบไป
+
+        ต้องเรียก **หลัง** คำสั่งทำงานเสร็จเสมอ ไม่ใช่ก่อน — ทิ้งแคชก่อนของจริงเปลี่ยน
+        เท่ากับเปิดช่องให้ refresher มาเติมภาพก่อนเปลี่ยนกลับเข้าไปใหม่ได้ทัน
         """
         with self._lock:
             self._local.data = None
             self._local.updated_at = 0.0
+            # ขยับเลขรุ่น: ผลสำรวจใด ๆ ที่ออกตัวไปก่อนบรรทัดนี้ถือเป็นของเก่า เขียนลงไม่ได้แล้ว
+            self._local_epoch += 1
             self._bump()
 
     def drop_missing(self, keep: set[str]) -> None:
@@ -159,11 +184,14 @@ def _refresh_local() -> None:
     from lmds.fleet import discover
     from lmds.web import jobs
 
+    # อ่านเลขรุ่นก่อนลงมือสำรวจ — discover() ใช้เวลาหลายสิบ ms ซึ่งนานพอให้ผู้ใช้กด
+    # ลบ/หยุดคั่นกลางได้ · ถ้าเกิดขึ้นจริง เลขจะไม่ตรงตอนเขียน แล้ว set_local จะทิ้งผลนี้ให้
+    epoch = STORE.local_epoch
     try:
         models = [model_payload(s, _job_payload(jobs, s.slug)) for s in discover()]
-        STORE.set_local({"host": host_payload(), "models": models})
+        STORE.set_local({"host": host_payload(), "models": models}, epoch=epoch)
     except Exception as exc:  # noqa: BLE001 — refresher ต้องไม่ตายเพราะเคสเดียว
-        STORE.set_local(None, str(exc)[:300])
+        STORE.set_local(None, str(exc)[:300], epoch=epoch)
 
 
 def _job_payload(jobs_module, slug: str) -> dict | None:
