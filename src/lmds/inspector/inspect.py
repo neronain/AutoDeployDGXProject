@@ -180,7 +180,8 @@ def _inspect_safetensors(
     else:
         template = client.fetch_small_file(source.repo_id, revision, "chat_template.jinja")
         report.has_chat_template = template is not None if tokenizer_config is not None else None
-        template_text = template or ""
+        # fetch_small_file คืน bytes — regex ของ capabilities ทำงานกับ str
+        template_text = _as_text(template)
 
     # เนื้อ template คือหลักฐานว่าโมเดลรับ tool / system / thinking ได้ไหม · เดิมดึงมา
     # แล้วดูแค่ว่ามีไฟล์หรือเปล่า แล้วทิ้ง ทั้งที่คำตอบอยู่ในนั้นและตอบได้ก่อนดาวน์โหลด
@@ -227,6 +228,13 @@ def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -
             )
         )
     return sorted(singles, key=lambda v: v.filename)
+
+
+def _as_text(value: object) -> str:
+    """ไฟล์เล็กจาก Hub มาเป็น bytes — แปลงเป็นข้อความแบบไม่ตายกับไบต์เสีย"""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value) if value else ""
 
 
 def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:

@@ -67,6 +67,8 @@ def _plan_payload(session: Session) -> dict:
             "source": recipe.source,
             "controller": recipe.controller,
         },
+        # อ่านจากไฟล์ของโมเดลตอน inspect — คนกดยืนยันตรงหน้านี้ ควรเห็นตรงนี้
+        "capabilities": report.capabilities,
         "model_id": plan.model_id,
         "revision": plan.revision,
         "served_model_name": plan.served_model_name,

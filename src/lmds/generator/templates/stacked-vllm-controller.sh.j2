@@ -83,6 +83,9 @@ NNODES="${NNODES:-{{ node_count }}}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-{{ plan.serving.kv_cache_dtype }}}"
 TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-{{ (plan.tool_calling.parser if plan.tool_calling.enabled else '') or '' }}}"
 REASONING_PARSER="${REASONING_PARSER:-{{ (plan.reasoning.parser if plan.reasoning.enabled else '') or '' }}}"
+# บาง template ที่มากับโมเดลไม่ได้ออกรูปแบบ tool ที่ vLLM แปลงเป็น tool_calls ได้
+# (Llama 3.3 เป็นตัวอย่าง) — สูตรจะระบุตัวที่ใช้ได้มาให้ ตั้ง parser อย่างเดียวไม่พอ
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-{{ plan.tool_calling.chat_template_override or '' }}}"
 # MoE backend (เช่น marlin) — ว่างโดยดีฟอลต์ ใส่เองเฉพาะโมเดล MoE ที่ต้องระบุ
 MOE_BACKEND="${MOE_BACKEND:-}"
 # flag เพิ่มจาก planner (ผ่าน allowlist แล้ว)
@@ -113,6 +116,14 @@ WORKER_INIT_WAIT="${WORKER_INIT_WAIT:-12}"
 # ================================================================================
 {% raw %}
 # ─────────────────────────── helpers ───────────────────────────
+# ชื่อไฟล์เปล่าจากสูตร = ตัวอย่างที่ vLLM แจกมากับ image · เติม path ให้
+# path เต็มที่ผู้ใช้ระบุเองต้องไม่ถูกแตะ
+_resolve_chat_template() {
+  local value="$1"
+  [[ -z "$value" || "$value" == */* ]] && { echo "$value"; return; }
+  echo "/opt/vllm/vllm-src/examples/${value}"
+}
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
@@ -495,6 +506,12 @@ build_common_args() {
   fi
   if [[ -n "$REASONING_PARSER" ]]; then
     COMMON_ARGS+=(--reasoning-parser "$REASONING_PARSER")
+  fi
+  if [[ -n "$CHAT_TEMPLATE" ]]; then
+    local tpl; tpl="$(_resolve_chat_template "$CHAT_TEMPLATE")"
+    if [[ -n "$tpl" ]]; then
+      COMMON_ARGS+=(--chat-template "$tpl")
+    fi
   fi
   if (( ${#EXTRA_SERVE_FLAGS[@]} > 0 )); then
     COMMON_ARGS+=("${EXTRA_SERVE_FLAGS[@]}")

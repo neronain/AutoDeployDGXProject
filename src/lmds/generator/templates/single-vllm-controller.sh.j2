@@ -62,8 +62,19 @@ TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-{% if plan.tool_calling.enabled %}{{ plan.
 # chain of thought lands in `content` instead of `reasoning_content`, so every
 # consumer has to strip the narration by guesswork. Empty = off.
 REASONING_PARSER="${REASONING_PARSER:-{% if plan.reasoning.enabled %}{{ plan.reasoning.parser }}{% endif %}}"
+# บาง template ที่มากับโมเดลไม่ได้ออกรูปแบบ tool ที่ vLLM แปลงเป็น tool_calls ได้
+# (Llama 3.3 เป็นตัวอย่าง) — สูตรจะระบุตัวที่ใช้ได้มาให้ ตั้ง parser อย่างเดียวไม่พอ
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-{{ plan.tool_calling.chat_template_override or "" }}}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # ========================================================================
+
+# ชื่อไฟล์เปล่าจากสูตร = ตัวอย่างที่ vLLM แจกมากับ image · เติม path ให้
+# path เต็มที่ผู้ใช้ระบุเองต้องไม่ถูกแตะ
+_resolve_chat_template() {
+  local value="$1"
+  [[ -z "$value" || "$value" == */* ]] && { echo "$value"; return; }
+  echo "/opt/vllm/vllm-src/examples/${value}"
+}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -434,6 +445,12 @@ start() {
   fi
   if [[ -n "$REASONING_PARSER" ]]; then
     serve_args+=(--reasoning-parser "$REASONING_PARSER")
+  fi
+  if [[ -n "$CHAT_TEMPLATE" ]]; then
+    local tpl; tpl="$(_resolve_chat_template "$CHAT_TEMPLATE")"
+    if [[ -n "$tpl" ]]; then
+      serve_args+=(--chat-template "$tpl")
+    fi
   fi
 
   local docker_args=(

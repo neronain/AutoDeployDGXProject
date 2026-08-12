@@ -92,6 +92,10 @@ def detect(
     `server`      vllm | llamacpp — ใช้ตอบเรื่องที่เป็นของเซิร์ฟเวอร์
     """
     config = config or {}
+    # รับ bytes ด้วย: ฟังก์ชันนี้ถูกเรียกจากหลายทาง และเคยพังทั้งหน้า analyze
+    # เพราะ template มาเป็น bytes จากผู้เรียกทางหนึ่ง
+    if isinstance(chat_template, bytes):
+        chat_template = chat_template.decode("utf-8", "replace")
     found = _from_template(chat_template) if chat_template else {}
     report = CapabilityReport()
 

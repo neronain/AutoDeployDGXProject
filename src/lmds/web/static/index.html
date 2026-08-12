@@ -1072,6 +1072,38 @@ async function pushAfterBuild(built, machine) {
 
 function wizBusy(text) { wiz.innerHTML = `<div class="pad"><div class="muted">${esc(text)}</div></div>`; }
 
+// ความสามารถที่อ่านได้จากไฟล์ของโมเดล — แสดงตรงหน้า Deploy ก่อนกดยืนยัน
+//
+// รอบแรกใส่ไว้แต่ในตารางของ CLI ซึ่งพลาดจุดสำคัญ: คนส่วนใหญ่ deploy ผ่านหน้านี้
+// ข้อมูลที่ช่วยตัดสินใจได้ดีที่สุดจึงไปโผล่ในที่ที่คนไม่ได้อยู่
+//
+// 🟡 ไม่ใช่การเลี่ยงตอบ — มันคือ "โมเดลรับได้ แต่ยังต้องตั้งค่าและพิสูจน์ตอนรัน"
+// ซึ่งเป็นความจริงคนละอย่างกับ ✅ · ยุบเป็นติ๊กเดียวเมื่อไหร่ คนก็ไปวางแผนงาน
+// บนของที่ยังไม่ได้เปิด
+const CAP_LABELS = {
+  tool_calling: "Tool calling", vision: "Vision", reasoning: "Reasoning",
+  system_prompt: "System prompt", json_mode: "JSON mode", streaming: "Streaming",
+};
+const CAP_MARKS = { yes: "✅", likely: "🟡", no: "❌", server: "⚙️", unknown: "❔" };
+
+function capsView(caps) {
+  if (!caps || !Object.keys(caps).length) return "";
+  const order = ["tool_calling", "vision", "reasoning", "system_prompt", "json_mode", "streaming"];
+  const rows = order.filter(n => caps[n]).map(n => {
+    const c = caps[n];
+    return `<span>${esc(CAP_LABELS[n])}</span><span>${CAP_MARKS[c.status] || "·"} ${esc(c.evidence)}</span>`;
+  }).join("");
+  // caveat คือสิ่งที่ยังต้องทำ ไม่ใช่คำเตือนลอย ๆ — ซ่อนไว้ใต้ปุ่มกาง เพราะยาว
+  // แต่ต้องกางได้ ไม่ใช่ตัดทิ้ง
+  const caveats = order.filter(n => caps[n] && caps[n].caveat)
+    .map(n => `<div class="dim" style="margin:3px 0">· <b style="font-weight:500">${
+      esc(CAP_LABELS[n])}</b> — ${esc(caps[n].caveat)}</div>`).join("");
+  return `<div class="sec" style="margin:14px 0 6px"><i>◇</i>ความสามารถ (อ่านจากไฟล์ ยังไม่ได้รัน)</div>
+    <div class="kv">${rows}</div>
+    ${caveats ? `<details style="margin-top:6px"><summary class="dim" style="cursor:pointer">
+      สิ่งที่ต้องยืนยันตอนรัน</summary>${caveats}</details>` : ""}`;
+}
+
 function planView(d) {
   const p = d.plan, f = p.fit;
   const head = Math.max(f.max_safe_context || 0, p.context);
@@ -1085,6 +1117,7 @@ function planView(d) {
       ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
       <span>planner</span><span>${esc(p.generator)}</span>
     </div>
+    ${capsView(p.capabilities)}
     ${p.recipe ? `<div class="ok-line">ใช้สูตรที่รันผ่านจริง: <b style="font-weight:500">${
       esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · ทดสอบบน " + esc(p.recipe.validated_on) : ""}${
       p.recipe.controller ? " · จาก " + esc(p.recipe.controller) : ""}</div>` : ""}
