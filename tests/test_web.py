@@ -1814,7 +1814,9 @@ def test_deploy_form_has_an_optional_token_field():
     """ลูกค้าบางรายมี token ของตัวเอง — ต้องมีที่ให้กรอกตั้งแต่แรก ไม่ใช่รอให้ 401 ก่อน"""
     page = TestClient(create_app()).get("/").text
     assert 'id="w-hf" type="password"' in page          # ไม่โชว์เป็นตัวอักษรล้วน
-    assert "ไม่บังคับ" in page
+    # ป้ายในตัวควบคุมเป็นอังกฤษแล้ว (ดู scripts/audit_ui_language.py ฝั่ง gateway)
+    # เจตนาเทสเหมือนเดิม: ช่องนี้ต้องบอกให้เห็นว่าไม่ใส่ก็ได้
+    assert "Optional" in page
     assert "hf_token: hfToken" in page                  # ส่งไปกับคำขอวิเคราะห์
     assert 'id="w-hf-save"' in page and "/api/secrets/hf" in page
 

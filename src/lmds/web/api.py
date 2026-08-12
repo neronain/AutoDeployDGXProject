@@ -476,6 +476,57 @@ def create_app(token: str = "") -> FastAPI:
             "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
         })
 
+    @app.get("/api/models/{slug}/script", dependencies=guarded)
+    def script_read(slug: str, node: str = "") -> dict:
+        """เนื้อ controller ตัวจริง — ทั้งการเสนอและการตรวจต้องยึดกับไฟล์นี้เท่านั้น"""
+        from lmds.web import scriptedit
+
+        try:
+            script = scriptedit.read_script(slug, node)
+        except scriptedit.ScriptError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "slug": slug, "node": node, "path": script.path,
+            "content": script.content, "commands": script.commands,
+        }
+
+    @app.post("/api/models/{slug}/script/propose", dependencies=guarded)
+    def script_propose(slug: str, body: dict) -> dict:
+        """ให้ LLM เสนอวิธีแก้ — ยังไม่เขียนอะไรทั้งนั้น
+
+        ข้อเสนอถูกตรวจกับไฟล์จริงก่อนส่งกลับ: ข้อความที่ LLM อ้างว่ามีในไฟล์ ต้องมี
+        จริงและมีครั้งเดียว ไม่งั้นปฏิเสธทั้งก้อน · ข้อเสนอที่ยึดกับไฟล์ไม่ได้ ไม่ควร
+        ถูกเอาไปให้คนกดอนุมัติตั้งแต่แรก
+        """
+        from lmds.web import scriptedit
+
+        request = str(body.get("request") or "").strip()
+        if not request:
+            raise HTTPException(status_code=400, detail="ยังไม่ได้บอกว่าอยากแก้อะไร")
+        try:
+            script = scriptedit.read_script(slug, str(body.get("node") or ""))
+            return scriptedit.propose(script, request)
+        except scriptedit.ScriptError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/models/{slug}/script/apply", dependencies=guarded)
+    def script_apply(slug: str, body: dict) -> dict:
+        """เขียนจริง — เรียกได้ก็ต่อเมื่อคนกดปุ่มหลังอ่าน diff แล้ว
+
+        คิดเนื้อไฟล์ใหม่จากไฟล์ ณ ตอนนี้ ไม่ใช้ preview ที่คำนวณไว้ตอนเสนอ · ระหว่าง
+        นั้นอาจมีคนแก้ไฟล์ไปแล้ว และ preview เก่าจะเขียนทับงานของเขาโดยไม่มีใครรู้
+        """
+        from lmds.web import scriptedit
+
+        edits = body.get("edits") or []
+        if not isinstance(edits, list) or not edits:
+            raise HTTPException(status_code=400, detail="ไม่มีรายการแก้")
+        try:
+            script = scriptedit.read_script(slug, str(body.get("node") or ""))
+            return scriptedit.apply(script, edits)
+        except scriptedit.ScriptError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/targets", dependencies=guarded)
     def targets_list() -> dict:
         from .deploy import targets
@@ -1074,6 +1125,30 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
+    def _require_controller(name: str, slug: str, options: dict) -> None:
+        """option ไปถึง controller เท่านั้น — โมเดลที่ไม่มี controller ต้องไม่รับไว้เฉย ๆ
+
+        โมเดลที่ LMDS "รับเลี้ยง" (คนรัน container เอง แล้ว lmds ps เห็นทีหลัง) สั่ง
+        start/stop ได้ผ่าน docker แต่ LMDS ไม่ได้เป็นเจ้าของคำสั่งที่ใช้รัน env ที่
+        ส่งมาจึงไม่มีทางไปถึงเซิร์ฟเวอร์ · เดิมรับไว้แล้วตอบ 0 ซึ่งทำให้ทุกอย่างที่
+        อยู่เหนือขึ้นไปรายงานว่าสำเร็จทั้งที่ไม่ได้ทำอะไรให้เลย
+        """
+        cached = state.STORE.snapshot()["nodes"].get(name) or {}
+        models = ((cached.get("data") or {}).get("models")) or []
+        entry = next((m for m in models if m.get("slug") == slug), None)
+        if entry is None:
+            return  # ยังไม่เคยตรวจเครื่องนี้ — ให้ผ่านไปแล้วให้ controller เป็นคนบอกเอง
+        if entry.get("controller_exists"):
+            return
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{slug}' บน {name} ไม่มี controller ของ LMDS — สั่ง start/stop ได้ "
+                f"แต่ตั้งค่า ({', '.join(sorted(options))}) ไม่ได้ เพราะ LMDS ไม่ได้เป็น "
+                f"เจ้าของคำสั่งที่ใช้รันตัวนี้ · deploy ใหม่ผ่าน LMDS ถึงจะตั้งค่าจากที่นี่ได้"
+            ),
+        )
+
     @app.post("/api/nodes/{name}/models/{slug}/{command}", dependencies=guarded)
     def node_command(name: str, slug: str, command: str, body: dict | None = None) -> dict:
         """สั่งงานโมเดลบนเครื่องอื่น — ผ่าน CLI ของ node ตัวเดียวกับที่ผู้ใช้พิมพ์เอง"""
@@ -1098,7 +1173,10 @@ def create_app(token: str = "") -> FastAPI:
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        env = _node_env(command, {k: v for k, v in (body or {}).items() if k != "confirm"})
+        options = {k: v for k, v in (body or {}).items() if k != "confirm"}
+        if options:
+            _require_controller(name, slug, options)
+        env = _node_env(command, options)
         parts = ([env] if env else []) + ["lmds", command, shlex.quote(slug)]
         if allowed[command]:
             parts.append(allowed[command])
