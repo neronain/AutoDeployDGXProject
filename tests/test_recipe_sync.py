@@ -125,6 +125,34 @@ def test_scan_reports_what_it_skipped(tmp_path):
     assert not any("verify-all.sh" in line for line in skipped)   # เครื่องมือของรีโป ไม่ใช่ controller
 
 
+def test_a_recipe_without_an_engine_never_reaches_the_catalog(tmp_path):
+    """RUNTIME_LABEL ที่ไม่มีคำที่รู้จัก → engine ว่าง → bundle ที่ไม่รู้ว่าจะรันด้วยอะไร
+
+    เดิมด่านนี้อยู่ในชุดเทส (parametrize ทับ catalog ที่รวมของที่ sync มา) ซึ่งแปลว่า
+    ต้องมีคน "รันเทส" บนเครื่องที่ sync แล้วเท่านั้นถึงจะเจอ · ย้ายมาตรวจตอน sync
+    คือตอนที่ยังบอกได้ว่า controller ไฟล์ไหนเป็นต้นเหตุ
+    """
+    mystery = VLLM_CONTROLLER.replace(
+        '${RUNTIME_LABEL:-vLLM (Docker)}', '${RUNTIME_LABEL:-เครื่องยนต์ที่ยังไม่รู้จัก}')
+    assert "vLLM" not in mystery, "ตัวอย่างในเทสเปลี่ยนไป — replace ไม่โดนแล้ว"
+    _write(tmp_path, "mystery-single.sh", mystery)
+    recipes, skipped = scan_directory(tmp_path, "controllers@abc1234")
+
+    assert recipes == [], "สูตรที่ไม่รู้ engine ต้องไม่เข้าแคตตาล็อก"
+    assert any("mystery-single.sh" in line and "engine" in line for line in skipped), skipped
+
+
+def test_a_complete_recipe_still_gets_through(tmp_path):
+    """ด่านใหม่ต้องไม่กันของดีทิ้ง — สูตรปกติต้องมีครบทั้งสามฟิลด์อยู่แล้ว"""
+    from lmds.recipes.controllers import REQUIRED_FIELDS
+
+    _write(tmp_path, "a-single.sh", VLLM_CONTROLLER)
+    recipes, skipped = scan_directory(tmp_path, "controllers@abc1234")
+
+    assert len(recipes) == 1 and skipped == []
+    assert all(recipes[0].get(field) for field in REQUIRED_FIELDS)
+
+
 def test_single_wins_over_stacked_for_the_same_model(tmp_path):
     """โมเดลเดียวกันมีทั้ง single และ stacked — LMDS เลือก topology เองจากเครื่องที่มี"""
     _write(tmp_path, "gemma4-31b-stacked.sh", STACKED_CONTROLLER)

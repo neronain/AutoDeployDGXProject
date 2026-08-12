@@ -311,6 +311,15 @@ def test_deploy_endpoints_are_token_guarded(fleet):
 
 # ── งานที่ใช้เวลานาน (download / start) ───────────────────────────────────────
 
+def gate_file(tmp_path) -> Path:
+    """ไฟล์ที่ถ้ามีอยู่ จะทำให้ขั้น download ของ controller ค้างรอจนกว่าเทสจะลบทิ้ง
+
+    มีไว้ให้เทสที่ต้องการให้งาน "ยังรันอยู่" แน่ ๆ ตอนยิงคำขอที่สอง · เทสอื่นไม่ได้
+    สร้างไฟล์นี้ ขั้น download จึงเร็วเหมือนเดิมทุกประการ
+    """
+    return tmp_path / "download-gate"
+
+
 @pytest.fixture
 def runnable(tmp_path, monkeypatch):
     """bundle ที่ controller รันได้จริง — download แล้วสร้างไฟล์ weight ให้"""
@@ -324,10 +333,14 @@ def runnable(tmp_path, monkeypatch):
     bundle = tmp_path / "bundles" / slug
     bundle.mkdir(parents=True)
     controller = bundle / f"{slug}-single.sh"
+    gate = gate_file(tmp_path)
+    # ลูปรอมีเพดาน (~10 วิ) — เทสที่พังกลางคันต้องไม่ทิ้ง process ค้างไว้ทั้งชุด
     controller.write_text(
         "#!/usr/bin/env bash\n"
         'case "$1" in\n'
-        f'  download) echo "โหลดอยู่"; mkdir -p "{model_dir}"; echo x > "{model_dir}/demo-Q8.gguf";;\n'
+        f'  download) echo "โหลดอยู่"; n=0;'
+        f' while [ -f "{gate}" ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done;'
+        f' mkdir -p "{model_dir}"; echo x > "{model_dir}/demo-Q8.gguf";;\n'
         '  fail) echo "พัง"; exit 3;;\n'
         '  *) echo "cmd $1";;\n'
         "esac\n",
@@ -387,13 +400,27 @@ def test_failed_job_reports_exit_code(runnable, monkeypatch):
     assert "พัง" in done["output"]
 
 
-def test_only_one_job_per_model(runnable):
-    """download ซ้อน start = ไฟล์พัง — ต้องกันไว้ ไม่ใช่หวังว่าผู้ใช้จะไม่กดซ้ำ"""
+def test_only_one_job_per_model(runnable, tmp_path):
+    """download ซ้อน start = ไฟล์พัง — ต้องกันไว้ ไม่ใช่หวังว่าผู้ใช้จะไม่กดซ้ำ
+
+    งานแรกต้อง "ยังรันอยู่" จริงตอนคำขอที่สองมาถึง ไม่งั้นการปล่อยผ่านคือพฤติกรรมที่ถูก
+    (ด่านกันคือ "หนึ่งงานต่อโมเดล" ไม่ใช่ "ห้ามสั่งซ้ำตลอดกาล") · ของเดิมพึ่งจังหวะว่า
+    controller ซึ่งเป็น bash สั้น ๆ ยังทำงานไม่จบ บางรอบมันจบก่อนคำขอที่สอง เทสจึง
+    fail สลับไปมาโดยที่โค้ดไม่ได้ผิดเลย — ตอนนี้กั้นด้วยไฟล์ ปล่อยเมื่อเราสั่งเท่านั้น
+    """
+    gate = gate_file(tmp_path)
+    gate.touch()
     client = TestClient(create_app())
-    client.post(f"/api/models/{runnable}/run/download")
-    second = client.post(f"/api/models/{runnable}/run/download")
-    assert second.status_code == 409
-    assert "กำลังรัน" in second.json()["detail"]
+    try:
+        first = client.post(f"/api/models/{runnable}/run/download")
+        assert first.status_code == 200, first.text
+
+        second = client.post(f"/api/models/{runnable}/run/download")
+        assert second.status_code == 409
+        assert "กำลังรัน" in second.json()["detail"]
+    finally:
+        gate.unlink(missing_ok=True)
+    _wait(client, first.json()["id"])
 
 
 def test_only_allowlisted_commands_can_run(runnable):

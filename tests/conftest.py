@@ -1,7 +1,33 @@
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# ─── sandbox ของทั้ง session ────────────────────────────────────────────────
+# ตั้งตอน import conftest คือ "ก่อน" pytest จะ collect/import ไฟล์เทส — เร็วกว่า
+# fixture ทุกตัว · โค้ดระดับ module ในไฟล์เทสที่แตะ config ตอน import จึงถูกครอบด้วย
+#
+# ย้าย HOME ไม่ใช่แค่ LMDS_CONFIG_DIR เพราะรูที่ทำให้ nodes.yaml ของผู้ใช้พังสองครั้ง
+# คือโค้ดที่ resolve home เอง (Path.home() / expanduser) ซึ่งไม่สนใจ env ของเรา
+# ย้าย HOME แล้วรูนั้นปิดสนิท: path จริงกลายเป็นสิ่งที่ process นี้ "ชี้ไปไม่ถึง"
+# แทนที่จะเป็นสิ่งที่เราคอยเฝ้าดูว่าพังหรือยัง
+REAL_HOME = Path.home()
+REAL_CONFIG_DIR = REAL_HOME / ".config" / "lmds"
+REAL_RUN_ROOT = REAL_HOME / ".lmds" / "run"
+
+SANDBOX_HOME = Path(tempfile.mkdtemp(prefix="lmds-tests-home-"))
+
+# เก็บกวาดที่ atexit ไม่ใช่ที่ fixture teardown — pytest ที่ import conftest แล้วไม่รัน
+# fixture (เช่น --collect-only หรือ collect พัง) จะทิ้งโฟลเดอร์ค้างใน /tmp ทุกครั้ง
+atexit.register(shutil.rmtree, SANDBOX_HOME, ignore_errors=True)
+
+os.environ["HOME"] = str(SANDBOX_HOME)
+os.environ["LMDS_CONFIG_DIR"] = str(SANDBOX_HOME / ".config" / "lmds")
+os.environ["LMDS_RUN_ROOT"] = str(SANDBOX_HOME / ".lmds" / "run")
 
 
 @pytest.fixture(autouse=True)
@@ -56,56 +82,97 @@ def no_registry_lookups(monkeypatch):
     yield
 
 
-def _real_config_files() -> dict[str, bytes]:
-    """Contents of the operator's real config, if any exists on this machine.
+@pytest.fixture(autouse=True)
+def no_systemd_lookups(monkeypatch):
+    """เทสต้องไม่ไปถาม systemd จริงของเครื่อง
 
-    Contents rather than checksums: a checksum tells you the file changed, the
-    bytes let you put it back. The directory is a few kilobytes.
+    `lmds web --stop/--restart` เรียก daemon.service_active() ซึ่งรัน
+    `systemctl --user is-active lmds-web.service` จริง · ผลเทสจึงขึ้นกับว่าเครื่องที่รัน
+    เปิด service ไว้หรือเปล่า — ถ้าเปิดอยู่ เทสจะเดินไปสาย systemd แทนสายที่ตั้งใจทดสอบ
+
+    ยังทำให้ `subprocess.run` ข้างใน service_active() ไม่ถูกเรียกด้วย ซึ่งสำคัญเพราะ
+    เทสที่ stub `subprocess.Popen` ไว้จะพังทันที: subprocess.run ใช้ Popen เป็น
+    context manager แต่ stub ของเทสไม่มี __enter__/__exit__
+
+    เทสที่ตั้งใจทดสอบสาย systemd patch ทับเป็น True เองอยู่แล้ว
     """
-    real = Path.home() / ".config" / "lmds"
-    if not real.is_dir():
-        return {}
-    snapshot: dict[str, bytes] = {}
-    for path in sorted(real.rglob("*")):
-        if path.is_file():
-            try:
-                snapshot[str(path)] = path.read_bytes()
-            except OSError:
-                continue
-    return snapshot
+    try:
+        from lmds.web import daemon
+    except ImportError:      # ยังไม่ได้ติดตั้ง extra ของเว็บ
+        yield
+        return
+    monkeypatch.setattr(daemon, "service_active", lambda: False)
+    yield
+
+
+def _live_paths() -> dict[str, Path]:
+    """path ที่เทสกำลังจะเขียนจริง ๆ — ถามตัวโปรแกรม ไม่ใช่เดาจาก env
+
+    import ในฟังก์ชันเพราะ conftest ถูก import ก่อนที่ sys.path จะพร้อมเสมอไป
+    """
+    from lmds.config.paths import config_dir
+    from lmds.fleet import run_root
+
+    return {"config_dir": config_dir(), "run_root": run_root(), "home": Path.home()}
+
+
+def _escaped(where: str) -> list[str]:
+    """path ไหนบ้างที่หลุดออกไปนอก sandbox แล้วชี้กลับมาที่ของจริง
+
+    สองที่ที่เทสเคยทำพัง (config dir / run root) เช็คแบบ "เท่ากับหรืออยู่ข้างใน"
+    ส่วน home เช็คแค่ "เท่ากับ" — tmp ของ pytest อยู่ใต้ home ได้ถ้า TMPDIR ตั้งไว้
+    แบบนั้น เช็คแบบอยู่ข้างในจะเตือนผิดทุกเทสบนเครื่องแบบนั้น · ไม่เสียการป้องกัน
+    เพราะถ้า home ถูกย้ายกลับไปของจริง config dir จะตกไปอยู่ใน REAL_CONFIG_DIR เอง
+    """
+    leaks = []
+    for label, path in _live_paths().items():
+        resolved = Path(path).expanduser()
+        if resolved == REAL_HOME:
+            leaks.append(f"{label} = {resolved}  (คือ home จริงของเครื่อง)")
+            continue
+        for real in (REAL_CONFIG_DIR, REAL_RUN_ROOT):
+            if resolved == real or real in resolved.parents:
+                leaks.append(f"{label} = {resolved}  (อยู่ใน {real})")
+                break
+    if leaks:
+        leaks.append(f"— ตรวจตอน: {where}")
+    return leaks
 
 
 @pytest.fixture(scope="session", autouse=True)
 def never_touch_the_real_config():
     """กันเทสเขียนทับ config จริงของเครื่อง — เคยลบ nodes.yaml ของผู้ใช้มาแล้ว
 
-    isolated_config กัน in-process ได้ แต่ subprocess ที่ไม่ได้รับ env ไปด้วย
-    หรือโค้ดที่ resolve home เองยังหลุดได้ ซึ่งไฟล์ที่พังคือทะเบียนเครื่องจริง
-    ของผู้ใช้ · เทียบ checksum ก่อน/หลัง session จับได้ทุกทาง
+    เดิมกันด้วยการ snapshot ~/.config/lmds ตอนเริ่ม แล้วเทียบ+เขียนคืนตอนจบ ซึ่ง
+    **แยกไม่ออก**ว่าไฟล์เปลี่ยนเพราะเทสหรือเพราะ daemon: `lmds web` เขียน nodes.yaml
+    ทุก 1-3 วิ (วัดแล้ว) และ write_atomic ทิ้ง `.nodes.yaml.*.tmp` ไว้ชั่วขณะ ซึ่ง
+    snapshot จับติดได้ ~0.25% ของครั้งที่มอง · ผลคือ session ล้มด้วยข้อความที่โทษเทส
+    ผิด ๆ แถมสร้างไฟล์ .tmp ค้างไว้ และถ้าผู้ใช้เพิ่ม node ในหน้าเว็บระหว่างเทสรัน
+    ของที่เพิ่งเพิ่มจะถูกเขียนทับหายไปเงียบ ๆ (ทดสอบแล้ว: หายจริง)
+
+    ตอนนี้จึงไม่เฝ้าดูของจริงอีกต่อไป — ย้าย HOME ทั้ง session ให้ path ของจริง
+    "ชี้ไปไม่ถึง" ตั้งแต่ต้น แล้วตรวจว่าการย้ายยังอยู่จริง · ไม่ต้องเดาว่าใครเขียน
+    เพราะเทสเขียนไปที่นั่นไม่ได้ และ daemon จะเขียนของมันต่อไปโดยไม่มีใครไปยุ่ง
     """
-    before = _real_config_files()
+    leaks = _escaped("เริ่ม session")
+    assert not leaks, "sandbox ไม่ทำงานตั้งแต่ต้น:\n  " + "\n  ".join(leaks)
     yield
-    after = _real_config_files()
-    if before == after:
-        return
+    leaks = _escaped("จบ session")
+    assert not leaks, "มีเทสย้าย path กลับไปที่ของจริง:\n  " + "\n  ".join(leaks)
 
-    damaged = sorted({*before, *after}, key=str)
-    restored: list[str] = []
-    for name in damaged:
-        original = before.get(name)
-        if original is None:
-            continue  # เทสสร้างไฟล์ใหม่ — ปล่อยไว้ให้เห็น ไม่ใช่ของเดิมที่หาย
-        if after.get(name) == original:
-            continue
-        try:
-            path = Path(name)
-            path.write_bytes(original)
-            path.chmod(0o600)
-            restored.append(name)
-        except OSError:  # noqa: PERF203
-            pass
 
-    raise AssertionError(
-        "เทสไปแก้ config จริงของเครื่องนี้ — กู้คืนให้แล้ว แต่ต้องอุดรูก่อนรันอีก:\n  "
-        + "\n  ".join(restored or [n for n in damaged if n in before])
-    )
+@pytest.fixture(autouse=True)
+def _sandbox_holds(isolated_config):
+    """ตรวจรายเทส — เทสที่ตั้ง env กลับไปที่ของจริงจะถูกจับตรงเทสนั้น ไม่ใช่ตอนจบ session
+
+    ข้อความจึงชี้ตัวคนผิดได้ทันที ต่างจากของเดิมที่บอกแค่ว่า "ไฟล์เปลี่ยน" ตอนจบ
+
+    ตรวจหลัง yield ด้วยเพราะเทสที่ย้าย env *ในตัวเทสเอง* ผ่านด่านก่อนเทสไปแล้ว ·
+    fixture นี้ขึ้นกับ isolated_config จึง teardown ก่อน monkeypatch ถูกถอน —
+    ตอนตรวจจึงยังเห็นค่าที่เทสตั้งไว้จริง ๆ ไม่ใช่ค่าที่ถูกคืนแล้ว
+    """
+    leaks = _escaped("ก่อนเทส")
+    assert not leaks, "sandbox ไม่ทำงานในเทสนี้:\n  " + "\n  ".join(leaks)
+    yield
+    leaks = _escaped("ระหว่างเทส")
+    assert not leaks, "เทสนี้ย้าย path ไปที่ของจริง:\n  " + "\n  ".join(leaks)

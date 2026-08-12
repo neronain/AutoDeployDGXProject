@@ -632,15 +632,21 @@ def test_prune_removes_only_dead_registrations(tmp_path, monkeypatch, isolated_c
 
 
 def test_tests_never_touch_the_real_run_root():
-    """เทสเคยเขียนทะเบียนลง ~/.lmds/run ของเครื่องจริง แล้วทิ้งรายการค้างให้ผู้ใช้เห็น"""
+    """เทสเคยเขียนทะเบียนลง ~/.lmds/run ของเครื่องจริง แล้วทิ้งรายการค้างให้ผู้ใช้เห็น
+
+    เทียบกับ REAL_RUN_ROOT ที่ conftest จำไว้ตอน import — ห้ามใช้ Path.home() ตรงนี้
+    เพราะ conftest ย้าย HOME ไป sandbox แล้ว ถามใหม่จะได้ path ของ sandbox แล้ว
+    assert ผ่านตลอดโดยไม่ได้ตรวจอะไรเลย
+    """
     import os
-    from pathlib import Path
+
+    from tests.conftest import REAL_RUN_ROOT
 
     from lmds.fleet import run_root
 
-    real = Path.home() / ".lmds" / "run"
     assert os.environ.get("LMDS_RUN_ROOT"), "conftest ต้องแยก LMDS_RUN_ROOT ทุกเทส"
-    assert run_root() != real
+    assert run_root() != REAL_RUN_ROOT
+    assert REAL_RUN_ROOT not in run_root().parents
 
 
 def test_start_passes_unknown_flags_to_the_controller(tmp_path, monkeypatch, isolated_config):

@@ -25,12 +25,31 @@ def test_catalog_loads():
     assert catalog, "แคตตาล็อกว่าง — สูตรหายไปหมด"
 
 
-@pytest.mark.parametrize("recipe", load_catalog(), ids=lambda r: r.match)
+# parametrize ทำงานตอน collect · conftest ย้าย config dir ไป sandbox ตั้งแต่ตอน import
+# แล้ว load_catalog() ตรงนี้จึงได้เฉพาะสูตรที่มากับ repo · ก่อนหน้านี้มันอ่าน
+# ~/.config/lmds/recipes-synced.yaml ของเครื่องที่รันด้วย จำนวนเคสจึงขึ้นกับว่าเครื่องนั้น
+# เคย `lmds recipes sync` อะไรไว้ (เครื่อง controller ตัวนี้: 7 → 23) — เทสชุดเดียวกัน
+# ให้ผลไม่เท่ากันข้ามเครื่อง และ CI ที่ไม่เคย sync ก็ตรวจของพวกนั้นไม่ได้อยู่ดี
+CATALOG = load_catalog()
+
+
+@pytest.mark.parametrize("recipe", CATALOG, ids=lambda r: r.match)
 def test_every_recipe_states_where_it_came_from(recipe):
     """สูตรที่ไม่มีที่มาคือการเดา — ห้ามมีในแคตตาล็อก"""
     assert recipe.source, f"{recipe.match} ไม่มี source"
     assert recipe.validated_on, f"{recipe.match} ไม่ได้บอกว่ารันผ่านบนอะไร"
     assert recipe.engine, f"{recipe.match} ไม่ได้ระบุ engine"
+
+
+def test_recipe_cases_come_only_from_the_bundled_catalog():
+    """เคสของเทสข้างบนต้องเป็นของ repo ล้วน ๆ — กันวันที่ sandbox รั่วแล้วไม่มีใครรู้
+
+    ถ้าวันหนึ่ง config dir ชี้กลับไปที่ของจริง จำนวนเคสจะบวมขึ้นเงียบ ๆ แล้วเทสจะไป
+    ตรวจข้อมูลของเครื่องนั้นแทนของ repo · เทสนี้ทำให้เรื่องนั้นดังขึ้นมาแทนที่จะเงียบ
+    """
+    from lmds.recipes import CATALOG_PATH, _read
+
+    assert {r.match for r in CATALOG} == {str(e["match"]) for e in _read(CATALOG_PATH)}
 
 
 def test_deepseek_recipe_sets_what_the_hardware_run_needed():

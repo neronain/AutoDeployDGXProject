@@ -23,6 +23,10 @@ _DEFAULT = re.compile(r'^\$\{[A-Z][A-Z0-9_]*:-(.*)\}$')
 # สคริปต์ที่ไม่ใช่ controller ของโมเดล — เป็นเครื่องมือของรีโปเอง
 TOOLING = {"install-canonical.sh", "verify-all.sh", "audit-controllers.py"}
 
+# ฟิลด์ที่สูตรต้องมีถึงจะเข้าแคตตาล็อกได้ — ตรวจตอน sync คือตอนที่ยังบอกได้ว่า
+# controller ตัวไหนเป็นต้นเหตุ · ปล่อยเข้าไปแล้วค่อยเจอตอน deploy คือสายเกินไป
+REQUIRED_FIELDS = ("engine", "source", "validated_on")
+
 
 def parse_header(text: str) -> dict[str, str]:
     """ตัวแปรตั้งค่าระดับบนสุดของ controller — คืน {} ถ้าไม่ใช่ไฟล์รูปแบบนี้
@@ -139,6 +143,13 @@ def scan_directory(root: Path, origin: str = "") -> tuple[list[dict], list[str]]
         recipe = recipe_from_controller(path.name, text, origin)
         if recipe is None:
             skipped.append(f"{path.name}: ไม่พบรุ่นโมเดล (MODEL_ID/HF_REPO/REPO_ID) ที่ระดับบนสุด")
+            continue
+        # สูตรที่ไม่มีที่มาคือการเดา — ห้ามเข้าแคตตาล็อก · เคสที่หลุดได้จริงคือ engine ว่าง
+        # เพราะ RUNTIME_LABEL ไม่มีคำที่รู้จัก (llama.cpp/sglang/vllm) แล้ว _engine() คืน ""
+        # ซึ่งจะกลายเป็น bundle ที่ไม่รู้ว่าจะรันด้วยอะไร · ข้ามแล้วบอก ดีกว่าเก็บไว้เงียบ ๆ
+        missing = [f for f in REQUIRED_FIELDS if not recipe.get(f)]
+        if missing:
+            skipped.append(f"{path.name}: สูตรไม่ครบ (ขาด {', '.join(missing)}) — ไม่เอาเข้าแคตตาล็อก")
             continue
         first = seen.get(recipe["match"].lower())
         if first:

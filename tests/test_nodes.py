@@ -688,3 +688,32 @@ def test_a_normal_failure_gets_no_made_up_explanation():
     from lmds.nodes import Node, explain_install_failure
 
     assert explain_install_failure("disk full", Node(name="n", host="h", user="u")) == ""
+
+
+def test_tests_never_touch_the_real_nodes_registry():
+    """เทสเคยลบ nodes.yaml ของผู้ใช้สองครั้ง — 6 เครื่องจริงถูกแทนด้วย node ของ fixture
+
+    เทสนี้ทำสิ่งที่เคยทำให้พังเป๊ะ ๆ (เพิ่ม node แล้วเขียนทะเบียน) แล้วพิสูจน์สองอย่าง:
+    ของที่เขียนไปลงใน sandbox จริง และไฟล์ของผู้ใช้ไม่ถูกแตะ · เทียบกับ REAL_CONFIG_DIR
+    ที่ conftest จำไว้ตอน import ไม่ใช่ Path.home() ซึ่งตอนนี้ชี้ไป sandbox แล้ว
+
+    ของเดิมกันด้วยการ snapshot แล้วเขียนคืนตอนจบ session ซึ่งแยกไม่ออกว่าไฟล์เปลี่ยน
+    เพราะเทสหรือเพราะ `lmds web` ที่รันอยู่เบื้องหลัง — เทสนี้ไม่ต้องแยก เพราะเทส
+    เขียนไปที่ไฟล์ของจริงไม่ได้ตั้งแต่แรก
+    """
+    from tests.conftest import REAL_CONFIG_DIR
+
+    real_registry = REAL_CONFIG_DIR / "nodes.yaml"
+    before = real_registry.read_bytes() if real_registry.exists() else None
+
+    add(Node(name="fixture-node", host="10.0.0.1", user="u"))
+    written = nodes_file()
+
+    assert written.exists(), "เทสต้องเขียนลงทะเบียนได้จริง ไม่ใช่แค่ไม่แตะของจริง"
+    assert written != real_registry
+    assert REAL_CONFIG_DIR not in written.parents, f"เขียนลง {written} ซึ่งอยู่ในของจริง"
+    assert "fixture-node" in written.read_text(encoding="utf-8")
+
+    after = real_registry.read_bytes() if real_registry.exists() else None
+    if before is not None:
+        assert after == before, "ทะเบียนจริงของผู้ใช้ถูกแตะ"
