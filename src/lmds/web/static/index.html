@@ -2603,6 +2603,15 @@ function showNodeOutput(node, title, output, extra = "") {
 // เดิมรอใน request เดียวแล้วเงียบเป็นสิบนาที ผู้ใช้แยกไม่ออกว่าคืบหน้าอยู่หรือค้างไปแล้ว
 const watchingNodes = new Map();   // "<node>/<slug>" -> job id
 
+// นาฬิกาที่เดินอยู่คือสิ่งเดียวที่แยก "เงียบเพราะกำลังทำงาน" ออกจาก "เงียบเพราะตายไปแล้ว"
+// บางขั้นไม่มีอะไรให้พิมพ์จริง ๆ (verify shard 50 GB) — ถ้าแผงนิ่งสนิทโดยไม่มีตัวเลขเดิน
+// ผู้ใช้จะสรุปว่าค้าง แล้วไปฆ่างานที่กำลังไปได้ดีทิ้ง
+function elapsedText(seconds) {
+  if (seconds == null) return "";
+  const m = Math.floor(seconds / 60), s = seconds % 60;
+  return m ? `${m} นาที ${s} วิ` : `${s} วิ`;
+}
+
 function followNodeJob(node, slug, jobId) {
   const key = node + "/" + slug;
   if (watchingNodes.get(key) === jobId) return;
@@ -2612,8 +2621,10 @@ function followNodeJob(node, slug, jobId) {
     if (!r.ok) { watchingNodes.delete(key); return; }
     const d = await r.json();
     const running = d.running;
-    showNodeOutput(node, `${d.command} · ${slug}${running ? " — กำลังทำงาน…" : ""}`,
-                   d.output || "เริ่มแล้ว…",
+    const since = elapsedText(d.elapsed);
+    showNodeOutput(node, `${d.command} · ${slug}${running ? ` — กำลังทำงาน… (${since})` : ""}`,
+                   d.output || `เริ่มแล้ว — ยังไม่มีผลส่งกลับมา (${since})\n`
+                     + "ขั้นที่โหลดไฟล์ใหญ่จะเงียบอยู่พักหนึ่งก่อนมีอะไรขึ้น ปิดหน้าต่างนี้ได้ งานไม่หยุดตาม",
                    running ? `<span class="tag">${esc(d.command)}</span>` : "");
     const pre = nodeRows.get(node)?.block.querySelector("pre");
     if (pre) pre.scrollTop = pre.scrollHeight;
@@ -3139,10 +3150,25 @@ function chatStripThinking(text) {
   return raw;
 }
 
+// โมเดลที่ถูกเทรนมาให้เรียก tool จะเรียกมันแม้ไม่มี tool ให้เรียก · ผู้ช่วยตัวนี้
+// อ่านอย่างเดียวโดยตั้งใจ ไม่เคยประกาศ tool ไหนเลย แต่ MiniMax-M2 ยังพ่น
+// <minimax:tool_call><invoke name="run">ssh …</invoke></minimax:tool_call> ออกมาเต็มกล่อง
+// แล้วไม่มีอะไรเกิดขึ้น — ผู้ใช้เห็น XML ดิบแทนคำตอบ
+//
+// system prompt สั่งห้ามไว้แล้ว แต่ห้ามแล้วไม่ฟังคือเรื่องปกติของโมเดล · กันที่หน้าจอ
+// อีกชั้นจะได้ไม่ต้องไล่แก้ทีละเจ้าที่มี syntax ของตัวเอง
+// ตัวปิดที่ยังมาไม่ถึงก็ตัด (`|$`) — ระหว่างสตรีมจะได้ไม่โผล่มาให้เห็นครึ่งบล็อก
+const CHAT_TOOL_BLOCK =
+  /<(?:[a-z0-9_.-]+:)?(?:tool_call|tool_use|function_calls?|invoke|antml)\b[\s\S]*?(?:<\/(?:[a-z0-9_.-]+:)?(?:tool_call|tool_use|function_calls?|invoke|antml)>|$)/gi;
+
+function chatStripToolCalls(text) {
+  return String(text).replace(CHAT_TOOL_BLOCK, "").trim();
+}
+
 function chatRender(text) {
   // code block กลายเป็น <pre> ที่เหลือ escape ทั้งหมด — ไม่ใช้ตัว render markdown
   // เพราะคำตอบของโมเดลคือ input ที่เชื่อไม่ได้ของหน้านี้
-  const parts = chatStripThinking(text).split(/```(?:[a-z]*)\n?/);
+  const parts = chatStripToolCalls(chatStripThinking(text)).split(/```(?:[a-z]*)\n?/);
   return parts.map((part, i) => (i % 2
     ? `<pre>${esc(part.replace(/\n$/, ""))}</pre>`
     : esc(part))).join("");
@@ -3210,6 +3236,14 @@ async function chatSend(question) {
       }
     }
     if (!reply.content.trim()) { reply.bad = true; reply.content = "ไม่มีคำตอบกลับมา"; }
+    // ตอบมาเป็นบล็อกเรียก tool ล้วน ๆ — ตัดออกแล้วไม่เหลืออะไรให้อ่าน · บอกไปตรง ๆ
+    // ว่าเกิดอะไรขึ้น ดีกว่าปล่อยกล่องว่างให้เดาเอาเองว่าพังตรงไหน
+    else if (!chatStripToolCalls(chatStripThinking(reply.content))) {
+      reply.bad = true;
+      reply.content = "โมเดลพยายามสั่งรันคำสั่งบนเครื่อง แต่ผู้ช่วยตัวนี้อ่านสถานะได้อย่างเดียว "
+        + "สั่งงานไม่ได้ — ลองถามใหม่ว่า \"สรุปสถานะของ <ชื่อเครื่อง> จาก state ให้หน่อย\" "
+        + "หรือเปลี่ยนไปใช้โมเดลที่ไม่ใช่สายเรียก tool ที่หน้า Provider";
+    }
   } catch (err) {
     reply.bad = true;
     reply.content = String(err.message || err);

@@ -311,10 +311,13 @@ download() {
   fi
 {% endif %}{% raw %}  mkdir -p "$HF_HOME"
   log "Downloading ${MODEL_ID} @ ${MODEL_REVISION} (resume-safe) …"
+  # PYTHONUNBUFFERED / -u: ในคอนเทนเนอร์ไม่มี tty แถบ progress ของ huggingface_hub
+  # เลื่อนตัวเลขด้วย \r ล้วน ๆ ไม่เคยขึ้นบรรทัดใหม่ — stderr ที่ line-buffer ไว้จึงไม่ flush
+  # ให้เลย · download หลายสิบ GB เงียบสนิทจนจบ คนดูแยกไม่ออกว่าโหลดอยู่หรือค้างไปแล้ว
   local dl_args=(
     run --rm -i --network host
     --user "$(id -u):$(id -g)"
-    -e HOME=/tmp -e HF_HOME=/cache
+    -e HOME=/tmp -e HF_HOME=/cache -e PYTHONUNBUFFERED=1
     -e "MODEL_ID=${MODEL_ID}" -e "MODEL_REVISION=${MODEL_REVISION}"
     -v "${HF_HOME}:/cache"
   )
@@ -322,7 +325,7 @@ download() {
   # Xet เป็น backend ใหม่ของ Hub ที่บาง repo (เช่นตระกูล Llama) ยังพังด้วย
   # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
   [[ -n "${HF_HUB_DISABLE_XET:-}" ]] && dl_args+=(-e "HF_HUB_DISABLE_XET=1")
-  dl_args+=(--entrypoint python3 "$VLLM_IMAGE" -)
+  dl_args+=(--entrypoint python3 "$VLLM_IMAGE" -u -)
 
   if ! docker "${dl_args[@]}" <<'PYEOF'
 import os

@@ -75,14 +75,38 @@ def fleet(tmp_path, monkeypatch):
     return slug
 
 
+class _FakePipe:
+    """ท่อไบต์ที่คายทีละบรรทัด — พอสำหรับ _pump ซึ่งอ่านด้วย read1()
+
+    เขียนเป็นไบต์เพราะของจริงเป็นไบต์: _pump ต้องเห็น \r เป็นตัวจบบรรทัดด้วย และ
+    ท่อที่ถอดรหัสเป็นข้อความให้แล้วจะตัดที่ \n อย่างเดียว ซึ่งเป็นบั๊กที่กำลังแก้อยู่
+    """
+
+    def __init__(self, lines):
+        self._lines = iter(lines)
+
+    def read1(self, _size=-1):
+        chunk = next(self._lines, "")
+        return chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+
+    def close(self):
+        pass
+
+
 class FakeStream:
     """จำลอง Popen ของ ssh แบบสตรีม — จบทันที ไม่ต้องรอ thread จริง"""
 
     def __init__(self, lines=("done\n",), code=0):
-        self.stdout = iter(lines)
+        self.stdout = _FakePipe(lines)
         self._code = code
 
     def wait(self):
+        return self._code
+
+    def kill(self):
+        """งานที่ถูกยกเลิกเรียกตัวนี้ — ของปลอมที่จบไปแล้วไม่ต้องทำอะไร"""
+
+    def poll(self):
         return self._code
 
 

@@ -217,15 +217,21 @@ download() {
 {% endif %}  mkdir -p "$HF_HOME"
 
   # download รันในคอนเทนเนอร์ — env ที่ตั้งบน host ไม่ถึงข้างในเอง ต้องส่งต่อให้
+  #
+  # -u / PYTHONUNBUFFERED: ในคอนเทนเนอร์ไม่มี tty (ไม่ได้ขอ -t เพราะต้องรันแบบไม่โต้ตอบ)
+  # แถบ progress ของ huggingface_hub เลื่อนตัวเลขด้วย \r ล้วน ๆ ไม่เคยขึ้นบรรทัดใหม่ —
+  # ซึ่ง stderr ที่ line-buffer ไว้จะไม่ยอม flush ให้เลย · ผลคือ download 50 GB เงียบสนิท
+  # ทั้งชั่วโมงแล้วค่อยพ่นออกมาทีเดียวตอนจบ คนดูแยกไม่ออกว่ากำลังโหลดอยู่หรือค้างไปแล้ว
   _snapshot_download() {
     local disable_xet="$1"
     docker run --rm \
       --user "$(id -u):$(id -g)" \
       -e HOME=/tmp -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
+      -e PYTHONUNBUFFERED=1 \
       ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
       -v "${HF_HOME}:/cache" \
-      --entrypoint python3 "$VLLM_IMAGE" -c "
+      --entrypoint python3 "$VLLM_IMAGE" -u -c "
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id='${MODEL_ID}', revision='${MODEL_REVISION}', cache_dir=None)
 print('download complete')

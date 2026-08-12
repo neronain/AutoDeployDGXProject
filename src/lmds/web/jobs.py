@@ -8,9 +8,11 @@ HTTP request เดียวรอไม่ไหว และผู้ใช้
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -34,6 +36,56 @@ CHAINS = {
 }
 _TAIL_LINES = 400
 
+# ตัวจบบรรทัดที่นับ — \r ด้วย ไม่ใช่ \n อย่างเดียว
+#
+# `for line in proc.stdout` ตัดที่ \n เท่านั้น · progress bar ของ huggingface_hub,
+# docker pull, rsync และ curl เลื่อนตัวเลขด้วย \r โดยไม่ขึ้นบรรทัดใหม่เลย
+# download 50 GB จึงไม่เคยส่งบรรทัดไหนออกมาสักบรรทัด — หน้าเว็บได้แผงว่าง ๆ นิ่ง
+# อยู่ครึ่งชั่วโมง แล้วผู้ใช้สรุปว่างานค้าง ทั้งที่ไฟล์กำลังไหลเข้าเครื่องอยู่
+_LINE_END = re.compile(r"\r\n|\r|\n")
+_READ_CHUNK = 8192
+
+
+def _pump(job: "Job", proc: subprocess.Popen) -> None:
+    """ย้ายผลจาก process เข้า job ทีละบรรทัด — นับ \\r เป็นตัวจบบรรทัดด้วย
+
+    บรรทัดที่จบด้วย \\r คือ "เฟรม" ของ progress bar ตัวถัดไปตั้งใจจะทับของเดิม
+    ไม่ใช่ต่อท้าย · ถ้า append ทุกเฟรม deque 400 บรรทัดจะเต็มไปด้วยเลข % ของ
+    วินาทีที่แล้ว แล้วดันบรรทัดที่บอกสาเหตุจริงหายไปหมด
+    """
+    # read1() ไม่ใช่ read(): คืนเท่าที่มีอยู่ทันที ส่วน read(n) จะรอจนครบ n
+    # ซึ่งแปลว่าไม่สตรีม · ไม่ใช้ os.read(fileno) เพราะผูกกับ pipe จริงโดยไม่จำเป็น
+    # แล้วทำให้เทสที่จำลอง subprocess ต้องมี fd จริงตามไปด้วย
+    stream = proc.stdout
+    read = getattr(stream, "read1", None) or stream.read
+    pending = ""
+    overwrite = False   # เฟรมก่อนหน้าจบด้วย \r → บรรทัดถัดไปทับตัวเดิม
+
+    def emit(text: str) -> None:
+        nonlocal overwrite
+        if overwrite and job.lines:
+            job.lines[-1] = text
+        else:
+            job.lines.append(text)
+
+    while True:
+        try:
+            data = read(_READ_CHUNK)
+        except (OSError, ValueError):   # process ตายกลางคัน — ท่อปิดไปแล้ว
+            break
+        if not data:
+            break
+        pending += data.decode("utf-8", "replace")
+        while True:
+            match = _LINE_END.search(pending)
+            if match is None:
+                break
+            emit(pending[: match.start()] + "\n")
+            overwrite = match.group() == "\r"
+            pending = pending[match.end() :]
+    if pending:        # เศษท้ายที่ไม่มีตัวจบบรรทัด — อย่าให้หายไปเฉย ๆ
+        emit(pending + "\n")
+
 
 @dataclass
 class Job:
@@ -47,6 +99,9 @@ class Job:
     lines: deque = field(default_factory=lambda: deque(maxlen=_TAIL_LINES))
     exit_code: int | None = None
     process: subprocess.Popen | None = None
+    # งานที่เงียบสนิทกับงานที่ตายไปแล้ว หน้าตาเหมือนกันเป๊ะถ้าไม่บอกเวลา — และบางขั้น
+    # (verify-files ของ shard 50 GB) เงียบจริง ๆ โดยไม่มีอะไรผิด
+    started_at: float = field(default_factory=time.monotonic)
 
     def __setattr__(self, name: str, value) -> None:
         """งานจบ = สถานะบนดิสก์เปลี่ยนแล้ว (weight โหลดเสร็จ, server ขึ้น) — ทิ้งแคชทันที
@@ -79,6 +134,7 @@ class Job:
             "running": self.running,
             "exit_code": self.exit_code,
             "output": "".join(self.lines),
+            "elapsed": int(time.monotonic() - self.started_at),
         }
 
 
@@ -256,9 +312,9 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
         _ACTIVE[slug] = job.id
 
     def run() -> None:
-        import os
-
-        env = {**os.environ, **extra_env}
+        # PYTHONUNBUFFERED: ขั้น download เรียก python ในคอนเทนเนอร์ ซึ่ง stdout ที่ปลาย
+        # ท่อ (ไม่ใช่ tty) ถูก block-buffer ไว้ — progress ค้างอยู่ในบัฟเฟอร์จนงานจบ
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", **extra_env}
         for index, step in enumerate(steps):
             job.step_index = index
             if len(steps) > 1:
@@ -266,7 +322,7 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
             try:
                 proc = subprocess.Popen(
                     [str(path), step], cwd=str(path.parent), env=env,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 )
             except OSError as exc:
                 job.lines.append(f"เรียก controller ไม่ได้: {exc}\n")
@@ -274,8 +330,7 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
                 return
             job.process = proc
             assert proc.stdout is not None
-            for line in proc.stdout:
-                job.lines.append(line)
+            _pump(job, proc)
             code = proc.wait()
             if code != 0:
                 # ขั้นแรกล้ม = ไม่ต้องทำขั้นถัดไป (verify ไฟล์ที่โหลดไม่จบไม่มีประโยชน์)
@@ -336,8 +391,7 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
             return
         job.process = proc
         assert proc.stdout is not None
-        for line in proc.stdout:
-            job.lines.append(line)
+        _pump(job, proc)
         code = proc.wait()
         # error ของ git/rsync อ่านแล้วไม่รู้ว่าต้องทำอะไร — แปลให้ตรงจุดก่อนจบงาน
         if code != 0 and self_node:
@@ -369,13 +423,11 @@ def start_shell(slug: str, command: str, script: str, cwd: str = "") -> Job:
         _ACTIVE[slug] = job.id
 
     def run() -> None:
-        import os
-
         try:
             proc = subprocess.Popen(
-                ["bash", "-s"], cwd=cwd or None, env=os.environ.copy(),
+                ["bash", "-s"], cwd=cwd or None,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
             )
         except OSError as exc:
             job.lines.append(f"รันไม่ได้: {exc}\n")
@@ -383,10 +435,9 @@ def start_shell(slug: str, command: str, script: str, cwd: str = "") -> Job:
             return
         job.process = proc
         assert proc.stdin is not None and proc.stdout is not None
-        proc.stdin.write(script)
+        proc.stdin.write(script.encode("utf-8"))
         proc.stdin.close()
-        for line in proc.stdout:
-            job.lines.append(line)
+        _pump(job, proc)
         job.exit_code = proc.wait()
 
     threading.Thread(target=run, daemon=True).start()

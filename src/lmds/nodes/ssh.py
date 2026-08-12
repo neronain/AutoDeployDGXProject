@@ -119,15 +119,21 @@ def stream(node: Node, command: str):
     """เปิด ssh แบบอ่านผลทีละบรรทัด — ใช้กับงานยาว (download หลายสิบ GB) ที่ต้องเห็นความคืบหน้า
 
     ต่างจาก run() ที่รอจนจบแล้วค่อยคืนทั้งก้อน · คืน Popen ให้ผู้เรียกวนอ่าน stdout เอง
+
+    คืนท่อแบบ **ไบต์** ไม่ใช่ข้อความ — ผู้เรียกต้องตัดบรรทัดที่ \\r ด้วย (progress bar
+    ไม่ขึ้นบรรทัดใหม่) ซึ่ง text=True + bufsize=1 ทำให้ทำไม่ได้: มันตัดที่ \\n อย่างเดียว
+
+    ปลายทางไม่มี tty (ไม่ได้ขอ -t เพราะงานนี้ต้องรันแบบไม่โต้ตอบ) python ฝั่งโน้นจึง
+    block-buffer stdout ของตัวเอง — สั่ง unbuffered ไว้ ไม่งั้นผลโผล่มาทีเดียวตอนจบ
     """
-    wrapped = f"bash -lc {shlex.quote(command)}"
+    wrapped = f"bash -lc {shlex.quote('export PYTHONUNBUFFERED=1; ' + command)}"
     host = node.all_hosts[0]
     args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port),
             f"{node.user}@{host}", wrapped]
     try:
         return subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
