@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -53,3 +54,45 @@ def no_registry_lookups(monkeypatch):
     # ตั้ง env แทนการ patch ตัวฟังก์ชัน — patch แล้วเทสของ tag_exists เองจะไปทดสอบ stub
     monkeypatch.setenv(SKIP_ENV, "1")
     yield
+
+
+def _real_config_files() -> dict[str, str]:
+    """Checksums of the operator's real config, if any exists on this machine."""
+    import hashlib
+
+    real = Path.home() / ".config" / "lmds"
+    if not real.is_dir():
+        return {}
+    digests: dict[str, str] = {}
+    for path in sorted(real.rglob("*")):
+        if path.is_file():
+            try:
+                digests[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                continue
+    return digests
+
+
+@pytest.fixture(scope="session", autouse=True)
+def never_touch_the_real_config():
+    """กันเทสเขียนทับ config จริงของเครื่อง — เคยลบ nodes.yaml ของผู้ใช้มาแล้ว
+
+    isolated_config กัน in-process ได้ แต่ subprocess ที่ไม่ได้รับ env ไปด้วย
+    หรือโค้ดที่ resolve home เองยังหลุดได้ ซึ่งไฟล์ที่พังคือทะเบียนเครื่องจริง
+    ของผู้ใช้ · เทียบ checksum ก่อน/หลัง session จับได้ทุกทาง
+    """
+    before = _real_config_files()
+    yield
+    after = _real_config_files()
+    if before == after:
+        return
+
+    changed = sorted(
+        {*before, *after},
+        key=lambda p: (before.get(p) == after.get(p), p),
+    )
+    damaged = [p for p in changed if before.get(p) != after.get(p)]
+    raise AssertionError(
+        "เทสไปแก้ config จริงของเครื่องนี้ — ต้อง isolate ให้ครบก่อนรันอีก:\n  "
+        + "\n  ".join(damaged)
+    )
