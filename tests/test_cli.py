@@ -133,7 +133,10 @@ def test_web_refuses_to_start_when_one_is_already_running(tmp_path, monkeypatch)
 
     result = runner.invoke(app, ["web", "-b", "--bind", "0.0.0.0"])
 
-    assert result.exit_code == 0
+    # ไม่ใช่ 0 โดยเจตนา: systemd unit ตั้ง Restart=always ไว้ ถ้าจบด้วย 0 มันอ่านว่า
+    # "ทำงานเสร็จแล้ว" แล้วปลุกใหม่ทุก 3 วิไม่รู้จบ (เจอจริง 144 รอบ) — unit จับคู่ด้วย
+    # RestartPreventExitStatus ที่ค่าเดียวกันนี้
+    assert result.exit_code == daemon.EXIT_ALREADY_RUNNING
     assert not started, "ต้องไม่สตาร์ตซ้อน"
     # ต้องพิมพ์ลิงก์ของตัวที่เสิร์ฟจริง ไม่ใช่ token ใหม่ที่ไม่มีใครถืออยู่
     assert "--restart" in result.output

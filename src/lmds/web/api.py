@@ -141,9 +141,17 @@ def create_app(token: str = "") -> FastAPI:
         เลข version ไม่ขยับทุกคอมมิต จึงบอกไม่ได้ว่าใครรันโค้ดเก่า · `check_repo=true`
         ไปถาม GitHub ด้วยว่ามีของใหม่กว่าที่ hub ถืออยู่ไหม (ช้ากว่า จึงไม่ทำทุกครั้ง)
         """
-        from lmds.inventory import source_commit
+        from lmds.inventory import installed_commit, source_commit
 
-        payload = {"version": lmds.__version__, "commit": source_commit(), "upstream": ""}
+        # `installed` = ของบนดิสก์ · `commit` = ของที่ process นี้รันอยู่จริง
+        # ต่างกัน = ติดตั้งใหม่แล้วแต่ยังไม่รีสตาร์ต ซึ่งหน้าเว็บต้องบอก ไม่งั้นมันจะโชว์
+        # commit เก่าค้างแล้วไปกล่าวหา node ที่อัปเดตถูกต้องว่ารันโค้ดเก่า
+        payload = {
+            "version": lmds.__version__,
+            "commit": source_commit(),
+            "installed": installed_commit(),
+            "upstream": "",
+        }
         if check_repo:
             payload["upstream"] = _upstream_commit()
         return payload

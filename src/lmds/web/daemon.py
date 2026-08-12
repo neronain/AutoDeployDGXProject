@@ -244,10 +244,24 @@ def log_tail(lines: int = 12) -> str:
 #   - `loginctl enable-linger` ทำให้มันขึ้นตั้งแต่บูตโดยไม่ต้องมีใคร login
 UNIT_NAME = "lmds-web.service"
 
+# `lmds web` เจอว่ามีตัวอื่นรันอยู่แล้ว จบด้วยรหัสนี้ — ไม่ใช่ 0
+#
+# ค่านี้กับ RestartPreventExitStatus ในยูนิตข้างล่างต้องตรงกันเสมอ ถ้าแก้ต้องแก้คู่กัน:
+# จบด้วย 0 แล้ว Restart=always จะอ่านว่าสำเร็จ แล้วปลุกใหม่ทุก 3 วิไม่รู้จบ (เจอจริง 144 รอบ)
+EXIT_ALREADY_RUNNING = 3
+
 _UNIT = """[Unit]
 Description=LMDS web console
 After=network-online.target
 Wants=network-online.target
+# เพดานการปลุกซ้ำ — ถึงเพดานแล้วให้ไปนอนที่สถานะ failed ซึ่ง `systemctl status` เห็นได้
+#
+# ค่าปริยายของ systemd (5 ครั้ง/10 วิ) ดักเคสนี้ไม่ได้เลย เพราะ RestartSec=3 คิดเป็น
+# ~3.3 ครั้ง/10 วิ ซึ่งต่ำกว่าเพดานตลอดกาล · ผลคือ service ที่ล้มทุกครั้งจะวนเงียบ ๆ
+# ได้ไม่รู้จบ (เจอจริง 144 รอบ ไม่มีอาการอะไรให้เห็นนอกจาก NRestarts ที่ไต่ขึ้น)
+# ยอมแพ้แล้วโชว์ว่าพังดีกว่าวนอยู่อย่างนั้นโดยไม่มีใครรู้
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -256,6 +270,10 @@ Environment=LMDS_WEB_TOKEN={token}
 {extra_env}
 Restart=always
 RestartSec=3
+# มีตัวอื่นถือพอร์ตอยู่แล้ว = ไม่มีอะไรให้ทำ อย่าปลุกซ้ำ · ไม่มีบรรทัดนี้ service จะวน
+# restart ทุก 3 วินาทีตลอดไป โดยที่หน้าเว็บก็ยังเปิดได้ปกติ (ตัวที่ถืออยู่เสิร์ฟให้) —
+# ไม่มีอาการอะไรให้เห็นเลยนอกจาก NRestarts ที่ไต่ขึ้นเรื่อย ๆ
+RestartPreventExitStatus={already_running}
 # SSE ถือ connection ค้างไว้ (หน้าเว็บที่เปิดอยู่ทุกแท็บ) — uvicorn รอให้มันปิดก่อนถึงจะจบ
 # ไม่มีเส้นตายก็ค้างที่ deactivating ไปเรื่อย ๆ แล้ว restart ไม่กลับมา (เจอจริง 2 ครั้ง)
 TimeoutStopSec=10
@@ -283,7 +301,8 @@ def render_unit(port: int, bind: str, token: str) -> str:
 
     extra = "\n".join(f"Environment={key}={os.environ[key]}"
                        for key in _FORWARD_ENV if os.environ.get(key))
-    return _UNIT.format(python=sys.executable, port=port, bind=bind, token=token, extra_env=extra)
+    return _UNIT.format(python=sys.executable, port=port, bind=bind, token=token, extra_env=extra,
+                        already_running=EXIT_ALREADY_RUNNING)
 
 
 def service_active() -> bool:

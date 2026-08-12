@@ -1774,7 +1774,13 @@ function nodeModelsMarkup(name, data) {
 // เลข version ไม่ขยับทุกคอมมิต (0.2.0 มาหลายสิบคอมมิตแล้ว) — เทียบ commit เท่านั้นถึงจะรู้ว่า
 // เครื่องไหนตามหลัง · สำคัญเพราะสถานะทุกอย่างของโมเดล (downloaded, commands, …) คำนวณด้วย
 // โค้ดของ *เครื่องนั้น* ไม่ใช่ของ hub — อัปเดตแต่ hub แล้วเข้าใจว่าทั้งฟลีตได้ของใหม่คือเข้าใจผิด
-let hubBuild = { version: "", commit: "", upstream: "" };
+let hubBuild = { version: "", commit: "", installed: "", upstream: "" };
+
+// hub ตามหลังตัวเองอยู่หรือเปล่า — ติดตั้งของใหม่ไว้แล้วแต่ process ที่รันยังเป็นของเก่า
+// ตอนนั้น commit ของ hub เชื่อไม่ได้ จะเอาไปตัดสินว่า node ไหนเก่าไม่ได้เลย
+function hubNeedsRestart() {
+  return Boolean(hubBuild.installed && hubBuild.commit && hubBuild.installed !== hubBuild.commit);
+}
 
 function paintNodeVersion(row, d, name) {
   if (!row) return;
@@ -1782,10 +1788,15 @@ function paintNodeVersion(row, d, name) {
   const host = d.host || {};
   const version = host.lmds_version ? "v" + host.lmds_version : "";
   const commit = host.lmds_commit || "";
-  const stale = commit && hubBuild.commit && commit !== hubBuild.commit;
+  // "ต่างจาก hub" ไม่ได้แปลว่า "เก่ากว่า" — เทียบ hash สองตัวบอกลำดับก่อนหลังไม่ได้
+  // เคสจริง: กด update ให้ node ทุกเครื่องจนได้ของล่าสุด แต่ hub เองยังไม่ได้รีสตาร์ต
+  // ป้ายเดิมเขียนว่า "โค้ดเก่า" จึงไปกล่าวหาเครื่องที่ทันสมัยที่สุดทั้งฟลีต แล้วชวนให้กด
+  // update ซ้ำทั้งที่ไม่มีอะไรต้องอัป · ตอน hub ยังไม่รีสตาร์ต อย่าตัดสิน node เลยดีกว่า
+  const differs = Boolean(commit && hubBuild.commit && commit !== hubBuild.commit);
+  const stale = differs && !hubNeedsRestart();
   row.version.innerHTML = `${esc(version)}${commit ? ` <span class="dim">${esc(commit)}</span>` : ""}`
     + (stale ? ` <span class="tag warn" title="เครื่องนี้รัน ${esc(commit)} ส่วน hub อยู่ที่ ${esc(hubBuild.commit)}
-        — สถานะโมเดลคำนวณด้วยโค้ดของเครื่องนี้ ไม่ใช่ของ hub">โค้ดเก่า</span>` : "")
+        — คนละรุ่นกัน ตัวไหนใหม่กว่าต้องดูที่ git · สถานะโมเดลคำนวณด้วยโค้ดของเครื่องนี้ ไม่ใช่ของ hub">คนละรุ่นกับ hub</span>` : "")
     // ปุ่มขึ้นเสมอ ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง" — commit เทียบไม่ได้ (hub ไม่ใช่ git checkout
     // หรือ node ยังตอบ commit ไม่ได้) ก็ยังต้องกดอัปเดตเครื่องนั้นได้อยู่ดี
     + ` <button data-nact="install" data-node="${esc(name || "")}" style="font-size:12px"
@@ -2438,11 +2449,17 @@ async function refresh() {
 
 // ถาม GitHub ด้วยว่ามีของใหม่กว่าที่ hub ถืออยู่ไหม — ครั้งเดียวตอนเปิดหน้า ไม่ใช่ทุกรอบ poll
 api("/api/version?check_repo=true").then(r => r.json()).then(d => {
-  hubBuild = { version: d.version || "", commit: d.commit || "", upstream: d.upstream || "" };
+  hubBuild = { version: d.version || "", commit: d.commit || "",
+               installed: d.installed || "", upstream: d.upstream || "" };
   const el = document.getElementById("ver");
   const behind = hubBuild.upstream && hubBuild.commit && hubBuild.upstream !== hubBuild.commit;
+  // ติดตั้งของใหม่ไว้แล้วแต่ยังรันของเก่าอยู่ — ต้องขึ้นก่อนป้าย "มีอัปเดต" เพราะมันคือ
+  // สาเหตุที่ทำให้เลข commit ข้างบนนี้เชื่อไม่ได้ และทำให้ทั้งฟลีตดูเหมือนไม่ตรงกัน
   el.innerHTML = `v${esc(hubBuild.version)}${hubBuild.commit ? " · " + esc(hubBuild.commit) : ""}`
-    + (behind ? ` <span class="tag warn" title="บน GitHub อยู่ที่ ${esc(hubBuild.upstream)}">มีอัปเดต</span>` : "");
+    + (hubNeedsRestart()
+        ? ` <span class="tag warn" title="ติดตั้ง ${esc(hubBuild.installed)} ไว้แล้ว แต่ตัวที่รันอยู่ยังเป็น ${esc(hubBuild.commit)}
+            — รีสตาร์ตก่อน: systemctl --user restart lmds-web">รอรีสตาร์ต</span>`
+        : behind ? ` <span class="tag warn" title="บน GitHub อยู่ที่ ${esc(hubBuild.upstream)}">มีอัปเดต</span>` : "");
   // ปุ่มอัปเดตขึ้นเสมอเมื่อ hub ติดตั้งจาก git checkout — ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง"
   // เพราะ upstream อ่านไม่ได้ (ไม่มีเน็ต/ถามไม่ทัน) ก็ยังต้องกดอัปเดตได้อยู่ดี
   const btn = document.getElementById("update");
@@ -2450,7 +2467,7 @@ api("/api/version?check_repo=true").then(r => r.json()).then(d => {
     btn.hidden = false;
     btn.className = behind ? "warn" : "";
   }
-  // node ที่โหลดไปก่อนหน้านี้ยังไม่รู้ commit ของ hub — วาดป้าย "โค้ดเก่า" ใหม่ให้ครบ
+  // node ที่โหลดไปก่อนหน้านี้ยังไม่รู้ commit ของ hub — วาดป้ายรุ่นใหม่ให้ครบ
   for (const [name, row] of nodeRows) {
     const cached = lastNodeData.get(name);
     if (cached) paintNodeVersion(row, cached, name);
@@ -2460,7 +2477,7 @@ api("/api/version?check_repo=true").then(r => r.json()).then(d => {
 
 // ── อัปเดตทั้งฟลีต: hub ก่อน แล้วค่อยไล่ node ─────────────────────────────
 //
-// ลำดับนี้สำคัญ ไม่ใช่แค่ความเรียบร้อย: ป้าย "โค้ดเก่า" ของ node เทียบกับ commit ของ *hub*
+// ลำดับนี้สำคัญ ไม่ใช่แค่ความเรียบร้อย: ป้ายรุ่นของ node เทียบกับ commit ของ *hub*
 // อัปเดต node ก่อนจึงทำให้ node ล้ำหน้า hub แล้วป้ายก็หายไปทั้งที่ยังไม่ตรงกันจริง
 // (เดิม hub อัปเดตจากหน้าเว็บไม่ได้เลย ทั้งฟลีตจึงไม่เคยอยู่ที่ commit เดียวกันสักที)
 const upbox = document.getElementById("upbox");

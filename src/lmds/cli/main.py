@@ -2521,7 +2521,12 @@ def web(
         console.print("[dim]เปิดใหม่/เปลี่ยนพอร์ต: [bold]lmds web --restart -b[/bold] · "
                       "หยุด: [bold]lmds web --stop[/bold] · "
                       "เปลี่ยน token: [bold]lmds web --restart -b --new-token[/bold][/dim]")
-        return
+        # ออกด้วย EXIT_ALREADY_RUNNING ไม่ใช่ 0 — systemd unit ตั้ง Restart=always ไว้
+        # ถ้าจบด้วย 0 มันอ่านว่า "ทำงานเสร็จสวย" แล้วปลุกใหม่ทุก RestartSec ไม่รู้จบ
+        # เจอจริง: มีคนรัน `lmds web` ด้วยมือค้างถือพอร์ตไว้ ตัวของ service จึงเจอตัวนี้
+        # ทุกครั้งแล้วจบ — วนไป 144 รอบเงียบ ๆ โดยไม่มีใครรู้ ส่วนที่เสิร์ฟจริงคือตัวมือ
+        # ซึ่งรันโค้ดคนละรุ่นกับที่ติดตั้งไว้ · unit จับคู่ด้วย RestartPreventExitStatus
+        raise typer.Exit(code=daemon.EXIT_ALREADY_RUNNING)
     if daemon.port_busy(bind, port):
         err_console.print(f"[red]พอร์ต {port} ไม่ว่าง[/red] — มีโปรแกรมอื่นยึดอยู่ (ไม่ใช่ของ lmds)")
         err_console.print(f"[dim]ดูว่าใคร: [bold]ss -ltnp | grep {port}[/bold] · "

@@ -84,12 +84,39 @@ def source_commit() -> str:
 
     # ติดตั้งแบบปกติ (node ทุกเครื่องเป็นแบบนี้) โค้ดไม่ได้อยู่ใน git checkout แล้ว —
     # ใช้ commit ที่ install.sh ประทับไว้ตอนติดตั้งแทน ซึ่งตรงกับโค้ดที่กำลังรันจริง
+    #
+    # จงใจ import (ไม่ใช่อ่านไฟล์): python cache โมดูลไว้ตั้งแต่ครั้งแรก ค่านี้จึงเป็นของ
+    # "ตอนที่ process นี้เริ่ม" ซึ่งตรงกับโค้ดที่ถูกโหลดเข้าหน่วยความจำไปแล้วจริง ๆ
+    # ถ้าอ่านสด ๆ จากดิสก์ เราจะรายงาน commit ของโค้ดที่ยังไม่ได้รัน — โกหกอีกทาง
     try:
         from lmds._build import COMMIT
 
         return str(COMMIT or "")
     except Exception:
         return ""
+
+
+def installed_commit() -> str:
+    """commit ที่ *ติดตั้งไว้บนดิสก์* ณ ตอนนี้ — ต่างจาก source_commit() ที่เป็นตัวที่รันอยู่
+
+    อ่านไฟล์ตรง ๆ ไม่ผ่าน import เพราะ `lmds._build` ถูก cache ไว้ใน sys.modules ตั้งแต่
+    ครั้งแรกที่ถูกเรียก · `install.sh` เขียนทับทีหลังไม่มีผลกับ process ที่รันอยู่
+
+    สองค่านี้ต่างกันเมื่อไหร่ = ติดตั้งของใหม่แล้วแต่ยังไม่ได้รีสตาร์ต ซึ่งเป็นสถานะที่เคย
+    หลอกคนมาแล้ว: header โชว์ commit เก่าค้าง แล้วทุก node ที่อัปเดตถูกต้องกลับโดนติดป้าย
+    ว่า "โค้ดเก่า" เพราะไม่ตรงกับ hub — ทั้งที่ hub ต่างหากที่ต้องรีสตาร์ต
+    """
+    import re
+
+    import lmds
+
+    build = Path(lmds.__file__).resolve().parent / "_build.py"
+    try:
+        text = build.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    found = re.search(r"""^COMMIT\s*=\s*["']([^"']*)["']""", text, re.MULTILINE)
+    return found.group(1) if found else ""
 
 
 def cache_health() -> dict:
