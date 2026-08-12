@@ -7,6 +7,12 @@
 <style>
 /* No CDN anywhere on this page — target machines may sit behind a proxy or be air-gapped.
    Everything below is one self-contained stylesheet: no fonts, no icons, no frameworks. */
+/* `hidden` ต้องชนะทุกอย่าง · `[hidden] { display: none }` ของเบราว์เซอร์อยู่ใน
+   UA stylesheet ซึ่งแพ้ selector ของเราทุกตัวที่ตั้ง display — เขียน
+   `.chat-panel { display: flex }` เมื่อไหร่ `hidden` ก็ไม่มีผลทันที และมันพัง
+   แบบเงียบ ๆ กว่าจะรู้คือตอนผู้ใช้กดปิดแล้วไม่ปิด */
+[hidden] { display: none !important; }
+
 :root {
   /* Neutral surface ramp — a console should recede so the data reads first */
   --bg: #f6f7f9; --card: #ffffff; --sunken: #f0f2f5;
@@ -300,7 +306,6 @@ label { font-size: 13px; color: var(--fg2); }
 
 
 /* ── กล่องอัปเดต: งานที่กินทั้งฟลีต ต้องอ่านได้โดยไม่ต้องเลื่อนหาว่าไปถึงไหนแล้ว ── */
-#upbox[hidden] { display: none; }
 #upbox {
   position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
   background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(3px);
@@ -415,9 +420,11 @@ pre {
   box-shadow: 0 6px 20px rgba(0, 0, 0, .22);
 }
 .chat-fab:hover { transform: translateY(-1px); }
-.chat-fab .ai-mark { width: 22px; height: 22px; }
-.chat-title { display: flex; align-items: center; gap: 6px; }
-.chat-title .ai-mark { width: 15px; height: 15px; opacity: .8; }
+.chat-fab .ai-mark { width: 24px; height: 24px; }
+.chat-title { display: flex; align-items: center; gap: 7px; }
+/* เครื่องหมายนี้คือตัวตนของกล่อง ไม่ใช่ของประดับ — วาดเต็มความเข้ม และขนาด/สี
+   ต้องตรงกับฝั่ง Gateway เพราะสองระบบถูกติดตั้งคู่กัน */
+.chat-title .ai-mark { width: 18px; height: 18px; color: var(--c2); }
 .chat-panel {
   position: fixed; right: 20px; bottom: 20px; z-index: 61;
   width: min(400px, calc(100vw - 40px)); height: min(560px, calc(100vh - 40px));
@@ -479,6 +486,22 @@ pre {
 .sec i {
   font-style: normal; margin-right: 6px; opacity: .6;
   font-size: 11px; vertical-align: baseline;
+}
+/* ── ข้อเสนอแก้สคริปต์ ─────────────────────────────────────────────────────── */
+.script-out { font-size: 12px; line-height: 1.55; }
+.script-out .why { margin: 0 0 8px; color: var(--fg2); }
+.script-out pre {
+  margin: 0 0 8px; padding: 9px 10px; overflow-x: auto; max-height: 320px;
+  background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-size: 11.5px; line-height: 1.5;
+}
+/* diff อ่านง่ายกว่าคำอธิบายเสมอ — ระบายสีบรรทัดที่เพิ่ม/ลบให้เห็นทันทีว่าแตะอะไรไปบ้าง */
+.script-out .add { color: var(--ok); }
+.script-out .del { color: var(--bad); }
+.script-out .hunk { color: var(--fg3); }
+.script-out .warn-note {
+  padding: 8px 10px; margin-bottom: 8px; border-radius: var(--r-sm);
+  background: var(--warn-bg); color: var(--warn);
 }
 </style>
 <script>
@@ -554,7 +577,7 @@ pre {
   <div class="card" id="fleet"><div class="empty">Loading…</div></div>
 
   <div class="sec row between" style="align-items:baseline">
-    <span>Other machines</span>
+    <span><i>⌂</i>Other machines</span>
     <span>
       <button id="cluster-check" style="font-size:12px" title="ตรวจว่าเครื่องไหนจับคู่ stacked กันได้">Check cluster</button>
       <button id="node-new" style="font-size:12px">+ Add machine</button>
@@ -563,14 +586,14 @@ pre {
   <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
 
   <div class="sec row between" style="align-items:baseline">
-    <span>Weights already on disk</span>
+    <span><i>◱</i>Weights already on disk</span>
     <button id="scan-run" style="font-size:12px">Scan</button>
   </div>
   <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
     <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
 
   <div class="sec row between" style="align-items:baseline">
-    <span>Proven recipes</span>
+    <span><i>✓</i>Proven recipes</span>
     <button id="recipes-load" style="font-size:12px">Show</button>
   </div>
   <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
@@ -771,6 +794,19 @@ function manageMarkup(m) {
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
     </div>
 
+    <div class="sec" style="margin:16px 0 6px"><i>✎</i>Edit the launch script</div>
+    <div class="field" style="flex-direction:column;align-items:stretch;gap:6px">
+      <span class="dim">บอกเป็นภาษาคนว่าอยากให้รันต่างจากเดิมยังไง — ผู้ช่วยจะอ่าน controller
+        ตัวจริงแล้วเสนอวิธีแก้ ถ้าทำได้ด้วย option ที่มีอยู่แล้วมันจะบอกคำสั่งแทนการแก้ไฟล์
+        · <b>ไม่มีอะไรถูกเขียนจนกว่าคุณจะกด Apply</b></span>
+      <div class="field">
+        <input class="o-ask" placeholder="e.g. use less VRAM at start / add env HF_HUB_OFFLINE=1"
+               style="flex:1;min-width:220px">
+        ${btn("askscript", "Propose")}
+      </div>
+      <div class="script-out" hidden></div>
+    </div>
+
     <div class="sec" style="margin:16px 0 6px"><i>↻</i>Autostart after reboot</div>
     <div class="field">
       <span class="muted">status: ${esc(auto || "—")}</span>
@@ -911,9 +947,9 @@ function wizForm(msg = "", extra = "") {
     <div class="field" style="width:100%">
       <label>HF token</label>
       <input id="w-hf" type="password" autocomplete="off" value="${esc(draft.hf_token || "")}"
-             placeholder="ไม่บังคับ — ใส่เมื่อรุ่นนั้นเป็น gated/private" style="min-width:240px">
+             placeholder="Optional — only for gated or private repos" style="min-width:240px">
       <label style="flex:none"><input type="checkbox" id="w-hf-save" style="min-width:auto;flex:none"
-        ${draft.hf_save ? "checked" : ""}> เก็บไว้ที่ hub</label>
+        ${draft.hf_save ? "checked" : ""}> Keep on this hub</label>
       <span class="dim">ไม่ติ๊ก = ใช้เฉพาะรอบนี้ ไม่ถูกเก็บที่ไหน · ติ๊ก = เก็บใน keyring/ไฟล์
         สิทธิ์ 0600 ของ hub แล้วใช้กับรุ่น gated ครั้งต่อ ๆ ไปเอง</span>
     </div>
@@ -972,7 +1008,7 @@ function renderRecipePicker() {
     return;
   }
   box.innerHTML = `<details style="margin-top:8px"${noLlm ? " open" : ""}>
-    <summary style="cursor:pointer" class="dim">เลือกจากสูตรที่รันผ่านแล้ว (${recipeList.length} รุ่น)${
+    <summary style="cursor:pointer" class="dim">Proven recipes (${recipeList.length})${
       noLlm ? " — ยังไม่ได้ตั้ง LLM ใช้ทางนี้ได้เลย" : ""}</summary>
     <div class="npills" style="margin-top:8px">${recipeList.map((r, i) =>
       `<button class="npill" data-recipe="${i}" title="${esc(r.match)}${
@@ -1215,7 +1251,7 @@ document.addEventListener("click", async e => {
       const nodes = d.nodes || [];
       sel.innerHTML = nodes.length
         ? nodes.map(n => `<option value="${esc(n.name)}">${esc(n.name)}</option>`).join("")
-        : `<option value="">ยังไม่มีเครื่องอื่นในทะเบียน</option>`;
+        : `<option value="">No other machines registered yet</option>`;
     }).catch(() => {});
     return;
   }
@@ -1237,6 +1273,16 @@ document.addEventListener("click", async e => {
     box.innerHTML = `<div class="warn-line" style="color:var(--ok)">ติดตั้งแล้วที่ ${esc(target)}:${esc(d.path || "")}
           (${d.size_mb} MB) — เลื่อนลงไปที่การ์ดของเครื่องนั้นเพื่อสั่ง download / start</div>`;
     refreshNodes();
+    return;
+  }
+
+  if (act === "askscript") {
+    const panel = document.getElementById("panel-" + slug);
+    const input = panel && panel.querySelector(".o-ask");
+    const question = input ? input.value.trim() : "";
+    if (!question) { if (input) input.focus(); return; }
+    // โมเดลในเครื่องนี้ไม่มี node — ตัว endpoint แยกทางเองจากค่าว่าง
+    await proposeScriptEdit(slug, "", panel.querySelector(".script-out"), question);
     return;
   }
 
@@ -1478,7 +1524,7 @@ function nodeCard(node) {
       <button data-nact="setup" data-node="${esc(node.name)}"
               title="ตั้งค่าที่ต้องใช้สิทธิ์ root บนเครื่องนั้น (ถามรหัสผ่านตอนนั้น ไม่เก็บ)">setup</button>
       <button data-nact="fix-perms" data-node="${esc(node.name)}"
-              title="คืนสิทธิ์แคชโมเดลให้เป็นของ user — ใช้เมื่อ container เคยรันเป็น root แล้ว sync-worker/start ตายเพราะ Permission denied">แก้สิทธิ์</button>
+              title="คืนสิทธิ์แคชโมเดลให้เป็นของ user — ใช้เมื่อ container เคยรันเป็น root แล้ว sync-worker/start ตายเพราะ Permission denied">Fix permissions</button>
       <button data-nact="refresh" data-node="${esc(node.name)}">Refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Forget</button>
     </div>
@@ -1652,28 +1698,28 @@ function nodeModelsMarkup(name, data) {
                    title="สัดส่วนหน่วยความจำที่ vLLM จองไว้ (0.3–0.98)">` : ""}
             <label>bind</label>
             <select class="n-bind" style="flex:none">
-              <option value=""${!o.bind ? " selected" : ""}>ค่าใน bundle</option>
-              <option value="0.0.0.0"${o.bind === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (ทั้งวง)</option>
-              <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (เครื่องนั้น)</option>
+              <option value=""${!o.bind ? " selected" : ""}>Bundle default</option>
+              <option value="0.0.0.0"${o.bind === "0.0.0.0" ? " selected" : ""}>0.0.0.0 (whole network)</option>
+              <option value="127.0.0.1"${o.bind === "127.0.0.1" ? " selected" : ""}>127.0.0.1 (that machine only)</option>
             </select>
           </div>
           <div class="field" style="width:100%">
             <label>API key</label>
             <input type="password" class="n-key" value="${esc(o.api_key ?? "")}"
-                   placeholder="ว่าง = ไม่ต้องยืนยันตัวตน" style="min-width:180px">
+                   placeholder="empty = no authentication" style="min-width:180px">
             <span class="dim">เก็บในเบราว์เซอร์นี้ ไม่ได้เขียนลง bundle ปลายทาง</span>
           </div>
           <div class="field" style="width:100%">
             <label>model ID</label>
             <input class="n-served" value="${esc(o.served_name ?? "")}"
-                   placeholder="ว่าง = ชื่อที่ bundle กำหนด" style="min-width:240px"
+                   placeholder="empty = the name the bundle sets" style="min-width:240px"
                    title="ชื่อที่ API เสิร์ฟออกไป — ย้ายมาจากระบบเดิมแล้วต้องใช้ชื่อเดิม ตั้งตรงนี้">
             <span class="dim">ชื่อที่ client เรียกใช้ (field "model" ใน request)</span>
           </div>
           <div class="field" style="width:100%">
             <label>image</label>
             <input class="n-image" value="${esc(o.image ?? "")}"
-                   placeholder="ว่าง = ใช้ image ที่ bundle กำหนด" style="min-width:280px"
+                   placeholder="empty = the image the bundle sets" style="min-width:280px"
                    title="ใช้ตอน image ของ bundle ใช้ไม่ได้ (tag ผิด/ถูกถอน) — ไม่ต้อง deploy ใหม่">
             <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
           </div>
@@ -1879,9 +1925,9 @@ document.addEventListener("click", async e => {
         <span class="dim">— user เดียวกับที่ใช้ต่อ SSH อยู่แล้ว ไม่ต้องกรอก</span>
       </div>
       <div class="field">
-        <label>รหัสผ่าน sudo</label>
+        <label>sudo password</label>
         <input id="setup-pw" type="password" autocomplete="current-password"
-               placeholder="ใช้ครั้งเดียว ไม่ถูกเก็บ" style="min-width:240px">
+               placeholder="used once, never stored" style="min-width:240px">
         <button data-nact="setup-go" data-node="${esc(node)}"
                 data-perms="${perms ? "1" : ""}">${perms ? "แก้สิทธิ์" : "ตั้งค่า"}</button>
         <button data-nact="close-output" data-node="${esc(node)}">Dismiss</button>
@@ -1969,7 +2015,7 @@ document.addEventListener("click", async e => {
     if (command === "remove" && !btn.dataset.confirm) {
       showNodeOutput(node, `จะลบ · ${slug}`, d.output, `
         <button class="danger" data-nact="model:remove" data-node="${esc(node)}"
-                data-slug="${esc(slug)}" data-confirm="1">ยืนยันลบถาวร</button>`);
+                data-slug="${esc(slug)}" data-confirm="1">Delete permanently</button>`);
       return;
     }
     if (command === "doctor" || command === "logs" || d.exit_code !== 0) {
@@ -2693,7 +2739,7 @@ function loginScreen(message = "") {
         <p class="muted" style="margin:6px 0 18px">Local Model Deploy Studio</p>
         <label class="dim" for="tok">Access token</label>
         <input id="tok" type="password" autocomplete="current-password" autofocus
-               placeholder="วาง token ที่ lmds web พิมพ์ออกมา">
+               placeholder="paste the token lmds web printed">
         <div id="tok-err" class="warn-line" style="color:var(--bad);min-height:18px">${esc(message)}</div>
         <button id="tok-go" style="width:100%">Sign in</button>
         <p class="dim" style="margin-top:14px">ลืม token? รันบนเครื่องนั้น: <code>lmds web --status</code></p>
@@ -2777,7 +2823,7 @@ function providerForm(message = "") {
         ${(p.choices || []).map(c => `<option value="${esc(c)}"${c === p.name ? " selected" : ""}>${esc(c)}</option>`).join("")}
       </select>
       <label>model</label>
-      <input id="p-model" value="${esc(p.model || "")}" placeholder="ว่าง = default ของ provider"
+      <input id="p-model" value="${esc(p.model || "")}" placeholder="empty = the provider default"
              list="p-models">
       <datalist id="p-models"></datalist>
       <button id="p-list" title="ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง">List models</button>
@@ -2785,7 +2831,7 @@ function providerForm(message = "") {
     <div class="field" id="p-models-box" hidden></div>
     <div class="field">
       <label>base URL</label>
-      <input id="p-url" value="${esc(p.base_url || "")}" placeholder="จำเป็นเฉพาะ openai-compat">
+      <input id="p-url" value="${esc(p.base_url || "")}" placeholder="required for openai-compat only">
     </div>
     <div class="field">
       <label>API key</label>
@@ -2917,7 +2963,7 @@ function palOpen() {
   const back = document.createElement("div");
   back.className = "pal-back";
   back.innerHTML = `<div class="pal" role="dialog" aria-label="Command palette">
-      <input id="pal-q" placeholder="ค้นหาโมเดล เครื่อง หรือคำสั่ง…" autocomplete="off">
+      <input id="pal-q" placeholder="Search models, machines or commands…" autocomplete="off">
       <div class="pal-list" id="pal-list" role="listbox"></div>
       <div class="pal-foot"><span>↑↓ เลือก</span><span>Enter ไป</span><span>Esc ปิด</span></div>
     </div>`;
@@ -2995,6 +3041,76 @@ document.getElementById("theme").onclick = () => {
   window.applyTheme();
 };
 window.applyTheme();          // ตั้งข้อความบนปุ่มให้ตรงกับธีมที่ใช้อยู่ตอนโหลดหน้า
+
+// ── แก้ controller script โดยมี LLM ช่วยเสนอ ────────────────────────────────
+// สามขั้นแยกจากกันโดยตั้งใจ: เสนอ (ไม่เขียน) → คนอ่าน diff → กด Apply (เขียน)
+// รวมสามขั้นเป็นขั้นเดียวเมื่อไหร่ ก็คือให้ LLM เขียนไฟล์บนเครื่องที่มี GPU ได้เอง
+function renderDiff(text) {
+  return text.split("\n").map(line => {
+    const cls = line.startsWith("+++") || line.startsWith("---") ? "hunk"
+      : line.startsWith("@@") ? "hunk"
+      : line.startsWith("+") ? "add"
+      : line.startsWith("-") ? "del" : "";
+    return cls ? `<span class="${cls}">${esc(line)}</span>` : esc(line);
+  }).join("\n");
+}
+
+async function proposeScriptEdit(slug, node, box, question) {
+  box.hidden = false;
+  box.innerHTML = `<span class="dim">กำลังอ่าน controller แล้วให้ผู้ช่วยดู…</span>`;
+  let plan;
+  try {
+    const response = await api(`/api/models/${encodeURIComponent(slug)}/script/propose`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ request: question, node }),
+    });
+    plan = await response.json();
+    if (!response.ok) throw new Error(plan.detail || `HTTP ${response.status}`);
+  } catch (err) {
+    box.innerHTML = `<div class="warn-note">${esc(err.message || err)}</div>`;
+    return;
+  }
+
+  if (plan.kind === "option") {
+    // ทางที่ดีกว่าเสมอ: bundle ไม่ต่างจากที่ LMDS สร้าง และไม่หายตอน generate ใหม่
+    box.innerHTML = `<p class="why">${esc(plan.explanation)}</p>
+      <pre>${esc(plan.command)}</pre>
+      <span class="dim">ทำได้ด้วย option ที่มีอยู่แล้ว — ไม่ต้องแก้ไฟล์
+        · สั่งได้จากปุ่มด้านบน หรือรันคำสั่งนี้บนเครื่องนั้น</span>`;
+    return;
+  }
+  if (plan.kind !== "edit") {
+    box.innerHTML = `<div class="warn-note">${esc(plan.explanation || "ทำให้ไม่ได้")}</div>`;
+    return;
+  }
+
+  box.innerHTML = `<p class="why">${esc(plan.explanation)}</p>
+    <pre>${renderDiff(plan.diff)}</pre>
+    <div class="field">
+      <button class="script-apply">Apply</button>
+      <button class="script-cancel">Cancel</button>
+      <span class="dim">สำรองไฟล์เดิมไว้ให้อัตโนมัติ และตรวจ bash -n ก่อนเขียน</span>
+    </div>`;
+  box.querySelector(".script-cancel").onclick = () => { box.hidden = true; box.innerHTML = ""; };
+  box.querySelector(".script-apply").onclick = async () => {
+    box.innerHTML = `<span class="dim">กำลังเขียน…</span>`;
+    try {
+      const response = await api(`/api/models/${encodeURIComponent(slug)}/script/apply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ edits: plan.edits, node }),
+      });
+      const done = await response.json();
+      if (!response.ok) throw new Error(done.detail || `HTTP ${response.status}`);
+      box.innerHTML = `<p class="why">เขียนแล้ว: <code>${esc(done.path)}</code></p>
+        <span class="dim">ไฟล์เดิมอยู่ที่ <code>${esc(done.backup)}</code>
+          · ต้อง restart โมเดลถึงจะมีผล</span>`;
+    } catch (err) {
+      box.innerHTML = `<div class="warn-note">${esc(err.message || err)}</div>`;
+    }
+  };
+}
 
 // ── ผู้ช่วย ─────────────────────────────────────────────────────────────────
 // ประวัติอยู่ใน sessionStorage เท่านั้น — ปิดแท็บแล้วหาย ไม่มีอะไรขึ้น server
@@ -3159,7 +3275,7 @@ boot().then(chatBoot).catch(chatBoot);
   </div>
   <div id="chat-log" class="chat-log"></div>
   <form id="chat-form" class="chat-form">
-    <textarea id="chat-text" rows="2" placeholder="ถามเรื่องเครื่องและโมเดลในระบบนี้ได้เลย…"></textarea>
+    <textarea id="chat-text" rows="2" placeholder="Ask about the machines and models here…"></textarea>
     <button type="submit" id="chat-send">Send</button>
   </form>
   <p class="chat-foot dim">

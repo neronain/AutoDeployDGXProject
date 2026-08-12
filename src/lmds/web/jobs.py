@@ -8,6 +8,7 @@ HTTP request เดียวรอไม่ไหว และผู้ใช้
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 import uuid
@@ -130,6 +131,13 @@ def controller_env(options: dict | None) -> dict:
         env["SERVED_MODEL_NAME"] = str(options["served_name"])
     if options.get("served_name"):
         env["SERVED_MODEL_NAME"] = str(options["served_name"])
+    # ชื่อ parser ของ vLLM — controller เปิด/ปิดจาก env ตัวนี้ ค่าว่างคือปิด
+    # ซึ่งเป็นค่าที่ต้องส่งได้จริง (เอา parser ที่ใส่ผิดออก) จึงเช็ก `is not None`
+    # ไม่ใช่ truthy เหมือนตัวอื่น
+    if options.get("tool_parser") is not None:
+        env["TOOL_CALL_PARSER"] = str(options["tool_parser"])
+    if options.get("reasoning_parser") is not None:
+        env["REASONING_PARSER"] = str(options["reasoning_parser"])
     if options.get("image"):
         # controller อ่านคนละชื่อตาม engine — ตั้งทั้งคู่ ตัวที่เกินมาไม่มีผล
         env["VLLM_IMAGE"] = env["LLAMACPP_IMAGE"] = str(options["image"])
@@ -143,6 +151,9 @@ OPTION_RANGES = {
     "slots": (1, 1024, int),
     "gpu_util": (0.3, 0.98, float),
 }
+
+
+_PARSER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
 def clean_options(options: dict | None) -> dict:
@@ -163,6 +174,17 @@ def clean_options(options: dict | None) -> dict:
         if not low <= value <= high:
             raise ValueError(f"{key} ต้องอยู่ระหว่าง {low} ถึง {high}")
         cleaned[key] = value
+    # ชื่อ parser ไปอยู่ในคำสั่งที่รันข้ามเครื่อง จำกัดชุดตัวอักษรไว้ให้แคบที่สุดที่ยัง
+    # ครอบชื่อจริงทั้งหมด (qwen3_coder, llama3_json, deepseek_r1, hermes, …)
+    # ค่าว่างผ่านได้ เพราะมันแปลว่า "ปิด" ซึ่งเป็นสิ่งที่ต้องสั่งได้
+    for key in ("tool_parser", "reasoning_parser"):
+        if key not in options:
+            continue
+        value = str(options[key] or "")
+        if value and not _PARSER_NAME.fullmatch(value):
+            raise ValueError(f"{key} ต้องเป็นชื่อ parser (a-z, 0-9, _ และ -)")
+        cleaned[key] = value
+
     if options.get("bind") in ("0.0.0.0", "127.0.0.1"):
         cleaned["bind"] = options["bind"]
     elif options.get("bind"):
