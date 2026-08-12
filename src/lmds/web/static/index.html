@@ -3158,11 +3158,24 @@ function chatStripThinking(text) {
 // system prompt สั่งห้ามไว้แล้ว แต่ห้ามแล้วไม่ฟังคือเรื่องปกติของโมเดล · กันที่หน้าจอ
 // อีกชั้นจะได้ไม่ต้องไล่แก้ทีละเจ้าที่มี syntax ของตัวเอง
 // ตัวปิดที่ยังมาไม่ถึงก็ตัด (`|$`) — ระหว่างสตรีมจะได้ไม่โผล่มาให้เห็นครึ่งบล็อก
-const CHAT_TOOL_BLOCK =
-  /<(?:[a-z0-9_.-]+:)?(?:tool_call|tool_use|function_calls?|invoke|antml)\b[\s\S]*?(?:<\/(?:[a-z0-9_.-]+:)?(?:tool_call|tool_use|function_calls?|invoke|antml)>|$)/gi;
+const CHAT_TOOL_NAMES = "tool_call|tool_use|function_calls?|invoke|antml|parameter";
+const CHAT_TOOL_BLOCK = new RegExp(
+  `<(?:[a-z0-9_.-]+:)?(?:${CHAT_TOOL_NAMES})\\b[\\s\\S]*?` +
+  `(?:</(?:[a-z0-9_.-]+:)?(?:${CHAT_TOOL_NAMES})>|$)`, "gi");
+// บล็อกพวกนี้ซ้อนกัน (tool_call ห่อ invoke ห่อ parameter) · ตัวจับแบบ non-greedy จะไป
+// จบที่ตัวปิดชั้นในก่อน แล้วเหลือ `</minimax:tool_call>` โดด ๆ ค้างหน้าจอ — กวาดซ้ำ
+// จนไม่มีอะไรเปลี่ยน แล้วเก็บแท็กกำพร้าที่เหลือทิ้งอีกที
+const CHAT_TOOL_ORPHAN = new RegExp(
+  `</?(?:[a-z0-9_.-]+:)?(?:${CHAT_TOOL_NAMES})\\b[^>]*>`, "gi");
 
 function chatStripToolCalls(text) {
-  return String(text).replace(CHAT_TOOL_BLOCK, "").trim();
+  let out = String(text);
+  for (let i = 0; i < 5; i++) {
+    const next = out.replace(CHAT_TOOL_BLOCK, "");
+    if (next === out) break;
+    out = next;
+  }
+  return out.replace(CHAT_TOOL_ORPHAN, "").trim();
 }
 
 function chatRender(text) {
