@@ -114,6 +114,69 @@ def _check_image(profile: dict, server: ServerInfo) -> list[Finding]:
     return [Finding("runtime-image", Status.OK, image)]
 
 
+def _model_type(profile: dict, slug: str) -> str:
+    """`model_type` จาก config.json ของ checkpoint ที่โหลดมาแล้ว
+
+    อ่านจากไฟล์ในเครื่อง ไม่ถาม Hub — ตอน doctor เราสนใจว่าของที่อยู่บนดิสก์ตรงนี้
+    รันได้ไหม ไม่ใช่ว่าของบน Hub เป็นยังไง
+    """
+    import json
+
+    directory, _ = _weight_paths(profile, slug)
+    config = directory / "config.json"
+    if not config.is_file():
+        return ""
+    try:
+        return str(json.loads(config.read_text(encoding="utf-8")).get("model_type") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+# โมเดลที่ออกใหม่กว่ารันไทม์เป็นเรื่องปกติ ไม่ใช่ความผิดของใคร — แต่มันจบด้วย
+# container ที่ตายเงียบ ๆ หลังโหลด weight มาแล้วหลายสิบกิกะ ซึ่งแพงเกินกว่าจะ
+# ปล่อยให้รู้ตอนนั้น
+_ARCH_PROBE = (
+    "import sys\n"
+    "from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES\n"
+    "import transformers\n"
+    "print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformers.__version__)\n"
+)
+
+
+def _check_architecture(profile: dict, server: ServerInfo, slug: str) -> list[Finding]:
+    """image ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม"""
+    image = (profile.get("runtime") or {}).get("image") or ""
+    model_type = _model_type(profile, slug)
+    if server.mode == "native" or not image or not model_type or shutil.which("docker") is None:
+        return []
+    # image ที่ยังไม่ได้ pull — _check_image บอกไปแล้ว ไม่ต้องดึง 20 GB มาเพื่อถาม
+    if _run(["docker", "image", "inspect", image])[0] != 0:
+        return []
+
+    code, out = _run(
+        ["docker", "run", "--rm", "--entrypoint", "python3", image, "-c", _ARCH_PROBE, model_type],
+        timeout=120,
+    )
+    if code != 0 or not out.strip():
+        # ถามไม่ได้ ไม่ได้แปลว่าใช้ไม่ได้ — เงียบดีกว่าเตือนผิด
+        return []
+
+    verdict, _, version = out.strip().split()[0], None, (out.strip().split() + [""])[1]
+    if verdict == "KNOWN":
+        return [Finding("architecture", Status.OK, f"{model_type} (transformers {version})")]
+    return [Finding(
+        "architecture", Status.FAIL,
+        f"image นี้ไม่รู้จักสถาปัตยกรรม '{model_type}' (transformers {version}) — "
+        f"start แล้ว container จะตายทันทีที่โหลด config",
+        "โมเดลใหม่กว่ารันไทม์ · ลอง image ที่ transformers ใหม่กว่า: "
+        f"VLLM_IMAGE=<image ใหม่กว่า> lmds start {slug}"
+        "  ·  เช็คก่อนได้ว่าตัวไหนรู้จัก: "
+        "docker run --rm --entrypoint python3 <image> -c "
+        "\"from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m; "
+        f"print('{model_type}' in m)\"",
+    )]
+
+
 def _check_hf_token(profile: dict) -> list[Finding]:
     if not (profile.get("model") or {}).get("gated"):
         return []
@@ -340,6 +403,7 @@ def diagnose(slug: str) -> Diagnosis:
         result.findings.extend(_check_disk(profile, slug))
         result.findings.extend(_check_docker(profile, server))
         result.findings.extend(_check_image(profile, server))
+        result.findings.extend(_check_architecture(profile, server, slug))
 
     result.findings.extend(_check_port(server))
     result.findings.extend(_check_server(server))
