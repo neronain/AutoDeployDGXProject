@@ -229,6 +229,50 @@ def _lib_knows(lib: Path, architecture: str) -> bool:
     return False
 
 
+
+# llama.cpp แปลง JSON schema ของ tool เป็น GBNF · `maxLength`/`maxItems` ค่าสูงถูก
+# ขยายเป็น repetition ตรง ๆ แล้วชน MAX_REPETITION_THRESHOLD (2000) จนโยน exception
+#
+#   parse: error parsing grammar: number of repetitions exceeds sane defaults
+#   srv send_error: Failed to initialize samplers: failed to parse grammar
+#
+# upstream แก้ที่ cd0fa6051 (2026-08-05) — เปลี่ยนจาก throw เป็นลด max เหลือ unbounded
+# ข้อความ error เดิมยังอยู่ในไบนารีทั้งสองรุ่น (min_times ยัง throw) จึงดูจากสตริงไม่ได้
+# ต้องดูที่ commit
+_GRAMMAR_FIX = "cd0fa6051"
+
+
+def _check_llamacpp_grammar(profile: dict, slug: str) -> list[Finding]:
+    """llama.cpp ตัวนี้รับ schema ที่ agent client ส่งมาไหว หรือจะตายตอนเรียก tool
+
+    เคสจริง 2026-08-13 — gpt-oss-120b บน spark-worker เสิร์ฟได้ปกติ ตอบ chat ได้
+    เรียก tool ด้วย schema ง่าย ๆ ก็ได้ แต่พอ Claude Code ส่งชุด tool จริงมาก็ 400
+    ทันที · โมเดลไม่ผิด ไฟล์ไม่ขาด — llama.cpp เก่ากว่าที่ client ต้องการเท่านั้น
+
+    อาการนี้จับตอน deploy ไม่ได้เลยถ้าไม่ตรวจ เพราะทุกอย่างขึ้นปกติหมด
+    """
+    if (profile.get("runtime") or {}).get("engine") != "llamacpp":
+        return []
+    pinned = (profile.get("target") or {}).get("llamacpp_dir")
+    root = Path(pinned) if pinned else Path.home() / "src" / "llama.cpp"
+    if not (root / ".git").exists():
+        return []  # ไม่ใช่ checkout (ติดตั้งจาก tarball/แพ็กเกจ) — ตรวจ ancestry ไม่ได้
+
+    code, _ = _run(["git", "-C", str(root), "merge-base", "--is-ancestor",
+                    _GRAMMAR_FIX, "HEAD"], timeout=20)
+    if code == 0:
+        return [Finding("grammar", Status.OK, f"llama.cpp มี {_GRAMMAR_FIX} — tool schema ใหญ่ผ่าน")]
+    if code != 1:
+        return []  # ไม่รู้จัก commit นั้น (checkout ตื้น/คนละ remote) — ไม่ตัดสิน
+
+    return [Finding(
+        "grammar", Status.WARN,
+        f"llama.cpp ที่ {root} ยังไม่มี {_GRAMMAR_FIX} — tool ที่มี maxLength/maxItems "
+        "เกิน 2000 จะทำให้ตอบ 400 'failed to parse grammar' (Claude Code ส่งแบบนั้นมา) · "
+        f"แก้: cd {root} && git pull && cmake --build build -j",
+    )]
+
+
 def _check_architecture(profile: dict, server: ServerInfo, slug: str) -> list[Finding]:
     """รันไทม์ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม"""
     if (profile.get("runtime") or {}).get("engine") == "llamacpp":
@@ -492,6 +536,7 @@ def diagnose(slug: str) -> Diagnosis:
         result.findings.extend(_check_docker(profile, server))
         result.findings.extend(_check_image(profile, server))
         result.findings.extend(_check_architecture(profile, server, slug))
+        result.findings.extend(_check_llamacpp_grammar(profile, slug))
 
     result.findings.extend(_check_port(server))
     result.findings.extend(_check_server(server))

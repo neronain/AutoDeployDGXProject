@@ -175,6 +175,65 @@ resize จนกลายเป็นว่างเปล่า แล้วโ
 
 ---
 
+## โมเดลขึ้นครบทุกอย่าง แต่ agent client เรียก tool ไม่ได้
+
+**อาการ** — `lmds test-text` ผ่าน, chat ได้, streaming ได้, เรียก tool ด้วย schema ง่าย ๆ
+ก็ได้ แต่พอ Claude Code ต่อเข้ามาก็ 400 ทันที
+
+```
+API Error: 400 Failed to initialize samplers: failed to parse grammar
+```
+
+**เคสจริง (2026-08-13)** — `kldzj-gpt-oss-120b-heretic-gguf` บน spark-worker · ไฟล์ครบ
+ทุกอย่างจาก repo ไม่ได้ขาดอะไร โมเดลก็ไม่ผิด
+
+ใน server log บอกต้นเหตุไว้ตรง ๆ:
+
+```
+parse: error parsing grammar: number of repetitions exceeds sane defaults
+```
+
+llama.cpp แปลง JSON schema ของ tool เป็น GBNF · `maxLength` / `maxItems` ค่าสูงถูกขยาย
+เป็น repetition ตรง ๆ แล้วชน `MAX_REPETITION_THRESHOLD` (2000) จนโยน exception —
+ซึ่ง agent client อย่าง Claude Code ส่ง schema แบบนั้นมาเป็นปกติ
+
+ที่หลอกคือ **bound ตัวเลขไม่ใช่ปัญหา** llama.cpp จัดการ `maximum: 9007199254740991`
+ได้สบาย ตัวที่พังคือความยาว string กับจำนวน item เท่านั้น:
+
+| schema | ก่อนแก้ |
+|---|---|
+| `integer maximum: 9007199254740991` | ผ่าน |
+| `string maxLength: 100000` | **ตาย** |
+| `array maxItems: 100000` | **ตาย** |
+
+**ตอนนี้** — `lmds doctor` ตรวจว่า llama.cpp ที่โมเดลนั้น pin ไว้มี `cd0fa6051`
+(*grammar: degrade max repetition >= 2000 to unbounded*, upstream 2026-08-05) หรือยัง
+ไม่มีก็ WARN พร้อมบอกวิธี build ใหม่
+
+ตรวจจากข้อความ error ในไบนารีไม่ได้ เพราะรุ่นที่แก้แล้วก็ยังมีสตริงนั้นอยู่ (`min_times`
+ยัง throw) จึงต้องดูที่ commit — และเช็คที่ **build ที่ pin ไว้ให้โมเดลนั้น** ไม่ใช่ของกลาง
+
+**วิธีแก้** — build llama.cpp แยกให้โมเดลนั้นแล้วชี้ `LLAMA_CPP_DIR` ไปหา ไม่ต้องอัปเกรด
+ของกลางที่โมเดลอื่นบนเครื่องเดียวกันพิสูจน์แล้วว่าใช้ได้
+
+```bash
+cd ~/src/llama.cpp && git fetch origin
+git worktree add --detach ~/src/llama.cpp-<slug> origin/master
+cd ~/src/llama.cpp-<slug>
+cmake -B build -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DGGML_NATIVE=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=121a-real
+cmake --build build -j "$(nproc)" --target llama-server
+```
+
+แล้วตั้ง `LLAMA_CPP_DIR` ใน controller ให้ชี้มาที่นั่น (bundle ที่สร้างใหม่ตั้งให้เองผ่าน
+`plan.runtime.native_dir`)
+
+**บทเรียนกว้างกว่านั้น** — smoke test ที่ผ่านไม่ได้แปลว่า client จริงจะใช้ได้ · schema ที่
+เราทดสอบเองมักง่ายกว่าที่ client ส่งมาหลายเท่า เจอครั้งแรกตอนผู้ใช้ต่อเข้ามาจริงเสมอ
+
+---
+
 ## ตรวจเองก่อน deploy
 
 ```bash
