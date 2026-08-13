@@ -328,7 +328,7 @@ download() {
   local dl_args=(
     run --rm -i --network host
     --user "$(id -u):$(id -g)"
-    -e HOME=/tmp -e HF_HOME=/cache -e PYTHONUNBUFFERED=1
+    -e HOME=/tmp -e USER=lmds -e HF_HOME=/cache -e PYTHONUNBUFFERED=1
     -e "MODEL_ID=${MODEL_ID}" -e "MODEL_REVISION=${MODEL_REVISION}"
     -v "${HF_HOME}:/cache"
   )

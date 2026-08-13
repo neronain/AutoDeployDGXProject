@@ -823,3 +823,22 @@ def test_the_check_does_not_block_when_it_cannot_be_sure(isolated_config, tmp_pa
     assert "[[ -n \"$model_type\" ]] || return 0" in body
     # และ exit 1 ต้องอยู่ใต้ UNKNOWN เท่านั้น
     assert body.index("UNKNOWN*)") < body.index("exit 1")
+
+def test_the_container_is_told_what_to_call_itself(isolated_config, tmp_path):
+    """image บางตัวไม่มี uid ของเราใน /etc/passwd
+
+    controller รันด้วย --user $(id -u) เพื่อไม่ให้ไฟล์ที่เขียนออกมาเป็นของ root
+    แต่ vllm/vllm-openai:latest ไม่มี uid 1000 และ vLLM เรียก getpass.getuser()
+    ตอนตั้งชื่อ cache แล้วตายด้วย KeyError ก่อนโหลดโมเดลด้วยซ้ำ:
+
+        KeyError: 'getpwuid(): uid not found: 1000'
+
+    getuser() อ่าน env USER ก่อนถึงจะไปดู passwd — env ตัวเดียวจึงพอ โดยไม่ต้อง
+    ถอย --user ออก ซึ่งจะทำให้ไฟล์กลับไปเป็นของ root
+    """
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+
+    assert "-e USER=" in text
+    # ต้องอยู่คู่กับทุกที่ที่รันด้วย --user ไม่ใช่แค่ที่เดียว
+    assert text.count("-e USER=") == text.count("-e HOME=/tmp")

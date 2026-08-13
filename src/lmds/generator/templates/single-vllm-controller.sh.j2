@@ -237,7 +237,7 @@ download() {
     local disable_xet="$1"
     docker run --rm \
       --user "$(id -u):$(id -g)" \
-      -e HOME=/tmp -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
+      -e HOME=/tmp -e USER=lmds -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
       -e PYTHONUNBUFFERED=1 \
       ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
@@ -457,7 +457,7 @@ start() {
     run -d --name "$CONTAINER_NAME"
     --network host --ipc host --gpus all
     -v "${HF_HOME}:/cache"
-    -e HF_HOME=/cache -e "HF_HUB_CACHE=$(_container_hub_cache)" -e HOME=/tmp
+    -e HF_HOME=/cache -e "HF_HUB_CACHE=$(_container_hub_cache)" -e HOME=/tmp -e USER=lmds
   )
   # รันในฐานะ user เดียวกับที่สั่ง ไม่ใช่ root
   #
