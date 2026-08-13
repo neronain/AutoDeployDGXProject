@@ -62,6 +62,88 @@ def weights_present(server, profile) -> bool:
     return all((directory / name).exists() for name in wanted)
 
 
+
+# engine ที่รู้จัก — ใช้จับว่า process/container ที่ถือ GPU อยู่คือ inference server
+# ไม่ใช่งานอื่น (training, notebook, ตัดต่อวิดีโอ) ซึ่งไม่ควรชวนให้ adopt
+_ENGINE_HINTS = ("sglang", "vllm", "llama-server", "llama_cpp", "ollama",
+                 "text-generation", "tgi", "tensorrt")
+
+
+def foreign_workloads() -> list[dict]:
+    """งานที่ถือ GPU อยู่แต่ LMDS ไม่ได้เป็นคนสร้าง
+
+    เครื่องที่เพิ่งถูกแอดเข้าฟลีตมักมีของรันอยู่ก่อนแล้ว — `lmds ps` เห็นเฉพาะ bundle
+    ของตัวเอง เครื่องจึงดู "ว่าง" ทั้งที่หน่วยความจำเกือบหมด แล้ว fit ก็วางแผน deploy
+    ทับลงไปบนที่ที่ไม่มีจริง
+
+    เคสจริง 2026-08-13 — msi-4 แอดเข้ามาแล้วรายงาน 0 โมเดล ขณะที่ container SGLang
+    (`Jackrong/Qwopus3.6-35B-A3B-Coder`, port 30000) รันมา 32 ชั่วโมงและถือ 96,073 MiB
+
+    รายงานอย่างเดียว ไม่แตะอะไรทั้งนั้น — `lmds adopt <container>` มีอยู่แล้วสำหรับ
+    คนที่ตัดสินใจว่าจะเอาเข้ามาอยู่ใต้การดูแล
+    """
+    from lmds.hardware.profiler import compute_apps
+
+    managed = {slug for slug, _ in _running_slugs()}
+    found: list[dict] = []
+
+    for pid, name, mib in compute_apps():
+        if not any(hint in name.lower() for hint in _ENGINE_HINTS):
+            continue
+        found.append({"kind": "process", "pid": pid, "name": name, "vram_mib": mib,
+                      "detail": _cmdline(pid)})
+
+    for container, image, status in _docker_containers():
+        haystack = f"{container} {image}".lower()
+        if not any(hint in haystack for hint in _ENGINE_HINTS):
+            continue
+        if container in managed or any(container.endswith(slug) for slug in managed):
+            continue  # ของเราเอง
+        found.append({"kind": "container", "name": container, "image": image,
+                      "detail": status})
+    return found
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return " ".join(raw.decode("utf-8", "replace").split("\x00")).strip()[:200]
+
+
+def _docker_containers() -> list[tuple[str, str, str]]:
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if done.returncode != 0:
+        return []
+    rows = []
+    for line in done.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            rows.append((parts[0], parts[1], parts[2]))
+    return rows
+
+
+def _running_slugs() -> list[tuple[str, str]]:
+    """slug ของ bundle ที่ LMDS ดูแลอยู่ — ใช้คัดของตัวเองออกจากรายการ 'ของคนอื่น'"""
+    from lmds.fleet import bundle_roots
+
+    slugs = []
+    for root in bundle_roots():
+        try:
+            slugs.extend((d.name, str(d)) for d in root.iterdir() if d.is_dir())
+        except OSError:
+            continue
+    return slugs
+
+
 def source_commit() -> str:
     """commit ของซอร์สที่ *ถูก import อยู่จริง* — ว่างเมื่อไม่ได้ติดตั้งจาก git checkout
 
@@ -180,6 +262,8 @@ def host_payload() -> dict:
     fabric = detect_fabric()
     return {
         "lmds_version": lmds.__version__,
+        # ของที่ถือ GPU อยู่แต่ไม่ได้มาจาก LMDS — เครื่องที่เพิ่งแอดเข้ามามักมี
+        "foreign": foreign_workloads(),
         # commit ของโค้ดที่เครื่องนี้รันอยู่ — hub เอาไปเทียบว่า node ไหนตามหลังแล้วต้องอัปเดต
         "lmds_commit": source_commit(),
         "hostname": summary.hostname,

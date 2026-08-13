@@ -74,6 +74,34 @@ def _run(cmd: list[str], timeout: int = 15) -> str | None:
     return proc.stdout
 
 
+
+def compute_apps() -> list[tuple[int, str, int]]:
+    """process ที่ถือหน่วยความจำ GPU อยู่ — (pid, ชื่อ, MiB)
+
+    บนเครื่อง unified memory (GB10/DGX Spark) `--query-gpu=memory.used` คืน `[N/A]`
+    ทั้ง memory.total ด้วย เพราะไม่มี VRAM แยกให้รายงาน แต่ `--query-compute-apps`
+    ยังบอกได้ว่าใครถืออะไรไว้เท่าไร
+
+    เคสจริง 2026-08-13 — msi-4 เพิ่งถูกแอดเข้าฟลีต รายงานว่า "0 โมเดล" และ
+    vram_used_gb เป็น None ทั้งที่ container SGLang รันมา 32 ชั่วโมงและถือ GPU ไว้
+    96,073 MiB · เครื่องที่เหลือจริงไม่ถึง 20 GB จึงดูเหมือนว่างทั้ง 121 GB
+    """
+    out = _run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+                "--format=csv,noheader,nounits"])
+    if not out:
+        return []
+    apps: list[tuple[int, str, int]] = []
+    for line in out.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            apps.append((int(parts[0]), parts[1], int(float(parts[2]))))
+        except ValueError:
+            continue  # [N/A] ในคอลัมน์ไหนก็ตาม = แถวนั้นใช้ไม่ได้ ไม่ใช่ศูนย์
+    return apps
+
+
 def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
     notes: list[str] = []
     if shutil.which("nvidia-smi") is None:
@@ -115,6 +143,22 @@ def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
             clock_memory_mhz=_int(11), clock_sm_mhz=_int(12),
             pcie_gen=_int(13), pcie_width=_int(14),
         ))
+
+    # เครื่อง unified memory ไม่รายงาน memory.used — รวมจาก process ที่ถืออยู่แทน
+    # ปล่อยให้เป็น None แปลว่า "ว่างทั้งเครื่อง" ในสายตาของ fit ซึ่งไม่จริงและอันตราย
+    if gpus and all(gpu.vram_used_mib is None for gpu in gpus):
+        apps = compute_apps()
+        if apps:
+            total = sum(mib for _, _, mib in apps)
+            # การ์ดเดียวคือเคสที่รู้แน่ว่าของทั้งหมดอยู่ใบไหน หลายใบแล้วเดาไม่ได้ว่า
+            # process ไหนอยู่ใบไหน จึงบอกเป็น note แทนที่จะหารเฉลี่ยมั่ว ๆ
+            if len(gpus) == 1:
+                gpus[0].vram_used_mib = total
+            else:
+                notes.append(
+                    f"มี process ถือ GPU อยู่รวม {total:,} MiB แต่มีการ์ด {len(gpus)} ใบ "
+                    "— แยกไม่ได้ว่าใบไหนเท่าไร"
+                )
 
     for gpu in gpus:
         if gpu.known is None:
