@@ -337,9 +337,32 @@ ensure_image() {
   docker pull "$image" || die "ดึง image ${image} ไม่สำเร็จ"
 }
 
+check_port_free() {
+  # ไม่เลือก port ให้ — ผู้ใช้เป็นคนกำหนด (เครื่องเดียวรัน llama.cpp ได้หลายตัว)
+  # แต่ห้าม start ทับของคนอื่นเด็ดขาด เพราะ wait_health ยิง /health ที่ port นี้
+  # แล้ว "โมเดลตัวที่ยึด port อยู่" จะตอบ 200 ให้ → รายงานว่า start สำเร็จ
+  # ทั้งที่ตัวเราไม่ได้ขึ้นเลย แล้วทุกคนก็คุยกับโมเดลผิดตัวโดยไม่รู้
+  #
+  # เคสจริง 2026-08-13 บน dgx-veerasiam: gemma กับ qwen ใช้ default port เดียวกัน
+  local holder
+  if command -v ss >/dev/null 2>&1; then
+    holder="$(ss -ltnp 2>/dev/null | awk -v p=":${API_PORT}\$" '"'"'$4 ~ p {print $NF; exit}'"'"')"
+  elif command -v lsof >/dev/null 2>&1; then
+    holder="$(lsof -nP -iTCP:"${API_PORT}" -sTCP:LISTEN -Fc 2>/dev/null | sed -n '"'"'s/^c//p'"'"' | head -1)"
+  else
+    return 0  # ไม่มีเครื่องมือให้ตรวจ — ปล่อยผ่าน ดีกว่าบล็อกการ start ด้วยเหตุผลผิด ๆ
+  fi
+  [[ -z "$holder" ]] && return 0
+  die "port ${API_PORT} ถูกใช้อยู่แล้วโดย ${holder}
+     เครื่องนี้รัน llama.cpp ได้หลายตัว แต่ต้องคนละ port
+     เลือก port อื่น:  $0 start --port <PORT>
+     หรือดูว่าใครถืออยู่: ss -ltnp | grep :${API_PORT}"
+}
+
 start() {
   verify_files
   mkdir -p "$RUN_DIR"
+  check_port_free
 
   if [[ "$RUNTIME_MODE" == "native" ]]; then
     [[ -x "$LLAMA_SERVER" ]] || die "ยังไม่มี llama-server — รัน: $0 prepare-runtime"

@@ -33,7 +33,7 @@ RAM_OFFLOAD_FRAC = 0.70  # llama.cpp offload: ใช้ RAM ได้ไม่�
 MIN_PRACTICAL_CONTEXT = 4096
 
 CONTEXT_STEPS = [4096, 8192, 16384, 32768, 65536, 131072, 262144]
-DEFAULT_CONTEXT_CAP = 65536  # ค่าเริ่มต้นมาตรฐาน v3.0.0
+# ไม่มี cap แบบตั้งเลขเอาเองอีกแล้ว — ดู _recommend_context()
 CLIENT_OUTPUT_DEFAULT = 8192
 TEMPLATE_OVERHEAD_TOKENS = 2048  # chat template + tool schema + system prompt
 
@@ -162,14 +162,23 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1) -> Fi
         )
 
     fit.max_safe_context = safe
-    fit.recommended_context = min(safe, DEFAULT_CONTEXT_CAP)
-    if safe > fit.recommended_context:
-        # การ cap ที่ DEFAULT_CONTEXT_CAP เป็นค่าเริ่มต้นมาตรฐาน ไม่ใช่ขีดจำกัดของเครื่อง —
-        # ต้องบอกให้เห็น ไม่งั้นผู้ใช้เสีย context ไปฟรี ๆ (เคสจริง: เสนอ 65,536 แต่รันได้ 262,144)
-        fit.notes.append(
-            f"หน่วยความจำรองรับได้ถึง {safe:,} tokens — ค่าที่แนะนำ ({fit.recommended_context:,}) "
-            f"เป็นค่าเริ่มต้นมาตรฐาน ปรับขึ้นได้ด้วย --context"
-        )
+    # แนะนำเท่าที่คำนวณได้จริง ไม่ตัดด้วยเลขที่ตั้งเอาเอง
+    #
+    # เดิมมี DEFAULT_CONTEXT_CAP = 65,536 คร่อมอยู่ตรงนี้ ผลคือทุก deploy ถูกตัด
+    # ลงมาที่ 65,536 ไม่ว่าเครื่องจะไหวแค่ไหน แล้วโยนภาระให้ผู้ใช้ไปหา --context เอง
+    # ซึ่งไม่มีใครทำเพราะไม่มีใครรู้ว่าเสียอะไรไป โค้ดเดิมถึงกับต้องเขียน note
+    # เตือนตัวเองว่า "เสนอ 65,536 แต่รันได้ 262,144" — นั่นคือสัญญาณว่าค่า default ผิด
+    # ไม่ใช่ว่า note ยังไม่ดีพอ
+    #
+    # safe ไม่ใช่การเดา: มันคือ _largest_step(min(หน่วยความจำที่เหลือ, native context))
+    # หารด้วย concurrency มาแล้ว จึงเป็นค่าที่ทั้งเครื่องและตัวโมเดลรับไหวโดยนิยาม
+    # (เคสจริง 2026-08-13: qwen3-coder-next-gguf บน spark-worker ตั้งมือที่ 131,072
+    # แล้วใช้งานได้ ทั้งที่ analyser เคยเสนอ 65,536)
+    fit.recommended_context = safe
+    fit.notes.append(
+        f"context {safe:,} — ค่าสูงสุดที่หน่วยความจำและตัวโมเดลรับไหว "
+        f"(ลดได้ด้วย --context ถ้าต้องการเผื่อ concurrency มากกว่านี้)"
+    )
     if native and max_context_raw < native:
         fit.verdict = Verdict.FITS_REDUCED_CONTEXT
         fit.notes.append(f"native context {native:,} แต่หน่วยความจำพอที่ ~{int(max_context_raw):,}")

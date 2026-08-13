@@ -165,11 +165,13 @@ def test_no_gpu_returns_none():
     assert from_hardware_report(HardwareReport(arch="arm64")) is None
 
 
-def test_context_cap_is_reported_not_hidden():
+def test_recommendation_is_the_computed_maximum():
     """เคสจริง Qwen3-Coder-30B บน DGX Spark (2026-08-02): แผนเสนอ 65,536 แต่รันได้จริง 262,144
 
-    สูตรคำนวณถูกอยู่แล้ว (max_safe_context = 262,144) — ที่ผิดคือค่านั้นไม่เคยถูกแสดง
-    ผู้ใช้จึงเสีย context ไป 4 เท่าโดยไม่รู้ตัว
+    รอบแรกแก้ด้วยการเพิ่ม note บอกว่าเครื่องรับได้มากกว่า ซึ่งไม่พอ เพราะไม่มีใคร
+    ไปตาม --context เอง (ยืนยันอีกครั้ง 2026-08-13 กับ qwen3-coder-next-gguf บน
+    spark-worker ที่ตั้งมือเป็น 131,072 แล้วใช้ได้) ค่าที่แนะนำจึงต้องเป็นค่าสูงสุด
+    ที่คำนวณได้เลย ไม่ใช่ตัดด้วยเลขที่ตั้งเอาเอง
     """
     from lmds.fit.analyzer import GIB
     from lmds.inspector.report import ArtifactType, KvDims, ModelReport
@@ -186,8 +188,8 @@ def test_context_cap_is_reported_not_hidden():
     fit = analyze(report, PRESETS["dgx-spark-single"])
 
     assert fit.max_safe_context == 262144, "สูตรเดิมคำนวณถูก — อย่าไปแก้สูตร"
-    assert fit.recommended_context == 65536  # ค่าเริ่มต้นมาตรฐาน v3.0.0
-    assert any("262,144" in n for n in fit.notes), "ต้องบอกผู้ใช้ว่าเครื่องรับได้มากกว่านี้"
+    assert fit.recommended_context == fit.max_safe_context, "ห้ามมี cap ที่ตั้งเลขเอาเองคร่อมอยู่"
+    assert any("262,144" in n for n in fit.notes), "ต้องบอกว่าเลขนี้มาจากไหน"
 
 
 def test_no_headroom_note_when_cap_not_binding():

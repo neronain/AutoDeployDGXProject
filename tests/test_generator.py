@@ -530,7 +530,12 @@ def test_stop_reports_truthfully(tmp_path):
 
 
 def test_readme_surfaces_context_headroom(tmp_path):
-    """คนที่รับ bundle ต่อ (SI → ลูกค้า) ต้องเห็นว่าเครื่องรับ context ได้มากกว่าค่าเริ่มต้น"""
+    """คนที่รับ bundle ต่อ (SI → ลูกค้า) ต้องเห็นว่าเครื่องรับ context ได้มากกว่าที่ตั้งไว้
+
+    ปกติ analyser แนะนำเท่ากับ max_safe อยู่แล้ว ช่องว่างจะเกิดตอนที่ context ถูก
+    ลดลงมาโดยตั้งใจ — เผื่อ concurrency หรือผู้ใช้สั่ง --context เอง กรณีนั้นแหละ
+    ที่คนรับ bundle ต่อต้องเห็นว่ายังมีที่เหลือ
+    """
     from lmds.fit.analyzer import GIB
     from lmds.inspector.report import KvDims
 
@@ -539,7 +544,11 @@ def test_readme_surfaces_context_headroom(tmp_path):
         context_length=262144,
         kv_dims=KvDims(layers=48, kv_heads=4, head_dim=128),
     )
-    bundle, plan, fit = make_bundle(report, tmp_path=tmp_path)
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None)
+    # ลดลงมาโดยตั้งใจ เหมือนที่ orchestrator ทำเมื่อต้องเผื่อ concurrency
+    plan.serving.context = 65536
+    bundle = render_bundle(plan, report, fit, tmp_path)
     readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
     profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
 

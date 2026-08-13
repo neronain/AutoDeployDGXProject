@@ -276,9 +276,48 @@ def _kv_dims_from_gguf(gguf: GgufInfo) -> KvDims | None:
     embedding = meta.get(f"{arch}.embedding_length")
     if head_dim is None and isinstance(embedding, int) and isinstance(heads, int) and heads:
         head_dim = embedding // heads
+
+    # โมเดล sliding-window (gemma-4, และตัวอื่นที่ใช้ท่าเดียวกัน) เขียน head_count_kv
+    # เป็น "ลิสต์ต่อ layer" ไม่ใช่เลขตัวเดียว เพราะแต่ละ layer ใช้ไม่เท่ากัน โค้ดเดิม
+    # เช็ค isinstance(int) แล้วตกทันที คืน None → analyser ไปเข้าสาขา "ไม่รู้มิติ KV"
+    # ที่ตั้ง context ไว้แค่ 16,384 ทั้งที่โมเดลรองรับ 262,144
+    #
+    # เคสจริง 2026-08-13: gemma-4-31B บน dgx-veerasiam รันมา 16,384 ด้วยเหตุนี้
+    # ทั้งที่หน่วยความจำเหลือพอสำหรับ 262,144 — เสีย context ไป 16 เท่าโดยไม่มีใครรู้
+    if isinstance(kv_heads, list):
+        layers, kv_heads, head_dim = _scaling_layers_only(meta, arch, kv_heads, head_dim)
+
     if all(isinstance(v, int) and v > 0 for v in (layers, kv_heads, head_dim)):
         return KvDims(layers=layers, kv_heads=kv_heads, head_dim=head_dim)
     return None
+
+
+def _scaling_layers_only(
+    meta: dict, arch: str, kv_heads: list, head_dim: int | None
+) -> tuple[int | None, int | None, int | None]:
+    """เก็บเฉพาะ layer ที่ KV โตตาม context.
+
+    layer ที่เป็น sliding-window ใช้ KV คงที่เท่าขนาดหน้าต่าง (gemma-4 = 1024 token)
+    ไม่ว่า context จะยาวแค่ไหน การนับมันรวมไปด้วยทำให้ประเมิน KV เกินจริงหลายเท่า
+    แล้วไปตัด context ทิ้งโดยไม่จำเป็น — จึงนับเฉพาะ layer full-attention
+
+    ที่เหลือคือส่วนคงที่ (gemma-4 ราว 800 MiB) ซึ่งไม่ได้บวกไว้ตรงนี้ เพราะ KvDims
+    คิดเป็น bytes/token ล้วน ๆ ส่วนต่างนี้คงที่และเล็กกว่า reserve ของ preset มาก
+    """
+    pattern = meta.get(f"{arch}.attention.sliding_window_pattern")
+    if isinstance(pattern, list) and len(pattern) == len(kv_heads):
+        # pattern[i] เป็น True = layer นั้น sliding → ตัดออก เหลือแต่ full-attention
+        full = [n for n, sliding in zip(kv_heads, pattern) if not sliding]
+        if full and all(isinstance(n, int) and n > 0 for n in full):
+            # key_length เป็นของ layer full-attention อยู่แล้ว (SWA ใช้ key_length_swa)
+            return len(full), max(full), head_dim
+
+    # ไม่มี pattern ให้ดู — ไม่เดาว่า layer ไหนเป็นอะไร ใช้ค่ามากสุดกับทุก layer
+    # ประเมินเกินจริงดีกว่าประเมินขาดแล้ว OOM ตอนโหลด
+    usable = [n for n in kv_heads if isinstance(n, int) and n > 0]
+    if not usable:
+        return None, None, None
+    return len(kv_heads), max(usable), head_dim
 
 
 def _inspect_gguf(
