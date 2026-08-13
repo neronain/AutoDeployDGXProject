@@ -345,16 +345,19 @@ check_port_free() {
   # ทั้งที่ตัวเราไม่ได้ขึ้นเลย แล้วทุกคนก็คุยกับโมเดลผิดตัวโดยไม่รู้
   #
   # เคสจริง 2026-08-13 บน dgx-veerasiam: gemma กับ qwen ใช้ default port เดียวกัน
-  local holder
-  if command -v ss >/dev/null 2>&1; then
-    holder="$(ss -ltnp 2>/dev/null | awk -v p=":${API_PORT}\$" '"'"'$4 ~ p {print $NF; exit}'"'"')"
-  elif command -v lsof >/dev/null 2>&1; then
-    holder="$(lsof -nP -iTCP:"${API_PORT}" -sTCP:LISTEN -Fc 2>/dev/null | sed -n '"'"'s/^c//p'"'"' | head -1)"
-  else
-    return 0  # ไม่มีเครื่องมือให้ตรวจ — ปล่อยผ่าน ดีกว่าบล็อกการ start ด้วยเหตุผลผิด ๆ
+  #
+  # ตรวจด้วย /dev/tcp ของ bash เอง ไม่เรียก awk/lsof — เวอร์ชันแรกของฟังก์ชันนี้ใช้
+  # awk แล้ว $4 กับ $NF ของ awk ไปชนกับ positional parameter ของ bash เข้า
+  # set -u จึงตายที่ "unbound variable" ตอนผู้ใช้กด start (bash -n ไม่จับให้ เพราะ
+  # เป็นเรื่องตอนรัน ไม่ใช่ syntax)
+  local holder=""
+  if ! (exec 3<>"/dev/tcp/127.0.0.1/${API_PORT}") 2>/dev/null; then
+    return 0
   fi
-  [[ -z "$holder" ]] && return 0
-  die "port ${API_PORT} ถูกใช้อยู่แล้วโดย ${holder}
+  # มีคนฟังอยู่จริง — พยายามบอกว่าใคร ถ้าบอกไม่ได้ก็ยังต้องหยุดอยู่ดี
+  holder="$(ss -ltnp 2>/dev/null | grep ":${API_PORT} " || true)"
+  holder="$(printf "%s" "$holder" | head -1)"
+  die "port ${API_PORT} ถูกใช้อยู่แล้ว${holder:+ — ${holder}}
      เครื่องนี้รัน llama.cpp ได้หลายตัว แต่ต้องคนละ port
      เลือก port อื่น:  $0 start --port <PORT>
      หรือดูว่าใครถืออยู่: ss -ltnp | grep :${API_PORT}"

@@ -186,6 +186,15 @@ def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
         serving=Serving(
             context=context,
             max_output_tokens=fit.client_output_default,
+            # llama.cpp แบ่ง --ctx-size แบบตายตัวให้ทุก slot ต่างจาก vLLM ที่แชร์ KV
+            # แบบ dynamic — 4 slot จึงแปลว่าแต่ละ request ได้ context เหลือหนึ่งในสี่
+            # ส่วน fit คำนวณมาที่ concurrency=1 ค่าที่แผนสัญญาไว้จึงเป็นค่าของ slot เดียว
+            #
+            # เคสจริง 2026-08-13: Muse-Glimmer แผนบอก 131,072 แต่ /props รายงาน 32,768
+            # เพราะ 131,072 ถูกหารด้วย 4 slot ที่ไม่มีใครขอ
+            #
+            # ต้องการ concurrency จริงค่อยตั้ง PARALLEL_SEQS ตอน start แล้วรับรู้ราคา
+            max_num_seqs=1 if engine is Engine.LLAMACPP else 4,
             **arch_requirements(report.repo_id),
         ),
         special_files=list(report.trust_remote_code_files),

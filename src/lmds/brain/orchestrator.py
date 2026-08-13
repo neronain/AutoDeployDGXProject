@@ -62,6 +62,13 @@ def _fit_output_into_slots(plan: DeploymentPlan) -> None:
     if plan.runtime.engine is not Engine.LLAMACPP:
         return          # vLLM แชร์ KV cache แบบ dynamic ไม่ได้หารตาม slot
     slots = max(1, plan.serving.max_num_seqs)
+    if slots > 1:
+        # ไม่ไปแก้ค่าที่คนตั้งมาเอง แต่ต้องพูดราคาออกมาให้ชัด — README/profile/banner
+        # ทุกที่แสดง context ของ plan ซึ่งเป็น *pool* ไม่ใช่ค่าที่แต่ละ request ได้
+        plan.warnings.append(
+            f"context ต่อ request จะเป็น {plan.serving.context // slots:,} ไม่ใช่ "
+            f"{plan.serving.context:,} — llama.cpp แบ่ง --ctx-size ให้ {slots} slot เท่า ๆ กัน"
+        )
     per_slot = plan.serving.context // slots
     usable = per_slot - _TEMPLATE_OVERHEAD_TOKENS - _MIN_INPUT_TOKENS
     if usable > plan.serving.max_output_tokens:
