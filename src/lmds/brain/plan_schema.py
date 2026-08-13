@@ -41,6 +41,14 @@ class RuntimeChoice(BaseModel):
     engine: Engine
     image_ref: str  # เช่น vllm/vllm-openai:v0.8.5 หรือ ghcr.io/ggml-org/llama.cpp:server-cuda
     image_pin: Optional[str] = None  # digest/commit — ต้อง pin ก่อน deploy จริง
+    # build ในเครื่อง (llama.cpp native) ที่โมเดลนี้ใช้ — โมเดลคนละตัวใช้คนละ build ได้
+    #
+    # กติกาเดียวกับ image: รันไทม์ผูกกับโมเดล ไม่ใช่ผูกกับเครื่อง สองโมเดลที่ต้องการ
+    # llama.cpp คนละรุ่นจึงอยู่ร่วมเครื่องกันได้ และการอัปเกรดให้ตัวหนึ่งไม่ไปขยับ
+    # อีกตัวที่พิสูจน์แล้วว่าใช้ได้
+    #
+    # None = ใช้ build กลางของเครื่อง (พฤติกรรมเดิม) ซึ่งถูกต้องเมื่อรุ่นเดียวกันใช้ร่วมได้
+    native_dir: Optional[str] = None
     rationale: str = ""
 
 

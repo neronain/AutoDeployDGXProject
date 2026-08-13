@@ -143,8 +143,96 @@ _ARCH_PROBE = (
 )
 
 
+def _gguf_architecture(path: Path) -> str:
+    """`general.architecture` จากหัวไฟล์ GGUF ในเครื่อง
+
+    อ่านผ่าน parser ตัวเดียวกับ inspector ไม่เขียนใหม่ — GGUF metadata มี vocab
+    อยู่ด้วยจึงใหญ่เกินกว่าจะอ่านทั้งก้อนขึ้นหน่วยความจำ เลยป้อนเป็น stream
+    """
+    from lmds.inspector.gguf import GgufParseError, parse_gguf
+
+    class _FileSource:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, n: int) -> bytes:
+            data = self._handle.read(n)
+            if len(data) < n:
+                raise EOFError("ปลายไฟล์ก่อนอ่านครบ")
+            return data
+
+        def skip(self, n: int) -> None:
+            self._handle.seek(n, 1)
+
+    try:
+        with path.open("rb") as handle:
+            return parse_gguf(_FileSource(handle)).architecture or ""
+    except (OSError, EOFError, GgufParseError):
+        return ""
+
+
+def _check_architecture_llamacpp(profile: dict, slug: str) -> list[Finding]:
+    """llama.cpp build ตัวที่โมเดลนี้ผูกไว้ รู้จักสถาปัตยกรรมของมันไหม
+
+    เคสจริง 2026-08-13: Muse-Glimmer-30B ใช้ architecture `muse-glimmer` ซึ่ง
+    llama.cpp บน spark-head (23 ก.ค., ตามหลัง upstream 296 commit) ยังไม่รู้จัก
+    ถ้าไม่ตรวจตรงนี้ ผู้ใช้จะโหลด 30 GB จบแล้วค่อยเจอตอน start ว่ารันไม่ได้
+
+    เช็คเดิมข้ามทาง native ทั้งหมด (`if server.mode == "native": return []`)
+    ทั้งที่ llama.cpp บน DGX Spark รัน native เป็นปกติ — เช็คที่มีอยู่จึงไม่เคย
+    ทำงานกับ engine ที่ต้องการมันที่สุด
+    """
+    directory, wanted = _weight_paths(profile, slug)
+    gguf = next((directory / name for name in wanted if name.endswith(".gguf")), None)
+    if gguf is None or not gguf.is_file():
+        return []  # ยังไม่ได้โหลด — _check_weights บอกไปแล้ว
+    architecture = _gguf_architecture(gguf)
+    if not architecture:
+        return []
+
+    pinned = (profile.get("target") or {}).get("llamacpp_dir")
+    root = Path(pinned) if pinned else Path.home() / "src" / "llama.cpp"
+    libs = sorted(root.glob("build/bin/libllama.so*")) + sorted(root.glob("build/src/libllama.so*"))
+    if not libs:
+        return [Finding(
+            "architecture", Status.WARN,
+            f"ไม่พบ libllama.so ใต้ {root} — ตรวจสถาปัตยกรรมไม่ได้",
+        )]
+
+    known = any(_lib_knows(lib, architecture) for lib in libs)
+    if known:
+        return [Finding("architecture", Status.OK, f"{architecture} (llama.cpp {root.name})")]
+    return [Finding(
+        "architecture", Status.FAIL,
+        f"llama.cpp ที่ {root} ไม่รู้จักสถาปัตยกรรม '{architecture}' — "
+        f"โมเดลใหม่กว่ารันไทม์ ต้อง build llama.cpp ใหม่ให้รองรับก่อน: "
+        f"cd {root} && git pull && cmake --build build -j",
+    )]
+
+
+def _lib_knows(lib: Path, architecture: str) -> bool:
+    """ชื่อ architecture โผล่ใน .so ไหม
+
+    ไม่ใช้ `strings | grep -q` เพราะ grep ปิด pipe ทันทีที่เจอ แล้ว strings โดน
+    SIGPIPE — ภายใต้ pipefail จะกลายเป็น "ไม่เจอ" ทั้งที่เจอ อ่านเองตรง ๆ ชัดกว่า
+    """
+    needle = architecture.encode()
+    try:
+        with lib.open("rb") as handle:
+            tail = b""
+            while chunk := handle.read(1 << 20):
+                if needle in tail + chunk:
+                    return True
+                tail = chunk[-len(needle):]
+    except OSError:
+        return False
+    return False
+
+
 def _check_architecture(profile: dict, server: ServerInfo, slug: str) -> list[Finding]:
-    """image ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม"""
+    """รันไทม์ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม"""
+    if (profile.get("runtime") or {}).get("engine") == "llamacpp":
+        return _check_architecture_llamacpp(profile, slug)
     image = (profile.get("runtime") or {}).get("image") or ""
     model_type = _model_type(profile, slug)
     if server.mode == "native" or not image or not model_type or shutil.which("docker") is None:

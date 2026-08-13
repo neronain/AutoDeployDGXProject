@@ -223,9 +223,8 @@ def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:
             f"projector_files ที่แผนเสนอไม่มีอยู่จริง ({', '.join(declared)}) — ใช้ไฟล์จาก repo แทน"
         )
     if not kept:
-        # เล็กสุดก่อน: mmproj ใหญ่กว่าไม่ได้ให้คุณภาพต่างพอจะคุ้มหน่วยความจำ (BF16 < F16 < F32)
-        smallest = min(available, key=lambda v: (v.size_bytes is None, v.size_bytes or 0))
-        kept = [smallest.filename]
+        chosen = _pick_projector(available, report)
+        kept = [chosen.filename]
         if not declared:
             plan.warnings.append(
                 f"repo มีไฟล์ mmproj — เปิดโหมด multimodal ให้อัตโนมัติด้วย {kept[0]}"
@@ -234,6 +233,41 @@ def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:
     plan.multimodal.projector_files = kept[:1]  # llama-server รับ --mmproj ได้ไฟล์เดียว
     if not plan.multimodal.modalities:
         plan.multimodal.modalities = ["image", "text"]
+
+
+def _pick_projector(available: list, report: ModelReport):
+    """เลือก projector ที่คู่กับ weight ที่เราจะรันจริง
+
+    เดิมเลือกไฟล์เล็กสุดเสมอ ด้วยเหตุผลว่า projector ใหญ่กว่าไม่คุ้มหน่วยความจำ
+    ซึ่งจริงเมื่อ repo มี projector ตัวเดียวในหลายระดับ quant แต่ repo จำนวนหนึ่ง
+    ใส่ projector ของ "โมเดลคนละตัว" ไว้ด้วยกัน แล้วกติกาเล็กสุดจะหยิบผิดตัวเงียบ ๆ
+
+    เคสจริง 2026-08-13 — unsloth/Muse-Glimmer-30B-GGUF มีสามไฟล์:
+        mmproj-Muse-Glimmer-30B-BF16.gguf   คู่กับ weight ปกติ
+        mmproj-Muse-Glimmer-30B-Q8_0.gguf   คู่กับ weight ปกติ
+        mmproj-kquant.gguf                  คู่กับ dflash-kquant.gguf (คนละโมเดล)
+    เล็กสุดคือ mmproj-kquant ซึ่งไม่ได้คู่กับ UD-Q8_K_XL ที่เราเลือกไว้เลย
+
+    จึงเลือกตามลำดับนี้: ชื่อที่ใช้ stem เดียวกับ weight ก่อน แล้วค่อยเล็กสุดในกลุ่มนั้น
+    ไม่มีตัวไหนเข้าเกณฑ์ค่อยกลับไปใช้เล็กสุดทั้งหมดตามเดิม
+    """
+    def size(v):
+        return (v.size_bytes is None, v.size_bytes or 0)
+
+    selected = (report.selected_gguf or "").rsplit("/", 1)[-1]
+    # "Muse-Glimmer-30B-UD-Q8_K_XL.gguf" -> "muse-glimmer-30b"
+    stem = selected.lower().removesuffix(".gguf")
+    parts = stem.split("-")
+    related = []
+    while len(parts) >= 2 and not related:
+        prefix = "-".join(parts)
+        related = [
+            v for v in available
+            if prefix in v.filename.rsplit("/", 1)[-1].lower()
+        ]
+        parts.pop()  # ตัดท้ายทีละส่วนจนเจอกลุ่มที่ชื่อร่วมกัน
+
+    return min(related or available, key=size)
 
 
 def _harden_runtime_assets(plan: DeploymentPlan) -> None:
