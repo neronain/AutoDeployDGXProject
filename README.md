@@ -235,6 +235,7 @@ LMDS_SKIP_PREREQ=1 ./install.sh              # ลง LMDS อย่างเด
 | [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว + env, fleet (ps/list/restart/logs -f/repair/remove/completion), target presets ครบ 20 ตัว, troubleshooting |
 | [docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | **ลำดับคำสั่งรันข้ามหลายเครื่องที่ผ่านการรันจริง** — ตั้งแต่ `node add` ถึง `test-text` พร้อมตัวเลขหน่วยความจำ/KV cache จริง เวลาที่ใช้แต่ละขั้น และอาการเสียที่พบบ่อย |
 | [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | **คุมหลายเครื่องจากเครื่องเดียว** — เพิ่มเครื่องด้วย ip/user/รหัสผ่านครั้งเดียว, ดู CPU/RAM/VRAM/ดิสก์/โมเดลที่รันของทุกเครื่อง, ตรวจ ConnectX/200G และจับคู่เครื่องที่ stacked ด้วยกันได้ |
+| [docs/PREFLIGHT.md](docs/PREFLIGHT.md) | **สิ่งที่ระบบตรวจให้ก่อน deploy และทำไม** — ทุกหัวข้อมาจากของที่พังจริงบนเครื่องจริง: รันไทม์ไม่รู้จัก architecture, เลือก projector ผิดตัว, context ถูกตัดเงียบ ๆ, start ทับ port ของโมเดลอื่น |
 | [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
 | [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | แผนพัฒนา 3 เฟส + work breakdown ของเฟส 1 |
