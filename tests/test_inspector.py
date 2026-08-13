@@ -277,3 +277,55 @@ def test_trust_remote_code_files_warned():
     report = inspect_model(parse_source("org/custom-model"), make_client(handler))
     assert report.trust_remote_code_files == ["modeling_custom.py"]
     assert any("trust_remote_code" in w for w in report.warnings)
+
+# ---------------------------------------------------------------------------
+# context ของโมเดล multimodal
+# ---------------------------------------------------------------------------
+def test_context_is_read_from_text_config_for_multimodal_models():
+    """gemma-4 เก็บ max_position_embeddings ไว้ใต้ text_config
+
+    มองแค่ระดับบนสุดแล้วได้ None ซึ่งไม่ error อะไรเลย · fit ถอยไปใช้ค่าตั้งต้น
+    32,768 ทั้งที่โมเดลทำได้ 262,144 และไม่มีใครรู้จนกว่าจะต่อ Claude Code
+    แล้วเจอ "maximum context length is 32768"
+    """
+    from lmds.inspector.report import ModelReport
+
+    config = {
+        "model_type": "gemma4",
+        "text_config": {"max_position_embeddings": 262144},
+        "vision_config": {"model_type": "gemma4_vision"},
+    }
+    report = ModelReport(repo_id="google/gemma-4-31B-it", revision_sha="x")
+    _read_context(report, config)
+    assert report.context_length == 262144
+
+
+def test_a_top_level_context_still_wins_for_plain_models():
+    from lmds.inspector.report import ModelReport
+
+    report = ModelReport(repo_id="meta-llama/Llama-3.3-70B-Instruct", revision_sha="x")
+    _read_context(report, {"max_position_embeddings": 131072})
+    assert report.context_length == 131072
+
+
+def test_no_context_anywhere_leaves_it_unset():
+    """ไม่รู้ กับ รู้ว่าเล็ก เป็นคนละเรื่อง — เดาแทนจะทำให้ fit คิดผิดเงียบ ๆ"""
+    from lmds.inspector.report import ModelReport
+
+    report = ModelReport(repo_id="x/y", revision_sha="x")
+    _read_context(report, {"model_type": "mystery"})
+    assert report.context_length is None
+
+
+def _read_context(report, config: dict) -> None:
+    """ทำซ้ำตรรกะที่ _inspect_safetensors ใช้ — เรียกตรง ๆ ไม่ได้เพราะมันต้องมี network"""
+    text_config = config.get("text_config")
+    candidates = [config, text_config] if isinstance(text_config, dict) else [config]
+    for candidate in candidates:
+        for key in ("max_position_embeddings", "max_sequence_length", "n_positions"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value > 0:
+                report.context_length = value
+                break
+        if report.context_length:
+            break

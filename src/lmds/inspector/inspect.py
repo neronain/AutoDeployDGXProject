@@ -155,10 +155,20 @@ def _inspect_safetensors(
         if isinstance(architectures, list) and architectures:
             report.architecture = str(architectures[0])
         report.model_type = config.get("model_type") or report.model_type
-        for key in ("max_position_embeddings", "max_sequence_length", "n_positions"):
-            value = config.get(key)
-            if isinstance(value, int) and value > 0:
-                report.context_length = value
+        # โมเดล multimodal แยก config ของส่วนข้อความไว้ใต้ text_config — ค่า context
+        # อยู่ในนั้น ไม่ใช่ระดับบนสุด · มองแค่ชั้นบนแล้วได้ None ซึ่งไม่ error อะไรเลย
+        # แต่ทำให้ fit ถอยไปใช้ค่าตั้งต้น และ bundle ออกมาเล็กกว่าที่โมเดลทำได้หลายเท่า
+        text_config = config.get("text_config")
+        # `source` เป็นพารามิเตอร์ของฟังก์ชันนี้อยู่แล้ว — ตั้งชื่อชนกันเมื่อไหร่
+        # การอ่าน config จะไปแทนที่ ModelSource เงียบ ๆ แล้วพังที่บรรทัดถัดไป
+        candidates = [config, text_config] if isinstance(text_config, dict) else [config]
+        for candidate in candidates:
+            for key in ("max_position_embeddings", "max_sequence_length", "n_positions"):
+                value = candidate.get(key)
+                if isinstance(value, int) and value > 0:
+                    report.context_length = value
+                    break
+            if report.context_length:
                 break
         quant = config.get("quantization_config")
         if isinstance(quant, dict):
