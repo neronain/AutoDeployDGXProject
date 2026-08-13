@@ -133,6 +133,16 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
             plan.runtime.image_ref = fallback
             plan.runtime.image_pin = None
 
+    # ตรึง image ที่ digest — tag เคลื่อนที่ได้ digest ไม่เคลื่อน · bundle ที่ทดสอบ
+    # ผ่านเมื่อวานจึงไม่กลายเป็นคนละ runtime วันนี้โดยไม่มีอะไรในไฟล์เปลี่ยน
+    #
+    # ถามไม่ได้ (registry ต้องล็อกอิน / ไม่มีเน็ต) ก็ปล่อยว่าง แล้วใช้ tag ตามเดิม —
+    # การห้าม deploy เพราะถาม registry ไม่ได้ แพงกว่าประโยชน์ที่ได้
+    if plan.runtime.image_pin is None:
+        from .registry import resolve_digest
+
+        plan.runtime.image_pin = resolve_digest(plan.runtime.image_ref)
+
     _fit_output_into_slots(plan)
 
     if fit.recommended_context and plan.serving.context > fit.recommended_context:

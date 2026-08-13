@@ -23,7 +23,15 @@ MODEL_REVISION="{{ plan.revision }}"
 # ชื่อโมเดลที่ API เสิร์ฟออกไป — ตั้งเองได้ผ่าน env เหมือน knob อื่น ๆ
 # ลูกค้าที่ย้ายมาจากระบบเดิมมักต้องใช้ชื่อเดิมเป๊ะ ไม่งั้น client ทุกตัวต้องแก้ตาม
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
-VLLM_IMAGE="${VLLM_IMAGE:-{{ plan.runtime.image_ref }}}"
+# runtime ของ bundle นี้ — ตรึงที่ digest ไม่ใช่ tag
+#
+# tag เคลื่อนที่ได้: `:latest` วันนี้กับเดือนหน้าเป็นคนละ image · bundle ที่ทดสอบ
+# ผ่านแล้วจึงกลายเป็นคนละ runtime ได้โดยไม่มีอะไรในไฟล์นี้เปลี่ยนเลย ซึ่งเป็นอาการ
+# ที่ไล่หาสาเหตุยากที่สุด เพราะ "ไม่ได้แก้อะไรสักหน่อย"
+#
+# tag ที่ digest นี้มาจาก ณ วันที่ generate: {{ plan.runtime.image_ref }}
+# อยากใช้ตัวอื่นก็ override ได้ตามเดิม: VLLM_IMAGE=<image> ./controller start
+VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 MASTER_CONTAINER="${MASTER_CONTAINER:-lmds-{{ slug }}-head}"
 WORKER_CONTAINER="${WORKER_CONTAINER:-lmds-{{ slug }}-worker}"
 
