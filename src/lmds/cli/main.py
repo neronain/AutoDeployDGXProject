@@ -1094,13 +1094,21 @@ def set_defaults(
     from pathlib import Path as _Path
 
     from lmds.fleet import find
-    from lmds.fleet.bundle_settings import SettingsError, read, write
+    from lmds.fleet.bundle_settings import (
+        SettingsError,
+        ensure_controller_reads,
+        read,
+        write,
+    )
 
     server = find(slug)
     if server is None or not server.controller:
         err_console.print(f"[red]ไม่รู้จัก '{slug}'[/red] — ดู: lmds ps")
         raise typer.Exit(code=1)
     bundle_dir = _Path(server.controller).parent
+    # bundle ที่สร้างก่อนฟีเจอร์นี้ยังไม่รู้จัก bundle.env — เขียนไฟล์ไปก็ไม่มีใครอ่าน
+    if ensure_controller_reads(_Path(server.controller)):
+        console.print("[dim]เติมบรรทัดอ่าน bundle.env ให้ controller ตัวนี้แล้ว (สำรองไฟล์เดิมไว้)[/dim]")
 
     if clear:
         write(bundle_dir, {})

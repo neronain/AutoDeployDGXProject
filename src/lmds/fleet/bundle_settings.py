@@ -129,3 +129,54 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
             lines.append(f'{name}="${{{name}:-{shlex.quote(value).strip(chr(39))}}}"')
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return cleaned
+
+
+# บล็อกเดียวกับที่ template ใส่ให้ bundle ใหม่ — เก็บไว้ที่นี่ด้วยเพื่อเติมให้ bundle
+# ที่ deploy ไปก่อนหน้านี้ ซึ่งเป็นทุกตัวที่ผู้ใช้มีอยู่ตอนนี้
+SOURCE_BLOCK = """# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดย `lmds set` / หน้าเว็บ) ──
+# อ่านก่อน default ทั้งหมดข้างล่าง และทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ลำดับ
+# ความสำคัญจึงเป็น: flag บรรทัดคำสั่ง > env จากภายนอก > ไฟล์นี้ > ค่าของ bundle
+BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
+if [[ -f "$BUNDLE_ENV" ]]; then
+  set -a; . "$BUNDLE_ENV"; set +a
+fi
+
+"""
+
+
+def ensure_controller_reads(controller: Path) -> bool:
+    """เติมบล็อกอ่าน bundle.env ให้ controller ที่สร้างก่อนฟีเจอร์นี้
+
+    การแก้ template มีผลกับ bundle ที่ generate ใหม่เท่านั้น ส่วนที่ deploy ไปแล้ว
+    จะเขียน bundle.env ไปก็ไม่มีใครอ่าน — ซึ่งคือทุก bundle ที่มีอยู่ตอนนี้
+
+    คืน True เมื่อเพิ่งเติมให้ · False เมื่อมีอยู่แล้วหรือแก้ไม่ได้
+    """
+    import re
+    import shutil
+    import subprocess
+    import time
+
+    controller = Path(controller)
+    if not controller.is_file():
+        return False
+    text = controller.read_text(encoding="utf-8")
+    if "BUNDLE_ENV" in text:
+        return False
+
+    # วางก่อน default ตัวแรก (บรรทัดรูป NAME="${NAME:-…}") — ก่อนหน้านั้นเป็น
+    # หัวไฟล์กับ set -euo pipefail ซึ่งต้องมาก่อนการ source
+    m = re.search(r'^[A-Z_][A-Z0-9_]*="\$\{[A-Z_]', text, flags=re.M)
+    if m is None:
+        return False
+    patched = text[: m.start()] + SOURCE_BLOCK + text[m.start():]
+
+    candidate = controller.with_suffix(controller.suffix + ".cand")
+    candidate.write_text(patched, encoding="utf-8")
+    if subprocess.run(["bash", "-n", str(candidate)]).returncode != 0:
+        candidate.unlink(missing_ok=True)
+        return False
+    shutil.copy2(controller, f"{controller}.bak-bundleenv-{time.strftime('%H%M%S')}")
+    shutil.copymode(controller, candidate)
+    candidate.replace(controller)
+    return True
