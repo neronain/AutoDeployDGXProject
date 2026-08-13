@@ -317,6 +317,47 @@ def create_app(token: str = "") -> FastAPI:
             status_code=200 if ok else 500,
         )
 
+
+    @app.get("/api/models/{slug}/settings", dependencies=guarded)
+    def settings_get(slug: str) -> dict:
+        """ค่าที่บันทึกไว้กับ bundle นี้ (ไม่ใช่ค่าที่กำลังรันอยู่)"""
+        from pathlib import Path as _Path
+
+        from lmds.fleet import find
+        from lmds.fleet.bundle_settings import read
+
+        server = find(slug)
+        if server is None or not server.controller:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        return {"slug": slug, "saved": read(_Path(server.controller).parent)}
+
+    @app.put("/api/models/{slug}/settings", dependencies=guarded)
+    def settings_put(slug: str, body: dict | None = None) -> dict:
+        """บันทึกค่า start ลงข้าง bundle เพื่อให้ทุกทางที่เรียก controller ได้ค่าเดียวกัน
+
+        เดิมค่าที่กรอกบนหน้าเว็บอยู่แค่ในเบราว์เซอร์ ส่งไปเป็น env เฉพาะตอนกดปุ่ม
+        นั้นครั้งเดียว · systemd ตอน autostart และปุ่ม test-* เรียก controller
+        เปล่า ๆ จึงตกไปใช้ default — พอ reboot โมเดลทุกตัวบนเครื่องเดียวกันไปชนกัน
+        ที่ port เดียว
+
+        ค่าว่าง = เอาออก กลับไปใช้ค่าของ bundle · API key ไม่ถูกบันทึก ตามที่หน้าเว็บ
+        บอกผู้ใช้ไว้ (โฟลเดอร์นี้ถูก zip แจกต่อได้)
+        """
+        from pathlib import Path as _Path
+
+        from lmds.fleet import find
+        from lmds.fleet.bundle_settings import SettingsError, write
+
+        server = find(slug)
+        if server is None or not server.controller:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        try:
+            saved = write(_Path(server.controller).parent, body or {})
+        except SettingsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.STORE.invalidate_local()
+        return {"slug": slug, "saved": saved}
+
     @app.post("/api/models/{slug}/start", dependencies=guarded)
     def start(slug: str, body: dict | None = None) -> JSONResponse:
         return _action(slug, "start", body)
@@ -1171,6 +1212,9 @@ def create_app(token: str = "") -> FastAPI:
             # (`--dry-run` ไม่ลบอะไร) แล้วส่ง confirm ที่ตรงกับ slug กลับมาถึงจะลบจริง
             # ปุ่มเดียวจบไม่ได้ แต่ "ทำไม่ได้เลย" ก็ไม่ใช่คำตอบ — ผู้ใช้ต้องไป ssh เองอยู่ดี
             "remove": "--dry-run",
+            # ค่าที่บันทึกกับ bundle — flag ประกอบจาก body ด้านล่าง ไม่ใช่ env
+            # เพราะ env มีผลแค่ครั้งที่รัน ซึ่งคือปัญหาที่คำสั่งนี้มีไว้แก้
+            "set": "",
         }
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
@@ -1184,6 +1228,29 @@ def create_app(token: str = "") -> FastAPI:
         options = {k: v for k, v in (body or {}).items() if k != "confirm"}
         if options:
             _require_controller(name, slug, options)
+        if command == "set":
+            # ไม่ส่งผ่าน env: `lmds set` ต้องได้ค่ามาเป็น flag เพื่อเขียนลงไฟล์
+            # ส่ง body ว่าง = --clear (ลบค่าที่บันทึกไว้)
+            flags = {"port": "--port", "context": "--context", "slots": "--slots",
+                     "bind": "--bind", "gpu_util": "--gpu-util",
+                     "served_name": "--model-id", "image": "--image"}
+            parts = ["lmds", "set", shlex.quote(slug)]
+            given = [(flags[k], v) for k, v in options.items()
+                     if k in flags and str(v).strip() != ""]
+            if given:
+                for flag, value in given:
+                    parts += [flag, shlex.quote(str(value))]
+            else:
+                parts.append("--clear")
+            remote = " ".join(parts)
+            node_obj = find(name)
+            try:
+                result = run(node_obj, remote, timeout=60)
+                state.STORE.force(name)
+            except NodeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return {"node": name, "slug": slug, "command": "set",
+                    "ok": result.ok, "output": (result.stdout or result.stderr or "").strip()}
         env = _node_env(command, options)
         parts = ([env] if env else []) + ["lmds", command, shlex.quote(slug)]
         if allowed[command]:

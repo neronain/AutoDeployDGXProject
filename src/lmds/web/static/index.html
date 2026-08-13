@@ -2024,6 +2024,21 @@ document.addEventListener("click", async e => {
     refreshNodes();
     return;
   }
+  if (nact === "save-settings" || nact === "clear-settings") {
+    // ค่าที่กรอกเคยอยู่แค่ในเบราว์เซอร์ · systemd ตอน autostart และปุ่ม test-* เรียก
+    // controller เปล่า ๆ จึงตกไปใช้ default — reboot ทีเดียวพอร์ตชนกันทั้งเครื่อง
+    const clearing = nact === "clear-settings";
+    const body = clearing ? {} : readNodeOpts(node, slug);
+    if (body) delete body.api_key;   // หน้าเว็บสัญญาไว้ว่า key ไม่ถูกเขียนลง bundle
+    const d = await withButton(btn, clearing ? "clearing…" : "saving…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/set`,
+          { method: "POST", body: JSON.stringify(body || {}) }));
+    if (!d) return;
+    showNodeOutput(node, `set · ${slug}`, d.output || "");
+    loadNode(node);
+    return;
+  }
+
   if (nact.startsWith("ctl:")) {
     const command = nact.slice(4);
     const d = await withButton(btn, command + "…", () =>

@@ -1068,6 +1068,74 @@ def version() -> None:
     console.print(f"[dim]{CREDIT}[/dim]")
 
 
+@app.command("set")
+def set_defaults(
+    slug: str = typer.Argument(..., help="ชื่อ bundle", autocompletion=_complete_slug),
+    port: Optional[int] = typer.Option(None, "--port", help="พอร์ตที่จะเสิร์ฟ"),
+    context: Optional[int] = typer.Option(None, "--context", help="context (tokens)"),
+    slots: Optional[int] = typer.Option(None, "--slots", help="จำนวน request พร้อมกัน"),
+    bind: Optional[str] = typer.Option(None, "--bind", help="ที่อยู่ที่ผูก (0.0.0.0 / 127.0.0.1)"),
+    gpu_util: Optional[float] = typer.Option(None, "--gpu-util", help="สัดส่วนหน่วยความจำของ vLLM"),
+    model_id: Optional[str] = typer.Option(None, "--model-id", help="ชื่อที่ API เสิร์ฟออกไป"),
+    image: Optional[str] = typer.Option(None, "--image", help="image ที่จะใช้แทนของ bundle"),
+    clear: bool = typer.Option(False, "--clear", help="ลบค่าที่บันทึกไว้ทั้งหมด"),
+) -> None:
+    """บันทึกค่า start ไว้กับ bundle — ทุกทางที่เรียก controller จะได้ค่าเดียวกัน
+
+    ค่าที่ใส่ตอน `lmds start --port …` มีผลครั้งนั้นครั้งเดียว · systemd ตอน autostart
+    และคำสั่งอย่าง `test-text` เรียก controller เปล่า ๆ จึงตกไปใช้ค่าเริ่มต้นของ bundle
+    — พอ reboot โมเดลหลายตัวบนเครื่องเดียวกันก็ไปชนกันที่พอร์ตเดียว
+
+    คำสั่งนี้เขียน `bundle.env` ไว้ข้าง controller ซึ่ง controller อ่านก่อนตั้ง default
+    ทุกตัว env จากภายนอกและ flag บรรทัดคำสั่งยังชนะไฟล์นี้เสมอ
+
+    ไม่เก็บ API key — โฟลเดอร์ bundle ถูก zip แจกต่อได้ ส่ง `API_KEY=` ตอน start แทน
+    """
+    from pathlib import Path as _Path
+
+    from lmds.fleet import find
+    from lmds.fleet.bundle_settings import SettingsError, read, write
+
+    server = find(slug)
+    if server is None or not server.controller:
+        err_console.print(f"[red]ไม่รู้จัก '{slug}'[/red] — ดู: lmds ps")
+        raise typer.Exit(code=1)
+    bundle_dir = _Path(server.controller).parent
+
+    if clear:
+        write(bundle_dir, {})
+        console.print(f"ลบค่าที่บันทึกไว้ของ [bold]{slug}[/bold] แล้ว — กลับไปใช้ค่าของ bundle")
+        return
+
+    incoming = {
+        "port": port, "context": context, "slots": slots, "bind": bind,
+        "gpu_util": gpu_util, "served_name": model_id, "image": image,
+    }
+    given = {k: v for k, v in incoming.items() if v is not None}
+    if not given:
+        current = read(bundle_dir)
+        if not current:
+            console.print(f"[dim]{slug} ยังไม่มีค่าที่บันทึกไว้ — ใช้ค่าของ bundle ทั้งหมด[/dim]")
+            return
+        table = Table("ค่า", "ที่บันทึกไว้", box=None)
+        for key, value in current.items():
+            table.add_row(key, value)
+        console.print(table)
+        return
+
+    # เขียนทับทั้งไฟล์ — รวมของเดิมเข้ากับที่เพิ่งสั่ง เพื่อให้แก้ทีละค่าได้
+    merged = {**read(bundle_dir), **{k: str(v) for k, v in given.items()}}
+    try:
+        saved = write(bundle_dir, merged)
+    except SettingsError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"บันทึกไว้กับ [bold]{slug}[/bold] แล้ว: " +
+                  " · ".join(f"{k}={v}" for k, v in saved.items()))
+    console.print("[dim]มีผลกับ start ทุกทาง รวมถึง autostart ตอน reboot และคำสั่ง test-*[/dim]")
+
+
 @app.command()
 def inspect(
     model: str = typer.Argument(..., help="ลิงก์ Hugging Face หรือ org/model"),

@@ -28,6 +28,18 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
 
+# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
+# อ่านก่อน default ทั้งหมดข้างล่าง และทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ลำดับ
+# ความสำคัญจึงเป็น: flag บรรทัดคำสั่ง > env จากภายนอก > ไฟล์นี้ > ค่าของ bundle
+#
+# มีไฟล์นี้เพราะค่าที่ตั้งบนหน้าเว็บเคยอยู่แค่ในเบราว์เซอร์: systemd ตอน autostart
+# และปุ่ม test-* เรียก controller เปล่า ๆ ทุกตัวจึงตกไปใช้ default — พอ reboot
+# โมเดลทุกตัวบนเครื่องเดียวกันก็ไปชนกันที่ port เดียว
+BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
+if [[ -f "$BUNDLE_ENV" ]]; then
+  set -a; . "$BUNDLE_ENV"; set +a
+fi
+
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-{{ plan.serving.context }}}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
