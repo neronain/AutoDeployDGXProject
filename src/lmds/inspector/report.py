@@ -44,11 +44,21 @@ class KvDims(BaseModel):
     layers: int
     kv_heads: int
     head_dim: int
+    # MLA (DeepSeek-V2/V3, Kimi K2/K3): เก็บ latent ก้อนเดียวต่อ token ต่อ layer
+    # ไม่ใช่ K กับ V แยกกันตาม head · ตั้งค่านี้เมื่อรู้ขนาด latent แล้วสูตรจะเปลี่ยนไปเลย
+    latent_dim: Optional[int] = None
+
+    @property
+    def elements_per_token(self) -> int:
+        """จำนวนค่าที่ต้องเก็บต่อ token — รูปทรงของ KV ตัดสินที่นี่ที่เดียว"""
+        if self.latent_dim:
+            return self.layers * self.latent_dim
+        # K + V ต่อ layer ต่อ token: 2 × kv_heads × head_dim
+        return 2 * self.layers * self.kv_heads * self.head_dim
 
     @property
     def bytes_per_token_fp16(self) -> int:
-        # K + V ต่อ layer ต่อ token: 2 × kv_heads × head_dim × 2 bytes (fp16)
-        return 2 * self.layers * self.kv_heads * self.head_dim * 2
+        return self.elements_per_token * 2  # fp16/bf16 = 2 ไบต์ต่อค่า
 
 
 class ShardFile(BaseModel):

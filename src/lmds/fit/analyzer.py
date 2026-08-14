@@ -57,6 +57,9 @@ class FitReport(BaseModel):
     target_name: str
     memory_model: MemoryModel
     engine_assumed: str  # vllm | llamacpp
+    # จำนวนเครื่อง — คนอ่านรายงานต้องรู้ว่าเป็น target ข้ามเครื่องไหม โดยไม่ต้อง
+    # ไปหา TargetSpec กลับมาเทียบเอง (ผู้ช่วย LLM กับหน้าเว็บได้แค่รายงานก้อนนี้)
+    node_count: int = 1
     weights_gb: Optional[float] = None
     budget_gb: float = 0.0
     verdict: Verdict = Verdict.UNKNOWN
@@ -107,6 +110,7 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1) -> Fi
         target_name=target.name,
         memory_model=target.memory_model,
         engine_assumed=engine,
+        node_count=target.node_count,
         budget_gb=round(budget, 1),
         concurrency=concurrency,
         notes=notes,

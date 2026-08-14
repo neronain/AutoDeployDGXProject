@@ -259,6 +259,18 @@ def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
     head_dim = scope.get("head_dim")
     if head_dim is None and isinstance(scope.get("hidden_size"), int) and isinstance(heads, int) and heads:
         head_dim = scope["hidden_size"] // heads
+    # MLA (DeepSeek-V2/V3, Kimi K2/K3): บีบ K กับ V ให้เหลือ latent ก้อนเดียวต่อ layer
+    # ขนาด kv_lora_rank + qk_rope_head_dim · สูตร GQA ปกติจะเกินจริงหลายสิบเท่า
+    #
+    # เคสจริง 2026-08-14: Kimi-K3-active-slice-32experts (93 layers, 96 heads) ถูกคิดเป็น
+    # 2,581 KiB/token ทั้งที่ของจริงคือ 105 KiB/token — เกินจริง 24.7 เท่า แล้วไปตัด context
+    # เหลือ 16,384 ทั้งที่โมเดลรองรับ 1,048,576 และหน่วยความจำพอถึงหลักแสน
+    latent = scope.get("kv_lora_rank")
+    if isinstance(latent, int) and latent > 0 and isinstance(layers, int) and layers > 0:
+        rope = scope.get("qk_rope_head_dim")
+        width = latent + (rope if isinstance(rope, int) and rope > 0 else 0)
+        return KvDims(layers=layers, kv_heads=1, head_dim=width, latent_dim=width)
+
     if all(isinstance(v, int) and v > 0 for v in (layers, kv_heads, head_dim)):
         return KvDims(layers=layers, kv_heads=kv_heads, head_dim=head_dim)
     return None

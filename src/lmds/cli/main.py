@@ -1168,6 +1168,10 @@ def inspect(
         autocompletion=_complete_target,
     ),
     concurrency: int = typer.Option(1, "--concurrency", help="จำนวน request พร้อมกันที่ใช้คำนวณ KV cache"),
+    context: Optional[int] = typer.Option(
+        None, "--context", help="ถามว่าค่านี้ควรตั้งไหม — บอกว่าได้กี่คนพร้อมกันและควรเลี่ยงอะไร"),
+    kv_dtype: str = typer.Option(
+        "bf16", "--kv-dtype", help="ชนิดของ KV cache ที่จะใช้ตอนรัน: bf16 | fp8"),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON (สำหรับ scripting)"),
 ) -> None:
     """วิเคราะห์โมเดลจากลิงก์ — ดึงเฉพาะ metadata ไม่ดาวน์โหลด weight
@@ -1184,12 +1188,14 @@ def inspect(
         payload = {
             "model": report.model_dump(mode="json"),
             "fit": [f.model_dump(mode="json") for f in fit_reports],
+            "context_advice": _context_payload(report, fit_reports, context, kv_dtype),
         }
         print(json_module.dumps(payload, indent=2, ensure_ascii=False))
         return
 
     _render_report(report)
     _render_fits(fit_reports)
+    _render_context(report, fit_reports, context, kv_dtype)
 
 
 def _build_plan_safe(report, fit, provider):
@@ -1325,6 +1331,96 @@ def _ensure_gguf_selected(source, report, interactive: bool):
         report.selected_gguf = chosen.filename
         report.weight_bytes = chosen.size_bytes
         return report
+
+
+# สำนวนไทยของรหัสคำแนะนำ — หน้าเว็บมีสำนวนอังกฤษของตัวเอง และผู้ช่วย LLM ได้รหัส
+# กับตัวเลขดิบไปเรียบเรียงเป็นภาษาที่ผู้ใช้พิมพ์มา · ที่เดียวกันสามภาษาไม่ได้
+_ADVICE_TH = {
+    "over-native": lambda f: (
+        f"context {f['context']:,} เกิน native ของตัวโมเดล ({f['native']:,}) — "
+        f"ตัวโมเดลรับไม่ได้ ไม่ใช่เรื่องหน่วยความจำ"),
+    "over-memory": lambda f: (
+        f"KV ที่ context {f['context']:,} ต้องใช้ {f['kv_gb']} GB "
+        f"แต่เหลือแค่ {f['kv_budget_gb']} GB"),
+    "single-user": lambda f: (
+        f"ใส่ได้ แต่ได้ {f['concurrency']} คนพร้อมกัน — "
+        f"หนึ่งคำสนทนากิน KV pool เกือบหมด คนที่สองต้องรอคิว"),
+    "thin-margin": lambda f: (
+        f"เหลือแค่ {f['spare_gb']} GB จาก {f['kv_budget_gb']} GB — "
+        f"ไม่พอให้ CUDA graph, activation ของ chunked prefill และ NCCL buffer "
+        f"ซึ่งไม่ได้อยู่ในงบนี้"),
+    "fp8-would-help": lambda f: (
+        f"เปลี่ยน KV เป็น fp8 (--kv-cache-dtype fp8_e5m2) → KV {f['kv_gb_now']} GB "
+        f"เหลือ {f['kv_gb_fp8']} GB · พร้อมกันจาก {f['concurrency_now']} เป็น "
+        f"{f['concurrency_fp8']} คน โดยไม่ต้อง quantize checkpoint ใหม่"),
+    "room-to-grow": lambda f: (
+        f"ยังขยับขึ้นเป็น {f['suggest']:,} ได้ และยังรับ {f['concurrency']} คนพร้อมกัน"),
+    "odd-step": lambda f: (
+        f"{f['context']:,} ไม่ใช่ค่ายกกำลังสองที่ engine ใช้เป็นขั้น — ตั้งได้ "
+        f"แต่บางตัวปัดลงเอง"),
+    "stacked-comms-unbudgeted": lambda f: (
+        f"target {f['nodes']} เครื่อง — งบนี้ยังไม่รวม NCCL buffer ของ tensor parallel "
+        f"ข้ามเครื่อง ให้เผื่อไว้"),
+    "kv-dims-unknown": lambda f: "อ่านมิติ KV จาก config ไม่ได้ — คำนวณให้ไม่ได้",
+    "weights-unknown": lambda f: "ยังไม่รู้ขนาด weight — คำนวณให้ไม่ได้",
+}
+
+
+def _context_payload(report, fit_reports: list, context: int | None, kv_dtype: str) -> list:
+    """ตารางกับคำแนะนำในรูปข้อมูล — ใช้ทั้งฝั่งพิมพ์และฝั่ง --json"""
+    from lmds.fit import advise, ladder
+
+    out = []
+    for fit in fit_reports:
+        if report.kv_dims is None or fit.weights_gb is None:
+            continue
+        steps = ladder(fit, report.kv_dims, kv_dtype, report.context_length)
+        asked = context or fit.recommended_context
+        out.append({
+            "target": fit.target_name,
+            "kv_dtype": kv_dtype,
+            "kv_bytes_per_token": steps[0].per_token_bytes if steps else None,
+            "ladder": [
+                {"context": p.context, "kv_gb": p.kv_gb,
+                 "concurrency": round(p.concurrency, 1), "fits": p.fits}
+                for p in steps
+            ],
+            "asked": asked,
+            "advice": [
+                {"kind": a.kind, "level": a.level, "facts": a.facts}
+                for a in advise(fit, report.kv_dims, asked, kv_dtype,
+                                report.context_length, fit.node_count)
+            ] if asked else [],
+        })
+    return out
+
+
+def _render_context(report, fit_reports: list, context: int | None, kv_dtype: str) -> None:
+    """context กับจำนวนคนพร้อมกันเป็นของแลกกัน — ตัวเลขเดี่ยวทำให้ดูเหมือนมีคำตอบเดียว"""
+    payload = _context_payload(report, fit_reports, context, kv_dtype)
+    for entry in payload:
+        if not entry["ladder"]:
+            continue
+        per_token = entry["kv_bytes_per_token"]
+        table = Table(title=f"Context กับจำนวนคนพร้อมกัน — {entry['target']} "
+                            f"(KV {kv_dtype} {per_token / 1024:.0f} KiB/token)")
+        table.add_column("context", justify="right")
+        table.add_column("KV ต่อคน", justify="right")
+        table.add_column("พร้อมกัน", justify="right")
+        for row in entry["ladder"]:
+            mark = "" if row["fits"] else " [red]ไม่พอ[/red]"
+            people = f"{row['concurrency']:.1f}" if row["fits"] else "—"
+            highlight = "[bold]" if row["context"] == entry["asked"] else ""
+            table.add_row(f"{highlight}{row['context']:,}",
+                          f"{highlight}{row['kv_gb']:.1f} GB{mark}",
+                          f"{highlight}{people}")
+        console.print(table)
+        for item in entry["advice"]:
+            phrase = _ADVICE_TH.get(item["kind"])
+            if phrase is None:
+                continue
+            colour = {"bad": "red", "warn": "yellow"}.get(item["level"], "dim")
+            err_console.print(f"[{colour}]• {phrase(item['facts'])}[/{colour}]")
 
 
 def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
