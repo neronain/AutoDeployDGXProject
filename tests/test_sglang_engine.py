@@ -127,10 +127,23 @@ def test_sglang_has_its_own_flag_allowlist():
     assert "--gpu-memory-utilization" not in flags
 
 
-def test_the_spark_gets_the_build_made_for_its_chip(tmp_path):
+def test_the_spark_gets_a_build_made_for_its_chip(tmp_path):
     """kernel ของ SM121 ต้องมากับ image ที่ build ให้เครื่องนี้ เหมือนกติกาของ vLLM"""
+    from lmds.brain.allowlists import KNOWN_IMAGE_REPOS
+
     _, plan = bundle(tmp_path)
-    assert "nvcr.io/nvidia/sglang" in plan.runtime.image_ref
+    repo = plan.runtime.image_ref.split(":")[0]
+    assert repo in KNOWN_IMAGE_REPOS[Engine.SGLANG]
+
+
+def test_the_default_sglang_image_is_not_the_stale_ngc_one():
+    """วัดจริงบน spark-head 2026-08-14: NGC sglang 26.02 มากับ transformers 4.57.1
+    ซึ่งไม่รู้จัก qwen3_5_moe เลย · เลือกมันเป็นค่าตั้งต้นคือแจก bundle ที่ start ไม่ขึ้น
+    ให้ทุกคนที่ deploy โมเดลรุ่นใหม่"""
+    from lmds.brain.rulebased import SPARK_SGLANG_IMAGE
+
+    assert "nvcr.io/nvidia/sglang" not in SPARK_SGLANG_IMAGE
+    assert ":latest" not in SPARK_SGLANG_IMAGE, "ค่าตั้งต้นต้อง pin ไม่ใช่ tag ที่เคลื่อนที่ได้"
 
 
 # ── หน้าเว็บต้องเลือกได้เท่ากับ CLI ─────────────────────────────────────────

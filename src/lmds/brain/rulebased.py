@@ -33,8 +33,16 @@ DEFAULT_IMAGES = {
 # image upstream มี manifest arm64 ก็จริง แต่ไม่ได้ build kernel สำหรับ SM121 —
 # controller ที่ทีมรันจริงบน Spark ทุกตัวใช้ NGC ทั้งหมด (26.05-py3 / 26.06-py3)
 SPARK_VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.05-py3"
-# เหตุผลเดียวกันกับ vLLM: kernel ของ SM121 ต้องมากับ build ที่ทำให้เครื่องนี้
-SPARK_SGLANG_IMAGE = "nvcr.io/nvidia/sglang:26.02-py3"
+# ฝั่ง SGLang ของ NGC (26.02-py3) ยังมากับ transformers 4.57.1 ซึ่งไม่รู้จักสถาปัตยกรรม
+# ที่ออกหลังจากนั้นเลย — วัดจริงบน spark-head 2026-08-14: qwen3_5_moe ไม่อยู่ใน
+# CONFIG_MAPPING_NAMES ของ image นั้น แต่รู้จักใน scitrera (5.6.0) และ lmsysorg (5.12.1)
+#
+# เลือก build ของ DGX Spark ที่ transformers ใหม่พอ แทนที่จะเอา NGC มาเพราะมันคู่กับ
+# ของ vLLM · ตัวนี้ทำมาสำหรับเครื่องนี้เหมือนกัน (ชื่อมันบอก) และ pin ที่ v0 ไม่ใช่ latest
+#
+# ถ้า image ไหนไม่รู้จักสถาปัตยกรรมของโมเดล controller จะหยุดตั้งแต่ก่อน start
+# พร้อมบอกให้เปลี่ยน image — ไม่ปล่อยให้ไปตายตอนอ่าน config
+SPARK_SGLANG_IMAGE = "scitrera/dgx-spark-sglang-mm:v0"
 
 
 def default_image(engine: Engine, memory_model) -> str:
