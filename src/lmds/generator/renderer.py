@@ -157,7 +157,11 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         features.append("reasoning")
     if plan.multimodal.modalities:
         features.append("+".join(plan.multimodal.modalities))
-    engine_name = "vLLM" if plan.runtime.engine is Engine.VLLM else "llama.cpp"
+    engine_name = {
+        Engine.VLLM: "vLLM",
+        Engine.SGLANG: "SGLang",
+        Engine.LLAMACPP: "llama.cpp",
+    }[plan.runtime.engine]
     native_build = is_gguf and fit.memory_model.value == "unified"
 
     return {
@@ -302,6 +306,8 @@ def render_bundle(
         template_name = "stacked-vllm-controller.sh.j2"
     elif plan.runtime.engine is Engine.LLAMACPP:
         template_name = "single-llamacpp-controller.sh.j2"
+    elif plan.runtime.engine is Engine.SGLANG:
+        template_name = "single-sglang-controller.sh.j2"
     else:
         template_name = "single-vllm-controller.sh.j2"
     controller_path = directory / context["controller_name"]

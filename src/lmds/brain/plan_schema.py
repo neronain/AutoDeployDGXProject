@@ -29,6 +29,9 @@ class Fact(BaseModel):
 class Engine(str, Enum):
     VLLM = "vllm"
     LLAMACPP = "llamacpp"
+    # SGLang เสิร์ฟ safetensors เหมือน vLLM แต่คนละชุดธง · จำเป็นเพราะ checkpoint
+    # บางตระกูล (NVFP4 ที่ calibrate ด้วย w1/w3 scale) รันถูกต้องเฉพาะบน SGLang
+    SGLANG = "sglang"
 
 
 class Topology(str, Enum):

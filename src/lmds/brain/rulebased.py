@@ -26,18 +26,24 @@ from .plan_schema import (
 DEFAULT_IMAGES = {
     Engine.VLLM: "vllm/vllm-openai:latest",
     Engine.LLAMACPP: "ghcr.io/ggml-org/llama.cpp:server-cuda",
+    Engine.SGLANG: "lmsysorg/sglang:latest",
 }
 
 # DGX Spark (GB10 / SM121 / ARM64) ใช้ image ของ NGC ที่ NVIDIA build มาให้เครื่องนี้โดยเฉพาะ
 # image upstream มี manifest arm64 ก็จริง แต่ไม่ได้ build kernel สำหรับ SM121 —
 # controller ที่ทีมรันจริงบน Spark ทุกตัวใช้ NGC ทั้งหมด (26.05-py3 / 26.06-py3)
 SPARK_VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.05-py3"
+# เหตุผลเดียวกันกับ vLLM: kernel ของ SM121 ต้องมากับ build ที่ทำให้เครื่องนี้
+SPARK_SGLANG_IMAGE = "nvcr.io/nvidia/sglang:26.02-py3"
 
 
 def default_image(engine: Engine, memory_model) -> str:
     """image ตั้งต้นตามเครื่องเป้าหมาย — unified memory = DGX Spark"""
-    if engine is Engine.VLLM and getattr(memory_model, "value", memory_model) == "unified":
+    unified = getattr(memory_model, "value", memory_model) == "unified"
+    if unified and engine is Engine.VLLM:
         return SPARK_VLLM_IMAGE
+    if unified and engine is Engine.SGLANG:
+        return SPARK_SGLANG_IMAGE
     return DEFAULT_IMAGES[engine]
 
 
@@ -164,8 +170,14 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
     return plan
 
 
-def rule_based_plan(report: ModelReport, fit: FitReport) -> DeploymentPlan:
-    engine = Engine.LLAMACPP if report.artifact_type is ArtifactType.GGUF else Engine.VLLM
+def rule_based_plan(report: ModelReport, fit: FitReport,
+                    engine: Engine | None = None) -> DeploymentPlan:
+    # engine ที่ผู้ใช้เลือกมาชนะการเดา แต่ GGUF ยังบังคับ llama.cpp เสมอ —
+    # vLLM กับ SGLang อ่านไฟล์ GGUF ไม่ได้ ยอมตามคำขอคือส่ง bundle ที่ start ไม่ขึ้นให้
+    if report.artifact_type is ArtifactType.GGUF:
+        engine = Engine.LLAMACPP
+    elif engine is None:
+        engine = Engine.VLLM
     topology = topology_for_target(fit.target_name)
 
     context = fit.recommended_context or 8192

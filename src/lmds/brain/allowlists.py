@@ -51,7 +51,33 @@ LLAMACPP_FLAGS = {
     "--rope-scaling",
 }
 
-_BY_ENGINE = {Engine.VLLM: VLLM_FLAGS, Engine.LLAMACPP: LLAMACPP_FLAGS}
+SGLANG_FLAGS = {
+    # ยืนยันจาก `sglang serve --help` ใน scitrera/dgx-spark-sglang-mm:v0 (2026-08-14)
+    # ไม่ใส่ธงที่ controller ตั้งให้อยู่แล้ว (--context-length, --mem-fraction-static,
+    # --max-running-requests, --tool-call-parser, --reasoning-parser) — ซ้ำแล้วทะเลาะกัน
+    "--attention-backend",
+    "--moe-runner-backend",
+    "--fp4-gemm-backend",
+    "--load-format",
+    "--quantization",
+    "--dtype",
+    "--kv-cache-dtype",
+    "--max-total-tokens",
+    "--cuda-graph-max-bs",
+    "--cuda-graph-bs",
+    "--disable-cuda-graph",
+    "--tp-size",
+    "--tensor-parallel-size",
+    "--enable-metrics",
+    "--log-level",
+    "--tokenizer-path",
+}
+
+_BY_ENGINE = {
+    Engine.VLLM: VLLM_FLAGS,
+    Engine.LLAMACPP: LLAMACPP_FLAGS,
+    Engine.SGLANG: SGLANG_FLAGS,
+}
 
 # registry/repo ของ runtime image ที่ยอมรับ (เทียบส่วนก่อน :tag/@digest)
 # LLM เสนอ image นอกรายการนี้ไม่ได้ — เคยเกิดจริง: มโน ghcr.io/lmds/llamacpp-ubuntu-rtx จน start พัง
@@ -68,6 +94,11 @@ KNOWN_IMAGE_REPOS: dict[Engine, set[str]] = {
     Engine.VLLM: {"vllm/vllm-openai", "nvcr.io/nvidia/vllm", "docker.io/vllm/vllm-openai"}
     | VETTED_COMMUNITY_IMAGES,
     Engine.LLAMACPP: {"ghcr.io/ggml-org/llama.cpp", "ghcr.io/ggerganov/llama.cpp"},
+    Engine.SGLANG: {
+        "lmsysorg/sglang",                  # ทางการ
+        "nvcr.io/nvidia/sglang",            # build ของ NVIDIA สำหรับ GB10/SM121
+        "scitrera/dgx-spark-sglang-mm",     # build ที่มี patch w1/w3 scale ของ NVFP4
+    },
 }
 
 

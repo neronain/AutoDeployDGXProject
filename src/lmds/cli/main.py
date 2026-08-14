@@ -1198,17 +1198,31 @@ def inspect(
     _render_context(report, fit_reports, context, kv_dtype)
 
 
-def _build_plan_safe(report, fit, provider):
+def _engine_choice(name):
+    """แปลชื่อที่พิมพ์มาเป็น Engine — ชื่อผิดต้องหยุดตรงนี้ ไม่ใช่ไปโผล่เป็น bundle ที่ start ไม่ขึ้น"""
+    from lmds.brain.plan_schema import Engine
+
+    if not name:
+        return None
+    try:
+        return Engine(name.strip().lower())
+    except ValueError:
+        allowed = ", ".join(e.value for e in Engine)
+        err_console.print(f"[red]ไม่รู้จัก engine '{name}'[/red] — มีให้เลือก: {allowed}")
+        raise typer.Exit(code=1) from None
+
+
+def _build_plan_safe(report, fit, provider, engine=None):
     """เรียก LLM วางแผน — ถ้า provider ล้ม (quota/เครือข่าย/schema) สลับเป็น rule-based พร้อมแจ้งชัด"""
     from lmds.brain import PlanError, ProviderError, build_plan
 
     if provider is not None:
         try:
-            return build_plan(report, fit, provider)
+            return build_plan(report, fit, provider, engine=engine)
         except (PlanError, ProviderError) as exc:
             err_console.print(f"[yellow]LLM ใช้ไม่ได้: {exc}[/yellow]")
             err_console.print("[yellow]→ สลับเป็น rule-based mode อัตโนมัติ (plan จะไม่มีการวิเคราะห์เชิงลึก)[/yellow]")
-    return build_plan(report, fit, None)
+    return build_plan(report, fit, None, engine=engine)
 
 
 def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bool):
@@ -1559,6 +1573,9 @@ def plan(
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
     as_json: bool = typer.Option(False, "--json"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine",
+        help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
 ) -> None:
     """สร้าง Deployment Plan (ขั้นวางแผนของ deploy) — ยังไม่ generate สคริปต์
 
@@ -1584,7 +1601,7 @@ def plan(
             except MissingKey as exc:
                 err_console.print(f"[yellow]{exc} — ใช้ rule-based mode[/yellow]")
 
-    deployment_plan = _build_plan_safe(report, fit, provider)
+    deployment_plan = _build_plan_safe(report, fit, provider, engine=_engine_choice(engine))
 
     if as_json:
         print(deployment_plan.model_dump_json(indent=2))
@@ -1654,6 +1671,9 @@ def generate(
     output: str = typer.Option("./bundles", "--output", help="โฟลเดอร์ output ของ bundle"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine",
+        help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
 ) -> None:
     """สร้าง deployment bundle: plan → render controller/README/MODEL_PROFILE (ยังไม่ validate/zip — M6)
 
@@ -1687,7 +1707,7 @@ def generate(
         else:
             err_console.print("[yellow]ยังไม่ได้ตั้งค่า provider — ใช้ rule-based mode[/yellow]")
 
-    deployment_plan = _build_plan_safe(report, fit, provider)
+    deployment_plan = _build_plan_safe(report, fit, provider, engine=_engine_choice(engine))
 
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
     _render_plan(deployment_plan, fit)
@@ -1964,6 +1984,9 @@ def deploy(
     output: str = typer.Option("./bundles", "--output"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
     concurrency: int = typer.Option(1, "--concurrency"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine",
+        help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
 ) -> None:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
@@ -2006,7 +2029,7 @@ def deploy(
         else:
             err_console.print("[yellow]ยังไม่ได้ตั้งค่า provider — ใช้ rule-based mode[/yellow]")
 
-    deployment_plan = _build_plan_safe(report, fit, provider)
+    deployment_plan = _build_plan_safe(report, fit, provider, engine=_engine_choice(engine))
 
     _render_plan(deployment_plan, fit)
 

@@ -107,8 +107,15 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         plan.warnings.append(f"แก้ model_id จาก {plan.model_id!r} เป็น {report.repo_id}")
         plan.model_id = report.repo_id
 
-    expected_engine = Engine.LLAMACPP if report.artifact_type is ArtifactType.GGUF else Engine.VLLM
-    if plan.runtime.engine is not expected_engine:
+    # GGUF อ่านได้เฉพาะ llama.cpp · ส่วน safetensors เสิร์ฟได้ทั้ง vLLM และ SGLang
+    # จึงบังคับเฉพาะฝั่ง GGUF · เดิมบังคับเป็น vLLM เสมอ ทำให้ผู้ใช้เลือก SGLang ไม่ได้เลย
+    if report.artifact_type is ArtifactType.GGUF:
+        allowed = {Engine.LLAMACPP}
+        expected_engine = Engine.LLAMACPP
+    else:
+        allowed = {Engine.VLLM, Engine.SGLANG}
+        expected_engine = Engine.VLLM
+    if plan.runtime.engine not in allowed:
         plan.warnings.append(
             f"แก้ engine จาก {plan.runtime.engine.value} เป็น {expected_engine.value} ตาม artifact จริง"
         )
@@ -345,10 +352,21 @@ def build_plan(
     fit: FitReport,
     provider: LlmProvider | None,
     max_attempts: int = MAX_ATTEMPTS,
+    engine: Engine | None = None,
 ) -> DeploymentPlan:
-    """provider=None → rule-based (degraded/--no-llm); มี provider → LLM + validate + retry"""
+    """provider=None → rule-based (degraded/--no-llm); มี provider → LLM + validate + retry
+
+    `engine` คือสิ่งที่ผู้ใช้เลือกมาเอง (`--engine sglang`) · safetensors เสิร์ฟได้ทั้ง
+    vLLM และ SGLang การเดาจึงเป็นแค่ค่าตั้งต้น ไม่ใช่คำตัดสิน
+    """
     if provider is None:
-        plan = harden_plan(rule_based_plan(report, fit), report, fit)
+        plan = harden_plan(rule_based_plan(report, fit, engine), report, fit)
+        _log_session(report, fit, [], plan)
+        return plan
+
+    # ผู้ใช้ระบุ engine มา = ไม่ต้องให้ LLM เลือกให้ · เดินทาง rule-based ที่แน่นอนกว่า
+    if engine is not None:
+        plan = harden_plan(rule_based_plan(report, fit, engine), report, fit)
         _log_session(report, fit, [], plan)
         return plan
 

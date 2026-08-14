@@ -893,6 +893,42 @@ lmds web --stop                   # หยุดตัวที่รันเ�
 lmds web -b --new-token           # เปลี่ยน token (ลิงก์เดิมใช้ไม่ได้ทันที)
 ```
 
+### เลือกรันไทม์เอง — vLLM หรือ SGLang
+
+safetensors เสิร์ฟได้ทั้งสองตัว การเดาจากชนิดไฟล์จึงเป็นแค่ค่าตั้งต้น:
+
+```bash
+lmds deploy <repo> --engine sglang       # หรือ vllm · ใช้ได้กับ plan/generate ด้วย
+```
+
+| | vLLM | SGLang | llama.cpp |
+|---|---|---|---|
+| ไฟล์ที่อ่านได้ | safetensors | safetensors | **GGUF** |
+| stacked หลายเครื่อง | ✅ | ยังไม่รองรับใน LMDS | ❌ |
+| เลือกได้ด้วย `--engine` | ✅ | ✅ | บังคับอัตโนมัติเมื่อเป็น GGUF |
+
+**GGUF ไม่มีทางกลายเป็น SGLang** ต่อให้สั่ง — SGLang อ่านไฟล์นั้นไม่ได้ ยอมตามคำขอ
+คือส่ง bundle ที่ start ไม่ขึ้นให้
+
+ทำไมต้องมี SGLang: checkpoint NVFP4 บางตระกูล (เช่น `sparkarena/Minimax-M3-*`)
+calibrate ด้วย w1/w3 scale ซึ่งรันถูกต้องเฉพาะบน SGLang · ไม่มีตัวนี้ก็ต้องยกทั้งตระกูล
+ออกจากระบบ
+
+**ชื่อ knob เหมือนกันทุก engine** แม้ SGLang จะเรียกธงคนละชื่อ — `--context`,
+`--gpu-util`, `MAX_MODEL_LEN`, `bundle.env` ใช้ชื่อเดิมหมด การแปลงเกิดที่จุดเดียว
+ตอนประกอบคำสั่งส่งให้ engine:
+
+| knob ของ controller | vLLM | SGLang |
+|---|---|---|
+| `MAX_MODEL_LEN` | `--max-model-len` | `--context-length` |
+| `GPU_MEMORY_UTILIZATION` | `--gpu-memory-utilization` | `--mem-fraction-static` |
+| `MAX_NUM_SEQS` | `--max-num-seqs` | `--max-running-requests` |
+| `API_KEY` | env `VLLM_API_KEY` | ธง `--api-key` |
+| tool calling | `--enable-auto-tool-choice` + parser | parser อย่างเดียว |
+
+image ตั้งต้นบน DGX Spark คือ `nvcr.io/nvidia/sglang:26.02-py3` (build ที่มี kernel
+ของ SM121) · เปลี่ยนได้ด้วย `SGLANG_IMAGE=<image> ./controller start`
+
 ### context ควรตั้งเท่าไร — ถามได้
 
 `lmds inspect` บอกได้อยู่แล้วว่า context สูงสุดเท่าไร แต่ค่านั้นคือค่าที่ **คนเดียว**
