@@ -66,3 +66,19 @@ def test_the_engine_is_asked_for_parser_names(tmp_path):
     assert "list_parsers() {" in text
     assert "parsers)         list_parsers ;;" in text
     assert "lazy" in text, "registry ปกติว่างเปล่า ชื่อจริงอยู่ใน lazy registry"
+
+
+def test_reasoning_accepts_both_field_names(tmp_path):
+    """vLLM เปลี่ยนชื่อฟิลด์ระหว่างรุ่น — ดูชื่อเดียวคือรายงานผิดว่า parser ไม่ทำงาน"""
+    block = _controller(tmp_path)
+
+    assert 'msg.get("reasoning_content") or msg.get("reasoning")' in block
+
+
+def test_an_empty_reasoning_is_not_reported_as_a_broken_parser(tmp_path):
+    """ไม่มี chain-of-thought อาจแปลว่าโมเดลไม่ได้คิด ไม่ใช่ว่า parser ผิด"""
+    text = _controller(tmp_path)
+    block = text[text.index("test_reasoning() {"):text.index("PYEOF\n}", text.index("test_reasoning() {"))]
+
+    assert "ไม่ใช่หลักฐานว่า parser ผิด" in block
+    assert "</think>" in block, "ต้องแยกเคสที่โมเดลพ่น think ออกมาจริงจากเคสที่ไม่ได้คิดเลย"

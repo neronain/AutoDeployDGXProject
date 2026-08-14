@@ -640,7 +640,9 @@ payload = json.dumps({
 req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
                              data=payload, headers={"Content-Type": "application/json"})
 msg = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]["message"]
-think = msg.get("reasoning_content") or ""
+# vLLM ใช้มาแล้วสองชื่อ: `reasoning_content` ในรุ่นเก่า และ `reasoning` ในรุ่นใหม่
+# ดูแค่ชื่อเดียวจะรายงานว่า parser ไม่ทำงานทั้งที่ทำงานอยู่ แล้วส่งคนไปแก้ของที่ถูกแล้ว
+think = msg.get("reasoning_content") or msg.get("reasoning") or ""
 answer = msg.get("content") or ""
 if "1591" not in (think + answer):
     print("FAIL: ไม่พบคำตอบ 1591")
@@ -648,7 +650,15 @@ if "1591" not in (think + answer):
     print("  content  :", answer[:200])
     sys.exit(1)
 if not think:
-    print("WARN: ตอบถูกแต่ reasoning_content ว่าง — parser อาจไม่ได้แยก chain-of-thought ออกมา")
+    # แยกสองกรณีให้ชัด ไม่งั้นคนจะไปไล่เปลี่ยน parser ทั้งที่โมเดลไม่ได้คิดออกมาเลย
+    leaked = any(m in answer for m in ("</think>", "<think>"))
+    if leaked:
+        print("WARN: โมเดลพ่น <think> ออกมาใน content — --reasoning-parser ไม่ตรงหรือยังไม่ได้ตั้ง")
+    else:
+        print("WARN: ตอบถูก แต่ไม่มีทั้ง reasoning_content และร่องรอย <think> ใน content")
+        print("  แปลว่าโมเดลไม่ได้แยก chain-of-thought ออกมาในรอบนี้ ซึ่งอาจถูกต้องแล้ว")
+        print("  (คำถามง่ายเกินจนไม่ต้องคิด หรือ template ปิด thinking ไว้)")
+        print("  ไม่ใช่หลักฐานว่า parser ผิด — ถ้าจะยืนยัน ให้ลองคำถามที่ต้องคิดหลายขั้น")
     sys.exit(0)
 print(f"PASS: 1591 ถูกต้อง · reasoning {len(think)} ตัวอักษร · answer {len(answer)} ตัวอักษร")
 PYEOF

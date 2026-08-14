@@ -208,6 +208,7 @@ LMDS *deploy* โมเดลลงเครื่องคุณ ส่วน L
 เป็นสมอง (`lmds config set-provider openai-compat --base-url http://litegate:8080/v1`),
 `managed_by` ที่ทำให้คำแนะนำของ LiteGate กลายเป็นคำสั่งที่ก๊อปไปวางได้, และ parser ที่ LiteGate
 บอกว่าขาดคือ knob ที่ LMDS เปิดได้ทันทีด้วย `restart --tool-parser` แล้วพิสูจน์ด้วย `test-tools`
+ซึ่งวัดโหมด `auto` — โหมดเดียวกับที่ agent ใช้จริง ไม่ใช่โหมดบังคับที่ผ่านได้แม้ parser ผิด
 
 ## เอกสาร
 

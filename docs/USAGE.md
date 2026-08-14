@@ -233,11 +233,26 @@ REASONING_PARSER=deepseek_r1 ./xxx-single.sh start       # ถาวร (ใส�
 
 **เลือก parser ตัวไหน** — เหมือน tool parser คือแยกตามตระกูลโมเดล ใส่ผิดไม่ error
 แต่จะไม่แยกอะไรออกมาเลย ที่ใช้บ่อย: `deepseek_r1` (DeepSeek-R1 และ Qwen3 ที่ใช้
-`<think>`), `qwen3`, `granite` · ดูรายชื่อที่ image รองรับ:
+`<think>`), `qwen3`, `nemotron_v3` (Nemotron 3), `granite` · **ถามชื่อจาก engine
+ด้วย `./xxx-single.sh parsers`** อย่าอ่านจากชื่อไฟล์ (เหตุผลเดียวกับ tool parser)
 
-```bash
-docker exec <container> ls /usr/local/lib/python3*/dist-packages/vllm/reasoning/
-```
+**อ่านผล `test-reasoning` ให้ถูก** — `WARN` มีสองความหมายที่คนละเรื่องกัน และคำสั่ง
+แยกให้แล้ว:
+
+| ที่เห็น | แปลว่า | ต้องทำอะไร |
+|---|---|---|
+| `PASS` + จำนวนตัวอักษร | parser แยกได้จริง | ไม่ต้องทำอะไร |
+| `WARN` + พบ `<think>` ใน content | ความคิดหลุดออกมาดิบ ๆ | parser ผิดหรือยังไม่ได้ตั้ง — แก้ |
+| `WARN` + ไม่มีร่องรอย `<think>` เลย | โมเดลไม่ได้คิดในรอบนั้น | **มักไม่ใช่ปัญหา** ลองคำถามที่ต้องคิดหลายขั้นก่อนสรุป |
+
+> เดิมคำสั่งนี้อ่านแค่ `reasoning_content` · vLLM รุ่นใหม่บางตัวใช้ชื่อ `reasoning`
+> ทำให้ขึ้น WARN ทั้งที่ parser ทำงานอยู่ ตอนนี้อ่านทั้งสองชื่อแล้ว
+
+⚠️ **สองหน้าต่างของ vLLM แยก reasoning ไม่เท่ากัน** — วัดจริงกับ
+Nemotron-3-Super บน image ล่าสุด: `/v1/messages` (endpoint Anthropic ในตัว)
+คืน `thinking` block มีเนื้อครบ ขณะที่ `/v1/chat/completions` คืน
+`reasoning_content` ว่าง · ถ้าลูกค้าปลายทางคือ Claude Code ให้ดูฝั่ง
+`/v1/messages` เป็นหลัก เพราะนั่นคือเส้นทางที่มันเดินจริง
 
 > **ถ้าใช้ LiteGate อยู่ด้วย** ชุดทดสอบของมันจะรายงานเองว่า `reasoning_not_separated`
 > พร้อมคำสั่งข้างบน — ไม่ต้องรอให้ผู้ใช้มาบ่นว่าคำตอบแปลก
@@ -697,7 +712,7 @@ VRAM · Disk free และการ์ด GPU (compute/power/temp/fan + clocks 
 | กลุ่ม | มีอะไร |
 |---|---|
 | **ตั้งค่าตอน start** | `port` · `context` · `slots` · `bind` · `API key` · `gpu-util` (เฉพาะ vLLM) |
-| **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `bench` · `stress` · `client-config` · `network-info` · `status` |
+| **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` |
 | **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` |
 | **จัดการ** | `restart` · `doctor` · `logs` · `repair` · `verify-files` · `enable`/`disable` · `remove` |
 
@@ -1097,7 +1112,7 @@ lmds web -b --new-token                                  # เปลี่ยน
 |---|---|
 | **download** | โหลด weight แล้ว **รัน `verify-files` ต่อให้อัตโนมัติ** พร้อม log สด — ปุ่มเปลี่ยนเป็น `start` เองเมื่อครบ |
 | **start / stop / restart** | ใช้ตัวเลือกที่ตั้งไว้ในแท็บ manage |
-| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `bench` · `stress` · `client-config` · `network-info` · `status` |
+| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` |
 | **manage** | port / context / slots / bind / API key · autostart · คำสั่ง stacked · repair · remove |
 | **doctor** | ผลเดียวกับ `lmds doctor` พร้อมคำสั่งแก้ |
 | **logs** | log ล่าสุด 300 บรรทัด |
@@ -1265,6 +1280,53 @@ lmds hardware
 ./xxx-single.sh logs 500 > failure.log
 # + คำสั่งเต็มที่รันแล้วพัง + ข้อความ error ทั้งหมด
 ```
+
+## 8.5 บันทึกจากของจริง — Nemotron-3-Super-120B-A12B-NVFP4 บน DGX Spark
+
+วัดเองบน spark-head (GB10 ตัวเดียว) 14 ส.ค. 2569 · เก็บไว้เพราะเป็นโมเดลสายคิด +
+เรียก tool ที่ deploy ยากที่สุดเท่าที่ผ่านมา และหลายอย่างไม่ตรงกับที่การ์ดเขียน
+
+**flag ที่ใช้จริงแล้วผ่านครบ:**
+
+```
+--max-model-len 262144 --gpu-memory-utilization 0.85 --max-num-seqs 4
+--kv-cache-dtype fp8
+--enable-auto-tool-choice --tool-parser qwen3_xml --reasoning-parser nemotron_v3
+```
+
+| วัดได้ | ค่า |
+|---|---|
+| GPU KV cache | 1,297,920 tokens |
+| concurrency ที่ 262k/คำขอ | **25.41x** (ไม่ใช่ 4.95x เพราะเป็น hybrid Mamba — มีแค่บาง layer ที่เก็บ KV โต) |
+| โหลด weight 17 shard | ~9 นาที |
+| prompt 100k tokens | 41 วินาที |
+| tool calling `auto` · หลาย tool พร้อมกัน | ผ่านทั้งคู่ |
+
+**สามเรื่องที่การ์ดของ NVIDIA เขียนไว้ต่างจากที่เราต้องใช้ — และเหตุผล:**
+
+1. **`--tool-call-parser qwen3_coder` vs `qwen3_xml`** — ไม่ต่างกันเลย ใน vLLM
+   รุ่นใหม่สองชื่อนี้ map ไป `Qwen3EngineToolParser` **คลาสเดียวกัน** จะใส่ชื่อไหน
+   ก็ได้ · ที่ต้องระวังคือ `hermes` ซึ่งอ่านรูปแบบของโมเดลตระกูลนี้ไม่ออก
+2. **`--reasoning-parser-plugin super_v3_reasoning_parser.py` + `super_v3`** —
+   จำเป็นเฉพาะ `vllm==0.20.0` ที่การ์ดปักไว้ · image ใหม่กว่ามี `nemotron_v3`
+   เป็น parser engine ในตัวแล้ว (`vllm.parser.nemotron_v3`) **ไม่ต้องโหลดไฟล์
+   ปลั๊กอินมา** · ตัว `super_v3` เองเป็นแค่ subclass ของ `deepseek_r1` ที่เพิ่ม
+   การกู้เคส thinking ว่าง
+3. **`--trust-remote-code`** — จำเป็นบน 0.20.0 · image ใหม่รู้จักสถาปัตยกรรม
+   NemotronH แล้ว จึงรันได้โดยไม่ต้องเปิด
+
+**context 1M ทำได้จริง** — การ์ดบอกให้ตั้ง `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` กับ
+`--max-model-len 1048576` · ด้วย KV cache 1.29M tokens ที่วัดได้ ยังเหลือราว 6 สาย
+พร้อมกันที่ 1M ต่อคำขอ (เดิมเคยสรุปผิดว่าไปไม่ถึง — สรุปจากขนาด KV แบบ dense
+ทั้งที่โมเดลนี้เป็น hybrid)
+
+**flag ที่ยังตั้งผ่าน LMDS ไม่ได้** (ต้องแก้ template ก่อน): `--speculative_config`
+(MTP — เร่งความเร็วได้มาก), `--moe-backend`, `--async-scheduling`,
+`--enable-chunked-prefill`, `--mamba-ssm-cache-dtype` และ env อย่าง
+`VLLM_NVFP4_GEMM_BACKEND` · ที่ตั้งได้ตอนนี้คือ `--context`, `--gpu-mem`,
+`--max-num-seqs`, `--tool-parser`, `--reasoning-parser`
+
+---
 
 ## 9. ความปลอดภัย — ข้อควรปฏิบัติ
 

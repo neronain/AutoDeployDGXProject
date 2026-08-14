@@ -108,7 +108,8 @@ lmds web --bind 0.0.0.0 -b      # asks for a token once, then remembers it — t
 ```
 
 Deploy wizard, download + verify, start/stop/restart, port/context/slots/API key/bind, doctor,
-logs, the test suite (`test-text` `test-vision` `test-tools` `bench` `stress`), autostart, stacked
+logs, the test suite (`test-text` `test-vision` `test-tools` `bench` `stress`), `parsers`,
+autostart, stacked
 commands, repair, remove — **and models on other machines are controlled exactly like local ones**.
 
 - **Readable before it is legible** — the same CPU / Unified·RAM / VRAM / Disk gauges for every
