@@ -362,3 +362,68 @@ def test_stack_flag_defaults_to_joining():
 def test_cluster_note_separates_slow_link_from_unconfigured_link():
     assert "ยังไม่ได้ตั้ง IP จริง" in cl.cluster_note(host(ip="169.254.31.110"))
     assert "ไม่พบ GPU" in cl.cluster_note(host(count=0))
+
+
+# ── ลิงก์ที่ negotiate ไม่ขึ้น ────────────────────────────────────────────────
+# NVIDIA ตรวจรับลิงก์ระหว่าง Spark ที่ >=184 Gbit/s · แต่พอร์ตที่ต่อผ่าน switch แล้วปล่อยให้
+# auto-negotiate มักลงมาเหลือ 50G · /sys/.../speed รายงานค่าที่ negotiate ได้ ไม่ใช่ค่าที่การ์ด
+# ทำได้ ทุกอย่างจึงผ่านเกณฑ์ 25G ไปเงียบ ๆ ทั้งที่ช้ากว่าที่ควรสี่เท่า
+
+def test_a_spark_link_below_spec_is_flagged():
+    check = cl.check_cluster_ip(host(gbps=50), "10.10.0.1")
+    assert check["state"] == "ok", "ยังใช้ได้ — เตือนต้องไม่กลายเป็นบล็อก"
+    assert check["warning"]["kind"] == "under-negotiated"
+    assert check["warning"]["speed_gbps"] == 50
+    assert check["warning"]["expected_gbps"] == 184
+
+
+def test_a_link_at_full_speed_says_nothing():
+    assert cl.check_cluster_ip(host(gbps=200), "10.10.0.1")["warning"] is None
+
+
+def test_a_hundred_gig_spark_link_is_still_below_spec():
+    """เคสที่เงียบที่สุด — 100G ผ่านทุกเกณฑ์เดิมและถูกรายงานว่า "stacked ได้เต็มที่\""""
+    assert cl.check_cluster_ip(host(gbps=100), "10.10.0.1")["warning"] is not None
+
+
+def test_a_non_spark_machine_is_not_measured_against_spark_spec():
+    """เกณฑ์ 184G เป็นของ ConnectX-7 บน Spark · การ์ด 100G ของเครื่องอื่นไม่ได้ผิดอะไร"""
+    other = host(gpu="NVIDIA RTX 5090", gbps=100)
+    assert cl.check_cluster_ip(other, "10.10.0.1")["warning"] is None
+
+
+def test_an_ordinary_nic_is_not_measured_against_spark_spec():
+    payload = host(gbps=100)
+    payload["fabric"]["links"][0]["connectx"] = False
+    assert cl.check_cluster_ip(payload, "10.10.0.1")["warning"] is None
+
+
+def test_the_group_says_which_machines_run_below_spec():
+    groups = cl.cluster_groups([
+        {"name": "a", "host": host(ip="10.10.0.1", gbps=200), "cluster_ip": "10.10.0.1"},
+        {"name": "b", "host": host(ip="10.10.0.2", gbps=50), "cluster_ip": "10.10.0.2"},
+    ])
+    warning = groups[0]["warnings"][0]
+    assert warning["kind"] == "under-negotiated"
+    assert warning["names"] == ["b"]
+    assert warning["speed_gbps"] == 50
+
+
+def test_running_below_spec_never_shrinks_the_cluster():
+    """ช้ากว่าที่ควร ≠ ใช้ไม่ได้ · ถ้าไปโผล่เป็น blocker คือเราตัดเครื่องที่ทำงานได้ทิ้ง"""
+    groups = cl.cluster_groups([
+        {"name": "a", "host": host(ip="10.10.0.1", gbps=50), "cluster_ip": "10.10.0.1"},
+        {"name": "b", "host": host(ip="10.10.0.2", gbps=50), "cluster_ip": "10.10.0.2"},
+    ])
+    group = groups[0]
+    assert group["ready"] is True
+    assert group["blockers"] == []
+    assert group["usable_world_size"] == group["world_size"] == 2
+
+
+def test_a_group_at_full_speed_carries_no_warning():
+    groups = cl.cluster_groups([
+        {"name": "a", "host": host(ip="10.10.0.1"), "cluster_ip": "10.10.0.1"},
+        {"name": "b", "host": host(ip="10.10.0.2"), "cluster_ip": "10.10.0.2"},
+    ])
+    assert groups[0]["warnings"] == []

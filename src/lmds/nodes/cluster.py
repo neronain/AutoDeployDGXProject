@@ -16,6 +16,10 @@ from typing import Iterable
 # ต่ำกว่านี้ stacked จะช้ากว่ารันแยกเครื่องจนไม่คุ้ม (activation/KV วิ่งข้ามเครื่องทุก token)
 MIN_STACK_GBPS = 25
 
+# NVIDIA ตรวจรับลิงก์ระหว่าง DGX Spark สองเครื่องที่ >=184 Gbit/s ต่อเส้น
+# https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html
+SPARK_LINK_GBPS = 184
+
 
 def machine_signature(host: dict) -> tuple:
     """ลายเซ็นฮาร์ดแวร์ที่ต้องตรงกันทุก rank"""
@@ -61,6 +65,28 @@ def fabric_links(host: dict) -> list[dict]:
     ]
 
 
+def _is_spark(host: dict) -> bool:
+    """เครื่องนี้เป็น DGX Spark ไหม — ดูจากชื่อ GPU (GB10) ไม่ใช่ชื่อเครื่องที่ตั้งเองได้"""
+    return any("gb10" in (gpu.get("name") or "").lower() for gpu in host.get("gpus") or [])
+
+
+def link_warning(host: dict, link: dict) -> dict | None:
+    """ลิงก์นี้ negotiate ได้ต่ำกว่าที่การ์ดควรทำได้ไหม — None = ไม่มีอะไรต้องเตือน
+
+    `/sys/class/net/*/speed` คือความเร็วที่ **negotiate ได้** ไม่ใช่ความสามารถของการ์ด
+    พอร์ต 200G ที่ต่อผ่าน switch แล้ว auto-negotiate ลงมาเหลือ 50G จะรายงาน 50 ซึ่งผ่าน
+    MIN_STACK_GBPS ไปได้สบาย — คลัสเตอร์ช้ากว่าที่ควรสี่เท่าโดยไม่มีอะไรตรงไหนบอกเลย
+
+    คืนรหัส ไม่ใช่ประโยค — CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเอง
+    """
+    if not _is_spark(host) or not link.get("connectx"):
+        return None
+    speed = link.get("speed_gbps") or 0
+    if not 0 < speed < SPARK_LINK_GBPS:
+        return None
+    return {"kind": "under-negotiated", "speed_gbps": speed, "expected_gbps": SPARK_LINK_GBPS}
+
+
 def suggest_cluster_ip(host: dict) -> str:
     """IP ที่ควรใช้เป็น cluster IP — เส้นที่เร็วที่สุดที่มี IP อยู่แล้ว (ว่าง = ต้องกรอกเอง)"""
     links = fabric_links(host)
@@ -79,22 +105,25 @@ def check_cluster_ip(host: dict, cluster_ip: str) -> dict:
         suggestion = suggest_cluster_ip(host)
         hint = f" — เสนอ {suggestion}" if suggestion else ""
         return {"state": "unset", "message": f"ยังไม่ได้ตั้ง cluster IP{hint}",
-                "iface": "", "speed_gbps": None}
+                "iface": "", "speed_gbps": None, "warning": None}
     links = (host.get("fabric") or {}).get("links") or []
     match = next((link for link in links if link.get("ip") == cluster_ip), None)
     if match is None:
         # ไม่ใช่ error เสมอไป: IP อาจอยู่บนการ์ดที่ตรวจไม่ได้ แต่ต้องเตือนเพราะพิมพ์ผิดก็มาทางนี้
-        return {"state": "mismatch", "iface": "", "speed_gbps": None,
+        return {"state": "mismatch", "iface": "", "speed_gbps": None, "warning": None,
                 "message": f"{cluster_ip} ไม่ตรงกับการ์ดที่ตรวจพบบนเครื่องนี้ — ตรวจอีกครั้ง"}
     if _is_link_local(cluster_ip):
-        return {"state": "link-local", "iface": match["iface"],
+        return {"state": "link-local", "iface": match["iface"], "warning": None,
                 "speed_gbps": match.get("speed_gbps"),
                 "message": f"{cluster_ip} เป็น link-local (169.254.x.x) — เส้นนี้ยังไม่ได้ตั้งค่า IP จริง"}
     speed = match.get("speed_gbps") or 0
     if speed < MIN_STACK_GBPS:
-        return {"state": "slow", "iface": match["iface"], "speed_gbps": speed,
+        return {"state": "slow", "iface": match["iface"], "speed_gbps": speed, "warning": None,
                 "message": f"{cluster_ip} อยู่บน {match['iface']} {speed}G — ช้าเกินไปสำหรับ stacked"}
+    # เร็วพอจะ stacked แต่ยังต่ำกว่าที่การ์ดควรทำได้ = ใช้ได้จริง ห้ามตัดออกจากกลุ่ม
+    # จึงเป็นคนละช่องกับ state — `usable_world_size` นับจาก state == "ok" เท่านั้น
     return {"state": "ok", "iface": match["iface"], "speed_gbps": speed,
+            "warning": link_warning(host, match),
             "message": f"{cluster_ip} บน {match['iface']} {speed}G"}
 
 
@@ -269,6 +298,17 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
                 **check,
             })
 
+        # เตือน ≠ บล็อก · กลุ่มยังพร้อมและยังนับ world size เต็ม แค่ต้องรู้ว่าวิ่งไม่เต็มสาย
+        warnings = []
+        under = [d for d in detail if (d.get("warning") or {}).get("kind") == "under-negotiated"]
+        if under:
+            warnings.append({
+                "kind": "under-negotiated",
+                "names": [d["name"] for d in under],
+                "speed_gbps": min(d["warning"]["speed_gbps"] for d in under),
+                "expected_gbps": SPARK_LINK_GBPS,
+            })
+
         addresses = [d["cluster_ip"] for d in detail if d["cluster_ip"]]
         # blockers เป็นรหัส ไม่ใช่ประโยค — CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเองคนละภาษา
         blockers = []
@@ -302,6 +342,7 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             "fabric_network": network,
             "parallelism": parallelism_note(gpu_count * len(members)),
             "blockers": blockers,
+            "warnings": warnings,
             "ready": not blockers,
         })
     groups.sort(key=lambda g: (-len(g["members"]), g["gpu"]))

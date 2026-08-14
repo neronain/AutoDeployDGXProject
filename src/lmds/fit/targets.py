@@ -38,6 +38,8 @@ PRESETS: dict[str, TargetSpec] = {
     ),
     # 4 เครื่อง: TP=4 หาร attention heads ของโมเดลส่วนใหญ่ลงตัว (64/4=16) ต่างจาก 3 เครื่อง
     # ที่ TP=3 มักหารไม่ลง — ยังไม่ได้ทดสอบจริง จึงคิดแบบ conservative
+    # ต้องมี switch ด้วย: NVIDIA ต่อสายตรงถึงกันได้สูงสุด 3 เครื่อง เกินกว่านั้นต้องผ่าน
+    # switch ซึ่งรองรับได้ถึง 4 (docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
     "dgx-spark-stacked-4": TargetSpec(
         "dgx-spark-stacked-4", MemoryModel.UNIFIED, 128.0, 4, system_ram_gb=None, tested=False
     ),

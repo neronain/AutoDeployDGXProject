@@ -737,6 +737,13 @@ def node_cluster(
         table.add_row(name, f"{best}G" if best else "—", cluster_ip or "[yellow]—[/yellow]", verdict)
         if stack and check["state"] in {"mismatch", "slow", "link-local"}:
             table.add_row("", "", "", f"[yellow]{check['message']}[/yellow]")
+        warning = check.get("warning")
+        if stack and warning and warning["kind"] == "under-negotiated":
+            table.add_row("", "", "", (
+                f"[yellow]{check['iface']} ขึ้นแค่ {warning['speed_gbps']}G — ConnectX ของ Spark "
+                f"ควรได้ >={warning['expected_gbps']}G · ตั้ง port speed ที่ switch เป็น 200G เอง "
+                f"(auto-negotiate มักลงมาเหลือ 50G)[/yellow]"
+            ))
 
     add_row(local_name + " (hub)", local, machines[0]["cluster_ip"], stack_self)
     # ลำดับเดียวกับที่ลากจัดไว้ในหน้าเว็บ — สมาชิกตัวแรกของกลุ่มคือเครื่องที่ถูกเสนอเป็น head
@@ -787,6 +794,14 @@ def node_cluster(
                     if gone["reason"] == "same-machine"
                     else f"{gone['name']} ฮาร์ดแวร์ตรงกัน แต่ไม่มี subnet ร่วมกับกลุ่มนี้ — ไม่ถูกนับใน world size")
             console.print(f"    [dim]· {text}[/dim]")
+        # เตือน ≠ บล็อก · กลุ่มยังพร้อม แต่ถ้าไม่พูดตรงนี้จะไม่มีใครรู้ว่าวิ่งไม่เต็มสาย
+        for warning in group.get("warnings", []):
+            if warning["kind"] == "under-negotiated":
+                console.print(
+                    f"    [yellow]· สายวิ่งแค่ {warning['speed_gbps']}G "
+                    f"(ควรได้ >={warning['expected_gbps']}G): {', '.join(warning['names'])} — "
+                    f"stacked ได้อยู่ แต่ช้ากว่าที่ควร ตรวจ port speed ที่ switch[/yellow]"
+                )
         for blocker in group["blockers"]:
             names = ", ".join(blocker["names"])
             text = {

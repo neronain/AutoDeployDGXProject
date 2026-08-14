@@ -2102,6 +2102,10 @@ function ipHint(m) {
   if (ip.state === "mismatch") return `${m.cluster_ip} does not match any interface found on that machine`;
   if (ip.state === "link-local") return `${m.cluster_ip} is a link-local address (169.254.x.x) — that port has no real IP configured yet`;
   if (ip.state === "slow") return `${m.cluster_ip} is on ${ip.iface} at ${ip.speed_gbps}G — too slow to stack`;
+  if (ip.warning && ip.warning.kind === "under-negotiated") {
+    // usable, just not at full speed — a switch port left on auto-negotiate commonly lands at 50G
+    return `${ip.iface} negotiated only ${ip.warning.speed_gbps}G — a Spark ConnectX link should reach ${ip.warning.expected_gbps}G. Set the switch port to 200G.`;
+  }
   return "";
 }
 
@@ -2228,6 +2232,13 @@ function groupHeader(g, index) {
     "duplicate-ip": "cluster IP ซ้ำกันมากกว่าหนึ่งเครื่อง: ",
     "split-fabric": "cluster IP อยู่คนละ subnet คุยกันไม่ได้: ",
   }[b.kind] || (b.kind + ": ")) + b.names.join(", "))}</div>`).join("");
+  // เตือน ≠ บล็อก · กลุ่มยังพร้อมและ world size ยังเต็ม แค่สายวิ่งช้ากว่าที่การ์ดทำได้
+  const warnings = (g.warnings || []).map(w => `<div class="warn-line">${esc(
+    w.kind === "under-negotiated"
+      ? `สายวิ่งแค่ ${w.speed_gbps}G (ควรได้ ≥${w.expected_gbps}G): ${w.names.join(", ")} — `
+        + "stacked ได้อยู่ แต่ช้ากว่าที่ควร ตรวจ port speed ที่ switch (auto-negotiate มักเหลือ 50G)"
+      : `${w.kind}: ${(w.names || []).join(", ")}`
+  )}</div>`).join("");
   // เครื่องที่ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่ใช่ blocker ของกลุ่มนี้ (กลุ่มยัง stacked ได้)
   // แต่ต้องบอก ไม่งั้นผู้ใช้จะงงว่าทำไมเครื่องนั้นไม่โผล่มาในคลัสเตอร์
   const excluded = (g.excluded || []).map(x => `<div class="dim gsub">${esc(
@@ -2249,7 +2260,7 @@ function groupHeader(g, index) {
     ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
       ? `<div class="warn-line">${g.world_size} GPU หารจำนวน attention head ของโมเดลส่วนใหญ่ไม่ลงตัว —
          ใช้ tensor-parallel ${g.parallelism.largest_tp} + pipeline stage แทน TP ${g.world_size}</div>` : ""}
-    ${blockers}${excluded}
+    ${blockers}${warnings}${excluded}
     ${g.ready ? `<div class="dim gsub">deploy ข้ามเครื่องกลุ่มนี้:
       <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> บน
       <b style="font-weight:500">${esc(g.members[0].name)}</b> แล้ว

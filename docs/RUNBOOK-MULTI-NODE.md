@@ -258,3 +258,24 @@ NCCL_SOCKET_IFNAME=... NCCL_IB_HCA=... lmds node ctl spark-head <slug> restart
 ```text
 พร้อม spark1 + spark2 + spark3 — world size 3 (TP=2 + pipeline (TP=3 หาร head ไม่ลง))
 ```
+
+
+## ลิงก์ขึ้นแล้ว แต่ขึ้นที่เท่าไร
+
+`/sys/class/net/<iface>/speed` รายงานความเร็วที่ **negotiate ได้** ไม่ใช่ความสามารถของการ์ด
+พอร์ต 200G ที่ต่อผ่าน switch แล้วปล่อยให้ auto-negotiate มักลงมาเหลือ 50G — ลิงก์ขึ้น ping ผ่าน
+NCCL วิ่งได้ ทุกอย่างดูปกติ แต่ช้ากว่าที่ควรสี่เท่า
+
+NVIDIA ตรวจรับลิงก์ระหว่าง Spark ที่ **≥184 Gbit/s** ต่อเส้น `lmds node cluster` จะเตือนเองเมื่อ
+เจอ ConnectX ของ Spark ที่ต่ำกว่านั้น — เตือนอย่างเดียว ไม่ตัดเครื่องออกจากกลุ่ม เพราะยังใช้ได้จริง
+
+```bash
+cat /sys/class/net/enp1s0f1np1/speed    # 200000 = 200G · 50000 = ต้องไปแก้ที่ switch
+```
+
+แก้ที่ port ของ switch ให้ตั้ง 200 Gbps ตายตัว อย่าปล่อย auto ส่วน throughput จริงที่วัดได้
+ราว 100 Gbps ต่อลิงก์เป็นเพดานของ PCIe Gen5 x4 ไม่ใช่การตั้งค่าผิด
+
+เพดานจำนวนเครื่อง: ต่อสายตรงถึงกันได้สูงสุด **3 เครื่อง** เกินกว่านั้นต้องผ่าน switch ซึ่งรองรับถึง
+**4 เครื่อง** — ที่มา [DGX Spark clustering](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
+สรุปเทียบกับของเราอยู่ที่ [NVIDIA-CLUSTER-SOURCES.md](NVIDIA-CLUSTER-SOURCES.md)

@@ -7,6 +7,7 @@ node ล่มหนึ่งเครื่องไม่กระทบเค
 from .cluster import (
     MIN_STACK_GBPS,
     check_cluster_ip,
+    link_warning,
     cluster_groups,
     cluster_note,
     connected_subset,
@@ -54,6 +55,7 @@ from .ssh import (
 __all__ = [
     "add",
     "check_cluster_ip",
+    "link_warning",
     "check_login",
     "cluster_groups",
     "cluster_note",
