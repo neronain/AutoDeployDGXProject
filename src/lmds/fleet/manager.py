@@ -257,9 +257,9 @@ def disable_autostart(info_or_slug, password: str = "") -> str:
     # เปิดแบบ user ก็ต้องปิดแบบ user — ไม่งั้นสั่ง disable แล้วมันยังขึ้นเองอยู่
     user_unit = user_systemd_dir() / name
     if user_unit.exists():
-        subprocess.run(["systemctl", "--user", "disable", "--now", name], capture_output=True)
+        _bounded(["systemctl", "--user", "disable", "--now", name], capture_output=True)
         user_unit.unlink(missing_ok=True)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        _bounded(["systemctl", "--user", "daemon-reload"], capture_output=True)
         if autostart_status(slug) != "absent":
             raise FleetError(f"ปิด autostart ไม่สำเร็จ — unit {name} ยังอยู่")
         return name
@@ -660,6 +660,27 @@ def _run_controller(info: ServerInfo, command: str, extra: list[str] | None = No
     return proc.returncode
 
 
+# เพดานเวลาของคำสั่งที่ "ต้องจบเอง" — docker/systemctl ที่ถูกเรียกจากหน้าเว็บ
+#
+# เคสจริง 2026-08-14: กด Remove บนคอนโซล แล้ว `docker stop` ค้าง คำขอไม่เคยตอบ
+# systemd ฆ่า lmds-web ทิ้งทั้งตัว (`Failed with result 'timeout'`) ผู้ใช้เห็นปุ่ม
+# ค้างที่ "Removing…" แล้วต้องรีเฟรชเอง · คำสั่งเดียวที่แขวนไม่ควรล้มทั้งคอนโซล
+#
+# ไม่ใส่กับคำสั่งที่ *ตั้งใจ* ให้ยาว: `tail -f`, controller ที่สตรีมออกหน้าจอ,
+# หรือ prompt ที่รอผู้ใช้พิมพ์ — พวกนั้นรันจาก CLI ไม่ใช่จากคำขอ HTTP
+COMMAND_TIMEOUT = 30
+
+
+def _bounded(args, **kwargs):
+    """subprocess.run ที่ยอมแพ้เมื่อถึงเวลา แทนที่จะแขวนคำขอไว้ตลอดกาล"""
+    kwargs.setdefault("timeout", COMMAND_TIMEOUT)
+    try:
+        return subprocess.run(args, **kwargs)
+    except subprocess.TimeoutExpired:
+        # คืนผลว่า "ไม่สำเร็จ" ให้ผู้เรียกตัดสินใจต่อ ดีกว่าโยนขึ้นไปทำให้ทั้งคำขอพัง
+        return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="")
+
+
 def stop_server(info: ServerInfo) -> str:
     """หยุดผ่าน controller; ถ้า controller หาย/ไม่ลงทะเบียน ใช้ fallback (kill pid / docker rm)"""
     if info.controller_exists:
@@ -675,9 +696,9 @@ def stop_server(info: ServerInfo) -> str:
         return "kill"
     if info.external:
         # ของคนอื่น — หยุดอย่างเดียว ห้ามลบ container ทิ้ง
-        subprocess.run(["docker", "stop", info.container], capture_output=True)
+        _bounded(["docker", "stop", info.container], capture_output=True)
         return "docker-stop"
-    subprocess.run(["docker", "rm", "-f", info.container], capture_output=True)
+    _bounded(["docker", "rm", "-f", info.container], capture_output=True)
     return "docker-rm"
 
 
@@ -687,7 +708,7 @@ def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
         _run_controller(info, "restart", options)
         return "controller"
     if info.mode == "docker" and info.container:
-        proc = subprocess.run(["docker", "restart", info.container], capture_output=True)
+        proc = _bounded(["docker", "restart", info.container], capture_output=True)
         if proc.returncode != 0:
             raise FleetError(f"docker restart {info.container} ล้มเหลว")
         return "docker-restart"
