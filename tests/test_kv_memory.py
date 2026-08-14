@@ -267,3 +267,58 @@ def test_a_million_needs_fp8_on_two_machines():
     assert not mem.plan(fit, K3, 1_048_576, "bf16").fits
     assert mem.plan(fit, K3, 1_048_576, "fp8").fits
     assert mem.max_context(fit, K3, 1.0, "bf16") < 1_048_576 < mem.max_context(fit, K3, 1.0, "fp8")
+
+
+# ── hybrid Mamba: layer ส่วนใหญ่ไม่มี KV ที่โตตาม context ───────────────────
+# ตัวที่สามของรูปแบบเดียวกัน ต่อจาก sliding-window (GGUF) และ MLA — สูตรเดียว
+# ใช้กับทุกสถาปัตยกรรมไม่ได้ และผลของการใช้ผิดคือ context ถูกตัดโดยไม่มีใครรู้
+
+NEMOTRON = "MEMEMEM*EMEMEMEM*EMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEM*EMEMEMEME"
+
+
+def _dims_from(config: dict):
+    from lmds.inspector.inspect import _kv_dims_from_config
+
+    return _kv_dims_from_config(config)
+
+
+def test_only_the_attention_layers_are_counted():
+    """เคสจริง Nemotron-3-Super: 88 layers แต่เป็น attention 8 ตัว"""
+    dims = _dims_from({
+        "num_hidden_layers": 88, "num_key_value_heads": 2, "head_dim": 128,
+        "num_attention_heads": 32, "hybrid_override_pattern": NEMOTRON,
+    })
+    assert dims.layers == 8
+    assert mem.bytes_per_token(dims) == 2 * 8 * 2 * 128 * 2
+
+
+def test_the_old_formula_would_have_been_eleven_times_over():
+    dense = _dims_from({"num_hidden_layers": 88, "num_key_value_heads": 2, "head_dim": 128,
+                        "num_attention_heads": 32})
+    hybrid = _dims_from({"num_hidden_layers": 88, "num_key_value_heads": 2, "head_dim": 128,
+                         "num_attention_heads": 32, "hybrid_override_pattern": NEMOTRON})
+    assert mem.bytes_per_token(dense) == mem.bytes_per_token(hybrid) * 11
+
+
+def test_a_pattern_we_cannot_read_falls_back_rather_than_guessing():
+    """ไม่มี '*' = เราอ่านรูปแบบนี้ไม่ออก · ประเมินเกินยังดีกว่าประเมินเป็นศูนย์แล้ว OOM"""
+    dims = _dims_from({"num_hidden_layers": 40, "num_key_value_heads": 4, "head_dim": 128,
+                       "num_attention_heads": 32, "hybrid_override_pattern": "MEMEMEME"})
+    assert dims.layers == 40
+
+
+def test_a_plain_model_is_untouched_by_the_hybrid_path():
+    dims = _dims_from({"num_hidden_layers": 60, "num_key_value_heads": 4, "head_dim": 128,
+                       "num_attention_heads": 64})
+    assert dims.layers == 60
+    assert dims.latent_dim is None
+
+
+def test_a_hybrid_model_serves_far_more_people_than_the_old_maths_allowed():
+    fit = stacked(weights=74.8, budget=113.5)   # Nemotron บน DGX Spark เครื่องเดียว
+    hybrid = _dims_from({"num_hidden_layers": 88, "num_key_value_heads": 2, "head_dim": 128,
+                         "num_attention_heads": 32, "hybrid_override_pattern": NEMOTRON})
+    dense = _dims_from({"num_hidden_layers": 88, "num_key_value_heads": 2, "head_dim": 128,
+                        "num_attention_heads": 32})
+    assert mem.plan(fit, hybrid, 262144).concurrency > 15
+    assert mem.plan(fit, dense, 262144).concurrency < 2

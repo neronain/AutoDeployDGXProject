@@ -259,6 +259,21 @@ def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
     head_dim = scope.get("head_dim")
     if head_dim is None and isinstance(scope.get("hidden_size"), int) and isinstance(heads, int) and heads:
         head_dim = scope["hidden_size"] // heads
+    # hybrid Mamba (NemotronH, Jamba, Zamba): มีแค่บาง layer ที่เป็น attention จริง
+    # ที่เหลือเป็น Mamba ซึ่ง state คงที่ไม่โตตาม context — นับรวมคือประเมินเกินหลายเท่า
+    #
+    # เคสจริง 2026-08-14: NVIDIA-Nemotron-3-Super-120B-A12B มี 88 layers แต่
+    # `hybrid_override_pattern` บอกว่าเป็น attention แค่ 8 ตัว (M=Mamba 40, E=MLP 40, *=attn 8)
+    # สูตรเดิมคิด 88 KiB/token ทั้งที่ของจริง 8 KiB/token — เกินจริง 11 เท่า
+    #
+    # นับเฉพาะ '*' เท่านั้น · pattern ที่ไม่มี '*' เลยแปลว่าเราอ่านรูปแบบนี้ไม่ออก
+    # ปล่อยให้ตกไปทางปกติดีกว่าเดาแล้วได้ 0 layer
+    pattern = scope.get("hybrid_override_pattern")
+    if isinstance(pattern, str) and "*" in pattern:
+        attention_layers = pattern.count("*")
+        if isinstance(kv_heads, int) and isinstance(head_dim, int) and kv_heads > 0 and head_dim > 0:
+            return KvDims(layers=attention_layers, kv_heads=kv_heads, head_dim=head_dim)
+
     # MLA (DeepSeek-V2/V3, Kimi K2/K3): บีบ K กับ V ให้เหลือ latent ก้อนเดียวต่อ layer
     # ขนาด kv_lora_rank + qk_rope_head_dim · สูตร GQA ปกติจะเกินจริงหลายสิบเท่า
     #
