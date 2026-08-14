@@ -33,6 +33,12 @@
   --g-warm: linear-gradient(135deg, var(--c3), var(--c4));
   --g-mix: linear-gradient(135deg, var(--c2), var(--c3));
 
+  /* ขนาดตัวอักษรทั้งหน้าคูณจากตัวนี้ตัวเดียว — หน้างานจริงหลายที่บอกว่าเล็กไป และ
+     "เล็กไป" ของแต่ละที่ไม่เท่ากัน (จอ 4K ในห้องเครื่องกับโน้ตบุ๊กบนโต๊ะคนละเรื่อง)
+     จึงให้ปรับเองได้แล้วจำไว้ ดีกว่าเลือกเลขกลางเลขเดียวแล้วหวังว่าจะพอดีทุกที่
+     ค่าตั้งต้นขยับขึ้นหนึ่งขั้นจากของเดิมแล้ว (1.00 คือขนาดเดิม) */
+  --fs: 1.08;
+
   --r-sm: 6px; --r: 10px; --r-lg: 14px;
   --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
   --shadow-lg: 0 4px 12px rgba(16, 24, 40, .07);
@@ -55,16 +61,29 @@
   --shadow-lg: 0 6px 18px rgba(0, 0, 0, .45);
   --glow: .07;
 }
-/* ปุ่มสลับธีมบนแถบหัว — เล็กและไม่แย่งสายตาจากปุ่ม Deploy */
-.theme {
-  font-size: 13px; line-height: 1; padding: 6px 9px; flex: none;
+/* ปุ่มเครื่องมือบนแถบหัว (ธีม / ขนาดตัวอักษร) — ไอคอนล้วน สี่เหลี่ยมจัตุรัส
+   ไม่มีคำกำกับเพราะทั้งคู่ "ลองกดแล้วเห็นผลทันที" อยู่แล้ว และคำจะไปแย่งที่ปุ่ม Deploy */
+.theme, .icobtn {
+  line-height: 1; padding: 0; flex: none;
+  width: 32px; height: 32px; display: inline-flex;
+  align-items: center; justify-content: center; gap: 0;
+  color: var(--fg2);
+}
+.theme:hover:not(:disabled), .icobtn:hover:not(:disabled) { color: var(--fg); }
+.theme .ic, .icobtn .ic { width: 16px; height: 16px; }
+/* ระดับขนาดตัวอักษรที่เลือกอยู่ — อยู่ข้างไอคอน ปุ่มจึงกว้างกว่าปุ่มไอคอนล้วน */
+.icobtn.size { width: auto; padding: 0 9px; gap: 5px; }
+.icobtn .lvl {
+  font-size: calc(9.5px * var(--fs)); font-weight: 700; letter-spacing: .02em;
+  color: var(--c2);
 }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; padding: 0 20px 64px; background: var(--bg); color: var(--fg);
-  font: 400 14px/1.55 var(--sans);
+  font-weight: 400; font-size: calc(14px * var(--fs)); line-height: 1.55;
+  font-family: var(--sans);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 }
@@ -85,13 +104,16 @@ body::before {
   backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--line);
 }
-.topbar .wrap { display: flex; align-items: center; gap: 14px; }
+.topbar .wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; row-gap: 8px; }
+/* จอแคบ (โน้ตบุ๊กที่เอาไปเดโม) เคยบีบปุ่มจนคำแตกสองบรรทัด — ห้ามแตก ให้ตกบรรทัดทั้งปุ่มแทน */
+.topbar button { white-space: nowrap; }
 .topbar h1 {
   background: var(--g-mix); -webkit-background-clip: text; background-clip: text;
   color: transparent;
 }
 h1 {
-  font: 600 15px/1 var(--mono); letter-spacing: .14em; margin: 0;
+  font-weight: 600; font-size: calc(15px * var(--fs)); line-height: 1;
+  font-family: var(--mono); letter-spacing: .14em; margin: 0;
   padding-right: 14px; border-right: 1px solid var(--line2);
 }
 .row { display: flex; align-items: center; gap: 12px; }
@@ -99,12 +121,12 @@ h1 {
 .grow { flex: 1; min-width: 200px; }
 
 /* ── type ───────────────────────────────────────────────────────────── */
-.muted { color: var(--fg2); font-size: 13px; }
-.dim { color: var(--fg3); font-size: 12px; line-height: 1.5; }
-.mono { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.name { font-weight: 600; font-size: 14.5px; letter-spacing: -.01em; }
+.muted { color: var(--fg2); font-size: calc(13px * var(--fs)); }
+.dim { color: var(--fg3); font-size: calc(12px * var(--fs)); line-height: 1.5; }
+.mono { font-family: var(--mono); font-size: calc(12.5px * var(--fs)); font-variant-numeric: tabular-nums; }
+.name { font-weight: 600; font-size: calc(14.5px * var(--fs)); letter-spacing: -.01em; }
 code {
-  font-family: var(--mono); font-size: 12px; background: var(--sunken);
+  font-family: var(--mono); font-size: calc(12px * var(--fs)); background: var(--sunken);
   border: 1px solid var(--line); padding: 2px 6px; border-radius: var(--r-sm);
 }
 a { color: var(--accent); text-underline-offset: 2px; }
@@ -112,11 +134,17 @@ a { color: var(--accent); text-underline-offset: 2px; }
 /* ── section heading ────────────────────────────────────────────────── */
 .sec {
   display: flex; align-items: center; gap: 12px;
-  margin: 30px 0 12px; font-size: 11px; font-weight: 600;
-  color: var(--fg3); letter-spacing: .1em; text-transform: uppercase;
+  margin: 32px 0 12px; font-size: calc(12px * var(--fs)); font-weight: 600;
+  color: var(--fg2); letter-spacing: .07em; text-transform: uppercase;
 }
-.sec > span:first-child { order: 1; }
+/* ลำดับในแถวหัวข้อ: ไอคอน → ชื่อ → เส้นคั่น → ปุ่ม
+   เดิม "ปุ่ม" พึ่ง `.sec button { order: 3 }` ซึ่งมีผลเฉพาะตอนปุ่มเป็นลูกโดยตรงของ .sec
+   หัวข้อ Other machines ห่อปุ่มไว้ใน <span> ปุ่มจึงไม่ได้ order อะไรเลย = 0 แล้วไปโผล่
+   ก่อนชื่อหัวข้อ · ตอนนี้ทุกหัวข้อใช้ .sec-act เหมือนกัน ไม่ต้องเดาจากรูปทรงของ DOM */
+.sec .chip { order: 0; }
+.sec > span.sec-title { order: 1; }
 .sec::after { content: ""; flex: 1; height: 1px; background: var(--line); order: 2; }
+.sec .sec-act { order: 3; display: flex; align-items: center; gap: 8px; }
 .sec button { order: 3; text-transform: none; letter-spacing: 0; font-weight: 500; }
 
 
@@ -128,10 +156,32 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .pad { padding: 16px 18px; }
 
 /* ── stat tiles: read like instrument panels ────────────────────────── */
-.sec::before {
-  content: ""; display: inline-block; width: 3px; height: 13px; border-radius: 2px;
-  background: var(--g-mix); margin-right: 9px; vertical-align: -2px;
+/* ── ไอคอน ───────────────────────────────────────────────────────────
+   วาดด้วยเส้น (stroke) ไม่ใช่ตัวอักษรสัญลักษณ์ — glyph อย่าง ▦ ◱ ได้หน้าตาตาม
+   ฟอนต์ของเครื่องที่เปิด เครื่องหนึ่งเห็นสี่เหลี่ยม อีกเครื่องเห็นกล่องว่าง
+   ส่วน SVG ในไฟล์เดียวกันได้รูปเดิมทุกที่ และไม่ต้องต่อเน็ตออกไปโหลดอะไร */
+.ic {
+  width: 1.05em; height: 1.05em; flex: none; vertical-align: -.16em;
+  fill: none; stroke: currentColor; stroke-width: 1.85;
+  stroke-linecap: round; stroke-linejoin: round;
 }
+/* ปุ่มที่มีไอคอน: ไอคอนกับคำต้องอยู่กึ่งกลางแนวเดียวกัน ไม่ใช่เกยเส้นฐาน
+   ยกเว้น .brain ที่ตัดคำยาวด้วย text-overflow: ellipsis — flex ทำให้ ellipsis ไม่ทำงาน
+   และตัวหนังสือถูกบีบหายจนเหลือแต่ไอคอน · ตรงนั้นให้ไอคอนวางแบบ inline ตามเดิม */
+button:has(.ic):not(.brain) { display: inline-flex; align-items: center; gap: 6px; }
+.brain .ic { margin-right: 5px; }
+/* ป้ายหัวข้อ: ไอคอนในกรอบสีจาง ๆ — ตาจับได้ก่อนอ่านคำ และแยกหัวข้อออกจากกันด้วยสี */
+.sec .chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 25px; height: 25px; border-radius: 8px; flex: none;
+  background: color-mix(in srgb, var(--sc, var(--c2)) 15%, transparent);
+  color: var(--sc, var(--c2));
+  border: 1px solid color-mix(in srgb, var(--sc, var(--c2)) 26%, transparent);
+}
+.sec .chip .ic { width: 14px; height: 14px; }
+/* หัวข้อย่อยในการ์ด (Tests / Manage / …) — ไอคอนเปล่า ไม่ต้องมีกรอบ
+   เพราะมันอยู่ในกรอบของการ์ดอยู่แล้ว กรอบซ้อนกรอบทำให้อ่านยากขึ้นไม่ใช่ง่ายขึ้น */
+.sec > .sec-ic { order: 0; width: 14px; height: 14px; color: var(--fg3); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin: 18px 0 4px; }
 .stat {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
@@ -144,11 +194,11 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .stat.hero > .muted:first-child, .stat.hero .dim { color: rgba(255, 255, 255, .82); }
 .stat.hero b { color: #fff; }
 .stat > .muted:first-child {
-  display: block; font-size: 11px; font-weight: 600; letter-spacing: .07em;
+  display: block; font-size: calc(11px * var(--fs)); font-weight: 600; letter-spacing: .07em;
   text-transform: uppercase; color: var(--fg3);
 }
 .stat b {
-  display: block; font-weight: 600; font-size: 20px; line-height: 1.25;
+  display: block; font-weight: 600; font-size: calc(20px * var(--fs)); line-height: 1.25;
   margin-top: 5px; letter-spacing: -.02em; font-variant-numeric: tabular-nums;
 }
 .stat .dim { margin-top: 3px; }
@@ -177,7 +227,7 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .dot.load { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
 
 .tag {
-  font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  font-size: calc(10.5px * var(--fs)); font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
   padding: 3px 8px; border-radius: 999px; background: var(--accent-bg); color: var(--accent);
   white-space: nowrap;
 }
@@ -187,7 +237,8 @@ a { color: var(--accent); text-underline-offset: 2px; }
 
 /* ── controls ───────────────────────────────────────────────────────── */
 button {
-  font: 500 13px/1 var(--sans); padding: 7px 12px; border-radius: var(--r-sm);
+  font-weight: 500; font-size: calc(13px * var(--fs)); line-height: 1;
+  font-family: var(--sans); padding: 7px 12px; border-radius: var(--r-sm);
   cursor: pointer; background: var(--card); color: var(--fg);
   border: 1px solid var(--line2); transition: background .12s ease, border-color .12s ease;
 }
@@ -215,7 +266,7 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   margin: 2px 0 10px 22px; padding: 8px 10px;
   background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
 }
-.submenu .dim { margin-left: auto; font-size: 12px; }
+.submenu .dim { margin-left: auto; font-size: calc(12px * var(--fs)); }
 /* กลุ่ม cluster — รั้วสีคร่อมเครื่องที่ stacked ด้วยกันได้ ทำหน้าที่เป็น "เส้นเชื่อม"
    ที่บอกว่าคู่ไหนเป็นคู่ไหน โดยไม่ต้องอ่านชื่อทีละตัว */
 .gwrap {
@@ -228,14 +279,14 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
 .ghead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .gsub { margin-top: 3px; }
 .gtag {
-  font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  font-size: calc(10.5px * var(--fs)); font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   color: var(--g); border: 1px solid var(--g); border-radius: 999px; padding: 2px 8px;
   background: color-mix(in srgb, var(--g) 12%, transparent); white-space: nowrap;
 }
 /* แถบ cluster ในการ์ดของเครื่องนั้น ๆ — อยู่ติดกับชื่อเครื่อง ไม่ต้องเลื่อนไปหาข้างล่าง */
 .nclus {
   padding: 8px 14px; border-top: 1px solid var(--line);
-  background: var(--sunken); font-size: 12.5px;
+  background: var(--sunken); font-size: calc(12.5px * var(--fs));
 }
 .nclus.in-group { border-left: 3px solid var(--g); }
 /* command palette — หน้านี้ยาวขึ้นเรื่อย ๆ ตามจำนวนเครื่อง การเลื่อนหาโมเดลเริ่มไม่ไหว */
@@ -251,7 +302,7 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
 }
 .pal input {
   width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
-  padding: 14px 16px; font-size: 15px; background: transparent; box-shadow: none;
+  padding: 14px 16px; font-size: calc(15px * var(--fs)); background: transparent; box-shadow: none;
 }
 .pal input:focus { border-color: var(--line); background: transparent; }
 .pal-list { max-height: 46vh; overflow-y: auto; }
@@ -260,22 +311,22 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   border-left: 2px solid transparent;
 }
 .pal-item[aria-selected="true"] { background: var(--sunken); border-left-color: var(--c2); }
-.pal-item .where { margin-left: auto; font-size: 11.5px; color: var(--fg3); }
+.pal-item .where { margin-left: auto; font-size: calc(11.5px * var(--fs)); color: var(--fg3); }
 .pal-empty { padding: 16px; color: var(--fg3); }
 .pal-foot {
-  padding: 8px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--fg3);
+  padding: 8px 16px; border-top: 1px solid var(--line); font-size: calc(11.5px * var(--fs)); color: var(--fg3);
   display: flex; gap: 14px;
 }
 /* ตัวบอกว่าใช้ LLM ตัวไหนอยู่ — ค่าที่เปลี่ยนผลลัพธ์ของทุก deploy ไม่ควรซ่อนอยู่ใน CLI */
 /* ชิปสรุปในหัวการ์ดเครื่อง — อ่านได้ในบรรทัดเดียวตอนย่อ */
 .nsum { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
 .chip {
-  font-size: 11px; color: var(--c); border: 1px solid var(--line);
+  font-size: calc(11px * var(--fs)); color: var(--c); border: 1px solid var(--line);
   border-radius: 999px; padding: 2px 8px; white-space: nowrap;
   font-variant-numeric: tabular-nums; background: var(--sunken);
 }
 .chip b { font-weight: 600; color: var(--c); }
-.brain { font-size: 12px; padding: 5px 10px; max-width: 260px; overflow: hidden;
+.brain { font-size: calc(12px * var(--fs)); padding: 5px 10px; max-width: 260px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .brain.off { color: var(--warn); border-color: var(--warn); }
 .brain b { font-weight: 600; }
@@ -293,7 +344,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 /* ช่องกรอกต้องแยกออกจากพื้นหลังเสมอ ไม่ว่าพื้นหลังจะมีแสงตรงไหน — เป็นที่ที่คนต้องคลิกถูก
    ใช้ผิวจมลงไป + เส้นขอบเข้มกว่าการ์ด และ focus เปลี่ยนสีขอบเป็นสีหลักของหน้า */
 input, select {
-  font: inherit; font-size: 13.5px; padding: 8px 11px; border-radius: var(--r-sm);
+  font: inherit; font-size: calc(13.5px * var(--fs)); padding: 8px 11px; border-radius: var(--r-sm);
   background: var(--sunken); color: var(--fg); border: 1px solid var(--line2);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, .06);
 }
@@ -301,7 +352,7 @@ input:hover, select:hover { border-color: var(--fg3); }
 input:focus, select:focus { border-color: var(--c2); background: var(--card); }
 input { flex: 1; min-width: 200px; }
 input::placeholder { color: var(--fg3); }
-label { font-size: 13px; color: var(--fg2); }
+label { font-size: calc(13px * var(--fs)); color: var(--fg2); }
 .field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 
 
@@ -311,32 +362,32 @@ label { font-size: 13px; color: var(--fg2); }
   background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(3px);
 }
 #upbox > .card { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; }
-#up-steps { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin: 8px 0 2px; }
+#up-steps { display: flex; flex-direction: column; gap: 4px; font-size: calc(13px * var(--fs)); margin: 8px 0 2px; }
 #up-steps div { display: flex; gap: 8px; align-items: baseline; }
 #up-steps b { font-weight: 500; min-width: 132px; }
 
 /* ── output ─────────────────────────────────────────────────────────── */
 pre {
   margin: 0; padding: 14px 18px; background: var(--sunken);
-  border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px;
+  border-top: 1px solid var(--line); font-family: var(--mono); font-size: calc(12px * var(--fs));
   line-height: 1.6; white-space: pre-wrap; word-break: break-word;
   max-height: 340px; overflow: auto;
 }
-.find { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; font-size: 13px; }
+.find { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; font-size: calc(13px * var(--fs)); }
 .find span:first-child { width: 16px; flex: none; }
 .find b { width: 108px; flex: none; font-weight: 500; color: var(--fg2); }
-.kv { display: grid; grid-template-columns: 132px 1fr; gap: 5px 14px; font-size: 13px; margin: 10px 0; }
+.kv { display: grid; grid-template-columns: 132px 1fr; gap: 5px 14px; font-size: calc(13px * var(--fs)); margin: 10px 0; }
 .kv span:first-child { color: var(--fg2); }
 .warn-line {
-  font-size: 12.5px; color: var(--warn); padding: 5px 10px; margin: 4px 0;
+  font-size: calc(12.5px * var(--fs)); color: var(--warn); padding: 5px 10px; margin: 4px 0;
   background: var(--warn-bg); border-radius: var(--r-sm);
 }
 /* ตรงข้ามกับ warn-line — บอกว่าค่าที่เห็นมาจากของที่รันผ่านจริง ไม่ใช่ค่าตั้งต้นที่เดาให้ */
 .ok-line {
-  font-size: 12.5px; color: var(--ok); padding: 5px 10px; margin: 4px 0;
+  font-size: calc(12.5px * var(--fs)); color: var(--ok); padding: 5px 10px; margin: 4px 0;
   background: var(--ok-bg); border-radius: var(--r-sm);
 }
-.empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: 13.5px; }
+.empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: calc(13.5px * var(--fs)); }
 
 /* ── GPU telemetry ─────────────────────────────────────────────────── */
 .gpu { border-top: 1px solid var(--line); padding: 14px 18px; }
@@ -347,37 +398,39 @@ pre {
   background: var(--g-mix); opacity: .5;
 }
 .gpu-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.gpu-name { font-weight: 600; font-size: 13.5px; }
+.gpu-name { font-weight: 600; font-size: calc(13.5px * var(--fs)); }
 .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
 .gauge { text-align: center; }
 .gauge svg { display: block; margin: 0 auto; }
+/* สองบรรทัดนี้ไม่คูณตาม --fs โดยตั้งใจ — ตัวเลขอยู่ใน SVG ที่ viewBox ตายตัว
+   ขยายแล้วล้นวงเกจ ขนาดของมันจึงผูกกับรูปทรง ไม่ใช่กับขนาดตัวอักษรของหน้า */
 .gauge-val { font: 600 15px/1 var(--sans); font-variant-numeric: tabular-nums; fill: var(--fg); }
 .gauge-unit { font: 500 8px/1 var(--sans); fill: var(--fg3); }
-.gauge-label { font-size: 10.5px; color: var(--fg3); margin-top: 4px;
+.gauge-label { font-size: calc(10.5px * var(--fs)); color: var(--fg3); margin-top: 4px;
   text-transform: uppercase; letter-spacing: .06em; }
-.gauge-sub { font-size: 10.5px; color: var(--fg3); margin-top: 2px;
+.gauge-sub { font-size: calc(10.5px * var(--fs)); color: var(--fg3); margin-top: 2px;
   font-variant-numeric: tabular-nums; }
 .gauge-track { stroke: var(--meter-track); opacity: .55; }
 .clocks { margin-top: 12px; display: grid; gap: 7px; }
 .clock-row { display: grid; grid-template-columns: 1fr 68px; gap: 10px; align-items: center;
-  font-size: 12px; }
+  font-size: calc(12px * var(--fs)); }
 .clock-bar { height: 4px; border-radius: 999px; background: var(--meter-track); overflow: hidden; }
 .clock-bar i { display: block; height: 100%; }
-.clock-num { text-align: right; font-family: var(--mono); font-size: 11.5px;
+.clock-num { text-align: right; font-family: var(--mono); font-size: calc(11.5px * var(--fs));
   font-variant-numeric: tabular-nums; color: var(--fg2); }
 
 /* ── machines ───────────────────────────────────────────────────────── */
 .ntoggle {
   font-family: var(--mono); width: 26px; height: 26px; padding: 0; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 15px; line-height: 1; color: var(--fg2);
+  font-size: calc(15px * var(--fs)); line-height: 1; color: var(--fg2);
 }
 .nbody.collapsed { display: none; }
 /* ที่จับสำหรับลากจัดลำดับ — ต้องเป็นที่จับแยก ไม่ใช่ลากทั้งการ์ด เพราะในหัวการ์ดมีปุ่มและ
    ช่องกรอก cluster IP อยู่ กดแล้วต้องได้คลิกตามปกติ ไม่ใช่กลายเป็นลาก */
 .ngrip {
   cursor: grab; user-select: none; touch-action: none; flex: none;
-  color: var(--fg2); opacity: .6; font-size: 16px; line-height: 1; padding: 8px 5px;
+  color: var(--fg2); opacity: .6; font-size: calc(16px * var(--fs)); line-height: 1; padding: 8px 5px;
 }
 .ngrip:hover { opacity: 1; }
 .machine.dragging { opacity: .65; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); cursor: grabbing; }
@@ -393,16 +446,16 @@ pre {
 .npills { display: flex; flex-wrap: wrap; gap: 6px; }
 .npill {
   background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
-  padding: 4px 9px; font-size: 11.5px; white-space: nowrap;
+  padding: 4px 9px; font-size: calc(11.5px * var(--fs)); white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.npill .muted { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.npill .muted { font-size: calc(11px * var(--fs)); text-transform: uppercase; letter-spacing: .05em; }
 .cgroup {
   border: 1px solid var(--line); border-left: 3px solid var(--line2);
   border-radius: var(--r); padding: 12px 14px; margin-bottom: 10px; background: var(--sunken);
 }
 .cgroup.ok { border-left-color: var(--ok); }
-.ipedit { width: 150px; flex: none; font-family: var(--mono); font-size: 12.5px; }
+.ipedit { width: 150px; flex: none; font-family: var(--mono); font-size: calc(12.5px * var(--fs)); }
 
 @media (max-width: 640px) {
   body { padding: 0 14px 48px; }
@@ -446,7 +499,7 @@ pre {
   flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.chat-head b { font-size: 13px; }
+.chat-head b { font-size: calc(13px * var(--fs)); }
 .chat-head .grow { flex: 1; }
 /* ปุ่มไอคอนมุมขวา ไม่ใช่ตัวอักษรลอย ๆ — กดโดนง่ายขึ้นและเข้าชุดกับปุ่มอื่นในหน้า */
 .chat-icon {
@@ -454,46 +507,42 @@ pre {
   display: flex; align-items: center; justify-content: center;
   border: 1px solid transparent; border-radius: var(--r-sm);
   background: none; color: var(--fg3); cursor: pointer;
-  font-size: 13px; line-height: 1;
+  font-size: calc(13px * var(--fs)); line-height: 1;
 }
 .chat-icon:hover { background: var(--sunken); border-color: var(--line); color: var(--fg); }
 .chat-foot {
-  margin: 0; padding: 0 12px 11px; font-size: 11px; line-height: 1.5;
+  margin: 0; padding: 0 12px 11px; font-size: calc(11px * var(--fs)); line-height: 1.5;
 }
 .chat-log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .chat-msg {
   max-width: 88%; padding: 8px 11px; border-radius: var(--r);
-  font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  font-size: calc(13px * var(--fs)); line-height: 1.55; white-space: pre-wrap; word-break: break-word;
 }
 .chat-msg.user { align-self: flex-end; background: var(--accent-bg); color: var(--fg); }
 .chat-msg.bot { align-self: flex-start; background: var(--sunken); border: 1px solid var(--line); }
 .chat-msg.bad { background: var(--bad-bg); border-color: var(--bad); }
 .chat-msg pre {
   margin: 6px 0 0; padding: 8px; overflow-x: auto;
-  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); font-size: calc(12px * var(--fs));
 }
 .chat-form { display: flex; gap: 6px; padding: 10px 12px 8px; border-top: 1px solid var(--line); align-items: flex-end; }
 .chat-form textarea {
-  flex: 1; resize: none; height: 52px; padding: 8px 10px; font: inherit; font-size: 13px;
+  flex: 1; resize: none; height: 52px; padding: 8px 10px; font: inherit; font-size: calc(13px * var(--fs));
   background: var(--bg); color: var(--fg); border: 1px solid var(--line2); border-radius: var(--r-sm);
 }
 .chat-form button { padding: 0 14px; }
 @media (max-width: 560px) {
   .chat-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); }
 }
-/* ไอคอนหน้าหัวข้อ: ป้ายเป็นอังกฤษทั้งหน้าเพื่อให้อ่านได้ทุกที่ที่เอาไปติดตั้ง
-   ส่วนไอคอนคือสิ่งที่คนจำได้เร็วกว่าคำ และอยู่รอดข้ามภาษา */
-.sec i {
-  font-style: normal; margin-right: 6px; opacity: .6;
-  font-size: 11px; vertical-align: baseline;
-}
+/* ป้ายเป็นอังกฤษทั้งหน้าเพื่อให้อ่านได้ทุกที่ที่เอาไปติดตั้ง ส่วนไอคอนคือสิ่งที่คน
+   จำได้เร็วกว่าคำ และอยู่รอดข้ามภาษา — นิยามอยู่ที่ .sec .chip ด้านบน */
 /* ── ข้อเสนอแก้สคริปต์ ─────────────────────────────────────────────────────── */
-.script-out { font-size: 12px; line-height: 1.55; }
+.script-out { font-size: calc(12px * var(--fs)); line-height: 1.55; }
 .script-out .why { margin: 0 0 8px; color: var(--fg2); }
 .script-out pre {
   margin: 0 0 8px; padding: 9px 10px; overflow-x: auto; max-height: 320px;
   background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm);
-  font-size: 11.5px; line-height: 1.5;
+  font-size: calc(11.5px * var(--fs)); line-height: 1.5;
 }
 /* diff อ่านง่ายกว่าคำอธิบายเสมอ — ระบายสีบรรทัดที่เพิ่ม/ลบให้เห็นทันทีว่าแตะอะไรไปบ้าง */
 .script-out .add { color: var(--ok); }
@@ -516,9 +565,35 @@ pre {
     const dark = window.themeMode === "dark" || (window.themeMode === "auto" && systemDark());
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     const button = document.getElementById("theme");
-    if (button) button.textContent = {light: "☀︎ Light", dark: "☾ Dark", auto: "⌁ Auto"}[window.themeMode];
+    const glyph = {light: "sun", dark: "moon", auto: "auto"}[window.themeMode];
+    if (button) {
+      button.innerHTML = `<svg class="ic" aria-hidden="true"><use href="#i-${glyph}"/></svg>`;
+      button.setAttribute("aria-label",
+        {light: "ธีมสว่าง", dark: "ธีมมืด", auto: "ตามเครื่อง"}[window.themeMode]);
+    }
   };
   window.applyTheme();
+
+  // ขนาดตัวอักษร: เก็บเป็น "ระดับ" ไม่ใช่ตัวเลขดิบ — คนใช้เลือกว่าอยากได้ใหญ่ขึ้น
+  // ไม่ได้เลือกว่าอยากได้ 1.18 · ค่าตั้งต้นคือ M ซึ่งใหญ่กว่าของเดิมหนึ่งขั้นแล้ว
+  window.fontSteps = [
+    {key: "s", fs: 1, label: "S"},
+    {key: "m", fs: 1.08, label: "M"},
+    {key: "l", fs: 1.18, label: "L"},
+    {key: "xl", fs: 1.3, label: "XL"},
+  ];
+  const savedSize = () => { try { return localStorage.getItem("lmds-fontsize"); } catch { return null; } };
+  window.fontStep = window.fontSteps.find(x => x.key === savedSize()) || window.fontSteps[1];
+  window.applyFontSize = () => {
+    document.documentElement.style.setProperty("--fs", window.fontStep.fs);
+    const button = document.getElementById("textsize");
+    if (!button) return;
+    button.innerHTML = `<svg class="ic" aria-hidden="true"><use href="#i-text"/></svg>`
+      + `<span class="lvl">${window.fontStep.label}</span>`;
+    button.title = `ขนาดตัวอักษร: ${window.fontStep.label} — กดเพื่อเปลี่ยน`;
+  };
+  window.applyFontSize();
+
   // อยู่โหมดตามเครื่องแล้วผู้ใช้สลับธีมของ OS ระหว่างเปิดหน้าค้างไว้ ต้องเปลี่ยนตามทันที
   window.matchMedia("(prefers-color-scheme: dark)")
     .addEventListener("change", () => { if (window.themeMode === "auto") window.applyTheme(); });
@@ -538,7 +613,83 @@ pre {
     <stop offset="0%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#ec4899"/></linearGradient>
   <linearGradient id="gr-bad" x1="0" y1="1" x2="1" y2="0">
     <stop offset="0%" stop-color="#f43f5e"/><stop offset="100%" stop-color="#f59e0b"/></linearGradient>
-</defs></svg>
+</defs>
+  <!-- ไอคอนทั้งหมดของหน้านี้ · 24x24 เส้นเปล่า สืบสีจาก currentColor
+       นิยามครั้งเดียวแล้วอ้างด้วย <use href="#i-..."> ที่ไหนก็ได้ -->
+  <symbol id="i-server" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/>
+    <path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24">
+    <circle cx="12" cy="5" r="2.6"/><circle cx="5" cy="19" r="2.6"/><circle cx="19" cy="19" r="2.6"/>
+    <path d="M12 7.6v3.9m0 0-5.3 5m5.3-5 5.3 5"/></symbol>
+  <symbol id="i-disk" viewBox="0 0 24 24">
+    <ellipse cx="12" cy="6" rx="8" ry="3"/>
+    <path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+  <symbol id="i-verified" viewBox="0 0 24 24">
+    <path d="M12 3l7 3v5.6c0 4.3-3 8.1-7 9.4-4-1.3-7-5.1-7-9.4V6z"/>
+    <path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+  <symbol id="i-deploy" viewBox="0 0 24 24">
+    <path d="M12 3.5v11"/><path d="m8 7.5 4-4 4 4"/>
+    <path d="M4.5 15v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24">
+    <path d="M11 3.5l1.7 4.3 4.3 1.7-4.3 1.7L11 15.5 9.3 11.2 5 9.5l4.3-1.7z"/>
+    <path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24">
+    <path d="M12 3.5v11"/><path d="m8 10.5 4 4 4-4"/><path d="M4.5 19.5h15"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="4"/>
+    <path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.5 1.5M17.9 17.9l1.5 1.5M2.5 12h2M19.5 12h2M4.6 19.4l1.5-1.5M17.9 6.1l1.5-1.5"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24">
+    <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4 8.6 8.6 0 1 0 20 14.6z"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5"/>
+    <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-exit" viewBox="0 0 24 24">
+    <path d="M14.5 4H17a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-2.5"/>
+    <path d="M9.5 8 5.5 12l4 4"/><path d="M5.5 12h9"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24">
+    <path d="M10.2 13.3a4.2 4.2 0 0 0 6 .4l2.6-2.6a4.2 4.2 0 0 0-6-6L11.4 6.6"/>
+    <path d="M13.8 10.7a4.2 4.2 0 0 0-6-.4l-2.6 2.6a4.2 4.2 0 0 0 6 6l1.4-1.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5"/><path d="M12 8.4v7.2M8.4 12h7.2"/></symbol>
+  <symbol id="i-scan" viewBox="0 0 24 24">
+    <path d="M4 8.5V6a2 2 0 0 1 2-2h2.5M15.5 4H18a2 2 0 0 1 2 2v2.5M20 15.5V18a2 2 0 0 1-2 2h-2.5M8.5 20H6a2 2 0 0 1-2-2v-2.5"/>
+    <path d="M4.5 12h15"/></symbol>
+  <symbol id="i-flask" viewBox="0 0 24 24">
+    <path d="M9.5 3v5.4L4.8 17a2 2 0 0 0 1.7 3h11a2 2 0 0 0 1.7-3L14.5 8.4V3"/>
+    <path d="M8 3h8M6.6 14h10.8"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24">
+    <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3"/>
+    <circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24">
+    <path d="M3 12h3.6l2-5.6 3.5 11.2 2.5-5.6H21"/></symbol>
+  <symbol id="i-logs" viewBox="0 0 24 24">
+    <path d="M4 6h16M4 10.7h16M4 15.3h11M4 20h7"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24">
+    <path d="M7.5 5.2 18 12 7.5 18.8z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24">
+    <rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24">
+    <path d="M20 11a8 8 0 1 0-.7 4"/><path d="M20 4.5V11h-6.5"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24">
+    <path d="M4 20h4L18 10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></symbol>
+  <symbol id="i-transfer" viewBox="0 0 24 24">
+    <path d="M4 8h13m-3.5-3.5L17 8l-3.5 3.5"/><path d="M20 16H7m3.5-3.5L7 16l3.5 3.5"/></symbol>
+  <symbol id="i-stacked" viewBox="0 0 24 24">
+    <rect x="3" y="3" width="12" height="12" rx="2"/>
+    <path d="M9 21h10a2 2 0 0 0 2-2V9"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24">
+    <path d="M15.5 3.5a5 5 0 0 0-4.4 7.4l-7.5 7.5a2 2 0 0 0 2.8 2.8l7.5-7.5a5 5 0 0 0 6.4-6.4l-2.9 2.9-2.6-.7-.7-2.6z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24">
+    <path d="M8.5 6h11M8.5 12h11M8.5 18h11"/>
+    <circle cx="4.5" cy="6" r="1.1"/><circle cx="4.5" cy="12" r="1.1"/><circle cx="4.5" cy="18" r="1.1"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24">
+    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/>
+    <circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-text" viewBox="0 0 24 24">
+    <path d="M2.5 19.5 7.5 5l5 14.5M4.2 15h6.6"/>
+    <path d="M14.5 19.5 18 9.5l3.5 10M15.7 16.4h4.6"/></symbol>
+</svg>
 <div id="upbox" hidden>
   <div class="card">
     <div class="pad">
@@ -559,10 +710,11 @@ pre {
     <span class="muted grow" id="host">…</span>
     <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
     <span class="dim" id="ver"></span>
-    <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้">Update</button>
+    <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Update</button>
+    <button id="textsize" class="icobtn size" title="ขนาดตัวอักษรของหน้านี้">…</button>
     <button id="theme" class="theme" title="สลับธีม สว่าง / มืด / ตามเครื่อง">…</button>
-    <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้">Sign out</button>
-    <button id="new">+ Deploy model</button>
+    <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้"><svg class="ic" aria-hidden="true"><use href="#i-exit"/></svg>Sign out</button>
+    <button id="new"><svg class="ic" aria-hidden="true"><use href="#i-deploy"/></svg>Deploy model</button>
   </div>
 </header>
 
@@ -573,28 +725,34 @@ pre {
   <div class="card" id="hostcard"></div>
   <div class="card" id="wiz" hidden></div>
 
-  <div class="sec"><i>▦</i>Models on this machine</div>
+  <div class="sec" style="--sc: var(--c1)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
+    <span class="sec-title">Models on this machine</span>
+  </div>
   <div class="card" id="fleet"><div class="empty">Loading…</div></div>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span><i>⌂</i>Other machines</span>
-    <span>
-      <button id="cluster-check" style="font-size:12px" title="ตรวจว่าเครื่องไหนจับคู่ stacked กันได้">Check cluster</button>
-      <button id="node-new" style="font-size:12px">+ Add machine</button>
+  <div class="sec" style="--sc: var(--c2)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
+    <span class="sec-title">Other machines</span>
+    <span class="sec-act">
+      <button id="cluster-check" title="ตรวจว่าเครื่องไหนจับคู่ stacked กันได้"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Check cluster</button>
+      <button id="node-new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add machine</button>
     </span>
   </div>
   <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span><i>◱</i>Weights already on disk</span>
-    <button id="scan-run" style="font-size:12px">Scan</button>
+  <div class="sec" style="--sc: var(--c3)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-disk"/></svg></span>
+    <span class="sec-title">Weights already on disk</span>
+    <span class="sec-act"><button id="scan-run"><svg class="ic" aria-hidden="true"><use href="#i-scan"/></svg>Scan</button></span>
   </div>
   <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
     <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
 
-  <div class="sec row between" style="align-items:baseline">
-    <span><i>✓</i>Proven recipes</span>
-    <button id="recipes-load" style="font-size:12px">Show</button>
+  <div class="sec" style="--sc: var(--c4)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-verified"/></svg></span>
+    <span class="sec-title">Proven recipes</span>
+    <span class="sec-act"><button id="recipes-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
   </div>
   <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
     <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
@@ -713,13 +871,13 @@ function actionsMarkup(m) {
   if (m.job) return `<span class="tag warn">${esc(m.job.command)}…</span>`;
   if (m.running) {
     return `<button data-act="stop" data-slug="${esc(m.slug)}">Stop</button>
-       <button data-act="restart" data-slug="${esc(m.slug)}">Restart</button>`;
+       <button data-act="restart" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg>Restart</button>`;
   }
   if (!m.controller_exists) return `<button disabled>Start</button>`;
   // Starting without weights always fails — send the user to download first
   return m.downloaded
-    ? `<button data-act="start" data-slug="${esc(m.slug)}">Start</button>`
-    : `<button data-act="job:download" data-slug="${esc(m.slug)}">Download</button>`;
+    ? `<button data-act="start" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>Start</button>`
+    : `<button data-act="job:download" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download</button>`;
 }
 
 // Per-model options, stored in the browser. The API key never reaches the server's disk.
@@ -794,7 +952,7 @@ function manageMarkup(m) {
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
     </div>
 
-    <div class="sec" style="margin:16px 0 6px"><i>✎</i>Edit the launch script</div>
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-edit"/></svg><span class="sec-title">Edit the launch script</span></div>
     <div class="field" style="flex-direction:column;align-items:stretch;gap:6px">
       <span class="dim">บอกเป็นภาษาคนว่าอยากให้รันต่างจากเดิมยังไง — ผู้ช่วยจะอ่าน controller
         ตัวจริงแล้วเสนอวิธีแก้ ถ้าทำได้ด้วย option ที่มีอยู่แล้วมันจะบอกคำสั่งแทนการแก้ไฟล์
@@ -807,7 +965,7 @@ function manageMarkup(m) {
       <div class="script-out" hidden></div>
     </div>
 
-    <div class="sec" style="margin:16px 0 6px"><i>↻</i>Autostart after reboot</div>
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-restart"/></svg><span class="sec-title">Autostart after reboot</span></div>
     <div class="field">
       <span class="muted">status: ${esc(auto || "—")}</span>
       ${auto === "n/a" ? `<span class="dim">This machine has no systemd — autostart is not available.</span>`
@@ -815,12 +973,12 @@ function manageMarkup(m) {
       <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>`}
     </div>
 
-    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><i>⧉</i>Stacked (2 nodes)</div>
+    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked (2 nodes)</span></div>
     <div class="field">
       ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
 
-    <div class="sec" style="margin:16px 0 6px"><i>⇄</i>Run on another machine</div>
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-transfer"/></svg><span class="sec-title">Run on another machine</span></div>
     <div class="field">
       <select class="o-node" style="flex:none;min-width:190px"><option value="">Loading machines…</option></select>
       ${btn("push", "Send bundle there")}
@@ -829,7 +987,7 @@ function manageMarkup(m) {
     </div>
     <div id="push-${esc(m.slug)}"></div>
 
-    <div class="sec" style="margin:16px 0 6px"><i>⚑</i>Repair / remove</div>
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-wrench"/></svg><span class="sec-title">Repair / remove</span></div>
     <div class="field">
       ${btn("job:repair", "repair")}
       ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
@@ -859,10 +1017,10 @@ function renderFleet(models) {
           <div class="grow"></div>
           <span class="mono muted port"></span>
           <span class="acts"></span>
-          <button data-act="tests" data-slug="${esc(m.slug)}">Tests</button>
-          <button data-act="opts" data-slug="${esc(m.slug)}">Manage</button>
-          <button data-act="doctor" data-slug="${esc(m.slug)}">Doctor</button>
-          <button data-act="logs" data-slug="${esc(m.slug)}">Logs</button>
+          <button data-act="tests" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-flask"/></svg>Tests</button>
+          <button data-act="opts" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg>Manage</button>
+          <button data-act="doctor" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-pulse"/></svg>Doctor</button>
+          <button data-act="logs" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>Logs</button>
         </div>
         <div id="panel-${esc(m.slug)}"></div>`;
       el.appendChild(block);
@@ -1098,7 +1256,7 @@ function capsView(caps) {
   const caveats = order.filter(n => caps[n] && caps[n].caveat)
     .map(n => `<div class="dim" style="margin:3px 0">· <b style="font-weight:500">${
       esc(CAP_LABELS[n])}</b> — ${esc(caps[n].caveat)}</div>`).join("");
-  return `<div class="sec" style="margin:14px 0 6px"><i>◇</i>ความสามารถ (อ่านจากไฟล์ ยังไม่ได้รัน)</div>
+  return `<div class="sec" style="margin:14px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-list"/></svg><span class="sec-title">ความสามารถ (อ่านจากไฟล์ ยังไม่ได้รัน)</span></div>
     <div class="kv">${rows}</div>
     ${caveats ? `<details style="margin-top:6px"><summary class="dim" style="cursor:pointer">
       สิ่งที่ต้องยืนยันตอนรัน</summary>${caveats}</details>` : ""}`;
@@ -1757,7 +1915,7 @@ function nodeModelsMarkup(name, data) {
             <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
           </div>
 
-          <div class="sec" style="width:100%;margin:6px 0 2px"><i>◇</i>Tests</div>
+          <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-flask"/></svg><span class="sec-title">Tests</span></div>
           <div class="field" style="width:100%">
             ${ctl("test-text", "ถามสั้น ๆ แล้วดูว่าตอบไหม")}
             ${ctl("test-vision", "ส่งภาพสีแดงไปถามว่าเห็นสีอะไร")}
@@ -1773,7 +1931,7 @@ function nodeModelsMarkup(name, data) {
               พอร์ต ${m.port} มี <b>${esc(rival.slug)}</b> รันอยู่ — ผลทดสอบที่ได้จะเป็นของตัวนั้น ไม่ใช่ตัวนี้
               · ตั้ง port ข้างบนให้ต่างกันก่อนแล้วค่อย start</div>` : ""}
           </div>
-          ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px"><i>⧉</i>Stacked</div>
+          ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked</span></div>
           <div class="field" style="width:100%">
             ${ctl("prepare-runtime", "เตรียม runtime บนทุกเครื่องในกลุ่ม")}
             ${ctl("sync-worker", "ซิงก์ไฟล์ไป worker")}
@@ -1781,7 +1939,7 @@ function nodeModelsMarkup(name, data) {
             ${ctl("clear-fi-cache", "ล้างแคชของ FlashInfer")}
           </div>` : ""}
 
-          <div class="sec" style="width:100%;margin:6px 0 2px"><i>⚙</i>Manage</div>
+          <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-sliders"/></svg><span class="sec-title">Manage</span></div>
           <div class="field" style="width:100%">
             ${m.running ? nbtn("restart", "restart", "หยุดแล้วเปิดใหม่ด้วยค่าข้างบน") : ""}
             ${nbtn("doctor", "doctor", "ตรวจว่าทำไมยัง start ไม่ได้")}
@@ -1832,7 +1990,7 @@ function paintNodeVersion(row, d, name) {
         — คนละรุ่นกัน ตัวไหนใหม่กว่าต้องดูที่ git · สถานะโมเดลคำนวณด้วยโค้ดของเครื่องนี้ ไม่ใช่ของ hub">คนละรุ่นกับ hub</span>` : "")
     // ปุ่มขึ้นเสมอ ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง" — commit เทียบไม่ได้ (hub ไม่ใช่ git checkout
     // หรือ node ยังตอบ commit ไม่ได้) ก็ยังต้องกดอัปเดตเครื่องนั้นได้อยู่ดี
-    + ` <button data-nact="install" data-node="${esc(name || "")}" style="font-size:12px"
+    + ` <button data-nact="install" data-node="${esc(name || "")}" style="font-size:calc(12px * var(--fs))"
           class="${stale ? "warn" : ""}"
           title="ดึงโค้ดใหม่จาก GitHub แล้วติดตั้งบนเครื่องนี้ (ไม่แตะโมเดลที่รันอยู่)">update</button>`;
 }
@@ -2310,7 +2468,7 @@ function layoutClusterGroups() {
     line.innerHTML = `เครื่องนี้ (hub) <b style="font-weight:500">${esc(hub.name)}</b> —
       ${hub.stack === false ? "ไม่ถูกเสนอเข้ากลุ่ม stacked" : "ถูกนับเป็นผู้สมัครเข้ากลุ่ม stacked ด้วย"}
       <button data-cact="toggle-stack" data-node="${esc(hub.name)}" data-self="1"
-        data-stack="${hub.stack === false ? "" : "1"}" style="font-size:12px"
+        data-stack="${hub.stack === false ? "" : "1"}" style="font-size:calc(12px * var(--fs))"
         >${hub.stack === false ? "เอาเข้ากลุ่ม" : "ไม่เอาเข้ากลุ่ม"}</button>`;
     box.prepend(line);
   }
@@ -2459,13 +2617,13 @@ async function loadRecipes() {
     return `<div style="margin-bottom:12px">
       <div class="row between"><b style="font-weight:500">${esc(r.label || r.match)}</b>
         <span class="dim">${esc(r.engine)}${r.topology ? " · " + esc(r.topology) : ""}</span></div>
-      <div class="mono dim" style="font-size:12px">${esc(r.match)}</div>
+      <div class="mono dim" style="font-size:calc(12px * var(--fs))">${esc(r.match)}</div>
       <div class="npills" style="margin:4px 0">${sets.map(s => `<span class="npill">${esc(s)}</span>`).join("")}</div>
       <div class="dim">verified on ${esc(r.validated_on || "—")} ·
         ${r.source && r.source.startsWith("http")
           ? `<a href="${esc(r.source)}" target="_blank" rel="noopener">source</a>`
           : esc(r.source || "—")}</div>
-      <button data-usemodel="${esc(r.match)}" style="font-size:12px;margin-top:4px">Deploy this</button>
+      <button data-usemodel="${esc(r.match)}" style="font-size:calc(12px * var(--fs));margin-top:4px">Deploy this</button>
     </div>`;
   }).join("")}</div>`;
 }
@@ -2822,7 +2980,7 @@ function loginScreen(message = "") {
   document.body.innerHTML = `
     <div class="login">
       <div class="login-box">
-        <h1 style="letter-spacing:.16em;font-size:15px">LMDS</h1>
+        <h1 style="letter-spacing:.16em;font-size:calc(15px * var(--fs))">LMDS</h1>
         <p class="muted" style="margin:6px 0 18px">Local Model Deploy Studio</p>
         <label class="dim" for="tok">Access token</label>
         <input id="tok" type="password" autocomplete="current-password" autofocus
@@ -2889,9 +3047,10 @@ async function loadProvider() {
   } catch { return; }
   const p = providerState;
   btn.classList.toggle("off", !p.configured || !p.has_key);
-  btn.innerHTML = p.configured
+  const spark = `<svg class="ic" aria-hidden="true"><use href="#i-spark"/></svg>`;
+  btn.innerHTML = spark + (p.configured
     ? `<b>${esc(p.name)}</b> · ${esc(p.model)}${p.has_key ? "" : " · ไม่มี key"}`
-    : "ไม่ได้ตั้ง LLM · rule-based";
+    : "ไม่ได้ตั้ง LLM · rule-based");
   btn.title = p.configured
     ? `${p.name} · ${p.model}${p.base_url ? " · " + p.base_url : ""}${p.has_key ? " · key " + p.key_hint : " · ยังไม่ได้ใส่ key"}`
     : "ยังไม่ได้ตั้ง LLM — deploy จะใช้ rule-based + recipes";
@@ -2973,7 +3132,7 @@ async function listProviderModels() {
   if (list) list.innerHTML = models.map(m => `<option value="${esc(m)}">`).join("");
   box.innerHTML = `<span class="dim">${models.length} โมเดลที่ key นี้ใช้ได้ — คลิกเพื่อเลือก:</span>
     <div class="field" style="width:100%;gap:6px">${models.slice(0, 40).map(m =>
-      `<button data-pick-model="${esc(m)}" style="font-size:12px">${esc(m)}</button>`).join("")}</div>
+      `<button data-pick-model="${esc(m)}" style="font-size:calc(12px * var(--fs))">${esc(m)}</button>`).join("")}</div>
     ${models.length > 40 ? `<span class="dim">…และอีก ${models.length - 40} ตัว (พิมพ์ในช่อง model เพื่อค้น)</span>` : ""}`;
 }
 
@@ -3127,7 +3286,15 @@ document.getElementById("theme").onclick = () => {
   try { localStorage.setItem("lmds-theme", window.themeMode); } catch { /* โหมดส่วนตัว */ }
   window.applyTheme();
 };
-window.applyTheme();          // ตั้งข้อความบนปุ่มให้ตรงกับธีมที่ใช้อยู่ตอนโหลดหน้า
+window.applyTheme();          // ตั้งไอคอนบนปุ่มให้ตรงกับธีมที่ใช้อยู่ตอนโหลดหน้า
+
+document.getElementById("textsize").onclick = () => {
+  const next = (window.fontSteps.indexOf(window.fontStep) + 1) % window.fontSteps.length;
+  window.fontStep = window.fontSteps[next];
+  try { localStorage.setItem("lmds-fontsize", window.fontStep.key); } catch { /* โหมดส่วนตัว */ }
+  window.applyFontSize();
+};
+window.applyFontSize();       // ปุ่มเพิ่งมีตัวตนตอนนี้ — ตอนสคริปต์หัวหน้ารันยังไม่มี
 
 // ── แก้ controller script โดยมี LLM ช่วยเสนอ ────────────────────────────────
 // สามขั้นแยกจากกันโดยตั้งใจ: เสนอ (ไม่เขียน) → คนอ่าน diff → กด Apply (เขียน)
