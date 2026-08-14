@@ -233,3 +233,37 @@ def test_an_expired_session_is_an_error_not_an_empty_answer():
     deploy._SESSIONS.pop("gone", None)
     with pytest.raises(deploy.DeployError):
         deploy.context_advice("gone", 32768)
+
+
+# ── บันไดต้องไม่กลายเป็นเพดานเสียเอง ────────────────────────────────────────
+# เคยมี DEFAULT_CONTEXT_CAP = 65,536 คร่อมอยู่แล้วถูกถอดออกไป · ลิสต์ของขั้นที่
+# จบเร็วเกินไปทำหน้าที่เดียวกันเป๊ะ แค่ไม่มีชื่อว่า cap
+
+K3 = KvDims(layers=93, kv_heads=1, head_dim=576, latent_dim=576)
+
+
+def test_the_ladder_reaches_a_million_when_the_model_does():
+    steps = [p.context for p in mem.ladder(stacked(weights=153.6), K3,
+                                           native_context=1_048_576)]
+    assert 1_048_576 in steps
+
+
+def test_a_short_context_model_is_not_offered_steps_it_cannot_take():
+    steps = [p.context for p in mem.ladder(stacked(), K3, native_context=32768)]
+    assert max(steps) == 32768
+
+
+def test_the_value_typed_appears_in_the_table_that_judges_it():
+    """กรอก 524,288 แล้วได้คำตอบว่า "ใส่ได้" แต่ตารางจบที่ 262,144 คืออ่านแล้วขัดกันเอง"""
+    fit = stacked(weights=153.6)
+    steps = [p.context for p in mem.ladder(fit, K3, native_context=1_048_576)]
+    assert 524_288 in steps
+    assert mem.plan(fit, K3, 524_288).fits
+
+
+def test_a_million_needs_fp8_on_two_machines():
+    """ตัวเลขที่ตอบคำถามจริง: bf16 ไปได้ 735k · fp8 ไปได้เกินล้าน"""
+    fit = stacked(weights=153.6)
+    assert not mem.plan(fit, K3, 1_048_576, "bf16").fits
+    assert mem.plan(fit, K3, 1_048_576, "fp8").fits
+    assert mem.max_context(fit, K3, 1.0, "bf16") < 1_048_576 < mem.max_context(fit, K3, 1.0, "fp8")
