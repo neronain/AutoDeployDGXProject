@@ -1099,9 +1099,26 @@ function wizForm(msg = "", extra = "") {
       </select>
       <label>Target</label>
       <select id="w-target"><option value="">Auto-detect</option></select>
+      <label>Engine</label>
+      <select id="w-engine" style="flex:none;min-width:130px">
+        <option value="">Auto</option>
+        <option value="vllm">vLLM</option>
+        <option value="sglang">SGLang</option>
+      </select>
       <span class="dim" id="w-machine-hint"></span>
     </div>
-    <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none"> Skip the LLM (rule-based plan)</label>
+    <!-- llama.cpp ไม่อยู่ในรายการโดยตั้งใจ: มันอ่านได้เฉพาะ GGUF และ GGUF ก็บังคับใช้มัน
+         อยู่แล้ว การใส่ตัวเลือกที่เลือกแล้วไม่มีผลคือชวนให้เข้าใจผิดว่ามีทางเลือก -->
+    <div class="dim">Auto = ตามชนิดไฟล์ (GGUF → llama.cpp, safetensors → vLLM) ·
+      SGLang จำเป็นสำหรับ NVFP4 บางตระกูลที่ calibrate ด้วย w1/w3 scale ·
+      เลือก SGLang กับ repo ที่เป็น GGUF ระบบจะยังใช้ llama.cpp เพราะ SGLang อ่านไฟล์นั้นไม่ได้</div>
+    <!-- ป้ายเดิมคือ "Skip the LLM (rule-based plan)" ซึ่งถูกอ่านว่าเป็นการเลือก llama.cpp
+         (ผู้ใช้จริงรายงานมาเอง) · คำว่า LLM อยู่ติดกับช่อง Engine ยิ่งชวนให้เข้าใจว่าเป็น
+         เรื่องเดียวกัน · ทั้งที่ช่องนี้พูดถึง "ใครวางแผน" ไม่ใช่ "อะไรเสิร์ฟโมเดล" -->
+    <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none">
+      Plan without an LLM — use proven recipes instead</label>
+    <div class="dim">เกี่ยวกับ<b style="font-weight:600">ผู้วางแผน</b> ไม่ใช่ตัวที่เสิร์ฟโมเดล ·
+      รันไทม์เลือกที่ช่อง Engine ด้านบน</div>
     <div class="field" style="width:100%">
       <label>HF token</label>
       <input id="w-hf" type="password" autocomplete="off" value="${esc(draft.hf_token || "")}"
@@ -1119,6 +1136,8 @@ function wizForm(msg = "", extra = "") {
   document.getElementById("w-nollm").checked = draft.no_llm;
   renderRecipePicker();
   api("/api/targets").then(r => r.json()).then(d => {
+    const eng = document.getElementById("w-engine");
+    if (eng && draft.engine) eng.value = draft.engine;
     const sel = document.getElementById("w-target");
     if (!sel) return;
     d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
@@ -1396,10 +1415,11 @@ async function analyzeNow(overrides = {}) {
   const model = (el("w-model") || {}).value || draft.model;
   const target = el("w-target") ? el("w-target").value : draft.target;
   const noLlm = el("w-nollm") ? el("w-nollm").checked : draft.no_llm;
+  const engine = el("w-engine") ? el("w-engine").value : draft.engine;
   const hfToken = el("w-hf") ? el("w-hf").value.trim() : draft.hf_token;
   const hfSave = el("w-hf-save") ? el("w-hf-save").checked : draft.hf_save;
   if (!model) return;
-  Object.assign(draft, { model, target, no_llm: noLlm, hf_token: hfToken, hf_save: hfSave });
+  Object.assign(draft, { model, target, engine, no_llm: noLlm, hf_token: hfToken, hf_save: hfSave });
   // เก็บก่อนวิเคราะห์ — จะได้ใช้ทั้งรอบนี้และรอบหน้าโดยไม่ต้องพิมพ์ซ้ำ
   if (hfToken && hfSave) {
     await api("/api/secrets/hf", { method: "POST", headers: { "content-type": "application/json" },
@@ -1410,7 +1430,7 @@ async function analyzeNow(overrides = {}) {
   try {
     const r = await api("/api/deploy/analyze", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, target, no_llm: noLlm, hf_token: hfToken, ...overrides }),
+      body: JSON.stringify({ model, target, engine, no_llm: noLlm, hf_token: hfToken, ...overrides }),
     });
     const d = await r.json();
     if (r.ok) { planView(d); return; }

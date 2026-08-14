@@ -131,3 +131,32 @@ def test_the_spark_gets_the_build_made_for_its_chip(tmp_path):
     """kernel ของ SM121 ต้องมากับ image ที่ build ให้เครื่องนี้ เหมือนกติกาของ vLLM"""
     _, plan = bundle(tmp_path)
     assert "nvcr.io/nvidia/sglang" in plan.runtime.image_ref
+
+
+# ── หน้าเว็บต้องเลือกได้เท่ากับ CLI ─────────────────────────────────────────
+# ตอนแรกฟีเจอร์นี้มีเฉพาะฝั่ง CLI · หน้าเว็บเรียก planner โดยไม่ส่ง engine เลย
+# ผลคือคนที่ใช้หน้าเว็บไม่มีทางเลือก SGLang ได้ ทั้งที่ระบบรองรับแล้ว
+
+def test_the_web_rejects_an_engine_it_does_not_know_before_touching_the_network():
+    """พิมพ์ผิดต้องรู้ทันที ไม่ใช่หลังรอดึง metadata สามสิบวินาที"""
+    import pytest
+
+    from lmds.web import deploy
+
+    with pytest.raises(deploy.DeployError) as caught:
+        deploy.analyze("org/model", engine="nonsense")
+    assert "nonsense" in str(caught.value)
+    assert "sglang" in str(caught.value)
+
+
+def test_the_web_and_the_cli_offer_the_same_engines():
+    """สองทางเข้าที่ให้ตัวเลือกไม่เท่ากันคือกับดัก — คนหนึ่งทำได้ อีกคนทำไม่ได้"""
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parents[1]
+            / "src/lmds/web/static/index.html").read_text()
+    assert 'id="w-engine"' in page
+    for value in ('value="vllm"', 'value="sglang"'):
+        assert value in page, value
+    # llama.cpp ต้องไม่อยู่ในรายการ — เลือกแล้วไม่มีผล เพราะ GGUF บังคับใช้มันอยู่แล้ว
+    assert 'value="llamacpp"' not in page

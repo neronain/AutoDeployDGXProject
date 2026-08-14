@@ -112,14 +112,29 @@ def analyze(
     no_llm: bool = False,
     hf_token: str = "",
     selected_gguf: str = "",
+    engine: str = "",
 ) -> dict:
     """วิเคราะห์จนได้ Deployment Plan ที่รอยืนยัน — ยังไม่เขียนไฟล์อะไรเลย"""
     from lmds.brain import PlanError, ProviderError, build_plan, make_provider
+    from lmds.brain.plan_schema import Engine
     from lmds.config import Settings
     from lmds.fit import PRESETS, Verdict, analyze as analyze_fit
     from lmds.fit.targets import from_hardware_report
     from lmds.inspector import AuthRequired, HfClient, HfError, RepoNotFound, inspect_model
     from lmds.resolver import SourceError, parse_source
+
+    # ตรวจ input ที่ตรวจได้ทันทีให้หมดก่อนแตะเครือข่าย — ชื่อ engine พิมพ์ผิดไม่ควร
+    # ต้องรอผลดึง metadata สามสิบวินาทีก่อนถึงจะรู้
+    chosen = None
+    if engine:
+        try:
+            chosen = Engine(engine.strip().lower())
+        except ValueError:
+            raise DeployError(
+                "input",
+                f"ไม่รู้จัก engine '{engine}' — มีให้เลือก: "
+                + ", ".join(e.value for e in Engine),
+            ) from None
 
     try:
         source = parse_source(model)
@@ -200,10 +215,10 @@ def analyze(
             notes.append("ยังไม่ได้ตั้ง LLM provider — ใช้ rule-based mode")
 
     try:
-        plan = build_plan(report, fit, provider)
+        plan = build_plan(report, fit, provider, engine=chosen)
     except (PlanError, ProviderError) as exc:
         notes.append(f"LLM ใช้ไม่ได้ ({exc}) — สลับเป็น rule-based")
-        plan = build_plan(report, fit, None)
+        plan = build_plan(report, fit, None, engine=chosen)
 
     if len(_SESSIONS) >= _MAX_SESSIONS:
         _SESSIONS.pop(next(iter(_SESSIONS)))

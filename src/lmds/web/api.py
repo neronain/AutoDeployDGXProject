@@ -601,6 +601,7 @@ def create_app(token: str = "") -> FastAPI:
                 no_llm=bool(body.get("no_llm")),
                 hf_token=body.get("hf_token") or "",
                 selected_gguf=body.get("selected_gguf") or "",
+                engine=body.get("engine") or "",
             )
         except DeployError as exc:
             raise _deploy_error(exc) from exc
