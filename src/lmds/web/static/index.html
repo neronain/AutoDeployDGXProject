@@ -1632,10 +1632,31 @@ document.addEventListener("click", async e => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ keep_weights: keep }),
     });
-    if (!r.ok) alert((await r.json()).detail || "Could not remove");
+    // ลบไม่สำเร็จแล้วยังลบแถวทิ้ง = หน้าเว็บบอกว่าสำเร็จทั้งที่โมเดลยังอยู่ · ผู้ใช้เพิ่ง
+    // เจอจริง: กดลบแล้วรายการหายหมด กด refresh แล้วกลับมาเหมือนเดิม เพราะไม่เคยถูกลบ
+    if (!r.ok) {
+      let why = "ลบไม่สำเร็จ";
+      try { why = (await r.json()).detail || why; } catch { /* เซิร์ฟเวอร์ไม่ได้ตอบ JSON */ }
+      alert(why);
+      btn.disabled = false; btn.textContent = "Confirm removal";
+      return;                       // ไม่แตะรายการเลย — ของยังอยู่ตามจริง
+    }
+    // HTTP 200 ไม่ได้แปลว่าลบครบ · เซิร์ฟเวอร์คืนรายการที่ลบไม่ได้มาในฟิลด์ `failed`
+    // (ไฟล์สิทธิ์ไม่พอ, container ยังถือไฟล์อยู่ ฯลฯ) และหน้าเว็บไม่เคยอ่านมันเลย —
+    // จึงลบแถวทิ้งทั้งที่ของยังอยู่ แล้วมันกลับมาตอน refresh
+    let result = {};
+    try { result = await r.json(); } catch { /* ไม่ตอบ JSON ก็ถือว่าไม่มีรายละเอียด */ }
+    const failed = result.failed || [];
+    if (failed.length) {
+      alert("ลบได้ไม่ครบ — ของที่เหลือยังอยู่:\n\n" + failed.join("\n"));
+      btn.disabled = false; btn.textContent = "Confirm removal";
+      await refresh();            // วาดตามสภาพจริง ไม่ใช่ตามที่หวัง
+      return;
+    }
+    // สำเร็จแล้วค่อยเอาออก · ไม่ล้างรายการทั้งกล่องก่อนโหลดใหม่ เพราะถ้า refresh
+    // ช้าหรือพลาด ผู้ใช้จะเห็นหน้าว่างเปล่าโดยไม่รู้ว่าเกิดอะไรขึ้น
     rows.delete(slug);
-    document.getElementById("fleet").innerHTML = "";
-    refresh();
+    await refresh();
     return;
   }
 
