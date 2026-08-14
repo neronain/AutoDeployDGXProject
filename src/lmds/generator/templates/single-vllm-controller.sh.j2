@@ -648,37 +648,142 @@ PYEOF
 }
 
 # controller ส่ง --tool-call-parser {{ plan.tool_calling.parser }} + --enable-auto-tool-choice
+list_parsers() {
+  need docker
+  ensure_image "${VLLM_IMAGE}"
+  # ถามชื่อจาก engine เอง — ชื่อไฟล์ในซอร์สไม่ตรงกับชื่อที่ลงทะเบียน
+  # (เช่นไฟล์ qwen3xml.py แต่ชื่อจริงคือ qwen3_xml) และรายชื่อเปลี่ยนไปตามเวอร์ชัน
+  docker run --rm --entrypoint python3 "${VLLM_IMAGE}" -c '
+import sys
+
+def registry(module, cls_name):
+    m = __import__(module, fromlist=["*"])
+    c = getattr(m, cls_name)
+    found = set()
+    for attr in dir(c):                       # เก็บทั้ง registry ปกติและแบบ lazy
+        if attr.endswith("parsers"):
+            value = getattr(c, attr, None)
+            if isinstance(value, dict):
+                found |= set(value)
+    return sorted(found)
+
+def report(label, candidates):
+    for module, cls_name in candidates:
+        try:
+            names = registry(module, cls_name)
+        except Exception:
+            continue
+        if names:
+            print(f"{label}:")
+            print("  " + " ".join(names))
+            return
+    print(f"{label}: อ่านจาก engine ไม่ได้ — ดูจาก --help ของ engine แทน")
+
+report("tool parsers  (--tool-parser)", [
+    ("vllm.tool_parsers", "ToolParserManager"),
+    ("vllm.entrypoints.openai.tool_parsers", "ToolParserManager"),
+    ("sglang.srt.function_call.function_call_parser", "FunctionCallParser"),
+])
+report("reasoning parsers  (--reasoning-parser)", [
+    ("vllm.reasoning", "ReasoningParserManager"),
+    ("sglang.srt.reasoning_parser", "ReasoningParser"),
+])
+' 2>/dev/null || die "รันไม่สำเร็จ — image อาจยังไม่ถูกดึงลงมา"
+}
+
 test_tools() {
   assert_our_server
   need curl
-  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${1:-required}" <<'PYEOF'
-import json, sys, urllib.request
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${1:-both}" "$0" <<'PYEOF'
+import json, re, sys, urllib.request
 
-port, model, mode = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-tools = [{"type": "function", "function": {
+port, model, mode, prog = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+
+# auto คือโหมดที่ Claude Code / Hermes / OpenClaw / agent ทุกตัวส่งมาจริง — โมเดล
+# เขียนตามรูปแบบของมันเอง แล้ว parser ต้องแปลให้ได้
+# required สั่งให้ engine บังคับรูปแบบด้วย guided decoding จึงผ่านได้แม้ parser ผิด
+# ทดสอบแค่ required แล้วรายงานว่าใช้ได้ = วัดเส้นทางที่ไม่มีใครเดิน
+TOOLS = [{"type": "function", "function": {
     "name": "get_weather", "description": "Get current weather for a location",
     "parameters": {"type": "object",
                    "properties": {"location": {"type": "string"}},
                    "required": ["location"]}}}]
-payload = json.dumps({
-    "model": model,
-    "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
-    "tools": tools, "tool_choice": mode, "max_tokens": 256,
-}).encode()
-req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
-                             data=payload, headers={"Content-Type": "application/json"})
-choice = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]
-calls = choice["message"].get("tool_calls") or []
-if calls:
+
+# รูปแบบดิบที่โมเดลเขียน → parser ที่แปลมันออก · เดาให้ ไม่ต้องไล่ลองทีละตัว
+SHAPES = [
+    (r"<function=|<parameter=",       "qwen3_xml (ถ้าไม่ผ่านลอง qwen3_coder)"),
+    (r"<tool_call>\s*\{",             "hermes"),
+    (r"<\|tool.call",                 "deepseek_v3 / deepseek_v31"),
+    (r"<\|python_tag\|>",             "llama3_json"),
+    (r'"name"\s*:\s*"get_weather"',   "llama3_json (หรือ mistral)"),
+    (r"^\s*\[?\s*get_weather\s*\(",   "pythonic (หรือ llama4_pythonic)"),
+]
+
+
+def ask(choice_mode):
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
+        "tools": TOOLS, "tool_choice": choice_mode, "max_tokens": 512,
+    }).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                                 data=payload, headers={"Content-Type": "application/json"})
+    msg = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]["message"]
+    return msg.get("tool_calls") or [], (msg.get("content") or "")
+
+
+def guess(text):
+    for pattern, name in SHAPES:
+        if re.search(pattern, text, re.M):
+            return name
+    return ""
+
+
+def one_line(calls):
     fn = calls[0]["function"]
-    print(f"PASS: {fn['name']}({fn['arguments'][:80]})")
-elif mode == "required":
-    print("FAIL: โหมด required แต่ไม่มี tool_calls — parser น่าจะไม่ตรงกับโมเดล")
-    print(json.dumps(choice, indent=2)[:400])
+    return f"{fn['name']}({fn['arguments'][:80]})"
+
+
+modes = ["auto", "required"] if mode == "both" else [mode]
+seen = {}
+for m in modes:
+    calls, text = ask(m)
+    seen[m] = (calls, text)
+    print(f"  {m:9s} → {one_line(calls) if calls else 'ไม่มี tool_calls'}")
+
+print()
+auto_calls, auto_text = seen.get("auto", (None, ""))
+req_calls = seen.get("required", (None, ""))[0]
+
+if auto_calls:
+    print("PASS: โมเดลเรียก tool ได้เองในโหมด auto — ใช้กับ agent ได้จริง")
+    sys.exit(0)
+
+if auto_calls is None:                      # ผู้ใช้ขอ required อย่างเดียว
+    if req_calls:
+        print("PASS(required): ผ่านเฉพาะโหมดบังคับ")
+        print(f"  ยังไม่ได้พิสูจน์ว่า agent ใช้ได้ · รัน: {prog} test-tools auto")
+        sys.exit(0)
+    print("FAIL(required): ไม่มี tool_calls แม้จะบังคับ — parser ไม่ตรงกับโมเดล")
     sys.exit(1)
+
+# auto ไม่ผ่าน = agent ใช้ไม่ได้ ไม่ว่า required จะผ่านหรือไม่
+print("FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่นจะเห็นเป็นข้อความเปล่า")
+if req_calls:
+    print("  โหมด required ผ่าน เพราะ engine บังคับรูปแบบให้เอง")
+    print("  แปลว่าโมเดลเรียก tool เป็น แต่ --tool-parser แปลรูปแบบของมันไม่ออก")
+elif req_calls is not None:
+    print("  โหมด required ก็ไม่ผ่าน — parser ผิด หรือโมเดลนี้เรียก tool ไม่เป็น")
+if auto_text.strip():
+    print("  สิ่งที่โมเดลเขียนออกมาจริง:")
+    print("    " + auto_text.strip()[:200].replace("\n", " "))
+hint = guess(auto_text)
+if hint:
+    print(f"  รูปแบบนี้ตรงกับ parser: {hint}")
+    print(f"  ลองใหม่:  {prog} restart --tool-parser <ชื่อข้างบน>")
 else:
-    print("WARN(auto): โมเดลตอบเป็นข้อความแทนการเรียก tool:",
-          (choice["message"].get("content") or "")[:120])
+    print(f"  ดูชื่อ parser ที่ใช้ได้ทั้งหมด:  {prog} parsers")
+sys.exit(1)
 PYEOF
 }
 usage() {
@@ -703,7 +808,9 @@ COMMANDS
   network-info      Show current bind address and the endpoint advertised to clients
   test-text         Send one chat completion request to verify the model answers
   test-reasoning    ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
-  test-tools [required|auto]  ตรวจว่า --tool-call-parser แปลงเป็น tool_calls ได้จริง
+  test-tools [both|auto|required]  ตรวจว่า --tool-parser แปลงเป็น tool_calls ได้จริง
+                    ค่าตั้งต้น both = ทดสอบ auto ก่อน ซึ่งเป็นโหมดที่ agent ใช้จริง
+  parsers           สิ่งที่ engine รู้จัก: ชื่อ --tool-parser และ --reasoning-parser ที่ใส่ได้จริง
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port to serve on                          [default: ${API_PORT}]
@@ -819,7 +926,8 @@ case "${1:-help}" in
   status)       status ;;
   logs)         logs "${2:-300}" ;;
   test-reasoning)  test_reasoning ;;
-  test-tools)      test_tools "${2:-required}" ;;
+  test-tools)      test_tools "${2:-both}" ;;
+  parsers)         list_parsers ;;
   client-config) client_config ;;
   info|banner) info ;;
   network-info) network_info ;;

@@ -139,7 +139,8 @@ cd bundles/qwen3-0-6b-gguf
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
-| `test-tools` | ตรวจว่า `--tool-call-parser` แปลงคำตอบเป็น `tool_calls` ได้จริง — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง |
+| `parsers` | ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง |
+| `test-tools` | ตรวจว่า `--tool-parser` แปลงคำตอบเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง |
 | `test-reasoning` | ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง — ใช้ได้ทุก bundle เช่นกัน |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 
@@ -262,15 +263,66 @@ TOOL_CALL_PARSER=qwen3_coder ./xxx-single.sh start  # ถาวร (ใส่ใ
 
 ค่าว่าง = ปิด ซึ่งยังเป็นค่าตั้งต้นของโมเดลที่ไม่รู้ parser
 
-**เลือก parser ตัวไหน** — vLLM มี parser แยกตามตระกูลโมเดล ใส่ผิดจะไม่ error
-แต่จะไม่คืน `tool_calls` เลย ดูรายชื่อที่ image นั้นรองรับได้จาก:
+**เลือก parser ตัวไหน** — ถามจาก engine เอง อย่าเดาจากชื่อไฟล์:
 
 ```bash
-docker exec <container> ls /usr/local/lib/python3*/dist-packages/vllm/tool_parsers/
+./xxx-single.sh parsers
 ```
 
-ที่ใช้บ่อย: `qwen3_coder` (Qwen3-Coder), `hermes` (Qwen ทั่วไป),
+```
+tool parsers  (--tool-parser):
+  deepseek_v3 glm47 granite hermes kimi_k2 llama3_json minimax_m3 mistral
+  pythonic qwen3_coder qwen3_xml seed_oss xlam ...
+reasoning parsers  (--reasoning-parser):
+  deepseek_r1 glm47 kimi_k2 nemotron_v3 qwen3 seed_oss ...
+```
+
+เดิมหัวข้อนี้เคยแนะให้ `ls` โฟลเดอร์ `vllm/tool_parsers/` แล้วอ่านชื่อไฟล์ —
+ซึ่งผิด เพราะ **ชื่อไฟล์กับชื่อที่ลงทะเบียนไม่ตรงกัน** (ไฟล์ `qwen3xml.py`
+ลงทะเบียนไว้ว่า `qwen3_xml`) และรายชื่อจริงอยู่ใน lazy registry ที่ยังไม่ถูก
+import จนกว่าจะมีคนเรียกใช้ · `parsers` อ่านทั้งสองที่แล้วรวมให้
+
+ที่ใช้บ่อย: `qwen3_coder` / `qwen3_xml` (ตระกูล Qwen รวม Nemotron-3 —
+สอง**ชื่อ**นี้ชี้ไป parser **ตัวเดียวกัน** ใน vLLM รุ่นใหม่), `hermes`,
 `llama3_json`, `mistral`, `deepseek_v3`
+
+**ใส่ผิดจะไม่ error** แต่จะไม่คืน `tool_calls` เลย — ยกเว้นตอนที่ client ส่ง
+`tool_choice: "required"` มา ซึ่งเป็นกับดักของหัวข้อถัดไป
+
+#### `test-tools` วัดโหมดที่ agent ใช้จริง
+
+```bash
+./xxx-single.sh test-tools           # = both · auto ก่อน แล้วค่อย required
+./xxx-single.sh test-tools auto      # เฉพาะเคสจริง
+./xxx-single.sh test-tools required  # เฉพาะโหมดบังคับ
+```
+
+ความต่างสำคัญกว่าที่เห็น:
+
+| `tool_choice` | ใครส่งมา | เกิดอะไรขึ้น |
+|---|---|---|
+| `auto` | Claude Code, Hermes, OpenClaw, agent ทุกตัว | โมเดลเขียนตามรูปแบบของมันเอง แล้ว **parser ต้องแปลให้ได้** |
+| `required` | สคริปต์ทดสอบเป็นหลัก | engine บังคับรูปแบบด้วย guided decoding — ผ่านได้**แม้ parser ผิด** |
+
+เคสจริง 2026-08-14: `test-tools` ขึ้น PASS แต่ Claude Code เห็นเป็นข้อความเปล่า
+เพราะเทสยิงด้วย `required` · โมเดลเขียน `<function=…>` แบบ Qwen แต่ parser ที่ตั้ง
+ไว้คือ `hermes` ซึ่งรอ JSON — พอเป็น `auto` จึงแปลไม่ออกและหลุดมาเป็น content
+เทสที่ผ่านทั้งที่ของจริงพัง แย่กว่าไม่มีเทส เพราะมันทำให้เลิกสงสัย
+
+ตอนนี้ค่าตั้งต้นจึงเป็น `both` และ **`auto` ไม่ผ่าน = ทั้งคำสั่งไม่ผ่าน** พร้อม
+พิมพ์สิ่งที่โมเดลเขียนออกมาจริงและเดา parser ที่ตรงกับรูปแบบนั้นให้:
+
+```
+  auto      → ไม่มี tool_calls
+  required  → get_weather({"location": "Bangkok"})
+
+FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่นจะเห็นเป็นข้อความเปล่า
+  โหมด required ผ่าน เพราะ engine บังคับรูปแบบให้เอง
+  แปลว่าโมเดลเรียก tool เป็น แต่ --tool-parser แปลรูปแบบของมันไม่ออก
+  สิ่งที่โมเดลเขียนออกมาจริง:
+    <tool_call> <function=get_weather> <parameter=location> Bangkok </parameter> …
+  รูปแบบนี้ตรงกับ parser: qwen3_xml (ถ้าไม่ผ่านลอง qwen3_coder)
+```
 
 > **หมายเหตุ** `test-tools` ติดมากับทุก bundle แล้ว ไม่ใช่เฉพาะที่เปิด tool ไว้
 > ตอนสร้าง — การให้สวิตช์เปิดได้แต่ไม่มีทางพิสูจน์ว่าได้ผล คือย้ายจุดบอด
