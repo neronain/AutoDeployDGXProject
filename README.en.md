@@ -1,42 +1,56 @@
-# AutoDeployDGXProject — Local Model Deploy Studio (LMDS)
+<div align="center">
 
-> ⚡ Built and maintained by **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
->
-> 🇹🇭 ภาษาไทย: [README.md](README.md) — the Thai README and `docs/` are the primary documentation.
-> This page is a summary for English readers; the CLI itself speaks Thai.
+# LMDS · Local Model Deploy Studio
 
-A CLI for Ubuntu that takes a **Hugging Face model link** (repo or direct `.gguf` file) and uses an
-**LLM API** (OpenAI, Gemini, MiniMax, or any OpenAI-compatible endpoint — including your own local
-model) as its "brain" to analyse the model and produce a **validated deployment bundle** for:
+**From a Hugging Face link to a server that actually answers — on your own machine**
 
-- **NVIDIA DGX Spark** — single node or stacked (multi-node)
-- **Ubuntu + RTX GPU** — ordinary local AI servers (x86_64)
+Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine or
+several acting as one. Nothing leaves the machine except what you ask for.
 
-> **Supported model sources today: Hugging Face only.** Ollama and NVIDIA NGC links are phase 2 —
-> passing one produces a clear "not supported yet" message. The `anthropic` provider can be
-> configured but its adapter is also phase 2.
+[![version](https://img.shields.io/badge/version-0.3.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-903-17703f)](tests/)
+[![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
+[![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
+[![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
+[![license](https://img.shields.io/badge/license-proprietary-8a5300)](LICENSE)
 
-## Core design principle
+**[Install](docs/INSTALL.md)** · **[Usage](docs/USAGE.md)** · **[Multi-node](docs/RUNBOOK-MULTI-NODE.md)** · **[ภาษาไทย](README.md)**
 
-> **Deterministic core + LLM assist** — the LLM never writes Bash. Every script is rendered from a
-> reviewed template. The LLM only researches the model and fills in a fixed JSON schema
-> (`DeploymentPlan`); memory-fit and token-budget maths are pure code. Every bundle must pass
-> quality gates (`bash -n`, audit rules, SHA-256) before it reaches the user.
+Built and maintained by **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
 
-## Quick start
+</div>
+
+> 🇹🇭 The Thai [README.md](README.md) and `docs/` are the primary documentation and the CLI speaks
+> Thai. This page is the summary for English readers; the **web console is in English**.
+
+---
+
+## The problem it solves
+
+Getting a model onto your own hardware is rarely hard because you cannot find the command. It is
+hard because **commands that look entirely correct return wrong results with no error**: a context
+silently cut to a tenth of what the machine could hold, tool calling switched on that never
+actually converts a reply, a 200G link that negotiated down to 50G, a KV cache estimated twenty
+times too large so the context is capped for no reason.
+
+LMDS is what came back from running all of that for real and turning each symptom into a check.
+
+| | |
+|---|---|
+| 🧮 **Arithmetic is code, not the LLM** | Memory fit, KV cache, token budgets, link speed. The LLM only researches the model and fills a fixed JSON schema — it **never writes Bash**. |
+| 🛡️ **Every bundle passes gates first** | `bash -n`, audit rules, SHA-256 checksums. No pass, no ZIP. |
+| 🔍 **Told while it is still fixable** | Not when users complain about latency. Every check comes from something that actually broke on real hardware. |
+| 🔌 **Works with no LLM at all** | Rule-based mode uses recipes proven on real machines. Air-gapped is fine. |
+
+## Three commands
 
 ```bash
-git clone https://github.com/neronain/AutoDeployDGXProject
-cd AutoDeployDGXProject && ./install.sh     # installs whatever is missing, then configures provider
-source ~/.bashrc                            # the installer prints exactly what to run at the end
-
-lmds hardware                               # GPU / RAM / disk / Docker / target profile
-lmds inspect Qwen/Qwen3-32B                 # analyse + fit check, no files written
-lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
+./install.sh                 # installs missing Docker / NVIDIA toolkit too, asking before each sudo
+lmds hardware                # what this machine is, and what target profile it maps to
+lmds deploy Qwen/Qwen3-32B   # analyse → plan → confirm → bundle + ZIP that passed every gate
 ```
 
-`deploy` walks through: analyse → plan → **confirm** (approve flags, adjust context) → render →
-10 quality gates → bundle + ZIP. Then on the target machine:
+Then, on the target machine:
 
 ```bash
 cd bundles/<slug>
@@ -44,160 +58,162 @@ cd bundles/<slug>
 ./<slug>-single.sh start && ./<slug>-single.sh test-text
 ```
 
-Run `./<slug>-single.sh help` for full English documentation of every option, environment variable,
-and how to set an API token — it is generated with that bundle's real defaults filled in.
+---
 
-## Managing what is running
+## Three questions few tools answer
 
-```bash
-lmds ps                  # host + every model: status, port, endpoint
-lmds list                # every bundle + status + engine/port/context/features + autostart
-lmds start|stop|restart <name>          # extra flags (--port, --gpu-util) pass through to the controller
-lmds logs <name> -f      # live tail
-lmds enable <name>       # systemd autostart after reboot
-lmds doctor <name>       # why won't it download/start? checks + exact fix commands
-lmds repair <name>       # re-fetch missing/corrupt files, then verify
-lmds remove <name>       # delete everything (--keep-weights to keep the download)
+### 1 · "At this context, how many people can use it at once?"
+
+Most tools report the largest context that fits — which is, by definition, the one where a single
+conversation fills the KV pool exactly. Set it and the second request queues, with nothing saying so.
+
 ```
+KV bf16 · 120 KiB per token
+  context      KV each     at once
+   32,768       3.8 GB        14.1
+  131,072        15 GB         3.5
+  262,144        30 GB         1.8   ← the value you typed
+```
+> • Fits, but serves 1.8 conversations at once — one full-length chat takes almost the whole pool
+> • Switching the KV cache to fp8 halves it: 30 GB → 15 GB, 1.8 concurrent → 3.5
+> • 2 nodes — this budget does not yet include NCCL buffers across the network
 
-`lmds ps` also adopts **containers you started yourself** (vLLM / llama.cpp / Ollama / TGI) — they can
-be stopped, restarted, tailed and enabled too. Stopping those uses `docker stop`, never `docker rm -f`.
+Shown in the CLI **and in the web console while the number is still being typed**. Handles GQA and
+**MLA** (DeepSeek-V2/V3, Kimi K2/K3), which stores one latent instead of a key and a value — one
+formula does not fit both families.
 
-## One machine, or several?
+### 2 · Several machines, one model
 
-**Stacking is not about speed — it is about a model not fitting in one machine.** Anything that
-fits on one machine runs *faster* there, because nothing crosses the wire per token.
+> **Stacked does not mean faster — it means too big for one machine.**
+> Anything that fits on one machine runs faster on one machine.
 
-| | Single machine | Stacked (several machines, one model) |
+| | Single | Stacked |
 |---|---|---|
 | Engine | vLLM **or** llama.cpp | **vLLM only** |
-| Artifact | safetensors or **GGUF** | **safetensors only** — GGUF cannot be stacked |
-| Fast fabric | not needed | **required**, ≥25G (in practice 200G RoCE) |
-| Target | `dgx-spark-single`, `rtx-5090`, … | `dgx-spark-stacked`, `dgx-spark-stacked-4` |
+| Artifact | safetensors or GGUF | **safetensors only** |
+| Fast link | not needed | **required**, ≥25G (200G RoCE in practice) |
+| Machines | 1 | ≤3 direct-cabled · ≤4 through a switch |
 
-Full command sequence: **[docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md)**
+LMDS detects ConnectX/RDMA itself, says which machines can stack together, writes `cluster.env`,
+and **warns when a link negotiated below what the card can do** — NVIDIA validates Spark links at
+≥184 Gbit/s, and a switch port left on auto-negotiate commonly lands at 50G while everything still
+looks healthy.
 
-## Controlling several machines from one
+→ [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) · [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) · [compared with NVIDIA's own docs](docs/NVIDIA-CLUSTER-SOURCES.md)
 
-A site with more than one machine does not need one SSH session per box. Register a machine once
-with its ip/user/password — LMDS installs its own SSH key and discards the password immediately
-(the registry has no password field, on purpose).
-
-```bash
-lmds node add 192.168.10.21 --user ops --install   # password once → installs the key and LMDS
-lmds node list --check                   # which machines still answer
-lmds ps --all                            # every model on every machine, one table
-lmds node run spark2 doctor my-model     # run any lmds command on that machine
-lmds node cluster                        # who has ConnectX/200G, and which pairs can be stacked
-lmds scan --all                          # models already on each machine, wherever they were put
-lmds node ctl spark1 <slug> start        # run a controller step on that machine
-lmds prune                               # clear registrations pointing at bundles that are gone
-lmds recipes                             # configurations proven on hardware — used when no LLM key is set
-```
-
-Nodes run **no daemon** and need no port open beyond 22 — the hub calls `lmds agent info` over SSH.
-That does mean **every machine needs LMDS installed on it** — the "agent" is the `lmds` command
-itself, not a resident process. The hub can do that for you: `lmds node install <name>` clones and
-runs `install.sh` there (skipping the sudo/Docker step, which no one can answer over SSH).
-Root is not required; a user in the `docker` group is enough. Each machine reports live CPU, RAM
-(or unified memory), VRAM, disk, link speed and **how many models are running** — llama.cpp can
-serve several at once.
-
-For stacking, LMDS reads `/sys` to find ConnectX/RDMA links and their speed, then groups machines
-that can actually be stacked together (same GPU model and count, fast enough link on both). It
-suggests the cluster IP it found but never assumes it — set it explicitly, then write it into the
-bundle so the controller stops asking:
+### 3 · A web console that matches the CLI
 
 ```bash
-lmds node set spark2 --cluster-ip 10.10.0.2
-lmds node cluster --write my-70b-model    # writes cluster.env (MASTER_IP/WORKER_IP/NCCL_SOCKET_IFNAME)
+lmds web --bind 0.0.0.0 -b      # asks for a token once, then remembers it — the link is bookmarkable
 ```
 
-Details: [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
+Deploy wizard, download + verify, start/stop/restart, port/context/slots/API key/bind, doctor,
+logs, the test suite (`test-text` `test-vision` `test-tools` `bench` `stress`), autostart, stacked
+commands, repair, remove — **and models on other machines are controlled exactly like local ones**.
 
-## Web UI (optional)
+- **Readable before it is legible** — the same CPU / Unified·RAM / VRAM / Disk gauges for every
+  machine, with warning colours before things run out. Values a card does not report are hidden,
+  not shown as 0.
+- **Machines that can stack together share a coloured frame** labelled `CLUSTER A/B`
+- **Buttons appear only for commands that controller really supports**, read from its own dispatch table
+- **Four text sizes** (S/M/L/XL) and light/dark/system themes, remembered per browser
+- **Fetches nothing from the internet** — fine behind a proxy or fully air-gapped
+
+> 🔒 The console can start, stop and delete models, so it binds `127.0.0.1` by default. **The
+> printed link carries no token**, because URLs end up in browser history, proxy logs and referrers.
+> Repeated wrong guesses from one IP back off exponentially.
+
+**The assistant** answers from *this fleet's actual state* rather than general knowledge — "which
+node is unreachable", "why won't msi-6 start". It uses the same LLM that plans deployments, hides
+itself when no provider is configured, and knows the context/KV rules but is **forbidden from doing
+the arithmetic**: an LLM multiplying in its head is wrong in a way that reads as authoritative.
+
+---
+
+## One machine, whole fleet
 
 ```bash
-lmds web                              # http://127.0.0.1:8600 — this machine only
-lmds web --bind 0.0.0.0               # reachable on the LAN; asks you to set a token first
+lmds node add 192.168.10.21 --user ops --install   # password once → installs key + LMDS for you
+lmds ps --all                     # every machine's models in one table
+lmds node cluster                 # who has 200G, and which pairs can stack
+lmds scan --all                   # weights already on disk anywhere — no re-downloading
+lmds node push spark2 <slug>      # send the bundle you approved to another machine
 ```
 
-```bash
-lmds web --background                 # run detached; the terminal stays free for the CLI
-lmds node push <machine> <slug>       # send a bundle built here to the machine that will run it
-lmds web --status                     # forgot the link? ask the running server
-lmds web --restart -b                 # restart; the existing link keeps working
-lmds web -b --new-token               # rotate the token
-lmds web --stop
-```
+Target machines run **no daemon**, need no port beyond 22, and **no root** — membership of the
+`docker` group is enough. The password is discarded the moment the key is installed; the registry
+has no password field by design.
 
-Opening the link shows a **login screen**: enter the token once and the browser remembers it. On the
-first run that binds to the network, LMDS **asks** whether you want to set your own token (press Enter
-for a generated one; your own must be at least 8 characters, any characters). It is stored in
-`~/.config/lmds/web-token`, so the link stays valid across restarts. `$LMDS_WEB_TOKEN` works too, for
-machines started by systemd or compose. The printed link never carries the token — URLs end up in
-browser history, proxy logs and referrers.
+## What is supported
 
-One English-language page covering the whole workflow: host status (CPU, memory, VRAM, disk,
-running-model count), other machines with their live resources, cluster fabric, deploy wizard, download
-(which verifies afterwards), start/stop/restart, per-model port/context/slots/API key, the test
-commands (`test-text`, `test-vision`, `bench`, `stress`, …), autostart, stacked commands, repair
-and remove. Buttons follow what each controller actually supports, read from the script itself —
-an older bundle simply won't show a command it doesn't have.
+| | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
+|---|---|---|
+| **llama.cpp** | ✅ native build | ✅ docker (+ multimodal) |
+| **vLLM** | ✅ docker | ✅ docker |
 
-It can start, stop and delete models, so it binds to localhost by default and generates a token
-whenever you expose it. The page loads nothing from the internet — it works behind a proxy or
-fully air-gapped. Still CLI-only: `lmds config` and `lmds hardware`.
+Hardware-validated across all five model families — GGUF, NVFP4, MoE, dense safetensors, gated
+repos · **22 target presets** (7 verified on real hardware) · **903 tests**
 
-Tab completion covers commands, bundle names and target presets: `lmds --install-completion`.
+> **Model source: Hugging Face only.** Ollama registry and NVIDIA NGC are phase 2 — passing such a
+> link produces a clear "not supported yet" message with an alternative.
 
-## Requirements
+## Pairs with LiteGate (optional)
 
-- Ubuntu 22.04 / 24.04 (ARM64 or x86_64) — the tool itself also runs on macOS for development
-- Python 3.10+
-- At least one LLM provider: OpenAI / Gemini / MiniMax / OpenAI-compatible (Ollama, local vLLM —
-  no key needed) — or none at all with `--no-llm` (rule-based mode)
-- Docker + NVIDIA Container Toolkit on the machine that will serve the model
-- Free disk ≈ *(model size × 1.2) + 25 GB* — the vLLM runtime image alone is ~10–20 GB
+**[LiteGate · AiGatewayLocal](https://github.com/neronain/AiGatewayLocal)** is the other half:
+LMDS *deploys* models onto your machines; LiteGate is the *single door* in front of all of them —
+API keys, quotas, per-person permissions, and measuring what a running server **can actually do**.
 
-`install.sh` sets up the Docker prerequisites for you. It asks before every `sudo` step and prints the
-exact command first: Docker itself, adding your user to the `docker` group, the NVIDIA Container
-Toolkit (all five steps), and `python3-venv` — then verifies Docker really sees the GPU. Answer `n` to
-skip any of them and it tells you the command to run yourself instead.
-
-```bash
-sudo -v && LMDS_ASSUME_YES=1 ./install.sh    # unattended: accept every prompt
-LMDS_SKIP_PREREQ=1 ./install.sh              # install LMDS only, never touch Docker
-```
-
-The NVIDIA **driver** is the one thing it will not install — that needs a reboot, and on machines with
-a working driver `ubuntu-drivers install` can break package dependencies. When not attached to a real
-terminal (CI, piped input) the installer changes nothing on the machine.
-
-## Security notes
-
-The endpoint a bundle serves binds to `0.0.0.0` with **no API key by default** — anyone on the network
-can use it. Use `--bind 127.0.0.1` or set `API_KEY`. Model metadata (model card, `config.json`, file
-list) is sent to whichever LLM provider you configure; weights, keys and tokens never leave the
-machine. Full details: [SECURITY.md](SECURITY.md).
+Neither needs the other. Install LMDS alone to deploy and run models; LiteGate alone to put a door
+in front of servers you already run; both to have LMDS build, LiteGate measure, and each tell the
+other what to fix.
 
 ## Documentation
 
-| Document | Contents |
+| | |
 |---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | Prerequisites, disk layout, proxy/air-gapped, provider setup (incl. local AI), how models are fetched and run, smoke test |
-| [docs/USAGE.md](docs/USAGE.md) | Full usage guide: deploy, controller commands + env, fleet management, target presets, troubleshooting |
-| [docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | Two-node runbook proven on real hardware: every command from `node add` to `test-text`, measured memory/KV figures, and the failures worth knowing |
-| [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Controlling several machines from one hub: registration, live resources, ConnectX/200G detection, cluster IPs |
-| [docs/PRD.md](docs/PRD.md) | Product requirements, architecture, security, risks |
-| [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | CLI specification (unimplemented parts marked ❌) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones and phases |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, invariants, how to add a preset/provider/gate |
-| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [INSTALL.md](docs/INSTALL.md) | Step-by-step install — prerequisites, disk, proxy/air-gapped, providers, uninstall |
+| [USAGE.md](docs/USAGE.md) | Full guide — deploy, every controller command and env var, fleet, web console, troubleshooting |
+| [PREFLIGHT.md](docs/PREFLIGHT.md) | What is checked before deploying and why — every item from something that really broke |
+| [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | The multi-node command sequence as actually run, with real figures and timings |
+| [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Running many machines from one |
+| [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | NVIDIA's clustering docs — what they confirm, what they add |
+| [PRD.md](docs/PRD.md) · [CLI_SPEC.md](docs/CLI_SPEC.md) · [ROADMAP.md](docs/ROADMAP.md) | Requirements, command spec, roadmap |
+| [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) | What leaves the machine · dev setup and rules · history |
+
+## Requirements
+
+- **Ubuntu 22.04 / 24.04** (ARM64 or x86_64) — development works on macOS
+- **Python 3.10+**
+- **Docker + NVIDIA Container Toolkit** on target machines (`./install.sh` can install both)
+- **Free disk** ≈ *(model size × 1.2) + 25 GB* — the vLLM runtime image alone is 10–20 GB
+- **An LLM provider** (optional): OpenAI / Gemini / MiniMax / OpenAI-compatible — or none, with `--no-llm`
+
+The one thing `install.sh` will not do is install the **NVIDIA driver**: it needs a reboot, and on
+some machines a working driver is already present while `ubuntu-drivers install` breaks on
+dependencies.
+
+## For developers
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pytest
+```
+
+Rules that must not be broken, and how to add a target preset, provider or quality gate:
+[CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
 **Proprietary — all rights reserved.** See [LICENSE](LICENSE).
 
-Bundles you generate belong to you and may be used, modified and redistributed freely. Model weights,
-container images and third-party runtimes are covered by their own licenses.
+Source being readable here grants no right to use or redistribute it. **Bundles you generate are
+yours** — use, modify and pass them on freely. Third-party models, images and runtimes remain under
+their own licences.
+
+<div align="center">
+<br>
+
+Controller standard inherited from [dgx-spark-all-controllers v3.0.0](https://github.com/neronain/dgx-spark-all-controllers)
+
+**neronain** · [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
+
+</div>

@@ -1,283 +1,238 @@
-# AutoDeployDGXProject — Local Model Deploy Studio (LMDS)
+<div align="center">
 
-> ⚡ สร้างและดูแลโดย **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
->
-> 🇬🇧 English summary: [README.en.md](README.en.md)
+# LMDS · Local Model Deploy Studio
 
-โปรแกรม CLI บน Ubuntu ที่รับ **ลิงก์โมเดล Hugging Face** (repo, ลิงก์ไฟล์ `.gguf` ตรง) แล้วใช้ **LLM API** (OpenAI, Gemini, MiniMax หรือ OpenAI-compatible endpoint — รวมถึงโมเดล local ของคุณเอง) เป็นสมองในการวิเคราะห์และ**สร้างชุดสคริปต์ deploy ที่ผ่านการ validate แล้ว** สำหรับ:
+**จากลิงก์ Hugging Face → เซิร์ฟเวอร์ที่ยิงได้จริงบนเครื่องของคุณเอง**
 
-- **NVIDIA DGX Spark** — เครื่องเดี่ยว หรือ stacked หลายเครื่อง
-- **Ubuntu + RTX GPU** — local AI server ทั่วไป (x86_64)
+ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
+เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-สืบทอดมาตรฐานจาก [dgx-spark-all-controllers v3.0.0](https://github.com/neronain/dgx-spark-all-controllers) และ skill pack `dgx-spark-model-deployer-team-pack-v3.0.0` ซึ่งมี controller ที่รันจริงแล้วกว่า 12 โมเดล
+[![version](https://img.shields.io/badge/version-0.3.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-903-17703f)](tests/)
+[![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
+[![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
+[![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
+[![license](https://img.shields.io/badge/license-proprietary-8a5300)](LICENSE)
 
-> **แหล่งโมเดลที่รองรับตอนนี้: Hugging Face เท่านั้น** — ลิงก์ Ollama (`ollama.com/...`) และ NVIDIA NGC อยู่ใน roadmap เฟส 2 (ใส่แล้วระบบจะแจ้งว่ายังไม่รองรับ พร้อมแนะให้ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน) · provider `anthropic` ตั้งค่าได้แล้วแต่ adapter ยังอยู่ในเฟส 2
+**[ติดตั้ง](docs/INSTALL.md)** · **[คู่มือใช้งาน](docs/USAGE.md)** · **[หลายเครื่อง](docs/RUNBOOK-MULTI-NODE.md)** · **[สิ่งที่ตรวจให้ก่อน deploy](docs/PREFLIGHT.md)** · **[English](README.en.md)**
 
-## สถานะโปรเจกต์
+สร้างและดูแลโดย **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
 
-✅ **เฟส 1 — CLI MVP ผ่านเกณฑ์ครบทุกข้อแล้ว (3 ส.ค. 2569)**
+</div>
 
-hardware-validated **6 ครั้ง บน 2 เครื่อง** (DGX Spark + RTX 5090) ครอบคลุมครบทั้ง 5 ตระกูลโมเดล —
-GGUF, NVFP4, MoE, dense safetensors, gated repo — และครบทั้ง 4 ช่องของเมทริกซ์ engine × สถาปัตยกรรม:
+---
 
-| | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
-|---|---|---|
-| llama.cpp | ✅ native build | ✅ docker (+ multimodal) |
-| vLLM | ✅ docker | ✅ docker |
+## ปัญหาที่มันแก้
 
-รายละเอียดต่อโมเดล: [ROADMAP.md](docs/ROADMAP.md) · สิ่งที่แก้จากการรันจริง: [CHANGELOG.md](CHANGELOG.md)
+การเอาโมเดลลงเครื่องตัวเองไม่ได้ยากตรง "รันคำสั่งไหน" — มันยากตรงที่**คำสั่งที่ดูถูกทุกอย่าง
+กลับให้ผลผิดโดยไม่มี error** ให้เห็น: context ถูกตัดเงียบ ๆ เหลือหนึ่งในสิบ, tool calling ที่
+เปิดไว้แต่ไม่เคยแปลงคำตอบจริง, สายเชื่อม 200G ที่ negotiate ลงมาเหลือ 50G, KV cache ที่คำนวณ
+เกินจริงยี่สิบเท่าจนตั้ง context ได้แค่เศษเดียวของที่เครื่องรับไหว
 
-## 📖 เริ่มที่นี่
+LMDS เกิดจากการไล่รันของจริงแล้วเก็บทุกอาการพวกนี้กลับมาเป็นการตรวจอัตโนมัติ
 
-| ผู้อ่าน | เอกสาร |
+| | |
 |---|---|
-| **ผู้ติดตั้ง/ทีมงาน/ลูกค้า** — ติดตั้งครั้งแรก | **[docs/INSTALL.md](docs/INSTALL.md)** — เตรียมเครื่อง (Docker, NVIDIA toolkit), ติดตั้ง, ตั้งค่า ทีละขั้น |
-| **ผู้ใช้งาน** — deploy โมเดล | **[docs/USAGE.md](docs/USAGE.md)** — คู่มือใช้งานละเอียด + ตาราง troubleshooting |
-| ผู้พัฒนา/ผู้ตัดสินใจ | [docs/PRD.md](docs/PRD.md), [docs/CLI_SPEC.md](docs/CLI_SPEC.md), [docs/ROADMAP.md](docs/ROADMAP.md) |
+| 🧮 **คำนวณด้วยโค้ด ไม่ใช่ LLM** | memory fit, KV cache, token budget, ความเร็วลิงก์ — LLM มีหน้าที่แค่วิจัยโมเดลและเลือกค่าใน Deployment Plan ที่เป็น JSON schema ตายตัว **ไม่เคยเขียน Bash เอง** |
+| 🛡️ **ทุก bundle ผ่านด่านก่อนถึงมือคุณ** | `bash -n`, audit rules, SHA-256 checksums — ไม่ผ่านคือไม่มี ZIP |
+| 🔍 **บอกตอนที่ยังแก้ทัน** | ไม่ใช่ตอนที่ผู้ใช้มาบ่นว่าช้า · ทุกข้อที่ตรวจมาจากของที่พังจริงบนเครื่องจริง |
+| 🔌 **ทำงานได้โดยไม่มี LLM** | โหมด rule-based ใช้สูตรที่รันผ่านจริงมาแล้ว · air-gapped ก็ใช้ได้ |
 
-## หลักการออกแบบสำคัญ
-
-> **Deterministic core + LLM assist** — LLM ไม่เขียน Bash เอง ทุกสคริปต์ render จาก template ที่ผ่านการตรวจแล้ว LLM ทำหน้าที่แค่วิจัยโมเดลและเลือกค่าใน Deployment Plan (JSON schema ตายตัว) ส่วนการคำนวณ memory fit / token budget ทำด้วยโค้ด 100% และทุก bundle ต้องผ่าน quality gates (`bash -n`, audit rules, SHA-256) ก่อนถึงมือผู้ใช้
-
-## ตัวอย่างการใช้งาน
+## เริ่มใน 3 คำสั่ง
 
 ```bash
-./install.sh                          # ติดตั้ง — ลง Docker/NVIDIA toolkit ที่ขาดให้ด้วย (ถามก่อนทุกขั้น)
-source ~/.bashrc                      # สคริปต์บอกเองตอนจบว่าต้องรันอะไร
+./install.sh                 # ลง Docker / NVIDIA toolkit ที่ขาดให้ด้วย — ถามก่อนทุกขั้นที่ใช้ sudo
+lmds hardware                # เครื่องนี้คือ target อะไร มีอะไรอยู่บ้าง
+lmds deploy Qwen/Qwen3-32B   # วิเคราะห์ → วางแผน → ให้ยืนยัน → bundle + ZIP ที่ผ่านทุกด่าน
+```
 
-lmds hardware                         # ตรวจเครื่อง + จำแนก target profile
-lmds inspect Qwen/Qwen3-32B --target rtx-pro-4000-dual    # วิเคราะห์ + fit โดยไม่ generate
-lmds deploy https://huggingface.co/Qwen/Qwen3-32B --target dgx-spark-single
-# → วิเคราะห์ → วางแผน → ยืนยัน (อนุมัติ flag/แก้ context ได้) → bundle + ZIP ที่ผ่าน quality gates ทุกด่าน
+<details>
+<summary>ตัวอย่างเพิ่มเติม</summary>
 
-# โมเดล gated → ระบบถาม HF token อัตโนมัติ (กด Enter ข้ามได้)
+```bash
+# ดูก่อนว่าลงได้ไหม โดยยังไม่สร้างอะไร
+lmds inspect Qwen/Qwen3-32B --target rtx-pro-4000-dual
+
+# context ที่จะตั้งนี้ ควรไหม — ตอบเป็นตาราง context x จำนวนคนพร้อมกัน
+lmds inspect <repo> --target dgx-spark-stacked --context 262144
+
+# โมเดล gated → ถาม HF token ให้เอง (Enter ข้ามได้)
 lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 
-# โมเดลใหญ่เกิน 1 เครื่อง → stacked (2× DGX Spark, multi-node controller: worker-first + sync-worker)
+# ใหญ่เกินหนึ่งเครื่อง → stacked (worker-first + sync-worker ให้อัตโนมัติ)
 lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
 ```
 
-## อัปเดตเวอร์ชัน (เครื่องที่ `git clone` ไว้แล้ว)
+</details>
+
+---
+
+## สามอย่างที่ไม่ค่อยมีที่ไหนตอบให้
+
+### 1 · "ตั้ง context เท่านี้แล้วจะมีกี่คนใช้พร้อมกันได้"
+
+เครื่องมือทั่วไปตอบได้แค่ว่า context สูงสุดเท่าไร ซึ่งตามนิยามคือค่าที่**คนเดียว**กิน KV pool
+หมดพอดี — ตั้งตามนั้นแล้วคนที่สองต่อคิว โดยไม่มีอะไรบอก
+
+```
+KV bf16 · 120 KiB ต่อ token
+  context      KV ต่อคน    พร้อมกัน
+   32,768       3.8 GB       14.1
+  131,072        15 GB        3.5
+  262,144        30 GB        1.8   ← ค่าที่กรอก
+```
+> • ใส่ได้ แต่ได้ 1.8 คนพร้อมกัน — หนึ่งคำสนทนากิน KV pool เกือบหมด
+> • เปลี่ยน KV เป็น fp8 → 30 GB เหลือ 15 GB · พร้อมกันจาก 1.8 เป็น 3.5 คน
+> • 2 เครื่อง — งบนี้ยังไม่รวม NCCL buffer ข้ามเครื่อง
+
+ขึ้นทั้งใน CLI และ**ในหน้าเว็บระหว่างที่ยังพิมพ์เลขอยู่** · รองรับทั้ง GQA และ **MLA**
+(DeepSeek-V2/V3, Kimi K2/K3) ซึ่งเก็บ KV เป็น latent ก้อนเดียว — สูตรเดียวใช้กับทุกตระกูลไม่ได้
+
+### 2 · หลายเครื่อง = โมเดลเดียว
+
+> **stacked ไม่ได้แปลว่าเร็วขึ้น — แปลว่าใหญ่เกินหนึ่งเครื่อง**
+> โมเดลที่ลงเครื่องเดียวได้ รันเครื่องเดียวเร็วกว่าเสมอ
+
+| | เครื่องเดียว | Stacked |
+|---|---|---|
+| Engine | vLLM **หรือ** llama.cpp | **vLLM เท่านั้น** |
+| Artifact | safetensors หรือ GGUF | **safetensors เท่านั้น** |
+| สายเชื่อม | ไม่ต้อง | **ต้องมี** ≥25G (ของจริง 200G RoCE) |
+| จำนวนเครื่อง | 1 | ต่อตรง ≤3 · ผ่าน switch ≤4 |
+
+ระบบตรวจ ConnectX/RDMA ให้เอง บอกว่าเครื่องคู่ไหน stacked กันได้ เขียน `cluster.env` ให้
+และ**เตือนเมื่อลิงก์ negotiate ได้ต่ำกว่าที่การ์ดทำได้** (NVIDIA ตรวจรับที่ ≥184 Gbit/s —
+พอร์ตที่ปล่อย auto มักลงมาเหลือ 50G แล้วทุกอย่างยังดูปกติ)
+
+→ [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) · [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) · [เทียบกับเอกสารของ NVIDIA](docs/NVIDIA-CLUSTER-SOURCES.md)
+
+### 3 · หน้าเว็บที่ทำได้เท่า CLI
+
+```bash
+lmds web --bind 0.0.0.0 -b      # ถาม token ก่อน แล้วจำไว้ — ลิงก์ bookmark ได้
+```
+
+deploy wizard, download + verify, start/stop/restart, ตั้ง port/context/slots/API key/bind,
+doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-tools` `bench` `stress`), autostart,
+คำสั่ง stacked, repair, remove — **และคุมโมเดลบนเครื่องอื่นได้เท่ากับเครื่องตัวเอง**
+
+- **อ่านสถานะได้ก่อนอ่านตัวหนังสือ** — เกจ CPU / Unified·RAM / VRAM / Disk ชุดเดียวกันทุกเครื่อง
+  พร้อมสีเตือนก่อนของหมด · ค่าที่การ์ดไม่รายงานถูกซ่อน ไม่ใช่โชว์ 0
+- **เครื่องที่ stacked ด้วยกันได้มีรั้วสีคร่อม** พร้อมป้าย `CLUSTER A/B`
+- **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง
+- **ปรับขนาดตัวอักษรได้ 4 ระดับ** (S/M/L/XL) และธีมสว่าง/มืด/ตามเครื่อง — จำไว้ต่อเบราว์เซอร์
+- **ไม่ดึงอะไรจากอินเทอร์เน็ตเลย** ใช้ได้บนเครื่องหลัง proxy หรือ air-gapped
+
+> 🔒 หน้านี้สั่ง start/stop/ลบโมเดลได้ จึง bind `127.0.0.1` เป็นค่าเริ่มต้น · **ลิงก์ที่พิมพ์ออกมา
+> ไม่มี token ติดไปด้วย** เพราะ URL ไปโผล่ใน history, log ของ proxy และ referrer · เดา token
+> ผิดติดกันจาก IP เดิมโดนหน่วงแบบทวีคูณ
+
+**ผู้ช่วยมุมขวาล่าง** ตอบจาก*สถานะจริงของ fleet นี้* ไม่ใช่ความรู้ทั่วไป — "เครื่องไหนต่อไม่ติด",
+"ทำไม msi-6 ยัง start ไม่ได้" · ใช้ LLM ตัวเดียวกับที่วางแผน deploy (ตั้งครั้งเดียวได้ทั้งสองอย่าง)
+และ**ซ่อนตัวเองเมื่อยังไม่ได้ตั้ง provider** เพราะกล่องแชทที่ตอบว่า "ยังไม่ได้ตั้ง" ทุกครั้ง
+แย่กว่าไม่มีกล่องแชท · มันรู้กติกาเรื่อง context/KV แต่**ถูกสั่งห้ามคิดเลขเอง** — ให้ชี้มาที่
+`lmds inspect --context` เพราะเลขที่ LLM คูณเองผิดแบบดูน่าเชื่อ ซึ่งแย่กว่าตอบว่าไม่รู้
+
+---
+
+## คุมทั้ง fleet จากเครื่องเดียว
+
+```bash
+lmds node add 192.168.10.21 --user ops --install   # ถามรหัสผ่านครั้งเดียว → ติดตั้ง key + LMDS ให้
+lmds ps --all                     # โมเดลของทุกเครื่องในตารางเดียว
+lmds node cluster                 # เครื่องไหนมี 200G และจับคู่ stacked กันได้
+lmds scan --all                   # weight ที่มีอยู่แล้วบนทุกเครื่อง — ไม่ต้องโหลดซ้ำ
+lmds node push spark2 <slug>      # ส่ง bundle ตัวที่อนุมัติแล้วไปติดตั้งเครื่องอื่น
+```
+
+เครื่องปลายทาง**ไม่ต้องรัน daemon** ไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 และ**ไม่ต้องใช้ root**
+(อยู่ในกลุ่ม `docker` พอ) · รหัสผ่านถูกทิ้งทันทีหลังติดตั้ง key — ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ
+
+<details>
+<summary>คำสั่งจัดการโมเดลทั้งหมด</summary>
+
+```bash
+lmds ps                  # ใครรันอยู่: ชื่อ, โมเดล, engine, port, ● running / ◐ loading / ○ stopped
+lmds list                # bundle ทั้งหมด + engine/port/context/ฟีเจอร์ + autostart
+lmds smoke <ชื่อ>         # พิสูจน์ว่ารันได้จริง: download → verify → start → test-text → stop
+lmds start/stop/restart <ชื่อ>
+lmds logs <ชื่อ> -f       # -n 500 = ย้อนหลัง
+lmds enable <ชื่อ>        # กลับมาเองหลัง reboot (systemd) · disable = ยกเลิก
+lmds doctor <ชื่อ>        # ทำไมยัง download/start ไม่ผ่าน + คำสั่งแก้
+lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
+lmds rebuild <ชื่อ>       # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน
+lmds remove <ชื่อ>        # ลบทั้งหมด (--keep-weights = เก็บ weight)
+lmds recipes             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key
+```
+
+`lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
+— stop/restart/logs/enable ได้เหมือนกัน โดยกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง
+
+</details>
+
+## รองรับอะไรบ้าง
+
+| | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
+|---|---|---|
+| **llama.cpp** | ✅ native build | ✅ docker (+ multimodal) |
+| **vLLM** | ✅ docker | ✅ docker |
+
+ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo
+· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **903 เทสต์**
+
+> **แหล่งโมเดล: Hugging Face เท่านั้น** — Ollama registry และ NVIDIA NGC อยู่ในเฟส 2
+> (ใส่ลิงก์เข้าไปแล้วระบบบอกเองว่ายังไม่รองรับ พร้อมแนะทางอื่น)
+
+## อัปเดต
 
 ```bash
 cd ~/AutoDeployDGXProject && git pull && ./install.sh
 ```
 
-> ⚠️ **`git pull` อย่างเดียวไม่พอ** — ต้องรัน `./install.sh` ซ้ำด้วย เพราะติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds` เลยยังเป็นโค้ดเก่าจนกว่าจะติดตั้งใหม่ทับ · config/key เดิมอยู่ครบ ไม่ต้องตั้งใหม่
-
-ตรวจว่าอัปเดตแล้ว (ควรเห็นคำสั่ง `repair` / `remove` / `restart`):
-
-```bash
-lmds --help
-```
-
-ถ้า `git pull` ฟ้อง local changes: `git stash && git pull && ./install.sh` (การแก้ PATH ครั้งก่อนอยู่ใน `~/.bashrc` ไม่ใช่ในโปรเจกต์ จึงไม่กระทบ) · รายละเอียด/ถอนการติดตั้ง: [docs/INSTALL.md](docs/INSTALL.md)
-
-## จัดการหลายโมเดลในเครื่องเดียว (Fleet)
-
-รันกี่โมเดลก็ได้ (คนละ port) แล้วคุมทั้งหมดจาก `lmds` — ไม่ต้องจำว่า bundle ไหนอยู่ที่ไหน:
-
-```bash
-lmds ps                  # ใครรันอยู่บ้าง: ชื่อ, โมเดล, engine, port, สถานะ ● running / ◐ loading / ○ stopped
-lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context/ฟีเจอร์ + autostart
-lmds smoke <ชื่อ>         # พิสูจน์ว่ารันได้จริง: download → verify → start → test-text → stop
-lmds rebuild <ชื่อ>       # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน (image เสีย/template อัปเดต)
-lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ขึ้นมาใหม่ (เช่น หลัง reboot)
-lmds start <ชื่อ> --port 8001   # flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller เลย
-lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม่ต้อง cd ไปหา ./xxx.sh stop · stop --all = หยุดทุกตัว
-lmds restart <ชื่อ>       # restart (ใช้ตอนเปลี่ยน option เช่นเพิ่ม API_KEY)
-lmds logs <ชื่อ> -f       # ตาม log แบบ realtime (-n 500 = ย้อนหลัง)
-lmds enable <ชื่อ>        # ให้โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง (systemd autostart) · disable = ยกเลิก
-lmds doctor <ชื่อ>       # ตรวจว่าทำไมยัง download/start ไม่ผ่าน + คำสั่งแก้
-lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
-lmds remove <ชื่อ>        # ลบออกจากเครื่องทั้งหมด (--keep-weights = เก็บ weight ไว้)
-```
-
-## เครื่องเดียว หรือ หลายเครื่อง?
-
-**stacked ไม่ได้แปลว่าเร็วขึ้น — แปลว่าใหญ่เกินหนึ่งเครื่อง** โมเดลที่ลงเครื่องเดียวได้
-รันเครื่องเดียวเร็วกว่าเสมอ เพราะไม่ต้องส่ง activation ข้ามสายทุก token
-
-| | เครื่องเดียว | Stacked (หลายเครื่อง = โมเดลเดียว) |
-|---|---|---|
-| Engine | vLLM **หรือ** llama.cpp | **vLLM เท่านั้น** |
-| Artifact | safetensors หรือ **GGUF** | **safetensors เท่านั้น** — GGUF stacked ไม่ได้ |
-| ต้องมีสายเร็ว | ไม่ต้อง | **ต้องมี** ≥25G (จริงคือ 200G RoCE) |
-| target | `dgx-spark-single` · `rtx-5090` … | `dgx-spark-stacked` · `dgx-spark-stacked-4` |
-
-ลำดับคำสั่งเต็มของ stacked: **[docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md)**
-
-## คุมหลายเครื่องจากเครื่องเดียว (Multi-node Fleet)
-
-หน้างานที่มีมากกว่า 1 เครื่อง ไม่ต้อง ssh ไล่ทีละตัว — เพิ่มเครื่องด้วย ip/user/รหัสผ่าน **ครั้งเดียว**
-ระบบติดตั้ง SSH key ให้แล้วทิ้งรหัสผ่านทันที (ทะเบียนไม่มีฟิลด์รหัสผ่านโดยตั้งใจ)
-
-```bash
-lmds node add 192.168.10.21 --user ops --install   # ถามรหัสผ่านครั้งเดียว → ติดตั้ง key + ลง LMDS ให้
-lmds node list --check                   # เครื่องไหนยังตอบบ้าง
-lmds ps --all                            # โมเดลของทุกเครื่องในตารางเดียว
-lmds node run spark2 doctor my-model     # สั่งคำสั่ง lmds อะไรก็ได้ข้ามเครื่อง
-lmds node cluster                        # เครื่องไหนมี ConnectX/200G และจับคู่ stacked กันได้
-lmds scan --all                          # โมเดลที่มีอยู่แล้วบนทุกเครื่อง (ไม่ต้องโหลดซ้ำ)
-lmds node ctl spark1 <slug> start        # สั่งสคริปต์ controller บนเครื่องนั้นโดยตรง
-lmds prune                               # ล้างทะเบียนค้างของ bundle ที่ลบไปแล้ว
-lmds recipes                             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key ของ LLM
-```
-
-- เครื่องปลายทาง **ไม่ต้องรัน daemon** และไม่ต้องเปิดพอร์ตเพิ่มนอกจาก 22 — hub เรียก `lmds agent info` ผ่าน SSH
-- ⚠️ แต่**ทุกเครื่องต้องมี LMDS ติดตั้งอยู่** ("agent" = ตัวคำสั่ง `lmds` เอง) — สั่งจาก hub ได้ด้วย
-  `lmds node install <ชื่อ>` ไม่ต้อง ssh เข้าไปเอง
-- **ไม่ต้องใช้ root** — user ที่อยู่ในกลุ่ม `docker` พอ
-- เห็นทรัพยากรสดของทุกเครื่อง: CPU · RAM/Unified · VRAM · ดิสก์ · ความเร็วสาย · **จำนวนโมเดลที่รัน**
-  (llama.cpp รันหลายตัวพร้อมกันได้)
-- ตรวจ **ConnectX/RDMA/ความเร็วลิงก์** ให้เอง แล้วบอกว่าเครื่องคู่ไหน stacked ด้วยกันได้ ·
-  กรอก cluster IP ที่ NCCL จะใช้ แล้วสั่ง `lmds node cluster --write <slug>` เขียนลง bundle ได้เลย
-
-รายละเอียด: [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
-
-## หน้าเว็บ (ทางเลือก)
-
-ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้ — เปิดหน้าเดียวที่คุมได้ครบ: สถานะเครื่อง, โมเดลทั้งหมด,
-start/stop/restart, doctor, logs
-
-```bash
-lmds web                                  # เปิดที่ http://127.0.0.1:8600 (เครื่องนี้เท่านั้น)
-lmds web --bind 0.0.0.0 --port 8600       # ให้ทั้งวง network เข้าได้ — ถาม token ก่อน
-```
-
-```bash
-lmds web --background                     # รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้ทันที
-lmds web --status                         # ลืม token? ถามตัวที่รันอยู่
-lmds web --restart -b                     # เปิดใหม่ (ลิงก์เดิมยังใช้ได้)
-lmds web -b --new-token                   # เปลี่ยน token
-lmds web --stop                           # หยุดตัวที่รันเบื้องหลัง
-```
-
-**เข้าใช้งานด้วย token** — เปิดลิงก์แล้วเจอ**หน้า login** กรอกครั้งเดียว เบราว์เซอร์จำให้
-· ครั้งแรกที่เปิดออก network ระบบจะ**ถามก่อน**ว่าจะตั้ง token เองไหม (Enter เฉย ๆ = สุ่มให้
-· ตั้งเองได้ ≥ 8 ตัว ไม่จำกัดชนิดตัวอักษร) แล้วจำไว้ที่ `~/.config/lmds/web-token` — **ลิงก์จึงอยู่ยาว
-bookmark ได้** · ตั้งผ่าน `$LMDS_WEB_TOKEN` ก็ได้สำหรับเครื่องที่รันด้วย systemd/compose
-
-> 🔒 หน้านี้**สั่ง start/stop/ลบโมเดลได้** จึง bind `127.0.0.1` เป็นค่าเริ่มต้น
-> · **ลิงก์ที่พิมพ์ออกมาไม่มี token ติดไปด้วย** เพราะ URL ไปโผล่ใน history ของเบราว์เซอร์,
-> log ของ proxy และ referrer · ต้องผ่าน login ก่อนถึงจะวาดอะไร · เดา token ผิดติดกัน 5 ครั้ง
-> จาก IP เดียวกันเริ่มโดนหน่วงแบบทวีคูณ
-> · หน้าเว็บไม่ดึงอะไรจากอินเทอร์เน็ตเลย ใช้ได้บนเครื่องหลัง proxy/air-gapped
-
-**หน้าเว็บเป็นภาษาอังกฤษ** (ตัว CLI ยังเป็นไทย) และทำได้เทียบเท่า CLI แล้ว — deploy wizard,
-download (+verify อัตโนมัติ), start/stop/restart, ตั้ง port/context/slots/API key/bind, doctor, logs,
-ชุดทดสอบ (`test-text`, `test-vision`, `bench`, `stress`, …), autostart, คำสั่ง stacked, repair,
-remove (แสดงรายการ + ขนาดก่อนยืนยัน)
-
-**อ่านสถานะได้ก่อนอ่านตัวหนังสือ** — เกจ CPU / Unified·RAM / VRAM / Disk free ชุดเดียวกันทั้ง
-เครื่องนี้และเครื่องอื่น พร้อมตัวเลขจริงใต้ทุกเกจ · การ์ด GPU มี compute/power/temp/fan + สัญญาณ
-นาฬิกา + PCIe (ค่าที่การ์ดไม่รายงานถูกซ่อน ไม่ใช่โชว์ 0) · **สีเตือนก่อนของหมด** (หน่วยความจำ
-≥75%/≥90% · ดิสก์กลับด้าน) · เครื่องอื่นมีเมนู **⋯** ต่อโมเดล และตั้ง port/context/gpu-util
-ก่อนสั่งรันข้ามเครื่องได้
-
-**เครื่องที่ stacked ด้วยกันได้มีรั้วสีคร่อมไว้** พร้อมป้าย `CLUSTER A/B` และ cluster IP อยู่ใน
-การ์ดของเครื่องนั้นเอง — ไม่ต้องไล่หาว่าค่าไหนของใคร
-
-**โมเดลบนเครื่องอื่นคุมได้เท่ากับโมเดลในเครื่อง** — ตั้ง port/context/slots/bind/API key/gpu-util
-ก่อนสั่ง start · ชุดทดสอบครบ (`test-text`, `test-vision`, `bench`, `client-config`, …) · doctor,
-logs, repair, autostart, remove — เป็น controller ตัวเดียวกัน จึงไม่มีเหตุผลให้ต่างกัน
-
-**เครื่องที่เปิดหน้าเว็บไม่ใช่เครื่องที่จะรันโมเดล?** สร้าง bundle ที่นี่ ตรวจแผนที่นี่ แล้วส่ง
-ตัวเดียวกันไปติดตั้ง: `manage` → **Run on another machine** หรือ `lmds node push <เครื่อง> <slug>`
-
-> **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง bundle เก่า
-> ที่ยังไม่มีคำสั่งใหม่จะไม่มีปุ่มนั้นให้กดแล้วล้ม · `enable`/`disable` autostart ต้องใช้ `sudo` ซึ่ง
-> หน้าเว็บไม่มี tty — ถ้าทำไม่ได้จะบอกคำสั่งให้ไปรันเอง · ยังต้องใช้ CLI: `lmds config`, `lmds hardware`
-
-**ผู้ช่วยมุมขวาล่าง** — กล่องแชทที่ตอบจาก*สถานะจริงของ fleet นี้* ไม่ใช่ความรู้ทั่วไป
-"มี node กี่เครื่อง เครื่องไหนต่อไม่ติด" "โมเดลอะไรรันอยู่บ้าง" "ทำไม msi-6 ยัง start ไม่ได้"
-— คำถามพวกนี้โมเดลทั่วไปไม่มีทางตอบได้ เพราะมันไม่รู้จักเครื่องของคุณ
-
-ใช้ **LLM ตัวเดียวกับที่วางแผน deploy** (ตั้งที่ Provider ครั้งเดียวได้ทั้งสองอย่าง) และ
-**ซ่อนตัวเองถ้ายังไม่ได้ตั้ง provider** — LMDS ทำงานได้เต็มที่ในโหมด rule-based กล่องแชท
-ที่ตอบว่า "ยังไม่ได้ตั้ง provider" ทุกครั้งแย่กว่าไม่มีกล่องแชท
-
-> ประวัติการคุยอยู่ในแท็บของเบราว์เซอร์เท่านั้น ปิดแท็บแล้วหาย ไม่มีอะไรถูกเก็บฝั่ง server
-> · สถานะที่ส่งให้ LLM ถูกกำกับไว้ว่าเป็น**ข้อมูล ไม่ใช่คำสั่ง** เพราะในนั้นมีชื่อ repo
-> สาธารณะและข้อความ error จากเครื่องปลายทาง ซึ่งเป็นข้อความจากนอกระบบ
-
-`lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
-— stop/restart/logs/enable ได้เหมือนกัน โดย stop ของกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง
-
-กด TAB เติมชื่อคำสั่ง/bundle ได้ (`install.sh` ถามให้ หรือรัน `lmds --install-completion`)
-
-ทุก controller ลงทะเบียนตัวเองอัตโนมัติตอน `start` — ต่อให้ bundle ถูกลบไปแล้ว `lmds stop` ก็ยัง
-fallback หยุดโมเดลค้างให้ได้ (kill pid / docker rm) · รายละเอียด: [docs/USAGE.md §4](docs/USAGE.md)
-
-## การติดตั้งเตรียมเครื่องให้เอง
-
-`./install.sh` ไม่ได้แค่ตรวจ — **ติดตั้งของที่ขาดให้เลย** โดยถามยืนยันก่อนทุกขั้นที่ใช้ `sudo`
-และพิมพ์คำสั่งจริงให้เห็นก่อนรัน: Docker, กลุ่ม `docker` ของ user, NVIDIA Container Toolkit (ครบ 5 ขั้น),
-โมดูล `python3-venv` แล้วทดสอบว่า Docker เห็น GPU จริง · ต่อด้วยถามตั้ง LLM provider + API key +
-tab completion · ตอบ `n` ข้ามได้ทุกข้อ แล้วสรุปตอนจบว่าเหลืออะไรต้องทำเอง
-
-```bash
-sudo -v && LMDS_ASSUME_YES=1 ./install.sh    # ติดตั้งรวดเดียวไม่ต้องนั่งตอบ
-LMDS_SKIP_PREREQ=1 ./install.sh              # ลง LMDS อย่างเดียว ไม่แตะ Docker/toolkit
-```
-
-ข้อเดียวที่ไม่ทำให้คือ **NVIDIA driver** — ต้อง reboot และบางเครื่องมี driver ใช้ได้อยู่แล้วแต่
-`ubuntu-drivers install` ชน dependency จนพัง · เมื่อไม่ได้รันบน terminal จริง (CI, pipe) จะไม่แตะเครื่องเลย
-· รายละเอียด: [docs/INSTALL.md §2](docs/INSTALL.md)
-
-ผลลัพธ์: โฟลเดอร์ bundle + ZIP ประกอบด้วย controller script (มาตรฐาน v3.0.0), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md`, `PACKAGE_SHA256SUMS`
-
-## เอกสารทั้งหมด
-
-| เอกสาร | เนื้อหา |
-|---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | **คู่มือติดตั้งละเอียด** — prerequisites, ดิสก์/ที่เก็บไฟล์, proxy/air-gapped, ตั้ง provider (รวม Local AI), โมเดลถูกดึงมาและรันยังไง, smoke test, ถอนการติดตั้ง |
-| [docs/USAGE.md](docs/USAGE.md) | **คู่มือใช้งานละเอียด** — deploy ตั้งแต่โมเดลเล็กถึง gated repo, คำสั่ง controller ทุกตัว + env, fleet (ps/list/restart/logs -f/repair/remove/completion), target presets ครบ 20 ตัว, troubleshooting |
-| [docs/RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | **ลำดับคำสั่งรันข้ามหลายเครื่องที่ผ่านการรันจริง** — ตั้งแต่ `node add` ถึง `test-text` พร้อมตัวเลขหน่วยความจำ/KV cache จริง เวลาที่ใช้แต่ละขั้น และอาการเสียที่พบบ่อย |
-| [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | **คุมหลายเครื่องจากเครื่องเดียว** — เพิ่มเครื่องด้วย ip/user/รหัสผ่านครั้งเดียว, ดู CPU/RAM/VRAM/ดิสก์/โมเดลที่รันของทุกเครื่อง, ตรวจ ConnectX/200G และจับคู่เครื่องที่ stacked ด้วยกันได้ |
-| [docs/PREFLIGHT.md](docs/PREFLIGHT.md) | **สิ่งที่ระบบตรวจให้ก่อน deploy และทำไม** — ทุกหัวข้อมาจากของที่พังจริงบนเครื่องจริง: รันไทม์ไม่รู้จัก architecture, เลือก projector ผิดตัว, context ถูกตัดเงียบ ๆ, start ทับ port ของโมเดลอื่น |
-| [docs/PRD.md](docs/PRD.md) | Product Requirements Document ฉบับเต็ม — เป้าหมาย, user stories, functional requirements, สถาปัตยกรรม, security, risks |
-| [docs/CLI_SPEC.md](docs/CLI_SPEC.md) | สเปกคำสั่ง CLI ทั้งหมดของเฟส 1 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | แผนพัฒนา 3 เฟส + work breakdown ของเฟส 1 |
-| [SECURITY.md](SECURITY.md) | ข้อมูลอะไรออกนอกเครื่องบ้าง, secret เก็บที่ไหน, จุดที่ต้องอนุมัติเอง, แจ้งช่องโหว่ |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | ตั้ง dev env, กฎที่ห้ามละเมิด, วิธีเพิ่ม target preset / provider / gate |
-| [CHANGELOG.md](CHANGELOG.md) | ประวัติการเปลี่ยนแปลง |
+> ⚠️ **`git pull` อย่างเดียวไม่พอ** — ติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds`
+> จะยังเป็นโค้ดเก่าจนกว่าจะรัน `./install.sh` ซ้ำ · config และ key เดิมอยู่ครบ ไม่ต้องตั้งใหม่
 
 ## ใช้คู่กับ LiteGate (ทางเลือก)
 
-**[LiteGate · AiGatewayLocal](https://github.com/neronain/AiGatewayLocal)** คืออีกครึ่งของชุดนี้:
-LMDS *deploy* โมเดลลงเครื่องคุณ ส่วน LiteGate เป็น *ประตูเดียว* หน้าโมเดลทั้งหมด — API key,
-โควตา, สิทธิ์ต่อคน, และ**ตรวจว่าเซิร์ฟเวอร์ที่รันอยู่ทำอะไรได้จริง**
-
-**ไม่มีตัวไหนต้องพึ่งอีกตัว:**
+**[LiteGate · AiGatewayLocal](https://github.com/neronain/AiGatewayLocal)** คืออีกครึ่งของชุดนี้ —
+LMDS *deploy* โมเดลลงเครื่องคุณ ส่วน LiteGate เป็น *ประตูเดียว* หน้าโมเดลทั้งหมด: API key, โควตา,
+สิทธิ์ต่อคน และตรวจว่าเซิร์ฟเวอร์ที่รันอยู่**ทำอะไรได้จริง**
 
 | ติดตั้ง | ได้อะไร |
 |---|---|
-| LMDS อย่างเดียว | deploy และรันโมเดลบนเครื่องตัวเอง มีหน้าเว็บและผู้ช่วยของตัวเอง ครบ |
-| LiteGate อย่างเดียว | ประตูเดียว + key + โควตา หน้าเซิร์ฟเวอร์ที่คุณรันมาด้วยวิธีไหนก็ได้ |
-| **ทั้งคู่** | ครบวง — LMDS สร้าง · LiteGate วัดของจริงแล้วบอกคำสั่งที่ต้องแก้ · ผู้ช่วยทั้งสองฝั่งใช้โมเดลของคุณเอง |
+| LMDS อย่างเดียว | deploy และรันโมเดลบนเครื่องตัวเอง มีหน้าเว็บและผู้ช่วยครบ |
+| LiteGate อย่างเดียว | ประตูเดียว + key + โควตา หน้าเซิร์ฟเวอร์ที่รันมาด้วยวิธีไหนก็ได้ |
+| **ทั้งคู่** | LMDS สร้าง · LiteGate วัดของจริงแล้วบอกคำสั่งที่ต้องแก้ |
 
-จุดที่ต่อกันได้มี 3 จุด และเป็นทางเลือกทั้งหมด:
+**ไม่มีตัวไหนต้องพึ่งอีกตัว** · จุดที่ต่อกันได้เป็นทางเลือกทั้งหมด — ให้ LMDS ใช้โมเดลของคุณเอง
+เป็นสมอง (`lmds config set-provider openai-compat --base-url http://litegate:8080/v1`),
+`managed_by` ที่ทำให้คำแนะนำของ LiteGate กลายเป็นคำสั่งที่ก๊อปไปวางได้, และ parser ที่ LiteGate
+บอกว่าขาดคือ knob ที่ LMDS เปิดได้ทันทีด้วย `restart --tool-parser` แล้วพิสูจน์ด้วย `test-tools`
 
-* **ให้ LMDS ใช้โมเดลของตัวเองเป็นสมอง** แทนที่จะจ่ายค่า API cloud:
-  ```bash
-  lmds config set-provider openai-compat --base-url http://litegate:8080/v1 --model general
-  ```
-* **`managed_by`** ในไฟล์โมเดลของ LiteGate ทำให้คำแนะนำของมันกลายเป็นคำสั่งที่ก๊อปไปวางได้จริง
-  แทนที่จะเป็น `./<controller>.sh` ลอย ๆ
-* **parser ที่ LiteGate บอกว่าขาด** คือ knob ที่ LMDS เปิดได้ทันทีด้วย
-  `restart --tool-parser` / `restart --reasoning-parser` แล้วพิสูจน์ด้วย `test-tools` / `test-reasoning`
+## เอกสาร
 
-มหาวิทยาลัยที่แค่อยากรันโมเดลลง LMDS ตัวเดียว · บริษัทที่มีเซิร์ฟเวอร์อยู่แล้วลง LiteGate ตัวเดียว
-· คนที่ลงทั้งคู่ได้ส่วนที่มีอยู่เฉพาะตอนที่ทั้งสองอยู่ด้วยกัน
+| | |
+|---|---|
+| [INSTALL.md](docs/INSTALL.md) | ติดตั้งทีละขั้น — prerequisites, ดิสก์, proxy/air-gapped, ตั้ง provider, ถอนการติดตั้ง |
+| [USAGE.md](docs/USAGE.md) | คู่มือใช้งานเต็ม — deploy, คำสั่ง controller ทุกตัว + env, fleet, หน้าเว็บ, troubleshooting |
+| [PREFLIGHT.md](docs/PREFLIGHT.md) | สิ่งที่ระบบตรวจให้ก่อน deploy และทำไม — ทุกข้อมาจากของที่พังจริง |
+| [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | ลำดับคำสั่งข้ามเครื่องที่รันจริงแล้ว พร้อมตัวเลขและเวลาที่ใช้แต่ละขั้น |
+| [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | คุมหลายเครื่องจากเครื่องเดียว |
+| [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | เอกสารคลัสเตอร์ของ NVIDIA — อะไรยืนยันของเรา อะไรเติมของใหม่ |
+| [PRD.md](docs/PRD.md) · [CLI_SPEC.md](docs/CLI_SPEC.md) · [ROADMAP.md](docs/ROADMAP.md) | ข้อกำหนด, สเปกคำสั่ง, แผนพัฒนา |
+| [SECURITY.md](SECURITY.md) | ข้อมูลอะไรออกนอกเครื่อง, secret เก็บที่ไหน, แจ้งช่องโหว่ |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) | ตั้ง dev env + กฎที่ห้ามละเมิด · ประวัติการเปลี่ยนแปลง |
 
-## Requirements (ตัวโปรแกรม)
+## Requirements
 
-- Ubuntu 22.04 / 24.04 (ARM64 หรือ x86_64) — พัฒนาบน macOS ได้
-- Python 3.10+
-- LLM provider อย่างน้อย 1 ทาง: OpenAI / Gemini / MiniMax / OpenAI-compatible (Ollama, vLLM local — ไม่ต้องมี key) — หรือไม่มีเลยก็ใช้ `--no-llm` (rule-based mode)
-- Docker + NVIDIA Container Toolkit บนเครื่องเป้าหมาย (สำหรับรัน bundle ที่ generate)
-- ดิสก์ว่างบนเครื่องเป้าหมาย ≈ *(ขนาดโมเดล × 1.2) + 25 GB* — runtime image ของ vLLM อย่างเดียว ~10–20 GB ([INSTALL §1.6](docs/INSTALL.md))
+- **Ubuntu 22.04 / 24.04** (ARM64 หรือ x86_64) — พัฒนาบน macOS ได้
+- **Python 3.10+**
+- **Docker + NVIDIA Container Toolkit** บนเครื่องเป้าหมาย (`./install.sh` ลงให้ได้)
+- **ดิสก์ว่าง** ≈ *(ขนาดโมเดล × 1.2) + 25 GB* — runtime image ของ vLLM อย่างเดียว ~10–20 GB
+- **LLM provider** (ทางเลือก): OpenAI / Gemini / MiniMax / OpenAI-compatible — หรือไม่มีเลยก็ได้ ใช้ `--no-llm`
+
+ข้อเดียวที่ `install.sh` ไม่ทำให้คือ **NVIDIA driver** เพราะต้อง reboot และบางเครื่องมี driver ที่ใช้ได้
+อยู่แล้วแต่ `ubuntu-drivers install` ชน dependency จนพัง
 
 ## สำหรับผู้พัฒนา
 
@@ -285,12 +240,21 @@ LMDS *deploy* โมเดลลงเครื่องคุณ ส่วน L
 python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pytest
 ```
 
-รายละเอียด (กฎที่ห้ามละเมิด, วิธีเพิ่ม preset/provider/gate): [CONTRIBUTING.md](CONTRIBUTING.md)
+กฎที่ห้ามละเมิดและวิธีเพิ่ม target preset / provider / quality gate: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-**Proprietary — สงวนลิขสิทธิ์** ดู [LICENSE](LICENSE)
+**Proprietary — สงวนลิขสิทธิ์** · ดู [LICENSE](LICENSE)
 
-การเปิดซอร์สให้อ่านได้ในรีโปนี้ไม่ได้ให้สิทธิ์ใช้งาน/แจกจ่ายต่อ · **bundle ที่ผู้ใช้ generate ออกมาเป็นของผู้ใช้เอง** ใช้/แก้/ส่งต่อได้อิสระ · โมเดล/image/runtime ของบุคคลที่สามอยู่ใต้ license ของเจ้าของนั้น ๆ
+การเปิดซอร์สให้อ่านได้ในรีโปนี้ไม่ได้ให้สิทธิ์ใช้งานหรือแจกจ่ายต่อ · **bundle ที่ผู้ใช้ generate
+ออกมาเป็นของผู้ใช้เอง** ใช้/แก้/ส่งต่อได้อิสระ · โมเดล image และ runtime ของบุคคลที่สามอยู่ใต้
+license ของเจ้าของนั้น ๆ
 
-> เป็นการยืนยันสถานะเดิมที่ `pyproject.toml` ประกาศไว้ ไม่ใช่การเปลี่ยนนโยบาย — ถ้าจะเปลี่ยนเป็น open source (MIT/Apache-2.0) ต้องตัดสินใจก่อนส่งมอบลูกค้ารายแรก ดู Decision Log ใน [PRD §13](docs/PRD.md)
+<div align="center">
+<br>
+
+สืบทอดมาตรฐาน controller จาก [dgx-spark-all-controllers v3.0.0](https://github.com/neronain/dgx-spark-all-controllers)
+
+**neronain** · [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
+
+</div>
