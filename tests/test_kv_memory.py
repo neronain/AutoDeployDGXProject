@@ -179,3 +179,57 @@ def test_mla_context_beats_what_the_old_formula_allowed():
     as_if_gqa = KvDims(layers=93, kv_heads=96, head_dim=74)
     assert mem.plan(fit, mla, 262144).fits
     assert not mem.plan(fit, as_if_gqa, 262144).fits
+
+
+# ── หน้า wizard: ตอบจาก session ที่วิเคราะห์ไว้แล้ว ─────────────────────────
+# ที่ต้องมีข้อนี้: คำแนะนำต้องขึ้นกับ **โมเดลที่กำลังจะ deploy** ได้ทันที ไม่ใช่รอให้
+# bundle ถูกสร้างแล้วไปบันทึกมิติ KV ไว้ก่อน — ไม่งั้นโมเดลที่เพิ่งเลือกจะไม่มีคำแนะนำ
+# ซึ่งเป็นจังหวะเดียวที่คนต้องการมันจริง ๆ
+
+def _wizard_session(kv_dims=M3, weights=174.2):
+    from lmds.inspector.report import ArtifactType, ModelReport
+    from lmds.web import deploy
+
+    report = ModelReport(repo_id="acme/m", revision_sha="deadbeef",
+                         artifact_type=ArtifactType.SAFETENSORS,
+                         kv_dims=kv_dims, context_length=524288)
+    session = deploy.Session(source=None, report=report,
+                             fit=stacked(weights=weights), plan=None)
+    deploy._SESSIONS["sid"] = session
+    return deploy
+
+
+def test_the_wizard_answers_for_the_model_being_deployed():
+    deploy = _wizard_session()
+    out = deploy.context_advice("sid", 262144)
+    assert out["available"] is True
+    assert out["kv_bytes_per_token"] == 122_880
+    assert {a["kind"] for a in out["advice"]} >= {"single-user", "fp8-would-help"}
+
+
+def test_the_wizard_ladder_stops_at_the_models_own_limit():
+    deploy = _wizard_session()
+    steps = [row["context"] for row in deploy.context_advice("sid", 32768)["ladder"]]
+    assert max(steps) <= 524288
+
+
+def test_asking_in_fp8_changes_the_whole_answer():
+    deploy = _wizard_session()
+    out = deploy.context_advice("sid", 262144, "fp8")
+    assert out["kv_bytes_per_token"] == 61_440
+    assert "single-user" not in {a["kind"] for a in out["advice"]}
+
+
+def test_a_model_whose_kv_cannot_be_read_says_so_instead_of_going_quiet():
+    deploy = _wizard_session(kv_dims=None)
+    out = deploy.context_advice("sid", 32768)
+    assert out["available"] is False
+    assert out["reason"] in mem.ADVICE_LEGEND
+
+
+def test_an_expired_session_is_an_error_not_an_empty_answer():
+    from lmds.web import deploy
+
+    deploy._SESSIONS.pop("gone", None)
+    with pytest.raises(deploy.DeployError):
+        deploy.context_advice("gone", 32768)

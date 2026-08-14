@@ -605,6 +605,17 @@ def create_app(token: str = "") -> FastAPI:
         except DeployError as exc:
             raise _deploy_error(exc) from exc
 
+    @app.get("/api/deploy/{session_id}/context", dependencies=guarded)
+    def deploy_context_advice(session_id: str, value: int, kv_dtype: str = "bf16") -> dict:
+        from .deploy import DeployError, context_advice
+
+        try:
+            return context_advice(session_id, value, kv_dtype)
+        except DeployError as exc:
+            raise _deploy_error(exc) from exc
+        except ValueError as exc:  # kv_dtype ที่ไม่รู้จัก
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/deploy/{session_id}/generate", dependencies=guarded)
     def deploy_generate(session_id: str, body: dict) -> dict:
         from .deploy import DeployError, generate

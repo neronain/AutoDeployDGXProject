@@ -1262,6 +1262,75 @@ function capsView(caps) {
       สิ่งที่ต้องยืนยันตอนรัน</summary>${caveats}</details>` : ""}`;
 }
 
+// The context you pick is a trade, not a single right answer: the largest value
+// that fits is by definition the one where a single conversation fills the pool.
+// The codes and numbers come from the same calculator the CLI uses — only the
+// wording lives here, because that page speaks Thai and this one speaks English.
+const CTX_ADVICE = {
+  "over-native": f => `${f.context.toLocaleString()} is beyond what the model itself supports (${
+    f.native.toLocaleString()}). That is the model's limit, not the machine's.`,
+  "over-memory": f => `KV at ${f.context.toLocaleString()} needs ${f.kv_gb} GB but only ${
+    f.kv_budget_gb} GB is left after the weights.`,
+  "single-user": f => `Fits, but serves ${f.concurrency} conversations at once — one full-length \
+chat takes almost the whole KV pool and the next request waits.`,
+  "thin-margin": f => `Only ${f.spare_gb} GB spare out of ${f.kv_budget_gb} GB — not enough for \
+CUDA graphs, chunked-prefill activations and NCCL buffers, none of which are in this budget.`,
+  "fp8-would-help": f => `Switching the KV cache to fp8 (--kv-cache-dtype fp8_e5m2) halves it: ${
+    f.kv_gb_now} GB becomes ${f.kv_gb_fp8} GB, and ${f.concurrency_now} concurrent becomes ${
+    f.concurrency_fp8}. It is a runtime flag, not a requantised checkpoint.`,
+  "room-to-grow": f => `There is room for ${f.suggest.toLocaleString()}, still serving ${
+    f.concurrency} at once.`,
+  "odd-step": f => `${f.context.toLocaleString()} is not one of the power-of-two steps engines \
+use; it is accepted, but some round it down.`,
+  "stacked-comms-unbudgeted": f => `${f.nodes} nodes — this budget does not yet include the NCCL \
+buffers tensor parallel needs across the network. Leave headroom.`,
+  "kv-dims-unknown": () => "The model config does not expose KV dimensions, so this cannot be calculated.",
+  "weights-unknown": () => "The weight size is not known yet, so this cannot be calculated.",
+};
+
+let ctxAdviceTimer = null;
+
+async function paintContextAdvice() {
+  const box = document.getElementById("w-ctx-advice");
+  const input = document.getElementById("w-ctx");
+  if (!box || !input || !sess) return;
+  const value = parseInt(input.value, 10);
+  if (!Number.isFinite(value) || value <= 0) { box.innerHTML = ""; return; }
+  const dtype = document.getElementById("w-fp8")?.checked ? "fp8" : "bf16";
+
+  let data;
+  try {
+    data = await (await api(`/api/deploy/${sess}/context?value=${value}&kv_dtype=${dtype}`)).json();
+  } catch { box.innerHTML = ""; return; }
+  if (!data.available) {
+    box.innerHTML = `<div class="dim gsub">${esc(CTX_ADVICE["kv-dims-unknown"]())}</div>`;
+    return;
+  }
+
+  const rows = data.ladder.map(r => {
+    const here = r.context === data.asked;
+    return `<tr${here ? ' style="font-weight:600"' : ""}>
+      <td style="text-align:right;padding:2px 10px 2px 0">${r.context.toLocaleString()}</td>
+      <td style="text-align:right;padding:2px 10px 2px 0">${r.fits ? r.kv_gb + " GB" : "—"}</td>
+      <td style="text-align:right">${r.fits ? r.concurrency.toFixed(1) : "does not fit"}</td>
+    </tr>`;
+  }).join("");
+
+  const lines = data.advice.map(a => {
+    const say = CTX_ADVICE[a.kind];
+    if (!say) return "";
+    const cls = a.level === "bad" ? "warn-line" : a.level === "warn" ? "warn-line" : "ok-line";
+    return `<div class="${cls}">${esc(say(a.facts))}</div>`;
+  }).join("");
+
+  box.innerHTML = `<div class="dim gsub" style="margin:8px 0 4px">KV ${data.kv_dtype} · ${
+    Math.round(data.kv_bytes_per_token / 1024)} KiB per token</div>
+    <table class="dim" style="border-collapse:collapse;margin-bottom:6px">
+      <tr class="dim"><th style="text-align:right;padding-right:10px">context</th>
+        <th style="text-align:right;padding-right:10px">KV each</th>
+        <th style="text-align:right">at once</th></tr>${rows}</table>${lines}`;
+}
+
 function planView(d) {
   const p = d.plan, f = p.fit;
   const head = Math.max(f.max_safe_context || 0, p.context);
@@ -1283,9 +1352,12 @@ function planView(d) {
     <div class="field" style="margin-top:12px">
       <label>context</label>
       <input id="w-ctx" type="number" value="${p.context}" max="${head}" style="flex:none;width:140px">
+      <label class="dim" style="display:inline-flex;align-items:center;gap:5px;flex:none">
+        <input type="checkbox" id="w-fp8" style="min-width:auto;flex:none"> fp8 KV cache</label>
       ${f.max_safe_context && f.max_safe_context > p.context
         ? `<span class="dim">This machine can hold ${f.max_safe_context.toLocaleString()} — the suggested value is the v3.0.0 default, not a limit</span>` : ""}
     </div>
+    <div id="w-ctx-advice"></div>
     ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
       <div class="muted">Flags that need your approval</div>
       ${p.flags_needing_approval.map(fl => `<label style="display:block;padding:3px 0">
@@ -1296,6 +1368,14 @@ function planView(d) {
       <button id="w-cancel">Cancel</button>
     </div>
   </div>`;
+  // หน่วงไว้หน่อย — พิมพ์เลขหกหลักคือหกครั้งที่ยิงถ้าไม่หน่วง
+  const redraw = () => {
+    clearTimeout(ctxAdviceTimer);
+    ctxAdviceTimer = setTimeout(paintContextAdvice, 250);
+  };
+  document.getElementById("w-ctx").addEventListener("input", redraw);
+  document.getElementById("w-fp8").addEventListener("change", paintContextAdvice);
+  paintContextAdvice();
 }
 
 function resultView(r) {

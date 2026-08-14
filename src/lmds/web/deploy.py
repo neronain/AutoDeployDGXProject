@@ -212,6 +212,45 @@ def analyze(
     return {"id": session_id, "notes": notes, "plan": _plan_payload(_SESSIONS[session_id])}
 
 
+def context_advice(session_id: str, value: int, kv_dtype: str = "bf16") -> dict:
+    """ค่าที่กรอกในหน้า wizard นี้ควรไหม — ตอบจาก session ที่ analyze ไว้แล้ว
+
+    ไม่ต้องยิง Hub ซ้ำและไม่ต้องรอ bundle ถูกสร้างก่อน: `report.kv_dims` กับ `fit`
+    อยู่ในมือตั้งแต่ตอน analyze แล้ว · โมเดลที่กำลังจะ deploy จึงได้คำแนะนำทันที
+    ไม่ต้องรอให้ bundle รุ่นใหม่ไปบันทึกอะไรไว้ก่อน
+    """
+    from lmds.fit import advise, ladder
+
+    session = _SESSIONS.get(session_id)
+    if session is None:
+        raise DeployError("expired", "ผลวิเคราะห์หมดอายุแล้ว — วิเคราะห์ใหม่อีกครั้ง")
+
+    report, fit = session.report, session.fit
+    if report.kv_dims is None or fit.weights_gb is None:
+        # ตอบว่าคำนวณไม่ได้ ดีกว่าเงียบ — หน้าเว็บจะได้บอกผู้ใช้ว่าทำไมไม่มีคำแนะนำ
+        return {"available": False, "reason": "kv-dims-unknown", "ladder": [], "advice": []}
+
+    steps = ladder(fit, report.kv_dims, kv_dtype, report.context_length)
+    return {
+        "available": True,
+        "asked": value,
+        "kv_dtype": kv_dtype,
+        "kv_bytes_per_token": report.kv_dims.elements_per_token
+        * (1 if kv_dtype == "fp8" else 2),
+        "native_context": report.context_length,
+        "ladder": [
+            {"context": s.context, "kv_gb": s.kv_gb,
+             "concurrency": round(s.concurrency, 1), "fits": s.fits}
+            for s in steps
+        ],
+        "advice": [
+            {"kind": a.kind, "level": a.level, "facts": a.facts}
+            for a in advise(fit, report.kv_dims, value, kv_dtype,
+                            report.context_length, fit.node_count)
+        ],
+    }
+
+
 def generate(
     session_id: str,
     context: Optional[int] = None,
