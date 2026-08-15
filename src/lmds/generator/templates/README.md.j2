@@ -24,7 +24,7 @@
 - **passwordless SSH** จาก master → worker (controller ใช้ SSH สั่งงาน worker)
 - รัน controller จาก **master node ในฐานะ user ปกติ** เท่านั้น (ห้าม sudo)
 {% elif native_llamacpp %}- Ubuntu 22.04/24.04 (ARM64/x86_64) + NVIDIA driver + CUDA Toolkit (DGX OS มีมาให้แล้ว)
-- Build dependencies: git, cmake, ninja-build, build-essential — **`prepare-runtime` ติดตั้งให้อัตโนมัติ** (ใช้ sudo)
+- Build dependencies: git, cmake, build-essential, curl — **`prepare-runtime` ติดตั้งให้อัตโนมัติ** (ใช้ sudo เฉพาะตอนที่ขาดจริง · ninja ไม่จำเป็น cmake ถอยไป Makefiles ได้)
 {% else %}- Ubuntu 22.04/24.04 + NVIDIA driver, Docker, NVIDIA Container Toolkit
 {% endif %}- พื้นที่ดิสก์ว่างอย่างน้อย {{ disk_gb }} GB (โมเดล + runtime){% if is_stacked %} — **ต่อ node** (โมเดลต้องมีครบทั้งสอง){% endif %}
 {% if report.gated %}- **โมเดลนี้เป็น gated repo** — ต้องมี `HF_TOKEN` (env) ที่ได้รับสิทธิ์แล้วตอน download

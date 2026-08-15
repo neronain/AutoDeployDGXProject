@@ -6,6 +6,36 @@
 
 ### Fixed
 
+- **`enable` สร้าง unit ที่บูตไม่ขึ้น — และไม่มีอะไรบอกจนกว่าจะรีบูต** · user unit ถูก
+  render ด้วยเทมเพลตของ **system** unit แล้วแก้แค่บรรทัด `WantedBy` ทิ้ง `User=` ค้างไว้ ·
+  user manager รันเป็น user นั้นอยู่แล้วจึงไม่มีสิทธิ์สลับ user ให้ตัวเอง systemd ตายตั้งแต่
+  ก่อนเรียก controller ด้วย `Failed to determine supplementary groups` → `status=216/GROUP`
+  · ที่ร้ายคือมันเงียบสนิท: `is-enabled` ตอบ `enabled`, หน้าเว็บขึ้นแบดจ์ autostart,
+  `loginctl` บอก `Linger=yes` — ครบทุกสัญญาณว่าใช้ได้ แล้วเครื่องบูตขึ้นมาไม่มีโมเดล ·
+  เจอพร้อมกันสามเครื่อง (msi-4, spark-worker, dgx-veerasiam) 2026-08-15
+  → `render_unit(..., scope=)` ประกอบ unit ตามสโคปของตัวเองตั้งแต่ต้น ไม่ใช่ render
+  แบบหนึ่งแล้วไปแก้ทีหลัง · ครอบคลุม adopted container unit ด้วย
+
+- **ประเมิน KV cache เกินจริงหลายเท่าบน arch แบบ hybrid** · `_kv_dims_from_gguf` คูณ
+  KV ด้วยจำนวน layer ทั้งหมด · qwen3.5 / qwen3-next วาง full attention สลับกับ layer SSM
+  ที่ state คงที่ไม่โตตาม context แล้วประกาศจังหวะไว้ที่ `full_attention_interval` แทนที่จะ
+  ไล่เป็นลิสต์ต่อ layer อย่าง gemma-4 · ทางที่รองรับลิสต์อยู่แล้วจึงจับพวกนี้ไม่ได้เลย
+  · เคสจริง `Qwen3.8-27B` (65 layer, interval 4) ถูกคิดเป็น 260 KiB/token → 95 GiB ที่
+  context 262,144 ทั้งที่ของจริง 64 KiB/token → 49 GiB (เครื่องวัดได้ 54 GB) ผลคือ `fit`
+  ปฏิเสธการรันคู่กับโมเดลอื่นที่จริง ๆ แล้วรันได้สบาย เสียเครื่องไปทั้งเครื่องโดยไม่มีใครรู้
+
+- **`prepare-runtime` บังคับ sudo ทั้งที่ไม่จำเป็น** · `ninja` อยู่ในลิสต์ dependency ที่ต้องมี
+  ทั้งที่ cmake ถอยไปใช้ Unix Makefiles ได้เอง · เครื่องที่มีของครบทุกอย่างแล้วจึงยังถูกส่งไป
+  `sudo apt-get` เพื่อลง generator ที่ไม่ได้ใช้ แล้วตายทันทีบนเครื่องที่ sudo ขอรหัส
+  (ค่าปกติของ Ubuntu และเป็นกรณีเดียวกับที่ hub เรียกผ่าน SSH ที่ไม่มี tty)
+  → ตัด ninja ออกจากลิสต์ · เช็ค `sudo -n` ก่อน แล้วบอกคำสั่งที่ต้องรันเองแทนที่จะปล่อยให้
+  sudo ตายพร้อม `a terminal is required` ที่ไม่ได้บอกว่าต้องทำอะไรต่อ
+
+- **หา CUDA toolkit ไม่เจอทั้งที่ลงไว้ครบ** · DGX OS วาง CUDA ไว้ที่ `/usr/local/cuda`
+  แต่ไม่ได้ใส่ใน PATH ของ shell ที่ไม่ใช่ login (เช่นที่ hub เรียกผ่าน SSH) · `command -v nvcc`
+  จึงไม่เจอ เราเตือนว่า "ไม่พบ CUDA" แล้วปล่อยไป build ล้มอีกทีตอน cmake
+  → `find_cuda_toolkit` มองหาใน `/usr/local/cuda*/bin` แล้วเติมเข้า PATH ให้เอง
+
 - **`test-tools` ผ่านทั้งที่ tool calling ใช้งานจริงไม่ได้** · เทสยิงด้วย
   `tool_choice: "required"` ซึ่ง engine บังคับรูปแบบผลลัพธ์ด้วย guided decoding ผลจึงเป็น JSON
   ที่ parser อ่านออกเสมอ **ไม่ว่า `--tool-parser` จะตรงกับโมเดลหรือไม่** · แต่ Claude Code,

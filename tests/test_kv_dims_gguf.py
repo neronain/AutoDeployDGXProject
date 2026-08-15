@@ -74,3 +74,51 @@ def test_a_list_without_a_pattern_is_conservative():
         "mystery.attention.key_length": 128,
     }, architecture="mystery"))
     assert (dims.layers, dims.kv_heads) == (12, 8)
+
+
+def test_hybrid_interval_counts_only_full_attention_layers():
+    """qwen3.5/qwen3-next บอกจังหวะ full attention ด้วย `full_attention_interval`
+
+    layer ที่เหลือเป็น SSM ซึ่ง state คงที่ ไม่โตตาม context · นับรวมทั้งหมด =
+    ประเมิน KV เกินไป 4 เท่า แล้ว fit ไปปฏิเสธ config ที่รันได้จริง
+    """
+    dims = _kv_dims_from_gguf(FakeGguf({
+        "qwen35.block_count": 65,
+        "qwen35.attention.head_count": 24,
+        "qwen35.attention.head_count_kv": 4,
+        "qwen35.attention.key_length": 256,
+        "qwen35.full_attention_interval": 4,
+    }, architecture="qwen35"))
+    assert dims.layers == 17, "65 layer ทุก ๆ 4 = 17 (ปัดขึ้น) ไม่ใช่ 65"
+    assert dims.kv_heads == 4
+    assert dims.head_dim == 256
+
+
+def test_hybrid_interval_matches_the_machine():
+    """ยึดกับของจริง: Qwen3.8-27B บน spark-worker
+
+    weight 30.2 GiB + KV ที่ context 262,144 แล้วเครื่องรายงาน 54 GB (50.3 GiB)
+    สูตรเดิมทำนาย 95 GiB ซึ่งห่างจากของจริงเกือบเท่าตัว
+    """
+    dims = _kv_dims_from_gguf(FakeGguf({
+        "qwen35.block_count": 64,
+        "qwen35.attention.head_count": 24,
+        "qwen35.attention.head_count_kv": 4,
+        "qwen35.attention.key_length": 256,
+        "qwen35.full_attention_interval": 4,
+    }, architecture="qwen35"))
+    assert dims.bytes_per_token_fp16 == 65_536      # 64 KiB/token
+    gib = dims.bytes_per_token_fp16 * 262_144 / 1024 ** 3
+    assert 15 < gib < 17, f"KV ที่ context เต็มควรราว 16 GiB ได้ {gib:.1f}"
+
+
+def test_interval_of_one_changes_nothing():
+    """interval=1 แปลว่าทุก layer เป็น full attention — อย่าไปหารอะไรทั้งนั้น"""
+    dims = _kv_dims_from_gguf(FakeGguf({
+        "plain.block_count": 32,
+        "plain.attention.head_count": 32,
+        "plain.attention.head_count_kv": 8,
+        "plain.attention.key_length": 128,
+        "plain.full_attention_interval": 1,
+    }, architecture="plain"))
+    assert dims.layers == 32

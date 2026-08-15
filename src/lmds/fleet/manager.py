@@ -61,23 +61,32 @@ def _controller_owner(controller: str) -> str:
         return getpass.getuser()
 
 
-def render_unit(info: "ServerInfo", timeout: int = 1800) -> str:
-    """สร้างเนื้อ systemd unit (system service) สำหรับ autostart ของ bundle นี้
+def render_unit(info: "ServerInfo", timeout: int = 1800, scope: str = "system") -> str:
+    """สร้างเนื้อ systemd unit สำหรับ autostart ของ bundle นี้
 
     - Type=oneshot + RemainAfterExit: controller start เปิด container/process แบบ detach
       แล้ว return เมื่อ health ผ่าน (unit คง active หลัง exec จบ)
     - ExecStartPre=stop: เคลียร์ container/process ค้างจากก่อน reboot ก่อน start ใหม่
-    - User=<เจ้าของ bundle>: รันเป็น user ปกติ (docker/HF cache/สิทธิ์ตรงกับตอน deploy)
+
+    `scope` ตัดสินสองบรรทัดที่ **ห้ามเหมือนกัน** ระหว่างสองสโคป:
+
+    - `User=` มีได้เฉพาะ system unit · user manager รันเป็น user นั้นอยู่แล้ว การสั่ง
+      ให้มันสลับ user คือสิ่งที่มันไม่มีสิทธิ์ทำ systemd จึงตายตั้งแต่ยังไม่ทันเรียก
+      controller ด้วย `Failed to determine supplementary groups` / `status=216/GROUP`
+    - `WantedBy` ต้องเป็น default.target สำหรับ user scope (multi-user.target ไม่มีใน
+      user manager)
+
+    ทั้งคู่พังแบบเดียวกันคือ **เงียบจนกว่าจะ reboot**: `systemctl --user is-enabled`
+    ตอบ enabled, หน้าเว็บขึ้นแบดจ์ autostart, `loginctl` บอก Linger=yes — แล้วเครื่อง
+    บูตขึ้นมาโดยไม่มีโมเดล เจอจริงบน msi-4, spark-worker และ dgx-veerasiam (2026-08-15)
     """
     if not info.controller_exists and info.mode == "docker" and info.container:
-        return _render_docker_unit(info)
+        return _render_docker_unit(info, scope)
 
     controller = info.controller
     workdir = str(Path(controller).parent)
-    user = _controller_owner(controller)
-    home = str(Path.home())
     model = info.model or info.model_id or info.slug
-    return "\n".join([
+    lines = [
         "[Unit]",
         f"Description=LMDS model: {info.slug} ({model})",
         "After=network-online.target docker.service",
@@ -86,8 +95,11 @@ def render_unit(info: "ServerInfo", timeout: int = 1800) -> str:
         "[Service]",
         "Type=oneshot",
         "RemainAfterExit=yes",
-        f"User={user}",
-        f"Environment=HOME={home}",
+    ]
+    if scope == "system":
+        lines.append(f"User={_controller_owner(controller)}")
+        lines.append(f"Environment=HOME={Path.home()}")
+    lines += [
         f"WorkingDirectory={workdir}",
         f"ExecStartPre=-{controller} stop",
         f"ExecStart={controller} start",
@@ -96,9 +108,14 @@ def render_unit(info: "ServerInfo", timeout: int = 1800) -> str:
         "Restart=no",
         "",
         "[Install]",
-        "WantedBy=multi-user.target",
+        f"WantedBy={_wanted_by(scope)}",
         "",
-    ])
+    ]
+    return "\n".join(lines)
+
+
+def _wanted_by(scope: str) -> str:
+    return "default.target" if scope == "user" else "multi-user.target"
 
 
 def autostart_status(slug: str) -> str:
@@ -127,15 +144,17 @@ def autostart_status(slug: str) -> str:
     return out if out in {"enabled", "disabled"} else ("enabled" if proc.returncode == 0 else "disabled")
 
 
-def _render_docker_unit(info: "ServerInfo") -> str:
+def _render_docker_unit(info: "ServerInfo", scope: str = "system") -> str:
     """unit สำหรับ container ที่ไม่ได้มาจาก lmds — แค่ start container เดิมกลับมาหลัง reboot
 
     ไม่มี controller ให้เรียก จึงทำได้แค่ `docker start` (ไม่ได้สร้าง container ใหม่)
     ถ้า container ถูกลบไป unit นี้จะล้ม — ต้อง enable ใหม่หลังสร้าง container ใหม่
+
+    `User=` เฉพาะ system scope ด้วยเหตุผลเดียวกับ `render_unit`
     """
     import getpass
 
-    return "\n".join([
+    lines = [
         "[Unit]",
         f"Description=LMDS (adopted container): {info.container}",
         "After=network-online.target docker.service",
@@ -145,14 +164,18 @@ def _render_docker_unit(info: "ServerInfo") -> str:
         "[Service]",
         "Type=oneshot",
         "RemainAfterExit=yes",
-        f"User={getpass.getuser()}",
+    ]
+    if scope == "system":
+        lines.append(f"User={getpass.getuser()}")
+    lines += [
         f"ExecStart=/usr/bin/docker start {info.container}",
         f"ExecStop=/usr/bin/docker stop {info.container}",
         "",
         "[Install]",
-        "WantedBy=multi-user.target",
+        f"WantedBy={_wanted_by(scope)}",
         "",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 def _enable_user_unit(info, name: str, timeout: int, start_now: bool, adopted: bool) -> str:
@@ -165,8 +188,9 @@ def _enable_user_unit(info, name: str, timeout: int, start_now: bool, adopted: b
     """
     directory = user_systemd_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    unit = render_unit(info, timeout).replace("WantedBy=multi-user.target", "WantedBy=default.target")
-    (directory / name).write_text(unit, encoding="utf-8")
+    # render ด้วย scope ของตัวเอง ไม่ใช่ render แบบ system แล้วค่อยแก้ทีหลัง — วิธีเดิม
+    # แก้ WantedBy ได้บรรทัดเดียวและปล่อย User= ค้างไว้ ซึ่งทำให้ unit ล้มตอนบูตทุกตัว
+    (directory / name).write_text(render_unit(info, timeout, scope="user"), encoding="utf-8")
 
     steps = [["systemctl", "--user", "daemon-reload"],
              ["systemctl", "--user", "enable", name]]

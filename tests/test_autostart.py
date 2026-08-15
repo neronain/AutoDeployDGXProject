@@ -47,6 +47,30 @@ def test_render_unit_has_required_directives(tmp_path):
     assert "User=" in unit and "Environment=HOME=" in unit
 
 
+def test_user_scope_unit_has_no_user_directive(tmp_path):
+    """`User=` ใน user unit ทำให้ systemd ตายก่อนเรียก controller ด้วยซ้ำ
+
+    user manager รันเป็น user นั้นอยู่แล้ว จึงไม่มีสิทธิ์สลับ user ให้ตัวเอง:
+    `Failed to determine supplementary groups` แล้ว `status=216/GROUP`
+    """
+    unit = render_unit(_info(tmp_path), scope="user")
+    assert "User=" not in unit
+    assert "WantedBy=default.target" in unit
+    # ส่วนที่เหลือต้องยังครบ — ไม่ใช่ตัด User= แล้วทำ unit พังทางอื่นแทน
+    assert "ExecStart=" in unit and " start" in unit
+    assert "Type=oneshot" in unit
+
+
+def test_adopted_docker_user_unit_has_no_user_directive(tmp_path):
+    """container ที่ถูก adopt ก็ใช้ทางเดียวกัน — พังเงียบแบบเดียวกันถ้าลืม"""
+    info = ServerInfo(slug="m", model="org/M", engine="vllm", mode="docker",
+                      port=8000, container="lmds-m", controller=str(tmp_path / "gone.sh"))
+    unit = render_unit(info, scope="user")
+    assert "User=" not in unit
+    assert "WantedBy=default.target" in unit
+    assert "docker start lmds-m" in unit
+
+
 def test_autostart_status_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "have_systemctl", lambda: True)
     monkeypatch.setenv("LMDS_SYSTEMD_DIR", str(tmp_path / "systemd"))
@@ -195,6 +219,8 @@ def test_user_unit_starts_at_boot_not_only_at_login(tmp_path, monkeypatch):
     unit = (tmp_path / "user-units" / enable_autostart(info)).read_text(encoding="utf-8")
     assert "WantedBy=default.target" in unit
     assert "multi-user.target" not in unit
+    # unit ที่เขียนลงดิสก์จริงต้องไม่มี User= ด้วย ไม่ใช่แค่ที่ render_unit คืนมา
+    assert "User=" not in unit
 
 
 def test_status_sees_a_user_unit(tmp_path, monkeypatch):

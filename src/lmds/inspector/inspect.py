@@ -313,10 +313,32 @@ def _kv_dims_from_gguf(gguf: GgufInfo) -> KvDims | None:
     # ทั้งที่หน่วยความจำเหลือพอสำหรับ 262,144 — เสีย context ไป 16 เท่าโดยไม่มีใครรู้
     if isinstance(kv_heads, list):
         layers, kv_heads, head_dim = _scaling_layers_only(meta, arch, kv_heads, head_dim)
+    else:
+        layers = _interval_layers_only(meta, arch, layers)
 
     if all(isinstance(v, int) and v > 0 for v in (layers, kv_heads, head_dim)):
         return KvDims(layers=layers, kv_heads=kv_heads, head_dim=head_dim)
     return None
+
+
+def _interval_layers_only(meta: dict, arch: str, layers: int | None) -> int | None:
+    """เก็บเฉพาะ layer full-attention ของ arch แบบ hybrid ที่บอกด้วย "ทุก ๆ N layer"
+
+    qwen3.5 / qwen3-next วาง full attention สลับกับ layer ที่เป็น SSM (linear attention)
+    ซึ่ง state คงที่ไม่โตตาม context แล้วประกาศจังหวะไว้ที่ `full_attention_interval`
+    แทนที่จะไล่เป็นลิสต์ต่อ layer อย่าง gemma-4 · `_scaling_layers_only` จับได้เฉพาะ
+    แบบลิสต์ ของพวกนี้จึงถูกคูณด้วยจำนวน layer ทั้งหมด = ประเมิน KV เกินไป N เท่า
+
+    เคสจริง 2026-08-15: Qwen3.8-27B (65 layer, interval 4) ถูกคิดเป็น 260 KiB/token
+    → 95 GiB ที่ context 262,144 ทั้งที่ของจริง 64 KiB/token → 49 GiB (เครื่องวัดได้
+    54 GB) ผลคือ fit ปฏิเสธการรันคู่กับโมเดลอื่นที่จริง ๆ แล้วรันได้สบาย
+    """
+    interval = meta.get(f"{arch}.full_attention_interval")
+    if not isinstance(layers, int) or not isinstance(interval, int) or interval <= 1:
+        return layers
+    # ปัดขึ้น: 65 layer ทุก ๆ 4 = 17 layer ที่เป็น full attention ไม่ใช่ 16
+    # ประเมินเกินหนึ่ง layer ปลอดภัยกว่าประเมินขาดแล้ว OOM ตอนโหลด
+    return -(-layers // interval)
 
 
 def _scaling_layers_only(

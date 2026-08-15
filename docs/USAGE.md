@@ -606,16 +606,43 @@ lmds deploy <url> --target dgx<TAB>  → dgx-spark-single / dgx-spark-stacked
 (เหมาะกับเครื่องลูกค้า/ทีมที่เปิดทิ้งไว้เป็น server) ใช้ systemd autostart:
 
 ```bash
-lmds enable gemma-4-26b-a4b-it-gguf          # ตั้ง autostart (ขอ sudo เขียน systemd unit)
+lmds enable gemma-4-26b-a4b-it-gguf          # ตั้ง autostart (user service — ไม่ต้อง sudo)
 lmds enable gemma-4-26b-a4b-it-gguf --now    # ตั้ง + start เดี๋ยวนี้เลย
 lmds list                                    # ดูคอลัมน์ autostart: ● เปิด / ○ ปิด
 lmds disable gemma-4-26b-a4b-it-gguf         # ยกเลิก autostart
 ```
 
-- ทำงานผ่าน **systemd system service** (`lmds-<ชื่อ>.service`) — รันเป็น user เจ้าของ bundle, เปิดหลัง `docker.service` พร้อม, เคลียร์ container ค้างก่อน start เสมอ
+- ค่าเริ่มต้นเป็น **systemd user service** (`~/.config/systemd/user/lmds-<ชื่อ>.service`) — **ไม่ต้อง sudo เลย** เพราะ hub สั่งข้ามเครื่องผ่าน SSH ที่ไม่มี tty ให้กรอกรหัส · `--system` เขียนลง `/etc/systemd/system` ซึ่งต้อง sudo และให้สิทธิ์เท่ากับ root
 - โมเดลใหญ่ที่โหลดนาน เพิ่มเวลา: `lmds enable <ชื่อ> --timeout 3600`
-- เช็ก/ดู log ของ service: `systemctl status lmds-<ชื่อ>` · `journalctl -u lmds-<ชื่อ> -f`
-- ต้องมี `systemd` (DGX OS/Ubuntu มีอยู่แล้ว) · **stacked (2 เครื่อง):** master ตั้ง autostart ได้ แต่ตอน boot worker ต้องเปิดอยู่ + SSH ถึงได้ ไม่งั้น start จะรอ/ล้ม
+- เช็ก/ดู log: `systemctl --user status lmds-<ชื่อ>` · `journalctl --user -u lmds-<ชื่อ> -f` (เติม `--user` เสมอสำหรับ user service)
+- **user service ต้องมี linger** ไม่งั้นมันขึ้นตอน login ไม่ใช่ตอนบูต: `loginctl enable-linger $USER` แล้วเช็กด้วย `loginctl show-user $USER -p Linger`
+- **stacked (2 เครื่อง):** master ตั้ง autostart ได้ แต่ตอน boot worker ต้องเปิดอยู่ + SSH ถึงได้ ไม่งั้น start จะรอ/ล้ม
+
+#### ⚠️ ตั้งแล้วต้องพิสูจน์ว่ามันขึ้นได้จริง
+
+`enable` สำเร็จ **ไม่ได้แปลว่า** unit จะ start ได้ · `is-enabled` ตอบ `enabled` แค่บอกว่ามีลิงก์
+ให้บูตเรียก ไม่ได้ลองเรียกดู เคยมีบั๊กที่ unit ทุกตัวตายตอนบูตโดยที่ทุกสัญญาณบอกว่าปกติดี
+สั่งให้มันเริ่มจริงหนึ่งครั้งเสมอ:
+
+```bash
+systemctl --user start lmds-<ชื่อ> && systemctl --user is-active lmds-<ชื่อ>
+```
+
+ได้ `active` ถึงจะมั่นใจได้ · ถ้า `failed` ดูเหตุที่ `journalctl --user -xeu lmds-<ชื่อ>`
+
+#### สโคปซ้อนกัน = ชนกันตอนบูต
+
+ถ้าเคย `enable --system` ไว้แล้วมา `enable` (user) ทีหลัง **จะมี unit สองตัวของ slug เดียวกัน**
+ทั้งคู่ enabled แล้วตอนบูตต่างคนต่าง start โมเดลเดียวกันบนพอร์ตเดียวกัน — ตัวหลังล้มเสมอ
+`lmds disable` ปิดฝั่ง user ให้ได้โดยไม่ต้อง sudo แต่ฝั่ง system ต้องสั่งเอง:
+
+```bash
+systemctl --user disable --now lmds-<ชื่อ>          # ฝั่ง user
+sudo systemctl disable --now lmds-<ชื่อ>            # ฝั่ง system (ต้อง sudo)
+sudo rm -f /etc/systemd/system/lmds-<ชื่อ>.service && sudo systemctl daemon-reload
+```
+
+ตรวจว่าเหลือฝั่งเดียวจริง: `ls ~/.config/systemd/user/lmds-*.service /etc/systemd/system/lmds-*.service`
 
 ## 4.5 คุมหลายเครื่องจากเครื่องเดียว (fleet หลายเครื่อง)
 
