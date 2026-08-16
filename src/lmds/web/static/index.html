@@ -278,6 +278,17 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   border-radius: var(--r); padding: 10px 10px 2px; margin-bottom: 12px;
   background: color-mix(in srgb, var(--g) 3%, var(--bg));
 }
+.sitesec { margin-bottom: 14px; }
+.sitehdr { display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 7px 10px; margin-bottom: 8px; border-radius: var(--r);
+  background: color-mix(in srgb, var(--accent, #1f5fbf) 10%, var(--sunken));
+  border: 1px solid color-mix(in srgb, var(--accent, #1f5fbf) 22%, transparent);
+  user-select: none; }
+.sitehdr:hover { background: color-mix(in srgb, var(--accent, #1f5fbf) 15%, var(--sunken)); }
+.sitetoggle { width: 14px; color: var(--accent, #1f5fbf); font-size: calc(11px * var(--fs)); }
+.sitelbl { font-weight: 600; letter-spacing: -.01em; }
+.sitecount { margin-left: auto; font-size: calc(12px * var(--fs)); color: var(--muted); }
+.sitesec.collapsed .sitehdr { margin-bottom: 0; }
 .gwrap .machine { margin-bottom: 8px; }
 .gbar { padding: 2px 4px 10px; }
 .ghead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -1771,6 +1782,8 @@ function tempColour(c) {
 // degrade to one row saying so — never hang or blank the whole page.
 const nodeRows = new Map();
 const collapsedNodes = new Set();
+// ไซต์ที่ผู้ใช้ยุบไว้ — เครื่องเยอะหลายไซต์ จะได้ปิดไซต์ที่ไม่ได้ดูตอนนี้ให้หน้าจอสั้นลง
+const collapsedSites = new Set();
 // เครื่องที่กำลังโชว์ผลคำสั่งอยู่ — ห้าม live update ทับจนกว่าผู้ใช้จะปิดเอง
 const pinnedOutput = new Set();
 // option ต่อโมเดลบนเครื่องอื่น เก็บในเบราว์เซอร์ — ไม่ส่งไปเขียนทับ bundle ปลายทาง
@@ -2618,6 +2631,13 @@ function layoutClusterGroups() {
   if (!box) return;
   // กำลังลากการ์ดอยู่ — refresh ทุก 5 วิห้ามมาแกะรั้ว/จัดใหม่กลางคัน ไม่งั้นการ์ดจะกระโดดหนีนิ้ว
   if (draggingName) return;
+  // แกะ section ของไซต์ออกก่อน (โยนการ์ด/รั้วกลับสู่ระดับบนสุด) — ต้องทำก่อนแกะรั้ว cluster
+  // ไม่งั้น querySelector หา .gwrap ที่ยังอยู่ใน section ไม่เจอ แล้วแกะไม่ครบ
+  for (const sec of [...box.querySelectorAll(".sitesec")]) {
+    while (sec.children.length > 1) box.appendChild(sec.children[1]);   // children[0] = หัวไซต์
+    sec.remove();
+  }
+  for (const item of box.querySelectorAll(".machine, .gwrap")) item.style.removeProperty("display");
   for (const wrap of [...box.querySelectorAll(".gwrap")]) {
     while (wrap.children.length > 1) box.appendChild(wrap.children[1]);
     wrap.remove();
@@ -2632,7 +2652,7 @@ function layoutClusterGroups() {
   // เพราะการแกะรั้วโยนการ์ดไปต่อท้ายกล่อง
   applyNodeOrder(box);
   for (const row of nodeRows.values()) row.block.querySelector(".nclus").hidden = true;
-  if (!clusterData) return;
+  if (!clusterData) { layoutSiteGroups(); return; }
 
   const byName = new Map((clusterData.machines || []).map(m => [m.name, m]));
   // สมาชิกในกลุ่มเรียงตามลำดับที่ผู้ใช้จัดไว้ด้วย — ตัวแรกคือเครื่องที่ถูกเสนอเป็น head
@@ -2685,6 +2705,52 @@ function layoutClusterGroups() {
     strip.innerHTML = clusterStrip(machine, gi >= 0 ? groups[gi] : null, gi);
     strip.style.setProperty("--g", gi >= 0 ? GROUP_COLOURS[gi % GROUP_COLOURS.length] : "transparent");
     strip.classList.toggle("in-group", gi >= 0);
+  }
+  layoutSiteGroups();
+}
+
+// กองการ์ดตามไซต์เป็น section ยุบได้ — ชั้นนอกสุดของ layout · รั้ว cluster (.gwrap) อยู่
+// "ใน" section ของไซต์ (สมาชิก cluster อยู่ไซต์เดียวกันอยู่แล้ว) จึงไม่ชนกัน · ทำหลังสุด
+// ต่อจากการวางลำดับ + รั้ว cluster เสร็จ แล้วห่อ item ระดับบนสุด (การ์ดเดี่ยว + รั้ว) เข้า section
+function layoutSiteGroups() {
+  const box = document.getElementById("nodes");
+  if (!box || draggingName) return;
+  const nameOf = new Map();
+  for (const [name, row] of nodeRows) nameOf.set(row.block, name);
+  const siteOf = (el) => {
+    const card = el.classList.contains("machine") ? el : el.querySelector(".machine");
+    return (lastNodeRegistry.get(nameOf.get(card)) || {}).site || "";
+  };
+  const items = [...box.children].filter(el =>
+    el.classList.contains("machine") || el.classList.contains("gwrap"));
+  // ยังไม่มีเครื่องไหนตั้งไซต์เลย → ไม่ต้องทำ section (ลิสต์เดียวเหมือนก่อนมีฟีเจอร์)
+  if (!items.some(el => siteOf(el))) return;
+
+  const groups = new Map();
+  for (const el of items) {
+    const s = siteOf(el);
+    (groups.get(s) || groups.set(s, []).get(s)).push(el);
+  }
+  // ไซต์เรียงตามตัวอักษร · "ยังไม่จัดไซต์" (ว่าง) ไปท้ายสุดเสมอ
+  const ordered = [...groups.keys()].sort((a, b) =>
+    (a === "") - (b === "") || a.localeCompare(b, "th"));
+  for (const site of ordered) {
+    const collapsed = collapsedSites.has(site);
+    const sec = document.createElement("div");
+    sec.className = "sitesec" + (collapsed ? " collapsed" : "");
+    sec.innerHTML = `<div class="sitehdr" data-site="${esc(site)}" title="กดยุบ/กางไซต์นี้">
+        <span class="sitetoggle">${collapsed ? "▸" : "▾"}</span>
+        <span class="sitelbl">${site ? esc(site) : "ยังไม่จัดไซต์"}</span>
+        <span class="sitecount">${groups.get(site).length} เครื่อง</span></div>`;
+    box.appendChild(sec);
+    sec.querySelector(".sitehdr").addEventListener("click", () => {
+      collapsedSites.has(site) ? collapsedSites.delete(site) : collapsedSites.add(site);
+      layoutSiteGroups();
+    });
+    for (const el of groups.get(site)) {
+      el.style.display = collapsed ? "none" : "";
+      sec.appendChild(el);
+    }
   }
 }
 
