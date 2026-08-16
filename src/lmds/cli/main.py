@@ -230,14 +230,7 @@ def node_list(
         console.print("ยังไม่มีเครื่องในทะเบียน — เพิ่มด้วย: lmds node add <ip> --user <ชื่อ>")
         return
 
-    table = Table(title="เครื่องในทะเบียน")
-    table.add_column("ชื่อ")
-    table.add_column("ปลายทาง")
-    table.add_column("lmds")
-    table.add_column("สถานะ" if check else "เห็นล่าสุด")
-    table.add_column("โน้ต")
-
-    for node in nodes:
+    def row_for(node):
         if check:
             try:
                 info = probe(node)
@@ -251,11 +244,29 @@ def node_list(
         else:
             version = node.lmds_version
             status = node.last_seen or "—"
-        table.add_row(node.name, f"{node.target}:{node.port}", version or "—", status, node.note)
+        return (node.name, f"{node.target}:{node.port}", version or "—", status, node.note)
 
-    console.print(table)
-    if not check:
-        console.print("[dim]ต่อจริงเพื่อเช็กสถานะ: lmds node list --check[/dim]")
+    # จัดกลุ่มตาม site — เครื่องเยอะจากหลายไซต์จะได้ไม่กองรวมเป็นลิสต์ยาวจนหาไม่เจอ
+    # เรียงให้ site ที่ยังไม่จัดกลุ่ม ("—") อยู่ท้ายสุด ที่เหลือเรียงตามชื่อไซต์
+    from collections import OrderedDict
+    groups: "OrderedDict[str, list]" = OrderedDict()
+    for node in nodes:
+        groups.setdefault(node.site or "", []).append(node)
+    ordered = sorted(groups, key=lambda s: (s == "", s.lower()))
+
+    multi = len([s for s in ordered if s]) > 0 and len(ordered) > 1
+    for site in ordered:
+        title = f"ไซต์: {site}" if site else ("เครื่องในทะเบียน" if not multi else "— ยังไม่จัดไซต์ —")
+        table = Table(title=title)
+        for col in ("ชื่อ", "ปลายทาง", "lmds",
+                    "สถานะ" if check else "เห็นล่าสุด", "โน้ต"):
+            table.add_column(col)
+        for node in groups[site]:
+            table.add_row(*row_for(node))
+        console.print(table)
+
+    console.print("[dim]จัดกลุ่มตามไซต์: lmds node set <ชื่อ> --site <ไซต์>"
+                  + ("" if check else " · เช็กสถานะจริง: lmds node list --check") + "[/dim]")
 
 
 @node_app.command("remove")
@@ -638,6 +649,11 @@ def node_set(
     cluster_ip: Optional[str] = typer.Option(None, "--cluster-ip", help="IP บนสายเร็วที่ใช้ตอน stacked"),
     cluster_iface: Optional[str] = typer.Option(None, "--cluster-iface", help="ชื่อ interface ของสายเร็ว"),
     note: Optional[str] = typer.Option(None, "--note"),
+    site: Optional[str] = typer.Option(
+        None, "--site",
+        help="ป้ายไซต์/ลูกค้าที่เครื่องนี้ไปตั้งอยู่ — ใช้จัดกลุ่มบนหน้าจอเท่านั้น (ว่าง = เอาป้ายออก) "
+             "ไม่กระทบ cluster",
+    ),
     alt_host: Optional[str] = typer.Option(
         None, "--alt-host",
         help="ที่อยู่สำรองของเครื่องเดียวกัน เช่น Tailscale (คั่นด้วย , ได้ · ว่าง = ลบทิ้ง)",
@@ -660,12 +676,13 @@ def node_set(
 
     changes = {k: v for k, v in
                (("cluster_ip", cluster_ip), ("cluster_iface", cluster_iface), ("note", note),
-                ("stack", stack))
+                ("site", site.strip() if site is not None else None), ("stack", stack))
                if v is not None}
     if alt_host is not None:
         changes["alt_hosts"] = [h.strip() for h in alt_host.split(",") if h.strip()]
     if not changes:
         console.print(f"[bold]{node.name}[/bold] — {node.target}:{node.port}")
+        console.print(f"site: {node.site or '—'}")
         console.print(f"cluster IP: {node.cluster_ip or '—'}  interface: {node.cluster_iface or '—'}")
         console.print(f"ที่อยู่: {' → '.join(node.all_hosts)}")
         console.print("เข้ากลุ่ม stacked: " + ("ได้" if node.stack else "[yellow]ไม่เอาเข้ากลุ่ม[/yellow]"))

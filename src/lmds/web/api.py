@@ -798,6 +798,7 @@ def create_app(token: str = "") -> FastAPI:
     def nodes_list() -> dict:
         return {"nodes": [
             {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
+             "site": n.site,
              "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
              "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface,
              # deploy สำหรับเครื่องอื่นต้องระบุ target เอง — แนะนำจากฮาร์ดแวร์ที่เคยตรวจไว้

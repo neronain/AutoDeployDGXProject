@@ -125,6 +125,10 @@ h1 {
 .dim { color: var(--fg3); font-size: calc(12px * var(--fs)); line-height: 1.5; }
 .mono { font-family: var(--mono); font-size: calc(12.5px * var(--fs)); font-variant-numeric: tabular-nums; }
 .name { font-weight: 600; font-size: calc(14.5px * var(--fs)); letter-spacing: -.01em; }
+.nsite { font-weight: 500; font-size: calc(11px * var(--fs)); letter-spacing: 0;
+  background: color-mix(in srgb, var(--accent, #1f5fbf) 16%, transparent);
+  color: var(--accent, #1f5fbf); border-radius: 6px; padding: 1px 7px; margin-left: 6px;
+  vertical-align: middle; white-space: nowrap; }
 code {
   font-family: var(--mono); font-size: calc(12px * var(--fs)); background: var(--sunken);
   border: 1px solid var(--line); padding: 2px 6px; border-radius: var(--r-sm);
@@ -1828,7 +1832,9 @@ function nodeCard(node) {
       <button class="ntoggle" title="ย่อ/ขยาย">−</button>
       <span class="dot"></span>
       <div class="grow">
-        <div class="name">${esc(node.name)}</div>
+        <div class="name">${esc(node.name)}${node.site
+          ? ` <span class="nsite" title="ไซต์ที่เครื่องนี้ไปตั้งอยู่ — จัดกลุ่มด้วย: lmds node set ${esc(node.name)} --site">${esc(node.site)}</span>`
+          : ""}</div>
         <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
       </div>
       <span class="nsum"></span>

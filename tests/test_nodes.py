@@ -717,3 +717,25 @@ def test_tests_never_touch_the_real_nodes_registry():
     after = real_registry.read_bytes() if real_registry.exists() else None
     if before is not None:
         assert after == before, "ทะเบียนจริงของผู้ใช้ถูกแตะ"
+
+
+# ── site (จัดกลุ่มตามที่ตั้งเครื่อง — orthogonal กับ cluster) ──────────────────
+def test_site_roundtrips_and_defaults_empty():
+    add(make())
+    assert find("spark1").site == ""          # ทะเบียนเดิมไม่มี site = ว่าง
+    add(make(name="cust1", host="10.0.0.9", site="customer-a"))
+    assert find("cust1").site == "customer-a"  # save/load เก็บค่าได้
+
+
+def test_update_sets_and_clears_site():
+    add(make())
+    assert update("spark1", site="customer-b").site == "customer-b"
+    assert update("spark1", site="").site == ""   # ว่าง = เอาป้ายออก
+
+
+def test_site_does_not_touch_cluster_fields():
+    """ตั้ง site ต้องไม่ไปแตะ stack/cluster_ip — cluster เป็นคนละเรื่องโดยสิ้นเชิง"""
+    add(make(cluster_ip="10.10.0.1", stack=True))
+    node = update("spark1", site="customer-a")
+    assert node.cluster_ip == "10.10.0.1"     # ค่า cluster เดิมอยู่ครบ
+    assert node.stack is True
