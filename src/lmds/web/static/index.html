@@ -3099,11 +3099,21 @@ let pollTimer = null;
 
 // แถวนี้กำลังถูกใช้อยู่ไหม — กางเมนูค้างไว้ หรือเคอร์เซอร์อยู่ในช่องกรอกของแถวนี้
 // ผลของคำสั่งต้องค้างอยู่จนผู้ใช้ปิดเอง — SSE วาดทับทุก 1 วิ ผลจะหายก่อนอ่านจบ
+// ทำให้การ์ดของ node หนึ่งมองเห็นได้จริง: กางไซต์ที่ยุบอยู่ก่อน (ไม่งั้นการ์ดถูก display:none)
+// แล้วค่อยกางการ์ดที่ย่อ — ใช้ก่อนโชว์ฟอร์ม/ผลคำสั่ง/กระโดดหา node
+function revealNode(node) {
+  const row = nodeRows.get(node);
+  if (!row) return;
+  const site = (lastNodeRegistry.get(node) || {}).site || "";
+  if (collapsedSites.has(site)) { collapsedSites.delete(site); layoutClusterGroups(); }
+  if (row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
+}
+
 function showNodeOutput(node, title, output, extra = "") {
   const row = nodeRows.get(node);
   if (!row) return;
-  // การ์ดที่ย่อไว้ต้องกางก่อน ไม่งั้นฟอร์ม/ผลคำสั่งอยู่ใน .nbody ที่ถูกซ่อน = ไม่เห็นอะไร
-  if (row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
+  // การ์ดที่ย่อ/ไซต์ที่ยุบต้องกางก่อน ไม่งั้นฟอร์ม/ผลคำสั่งอยู่ใน .nbody ที่ถูกซ่อน = ไม่เห็นอะไร
+  revealNode(node);
   pinnedOutput.add(node);
   row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">${esc(title)}</b>
@@ -3457,8 +3467,8 @@ function jumpToLocal(slug) {
 function jumpToNode(node, slug) {
   const row = nodeRows.get(node);
   if (!row) return;
-  // การ์ดที่ย่อไว้ต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
-  if (row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
+  // ไซต์ที่ยุบ/การ์ดที่ย่อต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
+  revealNode(node);
   openModelMenus.add(node + "/" + slug);
   if (!pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
   row.block.scrollIntoView({ behavior: "smooth", block: "center" });

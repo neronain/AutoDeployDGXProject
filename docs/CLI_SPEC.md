@@ -165,7 +165,8 @@ lmds node add <host> --user <u>   # ติดตั้ง SSH key (ถามร�
                                   #   --name --port --note --cluster-ip --cluster-iface --install
 lmds node install <name>          # ติดตั้ง/อัปเดต LMDS บนเครื่องนั้น (--with-prereq = ลง Docker ด้วย)
 lmds node list [--check]          # ทะเบียน · --check = ต่อจริงเพื่อดูว่ายังตอบไหม
-lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / --note (ไม่มีอาร์กิวเมนต์ = ดูค่าปัจจุบัน)
+lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / --note / --site (ไม่มีอาร์กิวเมนต์ = ดูค่าปัจจุบัน)
+                                  #   --site = ป้ายจัดกลุ่มเครื่องตามสถานที่ (คอนโซลจัดกลุ่มให้เอง) — ดู node list
 lmds node remove <name> [-y]      # ออกจากทะเบียนอย่างเดียว ไม่แตะเครื่องนั้น
 lmds node run <name> <cmd...>          # รันคำสั่ง *ของ lmds* บนเครื่องนั้น (ps/start/stop/logs/deploy)
 lmds node ctl <name> <slug> <cmd...>   # รัน *สคริปต์ controller* ในตัว bundle บนเครื่องนั้น
@@ -186,6 +187,10 @@ lmds ps --all                     # โมเดลของทุกเคร�
   (ที่อยู่เปลี่ยน = คนละเครื่อง → remove แล้ว add ใหม่)
 - `node cluster` ตรวจ ConnectX/RDMA/ความเร็วลิงก์จาก `/sys` แล้วจับกลุ่มเครื่องที่ stacked ด้วยกันได้
   (ต้องตรง: arch, profile, รุ่น GPU, จำนวน GPU และมีสาย ≥ 25G ทั้งคู่)
+- **`--site` เป็นแค่ป้ายจัดระเบียบ ไม่เกี่ยวกับ cluster** — เป็นคนละมิติกันโดยตั้งใจ: site บอกว่าเครื่องตั้งอยู่
+  สถานที่ไหน (คอนโซลจัดกลุ่ม/ยุบ-กางตาม site), ส่วน cluster ดูจาก GPU/สายเชื่อมจริงเท่านั้น
+  · เปลี่ยน site ไม่กระทบการจับกลุ่ม stacked และการ stacked ทำได้เฉพาะเครื่องใน site เดียวกันอยู่แล้ว
+  (คนละสถานที่ = คนละ subnet/สาย → ไม่มีทางผ่านเกณฑ์ลิงก์) · `node list` จัดตารางแยกตาม site ให้
 - **`node run` กับ `node ctl` ต่างกัน**: อันแรกสั่งโปรแกรม `lmds` อันหลังสั่งสคริปต์ controller
   ในตัว bundle · ขั้นตอนของ stacked (`sync-worker`, `verify-worker`) มีเฉพาะใน controller
 - `--write <slug>` เขียน `cluster.env` ลง bundle (MASTER_IP/WORKER_IP/SSH_USER/TRANSPORT_IP_*/NCCL_SOCKET_IFNAME)
