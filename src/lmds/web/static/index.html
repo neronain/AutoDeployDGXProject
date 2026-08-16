@@ -750,6 +750,17 @@ pre {
 
 <div class="wrap">
 
+  <!-- Fleet at a glance — everything the hub + all machines add up to -->
+  <div class="sec" style="--sc: var(--c1)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
+    <span class="sec-title">Fleet at a glance</span>
+  </div>
+  <div class="stats" id="fleet-summary"></div>
+
+  <div class="sec" style="--sc: var(--c2)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
+    <span class="sec-title">This machine</span>
+  </div>
   <div class="stats" id="stats"></div>
   <!-- เครื่องนี้ต้องอ่านเหมือนเครื่องอื่นในหน้าเดียวกัน — เกจชุดเดียวกัน ไม่ใช่คนละภาษา -->
   <div class="card" id="hostcard"></div>
@@ -849,6 +860,22 @@ function statCard(label, value, sub, colour, hero = "") {
     <b${colour && !hero ? ` style="color:${colour}"` : ""}>${esc(value)}</b>${sub ? `<span class="dim">${sub}</span>` : ""}</div>`;
 }
 
+
+// Fleet-wide overview: hub + every machine the store has cached, in the same
+// stat-card vocabulary as the per-machine cards. Numbers are "known so far" —
+// a node not yet probed is surfaced as pending, never counted as zero.
+function renderFleetSummary(s) {
+  const el = document.getElementById("fleet-summary");
+  if (!el || !s) return;
+  el.innerHTML = [
+    statCard("Machines", `${s.online} / ${s.machines}`,
+      s.pending ? `${s.pending} not probed yet` : "all reachable", "", "cool"),
+    statCard("GPUs", String(s.gpus),
+      s.vram_gb ? `${s.vram_gb} GB VRAM total` : "known so far", "", "warm"),
+    statCard("Models running", String(s.models_running),
+      `${s.models_healthy} serving · ${s.models_total} deployed`),
+  ].join("");
+}
 
 function renderHost(h, models) {
   document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
@@ -2936,6 +2963,9 @@ async function refresh() {
     const models = (await m.json()).models;
     renderHost(await h.json(), models);
     renderFleet(models);
+    // Isolated + non-blocking: the fleet strip reads cached data, and a hiccup
+    // here must never take down the main render.
+    api("/api/fleet/summary").then(r => r.json()).then(renderFleetSummary).catch(() => {});
   } catch {
     document.getElementById("fleet").innerHTML = `<div class="empty">Cannot reach LMDS — is the server still running?</div>`;
   }

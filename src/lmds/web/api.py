@@ -812,6 +812,53 @@ def create_app(token: str = "") -> FastAPI:
             for n in _ordered_nodes()
         ]}
 
+    @app.get("/api/fleet/summary", dependencies=guarded)
+    def fleet_summary() -> dict:
+        """Fleet at a glance — machines, GPUs, VRAM and running models across all.
+
+        Reads only what the store already cached from the last `agent info` per
+        node (plus the hub), so it costs no SSH on a poll. Nodes not yet probed
+        are reported as `pending` rather than counted as zero, so the numbers say
+        'known so far' honestly instead of undercounting a fleet still loading.
+        """
+        from lmds.nodes import load
+
+        snap = state.STORE.snapshot()
+
+        def agg(data: dict | None) -> tuple[int, float, int, int, int]:
+            data = data or {}
+            host = data.get("host") or {}
+            models = data.get("models") or []
+            gpus = host.get("gpus") or []
+            vram = sum((g.get("vram_gb") or 0) for g in gpus)
+            running = sum(1 for m in models if m.get("running"))
+            healthy = sum(1 for m in models if m.get("healthy"))
+            return len(gpus), vram, running, healthy, len(models)
+
+        gpus, vram, running, healthy, models_total = agg((snap.get("host") or {}).get("data"))
+        machines = online = 1  # the hub itself
+        pending = 0
+        nodes = snap.get("nodes") or {}
+        for n in load():
+            machines += 1
+            if not n.last_error:
+                online += 1
+            data = (nodes.get(n.name) or {}).get("data")
+            if data:
+                g, v, r, h, mt = agg(data)
+                gpus += g
+                vram += v
+                running += r
+                healthy += h
+                models_total += mt
+            else:
+                pending += 1
+        return {
+            "machines": machines, "online": online, "pending": pending,
+            "gpus": gpus, "vram_gb": round(vram),
+            "models_running": running, "models_healthy": healthy, "models_total": models_total,
+        }
+
     @app.put("/api/nodes/order", dependencies=guarded)
     def nodes_reorder(body: dict) -> dict:
         """บันทึกลำดับการ์ดที่ผู้ใช้ลากจัด — เก็บที่ hub ไม่ใช่ในเบราว์เซอร์
