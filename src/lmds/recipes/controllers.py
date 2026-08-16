@@ -132,7 +132,10 @@ def scan_directory(root: Path, origin: str = "") -> tuple[list[dict], list[str]]
     seen: dict[str, str] = {}
     # โมเดลเดียวกันมักมีทั้งตัว single และ stacked — ให้ single ชนะเสมอ เพราะ LMDS เลือก
     # topology เองจากขนาดโมเดลกับเครื่องที่มี ส่วนค่าที่เหลือ (image/parser) สองตัวใช้ร่วมกัน
-    for path in sorted(root.glob("*.sh"), key=lambda p: ("stacked" in p.name, p.name)):
+    # rglob ไม่ใช่ glob: controller อยู่ได้ทั้งที่ root (แบบ flat เดิม) และใน controllers/<slug>/
+    # (แบบที่ `--publish` เขียน) · ข้าม .git ไม่ให้ไปอ่านสคริปต์ hook ของ git เป็นสูตร
+    candidates = (p for p in root.rglob("*.sh") if ".git" not in p.parts)
+    for path in sorted(candidates, key=lambda p: ("stacked" in p.name, p.name)):
         if path.name in TOOLING:
             continue
         try:

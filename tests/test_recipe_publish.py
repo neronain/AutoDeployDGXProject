@@ -30,6 +30,7 @@ PROFILE = {
 
 CONTROLLER = '''#!/bin/bash
 # coder-30b — llama.cpp single-node controller (GGUF)
+RUNTIME_LABEL="llama.cpp (native build)"
 MODEL_ID="org/Coder-30B-GGUF"
 MODEL_LABEL="Coder 30B"
 API_PORT="${API_PORT:-8000}"
@@ -120,3 +121,20 @@ def test_operator_supplied_features_override_the_rulebased_profile(tmp_path):
     profile_yaml = yaml.safe_load(
         (store / "controllers" / "coder-30b" / "PROFILE.yaml").read_text())
     assert profile_yaml["measured_features"] == ["tools (qwen3_coder)"]
+
+
+def test_publish_then_scan_reads_it_back(tmp_path):
+    """ลูปต้องปิด: สิ่งที่ publish เขียน (controllers/<slug>/) ฝั่ง sync ต้องอ่านเป็นสูตรได้
+
+    scan_directory เดิม glob เฉพาะ root — controller ที่ publish วางใน subdir จึงหาย
+    เงียบ · ตอนนี้ rglob ครอบทั้งสองแบบ
+    """
+    from lmds.recipes.controllers import scan_directory
+
+    store = tmp_path / "store"
+    publish("coder-30b", _ctl(tmp_path), PROFILE, features=["tools (qwen3_coder)"],
+            repo=str(store), now="d", host="h", push=False)
+    recipes, _ = scan_directory(store)
+    match = next((r for r in recipes if r["match"] == "org/Coder-30B-GGUF"), None)
+    assert match is not None                      # อ่านเจอทั้งที่อยู่ใน controllers/<slug>/
+    assert "tools (qwen3_coder)" in match["notes"]   # measured features เดินทางมาถึง
