@@ -118,6 +118,10 @@ doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-tools` `
 
 - **อ่านสถานะได้ก่อนอ่านตัวหนังสือ** — เกจ CPU / Unified·RAM / VRAM / Disk ชุดเดียวกันทุกเครื่อง
   พร้อมสีเตือนก่อนของหมด · ค่าที่การ์ดไม่รายงานถูกซ่อน ไม่ใช่โชว์ 0
+- **แถบสรุปฟลีตบนสุด** — machines / online / GPUs / VRAM ทั้งหมด / โมเดลที่รันอยู่
+  จาก cache endpoint (`/api/fleet/summary`) ไม่ยิง SSH ทุก poll — ดูภาพรวมได้ทันที
+- **จัดกลุ่มเครื่องตาม site** — `lmds node set <ชื่อ> --site <ไซต์>` · คอนโซลจัดกลุ่ม/ยุบ-กาง
+  การ์ด node ขยาย/ย่อได้ · site คือมิติอื่นจาก cluster (ไม่กระทบการจับคู่ stacked)
 - **เครื่องที่ stacked ด้วยกันได้มีรั้วสีคร่อม** พร้อมป้าย `CLUSTER A/B`
 - **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง
 - **ปรับขนาดตัวอักษรได้ 4 ระดับ** (S/M/L/XL) และธีมสว่าง/มืด/ตามเครื่อง — จำไว้ต่อเบราว์เซอร์
@@ -178,17 +182,24 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 เรื่องเฉพาะรุ่น (parser, image ที่มี kernel ตรง, mmproj) — deploy ผ่านแต่ start ไม่ขึ้น ·
 **คลังสูตร** แก้ตรงนี้: เก็บ controller ที่ **รันผ่านจริงบนฮาร์ดแวร์แล้ว** ไว้ในรีโป Git กลาง
 
-- **pull** — `lmds recipes --sync` ดึงสูตรจากคลังมาที่ hub · `deploy --no-llm` หยิบไปใช้แทนการเดา
-- **push** — `lmds recipes --publish <ชื่อ>` ส่ง controller ที่เทสต์ผ่านขึ้นคลัง ปิดลูป:
+- **pull** — `lmds recipes --sync` ดึงสูตรล่าสุดจากคลัง canonical · `deploy --no-llm` หยิบไปใช้แทนการเดา
+- **push** — `lmds recipes --publish <ชื่อ> --features tools,vision` ส่ง controller ที่เทสต์ผ่านขึ้น candidates เพื่อรอ review ปิดลูป:
   ความรู้ที่แลกมาด้วยการ debug บนเครื่องหนึ่ง กลายเป็นของทั้งกอง ไม่ต้องค้นใหม่ทุกครั้ง
 
-สองชั้น: **canonical** ([`dgx-spark-all-controllers`](https://github.com/neronain/dgx-spark-all-controllers))
-ที่ทุกเครื่องดึงไปใช้ · **candidates** ([`script-update`](https://github.com/neronain/script-update))
-ที่ push ขึ้นไปรอ review · ปลายทาง publish ตั้งใน config (`recipes.publish_repo`) — **ว่าง =
-local store ในเครื่อง** ปลอดภัยสำหรับลูกค้า (fleet แชร์กันเองโดยไม่แตะรีโปเรา)
+**สองชั้น**: 
+1. **canonical** ([`dgx-spark-all-controllers`](https://github.com/neronain/dgx-spark-all-controllers)) — 
+   controller ที่ curate/ตรวจแล้ว ทุกเครื่อง pull ไปใช้
+2. **candidates** ([`script-update`](https://github.com/neronain/script-update)) — 
+   ตัวที่เพิ่ง publish รอ review ก่อน promote
+
+ปลายทาง publish ตั้งใน config (`recipes.publish_repo`) — **ว่าง = local store ในเครื่อง** ปลอดภัยสำหรับลูกค้า 
+(fleet แชร์กันเองโดยไม่แตะรีโปเรา)
 
 > ส่งเฉพาะ **ค่าของโมเดล** (engine, image, parser, mmproj, measured caps) — **ค่าของเครื่อง**
 > (port, context, slots) อยู่ใน `bundle.env` ไม่ตามขึ้นไป เครื่องปลายทาง fit ใหม่ตามตัวเอง
+> 
+> **หมายเหตุ llama.cpp**: controller สำหรับโมเดลที่มี chat template จะถูกสร้างด้วย `--jinja` โดยอัตโนมัติ — 
+> จำเป็นต่อ tool calling/function calling ของ llama.cpp รุ่นใหม่ (ไม่มี = tools ใช้ไม่ได้แม้ template รองรับ)
 
 ## รองรับอะไรบ้าง
 
@@ -229,6 +240,24 @@ LMDS *deploy* โมเดลลงเครื่องคุณ ส่วน L
 `managed_by` ที่ทำให้คำแนะนำของ LiteGate กลายเป็นคำสั่งที่ก๊อปไปวางได้, และ parser ที่ LiteGate
 บอกว่าขาดคือ knob ที่ LMDS เปิดได้ทันทีด้วย `restart --tool-parser` แล้วพิสูจน์ด้วย `test-tools`
 ซึ่งวัดโหมด `auto` — โหมดเดียวกับที่ agent ใช้จริง ไม่ใช่โหมดบังคับที่ผ่านได้แม้ parser ผิด
+
+## ระบบทั้งหมด — 4 repo ทำงานร่วมกัน
+
+LMDS เป็นส่วนหนึ่งของระบบแบบกระจายที่สร้างมาเพื่อให้โมเดลจำนวนมากทำงานได้อย่างน่าเชื่อถือและขยายได้ 
+ระหว่างเครื่องหลายเครื่อง ด้านล่างคือ 4 repository ที่ทำงานร่วมกัน:
+
+| Repository | บทบาท | ลิงก์ |
+|---|---|---|
+| **AutoDeployDGXProject** (LMDS) | โหลด weight, วิเคราะห์, สร้าง controller, deploy + รัน โมเดลทั้ง fleet ผ่าน SSH | [repo](https://github.com/neronain/AutoDeployDGXProject) |
+| **AiGatewayLocal** (LiteGate) | Endpoint OpenAI/Anthropic เดียวหน้าโมเดลทั้งหมด พร้อม key/quota/สิทธิ์ และวัดความสามารถจริง | [repo](https://github.com/neronain/AiGatewayLocal) |
+| **dgx-spark-all-controllers** (canonical) | Controller ที่ curate + ตรวจแล้ว ทุกเครื่องดึง (`lmds recipes --sync`) ไปใช้ | [repo](https://github.com/neronain/dgx-spark-all-controllers) |
+| **script-update** (candidates) | Controller ใหม่ที่เพิ่ง publish รอ review ก่อน promote ขึ้น canonical | [repo](https://github.com/neronain/script-update) |
+
+**Flow ทั้งระบบ**: 
+LMDS deploy โมเดลด้วย controller ที่สร้างจากการทดลองจริง → ตัวที่พิสูจน์แล้วส่ง (`lmds recipes --publish`) ไป 
+script-update (candidates) เพื่อรอ review → promote ขึ้น dgx-spark-all-controllers (canonical) → ทุกเครื่องใน fleet 
+ดึง (sync) จาก canonical ขึ้นมาใช้ · LiteGate เสิร์ฟโมเดล วัดความสามารถจริง และสั่งคำแนะนำแก้กลับไป LMDS ได้ 
+(เช่น `restart --tool-parser`) เพื่อตรวจสอบและยืนยันว่าทำงานแล้วจริง
 
 ## เอกสาร
 
