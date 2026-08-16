@@ -291,6 +291,10 @@ def list_recipes(
     publish: Optional[str] = typer.Option(
         None, "--publish", help="ส่ง controller ของ slug นี้ (ที่รันผ่าน + ทดสอบแล้ว) ขึ้นคลัง",
         autocompletion=_complete_slug),
+    features: Optional[str] = typer.Option(
+        None, "--features",
+        help="publish: ความสามารถที่วัดได้จริง คั่นด้วย comma (เช่น tools,vision,reasoning) "
+             "— ชนะค่า rule-based ของ profile"),
     repo: Optional[str] = typer.Option(None, "--repo", help="รีโป controller (ค่าเริ่มต้นคือของทีม)"),
     ref: Optional[str] = typer.Option(None, "--ref", help="branch/tag ที่จะดึง (ค่าเริ่มต้น main)"),
     no_push: bool = typer.Option(False, "--no-push", help="publish: commit ไว้ในเครื่องแต่ไม่ push ขึ้น remote"),
@@ -331,15 +335,21 @@ def list_recipes(
         settings = Settings.load()
         target = repo or settings.recipes.publish_repo or ""
         target_ref = ref or settings.recipes.publish_ref or "main"
+        feat_list = ([f.strip() for f in features.split(",") if f.strip()]
+                     if features is not None else None)
         try:
             result = publish_recipe(
                 publish, server.controller, profile,
-                repo=target, ref=target_ref, now=_now(),
+                features=feat_list, repo=target, ref=target_ref, now=_now(),
                 push=not no_push,
             )
         except SyncError as exc:
             err_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1)
+        if not result["features"]:
+            console.print("[yellow]⚠ ไม่มี measured features[/yellow] — profile เป็น rule-based "
+                          "อาจไม่ครบ · ระบุเองด้วย --features tools,vision,reasoning ให้สูตรพก "
+                          "ความสามารถที่วัดจริงไปด้วย")
         where = result["target"] if result["remote"] else f"local: {result['target']}"
         if not result["committed"]:
             console.print(f"[yellow]ไม่มีอะไรเปลี่ยน[/yellow] — {publish} ตรงกับที่อยู่ในคลังแล้ว ({where})")

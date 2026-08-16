@@ -76,13 +76,15 @@ def stamp_features(controller_text: str, features: list[str]) -> str:
     return controller_text
 
 
-def build_profile(slug: str, profile: dict, validated_on: str, host: str) -> str:
+def build_profile(slug: str, profile: dict, validated_on: str, host: str,
+                  features: list[str] | None = None) -> str:
     """PROFILE.yaml ที่เก็บ provenance — ตรวจสอบย้อนได้ว่าใคร/เครื่องไหน/เวอร์ชันไหนยืนยัน
 
     lmds ไม่ได้ parse ไฟล์นี้ (มันอ่าน header ของ controller) — ไฟล์นี้ไว้ให้คน review
     ก่อน promote เข้า canonical เห็นว่าค่านี้มาจากไหน
     """
     model = profile.get("model") or {}
+    feats = features if features is not None else measured_features(profile)
     return yaml.safe_dump(
         {
             "slug": slug,
@@ -94,7 +96,7 @@ def build_profile(slug: str, profile: dict, validated_on: str, host: str) -> str
                 "gguf": model.get("selected_gguf", ""),
             },
             "engine": (profile.get("runtime") or {}).get("engine", ""),
-            "measured_features": measured_features(profile),
+            "measured_features": feats,
             # ตัดค่าของเครื่องออกชัด ๆ — ไม่มี port/context/slots ในนี้โดยเจตนา
             "note": "model-intrinsic only; per-machine port/context live in bundle.env",
         },
@@ -122,21 +124,26 @@ def _ensure_local_git(path: Path) -> None:
 
 
 def publish(slug: str, controller_path: Path, profile: dict, *,
+            features: list[str] | None = None,
             repo: str = "", ref: str = "main", now: str = "", host: str = "",
             push: bool = True) -> dict:
-    """ส่ง controller ของ slug ขึ้นปลายทาง — คืนสรุป {target, remote, path, committed}
+    """ส่ง controller ของ slug ขึ้นปลายทาง — คืนสรุป {target, remote, path, committed, features}
 
     repo ว่าง → local store · repo เป็น URL → fetch/clone แล้ว push (ถ้า push=True)
+
+    `features` ที่ operator ระบุมาชนะค่าจาก profile: MODEL_PROFILE เป็น rule-based ตอน
+    generate (เดาแบบระวังไว้ก่อน — coder ที่มี tools จริงอาจถูกเขียน false) ส่วนคนที่กด
+    publish คือคนที่เพิ่งทดสอบมาจึงรู้ว่าวัดได้อะไรจริง · เงียบ = ใช้ที่ profile มี
     """
     controller_path = Path(controller_path)
     if not controller_path.is_file():
         raise SyncError(f"ไม่พบ controller ของ {slug}: {controller_path}")
     host = host or socket.gethostname()
     validated_on = f"{now} · {host}".strip(" ·") or host
+    feats = features if features is not None else measured_features(profile)
 
-    text = stamp_features(controller_path.read_text(encoding="utf-8"),
-                          measured_features(profile))
-    profile_text = build_profile(slug, profile, validated_on, host)
+    text = stamp_features(controller_path.read_text(encoding="utf-8"), feats)
+    profile_text = build_profile(slug, profile, validated_on, host, feats)
 
     remote = bool(repo) and _is_remote(repo)
     if remote:
@@ -155,11 +162,11 @@ def publish(slug: str, controller_path: Path, profile: dict, *,
     _write_into(repo_dir, slug, controller_path.name, text, profile_text)
     _git("add", "-A", cwd=repo_dir)
     status = _git("status", "--porcelain", cwd=repo_dir)
+    base = {"target": repo or str(repo_dir), "remote": remote, "features": feats,
+            "path": str(repo_dir / "controllers" / slug)}
     if not status.strip():
-        return {"target": repo or str(repo_dir), "remote": remote,
-                "path": str(repo_dir / "controllers" / slug), "committed": False}
+        return {**base, "committed": False}
     _git("commit", "-q", "-m", f"publish {slug} — validated {validated_on}", cwd=repo_dir)
     if remote and push:
         _git("push", "origin", f"HEAD:{ref}", cwd=repo_dir, timeout=600)
-    return {"target": repo or str(repo_dir), "remote": remote,
-            "path": str(repo_dir / "controllers" / slug), "committed": True}
+    return {**base, "committed": True}

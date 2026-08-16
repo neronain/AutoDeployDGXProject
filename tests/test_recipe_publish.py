@@ -101,3 +101,22 @@ def test_published_controller_never_carries_the_bundle_env(tmp_path):
     publish("coder-30b", _ctl(tmp_path), PROFILE, repo=str(store), now="d", host="h", push=False)
     dest = store / "controllers" / "coder-30b"
     assert not (dest / "bundle.env").exists()
+
+
+def test_operator_supplied_features_override_the_rulebased_profile(tmp_path):
+    """coder ที่มี tools จริงแต่ profile (rule-based) เขียน enabled=false —
+    คนที่เพิ่ง test มา ระบุเองได้และต้องชนะ"""
+    rulebased_says_no_tools = {
+        **PROFILE,
+        "features": {"tool_calling": {"enabled": False}, "reasoning": {"enabled": False}},
+    }
+    store = tmp_path / "store"
+    result = publish("coder-30b", _ctl(tmp_path), rulebased_says_no_tools,
+                     features=["tools (qwen3_coder)"], repo=str(store),
+                     now="d", host="h", push=False)
+    assert result["features"] == ["tools (qwen3_coder)"]
+    ctl = (store / "controllers" / "coder-30b" / "coder-30b-single.sh").read_text()
+    assert 'MODEL_FEATURES="tools (qwen3_coder)"' in ctl
+    profile_yaml = yaml.safe_load(
+        (store / "controllers" / "coder-30b" / "PROFILE.yaml").read_text())
+    assert profile_yaml["measured_features"] == ["tools (qwen3_coder)"]
