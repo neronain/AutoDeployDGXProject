@@ -225,3 +225,28 @@ def test_rebuild_says_so_when_there_is_no_profile(tmp_path, monkeypatch, isolate
     result = runner.invoke(app, ["rebuild", "not-a-bundle"])
     assert result.exit_code == 1
     assert "ไม่พบ bundle" in result.output
+
+
+def test_rebuild_without_output_overwrites_the_bundle_in_place(tmp_path, monkeypatch, isolated_config):
+    """rebuild เปล่า ๆ ต้องเขียนทับที่เดิม ไม่ใช่สร้างสำเนาใหม่ที่ ./bundles
+
+    เดิม default `./bundles` (relative CWD) → bundle ที่อยู่คนละที่ถูก rebuild เป็นสำเนา
+    ใหม่ ส่วนตัวจริงที่ start/publish อ่าน (จาก server.meta) ยังเป็นของเก่า
+    """
+    from lmds.brain import registry
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    _patch_inspect(monkeypatch, gguf_report())
+    made = runner.invoke(app, ["deploy", "unsloth/Qwen3-8B-GGUF", "--no-llm",
+                               "--target", "dgx-spark-single", "--output", str(tmp_path), "--yes"])
+    assert made.exit_code == 0, made.output
+
+    controller = tmp_path / "qwen3-8b-gguf" / "qwen3-8b-gguf-single.sh"
+    controller.write_text("#!/bin/bash\n# stale — ไม่มีของ template ปัจจุบัน\n")  # ทำให้เก่า
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: True)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    result = runner.invoke(app, ["rebuild", "qwen3-8b-gguf"])   # ไม่มี --output
+    assert result.exit_code == 0, result.output
+    # controller ตัวเดิม (ที่ find/publish อ่าน) ต้องถูกเขียนทับด้วย template ปัจจุบัน
+    assert "fetch_one" in controller.read_text(), "rebuild ต้องเขียนทับที่เดิม ไม่ใช่ที่อื่น"

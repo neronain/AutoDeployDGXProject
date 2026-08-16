@@ -1829,7 +1829,9 @@ def adopt(
 @app.command()
 def rebuild(
     slug: str = typer.Argument(..., help="ชื่อ bundle ที่จะสร้างใหม่", autocompletion=_complete_slug),
-    output: str = typer.Option("./bundles", "--output"),
+    output: Optional[str] = typer.Option(
+        None, "--output",
+        help="ปลายทาง (ว่าง = ที่เดิมของ bundle · in-place — controller ที่ start/publish อ่านจะได้ตัวใหม่)"),
 ) -> None:
     """สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน — เก็บค่าที่เคยตัดสินใจไว้ ไม่ต้องเดินผ่าน wizard อีก
 
@@ -1838,13 +1840,21 @@ def rebuild(
 
     ค่าที่เก็บไว้ (context, flags, ฟีเจอร์, target) ถูกนำกลับมาใช้ · ส่วนที่ระบบเลือกเอง
     (image, ตัวกันพลาดในสคริปต์) คำนวณใหม่ตามตรรกะปัจจุบัน — ไม่เรียก LLM ซ้ำ
+
+    ค่าเริ่มต้นเขียนทับ **ที่เดิม** ของ bundle · ก่อนหน้านี้ default `./bundles` (relative CWD)
+    ทำให้ bundle ที่อยู่นอก ~/bundles ถูก rebuild เป็นสำเนาใหม่ที่อื่น ส่วนตัวจริงที่
+    start/publish อ่าน (จาก server.meta) ยังเป็นของเก่า — regenerate แล้วเหมือนไม่มีอะไรเปลี่ยน
     """
+    from pathlib import Path as _Path
+
     from lmds.fleet import bundle_profile, find
 
     server = find(slug)
     if server is None or not server.controller:
         err_console.print(f"[red]ไม่พบ bundle: {slug}[/red] — ดูรายชื่อ: lmds list")
         raise typer.Exit(code=1)
+    # in-place: controller = <output>/<slug>/<slug>-single.sh → output คือ parent ของโฟลเดอร์ slug
+    output = output or str(_Path(server.controller).parent.parent)
     profile = bundle_profile(server.controller)
     if not profile:
         err_console.print(f"[red]อ่าน MODEL_PROFILE.yaml ของ {slug} ไม่ได้[/red] — สร้างใหม่ด้วย lmds deploy")
