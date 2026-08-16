@@ -285,7 +285,12 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   border: 1px solid color-mix(in srgb, var(--accent, #1f5fbf) 22%, transparent);
   user-select: none; }
 .sitehdr:hover { background: color-mix(in srgb, var(--accent, #1f5fbf) 15%, var(--sunken)); }
-.sitetoggle { width: 14px; color: var(--accent, #1f5fbf); font-size: calc(11px * var(--fs)); }
+.sitetoggle { font-family: var(--mono); width: 24px; height: 24px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+  border-radius: 7px; border: 1px solid color-mix(in srgb, var(--accent, #1f5fbf) 40%, transparent);
+  background: color-mix(in srgb, var(--accent, #1f5fbf) 14%, transparent);
+  color: var(--accent, #1f5fbf); font-size: calc(15px * var(--fs)); }
+.sitehdr:hover .sitetoggle { background: color-mix(in srgb, var(--accent, #1f5fbf) 24%, transparent); }
 .sitelbl { font-weight: 600; letter-spacing: -.01em; }
 .sitecount { margin-left: auto; font-size: calc(12px * var(--fs)); color: var(--muted); }
 .sitesec.collapsed .sitehdr { margin-bottom: 0; }
@@ -2757,7 +2762,7 @@ function layoutSiteGroups() {
     const sec = document.createElement("div");
     sec.className = "sitesec" + (collapsed ? " collapsed" : "");
     sec.innerHTML = `<div class="sitehdr" data-site="${esc(site)}" title="กดยุบ/กางไซต์นี้">
-        <span class="sitetoggle">${collapsed ? "▸" : "▾"}</span>
+        <span class="sitetoggle">${collapsed ? "+" : "−"}</span>
         <span class="sitelbl">${site ? esc(site) : "ยังไม่จัดไซต์"}</span>
         <span class="sitecount">${groups.get(site).length} เครื่อง</span></div>`;
     box.appendChild(sec);
