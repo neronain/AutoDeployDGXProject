@@ -59,6 +59,16 @@ def _engine(meta: dict[str, str]) -> str:
         return "sglang"
     if "vllm" in runtime:
         return "vllm"
+    # controller รุ่นเก่าไม่มี RUNTIME_LABEL — เดาจากตัวแปรเฉพาะ engine แทนที่จะตกไปเป็น
+    # "ไม่รู้ engine" แล้วโดน skip · เจอจริง: qwen3-coder-30b-a3b-instruct ที่ generate
+    # ด้วย lmds เก่า มี LLAMACPP_IMAGE/LLAMA_CPP_REPO ครบแต่ไม่มี RUNTIME_LABEL
+    keys = " ".join(meta)
+    if "LLAMACPP_IMAGE" in keys or "LLAMA_CPP_REPO" in keys or "LLAMA_SERVER" in keys:
+        return "llamacpp"
+    if "SGLANG_IMAGE" in keys or "SGLANG_" in keys:
+        return "sglang"
+    if "VLLM_IMAGE" in keys:
+        return "vllm"
     return ""
 
 

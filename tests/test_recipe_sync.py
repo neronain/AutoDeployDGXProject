@@ -134,7 +134,12 @@ def test_a_recipe_without_an_engine_never_reaches_the_catalog(tmp_path):
     """
     mystery = VLLM_CONTROLLER.replace(
         '${RUNTIME_LABEL:-vLLM (Docker)}', '${RUNTIME_LABEL:-เครื่องยนต์ที่ยังไม่รู้จัก}')
-    assert "vLLM" not in mystery, "ตัวอย่างในเทสเปลี่ยนไป — replace ไม่โดนแล้ว"
+    # เอาตัวแปรเฉพาะ engine ออกด้วย — ไม่งั้น _engine เดา vllm จาก VLLM_IMAGE ได้
+    # (พฤติกรรมใหม่ที่ถูกต้อง) · เทสนี้จงใจให้ "ไม่มีสัญญาณ engine เลย"
+    mystery = mystery.replace(
+        'VLLM_IMAGE="${VLLM_IMAGE:-avarok/dgx-vllm-nvfp4-kernel:v23}"', '')
+    assert "vLLM" not in mystery and "VLLM_IMAGE" not in mystery, \
+        "ตัวอย่างในเทสเปลี่ยนไป — replace ไม่โดนแล้ว"
     _write(tmp_path, "mystery-single.sh", mystery)
     recipes, skipped = scan_directory(tmp_path, "controllers@abc1234")
 
@@ -186,3 +191,24 @@ def _fresh_catalog():
     load_catalog.cache_clear()
     yield
     load_catalog.cache_clear()
+
+
+def test_old_controller_without_runtime_label_infers_engine(tmp_path):
+    """controller รุ่นเก่าไม่มี RUNTIME_LABEL แต่มี LLAMACPP_IMAGE/LLAMA_CPP_REPO ครบ —
+    ต้องเดา engine เป็น llamacpp ได้ ไม่ใช่ตกไปเป็น 'ไม่รู้ engine' แล้ว skip
+
+    เจอจริง: qwen3-coder-30b-a3b-instruct ที่ generate ด้วย lmds เก่าถูกข้ามตอน sync
+    """
+    old = '''#!/bin/bash
+MODEL_ID="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+MODEL_LABEL="Qwen3 Coder 30B"
+RUNTIME_MODE="${RUNTIME_MODE:-native}"
+LLAMACPP_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda"
+LLAMA_CPP_REPO="${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp.git}"
+MODEL_FILE="Qwen3-Coder-30B.Q6_K.gguf"
+'''
+    _write(tmp_path, "qwen3-coder-old-single.sh", old)
+    recipes, skipped = scan_directory(tmp_path, "controllers@abc1234")
+    match = next((r for r in recipes if "Qwen3-Coder-30B" in r["match"]), None)
+    assert match is not None, f"ควรอ่านได้ แต่ skip: {skipped}"
+    assert match["engine"] == "llamacpp"
