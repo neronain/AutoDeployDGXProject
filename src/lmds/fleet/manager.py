@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -203,7 +204,36 @@ def _enable_user_unit(info, name: str, timeout: int, start_now: bool, adopted: b
                 f"เปิด autostart (user service) ไม่สำเร็จ: {' '.join(cmd)}\n"
                 f"{(proc.stderr or '').strip()[:300]}"
             )
+    if start_now:
+        _verify_started(["systemctl", "--user"], name)
     return name
+
+
+def _verify_started(systemctl: list[str], name: str) -> None:
+    """พิสูจน์ว่า unit ที่เพิ่งสั่ง start ขึ้นมาจริง ไม่ใช่แค่คำสั่ง start คืน 0
+
+    `systemctl start` ของ oneshot คืน 0 เมื่อ ExecStart จบด้วยดี แต่ unit ที่ล้ม
+    ตั้งแต่ก่อนถึง ExecStart (เช่น `User=` ใน user unit → status 216/GROUP) ก็เคย
+    หลุดผ่านมาแล้ว เพราะไม่มีใครถาม is-active ต่อ · is-enabled บอกแค่ว่า "จะถูกเรียก
+    ตอนบูต" ไม่ได้บอกว่า "เรียกแล้วขึ้น" — ช่องว่างนี้คือที่ที่ autostart พังเงียบ ๆ
+    ไปทั้งกองโดยไม่มีใครรู้จนกว่าจะ reboot จริง
+
+    ไม่โยน error ถ้า start ไม่ผ่านเพราะยังโหลด weight อยู่ (activating) — เฉพาะ
+    failed เท่านั้นที่ถือว่าพัง
+    """
+    active = subprocess.run([*systemctl, "is-active", name],
+                            capture_output=True, text=True).stdout.strip()
+    if active in ("active", "activating"):
+        return
+    scope = "--user" if "--user" in systemctl else "--system"
+    journal = subprocess.run(
+        ["journalctl", scope, "-u", name, "-n", "15", "--no-pager"],
+        capture_output=True, text=True).stdout.strip()
+    raise FleetError(
+        f"enable สำเร็จแต่ unit start ไม่ขึ้น (is-active = {active or 'unknown'}) — "
+        f"autostart ที่ 'enabled' แบบนี้จะไม่กลับมาหลัง reboot\n"
+        f"{journal[-800:] if journal else 'ไม่มี log'}"
+    )
 
 
 def _sudo(cmd: list[str], password: str = ""):
@@ -219,6 +249,42 @@ def _sudo(cmd: list[str], password: str = ""):
     return subprocess.run(with_stdin, input=password + "\n", capture_output=True, text=True)
 
 
+def effective_autostart_port(info: "ServerInfo") -> str | None:
+    """port ที่ unit ของ slug นี้จะเสิร์ฟตอนบูต — ค่าที่ `lmds set` ไว้ หรือ default ในตัว controller
+
+    ตอน start เองส่ง --port ได้ทุกครั้ง แต่ systemd เรียก controller เปล่า ๆ จึงตกไปใช้
+    ค่านี้ · เทียบด้วยค่านี้จึงตรงกับสิ่งที่จะเกิดจริงตอน reboot
+    """
+    from lmds.fleet import bundle_settings
+    if not info.controller:
+        return None
+    bundle_dir = Path(info.controller).parent
+    saved = bundle_settings.read(bundle_dir).get("port")
+    if saved:
+        return saved
+    try:
+        text = Path(info.controller).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    found = re.search(r'^API_PORT="\$\{API_PORT:-(\d+)\}"', text, re.M)
+    return found.group(1) if found else None
+
+
+def autostart_port_conflict(info: "ServerInfo") -> tuple[str, str] | None:
+    """slug อื่นที่ enable ไว้แล้วและจะชน port กับ slug นี้ตอนบูต — คืน (slug, port) หรือ None"""
+    my_port = effective_autostart_port(info)
+    if my_port is None:
+        return None
+    for other in discover():
+        if other.slug == info.slug or not other.controller:
+            continue
+        if autostart_status(other.slug) != "enabled":
+            continue
+        if effective_autostart_port(other) == my_port:
+            return (other.slug, my_port)
+    return None
+
+
 def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = False,
                      scope: str = "user", password: str = "") -> str:
     """ติดตั้ง + enable systemd unit — คืนชื่อ unit ที่ติดตั้ง
@@ -232,6 +298,18 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
     if not info.controller_exists and not adopted:
         raise FleetError(
             f"ไม่พบ controller ของ {info.slug} — ต้องมี bundle หรือเป็น container ที่รันอยู่ก่อนตั้ง autostart"
+        )
+
+    # หลายโมเดลบนเครื่องเดียวกัน default port 8000 เท่ากันหมด · ตอน start เองทีละตัว
+    # ไม่มีปัญหา แต่พอ enable autostart หลายตัว reboot ทีเดียวมันขึ้นพร้อมกันแล้วชน
+    # port เดียว ตัวหลัง ๆ ล้ม · เจอจริงหลายรอบ — จับตั้งแต่ตอน enable ดีกว่าปล่อยให้
+    # ไปพังตอนบูตที่ไซต์ลูกค้าโดยไม่มีใครดู
+    clash = autostart_port_conflict(info)
+    if clash:
+        raise FleetError(
+            f"port {clash[1]} ชนกับ '{clash[0]}' ที่ตั้ง autostart ไว้แล้ว — "
+            f"ทั้งคู่จะขึ้น port เดียวกันตอน reboot แล้วตัวหลังล้ม\n"
+            f"ตั้ง port อื่นก่อน: lmds set {info.slug} --port <พอร์ตที่ยังว่าง>"
         )
 
     name = unit_name(info.slug)
@@ -261,6 +339,8 @@ def enable_autostart(info: "ServerInfo", timeout: int = 1800, start_now: bool = 
                 f"ติดตั้ง autostart ไม่สำเร็จ (คำสั่ง `{' '.join(cmd)}` ล้มเหลว)\n"
                 f"ลองรันมือ:\n  {manual}"
             )
+    if start_now:
+        _verify_started(["sudo", "systemctl"], name)
     return name
 
 

@@ -105,6 +105,7 @@ def test_enable_autostart_runs_sudo_steps(tmp_path, monkeypatch):
 
     class OK:
         returncode = 0
+        stdout = "active"    # is-active ตอบ active → smoke-check ผ่าน
 
     monkeypatch.setattr(manager.subprocess, "run", lambda cmd, *a, **k: (calls.append(cmd), OK())[1])
     name = enable_autostart(info, timeout=600, start_now=True, scope="system")
@@ -117,6 +118,43 @@ def test_enable_autostart_runs_sudo_steps(tmp_path, monkeypatch):
     assert any("daemon-reload" in c for c in joined)
     assert any("enable" in c for c in joined)
     assert any("systemctl start" in c for c in joined)
+    # --now ต้องพิสูจน์ต่อว่า unit ขึ้นจริง ไม่ใช่แค่ start คืน 0
+    assert any("is-active" in c for c in joined)
+
+
+def test_enable_now_fails_loudly_when_the_unit_will_not_start(tmp_path, monkeypatch):
+    """เคสจริงที่เจ็บมาแล้ว: start คืน 0 แต่ unit ล้มทันที (เช่น User= ใน user unit)
+
+    ก่อนหน้านี้ enable รายงานสำเร็จ แล้วเครื่องบูตมาไม่มีโมเดล โดยไม่มีใครรู้จนถึงตอนนั้น
+    ตอนนี้ is-active = failed ต้องทำให้ enable ล้มพร้อมบอก log
+    """
+    info = _info(tmp_path)
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_USER_SYSTEMD_DIR", str(tmp_path / "user-units"))
+
+    def fake_run(cmd, *a, **k):
+        text = " ".join(cmd)
+        out = "failed" if "is-active" in text else ("bad: status=216/GROUP" if "journalctl" in text else "")
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+    monkeypatch.setattr(manager.subprocess, "run", fake_run)
+    with pytest.raises(FleetError, match="start ไม่ขึ้น"):
+        enable_autostart(_info(tmp_path), start_now=True)
+
+
+def test_enable_now_accepts_a_model_still_loading(tmp_path, monkeypatch):
+    """โมเดลใหญ่ยัง activating (โหลด weight อยู่) ไม่ใช่ความล้มเหลว — ต้องไม่โยน error"""
+    info = _info(tmp_path)
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_USER_SYSTEMD_DIR", str(tmp_path / "user-units"))
+
+    def fake_run(cmd, *a, **k):
+        out = "activating" if "is-active" in " ".join(cmd) else ""
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+    monkeypatch.setattr(manager.subprocess, "run", fake_run)
+    # ไม่ควรโยน
+    enable_autostart(info, start_now=True)
 
 
 def test_enable_autostart_fails_without_systemd(tmp_path, monkeypatch):
@@ -260,3 +298,68 @@ def test_disable_removes_a_user_unit_too(tmp_path, monkeypatch):
     assert not (units / "lmds-m.service").exists()
     assert ["systemctl", "--user", "disable", "--now", "lmds-m.service"] in calls
     assert not any("sudo" in c for c in calls), "user unit ปิดได้โดยไม่ต้อง sudo"
+
+
+# --- port collision at enable time (autostart) --------------------------------
+# หลายโมเดล default port 8000 เท่ากัน · enable หลายตัวแล้ว reboot = ชน port ตัวหลังล้ม
+
+def _ctl_with_port(tmp_path, slug, port):
+    d = tmp_path / slug
+    d.mkdir()
+    ctl = d / f"{slug}-single.sh"
+    ctl.write_text(f'#!/bin/bash\nAPI_PORT="${{API_PORT:-{port}}}"\n')
+    ctl.chmod(0o755)
+    return manager.ServerInfo(slug=slug, model="m", engine="llamacpp", mode="native",
+                              port=port, container="", controller=str(ctl))
+
+
+def test_effective_port_prefers_saved_over_controller_default(tmp_path):
+    info = _ctl_with_port(tmp_path, "m", 8000)
+    assert manager.effective_autostart_port(info) == "8000"   # จาก default ใน controller
+    (tmp_path / "m" / "bundle.env").write_text('API_PORT="${API_PORT:-8010}"\n')
+    assert manager.effective_autostart_port(info) == "8010"   # ค่าที่ set ชนะ
+
+
+def test_enable_refuses_a_port_already_claimed_by_another_autostart(tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_USER_SYSTEMD_DIR", str(tmp_path / "user-units"))
+    mine = _ctl_with_port(tmp_path, "mine", 8000)
+    other = _ctl_with_port(tmp_path, "other", 8000)
+    monkeypatch.setattr(manager, "discover", lambda: [mine, other])
+    monkeypatch.setattr(manager, "autostart_status", lambda slug: "enabled")
+
+    with pytest.raises(FleetError, match="ชนกับ 'other'"):
+        enable_autostart(mine)
+
+
+def test_enable_allows_a_free_port(tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_USER_SYSTEMD_DIR", str(tmp_path / "user-units"))
+    mine = _ctl_with_port(tmp_path, "mine", 8010)
+    other = _ctl_with_port(tmp_path, "other", 8000)
+    monkeypatch.setattr(manager, "discover", lambda: [mine, other])
+    monkeypatch.setattr(manager, "autostart_status", lambda slug: "enabled")
+
+    class OK:
+        returncode = 0
+        stdout = "active"
+    monkeypatch.setattr(manager.subprocess, "run", lambda *a, **k: OK())
+    # ไม่ชน → ผ่าน
+    assert enable_autostart(mine) == "lmds-mine.service"
+
+
+def test_a_stopped_neighbour_does_not_block_enable(tmp_path, monkeypatch):
+    """เพื่อนบ้านที่ port เดียวกันแต่ไม่ได้ตั้ง autostart ไม่ชน — มันไม่ขึ้นตอนบูต"""
+    monkeypatch.setattr(manager, "have_systemctl", lambda: True)
+    monkeypatch.setenv("LMDS_USER_SYSTEMD_DIR", str(tmp_path / "user-units"))
+    mine = _ctl_with_port(tmp_path, "mine", 8000)
+    other = _ctl_with_port(tmp_path, "other", 8000)
+    monkeypatch.setattr(manager, "discover", lambda: [mine, other])
+    monkeypatch.setattr(manager, "autostart_status",
+                       lambda slug: "enabled" if slug == "mine" else "absent")
+
+    class OK:
+        returncode = 0
+        stdout = "active"
+    monkeypatch.setattr(manager.subprocess, "run", lambda *a, **k: OK())
+    assert enable_autostart(mine) == "lmds-mine.service"
