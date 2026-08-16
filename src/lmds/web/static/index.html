@@ -441,6 +441,16 @@ pre {
   font-size: calc(15px * var(--fs)); line-height: 1; color: var(--fg2);
 }
 .nbody.collapsed { display: none; }
+/* การ์ดแบบย่อ — เหลือบรรทัดเดียว (ชื่อ + ไซต์ + จุดสถานะ) ซ่อน stats/ปุ่ม/host/รายละเอียด
+   กด + เพื่อกางดูของครบ · ค่าเริ่มต้นเป็นแบบนี้เพื่อให้หลายไซต์หลายเครื่องไม่ยาวเหยียด */
+.machine.ncompact > .item { padding-top: 4px; padding-bottom: 4px; }
+.machine.ncompact .muted,
+.machine.ncompact .nsum,
+.machine.ncompact .nver,
+.machine.ncompact > .item button:not(.ntoggle),
+.machine.ncompact .nclus,
+.machine.ncompact .nbody { display: none; }
+.machine.ncompact .name { font-size: calc(13.5px * var(--fs)); }
 /* ที่จับสำหรับลากจัดลำดับ — ต้องเป็นที่จับแยก ไม่ใช่ลากทั้งการ์ด เพราะในหัวการ์ดมีปุ่มและ
    ช่องกรอก cluster IP อยู่ กดแล้วต้องได้คลิกตามปกติ ไม่ใช่กลายเป็นลาก */
 .ngrip {
@@ -1782,6 +1792,9 @@ function tempColour(c) {
 // degrade to one row saying so — never hang or blank the whole page.
 const nodeRows = new Map();
 const collapsedNodes = new Set();
+// การ์ดเครื่องเริ่มแบบ "ย่อ" (บรรทัดเดียว) เป็นค่าเริ่มต้น — 5 ไซต์ × 5 เครื่องจะได้ไม่ยาว
+// เหยียด · เครื่องที่กางดูรายละเอียดอยู่เก็บไว้ที่นี่ · ว่าง = ทุกเครื่องย่อ
+const expandedNodes = new Set();
 // ไซต์ที่ผู้ใช้ยุบไว้ — เครื่องเยอะหลายไซต์ จะได้ปิดไซต์ที่ไม่ได้ดูตอนนี้ให้หน้าจอสั้นลง
 const collapsedSites = new Set();
 // เครื่องที่กำลังโชว์ผลคำสั่งอยู่ — ห้าม live update ทับจนกว่าผู้ใช้จะปิดเอง
@@ -2187,12 +2200,17 @@ async function refreshNodes() {
       box.appendChild(block);
       const body = block.querySelector(".nbody");
       const toggle = block.querySelector(".ntoggle");
-      if (collapsedNodes.has(node.name)) { body.classList.add("collapsed"); toggle.textContent = "+"; }
+      // ย่อ = บรรทัดเดียว (ซ่อน stats/ปุ่ม/รายละเอียด) · กางดูรายละเอียดได้ · เริ่มแบบย่อ
+      const setCompact = (compact) => {
+        block.classList.toggle("ncompact", compact);
+        toggle.textContent = compact ? "+" : "−";
+      };
+      setCompact(!expandedNodes.has(node.name));
       toggle.addEventListener("click", () => {
-        const hidden = body.classList.toggle("collapsed");
-        toggle.textContent = hidden ? "+" : "−";
-        // จำไว้ ไม่งั้น refresh รอบถัดไปกางกลับเองทุก 5 วินาที
-        if (hidden) collapsedNodes.add(node.name); else collapsedNodes.delete(node.name);
+        const compact = !block.classList.contains("ncompact");
+        setCompact(compact);
+        // จำไว้ ไม่งั้น refresh รอบถัดไปกาง/ย่อกลับเองทุก 5 วินาที
+        if (compact) expandedNodes.delete(node.name); else expandedNodes.add(node.name);
       });
       nodeRows.set(node.name, {
         block,
@@ -3077,6 +3095,8 @@ let pollTimer = null;
 function showNodeOutput(node, title, output, extra = "") {
   const row = nodeRows.get(node);
   if (!row) return;
+  // การ์ดที่ย่อไว้ต้องกางก่อน ไม่งั้นฟอร์ม/ผลคำสั่งอยู่ใน .nbody ที่ถูกซ่อน = ไม่เห็นอะไร
+  if (row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
   pinnedOutput.add(node);
   row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">${esc(title)}</b>
@@ -3431,7 +3451,7 @@ function jumpToNode(node, slug) {
   const row = nodeRows.get(node);
   if (!row) return;
   // การ์ดที่ย่อไว้ต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
-  if (row.body.classList.contains("collapsed")) row.block.querySelector(".ntoggle")?.click();
+  if (row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
   openModelMenus.add(node + "/" + slug);
   if (!pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
   row.block.scrollIntoView({ behavior: "smooth", block: "center" });
