@@ -288,8 +288,12 @@ def node_remove(
 def list_recipes(
     model: Optional[str] = typer.Argument(None, help="ดูสูตรของโมเดลนี้ (ว่าง = ทั้งหมด)"),
     sync: bool = typer.Option(False, "--sync", help="ดึงสูตรใหม่จากรีโป controller ของทีมก่อนแสดง"),
+    publish: Optional[str] = typer.Option(
+        None, "--publish", help="ส่ง controller ของ slug นี้ (ที่รันผ่าน + ทดสอบแล้ว) ขึ้นคลัง",
+        autocompletion=_complete_slug),
     repo: Optional[str] = typer.Option(None, "--repo", help="รีโป controller (ค่าเริ่มต้นคือของทีม)"),
     ref: Optional[str] = typer.Option(None, "--ref", help="branch/tag ที่จะดึง (ค่าเริ่มต้น main)"),
+    no_push: bool = typer.Option(False, "--no-push", help="publish: commit ไว้ในเครื่องแต่ไม่ push ขึ้น remote"),
 ) -> None:
     """สูตรที่รันผ่านจริงแล้ว — ใช้อัตโนมัติเมื่อไม่มี LLM provider
 
@@ -303,6 +307,50 @@ def list_recipes(
     from lmds.recipes.sync import DEFAULT_REF, DEFAULT_REPO, SyncError
     from lmds.recipes.sync import sync as sync_recipes
     from lmds.recipes.sync import synced_source
+
+    if publish:
+        from pathlib import Path as _Path
+
+        import yaml as _yaml
+
+        from lmds.config.settings import Settings
+        from lmds.fleet import find
+        from lmds.recipes.publish import default_local_repo
+        from lmds.recipes.publish import publish as publish_recipe
+
+        server = find(publish)
+        if server is None or not server.controller:
+            err_console.print(f"[red]ไม่รู้จัก '{publish}'[/red] — ดู: lmds ps")
+            raise typer.Exit(code=1)
+        bundle_dir = _Path(server.controller).parent
+        profile_path = bundle_dir / "MODEL_PROFILE.yaml"
+        try:
+            profile = _yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+        except OSError:
+            profile = {}
+        settings = Settings.load()
+        target = repo or settings.recipes.publish_repo or ""
+        target_ref = ref or settings.recipes.publish_ref or "main"
+        try:
+            result = publish_recipe(
+                publish, server.controller, profile,
+                repo=target, ref=target_ref, now=_now(),
+                push=not no_push,
+            )
+        except SyncError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        where = result["target"] if result["remote"] else f"local: {result['target']}"
+        if not result["committed"]:
+            console.print(f"[yellow]ไม่มีอะไรเปลี่ยน[/yellow] — {publish} ตรงกับที่อยู่ในคลังแล้ว ({where})")
+        else:
+            console.print(f"[green]publish {publish} แล้ว[/green] → {where}")
+            if result["remote"] and no_push:
+                console.print("[dim]commit ไว้ในเครื่องแล้ว (--no-push) — push เองภายหลัง[/dim]")
+            elif not result["remote"]:
+                console.print(f"[dim]local store: {default_local_repo()} · "
+                              f"ตั้ง publish_repo เป็นรีโป candidates เพื่อ push ขึ้น[/dim]")
+        return
 
     if sync:
         try:

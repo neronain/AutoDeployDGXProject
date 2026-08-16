@@ -64,11 +64,25 @@ class Ui(BaseModel):
     node_order: list[str] = Field(default_factory=list)
 
 
+class Recipes(BaseModel):
+    """ปลายทางที่ `lmds recipes --publish` ส่ง controller ที่รันผ่านแล้วขึ้นไป
+
+    ว่าง = local store ในเครื่อง hub เอง (`~/.config/lmds/controllers/published-local`)
+    ซึ่งเป็นค่าที่ปลอดภัยสำหรับลูกค้า: fleet ของเขาแชร์กันได้โดยไม่แตะรีโปของเรา
+    · ทีมเราตั้งเป็นรีโป candidates (เช่น git@github.com:neronain/script-update.git)
+    เพื่อ push ขึ้นไปแล้ว review ก่อนเลื่อนเข้า canonical
+    """
+
+    publish_repo: str = ""
+    publish_ref: str = "main"
+
+
 class Settings(BaseModel):
     provider: Optional[ProviderConfig] = None
     defaults: Defaults = Field(default_factory=Defaults)
     cluster: Cluster = Field(default_factory=Cluster)
     ui: Ui = Field(default_factory=Ui)
+    recipes: Recipes = Field(default_factory=Recipes)
 
     @classmethod
     def load(cls) -> "Settings":

@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`lmds recipes --publish <slug>`** — ทางกลับของ `--sync` · เมื่อ deploy โมเดลจนได้ค่าที่
+  รันผ่าน + ทดสอบแล้ว ส่ง controller ตัวนั้นขึ้นคลังเพื่อให้เครื่องอื่น `--sync` ไปใช้ได้เลย
+  ไม่ต้องเดา parser/image/mmproj ใหม่ทุกครั้ง · ส่ง **เฉพาะค่าของโมเดล** — bundle.env
+  (port/context/slots ของเครื่อง) เป็นคนละไฟล์ ไม่ตามขึ้นไป และฝั่ง parse ตัด context ทิ้ง
+  อยู่แล้ว โมเดลจึงไป fit ใหม่ตามเครื่องปลายทางได้ · ปลายทาง (`recipes.publish_repo` ใน
+  config) ว่าง = local store ในเครื่อง (ลูกค้าใช้แบบนี้ ไม่แตะรีโปเรา) · ทีมตั้งเป็นรีโป
+  candidates แล้ว push ขึ้นไป review ก่อน promote เข้า canonical · stamp measured
+  capabilities ลง MODEL_FEATURES และเขียน PROFILE.yaml เก็บ provenance (validated_on,
+  host, revision) ไว้ให้ตรวจย้อนได้
+
+### Fixed
+
+- **`enable` — port ชนตอนบูต และ start ที่คืน 0 แต่ unit ล้ม** · หลายโมเดล default port
+  8000 เท่ากัน · enable หลายตัวแล้ว reboot = ทุกตัวแย่ง 8000 พร้อมกัน ตัวหลังล้ม · ตอนนี้
+  enable อ่าน effective port ของแต่ละ bundle แล้วปฏิเสธถ้าชนกับ unit ที่ enable ไว้แล้ว ·
+  และ `--now` เช็ก `is-active` ต่อ (is-enabled = "จะถูกเรียกตอนบูต" ไม่ใช่ "เรียกแล้วขึ้น")
+  ถ้า start คืน 0 แต่ unit failed → ล้มพร้อม log แทนที่จะรายงานสำเร็จ
+
+- **download โดน CDN throttle ต่อ connection** · single curl stream โดนบีบเหลือ ~150KB/s
+  ทั้งที่เครื่องมีแบนด์วิดท์เหลือ · controller ใช้ aria2c -x16 (16 connection ขนาน) ถ้ามี
+  ไม่งั้นถอยไป curl · ทั้งคู่ resume ได้ และ verify-files เช็ก size ต่อทุกครั้งอยู่แล้ว
+
 ### Fixed
 
 - **`enable` สร้าง unit ที่บูตไม่ขึ้น — และไม่มีอะไรบอกจนกว่าจะรีบูต** · user unit ถูก
