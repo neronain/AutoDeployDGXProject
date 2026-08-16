@@ -2768,7 +2768,9 @@ function layoutSiteGroups() {
     box.appendChild(sec);
     sec.querySelector(".sitehdr").addEventListener("click", () => {
       collapsedSites.has(site) ? collapsedSites.delete(site) : collapsedSites.add(site);
-      layoutSiteGroups();
+      // ต้อง re-layout เต็ม ไม่ใช่ layoutSiteGroups() ตรงๆ — รอบนี้การ์ดถูกฝังใน .sitesec แล้ว
+      // การสแกน box.children ระดับบนจะไม่เจอ .machine เลย แล้ว return ทิ้งเฉยๆ = กดไม่ติด
+      layoutClusterGroups();
     });
     for (const el of groups.get(site)) {
       el.style.display = collapsed ? "none" : "";
