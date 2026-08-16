@@ -139,6 +139,20 @@ def test_llamacpp_controller_exact_verification(isolated_config, tmp_path):
     assert "--jinja" in text  # chat template ฝังใน GGUF
 
 
+def test_llamacpp_download_uses_aria2c_then_falls_back_to_curl(isolated_config, tmp_path):
+    """CDN บางเจ้า throttle ต่อ connection (bartowski เจอจริง) → single curl ช้ามาก
+
+    aria2c -x16 เปิดหลายช่องขนานเลี่ยง throttle · แต่เครื่องที่ไม่มี aria2c ต้องยัง
+    โหลดได้ด้วย curl ตามเดิม จึงต้องมีทั้งสองทางในสคริปต์
+    """
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert "command -v aria2c" in text
+    assert "aria2c -x16" in text
+    assert "curl -fL --retry 5 -C -" in text   # fallback ยังอยู่
+    assert "--continue=true" in text            # aria2c resume ได้ ไม่เริ่มใหม่
+
+
 def test_llamacpp_without_selected_gguf_rejected(isolated_config, tmp_path):
     report = gguf_report(selected_gguf=None)
     fit = analyze(report, PRESETS["dgx-spark-single"])
