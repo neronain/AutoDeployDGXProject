@@ -132,7 +132,12 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
-        return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
+        # ไฟล์ถูกอ่านสดทุกครั้งอยู่แล้ว แต่เบราว์เซอร์แคชหน้าเก่าไว้จน "อัปเดตแล้วไม่เห็น"
+        # — บอกไม่ให้แคช ผู้ใช้จะได้ไม่ต้อง hard-refresh ทุกครั้งที่ console เปลี่ยน
+        return HTMLResponse(
+            (STATIC / "index.html").read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
 
     @app.get("/api/version", dependencies=guarded)
     def version(check_repo: bool = False) -> dict:

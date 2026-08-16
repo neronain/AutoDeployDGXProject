@@ -2305,6 +2305,10 @@ document.addEventListener("click", async e => {
   if (nact === "site") {
     // ฟอร์มในหน้า ไม่ใช่ prompt() — จัดกลุ่มเครื่องตามไซต์เพื่อไม่ให้หน้าจอยาวจนสับสน
     const cur = (lastNodeRegistry.get(node) || {}).site || "";
+    // ไซต์ที่ "มีอยู่แล้ว" จากเครื่องอื่น — ให้เลือกจากลิสต์ ไม่ใช่พิมพ์ใหม่ทุกครั้ง
+    // ไม่งั้น "customer-a" กับ "Customer A" กลายเป็นคนละกลุ่มเพราะพิมพ์ต่างนิดเดียว
+    const existing = [...new Set([...lastNodeRegistry.values()]
+      .map(n => (n.site || "").trim()).filter(Boolean))].sort();
     showNodeOutput(node, `ไซต์ · ${node}`, "");
     const row = nodeRows.get(node);
     if (!row) return;
@@ -2312,15 +2316,27 @@ document.addEventListener("click", async e => {
       <div class="name">จัดกลุ่ม ${esc(node)} ตามไซต์</div>
       <div class="dim" style="margin:6px 0 12px">ป้ายที่ตั้งเครื่อง (ชื่อไซต์/ลูกค้า) — ใช้จัดกลุ่ม
         และกรองบนหน้าจอเท่านั้น <b>ไม่กระทบ cluster</b> · เว้นว่าง = เอาป้ายออก</div>
+      ${existing.length ? `<div class="dim" style="margin-bottom:8px">ไซต์ที่มีอยู่ (กดเพื่อใช้ชื่อเดิม ไม่ต้องพิมพ์):
+        ${existing.map(s => `<button type="button" class="site-pick" data-site="${esc(s)}"
+          style="margin:2px 4px 2px 0">${esc(s)}</button>`).join("")}</div>` : ""}
       <div class="field">
         <label>ไซต์</label>
         <input id="site-inp" type="text" value="${esc(cur)}" placeholder="เช่น customer-a · HQ"
-               style="min-width:220px" autocomplete="off">
+               list="site-options" style="min-width:220px" autocomplete="off">
+        <datalist id="site-options">${existing.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
         <button data-nact="site-go" data-node="${esc(node)}">บันทึก</button>
         <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
       </div>
-      <div id="site-out" style="margin-top:10px" class="dim"></div>
+      <div id="site-out" style="margin-top:10px" class="dim">${existing.length
+        ? "" : "ยังไม่มีไซต์อื่น — พิมพ์ชื่อแรกได้เลย เครื่องถัดไปจะเลือกจากลิสต์นี้"}</div>
     </div>`;
+    // กดชิปไซต์ที่มีอยู่ = เติมชื่อเดิมลงช่อง (ชื่อตรงกันเป๊ะ ไม่มี typo)
+    for (const chip of row.body.querySelectorAll(".site-pick")) {
+      chip.addEventListener("click", () => {
+        const inp = row.body.querySelector("#site-inp");
+        if (inp) { inp.value = chip.dataset.site; inp.focus(); }
+      });
+    }
     const inp = row.body.querySelector("#site-inp");
     inp?.focus();
     inp?.addEventListener("keydown", (ev) => {
