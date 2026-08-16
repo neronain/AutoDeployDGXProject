@@ -250,3 +250,26 @@ def test_rebuild_without_output_overwrites_the_bundle_in_place(tmp_path, monkeyp
     assert result.exit_code == 0, result.output
     # controller ตัวเดิม (ที่ find/publish อ่าน) ต้องถูกเขียนทับด้วย template ปัจจุบัน
     assert "fetch_one" in controller.read_text(), "rebuild ต้องเขียนทับที่เดิม ไม่ใช่ที่อื่น"
+
+
+def test_rebuild_falls_back_when_the_stored_target_is_no_longer_a_preset(
+        tmp_path, monkeypatch, isolated_config):
+    """bundle รุ่นเก่าเก็บ target ที่เลิกใช้แล้ว (เจอจริง: 'this-machine') —
+    rebuild ต้องถอยไป auto-detect ไม่ใช่ตายทั้งคำสั่งจน bundle เก่าอัปเดตไม่ได้เลย
+    """
+    from lmds.brain import registry
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    _patch_inspect(monkeypatch, gguf_report())
+    runner.invoke(app, ["deploy", "unsloth/Qwen3-8B-GGUF", "--no-llm",
+                        "--target", "dgx-spark-single", "--output", str(tmp_path), "--yes"])
+    profile = tmp_path / "qwen3-8b-gguf" / "MODEL_PROFILE.yaml"
+    text = profile.read_text(encoding="utf-8")
+    profile.write_text(text.replace("name: dgx-spark-single", "name: this-machine"),
+                       encoding="utf-8")
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: True)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    result = runner.invoke(app, ["rebuild", "qwen3-8b-gguf"])
+    assert result.exit_code == 0, result.output
+    assert "this-machine" in result.output and "auto-detect" in result.output

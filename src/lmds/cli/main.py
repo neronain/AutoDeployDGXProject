@@ -1867,6 +1867,15 @@ def rebuild(
         err_console.print("[red]profile ไม่มี model.id — สร้างใหม่ด้วย lmds deploy[/red]")
         raise typer.Exit(code=1)
 
+    # target เดิมอาจเป็นค่าที่เลิกใช้แล้ว (เจอจริง: "this-machine" จาก bundle รุ่นเก่า) —
+    # เมื่อก่อน _compute_fits จะโยน error แล้ว rebuild ตายทั้งคำสั่ง แปลว่า bundle เก่า
+    # อัปเดตด้วย rebuild ไม่ได้เลย · ถอยไป auto-detect แทนดีกว่าปฏิเสธทั้งใบ
+    from lmds.fit import PRESETS
+    if target and target not in PRESETS:
+        console.print(f"[yellow]target เดิม '{target}' ไม่ใช่ preset ที่รู้จักแล้ว[/yellow] — "
+                      f"ใช้ auto-detect ตามฮาร์ดแวร์เครื่องนี้แทน")
+        target = ""
+
     old_image = (profile.get("runtime") or {}).get("image") or ""
     console.print(f"สร้าง [bold]{slug}[/bold] ใหม่จากค่าเดิม — {model_id} · target {target or 'อัตโนมัติ'}")
 
