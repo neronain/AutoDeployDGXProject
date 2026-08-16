@@ -163,12 +163,32 @@ lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/�
 lmds rebuild <ชื่อ>       # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน
 lmds remove <ชื่อ>        # ลบทั้งหมด (--keep-weights = เก็บ weight)
 lmds recipes             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key
+lmds recipes --sync      # ดึงสูตรใหม่จากคลัง controller ของทีม
+lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งสูตรที่เทสต์ผ่านขึ้นคลัง
 ```
 
 `lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
 — stop/restart/logs/enable ได้เหมือนกัน โดยกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง
 
 </details>
+
+## คลังสูตร — เรียนรู้ครั้งเดียว ใช้ได้ทั้งกอง
+
+เครื่องที่ไม่มี API key ของ LLM จะ deploy แบบ rule-based ซึ่งรู้แค่ "GGUF → llama.cpp" ไม่รู้
+เรื่องเฉพาะรุ่น (parser, image ที่มี kernel ตรง, mmproj) — deploy ผ่านแต่ start ไม่ขึ้น ·
+**คลังสูตร** แก้ตรงนี้: เก็บ controller ที่ **รันผ่านจริงบนฮาร์ดแวร์แล้ว** ไว้ในรีโป Git กลาง
+
+- **pull** — `lmds recipes --sync` ดึงสูตรจากคลังมาที่ hub · `deploy --no-llm` หยิบไปใช้แทนการเดา
+- **push** — `lmds recipes --publish <ชื่อ>` ส่ง controller ที่เทสต์ผ่านขึ้นคลัง ปิดลูป:
+  ความรู้ที่แลกมาด้วยการ debug บนเครื่องหนึ่ง กลายเป็นของทั้งกอง ไม่ต้องค้นใหม่ทุกครั้ง
+
+สองชั้น: **canonical** ([`dgx-spark-all-controllers`](https://github.com/neronain/dgx-spark-all-controllers))
+ที่ทุกเครื่องดึงไปใช้ · **candidates** ([`script-update`](https://github.com/neronain/script-update))
+ที่ push ขึ้นไปรอ review · ปลายทาง publish ตั้งใน config (`recipes.publish_repo`) — **ว่าง =
+local store ในเครื่อง** ปลอดภัยสำหรับลูกค้า (fleet แชร์กันเองโดยไม่แตะรีโปเรา)
+
+> ส่งเฉพาะ **ค่าของโมเดล** (engine, image, parser, mmproj, measured caps) — **ค่าของเครื่อง**
+> (port, context, slots) อยู่ใน `bundle.env` ไม่ตามขึ้นไป เครื่องปลายทาง fit ใหม่ตามตัวเอง
 
 ## รองรับอะไรบ้าง
 
