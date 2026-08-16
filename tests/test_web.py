@@ -2035,3 +2035,32 @@ def test_source_root_is_none_when_nothing_looks_like_a_checkout(monkeypatch, tmp
     monkeypatch.setattr(selfupdate.Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(selfupdate.lmds, "__file__", str(tmp_path / "a" / "b" / "lmds" / "__init__.py"))
     assert selfupdate.source_root() is None
+
+
+def test_web_sets_and_exposes_a_node_site():
+    """จัดกลุ่มตามไซต์จากหน้าเว็บ: PATCH ตั้ง site ได้ · /api/nodes ส่ง site ให้ badge"""
+    from lmds.nodes import Node, add, find
+
+    add(Node(name="cust1", host="10.0.0.9", user="ops"))
+    client = TestClient(create_app())
+
+    r = client.patch("/api/nodes/cust1", json={"site": "customer-a"})
+    assert r.status_code == 200
+    assert r.json()["site"] == "customer-a"
+    assert find("cust1").site == "customer-a"
+
+    nodes = client.get("/api/nodes").json()["nodes"]
+    assert next(n for n in nodes if n["name"] == "cust1")["site"] == "customer-a"
+
+    # เว้นว่าง = เอาป้ายออก
+    assert client.patch("/api/nodes/cust1", json={"site": ""}).json()["site"] == ""
+
+
+def test_web_site_change_does_not_touch_cluster():
+    from lmds.nodes import Node, add, find
+
+    add(Node(name="cust1", host="10.0.0.9", user="ops", cluster_ip="10.10.0.1", stack=True))
+    client = TestClient(create_app())
+    client.patch("/api/nodes/cust1", json={"site": "customer-a"})
+    node = find("cust1")
+    assert node.cluster_ip == "10.10.0.1" and node.stack is True   # cluster ไม่ถูกแตะ

@@ -1098,12 +1098,15 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.patch("/api/nodes/{name}", dependencies=guarded)
     def node_patch(name: str, body: dict) -> dict:
-        """แก้ค่าที่แก้ได้ของเครื่อง — ตอนนี้คือ cluster IP/interface และโน้ต"""
+        """แก้ค่าที่แก้ได้ของเครื่อง — cluster IP/interface, โน้ต, และไซต์ (จัดกลุ่มบนหน้าจอ)"""
         from lmds.nodes import NodeError, find, update
 
         if find(name) is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note", "stack") if k in body}
+        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note", "site", "stack")
+                   if k in body}
+        if "site" in changes and isinstance(changes["site"], str):
+            changes["site"] = changes["site"].strip()   # ว่าง = เอาป้ายออก
         if not changes:
             raise HTTPException(status_code=400, detail="ไม่มีฟิลด์ที่แก้ได้ในคำขอนี้")
         try:
@@ -1111,7 +1114,8 @@ def create_app(token: str = "") -> FastAPI:
         except NodeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"name": node.name, "cluster_ip": node.cluster_ip,
-                "cluster_iface": node.cluster_iface, "note": node.note, "stack": node.stack}
+                "cluster_iface": node.cluster_iface, "note": node.note,
+                "site": node.site, "stack": node.stack}
 
     @app.post("/api/nodes", dependencies=guarded)
     def node_add(body: dict) -> dict:

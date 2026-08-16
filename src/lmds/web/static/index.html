@@ -1843,6 +1843,8 @@ function nodeCard(node) {
               title="ตั้งค่าที่ต้องใช้สิทธิ์ root บนเครื่องนั้น (ถามรหัสผ่านตอนนั้น ไม่เก็บ)">setup</button>
       <button data-nact="fix-perms" data-node="${esc(node.name)}"
               title="คืนสิทธิ์แคชโมเดลให้เป็นของ user — ใช้เมื่อ container เคยรันเป็น root แล้ว sync-worker/start ตายเพราะ Permission denied">Fix permissions</button>
+      <button data-nact="site" data-node="${esc(node.name)}"
+              title="ตั้ง/แก้ไซต์ที่เครื่องนี้ไปตั้งอยู่ — ใช้จัดกลุ่มบนหน้าจอ ไม่กระทบ cluster">🏷 Site</button>
       <button data-nact="refresh" data-node="${esc(node.name)}">Refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Forget</button>
     </div>
@@ -2298,6 +2300,47 @@ document.addEventListener("click", async e => {
       api(`/api/nodes/${encodeURIComponent(node)}/install`, { method: "POST" }));
     if (!d) return;
     followNodeJob(node, "_install", d.job.id);
+    return;
+  }
+  if (nact === "site") {
+    // ฟอร์มในหน้า ไม่ใช่ prompt() — จัดกลุ่มเครื่องตามไซต์เพื่อไม่ให้หน้าจอยาวจนสับสน
+    const cur = (lastNodeRegistry.get(node) || {}).site || "";
+    showNodeOutput(node, `ไซต์ · ${node}`, "");
+    const row = nodeRows.get(node);
+    if (!row) return;
+    row.body.innerHTML = `<div class="pad">
+      <div class="name">จัดกลุ่ม ${esc(node)} ตามไซต์</div>
+      <div class="dim" style="margin:6px 0 12px">ป้ายที่ตั้งเครื่อง (ชื่อไซต์/ลูกค้า) — ใช้จัดกลุ่ม
+        และกรองบนหน้าจอเท่านั้น <b>ไม่กระทบ cluster</b> · เว้นว่าง = เอาป้ายออก</div>
+      <div class="field">
+        <label>ไซต์</label>
+        <input id="site-inp" type="text" value="${esc(cur)}" placeholder="เช่น customer-a · HQ"
+               style="min-width:220px" autocomplete="off">
+        <button data-nact="site-go" data-node="${esc(node)}">บันทึก</button>
+        <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
+      </div>
+      <div id="site-out" style="margin-top:10px" class="dim"></div>
+    </div>`;
+    const inp = row.body.querySelector("#site-inp");
+    inp?.focus();
+    inp?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") row.body.querySelector('[data-nact="site-go"]')?.click();
+    });
+    return;
+  }
+  if (nact === "site-go") {
+    const row = nodeRows.get(node);
+    const val = row?.body.querySelector("#site-inp")?.value ?? "";
+    const out = row?.body.querySelector("#site-out");
+    try {
+      const r = await api(`/api/nodes/${encodeURIComponent(node)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ site: val }),
+      });
+      if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).detail) || r.status);
+      pinnedOutput.delete(node);
+      refreshNodes();       // badge/กลุ่มอัปเดตทันที
+    } catch (e) { if (out) out.textContent = "บันทึกไม่สำเร็จ: " + e.message; }
     return;
   }
   if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
