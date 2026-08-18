@@ -369,3 +369,46 @@ GET    /api/nodes/{name}/inventory
 POST   /api/nodes/{name}/models/{slug}/{command}   # allowlist: start stop restart repair doctor
 GET    /api/cluster                   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
 ```
+
+## ตรวจว่าทุกเครื่องรันโค้ดชุดเดียวกันจริง
+
+**`lmds version` บอกไม่ได้** — เลข version ไม่ขยับตาม commit ทุกเครื่องจึงขึ้น `0.3.0`
+เหมือนกันหมดทั้งก่อนและหลังอัปเดต · ตรวจจาก **ลายนิ้วมือของไฟล์ที่ติดตั้งจริง** แทน:
+
+```bash
+lmds node install --all      # อัปเดตทุกเครื่องในทะเบียน (ดึงจาก GitHub)
+```
+
+```bash
+# รันบนแต่ละเครื่อง — ค่าต้องตรงกันทุกเครื่อง
+PY=~/.local/share/lmds/venv/bin/python
+SITE=$($PY -c "import lmds.inventory,pathlib;print(pathlib.Path(lmds.inventory.__file__).parent)")
+find "$SITE" \( -name '*.py' -o -name '*.j2' \) | LC_ALL=C sort | xargs sha256sum | sha256sum
+```
+
+แยกดูทีละส่วนได้: `single-llamacpp-controller.sh.j2` (ตัวสร้าง bundle) กับ
+`web/static/index.html` (คอนโซล) — สองไฟล์นี้คือของที่ผู้ใช้เห็นผลโดยตรง
+
+**ข้อควรระวังจากของจริง:**
+
+- อัปเดตทีละเครื่องแล้วมี commit ใหม่คั่นกลาง = ฟลีตแตกเป็นสองเวอร์ชันโดยไม่มีอะไรฟ้อง
+  (เจอจริง: spark-head ถูก install หลัง commit ถัดไป เลยต่างจากอีก 6 เครื่อง ทั้งที่
+  `lmds version` เท่ากันหมด) — ถ้าจะให้เท่ากันต้อง `--all` **หลัง** push commit สุดท้าย
+- เครื่องที่เคยติดตั้งแบบ editable จาก git clone (`~/AutoDeployDGXProject/src`) จะถูก
+  `install.sh` แปลงเป็น venv site-packages · **clone เก่ายังค้างบนดิสก์แต่ไม่ใช่โค้ดที่รันแล้ว**
+  อย่าไปแก้ที่นั่น
+- **ชื่อในทะเบียนไม่จำเป็นต้องตรงกับ hostname** — เป็นคนละอย่างโดยตั้งใจ (ทะเบียนชี้ที่
+  `user@host:port`) แต่ถ้าไม่ตรงจะสับสนตอนไล่ปัญหา · เทียบได้ด้วย
+  `lmds node run <ชื่อ> agent info` แล้วดู `host` ที่มันตอบกลับมา
+
+## bundle เก่าไม่ได้อัปเดตตามโค้ด
+
+`lmds node install` เปลี่ยนแค่ตัวโปรแกรม — **bundle ที่สร้างไว้แล้วยังเป็นไฟล์เดิม**
+controller เก่าจึงไม่มีคำสั่ง/ตัวกันพลาดที่เพิ่มมาทีหลัง และ `MODEL_PROFILE.yaml` เก่า
+ไม่มีคีย์ใหม่ (เช่น `features.moe`) คอนโซลจึงไม่มีข้อมูลจะแสดง
+
+```bash
+lmds rebuild <slug>     # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน ไม่เรียก LLM ซ้ำ
+```
+
+ปลอดภัยกับตัวที่รันอยู่ — เขียนแค่ไฟล์ bundle ตัวที่รันยังใช้ controller เดิมจนกว่าจะ restart
