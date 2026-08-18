@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from dataclasses import replace
+
 from lmds.fleet import ServerInfo, bundle_profile, discover, find
 
 
@@ -468,9 +470,27 @@ def _listening_on(port: int) -> str:
     return ""
 
 
+def _free_port(start: int) -> int:
+    """port ถัดไปที่ว่างจริง — แนะเลขตายตัวแล้วเจอว่าไม่ว่างอีกคือทำให้เสียเวลาเปล่า"""
+    for candidate in range(max(start, 8000) + 1, max(start, 8000) + 40):
+        if not _listening_on(candidate):
+            return candidate
+    return start + 1
+
+
 def _check_port(server: ServerInfo) -> list[Finding]:
-    if not server.port:
+    # `lmds set --port` เขียน bundle.env ซึ่ง controller อ่านก่อนตั้ง default — ตรวจด้วยค่าใน
+    # profile จึงฟ้อง conflict ที่ไม่เกิดจริง แล้วแนะให้ย้ายไป port ที่อาจไม่ว่างอีกตัว
+    from lmds.fleet.manager import effective_autostart_port
+
+    port = server.port
+    if not server.running:
+        saved = effective_autostart_port(server)
+        if saved and saved.isdigit():
+            port = int(saved)
+    if not port:
         return []
+    server = replace(server, port=port)
     holder = _listening_on(server.port)
     if server.running:
         if holder:
@@ -488,9 +508,10 @@ def _check_port(server: ServerInfo) -> list[Finding]:
         if rival:
             return [Finding("port", Status.FAIL,
                             f"port {server.port} ถูก {rival} ใช้อยู่ (ทุก bundle ตั้งต้นที่ 8000 เหมือนกัน)",
-                            f"lmds stop {rival}   หรือรันคู่กันคนละ port: lmds start {server.slug} --port 8001")]
+                            f"lmds stop {rival}   หรือรันคู่กันคนละ port: "
+                            f"lmds set {server.slug} --port {_free_port(server.port)}")]
         return [Finding("port", Status.FAIL, f"port {server.port} ถูกใช้โดยโปรเซสอื่น: {holder[:100]}",
-                        f"หยุดตัวที่ชน หรือย้าย port: lmds start {server.slug} --port 8001")]
+                        f"หยุดตัวที่ชน หรือย้าย port: lmds set {server.slug} --port {_free_port(server.port)}")]
     return [Finding("port", Status.OK, f"{server.port} ว่าง")]
 
 

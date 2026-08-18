@@ -904,6 +904,8 @@ def _scan_bundles(known_slugs: set[str]) -> list[ServerInfo]:
                 if controller is None:
                     continue
                 known_slugs.add(slug)
+                from lmds.fleet import bundle_settings
+
                 profile = bundle_profile(str(controller)) or {}
                 model = profile.get("model") or {}
                 runtime = profile.get("runtime") or {}
@@ -914,7 +916,9 @@ def _scan_bundles(known_slugs: set[str]) -> list[ServerInfo]:
                     model_id=model.get("id", ""),
                     engine=runtime.get("engine", ""),
                     mode="docker",
-                    port=int((profile.get("serving") or {}).get("port") or 8000),
+                    # bundle.env ชนะ profile — เป็นค่าที่ start จะใช้จริง
+                    port=int(bundle_settings.read(controller.parent).get("port")
+                             or (profile.get("serving") or {}).get("port") or 8000),
                     container=f"lmds-{slug}",
                     controller=str(controller),
                     registered=False,
