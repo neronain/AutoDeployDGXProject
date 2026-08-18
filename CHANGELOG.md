@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.3.5
+
+**MoE กับ MTP เป็นข้อเท็จจริงจากไฟล์ ไม่ใช่สิ่งที่ LLM เดา**
+
+- อ่านจำนวน expert ทั้งหมด/ที่เปิดต่อ token จาก `config.json` หรือ GGUF metadata แล้วแสดง
+  ตั้งแต่ตอน `deploy` ยันคอนโซล (`image, MoE 128e/8a, MTP`) — *total บอกว่าต้องมีหน่วยความจำ
+  เท่าไร active บอกว่าจะได้ความเร็วเท่าไร* บนเครื่องที่คอขวดคือ bandwidth สองค่านี้ต่างกันหลายเท่า
+- repo ที่แถมไฟล์ MTP draft head ถูกโหลด + ต่อสาย `--spec-draft-model` กับ
+  `--spec-type draft-mtp` ให้อัตโนมัติ · **วัดจริงบน DGX Spark: gemma4-26B-A4B ได้ 1.78x
+  โดย output เท่าเดิม** (repo เคลม 1.35x — Spark คอขวดที่ bandwidth จึงคุ้มกว่า)
+- repo ตระกูล *Native-MTP-Preserved* ที่คง MTP head ไว้ในไฟล์เป้าหมายเอง
+  (`nextn_predict_layers`) ก็เปิดให้ด้วย `--spec-type draft-mtp` เฉย ๆ ไม่มี draft แยก
+- กัน `mtp-*.gguf` หลุดไปเป็นตัวเลือก weight ให้ผู้ใช้เลือกรันเป็นตัวโมเดล
+
+**เปลี่ยนชื่อโมเดลได้เหมือนย้าย port**
+
+- `--name NAME` ตั้งชื่อที่ client ใส่ในฟิลด์ `model` · ชื่อที่ generate ตั้งไว้ถูกตรึงเป็น
+  `DEFAULT_SERVED_MODEL_NAME` ที่ override ไม่ได้ แล้วโชว์คู่กันเมื่อไม่ตรง — เปลี่ยนแล้วยังรู้
+  ว่าเดิมคืออะไร
+- `--mmproj/--no-mmproj` และ `--mtp/--no-mtp` เปิด/ปิดฟีเจอร์โดยไม่ต้อง deploy ใหม่
+- หน้า help แบ่งเป็น Identity / Network / Memory & limits / Model features
+
+**คำสั่งรายงานสิ่งที่เกิดขึ้นจริง**
+
+- `status`/`logs`/`network-info`/`stop` อ่าน `server.meta` — เดิม `start --port 8020`
+  แล้ว `status` ตอบ `API: not responding` เพราะไปถาม port default
+- `doctor` กับตัวสแกน bundle อ่าน `bundle.env` — เดิมฟ้อง port ชนที่ไม่ได้ชนจริง
+  แล้วแนะ port ที่ไม่ว่างอีกตัว
+- `lmds version` บอก commit ด้วย — เลขเวอร์ชันอย่างเดียวตอบไม่ได้ว่าฟลีตเท่ากันหรือยัง
+- ตั้งค่าว่างเพื่อปิด `MMPROJ_FILE` / `MTP_FILE` ได้จริง (เดิมใช้ `:-` ซึ่งกลืนค่าว่าง)
+
+**ดาวน์โหลดไม่ค้างตาย**
+
+- `curl` ได้ `--speed-limit`/`--speed-time` — สลับเน็ตแล้ว TCP ค้างใน `recv()` ไม่มี error
+  `--retry` จึงไม่เคยทำงาน process ค้างถาวรจน `stop` ไม่ได้
+
+**`rebuild` อ่าน GGUF header ของไฟล์ที่ profile เลือกไว้**
+
+- repo หลาย quant ไม่เลือกไฟล์ให้เองตอน inspect · เดิมตั้ง `selected_gguf` หลัง inspect
+  จบไปแล้ว ทำให้ architecture / context / kv_dims / MoE หายหมด
+
+**คอนโซล**
+
+- ป้าย MoE/MTP พร้อม icon และโทนสีแยกจาก ok/warn/bad
+- บรรทัด `model ID` พร้อม `↳ เดิม: …` เมื่อถูกตั้งชื่อใหม่
+- หมวด Model features — ติ๊กเปิด/ปิด vision กับ MTP
+
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
 ## [Unreleased]

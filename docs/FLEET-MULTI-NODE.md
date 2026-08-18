@@ -374,10 +374,10 @@ GET    /api/cluster                   # ตารางสายเชื่อ�
 
 ```bash
 lmds node install --all             # อัปเดตทุกเครื่องในทะเบียน (ดึงจาก GitHub)
-lmds node run <ชื่อ> version        # → lmds 0.3.0  (371dc16)
+lmds node run <ชื่อ> version        # → lmds 0.3.5  (de69eb6)
 ```
 
-**ดูที่ commit ไม่ใช่เลข version** — `__version__` ไม่ขยับทุกคอมมิต (0.3.0 มาหลายสิบ
+**ดูที่ commit ไม่ใช่เลข version** — `__version__` ไม่ขยับทุกคอมมิต (0.3.0 อยู่มาหลายสิบ
 คอมมิตแล้ว) ทุกเครื่องจึงขึ้นเลขเดียวกันหมดทั้งก่อนและหลังอัปเดต · `lmds version` เลย
 พ่วง commit ของโค้ดที่ *กำลังรันอยู่จริง* มาให้ และ `lmds agent info` ส่งค่าเดียวกันใน
 `host.lmds_commit` ให้ hub เทียบทั้งฟลีตจากที่เดียว

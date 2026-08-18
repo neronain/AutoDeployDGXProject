@@ -360,6 +360,14 @@ button.on { background: var(--sunken); border-color: var(--accent); color: var(-
   font-variant-numeric: tabular-nums; background: var(--sunken);
 }
 .chip b { font-weight: 600; color: var(--c); }
+.chip { display: inline-flex; align-items: center; gap: 4px; }
+.chip .ic { width: 11px; height: 11px; opacity: .75; flex: none; }
+/* โหมดย่อ: บีบให้พอดีบรรทัดเดียว ตัวเลขรองที่อยู่ในวงเล็บซ่อนไปก่อน */
+.machine.ncompact .nsum { gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+.machine.ncompact .chip { font-size: calc(10.5px * var(--fs)); padding: 1px 6px; }
+.machine.ncompact .chip .dim { display: none; }
+.chip.run { --c: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.chip.idle { --c: var(--fg3); }
 .brain { font-size: calc(12px * var(--fs)); padding: 5px 10px; max-width: 260px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .brain.off { color: var(--warn); border-color: var(--warn); }
@@ -463,8 +471,9 @@ pre {
 /* การ์ดแบบย่อ — เหลือบรรทัดเดียว (ชื่อ + ไซต์ + จุดสถานะ) ซ่อน stats/ปุ่ม/host/รายละเอียด
    กด + เพื่อกางดูของครบ · ค่าเริ่มต้นเป็นแบบนี้เพื่อให้หลายไซต์หลายเครื่องไม่ยาวเหยียด */
 .machine.ncompact > .item { padding-top: 4px; padding-bottom: 4px; }
+/* .nsum ไม่ซ่อนแล้ว — ตอนย่อคือตอนที่อยากเห็นภาพรวมหลายเครื่องพร้อมกันที่สุด
+   ซ่อนไปคือเหลือแค่ชื่อกับจุดเขียว ซึ่งบอกไม่ได้ว่าเครื่องไหนกำลังหนัก */
 .machine.ncompact .muted,
-.machine.ncompact .nsum,
 .machine.ncompact .nver,
 .machine.ncompact > .item button:not(.ntoggle),
 .machine.ncompact .nclus,
@@ -2253,7 +2262,7 @@ async function loadNode(name) {
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   paintNodeVersion(row, d, name);
   lastNodeData.set(name, d);
-  paintSummary(name, d.host);
+  paintSummary(name, d.host, d.summary);
   row.body.innerHTML = nodeModelsMarkup(name, d);
 }
 
@@ -3260,7 +3269,9 @@ function followNodeJob(node, slug, jobId) {
 
 // สรุปทรัพยากรในหัวการ์ด — ย่อการ์ดไว้แล้วยังต้องรู้ว่าเครื่องนั้นว่างหรือเต็ม
 // ไม่งั้นต้องกางทีละใบเพื่อดูว่าจะสั่งงานเครื่องไหนดี ซึ่งคือเหตุผลที่ย่อมันตั้งแต่แรก
-function summaryMarkup(host) {
+const chipIcon = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
+
+function summaryMarkup(host, sum) {
   if (!host) return "";
   const cpu = (host.cpu || {}).percent;
   const used = host.ram_used_gb, total = host.ram_total_gb;
@@ -3271,13 +3282,20 @@ function summaryMarkup(host) {
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
   const busy = gpu ? gpu.utilization_pct : null;
   // สีเดียวกับเกจข้างใน — ตัวเลขชุดเดียวกันต้องอ่านได้เหมือนกันทั้งย่อและกาง
-  const chip = (label, pct, extra = "") => pct == null ? "" :
-    `<span class="chip" style="--c:${pct >= 90 ? "var(--bad)" : pct >= 75 ? "var(--warn)" : "var(--fg3)"}">
-       ${esc(label)} <b>${pct}%</b>${extra ? `<span class="dim"> ${esc(extra)}</span>` : ""}</span>`;
-  return chip("CPU", cpu == null ? null : Math.min(cpu, 100))
-    + chip(unified ? "MEM" : "RAM", mem, used != null ? `${Math.round(used)}/${gb(total)}` : "")
-    + chip("VRAM", vram)
-    + chip("GPU", busy)
+  const chip = (icon, label, pct, extra = "") => pct == null ? "" :
+    `<span class="chip" title="${esc(label)}" style="--c:${pct >= 90 ? "var(--bad)" : pct >= 75 ? "var(--warn)" : "var(--fg3)"}">
+       ${chipIcon(icon)}<b>${pct}%</b>${extra ? `<span class="dim">${esc(extra)}</span>` : ""}</span>`;
+  // จำนวนโมเดลที่รันมาก่อนตัวเลขทรัพยากร — เป็นคำถามแรกที่คนถามกับเครื่องที่ย่ออยู่
+  const run = sum && sum.running != null
+    ? `<span class="chip ${sum.running ? "run" : "idle"}" title="โมเดลที่รันอยู่ / ที่ deploy ไว้">
+         ${chipIcon("i-server")}<b>${sum.running}</b><span class="dim">/${sum.total ?? "?"}</span></span>`
+    : "";
+  return run
+    + chip("i-pulse", "CPU", cpu == null ? null : Math.min(cpu, 100))
+    + chip("i-chip", unified ? "หน่วยความจำรวม (unified)" : "RAM", mem,
+           used != null ? ` ${Math.round(used)}/${gb(total)}` : "")
+    + chip("i-chip", "VRAM", vram)
+    + chip("i-spark", "GPU load", busy)
     + cacheChip(host.cache);
 }
 
@@ -3292,9 +3310,9 @@ function cacheChip(cache) {
             สิทธิ์แคช <b>ต้องแก้</b></span>`;
 }
 
-function paintSummary(name, host) {
+function paintSummary(name, host, sum) {
   const row = nodeRows.get(name);
-  if (row && row.summary) row.summary.innerHTML = summaryMarkup(host);
+  if (row && row.summary) row.summary.innerHTML = summaryMarkup(host, sum);
 }
 
 function nodeIsInUse(name) {
@@ -3329,12 +3347,12 @@ function applySnapshot(snap) {
     // จนกรอกไม่ทัน (เจอจริง) · เมนูที่กางอยู่ = กำลังใช้งานแถวนั้น ปล่อยไว้จนกว่าจะปิดเอง
     if (busy || pinnedOutput.has(name) || nodeIsInUse(name)) {
       // แถบสรุปในหัวไม่มีอะไรให้ผู้ใช้กดหรือพิมพ์ — อัปเดตได้เสมอแม้ตัวการ์ดถูกล็อกอยู่
-      paintSummary(name, (entry.data || {}).host);
+      paintSummary(name, (entry.data || {}).host, (entry.data || {}).summary);
       markStale(row, entry);
       continue;
     }
     lastNodeData.set(name, payload);
-    paintSummary(name, (entry.data || {}).host);
+    paintSummary(name, (entry.data || {}).host, (entry.data || {}).summary);
     row.dot.className = "dot " + (entry.data ? "on" : "");
     paintNodeVersion(row, { reachable: !!entry.data, host: (entry.data || {}).host }, name);
     row.body.innerHTML = nodeModelsMarkup(name, payload);

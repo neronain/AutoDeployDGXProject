@@ -7,7 +7,7 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.3.0-1f5fbf)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.3.5-1f5fbf)](CHANGELOG.md)
 [![tests](https://img.shields.io/badge/tests-903-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
