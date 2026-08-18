@@ -209,6 +209,13 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 | **vLLM** | ✅ docker | ✅ docker |
 
 ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo
+
+**MoE กับ MTP ถูกรายงานเป็นข้อเท็จจริงจากไฟล์** ไม่ใช่สิ่งที่ LLM เดา — จำนวน expert
+ทั้งหมด/ที่เปิดต่อ token อ่านจาก `config.json` หรือ GGUF metadata แล้วโชว์ตั้งแต่ตอน
+`deploy` ยันคอนโซล (`image, MoE 128e/8a, MTP`) เพราะ *total บอกว่าต้องมีหน่วยความจำ
+เท่าไร ส่วน active บอกว่าจะได้ความเร็วเท่าไร* — บนเครื่องที่คอขวดคือ bandwidth สองค่านี้
+ต่างกันหลายเท่า · repo ที่แถม MTP draft head มาให้จะถูกโหลด + ต่อสายให้อัตโนมัติ
+(วัดจริงบน DGX Spark: gemma4-26B-A4B ได้ **1.78x** โดย output เท่าเดิม)
 · **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **903 เทสต์**
 
 > **แหล่งโมเดล: Hugging Face เท่านั้น** — Ollama registry และ NVIDIA NGC อยู่ในเฟส 2

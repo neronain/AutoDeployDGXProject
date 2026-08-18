@@ -1892,6 +1892,22 @@ def rebuild(
 
     source, report = _resolve_and_inspect(model_id, revision, interactive_ok=True)
     if model.get("selected_gguf"):
+        # inspect ซ้ำด้วยไฟล์ที่ profile เคยเลือกไว้ — repo ที่มีหลาย variant จะไม่เลือกให้เอง
+        # แล้วไม่มีใครเปิด GGUF header เลย: architecture / context / kv dims / MoE หายหมด
+        # (ตั้ง selected_gguf ทีหลังไม่ช่วย เพราะ header ถูกอ่านตอน inspect เท่านั้น)
+        from dataclasses import replace as dc_replace
+
+        from lmds.inspector import HfClient, HfError, inspect_model
+
+        if report.selected_gguf != model["selected_gguf"]:
+            try:
+                report = inspect_model(
+                    dc_replace(source, filename=model["selected_gguf"]),
+                    HfClient(token=get_secret("hf")),
+                )
+            except HfError as exc:
+                console.print(f"[yellow]อ่าน header ของ {model['selected_gguf']} ไม่ได้ ({exc}) — "
+                              f"ใช้ค่าที่ profile เก็บไว้แทน[/yellow]")
         report.selected_gguf = model["selected_gguf"]
     report = _ensure_gguf_selected(source, report, interactive=False)
     fit = _compute_fits(report, [target] if target else [], 1)[0]

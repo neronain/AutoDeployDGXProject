@@ -147,6 +147,25 @@ lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างท
 - **flag ของ controller ส่งผ่านได้ตรง ๆ**: `lmds start <slug> --port 8001 --gpu-util 0.8` — LMDS ไม่พยายาม
   รู้จัก flag ทุกตัว (แต่ละ engine มีไม่เท่ากันและเปลี่ยนตามเวอร์ชัน) แค่ส่งต่อให้ controller ตรวจค่าเอง
   ซึ่งมันตรวจอยู่แล้ว · ก่อนหน้านี้ `--port` ตอบ `No such option` ทั้งที่ controller รองรับ
+- **flag ของ controller (llama.cpp) ที่ตั้งได้ตอน start/restart**:
+
+  | flag | ทำอะไร |
+  |---|---|
+  | `--name NAME` | ชื่อที่ client ใส่ในฟิลด์ `model` · ชื่อที่ generate ตั้งไว้ถูกตรึงเป็น `DEFAULT_SERVED_MODEL_NAME` ที่ override ไม่ได้ แล้วโชว์คู่กันเมื่อไม่ตรง |
+  | `--port N` `--context N` `--bind ADDR` | ตามเดิม |
+  | `--mmproj FILE` / `--no-mmproj` | เปิด/ปิด vision (โผล่เฉพาะ bundle ที่มีไฟล์ mmproj) |
+  | `--mtp FILE` / `--no-mtp` | เปิด/ปิด speculative decoding (โผล่เฉพาะ bundle ที่มีไฟล์ MTP) |
+
+  หน้า help แบ่งเป็น **Identity / Network / Memory & limits / Model features** — หมวดสุดท้าย
+  โผล่เฉพาะโมเดลที่มีไฟล์จริง · env เดิม (`MTP_FILE=""`) ยังใช้ได้ และใช้ `${VAR-default}`
+  (ไม่มี `:`) เพื่อให้ค่าว่างแปลว่า "ปิด" จริง ๆ ไม่ถูกแทนด้วย default
+
+- **คำสั่งหลัง start อ่านสถานะจริงจาก `server.meta`** — `status`/`logs`/`network-info`/
+  `client-config`/`test-*`/`stop` เป็นคนละ process กับตัวที่ start จึงไม่รู้ว่าใช้ flag อะไร
+  เดิมไปใช้ default ในไฟล์แล้วรายงานผิด (`start --port 8020` แล้ว `status` บอก
+  `API: not responding` เพราะไปถาม 8000) · อ่าน meta **เฉพาะตอนเซิร์ฟเวอร์ยังรันอยู่จริง** ·
+  flag ที่ระบุเองชนะเสมอ · `start`/`restart` ไม่สืบทอด ไม่งั้นค่าเก่าติดมาเงียบ ๆ ทุกครั้ง
+
 - **container ที่ไม่ได้มาจาก lmds**: `discover()` สแกน `docker ps` แล้วรับเฉพาะตัวที่ image ตรงกับ
   engine ที่รู้จัก (vLLM/llama.cpp/Ollama/TGI) ทำเครื่องหมาย `external=True` ·
   `stop` ของกลุ่มนี้ใช้ `docker stop` (ไม่ `docker rm -f`) · `enable` สร้าง unit แบบ `docker start <container>`
