@@ -754,7 +754,8 @@ def feature_summary(profile: dict | None) -> str:
     if moe.get("experts"):
         active = moe.get("experts_active")
         labels.append(f"MoE {moe['experts']}e/{active}a" if active else f"MoE {moe['experts']}e")
-    if (feats.get("speculative") or {}).get("draft_files"):
+    spec = feats.get("speculative") or {}
+    if spec.get("draft_files") or spec.get("embedded"):
         labels.append("MTP")
     return ", ".join(labels) if labels else "text"
 

@@ -223,13 +223,24 @@ def _harden_draft(plan: DeploymentPlan, report: ModelReport) -> None:
         if plan.speculative.draft_files:
             plan.warnings.append("ตัด draft_files ออก — ใช้ได้เฉพาะ engine llama.cpp")
             plan.speculative.draft_files = []
+        plan.speculative.embedded = False
         return
+
+    # บาง repo ไม่แถมไฟล์ draft แยกแต่ "คง" MTP head ไว้ในไฟล์เป้าหมายเอง (nextn_predict_layers)
+    # เคสจริง: SC117/Qwen3.6-35B-A3B-...-Native-MTP-Preserved-APEX — llama.cpp เปิดด้วย
+    # --spec-type draft-mtp เฉย ๆ ไม่มี --spec-draft-model · ดูแต่ไฟล์อย่างเดียวจะพลาดทั้งตระกูล
+    plan.speculative.embedded = bool(report.mtp_embedded)
 
     available = [v for v in report.gguf_variants if v.is_mtp]
     if not available:
         if plan.speculative.draft_files:
             plan.warnings.append("ตัด draft_files ออก — ไม่พบไฟล์ MTP ใน repo จริง")
             plan.speculative.draft_files = []
+        if plan.speculative.embedded:
+            plan.warnings.append(
+                "GGUF มี MTP head ฝังในตัว (nextn) — เปิด speculative decoding ให้อัตโนมัติ "
+                "โดยไม่ต้องมีไฟล์ draft แยก"
+            )
         return
 
     chosen = available[0].filename

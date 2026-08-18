@@ -138,6 +138,8 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
             )
     gguf_parts = gguf_parts + mtp_parts
     mtp_basename = mtp_parts[0]["basename"] if mtp_parts else ""
+    # MTP ฝังในไฟล์เป้าหมาย — ไม่มีไฟล์ให้โหลด มีแต่ flag ที่ต้องส่ง
+    mtp_embedded = bool(is_gguf and plan.speculative.embedded)
 
     required = list(BASE_REQUIRED_FILES)
     if report.shard_count and report.shard_count > 1:
@@ -228,6 +230,7 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "gguf_parts": gguf_parts,
         "mmproj_basename": mmproj_basename,
         "mtp_basename": mtp_basename,
+        "mtp_embedded": mtp_embedded,
         # llama.cpp บน DGX Spark (unified/ARM64) ไม่มี docker image ทางการ — ใช้ native source build
         "runtime_mode": "native" if fit.memory_model.value == "unified" else "docker",
         "cuda_architectures": "121a-real" if fit.memory_model.value == "unified" else "native",

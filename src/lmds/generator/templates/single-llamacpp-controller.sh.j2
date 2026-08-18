@@ -77,7 +77,10 @@ MODEL_FILE="${MODEL_FILES[0]}"
 # ไม่งั้น bash แทนค่าว่างด้วย default แล้วปิดไม่ได้จริง (เจอตอนวัด MTP เปิด/ปิด)
 MMPROJ_FILE="${MMPROJ_FILE-{{ mmproj_basename }}}"
 {% endif %}
-{% if mtp_basename %}# MTP draft head — target verify ทุก token ที่ draft เสนอ output เหมือนเดิมเป๊ะ
+{% if mtp_embedded and not mtp_basename %}# MTP head ฝังอยู่ในไฟล์โมเดลเอง (nextn) — ไม่มีไฟล์ให้โหลดแยก
+# MTP_EMBEDDED="" เพื่อปิด speculative decoding
+MTP_EMBEDDED="${MTP_EMBEDDED-1}"
+{% endif %}{% if mtp_basename %}# MTP draft head — target verify ทุก token ที่ draft เสนอ output เหมือนเดิมเป๊ะ
 # MTP_FILE="" เพื่อปิด speculative decoding (เหตุผลเดียวกับ MMPROJ_FILE ข้างบน)
 MTP_FILE="${MTP_FILE-{{ mtp_basename }}}"
 {% endif %}
@@ -192,6 +195,8 @@ parse_options() {
 {% endif %}{% if mtp_basename %}      --mtp)            MTP_FILE="$2"; shift 2 ;;
       --mtp=*)          MTP_FILE="${1#*=}"; shift ;;
       --no-mtp)         MTP_FILE=""; shift ;;
+{% endif %}{% if mtp_embedded and not mtp_basename %}      --no-mtp)         MTP_EMBEDDED=""; shift ;;
+      --mtp)            MTP_EMBEDDED=1; shift ;;
 {% endif %}      *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
@@ -399,6 +404,10 @@ server_args() {
 {% if mtp_basename %}  # ไม่มีบล็อกนี้ = ไม่มี speculative decoding เสียความเร็วที่ repo ทำมาให้ฟรี ๆ
   if [[ -n "$MTP_FILE" && -f "${MODEL_DIR}/${MTP_FILE}" ]]; then
     SERVER_ARGS+=(--spec-draft-model "${MODEL_MOUNT_DIR}/${MTP_FILE}" --spec-type draft-mtp)
+  fi
+{% endif %}{% if mtp_embedded and not mtp_basename %}  # head อยู่ในไฟล์แล้ว — ส่งแค่ flag ไม่มี --spec-draft-model
+  if [[ -n "$MTP_EMBEDDED" ]]; then
+    SERVER_ARGS+=(--spec-type draft-mtp)
   fi
 {% endif %}
 {% for flag in extra_flag_pairs %}
@@ -756,12 +765,14 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
                         Lower this first if the server runs out of memory.
   --client-input N|auto Input token budget written into client-config   [default: ${CLIENT_INPUT}]
   --client-output N     Output token budget written into client-config  [default: ${CLIENT_OUTPUT}]
-{% if mmproj_basename or mtp_basename %}
+{% if mmproj_basename or mtp_basename or mtp_embedded %}
  Model features (this model ships the files for these)
 {% if mmproj_basename %}  --mmproj FILE         Vision projector to load                  [default: ${MMPROJ_FILE}]
   --no-mmproj           Serve as text-only (skip the vision projector)
 {% endif %}{% if mtp_basename %}  --mtp FILE            MTP draft head for speculative decoding   [default: ${MTP_FILE}]
   --no-mtp              Turn speculative decoding off (slower, identical output)
+{% endif %}{% if mtp_embedded and not mtp_basename %}  --mtp / --no-mtp      Speculative decoding using the MTP head built into this GGUF
+                        (no separate draft file)                 [default: on]
 {% endif %}{% endif %}
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
@@ -789,6 +800,7 @@ ENVIRONMENT VARIABLES
   MODEL_DIR           Where GGUF files are stored                [default: ${MODEL_DIR}]
 {% if mmproj_basename %}  MMPROJ_FILE         Same as --mmproj / --no-mmproj              [default: ${MMPROJ_FILE}]
 {% endif %}{% if mtp_basename %}  MTP_FILE            Same as --mtp / --no-mtp                    [default: ${MTP_FILE}]
+{% endif %}{% if mtp_embedded and not mtp_basename %}  MTP_EMBEDDED        Same as --mtp / --no-mtp (empty = off)      [default: ${MTP_EMBEDDED}]
 {% endif %}  HF_TOKEN            Hugging Face token, needed for gated repos during 'download'
   N_GPU_LAYERS        Layers offloaded to GPU (fewer = less VRAM, slower)
   HEALTH_TIMEOUT      Seconds to wait for /health on start        [default: ${HEALTH_TIMEOUT}]

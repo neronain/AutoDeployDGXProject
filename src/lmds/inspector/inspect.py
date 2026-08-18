@@ -448,6 +448,7 @@ def _inspect_gguf(
     report.kv_dims = report.kv_dims or _kv_dims_from_gguf(gguf)
     report.moe_experts = report.moe_experts or gguf.expert_count
     report.moe_experts_active = report.moe_experts_active or gguf.expert_used_count
+    report.mtp_embedded = report.mtp_embedded or bool(gguf.nextn_layers)
     if report.has_chat_template is None:
         report.has_chat_template = gguf.chat_template is not None
     if gguf.file_type is not None and not report.quantization:

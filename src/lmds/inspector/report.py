@@ -95,6 +95,8 @@ class ModelReport(BaseModel):
     # บนเครื่องที่คอขวดคือ bandwidth (DGX Spark) สองค่านี้ต่างกันหลายเท่า ต้องเห็นทั้งคู่
     moe_experts: Optional[int] = None
     moe_experts_active: Optional[int] = None
+    # MTP head ที่ฝังอยู่ใน GGUF เอง (nextn_predict_layers) — ต่างจาก repo ที่แถมไฟล์ draft แยก
+    mtp_embedded: bool = False
     has_chat_template: Optional[bool] = None
     # ความสามารถที่อ่านได้จากไฟล์ ก่อน deploy — ดู inspector/capabilities.py ว่าอะไร
     # ตอบได้จริงและอะไรต้องรอวัดตอนรัน

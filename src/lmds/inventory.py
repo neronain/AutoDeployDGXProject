@@ -352,6 +352,7 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         "moe": ((profile or {}).get("features") or {}).get("moe") or None,
         "speculative": bool(
             (((profile or {}).get("features") or {}).get("speculative") or {}).get("draft_files")
+            or (((profile or {}).get("features") or {}).get("speculative") or {}).get("embedded")
         ),
         "projector": bool(
             (((profile or {}).get("features") or {}).get("multimodal") or {}).get("projector_files")

@@ -85,6 +85,8 @@ class Speculative(BaseModel):
     """
 
     draft_files: list[str] = Field(default_factory=list)
+    # MTP ฝังในไฟล์เป้าหมายเอง — llama.cpp เปิดด้วย --spec-type draft-mtp เฉย ๆ ไม่มี draft แยก
+    embedded: bool = False
 
 
 class Multimodal(BaseModel):

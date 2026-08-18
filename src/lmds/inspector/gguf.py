@@ -87,6 +87,13 @@ class GgufInfo:
         return value if isinstance(value, int) and value > 0 else None
 
     @property
+    def nextn_layers(self) -> int | None:
+        """จำนวนชั้น NextN/MTP ที่ฝังมาในไฟล์ — >0 = เปิด speculative ได้โดยไม่ต้องมี draft แยก"""
+        arch = self.architecture
+        value = self.metadata.get(f"{arch}.nextn_predict_layers") if arch else None
+        return value if isinstance(value, int) and value > 0 else None
+
+    @property
     def chat_template(self) -> str | None:
         return self.metadata.get("tokenizer.chat_template")
 

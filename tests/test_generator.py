@@ -614,6 +614,42 @@ def test_companion_files_can_be_disabled_by_empty_env(tmp_path):
     assert "${MMPROJ_FILE:-" not in script
 
 
+def test_embedded_mtp_is_enabled_without_a_draft_file(tmp_path):
+    """เคสจริง SC117/Qwen3.6-35B-A3B-...-Native-MTP-Preserved-APEX
+
+    repo ไม่แถมไฟล์ draft แยก แต่ "คง" MTP head ไว้ในไฟล์เป้าหมายเอง
+    (`{arch}.nextn_predict_layers`) · llama.cpp เปิดด้วย --spec-type draft-mtp เฉย ๆ
+    ถ้าดูแต่ไฟล์อย่างเดียวจะพลาดทั้งตระกูลนี้ทั้งที่ชื่อ repo บอกอยู่แล้วว่ามี MTP
+    """
+    report = gguf_report(mtp_embedded=True)
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert plan.speculative.embedded is True
+    assert plan.speculative.draft_files == [], "ไม่มีไฟล์ draft ให้โหลด"
+    assert "--spec-type draft-mtp" in script
+    # ดูที่ตัว SERVER_ARGS ไม่ใช่ทั้งไฟล์ — คอมเมนต์ในสคริปต์ก็พูดถึงชื่อ flag นี้
+    assert "SERVER_ARGS+=(--spec-draft-model" not in script, "head อยู่ในไฟล์แล้ว ส่ง draft-model ไปคือชี้ผิดไฟล์"
+    assert 'MTP_EMBEDDED="${MTP_EMBEDDED-1}"' in script
+    assert "--no-mtp)         MTP_EMBEDDED=\"\"" in script
+    assert not audit_script(script)
+
+    profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+    assert profile["features"]["speculative"]["embedded"] is True
+
+    from lmds.fleet.manager import feature_summary
+
+    assert "MTP" in feature_summary(profile), "badge ต้องขึ้นเหมือนแบบมีไฟล์ draft"
+
+
+def test_embedded_mtp_read_from_gguf_metadata():
+    from lmds.inspector.gguf import GgufInfo
+
+    meta = {"general.architecture": "qwen35moe", "qwen35moe.nextn_predict_layers": 1}
+    assert GgufInfo(version=3, tensor_count=1, metadata=meta).nextn_layers == 1
+    assert GgufInfo(version=3, tensor_count=1, metadata={"general.architecture": "llama"}).nextn_layers is None
+
+
 def test_gguf_without_mtp_has_no_spec_flags(tmp_path):
     """repo ที่ไม่มี MTP ต้องไม่มี --spec-type โผล่มา (ค่าว่างจะทำให้ llama-server ล้ม)"""
     bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
