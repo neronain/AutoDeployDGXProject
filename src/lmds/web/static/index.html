@@ -238,6 +238,20 @@ button:has(.ic):not(.brain) { display: inline-flex; align-items: center; gap: 6p
 .tag.bad { background: var(--bad-bg); color: var(--bad); }
 .tag.ok { background: var(--ok-bg); color: var(--ok); }
 .tag.warn { background: var(--warn-bg); color: var(--warn); }
+/* MoE/MTP เป็นคุณสมบัติของโมเดล ไม่ใช่สถานะดี/ร้าย — แยกโทนออกจาก ok/warn/bad */
+.tag.spec { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent);
+            border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+.tag.feat { background: color-mix(in srgb, var(--ok) 13%, transparent); color: var(--ok);
+            border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent); }
+.tag .ic { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1.5px; }
+.tag { display: inline-flex; align-items: center; }
+.tog { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px;
+       border: 1px solid var(--line2); border-radius: var(--r-sm); cursor: pointer;
+       font-size: calc(12.5px * var(--fs)); user-select: none; }
+.tog:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+       background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
+.tog input { margin: 0; accent-color: var(--accent); }
+.tog .ic { width: 13px; height: 13px; }
 
 /* ── controls ───────────────────────────────────────────────────────── */
 button {
@@ -661,7 +675,7 @@ pre {
   <symbol id="i-deploy" viewBox="0 0 24 24">
     <path d="M12 3.5v11"/><path d="m8 7.5 4-4 4 4"/>
     <path d="M4.5 15v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></symbol>
-  <symbol id="i-spark" viewBox="0 0 24 24">
+  <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M9 1.5v2M15 1.5v2M9 20.5v2M15 20.5v2M1.5 9h2M1.5 15h2M20.5 9h2M20.5 15h2"/></symbol><symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 1 9-9"/><path d="M12 12l4.5-4"/><circle cx="12" cy="12" r="1.3"/></symbol><symbol id="i-spark" viewBox="0 0 24 24">
     <path d="M11 3.5l1.7 4.3 4.3 1.7-4.3 1.7L11 15.5 9.3 11.2 5 9.5l4.3-1.7z"/>
     <path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24">
@@ -913,15 +927,46 @@ const rows = new Map();
 const models_by_slug = new Map();
 const has = (m, command) => (m.commands || []).includes(command);
 
+// badge ของโมเดล — ใช้ร่วมกันทั้งหน้าเครื่องนี้และหน้าเครื่องอื่น เดิมสองที่เขียนคนละชุด
+// แล้วหลุดไม่เท่ากัน (หน้าเครื่องอื่นไม่เคยโชว์ MoE เลยทั้งที่ payload มีมาให้)
+// ชื่อที่ client ต้องใส่ในฟิลด์ "model" — ไม่เท่ากับ slug และเปลี่ยนได้ตอน start
+// เดิมไม่โชว์ที่ไหนเลย ตั้งชื่อใหม่แล้วหน้าจอจึงดูเหมือนไม่มีอะไรเกิดขึ้น
+function servedLine(m) {
+  if (!m.served_name) return "";
+  const renamed = m.default_served_name && m.default_served_name !== m.served_name;
+  return `<div class="muted" style="margin-top:2px">
+    <span class="dim">model ID:</span> <code>${esc(m.served_name)}</code>
+    ${renamed ? `<span class="dim" title="ชื่อที่ bundle ตั้งมาตอน generate — เก็บไว้กันลืมว่าเดิมคืออะไร">
+      &nbsp;↳ เดิม: <code>${esc(m.default_served_name)}</code></span>` : ""}
+  </div>`;
+}
+
+function modelTags(m) {
+  const out = [];
+  const ico = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
+  if (m.topology === "stacked") out.push(`<span class="tag">stacked</span>`);
+  if (m.projector || (m.features || "").includes("image"))
+    out.push(`<span class="tag feat" title="รับภาพได้ (mmproj)">${ico("i-eye")}vision</span>`);
+  if (m.moe && m.moe.experts) {
+    const a = m.moe.experts_active;
+    out.push(`<span class="tag spec" title="MoE — โหลดทั้งก้อนแต่คิดแค่ ${a || "?"} expert ต่อ token`
+      + ` ความเร็วจึงมาจาก active ไม่ใช่ขนาดรวม">${ico("i-chip")}MoE ${m.moe.experts}e`
+      + (a ? `/${a}a` : "") + `</span>`);
+  }
+  if (m.speculative)
+    out.push(`<span class="tag spec" title="MTP draft head — เร็วขึ้นโดย output เท่าเดิม`
+      + ` (target verify ทุก token ที่ draft เสนอ)">${ico("i-gauge")}MTP</span>`);
+  return out;
+}
+
 function rowMarkup(m) {
-  const tags = [];
-  if (m.topology === "stacked") tags.push(`<span class="tag">stacked</span>`);
-  if (m.features && m.features.includes("image")) tags.push(`<span class="tag">vision</span>`);
+  const tags = modelTags(m);
   if (m.external) tags.push(`<span class="tag warn">not deployed by lmds</span>`);
   if (!m.controller_exists) tags.push(`<span class="tag bad">controller missing</span>`);
   else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">not downloaded</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
-    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>`;
+    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>
+    ${servedLine(m)}`;
 }
 
 function actionsMarkup(m) {
@@ -1850,6 +1895,11 @@ function readNodeOpts(node, slug) {
     image: num(".n-image"), served_name: num(".n-served"),
   };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
+  // ติ๊กออก = ปิดฟีเจอร์ ซึ่งต้องส่ง "" ไปจริง ๆ ไม่ใช่ไม่ส่ง (ไม่ส่ง = ใช้ค่า default ของ bundle)
+  // จึงอ่านหลัง delete undefined แล้วใส่ค่าว่างเข้าไปเอง
+  box.querySelectorAll("input.n-toggle").forEach(el => {
+    if (!el.checked) o[el.dataset.opt] = "";
+  });
   localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(o));
   return o;
 }
@@ -2042,8 +2092,7 @@ function nodeModelsMarkup(name, data) {
             <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
             ${m.running && m.context_configured && m.context !== m.context_configured
               ? `<span class="tag" title="ค่าใน bundle คือ ${m.context_configured.toLocaleString()} — ตัวที่รันอยู่ใช้ค่าที่คุณตั้งตอน start">ตั้งเอง</span>` : ""}
-            ${m.topology === "stacked" ? `<span class="tag">stacked</span>` : ""}
-            ${(m.features || "").includes("image") ? `<span class="tag">vision</span>` : ""}
+            ${modelTags(m).join(" ")}
             ${autoOn ? `<span class="tag">autostart</span>` : ""}
             ${rival ? `<span class="tag bad" title="ผลทดสอบจะเป็นของ ${esc(rival.slug)} ไม่ใช่ตัวนี้">
               พอร์ตชนกับ ${esc(rival.slug)}</span>` : ""}</span>
@@ -2056,6 +2105,7 @@ function nodeModelsMarkup(name, data) {
                   class="${open ? "on" : ""}" title="ตั้งค่า + คำสั่งทั้งหมด">⋯</button>
         </div>
         ${open ? `<div class="submenu" data-for="${esc(m.slug)}">
+          ${servedLine(m)}
           <div class="dim" style="width:100%">ตั้งค่าตอน start — เหมือน
             <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
           <div class="field" style="width:100%">
@@ -2090,9 +2140,10 @@ function nodeModelsMarkup(name, data) {
           <div class="field" style="width:100%">
             <label>model ID</label>
             <input class="n-served" value="${esc(o.served_name ?? "")}"
-                   placeholder="empty = the name the bundle sets" style="min-width:240px"
+                   placeholder="${esc(m.default_served_name || "empty = the name the bundle sets")}" style="min-width:240px"
                    title="ชื่อที่ API เสิร์ฟออกไป — ย้ายมาจากระบบเดิมแล้วต้องใช้ชื่อเดิม ตั้งตรงนี้">
-            <span class="dim">ชื่อที่ client เรียกใช้ (field "model" ใน request)</span>
+            <span class="dim">ชื่อที่ client เรียกใช้ (field "model" ใน request)
+              ${m.default_served_name ? `· ชื่อเดิมของ bundle: <code>${esc(m.default_served_name)}</code>` : ""}</span>
           </div>
           <div class="field" style="width:100%">
             <label>image</label>
@@ -2101,6 +2152,18 @@ function nodeModelsMarkup(name, data) {
                    title="ใช้ตอน image ของ bundle ใช้ไม่ได้ (tag ผิด/ถูกถอน) — ไม่ต้อง deploy ใหม่">
             <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
           </div>
+
+          ${(m.speculative || m.projector) ? `
+          <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-chip"/></svg><span class="sec-title">Model features</span></div>
+          <div class="field" style="width:100%">
+            ${m.projector ? `<label class="tog" title="ปิด = เสิร์ฟข้อความล้วน (llama-server ไม่โหลด mmproj)">
+              <input type="checkbox" class="n-toggle" data-opt="mmproj" ${o.mmproj === "" ? "" : "checked"}>
+              <svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg> vision</label>` : ""}
+            ${m.speculative ? `<label class="tog" title="ปิด = ไม่ใช้ draft head — ช้าลง แต่ output เหมือนกันเป๊ะ">
+              <input type="checkbox" class="n-toggle" data-opt="mtp" ${o.mtp === "" ? "" : "checked"}>
+              <svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg> MTP speculative decoding</label>` : ""}
+            <span class="dim">มีผลตอน start/restart ครั้งถัดไป</span>
+          </div>` : ""}
 
           <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-flask"/></svg><span class="sec-title">Tests</span></div>
           <div class="field" style="width:100%">

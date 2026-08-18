@@ -185,8 +185,12 @@ def controller_env(options: dict | None) -> dict:
         env["GPU_MEMORY_UTILIZATION"] = str(float(options["gpu_util"]))
     if options.get("served_name"):
         env["SERVED_MODEL_NAME"] = str(options["served_name"])
-    if options.get("served_name"):
-        env["SERVED_MODEL_NAME"] = str(options["served_name"])
+    # ปิดฟีเจอร์ = ส่งค่าว่าง ซึ่งเป็นค่าที่ "ตั้งใจส่ง" จึงเช็ก is not None ไม่ใช่ truthy
+    # controller ใช้ ${VAR-default} (ไม่มี :) ค่าว่างจึงไม่ถูกแทนด้วย default
+    if options.get("mtp") is not None:
+        env["MTP_FILE"] = str(options["mtp"])
+    if options.get("mmproj") is not None:
+        env["MMPROJ_FILE"] = str(options["mmproj"])
     # ชื่อ parser ของ vLLM — controller เปิด/ปิดจาก env ตัวนี้ ค่าว่างคือปิด
     # ซึ่งเป็นค่าที่ต้องส่งได้จริง (เอา parser ที่ใส่ผิดออก) จึงเช็ก `is not None`
     # ไม่ใช่ truthy เหมือนตัวอื่น
@@ -254,7 +258,20 @@ def clean_options(options: dict | None) -> dict:
         cleaned["image"] = _clean_image(str(options["image"]))
     if options.get("served_name"):
         cleaned["served_name"] = _clean_served_name(str(options["served_name"]))
+    # ค่าที่รับคือชื่อไฟล์ หรือค่าว่าง (= ปิด) — ชื่อไฟล์ไปอยู่ในคำสั่งข้ามเครื่อง
+    # จึงรับเฉพาะ basename ห้ามมี path หรืออักขระที่แตกคำสั่งได้
+    for key in ("mtp", "mmproj"):
+        if key not in options:
+            continue
+        value = str(options[key] or "")
+        if value and not _COMPANION_FILE.fullmatch(value):
+            raise ValueError(f"{key} ต้องเป็นชื่อไฟล์ .gguf (ไม่มี path)")
+        cleaned[key] = value
     return cleaned
+
+
+# ชื่อไฟล์คู่โมเดล (mmproj / mtp) — basename เท่านั้น
+_COMPANION_FILE = re.compile(r"[A-Za-z0-9._-]+\.gguf")
 
 
 def _clean_served_name(name: str) -> str:

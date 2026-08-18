@@ -344,6 +344,18 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         "context": running_context(server) or profile_context(profile),
         "context_configured": profile_context(profile),
         "features": feature_summary(profile),
+        # การ์ดในเว็บโชว์ slug ซึ่งไม่เคยเปลี่ยน — ตั้งชื่อใหม่แล้วหน้าจอเลยดูเหมือนไม่มีอะไรเกิดขึ้น
+        "served_name": server.model or ((profile or {}).get("model") or {}).get("served_name"),
+        "default_served_name": server.default_model
+        or ((profile or {}).get("model") or {}).get("served_name"),
+        # ส่งเป็นตัวเลข ไม่ใช่สตริงรวม — หน้าเว็บจะได้จัดรูปเองได้ ไม่ต้องแกะข้อความ
+        "moe": ((profile or {}).get("features") or {}).get("moe") or None,
+        "speculative": bool(
+            (((profile or {}).get("features") or {}).get("speculative") or {}).get("draft_files")
+        ),
+        "projector": bool(
+            (((profile or {}).get("features") or {}).get("multimodal") or {}).get("projector_files")
+        ),
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),
         "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
