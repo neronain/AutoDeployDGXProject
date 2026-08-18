@@ -866,6 +866,17 @@ target model verify ทุก token ที่ draft เสนอ — ได้�
 MTP_FILE=""   ./<controller>.sh restart    # ปิด speculative decoding
 ```
 
+วัดจริงบน DGX Spark (gemma4-26B-A4B Q4_K_M, ctx 65536, 3 รอบต่อโหมด):
+
+| | TG เฉลี่ย | draft acceptance |
+|---|---:|---:|
+| MTP เปิด | **123.58 tok/s** | ~83% |
+| MTP ปิด | 69.52 tok/s | — |
+| | **1.78x** | |
+
+สูงกว่าที่ repo เคลม (1.35x) เพราะ Spark คอขวดที่ memory bandwidth ไม่ใช่ compute —
+speculative decoding จึงคุ้มกว่าบนเครื่องแบบนี้
+
 > **ทำไมต้องบังคับจาก repo ไม่ให้ LLM ตัดสิน** — เคสจริง `HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-*-MTP`
 > LLM เสนอ `--mtp mtp-gemma-4-26B-it.gguf` ซึ่งผิดสองชั้น: llama.cpp ไม่มี flag ชื่อ `--mtp`
 > (ของจริงคือ `--spec-draft-model` คู่กับ `--spec-type draft-mtp`) และชื่อไฟล์ตก `-A4B` ไป

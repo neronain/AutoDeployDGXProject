@@ -472,6 +472,21 @@ def test_mtp_draft_head_is_downloaded_and_wired(tmp_path):
     assert not audit_script(script)
 
 
+def test_companion_files_can_be_disabled_by_empty_env(tmp_path):
+    """`MTP_FILE="" ./ctl restart` ต้องปิดได้จริง — เจอตอนวัด MTP เปิด/ปิดแล้วได้ตัวเลขเท่ากันเป๊ะ
+
+    `${VAR:-default}` แทนค่าว่างด้วย default ด้วย (`:` = unset *หรือ* ว่าง) การ override
+    จึงไม่มีผลเลยทั้งที่คอมเมนต์ในไฟล์บอกว่าปิดได้ · ต้องเป็น `${VAR-default}`
+    """
+    script = make_bundle(mtp_gguf_report(), tmp_path=tmp_path)[0].controller.read_text(
+        encoding="utf-8"
+    )
+    assert 'MTP_FILE="${MTP_FILE-' in script
+    assert 'MMPROJ_FILE="${MMPROJ_FILE-' in script
+    assert "${MTP_FILE:-" not in script
+    assert "${MMPROJ_FILE:-" not in script
+
+
 def test_gguf_without_mtp_has_no_spec_flags(tmp_path):
     """repo ที่ไม่มี MTP ต้องไม่มี --spec-type โผล่มา (ค่าว่างจะทำให้ llama-server ล้ม)"""
     bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)

@@ -71,12 +71,13 @@ EXPECTED_SHAS=(
 {% endfor %})
 MODEL_FILE="${MODEL_FILES[0]}"
 {% if mmproj_basename %}# multimodal projector — อยู่ท้าย MODEL_FILES แล้ว (download/verify จึงครอบคลุมให้)
-# ตั้งเป็นค่าว่างเพื่อเสิร์ฟโมเดลนี้แบบข้อความล้วน
-MMPROJ_FILE="${MMPROJ_FILE:-{{ mmproj_basename }}}"
+# MMPROJ_FILE="" เพื่อเสิร์ฟแบบข้อความล้วน — ใช้ ${VAR-default} ไม่ใช่ ${VAR:-default}
+# ไม่งั้น bash แทนค่าว่างด้วย default แล้วปิดไม่ได้จริง (เจอตอนวัด MTP เปิด/ปิด)
+MMPROJ_FILE="${MMPROJ_FILE-{{ mmproj_basename }}}"
 {% endif %}
 {% if mtp_basename %}# MTP draft head — target verify ทุก token ที่ draft เสนอ output เหมือนเดิมเป๊ะ
-# ตั้งเป็นค่าว่างเพื่อปิด speculative decoding
-MTP_FILE="${MTP_FILE:-{{ mtp_basename }}}"
+# MTP_FILE="" เพื่อปิด speculative decoding (เหตุผลเดียวกับ MMPROJ_FILE ข้างบน)
+MTP_FILE="${MTP_FILE-{{ mtp_basename }}}"
 {% endif %}
 
 CTX_SIZE="${CTX_SIZE:-{{ plan.serving.context }}}"
