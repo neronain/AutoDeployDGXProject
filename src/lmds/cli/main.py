@@ -1153,7 +1153,11 @@ def version() -> None:
     """แสดงเวอร์ชันโปรแกรมและมาตรฐาน template"""
     from .banner import CREDIT
 
-    console.print(f"lmds {lmds.__version__}")
+    from lmds.inventory import source_commit
+
+    # เลข version ไม่ขยับทุกคอมมิต — ถามว่า "ฟลีตเท่ากันหรือยัง" ต้องดู commit
+    commit = source_commit()
+    console.print(f"lmds {lmds.__version__}" + (f"  ({commit})" if commit else ""))
     console.print(f"template standard: {lmds.TEMPLATE_STANDARD}")
     console.print(f"[dim]{CREDIT}[/dim]")
 
