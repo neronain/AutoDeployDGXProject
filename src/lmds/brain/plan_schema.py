@@ -67,6 +67,16 @@ class Reasoning(BaseModel):
     parser: Optional[str] = None
 
 
+class Speculative(BaseModel):
+    """MTP/draft head สำหรับ speculative decoding — llama.cpp เท่านั้น
+
+    เป็นข้อเท็จจริงจาก repo เหมือน projector_files ไม่ใช่การตัดสินใจของ LLM:
+    target verify ทุก token ที่ draft เสนอ output จึงเหมือนเดิมเป๊ะ ได้มาแต่ความเร็ว
+    """
+
+    draft_files: list[str] = Field(default_factory=list)
+
+
 class Multimodal(BaseModel):
     modalities: list[str] = Field(default_factory=list)
     projector_files: list[str] = Field(default_factory=list)
@@ -114,6 +124,7 @@ class DeploymentPlan(BaseModel):
     tool_calling: ToolCalling = Field(default_factory=ToolCalling)
     reasoning: Reasoning = Field(default_factory=Reasoning)
     multimodal: Multimodal = Field(default_factory=Multimodal)
+    speculative: Speculative = Field(default_factory=Speculative)
 
     special_files: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

@@ -41,6 +41,10 @@ LLAMACPP_FLAGS = {
     "--parallel",
     "--cont-batching",
     "--mmproj",
+    # speculative decoding: path เป็นของ controller (renderer ตัดทิ้งแล้ว emit เอง)
+    "--spec-draft-model",
+    "--spec-type",
+    "--spec-draft-n-max",
     "--jinja",
     "--cache-type-k",
     "--cache-type-v",

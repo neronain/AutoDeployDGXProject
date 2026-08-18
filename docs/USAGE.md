@@ -852,6 +852,29 @@ lmds node list                        # ตารางแยกตาม site
 tool/system/thinking ยังไง · ส่วน vision อ่านจาก `vision_config` ใน config.json
 หรือไฟล์ mmproj (GGUF)
 
+### MTP draft head — เปิด speculative decoding ให้อัตโนมัติ
+
+repo GGUF บางตัวแถมไฟล์ `mtp-*.gguf` มาด้วย (multi-token prediction draft head)
+ผู้ทำ repo วัดได้ราว **+35% ถึง +53% ตอน generate โดย output เหมือนเดิมเป๊ะ** เพราะ
+target model verify ทุก token ที่ draft เสนอ — ได้มาแต่ความเร็ว ไม่แลกคุณภาพ
+
+ระบบจัดการให้เองทั้งหมด เหมือนที่ทำกับ mmproj: เจอไฟล์ `mtp-*.gguf` ใน repo →
+ผนวกเข้า `MODEL_FILES` (download + verify SHA-256 ครบ) แล้ว emit
+`--spec-draft-model ... --spec-type draft-mtp` ให้ใน controller
+
+```bash
+MTP_FILE=""   ./<controller>.sh restart    # ปิด speculative decoding
+```
+
+> **ทำไมต้องบังคับจาก repo ไม่ให้ LLM ตัดสิน** — เคสจริง `HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-*-MTP`
+> LLM เสนอ `--mtp mtp-gemma-4-26B-it.gguf` ซึ่งผิดสองชั้น: llama.cpp ไม่มี flag ชื่อ `--mtp`
+> (ของจริงคือ `--spec-draft-model` คู่กับ `--spec-type draft-mtp`) และชื่อไฟล์ตก `-A4B` ไป
+> allowlist กักไว้ได้ถูกแล้ว แต่ผลลัพธ์คือไม่มีใครโหลดไฟล์ MTP เลย เสียความเร็วที่ repo
+> ตั้งใจให้ไปเปล่า ๆ · ตอนนี้ชื่อไฟล์มาจากรายการไฟล์จริงใน repo เท่านั้น
+>
+> **llama.cpp ต้องใหม่พอ** — `--spec-type` เพิ่งมี ถ้า build เก่าจะขึ้น unknown option
+> ตรวจด้วย `llama-server --help | grep spec-type`
+
 **สิ่งที่ตอบจากไฟล์ไม่ได้** JSON mode กับ streaming เป็นของเซิร์ฟเวอร์ — vLLM และ
 llama.cpp ทำได้กับทุกโมเดล การไปบอกว่า "โมเดลนี้ทำ JSON mode ไม่ได้" ผิดตั้งแต่
 ตั้งคำถาม

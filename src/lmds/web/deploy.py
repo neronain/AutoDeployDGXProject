@@ -158,7 +158,7 @@ def analyze(
         raise DeployError("hub", str(exc)) from exc
 
     # repo GGUF หลาย variant ต้องเลือกไฟล์ก่อน ไม่งั้นไปพังตอนท้าย
-    weights = [v for v in report.gguf_variants if not v.is_mmproj]
+    weights = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
     if weights and not (selected_gguf or report.selected_gguf):
         if len(weights) == 1:
             report.selected_gguf = weights[0].filename

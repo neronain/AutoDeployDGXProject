@@ -1376,7 +1376,7 @@ def _ensure_gguf_selected(source, report, interactive: bool):
     """
     from lmds.inspector import ArtifactType
 
-    weight_variants = [v for v in report.gguf_variants if not v.is_mmproj]
+    weight_variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
     if report.artifact_type is not ArtifactType.GGUF or report.selected_gguf or len(weight_variants) <= 1:
         return report
 
@@ -1627,7 +1627,7 @@ def _render_report(report) -> None:
                 console.print(f"[dim]{line}[/dim]")
             return
     if report.artifact_type in (ArtifactType.GGUF, ArtifactType.MIXED) and report.gguf_variants:
-        variants = [v for v in report.gguf_variants if not v.is_mmproj]
+        variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
         mmproj = [v for v in report.gguf_variants if v.is_mmproj]
         table.add_row("GGUF variants", str(len(variants)) + (f" (+mmproj {len(mmproj)})" if mmproj else ""))
         if report.selected_gguf:

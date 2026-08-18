@@ -427,6 +427,69 @@ def test_multimodal_gguf_downloads_and_loads_projector(tmp_path):
     assert profile["features"]["multimodal"]["projector_files"] == ["mmproj-BF16.gguf"]
 
 
+def mtp_gguf_report(**overrides) -> ModelReport:
+    """repo GGUF ที่แถม MTP draft head — เคสจริง HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-*-MTP"""
+    return gguf_report(
+        repo_id="HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP",
+        selected_gguf="Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+        gguf_variants=[
+            GgufVariant(
+                filename="Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+                size_bytes=16 * GIB, sha256="a" * 64,
+            ),
+            GgufVariant(
+                filename="mmproj-Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-BF16.gguf",
+                size_bytes=1 * GIB, sha256="b" * 64, is_mmproj=True,
+            ),
+            GgufVariant(
+                filename="mtp-gemma-4-26B-A4B-it.gguf",
+                size_bytes=1 * GIB // 4, sha256="d" * 64, is_mtp=True,
+            ),
+        ],
+        **overrides,
+    )
+
+
+def test_mtp_draft_head_is_downloaded_and_wired(tmp_path):
+    """เคสจริง 2026-08-18: repo ทำ MTP มาให้ (~35% เร็วขึ้น output เท่าเดิม) แต่ bundle ทิ้งทั้งดุ้น
+
+    LLM เสนอ `--mtp mtp-gemma-4-26B-it.gguf` ซึ่งผิดสองชั้น — llama.cpp ไม่มี flag ชื่อ `--mtp`
+    และชื่อไฟล์ตก `-A4B` ไป · allowlist กักไว้ถูกแล้ว แต่ผลคือไม่มีใครโหลดไฟล์ MTP เลย
+    """
+    report = mtp_gguf_report()
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert plan.speculative.draft_files == ["mtp-gemma-4-26B-A4B-it.gguf"]
+    assert "mtp-gemma-4-26B-A4B-it.gguf" in script, "ไม่ใส่ใน MODEL_FILES = download ไม่ดึงมา"
+    assert "d" * 64 in script, "draft head ต้องถูก verify ด้วย SHA-256 เหมือน weight"
+    assert "--spec-type draft-mtp" in script, "ไม่ส่ง = ไม่มี speculative decoding"
+    assert "--spec-draft-model" in script
+    assert "--mtp " not in script, "flag ที่ LLM มโนต้องไม่หลุดเข้า controller"
+    # MODEL_FILE (ตัวที่ส่งเป็น -m) ต้องยังเป็น weight ไม่ใช่ draft head
+    assert 'MODEL_FILE="${MODEL_FILES[0]}"' in script
+    assert script.index("Balanced-Q4_K_M.gguf") < script.index("mtp-gemma-4-26B-A4B-it.gguf")
+    assert not audit_script(script)
+
+
+def test_gguf_without_mtp_has_no_spec_flags(tmp_path):
+    """repo ที่ไม่มี MTP ต้องไม่มี --spec-type โผล่มา (ค่าว่างจะทำให้ llama-server ล้ม)"""
+    bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert plan.speculative.draft_files == []
+    assert "--spec-type" not in script
+    assert "MTP_FILE" not in script
+
+
+def test_mtp_file_is_never_offered_as_a_weight(tmp_path):
+    """draft head เป็น .gguf เหมือนกัน — ถ้าไม่กรองออก จะโผล่ในรายการ quant ให้ผู้ใช้เลือกรันเป็นตัวโมเดล"""
+    report = mtp_gguf_report()
+    weights = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
+    assert [v.filename for v in weights] == [
+        "Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf"
+    ]
+
+
 def test_text_only_gguf_has_no_projector_flag(tmp_path):
     """repo ที่ไม่มี mmproj ต้องไม่มี --mmproj โผล่มา (ค่าว่างจะทำให้ llama-server ล้ม)"""
     bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)

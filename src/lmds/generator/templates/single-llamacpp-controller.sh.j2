@@ -74,6 +74,10 @@ MODEL_FILE="${MODEL_FILES[0]}"
 # ตั้งเป็นค่าว่างเพื่อเสิร์ฟโมเดลนี้แบบข้อความล้วน
 MMPROJ_FILE="${MMPROJ_FILE:-{{ mmproj_basename }}}"
 {% endif %}
+{% if mtp_basename %}# MTP draft head — target verify ทุก token ที่ draft เสนอ output เหมือนเดิมเป๊ะ
+# ตั้งเป็นค่าว่างเพื่อปิด speculative decoding
+MTP_FILE="${MTP_FILE:-{{ mtp_basename }}}"
+{% endif %}
 
 CTX_SIZE="${CTX_SIZE:-{{ plan.serving.context }}}"
 API_HOST="${API_HOST:-0.0.0.0}"
@@ -354,6 +358,11 @@ server_args() {
 {% if mmproj_basename %}  # ไม่มีบรรทัดนี้ = llama-server รับแต่ข้อความ ทั้งที่โมเดลมองภาพได้ (พังเงียบ ไม่มี error)
   if [[ -n "$MMPROJ_FILE" ]]; then
     SERVER_ARGS+=(--mmproj "${MODEL_MOUNT_DIR}/${MMPROJ_FILE}")
+  fi
+{% endif %}
+{% if mtp_basename %}  # ไม่มีบล็อกนี้ = ไม่มี speculative decoding เสียความเร็วที่ repo ทำมาให้ฟรี ๆ
+  if [[ -n "$MTP_FILE" && -f "${MODEL_DIR}/${MTP_FILE}" ]]; then
+    SERVER_ARGS+=(--spec-draft-model "${MODEL_MOUNT_DIR}/${MTP_FILE}" --spec-type draft-mtp)
   fi
 {% endif %}
 {% for flag in extra_flag_pairs %}

@@ -197,10 +197,41 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         )
     _harden_runtime_assets(plan)
     _harden_projector(plan, report)
+    _harden_draft(plan, report)
 
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+def _harden_draft(plan: DeploymentPlan, report: ModelReport) -> None:
+    """ไฟล์ MTP เป็นข้อเท็จจริงจาก repo เช่นเดียวกับ mmproj — บังคับให้ตรงของจริง
+
+    เจอจริงกับ HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-*-MTP: LLM เสนอ
+    `--mtp mtp-gemma-4-26B-it.gguf` ซึ่งผิดสองชั้น — llama.cpp ไม่มี flag ชื่อ `--mtp`
+    (ของจริงคือ `--spec-draft-model` + `--spec-type draft-mtp`) และชื่อไฟล์ตก `-A4B` ไป
+    ถ้าปล่อยผ่านคือ start ไม่ขึ้น ถ้าไม่ปล่อยก็เสียความเร็วที่ repo ตั้งใจให้ไปเปล่า ๆ
+    """
+    if plan.runtime.engine is not Engine.LLAMACPP:
+        if plan.speculative.draft_files:
+            plan.warnings.append("ตัด draft_files ออก — ใช้ได้เฉพาะ engine llama.cpp")
+            plan.speculative.draft_files = []
+        return
+
+    available = [v for v in report.gguf_variants if v.is_mtp]
+    if not available:
+        if plan.speculative.draft_files:
+            plan.warnings.append("ตัด draft_files ออก — ไม่พบไฟล์ MTP ใน repo จริง")
+            plan.speculative.draft_files = []
+        return
+
+    chosen = available[0].filename
+    if plan.speculative.draft_files != [chosen]:
+        plan.warnings.append(
+            f"repo มีไฟล์ MTP — เปิด speculative decoding ให้อัตโนมัติด้วย "
+            f"{chosen.rsplit(chr(47), 1)[-1]} (output เหมือนเดิม ได้มาแต่ความเร็ว)"
+        )
+    plan.speculative.draft_files = [chosen]  # llama-server รับ draft ได้ไฟล์เดียว
 
 
 def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:

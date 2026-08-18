@@ -29,6 +29,8 @@ class GgufVariant(BaseModel):
     size_bytes: Optional[int] = None  # split: ขนาดรวมทุก part
     sha256: Optional[str] = None  # จาก lfs.oid ของ Hub — ใช้ทำ exact hash check ใน controller
     is_mmproj: bool = False
+    # MTP/draft head สำหรับ speculative decoding — ไม่ใช่ weight ห้ามให้ผู้ใช้เลือกเป็นตัวโมเดล
+    is_mtp: bool = False
     parts: list[GgufPart] = []  # ว่าง = ไฟล์เดียว; split = ทุก part เรียงลำดับ
 
     @property

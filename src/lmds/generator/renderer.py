@@ -118,6 +118,27 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
     gguf_parts = gguf_parts + mmproj_parts
     mmproj_basename = mmproj_parts[0]["basename"] if mmproj_parts else ""
 
+    # MTP draft head — เหตุผลเดียวกับ mmproj: อยู่คนละไฟล์กับ weight ไม่ได้อยู่ใน variant ที่เลือก
+    # ไม่ผนวกตรงนี้ = ไม่โหลด ไม่ verify แล้ว speculative decoding เงียบหายไปทั้งที่ repo ทำมาให้
+    mtp_parts: list[dict] = []
+    if is_gguf:
+        for name in plan.speculative.draft_files:
+            base = name.rsplit("/", 1)[-1]
+            variant = next(
+                (v for v in report.gguf_variants if v.is_mtp and v.filename.rsplit("/", 1)[-1] == base),
+                None,
+            )
+            mtp_parts.append(
+                {
+                    "filename": variant.filename if variant is not None else name,
+                    "basename": base,
+                    "size_bytes": variant.size_bytes if variant is not None else None,
+                    "sha256": variant.sha256 if variant is not None else None,
+                }
+            )
+    gguf_parts = gguf_parts + mtp_parts
+    mtp_basename = mtp_parts[0]["basename"] if mtp_parts else ""
+
     required = list(BASE_REQUIRED_FILES)
     if report.shard_count and report.shard_count > 1:
         required.append("model.safetensors.index.json")
@@ -196,7 +217,9 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         # --mmproj ถูกตัดออกจาก extra_flags เสมอ: path ของไฟล์เป็นของ controller (MODEL_DIR ต่างกัน
         # ระหว่าง native/docker) ค่าที่ LLM เดามาจะชี้ผิดที่ ส่วนตัวจริง emit จาก mmproj_basename
         "extra_flag_pairs": [
-            _quote_flag(f) for f in plan.serving.extra_flags if not f.startswith("--mmproj")
+            _quote_flag(f)
+            for f in plan.serving.extra_flags
+            if not f.startswith(("--mmproj", "--spec-draft-model", "--spec-type"))
         ],
         "tensor_parallel": tensor_parallel,
         "gguf_basename": (plan.selected_gguf or "").rsplit("/", 1)[-1],
@@ -204,6 +227,7 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "gguf_sha256": gguf_sha,
         "gguf_parts": gguf_parts,
         "mmproj_basename": mmproj_basename,
+        "mtp_basename": mtp_basename,
         # llama.cpp บน DGX Spark (unified/ARM64) ไม่มี docker image ทางการ — ใช้ native source build
         "runtime_mode": "native" if fit.memory_model.value == "unified" else "docker",
         "cuda_architectures": "121a-real" if fit.memory_model.value == "unified" else "native",

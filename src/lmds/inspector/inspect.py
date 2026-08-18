@@ -222,6 +222,7 @@ def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -
                 GgufVariant(
                     filename=name, size_bytes=size, sha256=sha,
                     is_mmproj=base.lower().startswith("mmproj"),
+                    is_mtp=base.lower().startswith("mtp"),
                 )
             )
 
@@ -377,9 +378,9 @@ def _inspect_gguf(
     gguf_files: list[tuple[str, int | None, str | None]],
 ) -> None:
     report.gguf_variants = _group_gguf_variants(gguf_files)
-    weight_variants = [v for v in report.gguf_variants if not v.is_mmproj]
+    weight_variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
     if not weight_variants:
-        report.warnings.append("พบเฉพาะไฟล์ mmproj — ไม่มี GGUF ของตัวโมเดล")
+        report.warnings.append("พบเฉพาะไฟล์ mmproj/mtp — ไม่มี GGUF ของตัวโมเดล")
         return
 
     if source.filename:
