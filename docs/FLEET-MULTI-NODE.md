@@ -419,3 +419,32 @@ lmds rebuild <slug>     # สร้าง bundle เดิมใหม่ด้�
 ```
 
 ปลอดภัยกับตัวที่รันอยู่ — เขียนแค่ไฟล์ bundle ตัวที่รันยังใช้ controller เดิมจนกว่าจะ restart
+
+## อัปเดต llama.cpp บน node (native build)
+
+DGX Spark ไม่มี docker image ทางการ (ARM64/SM121) — `prepare-runtime` จึง **clone แล้ว
+build llama.cpp จาก source** ไว้ที่ `~/src/llama.cpp` · `lmds node install` อัปเดตแค่ตัว
+lmds เอง **ไม่แตะ llama.cpp** ตัวนี้จึงค้างเวอร์ชันได้เป็นเดือนโดยไม่มีอะไรฟ้อง
+
+```bash
+cd ~/src/llama.cpp
+git status -sb          # "## HEAD (no branch)" = detached ต้อง checkout ก่อน
+git checkout master && git pull --ff-only
+cmake --build build --config Release -j "$(nproc)"
+```
+
+> **ทำไมต้อง checkout ก่อน** — `prepare-runtime` ตรึงเวอร์ชันด้วย `git checkout <ref>`
+> ซึ่งทิ้ง repo ไว้ใน **detached HEAD** · `git pull` ที่นั่นตอบ `git pull <remote> <branch>`
+> แล้วจบเงียบ ๆ · เจอจริง 3 ใน 4 เครื่อง: สั่ง pull+build ไปแล้ว build สำเร็จ commit ไม่ขยับ
+> เลยสักตัว ถ้าไม่ได้เทียบ commit ก่อน-หลังจะเข้าใจว่าอัปเดตแล้ว
+
+**`lmds doctor <slug>` เตือนให้เมื่อ llama.cpp เก่าเกินไป** — เช่น ไม่มี commit
+`cd0fa6051` ซึ่งแก้ tool schema ที่มี `maxLength`/`maxItems` เกิน 2000 (Claude Code
+ส่งแบบนั้นมา) ถ้าไม่มีจะตอบ 400 `failed to parse grammar`
+
+**ระวัง fork**: บาง arch มีเฉพาะใน checkout แยก เช่น `~/src/llama.cpp-muse` ที่รองรับ
+`muse-glimmer` — **อย่า pull ทับหรือชี้ `LLAMA_CPP_DIR` ไปที่นั่นตอน `prepare-runtime`**
+เพราะมันจะ `git checkout` ทับ fork ทิ้ง (controller ของ muse มี guard กันไว้แล้ว)
+
+**หลัง build ต้อง restart โมเดล** — process ที่รันอยู่ยังถือ binary ตัวเก่าไว้ (inode เดิม)
+จนกว่าจะ restart

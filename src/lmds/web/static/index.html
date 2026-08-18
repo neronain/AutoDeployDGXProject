@@ -684,7 +684,7 @@ pre {
   <symbol id="i-deploy" viewBox="0 0 24 24">
     <path d="M12 3.5v11"/><path d="m8 7.5 4-4 4 4"/>
     <path d="M4.5 15v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></symbol>
-  <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M9 1.5v2M15 1.5v2M9 20.5v2M15 20.5v2M1.5 9h2M1.5 15h2M20.5 9h2M20.5 15h2"/></symbol><symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 1 9-9"/><path d="M12 12l4.5-4"/><circle cx="12" cy="12" r="1.3"/></symbol><symbol id="i-spark" viewBox="0 0 24 24">
+  <symbol id="i-temp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13.5V5a2 2 0 1 1 4 0v8.5a4 4 0 1 1-4 0z"/><path d="M12 9v5.5"/></symbol><symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M9 1.5v2M15 1.5v2M9 20.5v2M15 20.5v2M1.5 9h2M1.5 15h2M20.5 9h2M20.5 15h2"/></symbol><symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 1 9-9"/><path d="M12 12l4.5-4"/><circle cx="12" cy="12" r="1.3"/></symbol><symbol id="i-spark" viewBox="0 0 24 24">
     <path d="M11 3.5l1.7 4.3 4.3 1.7-4.3 1.7L11 15.5 9.3 11.2 5 9.5l4.3-1.7z"/>
     <path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24">
@@ -3290,12 +3290,26 @@ function summaryMarkup(host, sum) {
     ? `<span class="chip ${sum.running ? "run" : "idle"}" title="โมเดลที่รันอยู่ / ที่ deploy ไว้">
          ${chipIcon("i-server")}<b>${sum.running}</b><span class="dim">/${sum.total ?? "?"}</span></span>`
     : "";
+  // ดิสก์นับเป็น "เหลือเท่าไร" เหมือนเกจข้างใน — คำถามจริงตอนจะโหลดโมเดล 150 GB คือเหลือพอไหม
+  // สีจึงต้องกลับด้าน: เหลือน้อย = แดง (ตรงข้ามกับ CPU/RAM ที่ใช้มาก = แดง)
+  const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
+  const diskPct = free != null && diskTotal ? Math.round(free / diskTotal * 100) : null;
+  const diskChip = diskPct == null ? "" :
+    `<span class="chip" title="ดิสก์ที่เหลือ" style="--c:${diskPct <= 5 ? "var(--bad)" : diskPct <= 15 ? "var(--warn)" : "var(--fg3)"}">
+       ${chipIcon("i-disk")}<b>${diskPct}%</b><span class="dim"> ${gb(free)} เหลือ</span></span>`;
+  // อุณหภูมิ GPU — ตัวที่บอกว่าเครื่องกำลังลำบากก่อนที่ throughput จะตก
+  const temp = gpu ? gpu.temperature_c : null;
+  const tempChip = temp == null ? "" :
+    `<span class="chip" title="อุณหภูมิ GPU" style="--c:${temp >= 85 ? "var(--bad)" : temp >= 75 ? "var(--warn)" : "var(--fg3)"}">
+       ${chipIcon("i-temp")}<b>${Math.round(temp)}°</b></span>`;
   return run
     + chip("i-pulse", "CPU", cpu == null ? null : Math.min(cpu, 100))
     + chip("i-chip", unified ? "หน่วยความจำรวม (unified)" : "RAM", mem,
            used != null ? ` ${Math.round(used)}/${gb(total)}` : "")
     + chip("i-chip", "VRAM", vram)
     + chip("i-spark", "GPU load", busy)
+    + tempChip
+    + diskChip
     + cacheChip(host.cache);
 }
 
