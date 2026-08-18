@@ -149,7 +149,8 @@ def test_llamacpp_download_uses_aria2c_then_falls_back_to_curl(isolated_config, 
     text = bundle.controller.read_text(encoding="utf-8")
     assert "command -v aria2c" in text
     assert "aria2c -x16" in text
-    assert "curl -fL --retry 5 -C -" in text   # fallback ยังอยู่
+    assert "curl -fL --retry 5 --retry-delay 5 -C -" in text   # fallback ยังอยู่
+    assert "--speed-limit 10240 --speed-time 60" in text   # กัน transfer ค้างตายเมื่อเน็ตสลับ
     assert "--continue=true" in text            # aria2c resume ได้ ไม่เริ่มใหม่
 
 

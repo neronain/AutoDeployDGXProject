@@ -199,11 +199,17 @@ fetch_one() {
   local url="$1" out="$2"
   if command -v aria2c >/dev/null 2>&1; then
     aria2c -x16 -s16 -k1M --continue=true --file-allocation=none \
+      --connect-timeout=20 --timeout=60 --max-tries=5 --retry-wait=5 \
+      --lowest-speed-limit=10K \
       ${HF_TOKEN:+--header="Authorization: Bearer $HF_TOKEN"} \
       -d "$(dirname "$out")" -o "$(basename "$out")" "$url" && return 0
     echo "aria2c ล้ม — ถอยไป curl"
   fi
-  curl -fL --retry 5 -C - \
+  # --speed-limit/--speed-time = กันค้างตาย: สลับเน็ต/สาย NAT หลุด ทำให้ TCP ค้างใน recv()
+  # ไม่มี error ไม่มี timeout --retry จึงไม่เคยทำงาน — process ค้างถาวรจน stop ไม่ได้
+  # ต่ำกว่า 10KB/s ติดกัน 60s = ถือว่าตาย ยิง error ให้ --retry ทำงาน แล้ว -C - resume ต่อ
+  curl -fL --retry 5 --retry-delay 5 -C - \
+    --connect-timeout 20 --speed-limit 10240 --speed-time 60 \
     ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} \
     -o "$out" "$url"
 }
