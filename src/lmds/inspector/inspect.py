@@ -174,6 +174,7 @@ def _inspect_safetensors(
         if isinstance(quant, dict):
             report.quantization = str(quant.get("quant_method") or quant.get("quant_algo") or "quantized")
         report.kv_dims = _kv_dims_from_config(config)
+        report.moe_experts, report.moe_experts_active = _moe_from_config(config)
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
 
@@ -201,7 +202,11 @@ def _inspect_safetensors(
     if report.gguf_variants:
         has_mmproj = any(v.is_mmproj for v in report.gguf_variants)
     report.capabilities = detect(
-        config if config is not None else {}, template_text, has_mmproj=has_mmproj
+        config if config is not None else {},
+        template_text,
+        has_mmproj=has_mmproj,
+        moe_experts=report.moe_experts,
+        moe_experts_active=report.moe_experts_active,
     ).to_dict()
 
 
@@ -246,6 +251,31 @@ def _as_text(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     return str(value) if value else ""
+
+
+def _moe_from_config(config: dict) -> tuple[int | None, int | None]:
+    """จำนวน expert ทั้งหมด/ที่เปิดต่อ token — ชื่อคีย์ต่างกันไปตามตระกูล
+
+    โมเดล multimodal ซุกไว้ใต้ text_config เหมือนที่ทำกับ context_length
+    ถ้ามองแค่ชั้นบนจะได้ None เงียบ ๆ แล้ว MoE กลายเป็น dense ในสายตาระบบ
+    """
+    candidates = [config]
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        candidates.append(text_config)
+    total = active = None
+    for candidate in candidates:
+        for key in ("num_local_experts", "n_routed_experts", "num_experts", "moe_num_experts"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value > 0:
+                total = total or value
+                break
+        for key in ("num_experts_per_tok", "moe_topk", "num_experts_per_token"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value > 0:
+                active = active or value
+                break
+    return total, active
 
 
 def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
@@ -416,6 +446,8 @@ def _inspect_gguf(
     report.architecture = report.architecture or gguf.architecture
     report.context_length = report.context_length or gguf.context_length
     report.kv_dims = report.kv_dims or _kv_dims_from_gguf(gguf)
+    report.moe_experts = report.moe_experts or gguf.expert_count
+    report.moe_experts_active = report.moe_experts_active or gguf.expert_used_count
     if report.has_chat_template is None:
         report.has_chat_template = gguf.chat_template is not None
     if gguf.file_type is not None and not report.quantization:
@@ -426,5 +458,18 @@ def _inspect_gguf(
             suffix = name_upper.split(marker, 1)[1].split(".GGUF", 1)[0]
             report.quantization = (marker + suffix).strip("-_.")
             break
+
+    # repo GGUF ล้วนไม่ผ่าน _inspect_safetensors จึงไม่เคยมีใครเรียก detect() — capabilities
+    # ว่างเปล่ามาตลอด ทั้งที่ chat template กับ metadata อยู่ในไฟล์ GGUF ครบแล้ว
+    if not report.capabilities:
+        from lmds.inspector.capabilities import detect
+
+        report.capabilities = detect(
+            {},
+            gguf.chat_template or "",
+            has_mmproj=any(v.is_mmproj for v in report.gguf_variants),
+            moe_experts=report.moe_experts,
+            moe_experts_active=report.moe_experts_active,
+        ).to_dict()
     if gguf.partial:
         report.warnings.append("GGUF metadata อ่านได้บางส่วน (ชน budget) — ข้อมูลอาจไม่ครบ")

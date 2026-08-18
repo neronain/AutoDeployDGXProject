@@ -75,6 +75,18 @@ class GgufInfo:
         return None
 
     @property
+    def expert_count(self) -> int | None:
+        arch = self.architecture
+        value = self.metadata.get(f"{arch}.expert_count") if arch else None
+        return value if isinstance(value, int) and value > 0 else None
+
+    @property
+    def expert_used_count(self) -> int | None:
+        arch = self.architecture
+        value = self.metadata.get(f"{arch}.expert_used_count") if arch else None
+        return value if isinstance(value, int) and value > 0 else None
+
+    @property
     def chat_template(self) -> str | None:
         return self.metadata.get("tokenizer.chat_template")
 

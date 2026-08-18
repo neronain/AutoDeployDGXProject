@@ -83,6 +83,8 @@ def detect(
     *,
     has_mmproj: bool | None = None,
     server: str = "",
+    moe_experts: int | None = None,
+    moe_experts_active: int | None = None,
 ) -> CapabilityReport:
     """อ่านความสามารถจากไฟล์ของโมเดล
 
@@ -125,6 +127,18 @@ def detect(
             "vision", "no", "config.json ไม่มี vision_config — เป็นโมเดลข้อความล้วน", ""))
     else:
         report.capabilities.append(Capability("vision", "unknown", "ไม่มี config.json ให้ดู", ""))
+
+    # ── MoE ───────────────────────────────────────────────────────────────
+    # ไม่ใช่ของประดับ: active params คือตัวกำหนดความเร็วบนเครื่องที่คอขวดที่ bandwidth
+    # 26B-A4B อ่านแค่ ~4B ต่อ token ส่วน 31B dense อ่านครบ 31B — ต่างกันหลายเท่าบน Spark
+    if moe_experts:
+        active = f" เปิด {moe_experts_active} ต่อ token" if moe_experts_active else ""
+        report.capabilities.append(Capability(
+            "moe", "yes", f"{moe_experts} experts{active}",
+            "weight ทั้งก้อนต้องอยู่ในหน่วยความจำ แต่ความเร็วคิดจาก active params — "
+            "อย่าเอา total params ไปเทียบกับ dense ตรง ๆ"))
+    elif config or has_mmproj is not None:
+        report.capabilities.append(Capability("moe", "no", "dense — ไม่พบ expert ในไฟล์", ""))
 
     # ── tool calling ──────────────────────────────────────────────────────
     if not chat_template:

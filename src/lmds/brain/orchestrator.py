@@ -198,10 +198,17 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     _harden_runtime_assets(plan)
     _harden_projector(plan, report)
     _harden_draft(plan, report)
+    _harden_moe(plan, report)
 
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+def _harden_moe(plan: DeploymentPlan, report: ModelReport) -> None:
+    """MoE อ่านจากไฟล์ได้ตรง ๆ — ไม่เปิดให้ LLM เดา"""
+    plan.moe.experts = report.moe_experts
+    plan.moe.experts_active = report.moe_experts_active
 
 
 def _harden_draft(plan: DeploymentPlan, report: ModelReport) -> None:

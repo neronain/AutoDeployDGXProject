@@ -465,11 +465,81 @@ def test_mtp_draft_head_is_downloaded_and_wired(tmp_path):
     assert "d" * 64 in script, "draft head ต้องถูก verify ด้วย SHA-256 เหมือน weight"
     assert "--spec-type draft-mtp" in script, "ไม่ส่ง = ไม่มี speculative decoding"
     assert "--spec-draft-model" in script
-    assert "--mtp " not in script, "flag ที่ LLM มโนต้องไม่หลุดเข้า controller"
+    # `--mtp` เป็น flag ของ *controller* ได้ (เปิด/ปิด draft head) แต่ห้ามส่งต่อให้ llama-server
+    # ซึ่งไม่รู้จัก flag ชื่อนี้ — นั่นคือตัวที่ LLM มโนมา
+    assert "SERVER_ARGS+=(--mtp" not in script
     # MODEL_FILE (ตัวที่ส่งเป็น -m) ต้องยังเป็น weight ไม่ใช่ draft head
     assert 'MODEL_FILE="${MODEL_FILES[0]}"' in script
     assert script.index("Balanced-Q4_K_M.gguf") < script.index("mtp-gemma-4-26B-A4B-it.gguf")
     assert not audit_script(script)
+
+
+def test_moe_counts_reach_profile_and_support_column(tmp_path):
+    """MoE ต้องแจ้งเหมือน vision — active params คือตัวบอกความเร็ว ไม่ใช่ total
+
+    26B-A4B อ่านแค่ ~4B ต่อ token ส่วน 31B dense อ่านครบ 31B · บนเครื่องที่คอขวดที่
+    bandwidth สองตัวนี้ต่างกันหลายเท่า แต่เดิม lmds ไม่แสดงที่ไหนเลย
+    """
+    from lmds.fleet.manager import feature_summary
+
+    report = mtp_gguf_report(moe_experts=128, moe_experts_active=8)
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+
+    assert (plan.moe.experts, plan.moe.experts_active) == (128, 8)
+    profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+    assert profile["features"]["moe"] == {"experts": 128, "experts_active": 8}
+
+    support = feature_summary(profile)
+    assert "MoE 128e/8a" in support
+    assert "MTP" in support, "bundle ที่มี draft head ต้องบอกด้วย ไม่งั้นดูไม่ออกว่าเปิดอยู่ไหม"
+
+
+def test_dense_model_reports_no_moe(tmp_path):
+    bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    assert plan.moe.experts is None
+    profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+    from lmds.fleet.manager import feature_summary
+
+    assert "MoE" not in feature_summary(profile)
+
+
+def test_moe_read_from_gguf_metadata():
+    """ตัวเลข MoE ของ repo GGUF อยู่ใน header ไม่มี config.json ให้ดู"""
+    from lmds.inspector.gguf import GgufInfo
+
+    info = GgufInfo(version=3, tensor_count=1, metadata={
+        "general.architecture": "gemma4",
+        "gemma4.expert_count": 128,
+        "gemma4.expert_used_count": 8,
+    })
+    assert (info.expert_count, info.expert_used_count) == (128, 8)
+
+
+def test_moe_read_from_nested_text_config():
+    """โมเดล multimodal ซุก expert ไว้ใต้ text_config เหมือนที่ทำกับ context_length"""
+    from lmds.inspector.inspect import _moe_from_config
+
+    assert _moe_from_config({"text_config": {"num_local_experts": 128, "num_experts_per_tok": 8}}) == (128, 8)
+    assert _moe_from_config({"n_routed_experts": 256, "num_experts_per_tok": 8}) == (256, 8)
+    assert _moe_from_config({"num_hidden_layers": 40}) == (None, None)
+
+
+def test_companion_files_have_on_off_flags(tmp_path):
+    """เปิด/ปิดต้องสั่งเป็น flag ได้เหมือน --port ไม่ใช่ต้องรู้ชื่อ env var"""
+    script = make_bundle(mtp_gguf_report(), tmp_path=tmp_path)[0].controller.read_text(
+        encoding="utf-8"
+    )
+    for flag in ("--no-mtp)", "--mtp)", "--mtp=*)", "--no-mmproj)", "--mmproj)", "--mmproj=*)"):
+        assert flag in script, f"ไม่มี {flag} ในตัว parse argument"
+    # ต้องมีในหน้า help ด้วย — flag ที่ไม่มีใครรู้ว่ามีก็เท่ากับไม่มี
+    assert "--no-mtp " in script
+    assert "--no-mmproj " in script
+
+
+def test_text_only_bundle_has_no_companion_flags(tmp_path):
+    script = make_bundle(gguf_report(), tmp_path=tmp_path)[0].controller.read_text(encoding="utf-8")
+    assert "--no-mtp" not in script
+    assert "--no-mmproj" not in script
 
 
 def test_companion_files_can_be_disabled_by_empty_env(tmp_path):

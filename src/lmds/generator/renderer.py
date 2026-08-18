@@ -292,6 +292,8 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "tool_calling": plan.tool_calling.model_dump(mode="json"),
             "reasoning": plan.reasoning.model_dump(mode="json"),
             "multimodal": plan.multimodal.model_dump(mode="json"),
+            "moe": plan.moe.model_dump(mode="json"),
+            "speculative": plan.speculative.model_dump(mode="json"),
         },
         "facts": [f.model_dump(mode="json") for f in plan.facts],
         "warnings": plan.warnings,

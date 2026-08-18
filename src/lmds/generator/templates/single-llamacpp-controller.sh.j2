@@ -162,7 +162,13 @@ parse_options() {
       --client-input=*) CLIENT_INPUT="${1#*=}"; shift ;;
       --client-output)  CLIENT_OUTPUT="$2"; shift 2 ;;
       --client-output=*) CLIENT_OUTPUT="${1#*=}"; shift ;;
-      *) REMAINING_ARGS+=("$1"); shift ;;
+{% if mmproj_basename %}      --mmproj)         MMPROJ_FILE="$2"; shift 2 ;;
+      --mmproj=*)       MMPROJ_FILE="${1#*=}"; shift ;;
+      --no-mmproj)      MMPROJ_FILE=""; shift ;;
+{% endif %}{% if mtp_basename %}      --mtp)            MTP_FILE="$2"; shift 2 ;;
+      --mtp=*)          MTP_FILE="${1#*=}"; shift ;;
+      --no-mtp)         MTP_FILE=""; shift ;;
+{% endif %}      *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
   validate_numbers
@@ -709,7 +715,11 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --interface NAME      Pick the advertised IP from this interface (e.g. eth0) instead of auto-detect
   --client-input N|auto Input token budget written into client-config   [default: ${CLIENT_INPUT}]
   --client-output N     Output token budget written into client-config  [default: ${CLIENT_OUTPUT}]
-
+{% if mmproj_basename %}  --mmproj FILE         Vision projector to load                  [default: ${MMPROJ_FILE}]
+  --no-mmproj           Serve as text-only (skip the vision projector)
+{% endif %}{% if mtp_basename %}  --mtp FILE            MTP draft head for speculative decoding   [default: ${MTP_FILE}]
+  --no-mtp              Turn speculative decoding off (slower, identical output)
+{% endif %}
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
   Set one with the API_KEY environment variable — it is passed to llama-server as --api-key:
@@ -734,8 +744,8 @@ ENVIRONMENT VARIABLES
   CTX_SIZE            Same as --context
   RUNTIME_MODE        docker | native                            [default: ${RUNTIME_MODE}]
   MODEL_DIR           Where GGUF files are stored                [default: ${MODEL_DIR}]
-{% if mmproj_basename %}  MMPROJ_FILE         Vision projector passed as --mmproj         [default: ${MMPROJ_FILE}]
-                      Set to empty to serve this model as text-only.
+{% if mmproj_basename %}  MMPROJ_FILE         Same as --mmproj / --no-mmproj              [default: ${MMPROJ_FILE}]
+{% endif %}{% if mtp_basename %}  MTP_FILE            Same as --mtp / --no-mtp                    [default: ${MTP_FILE}]
 {% endif %}  HF_TOKEN            Hugging Face token, needed for gated repos during 'download'
   N_GPU_LAYERS        Layers offloaded to GPU (fewer = less VRAM, slower)
   HEALTH_TIMEOUT      Seconds to wait for /health on start        [default: ${HEALTH_TIMEOUT}]

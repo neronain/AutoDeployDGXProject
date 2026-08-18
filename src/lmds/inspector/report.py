@@ -91,6 +91,10 @@ class ModelReport(BaseModel):
     context_length: Optional[int] = None
     quantization: Optional[str] = None
     kv_dims: Optional[KvDims] = None
+    # MoE — total params บอกขนาดที่ต้องโหลด แต่ active params บอกความเร็วที่จะได้
+    # บนเครื่องที่คอขวดคือ bandwidth (DGX Spark) สองค่านี้ต่างกันหลายเท่า ต้องเห็นทั้งคู่
+    moe_experts: Optional[int] = None
+    moe_experts_active: Optional[int] = None
     has_chat_template: Optional[bool] = None
     # ความสามารถที่อ่านได้จากไฟล์ ก่อน deploy — ดู inspector/capabilities.py ว่าอะไร
     # ตอบได้จริงและอะไรต้องรอวัดตอนรัน

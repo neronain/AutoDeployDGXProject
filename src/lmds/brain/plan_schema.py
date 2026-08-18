@@ -67,6 +67,16 @@ class Reasoning(BaseModel):
     parser: Optional[str] = None
 
 
+class Moe(BaseModel):
+    """Mixture-of-Experts — ข้อเท็จจริงจากไฟล์ ไม่ใช่ตัวเลือก
+
+    total บอกว่าต้องมีหน่วยความจำเท่าไร active บอกว่าจะได้ความเร็วเท่าไร
+    """
+
+    experts: Optional[int] = None
+    experts_active: Optional[int] = None
+
+
 class Speculative(BaseModel):
     """MTP/draft head สำหรับ speculative decoding — llama.cpp เท่านั้น
 
@@ -125,6 +135,7 @@ class DeploymentPlan(BaseModel):
     reasoning: Reasoning = Field(default_factory=Reasoning)
     multimodal: Multimodal = Field(default_factory=Multimodal)
     speculative: Speculative = Field(default_factory=Speculative)
+    moe: Moe = Field(default_factory=Moe)
 
     special_files: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

@@ -863,8 +863,31 @@ target model verify ทุก token ที่ draft เสนอ — ได้�
 `--spec-draft-model ... --spec-type draft-mtp` ให้ใน controller
 
 ```bash
-MTP_FILE=""   ./<controller>.sh restart    # ปิด speculative decoding
+./<controller>.sh restart --no-mtp     # ปิด speculative decoding
+./<controller>.sh restart --mtp FILE   # ใช้ draft head ตัวอื่น
 ```
+
+vision ก็มีคู่เดียวกัน: `--no-mmproj` / `--mmproj FILE`
+
+### MoE — แจ้งเหมือน vision
+
+โมเดล MoE รายงาน **จำนวน expert ทั้งหมด กับที่เปิดต่อ token** ตั้งแต่ตอน `deploy`
+(แถว Features) ไปจนถึงคอลัมน์ *รองรับ (support)* ของ `lmds list`:
+
+```
+รองรับ (support)
+image, MoE 128e/8a, MTP
+```
+
+**ทำไมต้องเห็นทั้งสองค่า** — total บอกว่าต้องมีหน่วยความจำเท่าไร active บอกว่าจะได้
+ความเร็วเท่าไร · gemma4 26B-A4B โหลด 15.6 GB เท่าเดิมทุก token แต่อ่านแค่ ~4B
+ส่วน 31B dense อ่านครบ 31B — บน DGX Spark ที่คอขวดคือ bandwidth สองตัวนี้ต่างกัน
+หลายเท่า เอา total params ไปเทียบกับ dense ตรง ๆ จึงให้ภาพที่ผิด
+
+อ่านจาก `config.json` (`num_local_experts`/`n_routed_experts`/`num_experts` คู่กับ
+`num_experts_per_tok`) หรือ GGUF metadata (`{arch}.expert_count` /
+`{arch}.expert_used_count`) — โมเดล multimodal ซุกไว้ใต้ `text_config` มองแค่ชั้นบน
+จะได้ None เงียบ ๆ แล้ว MoE กลายเป็น dense ในสายตาระบบ
 
 วัดจริงบน DGX Spark (gemma4-26B-A4B Q4_K_M, ctx 65536, 3 รอบต่อโหมด):
 

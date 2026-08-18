@@ -1707,6 +1707,14 @@ def _render_plan(deployment_plan, fit) -> None:
         features.append(f"reasoning ({deployment_plan.reasoning.parser})")
     if deployment_plan.multimodal.modalities:
         features.append("multimodal: " + ",".join(deployment_plan.multimodal.modalities))
+    if deployment_plan.moe.experts:
+        active = deployment_plan.moe.experts_active
+        features.append(
+            f"MoE {deployment_plan.moe.experts} experts"
+            + (f" (เปิด {active}/token)" if active else "")
+        )
+    if deployment_plan.speculative.draft_files:
+        features.append("MTP speculative decoding")
     table.add_row("Features", ", ".join(features) or "ไม่เปิด (ยังไม่มีหลักฐานยืนยัน parser)")
     if deployment_plan.serving.extra_flags:
         table.add_row("Extra flags", " ".join(deployment_plan.serving.extra_flags))
