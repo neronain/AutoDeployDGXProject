@@ -389,6 +389,8 @@ def disable_autostart(info_or_slug, password: str = "") -> str:
 class ServerInfo:
     slug: str
     model: str = ""
+    # ชื่อที่ตอน generate ตั้งไว้ — ว่าง = bundle รุ่นก่อนมี --name หรือยังไม่เคย start
+    default_model: str = ""
     model_id: str = ""
     engine: str = ""
     mode: str = ""  # native | docker
@@ -662,6 +664,7 @@ def discover() -> list[ServerInfo]:
         info = ServerInfo(
             slug=meta.get("slug", meta_path.parent.name),
             model=meta.get("model", ""),
+            default_model=meta.get("default_model", ""),
             model_id=meta.get("model_id", ""),
             engine=meta.get("engine", ""),
             mode=meta.get("mode", ""),
@@ -906,6 +909,7 @@ def _scan_bundles(known_slugs: set[str]) -> list[ServerInfo]:
                 found.append(ServerInfo(
                     slug=slug,
                     model=model.get("served_name", slug),
+                    default_model=model.get("served_name", slug),
                     model_id=model.get("id", ""),
                     engine=runtime.get("engine", ""),
                     mode="docker",
@@ -940,6 +944,7 @@ def register_bundle(controller: Path | str) -> Path:
     meta.write_text(
         f"slug={slug}\n"
         f"model={model.get('served_name', slug)}\n"
+        f"default_model={model.get('served_name', slug)}\n"
         f"model_id={model.get('id', '')}\n"
         f"engine={runtime.get('engine', '')}\n"
         f"mode={'native' if runtime.get('native_build') else 'docker'}\n"

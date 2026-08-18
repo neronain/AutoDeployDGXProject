@@ -1828,6 +1828,9 @@ def adopt(
     console.print(f"[green]รับ {info.container} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
     console.print(f"[dim]image:   {info.image}[/dim]")
     console.print(f"[dim]model:   {info.model or '(ไม่ระบุใน env)'}[/dim]")
+    # ชื่อที่ถูกเปลี่ยนไปแล้วดูไม่ออกว่าเดิมคืออะไร — ต้องกลับไปเปิด MODEL_PROFILE เอง
+    if info.default_model and info.default_model != info.model:
+        console.print(f"[dim]         ↳ ชื่อเดิม: {info.default_model}[/dim]")
     console.print(f"[dim]port:    {info.port} · context: {info.context or 'ไม่ระบุ'}[/dim]")
     console.print(f"[dim]sคริปต์: {path}[/dim]")
     console.print("\n[dim]ทำได้: start · stop · restart · status · logs · test-text · client-config[/dim]")

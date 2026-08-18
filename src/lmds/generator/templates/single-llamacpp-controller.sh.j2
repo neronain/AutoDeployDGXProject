@@ -15,7 +15,9 @@ MODEL_ID="{{ plan.model_id }}"
 MODEL_REVISION="{{ plan.revision }}"
 # ชื่อโมเดลที่ API เสิร์ฟออกไป — ตั้งเองได้ผ่าน env เหมือน knob อื่น ๆ
 # ลูกค้าที่ย้ายมาจากระบบเดิมมักต้องใช้ชื่อเดิมเป๊ะ ไม่งั้น client ทุกตัวต้องแก้ตาม
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
+# ชื่อที่ตอน generate ตั้งให้ — ตรึงไว้ ไม่รับ override เพราะเป็นหลักฐานว่าเดิมคืออะไร
+DEFAULT_SERVED_MODEL_NAME="{{ plan.served_model_name }}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$DEFAULT_SERVED_MODEL_NAME}"
 
 # runtime mode: docker (RTX x86_64, image ทางการ) | native (DGX Spark ARM64 — build จาก source)
 RUNTIME_MODE="${RUNTIME_MODE:-{{ runtime_mode }}}"
@@ -144,14 +146,36 @@ detect_advertise_ip() {
   hostname -I 2>/dev/null | awk '{print $1}'
 }
 
+# ค่าที่เซิร์ฟเวอร์ "ถูกสั่งไว้จริง" อยู่ใน server.meta — คำสั่งที่รันทีหลัง (status/logs/stop)
+# เป็นคนละ process จึงไม่รู้เรื่องนั้นเลย แล้วไปใช้ default ในไฟล์แทน
+# เจอจริง: start --port 8020 --name foo แล้ว status บอก "API: not responding" เพราะไปถาม
+# port 8000 และโชว์ชื่อ default ทั้งที่เซิร์ฟเวอร์ทำงานปกติอยู่คนละ port คนละชื่อ
+# ใช้เฉพาะคำสั่งที่ "มองของที่รันอยู่" — start/restart ยังยึด default + flag ตามเดิม
+adopt_running_state() {
+  local meta="${RUN_DIR}/server.meta" value
+  [[ -f "$meta" ]] || return 0
+  server_alive || return 0
+  if [[ -z "${PORT_EXPLICIT:-}" ]]; then
+    value="$(sed -n 's/^port=//p' "$meta" | tail -1)"
+    [[ -n "$value" ]] && API_PORT="$value"
+  fi
+  if [[ -z "${NAME_EXPLICIT:-}" ]]; then
+    value="$(sed -n 's/^model=//p' "$meta" | tail -1)"
+    [[ -n "$value" ]] && SERVED_MODEL_NAME="$value"
+  fi
+  return 0
+}
+
 parse_options() {
   REMAINING_ARGS=()
   while (( $# )); do
     case "$1" in
       --context)        CTX_SIZE="$2"; shift 2 ;;
       --context=*)      CTX_SIZE="${1#*=}"; shift ;;
-      --port)           API_PORT="$2"; shift 2 ;;
-      --port=*)         API_PORT="${1#*=}"; shift ;;
+      --name)           SERVED_MODEL_NAME="$2"; NAME_EXPLICIT=1; shift 2 ;;
+      --name=*)         SERVED_MODEL_NAME="${1#*=}"; NAME_EXPLICIT=1; shift ;;
+      --port)           API_PORT="$2"; PORT_EXPLICIT=1; shift 2 ;;
+      --port=*)         API_PORT="${1#*=}"; PORT_EXPLICIT=1; shift ;;
       --bind)           API_HOST="$2"; shift 2 ;;
       --bind=*)         API_HOST="${1#*=}"; shift ;;
       --advertise-ip)   ADVERTISE_IP="$2"; shift 2 ;;
@@ -177,7 +201,12 @@ parse_options() {
 network_info() {
   echo "Bind:      ${API_HOST}:${API_PORT}"
   echo "Endpoint:  http://$(detect_advertise_ip):${API_PORT}/v1"
-  echo "Model:     ${SERVED_MODEL_NAME} (${MODEL_FILE})"
+  if [[ "$SERVED_MODEL_NAME" != "$DEFAULT_SERVED_MODEL_NAME" ]]; then
+    echo "Model:     ${SERVED_MODEL_NAME} (${MODEL_FILE})"
+    echo "           ↳ เปลี่ยนจากชื่อเดิม: ${DEFAULT_SERVED_MODEL_NAME}"
+  else
+    echo "Model:     ${SERVED_MODEL_NAME} (${MODEL_FILE})"
+  fi
   echo "Context:   ${CTX_SIZE}"
   echo "Runtime:   ${RUNTIME_MODE}"
 }
@@ -388,6 +417,7 @@ write_meta() {
   cat > "${RUN_DIR}/server.meta" <<EOF
 slug={{ slug }}
 model=${SERVED_MODEL_NAME}
+default_model=${DEFAULT_SERVED_MODEL_NAME}
 model_id=${MODEL_ID}
 engine=llamacpp
 mode=${RUNTIME_MODE}
@@ -538,6 +568,8 @@ stop() {
 }
 
 status() {
+  echo "model:     ${SERVED_MODEL_NAME}$([[ "$SERVED_MODEL_NAME" != "$DEFAULT_SERVED_MODEL_NAME" ]] \
+        && echo "   (ชื่อเดิม: ${DEFAULT_SERVED_MODEL_NAME})")"
   if [[ "$RUNTIME_MODE" == "native" ]]; then
     if server_alive; then echo "process: running (PID $(cat "$PID_FILE"))"; else echo "process: stopped"; fi
   else
@@ -704,22 +736,33 @@ COMMANDS
 {% endif %}
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
+
+ Identity
+  --name NAME           Name clients pass as "model" in the API   [default: ${SERVED_MODEL_NAME}]
+                        Original name from generate time: ${DEFAULT_SERVED_MODEL_NAME}
+                        (that one is fixed in this file, so a rename is always traceable)
+
+ Network
   --port N              Port to serve on                          [default: ${API_PORT}]
-  --context N           Max context length in tokens              [default: ${CTX_SIZE}]
-                        Lower this first if the server runs out of memory.
   --bind ADDR           Address the server listens on             [default: ${API_HOST}]
                         0.0.0.0 = reachable from the whole network
                         127.0.0.1 = this machine only (safest)
   --advertise-ip ADDR   IP printed for clients. Does NOT change what the server binds to.
                         Use when the machine has several NICs or sits behind NAT.
   --interface NAME      Pick the advertised IP from this interface (e.g. eth0) instead of auto-detect
+
+ Memory & limits
+  --context N           Max context length in tokens              [default: ${CTX_SIZE}]
+                        Lower this first if the server runs out of memory.
   --client-input N|auto Input token budget written into client-config   [default: ${CLIENT_INPUT}]
   --client-output N     Output token budget written into client-config  [default: ${CLIENT_OUTPUT}]
+{% if mmproj_basename or mtp_basename %}
+ Model features (this model ships the files for these)
 {% if mmproj_basename %}  --mmproj FILE         Vision projector to load                  [default: ${MMPROJ_FILE}]
   --no-mmproj           Serve as text-only (skip the vision projector)
 {% endif %}{% if mtp_basename %}  --mtp FILE            MTP draft head for speculative decoding   [default: ${MTP_FILE}]
   --no-mtp              Turn speculative decoding off (slower, identical output)
-{% endif %}
+{% endif %}{% endif %}
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
   Set one with the API_KEY environment variable — it is passed to llama-server as --api-key:
@@ -763,6 +806,11 @@ EOF
 }
 
 parse_options "$@"
+
+case "${1:-help}" in
+  status|logs|client-config|info|banner|network-info|test-text|test-vision|wait-health|stop)
+    adopt_running_state ;;
+esac
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 
 

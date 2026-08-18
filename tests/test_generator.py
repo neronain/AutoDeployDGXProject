@@ -474,6 +474,63 @@ def test_mtp_draft_head_is_downloaded_and_wired(tmp_path):
     assert not audit_script(script)
 
 
+def test_served_name_is_renamable_and_original_stays_recorded(tmp_path):
+    """เปลี่ยนชื่อโมเดลได้เหมือนย้าย port แต่ต้องยังรู้ว่าเดิมชื่ออะไร
+
+    ชื่อที่ถูกเปลี่ยนแล้วไม่มีร่องรอย = ต้องกลับไปเปิด MODEL_PROFILE เทียบเอง
+    ค่าเดิมจึงถูกตรึงเป็นค่าคงที่ที่ override ไม่ได้ แล้วโชว์คู่กันเมื่อไม่ตรง
+    """
+    bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert f'DEFAULT_SERVED_MODEL_NAME="{plan.served_model_name}"' in script
+    assert 'SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$DEFAULT_SERVED_MODEL_NAME}"' in script
+    for flag in ("--name)", "--name=*)"):
+        assert flag in script, f"ไม่มี {flag} ในตัว parse argument"
+    # ชื่อเดิมต้องถูกจดลง server.meta ให้ lmds ps อ่านได้ ไม่ใช่รู้อยู่แค่ในสคริปต์
+    assert "default_model=${DEFAULT_SERVED_MODEL_NAME}" in script
+    assert "$DEFAULT_SERVED_MODEL_NAME" in script.split("network_info()")[1][:400]
+    assert not audit_script(script)
+
+
+def test_status_follows_the_running_server_not_the_defaults(tmp_path):
+    """เจอจริง: start --port 8020 --name foo แล้ว status บอก "API: not responding"
+
+    status เป็นคนละ process จึงไม่รู้ว่าเซิร์ฟเวอร์ถูกสั่งด้วยอะไร ไปใช้ default ในไฟล์
+    แล้วไปถาม /health ที่ port 8000 · ค่าจริงอยู่ใน server.meta อยู่แล้ว แค่ไม่มีใครอ่าน
+    """
+    script = make_bundle(gguf_report(), tmp_path=tmp_path)[0].controller.read_text(
+        encoding="utf-8"
+    )
+    assert "adopt_running_state()" in script
+    # ต้องอ่านเฉพาะตอนที่เซิร์ฟเวอร์ยังรันอยู่จริง ไม่งั้น start รอบหน้าสืบทอดค่าเก่ามาเงียบ ๆ
+    body = script.split("adopt_running_state() {")[1].split("\n}")[0]
+    assert "server_alive || return 0" in body
+    # flag ที่ผู้ใช้ระบุเองต้องชนะค่าใน meta เสมอ
+    assert 'NAME_EXPLICIT=1' in script and 'PORT_EXPLICIT=1' in script
+    assert '[[ -z "${PORT_EXPLICIT:-}" ]]' in body
+    # start/restart ต้องไม่สืบทอด — ยึด default + flag ตามเดิม
+    dispatch = script.split('parse_options "$@"')[1][:400]
+    assert "status|logs|" in dispatch
+    assert "start|" not in dispatch and "restart|" not in dispatch
+    assert not audit_script(script)
+
+
+def test_options_help_is_grouped(tmp_path):
+    """option เยอะขึ้นเรื่อย ๆ — เรียงพรืดแล้วหาไม่เจอ ต้องแบ่งหัวข้อ"""
+    script = make_bundle(mtp_gguf_report(), tmp_path=tmp_path)[0].controller.read_text(
+        encoding="utf-8"
+    )
+    options = script.split("OPTIONS  (can be placed")[1].split("API TOKEN")[0]
+    for heading in ("Identity", "Network", "Memory & limits", "Model features"):
+        assert heading in options, f"หัวข้อ '{heading}' หายไปจาก OPTIONS"
+    # ของที่โมเดลนี้ไม่มีไฟล์ให้ ต้องไม่โผล่หัวข้อเปล่า
+    plain = make_bundle(gguf_report(), tmp_path=tmp_path / "b2")[0].controller.read_text(
+        encoding="utf-8"
+    )
+    assert "Model features" not in plain
+
+
 def test_moe_counts_reach_profile_and_support_column(tmp_path):
     """MoE ต้องแจ้งเหมือน vision — active params คือตัวบอกความเร็ว ไม่ใช่ total
 

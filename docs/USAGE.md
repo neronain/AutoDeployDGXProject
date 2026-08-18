@@ -869,6 +869,40 @@ target model verify ทุก token ที่ draft เสนอ — ได้�
 
 vision ก็มีคู่เดียวกัน: `--no-mmproj` / `--mmproj FILE`
 
+### เปลี่ยนชื่อโมเดล — ชื่อเดิมไม่หาย
+
+ชื่อที่ client ส่งมาในฟิลด์ `model` เปลี่ยนได้เหมือนย้าย port:
+
+```bash
+./<controller>.sh restart --name my-gemma
+```
+
+ชื่อที่ตอน generate ตั้งไว้ถูกตรึงเป็น `DEFAULT_SERVED_MODEL_NAME` ในไฟล์ **override
+ไม่ได้** เพราะมันคือหลักฐานว่าเดิมคืออะไร · เมื่อชื่อไม่ตรงกัน จะโชว์คู่กันทุกที่:
+
+```
+Model:     my-gemma (Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf)
+           ↳ เปลี่ยนจากชื่อเดิม: gemma4-26b-uncensored
+```
+
+`server.meta` จดทั้งสองค่า (`model=` กับ `default_model=`) — `lmds ps` จึงบอกได้ด้วย
+
+> **ทำไมถึงต้องมี** — LLM ตั้งชื่อไม่เหมือนกันทุกครั้งที่ generate · repo เดียวกัน
+> deploy สามรอบได้ `gemma4-26b-a4b-qat-uncensored`, `gemma4-26b-a4b-qat-uncensored-hauhaucs-balanced-mtp`
+> และ `gemma4-26b-uncensored` — regenerate ทีเดียว client ที่ตั้งชื่อไว้เดิมพังหมด
+> ตอนนี้ `--name` ตรึงชื่อให้เท่ากับของเดิมได้โดยไม่ต้องแก้ฝั่ง client
+
+### คำสั่งหลัง start ตามเซิร์ฟเวอร์ที่รันอยู่จริง
+
+`status` / `logs` / `network-info` / `client-config` / `test-*` / `stop` เป็นคนละ
+process กับตัวที่ start จึงไม่รู้ว่าเซิร์ฟเวอร์ถูกสั่งด้วย flag อะไร — เดิมไปใช้ค่า
+default ในไฟล์แล้วรายงานผิด (`start --port 8020` แล้ว `status` บอก
+`API: not responding` เพราะไปถาม port 8000)
+
+ตอนนี้อ่าน `server.meta` ก่อน **เฉพาะตอนที่เซิร์ฟเวอร์ยังรันอยู่จริง** · flag ที่ระบุ
+เองชนะเสมอ · `start`/`restart` ไม่สืบทอด — ยึด default + flag ตามเดิม ไม่งั้นค่าเก่า
+จะติดมาเงียบ ๆ ทุกครั้งที่ start
+
 ### MoE — แจ้งเหมือน vision
 
 โมเดล MoE รายงาน **จำนวน expert ทั้งหมด กับที่เปิดต่อ token** ตั้งแต่ตอน `deploy`
