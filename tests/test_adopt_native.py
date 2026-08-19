@@ -268,3 +268,25 @@ def test_adopt_still_works_when_the_server_cannot_be_asked(tmp_path, monkeypatch
     profile = yaml.safe_load((controller.parent / "MODEL_PROFILE.yaml").read_text())
     assert profile["features"]["tool_calling"]["enabled"] is False
     assert profile["model"]["native_context"] is None
+
+
+def test_lmds_own_units_are_not_mistaken_for_a_rival(tmp_path, monkeypatch):
+    """เจอบนเครื่องลูกค้า: บันทึก OWNING_UNIT เป็น lmds-web.service
+
+    โมเดลที่ถูก start จากคอนโซลสืบ cgroup ของ lmds-web.service มาด้วย · คว้ามาใช้แล้ว
+    ได้คำเตือนผิด และร้ายกว่าคือ controller จะปฏิเสธ start ตัวเองเพราะเห็นว่า "unit
+    เจ้าของ" ยัง active อยู่
+    """
+    from importlib import import_module
+
+    adopt_mod = import_module("lmds.fleet.adopt")
+
+    cases = {
+        "0::/user.slice/user-1000.slice/lmds-web.service": "",
+        "0::/user.slice/user-1000.slice/lmds-qwen35.service": "",
+        "0::/user.slice/user-1000.slice/session-5264.scope": "",
+        "0::/system.slice/llama-qwen.service": "llama-qwen.service",
+    }
+    for cgroup, expected in cases.items():
+        monkeypatch.setattr(adopt_mod, "_read_proc", lambda pid, name, _c=cgroup: _c)
+        assert adopt_mod.owning_unit(1) == expected, f"cgroup {cgroup}"

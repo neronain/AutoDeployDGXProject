@@ -179,13 +179,26 @@ def _read_proc(pid: int, name: str) -> str:
 
 
 def owning_unit(pid: int) -> str:
-    """systemd unit ที่เป็นเจ้าของ process — ตัวที่จะ restart ทับตอน LMDS เข้าคุม"""
+    """systemd unit *ของคนอื่น* ที่เป็นเจ้าของ process — ตัวที่จะแย่ง port กลับ
+
+    สนใจเฉพาะ unit ที่ไม่ใช่ของ LMDS · process ที่ถูก start จากคอนโซลจะสืบ cgroup ของ
+    `lmds-web.service` มาด้วย ถ้าคว้ามาใช้จะได้คำเตือนที่ผิด ("unit เดิมยังคุมอยู่" ทั้งที่
+    ไม่มีใครแย่ง) และร้ายกว่านั้นคือ controller จะปฏิเสธ start ตัวเองเพราะเห็นว่า unit
+    ที่ตัวเองอ้างว่าเป็นเจ้าของยัง active — เจอจริงบนเครื่องลูกค้า บันทึกเป็น lmds-web.service
+    """
     for line in _read_proc(pid, "cgroup").splitlines():
-        if ".service" in line:
-            part = line.rsplit("/", 1)[-1].strip()
-            if part.endswith(".service"):
-                return part
+        part = line.rsplit("/", 1)[-1].strip()
+        if part.endswith(".service") and not _is_own_unit(part):
+            return part
     return ""
+
+
+# unit ที่ LMDS สร้างเอง — ไม่ใช่ "เจ้าของเดิม" ที่ต้องระวัง
+_FOREIGN_UNIT = ("lmds-",)
+
+
+def _is_own_unit(unit: str) -> bool:
+    return unit.startswith(_FOREIGN_UNIT)
 
 
 def inspect_process(pid: int = 0, port: int = 0) -> AdoptedProcess:
