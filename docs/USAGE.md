@@ -588,16 +588,21 @@ stacked ส่งให้ทั้ง head และ worker
 ค่าถูกตรวจก่อนเขียน: ต้องเป็น `KEY=VALUE` และห้ามมีอักขระที่เชลล์ตีความ (`$`, backtick,
 quote, backslash) เพราะ controller แตกค่านี้ในเชลล์
 
-**เคสจริงที่ต้องใช้** — NVFP4 บน DGX Spark (GB10, sm_121):
+**เคสจริงที่ทำให้ต้องมีช่องนี้** — NVFP4 บน DGX Spark (GB10, sm_121):
 
-```bash
-lmds set <slug> --engine-env "VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_MARLIN_USE_ATOMIC_ADD=1"
-```
+vLLM ตรวจว่ามี flashinfer CUTLASS fused-MoE ไหม *ด้วยการ import* ซึ่ง JIT ทันที แล้ว
+`ptxas` ปฏิเสธ (`cvt with .e2m1x2 not supported on .target 'sm_121'`) engine core ตาย
+ก่อน health โดยหน้าเว็บบอกแค่ "container หยุดก่อน health ผ่าน"
 
-ไม่ตั้ง → vLLM ไป JIT CUTLASS FP4 kernel แล้ว `ptxas` ปฏิเสธ
-(`cvt with .e2m1x2 not supported on .target 'sm_121'`) engine core ตายก่อน health
-โดยหน้าเว็บบอกแค่ "container หยุดก่อน health ผ่าน" · เอกสารใน vLLM เองระบุว่า marlin คือ
-backend "for GPUs without native FP4 support" ซึ่งตรงกับ sm_121 · แลกด้วยความเร็วราว 42%
+⚠️ **`VLLM_NVFP4_GEMM_BACKEND=marlin` ไม่ช่วยกับโมเดล MoE** — ทดสอบบน msi-6 แล้ว
+(ยืนยันว่า env ถึง container จริงด้วย `docker inspect`) ยังล้มที่เดิม เพราะตัวแปรนี้คุม
+**GEMM** ไม่ใช่ **fused MoE** · image ที่มี FP4 kernel มาให้ (`avarok/dgx-vllm-nvfp4-kernel`)
+ก็ยังล้ม · สำหรับ MoE + NVFP4 บน sm_121 ตอนนี้ยังไม่มีทางที่ใช้ได้ — ไปทาง GGUF/llama.cpp
+หรือ checkpoint ที่ไม่ใช่ NVFP4 แทน
+
+โมเดล **dense** NVFP4 เป็นคนละ kernel path ยังไม่ได้ทดสอบว่าล้มด้วยไหม — ถ้าจะลอง
+ตั้ง `--engine-env "VLLM_NVFP4_GEMM_BACKEND=marlin"` ไว้ก่อนแล้วดู log ว่ามี ptxas error
+หรือไม่ ก่อนสรุปว่ารันได้
 
 > bundle ที่สร้างไว้ก่อนหน้านี้ยังใช้ controller เดิม — สั่ง `lmds rebuild <slug>` ก่อน
 > ถึงจะรับค่านี้ได้

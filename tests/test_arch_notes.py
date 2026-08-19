@@ -52,19 +52,17 @@ def test_qwen3_coder_gets_no_xml_hint():
     assert "qwen3_xml" not in notes
 
 
-def test_nvfp4_note_names_the_command_that_actually_fixes_it():
-    """คำแนะนำเดิมชี้ให้ไป cutlass/b12x — ซึ่งเป็น path ที่ *พัง* บน sm_121 พอดี
+def test_nvfp4_moe_note_says_it_is_a_dead_end_not_a_tunable():
+    """เคยเขียนว่า marlin แก้ได้ — ผิด · ยืนยันบน msi-6 ว่า env ถึง container จริง
+    แต่ยังล้มที่ ptxas เดิม เพราะ VLLM_NVFP4_GEMM_BACKEND คุม GEMM ไม่ใช่ fused MoE
 
-    ยืนยันบน msi-6 2026-08-20: VLLM_NVFP4_GEMM_BACKEND=marlin ทำให้ engine ขึ้นได้จริง
-    (ptxas error หายเกลี้ยง) ส่วน cutlass คือตัวที่ JIT แล้วตาย · คำเตือนต้องบอกคำสั่ง
-    ที่กดตามแล้วได้ผล ไม่ใช่ชื่อ backend ให้ไปลองเอง
+    คำเตือนที่บอกทางแก้ผิด แย่กว่าคำเตือนที่บอกตรง ๆ ว่าทางนี้ตัน — ผู้ใช้เสียเวลา
+    ไล่ตั้งค่าที่ไม่มีทางได้ผล
     """
     notes = _joined("Qwen/Qwen3.6-35B-A3B-NVFP4")
-    assert "VLLM_NVFP4_GEMM_BACKEND=marlin" in notes
-    assert "lmds set" in notes and "--engine-env" in notes
-    # ยังต้องบอกราคาที่จ่าย ไม่ใช่ขายว่าฟรี
-    assert "42%" in notes
-    assert "VLLM_MARLIN_USE_ATOMIC_ADD" in notes
+    assert "ไม่ช่วย" in notes
+    assert "e2m1x2" in notes and "sm_121" in notes
+    assert "GGUF" in notes           # ต้องบอกทางที่ไปต่อได้
 
 
 def test_nemotron_3x_warns_hybrid_mamba():

@@ -89,22 +89,19 @@ def arch_notes(repo_id: str, quantization: str = "",
             "ถ้าหลุดไป Marlin SM80 ก็แค่ช้ามาก (~-42%) · โมเดล MoE เสี่ยงกว่าโมเดล dense"
         )
         notes.append(
-            "ทางแก้ที่ยืนยันแล้วบน GB10 (msi-6, 2026-08-20): "
-            "lmds set <slug> --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin\" แล้ว restart · "
-            "vLLM เอกสารตัวเองระบุว่า marlin คือ backend \"for GPUs without native FP4 support\" "
-            "ซึ่งตรงกับ sm_121 · ยืนยันแล้วว่า engine ขึ้นได้ ไม่มี ptxas error อีก"
+            "MoE + NVFP4 บน sm_121 = ทางตัน (ทดสอบบน msi-6 2026-08-20) · vLLM ตรวจว่ามี "
+            "flashinfer cutlass fused-MoE ไหมโดยการ import ซึ่ง JIT ทันที แล้ว ptxas ล้ม "
+            "· VLLM_NVFP4_GEMM_BACKEND=marlin **ไม่ช่วย** (ยืนยันแล้วว่า env ถึง container "
+            "จริงแต่ยังล้มที่เดิม) เพราะมันคุม GEMM ไม่ใช่ MoE · image ที่มี FP4 kernel "
+            "(avarok/dgx-vllm-nvfp4-kernel) ก็ยังล้ม — ใช้ GGUF/llama.cpp หรือ checkpoint "
+            "ที่ไม่ใช่ NVFP4 แทน"
         )
         notes.append(
-            "แลกด้วยความเร็ว: Marlin ช้ากว่า path FP4 จริงราว 42% — เร่งคืนได้บ้างด้วย "
-            "--engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_MARLIN_USE_ATOMIC_ADD=1\" · "
-            "ถ้าอยากได้ความเร็วเต็มต้องใช้ image ที่มี FP4 kernel build มาสำหรับ sm_121 จริง ๆ "
-            "(ที่ลองแล้วยังไม่มี — avarok/dgx-vllm-nvfp4-kernel ก็ยังตกที่ ptxas)"
+            "โมเดล dense NVFP4 ยังไม่ได้ทดสอบว่าล้มด้วยไหม (คนละ kernel path กับ MoE) · "
+            "ถ้าจะลอง ให้ตั้ง --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin\" ไว้ก่อน "
+            "แล้วดู log ว่ามี ptxas error หรือไม่ ก่อนจะสรุปว่ารันได้"
         )
-    # ผูกกับ *สิ่งที่ตรวจได้จากไฟล์* ก่อน แล้วค่อยเผื่อชื่อรุ่นไว้เป็นตาข่ายรอง
-    #
-    # เคสจริง 2026-08-20: Qwen3.8-27B เป็น hybrid เหมือน Qwen3.5 ทุกอย่าง (layer_types สลับ
-    # linear_attention 3 ต่อ full_attention 1, มี mamba_ssm_dtype) แต่คำเตือนเดิมจับชื่อ
-    # "qwen3.5" อย่างเดียว รุ่นใหม่จึงหลุดไปทั้งดุ้น — รวมถึงข้อ prefix-caching ที่ทำ output ผิด
+
     if hybrid_attention or "qwen3.5" in key or "qwen3-5" in key or "deltanet" in key:
         notes.append(
             "Qwen3.5 (DeltaNet hybrid attention): อย่าเปิด --enable-prefix-caching (output ผิด) · "
