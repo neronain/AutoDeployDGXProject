@@ -1806,11 +1806,16 @@ def generate(
 
 @app.command()
 def adopt(
-    container: str = typer.Argument(..., help="ชื่อ container ที่รันอยู่ (ดูจาก docker ps)"),
-    slug: str = typer.Option("", "--slug", help="ชื่อที่จะใช้ใน lmds (ว่าง = ใช้ชื่อ container)"),
+    container: str = typer.Argument("", help="ชื่อ container ที่รันอยู่ (ดูจาก docker ps)"),
+    port: int = typer.Option(0, "--port", help="รับ process ที่ฟังอยู่ที่พอร์ตนี้ (ไม่ใช่ container)"),
+    pid: int = typer.Option(0, "--pid", help="รับ process ตาม PID"),
+    slug: str = typer.Option("", "--slug", help="ชื่อที่จะใช้ใน lmds (ว่าง = ตั้งให้จากของที่เจอ)"),
     output: str = typer.Option("./bundles", "--output"),
+    take_over: bool = typer.Option(
+        False, "--take-over",
+        help="หยุด+disable systemd unit เดิมแล้วให้ LMDS คุมแทน (ต้องใช้ sudo)"),
 ) -> None:
-    """รับ container ที่รันอยู่ก่อน LMDS เข้ามาอยู่ในระบบ — สร้าง controller จากของที่รันจริง
+    """รับโมเดลที่รันอยู่ก่อน LMDS เข้ามาอยู่ในระบบ — สร้าง controller จากของที่รันจริง
 
     ลูกค้าที่มี vLLM/llama.cpp รันอยู่ก่อนแล้วเพิ่งมาติดตั้ง LMDS: `lmds ps` เห็น container
     พวกนั้นและ stop/restart/logs ได้ แต่ทำอย่างอื่นไม่ได้เพราะไม่มี controller
@@ -1819,7 +1824,48 @@ def adopt(
     **รันคำสั่งเดิมซ้ำได้เป๊ะ** · ของที่รันอยู่ตอนนี้ไม่ถูกแตะต้อง
     """
     from lmds.fleet import FleetError
-    from lmds.fleet.adopt import adopt as adopt_container, inspect_container
+    from lmds.fleet.adopt import adopt as adopt_container
+    from lmds.fleet.adopt import adopt_process, inspect_container
+
+    if not container and not port and not pid:
+        err_console.print(
+            "[red]ต้องบอกว่าจะรับตัวไหน[/red] — ชื่อ container, หรือ --port / --pid "
+            "สำหรับ process ที่รันตรง ๆ (ดูรายชื่อ: lmds ps)"
+        )
+        raise typer.Exit(code=1)
+
+    # process ที่รันตรง ๆ ใต้ systemd ที่ลูกค้าเขียนเอง เจอพอ ๆ กับ container
+    if port or pid:
+        try:
+            path, proc = adopt_process(pid=pid, port=port, slug=slug, output=Path(output))
+        except FleetError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+
+        name = slug or (proc.model or f"pid-{proc.pid}").replace("_", "-").lower()
+        console.print(f"[green]รับ process {proc.pid} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
+        console.print(f"[dim]engine:  {proc.engine} (native)[/dim]")
+        console.print(f"[dim]binary:  {proc.exe}[/dim]")
+        console.print(f"[dim]weights: {proc.model_path or '(ไม่ระบุใน argv)'}[/dim]")
+        console.print(f"[dim]port:    {proc.port} · context: {proc.context or 'ไม่ระบุ'}[/dim]")
+        console.print(f"[dim]สคริปต์: {path}[/dim]")
+        if proc.unit:
+            console.print(f"\n[yellow]process นี้เป็นของ {proc.unit}[/yellow]")
+            if take_over:
+                _take_over_unit(proc.unit)
+            else:
+                console.print(
+                    f"[dim]unit เดิมยังคุมอยู่ — LMDS start จะชน port {proc.port} · "
+                    f"ให้ LMDS คุมแทนด้วย: lmds adopt --port {proc.port} --take-over[/dim]"
+                )
+        console.print(
+            "\n[dim]ทำได้: start · stop · restart · status · logs · test-text · "
+            "client-config · network-info[/dim]"
+        )
+        console.print(
+            "[dim]ไม่มี download/verify-files — weight เป็น path ที่คุณจัดการเอง[/dim]"
+        )
+        return
 
     try:
         info = inspect_container(container)
@@ -1840,6 +1886,30 @@ def adopt(
     console.print("\n[dim]ทำได้: start · stop · restart · status · logs · test-text · client-config[/dim]")
     console.print("[dim]ไม่มี download/verify-files — weight ของ container นี้เป็น path ที่คุณจัดการเอง[/dim]")
 
+
+
+
+def _take_over_unit(unit: str) -> None:
+    """หยุด+disable unit เดิมเพื่อให้ LMDS คุมแทน — ทำเมื่อผู้ใช้สั่งเท่านั้น
+
+    unit ที่ตั้ง Restart=always จะแย่ง port กลับทุกครั้งที่ LMDS stop · ปล่อยไว้แล้ว
+    ผู้ใช้จะเห็นอาการ "start แล้วแต่ตัวที่ตอบไม่ใช่ของ LMDS" ซึ่งไล่หาสาเหตุยากมาก
+    """
+    import subprocess
+
+    console.print(f"หยุดและ disable [bold]{unit}[/bold] …")
+    result = subprocess.run(
+        ["sudo", "-n", "systemctl", "disable", "--now", unit],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        console.print(f"[green]{unit} ถูกปิดแล้ว[/green] — LMDS คุม port นี้ต่อได้")
+        console.print(f"[dim]ย้อนกลับ: sudo systemctl enable --now {unit}[/dim]")
+        return
+    err_console.print(
+        f"[yellow]ปิด {unit} ไม่สำเร็จ[/yellow] ({(result.stderr or '').strip()[:120]})\n"
+        f"สั่งเองได้: sudo systemctl disable --now {unit}"
+    )
 
 @app.command()
 def rebuild(

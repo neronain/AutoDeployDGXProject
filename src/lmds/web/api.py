@@ -375,6 +375,55 @@ def create_app(token: str = "") -> FastAPI:
     def restart(slug: str, body: dict | None = None) -> JSONResponse:
         return _action(slug, "restart", body)
 
+    @app.post("/api/models/{slug}/adopt", dependencies=guarded)
+    def adopt_running(slug: str, body: dict | None = None) -> JSONResponse:
+        """รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ — สร้าง controller จากของที่รันจริง
+
+        หน้าเว็บติดป้าย "ไม่ลงทะเบียน" ให้ตัวพวกนี้มานานแล้วแต่ไม่มีปุ่มให้กด ผู้ใช้ต้อง
+        ไป ssh แล้วพิมพ์ `lmds adopt` เอง ซึ่งเป็นขั้นที่คนส่วนใหญ่ไม่รู้ว่ามี
+        """
+        from lmds.fleet import FleetError, find
+        from lmds.fleet.adopt import adopt as adopt_container
+        from lmds.fleet.adopt import adopt_process
+
+        body = body or {}
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก '{slug}'")
+        if server.controller_exists:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{slug}' มี controller อยู่แล้ว — ไม่ต้องรับเข้าระบบซ้ำ",
+            )
+
+        from pathlib import Path as _Path
+
+        # ลงที่เดียวกับที่ fleet สแกน (~/bundles) ไม่งั้นสร้างเสร็จแล้ว lmds list ไม่เห็น
+        output = _Path.home() / "bundles"
+        try:
+            if server.mode == "docker" and server.container:
+                path = adopt_container(server.container, slug=body.get("slug") or "", output=output)
+                info = {"kind": "container", "source": server.container}
+            else:
+                target_pid = server.pid or 0
+                if not target_pid and not server.port:
+                    raise FleetError(f"'{slug}' ไม่มีทั้ง PID และ port ให้อ้างอิง")
+                path, proc = adopt_process(
+                    pid=target_pid, port=server.port, slug=body.get("slug") or "", output=output
+                )
+                info = {
+                    "kind": "native", "source": f"pid {proc.pid}",
+                    "engine": proc.engine, "binary": proc.exe,
+                    "weights": proc.model_path, "context": proc.context,
+                    # unit ที่ Restart=always จะแย่ง port กลับ — หน้าเว็บต้องเตือนต่อ
+                    "owning_unit": proc.unit,
+                }
+        except FleetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        state.STORE.invalidate_local()
+        return JSONResponse({"slug": slug, "controller": str(path), **info})
+
     # ── deploy wizard ──────────────────────────────────────────────────────
     def _suggest_target(host: dict | None) -> str:
         """เดา target preset จากฮาร์ดแวร์ที่ตรวจพบของเครื่องนั้น

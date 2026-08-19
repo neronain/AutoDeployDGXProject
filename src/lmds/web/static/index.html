@@ -970,7 +970,8 @@ function modelTags(m) {
 
 function rowMarkup(m) {
   const tags = modelTags(m);
-  if (m.external) tags.push(`<span class="tag warn">not deployed by lmds</span>`);
+  if (m.external || !m.controller_exists)
+    tags.push(`<span class="tag warn" title="LMDS เห็นมันแต่ยังคุมไม่ได้ — กด รับเข้าระบบ">ยังไม่ได้รับเข้าระบบ</span>`);
   if (!m.controller_exists) tags.push(`<span class="tag bad">controller missing</span>`);
   else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">not downloaded</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
@@ -984,11 +985,41 @@ function actionsMarkup(m) {
     return `<button data-act="stop" data-slug="${esc(m.slug)}">Stop</button>
        <button data-act="restart" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg>Restart</button>`;
   }
-  if (!m.controller_exists) return `<button disabled>Start</button>`;
+  // ไม่มี controller = LMDS ทำอะไรกับมันไม่ได้เลย · เดิมยื่นปุ่ม Start ที่กดไม่ได้ให้ดูเฉย ๆ
+  // ทั้งที่สิ่งที่ผู้ใช้ต้องทำจริงคือรับมันเข้าระบบก่อน ซึ่งไม่มีทางรู้ถ้าไม่เคยอ่าน CLI
+  if (!m.controller_exists) {
+    return `<button data-act="adopt" data-slug="${esc(m.slug)}"
+              title="สร้าง controller จากคำสั่งที่มันรันอยู่จริง — ของที่รันอยู่ไม่ถูกแตะ">
+              <svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>รับเข้าระบบ</button>`;
+  }
   // Starting without weights always fails — send the user to download first
   return m.downloaded
     ? `<button data-act="start" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>Start</button>`
     : `<button data-act="job:download" data-slug="${esc(m.slug)}"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download</button>`;
+}
+
+// รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ · หน้าเว็บติดป้าย "not deployed by lmds" ให้ตัวพวกนี้
+// มานานแล้วแต่ไม่เคยมีปุ่มให้กด — ทางเดียวคือไป ssh แล้วพิมพ์ `lmds adopt` ซึ่งคนส่วนใหญ่ไม่รู้ว่ามี
+async function adoptModel(slug) {
+  if (!confirm(`รับ "${slug}" เข้าระบบ?\n\n`
+      + "LMDS จะอ่านคำสั่งที่มันรันอยู่จริงแล้วเขียนเป็น controller\n"
+      + "ตัวที่รันอยู่ตอนนี้ไม่ถูกแตะต้อง")) return;
+  try {
+    const res = await api(`/api/models/${encodeURIComponent(slug)}/adopt`, {method: "POST"});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "รับเข้าระบบไม่สำเร็จ");
+    let note = `รับ ${slug} เข้าระบบแล้ว (${data.kind === "native" ? "process" : "container"} · ${data.source})`;
+    if (data.weights) note += `\nweight: ${data.weights}`;
+    // unit ที่ Restart=always จะแย่ง port กลับทุกครั้งที่ LMDS stop — ไม่บอกตรงนี้คือ
+    // ปล่อยให้ผู้ใช้ไปเจออาการ "start แล้วตัวที่ตอบไม่ใช่ของเรา" เอง
+    if (data.owning_unit) {
+      note += `\n\n⚠ process นี้เป็นของ ${data.owning_unit}`
+            + `\nถ้ายัง enable อยู่ มันจะแย่ง port กลับทุกครั้งที่ LMDS stop`
+            + `\n\nให้ LMDS คุมแทน: sudo systemctl disable --now ${data.owning_unit}`;
+    }
+    alert(note);
+    await load();
+  } catch (e) { showError(e.message); }
 }
 
 // Per-model options, stored in the browser. The API key never reaches the server's disk.
@@ -1644,6 +1675,7 @@ document.addEventListener("click", async e => {
   const { act, slug } = btn.dataset;
   const model = models_by_slug.get(slug) || { slug };
 
+  if (act === "adopt") { await adoptModel(slug); return; }
   if (act === "tests") { togglePanel(slug, "tests", () => testsMarkup(model)); return; }
   if (act === "opts") {
     togglePanel(slug, "opts", () => manageMarkup(model));

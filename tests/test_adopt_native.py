@@ -1,0 +1,138 @@
+"""รับ process ที่รันตรง ๆ (ไม่ใช่ container) เข้าระบบ — lmds adopt --port/--pid
+
+เคสนี้เจอบ่อยกว่าที่คิด: ลูกค้ารัน llama-server ใต้ systemd unit ที่เขียนเอง แล้วเพิ่งมา
+ติดตั้ง LMDS ทีหลัง · `lmds ps` เห็นมันอยู่แล้วแต่ตันตรงไม่มี controller
+"""
+
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from lmds.fleet.adopt import AdoptedProcess, adopt_process, render_native_controller
+
+REAL_ARGV = [
+    "./llama-server",
+    "-m", "/home/praisit/models/Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled.Q4_K_M.gguf",
+    "-ngl", "99", "-c", "65536", "-np", "1",
+    "-sm", "layer", "-ts", "1,1,1",
+    "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
+    "--host", "0.0.0.0", "--port", "8080",
+]
+
+
+def _proc(**over) -> AdoptedProcess:
+    base = dict(
+        pid=122081, argv=REAL_ARGV,
+        exe="/home/praisit/llama.cpp/llama-server",
+        cwd="/home/praisit/llama.cpp",
+        unit="llama-qwen.service",
+    )
+    return AdoptedProcess(**{**base, **over})
+
+
+def test_the_facts_are_read_from_argv_not_guessed():
+    proc = _proc()
+    assert proc.engine == "llamacpp"
+    assert proc.port == 8080
+    assert proc.context == 65536
+    assert proc.model_path.endswith("Reasoning-Distilled.Q4_K_M.gguf")
+    assert proc.model == "Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled.Q4_K_M"
+
+
+def test_equals_form_flags_are_understood():
+    proc = _proc(argv=["llama-server", "--port=9001", "--ctx-size=4096", "-m", "/x.gguf"])
+    assert proc.port == 9001
+    assert proc.context == 4096
+
+
+def test_the_generated_script_reruns_the_same_command(tmp_path):
+    script = render_native_controller(_proc(), "qwen-adopted")
+
+    # bash ต้องอ่านรู้เรื่องก่อน — สคริปต์ที่ syntax พังคือรับเข้ามาแล้วใช้ไม่ได้เลย
+    path = tmp_path / "c.sh"
+    path.write_text(script, encoding="utf-8")
+    assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
+
+    # ทุก flag ที่ของเดิมใช้ต้องอยู่ครบ — ตกตัวเดียวคือได้คนละพฤติกรรม
+    for flag in ("-ngl", "99", "-ts", "1,1,1", "-ctk", "q8_0", "-ctv", "q8_0", "-fa", "-sm"):
+        assert flag in script, f"argv หาย: {flag}"
+    assert "/home/praisit/llama.cpp/llama-server" in script
+
+
+def test_secrets_are_never_copied_into_the_bundle():
+    """/proc/<pid>/environ มี API key ของ backend — เขียนลง bundle คือทำ secret หลุด"""
+    import inspect as _inspect
+
+    #  ได้ *ฟังก์ชัน* เพราะ __init__ re-export ทับชื่อโมดูล
+    from importlib import import_module
+
+    adopt_mod = import_module("lmds.fleet.adopt")
+
+    source = _inspect.getsource(adopt_mod.inspect_process)
+    assert "environ" not in source.replace("จงใจไม่อ่าน /proc/<pid>/environ", "")
+
+
+def test_the_owning_unit_is_recorded_and_blocks_a_conflicting_start():
+    """unit ที่ Restart=always จะแย่ง port กลับ — ต้องบอก ไม่ใช่ปล่อยให้ start แล้วงง"""
+    script = render_native_controller(_proc(), "qwen-adopted")
+    assert 'OWNING_UNIT="llama-qwen.service"' in script
+    assert "systemctl disable --now" in script
+    assert "is-active --quiet" in script
+
+
+def test_a_process_with_no_unit_says_nothing_about_units():
+    script = render_native_controller(_proc(unit=""), "qwen-adopted")
+    assert 'OWNING_UNIT=""' in script
+
+
+def test_something_that_is_not_a_model_server_is_refused(monkeypatch):
+    #  ได้ *ฟังก์ชัน* เพราะ __init__ re-export ทับชื่อโมดูล
+    from importlib import import_module
+
+    adopt_mod = import_module("lmds.fleet.adopt")
+    from lmds.fleet.manager import FleetError
+
+    monkeypatch.setattr(
+        adopt_mod, "inspect_process",
+        lambda **kw: AdoptedProcess(pid=99, argv=["/usr/bin/nginx", "-g", "daemon off;"],
+                                    exe="/usr/bin/nginx"),
+    )
+    with pytest.raises(FleetError, match="ไม่ใช่ตัวเสิร์ฟโมเดล"):
+        adopt_process(pid=99)
+
+
+def test_the_bundle_registers_itself_so_lmds_ps_can_see_it(tmp_path, monkeypatch):
+    #  ได้ *ฟังก์ชัน* เพราะ __init__ re-export ทับชื่อโมดูล
+    from importlib import import_module
+
+    adopt_mod = import_module("lmds.fleet.adopt")
+
+    monkeypatch.setattr(adopt_mod, "inspect_process", lambda **kw: _proc())
+    monkeypatch.setattr(adopt_mod, "run_root", lambda: tmp_path / "run")
+
+    controller, proc = adopt_process(pid=122081, slug="qwen-adopted", output=tmp_path / "bundles")
+
+    assert controller.exists() and controller.stat().st_mode & 0o111
+    meta = (tmp_path / "run" / "qwen-adopted" / "server.meta").read_text()
+    assert "mode=native" in meta
+    assert "engine=llamacpp" in meta
+    assert "port=8080" in meta
+    assert f"controller={controller}" in meta
+
+    import yaml
+
+    profile = yaml.safe_load((controller.parent / "MODEL_PROFILE.yaml").read_text())
+    assert profile["adopted"] is True
+    assert profile["serving"]["context"] == 65536
+    assert profile["source_process"]["unit"] == "llama-qwen.service"
+    # argv เก็บไว้ทั้งชุด — ตรวจย้อนได้ว่า bundle นี้มาจากคำสั่งอะไร
+    assert profile["source_process"]["argv"] == REAL_ARGV
+
+
+def test_no_download_or_verify_is_offered_because_there_is_nothing_to_download():
+    """คำสั่งที่ทำอะไรไม่ได้จริงแต่คืน 0 คือคำโกหกที่แพงกว่าการไม่มีคำสั่งนั้น"""
+    script = render_native_controller(_proc(), "qwen-adopted")
+    assert "download)" not in script
+    assert "verify-files)" not in script

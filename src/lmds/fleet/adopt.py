@@ -7,6 +7,11 @@ controller — กด repair ก็ได้แต่คำว่า "ไม่�
 ตัวนี้อ่านสิ่งที่ container กำลังใช้อยู่จริง (image, env, mount, port, args) แล้วเขียนเป็น
 controller ที่ **รันคำสั่งเดิมซ้ำได้เป๊ะ** — ของที่รันอยู่ไม่ถูกแตะต้อง
 
+**ไม่ใช่ทุกเครื่องที่รันด้วย Docker** — เคสที่เจอบ่อยพอ ๆ กันคือ `llama-server` ที่รันตรง ๆ
+ใต้ systemd unit ที่ลูกค้าเขียนเอง · `lmds ps` มองเห็นมันอยู่แล้ว (`_orphan_native` อ่าน
+cmdline) แต่ก็ตันตรงเดียวกันคือไม่มี controller · `inspect_process` ทำเรื่องเดียวกันกับ
+process แทน container
+
 หลักที่ยึด:
   - **สร้างจากสิ่งที่รันอยู่จริง ไม่ใช่เดา** — อ่านจาก `docker inspect` ตรง ๆ
   - **ไม่แกล้งทำเป็นมี `download`/`verify-files`** — weight ของ container พวกนี้เป็น path
@@ -106,6 +111,128 @@ _KEEP_ENV_PREFIXES = ("MODEL", "PORT", "MAX_", "VLLM_", "HF_", "CTX_", "API_", "
 
 def meaningful_env(adopted: Adopted) -> list[str]:
     return [e for e in adopted.env if e.split("=", 1)[0].startswith(_KEEP_ENV_PREFIXES)]
+
+
+
+
+# ---------------------------------------------------------------------------
+# process ที่รันตรง ๆ (ไม่ใช่ container)
+# ---------------------------------------------------------------------------
+@dataclass
+class AdoptedProcess:
+    """สิ่งที่อ่านได้จาก process ที่รันอยู่ — ทั้งหมดมาจาก /proc ไม่ได้เดา"""
+
+    pid: int
+    argv: list[str] = field(default_factory=list)
+    exe: str = ""
+    cwd: str = ""
+    # systemd unit ที่เป็นเจ้าของ (ว่าง = ไม่ได้รันใต้ unit) — ตัวที่จะแย่ง port กลับ
+    unit: str = ""
+
+    @property
+    def engine(self) -> str:
+        name = (self.exe or (self.argv[0] if self.argv else "")).lower()
+        if "llama" in name:
+            return "llamacpp"
+        if "vllm" in name or "vllm" in " ".join(self.argv).lower():
+            return "vllm"
+        return "unknown"
+
+    @property
+    def port(self) -> int:
+        value = _argv_value(self.argv, "--port", "-p")
+        return int(value) if value.isdigit() else 0
+
+    @property
+    def model_path(self) -> str:
+        return _argv_value(self.argv, "-m", "--model")
+
+    @property
+    def model(self) -> str:
+        alias = _argv_value(self.argv, "--alias", "--served-model-name")
+        if alias:
+            return alias
+        return Path(self.model_path).stem if self.model_path else ""
+
+    @property
+    def context(self) -> int:
+        value = _argv_value(self.argv, "-c", "--ctx-size", "--max-model-len")
+        return int(value) if value.isdigit() else 0
+
+
+def _argv_value(argv: list[str], *flags: str) -> str:
+    """ค่าของ flag แรกที่เจอ — รองรับทั้ง `--flag value` และ `--flag=value`"""
+    for index, item in enumerate(argv):
+        for flag in flags:
+            if item == flag and index + 1 < len(argv):
+                return argv[index + 1]
+            if item.startswith(f"{flag}="):
+                return item.split("=", 1)[1]
+    return ""
+
+
+def _read_proc(pid: int, name: str) -> str:
+    try:
+        return Path(f"/proc/{pid}/{name}").read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def owning_unit(pid: int) -> str:
+    """systemd unit ที่เป็นเจ้าของ process — ตัวที่จะ restart ทับตอน LMDS เข้าคุม"""
+    for line in _read_proc(pid, "cgroup").splitlines():
+        if ".service" in line:
+            part = line.rsplit("/", 1)[-1].strip()
+            if part.endswith(".service"):
+                return part
+    return ""
+
+
+def inspect_process(pid: int = 0, port: int = 0) -> AdoptedProcess:
+    """อ่านคำสั่งที่ process กำลังรันอยู่จริง
+
+    **จงใจไม่อ่าน /proc/<pid>/environ** — API key ของ backend อยู่ในนั้น การเขียนมันลง
+    bundle คือทำให้ทุกคนที่อ่านไฟล์ได้เห็น secret · cmdline พอสำหรับรันซ้ำอยู่แล้ว ส่วน
+    env ที่จำเป็นจริงให้คนตั้งเองใน bundle.env ซึ่งเป็นที่ของมัน
+    """
+    if not pid and not port:
+        raise FleetError("ต้องระบุ --pid หรือ --port")
+    if not pid:
+        pid = _pid_on_port(port)
+        if not pid:
+            raise FleetError(f"ไม่มี process ไหนฟังอยู่ที่ port {port}")
+
+    raw = _read_proc(pid, "cmdline")
+    if not raw:
+        raise FleetError(f"อ่าน /proc/{pid}/cmdline ไม่ได้ — process ยังอยู่ไหม?")
+    argv = [a for a in raw.split("\0") if a]
+
+    try:
+        exe = str(Path(f"/proc/{pid}/exe").resolve())
+    except OSError:
+        exe = argv[0] if argv else ""
+    try:
+        cwd = str(Path(f"/proc/{pid}/cwd").resolve())
+    except OSError:
+        cwd = ""
+
+    return AdoptedProcess(pid=pid, argv=argv, exe=exe, cwd=cwd, unit=owning_unit(pid))
+
+
+def _pid_on_port(port: int) -> int:
+    try:
+        proc = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FleetError(f"เรียก ss ไม่ได้: {exc}") from exc
+    for line in proc.stdout.splitlines():
+        if f":{port} " not in line:
+            continue
+        marker = "pid="
+        if marker in line:
+            value = line.split(marker, 1)[1].split(",", 1)[0]
+            if value.isdigit():
+                return int(value)
+    return 0
 
 
 def render_controller(adopted: Adopted, slug: str) -> str:
@@ -285,3 +412,230 @@ def adopt(container: str, slug: str = "", output: Path | None = None) -> Path:
         f"started_at=\n",
         encoding="utf-8")
     return controller
+
+
+def render_native_controller(proc: AdoptedProcess, slug: str) -> str:
+    """สคริปต์ที่รันคำสั่งเดิมของ process ซ้ำได้ — argv ชุดเดียวกับที่มันรันอยู่ตอนนี้"""
+    argv = " \\\n    ".join(shlex.quote(a) for a in proc.argv[1:])
+    exe = shlex.quote(proc.exe or (proc.argv[0] if proc.argv else ""))
+    cwd = shlex.quote(proc.cwd or str(Path.home()))
+    unit_note = (
+        f"# unit เดิมที่เป็นเจ้าของ process นี้: {proc.unit}\n"
+        f"# ถ้ามันยัง enable อยู่ มันจะแย่ง port กลับทุกครั้งที่ LMDS stop\n"
+        if proc.unit else ""
+    )
+
+    return f"""#!/usr/bin/env bash
+# LMDS adopted controller (native) — สร้างจาก process ที่รันอยู่ก่อนหน้า ไม่ได้ deploy ผ่าน LMDS
+#
+# argv ข้างล่างคัดมาจาก /proc/{proc.pid}/cmdline ตอนรับเข้าระบบ ไม่ได้เดา
+# ไม่มี download/verify-files: weight เป็น path ที่คุณจัดการเอง LMDS จึงไม่มีอะไรให้โหลดหรือตรวจ
+{unit_note}set -Eeuo pipefail
+
+SCRIPT_VERSION="${{SCRIPT_VERSION:-1.0.0}}"
+ADOPTED=1
+SLUG="{slug}"
+API_PORT="${{API_PORT:-{proc.port or 8000}}}"
+SERVER_BIN="${{SERVER_BIN:-{exe}}}"
+WORK_DIR="${{WORK_DIR:-{cwd}}}"
+RUN_DIR="${{RUN_DIR:-${{HOME}}/.lmds/run/{slug}}}"
+PID_FILE="${{RUN_DIR}}/server.pid"
+LOG_FILE="${{RUN_DIR}}/server.log"
+OWNING_UNIT="{proc.unit}"
+
+die() {{ echo "ERROR: $*" >&2; exit 1; }}
+
+server_alive() {{ [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; }}
+
+served_model() {{
+  local body
+  body="$(curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models")" || return 1
+  printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
+}}
+
+banner() {{
+  echo "LMDS adopted (native) · {slug} · v${{SCRIPT_VERSION}}"
+  echo "binary: ${{SERVER_BIN}}"
+}}
+
+info() {{
+  banner
+  echo "model:     {proc.model or '(ไม่ระบุใน argv)'}"
+  echo "weights:   {proc.model_path or '(ไม่ระบุ)'}"
+  echo "context:   {proc.context or 0}"
+  echo "port:      ${{API_PORT}}"
+  echo "adopted:   ใช่ — จาก process ที่รันอยู่ก่อน LMDS (pid {proc.pid} ตอนรับเข้า)"
+  [[ -n "$OWNING_UNIT" ]] && echo "unit เดิม:  ${{OWNING_UNIT}} (ยัง enable อยู่ = แย่ง port กลับ)"
+  true
+}}
+
+write_meta() {{
+  mkdir -p "$RUN_DIR"
+  local script_path
+  script_path="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)/$(basename "${{BASH_SOURCE[0]}}")"
+  cat > "${{RUN_DIR}}/server.meta" <<META
+slug={slug}
+model={proc.model or slug}
+default_model={proc.model or slug}
+model_id={proc.model_path or slug}
+engine={proc.engine}
+mode=native
+port=${{API_PORT}}
+container=
+pid_file=${{PID_FILE}}
+controller=${{script_path}}
+started_at=$(date +%Y-%m-%dT%H:%M:%S)
+META
+}}
+
+start() {{
+  server_alive && die "{slug} รันอยู่แล้ว (PID $(cat "$PID_FILE"))"
+  # เจ้าของเดิมยังถือ port อยู่ = start ไปก็ชนกันเปล่า ๆ บอกให้ชัดดีกว่าปล่อยให้ล้มเอง
+  if [[ -n "$OWNING_UNIT" ]] && systemctl is-active --quiet "$OWNING_UNIT" 2>/dev/null; then
+    die "${{OWNING_UNIT}} ยังรันอยู่และถือ port ${{API_PORT}} — หยุดก่อน: sudo systemctl disable --now ${{OWNING_UNIT}}"
+  fi
+  [[ -x "$SERVER_BIN" ]] || die "ไม่พบ binary: $SERVER_BIN"
+  mkdir -p "$RUN_DIR"
+  cd "$WORK_DIR" || die "เข้า $WORK_DIR ไม่ได้"
+  setsid nohup "$SERVER_BIN" \\
+    {argv} \\
+    >> "$LOG_FILE" 2>&1 < /dev/null &
+  echo $! > "$PID_FILE"
+  write_meta
+  echo "started: {slug} (PID $(cat "$PID_FILE") · port ${{API_PORT}})"
+}}
+
+stop() {{
+  if server_alive; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    for _ in $(seq 1 30); do server_alive || break; sleep 1; done
+    server_alive && kill -9 "$(cat "$PID_FILE")" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+  echo "stopped: {slug}"
+}}
+
+restart() {{ stop; start; }}
+
+status() {{
+  echo "model:     {proc.model or slug}"
+  if server_alive; then echo "process: running (PID $(cat "$PID_FILE"))"; else echo "process: stopped"; fi
+  curl -fsS -m 5 "http://127.0.0.1:${{API_PORT}}/v1/models" >/dev/null 2>&1 \\
+    && echo "api: ตอบปกติ" || echo "api: ยังไม่ตอบ"
+  if [[ -n "$OWNING_UNIT" ]] && systemctl is-active --quiet "$OWNING_UNIT" 2>/dev/null; then
+    echo "หมายเหตุ: ${{OWNING_UNIT}} ยังรันอยู่ — ตัวที่ตอบอาจเป็นของ unit นั้น ไม่ใช่ของ LMDS"
+  fi
+  true
+}}
+
+logs() {{ tail -n "${{1:-300}}" "$LOG_FILE" 2>/dev/null || echo "ยังไม่มี log (start ผ่าน LMDS ก่อน)"; }}
+
+test_text() {{
+  local served
+  served="$(served_model)" || die "เรียก /v1/models ไม่ได้ — server ขึ้นหรือยัง? ดู: $0 logs"
+  curl -fsS "http://127.0.0.1:${{API_PORT}}/v1/chat/completions" \\
+    -H "Content-Type: application/json" \\
+    -d "{{\\"model\\": \\"$served\\", \\"messages\\": [{{\\"role\\": \\"user\\", \\"content\\": \\"ตอบสั้น ๆ: 2+2 เท่ากับเท่าไร\\"}}], \\"max_tokens\\": 256}}" \\
+    || die "เรียก /v1/chat/completions ไม่สำเร็จ — ดู: $0 logs"
+  echo ""
+}}
+
+client_config() {{
+  local served
+  served="$(served_model)" || served="{slug}"
+  echo "{{"
+  echo "  \\"base_url\\": \\"http://$(hostname -I | awk '{{print $1}}'):${{API_PORT}}/v1\\","
+  echo "  \\"model\\": \\"$served\\","
+  echo "  \\"server_context\\": {proc.context or 0}"
+  echo "}}"
+}}
+
+network_info() {{
+  echo "Bind:      0.0.0.0:${{API_PORT}}"
+  echo "Endpoint:  http://$(hostname -I | awk '{{print $1}}'):${{API_PORT}}/v1"
+  echo "Model:     {proc.model or slug}"
+}}
+
+usage() {{
+  banner
+  cat <<'USAGE'
+
+คำสั่ง:
+  start | stop | restart      รันคำสั่งเดิมของ process ซ้ำ
+  status                      สถานะ process + API
+  logs [N]                    log ล่าสุด N บรรทัด
+  test-text                   ถามจริงแล้วดูว่าตอบไหม
+  client-config               ค่าที่ client ต้องใช้
+  network-info                bind + endpoint
+  info | banner               ข้อมูลของ bundle นี้
+
+ไม่มี download / verify-files: weight เป็น path ที่คุณจัดการเอง
+LMDS จึงไม่มีอะไรให้โหลดหรือตรวจ — ดูแลไฟล์เองเหมือนเดิม
+USAGE
+}}
+
+case "${{1:-}}" in
+  start)          start ;;
+  stop)           stop ;;
+  restart)        restart ;;
+  status)         status ;;
+  logs)           shift; logs "${{1:-300}}" ;;
+  test-text)      test_text ;;
+  client-config)  client_config ;;
+  network-info)   network_info ;;
+  info|banner)    info ;;
+  *)              usage ;;
+esac
+"""
+
+
+def adopt_process(pid: int = 0, port: int = 0, slug: str = "",
+                  output: Path | None = None) -> tuple[Path, AdoptedProcess]:
+    """สร้าง bundle จาก process ที่รันอยู่ — คืน (path ของ controller, สิ่งที่อ่านได้)"""
+    proc = inspect_process(pid=pid, port=port)
+    if proc.engine == "unknown":
+        raise FleetError(
+            f"pid {proc.pid} ไม่ใช่ตัวเสิร์ฟโมเดลที่รู้จัก (argv: {' '.join(proc.argv[:3])} …)"
+        )
+    slug = slug or (proc.model or f"pid-{proc.pid}").replace("_", "-").lower()
+    directory = (output or Path("./bundles")) / slug
+    directory.mkdir(parents=True, exist_ok=True)
+
+    controller = directory / f"{slug}-adopted.sh"
+    controller.write_text(render_native_controller(proc, slug), encoding="utf-8")
+    controller.chmod(0o755)
+
+    profile = {
+        "profile_version": 1,
+        "generated_by": "lmds adopt (native)",
+        "adopted": True,
+        "model": {
+            "id": proc.model_path or proc.model or slug,
+            "served_name": proc.model or slug,
+            "artifact_type": "gguf" if proc.model_path.endswith(".gguf") else "unknown",
+        },
+        "runtime": {"engine": proc.engine, "native_build": True, "binary": proc.exe},
+        "serving": {"context": proc.context, "port": proc.port},
+        "source_process": {"pid": proc.pid, "unit": proc.unit, "argv": proc.argv},
+    }
+    import yaml
+
+    (directory / "MODEL_PROFILE.yaml").write_text(
+        yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    run_dir = run_root() / slug
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "server.meta").write_text(
+        f"slug={slug}\n"
+        f"model={proc.model or slug}\n"
+        f"default_model={proc.model or slug}\n"
+        f"model_id={proc.model_path or slug}\n"
+        f"engine={proc.engine}\n"
+        f"mode=native\n"
+        f"port={proc.port}\n"
+        f"container=\n"
+        f"pid_file={run_dir / 'server.pid'}\n"
+        f"controller={controller}\n"
+        f"started_at=\n",
+        encoding="utf-8")
+    return controller, proc
