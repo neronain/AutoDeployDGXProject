@@ -72,6 +72,27 @@ def arch_requirements(repo_id: str) -> dict:
             return requirements
     return {}
 
+
+# กับดักที่ไม่ใช่ "ค่าที่ต้องตั้ง" แต่ควรเตือนก่อน deploy — สกัดจากการรันจริงบน DGX Spark
+# (งานวิจัย Qwen3.5-122B บน SM121 + เคสของทีม) · rule-based ไม่มี LLM ไปค้นให้ จึงเขียนไว้ตรง ๆ
+def arch_notes(repo_id: str, quantization: str = "") -> list[str]:
+    key = repo_id.lower().replace("_", "-")
+    quant = (quantization or "").lower()
+    notes: list[str] = []
+    if "nvfp4" in key or "nvfp4" in quant or "fp4" in quant:
+        notes.append(
+            "NVFP4/FP4: SM121 (GB10) ไม่มี FP4 CUTLASS kernel ในตัว — image ต้องมี kernel เฉพาะ "
+            "(เช่น avarok/dgx-vllm-nvfp4-kernel หรือ dspark-vllm-gx10) ไม่งั้น fallback Marlin SM80 ช้ามาก (~-42%)"
+        )
+    if "qwen3.5" in key or "qwen3-5" in key or "deltanet" in key:
+        notes.append(
+            "Qwen3.5 (DeltaNet hybrid attention): อย่าเปิด --enable-prefix-caching (output ผิด) · "
+            "kv-cache fp8 ได้ผลน้อยบน SM121"
+        )
+    if ("qwen3" in key or "qwen-3" in key) and "coder" not in key:
+        notes.append("ถ้าเปิด tool calling: Qwen3/3.5 ใช้ --tool-parser qwen3_xml (Qwen3-Coder ใช้ qwen3_coder)")
+    return notes
+
 def slugify(repo_id: str) -> str:
     name = repo_id.split("/")[-1].lower()
     return re.sub(r"[^a-z0-9]+", "-", name).strip("-") or "model"
@@ -228,6 +249,9 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         plan.warnings.append("ไม่พบ chat template — ต้องระบุ template เองตอนใช้งาน chat")
     if report.trust_remote_code_files:
         plan.warnings.append("repo มีไฟล์ remote code — review ก่อนเปิด --trust-remote-code (ต้องอนุมัติเอง)")
+    for note in arch_notes(report.repo_id, report.quantization or ""):
+        if note not in plan.warnings:
+            plan.warnings.append(note)
 
     # สูตรที่รันผ่านจริงมาก่อนค่าตั้งต้นเสมอ — นี่คือสิ่งที่ทดแทน LLM ให้เครื่องที่ไม่มี provider
     recipe = find_recipe(report.repo_id)
