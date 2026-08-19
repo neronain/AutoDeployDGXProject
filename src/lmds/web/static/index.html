@@ -764,6 +764,7 @@ pre {
     <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
     <span class="dim" id="ver"></span>
     <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Update</button>
+    <button id="restart-web" title="โหลดโค้ดที่อัปเดตแล้วเข้า process ใหม่ — หน้านี้จะหลุดสักครู่แล้วต่อกลับเอง"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg>Restart console</button>
     <button id="textsize" class="icobtn size" title="ขนาดตัวอักษรของหน้านี้">…</button>
     <button id="theme" class="theme" title="สลับธีม สว่าง / มืด / ตามเครื่อง">…</button>
     <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้"><svg class="ic" aria-hidden="true"><use href="#i-exit"/></svg>Sign out</button>
@@ -1000,6 +1001,31 @@ function actionsMarkup(m) {
 
 // รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ · หน้าเว็บติดป้าย "not deployed by lmds" ให้ตัวพวกนี้
 // มานานแล้วแต่ไม่เคยมีปุ่มให้กด — ทางเดียวคือไป ssh แล้วพิมพ์ `lmds adopt` ซึ่งคนส่วนใหญ่ไม่รู้ว่ามี
+// รีสตาร์ตบริการหน้าเว็บเอง · โค้ดที่ pull มาใหม่มีผลก็ต่อเมื่อ process โหลดใหม่ ซึ่งเดิม
+// ต้อง ssh เข้าไปพิมพ์คำสั่งเอง — คนที่ใช้ผ่านหน้าเว็บล้วน ๆ จึงไม่มีทางรู้ว่าของที่อัปไปทำงานหรือยัง
+async function restartConsole() {
+  if (!confirm("รีสตาร์ตบริการหน้าเว็บ?\n\nหน้านี้จะหลุดสักครู่แล้วต่อกลับเอง\nโมเดลที่รันอยู่ไม่ถูกแตะต้อง")) return;
+  const btn = document.getElementById("restart-web");
+  try {
+    const res = await api("/api/restart", {method: "POST"});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "restart ไม่สำเร็จ");
+    if (btn) { btn.disabled = true; btn.textContent = "กำลังรีสตาร์ต…"; }
+    // รอจนกว่ามันจะตอบอีกครั้ง แล้วค่อยโหลดหน้าใหม่ — เดาเวลาเอาแล้ว reload เร็วไปจะเจอ 502
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const ping = await api("/api/version");
+        if (ping.ok) { location.reload(); return; }
+      } catch { /* ยังไม่ขึ้น รอต่อ */ }
+    }
+    showError("รีสตาร์ตไปแล้วแต่ยังต่อกลับไม่ได้ — ลอง refresh เอง");
+  } catch (e) {
+    showError(e.message);
+    if (btn) { btn.disabled = false; btn.innerHTML = "Restart console"; }
+  }
+}
+
 async function adoptModel(slug) {
   if (!confirm(`รับ "${slug}" เข้าระบบ?\n\n`
       + "LMDS จะอ่านคำสั่งที่มันรันอยู่จริงแล้วเขียนเป็น controller\n"
@@ -2366,6 +2392,7 @@ async function refreshNodes() {
 }
 
 document.addEventListener("click", async e => {
+  if (e.target.closest("#restart-web")) { await restartConsole(); return; }
   if (e.target.id === "node-new") { nodeAddForm(); return; }
   if (e.target.id === "n-cancel") { nodeRows.clear(); refreshNodes(); return; }
   if (e.target.id === "n-save") {

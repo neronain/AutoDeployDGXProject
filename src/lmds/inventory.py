@@ -144,6 +144,15 @@ def _running_slugs() -> list[tuple[str, str]]:
     return slugs
 
 
+# commit ที่ process นี้เริ่มมาด้วย — อ่านครั้งเดียวแล้วจำไว้
+#
+# ติดตั้งแบบ git checkout ทำให้ `git rev-parse HEAD` เปลี่ยนทันทีที่ `git pull` ทั้งที่
+# process ยังรันโค้ดเก่าอยู่ · ถ้าอ่านสดทุกครั้ง "ตัวที่รันอยู่" กับ "ตัวบนดิสก์" จะเท่ากัน
+# เสมอ ป้าย "รอรีสตาร์ต" จึงไม่มีวันขึ้นตอนที่ควรขึ้น — และ (เพราะ _build.py ไม่เคยถูก
+# git pull อัปเดต) กลับขึ้นค้างถาวรตอนที่ไม่ควรขึ้น ซึ่งเป็นอาการที่เจอจริงบนเครื่องลูกค้า
+_BOOT_COMMIT: str | None = None
+
+
 def source_commit() -> str:
     """commit ของซอร์สที่ *ถูก import อยู่จริง* — ว่างเมื่อไม่ได้ติดตั้งจาก git checkout
 
@@ -151,18 +160,35 @@ def source_commit() -> str:
     รันโค้ดเก่า — เคสจริง: แก้บั๊กบน hub แล้วเข้าใจว่าทั้งฟลีตได้ของใหม่ ทั้งที่ `lmds agent info`
     ที่คำนวณสถานะทุกอย่างรันด้วยโค้ดของ *เครื่องนั้น* ซึ่งยังเก่าอยู่
     """
+    global _BOOT_COMMIT
+
+    if _BOOT_COMMIT is None:
+        _BOOT_COMMIT = _commit_on_disk()
+    return _BOOT_COMMIT
+
+
+def _git_head() -> str | None:
+    """commit บนดิสก์จาก git — None เมื่อไม่ได้ติดตั้งจาก git checkout"""
     import subprocess
 
     import lmds
 
     root = Path(lmds.__file__).resolve().parents[2]
-    if (root / ".git").exists():
-        try:
-            done = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-                                  capture_output=True, text=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            return ""
-        return done.stdout.strip() if done.returncode == 0 else ""
+    if not (root / ".git").exists():
+        return None
+    try:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _commit_on_disk() -> str:
+    """commit ของโค้ดที่ process นี้โหลดมา (เรียกครั้งแรกครั้งเดียว)"""
+    head = _git_head()
+    if head is not None:
+        return head
 
     # ติดตั้งแบบปกติ (node ทุกเครื่องเป็นแบบนี้) โค้ดไม่ได้อยู่ใน git checkout แล้ว —
     # ใช้ commit ที่ install.sh ประทับไว้ตอนติดตั้งแทน ซึ่งตรงกับโค้ดที่กำลังรันจริง
@@ -192,6 +218,15 @@ def installed_commit() -> str:
 
     import lmds
 
+    # git checkout: `git pull` ขยับ HEAD แต่ไม่เคยแตะ _build.py — อ่าน _build.py ที่นี่
+    # จะได้ commit ตอนติดตั้งครั้งแรกซึ่งค้างอยู่อย่างนั้นตลอดไป แล้วป้าย "รอรีสตาร์ต"
+    # ก็ติดถาวร รีสตาร์ตกี่ครั้งหรือ reboot ก็ไม่หาย (เจอจริงบนเครื่องลูกค้า)
+    head = _git_head()
+    if head is not None:
+        return head
+
+    # ไม่ใช่ git checkout — อ่าน **ไฟล์** ไม่ใช่โมดูลที่ python cache ไว้ ค่าที่ install.sh
+    # เพิ่งเขียนทับจึงเห็นทันทีโดยไม่ต้องรีสตาร์ต ซึ่งคือทั้งหมดที่ค่านี้มีไว้บอก
     build = Path(lmds.__file__).resolve().parent / "_build.py"
     try:
         text = build.read_text(encoding="utf-8")

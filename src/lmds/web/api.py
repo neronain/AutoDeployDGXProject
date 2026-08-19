@@ -89,6 +89,24 @@ class _Attempts:
         self._by_ip.pop(ip, None)
 
 
+def _running_unit() -> str:
+    """unit ที่ process ของเว็บนี้อยู่ — ว่างเมื่อไม่ได้รันใต้ systemd
+
+    ใช้ชื่อจริงดีกว่าค่า default: เครื่องที่ติดตั้งด้วยชื่ออื่นจะได้ restart ถูกตัว
+    """
+    from pathlib import Path as _P
+
+    try:
+        text = _P("/proc/self/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        part = line.rsplit("/", 1)[-1].strip()
+        if part.endswith(".service"):
+            return part
+    return ""
+
+
 def create_app(token: str = "") -> FastAPI:
     app = FastAPI(title="LMDS", docs_url=None, redoc_url=None, openapi_url=None)
     attempts = _Attempts()
@@ -160,6 +178,35 @@ def create_app(token: str = "") -> FastAPI:
         if check_repo:
             payload["upstream"] = _upstream_commit()
         return payload
+
+    @app.post("/api/restart", dependencies=guarded)
+    def restart_console(body: dict | None = None) -> dict:
+        """รีสตาร์ตบริการหน้าเว็บของเครื่องนี้
+
+        โค้ดที่ pull มาใหม่จะมีผลก็ต่อเมื่อ process โหลดใหม่ · เดิมทางเดียวคือ ssh เข้าไป
+        พิมพ์ `systemctl --user restart lmds-web` ซึ่งคนที่ใช้ผ่านหน้าเว็บล้วน ๆ ทำไม่ได้
+        แล้วก็ไม่มีทางรู้ว่าของที่อัปไปแล้วทำงานหรือยัง
+
+        ยิงแบบหลุดจาก process นี้ (setsid + หน่วง) ไม่งั้น systemd ฆ่าตัวที่สั่ง restart
+        ก่อนที่คำตอบจะเดินทางกลับถึงเบราว์เซอร์
+        """
+        import subprocess
+
+        from .daemon import UNIT_NAME
+
+        unit = _running_unit() or UNIT_NAME
+        try:
+            subprocess.Popen(
+                ["setsid", "bash", "-c", f"sleep 1; systemctl --user restart {unit}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"สั่ง restart ไม่ได้: {exc} — รันเอง: systemctl --user restart {unit}",
+            ) from exc
+        return {"unit": unit, "restarting": True}
 
     @app.post("/api/update", dependencies=guarded)
     def self_update(body: dict | None = None) -> dict:

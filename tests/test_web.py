@@ -1823,6 +1823,9 @@ def test_commit_is_known_even_when_installed_outside_a_git_checkout(monkeypatch,
     fake.write_text("", encoding="utf-8")
     monkeypatch.setattr("lmds.__file__", str(fake))
     monkeypatch.setitem(sys.modules, "lmds._build", types.SimpleNamespace(COMMIT="abc1234"))
+    # source_commit() จำค่าไว้ตั้งแต่เรียกครั้งแรก (โดยตั้งใจ: process ต้องรายงาน commit ที่
+    # ตัวเองโหลดมา ไม่ใช่ที่ git ชี้อยู่ตอนนี้) — เทสนี้ทดสอบตัว resolve จึงต้องล้าง cache ก่อน
+    monkeypatch.setattr(inventory, "_BOOT_COMMIT", None)
     assert inventory.source_commit() == "abc1234"
 
 
