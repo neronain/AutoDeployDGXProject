@@ -42,6 +42,11 @@ def capability_score(probes: list[dict]) -> dict:
         "earned": earned,
         "possible": possible,
         "counted": len([p for p in probes if not p.get("skipped")]),
+        # ตัวเลขรวมบอกว่า "ดีแค่ไหน" แต่คนตัดสินใจต้องรู้ว่า *ตกข้อไหน* —
+        # 85/100 ที่ตก tool calling ใช้กับ agent ไม่ได้ ส่วน 85 ที่ตก vision อาจไม่สำคัญเลย
+        "passed": [p.get("key") for p in probes if p.get("passed") and not p.get("skipped")],
+        "failed": [p.get("key") for p in probes if not p.get("passed") and not p.get("skipped")],
+        "skipped": [p.get("key") for p in probes if p.get("skipped")],
     }
 
 

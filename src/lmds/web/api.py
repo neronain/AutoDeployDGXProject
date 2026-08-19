@@ -835,6 +835,67 @@ def create_app(token: str = "") -> FastAPI:
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # ── คะแนนโมเดล ─────────────────────────────────────────────────────────
+    @app.get("/api/bench", dependencies=guarded)
+    def bench_index() -> dict:
+        """ตารางคะแนน — รอบล่าสุดของทุกโมเดลที่เคยวัดบนเครื่องนี้"""
+        from lmds.bench import all_runs, summarize
+
+        return {"runs": [summarize(run) for run in all_runs()]}
+
+    @app.get("/api/bench/{slug}", dependencies=guarded)
+    def bench_detail(slug: str) -> dict:
+        from lmds.bench import load, runs_for
+
+        paths = runs_for(slug)
+        if not paths:
+            return {"run": None, "history": []}
+        history = []
+        for path in paths:
+            try:
+                entry = load(path)
+            except (OSError, ValueError):
+                continue
+            history.append({
+                "stamped_at": entry.get("stamped_at"),
+                "engine_build": (entry.get("environment") or {}).get("engine_build", ""),
+            })
+        return {"run": load(paths[0]), "history": history}
+
+    @app.post("/api/bench/{slug}/run", dependencies=guarded)
+    def bench_start(slug: str, body: dict | None = None) -> dict:
+        """สั่งวัดเป็นงานเบื้องหลัง — วัดเต็มชุดกินเวลาหลายนาที คำขอ HTTP รอไม่ไหว"""
+        import shlex as _shlex
+
+        from lmds.fleet import find
+
+        from . import jobs
+
+        server = find(slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        if not server.running:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{slug} ยังไม่ได้รัน — วัดได้เฉพาะโมเดลที่รันอยู่",
+            )
+        options = body or {}
+        flags = []
+        if options.get("quick"):
+            flags.append("--quick")
+        if options.get("speed_only"):
+            flags.append("--speed-only")
+        if options.get("caps_only"):
+            flags.append("--caps-only")
+        runs = int(options.get("runs") or 3)
+        flags += ["--runs", str(max(1, min(10, runs)))]
+        script = f"lmds bench run {_shlex.quote(slug)} {' '.join(flags)}"
+        try:
+            job = jobs.start_shell(slug, "bench", script)
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job": job.payload()}
+
     @app.get("/api/jobs/{job_id}", dependencies=guarded)
     def job_status(job_id: str) -> dict:
         from . import jobs

@@ -614,6 +614,16 @@ pre {
   padding: 8px 10px; margin-bottom: 8px; border-radius: var(--r-sm);
   background: var(--warn-bg); color: var(--warn);
 }
+
+/* ── ตารางคะแนนโมเดล ── */
+.brow { padding: 10px 0; border-top: 1px solid var(--line); }
+.brow:first-of-type { border-top: 0; }
+.bstats { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 8px; }
+.bstat { min-width: 92px; }
+.bval { font-size: calc(15px * var(--fs)); font-weight: 500; }
+.npill.ok { color: var(--ok); border-color: var(--ok); }
+.npill.bad { color: var(--bad); border-color: var(--bad); }
+.npill.dim { opacity: .5; }
 </style>
 <script>
 // ตัดสินธีมก่อนวาดหน้า ไม่งั้นจะเห็นหน้าขาววาบก่อนแล้วค่อยเปลี่ยนเป็นมืด
@@ -804,6 +814,15 @@ pre {
     <span class="sec-title">Models on this machine</span>
   </div>
   <div class="card" id="fleet"><div class="empty">Loading…</div></div>
+
+  <div class="sec" style="--sc: var(--c3)">
+    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
+    <span class="sec-title">คะแนนโมเดล</span>
+    <span class="sec-act"><button id="bench-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
+  </div>
+  <div class="card" id="bench"><div class="empty">วัดความเร็วและความสามารถของโมเดลที่รันอยู่จริง —
+    <span class="dim">ทุกตัวเลขมาจากการยิงเซิร์ฟเวอร์จริงผ่าน OpenAI API จึงเทียบข้าม engine
+    และข้ามเครื่องได้ · กด Show เพื่อดูผลที่เคยวัดไว้</span></div></div>
 
   <div class="sec" style="--sc: var(--c2)">
     <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
@@ -1207,6 +1226,7 @@ function manageMarkup(m) {
       ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
 
+${m.running ? benchMarkup(m) : ''}
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-transfer"/></svg><span class="sec-title">Run on another machine</span></div>
     <div class="field">
       <select class="o-node" style="flex:none;min-width:190px"><option value="">Loading machines…</option></select>
@@ -1226,6 +1246,100 @@ function manageMarkup(m) {
     </div>
     <div id="rm-${esc(m.slug)}"></div>
   </div>`;
+}
+
+// ── คะแนนโมเดล ───────────────────────────────────────────────────────────────
+// ตัวเลขความเร็วโดด ๆ ไม่มีความหมาย — "32 tok/s" ดีหรือไม่ดีขึ้นกับเครื่อง quant context
+// และ engine build · ทุกแถวจึงแสดงสภาพแวดล้อมกำกับเสมอ
+function benchScoreClass(score) {
+  if (score === null || score === undefined) return "";
+  if (score >= 85) return "ok";
+  if (score >= 60) return "warn";
+  return "bad";
+}
+
+// ชื่อไทยของแต่ละข้อความสามารถ — ต้องอ่านรู้เรื่องโดยไม่ต้องเปิดคู่มือ
+const BENCH_PROBE_NAMES = {
+  instructions: "ทำตามคำสั่ง", thai: "ไทย", json: "JSON",
+  tools: "tools", reasoning: "reasoning", vision: "ภาพ", recall: "จำยาว",
+};
+
+// ตัวเลขรวมบอกว่า "ดีแค่ไหน" แต่คนตัดสินใจต้องรู้ว่าตกข้อไหน — 85/100 ที่ตก tool calling
+// ใช้กับ agent ไม่ได้เลย ส่วน 85 ที่ตก vision อาจไม่เกี่ยวกับงานที่จะเอาไปใช้
+function benchChips(cap) {
+  const chip = (key, cls) =>
+    `<span class="npill ${cls}">${esc(BENCH_PROBE_NAMES[key] || key)}</span>`;
+  return [
+    ...(cap.passed || []).map(k => chip(k, "ok")),
+    ...(cap.failed || []).map(k => chip(k, "bad")),
+    ...(cap.skipped || []).map(k => chip(k, "dim")),
+  ].join("");
+}
+
+function benchRow(entry) {
+  const speed = entry.speed || {};
+  const cap = entry.capability || {};
+  const env = entry.environment || {};
+  const tps = speed.decode_tps_avg;
+  const long = speed.decode_tps_long;
+  const score = cap.score;
+  const stat = (label, value, sub) =>
+    `<div class="bstat"><div class="dim">${esc(label)}</div><div class="bval">${value}</div>
+     ${sub ? `<div class="dim">${esc(sub)}</div>` : ""}</div>`;
+  return `<div class="brow">
+    <div class="row between">
+      <div><span class="name">${esc(entry.slug || "")}</span>
+        ${score === null || score === undefined ? ""
+          : `<span class="tag ${benchScoreClass(score)}">${score}/100</span>`}
+        <div class="muted">${esc(entry.model_id || "")}</div></div>
+      <div class="dim" style="text-align:right">${esc(entry.hostname || "")}<br>
+        ${esc(entry.engine || "")} ${esc(String(env.engine_build || "").slice(0, 18))}</div>
+    </div>
+    <div class="bstats">
+      ${stat("decode", tps ? tps.toFixed(1) + " tok/s" : "—", "ค่ากลางทุกงาน")}
+      ${stat("ที่ context ยาวสุด", long ? long.toFixed(1) + " tok/s" : "—",
+             speed.longest_context ? speed.longest_context.toLocaleString() + " tok" : "")}
+      ${stat("TTFT", speed.ttft_s_short ? speed.ttft_s_short.toFixed(2) + "s" : "—", "prompt สั้นสุด")}
+      ${stat("context", env.context ? Number(env.context).toLocaleString() : "—", env.quant || "")}
+    </div>
+    <div class="npills" style="margin-top:6px">${benchChips(cap)}</div>
+    <div class="dim" style="margin-top:4px">วัดเมื่อ ${
+      esc((entry.stamped_at || "").replace("T", " ").slice(0, 16))}${
+      speed.failed ? ` · ${speed.failed} งานล้ม` : ""}</div>
+  </div>`;
+}
+
+async function loadBench() {
+  const box = document.getElementById("bench");
+  box.innerHTML = `<div class="empty">Loading…</div>`;
+  const r = await api("/api/bench");
+  if (!r || !r.ok) { box.innerHTML = `<div class="empty">อ่านผลไม่ได้</div>`; return; }
+  const d = await r.json();
+  const runs = (d.runs || []).slice().sort(
+    (a, b) => ((b.speed || {}).decode_tps_avg || 0) - ((a.speed || {}).decode_tps_avg || 0));
+  if (!runs.length) {
+    box.innerHTML = `<div class="empty">ยังไม่เคยวัดอะไรเลย —
+      <span class="dim">เปิด Manage ของโมเดลที่รันอยู่ แล้วกด "วัดคะแนน"</span></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="pad">
+    <div class="dim" style="margin-bottom:10px">เรียงตาม decode tok/s ·
+      สภาพแวดล้อมกำกับไว้ทุกแถวเพราะ tok/s โดด ๆ เทียบกันไม่ได้</div>
+    ${runs.map(benchRow).join("")}</div>`;
+}
+
+function benchMarkup(m) {
+  return `
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-gauge"/></svg><span class="sec-title">วัดคะแนน</span></div>
+    <div class="field">
+      <button data-act="bench:full" data-slug="${esc(m.slug)}"
+              title="6 งาน ไล่ context 512 → 8K + ความสามารถ 7 ข้อ (หลายนาที)">วัดเต็มชุด</button>
+      <button data-act="bench:quick" data-slug="${esc(m.slug)}"
+              title="2 งาน — ดูคร่าว ๆ ไม่ใช่ตัวเลขที่เอาไปเทียบ">วัดเร็ว</button>
+      <button data-act="bench:caps" data-slug="${esc(m.slug)}"
+              title="ข้ามความเร็ว ตรวจเฉพาะว่าทำอะไรได้บ้าง">ความสามารถอย่างเดียว</button>
+      <span class="dim">วัดจากเซิร์ฟเวอร์ที่รันอยู่จริง — ผลถูกเก็บไว้เทียบกับรอบหน้าได้</span>
+    </div>`;
 }
 
 function renderFleet(models) {
@@ -1890,6 +2004,23 @@ document.addEventListener("click", async e => {
     // ช้าหรือพลาด ผู้ใช้จะเห็นหน้าว่างเปล่าโดยไม่รู้ว่าเกิดอะไรขึ้น
     rows.delete(slug);
     await refresh();
+    return;
+  }
+
+  if (act.startsWith("bench:")) {
+    const mode = act.slice(6);
+    const body = mode === "quick" ? { quick: true }
+      : mode === "caps" ? { caps_only: true } : {};
+    btn.disabled = true;
+    const r = await api(`/api/bench/${encodeURIComponent(slug)}/run`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) { showError(d.detail || "เริ่มวัดไม่ได้"); btn.disabled = false; return; }
+    // วัดเต็มชุดกินเวลาหลายนาที — ตามผลแบบสตรีม แล้วรีเฟรชตารางคะแนนตอนจบ
+    await followJob(slug, d.job.id);
+    loadBench();
     return;
   }
 
@@ -3139,6 +3270,7 @@ async function syncRecipes(button) {
 
 document.addEventListener("click", e => {
   if (e.target.id === "scan-run") loadScan();
+  if (e.target.id === "bench-load") { loadBench(); return; }
   if (e.target.id === "recipes-load") loadRecipes();
   if (e.target.id === "recipes-sync") syncRecipes(e.target);
   // "ใช้สูตรนี้ deploy" — เปิดกล่อง Deploy พร้อมเติมรุ่นให้ ไม่ต้องก๊อปชื่อโมเดลไปวางเอง
