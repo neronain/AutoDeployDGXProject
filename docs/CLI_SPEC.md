@@ -24,6 +24,9 @@ lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ด
 lmds adopt <CONTAINER> | --port N | --pid N   # รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ (ดูหัวข้อ adopt)
 lmds repair <SLUG> [--force]               # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
                                           #   ถูกปฏิเสธบน control plane (ไม่มี engine ให้รัน) — --force เพื่อยืนยัน
+lmds bench run <SLUG> [--quick|--speed-only|--caps-only] [--runs N]   # วัดความเร็ว+ความสามารถของโมเดลที่รันอยู่
+lmds bench list                            # ตารางคะแนนของทุกโมเดลที่เคยวัด
+lmds bench show <SLUG> [--history]         # ผลละเอียด / ประวัติทุกรอบ
 lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
 lmds node <subcommand>                     # ทะเบียนเครื่องอื่น (fleet หลายเครื่อง) — ดูหัวข้อ node
 lmds agent info                            # JSON สถานะเครื่องนี้ (hub เรียกผ่าน SSH ไม่ได้พิมพ์เอง)

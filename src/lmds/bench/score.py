@@ -84,4 +84,7 @@ def summarize(run: dict) -> dict:
         "speed": speed,
         "capability": capability,
         "environment": run.get("environment") or {},
+        # ตัวเลขที่ยืมมาจากรอบก่อน ต้องติดป้ายว่ามาจากเมื่อไร ไม่งั้นดูเหมือนวัดพร้อมกันหมด
+        "speed_from": run.get("speed_from", ""),
+        "probes_from": run.get("probes_from", ""),
     }

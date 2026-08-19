@@ -166,3 +166,28 @@ def test_second_chance_is_not_infinite(monkeypatch):
     assert text == ""
     assert len(calls) == 2
     assert "แม้ให้งบ" in blocked
+
+
+def test_caps_only_run_does_not_erase_the_speed_numbers(tmp_path, monkeypatch):
+    """วัดความสามารถอย่างเดียวไม่ควรทำให้ตารางคะแนนกลายเป็นขีดกลางทั้งคอลัมน์"""
+    import json as _json
+
+    from lmds.bench import store
+
+    monkeypatch.setattr(store, "bench_root", lambda: tmp_path)
+    directory = tmp_path / "m1"
+    directory.mkdir()
+    speed_run = {"slug": "m1", "stamped_at": "2026-08-19T10:00:00",
+                 "workloads": [{"key": "a", "target_input": 512, "decode_tps": 30.0,
+                                "ttft_s": 0.5}], "probes": []}
+    caps_run = {"slug": "m1", "stamped_at": "2026-08-19T11:00:00",
+                "workloads": [], "probes": [{"key": "tools", "passed": True, "skipped": False}]}
+    (directory / "20260819T100000.json").write_text(_json.dumps(speed_run), encoding="utf-8")
+    (directory / "20260819T110000.json").write_text(_json.dumps(caps_run), encoding="utf-8")
+
+    merged = store.latest_merged("m1")
+    assert merged["stamped_at"] == "2026-08-19T11:00:00"
+    assert merged["workloads"][0]["decode_tps"] == 30.0
+    # ต้องบอกด้วยว่าตัวเลขความเร็วมาจากรอบไหน ไม่งั้นดูเหมือนวัดพร้อมกัน
+    assert merged["speed_from"] == "2026-08-19T10:00:00"
+    assert merged["probes"][0]["key"] == "tools"

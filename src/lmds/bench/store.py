@@ -85,10 +85,42 @@ def runs_for(slug: str) -> list[Path]:
     return sorted(directory.glob("*.json"), reverse=True)
 
 
-def all_runs() -> list[dict]:
-    """ผล *ล่าสุด* ของทุกโมเดลที่เคยวัด — ใช้ทำตารางคะแนนรวม
+def latest_merged(slug: str) -> dict | None:
+    """ภาพรวมล่าสุดของโมเดลหนึ่ง — เติมด้านที่รอบล่าสุดไม่ได้วัดจากรอบก่อนหน้า
 
-    เอาแค่รอบล่าสุดเพราะตารางคะแนนตอบคำถามว่า "ตอนนี้ตัวไหนดีกว่า" ไม่ใช่ประวัติ
+    `lmds bench run --caps-only` ไม่มีข้อมูลความเร็วในตัวมันเอง ถ้าเอารอบล่าสุดมาตรง ๆ
+    ตารางคะแนนจะกลายเป็นขีดกลางทั้งคอลัมน์ ทั้งที่เพิ่งวัดความเร็วไปเมื่อสิบนาทีก่อน —
+    อ่านแล้วเหมือนโมเดลถอยหลัง ทั้งที่เราแค่ถามคำถามที่แคบลง
+
+    รอบที่ถูกยืมมาแนบตราเวลาของมันเองไว้ ผู้ใช้จะได้รู้ว่าตัวเลขนั้นเก่ากว่าที่เห็นข้างบน
+    """
+    paths = runs_for(slug)
+    if not paths:
+        return None
+    try:
+        merged = load(paths[0])
+    except (OSError, json.JSONDecodeError):
+        return None
+    for field, stamp_key in (("workloads", "speed_from"), ("probes", "probes_from")):
+        if merged.get(field):
+            continue
+        for path in paths[1:]:
+            try:
+                older = load(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if older.get(field):
+                merged[field] = older[field]
+                merged[stamp_key] = older.get("stamped_at", "")
+                break
+    return merged
+
+
+def all_runs() -> list[dict]:
+    """ผลล่าสุดของทุกโมเดลที่เคยวัด — ใช้ทำตารางคะแนนรวม
+
+    ตารางคะแนนตอบคำถามว่า "ตอนนี้ตัวไหนดีกว่า" ไม่ใช่ประวัติ จึงเอารอบล่าสุดของแต่ละตัว
+    (แต่เติมด้านที่รอบล่าสุดไม่ได้วัด — ดู latest_merged)
     """
     root = bench_root()
     if not root.is_dir():
@@ -97,10 +129,7 @@ def all_runs() -> list[dict]:
     for directory in sorted(root.iterdir()):
         if not directory.is_dir():
             continue
-        runs = sorted(directory.glob("*.json"), reverse=True)
-        if runs:
-            try:
-                latest.append(load(runs[0]))
-            except (OSError, json.JSONDecodeError):
-                continue
+        merged = latest_merged(directory.name)
+        if merged:
+            latest.append(merged)
     return latest

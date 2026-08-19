@@ -1305,7 +1305,11 @@ function benchRow(entry) {
     <div class="npills" style="margin-top:6px">${benchChips(cap)}</div>
     <div class="dim" style="margin-top:4px">วัดเมื่อ ${
       esc((entry.stamped_at || "").replace("T", " ").slice(0, 16))}${
-      speed.failed ? ` · ${speed.failed} งานล้ม` : ""}</div>
+      speed.failed ? ` · ${speed.failed} งานล้ม` : ""}${
+      entry.speed_from ? ` · ความเร็วจากรอบ ${
+        esc(entry.speed_from.replace("T", " ").slice(0, 16))}` : ""}${
+      entry.probes_from ? ` · ความสามารถจากรอบ ${
+        esc(entry.probes_from.replace("T", " ").slice(0, 16))}` : ""}</div>
   </div>`;
 }
 

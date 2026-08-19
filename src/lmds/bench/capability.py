@@ -169,7 +169,14 @@ def _probe_json(client, endpoint, model) -> Probe:
               'ตอบเป็น JSON object ที่มีคีย์ "city" และ "country" สำหรับกรุงเทพมหานคร'}],
             response_format={"type": "json_object"})
         if blocked:
-            return Probe("json", "JSON structured output", False, blocked)
+            # เคสจริง 2026-08-19: Qwen3.6 Reasoning-Distilled คิด 11,610 ตัวอักษรแล้วยังไม่ตอบ
+            # แม้ได้งบ 3,072 token · llama.cpp บังคับ grammar ของ json_object ตั้งแต่ token แรก
+            # ความคิดของโมเดลจึงต้องเป็น JSON ไปด้วย — มันเลยวนอยู่อย่างนั้น
+            # ไม่ใช่ว่าโมเดลทำ structured output ไม่ได้ แต่ทำพร้อมกับคิดก่อนตอบไม่ได้
+            hint = (" · โมเดลสาย reasoning มักติด grammar ของ json_object ใน llama.cpp "
+                    "(ความคิดถูกบังคับให้เป็น JSON ตั้งแต่ token แรก) — ลองตั้ง reasoning parser "
+                    "หรือใช้ tool calling แทน structured output") if "งบ token หมด" in blocked else ""
+            return Probe("json", "JSON structured output", False, blocked + hint)
         parsed = json.loads(text)
         ok = isinstance(parsed, dict) and "city" in parsed
         return Probe("json", "JSON structured output", ok, text[:80])
