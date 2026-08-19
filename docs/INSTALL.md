@@ -217,7 +217,7 @@ lmds version
 ควรได้:
 
 ```text
-lmds 0.3.5
+lmds 0.3.6
 template standard: dgx-spark-controllers-v3.0.0
 Local Model Deploy Studio — สร้างโดย neronain ⚡ fb.com/neronain.minidev
 ```

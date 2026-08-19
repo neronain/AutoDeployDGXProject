@@ -7,7 +7,7 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.3.5-1f5fbf)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.3.6-1f5fbf)](CHANGELOG.md)
 [![tests](https://img.shields.io/badge/tests-903-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
@@ -37,6 +37,7 @@ LMDS เกิดจากการไล่รันของจริงแล
 | 🛡️ **ทุก bundle ผ่านด่านก่อนถึงมือคุณ** | `bash -n`, audit rules, SHA-256 checksums — ไม่ผ่านคือไม่มี ZIP |
 | 🔍 **บอกตอนที่ยังแก้ทัน** | ไม่ใช่ตอนที่ผู้ใช้มาบ่นว่าช้า · ทุกข้อที่ตรวจมาจากของที่พังจริงบนเครื่องจริง |
 | 🔌 **ทำงานได้โดยไม่มี LLM** | โหมด rule-based ใช้สูตรที่รันผ่านจริงมาแล้ว · air-gapped ก็ใช้ได้ |
+| 🤝 **เครื่องที่มีโมเดลรันอยู่ก่อนแล้ว ไม่ต้องรื้อ** | `lmds adopt` อ่านคำสั่งที่มันรันอยู่จริง (container หรือ process ตรง ๆ) แล้วเขียนเป็น controller ที่รันซ้ำได้เป๊ะ — ไม่ต้อง redeploy ไม่ต้องโหลด weight ใหม่ |
 
 ## เริ่มใน 3 คำสั่ง
 

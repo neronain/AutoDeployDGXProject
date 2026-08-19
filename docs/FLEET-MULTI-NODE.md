@@ -374,7 +374,7 @@ GET    /api/cluster                   # ตารางสายเชื่อ�
 
 ```bash
 lmds node install --all             # อัปเดตทุกเครื่องในทะเบียน (ดึงจาก GitHub)
-lmds node run <ชื่อ> version        # → lmds 0.3.5  (de69eb6)
+lmds node run <ชื่อ> version        # → lmds 0.3.6  (6c7b266)
 ```
 
 **ดูที่ commit ไม่ใช่เลข version** — `__version__` ไม่ขยับทุกคอมมิต (0.3.0 อยู่มาหลายสิบ

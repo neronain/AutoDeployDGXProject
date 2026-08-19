@@ -1087,6 +1087,79 @@ gguf  gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf 25.7 GB               ~/models/gemma4-2
 > ถ้าไม่ตั้งให้ตรง vLLM ในคอนเทนเนอร์จะฟ้อง `LocalEntryNotFoundError` ทั้งที่ `verify-files`
 > เพิ่งบอกว่าไฟล์ครบ — เป็นอาการที่ไล่สาเหตุยากมากถ้าไม่รู้ว่ามีสองเลย์เอาต์
 
+## 4.7 โมเดลที่รันอยู่ก่อนแล้ว — `lmds adopt`
+
+`lmds scan` บอกว่ามี **ไฟล์** อะไรบนดิสก์ · หัวข้อนี้คือกรณีที่มี **เซิร์ฟเวอร์รันอยู่แล้ว**
+ตั้งแต่ก่อนติดตั้ง LMDS
+
+`lmds ps` มองเห็นมันอยู่แล้วและติดป้าย **`ไม่ลงทะเบียน`** — stop/logs ได้ แต่ทำอย่างอื่น
+ไม่ได้เลยเพราะไม่มี controller · `lmds adopt` อ่านคำสั่งที่มันรันอยู่**จริง** แล้วเขียนเป็น
+controller ที่รันซ้ำได้เป๊ะ **ของที่รันอยู่ตอนนั้นไม่ถูกแตะต้อง**
+
+```bash
+lmds adopt <container>              # รันด้วย Docker
+lmds adopt --port 8080              # รันตรง ๆ (llama-server, vLLM ที่ไม่ได้อยู่ใน container)
+lmds adopt --pid 122081             # ระบุ PID เอง
+lmds adopt --port 8080 --take-over  # + ปิด systemd unit เดิมให้ LMDS คุมแทน
+```
+
+**อ่านจาก `/proc/<pid>/cmdline` ไม่ได้เดา** — flag ทุกตัวที่ของเดิมใช้ถูกยกมาครบ
+(`-ngl 99 -c 65536 -ts 1,1,1 -sm layer -fa on -ctk q8_0 -ctv q8_0` ฯลฯ) ตกตัวเดียว
+คือได้คนละพฤติกรรม
+
+> **จงใจไม่อ่าน `/proc/<pid>/environ`** — API key ของ backend อยู่ในนั้น เขียนลง bundle
+> คือทำให้ทุกคนที่อ่านไฟล์ได้เห็น secret · `cmdline` พอสำหรับรันซ้ำอยู่แล้ว ส่วน env ที่
+> จำเป็นจริงตั้งเองใน `bundle.env` ซึ่งเป็นที่ของมัน
+
+### unit เดิมจะแย่ง port กลับ
+
+process ที่รันใต้ systemd unit ที่ลูกค้าเขียนเองมักตั้ง `Restart=always` — LMDS stop
+เมื่อไหร่มันเด้งกลับมายึด port ทันที · `adopt` จึงบันทึกชื่อ unit ไว้ แล้ว:
+
+- `start` **ปฏิเสธพร้อมบอกคำสั่งที่ต้องใช้** แทนที่จะปล่อยให้ชนกันเองแล้วงง
+- `status` เตือนว่า *"ตัวที่ตอบอาจเป็นของ unit นั้น ไม่ใช่ของ LMDS"*
+- `--take-over` สั่ง `systemctl disable --now` ให้ — **เฉพาะเมื่อสั่งเท่านั้น ไม่ทำเอง**
+
+```text
+ERROR: llama-qwen.service ยังรันอยู่และถือ port 8080 —
+  หยุดก่อน: sudo systemctl disable --now llama-qwen.service
+```
+
+> โมเดลใหญ่ถือ VRAM หลายสิบ GB **หยุดช้า** — `disable --now` อาจใช้เวลาเป็นนาที
+> ถ้า ssh หลุดกลางทางจะเหลือสถานะ *disabled แต่ยัง active* · แยกเป็น `disable` แล้ว
+> `stop` ทีหลังจะคุมได้ง่ายกว่า
+
+### ทำอะไรได้บ้างหลังรับเข้าระบบ
+
+`start` · `stop` · `restart` · `status` · `logs` · `test-text` · `client-config` ·
+`network-info` · `doctor` · `enable` (autostart)
+
+**ไม่มี `download` / `verify-files`** — weight เป็น path ที่คุณจัดการเอง LMDS ไม่ได้เป็น
+คนโหลดมา จึงไม่มีอะไรให้โหลดหรือตรวจ · *คำสั่งที่ทำอะไรไม่ได้จริงแต่คืน 0 คือคำโกหกที่
+แพงกว่าการไม่มีคำสั่งนั้น* · `doctor` ก็ตรวจไฟล์ตรง path จริงและไม่แนะ `repair`
+
+**ในหน้าเว็บ**: การ์ดที่ยังไม่มี controller มีปุ่ม **รับเข้าระบบ** อยู่ตรงที่เคยเป็นปุ่ม Start
+ที่กดไม่ได้ · ถ้ามี unit เจ้าของ หน้าเว็บเตือนพร้อมคำสั่ง `disable` ให้ copy ไปใช้
+
+### เคสจริง
+
+เครื่องลูกค้า 3× RTX 3060 มี `llama-server` รัน Qwen3.6-35B-A3B ใต้ unit ที่เขียนเอง
+มา 25 วัน · `lmds ps` ขึ้น `● running ⚠ ไม่ลงทะเบียน` แล้วจบแค่นั้น
+
+```bash
+lmds adopt --port 8080 --slug qwen35-a3b-opus
+sudo systemctl disable --now llama-qwen.service
+lmds start qwen35-a3b-opus
+lmds enable qwen35-a3b-opus          # ให้กลับมาเองหลัง reboot
+```
+
+ผลลัพธ์: bundle เต็มรูปแบบ **โดยไม่ต้อง redeploy หรือโหลด weight ใหม่สักไบต์**
+
+> **ตรวจ binary ที่ unit เดิมใช้ด้วย** — เครื่องนั้นมี `llama-server` สองตัวคนละรุ่นใน
+> โฟลเดอร์เดียวกัน (`./llama-server` กับ `build/bin/llama-server`) unit สั่ง `exec ./llama-server`
+> จึงรันตัวเก่ากว่าที่ทุกคนคิดอยู่หลายเดือน · `lmds adopt` ยกมาตามที่มันรันจริง ซึ่งถูกต้อง
+> แต่ถ้าจะอัป llama.cpp ต้อง copy ทับตัวที่ unit ใช้จริง ไม่ใช่แค่ `cmake --build`
+
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
 สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**

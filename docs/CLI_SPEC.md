@@ -21,6 +21,7 @@ lmds recipes [MODEL]                       # สูตรที่รันผ�
 lmds prune [-y]                            # ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้ว
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
+lmds adopt <CONTAINER> | --port N | --pid N   # รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ (ดูหัวข้อ adopt)
 lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
 lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
 lmds node <subcommand>                     # ทะเบียนเครื่องอื่น (fleet หลายเครื่อง) — ดูหัวข้อ node
@@ -176,6 +177,45 @@ lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างท
 - **autostart** = สร้าง systemd system unit `lmds-<slug>.service` (Type=oneshot + RemainAfterExit, `User=<เจ้าของ bundle>`, `ExecStartPre=stop` เคลียร์ container ค้าง, `WantedBy=multi-user.target`) → โมเดลกลับมาเองหลังเปิด-ปิดเครื่อง โดยไม่ต้อง login
 - `--now` = start ทันทีด้วย · `--timeout` = เวลารอ health ตอน boot (โมเดลใหญ่ควรเพิ่ม) · ต้องมี `systemd`
 - ทุก controller ลงทะเบียนตัวเองใต้ `~/.lmds/run/<slug>/server.meta` ตอน `start` — fleet อ่านจากตรงนี้ (ไม่มี daemon)
+
+## `lmds adopt`
+
+```text
+lmds adopt [CONTAINER] [OPTIONS]
+
+Arguments:
+  CONTAINER          ชื่อ container ที่รันอยู่ (ดู docker ps) — เว้นว่างได้ถ้าใช้ --port/--pid
+
+Options:
+  --port N           รับ process ที่ฟังอยู่ที่พอร์ตนี้ (ไม่ใช่ container)
+  --pid N            รับ process ตาม PID
+  --slug NAME        ชื่อที่จะใช้ใน lmds (ว่าง = ตั้งให้จากของที่เจอ)
+  --output DIR       ปลายทาง (default: ./bundles)
+  --take-over        systemctl disable --now unit เดิม แล้วให้ LMDS คุมแทน (ต้อง sudo)
+```
+
+สร้าง controller จาก **สิ่งที่รันอยู่จริง** ไม่ใช่จากแผนที่เดาเอา:
+
+| ชนิด | อ่านจาก | ได้อะไร |
+|---|---|---|
+| container | `docker inspect` | image · env · mount · port · args |
+| process | `/proc/<pid>/cmdline`, `exe`, `cwd`, `cgroup` | argv ครบทุก flag · binary · cwd · unit เจ้าของ |
+
+**สิ่งที่ตั้งใจไม่ทำ**
+
+- **ไม่อ่าน `/proc/<pid>/environ`** — API key ของ backend อยู่ในนั้น เขียนลง bundle คือ
+  ทำ secret หลุด · cmdline พอสำหรับรันซ้ำ ส่วน env ที่ต้องใช้จริงตั้งใน `bundle.env`
+- **ไม่มี `download` / `verify-files` ใน controller ที่ได้** — weight เป็น path ที่ผู้ใช้
+  จัดการเอง · คำสั่งที่ทำอะไรไม่ได้จริงแต่คืน 0 คือคำโกหกที่แพงกว่าการไม่มีคำสั่งนั้น ·
+  `lmds doctor` ก็ตรวจไฟล์ตรง path จริงและไม่แนะ `repair` กับ bundle ประเภทนี้
+- **ไม่ปิด unit เดิมให้เอง** — ต้องสั่ง `--take-over` เท่านั้น
+
+**unit เจ้าของ** ถูกบันทึกไว้ใน `MODEL_PROFILE.yaml` (`source_process.unit`) เพราะ unit ที่
+ตั้ง `Restart=always` จะแย่ง port กลับทุกครั้งที่ LMDS stop · controller ปฏิเสธ `start`
+พร้อมบอกคำสั่งที่ต้องใช้ และ `status` เตือนว่าตัวที่ตอบอาจไม่ใช่ของ LMDS
+
+**หน้าเว็บ**: `POST /api/models/{slug}/adopt` — การ์ดที่ยังไม่มี controller แสดงปุ่ม
+*รับเข้าระบบ* แทนปุ่ม Start ที่กดไม่ได้
 
 ## `lmds node` (fleet หลายเครื่อง)
 
