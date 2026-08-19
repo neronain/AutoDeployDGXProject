@@ -784,6 +784,34 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "slug": slug, "command": command,
                 "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
 
+    @app.post("/api/nodes/{name}/models/{slug}/bench", dependencies=guarded)
+    def node_bench(name: str, slug: str, body: dict | None = None) -> dict:
+        """สั่งวัดคะแนนโมเดลบนเครื่องอื่น — ผลถูกเก็บไว้ที่เครื่องนั้นตามเดิม
+
+        ใช้ `lmds bench` ไม่ใช่ `bench` ของ controller เพราะตัวหลังมีไม่ครบทุก engine
+        และวัดคนละวิธี ตัวเลขจึงเทียบข้ามเครื่องไม่ได้ ซึ่งเป็นเหตุผลเดียวที่มีตารางนี้
+        """
+        from lmds.nodes import find
+
+        from . import jobs
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        options = body or {}
+        flags = []
+        if options.get("quick"):
+            flags.append("--quick")
+        if options.get("caps_only"):
+            flags.append("--caps-only")
+        flags += ["--runs", str(max(1, min(10, int(options.get("runs") or 3))))]
+        script = f"lmds bench run {shlex.quote(slug)} {' '.join(flags)}"
+        try:
+            return {"node": name, "slug": slug, "command": "bench",
+                    "job": jobs.start_remote(name, slug, "bench", script).payload()}
+        except jobs.JobError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/models/{slug}/push/{name}", dependencies=guarded)
     def push_bundle(slug: str, name: str) -> dict:
         """ส่ง bundle ที่สร้าง+ตรวจแผนไว้ในเครื่องนี้ ไปติดตั้งบนเครื่องอื่น
@@ -842,6 +870,48 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.bench import all_runs, summarize
 
         return {"runs": [summarize(run) for run in all_runs()]}
+
+    @app.get("/api/bench/fleet", dependencies=guarded)
+    def bench_fleet() -> dict:
+        """คะแนนของทั้งฟลีต — ของเครื่องนี้ + ถามทุก node ผ่าน SSH
+
+        ผลวัดอยู่บนเครื่องที่รันโมเดล ไม่ใช่บน hub · ถ้าไม่รวมให้ hub คอนโซลที่คนใช้ประจำ
+        จะขึ้นว่างเปล่าตลอด ทั้งที่เพิ่งวัดไปเมื่อกี้บน spark-head
+
+        ไม่ยัดรวมกับ `agent info` ที่ถูก poll ทุกไม่กี่วินาที — อ่านตอนผู้ใช้เปิดดูเท่านั้น
+        """
+        import concurrent.futures
+
+        from lmds.bench import all_runs, summarize
+        from lmds.nodes import load as load_nodes
+        from lmds.nodes.ssh import _json_object, run as node_run
+
+        local = [dict(summarize(entry), machine_name="") for entry in all_runs()]
+
+        def ask(node) -> tuple[str, list, str]:
+            try:
+                result = node_run(node, "lmds agent bench", timeout=45)
+            except Exception as exc:
+                return node.name, [], str(exc)[:200]
+            if not result.ok:
+                return node.name, [], (result.stderr or result.stdout).strip()[:200]
+            payload = _json_object(result.stdout)
+            if payload is None:
+                # node เวอร์ชันเก่ายังไม่มีคำสั่งนี้ — ไม่ใช่ความผิดพลาดที่ต้องตกใจ
+                return node.name, [], "node นี้ยังไม่มี `lmds agent bench` (อัปเดตก่อน)"
+            return node.name, payload.get("runs") or [], ""
+
+        nodes = [n for n in load_nodes()]
+        remote: list[dict] = []
+        unreachable: list[dict] = []
+        if nodes:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                for name, runs, error in pool.map(ask, nodes):
+                    if error:
+                        unreachable.append({"node": name, "error": error})
+                        continue
+                    remote += [dict(entry, machine_name=name) for entry in runs]
+        return {"runs": local + remote, "unreachable": unreachable}
 
     @app.get("/api/bench/{slug}", dependencies=guarded)
     def bench_detail(slug: str) -> dict:

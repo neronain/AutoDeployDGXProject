@@ -111,6 +111,21 @@ def agent_info() -> None:
     print(json_module.dumps(snapshot(), ensure_ascii=False))
 
 
+@agent_app.command("bench")
+def agent_bench() -> None:
+    """พิมพ์คะแนนที่วัดไว้บนเครื่องนี้เป็น JSON — hub เอาไปรวมเป็นตารางของทั้งฟลีต
+
+    แยกจาก `agent info` โดยตั้งใจ: info ถูก poll ทุกไม่กี่วินาทีเพื่ออัปเดตสถานะ
+    ส่วนคะแนนอ่านตอนผู้ใช้เปิดดูเท่านั้น — ยัดรวมกันคือทำให้ทุกการ poll แพงขึ้นเปล่า ๆ
+    """
+    import json as json_module
+
+    from lmds.bench import all_runs, summarize
+
+    print(json_module.dumps({"runs": [summarize(run) for run in all_runs()]},
+                            ensure_ascii=False))
+
+
 # ── node: ทะเบียนเครื่องที่ hub คุมอยู่ ───────────────────────────────────────
 @node_app.command("add")
 def node_add(
