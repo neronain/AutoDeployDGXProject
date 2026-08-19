@@ -252,6 +252,15 @@ button:has(.ic):not(.brain) { display: inline-flex; align-items: center; gap: 6p
        background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 .tog input { margin: 0; accent-color: var(--accent); }
 .tog .ic { width: 13px; height: 13px; }
+/* แจ้งเตือนแบบไม่ขวางทาง — modal alert() เหมาะกับ "คำสั่งที่คุณเพิ่งกดล้มเหลว" เท่านั้น
+   ส่วนเน็ตหลุดชั่วคราวระหว่าง poll ไม่ใช่ความผิดใครและไม่ต้องให้ใครกด OK */
+#toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 90;
+  max-width: min(680px, 92vw); padding: 10px 14px; border-radius: var(--r-sm);
+  background: var(--card); border: 1px solid var(--bad); color: var(--fg);
+  box-shadow: var(--shadow); font-size: calc(13px * var(--fs)); display: none;
+}
+#toast.on { display: block; }
 
 /* ── controls ───────────────────────────────────────────────────────── */
 button {
@@ -804,6 +813,7 @@ pre {
       <button id="node-new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add machine</button>
     </span>
   </div>
+  <div id="toast" role="status" aria-live="polite"></div>
   <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
 
   <div class="sec" style="--sc: var(--c3)">
@@ -866,6 +876,25 @@ async function withButton(button, busyLabel, call) {
 
 // ตาข่ายรับท้าย: ปุ่มที่ยังไม่ได้ย้ายมาใช้ withButton ถ้า fetch พังจะทิ้ง promise ที่ไม่มีใครรับ
 // ผลคือหน้าเว็บเงียบสนิทและปุ่มค้างเป็น "…" ตลอดไป · อย่างน้อยต้องบอกผู้ใช้และปลดปุ่มคืน
+// ตอนกดรีสตาร์ตเอง เน็ตหลุดคือสิ่งที่ *ตั้งใจให้เกิด* — ไม่ใช่ความผิดพลาดที่ต้องเด้งบอก
+let consoleRestarting = false;
+
+function showError(message, level = "bad") {
+  const el = document.getElementById("toast");
+  if (!el) { alert(message); return; }
+  el.textContent = message;
+  el.style.borderColor = level === "bad" ? "var(--bad)" : "var(--warn)";
+  el.classList.add("on");
+  clearTimeout(showError._t);
+  showError._t = setTimeout(() => el.classList.remove("on"), 6000);
+}
+
+// fetch ล้มเพราะเซิร์ฟเวอร์ยังไม่ตอบ ≠ คำสั่งล้มเหลว · แยกให้ออกก่อนตัดสินใจว่าจะรบกวนแค่ไหน
+function isNetworkError(reason) {
+  const text = String((reason && reason.message) || reason || "");
+  return /failed to fetch|networkerror|load failed|fetch failed/i.test(text);
+}
+
 window.addEventListener("unhandledrejection", event => {
   // ปุ่มที่กำลังทำงานอยู่ใช้ข้อความลงท้ายด้วย "…" เป็นธรรมเนียมทั้งหน้า — ปลดเฉพาะพวกนั้น
   // ปุ่มที่ถูกปิดด้วยเหตุผลอื่น (เช่นยังไม่พร้อมใช้) ต้องไม่ถูกปลดตามไปด้วย
@@ -873,6 +902,14 @@ window.addEventListener("unhandledrejection", event => {
     if (b.textContent.trim().endsWith("…")) b.disabled = false;
   }
   const reason = event.reason;
+  // poll เบื้องหลังทุก 5 วิจะ reject ทุกครั้งที่เซิร์ฟเวอร์ไม่ตอบ — เด้ง modal ทุกครั้งคือ
+  // ทำให้การรีสตาร์ตตามปกติกลายเป็นเรื่องน่าตกใจ และบังคับให้คนกด OK โดยไม่มีอะไรให้ทำ
+  if (consoleRestarting && isNetworkError(reason)) { event.preventDefault(); return; }
+  if (isNetworkError(reason)) {
+    event.preventDefault();
+    showError("ต่อเซิร์ฟเวอร์ไม่ได้ชั่วคราว — หน้านี้จะลองใหม่เอง", "warn");
+    return;
+  }
   alert(`คำสั่งไม่สำเร็จ — ${String((reason && reason.message) || reason || "ไม่ทราบสาเหตุ")}`);
 });
 const gb = v => v == null ? "—" : Math.round(v) + " GB";
@@ -1006,6 +1043,7 @@ function actionsMarkup(m) {
 async function restartConsole() {
   if (!confirm("รีสตาร์ตบริการหน้าเว็บ?\n\nหน้านี้จะหลุดสักครู่แล้วต่อกลับเอง\nโมเดลที่รันอยู่ไม่ถูกแตะต้อง")) return;
   const btn = document.getElementById("restart-web");
+  consoleRestarting = true;
   try {
     const res = await api("/api/restart", {method: "POST"});
     const data = await res.json();
@@ -1019,8 +1057,10 @@ async function restartConsole() {
         if (ping.ok) { location.reload(); return; }
       } catch { /* ยังไม่ขึ้น รอต่อ */ }
     }
+    consoleRestarting = false;
     showError("รีสตาร์ตไปแล้วแต่ยังต่อกลับไม่ได้ — ลอง refresh เอง");
   } catch (e) {
+    consoleRestarting = false;
     showError(e.message);
     if (btn) { btn.disabled = false; btn.innerHTML = "Restart console"; }
   }

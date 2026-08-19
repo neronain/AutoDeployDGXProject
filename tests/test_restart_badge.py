@@ -65,3 +65,23 @@ def test_restart_reports_which_unit_it_will_restart(monkeypatch):
     detached = [c for c in calls if c and c[0] == "setsid"]
     assert detached, f"ไม่เจอคำสั่งแบบ setsid ใน {calls}"
     assert "systemctl --user restart" in " ".join(detached[0])
+
+
+def test_a_transient_network_error_does_not_open_a_modal():
+    """poll ทุก 5 วิ reject ทุกครั้งที่เซิร์ฟเวอร์ไม่ตอบ — เด้ง modal ทุกครั้งคือทำให้การ
+    รีสตาร์ตตามปกติกลายเป็นเรื่องน่าตกใจ และบังคับให้กด OK โดยไม่มีอะไรให้ทำ
+    """
+    page = TestClient(create_app()).get("/").text
+    assert "function isNetworkError" in page
+    assert "consoleRestarting" in page
+    # ตอนกดรีสตาร์ตเอง เน็ตหลุดคือสิ่งที่ตั้งใจให้เกิด ต้องเงียบสนิท
+    assert "if (consoleRestarting && isNetworkError(reason)) { event.preventDefault(); return; }" in page
+
+
+def test_show_error_actually_exists():
+    """เคยเรียก showError() ไว้สองที่ทั้งที่ยังไม่มีฟังก์ชันนี้ — error path จะโยน
+    ReferenceError ทับ error จริง แล้วผู้ใช้ไม่มีทางรู้ว่าเกิดอะไรขึ้น
+    """
+    page = TestClient(create_app()).get("/").text
+    assert "function showError" in page
+    assert 'id="toast"' in page
