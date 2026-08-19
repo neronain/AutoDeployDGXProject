@@ -5,13 +5,33 @@ from __future__ import annotations
 from lmds.brain.rulebased import arch_notes
 
 
-def _joined(repo_id: str, quant: str = "") -> str:
-    return " || ".join(arch_notes(repo_id, quant))
+def _joined(repo_id: str, quant: str = "", hybrid: bool = False) -> str:
+    return " || ".join(arch_notes(repo_id, quant, hybrid_attention=hybrid))
 
 
 def test_nvfp4_warns_about_fp4_kernel_image():
-    assert "FP4 CUTLASS" in _joined("nvidia/Llama-3.3-70B-Instruct-NVFP4")
-    assert "FP4 CUTLASS" in _joined("some/model", quant="nvfp4")
+    assert "FP4 kernel" in _joined("nvidia/Llama-3.3-70B-Instruct-NVFP4")
+    assert "FP4 kernel" in _joined("some/model", quant="nvfp4")
+
+
+def test_nvfp4_says_it_can_fail_outright_not_just_run_slow():
+    """เคสจริง 2026-08-20 บน msi-6: ptxas ปฏิเสธ cvt.e2m1x2 บน sm_121 แล้ว engine ตายก่อน health
+
+    คำเตือนเดิมพูดถึงแต่ "fallback Marlin ช้ามาก" ซึ่งอ่านแล้วเข้าใจว่าอย่างแย่ก็แค่ช้า
+    ผู้ใช้จึงกด deploy ไปแล้วเจอ container ตายโดยไม่รู้ว่าเกี่ยวกัน
+    """
+    notes = _joined("some/model-NVFP4")
+    assert "e2m1x2" in notes
+    assert "sm_121" in notes
+
+
+def test_hybrid_detected_from_files_warns_even_when_the_name_is_new():
+    """Qwen3.8 เป็น hybrid เหมือน Qwen3.5 แต่ชื่อไม่ตรง — คำเตือนที่ผูกกับชื่อพลาดรุ่นใหม่เสมอ"""
+    by_name = _joined("orcarouter/Qwen3.8-27B-Uncensored")
+    assert "prefix-caching" not in by_name
+
+    detected = _joined("orcarouter/Qwen3.8-27B-Uncensored", hybrid=True)
+    assert "prefix-caching" in detected
 
 
 def test_qwen35_warns_prefix_caching_and_tool_parser():

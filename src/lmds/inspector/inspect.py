@@ -174,6 +174,7 @@ def _inspect_safetensors(
         if isinstance(quant, dict):
             report.quantization = str(quant.get("quant_method") or quant.get("quant_algo") or "quantized")
         report.kv_dims = _kv_dims_from_config(config)
+        report.hybrid_attention = config_is_hybrid(config)
         report.moe_experts, report.moe_experts_active = _moe_from_config(config)
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
@@ -278,6 +279,34 @@ def _moe_from_config(config: dict) -> tuple[int | None, int | None]:
     return total, active
 
 
+def _hybrid_attention_layers(scope: dict[str, Any], layers: int | None) -> int | None:
+    """จำนวน layer ที่ KV โตตาม context สำหรับ arch แบบ hybrid linear-attention
+
+    คืน None เมื่ออ่านรูปแบบไม่ออก — ให้ผู้เรียกตกไปทางปกติ ดีกว่าเดาแล้วได้ 0 layer
+    """
+    kinds = scope.get("layer_types")
+    if isinstance(kinds, list) and kinds:
+        full = [k for k in kinds if isinstance(k, str) and k == "full_attention"]
+        if full and len(full) < len(kinds):
+            return len(full)
+        return None  # ทุก layer เป็น full attention อยู่แล้ว — ไม่ใช่ hybrid
+
+    interval = scope.get("full_attention_interval")
+    if isinstance(interval, int) and interval > 1 and isinstance(layers, int) and layers > 0:
+        # ปัดขึ้นเหมือนทาง GGUF: 65 layer ทุก ๆ 4 = 17 ไม่ใช่ 16
+        # ประเมินเกินหนึ่ง layer ปลอดภัยกว่าประเมินขาดแล้ว OOM ตอนโหลด
+        return -(-layers // interval)
+    return None
+
+
+def config_is_hybrid(config: dict[str, Any]) -> bool:
+    """arch นี้สลับ full attention กับ linear/SSM ไหม — ดูจาก config ไม่ใช่จากชื่อรุ่น"""
+    scope = config
+    if not config.get("num_hidden_layers") and isinstance(config.get("text_config"), dict):
+        scope = config["text_config"]
+    return _hybrid_attention_layers(scope, scope.get("num_hidden_layers")) is not None
+
+
 def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
     """อ่านมิติ KV จาก config.json — รองรับ text_config ซ้อน (โมเดล multimodal)"""
     scope = config
@@ -302,6 +331,21 @@ def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
     pattern = scope.get("hybrid_override_pattern")
     if isinstance(pattern, str) and "*" in pattern:
         attention_layers = pattern.count("*")
+        if isinstance(kv_heads, int) and isinstance(head_dim, int) and kv_heads > 0 and head_dim > 0:
+            return KvDims(layers=attention_layers, kv_heads=kv_heads, head_dim=head_dim)
+
+    # hybrid linear-attention (Qwen3.5, Qwen3-Next): full attention สลับกับ layer ที่เป็น
+    # SSM/linear ซึ่ง state คงที่ไม่โตตาม context · HF config บอกด้วย `layer_types`
+    # (ลิสต์ต่อ layer) หรือ `full_attention_interval` (ทุก ๆ N layer)
+    #
+    # เคสจริง 2026-08-19: orcarouter/Qwen3.8-27B-Uncensored-NVFP4 มี 64 layer แต่เป็น
+    # full attention แค่ 16 (interval 4) · สูตรเดิมคิด 256 KiB/token ทั้งที่ของจริง 64 KiB
+    # — เกินจริง 4 เท่า แล้วไปบอกว่าที่ context 262,144 รับได้ 1.4 คนพร้อมกัน ทั้งที่ได้ 5.8
+    #
+    # ทาง GGUF จับเคสนี้ได้มาตั้งแต่ `_interval_layers_only` แต่ทาง safetensors ไม่เคยมอง
+    # — repo เดียวกันคนละรูปแบบไฟล์จึงให้คำตอบคนละอย่าง
+    attention_layers = _hybrid_attention_layers(scope, layers)
+    if attention_layers is not None:
         if isinstance(kv_heads, int) and isinstance(head_dim, int) and kv_heads > 0 and head_dim > 0:
             return KvDims(layers=attention_layers, kv_heads=kv_heads, head_dim=head_dim)
 
@@ -446,6 +490,10 @@ def _inspect_gguf(
     report.architecture = report.architecture or gguf.architecture
     report.context_length = report.context_length or gguf.context_length
     report.kv_dims = report.kv_dims or _kv_dims_from_gguf(gguf)
+    if isinstance(gguf.metadata, dict) and report.architecture:
+        interval = gguf.metadata.get(f"{report.architecture}.full_attention_interval")
+        report.hybrid_attention = report.hybrid_attention or (
+            isinstance(interval, int) and interval > 1)
     report.moe_experts = report.moe_experts or gguf.expert_count
     report.moe_experts_active = report.moe_experts_active or gguf.expert_used_count
     report.mtp_embedded = report.mtp_embedded or bool(gguf.nextn_layers)

@@ -91,6 +91,9 @@ class ModelReport(BaseModel):
     context_length: Optional[int] = None
     quantization: Optional[str] = None
     kv_dims: Optional[KvDims] = None
+    # arch แบบ full attention สลับกับ linear/SSM (Qwen3.5/3.8, Qwen3-Next, Nemotron-3.x)
+    # ตรวจจากไฟล์ ไม่ใช่จากชื่อรุ่น — คำเตือนที่ผูกกับชื่อพลาดรุ่นใหม่เสมอ
+    hybrid_attention: bool = False
     # MoE — total params บอกขนาดที่ต้องโหลด แต่ active params บอกความเร็วที่จะได้
     # บนเครื่องที่คอขวดคือ bandwidth (DGX Spark) สองค่านี้ต่างกันหลายเท่า ต้องเห็นทั้งคู่
     moe_experts: Optional[int] = None

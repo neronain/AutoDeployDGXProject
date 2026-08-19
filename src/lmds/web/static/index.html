@@ -1468,8 +1468,10 @@ function wizForm(msg = "", extra = "") {
     <!-- llama.cpp ไม่อยู่ในรายการโดยตั้งใจ: มันอ่านได้เฉพาะ GGUF และ GGUF ก็บังคับใช้มัน
          อยู่แล้ว การใส่ตัวเลือกที่เลือกแล้วไม่มีผลคือชวนให้เข้าใจผิดว่ามีทางเลือก -->
     <div class="dim">Auto = ตามชนิดไฟล์ (GGUF → llama.cpp, safetensors → vLLM) ·
-      SGLang จำเป็นสำหรับ NVFP4 บางตระกูลที่ calibrate ด้วย w1/w3 scale ·
-      เลือก SGLang กับ repo ที่เป็น GGUF ระบบจะยังใช้ llama.cpp เพราะ SGLang อ่านไฟล์นั้นไม่ได้</div>
+      <b style="font-weight:600">llama.cpp ไม่มีให้เลือกเพราะเลือกไม่ได้</b> — มันอ่านได้เฉพาะ
+      <code>.gguf</code> และถ้า repo เป็น GGUF ระบบก็ใช้มันให้อยู่แล้วไม่ว่าจะเลือกอะไร ·
+      repo ที่มีแต่ safetensors จึงใช้ llama.cpp ไม่ได้เลย ต้องหา repo ที่แปลงเป็น GGUF แล้ว ·
+      SGLang จำเป็นสำหรับ NVFP4 บางตระกูลที่ calibrate ด้วย w1/w3 scale</div>
     <!-- ป้ายเดิมคือ "Skip the LLM (rule-based plan)" ซึ่งถูกอ่านว่าเป็นการเลือก llama.cpp
          (ผู้ใช้จริงรายงานมาเอง) · คำว่า LLM อยู่ติดกับช่อง Engine ยิ่งชวนให้เข้าใจว่าเป็น
          เรื่องเดียวกัน · ทั้งที่ช่องนี้พูดถึง "ใครวางแผน" ไม่ใช่ "อะไรเสิร์ฟโมเดล" -->
@@ -1715,7 +1717,8 @@ function planView(d) {
   wiz.innerHTML = `<div class="pad">
     <div class="name">${esc(p.model_id)}</div>
     <div class="kv">
-      <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}</span>
+      <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}${
+        p.engine_reason ? `<div class="dim">${esc(p.engine_reason)}</div>` : ""}</span>
       <span>revision</span><span class="mono">${esc(p.revision)}</span>
       <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${f.budget_gb} GB</span>
       ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}

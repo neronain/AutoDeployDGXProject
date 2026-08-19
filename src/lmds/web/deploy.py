@@ -52,6 +52,27 @@ def targets() -> list[dict]:
     ]
 
 
+def _engine_reason(plan, report) -> str:
+    """อธิบายว่าทำไมแผนนี้ได้ engine ตัวนี้ — ชนิดไฟล์ในรีโปเป็นตัวตัดสินหลัก"""
+    from lmds.brain.plan_schema import Engine
+    from lmds.inspector.report import ArtifactType
+
+    artifact = getattr(report, "artifact_type", None)
+    if artifact is ArtifactType.GGUF:
+        return ("repo เป็น GGUF → llama.cpp เสมอ · vLLM กับ SGLang อ่านไฟล์ GGUF ไม่ได้ "
+                "เลือกเป็นอย่างอื่นก็จะได้ bundle ที่ start ไม่ขึ้น")
+    if artifact is ArtifactType.SAFETENSORS:
+        return (f"repo เป็น safetensors → {plan.runtime.engine.value} · "
+                "llama.cpp ใช้กับ repo นี้ไม่ได้เพราะมันอ่านได้เฉพาะ .gguf "
+                "(ถ้าอยากใช้ llama.cpp ต้องหา repo ที่แปลงเป็น GGUF แล้ว)")
+    if artifact is ArtifactType.MIXED:
+        chosen = plan.runtime.engine
+        other = "llama.cpp" if chosen is not Engine.LLAMACPP else "vLLM/SGLang"
+        return (f"repo มีทั้ง safetensors และ GGUF → เลือก {chosen.value} · "
+                f"อีกทางคือ {other} ซึ่งใช้ไฟล์คนละชุดในรีโปเดียวกัน")
+    return f"engine: {plan.runtime.engine.value}"
+
+
 def _plan_payload(session: Session) -> dict:
     from lmds.recipes import find_recipe
 
@@ -73,6 +94,10 @@ def _plan_payload(session: Session) -> dict:
         "revision": plan.revision,
         "served_model_name": plan.served_model_name,
         "engine": plan.runtime.engine.value,
+        # ทำไมถึงได้ engine ตัวนี้ — ผู้ใช้เห็นแค่ชื่อ engine แล้วเดาเองไม่ออกว่าเลือกเองได้ไหม
+        # เคสจริง 2026-08-19: repo safetensors ล้วน ผู้ใช้หา llama.cpp ในช่อง Engine ไม่เจอ
+        # แล้วสรุปว่า LMDS พัง ทั้งที่ llama.cpp อ่าน safetensors ไม่ได้ตั้งแต่แรก
+        "engine_reason": _engine_reason(plan, report),
         "image": plan.runtime.image_ref,
         "topology": plan.topology.value,
         "generator": plan.generator,

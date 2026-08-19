@@ -75,21 +75,30 @@ def arch_requirements(repo_id: str) -> dict:
 
 # กับดักที่ไม่ใช่ "ค่าที่ต้องตั้ง" แต่ควรเตือนก่อน deploy — สกัดจากการรันจริงบน DGX Spark
 # (งานวิจัย Qwen3.5-122B บน SM121 + เคสของทีม) · rule-based ไม่มี LLM ไปค้นให้ จึงเขียนไว้ตรง ๆ
-def arch_notes(repo_id: str, quantization: str = "") -> list[str]:
+def arch_notes(repo_id: str, quantization: str = "",
+               hybrid_attention: bool = False) -> list[str]:
     key = repo_id.lower().replace("_", "-")
     quant = (quantization or "").lower()
     notes: list[str] = []
     if "nvfp4" in key or "nvfp4" in quant or "fp4" in quant:
         notes.append(
-            "NVFP4/FP4: SM121 (GB10) ไม่มี FP4 CUTLASS kernel ในตัว — image ต้องมี kernel เฉพาะ "
-            "(เช่น avarok/dgx-vllm-nvfp4-kernel หรือ dspark-vllm-gx10) ไม่งั้น fallback Marlin SM80 ช้ามาก (~-42%)"
+            "NVFP4/FP4 บน SM121 (GB10) **ล้มตั้งแต่ start ได้ ไม่ใช่แค่ช้า** — เคสจริง 2026-08-20 "
+            "บน msi-6: ptxas ปฏิเสธ `cvt with .e2m1x2 not supported on .target sm_121` ตอน JIT "
+            "cutlass_fused_moe แล้ว engine core ตายก่อน health · image ต้องมี FP4 kernel ที่ build "
+            "มาสำหรับ sm_121 (เช่น avarok/dgx-vllm-nvfp4-kernel หรือ dspark-vllm-gx10) "
+            "ถ้าหลุดไป Marlin SM80 ก็แค่ช้ามาก (~-42%) · โมเดล MoE เสี่ยงกว่าโมเดล dense"
         )
         notes.append(
             "NVFP4 MoE backend เลือกตามโมเดล: marlin (default, ช้า) / cutlass / b12x — "
             "cutlass/b12x คือ path ที่เลี่ยง Marlin fallback ได้ (ต้องใช้ image ที่มี kernel นั้น) · "
             "ถ้าลงเอยที่ Marlin ให้ตั้ง env VLLM_MARLIN_USE_ATOMIC_ADD=1"
         )
-    if "qwen3.5" in key or "qwen3-5" in key or "deltanet" in key:
+    # ผูกกับ *สิ่งที่ตรวจได้จากไฟล์* ก่อน แล้วค่อยเผื่อชื่อรุ่นไว้เป็นตาข่ายรอง
+    #
+    # เคสจริง 2026-08-20: Qwen3.8-27B เป็น hybrid เหมือน Qwen3.5 ทุกอย่าง (layer_types สลับ
+    # linear_attention 3 ต่อ full_attention 1, มี mamba_ssm_dtype) แต่คำเตือนเดิมจับชื่อ
+    # "qwen3.5" อย่างเดียว รุ่นใหม่จึงหลุดไปทั้งดุ้น — รวมถึงข้อ prefix-caching ที่ทำ output ผิด
+    if hybrid_attention or "qwen3.5" in key or "qwen3-5" in key or "deltanet" in key:
         notes.append(
             "Qwen3.5 (DeltaNet hybrid attention): อย่าเปิด --enable-prefix-caching (output ผิด) · "
             "kv-cache fp8 ได้ผลน้อยบน SM121"
@@ -274,7 +283,8 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         plan.warnings.append("ไม่พบ chat template — ต้องระบุ template เองตอนใช้งาน chat")
     if report.trust_remote_code_files:
         plan.warnings.append("repo มีไฟล์ remote code — review ก่อนเปิด --trust-remote-code (ต้องอนุมัติเอง)")
-    for note in arch_notes(report.repo_id, report.quantization or ""):
+    for note in arch_notes(report.repo_id, report.quantization or "",
+                           hybrid_attention=report.hybrid_attention):
         if note not in plan.warnings:
             plan.warnings.append(note)
 
