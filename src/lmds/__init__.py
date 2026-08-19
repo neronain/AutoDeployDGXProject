@@ -1,6 +1,6 @@
 """Local Model Deploy Studio (LMDS)."""
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 
 # เวอร์ชันของ template registry ที่ bundle มาตรฐานสืบทอดมา
 TEMPLATE_STANDARD = "dgx-spark-controllers-v3.0.0"

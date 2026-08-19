@@ -938,7 +938,12 @@ function renderFleetSummary(s) {
   ].join("");
 }
 
+// บทบาทของเครื่องที่คอนโซลนี้นั่งอยู่ — control plane สร้าง bundle แล้ว push ต่อ
+// ไม่ได้รันโมเดลเอง · ปุ่ม Download/Start บนเครื่องแบบนั้นดูดไฟล์สิบ ๆ GB มาเปล่า ๆ
+let HOST_ROLE = { control_plane: false, engines: [], evidence: "" };
+
 function renderHost(h, models) {
+  HOST_ROLE = h.role || HOST_ROLE;
   document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
   const gpu = h.gpus[0];
   const unified = h.memory_model === "unified";
@@ -961,6 +966,15 @@ function renderHost(h, models) {
   const ready = h.docker && h.toolkit;
   cards.push(statCard("Docker + GPU", ready ? "ready" : h.docker ? "no GPU access" : "not ready",
     `${esc(h.profile)} · ${esc(h.arch)}`, ready ? "var(--ok)" : "var(--bad)"));
+
+  // บทบาทของเครื่อง — เดิมคนเห็นแค่ "GPU not found" แล้วก็ยังกด Download อยู่ดี
+  // เพราะไม่มีอะไรบอกว่าเครื่องนี้ไม่ได้มีไว้รันโมเดล
+  const role = h.role || {};
+  cards.push(role.control_plane
+    ? statCard("บทบาท", "control plane", `${esc(role.evidence || "")} · สร้าง bundle แล้ว push ไปเครื่องอื่น`,
+        "var(--warn)")
+    : statCard("บทบาท", "รันโมเดลได้",
+        (role.engines || []).length ? `engine: ${esc((role.engines || []).join(", "))}` : "", "var(--ok)"));
 
   document.getElementById("stats").innerHTML = cards.join("");
   // CPU/หน่วยความจำ/ดิสก์/GPU ของเครื่องนี้ — เกจชุดเดียวกับที่ใช้กับเครื่องอื่น
@@ -1029,6 +1043,13 @@ function actionsMarkup(m) {
     return `<button data-act="adopt" data-slug="${esc(m.slug)}"
               title="สร้าง controller จากคำสั่งที่มันรันอยู่จริง — ของที่รันอยู่ไม่ถูกแตะ">
               <svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>รับเข้าระบบ</button>`;
+  }
+  // เครื่องที่รันโมเดลไม่ได้: ทางเดียวที่มีความหมายคือส่ง bundle ไปให้เครื่องที่รันได้
+  // เดิมยื่นปุ่ม Download ให้เหมือนกันหมด แล้วคนก็กด — ได้ weight 15-25 GB ที่ไม่มีอะไรรันมัน
+  if (HOST_ROLE.control_plane) {
+    return `<button data-act="opts" data-slug="${esc(m.slug)}"
+              title="เครื่องนี้เป็น control plane (${esc(HOST_ROLE.evidence || "")}) — ส่ง bundle ไปให้เครื่องที่รันได้">
+              <svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>ส่งไปเครื่องที่รันได้</button>`;
   }
   // Starting without weights always fails — send the user to download first
   return m.downloaded
@@ -1197,7 +1218,10 @@ function manageMarkup(m) {
 
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-wrench"/></svg><span class="sec-title">Repair / remove</span></div>
     <div class="field">
-      ${btn("job:repair", "repair")}
+      ${HOST_ROLE.control_plane
+        ? `<span class="dim">repair ที่นี่ไม่มีประโยชน์ — ${esc(HOST_ROLE.evidence || "")}
+             · ส่ง bundle ไปเครื่องที่รันได้ แล้วสั่ง repair จากการ์ดของเครื่องนั้น</span>`
+        : btn("job:repair", "repair")}
       ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
     </div>
     <div id="rm-${esc(m.slug)}"></div>

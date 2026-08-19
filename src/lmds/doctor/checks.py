@@ -562,6 +562,52 @@ def _check_controller(server: ServerInfo) -> list[Finding]:
                     f"deploy ใหม่ หรือ lmds remove {server.slug} เพื่อล้างทะเบียนทิ้ง")]
 
 
+def _check_role() -> list[Finding]:
+    """เครื่องนี้มีไว้รันโมเดล หรือมีไว้สร้าง bundle แล้วส่งต่อ
+
+    ต้องมาก่อนข้ออื่นเพราะมันเปลี่ยนความหมายของทุกข้อที่ตามมา: บน control plane
+    "ไม่มี docker" กับ "ไม่พบ libllama.so" ไม่ใช่ปัญหาที่ต้องแก้ — มันคือนิยามของเครื่อง
+    """
+    from lmds.hardware import serving
+
+    capability = serving.detect()
+    if capability.can_serve:
+        return [Finding("บทบาท", Status.OK,
+                        f"เครื่องรันโมเดล — engine: {', '.join(capability.engines)}")]
+    return [Finding(
+        "บทบาท", Status.WARN,
+        f"control plane — {capability.evidence()}",
+        "สร้าง bundle ที่นี่แล้วส่งไปรันที่อื่น: lmds node push <เครื่อง> <slug> --download",
+    )]
+
+
+def _demote_for_control_plane(findings: list[Finding]) -> list[Finding]:
+    """บน control plane ข้อที่บอกว่า "รันไม่ได้" ไม่ใช่ของเสีย — ไม่ควรนับเป็นตัวบล็อก
+
+    เดิม `lmds doctor` บน hub VM สรุปว่า "พบ 1 ข้อที่ต้องแก้ก่อนถึงจะรันได้" (docker)
+    ซึ่งชวนให้ไปติดตั้ง docker บนเครื่องที่ไม่มี GPU ให้มันใช้อยู่ดี
+    """
+    from lmds.hardware import serving
+
+    if serving.detect().can_serve:
+        return findings
+    # runtime ที่ไม่มี = นิยามของเครื่อง ไม่ใช่ของเสีย · weight ที่ยังไม่โหลด = ปกติ
+    # เพราะ bundle บน hub มีไว้ push ต่อ ไม่ได้มีไว้รันที่นี่
+    softened = {"docker", "image", "architecture", "grammar", "weights", "server"}
+    push_instead = "ส่งไปรันที่เครื่องอื่น: lmds node push <เครื่อง> <slug> --download"
+    demoted = []
+    for finding in findings:
+        if finding.name in softened and finding.status is Status.FAIL:
+            fix = push_instead if finding.name in ("weights", "server") else (
+                finding.fix or "ไม่ต้องแก้ที่นี่ — เครื่องนี้ไม่ได้มีไว้รันโมเดล")
+            finding = Finding(finding.name, Status.WARN, finding.detail, fix)
+        elif finding.name in ("weights", "server") and finding.fix:
+            # คำแนะนำเดิมชี้ไป repair/start ซึ่งเป็นคำสั่งที่เครื่องนี้ปฏิเสธอยู่แล้ว
+            finding = Finding(finding.name, finding.status, finding.detail, push_instead)
+        demoted.append(finding)
+    return demoted
+
+
 def diagnose(slug: str) -> Diagnosis:
     """ตรวจทุกข้อของ slug เดียว — ไม่แก้อะไรให้เอง แค่บอกสาเหตุกับคำสั่ง"""
     server = find(slug)
@@ -572,6 +618,7 @@ def diagnose(slug: str) -> Diagnosis:
         )])
 
     result = Diagnosis(slug)
+    result.findings.extend(_check_role())
     result.findings.extend(_check_controller(server))
 
     profile = bundle_profile(server.controller) or {}
@@ -592,4 +639,5 @@ def diagnose(slug: str) -> Diagnosis:
 
     result.findings.extend(_check_port(server))
     result.findings.extend(_check_server(server))
+    result.findings = _demote_for_control_plane(result.findings)
     return result

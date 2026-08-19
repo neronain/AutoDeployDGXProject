@@ -310,12 +310,32 @@ def _clean_image(image: str) -> str:
     return image
 
 
+def _node_hint() -> str:
+    """ชื่อเครื่องปลายทางสักตัวไว้เติมในคำแนะนำ — ไม่มีทะเบียนก็ไม่เป็นไร"""
+    try:
+        from lmds.nodes import load
+
+        nodes = load()
+        return nodes[0].name if nodes else ""
+    except Exception:
+        return ""
+
+
 def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:
     if command not in ALLOWED:
         raise JobError(f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
     path = Path(controller)
     if not path.is_file():
         raise JobError(f"ไม่พบ controller ของ {slug}")
+
+    # เครื่องที่รันโมเดลไม่ได้ ไม่ควรถูกกดปุ่มให้ดูด weight สิบ ๆ GB ลงมา
+    # ปฏิเสธที่นี่ = ครอบทุกทางที่หน้าเว็บสั่ง controller (ปุ่มเดี่ยวและ chain)
+    from lmds.hardware import serving
+
+    for step in CHAINS.get(command, [command]) + [command]:
+        blocked = serving.guard(slug, step, _node_hint())
+        if blocked:
+            raise JobError(blocked)
 
     steps = CHAINS.get(command, [command])
     extra_env = controller_env(options)

@@ -22,7 +22,8 @@ lmds prune [-y]                            # ล้างทะเบียน�
 lmds validate <BUNDLE_DIR> [--fix]         # รัน static quality gates กับ bundle ที่มีอยู่
 lmds ps | list | start | stop | restart | logs | enable | disable   # fleet (ดูหัวข้อ fleet)
 lmds adopt <CONTAINER> | --port N | --pid N   # รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ (ดูหัวข้อ adopt)
-lmds repair <SLUG>                         # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
+lmds repair <SLUG> [--force]               # โหลดไฟล์ที่ขาดกลับมา: download (resume) → verify-files
+                                          #   ถูกปฏิเสธบน control plane (ไม่มี engine ให้รัน) — --force เพื่อยืนยัน
 lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
 lmds node <subcommand>                     # ทะเบียนเครื่องอื่น (fleet หลายเครื่อง) — ดูหัวข้อ node
 lmds agent info                            # JSON สถานะเครื่องนี้ (hub เรียกผ่าน SSH ไม่ได้พิมพ์เอง)

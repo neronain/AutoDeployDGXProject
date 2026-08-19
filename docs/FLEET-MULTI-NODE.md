@@ -19,6 +19,41 @@ LMDS ทำให้ทั้งสองแบบเห็นจากที่
 
 ---
 
+## 1.5 เครื่องนี้มีไว้ทำอะไร — control plane vs เครื่องรันโมเดล
+
+LMDS ตรวจเองว่าเครื่องที่คุณนั่งอยู่ **รันโมเดลได้จริงไหม** โดยดูจากของที่มีอยู่ ไม่ใช่ชื่อเครื่อง:
+
+| เห็นอะไร | สรุปว่า |
+|---|---|
+| `llama-server` ที่รันได้ (`~/src/llama.cpp/build/bin/` หรือใน PATH) | รัน engine `llamacpp` ได้ |
+| docker **คู่กับ GPU** | รัน `vllm` / `sglang` / `trtllm` ได้ |
+| ไม่มีสักอย่าง | **control plane** — สร้าง bundle แล้ว push ต่อ |
+
+บน control plane คำสั่งพวกนี้ถูกปฏิเสธ: `download` `repair` `start` `restart` `prepare-runtime`
+
+เหตุผล: เคสจริง 2026-08-19 `lmds repair` บน hub VM (ไม่มี GPU/docker/llama.cpp, RAM 12 GB)
+เริ่มดูด weight 15.6 GB ลงมาอย่างว่าง่าย — ไฟล์ที่ต่อให้โหลดจบก็ไม่มีอะไรรันมันได้
+
+สิ่งที่ทำแทน — bundle ตัวเดิมที่คุณอนุมัติแผนไปแล้ว ถูกส่งไปให้เครื่องที่รันได้โหลด weight ของมันเอง:
+
+```bash
+lmds node push spark-head my-model --download   # ส่ง bundle แล้วสั่งโหลดที่ปลายทาง
+lmds node run spark-head start my-model
+```
+
+คำสั่งที่แค่ *อ่าน* ของที่มีอยู่ยังใช้ได้ตามปกติบน hub: `verify-files` `status` `doctor` `logs` `stop`
+
+**เมื่อการตรวจเดาผิด** (เช่นกำลังจะ build llama.cpp ทีหลัง):
+
+```bash
+lmds repair my-model --force          # ครั้งเดียว
+LMDS_ROLE=serving lmds repair my-model # ทั้ง session
+LMDS_ROLE=hub lmds repair my-model     # ตรงข้าม: เครื่องมี GPU แต่ตั้งใจให้เป็น hub
+```
+
+`lmds doctor` ขึ้นข้อ **บทบาท** เป็นข้อแรกเสมอ และบน control plane ข้อที่แปลว่า "รันไม่ได้"
+(`docker` `image` `architecture` `grammar` `weights` `server`) ไม่นับเป็นตัวบล็อก
+
 ## 2. สถาปัตยกรรม — ทำไมไม่มี daemon
 
 hub คุย node ผ่าน **SSH เท่านั้น** แล้วเรียก `lmds agent info` บนเครื่องนั้นเพื่อขอสถานะกลับมาเป็น JSON

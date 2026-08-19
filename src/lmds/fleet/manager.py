@@ -764,6 +764,30 @@ class FleetError(Exception):
     pass
 
 
+def _suggest_node() -> str:
+    """ชื่อเครื่องสักตัวในทะเบียนไว้เติมในคำแนะนำ — ไม่มีก็ปล่อยว่าง อย่าให้ล้มเพราะเรื่องนี้"""
+    try:
+        from lmds.nodes import load
+
+        nodes = load()
+        return nodes[0].name if nodes else ""
+    except Exception:
+        return ""
+
+
+def _guard_serving(info: "ServerInfo", action: str, force: bool = False) -> None:
+    """ห้ามคำสั่งที่กินทรัพยากรหนักบนเครื่องที่รันโมเดลไม่ได้
+
+    เคสจริง 2026-08-19: `lmds repair` บน hub VM (ไม่มี GPU/docker/llama.cpp, RAM 12 GB)
+    เริ่มดูด weight 15.6 GB ลงมาอย่างว่าง่าย — ไฟล์ที่ต่อให้โหลดจบก็ไม่มีอะไรรันมันได้
+    """
+    from lmds.hardware import serving
+
+    message = serving.guard(info.slug, action, _suggest_node(), force=force)
+    if message:
+        raise FleetError(message)
+
+
 def _run_controller(info: ServerInfo, command: str, extra: list[str] | None = None) -> int:
     if not info.controller_exists:
         raise FleetError(
@@ -832,12 +856,14 @@ def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
     )
 
 
-def start_server(info: ServerInfo, options: list[str] | None = None) -> int:
+def start_server(info: ServerInfo, options: list[str] | None = None,
+                 force: bool = False) -> int:
     """options = flag ของ controller เช่น ["--port", "8001"] — ส่งผ่านไปตรง ๆ
 
     controller เป็นเจ้าของ flag พวกนี้ (แต่ละ engine มีไม่เท่ากัน) LMDS จึงไม่พยายาม
     รู้จักทุกตัว แค่ส่งต่อและปล่อยให้ controller ตรวจค่าเอง — มันตรวจอยู่แล้ว
     """
+    _guard_serving(info, "start", force)
     return _run_controller(info, "start", options)
 
 
@@ -1120,8 +1146,9 @@ def _human(size: int) -> str:
     return f"{value:.1f} TB"
 
 
-def repair_server(info: ServerInfo) -> int:
+def repair_server(info: ServerInfo, force: bool = False) -> int:
     """ดาวน์โหลดไฟล์ที่ขาด/เสียใหม่ แล้วตรวจซ้ำ — download ของทุก controller resume ได้"""
+    _guard_serving(info, "repair", force)
     if not info.controller_exists:
         # container ที่ไม่ได้มาจาก LMDS ไม่เคยมี bundle เลย — บอกว่า "ถูกลบไปแล้ว" คือเดาผิด
         # และพาไปทางที่ไม่ใช่ (deploy ใหม่ทั้งที่ของรันอยู่ดี ๆ)

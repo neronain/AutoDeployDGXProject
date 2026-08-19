@@ -2579,8 +2579,11 @@ def start(
     if server.running:
         console.print(f"{slug} รันอยู่แล้ว (port {server.port})")
         return
+    # --force เป็นของ lmds ไม่ใช่ของ controller — คัดออกก่อนส่งต่อ
+    options = [arg for arg in ctx.args if arg != "--force"]
+    force = len(options) != len(ctx.args)
     try:
-        raise typer.Exit(code=start_server(server, list(ctx.args)))
+        raise typer.Exit(code=start_server(server, options, force=force))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
@@ -3090,6 +3093,7 @@ def doctor(
 @app.command()
 def repair(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
+    force: bool = typer.Option(False, "--force", help="ยืนยันว่าเครื่องนี้รันโมเดลได้จริง ทั้งที่ตรวจไม่เจอ engine"),
 ) -> None:
     """ซ่อมไฟล์โมเดลที่ขาด/เสีย — โหลดเฉพาะส่วนที่หายแล้วตรวจซ้ำ (resume ได้)"""
     from lmds.fleet import FleetError, find, repair_server
@@ -3098,9 +3102,15 @@ def repair(
     if server is None:
         err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds list")
         raise typer.Exit(code=1)
-    console.print(f"ซ่อม {slug}: download (resume) → verify-files")
     try:
-        code = repair_server(server)
+        from lmds.hardware import serving
+
+        blocked = serving.guard(slug, "repair", force=force)
+        if blocked:
+            err_console.print(f"[red]{blocked}[/red]")
+            raise typer.Exit(code=1)
+        console.print(f"ซ่อม {slug}: download (resume) → verify-files")
+        code = repair_server(server, force=force)
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)

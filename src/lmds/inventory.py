@@ -284,10 +284,20 @@ def cache_health() -> dict:
     }
 
 
+def _role_payload(capability) -> dict:
+    """บทบาทของเครื่องนี้ในรูปที่คอนโซลใช้ได้ — พร้อมหลักฐานให้คนเถียงกับข้อสรุปได้"""
+    return {
+        "control_plane": capability.is_control_plane,
+        "engines": list(capability.engines),
+        "evidence": capability.evidence(),
+        "forced": capability.forced,
+    }
+
+
 def host_payload() -> dict:
     import lmds
     from lmds.fit.targets import from_hardware_report
-    from lmds.hardware import probe
+    from lmds.hardware import probe, serving
     from lmds.hardware.profiler import detect_cpu, detect_fabric, host_summary
 
     report = probe()
@@ -311,6 +321,9 @@ def host_payload() -> dict:
         "disk_total_gb": report.disk_total_gb,
         "docker": report.docker,
         "toolkit": report.nvidia_container_toolkit,
+        # เครื่องนี้รันโมเดลเองได้ไหม หรือมีหน้าที่แค่สร้าง bundle แล้ว push ต่อ
+        # คอนโซลเอาไปตัดสินใจว่าจะโชว์ปุ่ม Download/Start หรือชวนให้ push แทน
+        "role": _role_payload(serving.detect()),
         # แคชโมเดลเป็นของ user อยู่ไหม — root-owned ทำให้ download/remove/sync ล้มเงียบ ๆ
         "cache": cache_health(),
         "cpu": cpu,

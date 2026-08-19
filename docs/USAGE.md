@@ -560,6 +560,15 @@ lmds stop --all                                                # ปิดทั
 > `enable` ก็ทำได้ แต่ unit ที่ได้จะเป็นแค่ `docker start <container>` (ไม่ได้สร้าง container ใหม่)
 > ถ้าลบ container นั้นทิ้ง unit จะล้ม ต้อง enable ใหม่
 
+### 4.2b เครื่องนี้รันโมเดลได้ไหม (control plane)
+
+ถ้าเครื่องที่คุณนั่งอยู่ไม่มี GPU ไม่มี docker และไม่มี `llama-server` LMDS ถือว่ามันเป็น
+**control plane** — มีไว้สร้าง bundle แล้วส่งไปรันที่อื่น ปุ่ม Download/Start บนคอนโซลจะกลายเป็น
+**ส่งไปเครื่องที่รันได้** และคำสั่ง `repair`/`start` จะถูกปฏิเสธพร้อมบอกคำสั่ง push ที่ควรใช้แทน
+
+ทับด้วย `--force` หรือ `LMDS_ROLE=serving` ได้เมื่อการตรวจเดาผิด · รายละเอียดเต็มอยู่ที่
+[FLEET-MULTI-NODE.md §1.5](FLEET-MULTI-NODE.md)
+
 ### 4.3 ซ่อม / ลบโมเดล
 
 ```bash
