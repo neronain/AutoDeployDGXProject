@@ -3121,6 +3121,213 @@ def repair(
     raise typer.Exit(code=code)
 
 
+# ── คะแนนโมเดล ────────────────────────────────────────────────────────────────
+bench_app = typer.Typer(help="วัดความเร็วและความสามารถของโมเดลที่รันอยู่", no_args_is_help=True)
+app.add_typer(bench_app, name="bench")
+
+
+def _bench_environment(server, profile: dict) -> dict:
+    """สภาพแวดล้อมที่ทำให้ตัวเลขความเร็วมีความหมาย — ขาดอันไหนไปก็เทียบข้ามรอบไม่ได้"""
+    import httpx
+
+    model = (profile or {}).get("model") or {}
+    serving = (profile or {}).get("serving") or {}
+    environment = {
+        "quant": model.get("quantization") or model.get("quant") or "",
+        "context": serving.get("context") or serving.get("context_tokens") or 0,
+        "engine_build": "",
+        "features": (profile or {}).get("features") or {},
+    }
+    # build ของ engine อ่านจากเซิร์ฟเวอร์ที่รันอยู่จริง ไม่ใช่จากที่จดไว้ตอน deploy
+    try:
+        response = httpx.get(f"http://127.0.0.1:{server.port}/props", timeout=5.0)
+        if response.status_code == 200:
+            props = response.json()
+            environment["engine_build"] = str(props.get("build_info") or "")
+            environment["context"] = props.get("default_generation_settings", {}).get(
+                "n_ctx") or environment["context"]
+    except Exception:
+        pass
+    return environment
+
+
+@bench_app.command("run")
+def bench_run(
+    slug: str = typer.Argument(..., help="ชื่อ (slug) ของโมเดลที่รันอยู่", autocompletion=_complete_slug),
+    quick: bool = typer.Option(False, "--quick", help="ชุดสั้น 2 งาน — ดูคร่าว ๆ ไม่ใช่ตัวเลขที่เอาไปเทียบ"),
+    runs: int = typer.Option(3, "--runs", help="ยิงกี่รอบต่อหนึ่งงาน แล้วเอาค่ากลาง"),
+    speed_only: bool = typer.Option(False, "--speed-only", help="วัดความเร็วอย่างเดียว"),
+    caps_only: bool = typer.Option(False, "--caps-only", help="ตรวจความสามารถอย่างเดียว"),
+) -> None:
+    """วัดโมเดลที่รันอยู่ แล้วเก็บผลไว้เทียบทีหลัง
+
+    ทุกอย่างวัดจากเซิร์ฟเวอร์จริงผ่าน OpenAI API — ได้ตัวเลขที่เทียบข้าม engine ได้
+    ต่างจากคำสั่ง bench ของ controller ที่แต่ละ engine มีไม่เท่ากันและวัดคนละวิธี
+    """
+    from lmds import bench
+    from lmds.fleet import bundle_profile, find
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps")
+        raise typer.Exit(code=1)
+    if not server.running:
+        err_console.print(f"[red]{slug} ยังไม่ได้รัน[/red] — วัดได้เฉพาะโมเดลที่รันอยู่: lmds start {slug}")
+        raise typer.Exit(code=1)
+
+    profile = bundle_profile(server.controller) or {}
+    environment = _bench_environment(server, profile)
+    served = server.model or ((profile.get("model") or {}).get("served_name")) or slug
+    endpoint = server.endpoint
+    features = profile.get("features") or {}
+    has_projector = bool((features.get("multimodal") or {}).get("projector_files"))
+    context_limit = int(environment.get("context") or 0)
+
+    console.print(f"วัด [bold]{slug}[/bold] · {served} · {endpoint}")
+    if environment.get("engine_build"):
+        console.print(f"[dim]build {environment['engine_build']} · context {context_limit:,}[/dim]")
+
+    workload_rows: list[dict] = []
+    if not caps_only:
+        chosen = bench.select("quick" if quick else "full", context_limit)
+        skipped = len(bench.select("quick" if quick else "full")) - len(chosen)
+        if skipped:
+            console.print(f"[dim]ข้าม {skipped} งานที่ยาวเกิน context ของโมเดลนี้[/dim]")
+
+        def progress(workload, index, total):
+            console.print(f"  {workload.label} ({workload.input_tokens} tok) — รอบ {index}/{total}")
+
+        results = bench.measure(endpoint, served, chosen, runs=runs, on_progress=progress)
+        workload_rows = [r.as_dict() for r in results]
+
+    probe_rows: list[dict] = []
+    if not speed_only:
+        console.print("ตรวจความสามารถ…")
+        probes = bench.run_probes(endpoint, served, has_projector, context_limit,
+                                  on_progress=lambda name: console.print(f"  {name}…"))
+        probe_rows = [{"key": p.key, "label": p.label, "passed": p.passed,
+                       "detail": p.detail, "skipped": p.skipped} for p in probes]
+
+    path = bench.record(slug, server.model_id or server.model, server.engine, served,
+                        workload_rows, probe_rows, environment, bench.now_stamp())
+    _print_bench(workload_rows, probe_rows)
+    console.print(f"\n[dim]เก็บผลไว้ที่ {path}[/dim]")
+    console.print(f"[dim]เทียบกับรอบก่อน: lmds bench show {slug}[/dim]")
+
+
+def _print_bench(workloads: list[dict], probes: list[dict]) -> None:
+    from lmds.bench import capability_score, speed_summary
+
+    if workloads:
+        table = Table(title="ความเร็ว (ค่ากลางจากทุกรอบ)")
+        table.add_column("งาน")
+        table.add_column("input", justify="right")
+        table.add_column("decode tok/s", justify="right")
+        table.add_column("TTFT", justify="right")
+        table.add_column("prefill tok/s", justify="right")
+        for row in workloads:
+            if row.get("error"):
+                table.add_row(row["label"], str(row["target_input"]), "—", "—",
+                              f"[red]{row['error'][:40]}[/red]")
+                continue
+            table.add_row(row["label"], f"{row['prompt_tokens']:,}",
+                          f"{row['decode_tps']:.1f}", f"{row['ttft_s']:.2f}s",
+                          f"{row['prefill_tps']:.0f}")
+        console.print(table)
+        summary = speed_summary(workloads)
+        if summary["decode_tps_avg"]:
+            console.print(f"[dim]เฉลี่ย {summary['decode_tps_avg']} tok/s · "
+                          f"ที่ context ยาวสุด ({summary['longest_context']:,}) "
+                          f"{summary['decode_tps_long']} tok/s[/dim]")
+
+    if probes:
+        table = Table(title="ความสามารถ")
+        table.add_column("")
+        table.add_column("ข้อ")
+        table.add_column("ที่ได้")
+        for probe in probes:
+            mark = "[dim]—[/dim]" if probe["skipped"] else ("✅" if probe["passed"] else "❌")
+            table.add_row(mark, probe["label"], probe["detail"][:60])
+        console.print(table)
+        score = capability_score(probes)
+        if score["score"] is not None:
+            console.print(f"[dim]คะแนนความสามารถ {score['score']}/100 "
+                          f"(นับ {score['counted']} ข้อที่วัดได้)[/dim]")
+
+
+@bench_app.command("list")
+def bench_list() -> None:
+    """ตารางคะแนนของทุกโมเดลที่เคยวัด — เอารอบล่าสุดของแต่ละตัว"""
+    from lmds.bench import all_runs, summarize
+
+    runs = all_runs()
+    if not runs:
+        console.print("ยังไม่เคยวัดอะไรเลย — เริ่มที่: [bold]lmds bench run <slug>[/bold]")
+        return
+    rows = sorted((summarize(r) for r in runs),
+                  key=lambda r: r["speed"]["decode_tps_avg"] or 0, reverse=True)
+    table = Table(title="คะแนนโมเดล")
+    table.add_column("โมเดล")
+    table.add_column("engine")
+    table.add_column("เครื่อง")
+    table.add_column("tok/s", justify="right")
+    table.add_column("ยาวสุด", justify="right")
+    table.add_column("TTFT", justify="right")
+    table.add_column("ความสามารถ", justify="right")
+    table.add_column("วัดเมื่อ")
+    for row in rows:
+        speed = row["speed"]
+        capability = row["capability"]
+        table.add_row(
+            row["slug"], row["engine"] or "", row["hostname"] or "",
+            f"{speed['decode_tps_avg']:.1f}" if speed["decode_tps_avg"] else "—",
+            f"{speed['decode_tps_long']:.1f}" if speed["decode_tps_long"] else "—",
+            f"{speed['ttft_s_short']:.2f}s" if speed["ttft_s_short"] else "—",
+            f"{capability['score']}/100" if capability["score"] is not None else "—",
+            (row["stamped_at"] or "").replace("T", " ")[:16],
+        )
+    console.print(table)
+
+
+@bench_app.command("show")
+def bench_show(
+    slug: str = typer.Argument(..., help="ชื่อ (slug)", autocompletion=_complete_slug),
+    history: bool = typer.Option(False, "--history", help="ทุกรอบที่เคยวัด ไม่ใช่แค่ล่าสุด"),
+) -> None:
+    """ผลละเอียดของรอบล่าสุด (หรือทั้งประวัติด้วย --history)"""
+    from lmds.bench import load, runs_for, speed_summary
+
+    paths = runs_for(slug)
+    if not paths:
+        err_console.print(f"[red]ยังไม่เคยวัด {slug}[/red] — วัดเลย: lmds bench run {slug}")
+        raise typer.Exit(code=1)
+
+    if history:
+        table = Table(title=f"ประวัติของ {slug}")
+        table.add_column("วัดเมื่อ")
+        table.add_column("build")
+        table.add_column("tok/s", justify="right")
+        table.add_column("ยาวสุด", justify="right")
+        for path in paths:
+            run = load(path)
+            summary = speed_summary(run.get("workloads") or [])
+            table.add_row(
+                (run.get("stamped_at") or "").replace("T", " ")[:16],
+                (run.get("environment") or {}).get("engine_build", "")[:20],
+                f"{summary['decode_tps_avg']:.1f}" if summary["decode_tps_avg"] else "—",
+                f"{summary['decode_tps_long']:.1f}" if summary["decode_tps_long"] else "—",
+            )
+        console.print(table)
+        return
+
+    run = load(paths[0])
+    machine = run.get("machine") or {}
+    console.print(f"[bold]{slug}[/bold] · {run.get('model_id')} · {run.get('engine')}")
+    console.print(f"[dim]{machine.get('hostname')} · {', '.join(g['name'] for g in machine.get('gpus') or []) or 'ไม่มี GPU'}"
+                  f" · วัดเมื่อ {(run.get('stamped_at') or '').replace('T', ' ')}[/dim]")
+    _print_bench(run.get("workloads") or [], run.get("probes") or [])
+
+
 def _human_size(num_bytes: int) -> str:
     value = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB", "TB"):

@@ -1,0 +1,106 @@
+"""เก็บผลวัดไว้เทียบข้ามเวลา ข้ามเครื่อง ข้ามเวอร์ชัน engine
+
+ตัวเลขความเร็วโดด ๆ ไม่มีความหมาย — "32 tok/s" ดีหรือไม่ดีขึ้นกับว่าเครื่องอะไร quant อะไร
+context เท่าไร build ไหน · ทุกผลจึงเก็บสภาพแวดล้อมไปด้วยทั้งชุด ไม่งั้นสามเดือนผ่านไป
+จะไม่มีทางรู้ว่าที่เร็วขึ้นเพราะอัปเกรด llama.cpp หรือเพราะบังเอิญวัดตอนเครื่องว่าง
+
+รูปแบบเป็น JSON หนึ่งไฟล์ต่อหนึ่งรอบวัด ไม่ใช่ฐานข้อมูล — อ่านด้วยตาได้ ก๊อปข้ามเครื่องได้
+และไม่ต้องมี migration ตอนเพิ่มฟิลด์
+"""
+
+from __future__ import annotations
+
+import json
+import platform
+from datetime import datetime
+from pathlib import Path
+
+
+def bench_root() -> Path:
+    return Path.home() / ".lmds" / "bench"
+
+
+def _machine_facts() -> dict:
+    from lmds.hardware import probe
+    from lmds.hardware.profiler import detect_cpu, host_summary
+
+    report = probe()
+    summary = host_summary()
+    return {
+        "hostname": summary.hostname,
+        "arch": report.arch,
+        "profile": report.profile.value,
+        "ram_total_gb": summary.ram_total_gb,
+        "cpu": (detect_cpu() or {}).get("model", ""),
+        "gpus": [
+            {"name": gpu.name,
+             "vram_gb": round(gpu.vram_mib / 1024, 1) if gpu.vram_mib else None}
+            for gpu in report.gpus
+        ],
+        "os": platform.platform(),
+    }
+
+
+def record(slug: str, model_id: str, engine: str, served_name: str,
+           workloads: list[dict], probes: list[dict], environment: dict,
+           stamped_at: str) -> Path:
+    """เขียนผลหนึ่งรอบลงไฟล์ แล้วคืน path
+
+    `stamped_at` รับมาจากผู้เรียกแทนที่จะเรียก datetime เอง — ให้เทสต์กำหนดเวลาได้
+    และให้ผลที่วัดพร้อมกันหลายเครื่องใช้ตราเวลาเดียวกัน
+    """
+    directory = bench_root() / slug
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stamped_at.replace(':', '').replace('-', '')}.json"
+    payload = {
+        "version": 1,
+        "slug": slug,
+        "model_id": model_id,
+        "engine": engine,
+        "served_name": served_name,
+        "stamped_at": stamped_at,
+        "machine": _machine_facts(),
+        # build ของ engine, quant, context, MoE/MTP — ตัวแปรที่เปลี่ยนผลมากที่สุด
+        "environment": environment,
+        "workloads": workloads,
+        "probes": probes,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def now_stamp() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def runs_for(slug: str) -> list[Path]:
+    """ผลทุกรอบของ slug นี้ ใหม่สุดก่อน"""
+    directory = bench_root() / slug
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("*.json"), reverse=True)
+
+
+def all_runs() -> list[dict]:
+    """ผล *ล่าสุด* ของทุกโมเดลที่เคยวัด — ใช้ทำตารางคะแนนรวม
+
+    เอาแค่รอบล่าสุดเพราะตารางคะแนนตอบคำถามว่า "ตอนนี้ตัวไหนดีกว่า" ไม่ใช่ประวัติ
+    """
+    root = bench_root()
+    if not root.is_dir():
+        return []
+    latest = []
+    for directory in sorted(root.iterdir()):
+        if not directory.is_dir():
+            continue
+        runs = sorted(directory.glob("*.json"), reverse=True)
+        if runs:
+            try:
+                latest.append(load(runs[0]))
+            except (OSError, json.JSONDecodeError):
+                continue
+    return latest
