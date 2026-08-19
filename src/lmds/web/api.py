@@ -1494,6 +1494,24 @@ def create_app(token: str = "") -> FastAPI:
             ),
         )
 
+    def _borrowed_secrets(command: str) -> dict[str, str]:
+        """HF token ของ hub ให้ node ยืมใช้เฉพาะคำสั่งที่ต้องโหลด weight
+
+        เคสจริง 2026-08-20: repo gated ถูก push ไป msi-5 แล้ว download ล้มเพราะ node
+        ไม่มี token · hub มีอยู่ (ผู้ใช้ติ๊ก "Keep on this hub" ไว้) แต่ไม่มีทางส่งให้
+        · bundle จงใจไม่พก token ไปด้วยเพื่อไม่ให้ secret รั่วไปกับไฟล์ ซึ่งถูกแล้ว
+        — ที่ขาดคือช่องทางยืมแบบชั่วคราว
+
+        ยืมทาง stdin เท่านั้น: ไม่เขียนลงดิสก์ของ node ไม่โผล่ใน argv/`ps`
+        และหมดอายุพร้อมคำสั่งนั้น · node ไม่ได้ "มี" token หลังจบงาน
+        """
+        if command not in ("repair", "download"):
+            return {}
+        from lmds.secrets import get_secret
+
+        token = get_secret("hf") or ""
+        return {"HF_TOKEN": token} if token else {}
+
     @app.post("/api/nodes/{name}/models/{slug}/{command}", dependencies=guarded)
     def node_command(name: str, slug: str, command: str, body: dict | None = None) -> dict:
         """สั่งงานโมเดลบนเครื่องอื่น — ผ่าน CLI ของ node ตัวเดียวกับที่ผู้ใช้พิมพ์เอง"""
@@ -1563,7 +1581,8 @@ def create_app(token: str = "") -> FastAPI:
         if long_running:
             try:
                 return {"node": name, "slug": slug, "command": command,
-                        "job": jobs.start_remote(name, slug, command, remote).payload()}
+                        "job": jobs.start_remote(name, slug, command, remote,
+                                                 _borrowed_secrets(command)).payload()}
             except jobs.JobError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:

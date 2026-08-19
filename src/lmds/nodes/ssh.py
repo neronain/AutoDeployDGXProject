@@ -115,7 +115,7 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str
     return Result(proc.returncode, proc.stdout, proc.stderr)
 
 
-def stream(node: Node, command: str):
+def stream(node: Node, command: str, secret_env: dict[str, str] | None = None):
     """เปิด ssh แบบอ่านผลทีละบรรทัด — ใช้กับงานยาว (download หลายสิบ GB) ที่ต้องเห็นความคืบหน้า
 
     ต่างจาก run() ที่รอจนจบแล้วค่อยคืนทั้งก้อน · คืน Popen ให้ผู้เรียกวนอ่าน stdout เอง
@@ -126,15 +126,31 @@ def stream(node: Node, command: str):
     ปลายทางไม่มี tty (ไม่ได้ขอ -t เพราะงานนี้ต้องรันแบบไม่โต้ตอบ) python ฝั่งโน้นจึง
     block-buffer stdout ของตัวเอง — สั่ง unbuffered ไว้ ไม่งั้นผลโผล่มาทีเดียวตอนจบ
     """
-    wrapped = f"bash -lc {shlex.quote('export PYTHONUNBUFFERED=1; ' + command)}"
+    prelude = "export PYTHONUNBUFFERED=1; "
+    if secret_env:
+        # ความลับเดินทางทาง **stdin** ไม่ใช่ argv และไม่ใช่ไฟล์
+        #
+        # argv ของ ssh มองเห็นได้จาก `ps` ของทุก user บนเครื่อง hub · เขียนลงไฟล์บน node
+        # แปลว่า secret ไปนอนอยู่อีกเครื่องถาวรโดยเจ้าของไม่ได้สั่ง · `read` ในเชลล์ปลายทาง
+        # รับค่าแล้วจบ ไม่มีร่องรอยเหลือหลังคำสั่งจบ
+        names = " ".join(secret_env)
+        prelude += "".join(f"read -r {name}; export {name}; " for name in secret_env)
+        prelude = f"# borrowed: {names}\n" + prelude
+    wrapped = f"bash -lc {shlex.quote(prelude + command)}"
     host = node.all_hosts[0]
     args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port),
             f"{node.user}@{host}", wrapped]
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if secret_env else subprocess.DEVNULL,
         )
+        if secret_env and proc.stdin is not None:
+            for value in secret_env.values():
+                proc.stdin.write((value + "\n").encode())
+            proc.stdin.flush()
+            proc.stdin.close()
+        return proc
     except FileNotFoundError as exc:
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
 

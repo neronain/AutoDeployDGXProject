@@ -953,7 +953,7 @@ def test_node_remove_needs_the_exact_slug_to_confirm(registered, monkeypatch):
     assert not called
 
     monkeypatch.setattr("lmds.nodes.stream",
-                        lambda node, command: called.append(command) or FakeStream())
+                        lambda node, command, *_: called.append(command) or FakeStream())
     ok = client.post("/api/nodes/spark2/models/demo/remove", json={"confirm": "demo"})
     assert ok.status_code == 200
     wait_for_job(client, ok.json()["job"]["id"])
@@ -984,7 +984,7 @@ def test_node_menu_commands_all_reach_the_node(registered, monkeypatch):
 
     monkeypatch.setattr("lmds.nodes.run", fake_run)
     monkeypatch.setattr("lmds.nodes.stream",
-                        lambda node, command: seen.append(command) or FakeStream())
+                        lambda node, command, *_: seen.append(command) or FakeStream())
     client = TestClient(create_app())
     menu = ["start", "stop", "restart", "doctor", "logs", "repair", "enable", "disable"]
     for command in menu:
@@ -1198,7 +1198,7 @@ def test_node_start_passes_options_as_env_just_like_a_local_model(registered, mo
     sent = {}
 
     monkeypatch.setattr("lmds.nodes.stream",
-                        lambda node, command: sent.update(command=command) or FakeStream())
+                        lambda node, command, *_: sent.update(command=command) or FakeStream())
     client = TestClient(create_app())
     r = client.post("/api/nodes/spark2/models/demo/start", json={
         "port": 8001, "context": 32768, "gpu_util": 0.8, "slots": 8,
@@ -1639,7 +1639,7 @@ def test_a_node_without_lmds_can_be_installed_from_the_page(registered, monkeypa
     """
     sent = {}
     monkeypatch.setattr("lmds.nodes.stream",
-                        lambda node, command: sent.update(command=command) or FakeStream(["ok\n"]))
+                        lambda node, command, *_: sent.update(command=command) or FakeStream(["ok\n"]))
     client = TestClient(create_app())
     r = client.post("/api/nodes/spark2/install")
     assert r.status_code == 200, r.text
@@ -1705,7 +1705,7 @@ def test_the_image_can_be_overridden_without_a_redeploy(registered, monkeypatch)
     monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: True)
     sent = {}
     monkeypatch.setattr("lmds.nodes.stream",
-                        lambda node, command: sent.update(command=command) or FakeStream())
+                        lambda node, command, *_: sent.update(command=command) or FakeStream())
     client = TestClient(create_app())
     r = client.post("/api/nodes/spark2/models/demo/start",
                     json={"image": "nvcr.io/nvidia/vllm:26.05-py3"})
@@ -1940,7 +1940,7 @@ def test_served_name_reaches_the_controller(registered, monkeypatch):
     monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: True)
     sent = {}
     monkeypatch.setattr("lmds.nodes.stream",
-                        lambda node, command: sent.update(command=command) or FakeStream())
+                        lambda node, command, *_: sent.update(command=command) or FakeStream())
     client = TestClient(create_app())
     r = client.post("/api/nodes/spark2/models/demo/start",
                     json={"served_name": "vllm-msi-03/aeon-ultimate"})

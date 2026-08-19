@@ -396,7 +396,28 @@ def explain_failure(output: str) -> str:
     return ""
 
 
-def start_remote(node_name: str, slug: str, command: str, remote_command: str) -> Job:
+def _scrub_secrets(job: "Job", secret_env: dict[str, str] | None) -> None:
+    """ลบค่า secret ที่ยืมไปออกจาก log ของงาน ก่อนที่ใครจะได้อ่าน
+
+    คำสั่งปลายทางไม่ควรพิมพ์ token ออกมา แต่ "ไม่ควร" กับ "ไม่เคย" คนละเรื่อง — สคริปต์
+    ที่ echo env ทั้งชุดเพื่อ debug, curl ที่ใส่ -v, หรือ error ที่แนบ URL พร้อม token
+    ล้วนทำให้ค่าไปโผล่ใน log ที่ถูกส่งกลับมาแสดงบนหน้าเว็บและถูกเก็บไว้
+
+    เคสจริง 2026-08-20: สคริปต์ตรวจสอบของเราเองพิมพ์ token ออกมาเต็มค่าเพราะเขียน
+    fallback ผิด — ถ้าไม่กรองตรงนี้ มันจะไปนอนอยู่ใน log ของ job ด้วย
+    """
+    if not secret_env:
+        return
+    from lmds.secrets import redact
+
+    values = [v for v in secret_env.values() if v]
+    if not values:
+        return
+    job.lines = deque((redact(line, values) for line in job.lines), maxlen=job.lines.maxlen)
+
+
+def start_remote(node_name: str, slug: str, command: str, remote_command: str,
+                 secret_env: dict[str, str] | None = None) -> Job:
     """รันคำสั่งบนเครื่องอื่นเป็นงานเบื้องหลัง แล้วสตรีมผลกลับมาทีละบรรทัด
 
     `download` โมเดล 70 GB ใช้เวลาเป็นสิบนาที — ถ้ารอใน HTTP request เดียวผู้ใช้จะเห็น
@@ -421,7 +442,8 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
 
     def run() -> None:
         try:
-            proc = stream(node, remote_command)
+            proc = (stream(node, remote_command, secret_env) if secret_env
+                    else stream(node, remote_command))
         except NodeError as exc:
             job.lines.append(f"{exc}\n")
             job.exit_code = 127
@@ -429,6 +451,7 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str) -
         job.process = proc
         assert proc.stdout is not None
         _pump(job, proc)
+        _scrub_secrets(job, secret_env)
         code = proc.wait()
         # error ของ git/rsync อ่านแล้วไม่รู้ว่าต้องทำอะไร — แปลให้ตรงจุดก่อนจบงาน
         if code != 0 and self_node:
