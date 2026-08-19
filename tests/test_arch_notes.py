@@ -20,10 +20,35 @@ def test_qwen35_warns_prefix_caching_and_tool_parser():
     assert "qwen3_xml" in notes
 
 
+def test_qwen35_suggests_mtp_speculative_decoding():
+    notes = _joined("Intel/Qwen3.5-122B-A10B-int4-AutoRound")
+    assert "MTP" in notes
+    assert "speculative" in notes
+
+
 def test_qwen3_coder_gets_no_xml_hint():
     notes = _joined("Qwen/Qwen3-Coder-30B-A3B-Instruct")
     # Coder must not be told to use qwen3_xml
     assert "qwen3_xml" not in notes
+
+
+def test_nvfp4_note_covers_moe_backend_split():
+    notes = _joined("Qwen/Qwen3.6-35B-A3B-NVFP4")
+    assert "cutlass" in notes and "b12x" in notes
+    assert "VLLM_MARLIN_USE_ATOMIC_ADD" in notes
+
+
+def test_nemotron_3x_warns_hybrid_mamba():
+    notes = _joined("nvidia/Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+    assert "Mamba" in notes
+    assert "--mamba-backend" in notes
+
+
+def test_deepseek_v4_serving_notes():
+    notes = _joined("deepseek-ai/DeepSeek-V4-Flash-0731")
+    assert "ds_mla" in notes  # kv-cache dtype nuance
+    assert "dspark" in notes  # spec method, not plain mtp
+    assert "block-size 256" in notes
 
 
 def test_plain_model_has_no_spurious_notes():

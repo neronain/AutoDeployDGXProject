@@ -84,13 +84,38 @@ def arch_notes(repo_id: str, quantization: str = "") -> list[str]:
             "NVFP4/FP4: SM121 (GB10) ไม่มี FP4 CUTLASS kernel ในตัว — image ต้องมี kernel เฉพาะ "
             "(เช่น avarok/dgx-vllm-nvfp4-kernel หรือ dspark-vllm-gx10) ไม่งั้น fallback Marlin SM80 ช้ามาก (~-42%)"
         )
+        notes.append(
+            "NVFP4 MoE backend เลือกตามโมเดล: marlin (default, ช้า) / cutlass / b12x — "
+            "cutlass/b12x คือ path ที่เลี่ยง Marlin fallback ได้ (ต้องใช้ image ที่มี kernel นั้น) · "
+            "ถ้าลงเอยที่ Marlin ให้ตั้ง env VLLM_MARLIN_USE_ATOMIC_ADD=1"
+        )
     if "qwen3.5" in key or "qwen3-5" in key or "deltanet" in key:
         notes.append(
             "Qwen3.5 (DeltaNet hybrid attention): อย่าเปิด --enable-prefix-caching (output ผิด) · "
             "kv-cache fp8 ได้ผลน้อยบน SM121"
         )
+        notes.append(
+            "Qwen3.5 มี MTP head ในตัว → เปิด speculative decoding ได้ฟรี "
+            "(--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":2}') "
+            "bit-exact ที่ temp=0 (rejection sampling) · single Spark ได้ ~2-3x throughput · vLLM รองรับ MTP เฉพาะ Qwen3.5"
+        )
     if ("qwen3" in key or "qwen-3" in key) and "coder" not in key:
         notes.append("ถ้าเปิด tool calling: Qwen3/3.5 ใช้ --tool-parser qwen3_xml (Qwen3-Coder ใช้ qwen3_coder)")
+    # Nemotron-3.x เป็น hybrid Mamba/SSM (ไม่ใช่ full attention) เหมือน DeltaNet — มี flag เฉพาะ
+    if "nemotron-3" in key or "nemotron3" in key or "lightning" in key:
+        notes.append(
+            "Nemotron-3.x = hybrid Mamba/SSM → ต้องตั้ง --mamba-backend flashinfer + "
+            "--mamba-ssm-cache-dtype (float16 Lightning / float32 Super) + --mamba-cache-mode align · "
+            "เป็น hybrid attention เหมือน DeltaNet ให้ระวัง prefix-caching และการประเมิน KV"
+        )
+    # DeepSeek-V4-Flash: MLA + sparse indexer + DSpark draft — คนละโลกกับโมเดล dense ทั่วไป
+    if "deepseek-v4" in key or "deepseek-v4-flash" in key:
+        notes.append(
+            "DeepSeek-V4-Flash (SM121): kv-cache = fp8_ds_mla (หรือ nvfp4_ds_mla ถ้า image มี flashmla "
+            "fp8-kernel fix ไม่งั้น decode ตกเหลือ ~1 tok/s ที่ ctx ยาว) · --block-size 256 · "
+            "speculative method=dspark (k≥5, มี draft head แยก) ไม่ใช่ mtp ธรรมดา · "
+            "ข้าม 2 Spark = TP=2 executor mp (ไม่ใช่ Ray), worker headless start ก่อน head"
+        )
     return notes
 
 def slugify(repo_id: str) -> str:
