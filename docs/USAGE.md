@@ -569,6 +569,39 @@ lmds stop --all                                                # ปิดทั
 ทับด้วย `--force` หรือ `LMDS_ROLE=serving` ได้เมื่อการตรวจเดาผิด · รายละเอียดเต็มอยู่ที่
 [FLEET-MULTI-NODE.md §1.5](FLEET-MULTI-NODE.md)
 
+### 4.2c ตั้ง env ของ engine เอง (`--engine-env`)
+
+vLLM/SGLang มี knob จำนวนมากที่อ่านจาก **environment ล้วน ๆ** ส่งผ่าน flag ไม่ได้เลย ·
+ตั้งได้ด้วย:
+
+```bash
+lmds set <slug> --engine-env "VLLM_NVFP4_GEMM_BACKEND=marlin"
+lmds set <slug> --engine-env "A=1 B=2"        # หลายตัวคั่นด้วยช่องว่าง
+lmds restart <slug>
+```
+
+ค่าถูกเก็บใน `bundle.env` ข้าง controller เหมือน knob อื่น — **ทุกทางที่เรียก controller
+ได้ค่าเดียวกัน** รวมถึง systemd autostart ตอน reboot และปุ่ม `test-*` บนหน้าเว็บ ·
+docker-based engine แตกเป็น `-e` ให้เอง · llama.cpp รัน native จึง export ตรง ๆ ·
+stacked ส่งให้ทั้ง head และ worker
+
+ค่าถูกตรวจก่อนเขียน: ต้องเป็น `KEY=VALUE` และห้ามมีอักขระที่เชลล์ตีความ (`$`, backtick,
+quote, backslash) เพราะ controller แตกค่านี้ในเชลล์
+
+**เคสจริงที่ต้องใช้** — NVFP4 บน DGX Spark (GB10, sm_121):
+
+```bash
+lmds set <slug> --engine-env "VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_MARLIN_USE_ATOMIC_ADD=1"
+```
+
+ไม่ตั้ง → vLLM ไป JIT CUTLASS FP4 kernel แล้ว `ptxas` ปฏิเสธ
+(`cvt with .e2m1x2 not supported on .target 'sm_121'`) engine core ตายก่อน health
+โดยหน้าเว็บบอกแค่ "container หยุดก่อน health ผ่าน" · เอกสารใน vLLM เองระบุว่า marlin คือ
+backend "for GPUs without native FP4 support" ซึ่งตรงกับ sm_121 · แลกด้วยความเร็วราว 42%
+
+> bundle ที่สร้างไว้ก่อนหน้านี้ยังใช้ controller เดิม — สั่ง `lmds rebuild <slug>` ก่อน
+> ถึงจะรับค่านี้ได้
+
 ### 4.3 ซ่อม / ลบโมเดล
 
 ```bash
