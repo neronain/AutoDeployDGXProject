@@ -12,15 +12,36 @@ from __future__ import annotations
 
 import base64
 import json
+import struct
+import zlib
 from dataclasses import dataclass
 
 import httpx
 
-# PNG สีแดงล้วน 8×8 — เล็กพอที่จะฝังในโค้ดและไม่กินเวลา encode
-_RED_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAG0lEQVQoz2P8z8Dwn4"
-    "GKgIlhVMOohlENoxpGNQAAaEwB/1PBpKQAAAAASUVORK5CYII="
-)
+
+def _solid_png(size: int, rgb: tuple[int, int, int]) -> bytes:
+    """สร้าง PNG สีเดียวล้วนขนาด size×size โดยไม่พึ่งไลบรารีภาพ
+
+    ทำไมต้อง 256×256 ไม่ใช่ 8×8: เคสจริง 2026-08-19 ใช้ภาพ 8×8 กับ muse-glimmer ที่รัน
+    ด้วย --mmproj ครบถ้วน แล้วโมเดลตอบว่า "ไม่พบภาพที่แนบมา" — vision encoder ทำงานที่
+    ความละเอียดระดับ 224px ขึ้นไป ภาพที่เล็กกว่านั้นถูก preprocess ทิ้งเงียบ ๆ
+    ตัววัดจึงกล่าวหาว่าเซิร์ฟเวอร์ไม่รองรับภาพ ทั้งที่มันรองรับ
+
+    สีล้วนบีบอัดแล้วเหลือไม่กี่ร้อยไบต์ ขนาดภาพจึงไม่ได้ทำให้คำขอหนักขึ้นจริง
+    """
+    raw = b"".join(b"\x00" + bytes(rgb) * size for _ in range(size))
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+_RED_PNG = _solid_png(256, (220, 30, 30))
+
 
 _WEATHER_TOOL = {
     "type": "function",

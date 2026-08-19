@@ -3240,9 +3240,13 @@ def _print_bench(workloads: list[dict], probes: list[dict]) -> None:
                           f"ที่ context ยาวสุด ({summary['longest_context']:,}) "
                           f"{summary['decode_tps_long']} tok/s[/dim]")
         # prefix cache ที่ยังกินอยู่ทำให้ TTFT/prefill ต่ำกว่าความจริงมาก — ต้องบอก ไม่ใช่ปล่อยผ่าน
+        # ส่วนหัวของ chat template ถูก cache เสมอไม่ว่าจะทำอะไร (~50 token ต่อคำขอ)
+        # เตือนเฉพาะตอนที่มันมากพอจะบิดตัวเลขจริง ไม่งั้นคำเตือนจะขึ้นทุกครั้งจนไม่มีใครอ่าน
         cached = sum(w.get("cached_tokens") or 0 for w in workloads)
-        if cached:
-            console.print(f"[yellow]⚠ เซิร์ฟเวอร์ใช้ prompt cache ไป {cached:,} token — "
+        total_prompt = sum((w.get("prompt_tokens") or 0) * (w.get("runs") or 0) for w in workloads)
+        if cached and total_prompt and cached / total_prompt > 0.10:
+            console.print(f"[yellow]⚠ เซิร์ฟเวอร์ใช้ prompt cache ไป {cached:,} token "
+                          f"({cached / total_prompt:.0%} ของ prompt ทั้งหมด) — "
                           f"TTFT/prefill ต่ำกว่าความจริง[/yellow]")
 
     if probes:
