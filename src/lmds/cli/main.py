@@ -1187,6 +1187,9 @@ def set_defaults(
     gpu_util: Optional[float] = typer.Option(None, "--gpu-util", help="สัดส่วนหน่วยความจำของ vLLM"),
     model_id: Optional[str] = typer.Option(None, "--model-id", help="ชื่อที่ API เสิร์ฟออกไป"),
     image: Optional[str] = typer.Option(None, "--image", help="image ที่จะใช้แทนของ bundle"),
+    engine_env: Optional[str] = typer.Option(
+        None, "--engine-env",
+        help='env ของ engine เอง เช่น "VLLM_NVFP4_GEMM_BACKEND=marlin" (หลายตัวคั่นด้วยช่องว่าง)'),
     clear: bool = typer.Option(False, "--clear", help="ลบค่าที่บันทึกไว้ทั้งหมด"),
 ) -> None:
     """บันทึกค่า start ไว้กับ bundle — ทุกทางที่เรียก controller จะได้ค่าเดียวกัน
@@ -1227,6 +1230,7 @@ def set_defaults(
     incoming = {
         "port": port, "context": context, "slots": slots, "bind": bind,
         "gpu_util": gpu_util, "served_name": model_id, "image": image,
+        "engine_env": engine_env,
     }
     given = {k: v for k, v in incoming.items() if v is not None}
     if not given:

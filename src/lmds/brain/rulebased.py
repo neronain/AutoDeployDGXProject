@@ -89,9 +89,16 @@ def arch_notes(repo_id: str, quantization: str = "",
             "ถ้าหลุดไป Marlin SM80 ก็แค่ช้ามาก (~-42%) · โมเดล MoE เสี่ยงกว่าโมเดล dense"
         )
         notes.append(
-            "NVFP4 MoE backend เลือกตามโมเดล: marlin (default, ช้า) / cutlass / b12x — "
-            "cutlass/b12x คือ path ที่เลี่ยง Marlin fallback ได้ (ต้องใช้ image ที่มี kernel นั้น) · "
-            "ถ้าลงเอยที่ Marlin ให้ตั้ง env VLLM_MARLIN_USE_ATOMIC_ADD=1"
+            "ทางแก้ที่ยืนยันแล้วบน GB10 (msi-6, 2026-08-20): "
+            "lmds set <slug> --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin\" แล้ว restart · "
+            "vLLM เอกสารตัวเองระบุว่า marlin คือ backend \"for GPUs without native FP4 support\" "
+            "ซึ่งตรงกับ sm_121 · ยืนยันแล้วว่า engine ขึ้นได้ ไม่มี ptxas error อีก"
+        )
+        notes.append(
+            "แลกด้วยความเร็ว: Marlin ช้ากว่า path FP4 จริงราว 42% — เร่งคืนได้บ้างด้วย "
+            "--engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_MARLIN_USE_ATOMIC_ADD=1\" · "
+            "ถ้าอยากได้ความเร็วเต็มต้องใช้ image ที่มี FP4 kernel build มาสำหรับ sm_121 จริง ๆ "
+            "(ที่ลองแล้วยังไม่มี — avarok/dgx-vllm-nvfp4-kernel ก็ยังตกที่ ptxas)"
         )
     # ผูกกับ *สิ่งที่ตรวจได้จากไฟล์* ก่อน แล้วค่อยเผื่อชื่อรุ่นไว้เป็นตาข่ายรอง
     #

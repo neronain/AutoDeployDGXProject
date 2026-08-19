@@ -34,6 +34,9 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "gpu_util": ("GPU_MEMORY_UTILIZATION",),
     "served_name": ("SERVED_MODEL_NAME",),
     "image": ("VLLM_IMAGE", "LLAMACPP_IMAGE"),
+    # env ของ engine เอง — knob ที่ vLLM/SGLang อ่านจาก environment ล้วน ๆ
+    # ไม่มีทางส่งเข้าไปได้เลยถ้าไม่มีช่องนี้ (ดู _clean)
+    "engine_env": ("ENGINE_ENV",),
 }
 
 
@@ -63,6 +66,24 @@ def _clean(name: str, value: object) -> str:
         if not re.fullmatch(r"[0-9a-zA-Z_.:\[\]-]+", text):
             raise SettingsError(f"bind ไม่ใช่ที่อยู่ที่ใช้ได้ (ได้ {text!r})")
         return text
+    if name == "engine_env":
+        # รายการ KEY=VALUE คั่นด้วยช่องว่าง — controller แตกออกเป็น `-e KEY=VALUE` ต่อ docker
+        #
+        # เคสจริง 2026-08-20: NVFP4 บน GB10 ต้องได้ VLLM_NVFP4_GEMM_BACKEND=marlin ไม่งั้น
+        # vLLM ไป JIT cutlass FP4 kernel แล้ว ptxas ปฏิเสธ (`cvt .e2m1x2` ไม่มีบน sm_121)
+        # engine ตายก่อน health · knob นี้อ่านจาก environment ล้วน ๆ ส่งผ่าน flag ไม่ได้
+        # ก่อนหน้านี้จึงไม่มีทางตั้งเลยนอกจากแก้สคริปต์ด้วยมือ ซึ่งหายไปทุกครั้งที่ rebuild
+        cleaned = []
+        for pair in text.split():
+            key, sep, value = pair.partition("=")
+            if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                raise SettingsError(
+                    f"engine_env ต้องเป็น KEY=VALUE คั่นด้วยช่องว่าง (ได้ {pair!r})")
+            if any(ch in value for ch in " \t\n\r\x00'\"$`\\"):
+                raise SettingsError(f"ค่าของ {key} มีอักขระที่เชลล์ตีความ — ใส่ไม่ได้")
+            cleaned.append(f"{key}={value}")
+        return " ".join(cleaned)
+
     # ชื่อโมเดล/image เป็นข้อความอิสระ แต่ต้องไม่มีอักขระที่ทำให้ shell ตีความ
     if any(ch in text for ch in "\n\r\x00"):
         raise SettingsError(f"{name} มีอักขระขึ้นบรรทัดใหม่")

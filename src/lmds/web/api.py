@@ -1547,7 +1547,9 @@ def create_app(token: str = "") -> FastAPI:
             # ส่ง body ว่าง = --clear (ลบค่าที่บันทึกไว้)
             flags = {"port": "--port", "context": "--context", "slots": "--slots",
                      "bind": "--bind", "gpu_util": "--gpu-util",
-                     "served_name": "--model-id", "image": "--image"}
+                     "served_name": "--model-id", "image": "--image",
+                     # knob ที่ engine อ่านจาก environment ล้วน ๆ — ส่ง flag ไม่ได้
+                     "engine_env": "--engine-env"}
             parts = ["lmds", "set", shlex.quote(slug)]
             given = [(flags[k], v) for k, v in options.items()
                      if k in flags and str(v).strip() != ""]
