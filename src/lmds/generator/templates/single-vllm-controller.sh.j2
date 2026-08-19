@@ -721,8 +721,8 @@ TOOLS = [{"type": "function", "function": {
 
 # รูปแบบดิบที่โมเดลเขียน → parser ที่แปลมันออก · เดาให้ ไม่ต้องไล่ลองทีละตัว
 SHAPES = [
-    (r"<function=|<parameter=",       "qwen3_xml (ถ้าไม่ผ่านลอง qwen3_coder)"),
-    (r"<tool_call>\s*\{",             "hermes"),
+    (r"<function=|<parameter=",       "qwen3_coder"),
+    (r"<tool_call>\s*\{",             "qwen3_xml (Qwen3.5+) หรือ hermes (Qwen รุ่นเก่า)"),
     (r"<\|tool.call",                 "deepseek_v3 / deepseek_v31"),
     (r"<\|python_tag\|>",             "llama3_json"),
     (r'"name"\s*:\s*"get_weather"',   "llama3_json (หรือ mistral)"),
