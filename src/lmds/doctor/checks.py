@@ -19,6 +19,7 @@ from pathlib import Path
 from dataclasses import replace
 
 from lmds.fleet import ServerInfo, bundle_profile, discover, find
+from lmds.inventory import self_managed_weights
 
 
 class Status(str, Enum):
@@ -361,7 +362,37 @@ def _projectors(profile: dict) -> list[str]:
     return [p.rsplit("/", 1)[-1] for p in (multimodal.get("projector_files") or [])]
 
 
+
+
+def _check_adopted_weights(profile: dict) -> list[Finding]:
+    """weight ของ bundle ที่รับเข้าระบบ — ตรวจไฟล์ตรง path ที่เซิร์ฟเวอร์ใช้จริง"""
+    model = (profile or {}).get("model") or {}
+    raw = str(model.get("id") or "")
+    if not raw.startswith(("/", "~", "./")):
+        # adopt จาก container: path อยู่ *ข้างใน* container โฮสต์มองไม่เห็น ตรวจแทนไม่ได้
+        return [Finding("weights", Status.OK,
+                        "ผู้ใช้ดูแลเอง (bundle ที่รับเข้าระบบ) — LMDS ไม่ได้โหลดไฟล์นี้มา")]
+
+    path = Path(raw).expanduser()
+    if path.exists():
+        size = path.stat().st_size / 1e9 if path.is_file() else 0
+        detail = f"{path}" + (f" ({size:.1f} GB)" if size else "")
+        return [Finding("weights", Status.OK, detail)]
+    return [Finding(
+        "weights", Status.FAIL,
+        f"ไฟล์ที่เซิร์ฟเวอร์ถูกสั่งให้ใช้ไม่อยู่แล้ว: {path}",
+        "bundle นี้รับเข้าระบบมา LMDS ไม่ได้เป็นคนโหลดไฟล์ จึงโหลดคืนให้ไม่ได้ — "
+        "หาไฟล์กลับมาไว้ที่เดิม หรือ deploy ใหม่จากรุ่นบน Hugging Face",
+    )]
+
 def _check_weights(profile: dict, slug: str) -> list[Finding]:
+    # bundle ที่มาจาก `lmds adopt` ชี้ weight ไปที่ path เดิมของเจ้าของ ไม่ใช่ ~/models/<slug>
+    # ตามธรรมเนียม LMDS · ตรวจด้วยกติกาปกติจะขึ้น "ยังไม่มีไฟล์โมเดล" ตลอดกาลทั้งที่เซิร์ฟเวอร์
+    # กำลังเสิร์ฟไฟล์นั้นอยู่ แล้วยังแนะ `lmds repair` ซึ่ง controller ของ adopt ไม่มีคำสั่งนั้น
+    # — คำแนะนำที่ทำตามแล้วล้มแน่นอนแย่กว่าไม่แนะอะไรเลย
+    if self_managed_weights(profile):
+        return _check_adopted_weights(profile)
+
     directory, wanted = _weight_paths(profile, slug)
     if not directory.is_dir():
         # บอกคำสั่งระดับ lmds ก่อนเสมอ — ใช้ได้จากที่ไหนก็ได้ และเป็นปุ่มเดียวกับที่มีบนหน้าเว็บ

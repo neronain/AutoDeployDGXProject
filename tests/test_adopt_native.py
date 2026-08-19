@@ -136,3 +136,41 @@ def test_no_download_or_verify_is_offered_because_there_is_nothing_to_download()
     script = render_native_controller(_proc(), "qwen-adopted")
     assert "download)" not in script
     assert "verify-files)" not in script
+
+
+def test_doctor_checks_adopted_weights_where_they_actually_are(tmp_path):
+    """เจอจากหน้าเว็บจริง: doctor หา weight ที่ ~/models/<slug> ตามธรรมเนียม LMDS
+
+    bundle ที่รับเข้าระบบชี้ไป path เดิมของเจ้าของ ผลคือขึ้น "ยังไม่มีไฟล์โมเดล" ตลอดกาล
+    ทั้งที่เซิร์ฟเวอร์กำลังเสิร์ฟไฟล์นั้นอยู่ แล้วยังแนะ `lmds repair` ที่ controller ของ
+    adopt ไม่มีคำสั่งนั้น — ทำตามแล้วล้มแน่นอน
+    """
+    from lmds.doctor.checks import Status, _check_weights
+
+    weights = tmp_path / "Qwen3.6-35B.Q4_K_M.gguf"
+    weights.write_bytes(b"x" * 2048)
+    profile = {
+        "adopted": True,
+        "model": {"id": str(weights)},
+        "runtime": {"engine": "llamacpp"},
+    }
+
+    findings = _check_weights(profile, "qwen35-a3b-opus")
+
+    assert [f.status for f in findings] == [Status.OK]
+    assert str(weights) in findings[0].detail
+    assert all("repair" not in (f.fix or "") for f in findings)
+
+
+def test_doctor_says_so_when_the_adopted_weights_are_gone(tmp_path):
+    from lmds.doctor.checks import Status, _check_weights
+
+    profile = {
+        "adopted": True,
+        "model": {"id": str(tmp_path / "หายไปแล้ว.gguf")},
+        "runtime": {"engine": "llamacpp"},
+    }
+    findings = _check_weights(profile, "x")
+    assert findings[0].status is Status.FAIL
+    # ห้ามแนะ repair — bundle นี้ไม่มีคำสั่งนั้นให้รัน
+    assert "repair" not in (findings[0].fix or "")
