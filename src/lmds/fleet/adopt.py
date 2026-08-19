@@ -414,9 +414,114 @@ def adopt(container: str, slug: str = "", output: Path | None = None) -> Path:
     return controller
 
 
+# ---------------------------------------------------------------------------
+# ถามเซิร์ฟเวอร์ที่รันอยู่ว่ามันทำอะไรได้บ้าง
+# ---------------------------------------------------------------------------
+# adopt มีของที่ deploy ปกติไม่มี: **เซิร์ฟเวอร์ตัวจริงรันอยู่ตรงหน้า** · llama.cpp บอก
+# modalities, chat_template_caps และ n_ctx_train ของตัวเองได้ตรง ๆ จึงไม่ต้องเดาจากชื่อไฟล์
+# และไม่ต้องให้ผู้ใช้ deploy ใหม่เพื่อให้ป้ายความสามารถขึ้นในคอนโซล
+def probe_server(port: int, timeout: float = 5.0) -> dict:
+    """ค่าที่เซิร์ฟเวอร์รายงานเอง — คืน {} เมื่อถามไม่ได้ (adopt ต้องไม่ล้มเพราะเรื่องนี้)"""
+    import json as _json
+    import urllib.request
+
+    out: dict = {}
+    for path, key in (("/props", "props"), ("/v1/models", "models")):
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}{path}", timeout=timeout
+            ) as response:
+                out[key] = _json.loads(response.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 — ถามไม่ได้ก็แค่ไม่มีข้อมูล ไม่ใช่เหตุให้ adopt ล้ม
+            continue
+    return out
+
+
+def features_from_probe(probe: dict, argv: list[str]) -> dict:
+    """features block สำหรับ MODEL_PROFILE — จากสิ่งที่เซิร์ฟเวอร์บอก ไม่ใช่จากชื่อโมเดล"""
+    props = probe.get("props") or {}
+    caps = props.get("chat_template_caps") or {}
+    modalities = props.get("modalities") or {}
+
+    projector = _argv_value(argv, "--mmproj")
+    vision = bool(modalities.get("vision")) or bool(projector)
+
+    return {
+        "tool_calling": {
+            "enabled": bool(caps.get("supports_tools") or caps.get("supports_tool_calls")),
+            "parser": None,
+            "parallel": bool(caps.get("supports_parallel_tool_calls")),
+        },
+        "reasoning": {"enabled": bool(caps.get("supports_preserve_reasoning")), "parser": None},
+        "multimodal": {
+            "modalities": ["image", "text"] if vision else ["text"],
+            "projector_files": [projector.rsplit("/", 1)[-1]] if projector else [],
+        },
+        # MTP ของ llama.cpp เปิดด้วย flag ไม่ใช่คุณสมบัติของไฟล์ — อ่านจาก argv ที่รันจริง
+        "speculative": {
+            "draft_files": (
+                [_argv_value(argv, "-md", "--spec-draft-model").rsplit("/", 1)[-1]]
+                if _argv_value(argv, "-md", "--spec-draft-model") else []
+            ),
+            "embedded": _argv_value(argv, "--spec-type") == "draft-mtp"
+            and not _argv_value(argv, "-md", "--spec-draft-model"),
+        },
+    }
+
+
+def _native_context(probe: dict) -> int:
+    """เพดานจริงของตัวโมเดล (n_ctx_train) — ต่างจาก n_ctx ที่เป็นค่าที่สั่งรันครั้งนี้
+
+    ไม่มีค่านี้ คอนโซลไม่รู้ว่าเพิ่ม context ได้ถึงไหน · เคสจริง: รันอยู่ 65,536 ทั้งที่
+    โมเดลรับได้ 262,144
+    """
+    meta = ((probe.get("models") or {}).get("data") or [{}])[0].get("meta") or {}
+    value = meta.get("n_ctx_train")
+    return int(value) if isinstance(value, int) and value > 0 else 0
+
+
+# flag ที่คอนโซล/CLI ต้องปรับได้ — ต้องถูกดึงออกจาก argv ที่ replay แล้วใส่กลับจากตัวแปร
+# ไม่งั้นค่าที่ผู้ใช้ตั้งจะถูก argv เดิมทับทุกครั้ง (เจอจริง: ตั้ง context 131968 แล้วเด้งกลับ 65536)
+_MANAGED_FLAGS = {
+    "port": ("--port", "-p"),
+    "ctx": ("-c", "--ctx-size"),
+    "host": ("--host",),
+}
+
+
+def split_managed(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    """คืน (argv ที่เหลือ, ค่าที่ดึงออกมา) — รองรับทั้ง `--flag value` และ `--flag=value`"""
+    flat = {f: name for name, flags in _MANAGED_FLAGS.items() for f in flags}
+    rest: list[str] = []
+    found: dict[str, str] = {}
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        name = flat.get(item)
+        if name and index + 1 < len(argv):
+            found.setdefault(name, argv[index + 1])
+            index += 2
+            continue
+        matched = False
+        for flag, fname in flat.items():
+            if item.startswith(f"{flag}="):
+                found.setdefault(fname, item.split("=", 1)[1])
+                matched = True
+                break
+        if matched:
+            index += 1
+            continue
+        rest.append(item)
+        index += 1
+    return rest, found
+
+
 def render_native_controller(proc: AdoptedProcess, slug: str) -> str:
     """สคริปต์ที่รันคำสั่งเดิมของ process ซ้ำได้ — argv ชุดเดียวกับที่มันรันอยู่ตอนนี้"""
-    argv = " \\\n    ".join(shlex.quote(a) for a in proc.argv[1:])
+    rest, managed = split_managed(proc.argv[1:])
+    argv = " \\\n    ".join(shlex.quote(a) for a in rest)
+    default_ctx = managed.get("ctx", "")
+    default_host = managed.get("host", "0.0.0.0")
     exe = shlex.quote(proc.exe or (proc.argv[0] if proc.argv else ""))
     cwd = shlex.quote(proc.cwd or str(Path.home()))
     unit_note = (
@@ -436,6 +541,8 @@ SCRIPT_VERSION="${{SCRIPT_VERSION:-1.0.0}}"
 ADOPTED=1
 SLUG="{slug}"
 API_PORT="${{API_PORT:-{proc.port or 8000}}}"
+CTX_SIZE="${{CTX_SIZE:-{default_ctx}}}"
+API_HOST="${{API_HOST:-{default_host}}}"
 SERVER_BIN="${{SERVER_BIN:-{exe}}}"
 WORK_DIR="${{WORK_DIR:-{cwd}}}"
 RUN_DIR="${{RUN_DIR:-${{HOME}}/.lmds/run/{slug}}}"
@@ -462,7 +569,7 @@ info() {{
   banner
   echo "model:     {proc.model or '(ไม่ระบุใน argv)'}"
   echo "weights:   {proc.model_path or '(ไม่ระบุ)'}"
-  echo "context:   {proc.context or 0}"
+  echo "context:   ${{CTX_SIZE:-ตามที่ argv เดิมตั้ง}}"
   echo "port:      ${{API_PORT}}"
   echo "adopted:   ใช่ — จาก process ที่รันอยู่ก่อน LMDS (pid {proc.pid} ตอนรับเข้า)"
   [[ -n "$OWNING_UNIT" ]] && echo "unit เดิม:  ${{OWNING_UNIT}} (ยัง enable อยู่ = แย่ง port กลับ)"
@@ -497,9 +604,12 @@ start() {{
   [[ -x "$SERVER_BIN" ]] || die "ไม่พบ binary: $SERVER_BIN"
   mkdir -p "$RUN_DIR"
   cd "$WORK_DIR" || die "เข้า $WORK_DIR ไม่ได้"
-  setsid nohup "$SERVER_BIN" \\
-    {argv} \\
-    >> "$LOG_FILE" 2>&1 < /dev/null &
+  # argv เดิมถูกดึง --port/-c/--host ออกไปแล้ว ใส่กลับจากตัวแปรตรงนี้ เพื่อให้ค่าที่ตั้ง
+  # จากคอนโซลหรือ flag บรรทัดคำสั่งชนะของเดิมได้จริง
+  local args=({argv})
+  args+=(--host "$API_HOST" --port "$API_PORT")
+  [[ -n "$CTX_SIZE" ]] && args+=(-c "$CTX_SIZE")
+  setsid nohup "$SERVER_BIN" "${{args[@]}}" >> "$LOG_FILE" 2>&1 < /dev/null &
   echo $! > "$PID_FILE"
   write_meta
   echo "started: {slug} (PID $(cat "$PID_FILE") · port ${{API_PORT}})"
@@ -574,6 +684,21 @@ LMDS จึงไม่มีอะไรให้โหลดหรือตร
 USAGE
 }}
 
+# flag ที่รับได้ตอน start/restart — ชุดเดียวกับ controller ปกติ
+ARGS=()
+while (( $# )); do
+  case "$1" in
+    --port)      API_PORT="$2"; shift 2 ;;
+    --port=*)    API_PORT="${{1#*=}}"; shift ;;
+    --context)   CTX_SIZE="$2"; shift 2 ;;
+    --context=*) CTX_SIZE="${{1#*=}}"; shift ;;
+    --bind)      API_HOST="$2"; shift 2 ;;
+    --bind=*)    API_HOST="${{1#*=}}"; shift ;;
+    *)           ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${{ARGS[@]}}"
+
 case "${{1:-}}" in
   start)          start ;;
   stop)           stop ;;
@@ -605,6 +730,12 @@ def adopt_process(pid: int = 0, port: int = 0, slug: str = "",
     controller.write_text(render_native_controller(proc, slug), encoding="utf-8")
     controller.chmod(0o755)
 
+    # เซิร์ฟเวอร์ตัวจริงรันอยู่ตรงหน้า — ถามมันเลยว่าทำอะไรได้ ดีกว่าเดาจากชื่อไฟล์
+    # ไม่มีบล็อกนี้ คอนโซลไม่มีข้อมูลจะแสดงป้ายความสามารถ และไม่รู้เพดาน context
+    probe = probe_server(proc.port) if proc.port else {}
+    native_context = _native_context(probe)
+    meta = ((probe.get("models") or {}).get("data") or [{}])[0].get("meta") or {}
+
     profile = {
         "profile_version": 1,
         "generated_by": "lmds adopt (native)",
@@ -613,9 +744,22 @@ def adopt_process(pid: int = 0, port: int = 0, slug: str = "",
             "id": proc.model_path or proc.model or slug,
             "served_name": proc.model or slug,
             "artifact_type": "gguf" if proc.model_path.endswith(".gguf") else "unknown",
+            "params_total": meta.get("n_params"),
+            "weight_bytes": meta.get("size"),
+            "quantization": meta.get("ftype"),
+            # เพดานของ *ตัวโมเดล* ไม่ใช่ค่าที่สั่งรันครั้งนี้ — คอนโซลใช้บอกว่าเพิ่มได้ถึงไหน
+            "native_context": native_context or None,
         },
-        "runtime": {"engine": proc.engine, "native_build": True, "binary": proc.exe},
+        "runtime": {
+            "engine": proc.engine, "native_build": True, "binary": proc.exe,
+            "build": ((probe.get("props") or {}).get("build_info")),
+        },
         "serving": {"context": proc.context, "port": proc.port},
+        "limits": {
+            "context_tokens": native_context or proc.context or 0,
+            "max_output_tokens": 8192,
+        },
+        "features": features_from_probe(probe, proc.argv),
         "source_process": {"pid": proc.pid, "unit": proc.unit, "argv": proc.argv},
     }
     import yaml

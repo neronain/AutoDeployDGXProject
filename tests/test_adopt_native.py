@@ -174,3 +174,97 @@ def test_doctor_says_so_when_the_adopted_weights_are_gone(tmp_path):
     assert findings[0].status is Status.FAIL
     # ห้ามแนะ repair — bundle นี้ไม่มีคำสั่งนั้นให้รัน
     assert "repair" not in (findings[0].fix or "")
+
+
+def test_console_overrides_actually_reach_the_server(tmp_path):
+    """เจอจากหน้าเว็บจริง: ตั้ง context 131968 แล้วเด้งกลับ 65536 ทุกครั้ง
+
+    controller replay argv ดิบ ๆ ซึ่งมี `-c 65536` ติดมาด้วย ค่าที่ผู้ใช้ตั้งจึงถูกทับเสมอ
+    · flag พวกนี้ต้องถูกดึงออกจาก argv แล้วใส่กลับจากตัวแปร
+    """
+    import subprocess
+
+    from lmds.fleet.adopt import render_native_controller, split_managed
+
+    rest, managed = split_managed(REAL_ARGV[1:])
+    assert managed == {"ctx": "65536", "host": "0.0.0.0", "port": "8080"}
+    # ที่เหลือต้องครบเป๊ะ ห้ามหล่นระหว่างทาง
+    assert "-ngl" in rest and "99" in rest and "-ts" in rest and "1,1,1" in rest
+    assert "-ctk" in rest and "q8_0" in rest
+    for flag in ("--port", "-c", "--host"):
+        assert flag not in rest, f"{flag} ต้องถูกดึงออก ไม่งั้นจะทับค่าที่ตั้ง"
+
+    script = render_native_controller(_proc(), "x")
+    path = tmp_path / "c.sh"
+    path.write_text(script, encoding="utf-8")
+    assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
+
+    out = subprocess.run(["bash", str(path), "--context", "131968", "info"],
+                         capture_output=True, text=True).stdout
+    assert "131968" in out, "flag --context ต้องมีผลจริง"
+
+
+def test_the_container_controller_is_left_alone(tmp_path):
+    """flag พวกนี้เป็นของ native — container ใช้ docker run คนละเรื่อง"""
+    from lmds.fleet.adopt import Adopted, render_controller
+
+    script = render_controller(Adopted(container="c", image="i"), "c")
+    assert "--context)" not in script
+
+
+def test_capabilities_come_from_the_running_server(tmp_path, monkeypatch):
+    """ไม่ต้อง deploy ใหม่เพื่อให้ป้ายความสามารถขึ้น — เซิร์ฟเวอร์บอกเองได้"""
+    from importlib import import_module
+
+    adopt_mod = import_module("lmds.fleet.adopt")
+    probe = {
+        "props": {
+            "build_info": "b10505-ee4c505a4",
+            "modalities": {"vision": False, "audio": False},
+            "chat_template_caps": {
+                "supports_tools": True,
+                "supports_parallel_tool_calls": True,
+                "supports_preserve_reasoning": True,
+            },
+        },
+        "models": {"data": [{"meta": {"n_ctx_train": 262144, "n_params": 34660610688,
+                                      "size": 21155768832, "ftype": "Q4_K - Medium"}}]},
+    }
+    monkeypatch.setattr(adopt_mod, "inspect_process", lambda **kw: _proc())
+    monkeypatch.setattr(adopt_mod, "probe_server", lambda *a, **k: probe)
+    monkeypatch.setattr(adopt_mod, "run_root", lambda: tmp_path / "run")
+
+    controller, _ = adopt_mod.adopt_process(pid=1, slug="x", output=tmp_path / "bundles")
+
+    import yaml
+
+    profile = yaml.safe_load((controller.parent / "MODEL_PROFILE.yaml").read_text())
+    feats = profile["features"]
+    assert feats["tool_calling"]["enabled"] is True
+    assert feats["tool_calling"]["parallel"] is True
+    assert feats["reasoning"]["enabled"] is True
+    assert feats["multimodal"]["modalities"] == ["text"]
+    # เพดานของตัวโมเดล ไม่ใช่ค่าที่สั่งรันครั้งนี้ — คอนโซลใช้บอกว่าเพิ่ม context ได้ถึงไหน
+    assert profile["model"]["native_context"] == 262144
+    assert profile["limits"]["context_tokens"] == 262144
+    assert profile["serving"]["context"] == 65536
+    assert profile["runtime"]["build"] == "b10505-ee4c505a4"
+
+
+def test_adopt_still_works_when_the_server_cannot_be_asked(tmp_path, monkeypatch):
+    """probe ล้มต้องไม่ทำให้ adopt ล้ม — แค่ได้ข้อมูลน้อยลง"""
+    from importlib import import_module
+
+    adopt_mod = import_module("lmds.fleet.adopt")
+    monkeypatch.setattr(adopt_mod, "inspect_process", lambda **kw: _proc())
+    monkeypatch.setattr(adopt_mod, "probe_server", lambda *a, **k: {})
+    monkeypatch.setattr(adopt_mod, "run_root", lambda: tmp_path / "run")
+
+    controller, _ = adopt_mod.adopt_process(pid=1, slug="x", output=tmp_path / "bundles")
+    assert controller.exists()
+
+    import yaml
+
+    profile = yaml.safe_load((controller.parent / "MODEL_PROFILE.yaml").read_text())
+    assert profile["features"]["tool_calling"]["enabled"] is False
+    assert profile["model"]["native_context"] is None
