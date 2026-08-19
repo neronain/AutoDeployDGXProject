@@ -110,13 +110,32 @@ def _answer(payload: dict) -> tuple[str, str]:
     return "", "เซิร์ฟเวอร์ตอบกลับมาว่าง"
 
 
+def _ask(client, endpoint, model, messages, budget: int = _BUDGET, **extra) -> tuple[str, str]:
+    """ถามแล้วคืน (คำตอบ, เหตุผลที่ไม่มีคำตอบ) — ให้โอกาสที่สองเมื่องบหมดตอนกำลังคิด
+
+    เคสจริง 2026-08-19: Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled คิดยาว
+    4,064 ตัวอักษรก่อนจะตอบ JSON — งบ 1024 token หมดก่อน ตัววัดสรุปว่า "ทำ structured
+    output ไม่ได้" ทั้งที่มันทำได้ แค่คิดนาน
+
+    ขยายงบให้ทุกข้อตั้งแต่แรกก็ได้ แต่นั่นทำให้ทุกโมเดลจ่ายค่าความช้าของโมเดลที่คิดเยอะที่สุด
+    ลองซ้ำเฉพาะตัวที่ต้องการจริง ๆ ตรงกว่า
+    """
+    payload = _chat(client, endpoint, model, max_tokens=budget, messages=messages, **extra)
+    text, blocked = _answer(payload)
+    if text or "งบ token หมด" not in blocked:
+        return text, blocked
+    payload = _chat(client, endpoint, model, max_tokens=budget * 3, messages=messages, **extra)
+    text, blocked = _answer(payload)
+    return text, (f"{blocked} (แม้ให้งบ {budget * 3:,} token แล้ว)" if blocked else blocked)
+
+
 def _probe_instructions(client, endpoint, model) -> Probe:
     """ทำตามคำสั่งที่คุมรูปแบบได้ไหม — ข้อพื้นฐานที่สุด ถ้าตกข้อนี้ที่เหลือไม่ต้องดู"""
     try:
-        text, blocked = _answer(_chat(
+        text, blocked = _ask(
             client, endpoint, model,
-            messages=[{"role": "user", "content":
-                       "ตอบด้วยคำเดียวเท่านั้น ห้ามมีเครื่องหมายวรรคตอน: เมืองหลวงของฝรั่งเศสคือ"}]))
+            [{"role": "user", "content":
+              "ตอบด้วยคำเดียวเท่านั้น ห้ามมีเครื่องหมายวรรคตอน: เมืองหลวงของฝรั่งเศสคือ"}])
         if blocked:
             return Probe("instructions", "ทำตามคำสั่ง", False, blocked)
         ok = "paris" in text.lower() or "ปารีส" in text
@@ -128,10 +147,10 @@ def _probe_instructions(client, endpoint, model) -> Probe:
 def _probe_thai(client, endpoint, model) -> Probe:
     """ถามไทยแล้วตอบไทยไหม — โรงเรียนที่ใช้งานจริงต้องการข้อนี้มากกว่าคะแนนอังกฤษ"""
     try:
-        text, blocked = _answer(_chat(
+        text, blocked = _ask(
             client, endpoint, model,
-            messages=[{"role": "user", "content":
-                       "อธิบายสั้น ๆ ว่าทำไมท้องฟ้าถึงเป็นสีฟ้า ตอบเป็นภาษาไทย"}]))
+            [{"role": "user", "content":
+              "อธิบายสั้น ๆ ว่าทำไมท้องฟ้าถึงเป็นสีฟ้า ตอบเป็นภาษาไทย"}])
         if blocked:
             return Probe("thai", "ตอบภาษาไทย", False, blocked)
         thai_chars = sum(1 for ch in text if "฀" <= ch <= "๿")
@@ -144,11 +163,11 @@ def _probe_thai(client, endpoint, model) -> Probe:
 def _probe_json(client, endpoint, model) -> Probe:
     """คืน JSON ที่ parse ได้จริงไหม — structured output คือฐานของ integration ส่วนใหญ่"""
     try:
-        text, blocked = _answer(_chat(
+        text, blocked = _ask(
             client, endpoint, model,
-            response_format={"type": "json_object"},
-            messages=[{"role": "user", "content":
-                       'ตอบเป็น JSON object ที่มีคีย์ "city" และ "country" สำหรับกรุงเทพมหานคร'}]))
+            [{"role": "user", "content":
+              'ตอบเป็น JSON object ที่มีคีย์ "city" และ "country" สำหรับกรุงเทพมหานคร'}],
+            response_format={"type": "json_object"})
         if blocked:
             return Probe("json", "JSON structured output", False, blocked)
         parsed = json.loads(text)
@@ -235,9 +254,8 @@ def _probe_recall(client, endpoint, model, context_limit: int) -> Probe:
     half = filler * 120
     prompt = f"{half}\n\n{needle}\n\n{half}\n\nคำถาม: รหัสยืนยันของโครงการคืออะไร ตอบเฉพาะรหัส"
     try:
-        text, blocked = _answer(_chat(
-            client, endpoint, model, max_tokens=_BUDGET_LONG,
-            messages=[{"role": "user", "content": prompt}]))
+        text, blocked = _ask(client, endpoint, model,
+                             [{"role": "user", "content": prompt}], budget=_BUDGET_LONG)
         if blocked:
             return Probe("recall", "จำ context ยาว", False, blocked)
         ok = "QUAIL-7742" in text.upper()

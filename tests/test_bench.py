@@ -133,3 +133,36 @@ def test_answer_separates_wrong_from_out_of_budget():
 
     answered = {"choices": [{"finish_reason": "stop", "message": {"content": "ปารีส"}}]}
     assert capability._answer(answered) == ("ปารีส", "")
+
+
+def test_slow_thinker_gets_a_second_chance(monkeypatch):
+    """โมเดลที่คิดยาวจนงบหมด ต้องได้ลองอีกครั้งด้วยงบที่ใหญ่ขึ้น ไม่ใช่ถูกตัดสินว่าทำไม่ได้"""
+    budgets = []
+
+    def fake_chat(client, endpoint, model, **body):
+        budgets.append(body["max_tokens"])
+        if len(budgets) == 1:
+            return {"choices": [{"finish_reason": "length",
+                                 "message": {"content": "", "reasoning_content": "คิด" * 900}}]}
+        return {"choices": [{"finish_reason": "stop", "message": {"content": '{"city": "กรุงเทพ"}'}}]}
+
+    monkeypatch.setattr(capability, "_chat", fake_chat)
+    text, blocked = capability._ask(None, "http://x/v1", "m", [{"role": "user", "content": "hi"}])
+    assert blocked == ""
+    assert text == '{"city": "กรุงเทพ"}'
+    assert budgets[1] == budgets[0] * 3
+
+
+def test_second_chance_is_not_infinite(monkeypatch):
+    calls = []
+
+    def always_out_of_budget(client, endpoint, model, **body):
+        calls.append(body["max_tokens"])
+        return {"choices": [{"finish_reason": "length",
+                             "message": {"content": "", "reasoning_content": "คิด"}}]}
+
+    monkeypatch.setattr(capability, "_chat", always_out_of_budget)
+    text, blocked = capability._ask(None, "http://x/v1", "m", [{"role": "user", "content": "hi"}])
+    assert text == ""
+    assert len(calls) == 2
+    assert "แม้ให้งบ" in blocked
