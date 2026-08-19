@@ -227,9 +227,18 @@ download() {
 หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
   fi
 {% endif %}  mkdir -p "$MODEL_DIR"
-  local i
+  local i have
   for i in "${!MODEL_FILES[@]}"; do
     echo "download [$(( i + 1 ))/{{ '${#MODEL_FILES[@]}' }}]: ${MODEL_URLS[$i]}"
+    # ของที่ค้างไว้ใหญ่กว่าที่ควรเป็น = เสียแน่นอน · resume ต่อมีแต่ทำให้ใหญ่ขึ้นอีก
+    # ลบทิ้งก่อนโหลดใหม่ ดีกว่าปล่อยให้ verify ตกทุกครั้งจนกว่าจะมีคนสังเกตเอง
+    if [[ -n "${EXPECTED_SIZES[$i]:-}" && -f "${MODEL_DIR}/${MODEL_FILES[$i]}" ]]; then
+      have="$(stat -c %s "${MODEL_DIR}/${MODEL_FILES[$i]}" 2>/dev/null || echo 0)"
+      if (( have > ${EXPECTED_SIZES[$i]} )); then
+        echo "  ของเดิมใหญ่เกิน (${have} > ${EXPECTED_SIZES[$i]}) — ลบแล้วโหลดใหม่"
+        rm -f "${MODEL_DIR}/${MODEL_FILES[$i]}"
+      fi
+    fi
     fetch_one "${MODEL_URLS[$i]}" "${MODEL_DIR}/${MODEL_FILES[$i]}"
   done
   echo "download complete: ${MODEL_DIR} ({{ '${#MODEL_FILES[@]}' }} ไฟล์)"
@@ -267,8 +276,21 @@ verify_files() {
 
     if [[ -n "${EXPECTED_SIZES[$i]}" ]]; then
       actual_size="$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path")"
-      [[ "$actual_size" == "${EXPECTED_SIZES[$i]}" ]] ||
-        die "${MODEL_FILES[$i]}: ขนาดไม่ตรง (ได้ ${actual_size} ต้องการ ${EXPECTED_SIZES[$i]} — download ไม่ครบ?)"
+      if [[ "$actual_size" != "${EXPECTED_SIZES[$i]}" ]]; then
+        # ใหญ่เกิน กับ เล็กเกิน ต้องแก้คนละทาง — บอกผิดแล้วผู้ใช้ไปวนอยู่กับคำสั่งที่ไม่ช่วย
+        #
+        # เคสจริง 2026-08-20 บน msi-5: ไฟล์ Q8_0 ได้มา 30,800,274,816 ไบต์ แต่ต้องการ
+        # 29,047,084,416 (เกินมา 1.75 GB) เพราะ resume ทับของเดิมที่ค้างจากรอบก่อน
+        # ข้อความเดิมบอกว่า "download ไม่ครบ?" ซึ่งพาไปสั่ง repair ซ้ำ — แต่ resume
+        # มีแต่ทำให้ไฟล์ใหญ่ขึ้น มันจึงไม่มีวันลงตัว
+        if (( actual_size > ${EXPECTED_SIZES[$i]} )); then
+          die "${MODEL_FILES[$i]}: ไฟล์ใหญ่เกินจริง (ได้ ${actual_size} ต้องการ ${EXPECTED_SIZES[$i]})
+ไฟล์เสีย — มักเกิดจาก resume ทับของที่ค้างจากรอบก่อน · resume ซ้ำไม่ช่วยเพราะมีแต่ทำให้ใหญ่ขึ้น
+ลบแล้วโหลดใหม่:  rm -f '$path'  แล้วรัน  $0 download"
+        fi
+        die "${MODEL_FILES[$i]}: ขนาดไม่ตรง (ได้ ${actual_size} ต้องการ ${EXPECTED_SIZES[$i]} — download ไม่ครบ)
+โหลดต่อได้เลย (resume):  $0 download"
+      fi
     fi
 
     if [[ -n "${EXPECTED_SHAS[$i]}" ]]; then

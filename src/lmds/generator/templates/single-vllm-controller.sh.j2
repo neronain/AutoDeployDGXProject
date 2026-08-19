@@ -309,8 +309,18 @@ verify_files() {
     [[ -e "$path" ]] || die "shard หายไป: ${SHARD_FILES[$i]} — รัน: $0 download (resume ต่อได้)"
     if [[ -n "${SHARD_SIZES[$i]}" ]]; then
       actual_size="$(stat -Lc %s "$path" 2>/dev/null || stat -Lf %z "$path")"
-      [[ "$actual_size" == "${SHARD_SIZES[$i]}" ]] ||
-        die "${SHARD_FILES[$i]}: ขนาดไม่ตรง (ได้ ${actual_size} ต้องการ ${SHARD_SIZES[$i]} — download ไม่ครบ?)"
+      if [[ "$actual_size" != "${SHARD_SIZES[$i]}" ]]; then
+        # ใหญ่เกิน กับ เล็กเกิน ต้องแก้คนละทาง — บอกผิดแล้วผู้ใช้ไปวนกับคำสั่งที่ไม่ช่วย
+        # (ทางนี้โหลดด้วย snapshot_download ซึ่ง resume ถูกอยู่แล้ว ไฟล์ใหญ่เกินจึงหมายถึง
+        #  แคชปนของเก่าคนละ revision มากกว่า — ลบแล้วโหลดใหม่เหมือนกัน)
+        if (( actual_size > ${SHARD_SIZES[$i]} )); then
+          die "${SHARD_FILES[$i]}: ไฟล์ใหญ่เกินจริง (ได้ ${actual_size} ต้องการ ${SHARD_SIZES[$i]})
+ไฟล์เสียหรือเป็นของคนละ revision — โหลดต่อไม่ช่วย
+ลบแล้วโหลดใหม่:  rm -f '$path'  แล้วรัน  $0 download"
+        fi
+        die "${SHARD_FILES[$i]}: ขนาดไม่ตรง (ได้ ${actual_size} ต้องการ ${SHARD_SIZES[$i]} — download ไม่ครบ)
+โหลดต่อได้เลย (resume):  $0 download"
+      fi
     fi
   done
   echo "shard ครบ {{ '${#SHARD_FILES[@]}' }} ไฟล์ (ขนาดตรงกับ Hub)"
