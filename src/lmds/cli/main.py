@@ -3239,6 +3239,11 @@ def _print_bench(workloads: list[dict], probes: list[dict]) -> None:
             console.print(f"[dim]เฉลี่ย {summary['decode_tps_avg']} tok/s · "
                           f"ที่ context ยาวสุด ({summary['longest_context']:,}) "
                           f"{summary['decode_tps_long']} tok/s[/dim]")
+        # prefix cache ที่ยังกินอยู่ทำให้ TTFT/prefill ต่ำกว่าความจริงมาก — ต้องบอก ไม่ใช่ปล่อยผ่าน
+        cached = sum(w.get("cached_tokens") or 0 for w in workloads)
+        if cached:
+            console.print(f"[yellow]⚠ เซิร์ฟเวอร์ใช้ prompt cache ไป {cached:,} token — "
+                          f"TTFT/prefill ต่ำกว่าความจริง[/yellow]")
 
     if probes:
         table = Table(title="ความสามารถ")

@@ -36,6 +36,9 @@ class Sample:
     total_s: float
     prompt_tokens: int
     completion_tokens: int
+    # token ที่เซิร์ฟเวอร์บอกว่าใช้ของเก่าจาก cache — ควรเป็น 0 ถ้า nonce ทำงาน
+    # ไม่เป็น 0 แปลว่าตัวเลข TTFT/prefill รอบนี้เชื่อไม่ได้
+    cached_tokens: int = 0
 
     @property
     def decode_tps(self) -> float:
@@ -56,6 +59,10 @@ class WorkloadResult:
     samples: list[Sample] = field(default_factory=list)
     error: str = ""
 
+    @property
+    def cache_hits(self) -> int:
+        return sum(s.cached_tokens for s in self.samples)
+
     def _median(self, attr: str) -> float:
         values = [getattr(s, attr) for s in self.samples]
         return round(statistics.median(values), 3) if values else 0.0
@@ -75,14 +82,16 @@ class WorkloadResult:
             "total_s": self._median("total_s"),
             "prompt_tokens": int(self._median("prompt_tokens")),
             "completion_tokens": int(self._median("completion_tokens")),
+            # >0 แปลว่า prefix cache ยังกินอยู่ — TTFT/prefill ของรอบนี้ต่ำกว่าความจริง
+            "cached_tokens": self.cache_hits,
         }
 
 
 def _stream_once(client: httpx.Client, endpoint: str, model: str,
-                 workload: Workload, timeout: float) -> Sample:
+                 workload: Workload, timeout: float, nonce: str) -> Sample:
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": workload.prompt()}],
+        "messages": [{"role": "user", "content": workload.prompt(nonce)}],
         "max_tokens": workload.output_tokens,
         "stream": True,
         # ขอ usage ท้ายสตรีม — ไม่งั้นต้องนับ chunk เอง ซึ่งนับ token ไม่ตรงกับ tokenizer
@@ -94,6 +103,7 @@ def _stream_once(client: httpx.Client, endpoint: str, model: str,
     chunk_tokens = 0
     prompt_tokens = 0
     completion_tokens = 0
+    cached_tokens = 0
 
     with client.stream("POST", f"{endpoint}/chat/completions", json=body, timeout=timeout) as response:
         if response.status_code != 200:
@@ -113,6 +123,8 @@ def _stream_once(client: httpx.Client, endpoint: str, model: str,
             if usage:
                 prompt_tokens = usage.get("prompt_tokens") or prompt_tokens
                 completion_tokens = usage.get("completion_tokens") or completion_tokens
+                details = usage.get("prompt_tokens_details") or {}
+                cached_tokens = details.get("cached_tokens") or cached_tokens
             for choice in event.get("choices") or []:
                 delta = choice.get("delta") or {}
                 # โมเดลสาย reasoning ส่งความคิดมาก่อนคำตอบ — token พวกนั้นก็ถูก decode
@@ -136,6 +148,7 @@ def _stream_once(client: httpx.Client, endpoint: str, model: str,
         prompt_tokens=prompt_tokens,
         # เซิร์ฟเวอร์ที่ไม่ส่ง usage มา — ใช้จำนวน chunk แทน (หยาบกว่า แต่ดีกว่าศูนย์)
         completion_tokens=completion_tokens or chunk_tokens,
+        cached_tokens=cached_tokens,
     )
 
 
@@ -153,12 +166,13 @@ def measure(endpoint: str, model: str, workloads, runs: int = 3,
         for workload in workloads:
             result = WorkloadResult(workload.key, workload.label, workload.input_tokens)
             try:
-                _stream_once(client, endpoint, model, workload, timeout)  # warm-up
+                _stream_once(client, endpoint, model, workload, timeout, "warmup")
                 for index in range(runs):
                     if on_progress:
                         on_progress(workload, index + 1, runs)
-                    result.samples.append(
-                        _stream_once(client, endpoint, model, workload, timeout))
+                    # nonce ต่างกันทุกรอบ — prefix cache จึงใช้ต่อไม่ได้
+                    result.samples.append(_stream_once(
+                        client, endpoint, model, workload, timeout, f"{workload.key}-{index}"))
             except (BenchError, httpx.HTTPError) as exc:
                 result.error = str(exc)[:300]
             results.append(result)

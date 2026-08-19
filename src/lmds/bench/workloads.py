@@ -55,17 +55,25 @@ class Workload:
     output_tokens: int
     kind: str = "text"
 
-    def prompt(self) -> str:
-        return _build_prompt(self)
+    def prompt(self, nonce: str = "") -> str:
+        """nonce ไปอยู่ *หัว* prompt เพื่อทำลาย prefix cache
+
+        เคสจริง 2026-08-19: ยิง prompt เดิมซ้ำ 3 รอบบน llama.cpp ได้ `cached_tokens: 76`
+        รอบหลัง ๆ ข้าม prefill ไปเลย — TTFT ที่วัดได้เหลือ 0.61 วิ สำหรับ 3,282 token
+        (prefill 5,389 tok/s ซึ่งเป็นไปไม่ได้บน GB10) · ถ้าไม่ทำลาย cache เรากำลังวัด
+        ความเร็วของ cache ไม่ใช่ของโมเดล
+        """
+        body = _build_prompt(self)
+        return f"[อ้างอิง {nonce}]\n{body}" if nonce else body
 
 
 def _pad_to(text: str, target_tokens: int) -> str:
     """ต่อ filler จนยาวประมาณ target_tokens
 
-    ประมาณ 0.75 token ต่อคำสำหรับข้อความอังกฤษธรรมดา — ไม่แม่นยำ แต่ไม่ต้องแม่น
-    เพราะเราบันทึกความยาวจริงจาก usage ที่เซิร์ฟเวอร์ตอบกลับ
+    ~1.3 token ต่อคำสำหรับ filler ชุดนี้ (วัดจริงจาก tokenizer ของ Qwen/Gemma: 682 คำ
+    → 893 token) · ค่านี้เป็นแค่การเล็ง ผลที่บันทึกใช้ `prompt_tokens` จริงจากเซิร์ฟเวอร์เสมอ
     """
-    words_needed = int(target_tokens / 0.75)
+    words_needed = max(8, int(target_tokens / 1.3))
     words = text.split()
     filler = _FILLER.split()
     while len(words) < words_needed:

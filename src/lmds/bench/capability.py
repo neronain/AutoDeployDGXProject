@@ -45,10 +45,22 @@ class Probe:
     skipped: bool = False
 
 
+# งบ token ต่อหนึ่งข้อ — ใหญ่โดยตั้งใจ
+#
+# เคสจริง 2026-08-19: ตั้ง max_tokens=32 แล้วถาม muse-glimmer ว่าเมืองหลวงฝรั่งเศสคืออะไร
+# ได้ finish_reason="length" กับ content ว่าง เพราะโมเดลใช้ทั้ง 32 token ไปกับการคิด
+# ตัววัดสรุปว่า "ทำตามคำสั่งไม่ได้" · พอให้ 1024 token มันตอบ "ปารีส" ทันที
+#
+# โมเดลสาย reasoning คิดก่อนตอบเป็นปกติ — งบที่ตึงเกินไปไม่ได้วัดความสามารถ
+# แต่วัดว่าเราให้เวลามันพอไหม
+_BUDGET = 1024
+_BUDGET_LONG = 2048
+
+
 def _chat(client: httpx.Client, endpoint: str, model: str, **body) -> dict:
     body.setdefault("model", model)
-    body.setdefault("max_tokens", 256)
-    response = client.post(f"{endpoint}/chat/completions", json=body, timeout=180.0)
+    body.setdefault("max_tokens", _BUDGET)
+    response = client.post(f"{endpoint}/chat/completions", json=body, timeout=300.0)
     response.raise_for_status()
     return response.json()
 
@@ -58,14 +70,34 @@ def _message(payload: dict) -> dict:
     return (choices[0].get("message") or {}) if choices else {}
 
 
+def _finish_reason(payload: dict) -> str:
+    choices = payload.get("choices") or []
+    return (choices[0].get("finish_reason") or "") if choices else ""
+
+
+def _answer(payload: dict) -> tuple[str, str]:
+    """(คำตอบ, เหตุผลที่คำตอบว่าง) — แยกให้ชัดว่า "ตอบผิด" กับ "ไม่ทันได้ตอบ" คนละเรื่อง"""
+    message = _message(payload)
+    content = (message.get("content") or "").strip()
+    if content:
+        return content, ""
+    thinking = message.get("reasoning_content") or ""
+    if _finish_reason(payload) == "length":
+        note = (f"งบ token หมดตอนกำลังคิด (คิดไป {len(thinking)} ตัวอักษร ยังไม่ทันตอบ)"
+                if thinking else "งบ token หมดก่อนตอบ")
+        return "", note
+    return "", "เซิร์ฟเวอร์ตอบกลับมาว่าง"
+
+
 def _probe_instructions(client, endpoint, model) -> Probe:
     """ทำตามคำสั่งที่คุมรูปแบบได้ไหม — ข้อพื้นฐานที่สุด ถ้าตกข้อนี้ที่เหลือไม่ต้องดู"""
     try:
-        message = _message(_chat(
-            client, endpoint, model, max_tokens=32,
+        text, blocked = _answer(_chat(
+            client, endpoint, model,
             messages=[{"role": "user", "content":
                        "ตอบด้วยคำเดียวเท่านั้น ห้ามมีเครื่องหมายวรรคตอน: เมืองหลวงของฝรั่งเศสคือ"}]))
-        text = (message.get("content") or "").strip()
+        if blocked:
+            return Probe("instructions", "ทำตามคำสั่ง", False, blocked)
         ok = "paris" in text.lower() or "ปารีส" in text
         return Probe("instructions", "ทำตามคำสั่ง", ok, text[:80])
     except Exception as exc:
@@ -75,11 +107,12 @@ def _probe_instructions(client, endpoint, model) -> Probe:
 def _probe_thai(client, endpoint, model) -> Probe:
     """ถามไทยแล้วตอบไทยไหม — โรงเรียนที่ใช้งานจริงต้องการข้อนี้มากกว่าคะแนนอังกฤษ"""
     try:
-        message = _message(_chat(
-            client, endpoint, model, max_tokens=200,
+        text, blocked = _answer(_chat(
+            client, endpoint, model,
             messages=[{"role": "user", "content":
                        "อธิบายสั้น ๆ ว่าทำไมท้องฟ้าถึงเป็นสีฟ้า ตอบเป็นภาษาไทย"}]))
-        text = message.get("content") or ""
+        if blocked:
+            return Probe("thai", "ตอบภาษาไทย", False, blocked)
         thai_chars = sum(1 for ch in text if "฀" <= ch <= "๿")
         ok = thai_chars >= 30
         return Probe("thai", "ตอบภาษาไทย", ok, f"อักษรไทย {thai_chars} ตัว")
@@ -90,12 +123,13 @@ def _probe_thai(client, endpoint, model) -> Probe:
 def _probe_json(client, endpoint, model) -> Probe:
     """คืน JSON ที่ parse ได้จริงไหม — structured output คือฐานของ integration ส่วนใหญ่"""
     try:
-        message = _message(_chat(
-            client, endpoint, model, max_tokens=200,
+        text, blocked = _answer(_chat(
+            client, endpoint, model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content":
                        'ตอบเป็น JSON object ที่มีคีย์ "city" และ "country" สำหรับกรุงเทพมหานคร'}]))
-        text = (message.get("content") or "").strip()
+        if blocked:
+            return Probe("json", "JSON structured output", False, blocked)
         parsed = json.loads(text)
         ok = isinstance(parsed, dict) and "city" in parsed
         return Probe("json", "JSON structured output", ok, text[:80])
@@ -111,7 +145,7 @@ def _probe_tools(client, endpoint, model) -> Probe:
     """
     try:
         payload = _chat(
-            client, endpoint, model, max_tokens=200, tools=[_WEATHER_TOOL],
+            client, endpoint, model, tools=[_WEATHER_TOOL],
             messages=[{"role": "user", "content": "อากาศที่เชียงใหม่ตอนนี้เป็นยังไง"}])
         message = _message(payload)
         calls = message.get("tool_calls") or []
@@ -130,7 +164,7 @@ def _probe_reasoning(client, endpoint, model) -> Probe:
     """แยกความคิดออกจากคำตอบไหม — ถ้าไม่แยก client จะเอา chain-of-thought ไปโชว์ผู้ใช้"""
     try:
         message = _message(_chat(
-            client, endpoint, model, max_tokens=400,
+            client, endpoint, model, max_tokens=_BUDGET_LONG,
             messages=[{"role": "user", "content":
                        "ร้านขายส้ม 3 ลูก 25 บาท ถ้าซื้อ 12 ลูกจ่ายเท่าไร คิดทีละขั้น"}]))
         thinking = message.get("reasoning_content") or ""
@@ -150,14 +184,17 @@ def _probe_vision(client, endpoint, model, has_projector: bool) -> Probe:
         return Probe("vision", "รับภาพ", False, "ไม่มี mmproj — ข้าม", skipped=True)
     try:
         data_url = "data:image/png;base64," + base64.b64encode(_RED_PNG).decode()
-        message = _message(_chat(
-            client, endpoint, model, max_tokens=60,
+        payload = _chat(
+            client, endpoint, model,
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": "ภาพนี้เป็นสีอะไร ตอบสั้น ๆ"},
                 {"type": "image_url", "image_url": {"url": data_url}},
-            ]}]))
-        text = (message.get("content") or "").lower()
-        ok = "red" in text or "แดง" in text
+            ]}])
+        text, blocked = _answer(payload)
+        if blocked:
+            return Probe("vision", "รับภาพ", False, blocked)
+        lowered = text.lower()
+        ok = "red" in lowered or "แดง" in text
         return Probe("vision", "รับภาพ", ok, text[:80])
     except Exception as exc:
         return Probe("vision", "รับภาพ", False, str(exc)[:120])
@@ -177,11 +214,12 @@ def _probe_recall(client, endpoint, model, context_limit: int) -> Probe:
     half = filler * 120
     prompt = f"{half}\n\n{needle}\n\n{half}\n\nคำถาม: รหัสยืนยันของโครงการคืออะไร ตอบเฉพาะรหัส"
     try:
-        message = _message(_chat(
-            client, endpoint, model, max_tokens=40,
+        text, blocked = _answer(_chat(
+            client, endpoint, model, max_tokens=_BUDGET_LONG,
             messages=[{"role": "user", "content": prompt}]))
-        text = (message.get("content") or "").upper()
-        ok = "QUAIL-7742" in text
+        if blocked:
+            return Probe("recall", "จำ context ยาว", False, blocked)
+        ok = "QUAIL-7742" in text.upper()
         return Probe("recall", "จำ context ยาว", ok, text[:60])
     except Exception as exc:
         return Probe("recall", "จำ context ยาว", False, str(exc)[:120])
