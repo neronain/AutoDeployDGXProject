@@ -221,6 +221,39 @@ def install_key(host: str, user: str, password: str, port: int = 22) -> None:
         raise NodeError(f"ติดตั้ง SSH key ไม่สำเร็จ: {hint}")
 
 
+def _json_object(output: str) -> dict | None:
+    """ดึง JSON object ออกจาก stdout ที่อาจมีอย่างอื่นปนมาข้างหน้า
+
+    เคสจริง 2026-08-19: dgx-70 (praisit@10.2.1.70) มี rc ที่พ่น `declare -x …` ของทุก
+    ตัวแปรออก stdout ทุกครั้งที่ login shell เริ่ม — JSON ของ `lmds agent info` อยู่ครบ
+    และถูกต้องทุกตัวอักษร แต่เริ่มที่ไบต์ที่ 858 · hub รายงานว่า "เวอร์ชันไม่ตรงกัน"
+    แล้วผู้ใช้ก็ไปไล่หาเวอร์ชันที่ไม่ได้ผิดอะไรเลย
+
+    เครื่องของลูกค้ามี banner, motd, คำเตือน conda, และ rc แปลก ๆ เป็นเรื่องปกติ —
+    การยืนกรานว่า stdout ต้องเป็น JSON ล้วนคือข้อสมมติที่ภาคสนามไม่เคยจริง
+    """
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        pass
+    else:
+        return parsed if isinstance(parsed, dict) else None
+
+    # ไล่ทีละ "{" เพราะขยะข้างหน้าอาจมีวงเล็บปีกกาของมันเอง (LS_COLORS, prompt, JSON ของ tool อื่น)
+    end = output.rfind("}")
+    if end < 0:
+        return None
+    start = output.find("{")
+    while 0 <= start < end:
+        try:
+            parsed = json.loads(output[start:end + 1])
+        except json.JSONDecodeError:
+            start = output.find("{", start + 1)
+            continue
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def probe(node: Node, timeout: int = 30) -> dict:
     """ดึงภาพรวมของ node ผ่าน `lmds agent info` — node ไม่ต้องรัน daemon อะไรเลย"""
     result = run(node, "lmds agent info", timeout=timeout)
@@ -244,10 +277,13 @@ def probe(node: Node, timeout: int = 30) -> dict:
                 f"อัปเดตจากที่นี่ได้เลย: lmds node install {node.name}"
             )
         raise NodeError(f"ต่อ {node.target} ไม่ได้: {stderr[:300] or 'ไม่มีข้อความ'}")
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise NodeError(f"{node.target} ตอบกลับไม่ใช่ JSON — เวอร์ชัน LMDS อาจไม่ตรงกัน") from exc
+    payload = _json_object(result.stdout)
+    if payload is None:
+        raise NodeError(
+            f"{node.target} ตอบกลับไม่ใช่ JSON — เวอร์ชัน LMDS อาจไม่ตรงกัน\n"
+            f"ที่ได้มา: {result.stdout.strip()[:200] or '(ว่าง)'}"
+        )
+    return payload
 
 
 # ติดตั้ง/อัปเดต LMDS บน node — hub ไม่ได้ push โค้ดไปเอง แต่สั่งให้เครื่องนั้น clone จาก GitHub
