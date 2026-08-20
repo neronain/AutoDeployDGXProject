@@ -477,6 +477,10 @@ pre {
   font-size: calc(15px * var(--fs)); line-height: 1; color: var(--fg2);
 }
 .nbody.collapsed { display: none; }
+/* ผลคำสั่งอยู่ใต้การ์ด และสูงได้จำกัด — log 400 บรรทัดไม่ควรดันทั้งหน้าจอ */
+.nout { border-top: 1px solid var(--line); }
+.nout pre { max-height: 40vh; overflow: auto; margin: 0; }
+.machine.ncompact .nout { display: none; }
 /* การ์ดแบบย่อ — เหลือบรรทัดเดียว (ชื่อ + ไซต์ + จุดสถานะ) ซ่อน stats/ปุ่ม/host/รายละเอียด
    กด + เพื่อกางดูของครบ · ค่าเริ่มต้นเป็นแบบนี้เพื่อให้หลายไซต์หลายเครื่องไม่ยาวเหยียด */
 .machine.ncompact > .item { padding-top: 4px; padding-bottom: 4px; }
@@ -2234,7 +2238,9 @@ function nodeCard(node) {
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Forget</button>
     </div>
     <div class="nclus" hidden></div>
-    <div class="nbody"></div>`;
+    <div class="nbody"></div>
+    <!-- ผลคำสั่ง/ผลเทส — อยู่ *ใต้* รายการโมเดล ไม่ใช่แทนที่มัน -->
+    <div class="nout" hidden></div>`;
   return block;
 }
 
@@ -2594,6 +2600,7 @@ async function refreshNodes() {
         version: block.querySelector(".nver"),
         summary: block.querySelector(".nsum"),
         body,
+        out: block.querySelector(".nout"),
       });
       loadNode(node.name);
     }
@@ -2639,7 +2646,7 @@ document.addEventListener("click", async e => {
     const key = node + "/" + slug;
     openModelMenus.has(key) ? openModelMenus.delete(key) : openModelMenus.add(key);
     const row = nodeRows.get(node);
-    if (row && !pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
+    if (row) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
     return;
   }
   if (nact === "setup" || nact === "fix-perms") {
@@ -2767,7 +2774,7 @@ document.addEventListener("click", async e => {
     } catch (e) { if (out) out.textContent = "บันทึกไม่สำเร็จ: " + e.message; }
     return;
   }
-  if (nact === "close-output") { pinnedOutput.delete(node); loadNode(node); return; }
+  if (nact === "close-output") { clearNodeOutput(node); return; }
   if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "forget") {
     if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
@@ -3504,11 +3511,25 @@ function showNodeOutput(node, title, output, extra = "") {
   // การ์ดที่ย่อ/ไซต์ที่ยุบต้องกางก่อน ไม่งั้นฟอร์ม/ผลคำสั่งอยู่ใน .nbody ที่ถูกซ่อน = ไม่เห็นอะไร
   revealNode(node);
   pinnedOutput.add(node);
-  row.body.innerHTML = `<div class="pad row between" style="padding-bottom:0">
+  // เดิมเขียนทับ row.body ทั้งอัน — รายการโมเดลกับเกจของเครื่องจึงหายไปทุกครั้งที่สั่งอะไร
+  // และผลของงานที่ *สำเร็จ* ก็ถูกล้างทิ้งทันทีที่ loadNode() วาดใหม่ · แยกมาไว้ใต้การ์ด
+  // แทน: ของเดิมยังอยู่ครบ ผลลัพธ์ต่อท้าย และลบทิ้งได้เมื่ออ่านจบ
+  const box = row.out || row.body;
+  box.hidden = false;
+  box.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">${esc(title)}</b>
       <span class="grow"></span>${extra}
-      <button data-nact="close-output" data-node="${esc(node)}">Close</button>
+      <button data-nact="close-output" data-node="${esc(node)}"
+              title="ลบผลลัพธ์นี้ทิ้ง — งานที่รันอยู่ไม่หยุดตาม">ลบผลลัพธ์</button>
     </div><pre>${esc(output || "(no output)")}</pre>`;
+}
+
+function clearNodeOutput(node) {
+  const row = nodeRows.get(node);
+  if (!row || !row.out) return;
+  row.out.innerHTML = "";
+  row.out.hidden = true;
+  pinnedOutput.delete(node);
 }
 
 // งานยาวบนเครื่องอื่น (download/start/remove) — สตรีมผลให้เห็นความคืบหน้า
@@ -3538,7 +3559,7 @@ function followNodeJob(node, slug, jobId) {
                    d.output || `เริ่มแล้ว — ยังไม่มีผลส่งกลับมา (${since})\n`
                      + "ขั้นที่โหลดไฟล์ใหญ่จะเงียบอยู่พักหนึ่งก่อนมีอะไรขึ้น ปิดหน้าต่างนี้ได้ งานไม่หยุดตาม",
                    running ? `<span class="tag">${esc(d.command)}</span>` : "");
-    const pre = nodeRows.get(node)?.block.querySelector("pre");
+    const pre = (nodeRows.get(node)?.out || nodeRows.get(node)?.block)?.querySelector("pre");
     if (pre) pre.scrollTop = pre.scrollHeight;
     if (running) { setTimeout(tick, 1200); return; }
     watchingNodes.delete(key);
@@ -3547,7 +3568,7 @@ function followNodeJob(node, slug, jobId) {
       showNodeOutput(node, `${d.command} · ${slug} — ไม่สำเร็จ (exit ${d.exit_code})`,
                      reason || d.output || "ไม่มีผลลัพธ์กลับมา");
     } else {
-      pinnedOutput.delete(node);
+      // สำเร็จแล้วก็ยังต้องเห็นผล (test-text ตอบว่าอะไร) — เดิมถูกล้างทิ้งทันที
       loadNode(node);
     }
   };
@@ -3643,10 +3664,12 @@ function applySnapshot(snap) {
       : { name, reachable: false, error: entry.error, age_seconds: entry.age_seconds,
           host: null, models: [] };
     // อย่าเขียนทับตอนผู้ใช้กำลังกดปุ่มอยู่ — ปุ่มจะกระโดดหนีมือ
-    // และอย่าลบผลลัพธ์ที่ผู้ใช้เพิ่งขอดู (doctor/logs) — SSE ส่งทุก 1-3 วิ ผลจะหายก่อนอ่านจบ
     // และห้ามวาดทับตอนผู้ใช้กำลังกรอก port/context อยู่ — ตัวเลขที่พิมพ์ไปแล้วจะหายทุก 1 วิ
     // จนกรอกไม่ทัน (เจอจริง) · เมนูที่กางอยู่ = กำลังใช้งานแถวนั้น ปล่อยไว้จนกว่าจะปิดเอง
-    if (busy || pinnedOutput.has(name) || nodeIsInUse(name)) {
+    //
+    // เดิมมี pinnedOutput ในเงื่อนไขนี้ด้วย เพื่อกันไม่ให้ผลลัพธ์ที่เพิ่งขอดูถูกลบทิ้ง —
+    // ตอนนี้ผลอยู่คนละที่กับ body แล้ว การ์ดจึงอัปเดตสดต่อไปได้ระหว่างที่ผู้ใช้อ่านผลข้างล่าง
+    if (busy || nodeIsInUse(name)) {
       // แถบสรุปในหัวไม่มีอะไรให้ผู้ใช้กดหรือพิมพ์ — อัปเดตได้เสมอแม้ตัวการ์ดถูกล็อกอยู่
       paintSummary(name, (entry.data || {}).host, (entry.data || {}).summary);
       markStale(row, entry);
@@ -3882,7 +3905,7 @@ function jumpToNode(node, slug) {
   // ไซต์ที่ยุบ/การ์ดที่ย่อต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
   revealNode(node);
   openModelMenus.add(node + "/" + slug);
-  if (!pinnedOutput.has(node)) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
+  row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
   row.block.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 

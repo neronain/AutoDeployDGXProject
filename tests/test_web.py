@@ -1155,14 +1155,21 @@ def test_every_gradient_referenced_by_a_gauge_is_defined():
     assert used <= defined, f"อ้างถึงแต่ไม่ได้นิยาม: {used - defined}"
 
 
-def test_command_output_is_not_wiped_by_live_updates():
-    """SSE ส่งสถานะทุก 1-3 วิ — ถ้าเขียนทับทั้งแถว ผลของ doctor จะหายก่อนผู้ใช้อ่านจบ
-    (เจอจริงหลังเปลี่ยนมาใช้ SSE: กด doctor แล้วเหมือนไม่มีอะไรเกิดขึ้น)"""
+def test_command_output_lives_outside_the_body_it_must_survive():
+    """SSE ส่งสถานะทุก 1-3 วิ — ผลของ doctor ต้องไม่หายไปกับการวาดการ์ดใหม่
+
+    เดิมแก้ด้วยการ *หยุดวาด* การ์ดขณะมีผลค้างอยู่ (ผลอยู่ใน row.body เดียวกัน) ซึ่งแลกมาด้วย
+    รายการโมเดลหายทั้งแผงและค่าในการ์ดค้างไปด้วย · ตอนนี้ผลอยู่คนละกล่อง (.nout) ใต้การ์ด
+    การ์ดจึงอัปเดตสดต่อได้โดยผลไม่หาย
+    """
     body = TestClient(create_app()).get("/").text
-    assert "pinnedOutput" in body
-    assert "busy || pinnedOutput.has(name)" in body
-    # ต้องมีทางปิดกลับไปหน้าปกติ ไม่งั้นค้างอยู่กับผลเก่า
+    assert 'class="nout"' in body, "ต้องมีกล่องผลลัพธ์แยกจาก body"
+    assert "row.out || row.body" in body, "showNodeOutput ต้องเขียนลงกล่องนั้น"
+    # body วาดใหม่ได้อิสระ — ห้ามกลับไปผูกการวาดกับการมีผลค้าง
+    assert "if (row) row.body.innerHTML = nodeModelsMarkup" in body
+    # ต้องลบผลทิ้งได้ ไม่งั้นเทสหลาย ๆ รอบแล้วหน้ายาวจนใช้งานไม่ไหว
     assert 'data-nact="close-output"' in body
+    assert "function clearNodeOutput" in body
 
 
 def test_manual_refresh_bypasses_the_cache():
@@ -1738,7 +1745,7 @@ def test_a_collapsed_machine_still_shows_its_load():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert "function summaryMarkup" in page and 'class="nsum"' in page
     # แถบสรุปต้องอัปเดตแม้ตัวการ์ดถูกล็อก (ผู้ใช้กำลังพิมพ์/มีผลคำสั่งค้างอยู่)
-    guard = page.split("if (busy || pinnedOutput.has(name) || nodeIsInUse(name))")[1][:300]
+    guard = page.split("if (busy || nodeIsInUse(name))")[1][:300]
     assert "paintSummary" in guard, "ค่าในหัวต้องไม่ค้างตอนตัวการ์ดถูกล็อก"
 
 
@@ -2067,3 +2074,17 @@ def test_web_site_change_does_not_touch_cluster():
     client.patch("/api/nodes/cust1", json={"site": "customer-a"})
     node = find("cust1")
     assert node.cluster_ip == "10.10.0.1" and node.stack is True   # cluster ไม่ถูกแตะ
+
+
+def test_long_output_cannot_stretch_the_page():
+    """log 400 บรรทัดต้องเลื่อนอยู่ในกล่องตัวเอง ไม่ใช่ดันการ์ดเครื่องอื่นหายไปจากจอ"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert ".nout pre { max-height:" in page
+    assert "overflow: auto" in page.split(".nout pre {")[1][:120]
+
+
+def test_a_successful_job_keeps_its_result_on_screen():
+    """test-text ที่ผ่านก็ยังต้องอ่านคำตอบได้ — เดิมผลถูกล้างทันทีที่ exit 0"""
+    page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    success = page.split("watchingNodes.delete(key);")[1][:600]
+    assert "pinnedOutput.delete(node);\n      loadNode(node);" not in success
