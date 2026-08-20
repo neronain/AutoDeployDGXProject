@@ -25,6 +25,23 @@ Built and maintained by **neronain** — [facebook.com/neronain.minidev](https:/
 
 ---
 
+## What it looks like
+
+<div align="center">
+
+<img src="docs/img/fleet.png" alt="LMDS web console — the whole fleet on one page" width="900">
+
+*Every machine on one page — GPUs, RAM, temperature, how many models are serving. A machine
+with no GPU knows it is a control plane and refuses to pull weights down.*
+
+<img src="docs/img/model-scores.png" alt="Model scores measured against the real server" width="900">
+
+*Scores measured through the running server own OpenAI API — decode tok/s, TTFT, the context
+it will actually accept, and seven capabilities probed one at a time. Comparable across engines
+and across machines.*
+
+</div>
+
 ## The problem it solves
 
 Getting a model onto your own hardware is rarely hard because you cannot find the command. It is
@@ -175,6 +192,7 @@ other what to fix.
 | [INSTALL.md](docs/INSTALL.md) | Step-by-step install — prerequisites, disk, proxy/air-gapped, providers, uninstall |
 | [USAGE.md](docs/USAGE.md) | Full guide — deploy, every controller command and env var, fleet, web console, troubleshooting |
 | [PREFLIGHT.md](docs/PREFLIGHT.md) | What is checked before deploying and why — every item from something that really broke |
+| [NETWORK.md](docs/NETWORK.md) | Every port and protocol the system uses, who talks to whom, and what to open when forwarding ports or sitting behind a reverse proxy |
 | [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | The multi-node command sequence as actually run, with real figures and timings |
 | [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Running many machines from one |
 | [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | NVIDIA's clustering docs — what they confirm, what they add |

@@ -14,13 +14,29 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-proprietary-8a5300)](LICENSE)
 
-**[ติดตั้ง](docs/INSTALL.md)** · **[คู่มือใช้งาน](docs/USAGE.md)** · **[หลายเครื่อง](docs/RUNBOOK-MULTI-NODE.md)** · **[สิ่งที่ตรวจให้ก่อน deploy](docs/PREFLIGHT.md)** · **[English](README.en.md)**
+**[ติดตั้ง](docs/INSTALL.md)** · **[คู่มือใช้งาน](docs/USAGE.md)** · **[หลายเครื่อง](docs/RUNBOOK-MULTI-NODE.md)** · **[สิ่งที่ตรวจให้ก่อน deploy](docs/PREFLIGHT.md)** · **[พอร์ต &amp; เครือข่าย](docs/NETWORK.md)** · **[English](README.en.md)**
 
 สร้างและดูแลโดย **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
 
 </div>
 
 ---
+
+## หน้าตาระบบ
+
+<div align="center">
+
+<img src="docs/img/fleet.png" alt="หน้าเว็บ LMDS — ทั้งฟลีตในหน้าเดียว" width="900">
+
+*ทุกเครื่องในฟลีตหน้าเดียว — GPU, RAM, อุณหภูมิ, จำนวนโมเดลที่รันอยู่ · เครื่องที่ไม่มี GPU
+รู้ตัวว่าเป็น control plane และไม่ยอมโหลด weight ลงมา*
+
+<img src="docs/img/model-scores.png" alt="คะแนนโมเดลที่วัดจากเซิร์ฟเวอร์จริง" width="900">
+
+*คะแนนที่ยิงผ่าน OpenAI API ของเซิร์ฟเวอร์จริง — decode tok/s, TTFT, context ที่ตั้งได้จริง
+และความสามารถ 7 ข้อที่ทดสอบทีละข้อ · เทียบข้าม engine และข้ามเครื่องได้*
+
+</div>
 
 ## ปัญหาที่มันแก้
 
@@ -275,6 +291,7 @@ script-update (candidates) เพื่อรอ review → promote ขึ้น
 | [USAGE.md](docs/USAGE.md) | คู่มือใช้งานเต็ม — deploy, คำสั่ง controller ทุกตัว + env, fleet, หน้าเว็บ, troubleshooting |
 | [BENCH.md](docs/BENCH.md) | ให้คะแนนโมเดลที่รันอยู่ — ความเร็ว (TTFT/decode/prefill) + ความสามารถ 7 ข้อ วัดจากเซิร์ฟเวอร์จริง |
 | [PREFLIGHT.md](docs/PREFLIGHT.md) | สิ่งที่ระบบตรวจให้ก่อน deploy และทำไม — ทุกข้อมาจากของที่พังจริง |
+| [NETWORK.md](docs/NETWORK.md) | พอร์ตและโปรโตคอลทุกตัวที่ระบบใช้ ใครคุยกับใคร และต้องเปิดอะไรเวลา forward port หรืออยู่หลัง reverse proxy |
 | [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | ลำดับคำสั่งข้ามเครื่องที่รันจริงแล้ว พร้อมตัวเลขและเวลาที่ใช้แต่ละขั้น |
 | [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | คุมหลายเครื่องจากเครื่องเดียว |
 | [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | เอกสารคลัสเตอร์ของ NVIDIA — อะไรยืนยันของเรา อะไรเติมของใหม่ |
