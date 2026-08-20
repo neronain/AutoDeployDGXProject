@@ -1670,7 +1670,7 @@ async function load(slug, kind) {
   const d = await r.json();
   const fixes = d.findings.filter(f => f.fix && f.status !== "ok");
   panel.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)">
-    ${d.findings.map(findRow).join("")}
+    ${(d.findings || []).map(findRow).join("")}
     ${fixes.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
       ${fixes.map(f => `<div class="find"><b>${esc(f.name)}</b><code>${esc(f.fix)}</code></div>`).join("")}
     </div>` : `<div class="dim" style="margin-top:8px">Nothing blocking the model from running.</div>`}
@@ -1931,7 +1931,7 @@ async function paintContextAdvice() {
     return;
   }
 
-  const rows = data.ladder.map(r => {
+  const rows = (data.ladder || []).map(r => {
     const here = r.context === data.asked;
     return `<tr${here ? ' style="font-weight:600"' : ""}>
       <td style="text-align:right;padding:2px 10px 2px 0">${r.context.toLocaleString()}</td>
@@ -1940,7 +1940,7 @@ async function paintContextAdvice() {
     </tr>`;
   }).join("");
 
-  const lines = data.advice.map(a => {
+  const lines = (data.advice || []).map(a => {
     const say = CTX_ADVICE[a.kind];
     if (!say) return "";
     const cls = a.level === "bad" ? "warn-line" : a.level === "warn" ? "warn-line" : "ok-line";
@@ -1985,7 +1985,7 @@ function planView(d) {
     <div id="w-ctx-advice"></div>
     ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
       <div class="muted">Flags that need your approval</div>
-      ${p.flags_needing_approval.map(fl => `<label style="display:block;padding:3px 0">
+      ${(p.flags_needing_approval || []).map(fl => `<label style="display:block;padding:3px 0">
         <input type="checkbox" class="w-flag" value="${esc(fl)}" style="min-width:auto;flex:none"> <code>${esc(fl)}</code></label>`).join("")}
     </div>` : ""}
     <div class="field" style="margin-top:14px">
@@ -2042,7 +2042,7 @@ async function analyzeNow(overrides = {}) {
     if (r.ok) { planView(d); return; }
     const det = d.detail || {};
     if (det.kind === "choose-gguf") {
-      wizForm(det.message, `<div style="margin-top:10px">${det.variants.map(v =>
+      wizForm(det.message, `<div style="margin-top:10px">${(det.variants || []).map(v =>
         `<label style="display:block;padding:3px 0"><input type="radio" name="gguf" value="${esc(v.filename)}" style="min-width:auto;flex:none">
          <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? v.size_gb + " GB" : ""}</span></label>`).join("")}
         <button id="w-gguf" style="margin-top:8px">Use this file</button></div>`);
@@ -2238,13 +2238,16 @@ document.addEventListener("click", async e => {
 
   if (act.startsWith("auto:")) {
     btn.disabled = true;
-    const r = await api(`/api/models/${encodeURIComponent(slug)}/autostart`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled: act === "auto:on" }),
-    });
-    const d = await r.json();
-    if (!r.ok) alert(`Could not change autostart\n\n${d.detail || ""}`);
-    btn.disabled = false;
+    try {
+      const r = await api(`/api/models/${encodeURIComponent(slug)}/autostart`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: act === "auto:on" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) alert(`Could not change autostart\n\n${d.detail || ""}`);
+    } finally {
+      btn.disabled = false;
+    }
     refresh();
     return;
   }
@@ -2255,7 +2258,12 @@ document.addEventListener("click", async e => {
     const size = b => (b / 1024 ** 3).toFixed(1);
     box.innerHTML = `<div style="border:1px solid var(--bad);border-radius:7px;padding:12px;margin-top:10px">
       <div class="warn-line" style="color:var(--bad)">Deletes ${size(d.total_bytes)} GB — cannot be undone</div>
-      ${d.items.map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
+      <!-- ค่าที่หายไปหนึ่งฟิลด์ไม่ควรทำให้ทั้งหน้าหยุดทำงาน · ก่อนหน้านี้ .map() ยิงตรง
+             บน property ของ response · พอเซิร์ฟเวอร์ตอบไม่ครบ (จบงานแล้วรูปแบบเปลี่ยน,
+             จังหวะที่ของถูกลบไปแล้ว) จะได้ TypeError หลุดออกไปถึง unhandledrejection
+             แล้วเด้ง "คำสั่งไม่สำเร็จ — Cannot read properties of undefined (reading 'map')"
+             ซึ่งไม่ได้บอกอะไรผู้ใช้เลย และปุ่มค้างอยู่อย่างนั้น -->
+            ${(d.items || []).map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
       <div class="field" style="margin-top:10px">
         <label><input type="checkbox" id="keep-${esc(slug)}" style="min-width:auto;flex:none" checked> Keep the weights (re-deploy without downloading again)</label>
         <button data-act="removego" data-slug="${esc(slug)}" style="border-color:var(--bad);color:var(--bad)">Confirm removal</button>
@@ -2267,6 +2275,11 @@ document.addEventListener("click", async e => {
   if (act === "removego") {
     const keep = (document.getElementById("keep-" + slug) || {}).checked;
     btn.disabled = true; btn.textContent = "Removing…";
+    // ทุกทางออกของบล็อกนี้ต้องคืนปุ่มและปิดกล่องยืนยัน · ก่อนหน้านี้การคืนสถานะกระจาย
+    // อยู่ในแต่ละ branch แล้ว "ทางออกที่ไม่ได้เขียนไว้" — ข้อยกเว้นที่หลุดจาก refresh() —
+    // ทิ้งปุ่มค้างที่ "Removing…" และกล่องยืนยันเปิดค้าง ทั้งที่โมเดลถูกลบไปแล้วจริง
+    // ผู้ใช้เห็น alert หนึ่งอันแล้วหน้าจอไม่ขยับอีกเลย
+    try {
     const r = await api(`/api/models/${encodeURIComponent(slug)}/remove`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ keep_weights: keep }),
@@ -2297,6 +2310,13 @@ document.addEventListener("click", async e => {
     rows.delete(slug);
     await refresh();
     return;
+    } finally {
+      // กล่องยืนยันปิดเสมอ และปุ่มกลับมากดได้เสมอ ไม่ว่าออกทางไหน
+      const box = document.getElementById("rm-" + slug);
+      if (box) box.innerHTML = "";
+      btn.disabled = false;
+      btn.textContent = "Confirm removal";
+    }
   }
 
   if (act.startsWith("bench:")) {
@@ -2906,13 +2926,19 @@ document.addEventListener("click", async e => {
     const msg = document.getElementById("n-msg");
     e.target.disabled = true;
     msg.innerHTML = `<div class="muted">Installing the key and contacting the machine…</div>`;
-    const r = await api("/api/nodes", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ host: val("n-host"), user: val("n-user"), name: val("n-name"),
-                             port: +val("n-port") || 22, password: val("n-pass") }),
-    });
-    const d = await r.json();
-    e.target.disabled = false;
+    let r, d;
+    try {
+      r = await api("/api/nodes", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ host: val("n-host"), user: val("n-user"), name: val("n-name"),
+                               port: +val("n-port") || 22, password: val("n-pass") }),
+      });
+      d = await r.json().catch(() => ({}));
+    } finally {
+      // เครื่องที่ต่อไม่ติดทำให้ api() โยนออกมา — ถ้าไม่คืนปุ่มตรงนี้ ผู้ใช้จะกดเพิ่ม
+      // เครื่องอีกไม่ได้เลยจนกว่าจะรีโหลดหน้า
+      e.target.disabled = false;
+    }
     if (!r.ok) {
       const det = d.detail || {};
       msg.innerHTML = `<div class="warn-line" style="color:var(--bad)">${esc(det.message || det || "Could not add the machine")}</div>`;
@@ -3284,7 +3310,7 @@ function clusterStrip(m, group, index) {
 
 // หัวกลุ่ม: บอกว่ากลุ่มนี้คือเครื่องอะไรบ้าง พร้อมสิ่งที่ยังขาด — อยู่เหนือเครื่องที่มันพูดถึง
 function groupHeader(g, index) {
-  const blockers = g.blockers.map(b => `<div class="warn-line">${esc(({
+  const blockers = (g.blockers || []).map(b => `<div class="warn-line">${esc(({
     "missing-ip": "ยังไม่ได้ตั้ง cluster IP ที่: ",
     "duplicate-ip": "cluster IP ซ้ำกันมากกว่าหนึ่งเครื่อง: ",
     "split-fabric": "cluster IP อยู่คนละ subnet คุยกันไม่ได้: ",
@@ -3306,7 +3332,7 @@ function groupHeader(g, index) {
   return `<div class="ghead">
       <span class="gtag" style="--g:${GROUP_COLOURS[index % GROUP_COLOURS.length]}">
         Cluster ${String.fromCharCode(65 + index)}</span>
-      <b style="font-weight:500">${esc(g.members.map(m => m.name).join("  ⇄  "))}</b>
+      <b style="font-weight:500">${esc((g.members || []).map(m => m.name).join("  ⇄  "))}</b>
       <span class="grow"></span>
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "stacked ได้" : "ยังไม่พร้อม"}</span>
     </div>
@@ -3487,12 +3513,16 @@ document.addEventListener("click", async e => {
   if (toggle) {
     const stack = !toggle.dataset.stack;
     toggle.disabled = true;
-    const r = await api(toggle.dataset.self ? "/api/cluster/self"
-      : `/api/nodes/${encodeURIComponent(toggle.dataset.node)}`, {
-      method: "PATCH", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ stack }),
-    });
-    toggle.disabled = false;
+    let r;
+    try {
+      r = await api(toggle.dataset.self ? "/api/cluster/self"
+        : `/api/nodes/${encodeURIComponent(toggle.dataset.node)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ stack }),
+      });
+    } finally {
+      toggle.disabled = false;
+    }
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       alert(d.detail || "Could not change that setting");
@@ -3507,11 +3537,15 @@ document.addEventListener("click", async e => {
   const name = btn.dataset.node;
   const input = document.querySelector(`input[data-ipfor="${CSS.escape(name)}"]`);
   btn.disabled = true;
-  const r = await api(`/api/nodes/${encodeURIComponent(name)}`, {
-    method: "PATCH", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cluster_ip: (input.value || "").trim() }),
-  });
-  btn.disabled = false;
+  let r;
+  try {
+    r = await api(`/api/nodes/${encodeURIComponent(name)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cluster_ip: (input.value || "").trim() }),
+    });
+  } finally {
+    btn.disabled = false;
+  }
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
     alert(d.detail || "Could not save the cluster IP");
@@ -4286,12 +4320,16 @@ document.addEventListener("click", async e => {
   if (e.target.id !== "p-save") return;
   const val = id => (document.getElementById(id) || {}).value || "";
   e.target.disabled = true;
-  const r = await api("/api/provider", {
-    method: "PUT", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name: val("p-name"), model: val("p-model"),
-                           base_url: val("p-url"), api_key: val("p-key") }),
-  });
-  e.target.disabled = false;
+  let r;
+  try {
+    r = await api("/api/provider", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: val("p-name"), model: val("p-model"),
+                             base_url: val("p-url"), api_key: val("p-key") }),
+    });
+  } finally {
+    e.target.disabled = false;
+  }
   const d = await r.json();
   if (!r.ok) { providerForm(typeof d.detail === "string" ? d.detail : "บันทึกไม่สำเร็จ"); return; }
   providerState = d;

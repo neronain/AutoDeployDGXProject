@@ -2189,3 +2189,45 @@ def test_the_settings_panels_can_persist_what_they_collect():
     assert 'data-nact="save-settings"' in html
     assert 'data-nact="clear-settings"' in html
     assert "/settings`" in html, "ปุ่ม Save ของแผงเครื่องนี้ต้องเรียก PUT /api/models/<slug>/settings"
+
+
+def test_no_map_runs_on_an_unguarded_property():
+    """ฟิลด์เดียวที่หายไปไม่ควรทำให้ทั้งหน้าหยุดทำงาน
+
+    ลูกค้าเจอ `คำสั่งไม่สำเร็จ — Cannot read properties of undefined (reading 'map')`
+    บ่อยจนใช้งานไม่ได้ · ต้นเหตุคือ `.map()` ยิงตรงบน property ของ response
+    พอเซิร์ฟเวอร์ตอบไม่ครบ TypeError หลุดไปถึง unhandledrejection แล้วปุ่มค้าง
+    """
+    import re
+
+    html = _console_html()
+    risky = []
+    for number, line in enumerate(html.splitlines(), 1):
+        for match in re.finditer(r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\.map\(", line):
+            expr = match.group(1)
+            if "?." in expr:
+                continue
+            if any(f"({expr} {op} [])" in line or f"{expr} {op} []" in line
+                   for op in ("||", "??")):
+                continue
+            risky.append(f"บรรทัด {number}: {expr}.map(")
+    assert risky == [], "map() ที่ไม่มีตัวกัน:\n" + "\n".join(risky)
+
+
+def test_a_button_that_is_disabled_gets_re_enabled_no_matter_what():
+    """ปุ่มที่ปิดไว้ระหว่างทำงาน ต้องมีทางกลับมาเสมอ
+
+    รูปแบบที่พังคือ disabled=true → await api(...) → disabled=false · พอ api() โยน
+    ข้อผิดพลาด บรรทัดสุดท้ายไม่เคยถูกรัน ปุ่มค้างจนกว่าจะรีโหลดหน้า — ตรงกับที่ลูกค้า
+    รายงานว่า "กดปุ่มแล้วค้าง พอทำงานจบหน้าจอส่วนนั้นไม่ปิด"
+    """
+    lines = _console_html().splitlines()
+    stuck = []
+    for number, line in enumerate(lines, 1):
+        if "disabled = true" not in line:
+            continue
+        window = "\n".join(lines[number - 1:number + 60])
+        if "finally" in window or "withButton" in window or "location.reload()" in window:
+            continue
+        stuck.append(f"บรรทัด {number}: {line.strip()[:80]}")
+    assert stuck == [], "ปุ่มที่อาจค้างถาวร:\n" + "\n".join(stuck)
