@@ -2124,3 +2124,68 @@ def test_the_output_panel_button_does_not_claim_to_delete_anything():
     assert ">ปิดข้อความนี้<" in page
     # และไม่มีคำอังกฤษหลงเหลือในปุ่มของหน้าที่เป็นไทยทั้งหน้า
     assert ">Dismiss<" not in page
+
+
+# ---------------------------------------------------------------------------
+# ปุ่มกับ handler ต้องมาเป็นคู่
+# ---------------------------------------------------------------------------
+def _console_html() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def _rendered_actions(html: str) -> set:
+    """ทุก action ที่มีปุ่มวาดออกมาจริง — ทั้งที่เขียนตรง ๆ และที่ผ่านตัวช่วย"""
+    import re
+
+    actions = set(re.findall(r'data-(?:n)?act="([a-z0-9:_-]+)"', html))
+    for fn, prefix in (("ctl", "ctl:"), ("job", "job:"), ("btn", "")):
+        for name in re.findall(fn + r'\("([a-z0-9:_-]+)"', html):
+            actions.add(prefix + name)
+    return actions
+
+
+def _handled_actions(html: str) -> set:
+    import re
+
+    handled = set(re.findall(r'n?act === "([a-z0-9:_-]+)"', html))
+    handled |= set(re.findall(r'n?act\.startsWith\("([a-z0-9:_-]+)"\)', html))
+    return handled
+
+
+def test_every_handler_has_a_button_that_reaches_it():
+    """handler ที่ไม่มีปุ่มให้กด = ฟีเจอร์ที่ผู้ใช้เอื้อมไม่ถึง และไม่มีอะไรฟ้อง
+
+    เจอจริง: save-settings กับ clear-settings มี handler และมี endpoint พร้อม
+    ตั้งแต่ dcf58be แต่ไม่เคยมีปุ่มถูกวาดในแผงของ node เลย · ลูกค้ารายงานว่า
+    "เปลี่ยน ID ไม่ได้ เปลี่ยน port ไม่ได้" ซึ่งตรงกับสิ่งที่เห็นบนหน้าจอทุกประการ —
+    ช่องกรอกได้ แต่ไม่มีอะไรให้กด และค่าไม่เคยถูกบันทึก
+    """
+    # ปุ่มแถวบนของโมเดลเลือกคำสั่งจากสถานะ แล้วส่งชื่อนั้นเข้าตัวช่วยเป็นตัวแปร
+    # (`const act = m.running ? "stop" : (m.downloaded ? "start" : "download")`)
+    # ตัวอ่านแบบข้อความจึงมองไม่เห็นว่ามันถูกวาด — ไม่ใช่ orphan จริง
+    RENDERED_FROM_A_VARIABLE = {"start", "stop", "restart", "download"}
+
+    html = _console_html()
+    rendered = _rendered_actions(html) | RENDERED_FROM_A_VARIABLE
+    orphans = sorted(
+        action
+        for action in _handled_actions(html)
+        if action not in rendered and not any(r.startswith(action) for r in rendered)
+    )
+    assert orphans == [], f"handler ที่ไม่มีปุ่ม: {orphans}"
+
+
+def test_the_settings_panels_can_persist_what_they_collect():
+    """ช่องที่กรอกได้ต้องมีทางบันทึกลง bundle ไม่ใช่อยู่แค่ในเบราว์เซอร์
+
+    ค่าที่อยู่แค่ในเบราว์เซอร์หายทุกครั้งที่ reboot เพราะ systemd เรียก controller
+    เปล่า ๆ — ซึ่งเป็นเหตุผลที่ bundle.env ถูกสร้างขึ้นมาตั้งแต่แรก
+    """
+    html = _console_html()
+    assert 'data-nact="save-settings"' in html
+    assert 'data-nact="clear-settings"' in html
+    assert "/settings`" in html, "ปุ่ม Save ของแผงเครื่องนี้ต้องเรียก PUT /api/models/<slug>/settings"

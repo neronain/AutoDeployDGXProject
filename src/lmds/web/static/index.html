@@ -1236,7 +1236,9 @@ function manageMarkup(m) {
     <div class="field">
       <label>API key</label>
       <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="empty = no authentication">
-      ${btn("genkey", "Generate")}${btn("saveopts", "Save")}
+      ${btn("genkey", "Generate")}${btn("saveopts", "Save")}${btn("clearopts", "Clear")}
+      <span class="dim">Save เขียนลง bundle.env — มีผลกับ start ทุกทาง รวม autostart ตอน reboot
+        · API key เก็บในเบราว์เซอร์นี้เท่านั้น</span>
     </div>
 
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-edit"/></svg><span class="sec-title">Edit the launch script</span></div>
@@ -2190,15 +2192,47 @@ document.addEventListener("click", async e => {
     }
     return;
   }
-  if (act === "saveopts") {
+  if (act === "saveopts" || act === "clearopts") {
+    // เดิมปุ่มนี้เขียนลง localStorage อย่างเดียวแล้วขึ้นว่า "Saved" · ค่าจึงไปถึง
+    // controller เฉพาะตอนกด start จากหน้านี้ · autostart ตอน reboot กับปุ่ม test-*
+    // เรียก controller เปล่า ๆ แล้วตกไปใช้ default — endpoint สำหรับบันทึกลง bundle
+    // มีมาตั้งแต่แรก (PUT /api/models/<slug>/settings) แต่ไม่เคยถูกเรียกจากหน้าเว็บ
+    const clearing = act === "clearopts";
     const panel = document.getElementById("panel-" + slug);
     const val = sel => (panel.querySelector(sel) || {}).value || "";
-    setOpts(slug, { port: +val(".o-port") || null, context: +val(".o-ctx") || null,
-                    slots: +val(".o-slots") || null, bind: val(".o-bind"), api_key: val(".o-key"),
-                    image: val(".o-image") || null,
-                    served_name: val(".o-served") || null });
-    btn.textContent = "Saved";
-    setTimeout(() => { btn.textContent = "Save"; }, 1500);
+    const opts = { port: +val(".o-port") || null, context: +val(".o-ctx") || null,
+                   slots: +val(".o-slots") || null, bind: val(".o-bind"), api_key: val(".o-key"),
+                   image: val(".o-image") || null,
+                   served_name: val(".o-served") || null };
+    setOpts(slug, clearing ? {} : opts);
+
+    const body = {};
+    if (!clearing) {
+      for (const [k, v] of Object.entries(opts)) {
+        if (k === "api_key") continue;          // สัญญากับผู้ใช้: key ไม่ถูกเขียนลง bundle
+        if (v !== null && v !== "") body[k] = v;
+      }
+    }
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = clearing ? "clearing…" : "saving…";
+    try {
+      const r = await api(`/api/models/${encodeURIComponent(slug)}/settings`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(`บันทึกไม่สำเร็จ\n\n${d.detail || ""}`); btn.textContent = label; return; }
+      btn.textContent = clearing ? "Cleared" : "Saved";
+    } catch (e) {
+      alert(`บันทึกไม่สำเร็จ\n\n${e}`);
+      btn.textContent = label;
+      return;
+    } finally {
+      btn.disabled = false;
+    }
+    setTimeout(() => { btn.textContent = label; }, 1600);
+    refresh();
     return;
   }
 
@@ -2673,6 +2707,18 @@ function nodeModelsMarkup(name, data) {
                    placeholder="empty = the image the bundle sets" style="min-width:280px"
                    title="ใช้ตอน image ของ bundle ใช้ไม่ได้ (tag ผิด/ถูกถอน) — ไม่ต้อง deploy ใหม่">
             <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
+          </div>
+          <!-- ปุ่มสองตัวนี้เคยหายไปทั้งที่ handler กับ endpoint พร้อมมาตั้งแต่ dcf58be
+               ผลคือช่องข้างบนกรอกได้แต่ไม่มีอะไรให้กด · ค่าไปถึงปลายทางเฉพาะตอนกด start
+               จากหน้านี้เท่านั้น พอ restart/reboot/autostart ก็หายหมด
+               ลูกค้ารายงานว่า "เปลี่ยน ID ไม่ได้ เปลี่ยน port ไม่ได้" ซึ่งถูกต้องตามที่เห็น -->
+          <div class="field" style="width:100%">
+            <button data-nact="save-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="เขียนค่าข้างบนลง bundle.env บนเครื่องปลายทาง — มีผลกับ start ทุกทาง รวม autostart ตอน reboot">บันทึกค่า</button>
+            <button data-nact="clear-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="ลบค่าที่บันทึกไว้ กลับไปใช้ค่าของ bundle">ล้างค่า</button>
+            <span class="dim">ไม่กดบันทึก = ค่าถูกใช้เฉพาะตอนกด start จากหน้านี้ครั้งนี้เท่านั้น
+              · API key ไม่ถูกเขียนลง bundle ไม่ว่ากรณีใด</span>
           </div>
 
           ${(m.speculative || m.projector) ? `
