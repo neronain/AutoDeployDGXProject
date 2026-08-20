@@ -2915,7 +2915,7 @@ document.addEventListener("click", async e => {
                placeholder="used once, never stored" style="min-width:240px">
         <button data-nact="setup-go" data-node="${esc(node)}"
                 data-perms="${perms ? "1" : ""}">${perms ? "แก้สิทธิ์" : "ตั้งค่า"}</button>
-        <button data-nact="close-output" data-node="${esc(node)}">Dismiss</button>
+        <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
       </div>
       <div class="dim">รหัสผ่านถูกส่งทาง stdin ของ ssh — ไม่เขียนลงดิสก์ ไม่อยู่ในคำสั่ง
         และไม่ถูกเก็บในทะเบียน · ต้องกรอกใหม่ทุกครั้งที่ต้องใช้</div>
@@ -3770,7 +3770,8 @@ function showNodeOutput(node, title, output, extra = "") {
       <b style="font-weight:500">${esc(title)}</b>
       <span class="grow"></span>${extra}
       <button data-nact="close-output" data-node="${esc(node)}"
-              title="ลบผลลัพธ์นี้ทิ้ง — งานที่รันอยู่ไม่หยุดตาม">ลบผลลัพธ์</button>
+              title="ปิดกล่องข้อความนี้เท่านั้น — ไม่ลบอะไรบนเครื่อง และงานที่รันอยู่ไม่หยุดตาม"
+              >ปิดข้อความนี้</button>
     </div><pre>${esc(output || "(no output)")}</pre>`;
 }
 

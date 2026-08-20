@@ -2108,3 +2108,19 @@ def test_a_successful_job_keeps_its_result_on_screen():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     success = page.split("watchingNodes.delete(key);")[1][:600]
     assert "pinnedOutput.delete(node);\n      loadNode(node);" not in success
+
+
+def test_the_output_panel_button_does_not_claim_to_delete_anything():
+    """ปุ่มปิดกล่องผลลัพธ์เคยชื่อ "ลบผลลัพธ์" และวางอยู่ใต้ผลของคำสั่ง remove พอดี
+
+    ผู้ใช้ที่เพิ่งลบ weight ไป 42 GB อ่านแล้วไม่กล้ากด เพราะไม่รู้ว่ามันจะลบอะไรอีก
+    มันแค่ปิดกล่องข้อความ ไม่แตะอะไรบนเครื่องปลายทางเลย
+    """
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parents[1]
+            / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert ">ลบผลลัพธ์<" not in page
+    assert ">ปิดข้อความนี้<" in page
+    # และไม่มีคำอังกฤษหลงเหลือในปุ่มของหน้าที่เป็นไทยทั้งหน้า
+    assert ">Dismiss<" not in page
