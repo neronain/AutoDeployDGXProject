@@ -4,6 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lmds"
+authors = [{ name = "neronain" }]
 dynamic = ["version"]          # source of truth เดียว: src/lmds/__init__.py
 description = "Local Model Deploy Studio - generate validated model deployment bundles for DGX Spark and RTX servers"
 readme = "README.md"

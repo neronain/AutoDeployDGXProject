@@ -654,6 +654,14 @@ pre {
 .npill.ok { color: var(--ok); border-color: var(--ok); }
 .npill.bad { color: var(--bad); border-color: var(--bad); }
 .npill.dim { opacity: .5; }
+
+/* ── ลายเซ็นผู้สร้าง — อยู่ในสายตาผู้ใช้ ไม่ใช่ในไฟล์ที่ไม่มีใครเปิด ── */
+#lmds-credit { max-width: 1180px; margin: 28px auto 22px; padding: 14px 18px 0;
+  border-top: 1px solid var(--line); display: flex; flex-wrap: wrap;
+  align-items: center; gap: 10px; font-size: calc(12px * var(--fs)); }
+#lmds-credit .cred-name { font-weight: 600; }
+#lmds-credit a { color: inherit; }
+#lmds-credit .grow { flex: 1; }
 </style>
 <script>
 // ตัดสินธีมก่อนวาดหน้า ไม่งั้นจะเห็นหน้าขาววาบก่อนแล้วค่อยเปลี่ยนเป็นมืด
@@ -3572,6 +3580,17 @@ async function refresh() {
 api("/api/version?check_repo=true").then(r => r.json()).then(d => {
   hubBuild = { version: d.version || "", commit: d.commit || "",
                installed: d.installed || "", upstream: d.upstream || "" };
+  // ลายเซ็นมาจาก /api/version ไม่ได้ฝังตายในหน้า — ถอดออกฝั่งเซิร์ฟเวอร์เมื่อไร
+  // footer ก็โล่งทันที เป็นสัญญาณที่มองเห็น ไม่ใช่การหายไปเงียบ ๆ
+  const foot = document.getElementById("lmds-credit");
+  if (foot && d.author) {
+    foot.querySelector(".cred-name").textContent = d.product || "LMDS";
+    const link = foot.querySelector("a");
+    link.textContent = d.author;
+    if (d.author_url) link.href = d.author_url;
+    document.getElementById("cred-lic").textContent =
+      [d.license, d.version ? "v" + d.version : ""].filter(Boolean).join(" · ");
+  }
   const el = document.getElementById("ver");
   const behind = hubBuild.upstream && hubBuild.commit && hubBuild.upstream !== hubBuild.commit;
   // ติดตั้งของใหม่ไว้แล้วแต่ยังรันของเก่าอยู่ — ต้องขึ้นก่อนป้าย "มีอัปเดต" เพราะมันคือ
@@ -4529,5 +4548,12 @@ boot().then(chatBoot).catch(chatBoot);
     ตอบจากสถานะจริงของ fleet นี้ ผ่าน LLM ที่คุณตั้งไว้เอง — ประวัติอยู่ในแท็บนี้เท่านั้น
   </p>
 </div>
+  <footer id="lmds-credit">
+    <span class="cred-name">Local Model Deploy Studio</span>
+    <span class="dim">สร้างโดย <a href="https://www.facebook.com/neronain.minidev"
+      target="_blank" rel="noopener">neronain</a></span>
+    <span class="grow"></span>
+    <span class="dim" id="cred-lic"></span>
+  </footer>
 </body>
 </html>

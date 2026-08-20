@@ -169,11 +169,19 @@ def create_app(token: str = "") -> FastAPI:
         # `installed` = ของบนดิสก์ · `commit` = ของที่ process นี้รันอยู่จริง
         # ต่างกัน = ติดตั้งใหม่แล้วแต่ยังไม่รีสตาร์ต ซึ่งหน้าเว็บต้องบอก ไม่งั้นมันจะโชว์
         # commit เก่าค้างแล้วไปกล่าวหา node ที่อัปเดตถูกต้องว่ารันโค้ดเก่า
+        from lmds.cli import banner
+
         payload = {
             "version": lmds.__version__,
             "commit": source_commit(),
             "installed": installed_commit(),
             "upstream": "",
+            # ลายเซ็นเดินทางมากับ payload ที่หน้าเว็บอ่านทุกครั้ง — ถอดออกเมื่อไร
+            # footer หายทันที ซึ่งเห็นได้ ไม่ใช่หายไปเงียบ ๆ ในไฟล์ที่ไม่มีใครเปิด
+            "author": banner.AUTHOR,
+            "author_url": banner.AUTHOR_URL,
+            "product": banner.PRODUCT,
+            "license": banner.LICENSE_NOTE,
         }
         if check_repo:
             payload["upstream"] = _upstream_commit()

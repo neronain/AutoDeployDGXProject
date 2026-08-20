@@ -16,7 +16,17 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
-CREDIT = "Local Model Deploy Studio — สร้างโดย neronain ⚡ fb.com/neronain.minidev"
+# ที่มาของลายเซ็นทุกจุดในโปรแกรม — CLI, หน้าเว็บ, bundle ที่ generate, /api/version
+#
+# รวมไว้ที่เดียวเพราะข้อความที่ก๊อปกระจายอยู่หลายไฟล์จะแก้ไม่ทั่ว แล้วสุดท้ายบางจุดก็หายไป
+# เงียบ ๆ · เคสจริง 2026-08-20: มีคนเอา repo ไปพัฒนาต่อโดยไม่ให้เครดิต — ลายเซ็นจึงต้อง
+# อยู่ในที่ที่ผู้ใช้ปลายทางเห็น ไม่ใช่แค่ในไฟล์ที่ลบทิ้งได้ในหนึ่งบรรทัด
+AUTHOR = "neronain"
+AUTHOR_URL = "https://www.facebook.com/neronain.minidev"
+PRODUCT = "Local Model Deploy Studio"
+LICENSE_NOTE = "Proprietary — All rights reserved"
+
+CREDIT = f"{PRODUCT} — สร้างโดย {AUTHOR} ⚡ fb.com/neronain.minidev"
 
 
 @dataclass

@@ -130,11 +130,31 @@ def wait_for_job(client, job_id, tries=50):
 
 
 def test_page_is_self_contained(fleet):
-    """เครื่องลูกค้าอาจอยู่หลัง proxy/air-gapped — หน้าเว็บต้องไม่ดึงอะไรจากเน็ต"""
+    """เครื่องลูกค้าอาจอยู่หลัง proxy/air-gapped — หน้าเว็บต้องไม่ *ดึง* อะไรจากเน็ต
+
+    กฎคือห้ามโหลดทรัพยากรจากภายนอก ไม่ใช่ห้ามเอ่ยถึง URL เลย · ลิงก์ `<a href>`
+    ไม่ได้โหลดอะไรตอนเปิดหน้า — หน้ายังทำงานครบในเครื่องที่ไม่มีเน็ต แค่กดลิงก์แล้ว
+    ไม่ไปไหนเท่านั้น · เดิมเช็ค "https://" ทั้งหน้า ซึ่งห้ามลายเซ็นผู้สร้างไปด้วย
+    """
+    import re
+
     body = TestClient(create_app()).get("/").text
     assert "<title>LMDS</title>" in body
-    for remote in ("https://", "http://cdn", "cdnjs", "googleapis", "unpkg"):
-        assert remote not in body, f"หน้าเว็บอ้างถึงแหล่งภายนอก: {remote}"
+
+    # ทรัพยากรที่เบราว์เซอร์จะไปโหลดเอง: script/img/iframe (src), stylesheet (link href),
+    # @import และ url(...) ใน CSS
+    loaders = (
+        re.findall(r"""<(?:script|img|iframe|source|video|audio)[^>]*\ssrc=["']([^"']+)""", body, re.I)
+        + re.findall(r"""<link[^>]*\shref=["']([^"']+)""", body, re.I)
+        + re.findall(r"""@import\s+["']([^"']+)""", body, re.I)
+        + re.findall(r"""url\(\s*["']?([^)"']+)""", body, re.I)
+    )
+    for target in loaders:
+        assert not target.lower().startswith(("http://", "https://", "//")), (
+            f"หน้าเว็บจะไปโหลดของจากภายนอก: {target}"
+        )
+    for host in ("cdnjs", "googleapis", "unpkg", "jsdelivr"):
+        assert host not in body, f"หน้าเว็บอ้างถึง CDN: {host}"
 
 
 def test_models_endpoint_matches_fleet(fleet):
