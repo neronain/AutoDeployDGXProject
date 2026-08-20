@@ -3234,6 +3234,28 @@ def bench_run(
     console.print(f"[dim]เทียบกับรอบก่อน: lmds bench show {slug}[/dim]")
 
 
+@bench_app.command("remove")
+def bench_remove(
+    slug: str = typer.Argument(..., help="ชื่อ (slug)", autocompletion=_complete_slug),
+    keep_last: int = typer.Option(0, "--keep-last", help="เก็บรอบล่าสุดไว้กี่รอบ (0 = ลบทั้งหมด)"),
+) -> None:
+    """ลบผลวัดที่เก็บไว้ของโมเดลหนึ่ง
+
+    ผลสะสมเร็วกว่าที่คิด เพราะการวัดซ้ำเป็นเรื่องปกติ (ก่อน/หลังเปลี่ยน flag,
+    ก่อน/หลังอัปเกรด engine) แล้วไม่มีใครกลับมาลบเอง
+    """
+    from lmds.bench import remove, runs_for
+
+    before = len(runs_for(slug))
+    if not before:
+        console.print(f"[dim]{slug} ไม่มีผลวัดเก็บไว้[/dim]")
+        return
+    removed = remove(slug, keep_last=max(0, keep_last))
+    kept = before - removed
+    console.print(f"ลบผลวัดของ [bold]{slug}[/bold] ไป {removed} รอบ"
+                  + (f" · เหลือไว้ {kept} รอบล่าสุด" if kept else ""))
+
+
 def _print_bench(workloads: list[dict], probes: list[dict]) -> None:
     from lmds.bench import capability_score, speed_summary
 

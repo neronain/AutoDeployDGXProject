@@ -784,6 +784,25 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "slug": slug, "command": command,
                 "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
 
+    @app.post("/api/nodes/{name}/bench/{slug}/remove", dependencies=guarded)
+    def node_bench_delete(name: str, slug: str, body: dict | None = None) -> dict:
+        """ลบผลวัดของโมเดลบนเครื่องอื่น — ผลอยู่ที่เครื่องที่วัด ไม่ได้อยู่ที่ hub"""
+        import shlex as _shlex
+
+        from lmds.nodes import NodeError, find, run
+
+        node_obj = find(name)
+        if node_obj is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        keep = max(0, int((body or {}).get("keep_last") or 0))
+        command = f"lmds bench remove {_shlex.quote(slug)} --keep-last {keep}"
+        try:
+            result = run(node_obj, command, timeout=120)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "slug": slug, "ok": result.ok,
+                "output": (result.stdout + result.stderr).strip()[-500:]}
+
     @app.post("/api/nodes/{name}/models/{slug}/bench", dependencies=guarded)
     def node_bench(name: str, slug: str, body: dict | None = None) -> dict:
         """สั่งวัดคะแนนโมเดลบนเครื่องอื่น — ผลถูกเก็บไว้ที่เครื่องนั้นตามเดิม
@@ -931,6 +950,13 @@ def create_app(token: str = "") -> FastAPI:
                 "engine_build": (entry.get("environment") or {}).get("engine_build", ""),
             })
         return {"run": load(paths[0]), "history": history}
+
+    @app.delete("/api/bench/{slug}", dependencies=guarded)
+    def bench_delete(slug: str, keep_last: int = 0) -> dict:
+        """ลบผลวัดของโมเดลหนึ่งบนเครื่องนี้ — ผลสะสมจนตารางอ่านไม่ไหวถ้าไม่มีทางลบ"""
+        from lmds.bench import remove
+
+        return {"slug": slug, "removed": remove(slug, keep_last=max(0, keep_last))}
 
     @app.post("/api/bench/{slug}/run", dependencies=guarded)
     def bench_start(slug: str, body: dict | None = None) -> dict:

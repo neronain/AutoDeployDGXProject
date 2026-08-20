@@ -832,7 +832,7 @@ pre {
 
   <div class="sec" style="--sc: var(--c1)">
     <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
-    <span class="sec-title">คะแนนโมเดล</span>
+    <span class="sec-title">Model scores</span>
     <span class="sec-act"><button id="bench-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
   </div>
   <div class="card" id="bench"><div class="empty">วัดความเร็วและความสามารถของโมเดลที่รันอยู่จริง —
@@ -994,9 +994,9 @@ function renderHost(h, models) {
   // เพราะไม่มีอะไรบอกว่าเครื่องนี้ไม่ได้มีไว้รันโมเดล
   const role = h.role || {};
   cards.push(role.control_plane
-    ? statCard("บทบาท", "control plane", `${esc(role.evidence || "")} · สร้าง bundle แล้ว push ไปเครื่องอื่น`,
+    ? statCard("Role", "control plane", `${esc(role.evidence || "")} · สร้าง bundle แล้ว push ไปเครื่องอื่น`,
         "var(--warn)")
-    : statCard("บทบาท", "รันโมเดลได้",
+    : statCard("Role", "serving",
         (role.engines || []).length ? `engine: ${esc((role.engines || []).join(", "))}` : "", "var(--ok)"));
 
   document.getElementById("stats").innerHTML = cards.join("");
@@ -1264,8 +1264,8 @@ function benchScoreClass(score) {
 
 // ชื่อไทยของแต่ละข้อความสามารถ — ต้องอ่านรู้เรื่องโดยไม่ต้องเปิดคู่มือ
 const BENCH_PROBE_NAMES = {
-  instructions: "ทำตามคำสั่ง", thai: "ไทย", json: "JSON",
-  tools: "tools", reasoning: "reasoning", vision: "ภาพ", recall: "จำยาว",
+  instructions: "instructions", thai: "Thai", json: "JSON",
+  tools: "tools", reasoning: "reasoning", vision: "vision", recall: "recall",
 };
 
 // ตัวเลขรวมบอกว่า "ดีแค่ไหน" แต่คนตัดสินใจต้องรู้ว่าตกข้อไหน — 85/100 ที่ตก tool calling
@@ -1297,25 +1297,48 @@ function benchRow(entry) {
           : `<span class="tag ${benchScoreClass(score)}">${score}/100</span>`}
         <div class="muted">${esc(entry.model_id || "")}</div></div>
       <div class="dim" style="text-align:right">${esc(entry.machine_name || entry.hostname || "")}<br>
-        ${esc(entry.engine || "")} ${esc(String(env.engine_build || "").slice(0, 18))}</div>
+        ${esc(entry.engine || "")} ${esc(String(env.engine_build || "").slice(0, 18))}
+        <br><button data-bench-del="${esc(entry.slug || "")}"
+                data-node="${esc(entry.machine_name || "")}"
+                title="ลบผลวัดของโมเดลนี้ทิ้ง — ไฟล์อยู่ที่เครื่องที่วัด"
+                style="margin-top:4px">Delete</button></div>
     </div>
     <div class="bstats">
-      ${stat("decode", tps ? tps.toFixed(1) + " tok/s" : "—", "ค่ากลางทุกงาน")}
-      ${stat("ที่ context ยาวสุด", long ? long.toFixed(1) + " tok/s" : "—",
+      ${stat("decode", tps ? tps.toFixed(1) + " tok/s" : "—", "median of all workloads")}
+      ${stat("longest context", long ? long.toFixed(1) + " tok/s" : "—",
              speed.longest_context ? speed.longest_context.toLocaleString() + " tok" : "")}
-      ${stat("TTFT", speed.ttft_s_short ? speed.ttft_s_short.toFixed(2) + "s" : "—", "prompt สั้นสุด")}
+      ${stat("TTFT", speed.ttft_s_short ? speed.ttft_s_short.toFixed(2) + "s" : "—", "shortest prompt")}
       ${stat("context", env.context ? Number(env.context).toLocaleString() : "—", env.quant || "")}
     </div>
     <div class="npills" style="margin-top:6px">${benchChips(cap)}</div>
-    <div class="dim" style="margin-top:4px">วัดเมื่อ ${
+    <div class="dim" style="margin-top:4px">measured ${
       esc((entry.stamped_at || "").replace("T", " ").slice(0, 16))}${
-      speed.failed ? ` · ${speed.failed} งานล้ม` : ""}${
-      entry.speed_from ? ` · ความเร็วจากรอบ ${
+      speed.failed ? ` · ${speed.failed} failed` : ""}${
+      entry.speed_from ? ` · speed from ${
         esc(entry.speed_from.replace("T", " ").slice(0, 16))}` : ""}${
-      entry.probes_from ? ` · ความสามารถจากรอบ ${
+      entry.probes_from ? ` · capability from ${
         esc(entry.probes_from.replace("T", " ").slice(0, 16))}` : ""}</div>
   </div>`;
 }
+
+// ลบผลวัด — ไฟล์อยู่บนเครื่องที่วัด ไม่ได้อยู่ที่ hub จึงต้องส่งคำสั่งไปเครื่องนั้น
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-bench-del]");
+  if (!btn) return;
+  const slug = btn.dataset.benchDel;
+  const node = btn.dataset.node;
+  const where = node ? `บน ${node}` : "บนเครื่องนี้";
+  if (!confirm(`ลบผลวัดทั้งหมดของ ${slug} ${where}?\n\nตัวโมเดลไม่ถูกแตะต้อง ลบเฉพาะผลที่วัดไว้`)) return;
+  const url = node
+    ? `/api/nodes/${encodeURIComponent(node)}/bench/${encodeURIComponent(slug)}/remove`
+    : `/api/bench/${encodeURIComponent(slug)}`;
+  const d = await withButton(btn, "ลบ…", () =>
+    api(url, node ? { method: "POST", headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ keep_last: 0 }) }
+              : { method: "DELETE" }));
+  if (!d) return;
+  loadBench();
+});
 
 async function loadBench() {
   const box = document.getElementById("bench");
@@ -1340,7 +1363,7 @@ async function loadBench() {
   }
   box.innerHTML = `<div class="pad">
     <div class="dim" style="margin-bottom:10px">ทุกเครื่องในฟลีต เรียงตาม decode tok/s ·
-      สภาพแวดล้อมกำกับไว้ทุกแถวเพราะ tok/s โดด ๆ เทียบกันไม่ได้</div>
+      แต่ละแถวกำกับ engine build / quant / context ไว้ เพราะ tok/s โดด ๆ เทียบกันไม่ได้</div>
     ${runs.map(benchRow).join("")}${missed}</div>`;
 }
 

@@ -116,6 +116,30 @@ def latest_merged(slug: str) -> dict | None:
     return merged
 
 
+def remove(slug: str, keep_last: int = 0) -> int:
+    """ลบผลวัดของโมเดลหนึ่ง คืนจำนวนไฟล์ที่ลบ
+
+    `keep_last` > 0 = เก็บรอบล่าสุดไว้เท่านั้น · ผลสะสมเร็วกว่าที่คิดเพราะการวัดซ้ำเป็น
+    เรื่องปกติ (ก่อน/หลังเปลี่ยน flag, ก่อน/หลังอัปเกรด engine) แล้วไม่มีใครกลับมาลบเอง
+    """
+    directory = bench_root() / slug
+    if not directory.is_dir():
+        return 0
+    runs = sorted(directory.glob("*.json"), reverse=True)
+    doomed = runs[keep_last:] if keep_last > 0 else runs
+    removed = 0
+    for path in doomed:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    # โฟลเดอร์ว่างที่ค้างไว้ทำให้ตารางคะแนนยังนับโมเดลนั้นอยู่ทั้งที่ไม่มีข้อมูลแล้ว
+    if not any(directory.iterdir()):
+        directory.rmdir()
+    return removed
+
+
 def all_runs() -> list[dict]:
     """ผลล่าสุดของทุกโมเดลที่เคยวัด — ใช้ทำตารางคะแนนรวม
 
