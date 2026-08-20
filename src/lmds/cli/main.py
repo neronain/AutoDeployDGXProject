@@ -112,7 +112,9 @@ def agent_info() -> None:
 
 
 @agent_app.command("bench")
-def agent_bench() -> None:
+def agent_bench(
+    slug: str = typer.Option("", "--slug", help="เอาผลเต็มของโมเดลนี้ตัวเดียว (ไม่ใส่ = สรุปทุกตัว)"),
+) -> None:
     """พิมพ์คะแนนที่วัดไว้บนเครื่องนี้เป็น JSON — hub เอาไปรวมเป็นตารางของทั้งฟลีต
 
     แยกจาก `agent info` โดยตั้งใจ: info ถูก poll ทุกไม่กี่วินาทีเพื่ออัปเดตสถานะ
@@ -120,8 +122,16 @@ def agent_bench() -> None:
     """
     import json as json_module
 
-    from lmds.bench import all_runs, summarize
+    from lmds.bench import all_runs, latest_merged, runs_for, summarize
 
+    if slug:
+        # หน้ารายละเอียดต้องการตัวเลขต่องานทุกงาน ไม่ใช่แค่บทสรุป — ส่งทั้งก้อนไปเลย
+        merged = latest_merged(slug)
+        print(json_module.dumps(
+            {"run": merged,
+             "history": [{"stamped_at": p.stem} for p in runs_for(slug)]},
+            ensure_ascii=False))
+        return
     print(json_module.dumps({"runs": [summarize(run) for run in all_runs()]},
                             ensure_ascii=False))
 
@@ -3145,6 +3155,15 @@ bench_app = typer.Typer(help="วัดความเร็วและคว�
 app.add_typer(bench_app, name="bench")
 
 
+def _quant_from_filename(filename: str) -> str:
+    """ดึงชื่อ quant ออกจากชื่อไฟล์ GGUF — Qwen3.8-27B-Uncensored-Q4_K_M.gguf → Q4_K_M"""
+    import re as _re
+
+    match = _re.search(r"[.-]((?:IQ|Q)\d[^.]*?|BF16|F16|F32)(?:\.gguf|-\d{5}-of-\d{5}\.gguf)$",
+                       filename or "", _re.IGNORECASE)
+    return match.group(1).upper() if match else ""
+
+
 def _bench_environment(server, profile: dict) -> dict:
     """สภาพแวดล้อมที่ทำให้ตัวเลขความเร็วมีความหมาย — ขาดอันไหนไปก็เทียบข้ามรอบไม่ได้"""
     import httpx
@@ -3152,7 +3171,10 @@ def _bench_environment(server, profile: dict) -> dict:
     model = (profile or {}).get("model") or {}
     serving = (profile or {}).get("serving") or {}
     environment = {
-        "quant": model.get("quantization") or model.get("quant") or "",
+        # ทาง GGUF ไม่ได้จด quantization ไว้ใน profile — ชื่อไฟล์บอกอยู่แล้ว (…-Q4_K_M.gguf)
+        # การ์ดนำเสนอที่ช่อง quantization ว่างอ่านแล้วเหมือนข้อมูลไม่ครบ ทั้งที่รู้ได้
+        "quant": (model.get("quantization") or model.get("quant")
+                  or _quant_from_filename(model.get("selected_gguf") or profile.get("selected_gguf") or "")),
         "context": serving.get("context") or serving.get("context_tokens") or 0,
         "engine_build": "",
         "features": (profile or {}).get("features") or {},

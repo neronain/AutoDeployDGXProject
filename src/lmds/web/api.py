@@ -784,6 +784,28 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "slug": slug, "command": command,
                 "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
 
+    @app.get("/api/nodes/{name}/bench/{slug}", dependencies=guarded)
+    def node_bench_detail(name: str, slug: str) -> dict:
+        """ผลวัดเต็มของโมเดลบนเครื่องอื่น — ไฟล์อยู่ที่นั่น hub แค่ไปอ่านมา"""
+        import shlex as _shlex
+
+        from lmds.nodes import NodeError, find, run
+        from lmds.nodes.ssh import _json_object
+
+        node_obj = find(name)
+        if node_obj is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        try:
+            result = run(node_obj, f"lmds agent bench --slug {_shlex.quote(slug)}", timeout=60)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        payload = _json_object(result.stdout) if result.ok else None
+        if payload is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{name} ตอบกลับไม่ได้: {(result.stderr or result.stdout).strip()[:200]}")
+        return payload
+
     @app.post("/api/nodes/{name}/bench/{slug}/remove", dependencies=guarded)
     def node_bench_delete(name: str, slug: str, body: dict | None = None) -> dict:
         """ลบผลวัดของโมเดลบนเครื่องอื่น — ผลอยู่ที่เครื่องที่วัด ไม่ได้อยู่ที่ hub"""

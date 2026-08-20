@@ -146,6 +146,9 @@ a { color: var(--accent); text-underline-offset: 2px; }
    หัวข้อ Other machines ห่อปุ่มไว้ใน <span> ปุ่มจึงไม่ได้ order อะไรเลย = 0 แล้วไปโผล่
    ก่อนชื่อหัวข้อ · ตอนนี้ทุกหัวข้อใช้ .sec-act เหมือนกัน ไม่ต้องเดาจากรูปทรงของ DOM */
 .sec .chip { order: 0; }
+/* ปุ่มพับหมวด — หน้าเดียวมีหลายหมวดยาว ๆ ต้องซ่อนของที่ยังไม่ดูได้ */
+.sec .sec-fold { order: 0; min-width: 22px; padding: 0 6px; line-height: 1.4; }
+.card.folded, .fold-hidden { display: none; }
 .sec > span.sec-title { order: 1; }
 .sec::after { content: ""; flex: 1; height: 1px; background: var(--line); order: 2; }
 .sec .sec-act { order: 3; display: flex; align-items: center; gap: 8px; }
@@ -619,6 +622,29 @@ pre {
   background: var(--warn-bg); color: var(--warn);
 }
 
+
+/* ── หน้ารายละเอียดคะแนน (เอาไปนำเสนอ) ── */
+.bdetail { padding: 14px 16px 16px; }
+.btitle { font-size: calc(19px * var(--fs)); font-weight: 600; letter-spacing: -.01em; }
+.bheads { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+          gap: 1px; background: var(--line); border: 1px solid var(--line);
+          border-radius: 10px; overflow: hidden; margin: 12px 0; }
+.bhead { background: var(--card); padding: 8px 10px; }
+.bheadv { font-size: calc(15px * var(--fs)); font-weight: 600; margin: 2px 0; }
+.bpanels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.bpanel { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.bpt { font-weight: 600; margin-bottom: 8px; }
+.brow2 { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+.blabel { flex: 0 0 44%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bbar { flex: 1; height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.bbar > span { display: block; height: 100%; border-radius: 999px; }
+.bnum { flex: 0 0 90px; text-align: right; font-variant-numeric: tabular-nums; }
+.bcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+          gap: 10px; margin-top: 12px; }
+.bcard { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.bcardv { font-size: calc(20px * var(--fs)); font-weight: 600; margin: 2px 0; }
+@media print { .sec-act, [data-bench-close], [data-bench-del] { display: none; } }
+
 /* ── ตารางคะแนนโมเดล ── */
 .brow { padding: 10px 0; border-top: 1px solid var(--line); }
 .brow:first-of-type { border-top: 0; }
@@ -815,7 +841,7 @@ pre {
 
   <div class="sec" style="--sc: var(--c1)">
     <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
-    <span class="sec-title">Models on this machine</span>
+    <button class="sec-fold" data-fold="fleet" title="ย่อ/กางหมวดนี้">−</button><span class="sec-title">Models on this machine</span>
   </div>
   <div class="card" id="fleet"><div class="empty">Loading…</div></div>
 
@@ -832,12 +858,13 @@ pre {
 
   <div class="sec" style="--sc: var(--c1)">
     <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
-    <span class="sec-title">Model scores</span>
+    <button class="sec-fold" data-fold="bench" title="ย่อ/กางหมวดนี้">−</button><span class="sec-title">Model scores</span>
     <span class="sec-act"><button id="bench-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
   </div>
   <div class="card" id="bench"><div class="empty">วัดความเร็วและความสามารถของโมเดลที่รันอยู่จริง —
     <span class="dim">ทุกตัวเลขมาจากการยิงเซิร์ฟเวอร์จริงผ่าน OpenAI API จึงเทียบข้าม engine
     และข้ามเครื่องได้ · กด Show เพื่อดูผลที่เคยวัดไว้</span></div></div>
+  <div class="card" id="bench-detail" hidden></div>
 
   <div class="sec" style="--sc: var(--c3)">
     <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-disk"/></svg></span>
@@ -1252,6 +1279,31 @@ ${m.running ? benchMarkup(m) : ''}
   </div>`;
 }
 
+
+// พับหมวดในหน้าหลัก — หน้าเดียวมีทั้งเครื่อง โมเดล คะแนน weights สูตร
+// ผู้ใช้ที่สนใจแค่บางส่วนไม่ควรต้องเลื่อนผ่านของที่เหลือทุกครั้ง
+const FOLD_KEY = "lmds-folded";
+const foldedSections = new Set(
+  (() => { try { return JSON.parse(localStorage.getItem(FOLD_KEY) || "[]"); } catch { return []; } })());
+
+function applyFold(id) {
+  const card = document.getElementById(id);
+  const btn = document.querySelector(`[data-fold="${id}"]`);
+  if (!card || !btn) return;
+  const folded = foldedSections.has(id);
+  card.classList.toggle("folded", folded);
+  btn.textContent = folded ? "+" : "−";
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-fold]");
+  if (!btn) return;
+  const id = btn.dataset.fold;
+  if (foldedSections.has(id)) foldedSections.delete(id); else foldedSections.add(id);
+  try { localStorage.setItem(FOLD_KEY, JSON.stringify([...foldedSections])); } catch {}
+  applyFold(id);
+});
+
 // ── คะแนนโมเดล ───────────────────────────────────────────────────────────────
 // ตัวเลขความเร็วโดด ๆ ไม่มีความหมาย — "32 tok/s" ดีหรือไม่ดีขึ้นกับเครื่อง quant context
 // และ engine build · ทุกแถวจึงแสดงสภาพแวดล้อมกำกับเสมอ
@@ -1298,7 +1350,11 @@ function benchRow(entry) {
         <div class="muted">${esc(entry.model_id || "")}</div></div>
       <div class="dim" style="text-align:right">${esc(entry.machine_name || entry.hostname || "")}<br>
         ${esc(entry.engine || "")} ${esc(String(env.engine_build || "").slice(0, 18))}
-        <br><button data-bench-del="${esc(entry.slug || "")}"
+        <br><button data-bench-detail="${esc(entry.slug || "")}"
+                data-node="${esc(entry.machine_name || "")}"
+                title="ดูรายละเอียดทุกงาน — เอาไปใช้นำเสนอได้"
+                style="margin-top:4px">Details</button>
+        <button data-bench-del="${esc(entry.slug || "")}"
                 data-node="${esc(entry.machine_name || "")}"
                 title="ลบผลวัดของโมเดลนี้ทิ้ง — ไฟล์อยู่ที่เครื่องที่วัด"
                 style="margin-top:4px">Delete</button></div>
@@ -1338,6 +1394,158 @@ document.addEventListener("click", async (e) => {
               : { method: "DELETE" }));
   if (!d) return;
   loadBench();
+});
+
+// ── หน้ารายละเอียดคะแนน — สำหรับเอาไปนำเสนอ ────────────────────────────────
+// ลูกค้าขอรูปแบบที่อ่านแล้วเห็นภาพทันทีว่าโมเดลนี้ทำงานยังไงบนเครื่องนี้: แท่งเทียบ
+// ต่องาน + ตัวเลขสรุปด้านบน · ตารางสรุปบรรทัดเดียวบอกไม่ได้ว่าความเร็วตกตรงไหน
+function benchBar(value, max, colour) {
+  const pct = max > 0 ? Math.max(2, Math.round(value / max * 100)) : 0;
+  return `<div class="bbar"><span style="width:${pct}%;background:${colour}"></span></div>`;
+}
+
+function benchDetailMarkup(run) {
+  const workloads = (run.workloads || []).filter(w => !w.error);
+  const probes = run.probes || [];
+  const env = run.environment || {};
+  const machine = run.machine || {};
+  const gpu = (machine.gpus || [])[0] || {};
+  const speed = benchSpeed(workloads);
+
+  const maxDecode = Math.max(...workloads.map(w => w.decode_tps), 0);
+  const maxPrefill = Math.max(...workloads.map(w => w.prefill_tps), 0);
+  const maxTtft = Math.max(...workloads.map(w => w.ttft_s), 0);
+
+  const head = (label, value, sub = "") =>
+    `<div class="bhead"><div class="dim">${esc(label)}</div>
+     <div class="bheadv">${esc(String(value))}</div>
+     ${sub ? `<div class="dim">${esc(sub)}</div>` : ""}</div>`;
+
+  const rows = (pick, max, colour, fmt) => workloads.map(w => `
+    <div class="brow2">
+      <span class="blabel">${esc(w.label)} <span class="dim">${w.target_input}→${
+        w.completion_tokens || ""}</span></span>
+      ${benchBar(pick(w), max, colour)}
+      <span class="bnum">${fmt(pick(w))}</span>
+    </div>`).join("");
+
+  const passed = probes.filter(p => p.passed && !p.skipped).map(p => p.key);
+  const failed = probes.filter(p => !p.passed && !p.skipped).map(p => p.key);
+  const skipped = probes.filter(p => p.skipped).map(p => p.key);
+
+  return `<div class="bdetail">
+    <div class="row between" style="align-items:flex-start">
+      <div>
+        <div class="btitle">${esc(gpu.name || machine.hostname || "")}</div>
+        <div class="muted">${esc(run.model_id || run.slug)}</div>
+        <div class="dim">${esc(machine.hostname || "")} · ${esc(machine.cpu || "")}${
+          machine.ram_total_gb ? " · " + Math.round(machine.ram_total_gb) + " GB RAM" : ""}</div>
+      </div>
+      <div class="dim" style="text-align:right">${esc(run.engine || "")} ${
+        esc(env.engine_build || "")}<br>measured ${
+        esc((run.stamped_at || "").replace("T", " ").slice(0, 16))}</div>
+    </div>
+
+    <div class="bheads">
+      ${head("running on", gpu.name ? gpu.name.replace(/^NVIDIA /, "") : "—",
+             gpu.vram_gb ? gpu.vram_gb + " GB"
+               : (machine.ram_total_gb ? Math.round(machine.ram_total_gb) + " GB unified" : ""))}
+      ${head("model", run.served_name || run.slug)}
+      ${head("quantization", env.quant || "—")}
+      ${head("avg decode", speed.avg != null ? speed.avg.toFixed(1) + " tok/s" : "—",
+             "median of all workloads")}
+      ${head("sweep", `${workloads.length} workloads`,
+             `${(run.workloads || []).length - workloads.length} failed`)}
+      ${head("ctx max", env.context ? Number(env.context).toLocaleString() : "—", "tokens")}
+    </div>
+
+    <div class="bpanels">
+      <div class="bpanel">
+        <div class="bpt">Decode <span class="dim">higher is better</span></div>
+        ${rows(w => w.decode_tps, maxDecode, "var(--c1)", v => v.toFixed(2) + " tok/s")}
+      </div>
+      <div class="bpanel">
+        <div class="bpt">Prefill <span class="dim">higher is better</span></div>
+        ${rows(w => w.prefill_tps, maxPrefill, "var(--c2)", v => Math.round(v) + " tok/s")}
+      </div>
+      <div class="bpanel">
+        <div class="bpt">TTFT <span class="dim">lower is better</span></div>
+        ${rows(w => w.ttft_s, maxTtft, "var(--c3)", v => v.toFixed(2) + "s")}
+      </div>
+      <div class="bpanel">
+        <div class="bpt">Capability</div>
+        <div class="npills">
+          ${passed.map(k => `<span class="npill ok">${esc(BENCH_PROBE_NAMES[k] || k)}</span>`).join("")}
+          ${failed.map(k => `<span class="npill bad">${esc(BENCH_PROBE_NAMES[k] || k)}</span>`).join("")}
+          ${skipped.map(k => `<span class="npill dim">${esc(BENCH_PROBE_NAMES[k] || k)}</span>`).join("")}
+        </div>
+        ${probes.filter(p => !p.passed && !p.skipped).map(p =>
+          `<div class="dim" style="margin-top:6px">${esc(BENCH_PROBE_NAMES[p.key] || p.key)}: ${
+            esc((p.detail || "").slice(0, 160))}</div>`).join("")}
+      </div>
+    </div>
+
+    <div class="bcards">
+      ${workloads.map(w => `<div class="bcard">
+        <div class="dim">${esc(w.label)}</div>
+        <div class="bcardv">${w.decode_tps.toFixed(2)} <span class="dim">tok/s</span></div>
+        <div class="dim">${Math.round(w.prefill_tps)} prefill · ${
+          (w.prompt_tokens || 0).toLocaleString()} tok · TTFT ${w.ttft_s.toFixed(2)}s</div>
+      </div>`).join("")}
+    </div>
+
+    <div class="dim" style="margin-top:10px">
+      decode ${speed.min != null ? speed.min.toFixed(2) : "—"} – ${
+        speed.max != null ? speed.max.toFixed(2) : "—"} tok/s ·
+      ${workloads.length}/${(run.workloads || []).length} workloads valid ·
+      ${esc(run.slug)} on ${esc(machine.hostname || "")}
+      ${run.cached_note || ""}
+    </div>
+  </div>`;
+}
+
+function benchSpeed(workloads) {
+  const values = workloads.map(w => w.decode_tps).filter(v => v > 0).sort((a, b) => a - b);
+  if (!values.length) return { avg: null, min: null, max: null };
+  const mid = Math.floor(values.length / 2);
+  return {
+    avg: values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2,
+    min: values[0], max: values[values.length - 1],
+  };
+}
+
+async function showBenchDetail(slug, node) {
+  const box = document.getElementById("bench-detail");
+  box.hidden = false;
+  box.innerHTML = `<div class="pad"><span class="muted">Loading ${esc(slug)}…</span></div>`;
+  const url = node ? `/api/nodes/${encodeURIComponent(node)}/bench/${encodeURIComponent(slug)}`
+                   : `/api/bench/${encodeURIComponent(slug)}`;
+  const r = await api(url);
+  if (!r || !r.ok) {
+    const detail = r ? ((await r.json().catch(() => ({}))).detail || r.status) : "ต่อไม่ได้";
+    box.innerHTML = `<div class="pad"><div class="warn-line">อ่านรายละเอียดไม่ได้ — ${esc(String(detail))}</div></div>`;
+    return;
+  }
+  const d = await r.json();
+  if (!d.run) { box.innerHTML = `<div class="pad"><div class="empty">ยังไม่มีผลวัดของ ${esc(slug)}</div></div>`; return; }
+  box.innerHTML = `<div class="pad row between" style="padding-bottom:0">
+      <b style="font-weight:500">Detail scores · ${esc(slug)}</b>
+      <span class="grow"></span>
+      <button data-bench-close="1">Close</button>
+    </div>${benchDetailMarkup(d.run)}`;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.addEventListener("click", async (e) => {
+  const open = e.target.closest("[data-bench-detail]");
+  if (open) {
+    await showBenchDetail(open.dataset.benchDetail, open.dataset.node || "");
+    return;
+  }
+  if (e.target.closest("[data-bench-close]")) {
+    const box = document.getElementById("bench-detail");
+    box.innerHTML = ""; box.hidden = true;
+  }
 });
 
 async function loadBench() {
@@ -3776,6 +3984,8 @@ async function boot() {
     document.getElementById("signout").hidden = false;
   }
   refresh();
+  // คืนสถานะพับ/กางที่ผู้ใช้เลือกไว้ก่อนวาดของจริง
+  ["fleet", "bench"].forEach(applyFold);
   refreshNodes();
   startStream();
   loadProvider();

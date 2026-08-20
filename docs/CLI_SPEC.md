@@ -27,6 +27,7 @@ lmds repair <SLUG> [--force]               # โหลดไฟล์ที่�
 lmds bench run <SLUG> [--quick|--speed-only|--caps-only] [--runs N]   # วัดความเร็ว+ความสามารถของโมเดลที่รันอยู่
 lmds bench list                            # ตารางคะแนนของทุกโมเดลที่เคยวัด
 lmds bench show <SLUG> [--history]         # ผลละเอียด / ประวัติทุกรอบ
+lmds bench remove <SLUG> [--keep-last N]   # ลบผลที่เก็บไว้ (ผลสะสมจนตารางอ่านไม่ไหว)
 lmds remove <SLUG> [--keep-weights] [-y]   # ลบ bundle/ทะเบียน/log/runtime files/weight ทั้งหมด
 lmds node <subcommand>                     # ทะเบียนเครื่องอื่น (fleet หลายเครื่อง) — ดูหัวข้อ node
 lmds agent info                            # JSON สถานะเครื่องนี้ (hub เรียกผ่าน SSH ไม่ได้พิมพ์เอง)
