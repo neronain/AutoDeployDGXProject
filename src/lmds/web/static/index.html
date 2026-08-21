@@ -2768,6 +2768,9 @@ function nodeModelsMarkup(name, data) {
             ${ctl("client-config", "ค่าที่ client ต้องใช้: base URL + งบ token")}
             ${ctl("network-info", "bind กับ endpoint ที่ประกาศออกไป")}
             ${ctl("status", "สถานะ container/process + API")}
+            ${ctl("props", "ค่าที่เซิร์ฟเวอร์ตั้งจริงตอนนี้ — context/slot ที่ได้จริง ไม่ใช่ที่ขอไป")}
+            ${ctl("runtime-info", "engine/บิลด์/อิมเมจที่กำลังใช้อยู่")}
+            ${ctl("parsers", "parser ของ tool call กับ reasoning ที่เปิดอยู่")}
             ${m.running ? "" : `<span class="dim">ยังไม่ได้รัน — ชุดทดสอบส่วนใหญ่ต้อง start ก่อน</span>`}
             ${rival ? `<div class="warn-line" style="color:var(--bad);width:100%">
               พอร์ต ${m.port} มี <b>${esc(rival.slug)}</b> รันอยู่ — ผลทดสอบที่ได้จะเป็นของตัวนั้น ไม่ใช่ตัวนี้
@@ -2786,6 +2789,8 @@ function nodeModelsMarkup(name, data) {
             ${m.running ? nbtn("restart", "restart", "หยุดแล้วเปิดใหม่ด้วยค่าข้างบน") : ""}
             ${nbtn("doctor", "doctor", "ตรวจว่าทำไมยัง start ไม่ได้")}
             ${nbtn("logs", "logs", "log ล่าสุด 300 บรรทัด")}
+            ${m.running ? "" : ctl("wait-health",
+              "รอต่อจนกว่าโมเดลจะพร้อม — ใช้เมื่อ start หมดเวลาไปก่อนแต่เซิร์ฟเวอร์ยังโหลดอยู่ (20B+ ใช้เวลาหลายนาที)")}
             ${m.self_managed_weights ? "" :
               nbtn("repair", "repair", m.downloaded ? "ตรวจไฟล์ซ้ำ + โหลดส่วนที่ขาด" : "โหลด weight (resume ได้)")}
             ${m.self_managed_weights ? "" : ctl("verify-files", "ตรวจ checksum ของไฟล์ที่โหลดมา")}
@@ -3844,11 +3849,26 @@ function revealNode(node) {
 // โมเดลเสียแล้วไปสร้างตัวใหม่ ซึ่งก็ตายด้วยเหตุเดียวกัน
 //
 // แปลงประโยคนั้นเป็นปุ่ม แทนที่จะให้ผู้ใช้ไปหา terminal
-const FIXABLE = new Set(["prepare-runtime", "download", "verify-files", "stop"]);
+const FIXABLE = new Set(["prepare-runtime", "download", "verify-files", "stop",
+                         "wait-health", "logs", "restart", "doctor"]);
 function fixButtonFor(node, output) {
-  const m = String(output || "").match(/รัน:\s*(\S+?-single\.sh)\s+([a-z-]+)/);
+  // controller ชี้คำสั่งถัดไปด้วยหลายสำนวน ไม่ใช่ "รัน:" อย่างเดียว —
+  // "รอต่อ:", "ดูคืบหน้า:", "แล้วรันใหม่:", "log:" · จับที่รูปแบบ "<อะไรก็ได้>: <path> <คำสั่ง>"
+  //
+  // ตัวที่สำคัญที่สุดคือ `รอต่อ: $0 wait-health` — โมเดล 20B ขึ้นไปโหลดนานเกิน
+  // HEALTH_TIMEOUT ได้ง่าย ๆ · start จะรายงานว่าไม่สำเร็จทั้งที่เซิร์ฟเวอร์ยังโหลดอยู่และ
+  // ไม่ได้ถูกหยุด ถ้าไม่มีปุ่มตรงนั้น คนใช้หน้าเว็บจะเข้าใจว่าพังแล้วไปกด start ซ้ำ
+  // ซึ่งชนพอร์ตตัวเองและทำให้แย่กว่าเดิม
+  const m = String(output || "").match(/(\S+?-single\.sh)\s+([a-z][a-z-]*)([^\n]*)/);
   if (!m) return "";
   const command = m[2];
+  // แยก "argument ที่เปลี่ยนพฤติกรรม" ออกจาก "คำอธิบายที่ต่อท้ายประโยค"
+  //
+  //   restart --bind 127.0.0.1   → flag เปลี่ยนความหมาย · ปุ่มเปล่าจะทำคนละอย่าง = ไม่เสนอ
+  //   stop ก่อน                  → "ก่อน" เป็นคำในประโยคไทย ไม่ใช่ argument = เสนอได้
+  //   logs 100                   → จำนวนบรรทัด ปุ่ม logs ก็แสดง log อยู่แล้ว = เสนอได้
+  const rest = (m[3] || "").trim();
+  if (rest.startsWith("-") || rest.includes(" -") || rest.includes("=")) return "";
   if (!FIXABLE.has(command)) return "";
   const slug = (m[1].split("/").pop() || "").replace(/-single\.sh$/, "");
   if (!slug) return "";
@@ -3857,6 +3877,10 @@ function fixButtonFor(node, output) {
     "download": "ยังไม่มี weight ครบบนเครื่องนี้",
     "verify-files": "ตรวจไฟล์ที่โหลดมาว่าครบและไม่เสีย",
     "stop": "ต้องหยุดตัวที่รันอยู่ก่อน",
+    "wait-health": "เซิร์ฟเวอร์ยังโหลดอยู่ ไม่ได้ถูกหยุด — รอต่อจนพร้อม",
+    "logs": "ดูว่าตอนนี้มันคืบไปถึงไหน",
+    "restart": "หยุดแล้วเปิดใหม่",
+    "doctor": "ไล่ดูว่าอะไรขาด",
   }[command] || "";
   return `<button data-nact="ctl:${esc(command)}" data-node="${esc(node)}" data-slug="${esc(slug)}"
             title="${esc(why)}" style="border-color:var(--accent);color:var(--accent)"

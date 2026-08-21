@@ -2267,3 +2267,52 @@ def test_every_run_this_hint_in_the_templates_is_offerable():
     listed = set(re.findall(r'"([a-z-]+)"', offered.pop()))
     missing = sorted(hinted - listed)
     assert missing == [], f"เทมเพลตแนะนำคำสั่งที่หน้าเว็บกดไม่ได้: {missing}"
+
+
+def _gui_actions(html: str) -> set:
+    import re
+
+    actions = set(re.findall(r'data-(?:n|c)?act="(?:ctl:|job:|model:)?([a-z][a-z0-9-]*)"', html))
+    for fn in ("ctl", "job", "btn", "nbtn"):
+        actions |= set(re.findall(fn + r'\("([a-z][a-z0-9-]*)"', html))
+    # ปุ่มแถวบนวาดจากตัวแปรตามสถานะของโมเดล
+    actions |= {"start", "stop", "restart", "download"}
+    return actions
+
+
+def test_every_controller_command_can_be_pressed():
+    """ลูกค้าใช้ผ่าน GUI เป็นหลัก — คำสั่งที่กดไม่ได้เท่ากับคำสั่งที่ไม่มี
+
+    รายการนี้มาจาก `commands` ที่ controller ตัวจริงประกาศ ไม่ใช่เดาจากเทมเพลต
+    """
+    commands = {
+        "clear-fi-cache", "client-config", "doctor", "download", "logs", "network-info",
+        "prepare-runtime", "props", "restart", "start", "status", "stop", "sync-worker",
+        "test-text", "test-vision", "verify-files", "verify-worker", "wait-health",
+        "test-tools", "test-reasoning", "bench", "stress", "runtime-info", "parsers", "remove",
+    }
+    missing = sorted(commands - _gui_actions(_console_html()))
+    assert missing == [], f"คำสั่งที่กดจากหน้าเว็บไม่ได้: {missing}"
+
+
+def test_wait_health_is_offered_when_start_times_out():
+    """โมเดล 20B+ โหลดนานเกิน HEALTH_TIMEOUT ได้ · start จะรายงานว่าไม่สำเร็จ
+    ทั้งที่เซิร์ฟเวอร์ยังโหลดอยู่และไม่ได้ถูกหยุด
+
+    ถ้าไม่มีปุ่มตรงนั้น คนใช้หน้าเว็บจะเข้าใจว่าพัง แล้วกด start ซ้ำ ซึ่งชนพอร์ตตัวเอง
+    """
+    html = _console_html()
+    assert '"wait-health"' in html
+    assert "wait-health" in html.split("const FIXABLE")[1][:400], (
+        "wait-health ต้องอยู่ในชุดที่เสนอเป็นปุ่มจากข้อความ error ได้"
+    )
+
+
+def test_a_hint_with_flags_is_not_offered_as_a_bare_button():
+    """`restart --bind 127.0.0.1` กับปุ่ม restart เปล่า ๆ ทำคนละอย่าง
+
+    ปุ่มที่ทำไม่ตรงกับประโยคที่อยู่ข้างบนมันแย่กว่าไม่มีปุ่ม
+    """
+    html = _console_html()
+    assert 'rest.startsWith("-")' in html
+    assert 'rest.includes("=")' in html
