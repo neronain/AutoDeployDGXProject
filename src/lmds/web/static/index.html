@@ -3835,6 +3835,34 @@ function revealNode(node) {
   if (row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
 }
 
+// controller เขียน "รัน: <path>/<slug>-single.sh <คำสั่ง>" ไว้ในข้อความที่มันตาย
+// ทุกครั้งที่ยังทำต่อได้ — ตอนนี้มี 3 คำสั่ง (download, prepare-runtime, stop)
+//
+// เจอจริง: กด start บนเครื่องที่ยังไม่เคย build llama.cpp แล้วได้
+//   "ยังไม่มี llama-server — รัน: /home/.../xxx-single.sh prepare-runtime"
+// ซึ่งถูกต้องทุกตัวอักษร แต่คนที่ใช้ผ่านหน้าเว็บไม่มีที่ให้พิมพ์คำสั่งนั้น · เขาจึงสรุปว่า
+// โมเดลเสียแล้วไปสร้างตัวใหม่ ซึ่งก็ตายด้วยเหตุเดียวกัน
+//
+// แปลงประโยคนั้นเป็นปุ่ม แทนที่จะให้ผู้ใช้ไปหา terminal
+const FIXABLE = new Set(["prepare-runtime", "download", "verify-files", "stop"]);
+function fixButtonFor(node, output) {
+  const m = String(output || "").match(/รัน:\s*(\S+?-single\.sh)\s+([a-z-]+)/);
+  if (!m) return "";
+  const command = m[2];
+  if (!FIXABLE.has(command)) return "";
+  const slug = (m[1].split("/").pop() || "").replace(/-single\.sh$/, "");
+  if (!slug) return "";
+  const why = {
+    "prepare-runtime": "เครื่องนี้ยังไม่เคยติดตั้ง runtime ของ engine นี้ — ทำครั้งเดียวจบ",
+    "download": "ยังไม่มี weight ครบบนเครื่องนี้",
+    "verify-files": "ตรวจไฟล์ที่โหลดมาว่าครบและไม่เสีย",
+    "stop": "ต้องหยุดตัวที่รันอยู่ก่อน",
+  }[command] || "";
+  return `<button data-nact="ctl:${esc(command)}" data-node="${esc(node)}" data-slug="${esc(slug)}"
+            title="${esc(why)}" style="border-color:var(--accent);color:var(--accent)"
+            >${esc(command)} ให้เลย</button>`;
+}
+
 function showNodeOutput(node, title, output, extra = "") {
   const row = nodeRows.get(node);
   if (!row) return;
@@ -3848,7 +3876,7 @@ function showNodeOutput(node, title, output, extra = "") {
   box.hidden = false;
   box.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">${esc(title)}</b>
-      <span class="grow"></span>${extra}
+      <span class="grow"></span>${fixButtonFor(node, output)}${extra}
       <button data-nact="close-output" data-node="${esc(node)}"
               title="ปิดกล่องข้อความนี้เท่านั้น — ไม่ลบอะไรบนเครื่อง และงานที่รันอยู่ไม่หยุดตาม"
               >ปิดข้อความนี้</button>

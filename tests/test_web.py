@@ -2231,3 +2231,39 @@ def test_a_button_that_is_disabled_gets_re_enabled_no_matter_what():
             continue
         stuck.append(f"บรรทัด {number}: {line.strip()[:80]}")
     assert stuck == [], "ปุ่มที่อาจค้างถาวร:\n" + "\n".join(stuck)
+
+
+def test_a_controller_hint_becomes_a_button():
+    """controller บอกคำสั่งที่ต้องรันไว้ในข้อความที่มันตาย — คนใช้หน้าเว็บไม่มีที่พิมพ์
+
+    เจอจริงบน msi-6: กด start แล้วได้ "ยังไม่มี llama-server — รัน: <path> prepare-runtime"
+    ซึ่งถูกต้อง แต่เป็นทางตัน ผู้ใช้จึงไปสร้างโมเดลใหม่ซึ่งตายด้วยเหตุเดียวกัน
+    """
+    html = _console_html()
+    assert "function fixButtonFor(" in html
+    assert "showNodeOutput" in html
+    # ต้องถูกเรียกจากกล่องผลลัพธ์ ไม่ใช่นิยามไว้เฉย ๆ
+    assert "fixButtonFor(node, output)" in html
+    for command in ("prepare-runtime", "download", "stop", "verify-files"):
+        assert f'"{command}"' in html, command
+
+
+def test_every_run_this_hint_in_the_templates_is_offerable():
+    """สำนวน "รัน: $0 <คำสั่ง>" ในเทมเพลตต้องอยู่ในชุดที่หน้าเว็บเสนอเป็นปุ่มได้
+
+    ถ้าเพิ่มคำสั่งใหม่ในเทมเพลตแล้วลืมเติมที่หน้าเว็บ ผู้ใช้จะเจอทางตันแบบเดิมอีก
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    hinted = set()
+    for template in (root / "src/lmds/generator/templates").glob("*.j2"):
+        hinted |= set(re.findall(r"รัน: \$0 ([a-z-]+)", template.read_text(encoding="utf-8")))
+
+    html = _console_html()
+    offered = set(re.findall(r'FIXABLE = new Set\(\[(.*?)\]\)', html, re.S))
+    assert offered, "ไม่เจอรายการคำสั่งที่หน้าเว็บเสนอได้"
+    listed = set(re.findall(r'"([a-z-]+)"', offered.pop()))
+    missing = sorted(hinted - listed)
+    assert missing == [], f"เทมเพลตแนะนำคำสั่งที่หน้าเว็บกดไม่ได้: {missing}"
