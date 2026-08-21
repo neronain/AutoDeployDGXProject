@@ -906,7 +906,19 @@ let token = localStorage.getItem(TOKEN_KEY) || "";
     history.replaceState(null, "", location.pathname);
   }
 }
-const api = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), ...(token ? { "x-lmds-token": token } : {}) } });
+// ส่ง body เป็น JSON แต่ไม่ประกาศ content-type = FastAPI อ่านไม่ออกแล้วตอบ 422
+// ซึ่งบนหน้าจอโผล่มาเป็น "ทำคำสั่งไม่สำเร็จ (HTTP 422)" ที่ไม่ได้บอกอะไรเลย
+//
+// เจอจริงกับปุ่มบันทึกค่าของ node: ทุกที่อื่นในไฟล์นี้ใส่ header เองทีละจุด พอมีที่หนึ่ง
+// ลืมก็พังเงียบ ๆ · เติมให้ตรงนี้ที่เดียว แล้วจุดที่ใส่เองอยู่แล้วยังชนะเหมือนเดิม
+const api = (p, o = {}) => fetch(p, {
+  ...o,
+  headers: {
+    ...(typeof o.body === "string" ? { "content-type": "application/json" } : {}),
+    ...(o.headers || {}),
+    ...(token ? { "x-lmds-token": token } : {}),
+  },
+});
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // กดปุ่มแล้ว "เงียบ" คือบั๊กที่เจอจริง: ปุ่มถูก disable + เปลี่ยนข้อความเป็น "…" แล้วถ้า fetch

@@ -2316,3 +2316,25 @@ def test_a_hint_with_flags_is_not_offered_as_a_bare_button():
     html = _console_html()
     assert 'rest.startsWith("-")' in html
     assert 'rest.includes("=")' in html
+
+
+def test_a_json_body_always_declares_its_content_type():
+    """ส่ง body โดยไม่ประกาศ content-type = FastAPI ตอบ 422
+
+    บนหน้าจอมันโผล่เป็น "ทำคำสั่งไม่สำเร็จ (HTTP 422)" ซึ่งไม่ได้บอกอะไรกับผู้ใช้เลย
+    · เดิมทุกจุดใส่ header เองทีละที่ พอมีที่หนึ่งลืม (ปุ่มบันทึกค่าของ node) ก็พังเงียบ
+    """
+    html = _console_html()
+    assert 'typeof o.body === "string"' in html, "api() ต้องเติม content-type ให้เองเมื่อมี body"
+
+    # และต้องไม่มีใครส่ง body โดยเลี่ยง api() ไปเรียก fetch ตรง ๆ
+    import re
+
+    direct = [
+        line.strip()[:90]
+        for line in html.splitlines()
+        if re.search(r"\bfetch\(", line)
+        and "body:" in line
+        and "const api" not in line
+    ]
+    assert direct == [], f"เรียก fetch ตรง ๆ พร้อม body: {direct}"
