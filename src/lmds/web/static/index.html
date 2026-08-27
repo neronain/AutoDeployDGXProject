@@ -594,6 +594,35 @@ pre {
   margin: 6px 0 0; padding: 8px; overflow-x: auto;
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); font-size: calc(12px * var(--fs));
 }
+/* การ์ด "ไปดูอะไรมา" กับ "จะทำอะไรต่อ" — อยู่ในสายสนทนา ไม่ใช่ป๊อปอัพ เพราะมันคือ
+   ส่วนหนึ่งของคำตอบ ไม่ใช่เรื่องแยก · ปุ่มอนุมัติต้องอยู่ติดกับคำสั่งที่มันจะรัน */
+.chat-checked {
+  align-self: flex-start; max-width: 88%; font-size: calc(11.5px * var(--fs));
+  color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 0 2px;
+}
+.chat-checked b { font-weight: 600; color: var(--fg); }
+.chat-plan {
+  align-self: flex-start; max-width: 88%; padding: 10px 11px;
+  background: var(--sunken); border: 1px solid var(--accent); border-radius: var(--r);
+  font-size: calc(12.5px * var(--fs));
+}
+.chat-plan > b { display: block; margin-bottom: 6px; }
+.chat-plan ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.chat-plan pre {
+  margin: 4px 0 0; padding: 6px 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-size: calc(11.5px * var(--fs));
+}
+.chat-plan .impact { color: var(--dim); margin-top: 3px; }
+.chat-plan .menu { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chat-plan .menu button {
+  padding: 5px 10px; font: inherit; font-size: calc(12px * var(--fs)); cursor: pointer;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line2); border-radius: var(--r-sm);
+}
+.chat-plan .menu button:hover:not(:disabled) { border-color: var(--accent); }
+.chat-plan .menu button.go { background: var(--accent-bg); border-color: var(--accent); }
+.chat-plan .menu button:disabled { opacity: .55; cursor: default; }
+.chat-plan .menu-why { color: var(--dim); margin-top: 6px; }
 .chat-form { display: flex; gap: 6px; padding: 10px 12px 8px; border-top: 1px solid var(--line); align-items: flex-end; }
 .chat-form textarea {
   flex: 1; resize: none; height: 52px; padding: 8px 10px; font: inherit; font-size: calc(13px * var(--fs));
@@ -4555,12 +4584,103 @@ function chatRender(text) {
     : esc(part))).join("");
 }
 
+// "ไปดูอะไรมาบ้าง" — บรรทัดเล็ก ๆ เหนือคำตอบ · ผู้ใช้ต้องแยกออกว่าคำตอบนี้มาจากการ
+// เดินไปดูเครื่องจริง หรือมาจากสถานะที่แคชไว้ สองอย่างนี้เชื่อถือได้ไม่เท่ากัน
+function chatCheckedHtml(checked) {
+  if (!checked) return "";
+  const bits = (checked.probes || []).map(p =>
+    `<span>${p.ok ? "✓" : "✗"} <b>${esc(p.title)}</b>${
+      p.target && p.target !== "this" ? " @ " + esc(p.target) : ""}</span>`);
+  for (const q of checked.docs || []) bits.push(`<span>📖 ${esc(q)}</span>`);
+  if (checked.note) bits.push(`<span>${esc(checked.note)}</span>`);
+  return bits.length ? `<div class="chat-checked">ดูมาแล้ว: ${bits.join("")}</div>` : "";
+}
+
+// การ์ดงานที่เสนอ — คำสั่งจริงอยู่ตรงนี้ให้อ่านก่อนกด ไม่ใช่คำอธิบายว่าจะทำอะไร
+function chatPlanHtml(plan) {
+  if (!plan || !plan.ticket) return "";
+  const steps = (plan.steps || []).map(s => {
+    const mark = s.done ? ((s.result && s.result.ok) ? "✓" : "✗") : "○";
+    const out = s.result
+      ? `<pre>${esc(((s.result.output || s.result.error || "").slice(-1500)) || "(ไม่มีผลลัพธ์)")}</pre>`
+      : "";
+    return `<li><b>${mark} ${esc(s.title)}</b>${
+      s.target && s.target !== "this" ? ` <span class="impact">@ ${esc(s.target)}</span>` : ""}
+      <pre>${esc(s.command)}</pre>
+      <div class="impact">ผลกระทบ: ${esc(s.impact || "-")}</div>${out}</li>`;
+  }).join("");
+
+  const id = esc(plan.ticket);
+  let menu;
+  if (plan.expired) {
+    menu = '<div class="menu-why">ข้อเสนอนี้หมดอายุแล้ว — ถามใหม่ถ้ายังต้องการ</div>';
+  } else if (!plan.mode) {
+    menu = `<div class="menu">${(plan.menu || []).map(m =>
+      `<button class="${m.mode === "apply" ? "go" : ""}" title="${esc(m.detail)}"
+        onclick="chatPlanChoose('${id}','${esc(m.mode)}',this)">${esc(m.label)}</button>`).join("")}</div>`;
+  } else if (plan.mode === "hold") {
+    menu = '<div class="menu-why">ยังไม่ได้แตะเครื่อง — คำสั่งข้างบนเอาไปรันเองได้</div>';
+  } else if (!plan.finished) {
+    menu = `<div class="menu"><button class="go"
+      onclick="chatPlanAdvance('${id}',this)">ทำขั้นถัดไป</button></div>`;
+  } else {
+    menu = '<div class="menu-why">ทำครบทุกขั้นแล้ว</div>';
+  }
+
+  return `<div class="chat-plan"><b>งานที่เสนอ${plan.why ? ": " + esc(plan.why) : ""}</b>`
+    + `<ol>${steps}</ol>${menu}</div>`;
+}
+
+function chatFindPlan(ticketId) {
+  return chatHistory.find(m => m.plan && m.plan.ticket === ticketId);
+}
+
+async function chatPlanChoose(ticketId, mode, button) {
+  const data = await withButton(button, "…", () => api(
+    `/api/assistant/ticket/${encodeURIComponent(ticketId)}/choose`,
+    { method: "POST", body: JSON.stringify({ mode }) }));
+  if (!data) return;
+  const message = chatFindPlan(ticketId);
+  if (message) message.plan = data;
+  chatDraw();
+  chatSave();
+}
+
+async function chatPlanAdvance(ticketId, button) {
+  const data = await withButton(button, "กำลังทำ…", () => api(
+    `/api/assistant/ticket/${encodeURIComponent(ticketId)}/advance`, { method: "POST" }));
+  if (!data) return;
+  const message = chatFindPlan(ticketId);
+  if (message) message.plan = data;
+  chatDraw();
+  chatSave();
+}
+
 function chatDraw() {
   const log = document.getElementById("chat-log");
   log.innerHTML = chatHistory.map(m =>
-    `<div class="chat-msg ${m.role === "user" ? "user" : m.bad ? "bot bad" : "bot"}">${
-      m.role === "user" ? esc(m.content) : chatRender(m.content)}</div>`).join("");
+    (m.role === "user" ? "" : chatCheckedHtml(m.checked))
+    + `<div class="chat-msg ${m.role === "user" ? "user" : m.bad ? "bot bad" : "bot"}">${
+      m.role === "user" ? esc(m.content) : chatRender(m.content)}</div>`
+    + (m.role === "user" ? "" : chatPlanHtml(m.plan))).join("");
   log.scrollTop = log.scrollHeight;
+}
+
+// หนึ่ง event จากสตรีม → อัปเดตข้อความที่กำลังตอบ · คืนข้อความ "กำลังรอ" อันใหม่
+//
+// แยกออกมาจาก chatSend เพื่อให้ลูปอ่านสตรีมสั้นพอที่จะเห็น try/finally ที่ปลดปุ่ม
+// ได้ในหน้าจอเดียว — ปุ่มที่ค้างถาวรคือบั๊กที่ผู้ใช้เจอจริงมาแล้ว
+function chatApplyEvent(payload, reply, waiting) {
+  if (payload.error) { reply.bad = true; reply.content += payload.error; }
+  else if (payload.delta) reply.content += payload.delta;
+  else if (payload.status) return payload.status;
+  else if (payload.evidence) { reply.checked = payload.evidence; return "กำลังเรียบเรียง…"; }
+  else if (payload.ticket) {
+    // เก็บไว้วาดตอนจบพร้อมคำอธิบาย — โผล่ก่อนคำตอบแปลว่ามีปุ่ม "แก้เลย" ให้กด
+    // ตั้งแต่ยังไม่มีใครบอกว่ามันจะทำอะไร
+    reply.plan = payload.ticket;
+  }
+  return waiting;
 }
 
 function chatSave() {
@@ -4572,12 +4692,15 @@ async function chatSend(question) {
   chatHistory.push({ role: "user", content: question });
   chatHistory.push({ role: "assistant", content: "" });
   chatDraw();
-  send.disabled = true;
 
   const bubble = document.querySelector("#chat-log .chat-msg:last-child");
   bubble.innerHTML = '<span class="dim">กำลังคิด…</span>';
   const reply = chatHistory[chatHistory.length - 1];
+  // ข้อความระหว่างรอ เปลี่ยนตามขั้นที่หลังบ้านกำลังทำ — การตรวจเครื่องจริงใช้เวลา
+  // หลายวินาที กล่องที่ค้างคำว่า "กำลังคิด…" ตลอดทำให้ดูเหมือนแฮงก์
+  let waiting = "กำลังคิด…";
 
+  send.disabled = true;
   try {
     const response = await api("/api/assistant/chat", {
       method: "POST",
@@ -4606,12 +4729,11 @@ async function chatSend(question) {
         if (!chunk || chunk === "[DONE]") continue;
         let payload;
         try { payload = JSON.parse(chunk); } catch { continue; }
-        if (payload.error) { reply.bad = true; reply.content += payload.error; }
-        else if (payload.delta) reply.content += payload.delta;
+        waiting = chatApplyEvent(payload, reply, waiting);
         // ระหว่างสตรีมยังตัดคำนำไม่ได้ (ตัวปิด </think> ยังมาไม่ถึง) — โชว์ไปก่อน
         // ดีกว่ากล่องว่าง แล้วมันจะเปลี่ยนเป็นคำตอบจริงเองตอนจบ
         const shown = chatRender(reply.content);
-        bubble.innerHTML = shown.trim() ? shown : '<span class="dim">กำลังคิด…</span>';
+        bubble.innerHTML = shown.trim() ? shown : `<span class="dim">${esc(waiting)}</span>`;
         bubble.className = reply.bad ? "chat-msg bot bad" : "chat-msg bot";
         document.getElementById("chat-log").scrollTop = 1e9;
       }
@@ -4619,11 +4741,16 @@ async function chatSend(question) {
     if (!reply.content.trim()) { reply.bad = true; reply.content = "ไม่มีคำตอบกลับมา"; }
     // ตอบมาเป็นบล็อกเรียก tool ล้วน ๆ — ตัดออกแล้วไม่เหลืออะไรให้อ่าน · บอกไปตรง ๆ
     // ว่าเกิดอะไรขึ้น ดีกว่าปล่อยกล่องว่างให้เดาเอาเองว่าพังตรงไหน
+    //
+    // ระบบไปดูเครื่องมาให้ก่อนแล้ว โมเดลจึงไม่ต้องเรียก tool เอง — ตัวที่ยังพยายามเรียก
+    // คือตัวที่ไม่ทำตาม system prompt ซึ่งแก้ได้ด้วยการเปลี่ยนโมเดล ไม่ใช่เปลี่ยนคำถาม
     else if (!chatStripToolCalls(chatStripThinking(reply.content))) {
       reply.bad = true;
-      reply.content = "โมเดลพยายามสั่งรันคำสั่งบนเครื่อง แต่ผู้ช่วยตัวนี้อ่านสถานะได้อย่างเดียว "
-        + "สั่งงานไม่ได้ — ลองถามใหม่ว่า \"สรุปสถานะของ <ชื่อเครื่อง> จาก state ให้หน่อย\" "
-        + "หรือเปลี่ยนไปใช้โมเดลที่ไม่ใช่สายเรียก tool ที่หน้า Provider";
+      reply.content = "โมเดลตอบกลับมาเป็นบล็อกเรียก tool ล้วน ๆ — ผู้ช่วยตัวนี้ตรวจเครื่องให้"
+        + "เรียบร้อยแล้วก่อนส่งให้มันตอบ มันจึงไม่ต้องเรียกเครื่องมือเอง"
+        + (reply.checked ? " (ผลตรวจอยู่ในบรรทัดด้านบน)" : "")
+        + " — ลองถามใหม่อีกครั้ง หรือเปลี่ยนไปใช้โมเดลที่ทำตาม system prompt ได้ดีกว่านี้"
+        + "ที่หน้า Provider";
     }
   } catch (err) {
     reply.bad = true;

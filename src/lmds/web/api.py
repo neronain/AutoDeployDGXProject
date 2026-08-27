@@ -618,21 +618,89 @@ def create_app(token: str = "") -> FastAPI:
         provider = make_provider(
             provider_config, get_secret(provider_config.name.value) or None
         )
-        system, messages = assistant.build_messages(history)
+        question = next(
+            (m["content"] for m in reversed(history) if m["role"] == "user"), ""
+        )
+
+        def send(payload: dict) -> str:
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
         def stream():
+            # ตรวจเครื่องก่อนตอบ แล้วค่อยสตรีมคำตอบ — ทำข้างในตัวสตรีมเพื่อให้ผู้ใช้
+            # เห็นว่ากำลังทำอะไรอยู่ระหว่างรอ SSH ตอบ แทนที่จะเห็นกล่องค้างเงียบ ๆ
+            yield send({"status": "กำลังดูสถานะเครื่องจริง…"})
+            try:
+                evidence = assistant.investigate(question)
+            except Exception as exc:  # การตรวจล้ม ≠ ตอบไม่ได้ — ตอบจากสถานะแคชต่อไป
+                evidence = {"note": f"ตรวจเครื่องไม่สำเร็จ: {exc}", "probes": [], "docs": []}
+            # ส่งให้หน้าเว็บวาดว่าไปดูอะไรมา และวาดเมนูอนุมัติถ้ามีงานที่เสนอ
+            yield send({"evidence": {
+                "probes": [
+                    {k: v for k, v in probe.items() if k != "output"}
+                    for probe in evidence.get("probes") or []
+                ],
+                "docs": [entry.get("query") for entry in evidence.get("docs") or []],
+                "note": evidence.get("note") or "",
+            }})
+            if evidence.get("ticket"):
+                yield send({"ticket": evidence["ticket"]})
+
+            system, messages = assistant.build_messages(history, evidence)
             try:
                 for piece in provider.stream_chat(system, messages):
-                    yield f"data: {json.dumps({'delta': piece}, ensure_ascii=False)}\n\n"
+                    yield send({"delta": piece})
             except ProviderError as exc:
                 # ส่ง error ลงไปใน stream แทนการตัดสาย: หน้าเว็บได้ขึ้นข้อความจริง
                 # แทนที่จะเห็นแค่ connection ขาดแล้วเดาเอาเองว่าเกิดอะไรขึ้น
-                yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+                yield send({"error": str(exc)})
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
         })
+
+    @app.get("/api/assistant/ticket/{ticket_id}", dependencies=guarded)
+    def assistant_ticket(ticket_id: str) -> dict:
+        """สถานะงานที่ผู้ช่วยเสนอ — หน้าเว็บใช้วาดปุ่มและผลของแต่ละขั้น"""
+        from lmds.assistant import policy
+
+        try:
+            return policy.get(ticket_id).payload()
+        except policy.PolicyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/assistant/ticket/{ticket_id}/choose", dependencies=guarded)
+    def assistant_ticket_choose(ticket_id: str, body: dict) -> dict:
+        """ผู้ใช้เลือกจากเมนู: แก้เลย / ทีละขั้น / ยังไม่ทำ
+
+        endpoint นี้คือจุดเดียวที่งานเปลี่ยนสภาพเครื่องเริ่มทำงานได้ และมันต้องถูกเรียก
+        จากเบราว์เซอร์ของผู้ใช้เท่านั้น — ตั๋วออกโดยเซิร์ฟเวอร์ ผู้ช่วยออกให้ตัวเองไม่ได้
+        """
+        from lmds.assistant import policy
+
+        mode = str(body.get("mode") or "").strip()
+        try:
+            ticket = policy.choose(ticket_id, mode)
+        except policy.PolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if mode == policy.HOLD:
+            return ticket.payload()
+        try:
+            ticket, _ = policy.advance(ticket_id)
+        except policy.PolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ticket.payload()
+
+    @app.post("/api/assistant/ticket/{ticket_id}/advance", dependencies=guarded)
+    def assistant_ticket_advance(ticket_id: str) -> dict:
+        """ทำขั้นถัดไป — ใช้กับโหมด 'ทีละขั้น' ที่ผู้ใช้กดต่อเองทุกครั้ง"""
+        from lmds.assistant import policy
+
+        try:
+            ticket, _ = policy.advance(ticket_id)
+        except policy.PolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ticket.payload()
 
     @app.get("/api/models/{slug}/script", dependencies=guarded)
     def script_read(slug: str, node: str = "") -> dict:

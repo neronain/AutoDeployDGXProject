@@ -148,10 +148,17 @@ def test_only_the_recent_turns_are_sent(monkeypatch):
 
 
 def test_state_is_truncated_so_a_big_fleet_cannot_crowd_out_the_question(monkeypatch):
+    """สถานะได้ที่ *ที่เหลือ* เท่านั้น ไม่ใช่ที่เท่าไรก็ได้
+
+    ผูกกับงบจริงแทนตัวเลขดิบ — วันที่กติกาหรือวิธีคิดยาวขึ้น เทสต์นี้ควรบอกว่า
+    "สถานะล้นงบ" ไม่ใช่พังเพราะตัวเลขที่เขียนไว้เมื่อปีที่แล้วไม่ตรงอีกต่อไป
+    """
     monkeypatch.setattr(assistant, "gather_state", lambda: {"junk": ["x" * 200] * 500})
 
     system, _ = assistant.build_messages([{"role": "user", "content": "hi"}])
-    assert len(system) < 14000
+    assert len(system) <= assistant.MAX_PROMPT_CHARS
+    # ของจริงถูกตัด ไม่ใช่ผ่านเพราะบังเอิญสั้น
+    assert system.count("x" * 200) < 500
 
 
 # ---------------------------------------------------------------------------
