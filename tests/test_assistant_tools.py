@@ -297,3 +297,18 @@ def test_docs_search_finds_a_real_section():
 
 def test_an_empty_query_returns_nothing():
     assert knowledge.search_docs("") == []
+
+
+def test_the_packaged_copy_of_the_docs_wins(tmp_path, monkeypatch):
+    """เครื่องที่ติดตั้งด้วย pip ไม่มี repo ให้ค้น — wheel ต้องพา docs ไปด้วย
+
+    เจอจริงตอนติดตั้งครั้งแรก: playbook มาครบแต่ `doc_index()` คืน 0 ไฟล์ เพราะ
+    site-packages ไม่มี docs/ อยู่ในชั้นไหนเลย · ฟีเจอร์ค้นเอกสารจึงตายเงียบ ๆ
+    บนทุกเครื่องที่ไม่ใช่เครื่องพัฒนา
+    """
+    packaged = tmp_path / "_docs"
+    packaged.mkdir()
+    (packaged / "USAGE.md").write_text("# หัวข้อจากแพ็กเกจ\nเนื้อหา", encoding="utf-8")
+    monkeypatch.setattr(knowledge, "__file__", str(tmp_path / "knowledge.py"))
+
+    assert knowledge._docs_dir() == packaged

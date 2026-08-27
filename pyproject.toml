@@ -37,6 +37,15 @@ packages = ["src/lmds"]
 # ปกติจะไม่มีวันรู้ว่าตัวเองรัน commit ไหน
 artifacts = ["src/lmds/_build.py"]
 
+# เอกสารเดินทางไปกับแพ็กเกจ — ผู้ช่วยค้นจากไฟล์จริงตอนตอบคำถาม และเครื่องที่ติดตั้ง
+# ด้วย pip ไม่มี repo ให้ค้น · ไม่ใส่แล้วฟีเจอร์นี้ตายเงียบ ๆ บนทุก node ที่ไม่ใช่เครื่องพัฒนา
+# (เจอจริงตอนติดตั้งครั้งแรก: playbook มาครบ แต่ "docs ค้นได้ 0 ไฟล์")
+#
+# ตารางนี้ต้องอยู่ **ท้ายสุด** ของบล็อก wheel — TOML ให้ทุกคีย์ที่ตามหลังหัวตารางเป็น
+# ของตารางนั้น วางไว้กลางบล็อกแล้ว `artifacts` จะกลายเป็นคีย์ของ force-include
+[tool.hatch.build.targets.wheel.force-include]
+"docs" = "lmds/assistant/_docs"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

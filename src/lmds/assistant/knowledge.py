@@ -57,17 +57,24 @@ class Section:
 
 
 def _docs_dir() -> Path:
-    """หา docs/ จากตำแหน่งของไฟล์นี้ — ใช้ได้ทั้งตอนรันจาก repo และตอนติดตั้งแล้ว
+    """หา docs/ — สำเนาที่มากับแพ็กเกจก่อน แล้วค่อยมองหา repo รอบตัว
 
-    ติดตั้งผ่าน pip แล้ว docs/ อาจไม่ถูกติดตั้งไปด้วย ซึ่งไม่ใช่ความผิดพลาด —
-    ผู้ช่วยยังทำงานได้ครบ แค่ไม่มีเอกสารให้อ้าง (search_docs คืนลิสต์ว่าง)
+    เครื่องที่ติดตั้งด้วย pip ไม่มี repo ให้ค้น มีแต่ site-packages · wheel จึงพา docs/
+    ไปด้วย (ดู pyproject `force-include`) ไม่งั้นฟีเจอร์ค้นเอกสารตายเงียบ ๆ บนทุก node
+    ที่ไม่ใช่เครื่องพัฒนา — เจอจริงตอนติดตั้งครั้งแรก: playbook มาครบ แต่ค้นได้ 0 ไฟล์
+
+    เครื่องพัฒนายังได้ของสดจาก repo เพราะ `pip install -e .` ไม่ได้ก็อป docs เข้าไป
+    การไล่หาขึ้นไปตามชั้นจึงยังจำเป็น ไม่ใช่โค้ดที่เหลือค้าง
     """
     here = Path(__file__).resolve()
+    packaged = here.parent / "_docs"
+    if (packaged / "USAGE.md").exists():
+        return packaged
     for parent in here.parents:
         candidate = parent / "docs"
         if candidate.is_dir() and (candidate / "USAGE.md").exists():
             return candidate
-    return here.parent / "docs"
+    return packaged
 
 
 def playbook() -> str:
