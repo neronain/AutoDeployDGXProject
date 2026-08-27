@@ -14,6 +14,10 @@ from .hf_api import BudgetExceeded
 
 GGUF_MAGIC = b"GGUF"
 
+# บล็อก transformer หนึ่งชั้นมี tensor อย่างน้อยราวนี้ (norm/qkv/out/ffn) — ใช้เป็น
+# เกณฑ์หยาบ ๆ ว่าไฟล์มีน้ำหนักครบเป็นโมเดลจริง ไม่ใช่หัวที่ประกาศบล็อกไว้เฉย ๆ
+MIN_TENSORS_PER_BLOCK = 4
+
 # value type → struct format (เฉพาะ scalar ขนาดคงที่)
 _SCALAR_FMT = {
     0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
@@ -92,6 +96,28 @@ class GgufInfo:
         arch = self.architecture
         value = self.metadata.get(f"{arch}.nextn_predict_layers") if arch else None
         return value if isinstance(value, int) and value > 0 else None
+
+    @property
+    def is_standalone_model(self) -> bool | None:
+        """ไฟล์นี้ llama.cpp โหลดเป็นโมเดลเดี่ยว ๆ ได้ไหม (None = บอกไม่ได้จาก metadata)
+
+        ใช้แยก "หัว MTP ล้วน ๆ" ออกจาก "โมเดล draft ย่อ" ซึ่งชื่อไฟล์แยกให้ไม่ได้ — ทั้งคู่
+        ชื่อขึ้นต้น mtp- และมี tokenizer/block_count/embedding_length ครบเหมือนกัน
+
+        ตัวชี้ขาดคือจำนวน tensor เทียบกับจำนวนบล็อกที่ metadata ประกาศไว้: บล็อก
+        transformer หนึ่งชั้นต้องมี tensor หลายตัว (norm/qkv/out/ffn) ไฟล์ที่ประกาศ 65
+        บล็อกแต่มี 16 tensor จึงไม่ใช่โมเดล — มันคือหัวที่ตั้งใจให้ฝังในไฟล์เป้าหมาย
+
+        เจอจริง 2026-08-27: mtp-RVN.gguf (65 บล็อก / 16 tensor) ถูกส่งเข้า
+        --spec-draft-model แล้ว llama-server ล้มที่ check_tensor_dims: tensor
+        'token_embd.weight' not found → ปิดตัวก่อน health check = start ไม่ขึ้นเลย
+        เทียบกับ mtp-gemma-4-26B-A4B-it.gguf (4 บล็อก / 49 tensor) ที่เป็น draft จริง
+        """
+        arch = self.architecture
+        blocks = self.metadata.get(f"{arch}.block_count") if arch else None
+        if not isinstance(blocks, int) or blocks <= 0 or not self.tensor_count:
+            return None
+        return self.tensor_count >= blocks * MIN_TENSORS_PER_BLOCK
 
     @property
     def chat_template(self) -> str | None:

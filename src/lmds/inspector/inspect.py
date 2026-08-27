@@ -497,6 +497,18 @@ def _inspect_gguf(
     report.moe_experts = report.moe_experts or gguf.expert_count
     report.moe_experts_active = report.moe_experts_active or gguf.expert_used_count
     report.mtp_embedded = report.mtp_embedded or bool(gguf.nextn_layers)
+
+    # ไฟล์ฝั่ง speculative ต้องถูกอ่าน header ด้วย ไม่ใช่เชื่อชื่อไฟล์: ถ้ามันเป็นหัวล้วน
+    # การส่งเข้า --spec-draft-model ทำให้ start ไม่ขึ้น (ดู GgufInfo.is_standalone_model)
+    for head in report.gguf_variants:
+        if not head.is_mtp or head.is_standalone_draft is not None:
+            continue
+        try:
+            head_info = parse_gguf(client.range_source(source.repo_id, revision, head.filename))
+        except (GgufParseError, BudgetExceeded, EOFError) as exc:
+            report.warnings.append(f"อ่าน header ของ {head.filename} ไม่สำเร็จ: {exc}")
+            continue
+        head.is_standalone_draft = head_info.is_standalone_model
     if report.has_chat_template is None:
         report.has_chat_template = gguf.chat_template is not None
     if gguf.file_type is not None and not report.quantization:

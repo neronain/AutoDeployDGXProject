@@ -1,5 +1,25 @@
 # Changelog
 
+## ยังไม่ปล่อย
+
+**หัว MTP ที่ไม่ใช่โมเดล ไม่ถูกส่งเข้า --spec-draft-model อีก**
+
+- repo ที่แถม "หัว MTP ล้วน ๆ" (เช่น `mtp-RVN.gguf` — 65 บล็อกแต่มี 16 tensor
+  ไม่มี `token_embd.weight`) เคยถูกต่อเป็น draft model แยก ผลคือ llama-server ล้มที่
+  `check_tensor_dims` แล้วปิดตัวก่อน health check — **โมเดลไม่ขึ้นเลย** ไม่ใช่แค่ไม่มี
+  speculative decoding · เจอจริงกับ 0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF
+- แยกไม่ได้ด้วยชื่อไฟล์: `mtp-gemma-4-26B-A4B-it.gguf` ก็ชื่อขึ้นต้น `mtp-` เหมือนกัน
+  แต่เป็นโมเดล draft ย่อจริง (4 บล็อก 49 tensor) ที่ต่อเป็น draft ได้ถูกต้อง
+- `GgufInfo.is_standalone_model` ตัดสินจาก header: จำนวน tensor ต้องสมเหตุผลกับจำนวน
+  บล็อกที่ metadata ประกาศ · inspect อ่าน header ของไฟล์ฝั่ง speculative ทุกตัวแล้ว
+  บันทึกไว้ที่ `GgufVariant.is_standalone_draft`
+- ไฟล์ที่อ่าน header ไม่สำเร็จ (None) ยังผ่านเหมือนเดิม — เน็ตสะดุดตอน inspect ไม่ควร
+  ปิดฟีเจอร์เงียบ ๆ · ปฏิเสธเฉพาะตัวที่รู้แน่ว่าเป็นหัวล้วน
+- ไฟล์ที่เลือกฝัง head มาแล้วชนะเสมอ: ไม่ส่ง `--spec-draft-model` ควบกับ `--spec-type`
+- คำเตือนบอกชื่อไฟล์ที่ควรเลือกแทนตรง ๆ (`เลือก RVN-Q6_K-multilingual-mtp.gguf แทน`)
+  ไม่ใช่แค่ "เลือกตัวที่ลงท้าย -mtp" ซึ่งเดาไม่ถูกเมื่อ repo มีเป็นร้อย variant
+
+
 ## 0.4.1
 
 **คะแนนโมเดล: หน้ารายละเอียดสำหรับนำเสนอ + ลบผลได้ + พับหมวดได้**

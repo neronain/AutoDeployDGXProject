@@ -243,13 +243,51 @@ def _harden_draft(plan: DeploymentPlan, report: ModelReport) -> None:
             )
         return
 
-    chosen = available[0].filename
+    # หัวที่ฝังมาในไฟล์เป้าหมายแล้วไม่ต้องมี draft แยก — ส่งทั้งสองอย่างคือชี้ผิดไฟล์
+    if plan.speculative.embedded:
+        if plan.speculative.draft_files:
+            plan.warnings.append(
+                "ตัด draft_files ออก — ไฟล์ที่เลือกฝัง MTP head มาแล้ว ส่ง --spec-type อย่างเดียวพอ"
+            )
+            plan.speculative.draft_files = []
+        plan.warnings.append(
+            "GGUF มี MTP head ฝังในตัว (nextn) — เปิด speculative decoding ให้อัตโนมัติ "
+            "โดยไม่ต้องมีไฟล์ draft แยก"
+        )
+        return
+
+    # ปฏิเสธเฉพาะตัวที่อ่าน header แล้วรู้ว่าเป็นหัวล้วน — อ่านไม่ได้ (None) ให้ผ่านไปตามเดิม
+    # ดีกว่าปิดฟีเจอร์เงียบ ๆ เพราะเน็ตสะดุดตอน inspect
+    usable = [v for v in available if v.is_standalone_draft is not False]
+    if not usable:
+        plan.speculative.draft_files = []
+        plan.warnings.append(
+            f"repo มี {available[0].filename.rsplit(chr(47), 1)[-1]} แต่เป็นหัว MTP ล้วน ๆ "
+            f"llama.cpp โหลดเป็น draft model แยกไม่ได้ — {_mtp_sibling_hint(plan, report)}"
+        )
+        return
+
+    chosen = usable[0].filename
     if plan.speculative.draft_files != [chosen]:
         plan.warnings.append(
             f"repo มีไฟล์ MTP — เปิด speculative decoding ให้อัตโนมัติด้วย "
             f"{chosen.rsplit(chr(47), 1)[-1]} (output เหมือนเดิม ได้มาแต่ความเร็ว)"
         )
     plan.speculative.draft_files = [chosen]  # llama-server รับ draft ได้ไฟล์เดียว
+
+
+def _mtp_sibling_hint(plan: DeploymentPlan, report: ModelReport) -> str:
+    """ชี้ชื่อ variant ที่ฝัง MTP มาแล้วของไฟล์ที่เลือก ถ้ามีอยู่จริงใน repo
+
+    "เลือกตัวที่ลงท้าย -mtp" ไม่พอเมื่อ repo มีเป็นร้อย variant — ผู้ใช้ต้องมานั่งเดาว่า
+    ตัวไหนคู่กับที่ตัวเองเลือก คำแนะนำที่ระบุชื่อไฟล์ตรง ๆ ทำตามได้ทันที
+    """
+    chosen = (plan.selected_gguf or "").rsplit("/", 1)[-1]
+    if chosen.endswith(".gguf"):
+        wanted = f"{chosen[: -len('.gguf')]}-mtp.gguf"
+        if any(v.filename.rsplit("/", 1)[-1] == wanted for v in report.gguf_variants):
+            return f"เลือก {wanted} แทนเพื่อเปิด speculative decoding"
+    return "เลือก variant ที่ลงท้าย -mtp เพื่อเปิด speculative decoding"
 
 
 def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:

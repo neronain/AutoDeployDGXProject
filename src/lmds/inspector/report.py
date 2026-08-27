@@ -31,6 +31,10 @@ class GgufVariant(BaseModel):
     is_mmproj: bool = False
     # MTP/draft head สำหรับ speculative decoding — ไม่ใช่ weight ห้ามให้ผู้ใช้เลือกเป็นตัวโมเดล
     is_mtp: bool = False
+    # is_mtp บอกแค่ว่า "เป็นไฟล์ฝั่ง speculative" ไม่ได้บอกว่าใช้ยังไง: บาง repo ให้โมเดล
+    # draft ย่อที่โหลดเดี่ยวได้ (--spec-draft-model) บางที่ให้หัวล้วนที่ต้องฝังในไฟล์เป้าหมาย
+    # None = ยังไม่ได้อ่าน header ของไฟล์นี้
+    is_standalone_draft: Optional[bool] = None
     parts: list[GgufPart] = []  # ว่าง = ไฟล์เดียว; split = ทุก part เรียงลำดับ
 
     @property

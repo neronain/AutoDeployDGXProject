@@ -650,6 +650,64 @@ def test_embedded_mtp_read_from_gguf_metadata():
     assert GgufInfo(version=3, tensor_count=1, metadata={"general.architecture": "llama"}).nextn_layers is None
 
 
+def test_bare_mtp_head_is_not_wired_as_a_draft_model(tmp_path):
+    """เคสจริง 2026-08-27: 0bserverx/Qwen3.8-27B-Heretic-...-GGUF + mtp-RVN.gguf
+
+    repo แถมทั้ง "หัว MTP ล้วน ๆ" (mtp-RVN.gguf) และ variant ที่ฝัง head มาแล้ว (-mtp)
+    ตัวหัวไม่มี token_embd.weight — llama-server ล้มที่ check_tensor_dims แล้วปิดตัว
+    ก่อน health check ผ่าน ผลคือโมเดลหลักของ Hermes ดับ ไม่ใช่แค่ไม่มี speculative
+
+    ชื่อไฟล์แยกสองอย่างนี้ไม่ได้ (Gemma4 ก็ชื่อ mtp-* แต่เป็นโมเดล draft จริง) จึงต้อง
+    ตัดสินจาก header ที่อ่านมา — is_standalone_draft=False เท่านั้นที่ถูกปฏิเสธ
+    """
+    report = mtp_gguf_report()
+    for variant in report.gguf_variants:
+        if variant.is_mtp:
+            variant.is_standalone_draft = False
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert plan.speculative.draft_files == [], "หัวล้วนต้องไม่ถูกส่งเป็น draft model"
+    assert "SERVER_ARGS+=(--spec-draft-model" not in script
+    assert any("หัว MTP" in w for w in plan.warnings), "ต้องบอกผู้ใช้ว่าทำไมถึงไม่เปิดให้"
+    assert not audit_script(script)
+
+
+def test_embedded_head_wins_over_a_separate_draft_file(tmp_path):
+    """ไฟล์ที่เลือกฝัง head มาแล้ว + repo มีไฟล์ draft ด้วย = ต้องใช้ทางฝัง ไม่ใช่ทั้งคู่
+
+    ส่ง --spec-draft-model คู่กับไฟล์ที่มี head อยู่ในตัวคือชี้ไปคนละน้ำหนัก
+    """
+    report = mtp_gguf_report(mtp_embedded=True)
+    bundle, plan, _ = make_bundle(report, tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert plan.speculative.embedded is True
+    assert plan.speculative.draft_files == []
+    assert "--spec-type draft-mtp" in script
+    assert "SERVER_ARGS+=(--spec-draft-model" not in script
+    assert not audit_script(script)
+
+
+def test_bare_head_is_told_apart_from_a_real_draft_model_by_its_header():
+    """หัวล้วนประกาศบล็อกไว้เยอะแต่มี tensor น้อย — โมเดลจริงมี tensor หลายตัวต่อบล็อก"""
+    from lmds.inspector.gguf import GgufInfo
+
+    bare = GgufInfo(  # mtp-RVN.gguf ของจริง: 65 บล็อก 16 tensor
+        version=3, tensor_count=16,
+        metadata={"general.architecture": "qwen35", "qwen35.block_count": 65},
+    )
+    draft = GgufInfo(  # mtp-gemma-4-26B-A4B-it.gguf ของจริง: 4 บล็อก 49 tensor
+        version=3, tensor_count=49,
+        metadata={"general.architecture": "gemma4", "gemma4.block_count": 4},
+    )
+    unknown = GgufInfo(version=3, tensor_count=16, metadata={"general.architecture": "qwen35"})
+
+    assert bare.is_standalone_model is False
+    assert draft.is_standalone_model is True
+    assert unknown.is_standalone_model is None, "ไม่มี block_count = บอกไม่ได้ ไม่ใช่ตอบว่าไม่ใช่"
+
+
 def test_gguf_without_mtp_has_no_spec_flags(tmp_path):
     """repo ที่ไม่มี MTP ต้องไม่มี --spec-type โผล่มา (ค่าว่างจะทำให้ llama-server ล้ม)"""
     bundle, plan, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
