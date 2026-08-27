@@ -20,6 +20,15 @@ from pathlib import Path
 _ASSIGN = re.compile(r'^([A-Z][A-Z0-9_]*)="([^"\n]*)"\s*(?:#.*)?$')
 _DEFAULT = re.compile(r'^\$\{[A-Z][A-Z0-9_]*:-(.*)\}$')
 
+# `MODEL_FILES=( "ก.gguf" "ข.gguf" )` — ชิ้นแรกคือไฟล์ที่ controller เสิร์ฟจริง
+#
+# controller ของ llama.cpp เก็บรายชื่อ shard ไว้ในอาร์เรย์ แล้วค่อยตั้ง
+# `MODEL_FILE="${MODEL_FILES[0]}"` · ตัวอ่าน header รับได้เฉพาะบรรทัด KEY="ค่า" ธรรมดา
+# ค่าที่ได้จึงเป็นสตริง '${MODEL_FILES[0]}' ซึ่งถูกทิ้งเพราะมี `$` — ผลคือสูตรของ GGUF
+# ทุกตัวไม่มี `gguf_file` ทั้งที่ "quant ไหนที่รันผ่าน" คือข้อมูลชิ้นสำคัญที่สุดของสูตรนั้น
+_ARRAY_HEAD = re.compile(r'^([A-Z][A-Z0-9_]*)=\(\s*(?:#.*)?$')
+_ARRAY_ITEM = re.compile(r'^\s*"([^"\n$]+)"\s*(?:#.*)?$')
+
 # สคริปต์ที่ไม่ใช่ controller ของโมเดล — เป็นเครื่องมือของรีโปเอง
 TOOLING = {"install-canonical.sh", "verify-all.sh", "audit-controllers.py"}
 
@@ -35,7 +44,21 @@ def parse_header(text: str) -> dict[str, str]:
     จะถูกใช้จริง — ค่าที่ประกาศไว้ตอนต้นคือค่าที่ตั้งใจให้เป็นค่าตั้งต้น
     """
     values: dict[str, str] = {}
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        array = _ARRAY_HEAD.match(line)
+        if array:
+            key = array.group(1)
+            # เก็บเฉพาะชิ้นแรก — ชิ้นถัดไปคือ shard ที่ llama.cpp ต่อให้เอง
+            for follow in lines[index + 1:]:
+                if follow.startswith(")"):
+                    break
+                item = _ARRAY_ITEM.match(follow)
+                if item:
+                    values.setdefault(key, item.group(1).strip())
+                    break
+            continue
+
         found = _ASSIGN.match(line)          # ไม่ strip — บรรทัดที่ย่อหน้าคืออยู่ในฟังก์ชัน
         if not found:
             continue
@@ -126,8 +149,11 @@ def recipe_from_controller(filename: str, text: str, origin: str = "") -> dict |
         recipe["image"] = meta["VLLM_IMAGE"]
     if meta.get("SERVED_MODEL_NAME"):
         recipe["served_model_name"] = meta["SERVED_MODEL_NAME"]
-    if meta.get("MODEL_FILE"):          # llama.cpp — ไฟล์ GGUF ที่ทดสอบมา
-        recipe["gguf_file"] = meta["MODEL_FILE"]
+    # llama.cpp — ไฟล์ GGUF ที่ทดสอบมา · รุ่นใหม่เก็บไว้ในอาร์เรย์ MODEL_FILES
+    # (ชิ้นแรก) ส่วนรุ่นเก่าตั้ง MODEL_FILE ตรง ๆ
+    gguf = meta.get("MODEL_FILE") or meta.get("MODEL_FILES")
+    if gguf and gguf.endswith(".gguf"):
+        recipe["gguf_file"] = gguf
     return recipe
 
 
