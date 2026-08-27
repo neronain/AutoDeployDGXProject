@@ -65,6 +65,25 @@ class Adopted:
             for item in self.env:
                 if item.startswith(key):
                     return item.split("=", 1)[1]
+        return self._model_from_argv()
+
+    def _model_from_argv(self) -> str:
+        """เซิร์ฟเวอร์หลายตัวรับชื่อโมเดลทาง argv ไม่ใช่ env — อ่านจาก env อย่างเดียวจึงแจ้ง
+        "(ไม่ระบุใน env)" ทั้งที่ชื่ออยู่ตรงหน้า
+
+        เจอจริง 2026-08-27 บน spark-03: `trtllm-serve
+        nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 --host 0.0.0.0 --port 8355`
+        """
+        argv = list(self.entrypoint) + list(self.args)
+        for flag in ("--model", "-m", "--model-path", "--model_path"):
+            if flag in argv:
+                index = argv.index(flag) + 1
+                if index < len(argv):
+                    return argv[index]
+        # ชื่อที่วางเป็น positional ตามหลังคำสั่ง serve — รับเฉพาะรูป org/name หรือ path
+        for previous, item in zip(argv, argv[1:]):
+            if previous.endswith(("serve", "-serve")) and not item.startswith("-"):
+                return item
         return ""
 
     @property

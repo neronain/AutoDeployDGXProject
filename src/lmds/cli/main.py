@@ -238,6 +238,7 @@ def node_add(
     console.print(
         f"\n[bold]เพิ่ม '{node.name}' แล้ว[/bold] — {gpus} · "
         f"lmds {node.lmds_version} · โมเดล {len(info.get('models', []))} ตัว"
+        + (f" · นอกระบบอีก {len(host_info['foreign'])}" if host_info.get("foreign") else "")
     )
     console.print("[dim]ดูทั้งหมด: lmds node list · สถานะรวมทุกเครื่อง: lmds ps --all[/dim]")
 
@@ -262,6 +263,11 @@ def node_list(
                 version = (info.get("host") or {}).get("lmds_version", "")
                 update(node.name, last_seen=_now(), last_error="", lmds_version=version)
                 status = f"[green]ต่อได้[/green] · โมเดล {len(info.get('models', []))} ตัว"
+                # "0 ตัว" บนเครื่องที่มี inference server รันอยู่จริงคือคำตอบที่ผิด —
+                # node รุ่นเก่าไม่ส่งคีย์นี้มา (ไม่มี = ไม่รู้ ไม่ใช่ไม่มี) จึงเงียบไว้
+                outside = len((info.get("host") or {}).get("foreign") or [])
+                if outside:
+                    status += f" · [yellow]นอกระบบอีก {outside}[/yellow]"
             except NodeError as exc:
                 update(node.name, last_error=str(exc)[:200])
                 version = node.lmds_version
@@ -1906,12 +1912,11 @@ def adopt(
     name = slug or info.container.replace("_", "-").lower()
     console.print(f"[green]รับ {info.container} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
     console.print(f"[dim]image:   {info.image}[/dim]")
-    console.print(f"[dim]model:   {info.model or '(ไม่ระบุใน env)'}[/dim]")
-    # ชื่อที่ถูกเปลี่ยนไปแล้วดูไม่ออกว่าเดิมคืออะไร — ต้องกลับไปเปิด MODEL_PROFILE เอง
-    if info.default_model and info.default_model != info.model:
-        console.print(f"[dim]         ↳ ชื่อเดิม: {info.default_model}[/dim]")
+    console.print(f"[dim]model:   {info.model or '(อ่านจาก env/argv ไม่ได้)'}[/dim]")
+    # ไม่มี "ชื่อเดิม" ให้เทียบเหมือนสาขา process: container ไม่ได้จดชื่อที่เสิร์ฟไว้ที่ไหน
+    # ชื่อที่เปลี่ยนแล้วแสดงอยู่ในบรรทัด "รับ … เข้าระบบแล้ว → <slug>" ข้างบนอยู่แล้ว
     console.print(f"[dim]port:    {info.port} · context: {info.context or 'ไม่ระบุ'}[/dim]")
-    console.print(f"[dim]sคริปต์: {path}[/dim]")
+    console.print(f"[dim]สคริปต์: {path}[/dim]")
     console.print("\n[dim]ทำได้: start · stop · restart · status · logs · test-text · client-config[/dim]")
     console.print("[dim]ไม่มี download/verify-files — weight ของ container นี้เป็น path ที่คุณจัดการเอง[/dim]")
 

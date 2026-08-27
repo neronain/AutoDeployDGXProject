@@ -837,6 +837,76 @@ def test_adopt_reproduces_the_running_container(tmp_path, monkeypatch, isolated_
     assert "download)" not in script and "verify-files)" not in script
 
 
+def test_model_name_is_read_from_argv_when_it_is_not_in_env(tmp_path, monkeypatch, isolated_config):
+    """เจอจริง 2026-08-27 บน spark-03: trtllm-serve รับชื่อโมเดลเป็น positional ไม่ใช่ env
+
+    `docker inspect` มีชื่อเต็มอยู่ใน Args อยู่แล้ว แต่ adopt อ่านแต่ env จึงสรุปว่า
+    "(ไม่ระบุใน env)" ทั้งที่ชื่อวางอยู่ตรงหน้า — คนอ่านสรุปแล้วไม่รู้ว่า adopt ตัวไหนมา
+    """
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    payload = [{
+        "Name": "/trtllm-nemotron",
+        "Args": ["nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
+                 "--host", "0.0.0.0", "--port", "8355"],
+        "Config": {
+            "Image": "nvidia/tensorrt-llm:nemotron-fixed2",
+            "Entrypoint": ["trtllm-serve"],
+            "Env": ["PATH=/usr/bin"],
+        },
+        "HostConfig": {
+            "Binds": [], "PortBindings": {"8355/tcp": [{"HostPort": "8355"}]},
+            "NetworkMode": "host", "Runtime": "nvidia",
+        },
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    info = inspect_container("trtllm-nemotron")
+    assert info.model == "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16"
+    assert info.port == 8355
+
+
+def test_model_name_is_read_from_a_model_flag_too(tmp_path, monkeypatch, isolated_config):
+    """--model บน argv ก็ต้องอ่านได้ ไม่ใช่เฉพาะ positional ตามหลัง serve"""
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    payload = [{
+        "Name": "/qwen_nvfp4_server",
+        "Args": ["--model", "/models/Qwen3.6-35B-A3B-NVFP4.gguf", "--port", "8080"],
+        "Config": {"Image": "ghcr.io/ggml-org/llama.cpp:server-cuda13-b8967",
+                   "Entrypoint": ["/app/llama-server"], "Env": []},
+        "HostConfig": {"Binds": [], "PortBindings": {"8080/tcp": [{"HostPort": "8080"}]},
+                       "NetworkMode": "host", "Runtime": "nvidia"},
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    assert inspect_container("qwen_nvfp4_server").model == "/models/Qwen3.6-35B-A3B-NVFP4.gguf"
+
+
+def test_env_still_wins_over_argv_for_the_model_name(tmp_path, monkeypatch, isolated_config):
+    """argv เป็นทางสำรอง ไม่ใช่ตัวแทน — env ที่ผู้ใช้ตั้งเองยังต้องชนะ"""
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    payload = [{
+        "Name": "/x",
+        "Args": ["--model", "/models/from-argv"],
+        "Config": {"Image": "i", "Entrypoint": [], "Env": ["MODEL=/models/from-env"]},
+        "HostConfig": {"Binds": [], "PortBindings": {}, "NetworkMode": "host", "Runtime": ""},
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    assert inspect_container("x").model == "/models/from-env"
+
+
 def test_repair_points_an_external_container_at_adopt(tmp_path, monkeypatch, isolated_config):
     """"bundle ถูกลบไปแล้ว" เป็นการเดาที่ผิดสำหรับ container ที่ไม่เคยมี bundle
     และพาไปทางที่ไม่ใช่ (deploy ใหม่ทั้งที่ของรันอยู่ดี ๆ)
