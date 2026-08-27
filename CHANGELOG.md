@@ -17,6 +17,9 @@
 - ชื่อโมเดลอ่านจาก argv ได้แล้วเมื่อไม่มีใน env — `trtllm-serve <org/name> --port …`
   วางชื่อเป็น positional · เดิมสรุปว่า "(ไม่ระบุใน env)" ทั้งที่ชื่ออยู่ใน docker inspect
 - แก้คำสะกด `sคริปต์` → `สคริปต์`
+- port ของ container ที่ adopt มาอ่านจาก `--port` บน argv ก่อน · container ที่เปิด
+  หลายรู (metrics/API/notebook) เคยถูกคว้ารูแรกมาใช้ แล้ว health check เคาะผิดที่
+  สถานะจึงค้าง "loading" ตลอด ทั้งที่โมเดลเสิร์ฟอยู่ปกติ (spark-03: 6006 แทน 8355)
 
 **หัว MTP ที่ไม่ใช่โมเดล ไม่ถูกส่งเข้า --spec-draft-model อีก**
 

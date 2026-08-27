@@ -52,6 +52,21 @@ class Adopted:
                     return int(item.split("=", 1)[1])
                 except ValueError:
                     break
+        # --port บน argv คือคำสั่งที่เซิร์ฟเวอร์รับไปจริง ๆ ส่วน PortBindings เป็นแค่รูที่
+        # เปิดไว้ ซึ่งมีได้หลายรูโดยที่ API อยู่รูเดียว
+        #
+        # เจอจริง 2026-08-27 บน spark-03: container เปิด 6006/8355/8888 (metrics, API,
+        # notebook) · adopt คว้า 6006 มาเป็น port ของโมเดล แล้ว `lmds ps` ก็ค้างที่
+        # "loading" ตลอดกาลเพราะ health check ไปเคาะผิดรู
+        argv = list(self.entrypoint) + list(self.args)
+        for flag in ("--port", "-p", "--server-port"):
+            if flag in argv:
+                index = argv.index(flag) + 1
+                if index < len(argv):
+                    try:
+                        return int(argv[index])
+                    except ValueError:
+                        break
         for spec in self.ports or {}:
             try:
                 return int(spec.split("/")[0])

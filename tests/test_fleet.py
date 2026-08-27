@@ -869,6 +869,54 @@ def test_model_name_is_read_from_argv_when_it_is_not_in_env(tmp_path, monkeypatc
     assert info.port == 8355
 
 
+def test_api_port_comes_from_argv_not_whichever_binding_is_first(tmp_path, monkeypatch, isolated_config):
+    """เจอจริง 2026-08-27 บน spark-03: container เปิด 6006 (metrics), 8355 (API), 8888 (notebook)
+
+    adopt คว้ารูแรกที่เจอมาเป็น port ของโมเดล แล้ว health check ก็ไปเคาะ 6006 ตลอด
+    สถานะจึงค้างที่ "loading" ทั้งที่โมเดลเสิร์ฟอยู่ดี ๆ ที่ 8355
+    """
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    payload = [{
+        "Name": "/trtllm-nemotron",
+        "Args": ["nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
+                 "--host", "0.0.0.0", "--port", "8355"],
+        "Config": {"Image": "nvidia/tensorrt-llm:nemotron-fixed2",
+                   "Entrypoint": ["trtllm-serve"], "Env": []},
+        "HostConfig": {
+            "Binds": [],
+            "PortBindings": {"6006/tcp": [{"HostPort": "6006"}],
+                             "8355/tcp": [{"HostPort": "8355"}],
+                             "8888/tcp": [{"HostPort": "8888"}]},
+            "NetworkMode": "host", "Runtime": "nvidia",
+        },
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    assert inspect_container("trtllm-nemotron").port == 8355
+
+
+def test_env_port_still_wins_over_argv(tmp_path, monkeypatch, isolated_config):
+    """PORT= ที่ผู้ใช้ตั้งเองยังชนะ argv เหมือนเดิม"""
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    payload = [{
+        "Name": "/x", "Args": ["--port", "9999"],
+        "Config": {"Image": "i", "Entrypoint": [], "Env": ["PORT=8000"]},
+        "HostConfig": {"Binds": [], "PortBindings": {"7000/tcp": [{"HostPort": "7000"}]},
+                       "NetworkMode": "host", "Runtime": ""},
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    assert inspect_container("x").port == 8000
+
+
 def test_model_name_is_read_from_a_model_flag_too(tmp_path, monkeypatch, isolated_config):
     """--model บน argv ก็ต้องอ่านได้ ไม่ใช่เฉพาะ positional ตามหลัง serve"""
     import json as json_module
