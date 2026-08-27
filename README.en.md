@@ -146,6 +146,24 @@ node is unreachable", "why won't msi-6 start". It uses the same LLM that plans d
 itself when no provider is configured, and knows the context/KV rules but is **forbidden from doing
 the arithmetic**: an LLM multiplying in its head is wrong in a way that reads as authoritative.
 
+It also **goes and looks at the machine before answering**. Ask why a model will not start and the
+system opens that controller's logs, checks the GPU, disk and ports, or runs `lmds doctor` on the
+target node over SSH first, then answers from what came back — the "ดูมาแล้ว: …" line above each
+reply lists exactly what it checked.
+
+Once the cause is clear enough to propose a fix, it **asks you instead of acting**:
+
+| Choice | What happens |
+|---|---|
+| **แก้เลย** (do it) | Runs every step in one go |
+| **ทีละขั้น** (step by step) | Runs one step, stops so you can read the result, waits for the next press |
+| **ยังไม่ทำ** (hold) | Shows the commands and touches nothing |
+
+**The LLM cannot issue commands.** It only picks entries from a fixed catalogue
+(`lmds/assistant/catalog.py`); the shell command is assembled in code, and the approval ticket is
+minted by the server — the only way anything runs is a human pressing a button. See
+[SECURITY.md](SECURITY.md).
+
 ---
 
 ## One machine, whole fleet

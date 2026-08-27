@@ -358,6 +358,22 @@ Exit codes: 0 ไม่พบปัญหาที่บล็อก · 2 มี
 - `GET /api/auth` → `{"required": bool}` · `POST /api/auth` (header `x-lmds-token`) → 200/401
   · ผิดติดกัน > 5 ครั้งต่อ IP → 429 หน่วงแบบทวีคูณ สูงสุด 60 วินาที
 - สถานะเก็บที่ `~/.lmds/run/web.json` (สิทธิ์ 0600 เพราะมี token) · `--stop` ตรวจ cmdline ก่อนฆ่า
+- `GET /api/version` คืน `commit` (โค้ดที่ process นี้รันอยู่), `installed` (ของบนดิสก์) และ
+  **`boot`** = ลายเซ็นของ process ที่สุ่มใหม่ทุกครั้งที่บริการเริ่ม · หน้าเว็บใช้ตอบว่า
+  "restart เสร็จหรือยัง" โดยไม่ผูกกับว่ามีโค้ดใหม่ไหม — เดิมรอให้ `commit` เปลี่ยน แล้วค้าง
+  120 วินาทีทุกครั้งที่อัปเดตแล้วไม่มีอะไรใหม่ จนสรุปผิดว่าเซิร์ฟเวอร์ไม่กลับมา
+
+### API ของผู้ช่วย (หน้าเว็บเรียก — ไม่ใช่ CLI)
+
+| Endpoint | ทำอะไร |
+|---|---|
+| `POST /api/assistant/chat` | สตรีม SSE: `status` → `evidence` (ไปดูอะไรมา) → `ticket` (ถ้ามีงานเสนอ) → `delta` |
+| `GET /api/assistant/ticket/{id}` | สถานะงานที่เสนอ + เมนูให้เลือก |
+| `POST /api/assistant/ticket/{id}/choose` | ผู้ใช้เลือก `apply` / `step` / `hold` — **จุดเดียวที่งานเริ่มทำงานได้** |
+| `POST /api/assistant/ticket/{id}/advance` | ทำขั้นถัดไป (โหมด `step`) |
+
+ตั๋วออกโดยเซิร์ฟเวอร์เท่านั้น อายุ 30 นาที และแต่ละขั้นใช้ได้ครั้งเดียว — LLM ออกตั๋ว
+ให้ตัวเองไม่ได้ (PRD FR-1c.5)
   เผื่อ PID ถูกใช้ซ้ำไปแล้ว · พอร์ตไม่ว่างโดยไม่ใช่ของ lmds จะบอกตรง ๆ พร้อมคำสั่งหาว่าใครยึด
 
 REST ที่หน้าเว็บใช้ (token เดียวกับหน้าเว็บ): `/api/host` `/api/models` `/api/nodes`
@@ -418,6 +434,12 @@ src/lmds/
 ├── fit/                 # analyzer.py (memory/KV cache), targets.py (target presets)
 ├── brain/               # providers.py, orchestrator.py, plan_schema.py, prompts.py,
 │                        #   rulebased.py, allowlists.py (flag/image allowlist)
+├── assistant/           # สิ่งที่ผู้ช่วยในหน้าเว็บ "ทำได้" — ไม่ผูกกับ FastAPI
+│                        #   catalog.py (probe อ่านอย่างเดียว + action ที่เปลี่ยนเครื่อง),
+│                        #   runner.py (รันผ่าน nodes/ssh + redact + ตัดตามงบ),
+│                        #   policy.py (ตั๋วอนุมัติ: แก้เลย/ทีละขั้น/ยังไม่ทำ),
+│                        #   router.py (LLM เลือกจากแคตตาล็อกเป็น JSON แล้วโค้ดตรวจซ้ำ),
+│                        #   knowledge.py + playbook.md (วิธีคิด + ค้น docs/ ตัวจริง)
 ├── generator/           # renderer.py + templates/*.j2 (single-vllm, single-llamacpp, stacked-vllm)
 ├── validator/           # gates.py — quality gates ทั้ง 10 ด่านรวมอยู่ไฟล์เดียว
 ├── fleet/               # manager.py — discover/stop/start/restart/logs/remove/repair + systemd unit

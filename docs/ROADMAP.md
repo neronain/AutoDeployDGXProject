@@ -57,7 +57,12 @@
 
 1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · งานต่อยอด: 4 เครื่อง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
 2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
-   verify-files, 2026-08-02) · ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้
+   verify-files, 2026-08-02) · ~~ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้~~
+   → ✅ **ทำแล้ว (2026-08-27)** ผู้ช่วยในหน้าเว็บเปิด log ของ controller บนเครื่องนั้นเอง (พร้อม
+   GPU/ดิสก์/พอร์ต/`lmds doctor`) แล้วเสนอวิธีแก้เป็นเมนู **แก้เลย / ทีละขั้น / ยังไม่ทำ** ·
+   LLM เลือกได้เฉพาะรายการในแคตตาล็อก คำสั่งประกอบด้วยโค้ด และไม่มีอะไรทำงานจนกว่าจะมีคนกด
+   (PRD FR-1c) · **งานต่อยอด**: ให้ `lmds doctor` ป้อนอาการที่จับได้เข้าผู้ช่วยโดยตรง,
+   จำสูตรที่แก้สำเร็จกลับเข้า `recipes` (ข้อ 6), และรองรับ log ที่ผู้ใช้วางมาเองจากเครื่องนอกทะเบียน
    · **มีหลักฐานแล้วว่าคุ้มที่สุดในเฟส 2**: การรัน DeepSeek V4 ครั้งแรกพัง 4 รอบ แต่ละรอบสาเหตุ
    อ่านได้จาก traceback ตรง ๆ (`only supports fp8 kv-cache` → kv-cache-dtype ·
    `Expected 7 but got 8 arguments` → cudagraph PIECEWISE · `LocalEntryNotFoundError` →
