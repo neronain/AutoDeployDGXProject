@@ -1821,6 +1821,25 @@ def test_version_endpoint_reports_the_commit_not_just_the_number():
     assert d["version"] and "commit" in d and d["upstream"] == ""   # ไม่ถาม remote ถ้าไม่สั่ง
 
 
+def test_version_carries_a_signature_of_this_process():
+    """หน้าเว็บต้องรู้ได้ว่า restart เสร็จแล้วจริง โดยไม่ต้องพึ่งว่า commit เปลี่ยนไหม
+
+    เจอจริง: กด Update ตอนที่ hub อยู่ที่ commit ล่าสุดอยู่แล้ว (`Already up to date`)
+    หน้าเว็บรอ commit เปลี่ยนจนครบ 120 วิ แล้วขึ้นว่า "เซิร์ฟเวอร์ยังไม่กลับมา" ทั้งที่
+    มันกลับมาตั้งแต่วินาทีแรก — แล้วหยุดก่อนไล่อัปเดต node ที่เหลือ
+    """
+    d = TestClient(create_app()).get("/api/version").json()
+    assert d["boot"], "ต้องมีลายเซ็นของ process ไม่งั้นแยก 'ยังไม่ restart' กับ 'ไม่มีอะไรเปลี่ยน' ไม่ออก"
+
+
+def test_the_console_waits_for_a_new_process_not_a_new_commit():
+    page = _console_html()
+    assert "waitForHub(beforeBoot)" in page
+    assert "d.boot !== previousBoot" in page
+    # อัปเดตแล้วไม่มีอะไรใหม่ = สำเร็จ แล้วต้องไปต่อที่ node
+    assert "อยู่ที่ ${now.commit || \"?\"} อยู่แล้ว" in page
+
+
 def test_version_endpoint_can_ask_the_repo(monkeypatch):
     from lmds.web import api as api_module
 

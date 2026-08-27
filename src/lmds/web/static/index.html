@@ -2853,7 +2853,7 @@ function nodeModelsMarkup(name, data) {
 // เลข version ไม่ขยับทุกคอมมิต (0.2.0 มาหลายสิบคอมมิตแล้ว) — เทียบ commit เท่านั้นถึงจะรู้ว่า
 // เครื่องไหนตามหลัง · สำคัญเพราะสถานะทุกอย่างของโมเดล (downloaded, commands, …) คำนวณด้วย
 // โค้ดของ *เครื่องนั้น* ไม่ใช่ของ hub — อัปเดตแต่ hub แล้วเข้าใจว่าทั้งฟลีตได้ของใหม่คือเข้าใจผิด
-let hubBuild = { version: "", commit: "", installed: "", upstream: "" };
+let hubBuild = { version: "", commit: "", installed: "", upstream: "", boot: "" };
 
 // hub ตามหลังตัวเองอยู่หรือเปล่า — ติดตั้งของใหม่ไว้แล้วแต่ process ที่รันยังเป็นของเก่า
 // ตอนนั้น commit ของ hub เชื่อไม่ได้ จะเอาไปตัดสินว่า node ไหนเก่าไม่ได้เลย
@@ -3705,7 +3705,8 @@ async function refresh() {
 // ถาม GitHub ด้วยว่ามีของใหม่กว่าที่ hub ถืออยู่ไหม — ครั้งเดียวตอนเปิดหน้า ไม่ใช่ทุกรอบ poll
 api("/api/version?check_repo=true").then(r => r.json()).then(d => {
   hubBuild = { version: d.version || "", commit: d.commit || "",
-               installed: d.installed || "", upstream: d.upstream || "" };
+               installed: d.installed || "", upstream: d.upstream || "",
+               boot: d.boot || "" };
   // ลายเซ็นมาจาก /api/version ไม่ได้ฝังตายในหน้า — ถอดออกฝั่งเซิร์ฟเวอร์เมื่อไร
   // footer ก็โล่งทันที เป็นสัญญาณที่มองเห็น ไม่ใช่การหายไปเงียบ ๆ
   const foot = document.getElementById("lmds-credit");
@@ -3774,8 +3775,13 @@ function upStep(key, label, state, detail) {
 
 document.getElementById("up-close").addEventListener("click", () => { upbox.hidden = true; });
 
-// รอให้เซิร์ฟเวอร์กลับมาหลัง restart แล้วคืน commit ใหม่ — คืน "" ถ้ารอจนหมดเวลา
-async function waitForHub(previous, seconds = 120) {
+// รอให้เซิร์ฟเวอร์ *ตัวใหม่* ขึ้นมาหลัง restart — คืน payload ของ /api/version หรือ null
+//
+// เทียบ `boot` (ลายเซ็นของ process) ไม่ใช่ `commit` · เดิมรอจนกว่า commit จะเปลี่ยน ซึ่ง
+// ผิดเมื่ออัปเดตแล้วไม่มีอะไรใหม่ให้ดึง: commit เท่าเดิม หน้าเว็บเลยรอจนครบ 120 วิ แล้วขึ้น
+// ว่า "เซิร์ฟเวอร์ยังไม่กลับมา" ทั้งที่มันกลับมาตั้งแต่วินาทีแรก — แล้ว *หยุดก่อนไล่อัปเดต
+// node ที่เหลือ* ซึ่งคือเหตุผลทั้งหมดที่ผู้ใช้กดปุ่มนี้
+async function waitForHub(previousBoot, seconds = 120) {
   const until = Date.now() + seconds * 1000;
   while (Date.now() < until) {
     await new Promise(r => setTimeout(r, 2000));
@@ -3783,11 +3789,13 @@ async function waitForHub(previous, seconds = 120) {
       const r = await api("/api/version");
       if (r.ok) {
         const d = await r.json();
-        if (d.commit && d.commit !== previous) return d.commit;
+        // ไม่มี boot = เซิร์ฟเวอร์รุ่นเก่ากว่าฟีเจอร์นี้ · ถอยไปใช้เกณฑ์เดิมเพื่อไม่ให้ค้าง
+        if (!d.boot) { if (d.commit && d.commit !== previousBoot) return d; continue; }
+        if (d.boot !== previousBoot) return d;
       }
     } catch { /* ยังไม่ขึ้น — รอต่อ */ }
   }
-  return "";
+  return null;
 }
 
 // ตามงานที่รันอยู่จนจบ แล้วคืน exit code · null = ติดต่อไม่ได้ (เซิร์ฟเวอร์ถูก restart ไปแล้ว)
@@ -3809,6 +3817,8 @@ async function followInto(jobId, target) {
 
 async function updateEverything() {
   const before = hubBuild.commit;
+  // จับลายเซ็นของ process ปัจจุบันไว้ก่อน แล้วรอให้มันเปลี่ยน = restart เสร็จจริง
+  const beforeBoot = hubBuild.boot;
   upShow("อัปเดต LMDS", "ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่ hub ก่อน แล้วไล่อัปเดตเครื่องอื่นตาม");
   upStep("hub", "hub (เครื่องนี้)", "run", "กำลังดึงโค้ด…");
 
@@ -3829,13 +3839,19 @@ async function updateEverything() {
     return;
   }
   upStep("hub", "hub (เครื่องนี้)", "run", "restart บริการ — รอเซิร์ฟเวอร์กลับมา…");
-  const now = await waitForHub(before);
+  const now = await waitForHub(beforeBoot);
   if (!now) {
     upStep("hub", "hub (เครื่องนี้)", "bad", "เซิร์ฟเวอร์ยังไม่กลับมา — ลองรีเฟรชหน้านี้");
     return;
   }
-  hubBuild.commit = now;
-  upStep("hub", "hub (เครื่องนี้)", "ok", `${before || "?"} → ${now}`);
+  hubBuild.commit = now.commit || hubBuild.commit;
+  hubBuild.boot = now.boot || "";
+  // "ดึงมาแล้วเป็นของเดิม" คือผลลัพธ์ที่ถูกต้อง ไม่ใช่ความล้มเหลว — และต้องไปต่อที่ node
+  // เพราะ node อาจตามหลัง hub อยู่ แม้ hub จะไม่มีอะไรให้อัปเดตแล้วก็ตาม
+  upStep("hub", "hub (เครื่องนี้)", "ok",
+         now.commit && now.commit !== before
+           ? `${before || "?"} → ${now.commit}`
+           : `อยู่ที่ ${now.commit || "?"} อยู่แล้ว`);
 
   const names = (await (await api("/api/nodes")).json()).nodes.map(n => n.name);
   for (const name of names) upStep("n:" + name, name, "wait", "รอคิว");
