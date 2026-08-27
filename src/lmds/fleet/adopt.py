@@ -45,6 +45,27 @@ class Adopted:
     entrypoint: list[str] = field(default_factory=list)
 
     @property
+    def argv_tokens(self) -> list[str]:
+        """คำสั่งของ container เป็น token — แตะสตริงที่ถูกห่อด้วย shell ออกมาด้วย
+
+        image จำนวนมากสั่งงานผ่าน `bash -c "โน่นนี่ && เซิร์ฟเวอร์ --port 8355 …"` ทำให้
+        argv ทั้งชุดยุบเหลือสามชิ้น (`bash`, `-c`, สตริงยาว) · การไล่หา `--port` แบบ
+        เทียบทีละชิ้นจึงไม่มีวันเจอ ทั้งที่มันอยู่ในนั้น
+
+        เจอจริง 2026-08-27 บน spark-03 (nvidia/tensorrt-llm:nemotron-fixed2)
+        """
+        tokens: list[str] = []
+        for item in list(self.entrypoint) + list(self.args):
+            if " " not in item:
+                tokens.append(item)
+                continue
+            try:
+                tokens.extend(shlex.split(item))
+            except ValueError:
+                tokens.extend(item.split())
+        return tokens
+
+    @property
     def port(self) -> int:
         for item in self.env:
             if item.startswith("PORT="):
@@ -58,7 +79,7 @@ class Adopted:
         # เจอจริง 2026-08-27 บน spark-03: container เปิด 6006/8355/8888 (metrics, API,
         # notebook) · adopt คว้า 6006 มาเป็น port ของโมเดล แล้ว `lmds ps` ก็ค้างที่
         # "loading" ตลอดกาลเพราะ health check ไปเคาะผิดรู
-        argv = list(self.entrypoint) + list(self.args)
+        argv = self.argv_tokens
         for flag in ("--port", "-p", "--server-port"):
             if flag in argv:
                 index = argv.index(flag) + 1
@@ -76,7 +97,7 @@ class Adopted:
 
     @property
     def model(self) -> str:
-        for key in ("MODEL=", "MODEL_ID=", "MODEL_PATH="):
+        for key in ("MODEL=", "MODEL_ID=", "MODEL_PATH=", "MODEL_HANDLE="):
             for item in self.env:
                 if item.startswith(key):
                     return item.split("=", 1)[1]
@@ -89,7 +110,7 @@ class Adopted:
         เจอจริง 2026-08-27 บน spark-03: `trtllm-serve
         nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 --host 0.0.0.0 --port 8355`
         """
-        argv = list(self.entrypoint) + list(self.args)
+        argv = self.argv_tokens
         for flag in ("--model", "-m", "--model-path", "--model_path"):
             if flag in argv:
                 index = argv.index(flag) + 1

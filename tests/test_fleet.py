@@ -899,6 +899,61 @@ def test_api_port_comes_from_argv_not_whichever_binding_is_first(tmp_path, monke
     assert inspect_container("trtllm-nemotron").port == 8355
 
 
+def test_a_command_wrapped_in_bash_c_is_still_read(tmp_path, monkeypatch, isolated_config):
+    """payload จริงจาก spark-03 — ทั้งคำสั่งอยู่ในสตริงเดียวของ `bash -c`
+
+    argv ยุบเหลือ ['bash', '-c', '<สตริงยาว>'] · ไล่หา --port ทีละชิ้นไม่มีวันเจอ
+    ผลคือ adopt คว้า 6006 จาก PortBindings มาแทน 8355 ที่เซิร์ฟเวอร์ฟังจริง
+    """
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    command = (
+        "hf download nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 && "
+        "PYTORCH_ALLOC_CONF=expandable_segments:True trtllm-serve "
+        "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 --host 0.0.0.0 --port 8355 "
+        "--trust_remote_code --reasoning_parser nano-v3 --tool_parser qwen3_coder"
+    )
+    payload = [{
+        "Name": "/trtllm-nemotron",
+        "Args": ["bash", "-c", command],
+        "Config": {"Image": "nvidia/tensorrt-llm:nemotron-fixed2",
+                   "Entrypoint": ["/opt/nvidia/nvidia_entrypoint.sh"], "Env": []},
+        "HostConfig": {
+            "Binds": [],
+            "PortBindings": {"6006/tcp": [{"HostPort": "6006"}],
+                             "8355/tcp": [{"HostPort": "8355"}],
+                             "8888/tcp": [{"HostPort": "8888"}]},
+            "NetworkMode": "host", "Runtime": "nvidia",
+        },
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    info = inspect_container("trtllm-nemotron")
+    assert info.port == 8355, "port ต้องมาจากคำสั่ง ไม่ใช่รูแรกที่ container เปิดไว้"
+    assert info.model == "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16"
+
+
+def test_model_handle_env_is_recognised(tmp_path, monkeypatch, isolated_config):
+    """image ฝั่ง NVIDIA ใช้ชื่อ MODEL_HANDLE ไม่ใช่ MODEL"""
+    import json as json_module
+
+    from lmds.fleet.adopt import inspect_container
+
+    payload = [{
+        "Name": "/x", "Args": [],
+        "Config": {"Image": "i", "Entrypoint": [],
+                   "Env": ["MODEL_HANDLE=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16"]},
+        "HostConfig": {"Binds": [], "PortBindings": {}, "NetworkMode": "host", "Runtime": ""},
+    }]
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json_module.dumps(payload), stderr=""))
+
+    assert inspect_container("x").model.endswith("Reasoning-BF16")
+
+
 def test_env_port_still_wins_over_argv(tmp_path, monkeypatch, isolated_config):
     """PORT= ที่ผู้ใช้ตั้งเองยังชนะ argv เหมือนเดิม"""
     import json as json_module
