@@ -145,6 +145,8 @@ lmds logs <slug> [-n N] [-f]  # ดู log · -f = ตาม realtime (docker lo
 lmds enable <slug> [--now] [--timeout SEC]   # autostart หลัง reboot (systemd, ใช้ sudo)
 lmds disable <slug>           # ยกเลิก autostart
 lmds repair <slug>            # download (resume) → verify-files
+#   download วน resume เองจนขนาดตรง — สตรีมที่ CDN ตัดกลางคัน (curl error 92)
+#   ไม่นับว่าเสร็จอีกแล้ว · ปรับจำนวนรอบได้ด้วย FETCH_MAX_ATTEMPTS (ค่าเริ่มต้น 20)
 lmds rebuild <slug>           # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน (เก็บค่าเดิม ไม่เรียก LLM ซ้ำ)
 lmds smoke <slug> [--on N]    # พิสูจน์ว่ารันได้จริง: download → verify → start → test-text → stop
 lmds remove <slug> [--keep-weights] [-y]     # ลบทุกอย่างที่เกี่ยวข้อง (แสดงรายการ+ขนาดก่อนถามยืนยัน)

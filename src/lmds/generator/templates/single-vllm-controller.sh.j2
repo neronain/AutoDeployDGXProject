@@ -335,6 +335,21 @@ verify_files() {
   echo "verify-files: OK (${snap})"
 }
 {% if runtime_assets %}
+# --retry-all-errors มีตั้งแต่ curl 7.71 (2020) · Ubuntu 20.04 มากับ 7.68 ซึ่งไม่มี
+# แล้ว curl จะตายทันทีด้วย "option --retry-all-errors: is unknown" — ถามก่อนใช้
+# ดีกว่าเดาจากเลขเวอร์ชัน เพราะ distro แก้ patch ย้อนหลังกันบ่อย
+curl_retry_all() {
+  if [[ -z "${_CURL_RETRY_ALL+x}" ]]; then
+    # เทียบด้วย case ไม่ใช่ท่อไปหา grep เพราะ grep ที่ออกก่อนทำให้ curl โดน SIGPIPE
+    # ใต้ `set -o pipefail` ทั้ง pipeline จึงคืนค่าไม่เป็นศูนย์แบบสุ่ม ๆ
+    case "$(curl --help all 2>/dev/null)" in
+      *--retry-all-errors*) _CURL_RETRY_ALL="--retry-all-errors" ;;
+      *)                    _CURL_RETRY_ALL="" ;;
+    esac
+  fi
+  printf '%s' "$_CURL_RETRY_ALL"
+}
+
 prepare_runtime() {
   # ดึงไฟล์ runtime ภายนอกที่ผู้ใช้อนุมัติตอน deploy — ไม่มีอันไหนถูกดึงโดยไม่ได้อนุมัติ
   need curl
@@ -342,7 +357,7 @@ prepare_runtime() {
   local i
   for i in "${!ASSET_FILES[@]}"; do
     echo "ดึง ${ASSET_FILES[$i]} จาก ${ASSET_URLS[$i]}"
-    curl -fL --retry 3 --retry-delay 2 \
+    curl -fL --retry 3 --retry-delay 2 $(curl_retry_all) \
       -o "${PLUGIN_DIR}/${ASSET_FILES[$i]}" "${ASSET_URLS[$i]}" ||
       die "ดึง ${ASSET_FILES[$i]} ไม่สำเร็จ"
   done

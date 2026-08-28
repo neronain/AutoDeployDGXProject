@@ -149,9 +149,16 @@ def test_llamacpp_download_uses_aria2c_then_falls_back_to_curl(isolated_config, 
     text = bundle.controller.read_text(encoding="utf-8")
     assert "command -v aria2c" in text
     assert "aria2c -x16" in text
-    assert "curl -fL --retry 5 --retry-delay 5 -C -" in text   # fallback ยังอยู่
+    assert "curl -fL --retry 5 --retry-delay 5 $(curl_retry_all) -C -" in text  # fallback ยังอยู่
     assert "--speed-limit 10240 --speed-time 60" in text   # กัน transfer ค้างตายเมื่อเน็ตสลับ
     assert "--continue=true" in text            # aria2c resume ได้ ไม่เริ่มใหม่
+    assert "ถอยไป curl" in text                 # aria2c พังแล้วต้องยังลอง curl ต่อในรอบเดียวกัน
+
+    # --retry ของ curl นับ transient error แค่ timeout/408/429/5xx · HTTP/2 CANCEL
+    # (error 92 ที่ CDN ของ HF ยิงกลางไฟล์ 20GB) ไม่อยู่ในชุดนั้น จึงต้องมี
+    # --retry-all-errors ด้วย และต้องถามก่อนใช้เพราะ curl < 7.71 ไม่รู้จัก flag นี้
+    assert "--retry-all-errors" in text
+    assert "curl_retry_all()" in text
 
 
 def test_llamacpp_without_selected_gguf_rejected(isolated_config, tmp_path):

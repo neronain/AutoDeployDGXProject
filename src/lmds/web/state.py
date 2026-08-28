@@ -217,25 +217,74 @@ def _refresh_node(name: str) -> None:
             pass
 
 
-def _loop(stop: threading.Event) -> None:
-    """ตัวเดียวที่คุยกับ node จริง — ทุก endpoint อ่านจากแคชที่ตัวนี้เติมให้"""
-    while not stop.is_set():
+# ── สำรวจ node พร้อมกันหลายเครื่อง ────────────────────────────────────────
+#
+# เดิมลูปเดียวไล่ SSH ทีละเครื่องแบบเรียงคิว · บน LAN ไม่รู้สึกอะไร แต่ผ่าน Tailscale
+# relay การ probe หนึ่งเครื่องกินเวลาระดับวินาที (ต่อ SSH ใหม่ + รันคำสั่งปลายทาง)
+# 14 เครื่องจึงใช้เวลารอบละหลายสิบวินาที — NODE_INTERVAL=15 ที่ตั้งไว้ไม่เคยเป็นจริง
+# เพราะรอบหนึ่งยังไม่ทันจบก็เลยกำหนดของทุกเครื่องไปแล้ว
+#
+# ที่แย่กว่านั้นคือ `_refresh_local()` อยู่หัวลูปเดียวกัน · ครบกำหนดทุก 3 วิ แต่กว่าลูป
+# จะวนกลับมาถึงต้องรอ SSH ครบทั้ง 14 เครื่องก่อน — กราฟของ *เครื่องนี้เอง* จึงตามหลัง
+# ของจริงหลายวินาที ซึ่งเป็นอาการที่ผู้ใช้รายงานเข้ามาตรง ๆ
+#
+# แก้ด้วยการโยน probe ลง thread pool: ลูปไม่ต้องรอใคร กราฟเครื่องนี้เดินตาม 3 วิจริง ๆ
+# และรอบของ node ก็จบใน ceil(14/8) ชุด ไม่ใช่ 14 ชุด
+NODE_WORKERS = 8
+
+_inflight: set[str] = set()
+_inflight_lock = threading.Lock()
+
+
+def _submit_node(pool, name: str) -> None:
+    """สั่ง probe หนึ่งเครื่องแบบไม่บล็อก — เครื่องที่ยังค้างอยู่จะไม่ถูกสั่งซ้ำ
+
+    ต้องกันซ้ำเอง เพราะ `due()` ยังเป็นจริงตลอดจนกว่าผลจะเขียนกลับ · ถ้าไม่กัน
+    เครื่องที่ช้าจะโดนสั่งซ้ำทุกวินาทีจนคิวเต็มไปด้วยงานของเครื่องเดียว
+    """
+    with _inflight_lock:
+        if name in _inflight:
+            return
+        _inflight.add(name)
+
+    def run() -> None:
         try:
-            if STORE.due(None):
-                _refresh_local()
-
-            from lmds.nodes import load
-
-            names = {n.name for n in load()}
-            STORE.drop_missing(names)
-            for name in names:
-                if stop.is_set():
-                    break
-                if STORE.due(name):
-                    _refresh_node(name)
-        except Exception:  # noqa: BLE001 — วนต่อเสมอ ล้มรอบเดียวไม่ควรหยุดทั้งระบบ
+            _refresh_node(name)
+        except Exception:  # noqa: BLE001 — เครื่องเดียวล้มไม่ควรฆ่า worker ทั้งตัว
             pass
-        stop.wait(1.0)
+        finally:
+            with _inflight_lock:
+                _inflight.discard(name)
+
+    try:
+        pool.submit(run)
+    except RuntimeError:      # pool ปิดไปแล้วระหว่างที่กำลังหยุด refresher
+        with _inflight_lock:
+            _inflight.discard(name)
+
+
+def _loop(stop: threading.Event) -> None:
+    """ตัวเดียวที่สั่งงาน — ทุก endpoint อ่านจากแคชที่ worker เติมให้"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=NODE_WORKERS, thread_name_prefix="lmds-probe") as pool:
+        while not stop.is_set():
+            try:
+                if STORE.due(None):
+                    _refresh_local()
+
+                from lmds.nodes import load
+
+                names = {n.name for n in load()}
+                STORE.drop_missing(names)
+                for name in names:
+                    if stop.is_set():
+                        break
+                    if STORE.due(name):
+                        _submit_node(pool, name)
+            except Exception:  # noqa: BLE001 — วนต่อเสมอ ล้มรอบเดียวไม่ควรหยุดทั้งระบบ
+                pass
+            stop.wait(1.0)
 
 
 _thread: threading.Thread | None = None
