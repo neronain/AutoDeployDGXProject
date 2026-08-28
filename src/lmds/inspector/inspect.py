@@ -70,8 +70,20 @@ def _sibling_files(info: dict[str, Any]) -> list[tuple[str, int | None, str | No
             continue
         size = sibling.get("size")
         lfs = sibling.get("lfs") or {}
-        sha = lfs.get("oid") if isinstance(lfs.get("oid"), str) else None
-        out.append((name, size if size is not None else lfs.get("size"), sha))
+        # Hub ใช้ชื่อคีย์ต่างกันตาม endpoint: `/api/models/<id>?blobs=true` ส่ง `sha256`
+        # ส่วน endpoint ของ file tree ส่ง `oid` · เดิมอ่านแต่ `oid` ค่าจึงเป็น None เสมอ
+        # กับเส้นทางที่ LMDS ใช้จริง — ผลคือ EXPECTED_SHAS ในทุก controller ว่างเปล่า
+        # และ verify-files ลดเหลือ "ขนาดตรงไหม" อย่างเดียว
+        #
+        # ขนาดตรงแต่เนื้อในเสียเป็นเคสที่เกิดได้จริง (สายหลุดกลางทางแล้ว resume ทับ,
+        # ดิสก์คืนบล็อกเสีย) และ GGUF ที่เสียบางไบต์จะโหลดขึ้นแต่ตอบเพี้ยน ซึ่งหาสาเหตุ
+        # ยากกว่าไฟล์ที่โหลดไม่ขึ้นมาก
+        sha = lfs.get("sha256") or lfs.get("oid")
+        out.append((
+            name,
+            size if size is not None else lfs.get("size"),
+            sha if isinstance(sha, str) else None,
+        ))
     return out
 
 

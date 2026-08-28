@@ -88,7 +88,7 @@ def _engine_for(report: ModelReport) -> str:
     return "llamacpp" if report.artifact_type is ArtifactType.GGUF else "vllm"
 
 
-def _budget_gb(target: TargetSpec, engine: str) -> tuple[float, list[str]]:
+def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tuple[float, list[str]]:
     notes: list[str] = []
     if target.memory_model is MemoryModel.UNIFIED:
         overhead = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB
@@ -104,6 +104,22 @@ def _budget_gb(target: TargetSpec, engine: str) -> tuple[float, list[str]]:
     if not target.tested:
         budget *= UNTESTED_BUDGET_FACTOR
         notes.append("target ยังไม่เคยทดสอบจริง — ใช้โหมด conservative (หัก budget เพิ่ม 5%)")
+
+    # หน่วยความจำที่โมเดล *ตัวอื่น* ถืออยู่แล้วบนเครื่องนี้
+    #
+    # เคสจริง 2026-08-28 บน msi-5: deploy Gemma-4-31B ลงเครื่องที่มี Qwen3.8-27B (Q8_0,
+    # ctx 256K) รันอยู่ก่อน · fit คิดจากความจุเต็ม 114.5 GB แล้วตอบ "fits" จึงเลือก Q8_0
+    # ตัวใหญ่สุดและ context สูงสุด 262,144 · ผลคือเครื่องขึ้นไป 107/121 GB และทั้งสอง
+    # โมเดลคลานอยู่ที่ 5-7 tok/s
+    #
+    # ตัวเลขนี้มีให้อ่านอยู่แล้ว (`compute_apps()` ที่ inventory ใช้รายงาน foreign
+    # workloads) แค่ไม่เคยถูกส่งเข้ามาถึงตรงนี้
+    if reserved_gb > 0:
+        budget -= reserved_gb
+        notes.append(
+            f"หักหน่วยความจำที่โมเดลอื่นบนเครื่องนี้ถืออยู่ {reserved_gb:.1f} GB — "
+            "หยุดตัวที่ไม่ใช้แล้วค่อย deploy จะได้ quant/context ที่ดีกว่านี้"
+        )
     return max(budget, 0.0), notes
 
 
@@ -112,9 +128,15 @@ def _largest_step(limit: float) -> int | None:
     return fitting[-1] if fitting else None
 
 
-def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1) -> FitReport:
+def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
+            reserved_gb: float = 0.0) -> FitReport:
+    """`reserved_gb` = หน่วยความจำที่โมเดลอื่นบนเครื่องเป้าหมายถืออยู่แล้ว
+
+    ผู้เรียกที่รู้ว่าเครื่องเป้าหมายคือเครื่องจริง (ไม่ใช่ preset สมมติ) ควรส่งค่านี้มา —
+    ดู `_budget_gb` ว่าทำไมการไม่ส่งถึงทำให้เลือก quant ใหญ่เกินเครื่อง
+    """
     engine = _engine_for(report)
-    budget, notes = _budget_gb(target, engine)
+    budget, notes = _budget_gb(target, engine, reserved_gb)
     fit = FitReport(
         target_name=target.name,
         memory_model=target.memory_model,

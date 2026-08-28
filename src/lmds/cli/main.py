@@ -1555,6 +1555,7 @@ def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
     from lmds.fit import PRESETS, analyze, from_hardware_report
 
     specs = []
+    detected_spec = None            # สเปกที่มาจากการตรวจเครื่องนี้จริง (ไม่ใช่ preset)
     if target_names:
         for name in target_names:
             spec = PRESETS.get(name)
@@ -1569,11 +1570,32 @@ def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
 
         detected = from_hardware_report(probe())
         if detected is not None:
+            detected_spec = detected
             specs.append(detected)
         if not any(s.name.startswith("dgx-spark") for s in specs):
             specs.append(PRESETS["dgx-spark-single"])
 
-    return [analyze(report, spec, concurrency=concurrency) for spec in specs]
+    return [
+        # หักเฉพาะกับสเปกที่ *ตรวจจากเครื่องนี้จริง* — preset เป็นเครื่องสมมติ การเอา
+        # ของที่รันบนเครื่องนี้ไปหักออกจากมันคือการปนคนละเครื่องเข้าด้วยกัน
+        analyze(report, spec, concurrency=concurrency,
+                reserved_gb=_memory_already_held_gb() if spec is detected_spec else 0.0)
+        for spec in specs
+    ]
+
+
+def _memory_already_held_gb() -> float:
+    """GPU memory ที่ process ของโมเดลอื่นถืออยู่บนเครื่องนี้ (GB)
+
+    อ่านจากตัวเดียวกับที่ `lmds ps` ใช้รายงาน foreign workload · อ่านไม่ได้ = 0
+    เพื่อให้พฤติกรรมถอยกลับไปเท่าเดิม ไม่ใช่ล้มทั้งคำสั่ง
+    """
+    try:
+        from lmds.hardware.profiler import compute_apps
+
+        return sum(mib for _, _, mib in compute_apps() if mib) / 1024.0
+    except Exception:
+        return 0.0
 
 
 def _render_fits(fit_reports: list) -> None:
