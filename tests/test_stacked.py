@@ -381,4 +381,9 @@ def test_container_hub_cache_handles_both_hf_layouts(tmp_path):
     assert "_container_hub_cache()" in text
     # ต้องส่งให้ทั้ง head (docker -e) และ worker (export ในสคริปต์)
     assert '-e "HF_HUB_CACHE=$(_container_hub_cache "$HF_HOME")"' in text
-    assert 'export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")' in text
+    # worker ตัดสินเองตอนรัน ไม่ใช่รับค่าที่ head คำนวณจากดิสก์ของ head
+    # (เคสจริง 2026-09-01: สองเครื่องเลย์เอาต์ไม่ตรงกัน head เลยตอบแทนผิด —
+    #  ดูรายละเอียดใน tests/test_worker_cache_layout.py)
+    assert 'if [ -d "/cache/models--$(_model_slug)/snapshots" ]' in text
+    assert "export HF_HUB_CACHE=/cache/hub" in text
+    assert '$(_container_hub_cache "$WORKER_HF_HOME")' not in text

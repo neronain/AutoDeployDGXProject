@@ -878,7 +878,20 @@ start() {
 set -e
 export VLLM_HOST_IP=${wip}
 export HF_HOME=/cache
-export HF_HUB_CACHE=$(_container_hub_cache "$WORKER_HF_HOME")
+# เลย์เอาต์ hub cache ต้องดูจากดิสก์ของ **worker เอง** ไม่ใช่ของ head
+#
+# เคสจริง 2026-09-01: _container_hub_cache รันบน head แล้วเอาคำตอบไปแปะใส่สคริปต์ของ
+# worker · head โหลดเองด้วย cache_dir=/cache จึงได้เลย์เอาต์แบน (/cache/models--…)
+# ส่วน worker ได้ของจาก rsync ที่ลงเป็นเลย์เอาต์มาตรฐาน (/cache/hub/models--…)
+# head เลยสั่ง HF_HUB_CACHE=/cache ให้ worker ทั้งที่ของจริงอยู่ใต้ hub/ →
+# LocalEntryNotFoundError ทั้งที่น้ำหนักครบ 171 GB อยู่บนเครื่องแล้ว
+#
+# เช็กตอนรันในคอนเทนเนอร์ของ worker เอง จึงถูกเสมอไม่ว่าเลย์เอาต์ฝั่งไหนจะเป็นแบบใด
+if [ -d "/cache/models--$(_model_slug)/snapshots" ] && [ ! -d "/cache/hub/models--$(_model_slug)/snapshots" ]; then
+  export HF_HUB_CACHE=/cache
+else
+  export HF_HUB_CACHE=/cache/hub
+fi
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 $(_nccl_env_pairs "$wifname" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
