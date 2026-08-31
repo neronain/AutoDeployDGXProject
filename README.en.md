@@ -174,6 +174,7 @@ lmds ps --all                     # every machine's models in one table
 lmds node cluster                 # who has 200G, and which pairs can stack
 lmds scan --all                   # weights already on disk anywhere — no re-downloading
 lmds node push spark2 <slug>      # send the bundle you approved to another machine
+lmds node clone <slug> --from msi-1 --to msi-2   # copy a model machine-to-machine, no re-download
 ```
 
 Target machines run **no daemon**, need no port beyond 22, and **no root** — membership of the

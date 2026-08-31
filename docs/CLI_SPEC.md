@@ -237,6 +237,16 @@ lmds node remove <name> [-y]      # ออกจากทะเบียนอ�
 lmds node run <name> <cmd...>          # รันคำสั่ง *ของ lmds* บนเครื่องนั้น (ps/start/stop/logs/deploy)
 lmds node ctl <name> <slug> <cmd...>   # รัน *สคริปต์ controller* ในตัว bundle บนเครื่องนั้น
                                        #   (prepare-runtime, download, sync-worker, test-text …)
+#   — ให้ node ยืม HF token ของ hub เองสำหรับ repo gated (ส่งทาง stdin ไม่ผ่าน argv)
+#   และสตรีมผลทีละบรรทัด ไม่รอจนจบแล้วพ่นทีเดียว
+
+lmds node clone <slug> --from <node> --to <node> [--start] [--dry-run] [--no-verify]
+#   สำเนาโมเดลข้ามเครื่อง ไม่โหลดจาก Hugging Face ใหม่ — ไฟล์วิ่งตรงระหว่างสองเครื่อง
+#   เลือกสายเร็วสุดที่ทั้งคู่มีเอง (cluster_ip ก่อน แล้วค่อยเส้นปกติ)
+#   ตรวจ SHA-256 ที่ปลายทางให้อัตโนมัติ · กุญแจชั่วคราวถูกถอนออกเสมอแม้จะล้มกลางคัน
+
+lmds node set <node> --cluster-name <ชื่อ>
+#   แบ่งหลายคลัสเตอร์ในไซต์เดียวกัน — ว่าง = ให้ระบบแบ่งเองตาม subnet
 lmds node cluster [--write SLUG] [--worker NAME]   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
 lmds node push <name> <slug> [--download] [--start]  # ส่ง bundle จากเครื่องนี้ไปติดตั้งบนเครื่องนั้น
 lmds ps --all                     # โมเดลของทุกเครื่องรวมกัน

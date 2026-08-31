@@ -301,23 +301,36 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
         # ไซต์เป็นส่วนหนึ่งของถัง ไม่ใช่แค่ป้ายแสดงผล — stacked ข้ามไซต์ทำไม่ได้จริง
         # (NCCL ต้องวิ่งบนสายในแร็ค ไม่ใช่ผ่าน WAN/VPN) และการเอามารวมถังเดียวกันทำให้
         # คู่ที่อยู่คนละที่มาแย่งกันเป็น "กลุ่มที่ถูกเลือก" ทั้งที่ไม่มีวันได้ทำงานร่วมกัน
-        buckets.setdefault((machine.get("site") or "", *machine_signature(host)), []).append(machine)
+        # ชื่อคลัสเตอร์ที่ตั้งเอง = แบ่งด้วยมือ · ว่าง = ให้ระบบแบ่งเองตาม subnet
+        #
+        # ระบบแบ่งอัตโนมัติได้เฉพาะตอนที่แต่ละคู่อยู่คนละวง — เครื่องรุ่นเดียวกันสี่เครื่อง
+        # บนวงเดียวกันจะถูกมองเป็นก้อนเดียว TP=4 ซึ่งบางทีไม่ใช่สิ่งที่ต้องการ
+        # (อยากได้สองคู่แยกกันเพื่อรันคนละโมเดล หรือให้คู่หนึ่งเป็นตัวสำรอง)
+        buckets.setdefault(
+            (machine.get("site") or "", machine.get("cluster_name") or "", *machine_signature(host)),
+            [],
+        ).append(machine)
 
     groups = []
     for key, bucket in buckets.items():
-        site, signature = key[0], key[1:]
+        site, cluster_name, signature = key[0], key[1], key[2:]
         candidates, excluded = drop_duplicate_machines(bucket)
-        subsets, outsiders = connected_subsets(candidates)
+        # ตั้งชื่อไว้เอง = เจตนาของคนชัดแล้ว ไม่ต้องไปแบ่งซ้ำตาม subnet อีก
+        # (ยังต้องมีวงร่วมกันจริงอยู่ดี ไม่งั้นขึ้นเป็น blocker ให้เห็น)
+        if cluster_name:
+            subsets, outsiders = [candidates], []
+        else:
+            subsets, outsiders = connected_subsets(candidates)
         excluded += [{"name": m["name"], "reason": "no-shared-fabric"} for m in outsiders]
         for members in subsets:
             if len(members) < 2:
                 continue
-            groups.append(_group_payload(site, signature, members, excluded))
+            groups.append(_group_payload(site, cluster_name, signature, members, excluded))
     groups.sort(key=lambda g: (-len(g["members"]), g["gpu"]))
     return groups
 
 
-def _group_payload(site: str, signature: tuple, members: list[dict],
+def _group_payload(site: str, cluster_name: str, signature: tuple, members: list[dict],
                    excluded: list[dict]) -> dict:
     """สร้างข้อมูลของกลุ่มหนึ่งกลุ่ม — แยกออกมาเพราะตอนนี้หนึ่งถังให้ได้หลายกลุ่ม"""
     arch, profile, gpu, gpu_count = signature
@@ -361,9 +374,15 @@ def _group_payload(site: str, signature: tuple, members: list[dict],
     }
     if len(addresses) == len(detail) and len(set_networks) > 1:
         blockers.append({"kind": "split-fabric", "names": [d["name"] for d in detail]})
+    # ตั้งชื่อคลัสเตอร์เองแล้วแต่เครื่องในกลุ่มไม่มีวงร่วมกันเลย = ยิง NCCL ถึงกันไม่ได้
+    # ต้องบอก ไม่ใช่ปล่อยให้ไปค้นพบตอน start แล้วค้างที่ NCCL init
+    if cluster_name and not shared_fabric(members)[0]:
+        blockers.append({"kind": "no-shared-fabric", "names": [d["name"] for d in detail]})
 
     return {
         "site": site,
+        # ว่าง = ระบบแบ่งเองตาม subnet · มีค่า = คนตั้งชื่อไว้เอง
+        "cluster_name": cluster_name,
         "members": detail,
         # ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่นับใน world size และไม่ทำให้กลุ่ม "ไม่พร้อม"
         "excluded": excluded,

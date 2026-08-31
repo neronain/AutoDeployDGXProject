@@ -686,7 +686,11 @@ def node_set(
     site: Optional[str] = typer.Option(
         None, "--site",
         help="ป้ายไซต์/ลูกค้าที่เครื่องนี้ไปตั้งอยู่ — ใช้จัดกลุ่มบนหน้าจอเท่านั้น (ว่าง = เอาป้ายออก) "
-             "ไม่กระทบ cluster",
+             "เป็นตัวบังคับตอนจับกลุ่ม stacked ด้วย — คนละไซต์จับคู่กันไม่ได้",
+    ),
+    cluster_name: Optional[str] = typer.Option(
+        None, "--cluster-name",
+        help="ชื่อคลัสเตอร์ — ใช้แบ่งหลายคลัสเตอร์ในไซต์เดียวกัน (ว่าง = ให้ระบบแบ่งเองตาม subnet)",
     ),
     alt_host: Optional[str] = typer.Option(
         None, "--alt-host",
@@ -710,13 +714,14 @@ def node_set(
 
     changes = {k: v for k, v in
                (("cluster_ip", cluster_ip), ("cluster_iface", cluster_iface), ("note", note),
-                ("site", site.strip() if site is not None else None), ("stack", stack))
+                ("site", site.strip() if site is not None else None), ("stack", stack),
+                ("cluster_name", cluster_name.strip() if cluster_name is not None else None))
                if v is not None}
     if alt_host is not None:
         changes["alt_hosts"] = [h.strip() for h in alt_host.split(",") if h.strip()]
     if not changes:
         console.print(f"[bold]{node.name}[/bold] — {node.target}:{node.port}")
-        console.print(f"site: {node.site or '—'}")
+        console.print(f"site: {node.site or '—'}  คลัสเตอร์: {node.cluster_name or '— (แบ่งเองตาม subnet)'}")
         console.print(f"cluster IP: {node.cluster_ip or '—'}  interface: {node.cluster_iface or '—'}")
         console.print(f"ที่อยู่: {' → '.join(node.all_hosts)}")
         console.print("เข้ากลุ่ม stacked: " + ("ได้" if node.stack else "[yellow]ไม่เอาเข้ากลุ่ม[/yellow]"))
@@ -840,7 +845,7 @@ def node_cluster(
     local = host_payload()
     local_name = local.get("hostname") or "เครื่องนี้"
     machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
-                 "stack": stack_self}]
+                 "site": "", "cluster_name": "", "stack": stack_self}]
 
     table = Table(title="สายเชื่อมของแต่ละเครื่อง")
     table.add_column("เครื่อง")
@@ -880,6 +885,7 @@ def node_cluster(
             table.add_row(node.name, "—", node.cluster_ip or "—", f"[red]ต่อไม่ได้[/red] {str(exc)[:40]}")
             continue
         machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip,
+                         "site": node.site, "cluster_name": node.cluster_name,
                          "stack": node.stack})
         add_row(node.name, host, node.cluster_ip, node.stack)
 

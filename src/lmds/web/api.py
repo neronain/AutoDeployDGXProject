@@ -1461,7 +1461,7 @@ def create_app(token: str = "") -> FastAPI:
             suggest_cluster_ip,
         )
 
-        def row(name, host, cluster_ip, is_self, stack):
+        def row(name, host, cluster_ip, is_self, stack, cluster_name: str = ""):
             # ส่งข้อมูลดิบอย่างเดียว — หน้าเว็บเป็นภาษาอังกฤษ จึงเรียบเรียงประโยคฝั่ง JS
             return {
                 "name": name, "self": is_self, "reachable": True,
@@ -1472,6 +1472,9 @@ def create_app(token: str = "") -> FastAPI:
                 "hostname": host.get("hostname") or "",
                 "ready": stack_ready(host), "has_gpu": bool(host.get("gpus")),
                 "fabric": host.get("fabric"), "cluster_ip": cluster_ip,
+                # ชื่อคลัสเตอร์ที่ตั้งเอง — ช่องแก้ในหน้าเว็บอ่านค่านี้ ถ้าไม่ส่งมาช่องจะว่าง
+                # ทุกครั้งที่รีเฟรช แล้วดูเหมือนกด Save ไม่ติด
+                "cluster_name": cluster_name,
                 "suggested_ip": suggest_cluster_ip(host),
                 "ip": check_cluster_ip(host, cluster_ip),
             }
@@ -1482,20 +1485,22 @@ def create_app(token: str = "") -> FastAPI:
         # ส่วน "เอาเข้ากลุ่มไหม" เก็บใน config.yaml (ทะเบียนไม่มีแถวของ hub ให้เก็บ)
         stack_self = Settings.load().cluster.stack_self
         machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
-                     "stack": stack_self}]
-        rows = [row(local_name, local, machines[0]["cluster_ip"], True, stack_self)]
+                     "site": "", "cluster_name": "", "stack": stack_self}]
+        rows = [row(local_name, local, machines[0]["cluster_ip"], True, stack_self, "")]
         for node in _ordered_nodes():
             try:
                 host = (probe(node).get("host")) or {}
             except NodeError as exc:
                 rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
                              "hostname": "", "has_gpu": False, "error": str(exc)[:200], "fabric": None,
-                             "stack": node.stack, "cluster_ip": node.cluster_ip, "suggested_ip": "",
+                             "stack": node.stack, "cluster_ip": node.cluster_ip,
+                             "cluster_name": node.cluster_name, "suggested_ip": "",
                              "ip": {"state": "unset", "iface": "", "speed_gbps": None}})
                 continue
             machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip,
+                             "site": node.site, "cluster_name": node.cluster_name,
                              "stack": node.stack})
-            rows.append(row(node.name, host, node.cluster_ip, False, node.stack))
+            rows.append(row(node.name, host, node.cluster_ip, False, node.stack, node.cluster_name))
         return {"machines": rows, "groups": cluster_groups(machines)}
 
     @app.get("/api/nodes/{name}/models/{slug}/clone/targets", dependencies=guarded)
@@ -1641,7 +1646,8 @@ def create_app(token: str = "") -> FastAPI:
 
         if find(name) is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note", "site", "stack")
+        changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note", "site",
+                                        "cluster_name", "stack")
                    if k in body}
         if "site" in changes and isinstance(changes["site"], str):
             changes["site"] = changes["site"].strip()   # ว่าง = เอาป้ายออก

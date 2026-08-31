@@ -3486,6 +3486,11 @@ function clusterStrip(m, group, index) {
            <button data-cact="save-ip" data-node="${esc(m.name)}">Save</button>`
         : `<span class="mono muted">${esc(m.cluster_ip || m.suggested_ip || "—")}</span>
            ${m.self ? '<span class="dim">(hub — ตรวจให้ ไม่ได้เก็บไว้)</span>' : ""}`}
+      ${editable ? `<span class="dim">คลัสเตอร์</span>
+        <input class="clname" data-clfor="${esc(m.name)}" value="${esc(m.cluster_name || "")}"
+               placeholder="ว่าง = แบ่งเองตาม subnet" style="flex:none;width:150px"
+               title="ตั้งชื่อเดียวกันให้เครื่องที่ต้องการอยู่คลัสเตอร์เดียวกัน — ใช้ตอนอยากได้หลายคลัสเตอร์ในไซต์เดียวกัน">
+        <button data-cact="save-clname" data-node="${esc(m.name)}">Save</button>` : ""}
       <span class="grow"></span>
       ${partners.length ? `<span class="dim">⇄ ${esc(partners.join(", "))}</span>` : ""}
       ${m.reachable ? `<button data-cact="toggle-stack" data-node="${esc(m.name)}"
@@ -3524,6 +3529,9 @@ function groupHeader(g, index) {
       <b style="font-weight:500">${esc((g.members || []).map(m => m.name).join("  ⇄  "))}</b>
       <span class="grow"></span>
       ${g.site ? `<span class="tag" title="stacked ต้องอยู่ไซต์เดียวกัน — NCCL วิ่งบนสายในแร็ค ไม่ใช่ผ่าน WAN">${esc(g.site)}</span>` : ""}
+      ${g.cluster_name
+        ? `<span class="tag" title="ตั้งชื่อคลัสเตอร์ไว้เอง — เครื่องที่ชื่อเดียวกันเท่านั้นที่จะอยู่กลุ่มนี้">${esc(g.cluster_name)}</span>`
+        : `<span class="dim" title="ไม่ได้ตั้งชื่อคลัสเตอร์ — ระบบแบ่งให้ตาม subnet ที่ใช้ร่วมกัน">แบ่งอัตโนมัติ</span>`}
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "stacked ได้" : "ยังไม่พร้อม"}</span>
     </div>
     <div class="dim gsub">${esc(g.gpu)} ×${g.gpus_per_node} ต่อเครื่อง · world size ${g.world_size}${
@@ -3724,6 +3732,29 @@ document.addEventListener("click", async e => {
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       alert(d.detail || "Could not change that setting");
+      return;
+    }
+    loadCluster();
+    return;
+  }
+
+  const clBtn = e.target.closest('button[data-cact="save-clname"]');
+  if (clBtn) {
+    const name = clBtn.dataset.node;
+    const input = document.querySelector(`input[data-clfor="${CSS.escape(name)}"]`);
+    clBtn.disabled = true;
+    let res;
+    try {
+      res = await api(`/api/nodes/${encodeURIComponent(name)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cluster_name: (input.value || "").trim() }),
+      });
+    } finally {
+      clBtn.disabled = false;
+    }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      alert(d.detail || "ตั้งชื่อคลัสเตอร์ไม่สำเร็จ");
       return;
     }
     loadCluster();
