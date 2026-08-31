@@ -417,7 +417,8 @@ def _scrub_secrets(job: "Job", secret_env: dict[str, str] | None) -> None:
 
 
 def start_remote(node_name: str, slug: str, command: str, remote_command: str,
-                 secret_env: dict[str, str] | None = None) -> Job:
+                 secret_env: dict[str, str] | None = None, stdin_text: str = "",
+                 on_done=None) -> Job:
     """รันคำสั่งบนเครื่องอื่นเป็นงานเบื้องหลัง แล้วสตรีมผลกลับมาทีละบรรทัด
 
     `download` โมเดล 70 GB ใช้เวลาเป็นสิบนาที — ถ้ารอใน HTTP request เดียวผู้ใช้จะเห็น
@@ -442,8 +443,7 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str,
 
     def run() -> None:
         try:
-            proc = (stream(node, remote_command, secret_env) if secret_env
-                    else stream(node, remote_command))
+            proc = stream(node, remote_command, secret_env, stdin_text=stdin_text)
         except NodeError as exc:
             job.lines.append(f"{exc}\n")
             job.exit_code = 127
@@ -464,7 +464,20 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str,
                 job.lines.append("\n" + hint + "\n")
         job.exit_code = code
 
-    threading.Thread(target=run, daemon=True).start()
+    def run_and_finish() -> None:
+        try:
+            run()
+        finally:
+            # เก็บกวาดต้องเกิดเสมอ แม้งานจะล้ม — clone ฝากกุญแจชั่วคราวไว้ที่ปลายทาง
+            # ถ้าไม่ถอนออกก็เท่ากับเปิดประตูทิ้งไว้
+            if on_done is not None:
+                try:
+                    for line in on_done(job) or []:
+                        job.lines.append(line)
+                except Exception as exc:  # noqa: BLE001 — เก็บกวาดล้มไม่ควรฆ่างานทั้งตัว
+                    job.lines.append(f"เก็บกวาดหลังงานจบล้มเหลว: {exc}\n")
+
+    threading.Thread(target=run_and_finish, daemon=True).start()
     return job
 
 

@@ -1498,6 +1498,101 @@ def create_app(token: str = "") -> FastAPI:
             rows.append(row(node.name, host, node.cluster_ip, False, node.stack))
         return {"machines": rows, "groups": cluster_groups(machines)}
 
+    @app.get("/api/nodes/{name}/models/{slug}/clone/targets", dependencies=guarded)
+    def clone_targets(name: str, slug: str) -> dict:
+        """เครื่องไหนรับสำเนาได้บ้าง — ไซต์เดียวกันขึ้นก่อน และบอกว่าจะวิ่งเส้นไหน"""
+        from lmds.fleet.clone import CloneError, plan_clone
+        from lmds.nodes import find, in_saved_order, load
+        from lmds.config import Settings
+
+        source = find(name)
+        if source is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+
+        rows = []
+        order = Settings.load().ui.node_order
+        for node in in_saved_order(load(), order):
+            if node.name == name:
+                continue
+            try:
+                plan = plan_clone(slug, name, node.name)
+            except CloneError:
+                continue
+            rows.append({"name": node.name, "site": node.site,
+                         "same_site": plan.same_site, "link": plan.link,
+                         "addr": plan.target_addr})
+        # ไซต์เดียวกันมาก่อน — สายในแร็คเร็วกว่าข้ามไซต์เป็นสิบเท่า
+        rows.sort(key=lambda r: (not r["same_site"], r["link"] != "cluster", r["name"]))
+        return {"targets": rows}
+
+    @app.post("/api/nodes/{name}/models/{slug}/clone", dependencies=guarded)
+    def clone_model(name: str, slug: str, body: dict) -> dict:
+        """ทำสำเนาโมเดลไปอีกเครื่อง — ไฟล์วิ่งตรงระหว่างสองเครื่อง ไม่ผ่าน hub
+
+        ทำเป็น job เบื้องหลังเพราะ 90 GB ใช้เวลาเป็นนาที · รอใน HTTP request เดียว
+        ผู้ใช้จะเห็นหน้าค้างโดยไม่รู้ว่าคืบหน้าหรือตายไปแล้ว
+        """
+        import pathlib as _pathlib
+        import shutil as _shutil
+        import subprocess as _subprocess
+        import tempfile as _tempfile
+
+        from lmds.fleet.clone import (
+            CloneError, _install_temp_key, build_rsync_command, inspect_source,
+            make_marker, plan_clone, revoke_temp_key,
+        )
+        from lmds.nodes import find
+        from lmds.web import jobs
+
+        target_name = (body.get("to") or "").strip()
+        if not target_name:
+            raise HTTPException(status_code=400, detail="ต้องระบุเครื่องปลายทาง (to)")
+
+        try:
+            plan = inspect_source(plan_clone(slug, name, target_name))
+        except CloneError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        target_node = find(target_name)
+        marker = make_marker()
+        key_dir = _tempfile.mkdtemp(prefix="lmds-clone-")
+        key_file = _pathlib.Path(key_dir) / "id"
+        try:
+            _subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", marker,
+                             "-f", str(key_file)], check=True)
+            private = key_file.read_text(encoding="utf-8")
+            public = (key_file.with_suffix(".pub")).read_text(encoding="utf-8")
+        except (OSError, _subprocess.CalledProcessError) as exc:
+            raise HTTPException(status_code=500, detail=f"สร้างกุญแจชั่วคราวไม่ได้: {exc}")
+        finally:
+            _shutil.rmtree(key_dir, ignore_errors=True)
+
+        try:
+            _install_temp_key(target_node, public, marker)
+        except CloneError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        def cleanup(job):
+            # ถอนกุญแจเสมอ ไม่ว่างานจะสำเร็จหรือล้ม
+            if revoke_temp_key(target_node, marker):
+                return [f"\nถอนกุญแจชั่วคราวออกจาก {target_name} แล้ว\n"]
+            return [f"\nถอนกุญแจชั่วคราวออกจาก {target_name} ไม่สำเร็จ — "
+                    f"ลบบรรทัดที่มี {marker} ใน ~/.ssh/authorized_keys เองด้วย\n"]
+
+        try:
+            job = jobs.start_remote(
+                name, slug, f"clone → {target_name}",
+                build_rsync_command(plan, target_node.user),
+                stdin_text=private, on_done=cleanup,
+            )
+        except jobs.JobError as exc:
+            revoke_temp_key(target_node, marker)
+            raise HTTPException(status_code=409, detail=str(exc))
+
+        return {"id": job.id, "slug": slug, "source": name, "target": target_name,
+                "total_bytes": plan.total_bytes, "link": plan.link,
+                "same_site": plan.same_site}
+
     @app.post("/api/cluster/write", dependencies=guarded)
     def cluster_write(body: dict) -> dict:
         """เขียน cluster.env ลง bundle ของกลุ่มที่เลือก — ขั้นสุดท้ายของ deploy แบบ stacked

@@ -2201,6 +2201,28 @@ function togglePanel(slug, key, render) {
   return true;
 }
 
+// ปลายทางที่รับสำเนาได้ — ฝั่ง server เรียงให้แล้ว (ไซต์เดียวกัน + สายเร็วขึ้นก่อน)
+// และบอกด้วยว่าแต่ละตัวจะวิ่งเส้นไหน เพราะต่างกันสิบเท่าและคนสั่งควรเห็นก่อนกด
+async function fillCloneTargets(node, slug) {
+  const sel = document.querySelector(
+    `select.n-clone-to[data-node="${CSS.escape(node)}"][data-slug="${CSS.escape(slug)}"]`);
+  if (!sel) return;
+  try {
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/clone/targets`);
+    const d = await r.json();
+    const rows = d.targets || [];
+    sel.innerHTML = rows.length
+      ? `<option value="">เลือกเครื่องปลายทาง</option>` + rows.map(t => {
+          const via = t.link === "cluster" ? "สายคลัสเตอร์" : "เส้นปกติ";
+          const site = t.same_site ? "" : ` · คนละไซต์${t.site ? " (" + t.site + ")" : ""}`;
+          return `<option value="${esc(t.name)}">${esc(t.name)} — ${via}${esc(site)}</option>`;
+        }).join("")
+      : `<option value="">ยังไม่มีเครื่องอื่นในทะเบียน</option>`;
+  } catch {
+    sel.innerHTML = `<option value="">ดูรายชื่อเครื่องไม่ได้</option>`;
+  }
+}
+
 document.addEventListener("click", async e => {
   const id = e.target.id;
   if (id === "new") { wizForm(); return; }
@@ -2864,6 +2886,23 @@ function nodeModelsMarkup(name, data) {
               · API key ไม่ถูกเขียนลง bundle ไม่ว่ากรณีใด</span>
           </div>
 
+          <!-- ทำสำเนาไปเครื่องอื่น — ทางเดียวที่เคยมีคือ download ใหม่จาก Hugging Face
+               ซึ่งกับ 90 GB คือ 38 นาที ทั้งที่เครื่องข้าง ๆ ถือไฟล์ชุดเดียวกันอยู่แล้ว -->
+          <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-network"/></svg><span class="sec-title">ทำสำเนาไปเครื่องอื่น</span></div>
+          <div class="field" style="width:100%">
+            <label>ไปที่</label>
+            <select class="n-clone-to" style="flex:none;min-width:190px"
+                    data-node="${esc(name)}" data-slug="${esc(m.slug)}">
+              <option value="">กำลังดูว่ามีเครื่องไหนบ้าง…</option>
+            </select>
+            <button data-nact="clone" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="คัดลอก weight + bundle ตรงไปเครื่องนั้น แล้วตรวจ SHA-256 ให้">Clone</button>
+            <span class="dim clone-hint"></span>
+          </div>
+          <div class="dim" style="width:100%">ไฟล์วิ่ง<b style="font-weight:600">ตรงระหว่างสองเครื่อง</b>
+            ไม่ผ่านเครื่องนี้ · เลือกสายเร็วสุดที่ทั้งคู่มีเอง · ใช้ทำตัวสำรอง/กระจายโหลดผ่าน gateway
+            โดยไม่ต้องโหลดจาก Hugging Face ใหม่</div>
+
           ${(m.speculative || m.projector) ? `
           <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-chip"/></svg><span class="sec-title">Model features</span></div>
           <div class="field" style="width:100%">
@@ -3086,6 +3125,28 @@ document.addEventListener("click", async e => {
     openModelMenus.has(key) ? openModelMenus.delete(key) : openModelMenus.add(key);
     const row = nodeRows.get(node);
     if (row) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
+    if (openModelMenus.has(key)) fillCloneTargets(node, slug);
+    return;
+  }
+  if (nact === "clone") {
+    const sel = document.querySelector(
+      `select.n-clone-to[data-node="${CSS.escape(node)}"][data-slug="${CSS.escape(slug)}"]`);
+    const to = sel && sel.value;
+    const hint = sel && sel.closest(".field").querySelector(".clone-hint");
+    if (!to) { if (hint) hint.textContent = "เลือกเครื่องปลายทางก่อน"; return; }
+    const d = await withButton(btn, "cloning…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/clone`,
+          { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ to }) }));
+    if (!d) return;
+    const gb = (d.total_bytes || 0) / 1024 ** 3;
+    if (hint) {
+      hint.textContent = `กำลังคัดลอก ${gb.toFixed(1)} GB → ${to}`
+        + (d.link === "cluster" ? " (สายคลัสเตอร์)" : "")
+        + (d.same_site === false ? " · ข้ามไซต์" : "");
+    }
+    // ความคืบหน้าไหลมากับการ์ดของเครื่องต้นทางเหมือน download/start ทุกตัว
+    refreshNodes();
     return;
   }
   if (nact === "setup" || nact === "fix-perms") {

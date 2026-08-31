@@ -129,3 +129,55 @@ def test_revoke_matches_only_the_marker_line(monkeypatch, fleet):
     assert clone.revoke_temp_key(fleet["msi-2"], marker) is True
     assert "grep -v -F" in seen["script"], "ต้องตัดเฉพาะบรรทัดที่ตรงกับ marker แบบตรงตัว"
     assert marker in seen["script"]
+
+
+# ── หน้าเว็บ ──────────────────────────────────────────────────────────────
+#
+# ผู้ใช้รายงาน 2026-08-31: "หน้า gui ยังหาเมนูไม่เจอ" — เพราะรอบแรกทำแต่ CLI
+# คนส่วนใหญ่ในทีมทำงานผ่านหน้าเว็บ ฟีเจอร์ที่มีแต่ใน CLI จึงเท่ากับไม่มี
+
+from pathlib import Path as _Path
+
+_INDEX = _Path(__file__).resolve().parents[1] / "src" / "lmds" / "web" / "static" / "index.html"
+
+
+def test_the_console_has_a_clone_control():
+    page = _INDEX.read_text(encoding="utf-8")
+    assert 'class="n-clone-to"' in page, "ไม่มีช่องเลือกเครื่องปลายทาง"
+    assert 'data-nact="clone"' in page, "ไม่มีปุ่ม Clone"
+    assert "function fillCloneTargets" in page, "ไม่ได้เติมรายชื่อเครื่องให้"
+    assert "/clone/targets" in page and "/clone`" in page
+
+
+def test_clone_endpoints_exist_and_validate():
+    from fastapi.testclient import TestClient
+    from lmds.hardware import serving
+    from lmds.web import state
+    from lmds.web.api import create_app
+
+    try:
+        client = TestClient(create_app())
+        # ไม่ระบุปลายทาง = บอกให้ชัด ไม่ใช่ 500
+        r = client.post("/api/nodes/msi-1/models/demo/clone", json={})
+        assert r.status_code == 400, r.text
+        assert "ปลายทาง" in r.json()["detail"]
+        # เครื่องต้นทางที่ไม่มีในทะเบียน = 404 ไม่ใช่ลิสต์ว่าง ๆ ที่อ่านแล้วงง
+        r = client.get("/api/nodes/ไม่มีเครื่องนี้/models/demo/clone/targets")
+        assert r.status_code == 404, r.text
+    finally:
+        state.stop_refresher()
+        state.STORE.__init__()
+        serving.reset_cache()
+
+
+def test_targets_put_the_same_site_and_fast_link_first(fleet):
+    """สายในแร็คเร็วกว่าข้ามไซต์สิบเท่า — ตัวที่ควรเลือกต้องอยู่บนสุด"""
+    from lmds.fleet.clone import plan_clone
+
+    rows = []
+    for name in ("far", "slow", "msi-2"):
+        plan = plan_clone("demo", "msi-1", name)
+        rows.append({"name": name, "same_site": plan.same_site, "link": plan.link})
+    rows.sort(key=lambda r: (not r["same_site"], r["link"] != "cluster", r["name"]))
+
+    assert [r["name"] for r in rows] == ["msi-2", "slow", "far"]
