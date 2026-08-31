@@ -115,7 +115,8 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str
     return Result(proc.returncode, proc.stdout, proc.stderr)
 
 
-def stream(node: Node, command: str, secret_env: dict[str, str] | None = None):
+def stream(node: Node, command: str, secret_env: dict[str, str] | None = None,
+           stdin_text: str = ""):
     """เปิด ssh แบบอ่านผลทีละบรรทัด — ใช้กับงานยาว (download หลายสิบ GB) ที่ต้องเห็นความคืบหน้า
 
     ต่างจาก run() ที่รอจนจบแล้วค่อยคืนทั้งก้อน · คืน Popen ให้ผู้เรียกวนอ่าน stdout เอง
@@ -143,11 +144,16 @@ def stream(node: Node, command: str, secret_env: dict[str, str] | None = None):
     try:
         proc = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if secret_env else subprocess.DEVNULL,
+            stdin=subprocess.PIPE if (secret_env or stdin_text) else subprocess.DEVNULL,
         )
-        if secret_env and proc.stdin is not None:
-            for value in secret_env.values():
-                proc.stdin.write((value + "\n").encode())
+        if proc.stdin is not None:
+            if secret_env:
+                for value in secret_env.values():
+                    proc.stdin.write((value + "\n").encode())
+            # ข้อความหลายบรรทัด (เช่น private key) ส่งดิบ ๆ ให้คำสั่งปลายทางอ่านเอง —
+            # `read -r` ของ secret_env อ่านได้ทีละบรรทัดจึงใช้กับกุญแจไม่ได้
+            if stdin_text:
+                proc.stdin.write(stdin_text.encode())
             proc.stdin.flush()
             proc.stdin.close()
         return proc

@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Optional
 
 import os
+import pathlib
 import sys
 
 import shlex
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import typer
@@ -967,6 +970,110 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
                   f" · {result.nnodes} เครื่อง (TP={result.nnodes})"
                   f"{' · NCCL ' + result.iface if result.iface else ''}[/dim]")
     console.print("[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
+
+
+@node_app.command("clone")
+def node_clone(
+    slug: str = typer.Argument(..., help="ชื่อ bundle ที่จะทำสำเนา", autocompletion=_complete_slug),
+    source: str = typer.Option(..., "--from", "-f", metavar="NODE",
+                               help="เครื่องที่มีโมเดลอยู่แล้ว", autocompletion=_complete_node),
+    target: str = typer.Option(..., "--to", "-t", metavar="NODE",
+                               help="เครื่องที่อยากได้สำเนา", autocompletion=_complete_node),
+    verify: bool = typer.Option(True, "--verify/--no-verify",
+                                help="ตรวจ SHA-256 ที่ปลายทางหลังคัดลอกเสร็จ"),
+    start: bool = typer.Option(False, "--start", help="สั่ง start ต่อทันทีถ้าตรวจผ่าน"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="ดูว่าจะคัดลอกอะไรบ้างโดยไม่แตะของจริง"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามการถามยืนยัน"),
+) -> None:
+    """ทำสำเนาโมเดลจากเครื่องที่รันได้แล้ว ไปเครื่องอื่น — ไม่ต้องโหลดจาก Hugging Face ใหม่
+
+    ใช้ตอนอยากได้ตัวสำรอง/กระจายโหลดหลายเครื่องในไซต์เดียวกัน · ไฟล์วิ่ง **ตรง**
+    จากต้นทางไปปลายทางบนสายเร็วที่สุดที่ทั้งคู่มี ไม่ผ่าน hub และไม่ผ่านอินเทอร์เน็ต
+    """
+    from lmds.fleet.clone import (
+        CloneError, build_rsync_command, inspect_source, make_marker, plan_clone,
+        revoke_temp_key, _install_temp_key,
+    )
+    from lmds.nodes import NodeError, find, stream
+
+    try:
+        plan = inspect_source(plan_clone(slug, source, target))
+    except CloneError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    gb = plan.total_bytes / (1024 ** 3)
+    table = Table(title=f"clone {slug}: {source} → {target}")
+    table.add_column("ไฟล์")
+    table.add_column("ขนาด", justify="right")
+    for name, size in sorted(plan.files, key=lambda f: -f[1])[:10]:
+        table.add_row(name, f"{size / 1024 ** 3:.2f} GB")
+    if len(plan.files) > 10:
+        table.add_row(f"… อีก {len(plan.files) - 10} ไฟล์", "")
+    console.print(table)
+    console.print(f"[dim]รวม {gb:.1f} GB · เส้นทาง "
+                  f"{plan.source_addr} → {plan.target_addr} "
+                  f"({'สายคลัสเตอร์' if plan.link == 'cluster' else 'เส้นปกติ'})[/dim]")
+    if not plan.same_site:
+        console.print("[yellow]สองเครื่องนี้ไม่ได้อยู่ไซต์เดียวกัน — ข้อมูลอาจวิ่งข้ามเน็ตนอก[/yellow]")
+
+    if dry_run:
+        console.print("[dim]--dry-run: ยังไม่แตะเครื่องปลายทาง[/dim]")
+        raise typer.Exit(code=0)
+    if not yes and not typer.confirm(f"คัดลอก {gb:.1f} GB ไป {target} เลยไหม", default=True):
+        raise typer.Exit(code=1)
+
+    # กุญแจชั่วคราวสำหรับงานนี้ครั้งเดียว — hub ไม่เคยส่ง key ของตัวเองให้ node
+    marker = make_marker()
+    target_node = find(target)
+    source_node = find(source)
+    key_dir = tempfile.mkdtemp(prefix="lmds-clone-")
+    key_file = os.path.join(key_dir, "id")
+    try:
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", marker,
+                        "-f", key_file], check=True)
+        private = pathlib.Path(key_file).read_text(encoding="utf-8")
+        public = pathlib.Path(key_file + ".pub").read_text(encoding="utf-8")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        err_console.print(f"[red]สร้างกุญแจชั่วคราวไม่ได้: {exc}[/red]")
+        raise typer.Exit(code=1)
+    finally:
+        # อยู่บนดิสก์ของ hub แค่ช่วงที่อ่านเข้าหน่วยความจำ ไม่นานกว่านั้น
+        shutil.rmtree(key_dir, ignore_errors=True)
+
+    code = 1
+    installed = False
+    try:
+        _install_temp_key(target_node, public, marker)
+        installed = True
+        console.print(f"[dim]ฝากกุญแจชั่วคราวไว้ที่ {target} ({marker})[/dim]")
+        proc = stream(source_node, build_rsync_command(plan, target_node.user),
+                      stdin_text=private)
+        assert proc.stdout is not None
+        for raw in iter(proc.stdout.readline, b""):
+            print(raw.decode("utf-8", "replace"), end="", flush=True)
+        code = proc.wait()
+    except (CloneError, NodeError) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+    finally:
+        # ถอนกุญแจเสมอ แม้ copy จะล้มกลางคัน — กุญแจชั่วคราวที่ค้างคือประตูที่เปิดทิ้งไว้
+        if installed and not revoke_temp_key(target_node, marker):
+            err_console.print(
+                f"[yellow]ถอนกุญแจชั่วคราวออกจาก {target} ไม่สำเร็จ — "
+                f"ลบบรรทัดที่มี {marker} ใน ~/.ssh/authorized_keys ของเครื่องนั้นเองด้วย[/yellow]")
+        elif installed:
+            console.print(f"[dim]ถอนกุญแจชั่วคราวออกจาก {target} แล้ว[/dim]")
+
+    if code != 0:
+        err_console.print(f"[red]คัดลอกไม่สำเร็จ (exit {code})[/red]")
+        raise typer.Exit(code=code)
+
+    console.print(f"[green]คัดลอก {gb:.1f} GB ไป {target} แล้ว[/green]")
+    if verify:
+        console.print(f"[dim]ตรวจ SHA-256 ที่ {target} …[/dim]")
+        node_ctl(target, slug, ["verify-files"])
+    if start:
+        node_ctl(target, slug, ["start"])
 
 
 # flag ของคำสั่งปลายทางต้องผ่านไปทั้งดุ้น — ไม่งั้น `node run x logs y -n 100`

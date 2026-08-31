@@ -483,6 +483,29 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 ต้องกดยอมรับเงื่อนไขของโมเดลบนเว็บ huggingface.co ด้วย account เดียวกับ token ก่อน ไม่งั้น token ก็เข้าไม่ได้
 ตอน `download` บนเครื่อง ให้ตั้ง `export HF_TOKEN=hf_xxx` ไว้ใน shell (สคริปต์อ่านจาก env — ไม่ฝังในไฟล์)
 
+### 3.3a ทำสำเนาโมเดลไปเครื่องอื่น (failover / กระจายโหลด)
+
+โมเดลตัวเดียวกันบนหลายเครื่อง = มีตัวสำรองเวลาเครื่องหนึ่งล่ม และแบ่งโหลดผ่าน gateway ได้ ·
+แต่ไม่มีเหตุผลที่จะโหลดจาก Hugging Face ใหม่ทุกครั้ง ในเมื่อเครื่องข้าง ๆ ถือไฟล์ชุดเดียวกันอยู่แล้ว
+
+```bash
+lmds node clone <slug> --from msi-1 --to msi-2            # คัดลอก + ตรวจ SHA-256 ที่ปลายทาง
+lmds node clone <slug> --from msi-1 --to msi-2 --start    # เปิดใช้งานต่อเลย
+lmds node clone <slug> --from msi-1 --to msi-2 --dry-run  # ดูก่อนว่าจะคัดลอกอะไรบ้าง
+```
+
+- ไฟล์วิ่ง **ตรงจากต้นทางไปปลายทาง ไม่ผ่าน hub** — hub มักเป็นเครื่องเล็กที่จะเป็นคอขวด
+- เลือก **สายเร็วที่สุดที่ทั้งคู่มี** เอง: ถ้าตั้ง `cluster_ip` (ConnectX 200G) ไว้ทั้งคู่ก็ใช้เส้นนั้น
+  ไม่งั้นถอยไปเส้นปกติ · ดูว่าใครมีบ้างด้วย `lmds node cluster`
+- คัดลอกทั้ง weight และ bundle แล้ว `verify-files` ที่ปลายทางให้อัตโนมัติ
+- ต่อกันคนละไซต์ก็ทำได้ แต่จะเตือน เพราะข้อมูลจะวิ่งข้ามเน็ตนอก
+- ต้นทางต้องมี `rsync` (`sudo apt install -y rsync`)
+
+> **กุญแจไม่เคยออกจาก hub** — node แต่ละเครื่องไม่มี key ของกันและกันโดยตั้งใจ ·
+> คำสั่งนี้สร้างกุญแจชั่วคราวสำหรับงานครั้งเดียว ฝาก public key ไว้ที่ปลายทางแบบ `restrict`
+> ส่ง private key ให้ต้นทางทาง stdin เข้า `ssh-agent` **ในหน่วยความจำ ไม่แตะดิสก์**
+> แล้วถอนกุญแจออกเสมอเมื่อจบ ไม่ว่าจะสำเร็จหรือล้มกลางคัน
+
 ### 3.3b Deploy แบบ stacked (โมเดลใหญ่เกิน 1 เครื่อง → 2× DGX Spark)
 
 > **ทำจากหน้าเว็บได้แล้ว (ไม่ต้องแตะเทอร์มินัล)**
@@ -828,6 +851,7 @@ lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต
 |---|---|
 | `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` |
 | `node ctl` | `prepare-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `network-info` `client-config` `bench` `clear-fi-cache` |
+| `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start`) |
 
 ขั้นตอนของ stacked (`sync-worker`, `verify-worker`) มีเฉพาะใน controller — ต้องใช้ `node ctl`
 · ลำดับเต็มดูที่ [RUNBOOK-MULTI-NODE.md](RUNBOOK-MULTI-NODE.md)
