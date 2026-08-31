@@ -3081,7 +3081,10 @@ async function refreshNodes() {
     if (!seen.has(name)) { row.block.remove(); nodeRows.delete(name); }
   }
   // การ์ดที่เพิ่ง append ไปต่อท้าย box ต้องถูกดึงกลับเข้าลำดับที่จัดไว้และรั้วกลุ่มของมัน
-  layoutClusterGroups();
+  //
+  // อ่านสถานะคลัสเตอร์ใหม่ทุกรอบด้วย (จากแคช จึงไม่มีค่าใช้จ่ายที่รู้สึกได้) — รั้วกลุ่ม
+  // และป้าย "stacked ได้ / ยังไม่พร้อม" จึงเดินตามความจริงตลอด ไม่ต้องรอให้ใครกดปุ่ม
+  loadCluster();
 }
 
 document.addEventListener("click", async e => {
@@ -3688,15 +3691,21 @@ function layoutSiteGroups() {
   }
 }
 
-async function loadCluster() {
+// สถานะคลัสเตอร์อยู่บนหน้าจอตลอด ไม่ใช่ต้องกดปุ่มทุกครั้งถึงจะเห็น
+//
+// ทำได้เพราะ /api/cluster อ่านจากแคชของ refresher แล้ว (ข้อมูลชุดเดียวกับที่ใช้ทำการ์ด
+// สถานะอยู่แล้ว) จึงตอบทันทีและเรียกถี่ได้ · `live` = ไปต่อทุกเครื่องสด ๆ ซึ่งช้ากว่ามาก
+// สงวนไว้ให้ปุ่ม "ตรวจใหม่" อย่างเดียว
+async function loadCluster(live = false) {
   const button = document.getElementById("cluster-check");
-  if (button) { button.disabled = true; button.textContent = "Checking…"; }
+  if (live && button) { button.disabled = true; button.textContent = "Checking…"; }
   try {
-    clusterData = await (await api("/api/cluster")).json();
+    clusterData = await (await api("/api/cluster" + (live ? "?refresh=true" : ""))).json();
   } catch {
-    clusterData = null;
+    // อ่านจากแคชล้ม = อย่าทิ้งของเดิมที่ยังแสดงอยู่ ไม่งั้นรั้วกลุ่มจะกะพริบหายทุกครั้งที่เน็ตสะดุด
+    if (live) clusterData = null;
   }
-  if (button) { button.disabled = false; button.textContent = "Check cluster"; }
+  if (live && button) { button.disabled = false; button.textContent = "Check cluster"; }
   layoutClusterGroups();
   if (clusterData && !(clusterData.groups || []).length) {
     const box = document.getElementById("nodes");
@@ -3712,7 +3721,7 @@ async function loadCluster() {
 }
 
 document.addEventListener("click", async e => {
-  if (e.target.id === "cluster-check") { loadCluster(); return; }
+  if (e.target.id === "cluster-check") { loadCluster(true); return; }
 
   // เอาเข้า/ไม่เอาเข้ากลุ่ม — hub เก็บใน config, node อื่นเก็บในทะเบียน จึงคนละ endpoint
   const toggle = e.target.closest('button[data-cact="toggle-stack"]');

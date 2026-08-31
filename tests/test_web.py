@@ -738,8 +738,13 @@ def test_patch_unknown_node_is_404(registered):
 
 
 def test_cluster_view_sends_codes_not_thai_sentences(registered, monkeypatch):
-    """หน้าเว็บเป็นภาษาอังกฤษล้วน — API ต้องส่งรหัสสถานะให้ JS เรียบเรียงเอง"""
-    data = TestClient(create_app()).get("/api/cluster").json()
+    """หน้าเว็บเป็นภาษาอังกฤษล้วน — API ต้องส่งรหัสสถานะให้ JS เรียบเรียงเอง
+
+    ใช้ `refresh=true` เพราะตั้งแต่ 2026-08-31 การอ่านแบบปกติมาจาก**แคชของ refresher**
+    (สถานะคลัสเตอร์จะได้อยู่บนหน้าจอตลอดโดยไม่ต้องกดปุ่ม) · เทสนี้สนใจรูปร่างของข้อมูล
+    ที่ได้จากการต่อเครื่องจริง จึงต้องขอเส้นทางนั้นตรง ๆ
+    """
+    data = TestClient(create_app()).get("/api/cluster?refresh=true").json()
     node = next(m for m in data["machines"] if m["name"] == "spark2")
     assert node["ip"]["state"] in {"ok", "unset", "mismatch", "slow"}
     assert node["fabric"]["best_gbps"] == 200

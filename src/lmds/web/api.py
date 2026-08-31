@@ -1449,10 +1449,17 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/cluster", dependencies=guarded)
-    def cluster_view() -> dict:
-        """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริง จึงช้ากว่าหน้าอื่น
+    def cluster_view(refresh: bool = False) -> dict:
+        """เครื่องไหนจับคู่ stacked กันได้บ้าง
 
-        เรียกเมื่อผู้ใช้กดเท่านั้น ไม่รวมอยู่ใน poll ปกติ
+        ค่าเริ่มต้นอ่านจาก**แคชของ refresher** จึงตอบทันทีและเรียกถี่ได้ — สถานะคลัสเตอร์
+        จะได้อยู่บนหน้าจอตลอด ไม่ใช่ต้องกดปุ่มทุกครั้งถึงจะเห็น (ผู้ใช้ขอ 2026-08-31)
+
+        `refresh=true` = ไปต่อทุกเครื่องสด ๆ ซึ่งช้ากว่ามาก — ใช้กับปุ่ม "ตรวจใหม่" เท่านั้น
+
+        ข้อมูลที่ cluster_groups ต้องใช้ (host payload + cluster_ip + site + ชื่อคลัสเตอร์)
+        อยู่ในแคชครบอยู่แล้ว เพราะ refresher probe ทุกเครื่องรอบละ 15 วิเพื่อทำการ์ดสถานะ
+        อยู่ดี — ของเดิมไปเรียก probe() ซ้ำอีกชุดโดยไม่จำเป็น
         """
         from lmds.config import Settings
         from lmds.inventory import host_payload
@@ -1487,9 +1494,19 @@ def create_app(token: str = "") -> FastAPI:
         machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
                      "site": "", "cluster_name": "", "stack": stack_self}]
         rows = [row(local_name, local, machines[0]["cluster_ip"], True, stack_self, "")]
+        snapshot = state.STORE.snapshot() if not refresh else {}
+        cached_nodes = (snapshot.get("nodes") or {}) if isinstance(snapshot, dict) else {}
         for node in _ordered_nodes():
             try:
-                host = (probe(node).get("host")) or {}
+                if refresh:
+                    host = (probe(node).get("host")) or {}
+                else:
+                    entry = cached_nodes.get(node.name) or {}
+                    data = entry.get("data")
+                    if not data:
+                        # ยังไม่เคยสำรวจสำเร็จ — บอกตามจริง ดีกว่าไปต่อสดแล้วทำหน้าค้าง
+                        raise NodeError(entry.get("error") or "ยังไม่มีข้อมูล — รอ refresher รอบถัดไป")
+                    host = data.get("host") or {}
             except NodeError as exc:
                 rows.append({"name": node.name, "self": False, "reachable": False, "ready": False,
                              "hostname": "", "has_gpu": False, "error": str(exc)[:200], "fabric": None,
@@ -1501,7 +1518,7 @@ def create_app(token: str = "") -> FastAPI:
                              "site": node.site, "cluster_name": node.cluster_name,
                              "stack": node.stack})
             rows.append(row(node.name, host, node.cluster_ip, False, node.stack, node.cluster_name))
-        return {"machines": rows, "groups": cluster_groups(machines)}
+        return {"machines": rows, "groups": cluster_groups(machines), "live": refresh}
 
     @app.get("/api/nodes/{name}/models/{slug}/clone/targets", dependencies=guarded)
     def clone_targets(name: str, slug: str) -> dict:
