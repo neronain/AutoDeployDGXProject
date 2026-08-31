@@ -232,12 +232,20 @@ def drop_duplicate_machines(members: list[dict]) -> tuple[list[dict], list[dict]
     return kept, twins
 
 
-def connected_subset(members: list[dict]) -> tuple[list[dict], list[dict]]:
-    """กลุ่มย่อยที่ใหญ่ที่สุดซึ่ง "มีขาอยู่ในวงเดียวกัน" → (สมาชิก, เครื่องที่ไม่มีวงร่วม)
+def connected_subsets(members: list[dict]) -> tuple[list[list[dict]], list[dict]]:
+    """**ทุก** กลุ่มย่อยที่มีขาอยู่ในวงเดียวกัน → (รายการกลุ่ม, เครื่องที่ไม่มีวงร่วมกับใครเลย)
 
     ฮาร์ดแวร์ตรงกันไม่ได้แปลว่าคุยกันได้ — เครื่องที่ไม่มีวงร่วมกับใครเลยต้องไม่ถูกนับเข้า
     world size เพราะมันเปลี่ยนแผน parallel ทั้งกลุ่ม (2 เครื่องใช้ TP=2 ได้ พอนับเป็น 3
     กลายเป็นต้อง pipeline ทั้งที่เครื่องที่สามเข้าร่วมไม่ได้จริง)
+
+    เดิมคืนแค่ **กลุ่มเดียวที่ใหญ่ที่สุด** แล้วโยนที่เหลือทิ้งเป็น "ไม่มี subnet ร่วม" ·
+    ฟลีตที่มีเครื่องรุ่นเดียวกันหลายคู่บนคนละวง จึงเห็นได้ทีละคู่เท่านั้น
+
+    เคสจริง 2026-08-31: spark-head + spark-worker ตั้ง cluster IP ครบแล้ว (10.100.152.x
+    200G ทั้งคู่) แต่ระบบไปเสนอ msi-1 + msi-2 ที่ยังไม่ได้ตั้ง IP เลย เพราะทั้งสี่เครื่อง
+    ฮาร์ดแวร์เหมือนกันจึงอยู่ถังเดียวกัน แล้วสองคู่มีสมาชิกเท่ากัน ตัวตัดสินจึงไปตกที่เลขวง ·
+    ผู้ใช้ตั้ง IP แล้วกด Save ก็ไม่มีอะไรเกิดขึ้น เพราะคู่ของเขาถูกทิ้งไปตั้งแต่ขั้นนี้
     """
     by_network: dict[str, list[str]] = {}
     for machine in members:
@@ -246,13 +254,30 @@ def connected_subset(members: list[dict]) -> tuple[list[dict], list[dict]]:
     if not by_network:
         return [], list(members)
 
-    # วงที่มีสมาชิกมากที่สุด — เท่ากันเอาเลขวงน้อยสุดเพื่อให้ผลคงที่ทุกครั้งที่เรียก
+    # วงที่มีสมาชิกมากที่สุดก่อน — เท่ากันเอาเลขวงน้อยสุดเพื่อให้ผลคงที่ทุกครั้งที่เรียก
     def rank(network: str) -> tuple:
         return (len(by_network[network]), [-int(part) for part in network.split("/")[0].split(".")])
 
-    inside = set(by_network[max(by_network, key=rank)])
-    return ([m for m in members if m["name"] in inside],
-            [m for m in members if m["name"] not in inside])
+    subsets: list[list[dict]] = []
+    placed: set[str] = set()
+    for network in sorted(by_network, key=rank, reverse=True):
+        names = [n for n in by_network[network] if n not in placed]
+        if len(names) < 2:
+            continue          # เครื่องเดียวในวง = ยังไม่ใช่กลุ่ม
+        placed.update(names)
+        subsets.append([m for m in members if m["name"] in names])
+
+    outsiders = [m for m in members if m["name"] not in placed]
+    return subsets, outsiders
+
+
+def connected_subset(members: list[dict]) -> tuple[list[dict], list[dict]]:
+    """กลุ่มเดียวที่ใหญ่ที่สุด — เก็บไว้ให้ผู้เรียกเดิมที่ต้องการคำตอบเดียว"""
+    subsets, outsiders = connected_subsets(members)
+    if not subsets:
+        return [], list(members)
+    inside = {m["name"] for m in subsets[0]}
+    return subsets[0], [m for m in members if m["name"] not in inside]
 
 
 def cluster_groups(machines: Iterable[dict]) -> list[dict]:
@@ -273,80 +298,92 @@ def cluster_groups(machines: Iterable[dict]) -> list[dict]:
             continue
         if not stack_ready(host):
             continue
-        buckets.setdefault(machine_signature(host), []).append(machine)
+        # ไซต์เป็นส่วนหนึ่งของถัง ไม่ใช่แค่ป้ายแสดงผล — stacked ข้ามไซต์ทำไม่ได้จริง
+        # (NCCL ต้องวิ่งบนสายในแร็ค ไม่ใช่ผ่าน WAN/VPN) และการเอามารวมถังเดียวกันทำให้
+        # คู่ที่อยู่คนละที่มาแย่งกันเป็น "กลุ่มที่ถูกเลือก" ทั้งที่ไม่มีวันได้ทำงานร่วมกัน
+        buckets.setdefault((machine.get("site") or "", *machine_signature(host)), []).append(machine)
 
     groups = []
-    for signature, bucket in buckets.items():
+    for key, bucket in buckets.items():
+        site, signature = key[0], key[1:]
         candidates, excluded = drop_duplicate_machines(bucket)
-        members, outsiders = connected_subset(candidates)
+        subsets, outsiders = connected_subsets(candidates)
         excluded += [{"name": m["name"], "reason": "no-shared-fabric"} for m in outsiders]
-        if len(members) < 2:
-            continue
-        arch, profile, gpu, gpu_count = signature
-        tiers = {fabric_tier(m["host"]) for m in members}
-        speeds = [(m["host"].get("fabric") or {}).get("best_gbps") or 0 for m in members]
-
-        # เสนอ IP จากวงที่ทุกเครื่องมีขาร่วมกัน ไม่ใช่ให้แต่ละเครื่องเลือกเองอิสระ
-        network, shared_ips = shared_fabric(members)
-        detail = []
-        for machine in members:
-            check = check_cluster_ip(machine["host"], machine.get("cluster_ip", ""))
-            detail.append({
-                "name": machine["name"],
-                "cluster_ip": machine.get("cluster_ip", ""),
-                "suggested_ip": shared_ips.get(machine["name"]) or suggest_cluster_ip(machine["host"]),
-                **check,
-            })
-
-        # เตือน ≠ บล็อก · กลุ่มยังพร้อมและยังนับ world size เต็ม แค่ต้องรู้ว่าวิ่งไม่เต็มสาย
-        warnings = []
-        under = [d for d in detail if (d.get("warning") or {}).get("kind") == "under-negotiated"]
-        if under:
-            warnings.append({
-                "kind": "under-negotiated",
-                "names": [d["name"] for d in under],
-                "speed_gbps": min(d["warning"]["speed_gbps"] for d in under),
-                "expected_gbps": SPARK_LINK_GBPS,
-            })
-
-        addresses = [d["cluster_ip"] for d in detail if d["cluster_ip"]]
-        # blockers เป็นรหัส ไม่ใช่ประโยค — CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเองคนละภาษา
-        blockers = []
-        missing = [d["name"] for d in detail if d["state"] == "unset"]
-        if missing:
-            blockers.append({"kind": "missing-ip", "names": missing})
-        if len(set(addresses)) != len(addresses):
-            blockers.append({"kind": "duplicate-ip", "names": [d["name"] for d in detail]})
-        # ตั้งครบแล้วแต่คนละวง = ต่อกันไม่ติด ทั้งที่แต่ละเครื่องดูถูกหมด
-        set_networks = {
-            link_network({"ip": d["cluster_ip"], "prefix": None}) for d in detail if d["cluster_ip"]
-        }
-        if len(addresses) == len(detail) and len(set_networks) > 1:
-            blockers.append({"kind": "split-fabric", "names": [d["name"] for d in detail]})
-
-        groups.append({
-            "members": detail,
-            # ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่นับใน world size และไม่ทำให้กลุ่ม "ไม่พร้อม"
-            "excluded": excluded,
-            "arch": arch,
-            "profile": profile,
-            "gpu": gpu,
-            "gpus_per_node": gpu_count,
-            # ทั้งกลุ่มวิ่งเร็วเท่าเครื่องที่ช้าที่สุด — NCCL รอ rank ที่ช้าที่สุดเสมอ
-            "link_gbps": min(speeds),
-            "rdma": tiers == {"rdma"},
-            "quality": "rdma" if tiers == {"rdma"} else "ethernet",
-            "world_size": gpu_count * len(members),
-            # เครื่องที่ตั้ง cluster IP ถูกต้องแล้วจริง ๆ — ต่างจาก world size ตอนที่ยังตั้งไม่ครบ
-            "usable_world_size": gpu_count * sum(1 for d in detail if d["state"] == "ok"),
-            "fabric_network": network,
-            "parallelism": parallelism_note(gpu_count * len(members)),
-            "blockers": blockers,
-            "warnings": warnings,
-            "ready": not blockers,
-        })
+        for members in subsets:
+            if len(members) < 2:
+                continue
+            groups.append(_group_payload(site, signature, members, excluded))
     groups.sort(key=lambda g: (-len(g["members"]), g["gpu"]))
     return groups
+
+
+def _group_payload(site: str, signature: tuple, members: list[dict],
+                   excluded: list[dict]) -> dict:
+    """สร้างข้อมูลของกลุ่มหนึ่งกลุ่ม — แยกออกมาเพราะตอนนี้หนึ่งถังให้ได้หลายกลุ่ม"""
+    arch, profile, gpu, gpu_count = signature
+    tiers = {fabric_tier(m["host"]) for m in members}
+    speeds = [(m["host"].get("fabric") or {}).get("best_gbps") or 0 for m in members]
+
+    # เสนอ IP จากวงที่ทุกเครื่องมีขาร่วมกัน ไม่ใช่ให้แต่ละเครื่องเลือกเองอิสระ
+    network, shared_ips = shared_fabric(members)
+    detail = []
+    for machine in members:
+        check = check_cluster_ip(machine["host"], machine.get("cluster_ip", ""))
+        detail.append({
+            "name": machine["name"],
+            "cluster_ip": machine.get("cluster_ip", ""),
+            "suggested_ip": shared_ips.get(machine["name"]) or suggest_cluster_ip(machine["host"]),
+            **check,
+        })
+
+    # เตือน ≠ บล็อก · กลุ่มยังพร้อมและยังนับ world size เต็ม แค่ต้องรู้ว่าวิ่งไม่เต็มสาย
+    warnings = []
+    under = [d for d in detail if (d.get("warning") or {}).get("kind") == "under-negotiated"]
+    if under:
+        warnings.append({
+            "kind": "under-negotiated",
+            "names": [d["name"] for d in under],
+            "speed_gbps": min(d["warning"]["speed_gbps"] for d in under),
+            "expected_gbps": SPARK_LINK_GBPS,
+        })
+
+    addresses = [d["cluster_ip"] for d in detail if d["cluster_ip"]]
+    # blockers เป็นรหัส ไม่ใช่ประโยค — CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเองคนละภาษา
+    blockers = []
+    missing = [d["name"] for d in detail if d["state"] == "unset"]
+    if missing:
+        blockers.append({"kind": "missing-ip", "names": missing})
+    if len(set(addresses)) != len(addresses):
+        blockers.append({"kind": "duplicate-ip", "names": [d["name"] for d in detail]})
+    # ตั้งครบแล้วแต่คนละวง = ต่อกันไม่ติด ทั้งที่แต่ละเครื่องดูถูกหมด
+    set_networks = {
+        link_network({"ip": d["cluster_ip"], "prefix": None}) for d in detail if d["cluster_ip"]
+    }
+    if len(addresses) == len(detail) and len(set_networks) > 1:
+        blockers.append({"kind": "split-fabric", "names": [d["name"] for d in detail]})
+
+    return {
+        "site": site,
+        "members": detail,
+        # ฮาร์ดแวร์ตรงกันแต่เข้ากลุ่มไม่ได้ — ไม่นับใน world size และไม่ทำให้กลุ่ม "ไม่พร้อม"
+        "excluded": excluded,
+        "arch": arch,
+        "profile": profile,
+        "gpu": gpu,
+        "gpus_per_node": gpu_count,
+        # ทั้งกลุ่มวิ่งเร็วเท่าเครื่องที่ช้าที่สุด — NCCL รอ rank ที่ช้าที่สุดเสมอ
+        "link_gbps": min(speeds),
+        "rdma": tiers == {"rdma"},
+        "quality": "rdma" if tiers == {"rdma"} else "ethernet",
+        "world_size": gpu_count * len(members),
+        # เครื่องที่ตั้ง cluster IP ถูกต้องแล้วจริง ๆ — ต่างจาก world size ตอนที่ยังตั้งไม่ครบ
+        "usable_world_size": gpu_count * sum(1 for d in detail if d["state"] == "ok"),
+        "fabric_network": network,
+        "parallelism": parallelism_note(gpu_count * len(members)),
+        "blockers": blockers,
+        "warnings": warnings,
+        "ready": not blockers,
+    }
 
 
 def cluster_note(host: dict) -> str:
