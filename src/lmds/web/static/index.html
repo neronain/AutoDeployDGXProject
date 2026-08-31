@@ -3523,6 +3523,7 @@ function groupHeader(g, index) {
         Cluster ${String.fromCharCode(65 + index)}</span>
       <b style="font-weight:500">${esc((g.members || []).map(m => m.name).join("  ⇄  "))}</b>
       <span class="grow"></span>
+      ${g.site ? `<span class="tag" title="stacked ต้องอยู่ไซต์เดียวกัน — NCCL วิ่งบนสายในแร็ค ไม่ใช่ผ่าน WAN">${esc(g.site)}</span>` : ""}
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "stacked ได้" : "ยังไม่พร้อม"}</span>
     </div>
     <div class="dim gsub">${esc(g.gpu)} ×${g.gpus_per_node} ต่อเครื่อง · world size ${g.world_size}${
