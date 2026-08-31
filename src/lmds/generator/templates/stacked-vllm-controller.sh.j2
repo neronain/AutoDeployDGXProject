@@ -428,7 +428,13 @@ print('download complete:', path, flush=True)
         docker rm -f "$dl_name" >/dev/null 2>&1 || true
         (( ${DL_ATTEMPT:-1} < ${DOWNLOAD_MAX_ATTEMPTS:-10} )) ||
           die "ค้างซ้ำ ${DL_ATTEMPT:-1} รอบ — ตรวจเน็ต/พร็อกซีแล้วสั่ง download ใหม่"
-        DL_ATTEMPT=$(( ${DL_ATTEMPT:-1} + 1 )) download
+        # ค้างแล้วเริ่มใหม่ ต้องปิด Xet ไปด้วย ไม่ใช่เริ่มใหม่แบบเดิมเป๊ะ ๆ
+        #
+        # เคสจริง 2026-09-01 บน spark-head: Xet client ค้างสนิท — ทุกเธรดจอดที่ futex_do_wait,
+# socket เปิดค้าง 11 เส้น, container log ว่างเปล่า, 12 นาทีไม่ขยับสักไบต์ · "ค้าง" แบบนี้
+# ไม่เคยคืน exit code จึงไม่มีทางไปเข้าทาง fallback ที่ปิด Xet ข้างล่างเลย · เริ่มใหม่ทั้งที
+# ยังเปิด Xet เหมือนเดิมก็ค้างซ้ำที่เดิมจนครบโควตา · พอปิด Xet โหลดต่อได้ทันทีที่ 34 MB/s
+        DL_ATTEMPT=$(( ${DL_ATTEMPT:-1} + 1 )) HF_HUB_DISABLE_XET=1 download
         return
       fi
     fi

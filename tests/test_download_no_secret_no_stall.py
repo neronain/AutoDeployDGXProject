@@ -151,3 +151,27 @@ def test_a_download_that_truly_stops_moving_is_still_killed(tmp_path):
     frozen = [153_900, 153_900, 153_900, 153_900, 153_900, 153_900]
     r = _run_watchdog(tmp_path, frozen)
     assert "KILLED" in r.stdout, f"ค้างนิ่งสนิทแล้วยังไม่ยอมเริ่มใหม่:\n{r.stdout}\n{r.stderr}"
+
+
+def test_restarting_after_a_stall_turns_xet_off(controllers):
+    """ค้างแล้วเริ่มใหม่ ต้องไม่เริ่มใหม่แบบเดิมเป๊ะ ๆ
+
+    เคสจริง 2026-09-01 บน spark-head: Xet client ค้างสนิท ทุกเธรดจอดที่ futex_do_wait
+    socket เปิดค้าง 11 เส้น log ว่าง 12 นาทีไม่ขยับสักไบต์ · "ค้าง" ไม่เคยคืน exit code
+    จึงไม่เข้าทาง fallback ที่ปิด Xet · เริ่มใหม่ทั้งที่ยังเปิด Xet = ค้างซ้ำที่เดิมจนครบโควตา
+
+    เจาะที่ *บรรทัดสั่งเริ่มใหม่* ตรง ๆ — ดูแค่ว่า HF_HUB_DISABLE_XET โผล่แถว ๆ นั้นไหม
+    ไม่พอ เพราะ fallback เดิม (ที่ทำงานเฉพาะตอน exit code ไม่เป็นศูนย์) ก็อยู่ใกล้ ๆ กัน
+    """
+    stacked = [l for l in controllers["stacked"].splitlines() if "DL_ATTEMPT=$((" in l and "download" in l]
+    assert stacked, "ไม่เจอบรรทัดสั่งเริ่มใหม่หลังค้างของ stacked"
+    assert all("HF_HUB_DISABLE_XET=1" in l for l in stacked), (
+        f"stacked เริ่มใหม่หลังค้างโดยยังเปิด Xet: {stacked}"
+    )
+
+    lines = controllers["single"].splitlines()
+    i = next(n for n, l in enumerate(lines) if "code == 75" in l)
+    window = "\n".join(lines[i : i + 8])
+    assert "disable_xet=1" in window, (
+        f"single เริ่มใหม่หลังค้างโดยยังเปิด Xet:\n{window}"
+    )
