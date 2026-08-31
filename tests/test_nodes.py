@@ -361,24 +361,46 @@ def test_scanner_does_not_double_count_hf_symlinks(tmp_path, monkeypatch):
 
 def test_node_ctl_runs_the_bundle_controller(monkeypatch):
     """`lmds node run` สั่งคำสั่งของ lmds · `node ctl` สั่งสคริปต์ controller ในตัว bundle
-    ซึ่งมีขั้นตอนที่ lmds ไม่ได้ห่อไว้ (prepare-runtime, sync-worker, test-text)"""
+    ซึ่งมีขั้นตอนที่ lmds ไม่ได้ห่อไว้ (prepare-runtime, sync-worker, test-text)
+
+    ใช้ stream() ไม่ใช่ run() ตั้งแต่ 2026-08-31 — download 90 GB ใช้เวลาเป็นสิบนาที
+    ของเดิมรอจนจบแล้วค่อยพ่นผลทีเดียว ระหว่างนั้นแยกไม่ออกว่าทำงานอยู่หรือค้างไปแล้ว
+    (และ stream() คือทางเดียวที่ให้ node ยืม HF_TOKEN ได้อย่างปลอดภัย)
+    """
     from typer.testing import CliRunner
 
     from lmds.cli.main import app
-    from lmds.nodes.ssh import Result
 
     add(make(name="n2"))
     seen = {}
 
-    def fake_run(node, command, timeout=60):
-        seen["cmd"] = command
-        return Result(0, "ok", "")
+    class FakeProc:
+        stdout = iter([])
 
-    monkeypatch.setattr("lmds.nodes.run", fake_run)
+        def wait(self):
+            return 0
+
+    def fake_stream(node, command, secret_env=None):
+        seen["cmd"] = command
+        proc = FakeProc()
+        proc.stdout = _Lines([b"ok\n"])
+        return proc
+
+    monkeypatch.setattr("lmds.nodes.stream", fake_stream)
     result = CliRunner().invoke(app, ["node", "ctl", "n2", "my-model", "start", "--gpu-util", "0.8"])
     assert result.exit_code == 0, result.output
     assert "bundles/my-model" in seen["cmd"]
     assert "start --gpu-util 0.8" in seen["cmd"]
+
+
+class _Lines:
+    """stdout ปลอมของ Popen — คืนไบต์ทีละบรรทัดแล้วจบด้วยค่าว่าง"""
+
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    def readline(self):
+        return self._lines.pop(0) if self._lines else b""
 
 
 def test_virtual_nic_without_device_link_is_still_reported(tmp_path, monkeypatch):

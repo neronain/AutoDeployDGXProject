@@ -751,7 +751,7 @@ def node_ctl(
     ต่างจาก `lmds node run` ตรงที่อันนั้นสั่ง *คำสั่งของ lmds* ส่วนอันนี้สั่ง *สคริปต์ controller*
     ในตัว bundle ซึ่งมีขั้นตอนที่ lmds ไม่ได้ห่อไว้ (prepare-runtime, sync-worker, test-text ฯลฯ)
     """
-    from lmds.nodes import NodeError, find, run
+    from lmds.nodes import NodeError, find, stream
 
     node = find(name)
     if node is None:
@@ -770,17 +770,34 @@ def node_ctl(
         f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller ใน '\"$PWD\" >&2; exit 1; }}; "
         f"\"$ctl\" {quoted}"
     )
+    # gated repo ต้องมี HF_TOKEN ที่ฝั่ง node — hub มีอยู่แล้ว แต่ bundle จงใจไม่พกไปด้วย
+    #
+    # เคสจริง 2026-08-31: `node ctl spark-head <slug> download` ตกทันทีด้วย "เป็น gated
+    # repo — ต้องมี HF_TOKEN" ทั้งที่ hub ถือ token ที่ใช้ได้อยู่ · หน้าเว็บให้ยืมได้ตั้งแต่
+    # รอบก่อน (lmds.web.jobs) แต่เส้นทาง CLI ไม่เคยถูกต่อให้ — คนที่ทำงานผ่าน CLI จึง
+    # deploy โมเดล gated ข้ามเครื่องไม่ได้เลย
+    #
+    # ความลับเดินทางทาง stdin ของ ssh เท่านั้น (stream() จัดการให้) ไม่ผ่าน argv ที่ `ps`
+    # ของทุก user มองเห็น และไม่เขียนลงไฟล์บนเครื่องปลายทาง
+    token = get_secret("hf")
+    secret_env = {"HF_TOKEN": token} if token else None
+
+    # สตรีมทีละบรรทัดแทนการรอทั้งก้อน — download 90 GB ใช้เวลาเป็นสิบนาที ของเดิมเงียบ
+    # สนิทจนจบแล้วค่อยพ่นออกมาทีเดียว ระหว่างนั้นแยกไม่ออกว่ากำลังทำงานหรือค้างไปแล้ว
     try:
-        # ขั้นอย่าง download/start ใช้เวลาเป็นสิบนาที — ต้องรอ ไม่ใช่ตัดจบที่ timeout สั้น ๆ
-        result = run(node, script, timeout=7200)
+        proc = stream(node, script, secret_env)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        err_console.print(result.stderr.rstrip())
-    raise typer.Exit(code=result.exit_code)
+
+    assert proc.stdout is not None
+    for raw in iter(proc.stdout.readline, b""):
+        line = raw.decode("utf-8", "replace")
+        # ปลายทางไม่ควรพิมพ์ token อยู่แล้ว — แต่ "ไม่ควร" กับ "ไม่เคย" คนละเรื่อง
+        if token:
+            line = line.replace(token, "***")
+        print(line, end="", flush=True)
+    raise typer.Exit(code=proc.wait())
 
 @node_app.command("cluster")
 def node_cluster(
