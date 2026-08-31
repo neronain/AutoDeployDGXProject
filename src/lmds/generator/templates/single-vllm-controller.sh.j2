@@ -254,32 +254,102 @@ download() {
   # แถบ progress ของ huggingface_hub เลื่อนตัวเลขด้วย \r ล้วน ๆ ไม่เคยขึ้นบรรทัดใหม่ —
   # ซึ่ง stderr ที่ line-buffer ไว้จะไม่ยอม flush ให้เลย · ผลคือ download 50 GB เงียบสนิท
   # ทั้งชั่วโมงแล้วค่อยพ่นออกมาทีเดียวตอนจบ คนดูแยกไม่ออกว่ากำลังโหลดอยู่หรือค้างไปแล้ว
+  # ไม่มีอะไรคืบหน้าเกินเท่านี้ = ถือว่าค้างตาย แล้วเริ่มใหม่ (ต่อจากของเดิม)
+  #
+  # เคสจริง 2026-08-31 บน spark-head: โหลดไปได้ 36 GB จาก 170.9 GB แล้วหยุดนิ่ง
+  # **1 ชั่วโมง 32 นาที** โดยไม่มี error ไม่มี log ไม่มีอะไรบอก · connection ไปหา CDN
+  # ยังเปิดค้างอยู่ process นอนหลับใน recv() รอข้อมูลที่ไม่มีวันมา
+  #
+  # ฝั่ง llama.cpp กันเคสนี้ไว้แล้วด้วย `--speed-limit/--speed-time` ของ curl พร้อม
+  # คอมเมนต์ที่เขียนไว้เองว่า "ไม่มี error ไม่มี timeout --retry จึงไม่เคยทำงาน" —
+  # แต่เส้นทาง vLLM ใช้ huggingface_hub ในคอนเทนเนอร์ซึ่งไม่มีตัวกันแบบนั้นเลย
+  #
+  # ที่แย่กว่าคือคนที่เห็นว่ามันค้างมักสั่งใหม่ทับ แล้วตัวใหม่ไปติด lock ของตัวที่ค้างอยู่
+  # กลายเป็นกองซ้อนกันสามตัวที่ไม่มีตัวไหนทำงานเลย (เจอจริงเช่นกัน)
+  DOWNLOAD_STALL_SECONDS="${DOWNLOAD_STALL_SECONDS:-600}"
+
+  _download_bytes() {
+    du -sb "$(_model_cache_dir)" 2>/dev/null | cut -f1 || echo 0
+  }
+
   _snapshot_download() {
     local disable_xet="$1"
-    docker run --rm \
+    local name="lmds-dl-$$-${RANDOM}"
+
+    # `-e HF_TOKEN` เฉย ๆ (ไม่มี =ค่า) = docker หยิบค่าจาก env ของเชลล์นี้ไปเอง
+    #
+    # ของเดิมเขียน `-e HF_TOKEN="$HF_TOKEN"` ซึ่งเอาค่าจริงไปแปะไว้ใน **argv ของ
+    # docker run** — user ทุกคนบนเครื่องอ่านได้ด้วย `ps` เฉย ๆ (เจอจริงบน spark-head)
+    # ทั้งที่ LMDS มีหลักเรื่องนี้อยู่แล้วในเส้นทาง SSH: ความลับไม่เดินทางผ่าน argv
+    docker run -d --name "$name" \
       --user "$(id -u):$(id -g)" \
       -e HOME=/tmp -e USER=lmds -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
       -e PYTHONUNBUFFERED=1 \
-      ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
+      -e HF_HUB_DOWNLOAD_TIMEOUT=30 \
+      ${HF_TOKEN:+-e HF_TOKEN} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
       -v "${HF_HOME}:/cache" \
       --entrypoint python3 "$VLLM_IMAGE" -u -c "
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id='${MODEL_ID}', revision='${MODEL_REVISION}', cache_dir=None)
 print('download complete')
-"
+" >/dev/null || return 1
+
+    # ปล่อย log ออกมาให้เห็นความคืบหน้า พร้อมเฝ้าว่ายังขยับอยู่ไหม
+    docker logs -f "$name" 2>&1 &
+    local logs_pid=$!
+    local last quiet=0
+    last="$(_download_bytes)"
+        # เทียบด้วย case ไม่ใช่ท่อไปหา grep — grep ที่ออกก่อนทำให้ docker โดน SIGPIPE
+    # ใต้ set -o pipefail ทั้ง pipeline จึงคืนค่าไม่เป็นศูนย์แบบสุ่ม ๆ
+    while [[ "$(docker inspect -f '{{ '{{.State.Running}}' }}' "$name" 2>/dev/null)" == "true" ]]; do
+      sleep 30
+      local now; now="$(_download_bytes)"
+      if [[ "${now:-0}" -gt "${last:-0}" ]]; then
+        last="$now"; quiet=0
+      else
+        quiet=$(( quiet + 30 ))
+        if (( quiet >= DOWNLOAD_STALL_SECONDS )); then
+          echo "" >&2
+          echo "ไม่มีอะไรคืบหน้ามา ${quiet} วินาที — ถือว่าค้าง หยุดแล้วเริ่มใหม่ต่อจากเดิม" >&2
+          docker stop -t 5 "$name" >/dev/null 2>&1 || true
+          kill "$logs_pid" 2>/dev/null || true
+          docker rm -f "$name" >/dev/null 2>&1 || true
+          return 75
+        fi
+      fi
+    done
+    kill "$logs_pid" 2>/dev/null || true
+    local code; code="$(docker wait "$name" 2>/dev/null || echo 1)"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    return "${code:-1}"
+  }
+
+  # ค้างแล้วเริ่มใหม่ได้หลายรอบ — ไฟล์ .incomplete ยังอยู่ครบ จึงต่อจากเดิมเสมอ
+  _snapshot_download_resilient() {
+    local disable_xet="$1" attempt=0
+    while (( attempt < ${DOWNLOAD_MAX_ATTEMPTS:-10} )); do
+      attempt=$(( attempt + 1 ))
+      _snapshot_download "$disable_xet" && return 0
+      local code=$?
+      (( code == 75 )) || return "$code"      # ล้มด้วยเหตุอื่น = ปล่อยให้ผู้เรียกจัดการ
+      echo "เริ่มใหม่รอบที่ $(( attempt + 1 )) (ได้มาแล้ว $(( $(_download_bytes) / 1073741824 )) GB)" >&2
+      sleep 5
+    done
+    echo "ค้างซ้ำ ${attempt} รอบ — ตรวจเน็ต/พร็อกซีแล้วสั่ง download ใหม่" >&2
+    return 1
   }
 
   # Xet เป็น backend ใหม่ของ Hub ที่บาง repo (เช่นตระกูล Llama) ยังพังด้วย
   # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
   # แทนที่จะโยน traceback ของ Python ใส่หน้าผู้ใช้แล้วจบ
   if [[ -n "${HF_HUB_DISABLE_XET:-}" ]]; then
-    _snapshot_download 1
-  elif ! _snapshot_download ""; then
+    _snapshot_download_resilient 1
+  elif ! _snapshot_download_resilient ""; then
     echo "" >&2
     echo "download ล้มเหลว — ลองใหม่โดยปิด Xet transfer (HF_HUB_DISABLE_XET=1)" >&2
     echo "ไฟล์ที่โหลดมาแล้วยังอยู่ ระบบจะโหลดต่อจากเดิม ไม่เริ่มใหม่ทั้งหมด" >&2
-    _snapshot_download 1
+    _snapshot_download_resilient 1
   fi
 }
 
@@ -515,7 +585,7 @@ start() {
   if [[ -z "${LMDS_RUN_AS_ROOT:-}" ]]; then
     docker_args+=(--user "$(id -u):$(id -g)")
   fi
-  if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e "HF_TOKEN=${HF_TOKEN}"); fi
+  if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e HF_TOKEN); fi
   if [[ -n "$API_KEY" ]]; then docker_args+=(-e "VLLM_API_KEY=${API_KEY}"); fi
 {% if runtime_assets -%}
   verify_assets
