@@ -485,6 +485,16 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 
 ### 3.3b Deploy แบบ stacked (โมเดลใหญ่เกิน 1 เครื่อง → 2× DGX Spark)
 
+> **ทำจากหน้าเว็บได้แล้ว (ไม่ต้องแตะเทอร์มินัล)**
+>
+> กด **Check cluster** → กลุ่มที่ขึ้นว่า "stacked ได้" จะมีปุ่ม **Deploy ลงกลุ่มนี้** ·
+> กดแล้ว wizard เปิดขึ้นโดยตั้ง target เป็น `dgx-spark-stacked` และเลือก head/worker
+> ให้ตามสมาชิกของกลุ่มเรียบร้อย · พอ generate เสร็จ ระบบ push ไปเครื่อง head แล้ว
+> **เขียน `cluster.env` ให้เองด้วย** (MASTER_IP/WORKER_IP/SSH_USER/NCCL iface) —
+> ไม่ต้องไปแก้ CONFIG ต้นไฟล์เอง
+>
+> ก่อนหน้านี้หน้า Cluster ได้แค่พิมพ์คำสั่งให้ไปก็อป จึงเหมือน "deploy stacked ไม่มีในหน้าเว็บ"
+
 โมเดลที่ใหญ่เกิน unified memory ของ Spark เครื่องเดียว (เช่น DeepSeek-V4-Flash ~168GB) ให้ใช้ target `dgx-spark-stacked` — lmds จะสร้าง controller แบบ **multi-node** (worker-first startup, TP ข้าม node, mp backend) แทนแบบเดี่ยวอัตโนมัติ
 
 ```bash
@@ -497,6 +507,8 @@ controller ที่ได้มีคำสั่งครบวงจร multi
 ```bash
 cd bundles/<slug>
 # แก้ CONFIG ต้นไฟล์ก่อน: MASTER_IP, WORKER_IP, SSH_USER, NCCL_SOCKET_IFNAME, NCCL_IB_HCA
+#   — ข้ามได้ถ้า deploy จากหน้าเว็บ (เขียน cluster.env ให้แล้ว) หรือสั่งเอง:
+#   lmds node cluster --write <slug> --on <เครื่อง head>
 ./<slug>-stacked.sh prepare-runtime   # pull + lock image ให้ image-ID ตรงกันทั้งสอง node
 ./<slug>-stacked.sh download          # ดาวน์โหลดโมเดลลง master
 ./<slug>-stacked.sh verify-files      # ตรวจ shard + config

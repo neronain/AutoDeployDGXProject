@@ -1726,7 +1726,31 @@ let sess = null, analyzing = false;
 // the form, and silently losing the target changes the result without the user noticing.
 // hf_token อยู่ในนี้เพื่อไม่ให้หายตอนฟอร์มถูกวาดใหม่ (เช่นตอนต้องเลือกไฟล์ GGUF ก่อน)
 // — เก็บในหน่วยความจำของหน้าเท่านั้น ไม่ลง localStorage ไม่ขึ้น URL
-const draft = { model: "", target: "", no_llm: false, machine: "", hf_token: "", hf_save: false };
+const draft = { model: "", target: "", no_llm: false, machine: "", worker: "",
+                hf_token: "", hf_save: false };
+// target ที่ผู้ใช้ "เลือกเอง" ต่างจาก target ที่ระบบเดาให้จากเครื่อง — ถ้าไม่แยก
+// การเลือกเครื่องจะไปทับ dgx-spark-stacked ที่เพิ่งกดมาจากหน้า Cluster เงียบ ๆ
+let targetPinned = false;
+
+// stacked ต้องรู้ "อีกเครื่อง" ด้วย — single ไม่ต้อง · ซ่อนไว้จนกว่าจะเลือก target
+// ที่เป็น multi-node จริง ๆ ไม่งั้นคนที่ deploy เครื่องเดียวจะเจอช่องที่ไม่เกี่ยวกับตัวเอง
+function isStackedTarget(name) { return /stacked/.test(name || ""); }
+
+function syncStackedFields() {
+  const target = document.getElementById("w-target");
+  const label = document.getElementById("w-worker-label");
+  const worker = document.getElementById("w-worker");
+  if (!target || !worker || !label) return;
+  const on = isStackedTarget(target.value);
+  label.hidden = !on;
+  worker.hidden = !on;
+  const hint = document.getElementById("w-machine-hint");
+  if (on && hint) {
+    hint.textContent = draft.machine
+      ? `head = ${draft.machine}${draft.worker ? " · worker = " + draft.worker : " · ยังไม่ได้เลือก worker"}`
+      : "เลือกเครื่อง head ที่ช่อง Run on ด้วย — bundle จะถูกส่งไปไว้ที่เครื่องนั้น";
+  }
+}
 
 function wizForm(msg = "", extra = "") {
   wiz.hidden = false;
@@ -1743,6 +1767,10 @@ function wizForm(msg = "", extra = "") {
       </select>
       <label>Target</label>
       <select id="w-target"><option value="">Auto-detect</option></select>
+      <label id="w-worker-label" hidden>Worker</label>
+      <select id="w-worker" style="flex:none;min-width:160px" hidden>
+        <option value="">เลือกเครื่อง worker</option>
+      </select>
       <label>Engine</label>
       <select id="w-engine" style="flex:none;min-width:130px">
         <option value="">Auto</option>
@@ -1789,6 +1817,8 @@ function wizForm(msg = "", extra = "") {
     d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
       `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (untested)"}</option>`));
     sel.value = draft.target;
+    sel.onchange = () => { draft.target = sel.value; targetPinned = !!sel.value; syncStackedFields(); };
+    syncStackedFields();
   });
   // เครื่องปลายทาง — เลือกได้ตั้งแต่ต้น แล้วระบบตั้ง target ให้ตรงกับฮาร์ดแวร์ของเครื่องนั้น
   // เดิมต้อง deploy ที่นี่ก่อนแล้วค่อย push ซึ่งอ้อม และต้องรู้เองว่าเครื่องนั้นคือ preset ไหน
@@ -1796,18 +1826,28 @@ function wizForm(msg = "", extra = "") {
     const sel = document.getElementById("w-machine");
     if (!sel) return;
     nodeTargets.clear();
+    const wsel = document.getElementById("w-worker");
     (d.nodes || []).forEach(n => {
       nodeTargets.set(n.name, n.suggested_target || "");
       sel.insertAdjacentHTML("beforeend", `<option value="${esc(n.name)}">${esc(n.name)}</option>`);
+      if (wsel) wsel.insertAdjacentHTML("beforeend", `<option value="${esc(n.name)}">${esc(n.name)}</option>`);
     });
     sel.value = draft.machine;
+    if (wsel) {
+      wsel.value = draft.worker;
+      wsel.onchange = () => { draft.worker = wsel.value; };
+    }
+    syncStackedFields();
     sel.onchange = () => {
       draft.machine = sel.value;
       const hint = document.getElementById("w-machine-hint");
       const target = document.getElementById("w-target");
       if (!sel.value) { if (hint) hint.textContent = ""; return; }
       const suggested = nodeTargets.get(sel.value);
-      if (suggested && target) { target.value = suggested; draft.target = suggested; }
+      // ปักธงไว้แล้ว (เช่นกด Deploy มาจากหน้า Cluster) = อย่าทับ · เดิมทับเสมอ ทำให้
+      // stacked กลายเป็น single ทันทีที่เลือกเครื่อง โดยไม่มีอะไรบอก
+      if (suggested && target && !targetPinned) { target.value = suggested; draft.target = suggested; }
+      syncStackedFields();
       if (hint) {
         hint.textContent = suggested
           ? `ตั้ง target เป็น ${suggested} ให้ตามฮาร์ดแวร์ของ ${sel.value} · bundle จะถูกส่งไปเครื่องนั้นให้อัตโนมัติ`
@@ -1867,18 +1907,42 @@ function startDeployWithRecipe(match) {
 }
 
 // สร้างเสร็จแล้วส่งต่อทันที — แต่ถ้าส่งไม่ผ่านต้องบอกว่า bundle ยังอยู่ที่นี่ ไม่ใช่หายไป
-async function pushAfterBuild(built, machine) {
+// stacked: bundle เปล่า ๆ ยังไม่รู้ IP ของคู่ตัวเอง — controller จะไปค้างที่ NCCL init
+// โดยไม่มีข้อความบอกสาเหตุ · เขียน cluster.env ต่อให้เลยตรงนี้ เพราะข้อมูลครบอยู่แล้ว
+// (เดิมต้องไปรัน `lmds node cluster --write` เองที่เทอร์มินัล ซึ่งคนที่ใช้หน้าเว็บล้วน ๆ ไม่รู้)
+async function writeClusterEnv(slug, head, worker) {
+  const r = await api("/api/cluster/write", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ slug, head, worker, on: head }),
+  });
+  const d = await r.json();
+  return r.ok
+    ? { ok: true, text: `cluster.env: head ${d.head_ip} · worker ${(d.worker_ips || []).join(" ")}`
+        + ` · ${d.nnodes} เครื่อง (TP=${d.nnodes})${d.iface ? " · NCCL " + d.iface : ""}` }
+    : { ok: false, text: d.detail || "เขียน cluster.env ไม่สำเร็จ" };
+}
+
+async function pushAfterBuild(built, machine, stacked = false) {
   const slug = built.slug || (built.bundle || "").split("/").pop();
   wizBusy(`สร้าง ${slug} เสร็จแล้ว — กำลังส่งไป ${machine}…`);
   const r = await api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(machine)}`,
                       { method: "POST" });
   const d = await r.json();
   if (r.ok) {
+    let cluster = null;
+    if (stacked) {
+      wizBusy(`ส่งถึง ${machine} แล้ว — กำลังเขียน cluster.env…`);
+      cluster = await writeClusterEnv(slug, machine, draft.worker || "");
+    }
     wiz.innerHTML = `<div class="pad">
       <div class="name">ติดตั้ง ${esc(slug)} บน ${esc(machine)} แล้ว</div>
       <div class="muted">${esc(d.path || "")} · ${d.size_mb} MB</div>
+      ${cluster ? `<div class="warn-line" style="color:var(--${cluster.ok ? "ok" : "bad"})">${esc(cluster.text)}</div>` : ""}
+      ${cluster && !cluster.ok ? `<div class="dim">เขียนเองได้ด้วย
+        <code>lmds node cluster --write ${esc(slug)} --on ${esc(machine)}</code></div>` : ""}
       <div class="dim" style="margin-top:8px">สั่ง download แล้ว start ได้จากการ์ดของ
-        ${esc(machine)} ด้านล่าง — ความคืบหน้าจะขึ้นให้เห็นระหว่างทำงาน</div>
+        ${esc(machine)} ด้านล่าง — ความคืบหน้าจะขึ้นให้เห็นระหว่างทำงาน${
+        stacked ? " · stacked ต้อง sync-worker ก่อน start" : ""}</div>
       <div class="field" style="margin-top:10px"><button id="w-close">Close</button></div>
     </div>`;
     refreshNodes();
@@ -2145,6 +2209,24 @@ document.addEventListener("click", async e => {
     Object.assign(draft, { model: "", target: "", no_llm: false });
     return;
   }
+  // หน้า Cluster รู้อยู่แล้วว่าคู่ไหน stacked ได้ และใครควรเป็น head — เดิมมันได้แค่
+  // พิมพ์คำสั่ง CLI ให้ไปก็อป ซึ่งแปลว่า "deploy แบบ stacked" ไม่มีอยู่ในหน้าเว็บเลย
+  const stackBtn = e.target.closest("button.deploy-stack");
+  if (stackBtn) {
+    Object.assign(draft, {
+      target: "dgx-spark-stacked",
+      machine: stackBtn.dataset.head || "",
+      worker: stackBtn.dataset.worker || "",
+    });
+    targetPinned = true;
+    wizForm();
+    // wizard อยู่บนสุดของหน้า ส่วนปุ่มนี้อยู่ในกลุ่มเครื่องซึ่งมักต้องเลื่อนลงไปไกล —
+    // ถ้าไม่พาขึ้นไป ผู้ใช้จะกดแล้วเหมือนไม่มีอะไรเกิดขึ้น
+    wiz.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.getElementById("w-model")?.focus();
+    return;
+  }
+
   const chip = e.target.closest("button[data-recipe]");
   if (chip) { pickRecipe(+chip.dataset.recipe); return; }
   if (id === "w-go") { analyzeNow(); return; }
@@ -2165,7 +2247,7 @@ document.addEventListener("click", async e => {
     const d = await r.json();
     if (r.ok) {
       // เลือกเครื่องปลายทางไว้ตั้งแต่ต้น = ส่งให้เลย ผู้ใช้จะได้ไม่ต้องไปหาปุ่ม push เอง
-      if (draft.machine) { await pushAfterBuild(d, draft.machine); return; }
+      if (draft.machine) { await pushAfterBuild(d, draft.machine, isStackedTarget(draft.target)); return; }
       resultView(d);
     } else {
       const det = d.detail || {};
@@ -3390,10 +3472,18 @@ function groupHeader(g, index) {
       ? `<div class="warn-line">${g.world_size} GPU หารจำนวน attention head ของโมเดลส่วนใหญ่ไม่ลงตัว —
          ใช้ tensor-parallel ${g.parallelism.largest_tp} + pipeline stage แทน TP ${g.world_size}</div>` : ""}
     ${blockers}${warnings}${excluded}
-    ${g.ready ? `<div class="dim gsub">deploy ข้ามเครื่องกลุ่มนี้:
-      <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> บน
-      <b style="font-weight:500">${esc(g.members[0].name)}</b> แล้ว
-      <code>lmds node cluster --write &lt;slug&gt; --on ${esc(g.members[0].name)}</code></div>` : ""}`;
+    ${g.ready ? `<div class="gsub">
+      <button class="deploy-stack" data-head="${esc(g.members[0].name)}"
+              data-worker="${esc((g.members[1] || {}).name || "")}"
+              data-nodes="${g.members.length}">Deploy ลงกลุ่มนี้</button>
+      <span class="dim">head <b style="font-weight:500">${esc(g.members[0].name)}</b>${
+        g.members[1] ? ` · worker <b style="font-weight:500">${esc(g.members[1].name)}</b>` : ""} ·
+        เปิด wizard โดยตั้ง target เป็น <code>dgx-spark-stacked</code> ให้แล้ว
+        และเขียน <code>cluster.env</code> (IP/SSH user/NCCL iface) ให้เองตอนจบ</span>
+      <div class="dim" style="margin-top:4px">เทียบเท่าคำสั่ง:
+        <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> +
+        <code>lmds node cluster --write &lt;slug&gt; --on ${esc(g.members[0].name)}</code></div>
+    </div>` : ""}`;
 }
 
 // จัดการ์ดใหม่: เครื่องที่อยู่กลุ่มเดียวกันต้องอยู่ติดกัน และมีเส้นรั้วสีเดียวกันคร่อมไว้

@@ -1498,6 +1498,35 @@ def create_app(token: str = "") -> FastAPI:
             rows.append(row(node.name, host, node.cluster_ip, False, node.stack))
         return {"machines": rows, "groups": cluster_groups(machines)}
 
+    @app.post("/api/cluster/write", dependencies=guarded)
+    def cluster_write(body: dict) -> dict:
+        """เขียน cluster.env ลง bundle ของกลุ่มที่เลือก — ขั้นสุดท้ายของ deploy แบบ stacked
+
+        เดิมหน้าเว็บทำขั้นนี้ไม่ได้เลย: หน้า Cluster พิมพ์คำสั่ง
+        `lmds node cluster --write <slug> --on <เครื่อง>` ให้ไปก็อปรันเอง · คนที่ deploy
+        ผ่านหน้าเว็บล้วน ๆ จึงได้ bundle ที่ยังไม่รู้ IP ของคู่ตัวเอง แล้ว start ก็ค้างที่
+        NCCL init โดยไม่มีอะไรบอกว่าเพราะอะไร
+        """
+        from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
+
+        slug = (body.get("slug") or "").strip()
+        head = (body.get("head") or "").strip()
+        if not slug or not head:
+            raise HTTPException(status_code=400, detail="ต้องระบุ slug และ head")
+
+        groups = (cluster_view() or {}).get("groups") or []
+        try:
+            result = write_cluster_env(
+                slug, groups, head,
+                (body.get("worker") or "").strip() or None,
+                (body.get("on") or "").strip() or None,
+            )
+        except ClusterEnvError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"target": result.target, "head_ip": result.head_ip,
+                "worker_ips": result.worker_ips, "nnodes": result.nnodes,
+                "iface": result.iface}
+
     @app.patch("/api/cluster/self", dependencies=guarded)
     def cluster_self_patch(body: dict) -> dict:
         """เปิด/ปิดการเอา hub เองเข้ากลุ่ม stacked — node อื่นใช้ PATCH /api/nodes/{name}"""

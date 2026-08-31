@@ -932,101 +932,25 @@ def node_cluster(
 
 
 def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> None:
-    """เขียน cluster.env ลง bundle — controller จะ source ไฟล์นี้แทนการถาม IP ตอน start"""
-    from lmds.fleet import bundle_roots
-    from lmds.nodes import find as find_node
+    """เขียน cluster.env ลง bundle — controller จะ source ไฟล์นี้แทนการถาม IP ตอน start
 
-    # hub ไม่จำเป็นต้องเป็นสมาชิกของคลัสเตอร์ — เครื่องที่คุมอาจเป็นโน้ตบุ๊กที่ไม่มี GPU
-    ready = [g for g in groups if g["ready"] and any(m["name"] == head_name for m in g["members"])]
-    if not ready:
-        names = sorted({m["name"] for g in groups if g["ready"] for m in g["members"]})
-        err_console.print(
-            f"[red]ไม่มีกลุ่มที่พร้อมและมี '{head_name}' เป็นสมาชิก[/red] — "
-            + (f"เลือก head ได้จาก: {', '.join(names)} (--head <ชื่อ>)" if names
-               else "ต้องตั้ง cluster IP ให้ครบก่อน (ดูตารางด้านบน)")
-        )
+    ตรรกะทั้งหมดอยู่ที่ `lmds.fleet.cluster_env` เพราะหน้าเว็บต้องเขียนไฟล์เดียวกันนี้ได้ด้วย
+    ที่นี่เหลือแค่แปลง error เป็นข้อความบนเทอร์มินัลกับ exit code
+    """
+    from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
+
+    try:
+        result = write_cluster_env(slug, groups, head_name, worker_name, on_node)
+    except ClusterEnvError as exc:
+        err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
-    group = ready[0]
 
-    others = [m for m in group["members"] if m["name"] != head_name]
-    if worker_name:
-        chosen = next((m for m in others if m["name"] == worker_name), None)
-        if chosen is None:
-            err_console.print(f"[red]'{worker_name}' ไม่ได้อยู่ในกลุ่มที่พร้อม[/red]")
-            raise typer.Exit(code=1)
-    elif others:
-        # เกิน 2 เครื่องก็เขียนได้ — worker ทุกตัวลง WORKER_IPS เรียงตาม node-rank
-        chosen = others[0]
-    else:
-        err_console.print("[red]กลุ่มนี้ไม่มี worker[/red]")
-        raise typer.Exit(code=1)
-    workers = [chosen] if worker_name else others
+    console.print(f"\n[green]เขียน {result.target} แล้ว[/green]")
+    console.print(f"[dim]head {result.head_ip} · worker {' '.join(result.worker_ips)}"
+                  f" · {result.nnodes} เครื่อง (TP={result.nnodes})"
+                  f"{' · NCCL ' + result.iface if result.iface else ''}[/dim]")
+    console.print("[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
 
-    head = next(m for m in group["members"] if m["name"] == head_name)
-    node = find_node(chosen["name"])
-    iface = head.get("iface") or ""
-    worker_ips = [m["cluster_ip"] for m in workers]
-    lines = [
-        "# สร้างโดย lmds node cluster --write — แก้มือได้ ค่า env ภายนอกยังชนะไฟล์นี้",
-        f"MASTER_IP={head['cluster_ip']}",
-        f"WORKER_IP={worker_ips[0]}",
-        # worker ทุกตัวเรียงตาม node-rank 1..N-1 — controller วนจากตัวแปรนี้
-        f'WORKER_IPS="{" ".join(worker_ips)}"',
-        f"NNODES={len(workers) + 1}",
-        f"TENSOR_PARALLEL_SIZE={len(workers) + 1}",
-        f"SSH_USER={node.user if node else ''}",
-        f"TRANSPORT_IP_MASTER={head['cluster_ip']}",
-        f"TRANSPORT_IP_WORKER={worker_ips[0]}",
-    ]
-    if iface:
-        # NCCL เลือก interface เองแล้วมักได้เส้นบริหารจัดการที่ช้ากว่า — ระบุให้ชัด
-        lines.append(f"NCCL_SOCKET_IFNAME={iface}")
-    body = "\n".join(lines) + "\n"
-
-    if on_node:
-        # bundle อยู่บนเครื่องที่จะรันมันจริง ไม่ใช่บน hub — เขียนข้ามเครื่องผ่าน SSH
-        from lmds.nodes import NodeError, run as run_remote
-
-        remote = find_node(on_node)
-        if remote is None:
-            err_console.print(f"[red]ไม่รู้จักเครื่อง '{on_node}'[/red] — ดู: lmds node list")
-            raise typer.Exit(code=1)
-        import base64
-
-        encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
-        script = (
-            f"dir=\"$(ls -d ~/bundles/{slug} ~/*/bundles/{slug} ./bundles/{slug} 2>/dev/null | head -1)\"; "
-            f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug}' >&2; exit 1; }}; "
-            f"echo {encoded} | base64 -d > \"$dir/cluster.env\" && "
-            f"chmod 600 \"$dir/cluster.env\" && echo \"$dir/cluster.env\""
-        )
-        try:
-            result = run_remote(remote, script, timeout=60)
-        except NodeError as exc:
-            err_console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
-        if not result.ok:
-            err_console.print((result.stderr or result.stdout).strip()[:400])
-            raise typer.Exit(code=1)
-        target = f"{remote.name}:{result.stdout.strip()}"
-    else:
-        bundle = next((root / slug for root in bundle_roots() if (root / slug).is_dir()), None)
-        if bundle is None:
-            err_console.print(
-                f"[red]ไม่พบ bundle ของ '{slug}' บนเครื่องนี้[/red] — "
-                f"ถ้า bundle อยู่บนเครื่องอื่นให้ใช้ --on <ชื่อเครื่อง>"
-            )
-            raise typer.Exit(code=1)
-        path = bundle / "cluster.env"
-        path.write_text(body, encoding="utf-8")
-        path.chmod(0o600)
-        target = str(path)
-
-    console.print(f"\n[green]เขียน {target} แล้ว[/green]")
-    console.print(f"[dim]head {head['cluster_ip']} · worker {' '.join(worker_ips)}"
-                  f" · {len(workers) + 1} เครื่อง (TP={len(workers) + 1})"
-                  f"{' · NCCL ' + iface if iface else ''}[/dim]")
-    console.print(f"[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
 
 # flag ของคำสั่งปลายทางต้องผ่านไปทั้งดุ้น — ไม่งั้น `node run x logs y -n 100`
 # จะโดน typer กินไปเป็น option ของ node run เอง
