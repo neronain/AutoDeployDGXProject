@@ -332,6 +332,19 @@ def render_bundle(
     directory.mkdir(parents=True, exist_ok=True)
 
     if is_stacked:
+        # stacked มีแต่ template ของ vLLM — engine อื่นต้องบอกตรง ๆ ไม่ใช่เงียบแล้วส่ง vLLM ให้
+        #
+        # เคสจริง 2026-09-01: Minimax-M3-v0-NVFP4-REAP50 (129 GB ใหญ่เกินเครื่องเดียว
+        # จึงต้อง stacked) รันได้เฉพาะบน SGLang · สั่ง deploy --target dgx-spark-stacked
+        # --engine sglang แล้วได้ controller ของ vLLM มาเงียบ ๆ ไปตายตอนโหลดน้ำหนัก
+        # ด้วย AssertionError ที่ไม่มีอะไรบอกว่าเลือก engine ผิดตั้งแต่ต้น
+        if plan.runtime.engine is not Engine.VLLM:
+            raise ValueError(
+                f"stacked (multi-node) ยังมีแต่ controller ของ vLLM — "
+                f"engine ที่ขอมาคือ {plan.runtime.engine.value} ซึ่งยังไม่มี template\n"
+                f"ทางออกตอนนี้: ใช้ vLLM ถ้าโมเดลรองรับ · "
+                f"หรือรันเครื่องเดียวด้วย --target dgx-spark-single"
+            )
         template_name = "stacked-vllm-controller.sh.j2"
     elif plan.runtime.engine is Engine.LLAMACPP:
         template_name = "single-llamacpp-controller.sh.j2"
