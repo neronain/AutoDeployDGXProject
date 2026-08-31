@@ -331,6 +331,13 @@ _download_bytes() {
 
 download() {
   need docker
+  # ยืนยันว่ามี image ก่อนแตะเรื่องน้ำหนักโมเดล
+  #
+  # เคสจริงที่ลูกค้าเจอ 2026-09-01: image เป็น `nvcr.io/nvidia/vllm:latest` ซึ่งไม่มีอยู่จริง
+  # แล้ว `docker run` ล้มด้วย "manifest unknown" · ของเดิมจับ exit code ที่ไม่เป็นศูนย์แล้ว
+  # สรุปเองว่าเป็นปัญหา Xet → ลองใหม่โดยปิด Xet → ล้มอีก → พิมพ์ว่า
+  # "download ล้มเหลวแม้ปิด Xet แล้ว" ซึ่งพาคนไปดูผิดที่ทั้งหมด
+  ensure_image "${VLLM_IMAGE}"
 {% endraw %}{% if report.gated %}  # gated repo: ไม่มี token = ดาวน์โหลดล้มด้วย 401 ที่อ่านยาก — ตรวจตั้งแต่ต้นดีกว่า
   if [[ -z "${HF_TOKEN:-}" ]]; then
     die "${MODEL_ID} เป็น gated repo — ต้องมี HF_TOKEN ก่อน download

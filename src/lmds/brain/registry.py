@@ -35,6 +35,16 @@ _ACCEPT = ", ".join([
 _ANON_TOKEN = {
     "registry-1.docker.io": "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull",
     "ghcr.io": "https://ghcr.io/token?scope=repository:{repo}:pull",
+    # NGC ตรวจได้โดยไม่ต้องล็อกอิน ผ่าน /proxy_auth (ไม่ใช่ /token ซึ่งตอบ 401)
+    #
+    # เคสจริง 2026-09-01 ที่ลูกค้าเจอ: แผนเสนอ `nvcr.io/nvidia/vllm:latest` ซึ่ง **NGC
+    # ไม่เคยมี tag นี้** (repo นี้ใช้ tag ตามเดือน เช่น 26.05-py3) · ตัวตรวจ tag มีอยู่แล้ว
+    # แต่ nvcr.io ไม่อยู่ในรายการนี้ จึงคืน None = "ตรวจไม่ได้" แล้วปล่อยผ่าน
+    # → bundle ถูกสร้างพร้อม image ที่ไม่มีอยู่จริง ไปตายตอน deploy ด้วย
+    #   "manifest for nvcr.io/nvidia/vllm:latest not found"
+    #
+    # ยืนยันแล้วว่าใช้ได้: 26.05-py3 → HTTP 200 · latest → HTTP 404
+    "nvcr.io": "https://nvcr.io/proxy_auth?scope=repository:{repo}:pull",
 }
 
 

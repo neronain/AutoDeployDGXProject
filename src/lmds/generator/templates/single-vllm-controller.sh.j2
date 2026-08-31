@@ -237,6 +237,13 @@ check_gpu() {
 
 download() {
   need docker
+  # ยืนยันว่ามี image ก่อนแตะเรื่องน้ำหนักโมเดล
+  #
+  # เคสจริงที่ลูกค้าเจอ 2026-09-01: image เป็น `nvcr.io/nvidia/vllm:latest` ซึ่งไม่มีอยู่จริง
+  # แล้ว `docker run` ล้มด้วย "manifest unknown" · ของเดิมจับ exit code ที่ไม่เป็นศูนย์แล้ว
+  # สรุปเองว่าเป็นปัญหา Xet → ลองใหม่โดยปิด Xet → ล้มอีก → พิมพ์ว่า
+  # "download ล้มเหลวแม้ปิด Xet แล้ว" ซึ่งพาคนไปดูผิดที่ทั้งหมด
+  ensure_image "${VLLM_IMAGE}"
 {% if report.gated %}  # gated repo: ไม่มี token = huggingface_hub โยน traceback ยาวเหยียดที่อ่านไม่รู้เรื่อง
   # ตรวจตั้งแต่ต้นแล้วบอกให้ตรง ๆ ดีกว่า
   if [[ -z "${HF_TOKEN:-}" ]]; then

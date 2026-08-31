@@ -314,14 +314,32 @@ def test_a_tag_that_does_not_exist_is_reported_as_missing(monkeypatch):
 
 
 def test_a_registry_we_cannot_query_is_not_treated_as_missing(monkeypatch):
-    """nvcr.io ต้องล็อกอิน · เครื่อง air-gapped ต่อไม่ได้ — ทั้งคู่ไม่ใช่เหตุผลที่จะห้าม deploy
+    """registry ที่ถามแบบ anonymous ไม่ได้ · เครื่อง air-gapped — ไม่ใช่เหตุผลที่จะห้าม deploy
 
     เคสนี้ตัดสินได้ก่อนแตะเน็ต (registry ไม่อยู่ในรายการที่ถามแบบ anonymous ได้)
+
+    เดิมใช้ nvcr.io เป็นตัวอย่าง แต่ตั้งแต่ 2026-09-01 NGC ถามได้แล้วผ่าน /proxy_auth
+    (ดูเทสถัดไป) — ตัวอย่างของ "ถามไม่ได้" จึงต้องเป็น registry อื่น
     """
     from lmds.brain.registry import SKIP_ENV, tag_exists
 
     monkeypatch.delenv(SKIP_ENV, raising=False)
-    assert tag_exists("nvcr.io/nvidia/vllm:26.05-py3") is None
+    assert tag_exists("registry.example.internal/team/vllm:v1") is None
+
+
+def test_ngc_tags_are_checked_so_a_nonexistent_one_never_ships(monkeypatch):
+    """`nvcr.io/nvidia/vllm:latest` ไม่มีอยู่จริง — ต้องถูกจับตั้งแต่ตอนวางแผน
+
+    เคสจริงที่ลูกค้าเจอ 2026-09-01: แผนเสนอ tag นี้ ผ่านทุกด่าน แล้วไปตายตอน deploy
+    ด้วย `manifest for nvcr.io/nvidia/vllm:latest not found` · ตัวตรวจ tag มีอยู่แล้ว
+    แต่ nvcr.io ไม่อยู่ใน _ANON_TOKEN จึงคืน None = "ตรวจไม่ได้" แล้วปล่อยผ่าน
+
+    NGC ใช้ /proxy_auth (ไม่ใช่ /token ซึ่งตอบ 401) — ยืนยันกับ registry จริงแล้ว
+    """
+    from lmds.brain.registry import _ANON_TOKEN
+
+    assert "nvcr.io" in _ANON_TOKEN, "NGC ต้องอยู่ในรายการที่ถามได้"
+    assert "proxy_auth" in _ANON_TOKEN["nvcr.io"], "/token ของ NGC ตอบ 401 — ต้องใช้ /proxy_auth"
 
 
 def test_an_unreachable_registry_is_not_treated_as_missing(monkeypatch):

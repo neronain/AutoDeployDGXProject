@@ -2,6 +2,28 @@
 
 ## ยังไม่ปล่อย
 
+**`nvcr.io/nvidia/vllm:latest` ไม่หลุดไปถึงเครื่องลูกค้าอีก**
+
+ลูกค้าเทส deploy stacked แล้วเจอ:
+
+```
+docker: Error response from daemon: manifest for nvcr.io/nvidia/vllm:latest
+        not found: manifest unknown
+ERROR: download ล้มเหลวแม้ปิด Xet แล้ว — ดูข้อความด้านบน
+```
+
+สองปัญหาซ้อนกัน:
+
+- **tag ผีผ่านทุกด่าน** — NGC ไม่เคยมี `:latest` สำหรับ repo นี้ (ใช้ tag ตามเดือน เช่น
+  `26.05-py3`) · allowlist ตรวจแค่ **ชื่อ repo ไม่ตรวจ tag** ส่วนตัวตรวจ tag มีอยู่แล้ว
+  แต่ `_ANON_TOKEN` มีแค่ Docker Hub กับ ghcr.io — nvcr.io จึงคืน `None` = "ตรวจไม่ได้"
+  แล้วปล่อยผ่าน · เพิ่ม NGC เข้าไปแล้วผ่าน `/proxy_auth` (ไม่ใช่ `/token` ซึ่งตอบ 401) ·
+  ยืนยันกับ registry จริง: `26.05-py3` → 200 · `latest` → **404**
+- **error โกหก** — `download()` ไม่ได้ยืนยันว่ามี image ก่อน พอ `docker run` ล้ม มันสรุป
+  เองว่าเป็นปัญหา Xet → ลองใหม่โดยปิด Xet → ล้มอีก → พิมพ์ "download ล้มเหลวแม้ปิด
+  Xet แล้ว" ซึ่งพาคนไปดูเรื่องดาวน์โหลดทั้งที่ปัญหาคือ image ไม่มีอยู่จริง ·
+  ตอนนี้ `ensure_image` ทำงานก่อนแตะน้ำหนักโมเดล ทั้ง single และ stacked
+
 **HF token ไม่โผล่ใน `ps` อีก และดาวน์โหลดที่ค้างตายถูกปลุกเอง**
 
 สองเคสจริงจาก spark-head ระหว่างโหลด NVFP4 170.9 GB:
