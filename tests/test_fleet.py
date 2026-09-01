@@ -425,7 +425,7 @@ def _docker_server_with_host_visible_process(tmp_path, monkeypatch, in_container
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     make_meta(tmp_path, "gemma-4-12b-it-gguf", mode="docker", port=8000)
     monkeypatch.setattr("lmds.fleet.manager._container_running", lambda container: True)
-    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port: False)
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda *_, **__: False)
     monkeypatch.setattr(
         "lmds.fleet.manager._pgrep_llama",
         lambda: [(4242, "llama-server --alias gemma-4-12b-it-ud-q8_k-xl --port 8000")],
@@ -455,7 +455,7 @@ def test_real_native_orphan_on_another_port_still_shows(tmp_path, monkeypatch):
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     make_meta(tmp_path, "registered", mode="docker", port=8000)
     monkeypatch.setattr("lmds.fleet.manager._container_running", lambda container: True)
-    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port: False)
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda *_, **__: False)
     monkeypatch.setattr(
         "lmds.fleet.manager._pgrep_llama",
         lambda: [(777, "llama-server --alias other-model --port 8001")],
@@ -570,7 +570,7 @@ def test_running_server_survives_even_without_its_controller(tmp_path, monkeypat
 
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run2"))
     monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: True)
-    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port: False)
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda *_, **__: False)
     monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
     monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
     monkeypatch.setattr("lmds.fleet.manager._scan_bundles", lambda known: [])

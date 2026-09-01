@@ -446,11 +446,26 @@ def _container_running(container: str) -> bool:
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
-def _health_ok(port: int) -> bool:
+def _health_ok(port: int, engine: str = "") -> bool:
+    """เช็คว่ายังเสิร์ฟอยู่ไหม — โดยไม่ไปปลุก GPU
+
+    /health ของ SGLang **รันโมเดลจริงหนึ่งรอบ** ทุกครั้งที่ถูกเรียก (prefill 1 token)
+    ไม่ใช่แค่ตอบว่ายังไม่ตาย · LMDS เช็คสถานะเป็นระยะทั้งจาก CLI และหน้าเว็บ โมเดลจึง
+    ถูกสั่งคิดตลอดเวลาโดยไม่มีใครถามอะไรเลย
+
+    เคสจริง 2026-09-01 บน spark-head: ผู้ใช้เห็น GPU 78% ทั้งที่ยังไม่เคยยิงคำสั่ง —
+    log ฝั่งเซิร์ฟเวอร์มีแต่ `GET /health` 11 ครั้งใน 3 นาที และ `Prefill batch` 11 ครั้ง
+    ตรงกันหนึ่งต่อหนึ่ง ไม่มี request อื่นเลย
+
+    /v1/models ของ SGLang ให้คำตอบเดียวกัน (API ตอบได้ = โมเดลโหลดจบแล้ว) โดยไม่แตะ GPU
+    ส่วน vLLM กับ llama.cpp ใช้ /health ตามเดิม เพราะของสองตัวนั้นถูกอยู่แล้ว และ
+    แยกสถานะ "กำลังโหลด" (503) ออกจาก "พร้อม" ได้ ซึ่ง /v1/models ทำไม่ได้
+    """
     if not port:
         return False
+    path = "/v1/models" if engine == "sglang" else "/health"
     try:
-        return httpx.get(f"http://127.0.0.1:{port}/health", timeout=2.0).status_code == 200
+        return httpx.get(f"http://127.0.0.1:{port}{path}", timeout=2.0).status_code == 200
     except httpx.HTTPError:
         return False
 
@@ -563,6 +578,9 @@ def _orphan_native(known_pids: set[int], busy_ports: set[int] | None = None) -> 
 
 # image ของ engine ที่เรารู้จัก — ใช้เดาว่า container ที่ไม่ได้มาจาก lmds เป็น model server
 _ENGINE_IMAGE_HINTS = {
+    # sglang มาก่อน vllm: image ของ SGLang บางตัวมีคำว่า vllm ติดมาด้วยเพราะติดตั้งไว้เป็น
+    # dependency · จับ vllm ก่อนจะได้เครื่องยนต์ผิด แล้ว /health ก็ไปปลุก GPU ทุกครั้งที่เช็ค
+    "sglang": ("lmsysorg/sglang", "nvcr.io/nvidia/sglang", "sglang"),
     "vllm": ("vllm/vllm-openai", "nvcr.io/nvidia/vllm", "vllm"),
     "llamacpp": ("llama.cpp", "llamacpp"),
     "ollama": ("ollama/ollama",),
@@ -679,7 +697,7 @@ def discover() -> list[ServerInfo]:
             info.running = bool(info.pid_file) and _pid_alive(info.pid_file)
         else:
             info.running = _container_running(info.container)
-        info.healthy = info.running and _health_ok(info.port)
+        info.healthy = info.running and _health_ok(info.port, info.engine)
 
         # ทะเบียนของ bundle ที่ "ไม่เคยถูก start" และ controller ก็ไม่อยู่แล้ว = ตายสนิท
         # เกิดตอน generate ไว้ที่อื่นแล้วลบทิ้ง (เครื่อง hub ที่ใช้สร้างอย่างเดียวจะเต็มไปด้วยรายการปลอม)
@@ -703,7 +721,7 @@ def discover() -> list[ServerInfo]:
     known_containers = {s.container for s in servers if s.container}
     busy_ports = {s.port for s in servers if s.running and s.port}
     for orphan in [*_orphan_native(known_pids, busy_ports), *_orphan_docker(known_containers)]:
-        orphan.healthy = orphan.running and _health_ok(orphan.port)
+        orphan.healthy = orphan.running and _health_ok(orphan.port, orphan.engine)
         servers.append(orphan)
 
     # bundle ที่อยู่บนดิสก์แต่ยังไม่เคย start — ต้องเห็นด้วย ไม่งั้น deploy เสร็จแล้วไปต่อไม่ถูก
