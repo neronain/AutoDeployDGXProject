@@ -43,6 +43,8 @@ class Adopted:
     network: str = ""
     runtime: str = ""
     entrypoint: list[str] = field(default_factory=list)
+    ipc_mode: str = ""
+    shm_size: int = 0
 
     @property
     def argv_tokens(self) -> list[str]:
@@ -155,6 +157,8 @@ def inspect_container(container: str) -> Adopted:
         network=host.get("NetworkMode") or "",
         runtime=host.get("Runtime") or "",
         entrypoint=list(config.get("Entrypoint") or []),
+        ipc_mode=host.get("IpcMode") or "",
+        shm_size=int(host.get("ShmSize") or 0),
     )
 
 
@@ -314,6 +318,15 @@ def render_controller(adopted: Adopted, slug: str) -> str:
     entry = f'  --entrypoint {shlex.quote(adopted.entrypoint[0])} \\\n' if adopted.entrypoint else ""
     network = f'  --network {shlex.quote(adopted.network)} \\\n' if adopted.network not in ("", "default") else ""
     runtime = '  --gpus all \\\n' if adopted.runtime == "nvidia" else ""
+    # NCCL/torch.distributed คุยกันผ่าน /dev/shm — docker ให้มาแค่ 64 MB โดยปริยาย
+    #
+    # เคสจริง 2026-09-01: adopt โมเดล stacked (MiniMax M3 บน SGLang 2 เครื่อง) แล้ว
+    # ทิ้ง --ipc host --shm-size ของเดิมไป พอ start ใหม่ head ตายด้วย
+    #   "creating shared memory segment /dev/shm/nccl-… No space left on device (28)"
+    # ส่วน worker ที่ต่อกลับมาเจอ Connection refused ก็ตายตาม · ที่ร้ายกว่าคือ
+    # --restart unless-stopped ปลุก head ซ้ำทุก 10 นาทีจนครบ 31 รอบโดยไม่มีใครรู้
+    ipc = f'  --ipc {shlex.quote(adopted.ipc_mode)} \\\n' if adopted.ipc_mode not in ("", "private") else ""
+    shm = f'  --shm-size {adopted.shm_size} \\\n' if adopted.shm_size > 67108864 else ""
     args = " ".join(shlex.quote(a) for a in adopted.args)
 
     return f'''#!/usr/bin/env bash
@@ -368,7 +381,7 @@ start() {{
     docker rm -f "${{CONTAINER_NAME}}" >/dev/null 2>&1 || true
   fi
   docker run -d --name "${{CONTAINER_NAME}}" --restart unless-stopped \\
-{runtime}{network}{port_lines}{bind_lines}{env_lines}{entry}  "${{IMAGE}}" {args}
+{runtime}{ipc}{shm}{network}{port_lines}{bind_lines}{env_lines}{entry}  "${{IMAGE}}" {args}
   echo "started: ${{CONTAINER_NAME}} (port ${{API_PORT}})"
 }}
 
