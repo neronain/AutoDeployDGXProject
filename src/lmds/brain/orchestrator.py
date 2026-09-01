@@ -199,10 +199,111 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     _harden_projector(plan, report)
     _harden_draft(plan, report)
     _harden_moe(plan, report)
+    _harden_parsers(plan)
 
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+# ชื่อ parser ที่ engine แต่ละตัวรู้จักจริง — อ่านมาจากรายการที่ตัวมันเองพิมพ์ออกมาตอน
+# ใส่ชื่อผิด · vLLM กับ SGLang **ใช้คนละชุด** และชื่อคล้ายกันจนสับสนได้ง่าย
+_VLLM_TOOL_PARSERS = {
+    "apertus", "cohere_command3", "cohere_command4", "deepseek_v3", "deepseek_v31",
+    "deepseek_v32", "deepseek_v4", "dots", "ernie45", "functiongemma", "gemma4",
+    "gigachat3", "glm45", "glm47", "granite", "granite-20b-fc", "granite4", "hermes",
+    "hunyuan_a13b", "hy_v3", "inkling", "internlm", "jamba", "kimi_k2", "kimi_k3",
+    "lfm2", "ling3", "llama3_json", "llama4_json", "llama4_pythonic", "longcat", "mimo",
+    "minicpm5", "minimax_m2", "minimax_m3", "mistral", "muse_glimmer", "olmo3", "openai",
+    "phi4_mini_json", "poolside_v1", "pythonic", "qwen3_coder", "qwen3_xml", "seed_oss",
+    "step3", "step3p5", "xlam",
+}
+_VLLM_REASONING_PARSERS = {
+    "cohere_command3", "cohere_command4", "deepseek_r1", "deepseek_v3", "deepseek_v4",
+    "ernie45", "gemma4", "glm45", "glm47", "granite", "holo2", "hunyuan_a13b", "hy_v3",
+    "inkling", "kimi_k2", "kimi_k3", "ling3", "mimo", "minimax_m2",
+    "minimax_m2_append_think", "minimax_m3", "mistral", "muse_glimmer", "nemotron_v3",
+    "olmo3", "openai_gptoss", "poolside_v1", "qwen3", "seed_oss", "step3", "step3p5",
+}
+_SGLANG_TOOL_PARSERS = {
+    "deepseekv3", "deepseekv31", "deepseekv32", "deepseekv4", "gemma4", "gigachat3",
+    "glm", "glm45", "glm47", "gpt-oss", "hermes", "hunyuan", "interns1", "kimi_k2",
+    "lfm2", "llama3", "mimo", "minimax-m2", "minimax-m3", "mistral", "poolside_v1",
+    "pythonic", "qwen", "qwen25", "qwen3_coder", "step3", "step3p5", "trinity",
+}
+_SGLANG_REASONING_PARSERS = {
+    "deepseek-r1", "deepseek-v3", "deepseek-v4", "gemma4", "glm45", "gpt-oss", "hunyuan",
+    "interns1", "kimi", "kimi_k2", "mimo", "minimax", "minimax-append-think", "minimax-m3",
+    "mistral", "nemotron_3", "poolside_v1", "qwen3", "qwen3-thinking", "step3", "step3p5",
+}
+
+
+def _harden_parsers(plan: DeploymentPlan) -> None:
+    """ชื่อ parser ที่ engine ไม่รู้จัก = เซิร์ฟเวอร์ไม่ขึ้นเลย — ต้องจับตั้งแต่ตอนวางแผน
+
+    เคสจริง 2026-09-01 บน spark-worker: LLM ที่วางแผน (qwen3-coder) เสนอ
+    `--tool-call-parser qwen25` และ `--reasoning-parser qwen25` สำหรับโมเดล Qwen3.5
+    ไม่มีใครตรวจกับรายชื่อจริง · container ตายทันทีที่ start หลังโหลดน้ำหนักครบแล้ว
+
+        KeyError: 'invalid tool call parser: qwen25'
+        KeyError: "Reasoning parser 'qwen25' not found"
+
+    ที่ทำให้พลาดง่ายคือ **qwen25 เป็นชื่อจริงของ SGLang** แค่ไม่ใช่ของ vLLM — สองเครื่องยนต์
+    ใช้คนละชุดและตั้งชื่อคล้ายกันมาก (qwen3_coder มีทั้งคู่ · minimax_m3 vs minimax-m3)
+
+    ตัดทิ้งดีกว่าปล่อยผ่าน: เสิร์ฟได้โดยไม่มี tool calling ยังใช้งานได้ ส่วนชื่อผิด
+    = start ไม่ขึ้นสักครั้ง · ตั้งเองภายหลังได้ด้วย TOOL_CALL_PARSER/REASONING_PARSER
+    """
+    if plan.runtime.engine is Engine.LLAMACPP:
+        return  # llama.cpp ไม่มี parser แบบนี้ — ฝั่งนั้นใช้ --jinja ของ template เอง
+    sglang = plan.runtime.engine is Engine.SGLANG
+    engine_name = "SGLang" if sglang else "vLLM"
+    other_name = "vLLM" if sglang else "SGLang"
+
+    for kind, cfg, mine, theirs, flag in (
+        ("tool-call", plan.tool_calling,
+         _SGLANG_TOOL_PARSERS if sglang else _VLLM_TOOL_PARSERS,
+         _VLLM_TOOL_PARSERS if sglang else _SGLANG_TOOL_PARSERS, "TOOL_CALL_PARSER"),
+        ("reasoning", plan.reasoning,
+         _SGLANG_REASONING_PARSERS if sglang else _VLLM_REASONING_PARSERS,
+         _VLLM_REASONING_PARSERS if sglang else _SGLANG_REASONING_PARSERS, "REASONING_PARSER"),
+    ):
+        name = (cfg.parser or "").strip()
+        if not name or name in mine:
+            continue
+        hint = (f" — {name!r} เป็นชื่อของ {other_name} ไม่ใช่ {engine_name}"
+                if name in theirs else f" — {engine_name} ไม่รู้จักชื่อนี้")
+        plan.warnings.append(
+            f"ตัด {kind} parser {name!r} ออก{hint} · ถ้ารู้ชื่อที่ถูก สั่งตอน start ได้: "
+            f"{flag}=<ชื่อ> ./controller start")
+        cfg.parser = None
+        cfg.enabled = False
+
+    # flag ที่ LLM ใส่มาเองซ้ำกับที่ plan ตั้งไว้ = ส่งไปสองชุด vLLM เตือน duplicate keys
+    # และถ้าชื่อผิดก็ตายทั้งที่ตัด parser ข้างบนไปแล้ว
+    # extra_flags เก็บเป็นสตริงเดียวรวมค่า ("--tool-call-parser qwen25") บ้าง
+    # และแยกเป็นสองอิลิเมนต์บ้าง — รองรับทั้งสองรูป
+    owned = ("--tool-call-parser", "--reasoning-parser", "--enable-auto-tool-choice")
+    dropped: list[str] = []
+    kept: list[str] = []
+    skip_next = False
+    for item in plan.serving.extra_flags:
+        if skip_next:
+            skip_next = False
+            dropped.append(item)
+            continue
+        head = item.replace("=", " ").split()[0] if item.strip() else ""
+        if head in owned:
+            dropped.append(item)
+            # "--tool-call-parser qwen25" มีค่าอยู่ในสตริงเดียวกันแล้ว ไม่ต้องข้ามตัวถัดไป
+            skip_next = head != "--enable-auto-tool-choice" and len(item.split()) == 1 and "=" not in item
+            continue
+        kept.append(item)
+    if dropped:
+        plan.serving.extra_flags = kept
+        plan.warnings.append(
+            "ตัด flag ที่ซ้ำกับค่าใน plan ออก: " + " ".join(dropped)
+            + " — controller ส่งให้เองอยู่แล้ว การใส่ซ้ำทำให้ vLLM เตือน duplicate keys")
 
 
 def _harden_moe(plan: DeploymentPlan, report: ModelReport) -> None:
