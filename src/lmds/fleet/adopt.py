@@ -113,7 +113,10 @@ class Adopted:
         nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 --host 0.0.0.0 --port 8355`
         """
         argv = self.argv_tokens
-        for flag in ("--model", "-m", "--model-path", "--model_path"):
+        # `-m` ต้องมาท้ายสุด: `python3 -m sglang.launch_server` ทำให้ `-m` กลายเป็น
+        # ชื่อโมดูล ไม่ใช่โมเดล — เจอจริง 2026-09-01 หน้าเว็บขึ้นชื่อรุ่นว่า
+        # "sglang.launch_server" · ฝั่ง llama.cpp ที่ใช้ `-m` จริงยังตกมาถึงอยู่ดี
+        for flag in ("--model-path", "--model_path", "--model", "-m"):
             if flag in argv:
                 index = argv.index(flag) + 1
                 if index < len(argv):
@@ -133,7 +136,28 @@ class Adopted:
                         return int(item.split("=", 1)[1])
                     except ValueError:
                         break
-        return 0
+        # หลายเซิร์ฟเวอร์รับ context ทาง argv ไม่ใช่ env — SGLang ใช้ --context-length
+        # ดูแต่ env อย่างเดียวจึงได้ 0 แล้วหน้าเว็บไม่โชว์ context ให้เลย
+        value = _argv_value(self.argv_tokens, "--context-length", "--max-model-len",
+                            "--ctx-size", "-c")
+        return int(value) if value.isdigit() else 0
+
+    @property
+    def engine(self) -> str:
+        """เดาเครื่องยนต์จาก **คำสั่งที่รันจริง** ก่อน แล้วค่อยดูชื่อ image
+
+        ของเดิมดูแต่ชื่อ image และรู้จักคำเดียวคือ "vllm" — container ที่ชื่อ image
+        ไม่มีคำนั้นจึงขึ้น engine=unknown ทั้งหมด เจอจริง 2026-09-01: MiniMax M3 บน
+        image `scitrera/dgx-spark-sglang-mm:v0` ขึ้น "unknown" ในหน้าเว็บทั้งที่คำสั่ง
+        เขียนว่า `python3 -m sglang.launch_server` ชัด ๆ
+        """
+        haystack = f"{self.image} {' '.join(self.argv_tokens)} {' '.join(self.entrypoint)}".lower()
+        for needle, engine in (("sglang", "sglang"), ("vllm", "vllm"),
+                               ("llama-server", "llamacpp"), ("llama.cpp", "llamacpp"),
+                               ("llamacpp", "llamacpp"), ("trtllm", "tensorrt-llm")):
+            if needle in haystack:
+                return engine
+        return "unknown"
 
 
 def inspect_container(container: str) -> Adopted:
@@ -161,6 +185,64 @@ def inspect_container(container: str) -> Adopted:
         shm_size=int(host.get("ShmSize") or 0),
     )
 
+
+
+def _host_path(adopted: "Adopted", container_path: str) -> Path | None:
+    """แปลง path ฝั่งคอนเทนเนอร์กลับเป็น path บนเครื่อง โดยใช้ -v ที่มันถูกรันมา
+
+    ไม่มีตัวนี้ = อ่าน config.json ของโมเดลไม่ได้เลย เพราะ path ที่ adopt เห็น
+    (เช่น /cache/models--org--m/snapshots/abc) มีอยู่แค่ในคอนเทนเนอร์
+    """
+    if not container_path.startswith("/"):
+        return None
+    best: tuple[int, Path] | None = None
+    for bind in adopted.binds:
+        parts = bind.split(":")
+        if len(parts) < 2:
+            continue
+        host_dir, cont_dir = parts[0], parts[1]
+        if container_path == cont_dir or container_path.startswith(cont_dir.rstrip("/") + "/"):
+            rest = container_path[len(cont_dir.rstrip("/")):].lstrip("/")
+            candidate = Path(host_dir) / rest if rest else Path(host_dir)
+            if best is None or len(cont_dir) > best[0]:
+                best = (len(cont_dir), candidate)
+    if best:
+        return best[1]
+    direct = Path(container_path)
+    return direct if direct.exists() else None
+
+
+def _features_from_model(adopted: "Adopted") -> dict:
+    """อ่านความสามารถจาก config.json ของโมเดลจริง — ไม่ได้เดาจากชื่อ
+
+    หน้าเว็บติดป้าย vision/MoE/MTP จาก profile["features"] · adopt ไม่เคยเขียนคีย์นี้
+    bundle ที่ adopt มาจึงโล่งไปทั้งแถว ทั้งที่ config.json อยู่บนดิสก์ให้อ่านอยู่แล้ว
+    """
+    path = _host_path(adopted, adopted.model)
+    if path is None or not (path / "config.json").is_file():
+        return {}
+    try:
+        config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    text = config.get("text_config") or config
+    features: dict = {}
+
+    experts = text.get("num_local_experts") or text.get("num_experts") or text.get("n_routed_experts")
+    active = text.get("num_experts_per_tok") or text.get("moe_topk")
+    if experts:
+        features["moe"] = {"experts": int(experts),
+                           **({"experts_active": int(active)} if active else {})}
+
+    architectures = config.get("architectures") or []
+    architecture = str(architectures[0]) if architectures else ""
+    if config.get("vision_config") or config.get("processor_class") \
+            or architecture.endswith("ForConditionalGeneration"):
+        features["multimodal"] = {"projector": True}
+
+    if text.get("num_nextn_predict_layers") or config.get("num_nextn_predict_layers"):
+        features["speculative"] = {"embedded_mtp": True}
+    return features
 
 # env ของ image เองมีเป็นร้อยตัว (PATH, CUDA_*, LD_*) — เอาไปใส่ใน docker run ซ้ำ
 # ไม่ได้ช่วยอะไรและทำให้สคริปต์อ่านไม่รู้เรื่อง · เก็บเฉพาะที่ผู้ใช้ตั้งเองจริง ๆ
@@ -193,7 +275,10 @@ class AdoptedProcess:
         name = (self.exe or (self.argv[0] if self.argv else "")).lower()
         if "llama" in name:
             return "llamacpp"
-        if "vllm" in name or "vllm" in " ".join(self.argv).lower():
+        argv = " ".join(self.argv).lower()
+        if "sglang" in name or "sglang" in argv:
+            return "sglang"
+        if "vllm" in name or "vllm" in argv:
             return "vllm"
         return "unknown"
 
@@ -468,11 +553,14 @@ def adopt(container: str, slug: str = "", output: Path | None = None) -> Path:
         "generated_by": "lmds adopt",
         "adopted": True,
         "model": {"id": adopted.model or adopted.container, "artifact_type": "unknown"},
-        "runtime": {"engine": "vllm" if "vllm" in adopted.image.lower() else "unknown",
+        "runtime": {"engine": adopted.engine,
                     "image": adopted.image},
         "serving": {"context": adopted.context, "port": adopted.port},
         "source_container": adopted.container,
     }
+    features = _features_from_model(adopted)
+    if features:
+        profile["features"] = features
     import yaml
 
     (directory / "MODEL_PROFILE.yaml").write_text(
