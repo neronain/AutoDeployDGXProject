@@ -343,11 +343,35 @@ reasoning parsers  (--reasoning-parser):
 import จนกว่าจะมีคนเรียกใช้ · `parsers` อ่านทั้งสองที่แล้วรวมให้
 
 ที่ใช้บ่อย: `qwen3_coder` / `qwen3_xml` (ตระกูล Qwen รวม Nemotron-3 —
-สอง**ชื่อ**นี้ชี้ไป parser **ตัวเดียวกัน** ใน vLLM รุ่นใหม่), `hermes`,
-`llama3_json`, `mistral`, `deepseek_v3`
+สอง**ชื่อ**นี้ชี้ไป parser **ตัวเดียวกัน** ใน vLLM รุ่นใหม่), `gemma4`
+(Gemma 4 — **ไม่ใช่** `hermes`), `hermes`, `llama3_json`, `mistral`,
+`deepseek_v3`
 
 **ใส่ผิดจะไม่ error** แต่จะไม่คืน `tool_calls` เลย — ยกเว้นตอนที่ client ส่ง
 `tool_choice: "required"` มา ซึ่งเป็นกับดักของหัวข้อถัดไป
+
+อาการเวลาใส่ผิดหน้าตาเหมือน "โมเดลตัวนี้เรียก tool ไม่เป็น" เป๊ะ ๆ ทั้งที่
+เรียกได้ · สิ่งที่ต่างคือ **call ไม่ได้หายไปไหน มันโผล่ใน `content` ในรูปแบบดิบ
+ของโมเดล** ดูตรงนั้นแล้วจะรู้ทันทีว่าควรใช้ parser ตัวไหน:
+
+| ถ้าเห็นใน `content` | parser ที่ถูก |
+|---|---|
+| `<\|tool_call>call:name{…}` | `gemma4` |
+| `<start_function_call>` | `functiongemma` |
+| `<tool_call>{json}</tool_call>` | `hermes` |
+| `[TOOL_CALLS]` | `mistral` |
+| `<\|python_tag\|>` | `llama3_json` |
+
+```bash
+# พิสูจน์ในคำสั่งเดียว: finish_reason ต้องเป็น tool_calls ไม่ใช่ stop
+./xxx-single.sh test-tools
+```
+
+> **เคสจริง (msi-2, 2026-09-02)** — `google/gemma-4-31B-it` deploy ด้วย
+> `--tool-call-parser hermes` เพราะตอนนั้น LMDS ยังไม่มีคำแนะนำสำหรับ Gemma
+> คนจึงหยิบค่าที่คุ้นมือที่สุด vLLM ขึ้นปกติ `/health` เขียว ตอบ 200 ทุก request
+> แต่คืน `finish_reason: stop` + `tool_calls: null` มาเป็นสัปดาห์ กว่าจะรู้ว่า
+> พังก็ตอนเอาไปต่อ agent จริง · ตอนนี้ `arch_notes` เตือนตั้งแต่ตอนวางแผนแล้ว
 
 #### `test-tools` วัดโหมดที่ agent ใช้จริง
 

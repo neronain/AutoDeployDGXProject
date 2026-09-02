@@ -52,6 +52,33 @@ def test_qwen3_coder_gets_no_xml_hint():
     assert "qwen3_xml" not in notes
 
 
+def test_gemma4_is_told_to_use_its_own_parser():
+    """เคสจริง msi-2 (2026-09-02): deploy ด้วย --tool-call-parser hermes
+
+    LMDS ไม่เคยแนะ Gemma ไว้ คนจึงใส่ hermes ซึ่งเป็นค่าที่คนมักหยิบมาใช้เป็นค่าเริ่มต้น
+    ผลคือโมเดลถูกใช้งานมาเป็นสัปดาห์โดยไม่มีใครรู้ว่า tool calling พังอยู่
+    """
+    notes = _joined("google/gemma-4-31B-it")
+    assert "gemma4" in notes
+    assert "hermes" in notes  # ต้องบอกด้วยว่าตัวไหนคือตัวที่ผิด ไม่ใช่บอกแต่ตัวที่ถูก
+
+
+def test_gemma4_note_says_the_failure_is_silent():
+    """คำเตือนที่ไม่บอกว่า "พังแบบเงียบ" จะถูกข้าม เพราะ deploy แล้วดูเหมือนสำเร็จ
+
+    vLLM ขึ้นปกติ /health เขียว ตอบ 200 ทุก request — สัญญาณเดียวที่มีคือ
+    finish_reason ที่ควรเป็น tool_calls กลับเป็น stop
+    """
+    notes = _joined("google/gemma-4-31B-it")
+    assert "finish_reason" in notes
+    assert "tool_calls" in notes
+
+
+def test_non_gemma_models_do_not_get_the_gemma_note():
+    for repo in ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "nvidia/Llama-3.3-70B-Instruct-NVFP4"):
+        assert "gemma4" not in _joined(repo)
+
+
 def test_nvfp4_moe_note_says_it_is_a_dead_end_not_a_tunable():
     """เคยเขียนว่า marlin แก้ได้ — ผิด · ยืนยันบน msi-6 ว่า env ถึง container จริง
     แต่ยังล้มที่ ptxas เดิม เพราะ VLLM_NVFP4_GEMM_BACKEND คุม GEMM ไม่ใช่ fused MoE

@@ -114,6 +114,18 @@ def arch_notes(repo_id: str, quantization: str = "",
         )
     if ("qwen3" in key or "qwen-3" in key) and "coder" not in key:
         notes.append("ถ้าเปิด tool calling: Qwen3/3.5 ใช้ --tool-parser qwen3_xml (Qwen3-Coder ใช้ qwen3_coder)")
+    # Gemma 4 พ่น `<|tool_call>call:name{...}` ซึ่งมีแต่ parser ชื่อ gemma4 ที่อ่านออก ·
+    # เคสจริง (msi-2, 2026-09-02): ตั้ง hermes ไว้ vLLM ขึ้นปกติและตอบ 200 ทุกครั้ง แต่คืน
+    # finish_reason=stop + tool_calls=null แล้วยัด call ดิบไว้ใน content — จากข้างนอกดูเหมือน
+    # โมเดลใช้ tool ไม่เป็น ทั้งที่ผิดแค่ชื่อ parser · ตอนนั้น LMDS ไม่เคยแนะ Gemma ไว้เลย
+    # คนจึงเดาไปที่ hermes ซึ่งเป็นค่าที่คนมักใช้เป็นค่าเริ่มต้น
+    if "gemma-4" in key or "gemma4" in key:
+        notes.append(
+            "ถ้าเปิด tool calling: Gemma 4 ใช้ --tool-parser gemma4 เท่านั้น (hermes อ่าน "
+            "syntax ของมันไม่ออก) · ตั้งผิดจะไม่ error ให้เห็น — vLLM ตอบ 200 แต่ tool_calls "
+            "เป็น null และ call ดิบ <|tool_call> โผล่ใน content · พิสูจน์ด้วยการยิง request "
+            "ที่มี tools จริงแล้วดู finish_reason ต้องได้ tool_calls ไม่ใช่ stop"
+        )
     # Nemotron-3.x เป็น hybrid Mamba/SSM (ไม่ใช่ full attention) เหมือน DeltaNet — มี flag เฉพาะ
     if "nemotron-3" in key or "nemotron3" in key or "lightning" in key:
         notes.append(
