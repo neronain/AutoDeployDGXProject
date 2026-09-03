@@ -700,6 +700,96 @@ pre {
 #lmds-credit .cred-name { font-weight: 600; }
 #lmds-credit a { color: inherit; }
 #lmds-credit .grow { flex: 1; }
+
+/* ── 0.6 app shell: rail ซ้าย · เนื้อหาตรงกลางสลับตาม route ─────────────────────
+   การ์ดเครื่อง/แผงเดิมทั้งหมดยังอยู่ที่เดิม (nodeRows, handler, เทสไม่เปลี่ยน) — shell แค่ตัดสิน
+   ว่า view ไหนโชว์ และในหน้าเครื่องโชว์การ์ดของเครื่องไหน */
+body { padding: 0; }
+#shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 100vh; }
+#rail { position: sticky; top: 0; height: 100vh; overflow: auto; background: var(--sunken);
+  border-right: 1px solid var(--line); padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+.rbrand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 12px; }
+.rbrand .rlogo { width: 30px; height: 30px; border-radius: 7px; background: var(--g-mix); color: #fff;
+  display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 12px; flex: none; }
+.rbrand b { font-size: calc(14px * var(--fs)); letter-spacing: .12em; font-family: var(--mono); display: block; }
+.rbrand small { display: block; color: var(--fg3); font-size: calc(11px * var(--fs)); }
+.rnav a { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: var(--r-sm);
+  color: var(--fg); text-decoration: none; font-weight: 500; font-size: calc(13.5px * var(--fs)); }
+.rnav a:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.rnav a.on { background: var(--accent-bg); color: var(--accent); }
+.rnav a .ic { width: 15px; height: 15px; flex: none; }
+.rnav .rcount { margin-left: auto; color: var(--fg3); font-family: var(--mono); font-size: calc(11.5px * var(--fs)); }
+.reyebrow { font-size: calc(10.5px * var(--fs)); letter-spacing: .08em; text-transform: uppercase; color: var(--fg3);
+  font-weight: 600; padding: 12px 10px 2px; }
+.rsite { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-top: 4px; cursor: pointer;
+  color: var(--fg2); font-size: calc(12px * var(--fs)); font-weight: 600; border-radius: var(--r-sm); text-decoration: none; }
+.rsite:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.rsite.on { color: var(--accent); }
+.rsite .rchev { margin-left: auto; transition: transform .15s; color: var(--fg3); }
+.rsite.open .rchev { transform: rotate(90deg); }
+.rtree { margin: 2px 0 0 8px; border-left: 1px solid var(--line); padding-left: 6px; display: none; }
+.rtree.open { display: block; }
+.rtree a { padding: 5px 8px; font-weight: 400; font-size: calc(13px * var(--fs)); color: var(--fg2); }
+.rtree a.on { color: var(--accent); }
+.rtree .rdot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg3); flex: none; }
+.rtree .rdot.on { background: var(--ok); } .rtree .rdot.hot { background: var(--warn); } .rtree .rdot.down { background: var(--bad); }
+.rtree .rbar { margin-left: auto; width: 40px; height: 4px; background: var(--meter-track); border-radius: 2px; overflow: hidden; flex: none; }
+.rtree .rbar i { display: block; height: 100%; background: var(--meter); }
+.rtree .rbar i.hot { background: var(--warn); } .rtree .rbar i.full { background: var(--bad); }
+.rfoot { margin-top: auto; padding: 10px 6px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.rfoot button { width: 100%; justify-content: center; }
+#mainc { min-width: 0; padding: 0 24px 64px; }
+#mainc .topbar { margin: 0 -24px 6px; padding: 10px 24px; }
+#mainc .wrap { max-width: 1380px; margin: 0; }
+.crumb { display: flex; align-items: center; gap: 8px; color: var(--fg2); font-size: calc(13px * var(--fs)); min-width: 0; }
+.crumb b { color: var(--fg); font-weight: 600; }
+.crumb a { color: var(--fg2); text-decoration: none; } .crumb a:hover { color: var(--accent); }
+.crumb .csep { color: var(--fg3); }
+.rsearch { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--line2);
+  border-radius: var(--r-sm); padding: 5px 10px; min-width: 230px; color: var(--fg3); }
+.rsearch input { border: 0; background: transparent; color: var(--fg); font: inherit; outline: 0; width: 100%; min-width: 0; }
+.view[hidden] { display: none !important; }
+.machine[hidden], .sitesec[hidden], .gwrap[hidden], .gnone[hidden] { display: none !important; }
+#nodes.route-node .sitehdr, #nodes.route-node .gnone { display: none; }
+/* หน้าภาพรวม */
+.ov-grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .ov-grid { grid-template-columns: 1fr; } }
+.ov-panel > .ov-hd { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.ov-panel > .ov-hd h3 { margin: 0; font-size: calc(14px * var(--fs)); font-weight: 600; }
+.ov-panel > .ov-hd .r { margin-left: auto; color: var(--fg3); font-size: calc(12px * var(--fs)); }
+.ov-panel > .ov-bd { padding: 12px 16px; }
+.hbar { display: grid; grid-template-columns: 124px 1fr 96px; gap: 10px; align-items: center; padding: 4px 0; font-size: calc(12.5px * var(--fs)); }
+.hbar .hname { font-family: var(--mono); font-size: calc(12px * var(--fs)); color: var(--fg); text-decoration: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hbar .hname:hover { color: var(--accent); }
+.hbar .htrack { height: 10px; background: var(--meter-track); border-radius: 3px; overflow: hidden; position: relative; }
+.hbar .htrack i { position: absolute; inset: 0 auto 0 0; background: var(--meter); }
+.hbar .htrack i.hot { background: var(--warn); } .hbar .htrack i.full { background: var(--bad); }
+.hbar .hv { text-align: right; color: var(--fg2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ov-alert { display: grid; grid-template-columns: 4px 1fr; gap: 12px; padding: 9px 12px; border: 1px solid var(--line);
+  border-radius: var(--r-sm); background: var(--sunken); margin-bottom: 8px; }
+.ov-alert i { border-radius: 2px; background: var(--warn); } .ov-alert.bad i { background: var(--bad); } .ov-alert.info i { background: var(--accent); }
+.ov-alert b { display: block; font-weight: 600; font-size: calc(13px * var(--fs)); }
+.ov-alert span { font-size: calc(12.5px * var(--fs)); color: var(--fg2); }
+.ov-alert a { color: inherit; }
+.ov-legend { display: flex; flex-direction: column; gap: 6px; font-size: calc(12.5px * var(--fs)); color: var(--fg2); }
+.ov-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.ov-table { width: 100%; border-collapse: collapse; font-size: calc(13px * var(--fs)); }
+.ov-table th { text-align: left; color: var(--fg3); font-weight: 600; font-size: calc(11.5px * var(--fs)); letter-spacing: .04em;
+  text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.ov-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.ov-table tr:last-child td { border-bottom: 0; }
+.ov-table tr.orow { cursor: pointer; } .ov-table tr.orow:hover td { background: var(--sunken); }
+.ov-table td.r, .ov-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.ov-pill { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12px * var(--fs)); font-weight: 600; }
+.ov-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--fg3); }
+.ov-pill.on i { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); } .ov-pill.down i { background: var(--bad); }
+.vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 4px; }
+.vhead h2 { margin: 0; font-size: calc(20px * var(--fs)); font-weight: 700; letter-spacing: -.01em; }
+@media (max-width: 900px) {
+  #shell { grid-template-columns: 1fr; }
+  #rail { position: static; height: auto; max-height: 40vh; }
+}
 </style>
 <script>
 // ตัดสินธีมก่อนวาดหน้า ไม่งั้นจะเห็นหน้าขาววาบก่อนแล้วค่อยเปลี่ยนเป็นมืด
@@ -852,14 +942,22 @@ pre {
   </div>
 </div>
 
-<header class="topbar">
-  <div class="wrap">
-    <h1>LMDS</h1>
-    <span class="muted grow" id="host">…</span>
-    <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button>
+<div id="shell">
+<aside id="rail">
+  <div class="rbrand"><div class="rlogo">L</div><div><b>LMDS</b><small>Local Model Deploy Studio</small></div></div>
+  <nav class="rnav" id="rail-nav"></nav>
+  <div class="rfoot">
     <span class="dim" id="ver"></span>
     <button id="update" hidden title="ดึงโค้ดใหม่จาก GitHub มาติดตั้งที่เครื่องนี้ แล้วอัปเดตเครื่องอื่นต่อได้"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Update</button>
     <button id="restart-web" title="โหลดโค้ดที่อัปเดตแล้วเข้า process ใหม่ — หน้านี้จะหลุดสักครู่แล้วต่อกลับเอง"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg>Restart console</button>
+  </div>
+</aside>
+<div id="mainc">
+<header class="topbar">
+  <div class="wrap">
+    <div class="crumb" id="crumb"><b>ภาพรวม</b></div>
+    <span class="muted grow" id="host">…</span>
+    <label class="rsearch" title="ค้นเครื่องหรือโมเดล แล้วกด Enter"><span>⌕</span><input id="rsearch" placeholder="ค้นเครื่อง / โมเดล…"></label>
     <button id="textsize" class="icobtn size" title="ขนาดตัวอักษรของหน้านี้">…</button>
     <button id="theme" class="theme" title="สลับธีม สว่าง / มืด / ตามเครื่อง">…</button>
     <button id="signout" hidden title="ลืม token ในเบราว์เซอร์นี้"><svg class="ic" aria-hidden="true"><use href="#i-exit"/></svg>Sign out</button>
@@ -868,65 +966,97 @@ pre {
 </header>
 
 <div class="wrap">
-
-  <!-- Fleet at a glance — everything the hub + all machines add up to -->
-  <div class="sec" style="--sc: var(--c1)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
-    <span class="sec-title">Fleet at a glance</span>
-  </div>
-  <div class="stats" id="fleet-summary"></div>
-
-  <div class="sec" style="--sc: var(--c2)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
-    <span class="sec-title">This machine</span>
-  </div>
-  <div class="stats" id="stats"></div>
-  <!-- เครื่องนี้ต้องอ่านเหมือนเครื่องอื่นในหน้าเดียวกัน — เกจชุดเดียวกัน ไม่ใช่คนละภาษา -->
-  <div class="card" id="hostcard"></div>
+  <!-- wizard และ toast อยู่เหนือทุก view — เปิดจากปุ่ม Deploy / แจ้งเตือนได้จากทุกหน้า -->
   <div class="card" id="wiz" hidden></div>
-
-  <div class="sec" style="--sc: var(--c1)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
-    <button class="sec-fold" data-fold="fleet" title="ย่อ/กางหมวดนี้">−</button><span class="sec-title">Models on this machine</span>
-  </div>
-  <div class="card" id="fleet"><div class="empty">Loading…</div></div>
-
-  <div class="sec" style="--sc: var(--c2)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
-    <span class="sec-title">Other machines</span>
-    <span class="sec-act">
-      <button id="cluster-check" title="ตรวจว่าเครื่องไหนจับคู่ stacked กันได้"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Check cluster</button>
-      <button id="node-new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add machine</button>
-    </span>
-  </div>
   <div id="toast" role="status" aria-live="polite"></div>
-  <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
 
-  <div class="sec" style="--sc: var(--c1)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
-    <button class="sec-fold" data-fold="bench" title="ย่อ/กางหมวดนี้">−</button><span class="sec-title">Model scores</span>
-    <span class="sec-act"><button id="bench-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
-  </div>
-  <div class="card" id="bench"><div class="empty">วัดความเร็วและความสามารถของโมเดลที่รันอยู่จริง —
-    <span class="dim">ทุกตัวเลขมาจากการยิงเซิร์ฟเวอร์จริงผ่าน OpenAI API จึงเทียบข้าม engine
-    และข้ามเครื่องได้ · กด Show เพื่อดูผลที่เคยวัดไว้</span></div></div>
-  <div class="card" id="bench-detail" hidden></div>
+  <section class="view" data-view="overview">
+    <div class="sec" style="--sc: var(--c1)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
+      <span class="sec-title">Fleet at a glance</span>
+    </div>
+    <div class="stats" id="fleet-summary"></div>
+    <div id="ov"></div>
+  </section>
 
-  <div class="sec" style="--sc: var(--c3)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-disk"/></svg></span>
-    <span class="sec-title">Weights already on disk</span>
-    <span class="sec-act"><button id="scan-run"><svg class="ic" aria-hidden="true"><use href="#i-scan"/></svg>Scan</button></span>
-  </div>
-  <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
-    <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
+  <section class="view" data-view="hub" hidden>
+    <div class="sec" style="--sc: var(--c2)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
+      <span class="sec-title">This machine</span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <!-- เครื่องนี้ต้องอ่านเหมือนเครื่องอื่นในหน้าเดียวกัน — เกจชุดเดียวกัน ไม่ใช่คนละภาษา -->
+    <div class="card" id="hostcard"></div>
+    <div class="sec" style="--sc: var(--c1)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg></span>
+      <button class="sec-fold" data-fold="fleet" title="ย่อ/กางหมวดนี้">−</button><span class="sec-title">Models on this machine</span>
+    </div>
+    <div class="card" id="fleet"><div class="empty">Loading…</div></div>
+  </section>
 
-  <div class="sec" style="--sc: var(--c4)">
-    <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-verified"/></svg></span>
-    <span class="sec-title">Proven recipes</span>
-    <span class="sec-act"><button id="recipes-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
-  </div>
-  <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
-    <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
+  <section class="view" data-view="nodes" hidden>
+    <div class="sec" style="--sc: var(--c2)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg></span>
+      <span class="sec-title" id="nodes-title">Other machines</span>
+      <span class="sec-act">
+        <button id="cluster-check" title="ตรวจว่าเครื่องไหนจับคู่ stacked กันได้"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Check cluster</button>
+        <button id="node-new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add machine</button>
+      </span>
+    </div>
+    <div id="nodes"><div class="card"><div class="empty">Loading…</div></div></div>
+  </section>
+
+  <section class="view" data-view="models" hidden>
+    <div id="allmodels"></div>
+  </section>
+
+  <section class="view" data-view="bench" hidden>
+    <div class="sec" style="--sc: var(--c1)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
+      <button class="sec-fold" data-fold="bench" title="ย่อ/กางหมวดนี้">−</button><span class="sec-title">Model scores</span>
+      <span class="sec-act"><button id="bench-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
+    </div>
+    <div class="card" id="bench"><div class="empty">วัดความเร็วและความสามารถของโมเดลที่รันอยู่จริง —
+      <span class="dim">ทุกตัวเลขมาจากการยิงเซิร์ฟเวอร์จริงผ่าน OpenAI API จึงเทียบข้าม engine
+      และข้ามเครื่องได้ · กด Show เพื่อดูผลที่เคยวัดไว้</span></div></div>
+    <div class="card" id="bench-detail" hidden></div>
+  </section>
+
+  <section class="view" data-view="weights" hidden>
+    <div class="sec" style="--sc: var(--c3)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-disk"/></svg></span>
+      <span class="sec-title">Weights already on disk</span>
+      <span class="sec-act"><button id="scan-run"><svg class="ic" aria-hidden="true"><use href="#i-scan"/></svg>Scan</button></span>
+    </div>
+    <div class="card" id="scan"><div class="empty">Find model weights wherever they were put —
+      <span class="dim">HF cache in either layout, GGUF folders, custom roots. Read-only: nothing is moved or deleted.</span></div></div>
+  </section>
+
+  <section class="view" data-view="recipes" hidden>
+    <div class="sec" style="--sc: var(--c4)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-verified"/></svg></span>
+      <span class="sec-title">Proven recipes</span>
+      <span class="sec-act"><button id="recipes-load"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Show</button></span>
+    </div>
+    <div class="card" id="recipes"><div class="empty">Settings that were verified on real hardware —
+      <span class="dim">applied automatically at deploy time, with or without an LLM key</span></div></div>
+  </section>
+
+  <section class="view" data-view="settings" hidden>
+    <div class="sec" style="--sc: var(--c2)">
+      <span class="chip"><svg class="ic" aria-hidden="true"><use href="#i-spark"/></svg></span>
+      <span class="sec-title">ตั้งค่า hub</span>
+    </div>
+    <div class="card"><div class="pad">
+      <div class="field"><label class="dim" style="min-width:150px">LLM ที่ช่วยวางแผน deploy</label>
+        <button id="brain" class="brain" title="LLM ที่ใช้ช่วยวางแผน deploy — กดเพื่อเปลี่ยน">…</button></div>
+      <div class="dim">ไม่มี LLM ก็ deploy ได้ — ใช้ rule-based + สูตรที่รันผ่านจริง · ตั้งไว้แล้วแผนจะวิจัย parser/feature ให้ลึกขึ้น</div>
+    </div></div>
+  </section>
+
+</div>
+</div>
+</div>
 
 </div>
 
@@ -1034,6 +1164,7 @@ function statCard(label, value, sub, colour, hero = "") {
 // stat-card vocabulary as the per-machine cards. Numbers are "known so far" —
 // a node not yet probed is surfaced as pending, never counted as zero.
 function renderFleetSummary(s) {
+  lastFleetSummary = s || lastFleetSummary;
   const el = document.getElementById("fleet-summary");
   if (!el || !s) return;
   el.innerHTML = [
@@ -1653,6 +1784,7 @@ function benchMarkup(m) {
 }
 
 function renderFleet(models) {
+  lastLocalModels = models || [];
   const el = document.getElementById("fleet");
   if (!models.length) {
     rows.clear();
@@ -3242,6 +3374,7 @@ async function loadNode(name) {
   for (const key of openModelMenus) {
     if (key.startsWith(name + "/")) hydrateMemoryLine(name, key.slice(name.length + 1));
   }
+  renderRail();
 }
 
 async function refreshNodes() {
@@ -3316,7 +3449,8 @@ async function refreshNodes() {
   //
   // อ่านสถานะคลัสเตอร์ใหม่ทุกรอบด้วย (จากแคช จึงไม่มีค่าใช้จ่ายที่รู้สึกได้) — รั้วกลุ่ม
   // และป้าย "stacked ได้ / ยังไม่พร้อม" จึงเดินตามความจริงตลอด ไม่ต้องรอให้ใครกดปุ่ม
-  loadCluster();
+  await loadCluster();
+  renderRail();
 }
 
 document.addEventListener("click", async e => {
@@ -3960,6 +4094,7 @@ async function loadCluster(live = false) {
   }
   if (live && button) { button.disabled = false; button.textContent = "Check cluster"; }
   layoutClusterGroups();
+  applyRouteFilter();   // shell: จัดกลุ่มใหม่แล้วต้องซ่อน/โชว์ตาม route เดิม
   if (clusterData && !(clusterData.groups || []).length) {
     const box = document.getElementById("nodes");
     if (box && !box.querySelector(".gnone")) {
@@ -4595,6 +4730,8 @@ function applySnapshot(snap) {
     paintNodeVersion(row, { reachable: !!entry.data, host: (entry.data || {}).host }, name);
     row.body.innerHTML = nodeModelsMarkup(name, payload);
   }
+  renderRail();
+  renderOverview();
 }
 
 function startStream() {
@@ -4654,6 +4791,253 @@ function signOut() {
   location.reload();
 }
 
+
+// ═══════════════════ 0.6 app shell: router · rail · ภาพรวม ═══════════════════════
+// การ์ดเครื่องยังอยู่ใน #nodes ตามเดิม (nodeRows/handlers/SSE ไม่รู้ด้วยซ้ำว่ามี shell) —
+// router แค่เลือกว่า <section class="view"> ไหนโชว์ และในหน้าเครื่องซ่อนการ์ดของเครื่องอื่น
+// ผู้ใช้ 2026-09-04: "เมนูอยู่ซ้าย กดรายการแล้วรายละเอียดออกตรงกลาง site/node อยู่ซ้าย"
+let route = { kind: "overview" };
+let lastFleetSummary = null;
+let lastLocalModels = [];
+let ovPaintedAt = 0;
+const RAIL_OPEN_KEY = "lmds:rail:open";
+
+function parseRoute() {
+  const h = location.hash.replace(/^#\/?/, "") || "overview";
+  const [kind, a] = h.split("/").map(x => { try { return decodeURIComponent(x); } catch { return x; } });
+  if (kind === "node" && a) return { kind, name: a };
+  if (kind === "site") return { kind, site: a || "" };
+  if (["overview", "hub", "nodes", "models", "bench", "weights", "recipes", "settings"].includes(kind)) return { kind };
+  return { kind: "overview" };
+}
+function navigateNode(name) { const h = `#/node/${encodeURIComponent(name)}`; if (location.hash !== h) location.hash = h; }
+
+function siteOfNode(name) { return (lastNodeRegistry.get(name) || {}).site || ""; }
+function siteLabel(s) { return s || "ยังไม่จัดไซต์"; }
+function nodeUsage(name) {
+  const d = lastNodeData.get(name);
+  const g = ((d && d.host && d.host.gpus) || [])[0];
+  if (!g || !g.vram_gb) return { pct: null, used: null, cap: null, reachable: !!(d && d.reachable) };
+  return { pct: g.vram_used_gb != null ? Math.round(g.vram_used_gb / g.vram_gb * 100) : null,
+           used: g.vram_used_gb, cap: g.vram_gb, reachable: !!(d && d.reachable) };
+}
+const sevOf = p => p == null ? "" : p >= 90 ? "full" : p >= 75 ? "hot" : "";
+
+function renderRail() {
+  const nav = document.getElementById("rail-nav");
+  if (!nav) return;
+  let open;
+  try { open = new Set(JSON.parse(localStorage.getItem(RAIL_OPEN_KEY) || "[]")); } catch { open = new Set(); }
+  if (route.kind === "node") open.add(siteOfNode(route.name));
+  if (route.kind === "site") open.add(route.site);
+  const names = nodeOrder.length ? nodeOrder.filter(n => lastNodeRegistry.has(n)) : [...lastNodeRegistry.keys()];
+  const sites = new Map();
+  for (const n of names) { const s = siteOfNode(n); (sites.get(s) || sites.set(s, []).get(s)).push(n); }
+  const order = [...sites.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b, "th"));
+  const ic = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const item = (href, icon, label, count, on) =>
+    `<a href="${href}" class="${on ? "on" : ""}">${ic(icon)}${esc(label)}${count != null ? `<span class="rcount">${count}</span>` : ""}</a>`;
+  const localRunning = (lastLocalModels || []).filter(m => m.running).length;
+  let h = item("#/overview", "i-network", "ภาพรวม", null, route.kind === "overview");
+  h += item("#/hub", "i-server", "เครื่องนี้ (hub)", HOST_ROLE.control_plane ? null : localRunning || null, route.kind === "hub");
+  h += `<div class="reyebrow">ไซต์ / เครื่อง</div>`;
+  h += item("#/nodes", "i-link", "ทุกเครื่อง", names.length, route.kind === "nodes");
+  for (const s of order) {
+    const list = sites.get(s), isOpen = open.has(s);
+    h += `<a href="#/site/${encodeURIComponent(s)}" class="rsite ${isOpen ? "open" : ""} ${route.kind === "site" && route.site === s ? "on" : ""}" data-site="${esc(s)}">
+            ${ic("i-network")}${esc(siteLabel(s))}<span class="rcount">${list.length}</span><span class="rchev" data-toggle="${esc(s)}">›</span></a>
+          <div class="rtree ${isOpen ? "open" : ""}" data-tree="${esc(s)}">`;
+    for (const n of list) {
+      const u = nodeUsage(n);
+      const d = lastNodeData.get(n);
+      const running = d && d.models ? d.models.some(m => m.running) : false;
+      const dot = !u.reachable && d ? "down" : u.pct >= 90 ? "hot" : running ? "on" : "";
+      h += `<a href="#/node/${encodeURIComponent(n)}" class="${route.kind === "node" && route.name === n ? "on" : ""}" title="${esc(n)}${u.pct != null ? ` · GPU ${u.pct}%` : ""}">
+              <span class="rdot ${dot}"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n)}</span>
+              <span class="rbar"><i class="${sevOf(u.pct)}" style="width:${u.pct ?? 0}%"></i></span></a>`;
+    }
+    h += `</div>`;
+  }
+  h += `<div class="reyebrow">คลัง</div>`;
+  h += item("#/models", "i-deploy", "โมเดลทั้งฟลีต", lastFleetSummary ? lastFleetSummary.models_total : null, route.kind === "models");
+  h += item("#/bench", "i-gauge", "คะแนน (bench)", null, route.kind === "bench");
+  h += item("#/recipes", "i-verified", "สูตรที่รันผ่านแล้ว", null, route.kind === "recipes");
+  h += item("#/weights", "i-disk", "Weights บนดิสก์", null, route.kind === "weights");
+  h += item("#/settings", "i-spark", "ตั้งค่า hub", null, route.kind === "settings");
+  nav.innerHTML = h;
+  nav.querySelectorAll(".rchev").forEach(ch => ch.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    const site = ch.dataset.toggle;
+    open.has(site) ? open.delete(site) : open.add(site);
+    localStorage.setItem(RAIL_OPEN_KEY, JSON.stringify([...open]));
+    ch.closest(".rsite").classList.toggle("open");
+    nav.querySelector(`.rtree[data-tree="${CSS.escape(site)}"]`)?.classList.toggle("open");
+  }));
+}
+
+// ในหน้าเครื่อง/ไซต์: ซ่อนการ์ดที่ไม่เกี่ยว — ไม่ลบ ไม่ย้าย เพราะ nodeRows/SSE ยังชี้อยู่
+function applyRouteFilter() {
+  const box = document.getElementById("nodes");
+  if (!box) return;
+  const sel = route.kind === "node" ? route.name : null;
+  const site = route.kind === "site" ? route.site : null;
+  box.classList.toggle("route-node", !!sel);
+  for (const [name, row] of nodeRows) {
+    const show = sel ? name === sel : site != null ? siteOfNode(name) === site : true;
+    row.block.hidden = !show;
+    if (show && sel && row.block.classList.contains("ncompact")) row.block.querySelector(".ntoggle")?.click();
+  }
+  box.querySelectorAll(".sitesec").forEach(sec => {
+    const s = (sec.querySelector(".sitehdr") || {}).dataset?.site ?? "";
+    sec.hidden = sel ? siteOfNode(sel) !== s : site != null ? s !== site : false;
+  });
+  box.querySelectorAll(".gwrap").forEach(g => {
+    const anyShown = [...g.querySelectorAll(".machine")].some(m => !m.hidden);
+    g.hidden = !anyShown && (!!sel || site != null);
+  });
+  const title = document.getElementById("nodes-title");
+  if (title) title.textContent = sel ? sel : site != null ? `ไซต์ ${siteLabel(site)}` : "Other machines";
+}
+
+function routeRender() {
+  route = parseRoute();
+  const viewFor = { overview: "overview", hub: "hub", nodes: "nodes", site: "nodes", node: "nodes",
+                    models: "models", bench: "bench", weights: "weights", recipes: "recipes", settings: "settings" }[route.kind];
+  document.querySelectorAll(".view").forEach(v => { v.hidden = v.dataset.view !== viewFor; });
+  document.body.dataset.route = route.kind;
+  const trail = [["#/overview", "ฟลีต"]];
+  if (route.kind === "overview") trail.push([null, "ภาพรวม"]);
+  else if (route.kind === "hub") trail.push([null, "เครื่องนี้ (hub)"]);
+  else if (route.kind === "nodes") trail.push([null, "ทุกเครื่อง"]);
+  else if (route.kind === "site") trail.push(["#/nodes", "ทุกเครื่อง"], [null, siteLabel(route.site)]);
+  else if (route.kind === "node") trail.push([`#/site/${encodeURIComponent(siteOfNode(route.name))}`, siteLabel(siteOfNode(route.name))], [null, route.name]);
+  else trail.push([null, { models: "โมเดลทั้งฟลีต", bench: "คะแนน (bench)", weights: "Weights บนดิสก์", recipes: "สูตรที่รันผ่านแล้ว", settings: "ตั้งค่า hub" }[route.kind]]);
+  const crumb = document.getElementById("crumb");
+  if (crumb) crumb.innerHTML = trail.map(([h, t], i) => i === trail.length - 1
+    ? `<b>${esc(t)}</b>` : `<a href="${h}">${esc(t)}</a><span class="csep">›</span>`).join("");
+  renderRail();
+  applyRouteFilter();
+  if (route.kind === "overview") renderOverview(true);
+  if (route.kind === "models") renderAllModels();
+  if (route.kind === "node") {
+    const row = nodeRows.get(route.name);
+    if (row) row.block.scrollIntoView({ block: "start" });
+  }
+  window.scrollTo(0, 0);
+}
+
+// ── ภาพรวม: KPI · แถบหน่วยความจำต่อเครื่อง · engine · ต้องดู · ตารางไซต์ ──
+function ovAlerts() {
+  const out = [];
+  for (const name of lastNodeRegistry.keys()) {
+    const reg = lastNodeRegistry.get(name) || {}, d = lastNodeData.get(name);
+    if (d && !d.reachable) { out.push({ lv: "bad", t: `${name} ต่อไม่ได้`, s: String(d.error || "").slice(0, 90), href: `#/node/${encodeURIComponent(name)}` }); continue; }
+    const u = nodeUsage(name);
+    if (u.pct != null && u.pct >= 90) out.push({ lv: "warn", t: `${name} หน่วยความจำ ${u.pct}%`, s: `ใช้ ${u.used} / ${u.cap} GB — เพิ่มโมเดลตัวต่อไปต้องหยุดของเดิมก่อน`, href: `#/node/${encodeURIComponent(name)}` });
+    const models = (d && d.models) || [];
+    const byPort = {};
+    for (const m of models) (byPort[m.port] ||= []).push(m);
+    for (const [port, ms] of Object.entries(byPort)) {
+      if (ms.length > 1 && ms.some(m => m.running) && ms.some(m => !m.running))
+        out.push({ lv: "warn", t: `${name}: พอร์ต ${port} ซ้อนกัน`, s: ms.map(m => m.slug).join(" · ") + " — ตัวที่หยุดอยู่จะ start ไม่ขึ้นจนกว่าจะเปลี่ยนพอร์ต", href: `#/node/${encodeURIComponent(name)}` });
+    }
+    if (hubBuild.commit && reg.lmds_commit && reg.lmds_commit !== hubBuild.commit)
+      out.push({ lv: "info", t: `${name} รัน LMDS ${reg.lmds_version || "?"} (${reg.lmds_commit})`, s: `hub อยู่ที่ ${hubBuild.version} · ${hubBuild.commit} — อัปเดตเมื่อสะดวก`, href: `#/node/${encodeURIComponent(name)}` });
+  }
+  return out;
+}
+
+function renderOverview(force = false) {
+  const el = document.getElementById("ov");
+  if (!el || route.kind !== "overview") return;
+  if (!force && Date.now() - ovPaintedAt < 5000) return;   // SSE มาทุกวิ — วาดใหม่ทุก 5 วิพอ
+  ovPaintedAt = Date.now();
+  const names = [...lastNodeRegistry.keys()];
+  if (!names.length && !lastFleetSummary) { el.innerHTML = ""; return; }
+  const withUsage = names.map(n => ({ n, u: nodeUsage(n) })).filter(x => x.u.cap);
+  const used = withUsage.reduce((a, x) => a + (x.u.used || 0), 0), cap = withUsage.reduce((a, x) => a + x.u.cap, 0);
+  const eng = {};
+  for (const n of names) for (const m of ((lastNodeData.get(n) || {}).models || [])) if (m.running) eng[m.engine] = (eng[m.engine] || 0) + 1;
+  for (const m of (lastLocalModels || [])) if (m.running) eng[m.engine] = (eng[m.engine] || 0) + 1;
+  const running = Object.values(eng).reduce((a, b) => a + b, 0);
+  const al = ovAlerts();
+  const bars = withUsage.sort((a, b) => (b.u.pct ?? -1) - (a.u.pct ?? -1)).map(({ n, u }) =>
+    `<div class="hbar"><a class="hname" href="#/node/${encodeURIComponent(n)}">${esc(n)}</a>
+      <div class="htrack"><i class="${sevOf(u.pct)}" style="width:${u.pct ?? 0}%"></i></div>
+      <div class="hv"><b>${u.pct ?? "—"}%</b> · ${u.used ?? "—"}/${u.cap}</div></div>`).join("");
+  const ENG = { llamacpp: ["llama.cpp", "var(--meter)"], vllm: ["vLLM", "var(--warn)"], sglang: ["SGLang", "var(--c3, var(--ok))"] };
+  const parts = Object.entries(eng).map(([k, v]) => ({ k, v, c: (ENG[k] || [k, "var(--fg3)"])[1], label: (ENG[k] || [k])[0] }));
+  const R = 42, C = 2 * Math.PI * R; let off = 0;
+  const segs = parts.map(p => { const len = running ? C * (p.v / running) : 0;
+    const d = `<circle cx="60" cy="60" r="${R}" fill="none" stroke="${p.c}" stroke-width="14" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}" transform="rotate(-90 60 60)"/>`; off += len; return d; }).join("");
+  const donut = `<svg viewBox="0 0 120 120" width="140" height="140" role="img" aria-label="โมเดลที่รันอยู่ ${running}">
+      <circle cx="60" cy="60" r="${R}" fill="none" stroke="var(--meter-track)" stroke-width="14"/>${segs}
+      <text x="60" y="57" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--fg)">${running}</text>
+      <text x="60" y="73" text-anchor="middle" style="font-size:9.5px;fill:var(--fg2)">กำลังรัน</text></svg>`;
+  const sites = new Map();
+  for (const n of names) { const s = siteOfNode(n); (sites.get(s) || sites.set(s, []).get(s)).push(n); }
+  const siteRows = [...sites.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b, "th")).map(s => {
+    const l = sites.get(s); const us = l.map(nodeUsage).filter(u => u.cap);
+    const u = us.reduce((a, x) => a + (x.used || 0), 0), c = us.reduce((a, x) => a + x.cap, 0);
+    const run = l.reduce((a, n) => a + (((lastNodeData.get(n) || {}).models || []).filter(m => m.running).length), 0);
+    const online = l.filter(n => (lastNodeData.get(n) || {}).reachable).length;
+    const p = c ? Math.round(u / c * 100) : null;
+    return `<tr class="orow" data-href="#/site/${encodeURIComponent(s)}"><td><b>${esc(siteLabel(s))}</b></td><td class="r">${l.length}</td><td class="r">${online}</td><td class="r">${run}</td><td class="r">${Math.round(u)} / ${Math.round(c)}</td>
+      <td style="width:150px"><div class="hbar" style="grid-template-columns:1fr;padding:0"><div class="htrack"><i class="${sevOf(p)}" style="width:${p ?? 0}%"></i></div></div></td></tr>`; }).join("");
+  const S = lastFleetSummary || {};
+  el.innerHTML = `
+    <div class="ov-grid" style="margin-top:14px">
+      <div class="card ov-panel"><div class="ov-hd"><h3>หน่วยความจำ GPU ต่อเครื่อง</h3><div class="r">${Math.round(used)} / ${Math.round(cap)} GB ใช้อยู่ · เรียงจากแน่นสุด</div></div><div class="ov-bd">${bars || `<div class="empty">ยังไม่มีข้อมูลเครื่อง</div>`}</div></div>
+      <div style="display:grid;gap:14px">
+        <div class="card ov-panel"><div class="ov-hd"><h3>โมเดลที่รันอยู่ แยกตาม engine</h3></div><div class="ov-bd" style="display:flex;gap:16px;align-items:center">${donut}
+          <div class="ov-legend">${parts.map(p => `<span><i style="background:${p.c}"></i>${esc(p.label)} <b>${p.v}</b></span>`).join("")}
+            <span class="dim">${S.models_total != null ? `${S.models_total} bundle ทั้งฟลีต · ${S.models_total - (S.models_running || 0)} หยุดอยู่` : ""}</span></div></div></div>
+        <div class="card ov-panel"><div class="ov-hd"><h3>ต้องดู</h3><div class="r">${al.length} รายการ</div></div><div class="ov-bd">
+          ${al.slice(0, 6).map(a => `<a class="ov-alert ${a.lv}" href="${a.href}" style="text-decoration:none"><i></i><div><b>${esc(a.t)}</b><span>${esc(a.s)}</span></div></a>`).join("") || `<div class="empty">ไม่มีอะไรต้องดู</div>`}
+        </div></div>
+      </div>
+    </div>
+    <div class="card ov-panel" style="margin-top:14px"><div class="ov-hd"><h3>ไซต์</h3><div class="r">คลิกแถวเพื่อดูเครื่องในไซต์</div></div>
+      <div style="overflow-x:auto"><table class="ov-table"><tr><th>ไซต์</th><th class="r">เครื่อง</th><th class="r">ออนไลน์</th><th class="r">โมเดลรัน</th><th class="r">GPU ใช้ / ทั้งหมด (GB)</th><th></th></tr>${siteRows}</table></div></div>`;
+  el.querySelectorAll("tr.orow[data-href]").forEach(tr => tr.onclick = () => { location.hash = tr.dataset.href; });
+}
+
+// ── โมเดลทั้งฟลีต ──
+function renderAllModels() {
+  const el = document.getElementById("allmodels");
+  if (!el) return;
+  const all = [];
+  for (const m of (lastLocalModels || [])) all.push({ where: "เครื่องนี้", node: null, m });
+  for (const [name, d] of lastNodeData) for (const m of (d.models || [])) all.push({ where: name, node: name, m });
+  all.sort((a, b) => (b.m.running - a.m.running) || a.m.slug.localeCompare(b.m.slug));
+  const rows = all.map(({ where, node, m }) => `<tr class="orow" data-node="${esc(node || "")}" data-slug="${esc(m.slug)}">
+      <td><span class="ov-pill ${m.running ? "on" : ""}"><i></i>${m.running ? (m.healthy ? "running" : "loading") : "stopped"}</span></td>
+      <td class="mono" title="${esc(m.slug)}">${esc(m.slug.length > 40 ? m.slug.slice(0, 40) + "…" : m.slug)}</td>
+      <td>${esc(where)}${node ? `<span class="dim"> · ${esc(siteLabel(siteOfNode(node)))}</span>` : ""}</td>
+      <td><span class="tag">${esc(m.engine === "llamacpp" ? "llama.cpp" : m.engine === "vllm" ? "vLLM" : m.engine || "?")}</span></td>
+      <td class="mono">${m.port ?? ""}</td><td class="r">${m.context ? Number(m.context).toLocaleString() : "—"}</td>
+      <td>${esc(m.features || "")}</td></tr>`).join("");
+  el.innerHTML = `<div class="vhead"><h2>โมเดลทั้งฟลีต</h2><span class="tag">${all.length} bundle</span><span class="tag ok">${all.filter(x => x.m.running).length} รันอยู่</span></div>
+    <div class="card"><div style="overflow-x:auto"><table class="ov-table"><tr><th>สถานะ</th><th>bundle</th><th>เครื่อง</th><th>engine</th><th>port</th><th class="r">context</th><th>ความสามารถ</th></tr>${rows || `<tr><td colspan="7" class="empty">ยังไม่มีข้อมูล</td></tr>`}</table></div></div>`;
+  el.querySelectorAll("tr.orow").forEach(tr => tr.onclick = () => {
+    const node = tr.dataset.node, slug = tr.dataset.slug;
+    if (node) { navigateNode(node); setTimeout(() => jumpToNode(node, slug), 50); }
+    else { location.hash = "#/hub"; setTimeout(() => jumpToLocal(slug), 50); }
+  });
+}
+
+document.getElementById("rsearch")?.addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) return;
+  const node = [...lastNodeRegistry.keys()].find(n => n.toLowerCase().includes(q));
+  if (node) { navigateNode(node); return; }
+  for (const [name, d] of lastNodeData) { const m = (d.models || []).find(m => m.slug.toLowerCase().includes(q)); if (m) { navigateNode(name); setTimeout(() => jumpToNode(name, m.slug), 50); return; } }
+  const local = (lastLocalModels || []).find(m => m.slug.toLowerCase().includes(q));
+  if (local) { location.hash = "#/hub"; setTimeout(() => jumpToLocal(local.slug), 50); }
+});
+window.addEventListener("hashchange", routeRender);
+
 async function boot() {
   const mode = await fetch("/api/auth").then(r => r.json()).catch(() => ({ required: false }));
   if (mode.required) {
@@ -4669,7 +5053,9 @@ async function boot() {
   refresh();
   // คืนสถานะพับ/กางที่ผู้ใช้เลือกไว้ก่อนวาดของจริง
   ["fleet", "bench"].forEach(applyFold);
-  refreshNodes();
+  routeRender();           // shell: เลือก view ตาม hash ตั้งแต่เฟรมแรก
+  await refreshNodes();
+  routeRender();           // การ์ดเครื่องมาแล้ว → กรองตาม route + วาด rail ด้วยชื่อจริง
   startStream();
   loadProvider();
 }
@@ -4818,6 +5204,7 @@ function jumpToLocal(slug) {
 function jumpToNode(node, slug) {
   const row = nodeRows.get(node);
   if (!row) return;
+  navigateNode(node);   // shell: ไปหน้าเครื่องนั้นก่อน ไม่งั้นการ์ดถูกซ่อนอยู่
   // ไซต์ที่ยุบ/การ์ดที่ย่อต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
   revealNode(node);
   openModelMenus.add(node + "/" + slug);
