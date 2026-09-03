@@ -7,7 +7,7 @@
 Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine or
 several acting as one. Nothing leaves the machine except what you ask for.
 
-[![version](https://img.shields.io/badge/version-0.3.0-1f5fbf)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.5.1-1f5fbf)](CHANGELOG.md)
 [![tests](https://img.shields.io/badge/tests-1273-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
@@ -177,6 +177,31 @@ lmds node push spark2 <slug>      # send the bundle you approved to another mach
 lmds node clone <slug> --from msi-1 --to msi-2   # copy a model machine-to-machine, no re-download
 ```
 
+<details>
+<summary>All model-management commands</summary>
+
+```bash
+lmds ps                  # who is running: name, model, engine, port, ● running / ◐ loading / ○ stopped
+lmds list                # every bundle + engine/port/context/features + autostart
+lmds smoke <name>        # prove it runs: download → verify → start → test-text → stop
+lmds start/stop/restart <name>
+lmds logs <name> -f      # -n 500 = tail
+lmds enable <name>       # come back after reboot (systemd) · disable = undo
+lmds doctor <name>       # why download/start still fails + the command that fixes it
+lmds repair <name>       # re-download missing/corrupt files, then re-verify
+lmds rebuild <name>      # regenerate the same bundle with the current logic
+lmds set <name> --image <digest> --tool-parser qwen3_xml --extra-args "…"   # one value for every way start is called
+lmds adopt               # bring a model that was running before LMDS into the system
+lmds remove <name>       # delete everything (--keep-weights keeps the weights)
+lmds recipes --sync / --publish <name> --features tools,vision
+```
+
+`lmds ps` also shows **containers not deployed through LMDS** (vLLM / llama.cpp / Ollama / TGI
+already running) — stop/restart/logs/enable work the same; that group uses `docker stop` and never
+removes the container.
+
+</details>
+
 Target machines run **no daemon**, need no port beyond 22, and **no root** — membership of the
 `docker` group is enough. The password is discarded the moment the key is installed; the registry
 has no password field by design.
@@ -193,6 +218,37 @@ repos · **22 target presets** (7 verified on real hardware) · **903 tests**
 
 > **Model source: Hugging Face only.** Ollama registry and NVIDIA NGC are phase 2 — passing such a
 > link produces a clear "not supported yet" message with an alternative.
+
+## Recipes — learn once, reuse across the fleet
+
+A machine with no LLM API key deploys rule-based, which only knows "GGUF → llama.cpp"; it does not
+know per-model facts (the parser, the image with the right kernels, the mmproj file), so a deploy
+can succeed and the server still fail to start. **Recipes** close that gap: controllers that
+**ran on real hardware** live in a central Git repository.
+
+- **pull** — `lmds recipes --sync` fetches the latest recipes from the canonical store; `deploy --no-llm` uses them instead of guessing
+- **push** — `lmds recipes --publish <slug> --features tools,vision` sends a controller you tested to the candidates store for review
+
+Two tiers: **canonical** ([`dgx-spark-all-controllers`](https://github.com/neronain/dgx-spark-all-controllers)),
+curated and pulled by every machine, and **candidates** ([`script-update`](https://github.com/neronain/script-update)),
+freshly published and awaiting review. The publish target is configured (`recipes.publish_repo`);
+empty means a local store, so customer fleets never touch our repositories.
+
+Only **model values** travel (engine, image, parser, mmproj, measured capabilities). **Machine
+values** (port, context, slots, gpu-util) stay in `bundle.env`, and the receiving machine re-fits
+them to its own memory. Since 0.5.1 the values you set with `lmds set` (a proven image digest,
+`--tool-parser`, `--reasoning-parser`, `--engine-env`, `--extra-args`) are folded into the
+published header, so the store holds the recipe that actually started, not the plan's first guess.
+
+## Updating
+
+```bash
+cd ~/AutoDeployDGXProject && git pull && ./install.sh
+```
+
+> ⚠️ **`git pull` alone is not enough.** LMDS is installed as a copy into its venv (not editable),
+> so the `lmds` command keeps running the old code until `./install.sh` is run again. Existing
+> config and keys are kept.
 
 ## Pairs with LiteGate (optional)
 

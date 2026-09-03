@@ -7,7 +7,7 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.3.6-1f5fbf)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.5.1-1f5fbf)](CHANGELOG.md)
 [![tests](https://img.shields.io/badge/tests-1273-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
@@ -218,6 +218,7 @@ lmds enable <ชื่อ>        # กลับมาเองหลัง rebo
 lmds doctor <ชื่อ>        # ทำไมยัง download/start ไม่ผ่าน + คำสั่งแก้
 lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
 lmds rebuild <ชื่อ>       # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน
+lmds set <ชื่อ> --image <digest> --tool-parser qwen3_xml --extra-args "…"   # ค่าที่ทุกทาง start ใช้เหมือนกัน (0.5)
 lmds remove <ชื่อ>        # ลบทั้งหมด (--keep-weights = เก็บ weight)
 lmds recipes             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key
 lmds recipes --sync      # ดึงสูตรใหม่จากคลัง controller ของทีม
@@ -250,6 +251,9 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 
 > ส่งเฉพาะ **ค่าของโมเดล** (engine, image, parser, mmproj, measured caps) — **ค่าของเครื่อง**
 > (port, context, slots) อยู่ใน `bundle.env` ไม่ตามขึ้นไป เครื่องปลายทาง fit ใหม่ตามตัวเอง
+> 
+> **0.5.1:** ค่าที่ตั้งด้วย `lmds set` (image ที่พิสูจน์แล้ว, `--tool-parser`, `--reasoning-parser`, `--engine-env`,
+> `--extra-args`) ถูกพับลง header ตอน publish — คลังจึงได้สูตรที่ start ขึ้นจริง ไม่ใช่ค่าเดาของ plan
 > 
 > **หมายเหตุ llama.cpp**: controller สำหรับโมเดลที่มี chat template จะถูกสร้างด้วย `--jinja` โดยอัตโนมัติ — 
 > จำเป็นต่อ tool calling/function calling ของ llama.cpp รุ่นใหม่ (ไม่มี = tools ใช้ไม่ได้แม้ template รองรับ)

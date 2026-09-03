@@ -93,11 +93,14 @@ ENGINE_ENV="${ENGINE_ENV:-}"
 # ไม่เก็บใน bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่ `}` ตัวแรก JSON อย่าง
 # --speculative-config {"method":"mtp"} จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
 # แตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนติดกัน หรือใช้รูป --flag=value
+# ค่าตั้งต้นของแฟล็กเพิ่ม — publish เขียนค่าที่พิสูจน์แล้วลงตรงนี้ · single quote โดยเจตนา:
+# JSON เช่น --speculative-config {"method":"mtp"} มี } ซึ่งจะตัด ${VAR:-...} ขาดกลางคัน
+EXTRA_SERVE_ARGS_DEFAULT=''
 BUNDLE_ARGS="${BUNDLE_ARGS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.args}"
 if [[ -z "${EXTRA_SERVE_ARGS:-}" && -f "$BUNDLE_ARGS" ]]; then
   EXTRA_SERVE_ARGS="$(tr '\n' ' ' < "$BUNDLE_ARGS")"
 fi
-EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
+EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-$EXTRA_SERVE_ARGS_DEFAULT}"
 ADVERTISE_IP="${ADVERTISE_IP:-}"
 ADVERTISE_INTERFACE="${ADVERTISE_INTERFACE:-}"
 ROUTE_PROBE_IP="${ROUTE_PROBE_IP:-1.1.1.1}"

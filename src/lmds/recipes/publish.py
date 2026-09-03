@@ -16,6 +16,7 @@ context cap, slots) อยู่ใน bundle.env คนละไฟล์ ไ�
 
 from __future__ import annotations
 
+import re
 import socket
 from pathlib import Path
 
@@ -33,6 +34,67 @@ def default_local_repo() -> Path:
 
 def _is_remote(repo: str) -> bool:
     return "://" in repo or repo.startswith("git@")
+
+
+# ค่าที่ "พิสูจน์แล้ว" มักไม่ได้อยู่ใน controller — อยู่ใน bundle.env / bundle.args ที่ `lmds set` เขียน
+#
+# เคสจริง 2026-09-03: spark04 กับ spark-worker รันได้ก็เพราะ `lmds set --image <digest v0.28.0>
+# --tool-parser qwen3_xml --reasoning-parser qwen3 --extra-args "…MTP…"` แต่ header ของ controller
+# ยังเป็นค่าเดิมจาก plan (image nvcr ที่ล้ม, ไม่มี parser) · publish แบบเดิมส่ง header นั้นขึ้นไป
+# เครื่องปลายทาง sync มาก็ได้สูตรที่ start ไม่ขึ้น — ตรงข้ามกับจุดประสงค์ของคลัง
+#
+# พับเฉพาะ "ค่าของโมเดล" (image ที่มี kernel ตรง, parser, env ของ engine, แฟล็กเพิ่ม, mmproj)
+# ค่าของเครื่อง (port, context, gpu-util, slots, ชื่อที่เสิร์ฟ, bind) ไม่พับโดยเจตนา
+MODEL_KEYS = ("VLLM_IMAGE", "LLAMACPP_IMAGE", "SGLANG_IMAGE", "TOOL_CALL_PARSER",
+              "REASONING_PARSER", "ENGINE_ENV", "CHAT_TEMPLATE", "MMPROJ_FILE", "IMAGE_MIN_TOKENS")
+_ENV_LINE = re.compile(r'^([A-Z][A-Z0-9_]*)="?\$\{\1(:?-)(.*)\}"?\s*$')
+
+
+def bundle_overrides(bundle_dir: Path) -> dict[str, str]:
+    """ค่าของโมเดลที่ bundle.env/bundle.args ของ bundle นี้ทับไว้ — {} ถ้าไม่มี"""
+    out: dict[str, str] = {}
+    env = bundle_dir / "bundle.env"
+    if env.is_file():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            m = _ENV_LINE.match(line.strip())
+            if m and m.group(1) in MODEL_KEYS and m.group(3):
+                out[m.group(1)] = m.group(3)
+    args = bundle_dir / "bundle.args"
+    if args.is_file():
+        text = " ".join(args.read_text(encoding="utf-8").split())
+        if text:
+            out["EXTRA_SERVE_ARGS"] = text
+    return out
+
+
+def fold_overrides(controller_text: str, overrides: dict[str, str]) -> tuple[str, dict[str, str], list[str]]:
+    """เขียนค่าที่ทับไว้ลงเป็นค่าตั้งต้นใน header — คืน (text, ที่พับได้, ที่พับไม่ได้)
+
+    พับได้เฉพาะบรรทัดที่ header มีอยู่แล้ว (`KEY="${KEY:-…}"`) — ไม่ประดิษฐ์ตัวแปรใหม่ให้
+    controller ที่ไม่รู้จัก · EXTRA_SERVE_ARGS ลงที่ `EXTRA_SERVE_ARGS_DEFAULT='…'` (single quote)
+    เพราะ JSON มี } ที่จะตัด ${VAR:-…} ขาด — ของเดิมที่ยังไม่มีบรรทัดนี้จะถูกรายงานว่าพับไม่ได้
+    """
+    lines = controller_text.splitlines()
+    applied: dict[str, str] = {}
+    skipped: list[str] = []
+    for key, value in overrides.items():
+        if key == "EXTRA_SERVE_ARGS":
+            pat = re.compile(r"^EXTRA_SERVE_ARGS_DEFAULT='.*'\s*$")
+            repl = "EXTRA_SERVE_ARGS_DEFAULT='" + value.replace("'", "'\\''") + "'"
+        else:
+            pat = re.compile(rf'^{key}="?\$\{{{key}(:?-)(.*)\}}"?\s*(#.*)?$')
+            repl = None
+        for i, line in enumerate(lines):
+            m = pat.match(line)
+            if not m:
+                continue
+            lines[i] = repl if repl is not None else f'{key}="${{{key}{m.group(1)}{value}}}"'
+            applied[key] = value
+            break
+        else:
+            skipped.append(key)
+    text = "\n".join(lines) + ("\n" if controller_text.endswith("\n") else "")
+    return text, applied, skipped
 
 
 def measured_features(profile: dict) -> list[str]:
@@ -77,7 +139,8 @@ def stamp_features(controller_text: str, features: list[str]) -> str:
 
 
 def build_profile(slug: str, profile: dict, validated_on: str, host: str,
-                  features: list[str] | None = None) -> str:
+                  features: list[str] | None = None,
+                  overrides: dict[str, str] | None = None) -> str:
     """PROFILE.yaml ที่เก็บ provenance — ตรวจสอบย้อนได้ว่าใคร/เครื่องไหน/เวอร์ชันไหนยืนยัน
 
     lmds ไม่ได้ parse ไฟล์นี้ (มันอ่าน header ของ controller) — ไฟล์นี้ไว้ให้คน review
@@ -97,6 +160,8 @@ def build_profile(slug: str, profile: dict, validated_on: str, host: str,
             },
             "engine": (profile.get("runtime") or {}).get("engine", ""),
             "measured_features": feats,
+            # ค่าของโมเดลที่เครื่องนี้ต้องตั้งทับ plan ถึงจะรันได้ — คน review เห็นทันทีว่าต่างจากค่าเดา
+            "overrides": dict(overrides or {}),
             # ตัดค่าของเครื่องออกชัด ๆ — ไม่มี port/context/slots ในนี้โดยเจตนา
             "note": "model-intrinsic only; per-machine port/context live in bundle.env",
         },
@@ -126,7 +191,7 @@ def _ensure_local_git(path: Path) -> None:
 def publish(slug: str, controller_path: Path, profile: dict, *,
             features: list[str] | None = None,
             repo: str = "", ref: str = "main", now: str = "", host: str = "",
-            push: bool = True) -> dict:
+            push: bool = True, bundle_dir: Path | None = None) -> dict:
     """ส่ง controller ของ slug ขึ้นปลายทาง — คืนสรุป {target, remote, path, committed, features}
 
     repo ว่าง → local store · repo เป็น URL → fetch/clone แล้ว push (ถ้า push=True)
@@ -142,8 +207,10 @@ def publish(slug: str, controller_path: Path, profile: dict, *,
     validated_on = f"{now} · {host}".strip(" ·") or host
     feats = features if features is not None else measured_features(profile)
 
-    text = stamp_features(controller_path.read_text(encoding="utf-8"), feats)
-    profile_text = build_profile(slug, profile, validated_on, host, feats)
+    overrides = bundle_overrides(Path(bundle_dir) if bundle_dir else controller_path.parent)
+    text, applied, skipped = fold_overrides(controller_path.read_text(encoding="utf-8"), overrides)
+    text = stamp_features(text, feats)
+    profile_text = build_profile(slug, profile, validated_on, host, feats, overrides=applied)
 
     remote = bool(repo) and _is_remote(repo)
     if remote:
@@ -163,7 +230,8 @@ def publish(slug: str, controller_path: Path, profile: dict, *,
     _git("add", "-A", cwd=repo_dir)
     status = _git("status", "--porcelain", cwd=repo_dir)
     base = {"target": repo or str(repo_dir), "remote": remote, "features": feats,
-            "path": str(repo_dir / "controllers" / slug)}
+            "path": str(repo_dir / "controllers" / slug),
+            "overrides": applied, "unfolded": skipped}
     if not status.strip():
         return {**base, "committed": False}
     _git("commit", "-q", "-m", f"publish {slug} — validated {validated_on}", cwd=repo_dir)

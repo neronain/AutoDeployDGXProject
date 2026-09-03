@@ -17,7 +17,8 @@ from pathlib import Path
 # รับเฉพาะบรรทัดที่เริ่มชิดซ้าย = ตัวแปรตั้งค่าระดับบนสุดของสคริปต์ · ตัวแปรที่อยู่ในฟังก์ชัน
 # ย่อหน้าเสมอ จึงถูกคัดออกเอง (สำคัญกับ controller แบบ stacked ที่มีฟังก์ชันถามค่าคั่นกลาง
 # ก่อนบล็อกตั้งค่าจริง — ถ้าหยุดอ่านที่ฟังก์ชันแรกจะพลาดทั้งไฟล์)
-_ASSIGN = re.compile(r'^([A-Z][A-Z0-9_]*)="([^"\n]*)"\s*(?:#.*)?$')
+# รับทั้ง KEY="ค่า" และ KEY='ค่า' — แฟล็กเพิ่มที่มี JSON ต้องอยู่ใน single quote (ดู template)
+_ASSIGN = re.compile(r'^([A-Z][A-Z0-9_]*)=(?:"([^"\n]*)"|\'([^\'\n]*)\')\s*(?:#.*)?$')
 _DEFAULT = re.compile(r'^\$\{[A-Z][A-Z0-9_]*:-(.*)\}$')
 
 # `MODEL_FILES=( "ก.gguf" "ข.gguf" )` — ชิ้นแรกคือไฟล์ที่ controller เสิร์ฟจริง
@@ -62,7 +63,7 @@ def parse_header(text: str) -> dict[str, str]:
         found = _ASSIGN.match(line)          # ไม่ strip — บรรทัดที่ย่อหน้าคืออยู่ในฟังก์ชัน
         if not found:
             continue
-        key, raw = found.groups()
+        key, raw = found.group(1), (found.group(2) if found.group(2) is not None else found.group(3))
         if key in values:
             continue
         default = _DEFAULT.match(raw)
@@ -149,6 +150,15 @@ def recipe_from_controller(filename: str, text: str, origin: str = "") -> dict |
         recipe["image"] = meta["VLLM_IMAGE"]
     if meta.get("SERVED_MODEL_NAME"):
         recipe["served_model_name"] = meta["SERVED_MODEL_NAME"]
+    # ค่าที่ publish พับลงมาจาก bundle.env/bundle.args ของเครื่องที่พิสูจน์แล้ว — ของโมเดล ไม่ใช่ของเครื่อง
+    if meta.get("TOOL_CALL_PARSER"):
+        recipe["tool_parser"] = meta["TOOL_CALL_PARSER"]
+    if meta.get("REASONING_PARSER"):
+        recipe["reasoning_parser"] = meta["REASONING_PARSER"]
+    if meta.get("ENGINE_ENV"):
+        recipe["engine_env"] = meta["ENGINE_ENV"]
+    if meta.get("EXTRA_SERVE_ARGS_DEFAULT"):
+        recipe["extra_args"] = meta["EXTRA_SERVE_ARGS_DEFAULT"]
     # llama.cpp — ไฟล์ GGUF ที่ทดสอบมา · รุ่นใหม่เก็บไว้ในอาร์เรย์ MODEL_FILES
     # (ชิ้นแรก) ส่วนรุ่นเก่าตั้ง MODEL_FILE ตรง ๆ
     gguf = meta.get("MODEL_FILE") or meta.get("MODEL_FILES")

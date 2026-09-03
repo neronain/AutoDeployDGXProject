@@ -138,3 +138,102 @@ def test_publish_then_scan_reads_it_back(tmp_path):
     match = next((r for r in recipes if r["match"] == "org/Coder-30B-GGUF"), None)
     assert match is not None                      # อ่านเจอทั้งที่อยู่ใน controllers/<slug>/
     assert "tools (qwen3_coder)" in match["notes"]   # measured features เดินทางมาถึง
+
+
+VLLM_CONTROLLER = '''#!/bin/bash
+# q36 — vLLM single-node controller
+RUNTIME_LABEL="vLLM (Docker)"
+MODEL_ID="nvidia/Qwen3.6-35B-A3B-NVFP4"
+MODEL_LABEL="Qwen3.6 35B"
+VLLM_IMAGE="${VLLM_IMAGE:-nvcr.io/nvidia/vllm@sha256:654e}"
+ENGINE_ENV="${ENGINE_ENV:-}"
+EXTRA_SERVE_ARGS_DEFAULT=''
+BUNDLE_ARGS="${BUNDLE_ARGS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.args}"
+if [[ -z "${EXTRA_SERVE_ARGS:-}" && -f "$BUNDLE_ARGS" ]]; then
+  EXTRA_SERVE_ARGS="$(tr '\\n' ' ' < "$BUNDLE_ARGS")"
+fi
+EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-$EXTRA_SERVE_ARGS_DEFAULT}"
+TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-}"
+REASONING_PARSER="${REASONING_PARSER:-}"
+API_PORT="${API_PORT:-8000}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
+'''
+
+
+def _vllm_bundle(tmp_path):
+    ctl = tmp_path / "q36-single.sh"
+    ctl.write_text(VLLM_CONTROLLER)
+    ctl.chmod(0o755)
+    (tmp_path / "bundle.env").write_text(
+        'VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai@sha256:61fc}"\n'
+        'TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_xml}"\n'
+        'REASONING_PARSER="${REASONING_PARSER:-qwen3}"\n'
+        'API_PORT="${API_PORT:-8000}"\n'
+        'MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"\n'
+        'GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.8}"\n')
+    (tmp_path / "bundle.args").write_text(
+        '--kv-cache-dtype fp8\n--speculative-config {"method":"mtp","num_speculative_tokens":3}\n')
+    return ctl
+
+
+def test_publish_folds_proven_model_values_from_bundle_env_and_args(tmp_path):
+    """เคสจริง spark04/spark-worker (2026-09-03): รันได้เพราะ lmds set --image/--tool-parser/
+    --extra-args แต่ header ของ controller ยังเป็นค่า plan ที่ล้ม — publish แบบเดิมส่งค่าที่ล้มขึ้นคลัง
+    """
+    from lmds.recipes.controllers import parse_header
+
+    store = tmp_path / "store"
+    result = publish("q36", _vllm_bundle(tmp_path), PROFILE, repo=str(store), now="d", host="spark04",
+                     push=False)
+    assert result["unfolded"] == []
+    ctl = (store / "controllers" / "q36" / "q36-single.sh").read_text()
+    meta = parse_header(ctl)
+    # ค่าของโมเดล — พับลงมา
+    assert meta["VLLM_IMAGE"] == "vllm/vllm-openai@sha256:61fc"
+    assert meta["TOOL_CALL_PARSER"] == "qwen3_xml" and meta["REASONING_PARSER"] == "qwen3"
+    assert meta["EXTRA_SERVE_ARGS_DEFAULT"] == \
+        '--kv-cache-dtype fp8 --speculative-config {"method":"mtp","num_speculative_tokens":3}'
+    # ค่าของเครื่อง — ต้องยังเป็นค่าเดิมของ controller ไม่ใช่ของ spark04
+    assert meta["API_PORT"] == "8000" and meta["MAX_MODEL_LEN"] == "131072"
+    assert meta["GPU_MEMORY_UTILIZATION"] == "0.4"
+    # provenance บอกคน review ว่าค่าไหนถูกทับ
+    profile_yaml = yaml.safe_load((store / "controllers" / "q36" / "PROFILE.yaml").read_text())
+    assert profile_yaml["overrides"]["VLLM_IMAGE"] == "vllm/vllm-openai@sha256:61fc"
+    assert "API_PORT" not in profile_yaml["overrides"]
+
+
+def test_folded_extra_args_survive_bash_with_json_braces(tmp_path):
+    """JSON ใน ${VAR:-…} ถูก } ตัดขาด — นั่นคือเหตุผลของ single quote · ต้องพิสูจน์ด้วย bash จริง"""
+    store = tmp_path / "store"
+    publish("q36", _vllm_bundle(tmp_path), PROFILE, repo=str(store), now="d", host="h", push=False)
+    ctl = store / "controllers" / "q36" / "q36-single.sh"
+    header = "\n".join(l for l in ctl.read_text().splitlines()
+                       if not l.startswith("#!")) + '\nprintf "%s" "$EXTRA_SERVE_ARGS"\n'
+    out = subprocess.run(["bash", "-c", header], capture_output=True, text=True,
+                         cwd=tmp_path / "elsewhere" if (tmp_path / "elsewhere").mkdir() is None else tmp_path,
+                         env={"PATH": "/usr/bin:/bin"})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == '--kv-cache-dtype fp8 --speculative-config {"method":"mtp","num_speculative_tokens":3}'
+
+
+def test_publish_reports_keys_an_old_controller_cannot_hold(tmp_path):
+    """controller รุ่นก่อน EXTRA_SERVE_ARGS_DEFAULT — บอกว่าพับไม่ได้ ดีกว่าหายเงียบ"""
+    ctl = _ctl(tmp_path)                       # header เก่า ไม่มีบรรทัด image/parser/args
+    (tmp_path / "bundle.args").write_text("--jinja\n")
+    (tmp_path / "bundle.env").write_text('LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-ghcr.io/x@sha256:1}"\n')
+    result = publish("coder-30b", ctl, PROFILE, repo=str(tmp_path / "store"), now="d", host="h",
+                     push=False)
+    assert set(result["unfolded"]) == {"EXTRA_SERVE_ARGS", "LLAMACPP_IMAGE"}
+
+
+def test_header_parser_reads_single_quoted_defaults():
+    from lmds.recipes.controllers import parse_header, recipe_from_controller
+
+    text = VLLM_CONTROLLER.replace("EXTRA_SERVE_ARGS_DEFAULT=''",
+                                   "EXTRA_SERVE_ARGS_DEFAULT='--a {\"b\":1}'")
+    text = text.replace('TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-}"', 'TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_xml}"')
+    meta = parse_header(text)
+    assert meta["EXTRA_SERVE_ARGS_DEFAULT"] == '--a {"b":1}'
+    recipe = recipe_from_controller("q36-single.sh", text)
+    assert recipe["extra_args"] == '--a {"b":1}' and recipe["tool_parser"] == "qwen3_xml"

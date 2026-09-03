@@ -1,6 +1,26 @@
 # Changelog
 
-## ยังไม่ปล่อย
+## 0.5.1 — 2026-09-03
+
+วันเดียวบนฟลีตจริง 14 เครื่อง: deploy 4 โมเดลใหม่ (spark-02 ×2, spark-head, spark-worker, spark04)
+แล้วเก็บทุกอย่างที่พังกลับมาเป็นโค้ด · ทุกข้อมีเทสที่ล้มกับโค้ดเดิม
+
+**publish พับค่าที่ `lmds set` ไว้ลง header — คลังได้สูตรที่รันได้จริง ไม่ใช่ค่าเดาของ plan**
+
+spark04 / spark-worker 2026-09-03: ทั้งคู่รันได้เพราะ `lmds set --image <digest v0.28.0>
+--tool-parser qwen3_xml --reasoning-parser qwen3 --extra-args "…MTP…"` แต่ค่าพวกนี้อยู่ใน
+`bundle.env`/`bundle.args` · header ของ controller ยังเป็น image จาก plan ที่ start ไม่ขึ้น
+และไม่มี parser → `lmds recipes --publish` ส่งค่าที่ล้มขึ้นคลัง เครื่องที่ sync มาก็เจอปัญหาเดิมซ้ำ
+
+- `publish` พับ **ค่าของโมเดล** จาก bundle.env (`VLLM_IMAGE`/`LLAMACPP_IMAGE`, `TOOL_CALL_PARSER`,
+  `REASONING_PARSER`, `ENGINE_ENV`, `CHAT_TEMPLATE`, `MMPROJ_FILE`, `IMAGE_MIN_TOKENS`) ลงเป็นค่าตั้งต้น
+  ใน header · ค่าของเครื่อง (port, context, gpu-util, slots, bind, ชื่อที่เสิร์ฟ) ไม่พับโดยเจตนา
+- แฟล็กเพิ่มจาก `bundle.args` ลงที่ `EXTRA_SERVE_ARGS_DEFAULT='…'` (single quote — JSON มี `}` ที่จะตัด
+  `${VAR:-…}` ขาด) · template ทั้งสามอ่านค่านี้เมื่อไม่มี env และไม่มี bundle.args
+- `PROFILE.yaml` มี `overrides:` ให้คน review เห็นว่าค่าไหนต่างจาก plan · CLI บอกว่าพับอะไรไป
+  และเตือนเมื่อ controller รุ่นเก่าไม่มีบรรทัดรองรับ (ต้อง `lmds rebuild` ก่อน)
+- ฝั่ง sync อ่าน single quote ได้แล้ว · สูตรพก `tool_parser` / `reasoning_parser` / `engine_env` /
+  `extra_args` ไปด้วย
 
 **controller บอกสาเหตุจริงเมื่อ container ตายก่อน health**
 

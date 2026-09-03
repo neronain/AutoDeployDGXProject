@@ -411,6 +411,12 @@ def list_recipes(
             console.print("[yellow]⚠ ไม่มี measured features[/yellow] — profile เป็น rule-based "
                           "อาจไม่ครบ · ระบุเองด้วย --features tools,vision,reasoning ให้สูตรพก "
                           "ความสามารถที่วัดจริงไปด้วย")
+        if result.get("overrides"):
+            folded = " · ".join(f"{k}={v[:60]}" for k, v in result["overrides"].items())
+            console.print(f"[dim]พับค่าที่ lmds set ไว้ลง header แล้ว: {folded}[/dim]")
+        if result.get("unfolded"):
+            console.print(f"[yellow]⚠ พับไม่ได้ (controller รุ่นเก่าไม่มีบรรทัดรองรับ): "
+                          f"{', '.join(result['unfolded'])}[/yellow] — lmds rebuild แล้ว publish ใหม่")
         where = result["target"] if result["remote"] else f"local: {result['target']}"
         if not result["committed"]:
             console.print(f"[yellow]ไม่มีอะไรเปลี่ยน[/yellow] — {publish} ตรงกับที่อยู่ในคลังแล้ว ({where})")

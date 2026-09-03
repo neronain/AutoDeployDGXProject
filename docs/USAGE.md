@@ -1246,6 +1246,24 @@ commit ไหน ดึงเมื่อไหร่
 สำเนารีโปอยู่ที่ `~/.config/lmds/controllers/<ชื่อรีโป>` (เป็นแคช ลบทิ้งได้) · สูตรที่ดึงมาแล้ว
 อยู่ใน `~/.config/lmds/recipes-synced.yaml`
 
+### ส่งสูตรที่รันผ่านแล้วขึ้นคลัง — `lmds recipes --publish`
+
+```bash
+lmds recipes --publish <slug> --features tools,vision,reasoning   # ระบุที่วัดได้จริง ไม่ใช่ที่ profile เดา
+```
+
+**ตั้งแต่ 0.5.1 publish พับค่าที่ `lmds set` ไว้ลง header ให้เอง** — image ที่มี kernel ตรงรุ่น,
+`--tool-parser` / `--reasoning-parser`, `--engine-env`, และ `--extra-args` (ลงที่
+`EXTRA_SERVE_ARGS_DEFAULT='…'` แบบ single quote เพราะ JSON มี `}`) · เครื่องที่ sync ไปจึงได้สูตรที่
+start ขึ้นจริง ไม่ใช่ค่าเดาของ plan ที่เคยล้ม
+
+ค่าของเครื่อง (port, context, gpu-util, slots, bind, ชื่อที่เสิร์ฟ) **ไม่พับโดยเจตนา** — เครื่องปลายทาง
+fit ใหม่ตามหน่วยความจำของตัวเอง · `PROFILE.yaml` ที่ไปด้วยมี `overrides:` ให้คน review เห็นว่า
+ค่าไหนต่างจาก plan · controller ที่ generate ก่อน 0.5.1 ไม่มีบรรทัดรองรับ → CLI เตือน "พับไม่ได้"
+ให้ `lmds rebuild <slug>` ก่อนแล้ว publish ใหม่
+
+ปลายทางตั้งที่ `recipes.publish_repo` ใน config (ว่าง = local store ในเครื่อง ไม่แตะรีโปของทีม)
+
 ## 4.5.2 เครื่องจัดการโชว์โมเดลที่ไม่ใช่ของตัวเอง — `lmds prune`
 
 เครื่องที่ใช้ **สร้าง bundle ให้เครื่องอื่น** จะสะสมทะเบียนของ bundle ที่ย้าย/ลบไปแล้ว
