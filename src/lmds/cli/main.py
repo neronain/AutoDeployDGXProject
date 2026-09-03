@@ -171,6 +171,7 @@ def node_add(
         probe,
         install_lmds,
         public_key_path,
+        status_from_probe,
         suggest_cluster_ip,
         suggest_name,
     )
@@ -213,7 +214,8 @@ def node_add(
                     info, reachable = probe(node), True
                     node.last_error = ""
         host_info = info.get("host") or {}
-        node.lmds_version = host_info.get("lmds_version", "")
+        for key, value in status_from_probe(info).items():
+            setattr(node, key, value)
         node.last_seen = _now() if reachable else ""
         if reachable and not node.cluster_ip:
             # เสนอเฉย ๆ ไม่ตั้งให้เอง — เดา IP ผิดแล้ว stacked จะค้างตอน NCCL init โดยไม่บอกสาเหตุ
@@ -252,7 +254,14 @@ def node_list(
 ) -> None:
     """เครื่องทั้งหมดที่อยู่ในทะเบียน — เรียงตามลำดับที่ลากจัดไว้ในหน้าเว็บ"""
     from lmds.config import Settings
-    from lmds.nodes import NodeError, in_saved_order, load, probe, update
+    from lmds.nodes import (
+        NodeError,
+        in_saved_order,
+        load,
+        probe,
+        status_from_probe,
+        update,
+    )
 
     nodes = in_saved_order(load(), Settings.load().ui.node_order)
     if not nodes:
@@ -260,11 +269,16 @@ def node_list(
         return
 
     def row_for(node):
+        # host ในทะเบียนคือ "ที่อยู่ที่ hub ใช้ SSH" ซึ่งเป็นชื่อได้ (`orb`, ชื่อบน Tailscale)
+        # และเครื่องหลัง NAT มองจาก hub เป็นคนละที่อยู่กับที่เครื่องในวงเดียวกันใช้เรียกมัน
+        local_ip = node.local_ip
         if check:
             try:
                 info = probe(node)
-                version = (info.get("host") or {}).get("lmds_version", "")
-                update(node.name, last_seen=_now(), last_error="", lmds_version=version)
+                fields = status_from_probe(info)
+                version = fields.get("lmds_version", node.lmds_version)
+                local_ip = fields.get("local_ip", local_ip)
+                update(node.name, last_seen=_now(), last_error="", **fields)
                 status = f"[green]ต่อได้[/green] · โมเดล {len(info.get('models', []))} ตัว"
                 # "0 ตัว" บนเครื่องที่มี inference server รันอยู่จริงคือคำตอบที่ผิด —
                 # node รุ่นเก่าไม่ส่งคีย์นี้มา (ไม่มี = ไม่รู้ ไม่ใช่ไม่มี) จึงเงียบไว้
@@ -278,7 +292,8 @@ def node_list(
         else:
             version = node.lmds_version
             status = node.last_seen or "—"
-        return (node.name, f"{node.target}:{node.port}", version or "—", status, node.note)
+        return (node.name, f"{node.target}:{node.port}", local_ip or "—",
+                version or "—", status, node.note)
 
     # จัดกลุ่มตาม site — เครื่องเยอะจากหลายไซต์จะได้ไม่กองรวมเป็นลิสต์ยาวจนหาไม่เจอ
     # เรียงให้ site ที่ยังไม่จัดกลุ่ม ("—") อยู่ท้ายสุด ที่เหลือเรียงตามชื่อไซต์
@@ -292,7 +307,7 @@ def node_list(
     for site in ordered:
         title = f"ไซต์: {site}" if site else ("เครื่องในทะเบียน" if not multi else "— ยังไม่จัดไซต์ —")
         table = Table(title=title)
-        for col in ("ชื่อ", "ปลายทาง", "lmds",
+        for col in ("ชื่อ", "ปลายทาง", "IP ของเครื่อง", "lmds",
                     "สถานะ" if check else "เห็นล่าสุด", "โน้ต"):
             table.add_column(col)
         for node in groups[site]:
@@ -610,7 +625,15 @@ def node_install(
     ทุกเครื่องที่ hub คุมต้องมี `lmds` อยู่บนเครื่อง — hub ไม่ได้ส่ง agent ไปรันเอง แต่เรียก
     `lmds agent info` ผ่าน SSH คำสั่งนี้จึงเป็นวิธีทำให้เครื่องปลายทางพร้อมโดยไม่ต้อง ssh เข้าไปเอง
     """
-    from lmds.nodes import NodeError, find, install_lmds, load, probe, update
+    from lmds.nodes import (
+        NodeError,
+        find,
+        install_lmds,
+        load,
+        probe,
+        status_from_probe,
+        update,
+    )
 
     # อัปเดตทีละเครื่องด้วยมือแปลว่ามีวันลืมเครื่องหนึ่ง แล้วมันค้างเวอร์ชันเก่าอยู่เงียบ ๆ
     # จนกว่าจะมีคนสังเกตเห็น (เจอจริง: msi-6 ค้างที่ 0.1.0 อยู่หลายรอบ)
@@ -628,8 +651,9 @@ def node_install(
                 err_console.print(f"[red]ไม่สำเร็จ[/red] {(result.stderr or '').strip()[-200:]}")
                 continue
             try:
-                version = (probe(target).get("host") or {}).get("lmds_version", "")
-                update(target.name, lmds_version=version, last_seen=_now(), last_error="")
+                fields = status_from_probe(probe(target))
+                version = fields.get("lmds_version", "")
+                update(target.name, last_seen=_now(), last_error="", **fields)
                 console.print(f"[green]พร้อมแล้ว[/green] — lmds {version}")
             except NodeError as exc:
                 failed.append(target.name)
@@ -673,8 +697,9 @@ def node_install(
     except NodeError as exc:
         err_console.print(f"[red]ติดตั้งแล้วแต่ยังอ่านสถานะไม่ได้: {exc}[/red]")
         raise typer.Exit(code=1)
-    version = (info.get("host") or {}).get("lmds_version", "")
-    update(name, lmds_version=version, last_seen=_now(), last_error="")
+    fields = status_from_probe(info)
+    version = fields.get("lmds_version", "")
+    update(name, last_seen=_now(), last_error="", **fields)
     console.print(f"[green]พร้อมแล้ว[/green] — {node.name} รัน lmds {version}")
 
 @node_app.command("set")
@@ -2424,12 +2449,28 @@ def _ram_bar(used: float, total: float, width: int = 18) -> str:
     return f"[{color}]{'▰' * filled}[/{color}]{'▱' * (width - filled)} {percent:.0f}%"
 
 
+def _address_label(address: dict) -> str:
+    """`10.2.1.70/24 eth0` — prefix บอกวง ชื่อการ์ดบอกว่าเสียบอยู่เส้นไหน"""
+    text = address["ip"]
+    if address.get("prefix"):
+        text += f"/{address['prefix']}"
+    if address.get("iface"):
+        text += f" [dim]{address['iface']}[/dim]"
+    if address.get("link_local"):
+        text += " [yellow](link-local)[/yellow]"
+    return text
+
+
 def _render_host_panel() -> None:
     from lmds.hardware import host_summary
 
     host = host_summary()
     parts = [f"[bold]{host.hostname}[/bold]", host.ip, host.arch, f"profile: {host.profile.value}"]
     console.print("🖥  " + " · ".join(parts))
+    # เครื่องที่มีหลายเส้น (LAN + Tailscale + สายคลัสเตอร์) — บรรทัดบนบอกได้เส้นเดียวคือเส้นที่
+    # ออกเน็ต ซึ่งบ่อยครั้งไม่ใช่เส้นที่คนอื่นใช้ยิงเข้ามา · เส้นเดียวก็ไม่ต้องพูดซ้ำ
+    if len(host.addresses) > 1:
+        console.print("🌐 IP: " + " · ".join(_address_label(a) for a in host.addresses))
     if host.gpus:
         gpu_bits = []
         for gpu in host.gpus:
@@ -2481,6 +2522,9 @@ def _render_all_nodes() -> None:
 
     table = Table(title=f"เครื่องอื่นในทะเบียน ({len(nodes)})")
     table.add_column("เครื่อง")
+    # ที่อยู่ที่ใช้ SSH ไม่ได้ตอบว่า "เครื่องนั้นอยู่ IP ไหนในวง" — เป็นชื่อได้ และเครื่องหลัง
+    # NAT มองจาก hub เป็นคนละที่อยู่กับที่เครื่องข้าง ๆ มันใช้เรียกกันเอง
+    table.add_column("IP")
     table.add_column("โมเดล (slug)")
     table.add_column("engine")
     table.add_column("port")
@@ -2490,13 +2534,18 @@ def _render_all_nodes() -> None:
         try:
             info = probe(node)
         except NodeError as exc:
-            table.add_row(f"[bold]{node.name}[/bold]", "—", "—", "—",
+            # ต่อไม่ได้ = ไม่มีค่าใหม่ · ค่าล่าสุดที่ทะเบียนจำไว้คือสิ่งเดียวที่ยังช่วยตามเครื่องได้
+            table.add_row(f"[bold]{node.name}[/bold]", f"[dim]{node.local_ip or '—'}[/dim]",
+                          "—", "—", "—",
                           f"[red]ติดต่อไม่ได้[/red] {str(exc).splitlines()[0][:60]}")
             continue
+        host = info.get("host") or {}
+        local_ip = host.get("ip") or node.local_ip or "—"
         models = info.get("models") or []
-        gpu = ", ".join(g["name"].replace("NVIDIA ", "") for g in (info.get("host") or {}).get("gpus", []))
+        gpu = ", ".join(g["name"].replace("NVIDIA ", "") for g in host.get("gpus", []))
         if not models:
-            table.add_row(f"[bold]{node.name}[/bold]", "[dim](ยังไม่มีโมเดล)[/dim]", "—", "—",
+            table.add_row(f"[bold]{node.name}[/bold]", local_ip,
+                          "[dim](ยังไม่มีโมเดล)[/dim]", "—", "—",
                           f"[green]ต่อได้[/green] · {gpu or 'ไม่พบ GPU'}")
             continue
         for index, model in enumerate(models):
@@ -2507,6 +2556,7 @@ def _render_all_nodes() -> None:
             else:
                 status = "○ stopped"
             table.add_row(f"[bold]{node.name}[/bold]" if index == 0 else "",
+                          local_ip if index == 0 else "",
                           model.get("slug", ""), model.get("engine", ""),
                           str(model.get("port") or "-"), status)
 
@@ -3511,7 +3561,7 @@ def hardware() -> None:
             table.add_row(f"GPU {i}", f"{gpu.name} ({vram}, {cc}) {tested}")
     else:
         table.add_row("GPU", "ไม่พบ")
-    from lmds.hardware.profiler import detect_mem, primary_ip
+    from lmds.hardware.profiler import detect_mem, local_addresses, primary_ip
 
     total_gb, available_gb = detect_mem()
     if total_gb and available_gb is not None:
@@ -3528,7 +3578,10 @@ def hardware() -> None:
         )
     else:
         table.add_row("Disk ($HOME)", "ตรวจไม่ได้")
-    table.add_row("IP", primary_ip())
+    # ทุกเส้น ไม่ใช่แค่เส้นที่ default route ออก — บนเครื่องที่ NAT ออกไป (คอนเทนเนอร์,
+    # VM ของ OrbStack) เส้นนั้นไม่ใช่เส้นที่คนอื่นใช้ยิงเข้ามา และเป็นค่าที่คนก๊อปไปใช้ผิดบ่อย
+    addresses = local_addresses()
+    table.add_row("IP", "\n".join(_address_label(a) for a in addresses) or primary_ip())
     table.add_row("Docker", "✅" if report.docker else "❌")
     table.add_row("NVIDIA Container Toolkit", "✅" if report.nvidia_container_toolkit else "❌")
     table.add_row("Profile", report.profile.value)

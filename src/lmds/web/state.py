@@ -200,7 +200,7 @@ def _job_payload(jobs_module, slug: str) -> dict | None:
 
 
 def _refresh_node(name: str) -> None:
-    from lmds.nodes import NodeError, find, probe, update
+    from lmds.nodes import NodeError, find, probe, status_from_probe, update
 
     node = find(name)
     if node is None:
@@ -208,7 +208,7 @@ def _refresh_node(name: str) -> None:
     try:
         info = probe(node)
         STORE.set_node(name, info)
-        update(name, last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
+        update(name, last_error="", **status_from_probe(info))
     except NodeError as exc:
         STORE.set_node(name, None, str(exc)[:300])
         try:

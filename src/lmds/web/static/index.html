@@ -129,6 +129,12 @@ h1 {
   background: color-mix(in srgb, var(--accent, #1f5fbf) 16%, transparent);
   color: var(--accent, #1f5fbf); border-radius: 6px; padding: 1px 7px; margin-left: 6px;
   vertical-align: middle; white-space: nowrap; }
+/* IP ที่เครื่องนั้นถืออยู่จริง — อยู่บนบรรทัดชื่อเพราะบรรทัดนี้เป็นบรรทัดเดียวที่เหลือตอนย่อ
+   และ "เครื่องนี้คือ IP ไหน" เป็นคำถามที่ถามตอนกวาดตาดูทั้งฟลีต ไม่ใช่ตอนกางดูทีละเครื่อง */
+.nip { font-weight: 500; font-size: calc(11.5px * var(--fs)); letter-spacing: 0;
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--fg3); margin-left: 8px; vertical-align: middle; white-space: nowrap; }
+.nip:empty { display: none; }
 code {
   font-family: var(--mono); font-size: calc(12px * var(--fs)); background: var(--sunken);
   border: 1px solid var(--line); padding: 2px 6px; border-radius: var(--r-sm);
@@ -519,6 +525,9 @@ pre {
   font-variant-numeric: tabular-nums;
 }
 .npill .muted { font-size: calc(11px * var(--fs)); text-transform: uppercase; letter-spacing: .05em; }
+/* ชื่อการ์ดเป็น "ค่าที่เอาไปใช้ต่อ" ไม่ใช่ป้ายกำกับ — ตัวใหญ่ทั้งหมดทำให้ en0 กลายเป็น EN0
+   ซึ่งพิมพ์ตามแล้วผิดทั้ง `--cluster-iface` และคำสั่ง `ip` บนเครื่องนั้น */
+.npill .ifn { font-size: calc(11px * var(--fs)); color: var(--fg3); }
 .cgroup {
   border: 1px solid var(--line); border-left: 3px solid var(--line2);
   border-radius: var(--r); padding: 12px 14px; margin-bottom: 10px; background: var(--sunken);
@@ -1043,7 +1052,10 @@ let HOST_ROLE = { control_plane: false, engines: [], evidence: "" };
 
 function renderHost(h, models) {
   HOST_ROLE = h.role || HOST_ROLE;
-  document.getElementById("host").textContent = `${h.hostname || ""} · ${h.ip || ""}`;
+  const hostLine = document.getElementById("host");
+  hostLine.textContent = `${h.hostname || ""} · ${ipLabel(h)}`;
+  // เครื่องที่มีหลายเส้น (LAN + Tailscale + สายคลัสเตอร์) เห็นได้ครบโดยไม่กินที่บนหัว
+  hostLine.title = ipTitle(h);
   const gpu = h.gpus[0];
   const unified = h.memory_model === "unified";
   const cards = [];
@@ -2661,7 +2673,7 @@ function nodeCard(node) {
       <div class="grow">
         <div class="name">${esc(node.name)}${node.site
           ? ` <span class="nsite" title="ไซต์ที่เครื่องนี้ไปตั้งอยู่ — จัดกลุ่มด้วย: lmds node set ${esc(node.name)} --site">${esc(node.site)}</span>`
-          : ""}</div>
+          : ""}<span class="nip"></span></div>
         <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
       </div>
       <span class="nsum"></span>
@@ -2726,6 +2738,27 @@ function systemCard(host) {
       ${gauge(diskPct, 100, "Disk free", "%", freeColour(diskPct),
               free != null ? `${gb(free)} / ${gb(diskTotal)}` : "")}
     </div>
+    ${addressRow(host)}
+  </div>`;
+}
+
+// ทุกเส้นที่เครื่องนี้ถือ IPv4 อยู่ · คำถามแรกหลัง deploy เสร็จคือ "แล้วยิงเข้ามาที่ไหน"
+// ซึ่งตอบด้วยที่อยู่ที่ใช้ SSH ไม่ได้ — นั่นคือมุมมองของ hub เครื่องเดียว และเป็นชื่อได้
+// (`orb`, ชื่อบน Tailscale) · เครื่องหลัง NAT ยิ่งต่าง: ที่อยู่ที่ hub เห็นไม่ใช่ที่อยู่
+// ที่เครื่องในวงเดียวกันใช้เรียกมัน
+function addressRow(host) {
+  const list = (host.ips || []).length
+    ? host.ips
+    : (host.ip ? [{ iface: "", ip: host.ip, prefix: null, primary: true, link_local: false }] : []);
+  if (!list.length) return "";
+  const why = a => (a.iface ? a.iface + " · " : "") + a.ip + (a.prefix != null ? "/" + a.prefix : "")
+    + (a.link_local ? " · link-local (169.254.x.x) — เส้นนี้ยังไม่ได้ตั้งค่า IP จริง"
+       : a.primary ? " · เส้นที่ออกเน็ต (default route)" : "");
+  return `<div class="npills" style="margin-top:10px;align-items:center">
+    <span class="dim" style="flex:none">IP ของเครื่องนี้</span>
+    ${list.map(a => `<span class="npill${a.link_local ? " dim" : ""}" title="${esc(why(a))}">${
+        a.primary ? `<b>${esc(a.ip)}</b>` : esc(a.ip)}${
+        a.iface ? ` <span class="ifn">${esc(a.iface)}</span>` : ""}</span>`).join("")}
   </div>`;
 }
 
@@ -3071,11 +3104,15 @@ async function refreshNodes() {
         dot: block.querySelector(".dot"),
         version: block.querySelector(".nver"),
         summary: block.querySelector(".nsum"),
+        ip: block.querySelector(".nip"),
         body,
         out: block.querySelector(".nout"),
       });
       loadNode(node.name);
     }
+    // ค่าที่ทะเบียนจำไว้จากรอบก่อน — ขึ้นทันทีตั้งแต่การ์ดโผล่โดยไม่ต้องรอ SSH รอบใหม่
+    // และเป็นค่าเดียวที่ยังเหลือให้ดูตอนเครื่องนั้นต่อไม่ได้
+    paintNodeIp(nodeRows.get(node.name), { ip: node.local_ip });
   }
   for (const [name, row] of nodeRows) {
     if (!seen.has(name)) { row.block.remove(); nodeRows.delete(name); }
@@ -4264,9 +4301,38 @@ function cacheChip(cache) {
             สิทธิ์แคช <b>ต้องแก้</b></span>`;
 }
 
+// IP ที่ "เครื่องนั้น" รายงานว่าตัวเองถืออยู่ — ไม่ใช่ที่อยู่ที่ hub ใช้ SSH เข้าไป
+// (host ในทะเบียนเป็นชื่อได้ และเครื่องหลัง NAT มองจาก hub เป็นคนละที่อยู่กับที่มันใช้จริง)
+function ipLabel(host) {
+  const list = (host && host.ips) || [];
+  const best = list.find(a => a.primary) || list[0];
+  return (best && best.ip) || (host && host.ip) || "";
+}
+
+function ipTitle(host) {
+  const list = (host && host.ips) || [];
+  const head = "IP ที่เครื่องนี้รายงานว่าตัวเองถืออยู่ — คนละอย่างกับที่อยู่ที่ hub ใช้ SSH เข้าไป";
+  if (!list.length) return head;
+  return head + "\n" + list.map(a =>
+    `${a.ip}${a.prefix != null ? "/" + a.prefix : ""}${a.iface ? "  " + a.iface : ""}`
+    + (a.link_local ? "  · link-local ยังไม่ได้ตั้งค่า" : a.primary ? "  · ออกเน็ตทางนี้" : "")
+  ).join("\n");
+}
+
+function paintNodeIp(row, host) {
+  if (!row || !row.ip) return;
+  const label = ipLabel(host);
+  // ไม่มีค่าใหม่ = อย่าลบของเดิมทิ้ง · ค่าล่าสุดที่เคยเห็นมีประโยชน์กว่าช่องว่าง โดยเฉพาะ
+  // ตอนเครื่องดับ ซึ่งเป็นตอนที่คนอยากรู้พอดีว่าจะไปตามที่ IP ไหน
+  if (!label) return;
+  row.ip.textContent = label;
+  row.ip.title = ipTitle(host);
+}
+
 function paintSummary(name, host, sum) {
   const row = nodeRows.get(name);
   if (row && row.summary) row.summary.innerHTML = summaryMarkup(host, sum);
+  paintNodeIp(row, host);
 }
 
 function nodeIsInUse(name) {

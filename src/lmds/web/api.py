@@ -1167,6 +1167,9 @@ def create_app(token: str = "") -> FastAPI:
             {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
              "site": n.site,
              "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
+             # IP ที่เครื่องนั้นรายงานเอง — ค่าล่าสุดจากทะเบียน จึงบอกได้ทันทีตั้งแต่การ์ดขึ้น
+             # และยังบอกได้ตอนเครื่องดับ (host ที่ใช้ SSH เป็นชื่อได้ ไม่ใช่ IP เสมอไป)
+             "local_ip": n.local_ip,
              "cluster_ip": n.cluster_ip, "cluster_iface": n.cluster_iface,
              # deploy สำหรับเครื่องอื่นต้องระบุ target เอง — แนะนำจากฮาร์ดแวร์ที่เคยตรวจไว้
              "suggested_target": _node_target_hint(n.name)}
@@ -1358,7 +1361,7 @@ def create_app(token: str = "") -> FastAPI:
     @app.get("/api/nodes/{name}/inventory", dependencies=guarded)
     def node_inventory(name: str, refresh: bool = False) -> dict:
         """สถานะของ node หนึ่งเครื่อง — เครื่องล่มต้องไม่ทำให้ทั้งหน้าพัง จึงคืน reachable=false"""
-        from lmds.nodes import NodeError, find, probe, update
+        from lmds.nodes import NodeError, find, probe, status_from_probe, update
 
         node = find(name)
         if node is None:
@@ -1392,7 +1395,7 @@ def create_app(token: str = "") -> FastAPI:
         except NodeError as exc:
             remember(last_error=str(exc)[:200])
             return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
-        remember(last_error="", lmds_version=(info.get("host") or {}).get("lmds_version", ""))
+        remember(last_error="", **status_from_probe(info))
         return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **info})
 
     @app.get("/api/scan", dependencies=guarded)
@@ -1682,7 +1685,8 @@ def create_app(token: str = "") -> FastAPI:
     def node_add(body: dict) -> dict:
         """เพิ่มเครื่อง — รหัสผ่านใช้ครั้งเดียวเพื่อติดตั้ง key แล้วทิ้ง ไม่เขียนลงดิสก์"""
         from lmds.nodes import (
-            Node, NodeError, add, check_login, ensure_key, install_key, load, probe, suggest_name,
+            Node, NodeError, add, check_login, ensure_key, install_key, load, probe,
+            status_from_probe, suggest_name,
         )
 
         host = (body.get("host") or "").strip()
@@ -1714,7 +1718,8 @@ def create_app(token: str = "") -> FastAPI:
             except NodeError as exc:
                 info, reachable = {}, False
                 node.last_error = str(exc)[:200]
-            node.lmds_version = (info.get("host") or {}).get("lmds_version", "")
+            for key, value in status_from_probe(info).items():
+                setattr(node, key, value)
             node.last_seen = _timestamp() if reachable else ""
             add(node)
         except NodeError as exc:

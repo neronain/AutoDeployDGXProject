@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 import platform
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -251,6 +253,10 @@ class HostSummary:
     gpus: list[DetectedGpu] = field(default_factory=list)
     ram_total_gb: float | None = None
     ram_available_gb: float | None = None
+    # ที่อยู่ IPv4 ทุกเส้นของเครื่องนี้ — `ip` ข้างบนคือเส้นที่ออกเน็ตเส้นเดียว ซึ่งบ่อยครั้ง
+    # ไม่ใช่เส้นที่คนอื่นใช้ยิงเข้ามา (VM/คอนเทนเนอร์ที่ NAT ออกไป, เครื่องที่มีทั้ง LAN
+    # และ Tailscale) · ว่าง = ตรวจไม่ได้บนเครื่องนี้ ไม่ใช่ "ไม่มีเน็ต"
+    addresses: list[dict] = field(default_factory=list)
 
     @property
     def ram_used_gb(self) -> float | None:
@@ -271,6 +277,7 @@ def host_summary() -> HostSummary:
         gpus=gpus,
         ram_total_gb=total,
         ram_available_gb=available,
+        addresses=local_addresses(),
     )
 
 
@@ -289,6 +296,57 @@ def _sysfs(path: str) -> str:
         return ""
 
 
+# การ์ดเสมือนที่ไม่ใช่ "ทางเข้าเครื่องนี้" — bridge ของ docker/k8s กับปลาย veth ของคอนเทนเนอร์
+# ที่อยู่บนเส้นพวกนี้ยิงจากเครื่องอื่นไม่ถึง เอามาโชว์ปนกับ IP จริงคือชวนให้คนก๊อปผิดเส้น
+_VIRTUAL_IFACE_PREFIXES = ("docker", "br-", "veth", "virbr", "cni", "flannel")
+
+# `ifconfig` มีสองสำเนียง: ของใหม่เขียน `inet 10.0.0.5 netmask 255.255.255.0`
+# ของ net-tools รุ่นเก่าเขียน `inet addr:10.0.0.5  Mask:255.255.255.0` — รับทั้งคู่
+_INET_RE = re.compile(r"\binet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)")
+_MASK_RE = re.compile(r"(?:\bnetmask\s+|\bMask:)(\S+)")
+
+
+def _netmask_bits(raw: str) -> int | None:
+    """netmask → prefix length · macOS ให้มาเป็นเลขฐานสิบหก (`0xffffff00`) ไม่ใช่ 255.255.255.0"""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw, 16) if raw.lower().startswith("0x") else int(ipaddress.IPv4Address(raw))
+    except ValueError:
+        return None
+    return bin(value).count("1")
+
+
+def _ifconfig_addresses() -> dict[str, str]:
+    """ทางสำรองเมื่อไม่มี iproute2 — คืนรูปเดียวกับ `ip -o -4 addr show` (iface → CIDR)
+
+    เจอตอนเทสบน macOS/OrbStack: เครื่องที่ไม่มีคำสั่ง `ip` ทำให้ทั้ง `lmds info` และ
+    การ์ดของเครื่องนั้นตอบว่า "ตรวจไม่ได้" ทั้งที่มี IP อยู่ครบ · `ifconfig` มีมาให้ทั้ง
+    macOS และ image เก่าที่ยังไม่ย้ายไป iproute2 จึงใช้เป็นตาข่ายรับได้
+    """
+    out = _run(["ifconfig", "-a"], timeout=5)
+    if not out:
+        return {}
+    addresses: dict[str, str] = {}
+    iface = ""
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        # บรรทัดที่ไม่ย่อหน้า = ขึ้นการ์ดใบใหม่ ("en0: flags=…" หรือ "eth0  Link encap:…")
+        if not line[0].isspace():
+            iface = line.split()[0].rstrip(":")
+            continue
+        found = _INET_RE.search(line)
+        if not iface or not found:
+            continue
+        mask = _MASK_RE.search(line)
+        bits = _netmask_bits(mask.group(1)) if mask else None
+        addresses.setdefault(iface, f"{found.group(1)}/{bits}" if bits is not None
+                             else found.group(1))
+    return addresses
+
+
 def _iface_addresses() -> dict[str, str]:
     """iface → IPv4 — ใช้เสนอค่าให้ผู้ใช้เลือกเป็น cluster IP ไม่ใช่ตั้งให้เอง
 
@@ -296,14 +354,56 @@ def _iface_addresses() -> dict[str, str]:
     """
     out = _run(["ip", "-o", "-4", "addr", "show"], timeout=5)
     if not out:
-        return {}
+        return _ifconfig_addresses()
     addresses: dict[str, str] = {}
     for line in out.splitlines():
         parts = line.split()
         if len(parts) < 4 or parts[2] != "inet":
             continue
         addresses.setdefault(parts[1], parts[3])  # เก็บ CIDR ไว้ทั้งก้อน เช่น 10.100.152.1/24
-    return addresses
+    return addresses or _ifconfig_addresses()
+
+
+def local_addresses() -> list[dict]:
+    """IPv4 ทุกเส้นของเครื่องนี้ — เส้นที่เครื่องอื่นยิงเข้ามาได้จริง เรียงเส้นที่น่าใช้ไว้บน
+
+    ทะเบียนของ hub รู้จัก node จาก "ที่อยู่ที่ใช้ SSH" อย่างเดียว ซึ่งบ่อยครั้งไม่ใช่ IP
+    (`orb`, `spark1.local`, ชื่อบน Tailscale) · พอถึงเวลาต้องบอกลูกค้าว่ายิง API ไปที่ไหน
+    หรือจะตั้ง cluster IP ก็ไม่มีที่ไหนบนหน้าจอบอกได้ว่าเครื่องนั้นถือ IP อะไรอยู่จริง
+
+    `primary_ip()` ตอบได้ทีละเส้นเดียว (เส้นที่ default route ออก) ซึ่งบนเครื่องที่ NAT
+    ออกไป — คอนเทนเนอร์, VM ของ OrbStack, เครื่องที่มีทั้ง LAN และ Tailscale — ไม่ใช่
+    เส้นที่คนอื่นใช้เข้ามา · ตัดเส้นเสมือนของ docker/k8s ทิ้งเพราะยิงจากข้างนอกไม่ถึง
+    """
+    default = primary_ip()
+    out: list[dict] = []
+    for iface, cidr in _iface_addresses().items():
+        if iface == "lo" or iface.startswith(_VIRTUAL_IFACE_PREFIXES):
+            continue
+        address, _, prefix = cidr.partition("/")
+        try:
+            parsed = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if parsed.is_loopback:
+            continue
+        out.append({
+            "iface": iface,
+            "ip": address,
+            # ต้องมี prefix ถึงจะบอกได้ว่าสองเครื่องอยู่วงเดียวกันไหม
+            "prefix": int(prefix) if prefix.isdigit() else None,
+            # 169.254.x.x = เครื่องตั้งเองเพราะไม่มี DHCP — ลิงก์ขึ้นแต่ยังคุยกับใครไม่ได้
+            "link_local": parsed.is_link_local,
+            # เส้นที่ออกเน็ต = ตัวเดียวกับที่เคยรายงานเป็น `ip` โดด ๆ
+            "primary": address == default,
+        })
+    out.sort(key=lambda a: (not a["primary"], a["link_local"], a["iface"]))
+    # เครื่องที่อ่านรายชื่อการ์ดไม่ได้เลยยังต้องบอก IP ที่ใช้ออกเน็ตได้ ไม่งั้นหน้าจอว่างเปล่า
+    # ทั้งที่ `lmds info` ตอบ IP ตัวนี้มาตลอด — ว่างต้องแปลว่า "ไม่มีเลยจริง ๆ" เท่านั้น
+    if default and default != "127.0.0.1" and not any(a["primary"] for a in out):
+        out.insert(0, {"iface": "", "ip": default, "prefix": None,
+                       "link_local": False, "primary": True})
+    return out
 
 
 def detect_fabric() -> dict:
@@ -327,7 +427,7 @@ def detect_fabric() -> dict:
         # NIC เสมือน (VM/cloud) ไม่มี symlink device/ — เดิมข้ามทิ้งทั้งใบ ทำให้เครื่องแบบนั้น
         # รายงานว่า "ไม่มีเครือข่ายเลย" ทั้งที่มี IP อยู่ · ข้ามเฉพาะ loopback กับ virtual bridge
         # ที่ไม่ใช่ทางออกจริงก็พอ
-        if name == "lo" or name.startswith(("docker", "br-", "veth", "virbr", "cni", "flannel")):
+        if name == "lo" or name.startswith(_VIRTUAL_IFACE_PREFIXES):
             continue
         driver = ""
         try:

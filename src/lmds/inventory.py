@@ -313,6 +313,9 @@ def host_payload() -> dict:
         "lmds_commit": source_commit(),
         "hostname": summary.hostname,
         "ip": summary.ip,
+        # ที่อยู่ทุกเส้น ไม่ใช่แค่เส้นที่ออกเน็ต — hub รู้จักเครื่องนี้จากที่อยู่ SSH ซึ่งอาจ
+        # เป็นชื่อ (`orb`, ชื่อบน Tailscale) จึงไม่มีทางรู้เลยว่าเครื่องถือ IP อะไรอยู่จริง
+        "ips": summary.addresses,
         "arch": report.arch,
         "profile": report.profile.value,
         "ram_used_gb": summary.ram_used_gb,

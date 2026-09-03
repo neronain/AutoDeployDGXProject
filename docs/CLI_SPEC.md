@@ -231,6 +231,8 @@ lmds node add <host> --user <u>   # ติดตั้ง SSH key (ถามร�
                                   #   --name --port --note --cluster-ip --cluster-iface --install
 lmds node install <name>          # ติดตั้ง/อัปเดต LMDS บนเครื่องนั้น (--with-prereq = ลง Docker ด้วย)
 lmds node list [--check]          # ทะเบียน · --check = ต่อจริงเพื่อดูว่ายังตอบไหม
+                                  #   คอลัมน์ "IP ของเครื่อง" = IP ที่ node รายงานเอง
+                                  #   (คนละอย่างกับที่อยู่ SSH ซึ่งเป็นชื่อได้)
 lmds node set <name> [...]        # แก้ --cluster-ip / --cluster-iface / --note / --site (ไม่มีอาร์กิวเมนต์ = ดูค่าปัจจุบัน)
                                   #   --site = ป้ายจัดกลุ่มเครื่องตามสถานที่ (คอนโซลจัดกลุ่มให้เอง) — ดู node list
 lmds node remove <name> [-y]      # ออกจากทะเบียนอย่างเดียว ไม่แตะเครื่องนั้น

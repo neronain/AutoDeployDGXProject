@@ -164,6 +164,7 @@ lmds node run spark2 doctor my-model   # รันคำสั่ง lmds อะ
 | **VRAM** | `nvidia-smi memory.used/total` | การ์ดแยก (RTX) เท่านั้น · GB10 ไม่รายงานค่านี้ → แสดง "shared" ไม่ใช่ 0 |
 | **Disk** | `statvfs` ที่ `$HOME` | ที่เก็บ weight จริง |
 | **Link** | `/sys/class/net/*/speed` | สายที่เร็วที่สุดที่ลิงก์ขึ้น + ป้าย RDMA |
+| **IP ของเครื่อง** | `ip -o -4 addr` (สำรอง: `ifconfig`) | IP ที่ **เครื่องนั้น** ถืออยู่จริง — คนละอย่างกับที่อยู่ที่ hub ใช้ SSH ซึ่งเป็นชื่อได้ · ดู [NETWORK.md](NETWORK.md#เครื่องนั้นอยู่-ip-ไหน) |
 | **Models running** | `lmds agent info` | เป็น **จำนวน** ไม่ใช่ใช่/ไม่ใช่ — llama.cpp รันหลายโมเดลพร้อมกันได้ (คนละพอร์ต) |
 
 ปุ่มต่อโมเดลบน node จำกัดไว้ที่ `start / stop / restart / repair / doctor` เท่านั้น (allowlist ฝั่ง server
