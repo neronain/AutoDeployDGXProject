@@ -11,7 +11,8 @@ from lmds.recipes import find_recipe
 
 
 def suggest_settings(model_id: str, engine: str, *, architecture: str = "",
-                     quantization: str = "", memory_model: str = "") -> dict:
+                     quantization: str = "", memory_model: str = "",
+                     projector: bool = False) -> dict:
     """→ {"values": {field: value}, "sources": {field: ที่มา}, "notes": [...]}
 
     field ใช้ชื่อเดียวกับ `bundle_settings.FIELDS` จึงส่งเข้า write()/PUT /settings ได้ตรง ๆ
@@ -46,6 +47,16 @@ def suggest_settings(model_id: str, engine: str, *, architecture: str = "",
     hint = nvfp4_on_sm121(model_id, quantization, engine, memory_model)
     put("image", hint.image, hint.why)
     put("engine_env", hint.engine_env, hint.why)
+
+    # llama.cpp + projector: --image-min-tokens 1024 ใช้กับ Qwen-VL เท่านั้น — ตระกูลอื่นเกินเพดาน
+    # ของ projector แล้ว start พัง (dgx-veerasiam/gemma-4-12b 2026-09-04) · auto = ค่าจากไฟล์
+    if engine == "llamacpp" and projector:
+        key = f"{model_id} {architecture}".lower()
+        if "qwen" in key:
+            put("image_min_tokens", "1024", "กฎตระกูล: Qwen-VL ต้องการอย่างน้อย 1024 image tokens (llama.cpp เตือนเอง)")
+        else:
+            put("image_min_tokens", "auto",
+                "กฎตระกูล: ไม่ใช่ Qwen-VL — ใช้ค่าของ projector (Gemma-4 รับได้แค่ 280 · บังคับ 1024 = start พัง)")
 
     if not values:
         notes.append("ไม่รู้จักตระกูลนี้และไม่มีสูตรที่รันผ่าน — ไม่เดา · ดูคำเตือนใน plan หรือถามผู้ช่วย")

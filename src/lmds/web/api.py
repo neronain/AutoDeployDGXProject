@@ -417,12 +417,14 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         prof = bundle_profile(server.controller) or {}
         model = prof.get("model") or {}
+        mm = ((prof.get("features") or {}).get("multimodal") or {})
         return {"slug": slug, **suggest_settings(
             model.get("id") or server.model_id or "",
             (prof.get("runtime") or {}).get("engine") or server.engine or "",
             architecture=model.get("architecture") or "",
             quantization=model.get("quantization") or "",
             memory_model=(prof.get("target") or {}).get("memory_model") or "",
+            projector=bool(mm.get("projector_files")),
         )}
 
     @app.get("/api/nodes/{name}/models/{slug}/settings/suggest", dependencies=guarded)
@@ -438,6 +440,7 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "slug": slug, **suggest_settings(
             model.get("model_id") or "", model.get("engine") or "",
             memory_model=host.get("memory_model") or "",
+            projector=bool(model.get("projector")),
         )}
 
     @app.put("/api/models/{slug}/settings", dependencies=guarded)

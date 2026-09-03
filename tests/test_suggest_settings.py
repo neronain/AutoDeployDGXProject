@@ -78,3 +78,13 @@ def test_a_family_we_do_not_know_can_still_come_from_a_recipe():
 def test_llamacpp_bundle_gets_no_parser_fields():
     s = suggest_settings("unsloth/gemma-4-12b-it-GGUF", "llamacpp", memory_model="unified")
     assert "tool_parser" not in s["values"] and "reasoning_parser" not in s["values"]
+
+
+def test_llamacpp_vision_bundles_get_image_min_tokens_by_family():
+    """เคส 2026-09-04: Gemma-4 ต้อง auto · Qwen-VL ต้อง 1024 · ไม่มี projector = ไม่เสนอ"""
+    g = suggest_settings("unsloth/gemma-4-12b-it-GGUF", "llamacpp", memory_model="unified", projector=True)
+    assert g["values"]["image_min_tokens"] == "auto"
+    q = suggest_settings("unsloth/Qwen3-VL-8B-Instruct-GGUF", "llamacpp", memory_model="unified", projector=True)
+    assert q["values"]["image_min_tokens"] == "1024"
+    t = suggest_settings("unsloth/Qwen3-8B-GGUF", "llamacpp", memory_model="unified", projector=False)
+    assert "image_min_tokens" not in t["values"]

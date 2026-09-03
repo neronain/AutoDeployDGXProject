@@ -54,6 +54,8 @@ hermes ก็ได้ tool call เป็นข้อความ (msi-2 2026-0
   `/api/nodes/{name}/models/{slug}/settings/suggest` (อ่านจากแคช inventory ไม่ยิง SSH)
 - ฟอร์ม node มีช่อง **engine env** แล้ว (เดิมตั้งได้แค่ CLI) และ `image min tokens` ถูกส่งต่อถึง `lmds set`
   บน node แล้ว (เดิมกรอกแล้วหายกลางทาง)
+- bundle llama.cpp ที่มี projector ได้ `image min tokens` เสนอให้ด้วย: Qwen-VL → 1024 · ตระกูลอื่น → auto
+  (เคส Gemma-4 ข้างล่าง) — ทั้งปุ่มและ `--auto` อ่านว่ามี projector จาก inventory/MODEL_PROFILE
 - ค่า NVFP4/SM121 ในกฎอ่านจาก bundle.env ของ spark-head ที่รันอยู่จริง (`avarok/dgx-vllm-nvfp4-kernel` +
   `VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0
   VLLM_MARLIN_USE_ATOMIC_ADD=1`) ไม่ใช่จากข้อความเตือน

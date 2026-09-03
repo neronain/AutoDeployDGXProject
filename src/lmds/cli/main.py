@@ -1431,6 +1431,7 @@ def set_defaults(
             architecture=model.get("architecture") or "",
             quantization=model.get("quantization") or "",
             memory_model=(prof.get("target") or {}).get("memory_model") or "",
+            projector=bool((((prof.get("features") or {}).get("multimodal") or {}).get("projector_files"))),
         )
         for note in sug["notes"]:
             console.print(f"[dim]{note}[/dim]")
