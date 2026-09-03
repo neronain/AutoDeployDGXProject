@@ -177,3 +177,8 @@ def test_the_page_sends_the_machine_and_draws_the_bar():
     body = page[page.index('api("/api/deploy/analyze"'):][:700]
     assert "machine:" in body and "worker:" in body, "หน้าเว็บยังไม่ส่งเครื่องปลายทางไปกับ analyze"
     assert 'id="w-mem"' in page and "already in use" in page, "ยังไม่มีแถบหน่วยความจำ"
+    # โน้ตจาก fit (เช่น "ยังไม่มีข้อมูลหน่วยความจำของเครื่องนี้ คิดจากความจุเต็ม") ต้องถูกวาด —
+    # เดิมหน้าเว็บทิ้ง f.notes ไปเงียบ ๆ ผู้ใช้จึงไม่รู้ว่าตัวเลขบนแถบมีเงื่อนไขอะไรพ่วง
+    plan_view = page[page.index("function planView("):][:3000]
+    assert "fitNotesView(f.notes)" in plan_view, "planView ยังไม่วาด f.notes"
+    assert "Deployable, but cannot start right now" in page, "ยังไม่มีป้าย deploy ได้แต่ start ไม่ได้"

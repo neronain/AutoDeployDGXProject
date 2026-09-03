@@ -2074,6 +2074,15 @@ function memoryView(f, context, kvAt, dtype = "bf16") {
   </div>`;
 }
 
+// โน้ตจากตัวคำนวณ fit (ตัวเดียวกับที่ CLI พิมพ์) — เดิมหน้าเว็บไม่วาดเลย ทั้งที่มีของสำคัญอยู่ในนั้น:
+// "ยังไม่มีข้อมูลหน่วยความจำของเครื่องนี้ คิดจากความจุเต็ม" · "stacked หักตามเครื่องที่แน่นสุด" ·
+// "target ยังไม่เคยทดสอบ" — ผู้ใช้ไม่มีทางรู้ว่าตัวเลขบนแถบมีเงื่อนไขอะไรพ่วงอยู่
+function fitNotesView(notes) {
+  if (!(notes || []).length) return "";
+  return `<div class="dim gsub" style="margin:2px 0 6px">${
+    notes.map(n => `<div style="padding:1px 0">· ${esc(n)}</div>`).join("")}</div>`;
+}
+
 // deploy = วาง bundle ไว้ที่เครื่อง · start = อีกเรื่อง — ป้ายนี้แยกสองอย่างนั้นออกจากกัน
 // (ผู้ใช้ 2026-09-04: "ลูกค้าอาจจะยังไม่ได้รัน เพียงแต่ต้องการรู้ค่าและ deploy ลงไปก่อน")
 function startNowLine(f, context, spare) {
@@ -2152,6 +2161,7 @@ function planView(d) {
       <span>planner</span><span>${esc(p.generator)}</span>
     </div>
     <div id="w-mem">${memoryView(f, p.context, f.kv_at_context_gb)}</div>
+    ${fitNotesView(f.notes)}
     ${capsView(p.capabilities)}
     ${p.recipe ? `<div class="ok-line">ใช้สูตรที่รันผ่านจริง: <b style="font-weight:500">${
       esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · ทดสอบบน " + esc(p.recipe.validated_on) : ""}${

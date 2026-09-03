@@ -27,6 +27,8 @@ budget ได้ตั้งแต่วันนั้น แต่**หน้�
   **ตอนนี้** (หักของที่รันอยู่) แค่ติดป้าย "deploy ได้ แต่ start ตอนนี้ไม่ได้ — ขาด X GB · ลด context เหลือ N
   แล้ว start ได้เลย หรือหยุด <ชื่อโมเดล@เครื่อง> ก่อน" · payload มี `now_verdict / now_budget_gb /
   now_max_safe_context / now_short_gb / running_now`
+- หน้า plan วาด `fit.notes` ใต้แถบแล้ว (เดิมทิ้งเงียบ ๆ) — ผู้ใช้จึงเห็น "ยังไม่มีข้อมูลของเครื่องนี้ คิดจาก
+  ความจุเต็ม" / "stacked หักตามเครื่องที่แน่นสุด" / "target ยังไม่เคยทดสอบ" ที่พ่วงอยู่กับตัวเลขบนแถบ
 - `profiler.memory_held_gb()` เป็นตัวเดียวที่ทั้ง CLI และเว็บใช้ (เดิม CLI มีสำเนาของตัวเองใน main.py)
 - เทส 9 ข้อใน `tests/test_web_reserved_memory.py` + 1 ข้อใน `test_fit_and_checksums.py` — ทุกข้อล้มกับโค้ดเดิม
 
