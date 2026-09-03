@@ -308,6 +308,23 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         if note not in plan.warnings:
             plan.warnings.append(note)
 
+    # ตระกูลที่รู้แน่ → ใส่ parser ให้เป็น *ค่า* ไม่ใช่แค่คำเตือน · bundle จะได้เกิดมาถูก
+    # ไม่ต้องให้คนที่ไม่รู้ไปพิมพ์ชื่อเอง (ผู้ใช้ 2026-09-04: "กลัวใส่ผิด แล้วไม่มีให้ใช้งาน")
+    # สูตรที่รันผ่านจริง (ด้านล่าง) ยังชนะค่านี้เสมอ · ชื่อทั้งหมดผ่าน _harden_parsers แน่นอน (มีเทส)
+    from lmds.brain.families import parsers_for
+
+    choice = parsers_for(report.repo_id, report.architecture or "", engine.value)
+    if choice.tool:
+        plan.tool_calling.enabled = True
+        plan.tool_calling.parser = choice.tool
+        plan.warnings.append(
+            f"เปิด tool calling ให้แล้ว: --tool-call-parser {choice.tool}"
+            + (f" · --reasoning-parser {choice.reasoning}" if choice.reasoning else "")
+            + f" — {choice.why} · เปลี่ยน/ปิดได้ด้วย lmds set --tool-parser / --reasoning-parser"
+        )
+    if choice.reasoning:
+        plan.reasoning.enabled = True
+        plan.reasoning.parser = choice.reasoning
     # สูตรที่รันผ่านจริงมาก่อนค่าตั้งต้นเสมอ — นี่คือสิ่งที่ทดแทน LLM ให้เครื่องที่ไม่มี provider
     recipe = find_recipe(report.repo_id)
     if recipe is not None:

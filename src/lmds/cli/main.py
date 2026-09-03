@@ -1369,6 +1369,9 @@ def set_defaults(
         None, "--extra-args",
         help='แฟล็กเพิ่มของ engine เช่น \'--speculative-config {"method":"mtp","num_speculative_tokens":2}\' '
              '(คั่นด้วยช่องว่าง · JSON เขียนติดกันไม่มีช่องว่าง)'),
+    auto: bool = typer.Option(
+        False, "--auto",
+        help="ให้ระบบเติม parser / image / env ตามโมเดล (สูตรที่รันผ่านจริง > กฎตระกูล) · flag ที่ระบุเองชนะ"),
     clear: bool = typer.Option(False, "--clear", help="ลบค่าที่บันทึกไว้ทั้งหมด"),
 ) -> None:
     """บันทึกค่า start ไว้กับ bundle — ทุกทางที่เรียก controller จะได้ค่าเดียวกัน
@@ -1414,6 +1417,28 @@ def set_defaults(
         "image_min_tokens": image_min_tokens,
     }
     given = {k: v for k, v in incoming.items() if v is not None}
+    if auto:
+        # ความรู้มีอยู่แล้ว (recipes / arch_notes) แต่ผู้ใช้ต้องอ่านคำเตือนแล้วพิมพ์ชื่อเอง
+        # ซึ่งคนไม่รู้ก็ไม่กล้าพิมพ์ (2026-09-04) — เติมให้ พร้อมบอกที่มาทีละค่า
+        from lmds.fleet import bundle_profile
+        from lmds.fleet.suggest import suggest_settings
+
+        prof = bundle_profile(server.controller) or {}
+        model = prof.get("model") or {}
+        sug = suggest_settings(
+            model.get("id") or server.model_id or "",
+            (prof.get("runtime") or {}).get("engine") or server.engine or "",
+            architecture=model.get("architecture") or "",
+            quantization=model.get("quantization") or "",
+            memory_model=(prof.get("target") or {}).get("memory_model") or "",
+        )
+        for note in sug["notes"]:
+            console.print(f"[dim]{note}[/dim]")
+        table = Table("ค่า", "เติมให้", "ที่มา", box=None)
+        for key, value in sug["values"].items():
+            table.add_row(key, value, sug["sources"].get(key, ""))
+            given.setdefault(key, value)   # flag ที่ผู้ใช้ระบุเองชนะ
+        console.print(table)
     if not given:
         current = read(bundle_dir)
         if not current:

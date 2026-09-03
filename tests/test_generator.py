@@ -969,7 +969,8 @@ def test_features_off_keeps_controller_clean(tmp_path):
     ดังนั้น bundle ที่สร้างตอนยังไม่รู้ว่าโมเดลเรียก tool ได้ ก็ยังเปิดทีหลังได้
     ถ้าให้ flag เปิดได้แต่ไม่มีคำสั่งพิสูจน์ ก็แค่ย้ายจุดบอดไปที่ใหม่
     """
-    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    # ตระกูลที่ planner ไม่รู้จัก — Qwen3 จะได้ parser ตั้งแต่ plan (0.5.2) ซึ่งไม่ใช่เคสของเทสนี้
+    bundle, _, _ = make_bundle(safetensors_report(repo_id="acme/mystery-70b"), tmp_path=tmp_path)
     script = bundle.controller.read_text(encoding="utf-8")
     # test_reasoning ยังต้องมี — เหมือน test_tools · การให้สวิตช์เปิด parser ได้ทีหลัง
     # แต่ไม่มีทางพิสูจน์ว่าเปิดแล้วได้ผล คือย้ายจุดบอดไปที่ใหม่เฉย ๆ
@@ -985,7 +986,8 @@ def test_tool_calling_can_be_switched_on_after_deploy(tmp_path):
     --enable-auto-tool-choice และ controller ที่ deploy ไปแล้วไม่มี option เปิดเลย
     ทางแก้เดียวคือ generate ใหม่ทั้งชุด
     """
-    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    # ตระกูลที่ planner ไม่รู้จัก — ถึงจะ "ปิดอยู่ตอนสร้าง" จริง (Qwen3 ได้ parser ตั้งแต่ plan แล้ว)
+    bundle, _, _ = make_bundle(safetensors_report(repo_id="acme/mystery-70b"), tmp_path=tmp_path)
     script = bundle.controller.read_text(encoding="utf-8")
 
     # ปิดอยู่ตอนสร้าง: ไม่มี parser จึงไม่ส่ง flag ให้ vLLM

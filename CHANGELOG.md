@@ -35,6 +35,31 @@ budget ได้ตั้งแต่วันนั้น แต่**หน้�
 ยังไม่ทำในรอบนี้ (คนละเรื่อง ต้องตกลงสมมติฐานก่อน): แปลง concurrency เป็น "จำนวนคน" ด้วยความยาวคำขอปกติ ·
 โมเดลคำนวณของ llama.cpp `--parallel` ที่จอง KV ทั้งก้อนล่วงหน้า (ตารางตอนนี้คิดแบบ paged ของ vLLM ให้ทั้งคู่)
 
+**ระบบเติม parser / image / env ให้ตามโมเดล — ไม่ต้องรู้ชื่อเอง**
+
+ผู้ใช้ 2026-09-04 ดูฟอร์ม settings แล้วถาม "ช่องเริ่มเยอะ … tool/reasoning parser ถ้าไม่ทราบ จะทำอย่างไร
+กลัวใส่ผิด แล้วไม่มีให้ใช้งาน" · ความจริงคือระบบ*รู้*อยู่แล้ว — `arch_notes()` เขียนคำเตือนว่า Qwen3 ต้องใช้
+`qwen3_xml` + `qwen3`, Gemma 4 ต้องใช้ `gemma4` และ NVFP4 บน GB10 ต้องใช้ image+env ชุด marlin —
+แต่เก็บเป็น**ข้อความ** แล้วปล่อย `parser = null` ให้ผู้ใช้ไปพิมพ์เอง ซึ่งคนไม่รู้ก็ไม่กด และคนที่เดาไป
+hermes ก็ได้ tool call เป็นข้อความ (msi-2 2026-09-02)
+
+สองชั้น:
+- **bundle ใหม่เกิดมาถูก** — `brain/families.py` เก็บความรู้นั้นเป็น*ค่า* · planner ใส่ `tool_calling.parser`
+  / `reasoning.parser` ให้ตระกูลที่รู้แน่ (Qwen3/3.5/3.6 · Qwen3-Coder · Gemma 4) ตาม engine
+  (vLLM/SGLang ใช้คนละชุดชื่อ · llama.cpp ไม่มีแฟล็กนี้) = เปิด tool calling ให้เลย พร้อมคำเตือนใน plan
+  ว่าเปิดให้แล้วและปิดยังไง · สูตรที่รันผ่านจริงยังชนะเสมอ · ตระกูลที่ไม่รู้ **ไม่เดา**
+- **bundle ที่มีอยู่แล้ว** — ปุ่ม **เติมให้ตามโมเดล** ในฟอร์ม settings ของทุกเครื่อง (+ `lmds set <slug> --auto`)
+  → `fleet/suggest.py` เสนอค่าจาก recipe > กฎตระกูล > กฎฮาร์ดแวร์ (NVFP4/SM121) พร้อม**ที่มาทีละค่า** ·
+  แค่เติมให้ดู ยังไม่บันทึกจนกด บันทึกค่า · `GET /api/models/{slug}/settings/suggest` และ
+  `/api/nodes/{name}/models/{slug}/settings/suggest` (อ่านจากแคช inventory ไม่ยิง SSH)
+- ฟอร์ม node มีช่อง **engine env** แล้ว (เดิมตั้งได้แค่ CLI) และ `image min tokens` ถูกส่งต่อถึง `lmds set`
+  บน node แล้ว (เดิมกรอกแล้วหายกลางทาง)
+- ค่า NVFP4/SM121 ในกฎอ่านจาก bundle.env ของ spark-head ที่รันอยู่จริง (`avarok/dgx-vllm-nvfp4-kernel` +
+  `VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0
+  VLLM_MARLIN_USE_ATOMIC_ADD=1`) ไม่ใช่จากข้อความเตือน
+- เทส: `test_suggest_settings.py` (กฎตระกูล · ทุกชื่อผ่าน `_harden_parsers` · recipe ชนะกฎ · ไม่รู้ = ไม่เดา)
+  · `test_suggest_api_ui.py` · `test_brain` ปรับให้ Qwen3 บน vLLM ได้ parser ตั้งแต่ plan
+
 **`--image-min-tokens 1024` บังคับเฉพาะ Qwen-VL — Gemma-4 และตระกูลอื่นกลับไปใช้ค่าของ projector**
 
 0.5.1 (17ed363) ใส่ `IMAGE_MIN_TOKENS=1024` ให้ทุก controller ที่มี projector เพื่อแก้ความแม่นของ Qwen-VL

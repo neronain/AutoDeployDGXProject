@@ -402,6 +402,44 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         return {"slug": slug, "saved": read(_Path(server.controller).parent)}
 
+    @app.get("/api/models/{slug}/settings/suggest", dependencies=guarded)
+    def settings_suggest(slug: str) -> dict:
+        """ค่าที่ควรใส่ตามโมเดล (parser / image / env) — เสนออย่างเดียว ยังไม่บันทึก
+
+        ผู้ใช้ 2026-09-04: "ทำให้ระบบกรอกให้เองตาม model ได้ไหม … กลัวใส่ผิด" · ความรู้มีอยู่แล้ว
+        ใน recipes กับ arch_notes แต่ไม่เคยไหลมาถึงช่องกรอก — endpoint นี้คือสะพานนั้น
+        """
+        from pathlib import Path as _Path
+        from lmds.fleet import bundle_profile, find
+        from lmds.fleet.suggest import suggest_settings
+        server = find(slug)
+        if server is None or not server.controller:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        prof = bundle_profile(server.controller) or {}
+        model = prof.get("model") or {}
+        return {"slug": slug, **suggest_settings(
+            model.get("id") or server.model_id or "",
+            (prof.get("runtime") or {}).get("engine") or server.engine or "",
+            architecture=model.get("architecture") or "",
+            quantization=model.get("quantization") or "",
+            memory_model=(prof.get("target") or {}).get("memory_model") or "",
+        )}
+
+    @app.get("/api/nodes/{name}/models/{slug}/settings/suggest", dependencies=guarded)
+    def node_settings_suggest(name: str, slug: str) -> dict:
+        """เหมือน settings_suggest แต่สำหรับ bundle บนเครื่องอื่น — อ่านจากแคช inventory ไม่ยิง SSH"""
+        from lmds.fleet.suggest import suggest_settings
+        entry = state.STORE.snapshot()["nodes"].get(name) or {}
+        data = entry.get("data") or {}
+        model = next((m for m in (data.get("models") or []) if m.get("slug") == slug), None)
+        if model is None:
+            raise HTTPException(status_code=404, detail=f"ยังไม่มีข้อมูล {slug} บน {name} — กด refresh ที่การ์ดเครื่องก่อน")
+        host = data.get("host") or {}
+        return {"node": name, "slug": slug, **suggest_settings(
+            model.get("model_id") or "", model.get("engine") or "",
+            memory_model=host.get("memory_model") or "",
+        )}
+
     @app.put("/api/models/{slug}/settings", dependencies=guarded)
     def settings_put(slug: str, body: dict | None = None) -> dict:
         """บันทึกค่า start ลงข้าง bundle เพื่อให้ทุกทางที่เรียก controller ได้ค่าเดียวกัน
@@ -1843,7 +1881,9 @@ def create_app(token: str = "") -> FastAPI:
                      "engine_env": "--engine-env",
                      # แฟล็กเพิ่มของ engine (MTP ฯลฯ) — เก็บใน bundle.args ไม่ใช่ bundle.env
                      "extra_args": "--extra-args",
-                     "tool_parser": "--tool-parser", "reasoning_parser": "--reasoning-parser"}
+                     "tool_parser": "--tool-parser", "reasoning_parser": "--reasoning-parser",
+                     # vision ของ llama.cpp — auto = ใช้ค่าของ projector (Gemma-4 ต้องใช้ auto)
+                     "image_min_tokens": "--image-min-tokens"}
             parts = ["lmds", "set", shlex.quote(slug)]
             given = [(flags[k], v) for k, v in options.items()
                      if k in flags and str(v).strip() != ""]

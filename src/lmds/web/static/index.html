@@ -2706,6 +2706,7 @@ function readNodeOpts(node, slug) {
     extra_args: num(".n-extra"),
     tool_parser: num(".n-tool-parser"), reasoning_parser: num(".n-reasoning-parser"),
     image_min_tokens: num(".n-image-min-tokens"),
+    engine_env: num(".n-engine-env"),
   };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
   // ติ๊กออก = ปิดฟีเจอร์ ซึ่งต้องส่ง "" ไปจริง ๆ ไม่ใช่ไม่ส่ง (ไม่ส่ง = ใช้ค่า default ของ bundle)
@@ -2989,6 +2990,12 @@ function nodeModelsMarkup(name, data) {
             <input class="n-reasoning-parser" value="${esc(o.reasoning_parser ?? "")}" placeholder="e.g. qwen3" style="flex:none;width:130px"
                    title="--reasoning-parser ที่ใช้ทุกครั้งที่ start — ว่าง = ตามที่ bundle ตั้ง">
           </div>` : ""}
+          ${m.engine === "vllm" ? `<div class="field" style="width:100%">
+            <label>engine env</label>
+            <input class="n-engine-env" value="${esc(o.engine_env ?? "")}"
+                   placeholder="e.g. VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0" style="min-width:320px"
+                   title="env ที่ engine อ่านเอง (KEY=VALUE คั่นด้วยช่องว่าง) — NVFP4 บน GB10 ต้องมีชุด marlin ไม่งั้นล้มตั้งแต่ start">
+          </div>` : ""}
           ${m.engine === "llamacpp" && m.projector ? `<div class="field">
             <label>image min tokens</label>
             <input class="n-image-min-tokens" value="${esc(o.image_min_tokens ?? "")}" placeholder="auto · or 1024 for Qwen-VL" style="flex:none;width:200px"
@@ -3018,6 +3025,9 @@ function nodeModelsMarkup(name, data) {
                     title="เขียนค่าข้างบนลง bundle.env บนเครื่องปลายทาง — มีผลกับ start ทุกทาง รวม autostart ตอน reboot">บันทึกค่า</button>
             <button data-nact="clear-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                     title="ลบค่าที่บันทึกไว้ กลับไปใช้ค่าของ bundle">ล้างค่า</button>
+            <button data-nact="suggest-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="ระบบเติม parser / image / env ให้ตามโมเดล จากสูตรที่รันผ่านจริงหรือกฎตระกูล — แค่เติมให้ดู ยังไม่บันทึกจนกด บันทึกค่า">เติมให้ตามโมเดล</button>
+            <span class="n-suggest-note dim" style="width:100%"></span>
             <span class="dim">ไม่กดบันทึก = ค่าถูกใช้เฉพาะตอนกด start จากหน้านี้ครั้งนี้เท่านั้น
               · API key ไม่ถูกเขียนลง bundle ไม่ว่ากรณีใด</span>
           </div>
@@ -3426,6 +3436,27 @@ document.addEventListener("click", async e => {
     refreshNodes();
     return;
   }
+  if (nact === "suggest-settings") {
+    // คนที่ไม่รู้ชื่อ parser ไม่ควรต้องเดา — ระบบรู้อยู่แล้ว (recipe / กฎตระกูล) แค่ไม่เคยไหลมาถึงช่อง
+    // เติมให้ดูก่อน ผู้ใช้ตรวจแล้วค่อยกด บันทึกค่า เอง (ผู้ใช้ 2026-09-04)
+    const d = await withButton(btn, "กำลังดู…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/settings/suggest`));
+    if (!d) return;
+    const card = btn.closest(".submenu") || btn.parentElement.parentElement;   // กล่อง settings ของโมเดลนี้ (ตัวเดียวกับ readNodeOpts)
+    const put = (sel, v) => { const el = card.querySelector(sel); if (el && v != null) el.value = v; };
+    const v = d.values || {};
+    put(".n-tool-parser", v.tool_parser); put(".n-reasoning-parser", v.reasoning_parser);
+    put(".n-image", v.image); put(".n-engine-env", v.engine_env); put(".n-image-min-tokens", v.image_min_tokens);
+    const note = card.querySelector(".n-suggest-note");
+    if (note) {
+      const lines = Object.entries(v).map(([k, val]) => `${k} = ${val}  ← ${d.sources[k] || ""}`);
+      note.innerHTML = (lines.length
+        ? `เติมให้แล้ว (ยังไม่บันทึก):<br>${lines.map(esc).join("<br>")}<br><b>ตรวจแล้วกด บันทึกค่า</b> · หลัง start กด test-tools เพื่อพิสูจน์`
+        : "") + (d.notes || []).map(n => `<br>${esc(n)}`).join("");
+    }
+    return;
+  }
+
   if (nact === "save-settings" || nact === "clear-settings") {
     // ค่าที่กรอกเคยอยู่แค่ในเบราว์เซอร์ · systemd ตอน autostart และปุ่ม test-* เรียก
     // controller เปล่า ๆ จึงตกไปใช้ default — reboot ทีเดียวพอร์ตชนกันทั้งเครื่อง

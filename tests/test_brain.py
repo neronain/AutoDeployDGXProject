@@ -93,7 +93,20 @@ def test_rule_based_plan_safetensors(isolated_config):
     assert plan.serving.context == 32768
     assert plan.generator == "rule-based"
     assert all(f.confidence is Confidence.VERIFIED for f in plan.facts)
-    assert plan.tool_calling.enabled is False
+    # Qwen3 บน vLLM: planner รู้ parser แน่ → เปิดให้เลย (เดิมพิมพ์เป็นคำเตือนแล้วปล่อย None
+    # ผู้ใช้ต้องไปพิมพ์เองซึ่งคนไม่รู้ก็ไม่กล้า — 2026-09-04)
+    assert plan.tool_calling.enabled is True and plan.tool_calling.parser == "qwen3_xml"
+    assert plan.reasoning.enabled is True and plan.reasoning.parser == "qwen3"
+    assert any("เปิด tool calling ให้แล้ว" in w for w in plan.warnings)
+
+
+def test_rule_based_plan_does_not_guess_parsers_for_unknown_families(isolated_config):
+    """ตระกูลที่ไม่รู้ → ห้ามเดา (เดาผิด = tool call กลายเป็นข้อความโดยไม่มี error)"""
+    # ต้องเป็นตระกูลที่ *ไม่มี* ทั้งกฎและสูตร — Llama มีสูตรในคลัง (llama3_json) จึงใช้ไม่ได้
+    report = qwen_report(repo_id="acme/mystery-model-7b")
+    plan = rule_based_plan(report, spark_fit(report))
+    assert plan.tool_calling.enabled is False and plan.tool_calling.parser is None
+    assert plan.reasoning.enabled is False
 
 
 def test_rule_based_plan_gguf(isolated_config):
