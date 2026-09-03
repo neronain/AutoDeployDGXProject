@@ -8,11 +8,18 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import threading
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from contextlib import contextmanager
+from dataclasses import MISSING, asdict, dataclass, field
 from pathlib import Path
 
 import yaml
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — เครื่องพัฒนาที่ไม่ใช่ POSIX
+    fcntl = None
 
 from lmds.config.paths import config_dir, ensure_config_dir, write_atomic
 
@@ -119,6 +126,11 @@ def load() -> list[Node]:
         known = {f: entry.get(f) for f in Node.__dataclass_fields__ if f in entry}
         known.setdefault("host", "")
         known.setdefault("user", "")
+        # `alt_hosts:` / `labels:` ว่าง ๆ ในไฟล์ที่แก้ด้วยมือ = None → Node ได้ None แทน list/dict
+        # แล้วทุกตัวที่วน .append/.items ล้มทั้งทะเบียน — ฟิลด์ที่มี default_factory ให้ตกกลับ default
+        for key, value in list(known.items()):
+            if value is None and Node.__dataclass_fields__[key].default_factory is not MISSING:
+                known.pop(key)
         # `stack: null` ในไฟล์ที่แก้ด้วยมือต้องแปลว่า "ค่าเริ่มต้น" ไม่ใช่ "ห้าม stacked"
         if known.get("stack") is None:
             known.pop("stack", None)
@@ -146,13 +158,39 @@ def validate_cluster_ip(value: str) -> str:
         raise NodeError(f"cluster IP '{value}' ไม่ถูกต้อง: {exc}") from exc
     if address.version != 4:
         raise NodeError("รองรับ IPv4 เท่านั้นสำหรับ cluster IP (NCCL/RoCE ใช้ IPv4)")
-    if address.is_loopback or address.is_multicast:
+    # 169.254.x คือที่อยู่ที่ interface ตั้งให้ตัวเองตอน DHCP ไม่ตอบ — ไม่ใช่ที่อยู่ที่อีกเครื่องต่อถึง
+    if address.is_loopback or address.is_multicast or address.is_link_local:
         raise NodeError(f"cluster IP '{value}' ใช้ไม่ได้ — ต้องเป็นที่อยู่บนสายจริงระหว่างเครื่อง")
     return value
 
 
 def find(name: str) -> Node | None:
     return next((n for n in load() if n.name == name), None)
+
+
+_REGISTRY_LOCK = threading.RLock()
+
+
+@contextmanager
+def _locked():
+    """ล็อกทะเบียนตลอดช่วง load → แก้ → save
+
+    write_atomic ทำให้ *การเขียน* ไม่พังกลางคัน แต่ไม่ได้กันสองคนที่ต่างคนต่าง load สำเนาเก่า
+    มาแก้แล้วเขียนทับกัน — refresher 8 thread เรียก update(last_seen) ทุก 15 วิ ระหว่างที่ผู้ใช้
+    PATCH cluster_ip จากหน้าเว็บ → API ตอบ 200 แต่ไฟล์ไม่มีค่าใหม่ · กด forget แล้วเครื่องโผล่กลับ
+    (รีวิว 2026-09-04) · RLock กัน thread ใน process นี้ · flock กัน process อื่น (`lmds node …`
+    จาก CLI ที่รันพร้อม hub)
+    """
+    with _REGISTRY_LOCK:
+        ensure_config_dir()
+        with open(config_dir() / ".nodes.lock", "a+", encoding="utf-8") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def add(node: Node) -> Node:
@@ -164,42 +202,45 @@ def add(node: Node) -> Node:
     if not node.host or not node.user:
         raise NodeError("ต้องระบุทั้ง host และ user")
     node.cluster_ip = validate_cluster_ip(node.cluster_ip)
-    existing = load()
-    if any(n.name == node.name for n in existing):
-        raise NodeError(f"มีเครื่องชื่อ '{node.name}' อยู่แล้ว — ลบก่อนหรือใช้ชื่ออื่น")
-    clash = next((n for n in existing if n.host == node.host and n.user == node.user), None)
-    if clash is not None:
-        raise NodeError(f"{node.target} ถูกเพิ่มไว้แล้วในชื่อ '{clash.name}'")
-    existing.append(node)
-    save(existing)
+    with _locked():
+        existing = load()
+        if any(n.name == node.name for n in existing):
+            raise NodeError(f"มีเครื่องชื่อ '{node.name}' อยู่แล้ว — ลบก่อนหรือใช้ชื่ออื่น")
+        clash = next((n for n in existing if n.host == node.host and n.user == node.user), None)
+        if clash is not None:
+            raise NodeError(f"{node.target} ถูกเพิ่มไว้แล้วในชื่อ '{clash.name}'")
+        existing.append(node)
+        save(existing)
     return node
 
 
 def remove(name: str) -> Node:
-    existing = load()
-    target = next((n for n in existing if n.name == name), None)
-    if target is None:
-        raise NodeError(f"ไม่รู้จักเครื่อง '{name}' — ดูรายชื่อ: lmds node list")
-    save([n for n in existing if n.name != name])
+    with _locked():
+        existing = load()
+        target = next((n for n in existing if n.name == name), None)
+        if target is None:
+            raise NodeError(f"ไม่รู้จักเครื่อง '{name}' — ดูรายชื่อ: lmds node list")
+        save([n for n in existing if n.name != name])
     return target
 
 
 def update(name: str, **changes) -> Node:
     """อัปเดตฟิลด์สถานะ (last_seen / last_error / lmds_version) — ไม่แตะ host/user"""
-    existing = load()
-    target = next((n for n in existing if n.name == name), None)
-    if target is None:
-        raise NodeError(f"ไม่รู้จักเครื่อง '{name}'")
-    for key, value in changes.items():
-        if key in {"name", "host", "user", "port"}:
-            continue  # เปลี่ยนที่อยู่ต้องลบแล้วเพิ่มใหม่ ไม่ใช่แก้เงียบ ๆ
-        if key == "cluster_ip":
-            value = validate_cluster_ip(value)
-        if key == "stack":
-            value = bool(value)
-        if key in Node.__dataclass_fields__:
-            setattr(target, key, value)
-    save(existing)
+    with _locked():
+        existing = load()
+        target = next((n for n in existing if n.name == name), None)
+        if target is None:
+            raise NodeError(f"ไม่รู้จักเครื่อง '{name}'")
+        for key, value in changes.items():
+            if key in {"name", "host", "user", "port"}:
+                continue  # เปลี่ยนที่อยู่ต้องลบแล้วเพิ่มใหม่ ไม่ใช่แก้เงียบ ๆ
+            if key == "cluster_ip":
+                value = validate_cluster_ip(value)
+            if key == "stack":
+                value = bool(value)
+            if key in Node.__dataclass_fields__:
+                setattr(target, key, value)
+        save(existing)
     return target
 
 

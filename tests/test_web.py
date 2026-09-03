@@ -2036,6 +2036,8 @@ def test_update_streams_a_job_and_restarts_the_service(monkeypatch, tmp_path):
     """อัปเดตกินเวลาเป็นนาที — ต้องเป็นงานที่ตามดู log ได้ ไม่ใช่ HTTP ที่ค้างรอ"""
     from lmds.web import selfupdate
 
+    # อัปเดตจากหน้าเว็บมีความหมายก็ต่อเมื่ออยู่ใต้ systemd (ไม่งั้น restart ไม่ได้ → 409)
+    monkeypatch.setattr("lmds.web.api._running_unit", lambda: "lmds-web.service")
     monkeypatch.setattr(selfupdate, "source_root", lambda: tmp_path)
     monkeypatch.setattr(selfupdate, "dirty_files", lambda root: [])
     sent = {}

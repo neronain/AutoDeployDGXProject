@@ -7,8 +7,8 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.5.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1273-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.6.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-1466-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -58,10 +58,17 @@ LMDS เกิดจากการไล่รันของจริงแล
 ## เริ่มใน 3 คำสั่ง
 
 ```bash
-./install.sh                 # ลง Docker / NVIDIA toolkit ที่ขาดให้ด้วย — ถามก่อนทุกขั้นที่ใช้ sudo
-lmds hardware                # เครื่องนี้คือ target อะไร มีอะไรอยู่บ้าง
-lmds deploy Qwen/Qwen3-32B   # วิเคราะห์ → วางแผน → ให้ยืนยัน → bundle + ZIP ที่ผ่านทุกด่าน
+git clone https://github.com/neronain/AutoDeployDGXProject && cd AutoDeployDGXProject
+./install.sh -y                      # ลง Docker / NVIDIA toolkit ที่ขาดให้ด้วย (ไม่ใส่ -y = ถามก่อนทุกขั้นที่ใช้ sudo)
+lmds web --enable --bind 0.0.0.0     # คอนโซลที่ http://<ip>:8600 — ขึ้นเองหลังรีบูต · พิมพ์ token ให้
 ```
+
+**เครื่องอื่นในฟลีตไม่ต้องติดตั้งเอง** — บนหน้าเว็บกด *Add machine* ใส่ host / user / รหัสผ่าน sudo
+ครั้งเดียว: hub ใส่ SSH key ให้, **ส่งโค้ดของตัวเองไปติดตั้ง** (ไม่ต้อง clone repo หรือมี deploy key
+บนเครื่องนั้น), ตั้ง Docker / NVIDIA toolkit ให้ แล้วเครื่องนั้นโผล่ในเมนูซ้ายทันที
+
+ถนัด CLI มากกว่า: `lmds hardware` (เครื่องนี้คือ target อะไร) → `lmds deploy Qwen/Qwen3-32B`
+(วิเคราะห์ → วางแผน → ให้ยืนยัน → bundle + ZIP ที่ผ่านทุกด่าน)
 
 <details>
 <summary>ตัวอย่างเพิ่มเติม</summary>
@@ -136,8 +143,15 @@ lmds node set n3 --cluster-name ทีมสำรอง     # n3+n4 อีก�
 ### 3 · หน้าเว็บที่ทำได้เท่า CLI
 
 ```bash
-lmds web --bind 0.0.0.0 -b      # ถาม token ก่อน แล้วจำไว้ — ลิงก์ bookmark ได้
+lmds web --enable --bind 0.0.0.0   # systemd user service — ขึ้นเองหลังรีบูต ฟื้นเองถ้าตาย
+lmds web --bind 0.0.0.0 -b         # หรือรันเบื้องหลังชั่วคราว — ถาม token ก่อน แล้วจำไว้
 ```
+
+**0.6 จัดหน้าใหม่แบบแดชบอร์ด** — เมนูซ้าย: ภาพรวม · เครื่องนี้ · ต้นไม้ **ไซต์ → เครื่อง** (จุดสถานะ +
+% หน่วยความจำ) · คลัง (โมเดลทั้งฟลีต / คะแนน / สูตร / weights / ตั้งค่า) · กดรายการแล้วรายละเอียด
+ออกตรงกลาง · หน้าภาพรวมมีแถบหน่วยความจำต่อเครื่อง โดนัท engine และ **"Needs attention"** ที่คำนวณ
+จากข้อมูลจริง (เครื่องต่อไม่ได้ · เกิน 90% · พอร์ตซ้อน · commit ไม่ตรง hub) · ลิงก์ตรงถึงเครื่องได้
+(`#/node/<ชื่อ>`) · เมนูและหน้าเว็บทั้งหมดเป็นภาษาอังกฤษ
 
 deploy wizard, download + verify, start/stop/restart, ตั้ง port/context/slots/API key/bind,
 doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-tools` `bench` `stress`), autostart,
@@ -285,7 +299,8 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 ## อัปเดต
 
 ```bash
-cd ~/AutoDeployDGXProject && git pull && ./install.sh
+cd ~/AutoDeployDGXProject && git pull && ./install.sh     # hub — หรือกดปุ่ม Update บนหน้าเว็บ
+lmds node install --all                                  # เครื่องอื่นทั้งฟลีต — hub ส่งโค้ดไปให้เอง
 ```
 
 > ⚠️ **`git pull` อย่างเดียวไม่พอ** — ติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds`

@@ -108,8 +108,9 @@ def read_node_profile(node, slug: str) -> dict:
     from lmds.nodes import NodeError, run
 
     quoted = shlex.quote(slug)
+    # ใน echo ก็ต้องใช้ตัวที่ quote แล้ว — slug ดิบใน single quote คือช่อง shell injection ที่ review เจอ
     script = (f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\"; "
-              f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug}' >&2; exit 1; }}; "
+              f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle '{quoted} >&2; exit 1; }}; "
               f"cat \"$dir/MODEL_PROFILE.yaml\"")
     result = run(node, script, timeout=25)
     if not result.ok:

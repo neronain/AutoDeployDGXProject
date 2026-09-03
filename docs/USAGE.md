@@ -631,6 +631,8 @@ cd bundles/<slug>
 
 > **`--concurrency` มีผลกับ memory โดยตรง** — KV cache โตตามจำนวน request ที่รันพร้อมกัน
 > ใส่ `--concurrency 4` แปลว่า "กันหน่วยความจำเผื่อ 4 คนใช้พร้อมกัน" ผลคือ context ที่แนะนำจะลดลง
+> · กับ llama.cpp แผนจะตั้ง slot = N และ `--ctx-size` = N × context ต่อ slot (llama-server แบ่ง pool ให้ทุก slot เท่า ๆ กัน)
+> ค่าที่แต่ละ request ได้จริงคือค่าที่ fit รายงาน ไม่ใช่ตัวเลข `--ctx-size`
 > ตั้งให้ตรงกับการใช้งานจริง: เดโม่/คนเดียว = 1 · ทีมเล็ก = 2–4 · ตั้งสูงเกินจริงจะได้ context สั้นโดยไม่จำเป็น
 
 ### 3.6 ขั้นยืนยัน — จุดที่ต้องอ่านก่อนกด
@@ -1405,7 +1407,9 @@ lmds enable qwen35-a3b-opus          # ให้กลับมาเองห�
 (ตัว CLI ยังเป็นไทย)
 
 ```bash
-lmds web                          # http://127.0.0.1:8600 — เครื่องนี้เท่านั้น
+lmds web --enable --bind 0.0.0.0  # แนะนำ: systemd user service — ขึ้นเองหลังรีบูต ฟื้นเองถ้าตาย
+lmds web --disable                # เลิกให้ขึ้นเอง
+lmds web                          # http://127.0.0.1:8600 — เครื่องนี้เท่านั้น (รันค้าง terminal)
 lmds web --bind 0.0.0.0           # ให้ทั้งวง network เข้าได้ — ถาม token ก่อน (Enter = สุ่มให้)
 lmds web --background             # รันเบื้องหลัง terminal ว่างใช้ CLI ต่อได้
 lmds web --status                 # ลืมลิงก์/token? ถามตัวที่รันอยู่ได้เลย
@@ -1433,7 +1437,7 @@ lmds web -b --new-token           # เปลี่ยน token (ลิงก์
 
 > **ป้ายไม่ขึ้นบนเครื่องอื่น?** payload มาจาก `lmds agent info` ที่รันบน**เครื่องปลายทาง**
 > ไม่ใช่ hub — เครื่องที่ยังเป็น lmds เวอร์ชันเก่าจะส่งข้อมูลไม่ครบ อัปเดตด้วย
-> `lmds node install --all` แล้ว refresh หน้าเว็บ
+> `lmds node install --all` (hub ส่งโค้ดของตัวเองไปให้ — เครื่องนั้นไม่ต้องเข้า GitHub) แล้ว refresh หน้าเว็บ
 
 ### เลือกรันไทม์เอง — vLLM หรือ SGLang
 

@@ -83,11 +83,15 @@ setsid bash -c 'sleep 2; systemctl --user restart {unit}' >/dev/null 2>&1 < /dev
 """
 
 
-def update_script(restart: bool = True) -> str:
-    """สคริปต์ที่งานอัปเดตรัน — แยกออกมาให้เทสอ่านได้โดยไม่ต้องรันจริง"""
+def update_script(restart: bool = True, unit: str = "") -> str:
+    """สคริปต์ที่งานอัปเดตรัน — แยกออกมาให้เทสอ่านได้โดยไม่ต้องรันจริง
+
+    `unit` = ชื่อ unit ที่ process นี้รันอยู่จริง (api._running_unit) · เดิมใช้ค่า default เสมอ
+    เครื่องที่ติดตั้งด้วยชื่ออื่นจึงอัปเดตแล้ว restart ผิดตัว — ของใหม่ไม่เคยถูกโหลด
+    """
     from .daemon import UNIT_NAME
 
     return _SCRIPT.format(
         remote="origin",
-        restart=_RESTART.format(unit=UNIT_NAME) if restart else "",
+        restart=_RESTART.format(unit=unit or UNIT_NAME) if restart else "",
     )

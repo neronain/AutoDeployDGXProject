@@ -95,9 +95,10 @@ def _locate(slug: str) -> str:
     มีคำตอบเดียวทั้งระบบ ไม่ใช่คนละแบบในแต่ละ endpoint
     """
     quoted = shlex.quote(slug)
+    # ใน echo ก็ต้องใช้ตัวที่ quote แล้ว — slug ดิบใน double quote คือ `$(…)` ที่รันได้จริง
     return (
         f'dir="$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)"; '
-        f'[ -n "$dir" ] || {{ echo "ไม่พบ bundle {slug}" >&2; exit 1; }}; '
+        f'[ -n "$dir" ] || {{ echo "ไม่พบ bundle "{quoted} >&2; exit 1; }}; '
         f'cd "$dir" || exit 1; '
         f'ctl="$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)"; '
         f'[ -n "$ctl" ] || {{ echo "ไม่พบ controller" >&2; exit 1; }}; '

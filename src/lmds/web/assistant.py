@@ -152,7 +152,8 @@ def _node_summary(node, entry: dict | None) -> dict:
                 "slug": m.get("slug"),
                 "running": m.get("running"),
                 "port": m.get("port"),
-                "repo": m.get("repo"),
+                # inventory.model_payload() ส่งมาเป็น model_id — เดิมอ่าน "repo" ได้ None ทุกตัว
+                "repo": m.get("model_id"),
             }
             for m in (data.get("models") or [])
         ],
@@ -187,7 +188,7 @@ def gather_state() -> dict:
                 "slug": m.get("slug"),
                 "running": m.get("running"),
                 "port": m.get("port"),
-                "repo": m.get("repo"),
+                "repo": m.get("model_id"),
             }
             for m in (local.get("models") or [])
         ],

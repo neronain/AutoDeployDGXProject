@@ -41,7 +41,9 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 #
 # tag ที่ digest นี้มาจาก ณ วันที่ generate: {{ plan.runtime.image_ref }}
 # อยากใช้ตัวอื่นก็ override ได้ตามเดิม: VLLM_IMAGE=<image> ./controller start
-VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
+# repo ของ image มาจาก renderer (image_repo) เพราะ registry ที่มีพอร์ตตัดที่ ':' ตัวแรกไม่ได้ ·
+# fallback เดิมเหลือไว้ให้ render บรรทัดนี้เดี่ยว ๆ ด้วย plan อย่างเดียวได้ (เทส image pin)
+VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ image_repo if image_repo is defined else plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 MASTER_CONTAINER="${MASTER_CONTAINER:-lmds-{{ slug }}-head}"
 WORKER_CONTAINER="${WORKER_CONTAINER:-lmds-{{ slug }}-worker}"
 
@@ -56,18 +58,36 @@ fi
 MASTER_IP="${MASTER_IP:-10.100.152.1}"
 WORKER_IP="${WORKER_IP:-10.100.152.2}"
 SSH_USER="${SSH_USER:-${USER:-$(id -un)}}"
-# คลัสเตอร์ที่มากกว่า 2 เครื่อง: ใส่ IP ของ worker ทุกตัวคั่นด้วยช่องว่าง เรียงตาม node-rank
-# (rank 1, 2, 3 …) · ค่าเริ่มต้นคือ worker เดียว = พฤติกรรมเดิมทุกประการ
-WORKER_IPS="${WORKER_IPS:-{% if node_count > 2 %}{% for i in range(2, node_count + 1) %}10.100.152.{{ i }}{{ " " if not loop.last }}{% endfor %}{% else %}$WORKER_IP{% endif %}}"
-# fabric/transport IP สำหรับ NCCL — ถ้าใช้ QSFP แยก interface ให้ override สองตัวนี้
-TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
-TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
+# ค่าที่ derive จาก MASTER_IP/WORKER_IP ต้องคำนวณใหม่ **หลัง** prompt ด้วย ไม่ใช่แค่ตอนโหลดไฟล์
+#
+# เดิม TRANSPORT_IP_* กับ WORKER_IPS ถูกตั้งตรงนี้จาก placeholder 10.100.152.x แล้ว
+# prompt_cluster_config ค่อยทำ VAR:-MASTER_IP ซ้ำ ซึ่งไม่ทำอะไรเลยเพราะตัวแปรมีค่าอยู่แล้ว →
+# IP ที่พิมพ์ตอบ prompt ถูกเมินเงียบ ๆ: head ผูก VLLM_HOST_IP กับ 10.100.152.1 และลูป worker
+# ssh ไป 10.100.152.2 ทั้งที่ผู้ใช้เพิ่งบอกว่าเครื่องอยู่ที่อื่น
+# จำค่าที่ผู้ใช้ตั้งมาเอง (env / cluster.env) แยกไว้ — ของที่ตั้งเองชนะเสมอ ของที่ derive ตามค่าล่าสุด
+WORKER_IPS_EXPLICIT="${WORKER_IPS:-}"
+TRANSPORT_IP_MASTER_EXPLICIT="${TRANSPORT_IP_MASTER:-}"
+TRANSPORT_IP_WORKER_EXPLICIT="${TRANSPORT_IP_WORKER:-}"
+_derive_cluster_defaults() {
+  # คลัสเตอร์ที่มากกว่า 2 เครื่อง: ใส่ IP ของ worker ทุกตัวคั่นด้วยช่องว่าง เรียงตาม node-rank
+  # (rank 1, 2, 3 …) · ค่าเริ่มต้นคือ worker เดียว = พฤติกรรมเดิมทุกประการ
+  WORKER_IPS="$WORKER_IPS_EXPLICIT"
+  WORKER_IPS="${WORKER_IPS:-{% if node_count > 2 %}{% for i in range(2, node_count + 1) %}10.100.152.{{ i }}{{ " " if not loop.last }}{% endfor %}{% else %}$WORKER_IP{% endif %}}"
+  # fabric/transport IP สำหรับ NCCL — ถ้าใช้ QSFP แยก interface ให้ override สองตัวนี้
+  TRANSPORT_IP_MASTER="$TRANSPORT_IP_MASTER_EXPLICIT"
+  TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
+  TRANSPORT_IP_WORKER="$TRANSPORT_IP_WORKER_EXPLICIT"
+  TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
+}
+_derive_cluster_defaults
 MASTER_PORT="${MASTER_PORT:-25000}"
 
 # ── NCCL / RoCE (ต้องตั้งชื่อ interface จริงบนเครื่อง; ว่าง = fallback TCP ช้าลง) ──
 # หา interface: ip -br link | grep -Ei '200|roce|mlx' ; ibdev2netdev 2>/dev/null
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-}"
+# ค่าที่ผู้ใช้ตั้งเองใช้ทั้งคลัสเตอร์ · ค่าที่ detect ให้เป็นของแต่ละเครื่อง (worker หาของตัวเองใน start)
+NCCL_IB_HCA_EXPLICIT="$NCCL_IB_HCA"
 NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
 
 # ── Paths ──
@@ -146,6 +166,8 @@ TOTAL_SIZE_APPROX_GB="${TOTAL_SIZE_APPROX_GB:-{{ total_size_gb }}}"
 
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-{{ health_timeout }}}"
 WORKER_INIT_WAIT="${WORKER_INIT_WAIT:-12}"
+# ระหว่างรอ head health ต้องแวะดู worker ด้วย (วินาที) — worker ที่ตายทำให้ head ค้างรอ NCCL เงียบ ๆ
+WORKER_CHECK_INTERVAL="${WORKER_CHECK_INTERVAL:-60}"
 # ================================================================================
 {% raw %}
 # ─────────────────────────── helpers ───────────────────────────
@@ -485,11 +507,14 @@ print('download complete:', path, flush=True)
 explain_crash() {
   local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError'
   local cause
+  # `|| true` ท้าย pipeline จำเป็น: grep ที่ไม่เจอบรรทัด Error คืน 1 → ใต้ set -e + pipefail การ assign
+  # นี้ทำสคริปต์ตายทันที ก่อนจะถึง die "container หยุดก่อน health" ของผู้เรียก · crash ที่ log ไม่มี
+  # exception (โดน OOM-kill, image พัง) จึงถูกรายงานเป็นความว่างเปล่า exit 1 ไม่มีข้อความสักบรรทัด
   cause="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 \
     | grep -E "(${errs}): " \
     | grep -vE 'Engine core initialization failed|See root cause above' \
     | sed -E "s/^.*(${errs}): /\\1: /" \
-    | head -1 | cut -c1-300)"
+    | head -1 | cut -c1-300 || true)"
   [[ -n "$cause" ]] || return 0
   echo "สาเหตุจาก log: ${cause}" >&2
   case "$cause" in
@@ -721,7 +746,13 @@ _resolve_ifname() {
 
 _nccl_env_pairs() {
   # พิมพ์ทีละบรรทัด KEY=VALUE — ใช้ทั้ง head (docker -e) และ worker (export)
+  # arg 2 = HCA ของเครื่องนั้น (worker ส่งของตัวเองมา) · ไม่ส่ง = ของ head
+  #
+  # เดิม NCCL_IB_HCA ที่ resolve บน head ถูก push ให้ worker ทั้งก้อน — mlx5_N ของ worker
+  # ไม่จำเป็นต้องเลขเดียวกับ head ต่อให้เป็นเครื่องรุ่นเดียวกัน (ลำดับ enumerate ต่างกันได้)
+  # ชื่อผิด = NCCL หา HCA ไม่เจอแล้วตกไป TCP เงียบ ๆ ทั้งที่ head ใช้ RoCE อยู่
   local ifname="${1:-$NCCL_SOCKET_IFNAME}"
+  local hca="${2-$NCCL_IB_HCA}"
   echo "NCCL_IGNORE_CPU_AFFINITY=1"
   echo "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX}"
   if [[ -n "$ifname" ]]; then
@@ -734,12 +765,12 @@ _nccl_env_pairs() {
   else
     echo "WARN: หา interface ของ ${TRANSPORT_IP_MASTER} ไม่เจอ — NCCL อาจเลือกเส้นผิด" >&2
   fi
-  if [[ -n "$NCCL_IB_HCA" ]]; then
-    echo "NCCL_IB_HCA=${NCCL_IB_HCA}"
+  if [[ -n "$hca" ]]; then
+    echo "NCCL_IB_HCA=${hca}"
     echo "NCCL_IB_DISABLE=0"
   else
     echo "NCCL_IB_DISABLE=1"
-    echo "WARN: ไม่พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME:-<ไม่รู้ interface>} — fallback TCP (ช้าลง)" >&2
+    echo "WARN: ไม่พบ RoCE HCA ของ ${ifname:-<ไม่รู้ interface>} — fallback TCP (ช้าลง)" >&2
   fi
 }
 
@@ -767,8 +798,12 @@ prompt_cluster_config() {
   read -rp "  Head (master) node IP [${MASTER_IP}]: " ans || true; [[ -z "$ans" ]] || MASTER_IP="$ans"
   read -rp "  Worker node IP        [${WORKER_IP}]: " ans || true; [[ -z "$ans" ]] || WORKER_IP="$ans"
   read -rp "  SSH user for nodes    [${SSH_USER}]: " ans || true; [[ -z "$ans" ]] || SSH_USER="$ans"
-  TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
-  TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
+  if (( NNODES > 2 )); then
+    read -rp "  All worker IPs (rank order, space-separated) [${WORKER_IPS}]: " ans || true
+    [[ -z "$ans" ]] || WORKER_IPS_EXPLICIT="$ans"
+  fi
+  # คำตอบต้องไปถึง TRANSPORT_IP_* / WORKER_IPS ด้วย — ดูคำอธิบายที่ _derive_cluster_defaults
+  _derive_cluster_defaults
   printf '\n'
 }
 
@@ -858,6 +893,22 @@ ensure_image() {
   docker pull "$image" || die "ดึง image ${image} ไม่สำเร็จ"
 }
 
+# port ว่างบน head? — container รันด้วย --network host จึงไม่ "publish" port
+# ตัวกรอง docker publish= จับไม่เจอเลย ต้องดู listening socket จริง
+#
+# เทียบทั้ง token ไม่ใช่ substring: ของเดิม *":${API_PORT} "* จับ *:18000 ว่าเป็น :8000 ด้วย
+# → port 8000 ว่างจริงแต่ start ถูกปฏิเสธเพราะมีอะไรฟังอยู่ที่ 18000 · ตัวหน้าต้องเป็น : หรือ .
+# (ss/netstat พิมพ์ 0.0.0.0:8000 · *:8000 · [::]:8000) ตัวหลังต้องเป็นช่องว่างหรือจบบรรทัด
+_head_port_in_use() {
+  local listening=""
+  if command -v ss >/dev/null 2>&1; then
+    listening="$(ss -tln 2>/dev/null || true)"
+  elif command -v netstat >/dev/null 2>&1; then
+    listening="$(netstat -tln 2>/dev/null || true)"
+  fi
+  grep -Eq "[:.]${API_PORT}([[:space:]]|$)" <<< "$listening"
+}
+
 start() {
   ensure_image "${VLLM_IMAGE}"
   _require_non_root
@@ -877,15 +928,7 @@ start() {
   local head_fi="${FLASHINFER_CACHE}/${cache_key}"
   local worker_fi="${WORKER_FLASHINFER_CACHE}/${cache_key}"
 
-  # port ว่างบน head? — container รันด้วย --network host จึงไม่ "publish" port
-  # ตัวกรอง docker publish= จับไม่เจอเลย ต้องดู listening socket จริง
-  local listening=""
-  if command -v ss >/dev/null 2>&1; then
-    listening="$(ss -tln 2>/dev/null || true)"
-  elif command -v netstat >/dev/null 2>&1; then
-    listening="$(netstat -tln 2>/dev/null || true)"
-  fi
-  if [[ "$listening" == *":${API_PORT} "* ]]; then
+  if _head_port_in_use; then
     die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน (ดู: ss -tlnp | grep ${API_PORT})"
   fi
 
@@ -920,13 +963,21 @@ start() {
 
   # ── Step 1: worker ทุกตัว (rank 1..N-1, headless) ก่อน ──
   # container ชื่อเดียวกันได้เพราะอยู่คนละเครื่อง · rank เรียงตามลำดับใน WORKER_IPS
-  local rank=0 worker_script wifname
+  local rank=0 worker_script wifname whca
   for wip in $WORKER_IPS; do
     rank=$(( rank + 1 ))
     wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wip}' \
       '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true)"
     [[ -n "$wifname" ]] || wifname="$NCCL_SOCKET_IFNAME"
-    log "Starting worker rank ${rank} (headless) on ${wip} [${wifname:-auto}] …"
+    # HCA ของ worker หาบนเครื่อง worker เอง (sysfs เดียวกับ detect_hca_for_interface ของ head)
+    # ค่าที่ผู้ใช้ตั้ง NCCL_IB_HCA มาเองใช้ทั้งคลัสเตอร์ · หาไม่เจอ = worker ตัวนั้นใช้ TCP ไม่ยืมชื่อของ head
+    whca="$NCCL_IB_HCA_EXPLICIT"
+    if [[ -z "$whca" && -n "$wifname" ]]; then
+      whca="$(ssh_at "$wip" "for d in /sys/class/infiniband/*; do [ -e \"\$d/device/net/${wifname}\" ] && basename \"\$d\"; done" 2>/dev/null || true)"
+      whca="${whca%%$'\n'*}"
+    fi
+    [[ -z "$whca" || "$whca" == "$NCCL_IB_HCA" ]] || log "worker ${wip} ใช้ HCA คนละตัวกับ head: ${whca}"
+    log "Starting worker rank ${rank} (headless) on ${wip} [${wifname:-auto}${whca:+ / ${whca}}] …"
     worker_script="$(cat <<WSCRIPT
 #!/bin/bash
 set -e
@@ -948,7 +999,7 @@ else
 fi
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-$(_nccl_env_pairs "$wifname" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
+$(_nccl_env_pairs "$wifname" "$whca" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
 $(for pair in "${EXTRA_DOCKER_ENV[@]}"; do printf 'export %s\n' "$pair"; done)
 exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port 18000 --headless
 WSCRIPT
@@ -1004,6 +1055,7 @@ WSCRIPT
   # ── Step 3: health poll ──
   log "รอ /health (สูงสุด ${STARTUP_TIMEOUT}s — โหลดโมเดลใหญ่ + warm-up ข้าม node ใช้เวลานาน)…"
   local deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
+  local next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
   while (( $(date +%s) < deadline )); do
     if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
       log "Server พร้อม"
@@ -1015,6 +1067,19 @@ WSCRIPT
     if [[ "$(docker inspect -f '{{.State.Running}}' "$MASTER_CONTAINER" 2>/dev/null || true)" != "true" ]]; then
       CONTAINER_NAME="$MASTER_CONTAINER" explain_crash
       die "head container หยุดก่อน health ผ่าน — ดู: $0 logs head 200"
+    fi
+    # worker ตายระหว่างรอ head — เดิมดู worker แค่หลัง WORKER_INIT_WAIT แล้วเฝ้าแต่ head
+    # worker ที่ OOM ตอนโหลดน้ำหนักทำให้ head ค้างรอ NCCL init จนครบ STARTUP_TIMEOUT
+    # (ชั่วโมงกว่าสำหรับโมเดลใหญ่) โดยไม่มีอะไรบอกว่าเครื่องไหนตาย
+    if (( $(date +%s) >= next_worker_check )); then
+      for wip in $WORKER_IPS; do
+        if [[ "$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
+          ssh_at "$wip" "docker logs --tail 100 '${WORKER_CONTAINER}' 2>&1" || true
+          docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
+          die "worker container บน ${wip} ตายระหว่างรอ head health — หยุด head แล้ว · log ของ worker อยู่ด้านบน (เพิ่มเติม: $0 logs worker 200)"
+        fi
+      done
+      next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
     fi
     sleep 10
   done

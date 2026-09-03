@@ -161,8 +161,11 @@ sudo systemctl daemon-reload && sudo systemctl restart docker
 ```bash
 git clone https://github.com/neronain/AutoDeployDGXProject
 cd AutoDeployDGXProject
-./install.sh
+./install.sh          # เติม -y = ตอบ Y ทุกข้อ (เท่ากับ LMDS_ASSUME_YES=1)
 ```
+
+> **ติดตั้งครั้งเดียวที่เครื่องที่จะเป็น hub ก็พอ** — เครื่องอื่นในฟลีตเพิ่มจากหน้าเว็บ (§2.2)
+> hub ส่งโค้ดของตัวเองไปติดตั้งให้ ไม่ต้อง clone repo บนเครื่องนั้น
 
 สคริปต์จะ:
 1. ตรวจ Python ≥ 3.10 · ถ้าขาดโมดูล `venv` **ถามติดตั้งให้** (`sudo apt install python3-venv`)
@@ -208,6 +211,38 @@ sudo -v && LMDS_ASSUME_YES=1 ./install.sh     # ติดตั้งรวด�
 หลังติดตั้งเสร็จ สคริปต์จะบอกเองที่บรรทัดสุดท้ายว่าต้อง `source ~/.bashrc` (และ `newgrp docker` ถ้าเพิ่งถูกเพิ่มเข้ากลุ่ม)
 — PATH กับกลุ่มที่เพิ่งเติมยังไม่มีผลกับ shell เดิม จะเปิด terminal ใหม่แทนก็ได้
 
+### 2.1 เปิดคอนโซลเว็บ (เครื่องนี้กลายเป็น hub)
+
+```bash
+lmds web --enable --bind 0.0.0.0     # systemd user service — ขึ้นเองหลังรีบูต ฟื้นเองถ้าตาย
+```
+
+พิมพ์ token ให้บนจอ (เก็บไว้ที่ `~/.config/lmds/web-token`) · เปิด `http://<ip ของเครื่องนี้>:8600`
+แล้วกรอก token ครั้งเดียวต่อเบราว์เซอร์ · ถ้าบอกว่า "ยังไม่ขึ้นตอนบูต" ให้รัน
+`sudo loginctl enable-linger $USER` หนึ่งครั้ง (ทำให้ service ของผู้ใช้ขึ้นได้โดยไม่ต้อง login)
+
+| คำสั่ง | ใช้เมื่อ |
+|---|---|
+| `lmds web --status` | ลืมลิงก์/token |
+| `lmds web --restart` | หลังอัปเดตโค้ด (ปุ่ม Update บนหน้าเว็บทำให้เอง) |
+| `lmds web --disable` | เลิกให้ขึ้นเอง |
+| `lmds web -b --bind 0.0.0.0` | เครื่องที่ไม่มี systemd — รันเบื้องหลังจนกว่าจะรีบูต |
+
+### 2.2 เพิ่มเครื่องอื่นจากหน้าเว็บ
+
+บนคอนโซล → **Add machine** → ใส่ชื่อ, host (IP หรือ hostname), user และ**รหัสผ่าน sudo ของ user นั้น**
+(ใช้ครั้งเดียว ไม่ถูกเก็บ) → hub ทำให้ตามลำดับ:
+
+1. ใส่ SSH key ของ hub ลง `~/.ssh/authorized_keys` ของเครื่องนั้น
+2. **ส่งโค้ดของ hub ไป** (git bundle ~2 MB ผ่าน scp) แล้วรัน `install.sh` บนเครื่องนั้น — เครื่องนั้น
+   **ไม่ต้องเข้าถึง GitHub** และไม่ต้องมี deploy key (hub ที่ไม่ได้ติดตั้งจาก git checkout จะถอยไป
+   `git clone` จาก GitHub ตามเดิม)
+3. ติดตั้ง Docker / NVIDIA Container Toolkit / กลุ่ม docker / linger ด้วยรหัสผ่านที่ให้มา
+4. สำรวจเครื่อง (`lmds agent info`) แล้วขึ้นในเมนูซ้ายภายใต้ไซต์ที่ตั้งไว้
+
+จาก CLI: `lmds node add <ชื่อ> <user>@<host> --install` แล้ว `lmds node setup <ชื่อ>` (ขั้นที่ใช้ sudo)
+· อัปเดตภายหลัง: ปุ่ม **Update** บนการ์ดเครื่อง หรือ `lmds node install --all`
+
 ### ตรวจว่าติดตั้งสำเร็จ
 
 ```bash
@@ -217,7 +252,7 @@ lmds version
 ควรได้:
 
 ```text
-lmds 0.3.6
+lmds 0.6.0
 template standard: dgx-spark-controllers-v3.0.0
 Local Model Deploy Studio — สร้างโดย neronain ⚡ fb.com/neronain.minidev
 ```

@@ -111,14 +111,18 @@ def _clean(name: str, value: object) -> str:
             if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
                 raise SettingsError(
                     f"engine_env ต้องเป็น KEY=VALUE คั่นด้วยช่องว่าง (ได้ {pair!r})")
-            if any(ch in value for ch in " \t\n\r\x00'\"$`\\"):
+            if any(ch in value for ch in " \t\n\r\x00'\"$`\\{}"):
                 raise SettingsError(f"ค่าของ {key} มีอักขระที่เชลล์ตีความ — ใส่ไม่ได้")
             cleaned.append(f"{key}={value}")
         return " ".join(cleaned)
 
-    # ชื่อโมเดล/image เป็นข้อความอิสระ แต่ต้องไม่มีอักขระที่ทำให้ shell ตีความ
-    if any(ch in text for ch in "\n\r\x00"):
-        raise SettingsError(f"{name} มีอักขระขึ้นบรรทัดใหม่")
+    # ชื่อโมเดล/image เป็นข้อความอิสระ — แต่ไฟล์นี้ถูก `source` เป็น bash ทุกครั้งที่ start/autostart
+    # เดิมกันแค่ขึ้นบรรทัดใหม่ ส่วน $(…) ` " ผ่านได้ → served_name="x$(id)y" จากช่องกรอกบนหน้าเว็บ
+    # = รันคำสั่งบนเครื่องนั้นในฐานะผู้ใช้ (รีวิว 2026-09-04) · shlex.quote ตอนเขียนไม่ช่วย
+    # เพราะค่าถูกวางใน "${VAR:-…}" ที่อยู่ใน double quote อยู่แล้ว
+    if any(ch in text for ch in "\n\r\x00\"'`$\\{}"):
+        raise SettingsError(
+            f"{name} มีอักขระที่เชลล์ตีความ (\" ' ` $ \\ {{ }}) — ใส่ไม่ได้")
     return text
 
 
@@ -197,7 +201,9 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
     ]
     for field, value in cleaned.items():
         for name in FIELDS[field]:
-            lines.append(f'{name}="${{{name}:-{shlex.quote(value).strip(chr(39))}}}"')
+            # ค่าผ่าน _clean มาแล้ว (ไม่มี " ' ` $ \ { } หรือขึ้นบรรทัดใหม่) จึงวางตรง ๆ ได้ —
+            # shlex.quote แล้ว strip quote ทิ้ง ไม่ได้ป้องกันอะไร แค่ทำให้ดูเหมือนปลอดภัย
+            lines.append(f'{name}="${{{name}:-{value}}}"')
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if extra:
         cleaned["extra_args"] = extra

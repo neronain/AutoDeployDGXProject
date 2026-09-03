@@ -87,7 +87,8 @@ hub **ไม่ได้ส่ง agent ไปรัน** บนเครื่�
 ก็ยังคุยกันได้ · ข้อแลกเปลี่ยน: **ต้องติดตั้งบนทุกเครื่องก่อน** ซึ่ง hub ทำให้ได้ด้วยคำสั่งเดียว:
 
 ```bash
-lmds node install <ชื่อเครื่อง>      # clone/pull จาก GitHub แล้วรัน install.sh บนเครื่องนั้น
+lmds node install <ชื่อเครื่อง>      # hub ส่งโค้ดของตัวเองไป (git bundle ผ่าน scp) แล้วรัน install.sh บนเครื่องนั้น
+                                     # — เครื่องนั้นไม่ต้องเข้า GitHub · hub ที่ไม่ได้ติดตั้งจาก checkout ถอยไป clone เอง
 lmds node add <ip> --user <u> --install   # เพิ่ม + ติดตั้งในคำสั่งเดียว
 ```
 

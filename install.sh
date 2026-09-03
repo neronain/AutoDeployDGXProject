@@ -7,7 +7,20 @@
 #   LMDS_INSTALL_DIR / LMDS_BIN_DIR  ที่ติดตั้ง (default ~/.local/share/lmds, ~/.local/bin)
 #   LMDS_ASSUME_YES=1                ตอบ Y ทุกคำถาม — ติดตั้งของที่ขาดให้เลยโดยไม่ถาม
 #   LMDS_SKIP_PREREQ=1               ข้ามส่วนติดตั้ง Docker/NVIDIA Container Toolkit (ตรวจอย่างเดียว)
+#   ./install.sh -y                  เท่ากับ LMDS_ASSUME_YES=1
 set -Eeuo pipefail
+
+# `./install.sh -y` = LMDS_ASSUME_YES=1 — พิมพ์ง่ายกว่า env และเห็นในประวัติคำสั่งชัดกว่า
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) export LMDS_ASSUME_YES=1 ;;
+    -h|--help)
+      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+      echo "  -y, --yes                        เท่ากับ LMDS_ASSUME_YES=1"
+      exit 0 ;;
+    *) echo "ไม่รู้จัก option: $arg (ดู: ./install.sh --help)" >&2; exit 2 ;;
+  esac
+done
 
 INSTALL_DIR="${LMDS_INSTALL_DIR:-${HOME}/.local/share/lmds}"
 BIN_DIR="${LMDS_BIN_DIR:-${HOME}/.local/bin}"
@@ -432,6 +445,9 @@ if [ "$need_source_rc" = "1" ] || [ "$need_newgrp" = "1" ]; then
   echo "       ${activate}"
   step=$((step + 1))
 fi
+echo "  ${step}. เปิดคอนโซลเว็บ (ขึ้นเองหลังรีบูต):  lmds web --enable --bind 0.0.0.0"
+echo "       เครื่องอื่นในฟลีตเพิ่มจากหน้าเว็บ (Add machine) — hub ส่งโค้ดไปติดตั้งให้เอง ไม่ต้องรัน install.sh ทีละเครื่อง"
+step=$((step + 1))
 echo "  ${step}. ตรวจเครื่องแบบละเอียด:  lmds hardware"
 step=$((step + 1))
 echo "  ${step}. ลอง deploy ตัวเล็กก่อน:  lmds deploy Qwen/Qwen3-0.6B"

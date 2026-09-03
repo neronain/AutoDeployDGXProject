@@ -25,6 +25,116 @@
   หัวข้อ/breadcrumb เป็นชื่อเครื่อง · ปุ่มเดิมทุกปุ่มทำงานเหมือนเดิม
 - ยังอยู่บนกฎ air-gapped: ไม่โหลดฟอนต์/สคริปต์จากเน็ต (เทส test_page_is_self_contained คุมอยู่)
 
+**Controller templates ผ่าน review รอบใหญ่ — 12 จุดที่ผู้ใช้เจอเป็น "เงียบ ๆ ไม่ทำงาน" มากกว่า error**
+
+ผู้ review render bundle แล้วรัน controller ที่ได้จริงใต้ bash (ไม่ใช่อ่าน template) — ทุกข้อมีเทสรันแบบเดียวกัน
+คุมไว้ใน `tests/test_review_templates.py`
+
+- **llama.cpp**: `bundle.args` / `--extra-args` และ `--jinja` ไม่ผูกกับผลตรวจ chat template ของ inspector อีก —
+  inspector ตอบ None ให้ GGUF หลายตัว แล้ว renderer แปลงเป็น False ทำให้แฟล็กที่ `lmds set` บอกว่าบันทึกแล้วหายทั้งชุด
+- **vLLM / SGLang / stacked**: `explain_crash` ใต้ `set -e` + pipefail เคยฆ่าสคริปต์ทันทีเมื่อ log ไม่มีบรรทัด Error
+  (OOM-kill) — container ตายก่อน health จึงถูกรายงานเป็น exit 1 เปล่า ๆ ไม่มีข้อความ · ใส่ `|| true` ท้าย pipeline
+- **stacked**: IP ที่พิมพ์ตอบ prompt ไม่เคยไปถึง `TRANSPORT_IP_*` / `WORKER_IPS` (derive จาก placeholder ตอนโหลดไฟล์
+  แล้ว `:-` ไม่ทับ) — แยกค่าที่ผู้ใช้ตั้งเองออกจากค่าที่ derive แล้วคำนวณใหม่หลัง prompt · คลัสเตอร์ >2 เครื่องถาม
+  รายการ worker ทั้งหมดด้วย
+- **SGLang** ได้ของที่ vLLM มีอยู่แล้ว: `bundle.args` / `--extra-args`, `DRY_RUN=1`, และ watchdog ของ download
+  (`DOWNLOAD_STALL_SECONDS` + เริ่มใหม่ต่อจากเดิมโดยปิด Xet)
+- **renderer**: `_quote_flag` แยก `=` เฉพาะใน token ชื่อ flag — เดิม `-ot exps=CPU` กลายเป็น `-ot 'exps CPU'`
+- **llama.cpp**: `LLAMA_CPP_UPDATE=1 ./controller prepare-runtime` ข้าม `runtime.lock` ไป build `LLAMA_CPP_REF` ล่าสุด —
+  เดิม test-tools แนะให้อัปเดตด้วย prepare-runtime ซึ่งวนกลับมา build commit เดิมเป๊ะ
+- **stacked**: ระหว่างรอ head health แวะดู worker ทุก `WORKER_CHECK_INTERVAL` (60s) — worker ตายแล้ว head ค้างรอ NCCL
+  จนครบ timeout โดยไม่มีใครบอก · ตอนนี้พิมพ์ log worker 100 บรรทัด หยุด head แล้ว die ระบุ IP · RoCE HCA ของ worker
+  ถามที่ worker เอง ไม่ push ชื่อ `mlx5_N` ของ head ไปให้
+- **llama.cpp**: `HF_TOKEN` ไม่อยู่บน argv ของ curl/aria2c อีก (`ps` อ่านได้ทั้งเครื่อง) — curl รับ header ทาง stdin
+  (`-K -`) · aria2c ผ่านไฟล์ conf ชั่วคราว mode 600 ที่ลบทันทีที่จบ
+- **ทุก template**: image ที่ตรึง digest ใช้ `image_repo` จาก renderer — registry ที่มีพอร์ต
+  (`registry.local:5000/vllm:tag`) เคยถูกตัดที่ `:` ตัวแรกเหลือ `registry.local@sha256:…`
+- **llama.cpp**: `start` ตรวจขนาด + GGUF magic แล้วเชื่อ stamp `<file>.sha256-ok` (size+mtime) ที่เขียนหลัง hash ผ่าน —
+  เดิม sha256sum ไฟล์ 60–100 GB ทุก start กินหลายนาที · `verify-files` ยัง hash เต็มเสมอ
+- **stacked**: เช็ค port บน head เทียบทั้ง token — เดิม `*":8000 "*` จับ `*:18000` ว่าเป็น 8000 แล้วปฏิเสธ start ทั้งที่ port ว่าง
+- **SGLang**: แปลชื่อ kv-cache dtype จากภาษา vLLM ของ planner — `fp8` → `fp8_e4m3` · ชื่อที่ SGLang ไม่มี (`nvfp4_ds_mla`
+  ของสูตร DeepSeek-V4) → `auto` พร้อม WARN บอกว่าทิ้งอะไรไป · เดิมส่งตรง ๆ แล้วตายตั้งแต่ parse argument
+
+**เมนูเป็นภาษาอังกฤษ** — หน้าเว็บพูดอังกฤษมาตลอด (CLI พูดไทย) แต่ rail/ภาพรวมที่เพิ่มใน 0.6 เผลอเป็นไทย ·
+ผู้ใช้ 2026-09-04: "อย่าลืมเมนู eng" → เมนูซ้าย breadcrumb ช่องค้นหา tooltip หน้าภาพรวม/โมเดลทั้งฟลีต/ตั้งค่า
+เป็นอังกฤษทั้งหมด (comment ในโค้ดยังไทยตามกติกา)
+
+**รีวิวโค้ดทั้งระบบ (ชุด backend: fleet / nodes / brain / fit)** — ผู้ใช้ขอให้ 0.6 เป็นรอบตรวจทั้งระบบ
+"ส่วนไหนผิด ไม่ว่าจะ single หรือ stack แก้ได้เลย" · ทุกข้อยืนยันด้วยเทสก่อนแก้ (`tests/test_review_backend.py`)
+
+- **[สูง] bundle.env รันคำสั่งได้จากช่องกรอกบนหน้าเว็บ** — `served_name`/`image` กันแค่ขึ้นบรรทัดใหม่ แล้วถูก
+  เขียนเป็น `NAME="${NAME:-ค่า}"` ที่ controller `source` ทุกครั้งที่ start/autostart → `x$(id)y` ถูกรันจริง
+  (`shlex.quote` แล้ว strip quote ทิ้ง ไม่ได้กันอะไร) · ตอนนี้ปฏิเสธ `" ' \` $ \ { }` ทั้งสองช่อง และ `{}`
+  ใน engine_env ด้วย (ปิด `${…}` ก่อนเวลา)
+- **[สูง] ทะเบียนเครื่อง (`nodes.yaml`) แข่งกันเขียนจนค่าหาย** — `add/remove/update` ต่างคนต่าง load สำเนา
+  มาแก้แล้ว save · refresher 8 thread เขียน last_seen ทุก 15 วิ ระหว่างที่ผู้ใช้ PATCH cluster_ip → API ตอบ
+  200 แต่ไฟล์ไม่มีค่าใหม่ · กด forget แล้วเครื่องโผล่กลับ · ใส่ RLock + flock (`~/.config/lmds/.nodes.lock`)
+  ครอบทั้งช่วง load→save · เทสยิงสองเธรดแข่งกัน
+- **`--concurrency N` กับ llama.cpp ให้ผลกลับด้าน** — analyzer หาร context ด้วย N (ค่าต่อ 1 sequence) แต่แผน
+  ยังตั้ง slot = 1 และเอาค่าที่หารแล้วไปเป็น `--ctx-size` ทั้งก้อน = slot เดียวที่ได้ context หารสี่ ·
+  ตอนนี้ slot = N และ pool = N × ค่าต่อ slot (harden ใช้เพดานเดียวกัน ไม่บีบกลับ) · vLLM/SGLang เหมือนเดิม
+- **harden จัด output ก่อน clamp context** — max_output_tokens ถูกจัดให้พอดี slot จาก context ที่ยังไม่ถูกลด
+  → แผนสัญญา output ที่โตกว่า slot จริง · สลับลำดับ
+- **ขั้น prereq ใต้ sudo `cd ~/AutoDeployDGXProject` ไป /root** — `~` ใน `bash -c` ใต้ sudo คือ home ของ root
+  จึง "no such directory" ทุกครั้ง · ส่ง `HOME` ของผู้ใช้เข้าไป และ chown สิ่งที่ installer สร้างกลับเป็นของผู้ใช้
+- **`lmds remove` อ่าน `MODEL_DIR` จาก environ ของ hub** — ค่านั้นเป็นของ bundle ที่กำลัง start อยู่ ไม่ใช่ของ
+  โมเดลที่กำลังลบ → ได้โฟลเดอร์ผิดไปลบ · ใช้ `~/models/<slug>` เสมอ
+- **adopt รับ slug อะไรก็ได้** — `--slug ../../x` เขียน controller นอก `bundles/` · ตรวจรูปแบบก่อนแตะ docker/proc
+  และชื่อที่เดาจาก container/โมเดลถูกบีบเข้ารูป slug (org/Model_X → org-model-x)
+- **dual-GPU ในเครื่องเดียวถูกนับเป็น 2 node** — `from_hardware_report` ไม่ใส่ `gpus_per_node` → แผน stacked
+  ทั้งที่มีเครื่องเดียว
+- adopt ทิ้ง `HostIp` ของ port → container ที่เคย bind แค่ 127.0.0.1 กลายเป็นเปิดทุก interface หลัง adopt ·
+  `alt_hosts:`/`labels:` ว่างในไฟล์ที่แก้มือ = None → TypeError ทั้งทะเบียน (ตกกลับ default) · cluster IP
+  169.254.x (link-local) ถูกปฏิเสธ · ssh ใส่ `ServerAliveInterval` — สายที่ตายเงียบไม่ทำให้ job ค้างล็อก slug ตลอด
+
+**ชั้นเว็บผ่าน review รอบเดียวกัน — 12 จุด ส่วนใหญ่คือ "ทำงานผิดเงียบ ๆ" ไม่ใช่ error** (เทส `tests/test_review_web.py`)
+
+- **slug จาก URL กลายเป็นคำสั่ง shell บนเครื่องอื่น** — `echo 'ไม่พบ bundle {slug}'` ใส่ slug ดิบใน single quote
+  (api / memory / scriptedit / clone) → `x';id;'` รันได้จริง · ตรวจรูปแบบ slug ที่ปากทางทุก route ที่ไปถึง node
+  หรือชื่อไฟล์ (400) และทุก echo ใช้ตัวที่ `shlex.quote` แล้ว
+- **start/stop โมเดลในเครื่องนี้ส่ง option ผ่าน `os.environ` ของทั้ง process** — สอง start ซ้อนกันคืนค่าของกันและกัน
+  → `API_PORT` ค้างถาวร และ subprocess ระหว่างนั้นได้ `API_KEY` ของอีกโมเดล · ล็อกให้ทำทีละตัว (subprocess อื่น
+  ยังเห็น env ช่วงสั้น ๆ ที่ถือล็อกอยู่ — แก้ให้หมดต้องส่ง env ตรงเข้า fleet.manager)
+- **งานที่ ssh ค้างยกเลิกไม่ได้ และล็อก (เครื่อง, โมเดล) ตลอดกาล** — เพิ่ม `POST /api/jobs/{id}/cancel` + ปุ่ม
+  Cancel ในแผงผลงาน (ทั้งโมเดลในเครื่องนี้และบนเครื่องอื่น) · terminate แล้วท่อปิด exit_code ถูกตั้ง ล็อกหลุด
+- **probe ที่ล้มด้วยอย่างอื่นที่ไม่ใช่ NodeError (เช่น motd ไม่ใช่ UTF-8) ไม่เคยลงแคช** — `due()` เป็นจริงทุกวิ
+  → SSH เครื่องนั้นวินาทีละครั้ง และการ์ด "ไม่มีข้อมูล" ตลอดกาล · จับทุก exception ลงแคชพร้อมชื่อ error
+- **`inventory?refresh=true` ตอบสดแต่ไม่เขียนแคช** — SSE ส่ง snapshot เก่าทับการ์ดใน 3 วิ และ `refreshing`
+  ค้าง · เขียน `STORE.set_node` ทั้งสำเร็จและล้ม
+- **restart/update นอก systemd ล้มเงียบ** — เดิมถอยไปชื่อ unit default แล้วสั่ง systemctl ทั้งที่รันในเทอร์มินัล
+  → 409 "ไม่ได้รันใต้ systemd — restart เอง: lmds web --restart" · update ส่งชื่อ unit ที่รันอยู่จริงเข้า script
+  (เครื่องที่ติดตั้งชื่ออื่นเคย restart ผิดตัว) · หน้าเว็บรอให้ลายเซ็น process เปลี่ยน (`waitForHub`) ไม่ใช่ ping
+  1 วิแล้ว reload ไปเจอ process เดิม
+- **คำสั่งสั้นข้ามเครื่องได้ timeout 1800 วิ** — เครื่องที่ ssh ค้างยึด thread ของเว็บครึ่งชั่วโมง · `stop` ย้ายไปเป็น
+  job (ยกเลิกได้) ที่เหลือ 120 วิ · `/api/scan?all_nodes=true` ถามทุกเครื่องพร้อมกัน (8 worker, 60 วิ/เครื่อง)
+  แทนเรียงคิว 300 วิ · แผง weights มี try/catch — เดิมพังแล้วค้างที่ "Scanning…" ตลอดกาล
+- **เลือกไฟล์ GGUF ผ่านหน้าเว็บ = ข้าม LLM เงียบ ๆ** — ตัวแปร `chosen` (Engine) ถูกทับด้วย GgufVariant แล้วส่งเป็น
+  `engine=` ให้ build_plan ซึ่งตีความว่า "ผู้ใช้เลือก engine เอง" · แยกชื่อตัวแปร
+- ผู้ช่วยอ่าน `m["repo"]` แต่ inventory ส่ง `model_id` → ไม่เคยรู้ว่าโมเดลไหนคือ repo อะไร
+- หน้าเว็บ: detail แบบสตริง (400/401/429/500) ของ analyze/generate ไม่เคยโชว์ (เหลือแค่ "Analysis failed") ·
+  เลิกตาม job เงียบ ๆ เมื่อ hub ตอบ 404/5xx → ตอนนี้บอก "Lost track of job" · แผง doctor แตะ `d.findings`
+  ก่อนเช็ค `r.ok` → 404/500 ทำให้แผงว่างค้าง
+- ป้าย "มีอัปเดต" ของ hub มอง `.git` จากตำแหน่งโมดูล — บน hub ที่ติดตั้งจริง (site-packages) จึงไม่เคยขึ้น ·
+  ใช้ `selfupdate.source_root()` ตัวเดียวกับปุ่มอัปเดต
+- option ของโมเดลในเครื่องนี้ (`/start`, `/run/<cmd>`) ส่ง body ดิบเข้า `controller_env` → `port: "abc"` = 500
+  และ image ข้าม allowlist ไปถึง `docker run` · ผ่าน `clean_options` ชุดเดียวกับ node (400)
+
+**ติดตั้งง่ายขึ้น: ติดตั้งที่ hub เครื่องเดียว ที่เหลือ hub ส่งโค้ดไปเอง** — ผู้ใช้ 2026-09-04:
+"ต้องติดตั้งง่าย ไม่ยุ่งยาก" · ตรวจเส้นทางตั้งแต่เครื่องเปล่าแล้วพบว่าขั้นที่ยากที่สุดคือ *เครื่องที่สอง*:
+repo เป็น private ทุกเครื่องที่เพิ่มเข้าฟลีตต้องมี deploy key ของตัวเองก่อน ไม่งั้น `could not read Username`
+(เคยต้องส่ง git bundle ด้วยมือเมื่อ 13 ส.ค.)
+
+- **`lmds node install` / ปุ่ม install-update บนหน้าเว็บ ส่งโค้ดของ hub ไปให้เครื่องนั้น** (git bundle ~2 MB
+  ผ่าน scp แล้ว `git clone`/`pull` จากไฟล์นั้น · origin ชี้กลับ GitHub เผื่อวันหน้ามี key) — เครื่องปลายทาง
+  ไม่ต้องเข้าถึง GitHub · แคช bundle ต่อ commit (15 เครื่องกด update พร้อมกัน pack ครั้งเดียว) · hub ที่ไม่ได้
+  ติดตั้งจาก checkout หรือ scp ล้ม → ถอยไป clone จาก GitHub ตามเดิม ไม่ใช่ล้ม (`tests/test_install_ship.py`)
+- `./install.sh -y` = `LMDS_ASSUME_YES=1` · `--help` · สรุปท้ายสคริปต์บอกขั้นเปิดคอนโซล
+  (`lmds web --enable --bind 0.0.0.0`) และว่าเครื่องอื่นเพิ่มจากหน้าเว็บได้ — เดิมจบที่ `lmds deploy` ทั้งที่
+  ผู้ใช้ส่วนใหญ่ทำงานผ่านหน้าเว็บ
+- เอกสาร: README (ไทย/อังกฤษ) เริ่มใน 3 คำสั่งเป็น clone → install → `lmds web --enable` + "เครื่องอื่นเพิ่มจาก
+  หน้าเว็บ" · INSTALL.md เพิ่ม §2.1 เปิดคอนโซล / §2.2 เพิ่มเครื่องจากหน้าเว็บ · USAGE §5 มี `--enable/--disable` ·
+  badge เวอร์ชัน/จำนวนเทสตรงของจริง · ตัวอย่าง `lmds version` ไม่ใช่ 0.3.6 แล้ว
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

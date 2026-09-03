@@ -87,9 +87,11 @@ def plan_clone(slug: str, source_name: str, target_name: str) -> ClonePlan:
     )
 
 
+# {slug} ต้องเป็นค่าที่ shlex.quote แล้วเท่านั้น — เดิมใส่ดิบ ๆ ทั้งใน ls และ echo
+# ซึ่ง slug ที่มาจาก URL ของหน้าเว็บกลายเป็นคำสั่งบนเครื่องต้นทางได้
 _FIND_BUNDLE = (
     'dir="$(ls -d ~/bundles/{slug} ~/*/bundles/{slug} ./bundles/{slug} 2>/dev/null | head -1)"; '
-    '[ -n "$dir" ] || {{ echo "ไม่พบ bundle {slug}" >&2; exit 1; }}; '
+    '[ -n "$dir" ] || {{ echo "ไม่พบ bundle "{slug} >&2; exit 1; }}; '
 )
 
 
@@ -98,7 +100,7 @@ def inspect_source(plan: ClonePlan) -> ClonePlan:
     from lmds.nodes import NodeError, find, run
 
     source = find(plan.source)
-    script = _FIND_BUNDLE.format(slug=plan.slug) + (
+    script = _FIND_BUNDLE.format(slug=shlex.quote(plan.slug)) + (
         'ctl="$(ls "$dir"/*-single.sh "$dir"/*-stacked.sh 2>/dev/null | head -1)"; '
         '[ -n "$ctl" ] || { echo "ไม่พบ controller ใน $dir" >&2; exit 1; }; '
         # MODEL_DIR ประกาศไว้ในตัว controller เอง — ถามมันดีกว่าเดา path

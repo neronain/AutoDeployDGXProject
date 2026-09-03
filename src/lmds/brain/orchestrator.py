@@ -157,13 +157,21 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
 
         plan.runtime.image_pin = resolve_digest(plan.runtime.image_ref)
 
-    _fit_output_into_slots(plan)
-
-    if fit.recommended_context and plan.serving.context > fit.recommended_context:
+    # llama.cpp: --ctx-size คือ pool ที่แบ่งให้ทุก slot ส่วน fit คิดต่อ 1 sequence ที่ concurrency
+    # ที่ขอ → เพดานของแผนคือ recommended × concurrency ไม่ใช่ recommended เฉย ๆ (ไม่งั้น
+    # --concurrency 4 ถูกบีบกลับเหลือ context เดียวแล้วแบ่งสี่) · vLLM/SGLang แชร์ KV แบบ dynamic
+    ceiling = fit.recommended_context or 0
+    if ceiling and plan.runtime.engine is Engine.LLAMACPP:
+        ceiling *= max(1, int(getattr(fit, "concurrency", 1) or 1))
+    if ceiling and plan.serving.context > ceiling:
         plan.warnings.append(
-            f"ลด context จาก {plan.serving.context:,} เหลือ {fit.recommended_context:,} ตาม fit analysis"
+            f"ลด context จาก {plan.serving.context:,} เหลือ {ceiling:,} ตาม fit analysis"
         )
-        plan.serving.context = fit.recommended_context
+        plan.serving.context = ceiling
+
+    # ต้องมา *หลัง* clamp — max_output_tokens ถูกจัดให้พอดี slot จาก context ที่ใช้จริง
+    # เดิมจัดก่อนแล้วค่อยลด context → output ที่แผนสัญญาอาจโตกว่า slot (รีวิว 2026-09-04)
+    _fit_output_into_slots(plan)
 
     # topology เป็นสมบัติของ target (กี่ node/GPU) — บังคับจาก target เสมอ ไม่ให้ LLM เลือกเอง
     from .rulebased import topology_for_target

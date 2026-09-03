@@ -48,7 +48,9 @@ RUNTIME_MODE="${RUNTIME_MODE:-{{ runtime_mode }}}"
 #
 # tag ที่ digest นี้มาจาก ณ วันที่ generate: {{ plan.runtime.image_ref }}
 # อยากใช้ตัวอื่นก็ override ได้ตามเดิม: LLAMACPP_IMAGE=<image> ./controller start
-LLAMACPP_IMAGE="${{ '{' }}LLAMACPP_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
+# repo ของ image มาจาก renderer (image_repo) เพราะ registry ที่มีพอร์ตตัดที่ ':' ตัวแรกไม่ได้ ·
+# fallback เดิมเหลือไว้ให้ render บรรทัดนี้เดี่ยว ๆ ด้วย plan อย่างเดียวได้ (เทส image pin)
+LLAMACPP_IMAGE="${{ '{' }}LLAMACPP_IMAGE:-{% if plan.runtime.image_pin %}{{ image_repo if image_repo is defined else plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 LLAMA_CPP_REPO="${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp.git}"
 LLAMA_CPP_REF="${LLAMA_CPP_REF:-master}"
 # build ที่โมเดลนี้ผูกไว้ — ไม่ใช่ build กลางของเครื่อง เว้นแต่ไม่ได้ pin ไว้
@@ -326,17 +328,28 @@ curl_retry_all() {
 fetch_one() {
   local url="$1" out="$2" want="${3:-}"
   local attempt=0 rc have prev=-1
+  # token ต้องไม่อยู่บน argv — `ps` ให้ทุก user บนเครื่องอ่าน argv ของกันได้ (เจอจริงบน spark-head
+  # กับ `docker run -e HF_TOKEN="$HF_TOKEN"` ฝั่ง vLLM ซึ่งแก้ไปแล้ว) · เส้นทาง GGUF เคยส่ง Bearer
+  # ผ่าน --header ของ curl/aria2c ตรง ๆ ซึ่งเป็นรูเดียวกัน · curl อ่าน config จาก stdin (-K -) ได้
+  # ส่วน aria2c ไม่รับ stdin จึงใช้ไฟล์ชั่วคราว mode 600 แล้วลบทันทีที่จบ (ทำในฟังก์ชันนี้เอง
+  # ไม่แยกตัวช่วย — เทส download ดึง fetch_one ออกไปรันเดี่ยว ๆ)
+  local curl_auth="" aria2_auth
+  [[ -z "${HF_TOKEN:-}" ]] || curl_auth="header = \"Authorization: Bearer ${HF_TOKEN}\""
 
   while :; do
     attempt=$(( attempt + 1 ))
     rc=1
     if command -v aria2c >/dev/null 2>&1; then
       rc=0
+      aria2_auth="$(mktemp "${TMPDIR:-/tmp}/lmds-aria2.XXXXXX")"
+      chmod 600 "$aria2_auth"
+      [[ -z "${HF_TOKEN:-}" ]] || printf 'header=Authorization: Bearer %s\n' "$HF_TOKEN" > "$aria2_auth"
       aria2c -x16 -s16 -k1M --continue=true --file-allocation=none \
         --connect-timeout=20 --timeout=60 --max-tries=5 --retry-wait=5 \
         --lowest-speed-limit=10K \
-        ${HF_TOKEN:+--header="Authorization: Bearer $HF_TOKEN"} \
+        --conf-path="$aria2_auth" \
         -d "$(dirname "$out")" -o "$(basename "$out")" "$url" || rc=$?
+      rm -f "$aria2_auth"
       (( rc == 0 )) || echo "  aria2c ล้ม (exit ${rc}) — ถอยไป curl"
     fi
     if (( rc != 0 )); then
@@ -347,8 +360,8 @@ fetch_one() {
       rc=0
       curl -fL --retry 5 --retry-delay 5 $(curl_retry_all) -C - \
         --connect-timeout 20 --speed-limit 10240 --speed-time 60 \
-        ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} \
-        -o "$out" "$url" || rc=$?
+        -K - \
+        -o "$out" "$url" <<< "$curl_auth" || rc=$?
       (( rc == 0 )) || echo "  curl ล้ม (exit ${rc})"
     fi
 
@@ -377,8 +390,37 @@ fetch_one() {
   done
 }
 
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
+# stamp ว่า hash ผ่านแล้ว: "<size> <mtime>" ของไฟล์ตอนที่ผ่าน — start เชื่อ stamp ถ้าไฟล์ยังเป็นก้อนเดิม
+#
+# เดิม start() เรียก verify_files เต็ม ๆ ทุกครั้ง = sha256sum ไฟล์ 60–100 GB ทุก start กินเวลา
+# หลายนาทีก่อน llama-server จะได้เริ่มโหลดด้วยซ้ำ ทั้งที่ไฟล์ไม่ได้เปลี่ยนตั้งแต่ verify รอบก่อน
+# hash เต็มยังทำผ่านคำสั่ง verify-files และครั้งแรกที่ยังไม่มี stamp — start รอบถัดไปเหลือแค่เทียบขนาด
+_sha_stamp_path() { printf '%s.sha256-ok' "$1"; }
+_sha_stamp_value() { printf '%s %s' "$(file_size "$1")" "$(file_mtime "$1")"; }
+_sha_stamp_matches() {
+  local path="$1" stamp
+  stamp="$(_sha_stamp_path "$path")"
+  [[ -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$(_sha_stamp_value "$path")" ]]
+}
+# เขียนไม่ได้ (MODEL_DIR read-only) ไม่ใช่เหตุให้ verify ตก — แค่รอบหน้าต้อง hash ใหม่
+_write_sha_stamp() { _sha_stamp_value "$1" > "$(_sha_stamp_path "$1")" 2>/dev/null || true; }
+
+_verify_sha() {
+  local name="$1" path="$2" expected="$3" actual
+  need sha256sum
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || die "${name}: SHA-256 ไม่ตรง (ได้ ${actual})"
+  _write_sha_stamp "$path"
+}
+
+# mode: full (คำสั่ง verify-files) = hash ทุกไฟล์เสมอ · quick (start) = ข้าม hash ถ้า stamp ยังตรง
 verify_files() {
-  local i path actual_size actual_sha
+  local mode="${1:-full}"
+  local i path actual_size
   for i in "${!MODEL_FILES[@]}"; do
     path="${MODEL_DIR}/${MODEL_FILES[$i]}"
     [[ -f "$path" ]] || die "ยังไม่ได้ download (ไม่พบ $path) — รัน: $0 download"
@@ -403,10 +445,11 @@ verify_files() {
     fi
 
     if [[ -n "${EXPECTED_SHAS[$i]}" ]]; then
-      need sha256sum
-      actual_sha="$(sha256sum "$path" | awk '{print $1}')"
-      [[ "$actual_sha" == "${EXPECTED_SHAS[$i]}" ]] ||
-        die "${MODEL_FILES[$i]}: SHA-256 ไม่ตรง (ได้ ${actual_sha})"
+      if [[ "$mode" == "quick" ]] && _sha_stamp_matches "$path"; then
+        :  # ขนาด+mtime ตรงกับตอนที่ hash ผ่านครั้งก่อน — ไม่ต้องอ่านไฟล์ทั้งก้อนซ้ำ
+      else
+        _verify_sha "${MODEL_FILES[$i]}" "$path" "${EXPECTED_SHAS[$i]}"
+      fi
     fi
   done
 
@@ -476,9 +519,12 @@ prepare_runtime() {
   fi
 
   local commit
-  if [[ -f "$RUNTIME_LOCK" ]]; then
+  # lock ทำให้ build ซ้ำได้ commit เดิม — แต่ต้องมีทางอัปเดตด้วย: test-tools แนะให้รัน prepare-runtime
+  # เมื่อ llama.cpp เก่ากว่าโมเดล ซึ่งเดิมวนกลับมา build commit ที่ lock ไว้เป๊ะ ไม่มีวันใหม่ขึ้น
+  # LLAMA_CPP_UPDATE=1 = ข้าม lock ไปดึง LLAMA_CPP_REF ล่าสุด แล้วเขียน lock ใหม่หลัง build ผ่าน
+  if [[ -f "$RUNTIME_LOCK" && -z "${LLAMA_CPP_UPDATE:-}" ]]; then
     commit="$(cat "$RUNTIME_LOCK")"
-    echo "ใช้ commit ที่ lock ไว้: ${commit}"
+    echo "ใช้ commit ที่ lock ไว้: ${commit} (อัปเดตเป็น ${LLAMA_CPP_REF} ล่าสุด: LLAMA_CPP_UPDATE=1 $0 prepare-runtime)"
   else
     git -C "$LLAMA_CPP_DIR" fetch --all --quiet
     git -C "$LLAMA_CPP_DIR" checkout --quiet "$LLAMA_CPP_REF"
@@ -547,14 +593,18 @@ server_args() {
 {% for flag in extra_flag_pairs %}
   SERVER_ARGS+=({{ flag }})
 {% endfor %}
-{% if has_chat_template %}
+  # แฟล็กเพิ่มกับ --jinja ส่งเสมอ ไม่ผูกกับผลตรวจ chat template ของ inspector
+  #
+  # เดิมสองอย่างนี้อยู่ใต้เงื่อนไข has_chat_template ซึ่ง inspector ตอบ None ให้ GGUF หลายตัว
+  # (อ่าน metadata ไม่ครบ) → renderer แปลงเป็น False → ทั้ง bundle.args และ --extra-args ที่ผู้ใช้
+  # ตั้งไว้หายไปเงียบ ๆ ทั้งชุด ทั้งที่ `lmds set` บอกว่าบันทึกแล้ว · --jinja เองก็ปลอดภัยเสมอ:
+  # llama-server ที่ไฟล์ไม่มี template ถอยไปใช้ chatml ให้เอง ไม่ล้ม
   if [[ -n "$EXTRA_SERVE_ARGS" ]]; then
     local extra_arg
     for extra_arg in $EXTRA_SERVE_ARGS; do SERVER_ARGS+=("$extra_arg"); done
   fi
 
   SERVER_ARGS+=(--jinja)
-{% endif %}
 }
 
 write_meta() {
@@ -616,7 +666,8 @@ check_port_free() {
 }
 
 start() {
-  verify_files
+  # ขนาด + GGUF magic ทุกครั้ง · sha256 เต็มเฉพาะเมื่อ stamp จาก verify-files ไม่ตรง (ดู verify_files)
+  verify_files quick
   mkdir -p "$RUN_DIR"
   check_port_free
 
@@ -994,7 +1045,7 @@ elif auto_finish == "length" and auto_reasoning and not auto_text.strip():
     print("  ลองใหม่อีกครั้ง หรือถามผ่าน API ตรง ๆ โดยเพิ่ม max_tokens")
 elif any(re.search(pattern, auto_text, re.M) for pattern in LEAKS):
     print("  โมเดลเรียก tool แล้ว แต่ call หลุดออกมาเป็นข้อความ = template แปลรูปแบบของมันไม่ออก")
-    print(f"  มักเป็น llama.cpp รุ่นเก่ากว่าโมเดล — อัปเดตด้วย: {prog} prepare-runtime")
+    print(f"  มักเป็น llama.cpp รุ่นเก่ากว่าโมเดล — อัปเดตด้วย: LLAMA_CPP_UPDATE=1 {prog} prepare-runtime")
     print("  หรือใช้ template ที่ตรงรุ่นผ่าน --chat-template-file")
 elif req_calls:
     print("  โหมด required ผ่าน เพราะ grammar บังคับรูปแบบให้เอง")
@@ -1099,6 +1150,7 @@ ENVIRONMENT VARIABLES
   HEALTH_TIMEOUT      Seconds to wait for /health on start        [default: ${HEALTH_TIMEOUT}]
   LLAMA_CPP_DIR       llama.cpp source/build dir (native mode)    [default: ${LLAMA_CPP_DIR}]
   CUDA_ARCHITECTURES  CUDA arch used by prepare-runtime           [default: ${CUDA_ARCHITECTURES}]
+  LLAMA_CPP_UPDATE    Set to 1 so prepare-runtime ignores runtime.lock and rebuilds at LLAMA_CPP_REF
   RUN_DIR             Runtime state read by 'lmds ps'             [default: ${RUN_DIR}]
 
 EXAMPLES

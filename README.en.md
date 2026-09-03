@@ -7,8 +7,8 @@
 Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine or
 several acting as one. Nothing leaves the machine except what you ask for.
 
-[![version](https://img.shields.io/badge/version-0.5.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1273-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.6.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-1466-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -62,10 +62,18 @@ LMDS is what came back from running all of that for real and turning each sympto
 ## Three commands
 
 ```bash
-./install.sh                 # installs missing Docker / NVIDIA toolkit too, asking before each sudo
-lmds hardware                # what this machine is, and what target profile it maps to
-lmds deploy Qwen/Qwen3-32B   # analyse → plan → confirm → bundle + ZIP that passed every gate
+git clone https://github.com/neronain/AutoDeployDGXProject && cd AutoDeployDGXProject
+./install.sh -y                      # installs missing Docker / NVIDIA toolkit too (without -y it asks before each sudo)
+lmds web --enable --bind 0.0.0.0     # console at http://<ip>:8600 — survives reboots · prints the token
 ```
+
+**Other machines in the fleet install themselves.** Click *Add machine* in the console, enter
+host / user / sudo password once: the hub installs its SSH key, **ships its own code over** (no repo
+clone or deploy key needed on that machine), sets up Docker / the NVIDIA toolkit, and the machine
+appears in the left-hand menu.
+
+Prefer the CLI: `lmds hardware` (what this machine is) → `lmds deploy Qwen/Qwen3-32B`
+(analyse → plan → confirm → bundle + ZIP that passed every gate).
 
 Then, on the target machine:
 
@@ -243,7 +251,8 @@ published header, so the store holds the recipe that actually started, not the p
 ## Updating
 
 ```bash
-cd ~/AutoDeployDGXProject && git pull && ./install.sh
+cd ~/AutoDeployDGXProject && git pull && ./install.sh     # the hub — or press Update in the console
+lmds node install --all                                  # every other machine — the hub ships the code
 ```
 
 > ⚠️ **`git pull` alone is not enough.** LMDS is installed as a copy into its venv (not editable),

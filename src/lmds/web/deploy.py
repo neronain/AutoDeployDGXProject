@@ -339,15 +339,18 @@ def analyze(
         # ถ้าไม่ทำขั้นนี้ fit จะได้แค่ verdict "unknown" กับ context อนุรักษ์นิยมสุด ๆ (เหมือน CLI ทำ)
         from dataclasses import replace as dc_replace
 
-        chosen = next((v for v in weights if v.filename == selected_gguf), None)
+        # ชื่อต้องไม่ชนกับ `chosen` (Engine) ข้างบน — เดิมทับกัน GgufVariant เลยถูกส่งเป็น
+        # engine= ให้ build_plan ซึ่งตีความว่า "ผู้ใช้เลือก engine เอง" แล้วข้าม LLM ไปเงียบ ๆ
+        # ทุกครั้งที่ deploy repo GGUF หลายไฟล์ผ่านหน้าเว็บ
+        variant = next((v for v in weights if v.filename == selected_gguf), None)
         try:
             report = inspect_model(
                 dc_replace(source, filename=selected_gguf), HfClient(token=token or None)
             )
         except HfError:
             report.selected_gguf = selected_gguf
-            if chosen is not None:
-                report.weight_bytes = chosen.size_bytes
+            if variant is not None:
+                report.weight_bytes = variant.size_bytes
 
     if target:
         if target not in PRESETS:

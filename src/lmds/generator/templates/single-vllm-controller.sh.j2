@@ -37,7 +37,9 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 #
 # tag ที่ digest นี้มาจาก ณ วันที่ generate: {{ plan.runtime.image_ref }}
 # อยากใช้ตัวอื่นก็ override ได้ตามเดิม: VLLM_IMAGE=<image> ./controller start
-VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
+# repo ของ image มาจาก renderer (image_repo) เพราะ registry ที่มีพอร์ตตัดที่ ':' ตัวแรกไม่ได้ ·
+# fallback เดิมเหลือไว้ให้ render บรรทัดนี้เดี่ยว ๆ ด้วย plan อย่างเดียวได้ (เทส image pin)
+VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ image_repo if image_repo is defined else plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
 
 
@@ -689,11 +691,14 @@ warn_open_endpoint() {
 explain_crash() {
   local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError'
   local cause
+  # `|| true` ท้าย pipeline จำเป็น: grep ที่ไม่เจอบรรทัด Error คืน 1 → ใต้ set -e + pipefail การ assign
+  # นี้ทำสคริปต์ตายทันที ก่อนจะถึง die "container หยุดก่อน health" ของผู้เรียก · crash ที่ log ไม่มี
+  # exception (โดน OOM-kill, image พัง) จึงถูกรายงานเป็นความว่างเปล่า exit 1 ไม่มีข้อความสักบรรทัด
   cause="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 \
     | grep -E "(${errs}): " \
     | grep -vE 'Engine core initialization failed|See root cause above' \
     | sed -E "s/^.*(${errs}): /\\1: /" \
-    | head -1 | cut -c1-300)"
+    | head -1 | cut -c1-300 || true)"
   [[ -n "$cause" ]] || return 0
   echo "สาเหตุจาก log: ${cause}" >&2
   case "$cause" in

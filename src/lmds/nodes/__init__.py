@@ -40,6 +40,7 @@ from .registry import (
 from .ssh import (
     explain_install_failure,
     install_script,
+    prepare_install,
     run_privileged,
     push_file,
     stream,
@@ -76,6 +77,7 @@ __all__ = [
     "install_key",
     "install_lmds",
     "install_script",
+    "prepare_install",
     "explain_install_failure",
     "key_path",
     "load",

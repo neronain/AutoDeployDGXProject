@@ -263,7 +263,12 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         engine = Engine.VLLM
     topology = topology_for_target(fit.target_name)
 
-    context = fit.recommended_context or 8192
+    # llama.cpp: fit หาร context ด้วย concurrency ที่ขอมาแล้ว (ค่าต่อ 1 sequence) แต่ --ctx-size
+    # ของ llama-server คือ pool ที่แบ่งให้ทุก slot เท่า ๆ กัน → คูณกลับ และตั้ง slot = concurrency
+    # เดิมขอ --concurrency 4 แล้วได้ slot เดียวกับ context หารสี่ = แย่กว่าไม่ใส่ (รีวิว 2026-09-04)
+    per_sequence = fit.recommended_context or 8192
+    slots = max(1, int(getattr(fit, "concurrency", 1) or 1)) if engine is Engine.LLAMACPP else 4
+    context = per_sequence * slots if engine is Engine.LLAMACPP else per_sequence
     plan = DeploymentPlan(
         model_id=report.repo_id,
         revision=report.revision_sha,
@@ -288,8 +293,8 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
             # เคสจริง 2026-08-13: Muse-Glimmer แผนบอก 131,072 แต่ /props รายงาน 32,768
             # เพราะ 131,072 ถูกหารด้วย 4 slot ที่ไม่มีใครขอ
             #
-            # ต้องการ concurrency จริงค่อยตั้ง PARALLEL_SEQS ตอน start แล้วรับรู้ราคา
-            max_num_seqs=1 if engine is Engine.LLAMACPP else 4,
+            # ต้องการ concurrency จริง: `--concurrency N` → slot = N และ context = N × ค่าต่อ slot
+            max_num_seqs=slots,
             **arch_requirements(report.repo_id),
         ),
         special_files=list(report.trust_remote_code_files),

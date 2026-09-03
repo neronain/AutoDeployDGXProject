@@ -1051,7 +1051,10 @@ def weights_path(info: ServerInfo) -> Path | None:
     engine = ((profile or {}).get("runtime") or {}).get("engine") or info.engine
     model_id = ((profile or {}).get("model") or {}).get("id") or info.model_id
     if engine == "llamacpp":
-        candidate = Path(os.environ.get("MODEL_DIR", Path.home() / "models" / info.slug))
+        # ห้ามอ่าน MODEL_DIR จาก environ ของ process นี้ — ค่านั้นเป็นของ bundle ที่กำลัง start อยู่
+        # (controller_env) ไม่ใช่ของโมเดลตัวนี้ → `lmds remove` เคยได้โฟลเดอร์ของโมเดลอื่นไปลบ
+        # (รีวิว 2026-09-04) · ที่เก็บของ llama.cpp bundle คือ ~/models/<slug> เสมอ
+        candidate = Path.home() / "models" / info.slug
         return candidate if candidate.is_dir() else None
     if not model_id or "/" not in model_id:
         return None

@@ -162,6 +162,23 @@ def get(job_id: str) -> Job | None:
     return _JOBS.get(job_id)
 
 
+def cancel(job: Job) -> bool:
+    """ฆ่า process ของงานที่ยังรันอยู่ — คืน True ถ้ามีอะไรให้ฆ่า
+
+    ไม่ตั้ง exit_code เอง: ท่อปิดแล้ว _pump จะจบและ thread ของงานเป็นคนตั้ง (ผ่าน wait())
+    ตั้งจากตรงนี้ซ้อนกันจะได้ค่าสองรอบและ invalidate แคชสองครั้งโดยไม่จำเป็น
+    """
+    proc = job.process
+    if not job.running or proc is None:
+        return False
+    job.lines.append("\n── ผู้ใช้กดยกเลิก ──\n")
+    try:
+        proc.terminate()
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
 def controller_env(options: dict | None) -> dict:
     """แปลงตัวเลือกจากหน้าเว็บเป็น env ที่ controller อ่าน — ชุดเดียวกับที่ CLI ใช้
 
@@ -380,7 +397,9 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
 
 
 # คำสั่งข้ามเครื่องที่ยาวพอจะต้องเห็นความคืบหน้า — สั้น ๆ อย่าง doctor/logs ตอบตรง ๆ เร็วกว่า
-REMOTE_LONG = {"start", "restart", "repair", "remove"}
+# stop อยู่ในนี้ด้วย: docker stop ของ vLLM ที่กำลังโหลด weight รอได้เป็นนาที และ ssh ที่ค้าง
+# ระหว่างนั้นยึด thread ของเว็บไว้ทั้งก้อน — เป็น job แล้วอย่างน้อยกดยกเลิกได้
+REMOTE_LONG = {"start", "stop", "restart", "repair", "remove"}
 
 
 def explain_failure(output: str) -> str:

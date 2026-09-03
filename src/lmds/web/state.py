@@ -215,6 +215,11 @@ def _refresh_node(name: str) -> None:
             update(name, last_error=str(exc)[:200])
         except NodeError:
             pass
+    except Exception as exc:  # noqa: BLE001 — ต้องลงแคชเสมอ ไม่งั้น due() เป็นจริงทุกวิ
+        # probe ที่ล้มด้วยอย่างอื่นที่ไม่ใช่ NodeError (เช่น UnicodeDecodeError จาก motd ที่ไม่ใช่
+        # UTF-8) เดิมหลุดขึ้นไปให้ _submit_node กลืนเงียบ ๆ โดยไม่เขียนอะไรลงแคช → เครื่องนั้น
+        # ครบกำหนดตลอด ถูก SSH ซ้ำทุกวินาที และการ์ดขึ้น "ไม่มีข้อมูล" ตลอดกาลโดยไม่บอกสาเหตุ
+        STORE.set_node(name, None, f"probe ล้มเหลว ({type(exc).__name__}): {exc}"[:300])
 
 
 # ── สำรวจ node พร้อมกันหลายเครื่อง ────────────────────────────────────────

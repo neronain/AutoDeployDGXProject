@@ -97,6 +97,9 @@ def from_hardware_report(report: HardwareReport) -> TargetSpec | None:
         memory_model=memory_model,
         memory_gb=round(min(memory_values), 1),
         gpu_count=len(report.gpus),
+        # GPU ทุกตัวใน report อยู่ในเครื่องเดียว — ไม่ใส่ = dual-RTX ถูกนับเป็น 2 node แล้วแผน
+        # ออกมาเป็น stacked ทั้งที่มีเครื่องเดียว (รีวิว 2026-09-04)
+        gpus_per_node=len(report.gpus),
         system_ram_gb=report.ram_gb,
         tested=all(g.tested for g in report.gpus),
     )

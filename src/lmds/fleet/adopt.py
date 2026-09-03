@@ -31,6 +31,24 @@ from pathlib import Path
 
 from .manager import FleetError, run_root
 
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+
+
+def _check_slug(slug: str) -> str:
+    """slug กลายเป็นชื่อโฟลเดอร์ ชื่อไฟล์ controller และชื่อ container — ต้องไม่มี / .. ช่องว่าง
+    เดิมรับอะไรก็ได้: `--slug ../../x` เขียน controller นอก bundles/ ได้ (รีวิว 2026-09-04)
+    """
+    if not _SLUG_RE.fullmatch(slug or ""):
+        raise FleetError(
+            f"slug '{(slug or '')[:40]}' ใช้ไม่ได้ — ใช้ตัวพิมพ์เล็ก ตัวเลข และ . _ - (ไม่เกิน 63 ตัว)")
+    return slug
+
+
+def _derive_slug(text: str) -> str:
+    """ชื่อ container/โมเดลที่ไม่ได้ขอ slug มา — บีบให้เข้ารูป slug (org/model → org-model)"""
+    derived = re.sub(r"[^a-z0-9.-]+", "-", (text or "").lower()).strip("-.")[:63]
+    return _check_slug(derived or "adopted")
+
 
 @dataclass
 class Adopted:
@@ -448,9 +466,15 @@ def render_controller(adopted: Adopted, slug: str) -> str:
                      f"(docker หยิบจาก environment ให้เอง)\n") + env_lines
     env_lines = env_lines_note + env_lines
     bind_lines = "".join(f'  --volume {shlex.quote(b)} \\\n' for b in adopted.binds)
+    def _publish(spec: str, binding: list) -> str:
+        # เดิมทิ้ง HostIp → container ที่เคย bind แค่ 127.0.0.1 กลายเป็นเปิดทุก interface หลัง adopt
+        host_ip = str(binding[0].get("HostIp") or "").strip()
+        prefix = f"{host_ip}:" if host_ip and host_ip not in ("0.0.0.0", "::") else ""
+        return (f'  --publish {shlex.quote(prefix + str(binding[0]["HostPort"]))}'
+                f':{shlex.quote(spec.split("/")[0])} \\\n')
+
     port_lines = "".join(
-        f'  --publish {shlex.quote(binding[0]["HostPort"])}:{shlex.quote(spec.split("/")[0])} \\\n'
-        for spec, binding in (adopted.ports or {}).items() if binding
+        _publish(spec, binding) for spec, binding in (adopted.ports or {}).items() if binding
     )
     entry = f'  --entrypoint {shlex.quote(adopted.entrypoint[0])} \\\n' if adopted.entrypoint else ""
     network = f'  --network {shlex.quote(adopted.network)} \\\n' if adopted.network not in ("", "default") else ""
@@ -591,8 +615,10 @@ esac
 
 def adopt(container: str, slug: str = "", output: Path | None = None) -> Path:
     """สร้าง bundle จาก container ที่รันอยู่ แล้วลงทะเบียนกับ fleet — คืน path ของ controller"""
+    if slug:
+        _check_slug(slug)  # ก่อนแตะ docker — slug ผิดรูปไม่ควรได้ไปถึง inspect
     adopted = inspect_container(container)
-    slug = slug or adopted.container.replace("_", "-").lower()
+    slug = slug or _derive_slug(adopted.container.replace("_", "-"))
     directory = (output or Path("./bundles")) / slug
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -938,12 +964,14 @@ esac
 def adopt_process(pid: int = 0, port: int = 0, slug: str = "",
                   output: Path | None = None) -> tuple[Path, AdoptedProcess]:
     """สร้าง bundle จาก process ที่รันอยู่ — คืน (path ของ controller, สิ่งที่อ่านได้)"""
+    if slug:
+        _check_slug(slug)
     proc = inspect_process(pid=pid, port=port)
     if proc.engine == "unknown":
         raise FleetError(
             f"pid {proc.pid} ไม่ใช่ตัวเสิร์ฟโมเดลที่รู้จัก (argv: {' '.join(proc.argv[:3])} …)"
         )
-    slug = slug or (proc.model or f"pid-{proc.pid}").replace("_", "-").lower()
+    slug = slug or _derive_slug((proc.model or f"pid-{proc.pid}").replace("_", "-"))
     directory = (output or Path("./bundles")) / slug
     directory.mkdir(parents=True, exist_ok=True)
 

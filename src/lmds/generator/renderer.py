@@ -14,6 +14,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import lmds
+from lmds.brain.allowlists import image_repo
 from lmds.brain.plan_schema import DeploymentPlan, Engine, Topology
 from lmds.fit import FitReport
 from lmds.fit.targets import PRESETS
@@ -54,11 +55,23 @@ def _client_input(plan: DeploymentPlan) -> int:
 
 
 def _quote_flag(flag: str) -> str:
-    """'--kv-cache-dtype=fp8' → '--kv-cache-dtype=fp8' (quoted ปลอดภัยสำหรับ bash array)"""
-    parts = flag.replace("=", " ", 1).split(None, 1)
-    if len(parts) == 1:
-        return shlex.quote(parts[0])
-    return f"{shlex.quote(parts[0])} {shlex.quote(parts[1])}"
+    """'--kv-cache-dtype=fp8' → "--kv-cache-dtype fp8" (quoted ปลอดภัยสำหรับ bash array)
+
+    แยก `=` เฉพาะที่อยู่ใน token แรกซึ่งเป็นชื่อ flag (ขึ้นต้นด้วย -) เท่านั้น — เดิม replace `=`
+    ตัวแรกของทั้งสตริง ทำให้ค่าที่มี `=` ในตัวพัง: `-ot exps=CPU` กลายเป็น `-ot 'exps CPU'`
+    และ `--override-kv a.b=int:8` เป็น `--override-kv 'a.b int:8'` ซึ่ง llama.cpp ปฏิเสธ
+    """
+    parts = flag.split(None, 1)
+    if not parts:
+        return ""
+    head = parts[0]
+    rest = parts[1] if len(parts) > 1 else None
+    if head.startswith("-") and "=" in head:
+        head, value = head.split("=", 1)
+        rest = value if rest is None else f"{value} {rest}"
+    if rest is None:
+        return shlex.quote(head)
+    return f"{shlex.quote(head)} {shlex.quote(rest)}"
 
 
 def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
@@ -248,6 +261,9 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "cuda_architectures": "121a-real" if fit.memory_model.value == "unified" else "native",
         "native_llamacpp": is_gguf and fit.memory_model.value == "unified",
         "has_chat_template": bool(report.has_chat_template),
+        # repo ของ image สำหรับตรึง digest — ตัดที่ ':' ตัวแรกไม่ได้ เพราะ registry ที่มีพอร์ต
+        # (registry.local:5000/vllm:tag) จะเหลือแค่ registry.local
+        "image_repo": image_repo(plan.runtime.image_ref),
         "n_gpu_layers": n_gpu_layers,
         "client_input": _client_input(plan),
         "context_env": "MAX_MODEL_LEN" if not is_gguf else "CTX_SIZE",

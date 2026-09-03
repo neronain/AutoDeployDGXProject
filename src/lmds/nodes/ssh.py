@@ -17,6 +17,7 @@ import select
 import shutil
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,10 @@ _SSH_BASE = [
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ConnectTimeout=10",
+    # TCP ที่ตายเงียบ (Tailscale relay หลุดกลางทาง) ทำให้ stream() ค้างไม่มีกำหนด → job นั้น
+    # ล็อก (node, slug) ไว้ตลอดจนกว่าจะ restart hub · ให้ ssh ยอมแพ้เองใน ~60 วิ
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=4",
 ]
 
 
@@ -329,6 +334,27 @@ LMDS_ASSUME_YES=1 {skip}./install.sh
 "$HOME/.local/bin/lmds" version
 """
 
+# ติดตั้งจากโค้ดที่ hub ส่งมาให้ (git bundle) — เครื่องปลายทางไม่ต้องเข้าถึง GitHub เลย
+#
+# repo เป็น private · เดิมทุกเครื่องที่เพิ่มเข้าฟลีตต้องมี deploy key ของตัวเองก่อน ไม่งั้น
+# "could not read Username" — คือขั้นที่ยุ่งยากที่สุดของการติดตั้ง และเป็นเหตุผลที่เคยต้องส่ง
+# bundle ด้วยมือ (13 ส.ค. 69) · hub มี checkout อยู่แล้ว ส่งไปเองได้ (pack ทั้ง repo ~2 MB)
+# · clone จาก bundle แล้วชี้ origin กลับไป GitHub เผื่อวันหน้าเครื่องนั้นได้ key เอง
+_INSTALL_FROM_BUNDLE_SCRIPT = """
+set -e
+cd "$HOME"
+if [ -d AutoDeployDGXProject/.git ]; then
+  cd AutoDeployDGXProject && git pull --ff-only {bundle} main
+else
+  git clone {bundle} AutoDeployDGXProject && cd AutoDeployDGXProject && git remote set-url origin {repo}
+fi
+rm -f {bundle}
+LMDS_ASSUME_YES=1 {skip}./install.sh
+"$HOME/.local/bin/lmds" version
+"""
+
+REMOTE_BUNDLE = "/tmp/lmds-src.bundle"
+
 
 # ขั้นที่ต้องใช้สิทธิ์ root บนเครื่องปลายทาง — ทำครั้งเดียวต่อเครื่อง
 # แต่ละขั้นเป็น (คำสั่ง, คำอธิบาย, ตัวตรวจว่าสำเร็จจริง)
@@ -378,7 +404,13 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False,
     steps = list(steps) if steps is not None else privileged_steps(node.user)
     if with_prereq:
         steps.append((
-            "sudo -S -p '' bash -c 'cd ~/AutoDeployDGXProject && LMDS_ASSUME_YES=1 ./install.sh'",
+            # `~` ข้างใน bash -c ใต้ sudo คือ /root ไม่ใช่ home ของผู้ใช้ → "cd: no such directory"
+            # ทุกครั้ง (รีวิว 2026-09-04) · ส่ง HOME ของผู้ใช้เข้าไปแทน และคืนเจ้าของไฟล์ที่ installer
+            # สร้างใน home ให้ผู้ใช้ ไม่งั้น venv เป็นของ root แล้ว `lmds` ธรรมดาอัปเดตทับไม่ได้รอบถัดไป
+            "sudo -S -p '' env HOME=\"$HOME\" LMDS_ASSUME_YES=1 bash -c "
+            "'cd \"$HOME/AutoDeployDGXProject\" && ./install.sh; rc=$?; "
+            "chown -R \"$SUDO_USER\": \"$HOME/.local/share/lmds\" \"$HOME/.local/bin\" "
+            "\"$HOME/.config/lmds\" 2>/dev/null; exit $rc'",
             "ติดตั้ง Docker / NVIDIA container toolkit",
             "docker info >/dev/null 2>&1",
         ))
@@ -402,11 +434,68 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False,
     return results
 
 
-def install_script(with_prereq: bool = False) -> str:
-    """สคริปต์ติดตั้ง — แยกออกมาเพื่อให้ทั้งแบบรอผลและแบบสตรีมใช้ตัวเดียวกัน"""
-    return _INSTALL_SCRIPT.format(
-        repo=REPO_URL, skip="" if with_prereq else "LMDS_SKIP_PREREQ=1 ",
-    )
+def install_script(with_prereq: bool = False, bundle: str = "") -> str:
+    """สคริปต์ติดตั้ง — แยกออกมาเพื่อให้ทั้งแบบรอผลและแบบสตรีมใช้ตัวเดียวกัน
+
+    `bundle` = path ของ git bundle ที่ส่งไปไว้บนเครื่องนั้นแล้ว → ติดตั้งจากไฟล์นั้น
+    ว่าง = ทางเดิม (clone จาก GitHub ซึ่งเครื่องนั้นต้องมีสิทธิ์เข้าถึงเอง)
+    """
+    skip = "" if with_prereq else "LMDS_SKIP_PREREQ=1 "
+    if bundle:
+        return _INSTALL_FROM_BUNDLE_SCRIPT.format(
+            repo=REPO_URL, skip=skip, bundle=shlex.quote(bundle))
+    return _INSTALL_SCRIPT.format(repo=REPO_URL, skip=skip)
+
+
+def source_bundle() -> Path | None:
+    """git bundle ของ checkout ที่ hub ตัวนี้ติดตั้งมา — None เมื่อ hub ไม่ได้ติดตั้งจาก git
+
+    แคชต่อ commit ใน temp dir: ฟลีต 15 เครื่องกด update พร้อมกันไม่ต้อง pack 15 รอบ
+    """
+    from lmds.web.selfupdate import source_root
+
+    root = source_root()
+    if root is None:
+        return None
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if head.returncode != 0 or not head.stdout.strip():
+        return None
+    target = Path(tempfile.gettempdir()) / f"lmds-src-{head.stdout.strip()}.bundle"
+    if target.is_file():
+        return target
+    try:
+        done = subprocess.run(["git", "-C", str(root), "bundle", "create", str(target), "main"],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return target if done.returncode == 0 and target.is_file() else None
+
+
+def ship_source(node: Node) -> str:
+    """ส่งโค้ดของ hub ไปเครื่องนั้น — คืน path บนเครื่องปลายทาง หรือ "" เมื่อส่งไม่ได้
+
+    ส่งไม่ได้ (hub ไม่มี checkout / scp ล้ม) ไม่ใช่ความผิดพลาด — แค่ถอยไปทาง GitHub ตามเดิม
+    """
+    local = source_bundle()
+    if local is None:
+        return ""
+    try:
+        pushed = push_file(node, str(local), REMOTE_BUNDLE, timeout=300)
+    except NodeError:
+        return ""
+    return REMOTE_BUNDLE if pushed.ok else ""
+
+
+def prepare_install(node: Node, with_prereq: bool = False) -> str:
+    """สคริปต์ติดตั้งสำหรับเครื่องนี้ — ส่งโค้ดจาก hub ไปก่อนถ้าทำได้ แล้วค่อยคืนสคริปต์
+
+    จุดเดียวที่ทั้ง CLI (`lmds node install`) และหน้าเว็บ (ปุ่ม install/update) เรียก
+    """
+    return install_script(with_prereq, bundle=ship_source(node))
 
 
 def explain_install_failure(output: str, node: Node) -> str:
@@ -419,7 +508,8 @@ def explain_install_failure(output: str, node: Node) -> str:
     if "could not read Username" in text or "Authentication failed" in text:
         return (
             f"{node.name} เข้าถึง repo ไม่ได้ — repo เป็น private และเครื่องนั้นยังไม่มีสิทธิ์\n"
-            "แก้ได้สองทาง:\n"
+            "ปกติ hub จะส่งโค้ดของตัวเองไปให้ (ไม่ต้องใช้ GitHub) — เห็นข้อความนี้แปลว่า hub ตัวนี้\n"
+            "ไม่ได้ติดตั้งจาก git checkout หรือส่งไฟล์ไปเครื่องนั้นไม่ได้ · แก้ได้สองทาง:\n"
             f"  1. ใส่ deploy key บน {node.name} แล้วชี้ remote ไป SSH:\n"
             f"     ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_lmds_github   (บนเครื่องนั้น)\n"
             "     เอา .pub ไปใส่ที่ GitHub → repo → Settings → Deploy keys\n"
@@ -434,7 +524,7 @@ def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False) -> 
     ค่าเริ่มต้นข้ามขั้นตอน prerequisite (docker/toolkit) เพราะขั้นนั้นต้องใช้ sudo ซึ่งไม่มี tty
     ให้กรอกรหัสผ่าน — เครื่องที่ยังไม่มี Docker ต้องไปรัน install.sh เองบนเครื่องนั้น
     """
-    return run(node, install_script(with_prereq), timeout=timeout)
+    return run(node, prepare_install(node, with_prereq), timeout=timeout)
 
 
 def check_login(host: str, user: str, port: int = 22) -> bool:

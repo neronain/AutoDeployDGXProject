@@ -15,6 +15,7 @@ import json
 import re
 import secrets
 import shlex
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -109,6 +110,31 @@ def _running_unit() -> str:
         if part.endswith(".service"):
             return part
     return ""
+
+
+# slug ที่รับจาก URL ถูกต่อเป็นคำสั่ง shell ไปรันบนเครื่องอื่น (ls -d ~/bundles/<slug>,
+# echo 'ไม่พบ bundle <slug>') และเป็นชื่อไฟล์ (<slug>.zip) · shlex.quote ครอบไว้บางจุดแต่ไม่ทุกจุด —
+# review 2026-09-04 พบ echo ที่ใส่ slug ดิบ ๆ ใน single quote ซึ่ง `x';id;'` ทะลุออกมาได้
+# ตรวจรูปแบบตั้งแต่ปากทางแทนที่จะไล่ quote ทีละบรรทัด: slug ของ bundle ที่ LMDS สร้างมีแค่ตัวพวกนี้
+_SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _check_slug(slug: str) -> str:
+    """slug ต้องเป็นชื่อ bundle ที่ปลอดภัยพอจะไปอยู่ในคำสั่ง shell/ชื่อไฟล์ — ไม่ผ่าน = 400"""
+    if not _SLUG_OK.fullmatch(slug or ""):
+        raise HTTPException(
+            status_code=400,
+            detail=f"ชื่อโมเดล (slug) ไม่ถูกต้อง: {slug[:40]!r} — ใช้ได้เฉพาะ a-z 0-9 . _ - ไม่เกิน 64 ตัว",
+        )
+    return slug
+
+
+# start/stop ของโมเดลในเครื่องนี้ส่ง option ให้ controller ผ่าน os.environ (ทางเดียวกับที่ CLI ใช้)
+# ซึ่งเป็นของทั้ง process · สอง start ที่ซ้อนกันจะ save/restore ค่าของกันและกัน — ตัวที่จบทีหลัง
+# คืนค่าที่ตัวแรกตั้งไว้กลับเข้าไป API_PORT จึงค้างอยู่ใน env ถาวร และ subprocess ทุกตัวที่เกิด
+# ระหว่างนั้นได้ API_KEY ของอีกโมเดลไปด้วย · ล็อกให้ทำทีละตัว (subprocess อื่นยังเห็น env ช่วงสั้น ๆ
+# ที่ถือล็อกอยู่ — แก้ให้หมดต้องส่ง env ตรงเข้า fleet.manager ซึ่งเป็นงานอีกก้อน)
+_ENV_LOCK = threading.Lock()
 
 
 def create_app(token: str = "") -> FastAPI:
@@ -211,9 +237,15 @@ def create_app(token: str = "") -> FastAPI:
         """
         import subprocess
 
-        from .daemon import UNIT_NAME
-
-        unit = _running_unit() or UNIT_NAME
+        unit = _running_unit()
+        if not unit:
+            # เดิมถอยไปใช้ชื่อ default แล้วสั่ง systemctl ทั้งที่ process นี้ไม่ได้อยู่ใต้ systemd
+            # (รัน `lmds web` ในเทอร์มินัล) — คำสั่งล้มเงียบ ๆ ส่วนหน้าเว็บบอกว่า "กำลังรีสตาร์ต…"
+            # แล้ว reload ไปเจอ process เดิมที่ไม่เคยเปลี่ยน
+            raise HTTPException(
+                status_code=409,
+                detail="ไม่ได้รันใต้ systemd — restart เอง: lmds web --restart",
+            )
         try:
             subprocess.Popen(
                 ["setsid", "bash", "-c", f"sleep 1; systemctl --user restart {unit}"],
@@ -253,9 +285,16 @@ def create_app(token: str = "") -> FastAPI:
                        + "\n".join(f"  · {name}" for name in dirty[:10])
                        + ("\n  …" if len(dirty) > 10 else ""),
             )
+        unit = _running_unit()
+        if not unit:
+            # pull+install สำเร็จแต่ restart ไม่ได้ = โค้ดใหม่ไม่เคยถูกโหลด แล้วหน้าเว็บบอกว่าอัปเดตแล้ว
+            raise HTTPException(
+                status_code=409,
+                detail="ไม่ได้รันใต้ systemd — restart เอง: lmds web --restart",
+            )
         try:
             job = jobs.start_shell("_hub", "update",
-                                   selfupdate.update_script(restart=True), cwd=str(root))
+                                   selfupdate.update_script(restart=True, unit=unit), cwd=str(root))
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"job": job.payload()}
@@ -267,10 +306,13 @@ def create_app(token: str = "") -> FastAPI:
         ของเครื่องที่กำลังให้บริการอยู่
         """
         import subprocess
-        from pathlib import Path as _Path
 
-        root = _Path(lmds.__file__).resolve().parents[2]
-        if not (root / ".git").exists():
+        from . import selfupdate
+
+        # ตำแหน่งเดียวกับที่ปุ่มอัปเดตใช้ — เดาจากที่อยู่โมดูลผิดบนเครื่องที่ติดตั้งจริง
+        # (โค้ดอยู่ใน site-packages ไม่มี .git ใกล้ ๆ) ป้าย "มีอัปเดต" จึงไม่เคยขึ้นที่นั่น
+        root = selfupdate.source_root()
+        if root is None:
             return ""
         try:
             done = subprocess.run(["git", "-C", str(root), "ls-remote", "origin", "HEAD"],
@@ -364,23 +406,31 @@ def create_app(token: str = "") -> FastAPI:
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         runner = {"start": start_server, "stop": stop_server, "restart": restart_server}[verb]
-        # ตัวเลือก port/API key/context ส่งผ่าน env เหมือนที่ผู้ใช้พิมพ์หน้าคำสั่งบน CLI
-        saved = {k: os.environ.get(k) for k in jobs.controller_env(options)}
-        os.environ.update(jobs.controller_env(options))
+        # ตรวจค่าก่อนแปลงเป็น env — เดิม controller_env() ทำ int("abc") แล้วระเบิดเป็น 500
+        # และ image หลุดไปโดยไม่ผ่าน allowlist ทั้งที่ทางของ node ตรวจครบ
         try:
-            outcome = runner(server)
-        except FleetError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-            # ทิ้งแคชหลังคำสั่งจบ ไม่ใช่ก่อนเริ่ม — ทิ้งก่อนแล้ว refresher มีเวลาทั้งช่วงที่
-            # คำสั่งกำลังทำงานให้เอาภาพเดิมกลับเข้าแคช · อยู่ใน finally เพราะคำสั่งที่ล้ม
-            # กลางคันก็เปลี่ยนสถานะไปแล้วบางส่วน แคชเก่าจึงเชื่อไม่ได้เหมือนกัน
-            state.STORE.invalidate_local()
+            env = jobs.controller_env(jobs.clean_options(options))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # ตัวเลือก port/API key/context ส่งผ่าน env เหมือนที่ผู้ใช้พิมพ์หน้าคำสั่งบน CLI
+        # ถือล็อกตลอดช่วง ตั้ง → รัน → คืนค่า ไม่งั้น start สองตัวที่ซ้อนกันคืน env ของกันและกัน
+        with _ENV_LOCK:
+            saved = {k: os.environ.get(k) for k in env}
+            os.environ.update(env)
+            try:
+                outcome = runner(server)
+            except FleetError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+                # ทิ้งแคชหลังคำสั่งจบ ไม่ใช่ก่อนเริ่ม — ทิ้งก่อนแล้ว refresher มีเวลาทั้งช่วงที่
+                # คำสั่งกำลังทำงานให้เอาภาพเดิมกลับเข้าแคช · อยู่ใน finally เพราะคำสั่งที่ล้ม
+                # กลางคันก็เปลี่ยนสถานะไปแล้วบางส่วน แคชเก่าจึงเชื่อไม่ได้เหมือนกัน
+                state.STORE.invalidate_local()
         # start คืน exit code (int) ส่วน stop/restart คืนวิธีที่ใช้ (str)
         ok = outcome == 0 if isinstance(outcome, int) else True
         return JSONResponse(
@@ -443,6 +493,7 @@ def create_app(token: str = "") -> FastAPI:
         """เหมือน model_memory แต่สำหรับ bundle บนเครื่องอื่น — host จากแคช · profile อ่านผ่าน SSH ครั้งเดียว"""
         from lmds.nodes import NodeError, find
         from .memory import memory_facts, read_node_profile
+        _check_slug(slug)
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
@@ -458,6 +509,7 @@ def create_app(token: str = "") -> FastAPI:
     def node_settings_suggest(name: str, slug: str) -> dict:
         """เหมือน settings_suggest แต่สำหรับ bundle บนเครื่องอื่น — อ่านจากแคช inventory ไม่ยิง SSH"""
         from lmds.fleet.suggest import suggest_settings
+        _check_slug(slug)
         entry = state.STORE.snapshot()["nodes"].get(name) or {}
         data = entry.get("data") or {}
         model = next((m for m in (data.get("models") or []) if m.get("slug") == slug), None)
@@ -786,6 +838,7 @@ def create_app(token: str = "") -> FastAPI:
         """เนื้อ controller ตัวจริง — ทั้งการเสนอและการตรวจต้องยึดกับไฟล์นี้เท่านั้น"""
         from lmds.web import scriptedit
 
+        _check_slug(slug)
         try:
             script = scriptedit.read_script(slug, node)
         except scriptedit.ScriptError as exc:
@@ -805,6 +858,7 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.web import scriptedit
 
+        _check_slug(slug)
         request = str(body.get("request") or "").strip()
         if not request:
             raise HTTPException(status_code=400, detail="ยังไม่ได้บอกว่าอยากแก้อะไร")
@@ -823,6 +877,7 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.web import scriptedit
 
+        _check_slug(slug)
         edits = body.get("edits") or []
         if not isinstance(edits, list) or not edits:
             raise HTTPException(status_code=400, detail="ไม่มีรายการแก้")
@@ -915,13 +970,15 @@ def create_app(token: str = "") -> FastAPI:
                         "clear-fi-cache", "bench", "stress"}
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
+        _check_slug(slug)
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
         quoted = shlex.quote(slug)
         script = (
             f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\"; "
-            f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle {slug} บน {name}' >&2; exit 1; }}; "
+            # ข้อความ echo ก็ต้องใช้ตัวที่ quote แล้ว — slug ดิบใน single quote คือช่องที่ review เจอ
+            f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle '{quoted}' บน '{shlex.quote(name)} >&2; exit 1; }}; "
             f"cd \"$dir\" || exit 1; "
             f"ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
             f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
@@ -950,6 +1007,7 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.nodes import NodeError, find, run
         from lmds.nodes.ssh import _json_object
 
+        _check_slug(slug)
         node_obj = find(name)
         if node_obj is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
@@ -971,6 +1029,7 @@ def create_app(token: str = "") -> FastAPI:
 
         from lmds.nodes import NodeError, find, run
 
+        _check_slug(slug)
         node_obj = find(name)
         if node_obj is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
@@ -994,6 +1053,7 @@ def create_app(token: str = "") -> FastAPI:
 
         from . import jobs
 
+        _check_slug(slug)
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
@@ -1022,6 +1082,7 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.fleet import bundle_roots
         from lmds.nodes import NodeError, find, push_file, run
 
+        _check_slug(slug)   # กลายเป็นชื่อไฟล์ {slug}.zip และ path บนเครื่องปลายทาง
         node = find(name)
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
@@ -1057,8 +1118,14 @@ def create_app(token: str = "") -> FastAPI:
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        # ตรวจค่าเหมือนทางของ node — เดิมส่ง body ดิบ int("abc") ระเบิดเป็น 500 และ image
+        # ข้าม allowlist ไปถึง `docker run` ได้
         try:
-            return jobs.start(slug, command, server.controller, body).payload()
+            options = jobs.clean_options(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return jobs.start(slug, command, server.controller, options).payload()
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1180,6 +1247,21 @@ def create_app(token: str = "") -> FastAPI:
         if job is None:
             raise HTTPException(status_code=404, detail="ไม่พบงานนี้")
         return job.payload()
+
+    @app.post("/api/jobs/{job_id}/cancel", dependencies=guarded)
+    def job_cancel(job_id: str) -> dict:
+        """ยกเลิกงานที่ค้าง — งานที่ ssh แฮงค์ไม่มีทางจบเอง และล็อก (เครื่อง, โมเดล) ไว้ตลอดกาล
+
+        เดิมไม่มีปุ่มนี้: start ที่ค้างอยู่ทำให้สั่งอะไรกับโมเดลนั้นไม่ได้อีกเลย (409 "กำลังรัน…")
+        จนกว่าจะ restart ทั้ง hub · terminate ให้ process ตาย ท่อปิด _pump จบ แล้ว exit_code ถูกตั้ง
+        ซึ่งคือจังหวะที่ล็อกถูกปล่อย
+        """
+        from . import jobs
+
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="ไม่พบงานนี้")
+        return {"id": job.id, "cancelled": jobs.cancel(job)}
 
     # ── ลบ / autostart — ทำผ่าน fleet ตรง ๆ ไม่ใช่ job เพราะไม่ใช่คำสั่งของ controller ──
     @app.get("/api/models/{slug}/removal-plan", dependencies=guarded)
@@ -1326,7 +1408,7 @@ def create_app(token: str = "") -> FastAPI:
         พร้อมคำสั่งให้ไป ssh ทำเอง ทั้งที่ hub ต่อ SSH ได้อยู่แล้วและ CLI ก็มี
         `lmds node install` มาตลอด
         """
-        from lmds.nodes import find, install_script
+        from lmds.nodes import find, prepare_install
 
         from . import jobs
 
@@ -1334,7 +1416,8 @@ def create_app(token: str = "") -> FastAPI:
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
         # prerequisite (docker/toolkit) ต้องใช้ sudo ซึ่งไม่มี tty ให้กรอกรหัส — ค่าเริ่มต้นจึงข้าม
-        script = install_script(with_prereq=bool((body or {}).get("with_prereq")))
+        # hub ส่งโค้ดของตัวเองไปให้ก่อน (scp ~2 MB) — เครื่องนั้นไม่ต้องมีสิทธิ์เข้า GitHub
+        script = prepare_install(node, with_prereq=bool((body or {}).get("with_prereq")))
         try:
             job = jobs.start_remote(name, "_install", "install", script)
         except jobs.JobError as exc:
@@ -1462,11 +1545,15 @@ def create_app(token: str = "") -> FastAPI:
                 pass
 
         state.STORE.mark_refreshing(name)
+        # ผลต้องลงแคชด้วย — เดิมตอบกลับอย่างเดียว refresher ส่ง snapshot เก่าผ่าน SSE ภายใน 3 วิ
+        # ทับการ์ดที่เพิ่งสด และ `refreshing` ค้างเป็น true เพราะไม่มีใครมา set_node ให้
         try:
             info = probe(node)
         except NodeError as exc:
+            state.STORE.set_node(name, None, str(exc)[:300])
             remember(last_error=str(exc)[:200])
             return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
+        state.STORE.set_node(name, info)
         remember(last_error="", **status_from_probe(info))
         return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **info})
 
@@ -1483,15 +1570,25 @@ def create_app(token: str = "") -> FastAPI:
 
         payload = {"host": rows(scan())}
         if all_nodes:
-            from lmds.nodes import NodeError, load, run as run_remote
+            import concurrent.futures
 
-            for node in load():
+            from lmds.nodes import load, run as run_remote
+
+            # ถามทุกเครื่องพร้อมกัน (แบบเดียวกับ bench_fleet) — เดิมไล่ทีละเครื่อง timeout 300
+            # ฟลีต 8 เครื่องที่มีตัวหนึ่งค้างคือ request แขวน thread ของเว็บไว้เป็นสิบนาที
+            def ask(node) -> tuple[str, list]:
                 try:
-                    result = run_remote(node, "lmds scan --json", timeout=300)
-                    payload[node.name] = json_module.loads(result.stdout).get("host", []) \
-                        if result.ok else []
-                except (NodeError, json_module.JSONDecodeError, ValueError):
-                    payload[node.name] = []
+                    result = run_remote(node, "lmds scan --json", timeout=60)
+                    return node.name, (json_module.loads(result.stdout).get("host", [])
+                                       if result.ok else [])
+                except Exception:  # noqa: BLE001 — เครื่องเดียวตอบไม่ได้ = ช่องว่าง ไม่ใช่ทั้งหน้าพัง
+                    return node.name, []
+
+            nodes = load()
+            if nodes:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                    for name, found in pool.map(ask, nodes):
+                        payload[name] = found
         return payload
 
     @app.get("/api/recipes", dependencies=guarded)
@@ -1602,6 +1699,7 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.nodes import find, in_saved_order, load
         from lmds.config import Settings
 
+        _check_slug(slug)
         source = find(name)
         if source is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
@@ -1641,6 +1739,7 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.nodes import find
         from lmds.web import jobs
 
+        _check_slug(slug)
         target_name = (body.get("to") or "").strip()
         if not target_name:
             raise HTTPException(status_code=400, detail="ต้องระบุเครื่องปลายทาง (to)")
@@ -1891,6 +1990,7 @@ def create_app(token: str = "") -> FastAPI:
         }
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
+        _check_slug(slug)
         if command == "remove" and (body or {}).get("confirm"):
             if (body or {}).get("confirm") != slug:
                 raise HTTPException(status_code=400, detail="ชื่อยืนยันไม่ตรงกับโมเดลที่จะลบ")
@@ -1952,7 +2052,9 @@ def create_app(token: str = "") -> FastAPI:
             except jobs.JobError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
-            result = run(node, remote, timeout=1800)
+            # ที่เหลือคือ doctor/logs/enable/disable/remove --dry-run — งานสั้น · เดิม 1800 วิ
+            # = เครื่องที่ ssh ค้างยึด thread ของเว็บไว้ครึ่งชั่วโมง (stop ย้ายไปเป็น job แล้ว)
+            result = run(node, remote, timeout=120)
             state.STORE.force(name)   # สถานะเพิ่งเปลี่ยน — อย่าให้ผู้ใช้เห็นของเก่าอีก 15 วิ
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

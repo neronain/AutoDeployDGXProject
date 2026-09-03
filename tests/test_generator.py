@@ -230,9 +230,14 @@ def test_no_secrets_in_bundle(isolated_config, tmp_path, monkeypatch):
     for file_path in bundle.files:
         content = file_path.read_text(encoding="utf-8")
         assert "hf_SECRETTOKEN123456789" not in content
-    # token ใช้ผ่าน env เท่านั้น
+    # token ใช้ผ่าน env เท่านั้น — และต้องไม่ไปโผล่บน argv ของ curl/aria2c ที่ `ps` อ่านได้
     text = bundle.controller.read_text(encoding="utf-8")
-    assert 'HF_TOKEN:+' in text
+    assert '"${HF_TOKEN:-}"' in text
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        if re.search(r"\b(curl|aria2c)\b", line):
+            assert "HF_TOKEN" not in line, line
 
 
 @pytest.mark.parametrize("target", ["dgx-spark-single", "rtx-pro-4000-dual"])
@@ -1375,17 +1380,21 @@ def test_llamacpp_test_tools_reads_running_state_first(tmp_path):
 MTP_ARGS = '--speculative-config {"method":"mtp","num_speculative_tokens":2} --enable-chunked-prefill'
 
 
-def test_llamacpp_serve_args_include_bundle_args_verbatim(tmp_path):
+@pytest.mark.parametrize("has_chat_template", [True, False, None])
+def test_llamacpp_serve_args_include_bundle_args_verbatim(tmp_path, has_chat_template):
     """เคสจริง spark-worker (2026-09-03): จะเปิด MTP บน vLLM ต้องส่ง JSON ใน --speculative-config
     ซึ่ง `lmds set` ตั้งไม่ได้ (docs/USAGE.md ยอมรับไว้เอง) ทั้งที่ plan ของ LMDS แนะให้เปิด
 
     bundle.args ต้องถูกแตกเป็น argv โดย JSON คงเป็นก้อนเดียว — ทดสอบด้วยคำสั่ง serve-args
     ที่ประกอบ argv จริงแต่ไม่ start
+
+    ต้องจริงไม่ว่า inspector จะตอบเรื่อง chat template ว่าอะไร — เดิมทั้ง bundle.args และ --jinja
+    ซ่อนอยู่ใต้เงื่อนไข has_chat_template ซึ่งเป็น None สำหรับ GGUF ที่อ่าน metadata ไม่ครบ
     """
     import os
     import subprocess
 
-    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    bundle, _, _ = make_bundle(gguf_report(has_chat_template=has_chat_template), tmp_path=tmp_path)
     (bundle.directory / "bundle.args").write_text(MTP_ARGS + "\n", encoding="utf-8")
     out = subprocess.run(["bash", str(bundle.controller), "serve-args"],
                          env={**os.environ, "RUN_DIR": str(tmp_path / "run")},
@@ -1412,13 +1421,14 @@ def test_extra_args_flag_beats_bundle_args(tmp_path):
     assert "--from-flag" in out and "--from-file" not in out
 
 
-def test_vllm_and_stacked_controllers_forward_bundle_args():
-    """ทุก template ของ vLLM ต้องอ่าน bundle.args เหมือนกัน — ตัวที่ลืมจะพังเงียบ:
-    ตั้งค่าแล้ว lmds บอกว่าบันทึกแล้ว แต่ engine ไม่เคยได้รับ"""
+def test_every_docker_controller_forwards_bundle_args():
+    """ทุก template ที่รัน engine ใน docker ต้องอ่าน bundle.args เหมือนกัน — ตัวที่ลืมจะพังเงียบ:
+    ตั้งค่าแล้ว lmds บอกว่าบันทึกแล้ว แต่ engine ไม่เคยได้รับ (SGLang เคยเป็นแบบนั้น)"""
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "src" / "lmds" / "generator" / "templates"
-    for name in ("single-vllm-controller.sh.j2", "stacked-vllm-controller.sh.j2"):
+    for name in ("single-vllm-controller.sh.j2", "stacked-vllm-controller.sh.j2",
+                 "single-sglang-controller.sh.j2"):
         text = (root / name).read_text(encoding="utf-8")
         assert 'BUNDLE_ARGS="${BUNDLE_ARGS:-' in text, name
         assert 'for extra_arg in $EXTRA_SERVE_ARGS' in text, name

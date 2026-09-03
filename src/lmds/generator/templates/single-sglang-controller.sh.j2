@@ -25,7 +25,9 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 #
 # tag ที่ digest นี้มาจาก ณ วันที่ generate: {{ plan.runtime.image_ref }}
 # อยากใช้ตัวอื่นก็ override ได้ตามเดิม: SGLANG_IMAGE=<image> ./controller start
-SGLANG_IMAGE="${{ '{' }}SGLANG_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
+# repo ของ image มาจาก renderer (image_repo) เพราะ registry ที่มีพอร์ตตัดที่ ':' ตัวแรกไม่ได้ ·
+# fallback เดิมเหลือไว้ให้ render บรรทัดนี้เดี่ยว ๆ ด้วย plan อย่างเดียวได้ (เทส image pin)
+SGLANG_IMAGE="${{ '{' }}SGLANG_IMAGE:-{% if plan.runtime.image_pin %}{{ image_repo if image_repo is defined else plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
 
 # ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
@@ -45,6 +47,19 @@ API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 API_KEY="${API_KEY:-}"
 ENGINE_ENV="${ENGINE_ENV:-}"
+# แฟล็กเพิ่มของ engine — อ่านทั้งบรรทัดจาก bundle.args (เขียนโดย `lmds set --extra-args`)
+# ไม่เก็บใน bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่ `}` ตัวแรก JSON อย่าง
+# --speculative-config {"method":"mtp"} จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
+# แตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนติดกัน หรือใช้รูป --flag=value
+# ค่าตั้งต้นของแฟล็กเพิ่ม — publish เขียนค่าที่พิสูจน์แล้วลงตรงนี้ · single quote โดยเจตนา:
+# JSON เช่น --speculative-config {"method":"mtp"} มี } ซึ่งจะตัด ${VAR:-...} ขาดกลางคัน
+# (SGLang เคยไม่มีช่องนี้เลย — `lmds set --extra-args` บอกว่าบันทึกแล้วแต่ engine ไม่เคยได้รับ)
+EXTRA_SERVE_ARGS_DEFAULT=''
+BUNDLE_ARGS="${BUNDLE_ARGS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.args}"
+if [[ -z "${EXTRA_SERVE_ARGS:-}" && -f "$BUNDLE_ARGS" ]]; then
+  EXTRA_SERVE_ARGS="$(tr '\n' ' ' < "$BUNDLE_ARGS")"
+fi
+EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-$EXTRA_SERVE_ARGS_DEFAULT}"
 ADVERTISE_IP="${ADVERTISE_IP:-}"
 ADVERTISE_INTERFACE="${ADVERTISE_INTERFACE:-}"
 ROUTE_PROBE_IP="${ROUTE_PROBE_IP:-1.1.1.1}"
@@ -53,6 +68,8 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-{{ plan.serving.gpu_memory_uti
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-{{ plan.serving.max_num_seqs }}}"
 # prompt ยาวถูกซอยเป็นก้อนเท่านี้ก่อนเข้า GPU — ของ SGLang โดยเฉพาะ
 CHUNKED_PREFILL_SIZE="${CHUNKED_PREFILL_SIZE:-8192}"
+# ชื่อ dtype ตามที่ planner ให้มา (ภาษา vLLM) — แปลเป็นชื่อของ SGLang ตอน start (ดู _sglang_kv_cache_dtype)
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-{{ plan.serving.kv_cache_dtype }}}"
 {% if tensor_parallel > 1 -%}
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-{{ tensor_parallel }}}"
 {% endif -%}
@@ -95,6 +112,20 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # เปล่า ๆ หมายถึงไฟล์ตัวอย่างในโฟลเดอร์ของ image · ที่นี่ส่งต่อตามที่กรอกมา
 _resolve_chat_template() { echo "$1"; }
 
+# planner พูดภาษา vLLM (`fp8`, `nvfp4_ds_mla` ของสูตร DeepSeek-V4) แต่ argparse ของ SGLang รับแค่
+# auto | fp8_e5m2 | fp8_e4m3 (build ใหม่มี bf16) — ส่งชื่อ vLLM ไปตรง ๆ = ตายตั้งแต่ parse argument
+# ก่อนจะได้โหลดอะไร · fp8 ของ vLLM คือ e4m3 · ชื่อที่ SGLang ไม่มีคู่ (nvfp4_ds_mla) ถอยเป็น auto
+# พร้อมบอกดัง ๆ ว่าทิ้งอะไรไป ไม่ใช่เงียบ
+_sglang_kv_cache_dtype() {
+  case "$1" in
+    auto|fp8_e5m2|fp8_e4m3|bf16) printf '%s' "$1" ;;
+    fp8) printf 'fp8_e4m3' ;;
+    *)
+      echo "WARN: kv-cache dtype '$1' เป็นชื่อเฉพาะของ vLLM — SGLang ไม่รู้จัก ใช้ auto แทน (ตั้งเอง: KV_CACHE_DTYPE=fp8_e4m3)" >&2
+      printf 'auto' ;;
+  esac
+}
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
@@ -118,7 +149,12 @@ print((data[0].get("id") or "").strip() if data else "")
      มีเซิร์ฟเวอร์อื่นยึดพอร์ตนี้อยู่ — ผลทดสอบที่ได้จะเป็นของโมเดลนั้น ไม่ใช่ตัวนี้
      แก้: หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต  $0 restart --port 8001"
 }
-need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+need() {
+  # DRY_RUN ประกอบคำสั่งอย่างเดียว ไม่แตะ docker/nvidia-smi — เครื่องที่ generate bundle
+  # (เช่น hub ที่ไม่มี GPU) ต้องดู argv ที่จะรันได้โดยไม่ต้องมีของพวกนั้นติดตั้ง
+  [[ -n "${DRY_RUN:-}" ]] && return 0
+  command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"
+}
 
 validate_numbers() {
   [[ "$API_PORT" =~ ^[0-9]+$ ]] && (( API_PORT >= 1 && API_PORT <= 65535 )) ||
@@ -152,6 +188,8 @@ parse_options() {
   while (( $# )); do
     case "$1" in
       --context)        MAX_MODEL_LEN="$2"; shift 2 ;;
+      --extra-args)     EXTRA_SERVE_ARGS="$2"; shift 2 ;;
+      --extra-args=*)   EXTRA_SERVE_ARGS="${1#*=}"; shift ;;
       --context=*)      MAX_MODEL_LEN="${1#*=}"; shift ;;
       --gpu-util)      GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
       --gpu-util=*)  GPU_MEMORY_UTILIZATION="${1#*=}"; shift ;;
@@ -235,6 +273,8 @@ check_gpu() {
 
 download() {
   need docker
+  # ยืนยันว่ามี image ก่อนแตะเรื่องน้ำหนักโมเดล — ไม่งั้น "manifest unknown" ถูกอ่านเป็นปัญหา Xet (ดู vLLM)
+  ensure_image "${SGLANG_IMAGE}"
 {% if report.gated %}  # gated repo: ไม่มี token = huggingface_hub โยน traceback ยาวเหยียดที่อ่านไม่รู้เรื่อง
   # ตรวจตั้งแต่ต้นแล้วบอกให้ตรง ๆ ดีกว่า
   if [[ -z "${HF_TOKEN:-}" ]]; then
@@ -252,12 +292,38 @@ download() {
   # แถบ progress ของ huggingface_hub เลื่อนตัวเลขด้วย \r ล้วน ๆ ไม่เคยขึ้นบรรทัดใหม่ —
   # ซึ่ง stderr ที่ line-buffer ไว้จะไม่ยอม flush ให้เลย · ผลคือ download 50 GB เงียบสนิท
   # ทั้งชั่วโมงแล้วค่อยพ่นออกมาทีเดียวตอนจบ คนดูแยกไม่ออกว่ากำลังโหลดอยู่หรือค้างไปแล้ว
+  # ไม่มีอะไรคืบหน้าเกินเท่านี้ = ถือว่าค้างตาย แล้วเริ่มใหม่ (ต่อจากของเดิม)
+  #
+  # เคสจริง 2026-08-31 บน spark-head: โหลดไปได้ 36 GB จาก 170.9 GB แล้วหยุดนิ่ง
+  # **1 ชั่วโมง 32 นาที** โดยไม่มี error ไม่มี log ไม่มีอะไรบอก · connection ไปหา CDN
+  # ยังเปิดค้างอยู่ process นอนหลับใน recv() รอข้อมูลที่ไม่มีวันมา
+  #
+  # ฝั่ง llama.cpp กันเคสนี้ไว้แล้วด้วย `--speed-limit/--speed-time` ของ curl พร้อม
+  # คอมเมนต์ที่เขียนไว้เองว่า "ไม่มี error ไม่มี timeout --retry จึงไม่เคยทำงาน" —
+  # แต่เส้นทาง vLLM ใช้ huggingface_hub ในคอนเทนเนอร์ซึ่งไม่มีตัวกันแบบนั้นเลย
+  #
+  # ที่แย่กว่าคือคนที่เห็นว่ามันค้างมักสั่งใหม่ทับ แล้วตัวใหม่ไปติด lock ของตัวที่ค้างอยู่
+  # กลายเป็นกองซ้อนกันสามตัวที่ไม่มีตัวไหนทำงานเลย (เจอจริงเช่นกัน)
+  DOWNLOAD_STALL_SECONDS="${DOWNLOAD_STALL_SECONDS:-600}"
+
+  _download_bytes() {
+    du -sb "$(_model_cache_dir)" 2>/dev/null | cut -f1 || echo 0
+  }
+
   _snapshot_download() {
     local disable_xet="$1"
-    docker run --rm \
+    local name="lmds-dl-$$-${RANDOM}"
+
+    # `-e HF_TOKEN` เฉย ๆ (ไม่มี =ค่า) = docker หยิบค่าจาก env ของเชลล์นี้ไปเอง
+    #
+    # ของเดิมเขียน `-e HF_TOKEN="$HF_TOKEN"` ซึ่งเอาค่าจริงไปแปะไว้ใน **argv ของ
+    # docker run** — user ทุกคนบนเครื่องอ่านได้ด้วย `ps` เฉย ๆ (เจอจริงบน spark-head)
+    # ทั้งที่ LMDS มีหลักเรื่องนี้อยู่แล้วในเส้นทาง SSH: ความลับไม่เดินทางผ่าน argv
+    docker run -d --name "$name" \
       --user "$(id -u):$(id -g)" \
       -e HOME=/tmp -e USER=lmds -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
       -e PYTHONUNBUFFERED=1 \
+      -e HF_HUB_DOWNLOAD_TIMEOUT=30 \
       ${HF_TOKEN:+-e HF_TOKEN} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
       -v "${HF_HOME}:/cache" \
@@ -265,19 +331,81 @@ download() {
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id='${MODEL_ID}', revision='${MODEL_REVISION}', cache_dir=None)
 print('download complete')
-"
+" >/dev/null || return 1
+
+    # ปล่อย log ออกมาให้เห็นความคืบหน้า พร้อมเฝ้าว่ายังขยับอยู่ไหม
+    docker logs -f "$name" 2>&1 &
+    local logs_pid=$!
+    local last quiet=0
+    last="$(_download_bytes)"
+        # เทียบด้วย case ไม่ใช่ท่อไปหา grep — grep ที่ออกก่อนทำให้ docker โดน SIGPIPE
+    # ใต้ set -o pipefail ทั้ง pipeline จึงคืนค่าไม่เป็นศูนย์แบบสุ่ม ๆ
+    while [[ "$(docker inspect -f '{{ '{{.State.Running}}' }}' "$name" 2>/dev/null)" == "true" ]]; do
+      sleep 30
+      local now; now="$(_download_bytes)"
+      # เทียบว่า "เปลี่ยนไหม" ไม่ใช่ "มากขึ้นไหม"
+      #
+      # เคสจริง 2026-09-01 บน spark-head: ของเดิมเก็บ last เป็น "ค่าสูงสุดที่เคยเห็น" แล้ว
+      # seed ไว้ตั้งแต่ก่อนเข้าลูป · พอ container ใหม่เริ่ม มันตัด .incomplete ของรอบก่อน
+      # ทิ้งแล้วโหลดใหม่ ขนาดโฟลเดอร์จึง **ลดลง** จาก 164.6 GB เหลือ 153.9 GB · ทุกตัวอย่าง
+      # หลังจากนั้นถูกเทียบกับ 164.6 GB ที่ไม่มีวันถึงภายใน 600 วิ → watchdog ฆ่า download
+      # ที่กำลังทำงานดี ๆ ทุก 10 นาที → ตัดไฟล์ทิ้งอีก → วนไม่รู้จบ (เห็นจริง 3 รอบติด
+      # 154→163 GB แล้วกลับมา 154 GB)
+      #
+      # ขนาดที่ "ลดลง" แปลว่าตัวโหลดกำลังเขียนอยู่ ไม่ใช่ค้าง — นับเป็นความคืบหน้าเหมือนกัน
+      # ค้างจริงคือขนาด **ไม่ขยับเลย** ต่างหาก
+      if [[ "${now:-0}" != "${last:-0}" ]]; then
+        last="$now"; quiet=0
+      else
+        quiet=$(( quiet + 30 ))
+        if (( quiet >= DOWNLOAD_STALL_SECONDS )); then
+          echo "" >&2
+          echo "ไม่มีอะไรคืบหน้ามา ${quiet} วินาที — ถือว่าค้าง หยุดแล้วเริ่มใหม่ต่อจากเดิม" >&2
+          docker stop -t 5 "$name" >/dev/null 2>&1 || true
+          kill "$logs_pid" 2>/dev/null || true
+          docker rm -f "$name" >/dev/null 2>&1 || true
+          return 75
+        fi
+      fi
+    done
+    kill "$logs_pid" 2>/dev/null || true
+    local code; code="$(docker wait "$name" 2>/dev/null || echo 1)"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    return "${code:-1}"
+  }
+
+  # ค้างแล้วเริ่มใหม่ได้หลายรอบ — ไฟล์ .incomplete ยังอยู่ครบ จึงต่อจากเดิมเสมอ
+  _snapshot_download_resilient() {
+    local disable_xet="$1" attempt=0
+    while (( attempt < ${DOWNLOAD_MAX_ATTEMPTS:-10} )); do
+      attempt=$(( attempt + 1 ))
+      _snapshot_download "$disable_xet" && return 0
+      local code=$?
+      (( code == 75 )) || return "$code"      # ล้มด้วยเหตุอื่น = ปล่อยให้ผู้เรียกจัดการ
+      # ค้างแล้วเริ่มใหม่ ต้องปิด Xet ไปด้วย ไม่ใช่เริ่มใหม่แบบเดิมเป๊ะ ๆ
+      #
+      # เคสจริง 2026-09-01 บน spark-head: Xet client ค้างสนิท — ทุกเธรดจอดที่ futex_do_wait,
+# socket เปิดค้าง 11 เส้น, container log ว่างเปล่า, 12 นาทีไม่ขยับสักไบต์ · "ค้าง" แบบนี้
+# ไม่เคยคืน exit code จึงไม่มีทางไปเข้าทาง fallback ที่ปิด Xet ข้างล่างเลย · เริ่มใหม่ทั้งที
+# ยังเปิด Xet เหมือนเดิมก็ค้างซ้ำที่เดิมจนครบโควตา · พอปิด Xet โหลดต่อได้ทันทีที่ 34 MB/s
+      disable_xet=1
+      echo "เริ่มใหม่รอบที่ $(( attempt + 1 )) (ได้มาแล้ว $(( $(_download_bytes) / 1073741824 )) GB)" >&2
+      sleep 5
+    done
+    echo "ค้างซ้ำ ${attempt} รอบ — ตรวจเน็ต/พร็อกซีแล้วสั่ง download ใหม่" >&2
+    return 1
   }
 
   # Xet เป็น backend ใหม่ของ Hub ที่บาง repo (เช่นตระกูล Llama) ยังพังด้วย
   # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
   # แทนที่จะโยน traceback ของ Python ใส่หน้าผู้ใช้แล้วจบ
   if [[ -n "${HF_HUB_DISABLE_XET:-}" ]]; then
-    _snapshot_download 1
-  elif ! _snapshot_download ""; then
+    _snapshot_download_resilient 1
+  elif ! _snapshot_download_resilient ""; then
     echo "" >&2
     echo "download ล้มเหลว — ลองใหม่โดยปิด Xet transfer (HF_HUB_DISABLE_XET=1)" >&2
     echo "ไฟล์ที่โหลดมาแล้วยังอยู่ ระบบจะโหลดต่อจากเดิม ไม่เริ่มใหม่ทั้งหมด" >&2
-    _snapshot_download 1
+    _snapshot_download_resilient 1
   fi
 }
 
@@ -460,14 +588,19 @@ start() {
     echo "เก็บซาก container จากรอบก่อน (${CONTAINER_NAME}) แล้วเริ่มใหม่"
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   fi
-  check_gpu >/dev/null
-  verify_files
-  check_architecture
+  # DRY_RUN=1 = ประกอบคำสั่งแล้วพิมพ์ออกมา ไม่แตะ GPU/ไฟล์/docker — ใช้ตรวจว่า flag และ env
+  # ที่ตั้งผ่าน lmds set / bundle.args ไปถึง argv จริง ก่อนจะรอโหลดโมเดลหลายนาทีเพื่อรู้ว่าไม่ถึง
+  if [[ -z "${DRY_RUN:-}" ]]; then
+    check_gpu >/dev/null
+    verify_files
+    check_architecture
+  fi
 
   # ชื่อ knob ของ controller เหมือนกันทุก engine — แปลเป็นชื่อธงของ SGLang ตรงนี้ที่เดียว
   #   MAX_MODEL_LEN          → --context-length        (vLLM: --max-model-len)
   #   GPU_MEMORY_UTILIZATION → --mem-fraction-static   (vLLM: --gpu-memory-utilization)
   #   MAX_NUM_SEQS           → --max-running-requests  (vLLM: --max-num-seqs)
+  #   KV_CACHE_DTYPE         → --kv-cache-dtype        (แปลชื่อค่า: fp8 → fp8_e4m3 · ชื่อเฉพาะ vLLM → auto)
   local serve_args=(
     serve
     --model-path "$MODEL_ID"
@@ -486,9 +619,14 @@ start() {
 {% for flag in extra_flag_pairs %}
   serve_args+=({{ flag }})
 {% endfor %}
-{% if plan.serving.kv_cache_dtype != "auto" %}
-  serve_args+=(--kv-cache-dtype "{{ plan.serving.kv_cache_dtype }}")
-{% endif %}
+  local kv_dtype; kv_dtype="$(_sglang_kv_cache_dtype "$KV_CACHE_DTYPE")"
+  if [[ "$kv_dtype" != "auto" ]]; then
+    serve_args+=(--kv-cache-dtype "$kv_dtype")
+  fi
+  if [[ -n "$EXTRA_SERVE_ARGS" ]]; then
+    local extra_arg
+    for extra_arg in $EXTRA_SERVE_ARGS; do serve_args+=("$extra_arg"); done
+  fi
   # ต่างจาก vLLM: ไม่มี --enable-auto-tool-choice · ตั้ง parser คือเปิดใช้แล้ว
   if [[ -n "$TOOL_CALL_PARSER" ]]; then
     serve_args+=(--tool-call-parser "$TOOL_CALL_PARSER")
@@ -504,6 +642,12 @@ start() {
   fi
   if [[ -n "$API_KEY" ]]; then
     serve_args+=(--api-key "$API_KEY")
+  fi
+
+  if [[ -n "${DRY_RUN:-}" ]]; then
+    printf 'IMAGE=%s\n' "$SGLANG_IMAGE"
+    printf '%s\n' "${serve_args[@]}"
+    return 0
   fi
 
   local docker_args=(
@@ -567,11 +711,14 @@ warn_open_endpoint() {
 explain_crash() {
   local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError'
   local cause
+  # `|| true` ท้าย pipeline จำเป็น: grep ที่ไม่เจอบรรทัด Error คืน 1 → ใต้ set -e + pipefail การ assign
+  # นี้ทำสคริปต์ตายทันที ก่อนจะถึง die "container หยุดก่อน health" ของผู้เรียก · crash ที่ log ไม่มี
+  # exception (โดน OOM-kill, image พัง) จึงถูกรายงานเป็นความว่างเปล่า exit 1 ไม่มีข้อความสักบรรทัด
   cause="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 \
     | grep -E "(${errs}): " \
     | grep -vE 'Engine core initialization failed|See root cause above' \
     | sed -E "s/^.*(${errs}): /\\1: /" \
-    | head -1 | cut -c1-300)"
+    | head -1 | cut -c1-300 || true)"
   [[ -n "$cause" ]] || return 0
   echo "สาเหตุจาก log: ${cause}" >&2
   case "$cause" in
@@ -897,6 +1044,7 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port to serve on                          [default: ${API_PORT}]
   --context N           Max context length in tokens              [default: ${MAX_MODEL_LEN}]
                         Lower this first if the server runs out of memory.
+  --extra-args "..."    Extra engine flags appended verbatim (space-separated; write JSON without spaces) [default: ${EXTRA_SERVE_ARGS}]
   --bind ADDR           Address the server listens on             [default: ${API_HOST}]
                         0.0.0.0 = reachable from the whole network
                         127.0.0.1 = this machine only (safest)
@@ -946,6 +1094,7 @@ ENVIRONMENT VARIABLES
                           Lower it when sharing the GPU with other workloads.
   MAX_NUM_SEQS            Passed as --max-running-requests           [default: ${MAX_NUM_SEQS}]
   CHUNKED_PREFILL_SIZE    Prefill chunk size                        [default: ${CHUNKED_PREFILL_SIZE}]
+  KV_CACHE_DTYPE          auto | fp8_e4m3 | fp8_e5m2 (vLLM's "fp8" is translated) [default: ${KV_CACHE_DTYPE}]
   HEALTH_TIMEOUT          Seconds to wait for /health on start      [default: ${HEALTH_TIMEOUT}]
   CONTAINER_NAME          Docker container name                     [default: ${CONTAINER_NAME}]
   RUN_DIR                 Runtime state read by 'lmds ps'           [default: ${RUN_DIR}]

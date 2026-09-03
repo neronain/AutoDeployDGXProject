@@ -54,6 +54,8 @@ def test_restart_reports_which_unit_it_will_restart(monkeypatch):
     import subprocess
 
     monkeypatch.setattr(subprocess, "Popen", _Popen)
+    # ไม่ได้อยู่ใต้ systemd = 409 (ดู test_review_web) — เทสนี้ทดสอบสายที่อยู่ใต้ systemd
+    monkeypatch.setattr("lmds.web.api._running_unit", lambda: "lmds-web.service")
     res = TestClient(create_app()).post("/api/restart")
 
     assert res.status_code == 200, res.text
