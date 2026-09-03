@@ -255,6 +255,10 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 > **0.5.1:** ค่าที่ตั้งด้วย `lmds set` (image ที่พิสูจน์แล้ว, `--tool-parser`, `--reasoning-parser`, `--engine-env`,
 > `--extra-args`) ถูกพับลง header ตอน publish — คลังจึงได้สูตรที่ start ขึ้นจริง ไม่ใช่ค่าเดาของ plan
 > 
+> **0.5.2:** deploy จากหน้าเว็บโดยเลือกเครื่องในช่อง Run on → fit **หักหน่วยความจำที่เครื่องนั้นใช้อยู่แล้ว**
+> ก่อนเลือก quant/context และหน้า plan วาดแถบ capacity · already in use · weights · KV · spare ให้เห็น
+> (เดิมคิดจาก "เครื่องว่าง" เสมอ — deploy ตัวที่ 2-3 ลงเครื่องเดียวกันจึงทับกันโดยไม่มีอะไรเตือน)
+> 
 > **หมายเหตุ llama.cpp**: controller สำหรับโมเดลที่มี chat template จะถูกสร้างด้วย `--jinja` โดยอัตโนมัติ — 
 > จำเป็นต่อ tool calling/function calling ของ llama.cpp รุ่นใหม่ (ไม่มี = tools ใช้ไม่ได้แม้ template รองรับ)
 

@@ -790,6 +790,9 @@ def create_app(token: str = "") -> FastAPI:
                 hf_token=body.get("hf_token") or "",
                 selected_gguf=body.get("selected_gguf") or "",
                 engine=body.get("engine") or "",
+                # เครื่องปลายทางในฟลีต — fit ต้องหักหน่วยความจำที่เครื่องนั้นใช้อยู่แล้ว
+                machine=body.get("machine") or "",
+                worker=body.get("worker") or "",
             )
         except DeployError as exc:
             raise _deploy_error(exc) from exc

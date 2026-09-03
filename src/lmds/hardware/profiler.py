@@ -104,6 +104,19 @@ def compute_apps() -> list[tuple[int, str, int]]:
     return apps
 
 
+def memory_held_gb() -> float:
+    """GPU memory ที่ process ทั้งหมดถืออยู่บนเครื่องนี้ (GB) — อ่านไม่ได้ = 0
+
+    ตัวเดียวกับที่ `lmds ps` ใช้รายงาน foreign workload · fit เอาไปหักออกจาก budget
+    ก่อนวางแผน deploy ตัวถัดไปลงเครื่องเดียวกัน · คืน 0 เมื่ออ่านไม่ได้ เพื่อให้พฤติกรรม
+    ถอยกลับไปเท่าเดิม ไม่ใช่ล้มทั้งคำสั่ง
+    """
+    try:
+        return sum(mib for _, _, mib in compute_apps() if mib) / 1024.0
+    except Exception:  # noqa: BLE001 — nvidia-smi พังไม่ควรทำให้วางแผนไม่ได้
+        return 0.0
+
+
 def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
     notes: list[str] = []
     if shutil.which("nvidia-smi") is None:

@@ -47,6 +47,24 @@ def test_nothing_changes_when_the_machine_is_idle():
 SHA = "f70913d592f33fa383a3ea656222573fccda04d31404d477cad8624876ac1e95"
 
 
+def test_the_report_carries_the_memory_breakdown_not_just_one_budget_number():
+    """หน้าเว็บต้องวาดได้ว่า budget มาจากอะไร: capacity − ใช้อยู่แล้ว − overhead → weights → KV → เหลือ"""
+    from tests.test_generator import safetensors_report
+    from lmds.fit import PRESETS, analyze
+    from lmds.fit.analyzer import GIB
+
+    spark = PRESETS["dgx-spark-single"]
+    idle = analyze(safetensors_report(weight_bytes=30 * GIB), spark)
+    busy = analyze(safetensors_report(weight_bytes=30 * GIB), spark, reserved_gb=40.0)
+
+    assert idle.capacity_gb == 128.0 and idle.reserved_gb == 0.0
+    assert busy.reserved_gb == 40.0
+    # ที่เหลือให้ KV ลดลงเท่ากับที่โมเดลอื่นถืออยู่ — ไม่ใช่แค่ budget ก้อนรวม
+    assert idle.kv_budget_gb is not None and busy.kv_budget_gb is not None
+    assert round(idle.kv_budget_gb - busy.kv_budget_gb, 1) == 40.0
+    assert busy.kv_budget_gb == round(busy.budget_gb - busy.weights_gb, 1)
+
+
 def test_the_checksum_from_the_models_endpoint_is_read():
     """`/api/models/<id>?blobs=true` ส่งคีย์ `sha256` — รูปแบบที่ LMDS ใช้จริง"""
     info = {"siblings": [

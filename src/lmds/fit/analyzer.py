@@ -71,6 +71,13 @@ class FitReport(BaseModel):
     node_count: int = 1
     weights_gb: Optional[float] = None
     budget_gb: float = 0.0
+    # ภาพรวมหน่วยความจำ — หน้าเว็บเอาไปวาดแถบ "เครื่องมีเท่านี้ · ใช้อยู่แล้ว · weights · KV · เหลือ"
+    # ไม่มีสามค่านี้ ผู้ใช้เห็นแค่ budget ก้อนเดียวแล้วเดาไม่ออกว่ามันมาจากอะไร และไม่รู้เลยว่า
+    # โมเดลตัวอื่นบนเครื่องเดียวกันถูกนับไปแล้วหรือยัง
+    capacity_gb: float = 0.0          # หน่วยความจำ GPU ทั้งหมดของ target
+    reserved_gb: float = 0.0          # ที่โมเดลอื่นบนเครื่องเป้าหมายถืออยู่แล้ว (หักออกจาก budget แล้ว)
+    reserved_source: str = ""         # อ่านมาจากไหน — ชื่อเครื่อง / "this machine" / "" = preset สมมติ
+    kv_budget_gb: Optional[float] = None  # budget - weights = ที่เหลือให้ KV cache
     verdict: Verdict = Verdict.UNKNOWN
     kv_bytes_per_token: Optional[int] = None
     kv_estimated: bool = False
@@ -143,6 +150,8 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
         engine_assumed=engine,
         node_count=target.node_count,
         budget_gb=round(budget, 1),
+        capacity_gb=round(target.total_gpu_memory_gb, 1),
+        reserved_gb=round(reserved_gb, 1),
         concurrency=concurrency,
         notes=notes,
     )
@@ -164,6 +173,7 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
     weights_gb = weights_bytes / GIB
     fit.weights_gb = round(weights_gb, 1)
     kv_budget_gb = budget - weights_gb
+    fit.kv_budget_gb = round(kv_budget_gb, 1)
 
     if kv_budget_gb <= 0:
         return _handle_no_headroom(report, target, fit, weights_gb, budget)

@@ -1751,17 +1751,10 @@ def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
 
 
 def _memory_already_held_gb() -> float:
-    """GPU memory ที่ process ของโมเดลอื่นถืออยู่บนเครื่องนี้ (GB)
+    """GPU memory ที่โมเดลอื่นถืออยู่บนเครื่องนี้ — ตัวเดียวกับที่หน้าเว็บใช้ (profiler.memory_held_gb)"""
+    from lmds.hardware.profiler import memory_held_gb
 
-    อ่านจากตัวเดียวกับที่ `lmds ps` ใช้รายงาน foreign workload · อ่านไม่ได้ = 0
-    เพื่อให้พฤติกรรมถอยกลับไปเท่าเดิม ไม่ใช่ล้มทั้งคำสั่ง
-    """
-    try:
-        from lmds.hardware.profiler import compute_apps
-
-        return sum(mib for _, _, mib in compute_apps() if mib) / 1024.0
-    except Exception:
-        return 0.0
+    return memory_held_gb()
 
 
 def _render_fits(fit_reports: list) -> None:

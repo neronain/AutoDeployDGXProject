@@ -124,10 +124,91 @@ def _plan_payload(session: Session) -> dict:
             "weights_gb": fit.weights_gb,
             # เพดานจริงของเครื่อง — มักสูงกว่าค่าที่แผนเสนอ ต้องให้ผู้ใช้เห็นก่อนกดยืนยัน
             "max_safe_context": fit.max_safe_context,
+            # ภาพรวมหน่วยความจำ — ให้หน้าเว็บวาดแถบ capacity / ใช้อยู่แล้ว / weights / KV / เหลือ
+            # ตัวเลข "ใช้อยู่แล้ว" คือของที่หายไปจากหน้าเว็บทั้งที่ analyzer หักให้ได้ตั้งแต่ 2026-08-28
+            "capacity_gb": fit.capacity_gb,
+            "reserved_gb": fit.reserved_gb,
+            "reserved_source": fit.reserved_source,
+            "kv_budget_gb": fit.kv_budget_gb,
+            "kv_bytes_per_token": fit.kv_bytes_per_token,
+            "kv_at_context_gb": _kv_at(fit, plan.serving.context),
             "notes": fit.notes,
         },
         "gated": report.gated,
     }
+
+
+def _held_on_node(name: str) -> float | None:
+    """GB ที่โมเดลบนเครื่อง `name` ถืออยู่ — อ่านจากแคช inventory ของ hub
+
+    ไม่ยิง SSH ตรงนี้: refresher สำรวจทุกเครื่องอยู่แล้วทุก 15 วิ และ analyze ก็รอ Hub
+    อยู่หลายวินาทีแล้ว · None = ยังไม่มีข้อมูลของเครื่องนั้น (เพิ่งแอด / ต่อไม่ได้) ซึ่งต่างจาก
+    0 = สำรวจแล้วไม่มีใครถือ GPU — ผู้เรียกต้องบอกผู้ใช้ต่างกัน
+    """
+    from lmds.web import state
+
+    entry = state.STORE.snapshot()["nodes"].get(name)
+    if not entry or not entry.get("data"):
+        return None
+    gpus = ((entry["data"].get("host") or {}).get("gpus")) or []
+    if not gpus:
+        return None
+    return float(sum((g.get("vram_used_gb") or 0.0) for g in gpus))
+
+
+def _reserved_on_target(spec, target: str, machine: str, worker: str) -> tuple[float, str, list[str]]:
+    """หน่วยความจำที่ต้องหักออกจาก budget ก่อนวางแผน + ที่มาของตัวเลข + โน้ตถึงผู้ใช้
+
+    เคสจริง 2026-08-28 (msi-5): deploy Gemma-4-31B ทับเครื่องที่ Qwen3.8-27B (Q8_0, ctx 256K)
+    รันอยู่ · หน้าเว็บคิดจาก 114.5 GB เต็มแล้วตอบ "fits" เลือก Q8_0 + ctx 262K · เครื่องขึ้นไป
+    107/121 GB ทั้งสองโมเดลคลาน 5-7 tok/s · analyzer รับ `reserved_gb` ได้ตั้งแต่วันนั้น
+    แต่หน้าเว็บไม่เคยส่ง — CLI เองก็ส่งเฉพาะตอน target คือเครื่องตัวเอง · ฟลีตที่มีคนรัน
+    vLLM หนึ่ง llama.cpp สองบนเครื่องเดียวจึงถูกวางแผนทับกันทุกครั้ง
+
+    กติกา:
+      เลือกเครื่องในฟลีต     → อ่านจากแคช inventory ของเครื่องนั้น
+                              stacked = เครื่องที่แน่นสุด × จำนวนเครื่อง เพราะ tensor parallel
+                              แบ่งเท่ากัน เครื่องที่เหลือน้อยสุดจึงเป็นตัวจำกัดทั้งคลัสเตอร์
+      ไม่เลือก + ไม่มี target → เครื่องนี้เอง (เหมือน CLI)
+      ไม่เลือก + target preset → เครื่องสมมติ ไม่มีอะไรให้หัก
+    """
+    notes: list[str] = []
+    if machine:
+        members = [machine] + ([worker] if worker and worker != machine else [])
+        held = [_held_on_node(m) for m in members]
+        unknown = [m for m, h in zip(members, held) if h is None]
+        if unknown:
+            notes.append(
+                f"ยังไม่มีข้อมูลหน่วยความจำที่ใช้อยู่ของ {', '.join(unknown)} — คิดจากความจุเต็ม · "
+                "ถ้าเครื่องนั้นมีโมเดลรันอยู่ budget นี้สูงเกินจริง "
+                "(กด refresh ที่การ์ดเครื่องนั้นแล้ววิเคราะห์ใหม่)"
+            )
+        known = [h for h in held if h is not None]
+        if not known:
+            return 0.0, "", notes
+        worst = max(known)
+        if spec.node_count > 1:
+            if worst > 0:
+                notes.append(
+                    f"stacked: หักตามเครื่องที่ใช้อยู่มากสุด {worst:.1f} GB × {spec.node_count} เครื่อง — "
+                    "tensor parallel แบ่งเท่ากัน เครื่องที่แน่นสุดจึงเป็นตัวจำกัดทั้งคลัสเตอร์"
+                )
+            return worst * spec.node_count, " + ".join(members), notes
+        return worst, machine, notes
+    if not target:
+        from lmds.hardware.profiler import memory_held_gb
+
+        return memory_held_gb(), "this machine", notes
+    return 0.0, "", notes
+
+
+def _kv_at(fit, context: int) -> Optional[float]:
+    """KV cache ที่ context นี้ (GB) สำหรับ 1 sequence · None เมื่อไม่รู้มิติ KV"""
+    from lmds.fit.analyzer import GIB
+
+    if not fit.kv_bytes_per_token or not context:
+        return None
+    return round(fit.kv_bytes_per_token * context / GIB, 1)
 
 
 def analyze(
@@ -138,8 +219,14 @@ def analyze(
     hf_token: str = "",
     selected_gguf: str = "",
     engine: str = "",
+    machine: str = "",
+    worker: str = "",
 ) -> dict:
-    """วิเคราะห์จนได้ Deployment Plan ที่รอยืนยัน — ยังไม่เขียนไฟล์อะไรเลย"""
+    """วิเคราะห์จนได้ Deployment Plan ที่รอยืนยัน — ยังไม่เขียนไฟล์อะไรเลย
+
+    `machine`/`worker` = เครื่องในฟลีตที่จะส่ง bundle ไป — ใช้หักหน่วยความจำที่เครื่องนั้น
+    ใช้อยู่แล้วออกจาก budget (ดู `_reserved_on_target`) · ว่าง = วิเคราะห์สำหรับเครื่องนี้/preset
+    """
     from lmds.brain import PlanError, ProviderError, build_plan, make_provider
     from lmds.brain.plan_schema import Engine
     from lmds.config import Settings
@@ -220,11 +307,20 @@ def analyze(
 
         spec = from_hardware_report(probe()) or PRESETS["dgx-spark-single"]
 
-    fit = analyze_fit(report, spec)
+    reserved_gb, reserved_source, reserve_notes = _reserved_on_target(spec, target or "", machine, worker)
+    fit = analyze_fit(report, spec, reserved_gb=reserved_gb)
+    fit.reserved_source = reserved_source
+    fit.notes.extend(reserve_notes)
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
+        why = f"โมเดลไม่ fit กับ {fit.target_name} ({fit.verdict.value})"
+        if fit.reserved_gb > 0:
+            # ไม่บอกตรงนี้ ผู้ใช้จะงงว่าทำไมเครื่อง 128 GB ถึงใส่โมเดล 40 GB ไม่ได้
+            why += (f" — หัก {fit.reserved_gb} GB ที่ {reserved_source} ใช้อยู่แล้ว "
+                    f"เหลือ budget {fit.budget_gb} GB")
         raise DeployError(
-            "no-fit", f"โมเดลไม่ fit กับ {fit.target_name} ({fit.verdict.value})",
-            {"alternatives": fit.alternatives, "budget_gb": fit.budget_gb, "weights_gb": fit.weights_gb},
+            "no-fit", why,
+            {"alternatives": fit.alternatives, "budget_gb": fit.budget_gb, "weights_gb": fit.weights_gb,
+             "reserved_gb": fit.reserved_gb, "reserved_source": reserved_source},
         )
 
     provider = None

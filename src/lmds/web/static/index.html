@@ -2031,6 +2031,46 @@ buffers tensor parallel needs across the network. Leave headroom.`,
 
 let ctxAdviceTimer = null;
 
+// แถบหน่วยความจำของเครื่องปลายทาง — คำถามจริงตอนวาง deploy ตัวที่ 2-3 ลงเครื่องเดียวกันคือ
+// "เหลือที่จริง ๆ เท่าไร" ไม่ใช่ "budget เท่าไร" · ตัวเลข already in use คือของที่ analyzer
+// หักให้ได้ตั้งแต่ 2026-08-28 แต่หน้าเว็บไม่เคยส่งค่าไปให้ จึงคิดจากเครื่องว่างเสมอ
+// · วาดใหม่ทุกครั้งที่พิมพ์ context หรือสลับ fp8 (KV เปลี่ยน spare เปลี่ยน)
+let planFit = null;
+function memoryView(f, context, kvAt, dtype = "bf16") {
+  const cap = f.capacity_gb || 0;
+  if (!cap) return "";
+  const reserved = f.reserved_gb || 0, weights = f.weights_gb || 0, budget = f.budget_gb || 0;
+  const kv = kvAt == null ? null : Math.max(0, kvAt);
+  const overhead = Math.max(0, cap - reserved - budget);          // OS reserve + engine overhead
+  const spare = kv == null ? null : budget - weights - kv;
+  const pct = v => Math.max(0, Math.min(100, v / cap * 100)).toFixed(1) + "%";
+  const seg = (v, colour, title) => v > 0
+    ? `<span title="${esc(title)}" style="display:block;width:${pct(v)};background:${colour}"></span>` : "";
+  const who = f.reserved_source || "";
+  const legend = [
+    reserved > 0
+      ? `<b>${reserved} GB</b> already in use${who ? " on " + esc(who) : ""}`
+      : who ? `nothing else running on ${esc(who)}` : `preset — other models not subtracted`,
+    `<b>${weights} GB</b> weights`,
+    kv == null ? "KV: unknown" : `<b>${kv} GB</b> KV at ${Number(context).toLocaleString()} (${esc(dtype)})`,
+    spare == null ? "" : spare < 0
+      ? `<b style="color:var(--bad)">${(-spare).toFixed(1)} GB over</b>`
+      : `<b>${spare.toFixed(1)} GB</b> spare`,
+    overhead > 0 ? `<span class="dim">${overhead.toFixed(1)} GB OS + engine overhead</span>` : "",
+  ].filter(Boolean).join(" · ");
+  return `<div class="membar" style="margin:10px 0 2px">
+    <div class="dim gsub" style="margin-bottom:4px">${cap} GB on ${esc(f.target)}${
+      who && who !== "this machine" ? " · live from " + esc(who) : ""}</div>
+    <div style="display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--meter-track)">
+      ${seg(overhead, "var(--line2)", "OS + engine overhead")}
+      ${seg(reserved, "var(--warn)", "already in use by other models")}
+      ${seg(weights, "var(--accent)", "weights")}
+      ${kv == null ? "" : seg(kv, "var(--meter)", "KV cache at this context")}
+    </div>
+    <div class="dim gsub" style="margin-top:4px">${legend}</div>
+  </div>`;
+}
+
 async function paintContextAdvice() {
   const box = document.getElementById("w-ctx-advice");
   const input = document.getElementById("w-ctx");
@@ -2046,6 +2086,11 @@ async function paintContextAdvice() {
   if (!data.available) {
     box.innerHTML = `<div class="dim gsub">${esc(CTX_ADVICE["kv-dims-unknown"]())}</div>`;
     return;
+  }
+  const mem = document.getElementById("w-mem");
+  if (mem && planFit) {
+    const kvAt = Math.round(data.kv_bytes_per_token * value / 1073741824 * 10) / 10;
+    mem.innerHTML = memoryView(planFit, value, kvAt, data.kv_dtype);
   }
 
   const rows = (data.ladder || []).map(r => {
@@ -2076,6 +2121,7 @@ function planView(d) {
   const p = d.plan, f = p.fit;
   const head = Math.max(f.max_safe_context || 0, p.context);
   sess = d.id;
+  planFit = f;
   wiz.innerHTML = `<div class="pad">
     <div class="name">${esc(p.model_id)}</div>
     <div class="kv">
@@ -2086,6 +2132,7 @@ function planView(d) {
       ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
       <span>planner</span><span>${esc(p.generator)}</span>
     </div>
+    <div id="w-mem">${memoryView(f, p.context, f.kv_at_context_gb)}</div>
     ${capsView(p.capabilities)}
     ${p.recipe ? `<div class="ok-line">ใช้สูตรที่รันผ่านจริง: <b style="font-weight:500">${
       esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · ทดสอบบน " + esc(p.recipe.validated_on) : ""}${
@@ -2153,7 +2200,10 @@ async function analyzeNow(overrides = {}) {
   try {
     const r = await api("/api/deploy/analyze", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, target, engine, no_llm: noLlm, hf_token: hfToken, ...overrides }),
+      body: JSON.stringify({ model, target, engine, no_llm: noLlm, hf_token: hfToken,
+                             // เครื่องปลายทาง — server หักหน่วยความจำที่เครื่องนั้นใช้อยู่แล้วออกจาก budget
+                             // (ไม่ส่ง = วางแผนจาก "เครื่องว่าง" ทุกครั้ง ซึ่งคือบั๊กเดิม)
+                             machine: draft.machine || "", worker: draft.worker || "", ...overrides }),
     });
     const d = await r.json();
     if (r.ok) { planView(d); return; }
