@@ -28,6 +28,17 @@ budget ได้ตั้งแต่วันนั้น แต่**หน้�
 ยังไม่ทำในรอบนี้ (คนละเรื่อง ต้องตกลงสมมติฐานก่อน): แปลง concurrency เป็น "จำนวนคน" ด้วยความยาวคำขอปกติ ·
 โมเดลคำนวณของ llama.cpp `--parallel` ที่จอง KV ทั้งก้อนล่วงหน้า (ตารางตอนนี้คิดแบบ paged ของ vLLM ให้ทั้งคู่)
 
+**ไฟล์ mmproj ที่ชื่อขึ้นต้นด้วยชื่อโมเดล ถูกจำได้แล้ว — vision ไม่หายเงียบ ๆ**
+
+เจอตอนลองฟีเจอร์ข้างบนกับ `llmfan46/gemma-4-31B-it-uncensored-heretic-NVFP4-GGUF`: หน้าเลือกไฟล์เสนอ
+`gemma-4-31B-it-uncensored-heretic-mmproj-BF16.gguf` (1.1 GB) เป็นตัวเลือก weights · เพราะตรวจแค่
+`startswith("mmproj")` · ผลที่แย่กว่าคือ `has_mmproj=False` → capabilities บอก "โหลดภาพไม่ได้" และ controller
+ไม่ได้ `--mmproj` ทั้งที่ Gemma-4 เป็นโมเดลภาพ
+
+- จับ `mmproj` เป็น token ที่คั่นด้วย `-` `_` `.` หรือหัว/ท้ายชื่อ (ไม่จับกลางคำ) · **mtp ยังตรวจเฉพาะขึ้นต้น**
+  เพราะชื่ออย่าง `…-Native-MTP-Preserved-APEX-…` คือ weights ที่เก็บหัว MTP ไว้ ไม่ใช่ไฟล์ mtp แยก
+- เทส 4 ข้อ `tests/test_gguf_variant_roles.py` ด้วยชื่อไฟล์จาก repo จริง
+
 ## 0.5.1 — 2026-09-03
 
 วันเดียวบนฟลีตจริง 14 เครื่อง: deploy 4 โมเดลใหม่ (spark-02 ×2, spark-head, spark-worker, spark04)

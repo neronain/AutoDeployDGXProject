@@ -13,6 +13,19 @@ from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
 from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport, ShardFile
 
+# projector ของ llama.cpp ไม่ได้ขึ้นต้นด้วย mmproj เสมอ — ผู้ quantize บางคนเอาชื่อโมเดลนำ
+# เคสจริง 2026-09-04: llmfan46/gemma-4-31B-it-uncensored-heretic-NVFP4-GGUF มีไฟล์
+# "gemma-4-31B-it-uncensored-heretic-mmproj-BF16.gguf" · ตรวจแค่ startswith จึง
+#   1) โผล่ในรายการ "เลือกไฟล์ weights" ให้ผู้ใช้เลือกผิดได้ (1.1 GB)
+#   2) has_mmproj=False → vision ถูกปิดเงียบ ๆ ทั้งที่ Gemma-4 เป็นโมเดลภาพ
+# จับเป็น token คั่นด้วย - _ . หรือหัว/ท้ายชื่อ — ไม่จับกลางคำเพื่อไม่ชนชื่ออื่น
+_MMPROJ_TOKEN_RE = re.compile(r"(?:^|[-_.])mmproj(?:[-_.]|$)", re.IGNORECASE)
+
+
+def _is_mmproj(basename: str) -> bool:
+    return _MMPROJ_TOKEN_RE.search(basename) is not None
+
+
 _SPLIT_GGUF_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 
 _SAFETENSORS_INDEX = "model.safetensors.index.json"
@@ -261,7 +274,9 @@ def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -
             singles.append(
                 GgufVariant(
                     filename=name, size_bytes=size, sha256=sha,
-                    is_mmproj=base.lower().startswith("mmproj"),
+                    is_mmproj=_is_mmproj(base),
+                    # mtp ตรวจเฉพาะขึ้นต้น — ชื่อโมเดลอย่าง "…-MTP-Preserved-APEX" คือ weights
+                    # ที่เก็บหัว MTP ไว้ ไม่ใช่ไฟล์ mtp แยก จับกลางชื่อจะทิ้ง weights ตัวจริง
                     is_mtp=base.lower().startswith("mtp"),
                 )
             )
