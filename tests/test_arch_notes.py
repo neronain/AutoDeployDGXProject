@@ -107,3 +107,45 @@ def test_deepseek_v4_serving_notes():
 
 def test_plain_model_has_no_spurious_notes():
     assert arch_notes("meta-llama/Llama-3.3-70B-Instruct") == []
+
+
+def test_qwen36_gets_the_hybrid_warnings_from_its_name_alone():
+    """เดิม 3.6 เข้าเงื่อนไขได้ทางเดียวคือ hybrid_attention ที่มาจากการอ่านไฟล์
+
+    inspect ที่อ่านไฟล์ไม่ครบ (เน็ตสะดุด / repo ไม่มี config) จะได้ plan ที่เงียบสนิท
+    ทั้งที่รู้จากชื่อได้อยู่แล้วว่าเป็นตระกูล DeltaNet
+    """
+    notes = _joined("unsloth/Qwen3.6-35B-A3B-MTP-GGUF")
+    assert "prefix-caching" in notes
+
+
+def test_mtp_note_carries_both_runtimes_flags():
+    """เคสจริง spark-02 (2026-09-03): plan เป็น GGUF/llama.cpp แต่โน้ตยกแต่แฟล็กของ vLLM
+
+    ผู้ใช้อ่านแล้วเอาไปใช้ไม่ได้ — llama.cpp ไม่มี --speculative-config
+    """
+    notes = _joined("unsloth/Qwen3.6-35B-A3B-MTP-GGUF")
+    assert "--spec-type draft-mtp" in notes
+    assert "--speculative-config" in notes
+
+
+def test_mtp_vllm_method_stays_the_current_name():
+    """vLLM deprecate ชื่อเจาะจงรุ่นแล้ว (qwen3_next_mtp -> mtp)
+
+    model card ของ Qwen ยังเขียนชื่อเก่าอยู่ · ถ้า LMDS ลอกตามจะพาคนไปหา
+    deprecation warning โดยไม่จำเป็น
+    """
+    notes = _joined("unsloth/Qwen3.6-35B-A3B-MTP-GGUF")
+    assert '"method":"mtp"' in notes
+
+
+def test_qwen_tool_note_says_the_two_names_are_the_same_parser():
+    """เคยเข้าใจผิดว่า 3.6 ต้องใช้ qwen3_coder เท่านั้น — จริง ๆ สองชื่อ map ไปคลาสเดียวกัน
+
+    คำเตือนต้องบอกให้ชัด ไม่งั้นคนจะไล่แก้ของที่ไม่ได้พัง และ --reasoning-parser
+    ที่ขาดจริง ๆ จะถูกมองข้าม
+    """
+    notes = _joined("unsloth/Qwen3.6-35B-A3B-MTP-GGUF")
+    assert "qwen3_xml" in notes and "qwen3_coder" in notes
+    assert "ตัวเดียวกัน" in notes
+    assert "--reasoning-parser qwen3" in notes

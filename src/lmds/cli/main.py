@@ -1503,11 +1503,17 @@ def _ensure_gguf_selected(source, report, interactive: bool):
         err_console.print(
             f"[red]repo นี้มี GGUF {len(variants)} variant — ต้องระบุไฟล์ (โหมด non-interactive)[/red]"
         )
-        for variant in variants[:8]:
+        # เดิมตัดที่ 8 ตัวแรก ซึ่งเรียงจากเล็กไปใหญ่ = เห็นแต่ควอนต์ต่ำสุด และไม่บอกว่าตัดมา
+        # เคสจริง spark-02 (2026-09-03): repo มี 22 variant คนอยากได้ Q8 แต่รายการหยุดแค่
+        # Q3_K_XL จึงดูเหมือน repo นี้ไม่มี Q8 ขาย
+        for variant in variants:
             size = f"{variant.size_bytes / 1e9:.1f} GB" if variant.size_bytes else "?"
             err_console.print(f"  • {variant.filename} ({size})")
+        # ตัวอย่างเดิมเป็น variants[0] = ตัวเล็กสุด (IQ1_M) ซึ่งคุณภาพต่ำสุดใน repo
+        # การยกตัวกลาง ๆ มาเป็นตัวอย่างสะท้อนความตั้งใจจริงมากกว่า
+        example = variants[len(variants) // 2]
         err_console.print(
-            f'\nระบุไฟล์ด้วยลิงก์ตรง เช่น:\n  lmds deploy "https://huggingface.co/{report.repo_id}/blob/main/{variants[0].filename}"'
+            f'\nระบุไฟล์ด้วยลิงก์ตรง เช่น:\n  lmds deploy "https://huggingface.co/{report.repo_id}/blob/main/{example.filename}"'
         )
         raise typer.Exit(code=1)
 

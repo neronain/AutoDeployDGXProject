@@ -102,18 +102,28 @@ def arch_notes(repo_id: str, quantization: str = "",
             "แล้วดู log ว่ามี ptxas error หรือไม่ ก่อนจะสรุปว่ารันได้"
         )
 
-    if hybrid_attention or "qwen3.5" in key or "qwen3-5" in key or "deltanet" in key:
+    # จับชื่อ 3.6 ด้วย ไม่ใช่รอ hybrid_attention จากการอ่านไฟล์อย่างเดียว — repo ที่ inspect
+    # ไม่ผ่าน (เน็ตสะดุด/ไฟล์ไม่ครบ) จะได้คำเตือนเหมือนกัน
+    if (hybrid_attention or "qwen3.5" in key or "qwen3-5" in key
+            or "qwen3.6" in key or "qwen3-6" in key or "deltanet" in key):
         notes.append(
             "Qwen3.5 (DeltaNet hybrid attention): อย่าเปิด --enable-prefix-caching (output ผิด) · "
             "kv-cache fp8 ได้ผลน้อยบน SM121"
         )
         notes.append(
-            "Qwen3.5 มี MTP head ในตัว → เปิด speculative decoding ได้ฟรี "
-            "(--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":2}') "
-            "bit-exact ที่ temp=0 (rejection sampling) · single Spark ได้ ~2-3x throughput · vLLM รองรับ MTP เฉพาะ Qwen3.5"
+            "Qwen3.5/3.6 มี MTP head ในตัว → เปิด speculative decoding ได้ฟรี · "
+            "vLLM: --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":2}' "
+            "(ชื่อเจาะจงรุ่นอย่าง qwen3_next_mtp ยัง deprecated อยู่ vLLM แปลงกลับเป็น mtp ให้เอง) · "
+            "llama.cpp: --spec-type draft-mtp --spec-draft-n-max 2 — คนละแฟล็กกันสิ้นเชิง "
+            "ห้ามลอกของ vLLM ไปใส่ · bit-exact ที่ temp=0 (rejection sampling) · single Spark ได้ ~2-3x throughput"
         )
     if ("qwen3" in key or "qwen-3" in key) and "coder" not in key:
-        notes.append("ถ้าเปิด tool calling: Qwen3/3.5 ใช้ --tool-parser qwen3_xml (Qwen3-Coder ใช้ qwen3_coder)")
+        notes.append(
+            "ถ้าเปิด tool calling: Qwen3/3.5/3.6 ใช้ --tool-call-parser qwen3_xml หรือ qwen3_coder "
+            "— สองชื่อนี้ map ไป Qwen3EngineToolParser ตัวเดียวกันใน vLLM รุ่นใหม่ ใส่ชื่อไหนก็ได้ "
+            "(ที่พังคือ hermes ซึ่งอ่าน syntax ของตระกูลนี้ไม่ออก) · และต้องมี --reasoning-parser qwen3 "
+            "ด้วย ไม่งั้นส่วน thinking จะไม่ถูกแยกออกจากคำตอบ"
+        )
     # Gemma 4 พ่น `<|tool_call>call:name{...}` ซึ่งมีแต่ parser ชื่อ gemma4 ที่อ่านออก ·
     # เคสจริง (msi-2, 2026-09-02): ตั้ง hermes ไว้ vLLM ขึ้นปกติและตอบ 200 ทุกครั้ง แต่คืน
     # finish_reason=stop + tool_calls=null แล้วยัด call ดิบไว้ใน content — จากข้างนอกดูเหมือน
