@@ -56,6 +56,9 @@ class Node:
     last_seen: str = ""
     last_error: str = ""
     lmds_version: str = ""
+    # commit ของโค้ดที่เครื่องนั้นรันอยู่ — เลข version ไม่ขยับทุกคอมมิต (0.5.0 ครอบทั้ง
+    # af01a1e กับ f9181ab ที่ต่างกัน 6 คอมมิต) ดูแค่ version จึงบอกไม่ได้ว่าใครตามหลัง
+    lmds_commit: str = ""
     # IP ที่ "เครื่องนั้น" รายงานว่าตัวเองถืออยู่ — คนละอย่างกับ host ที่ใช้ SSH เข้าไป
     # host เป็นชื่อได้ (`orb`, `spark1.local`, ชื่อบน Tailscale) และเป็นที่อยู่ที่ hub
     # มองเห็น ไม่ใช่ที่อยู่บนวงของเครื่องนั้น · เก็บไว้เพื่อให้รายชื่อเครื่องบอก IP ได้
@@ -211,6 +214,7 @@ def status_from_probe(info: dict) -> dict:
     host = info.get("host") or {}
     fields = {
         "lmds_version": host.get("lmds_version") or "",
+        "lmds_commit": host.get("lmds_commit") or "",
         "local_ip": host.get("ip") or "",
     }
     # คีย์ที่ปลายทางไม่ได้ส่งมาแปลว่า "ไม่รู้" ไม่ใช่ "ไม่มี" — เขียนทับด้วยค่าว่างคือทิ้งของ

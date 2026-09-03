@@ -2624,6 +2624,8 @@ function readNodeOpts(node, slug) {
     port: num(".n-port"), context: num(".n-ctx"), gpu_util: num(".n-gpu"),
     slots: num(".n-slots"), bind: num(".n-bind"), api_key: num(".n-key"),
     image: num(".n-image"), served_name: num(".n-served"),
+    extra_args: num(".n-extra"),
+    tool_parser: num(".n-tool-parser"), reasoning_parser: num(".n-reasoning-parser"),
   };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
   // ติ๊กออก = ปิดฟีเจอร์ ซึ่งต้องส่ง "" ไปจริง ๆ ไม่ใช่ไม่ส่ง (ไม่ส่ง = ใช้ค่า default ของ bundle)
@@ -2798,7 +2800,7 @@ function nodeModelsMarkup(name, data) {
   const host = data.host || {};
   const sum = data.summary || {};
   const gpuNames = (host.gpus || []).map(g => g.name.replace(/^NVIDIA /, "")).join(", ") || "no GPU";
-  const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}
+  const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}${host.lmds_commit ? " (" + esc(host.lmds_commit) + ")" : ""}
     · ${sum.running || 0} of ${sum.total || models.length} running${
       data.age_seconds ? ` · updated ${Math.round(data.age_seconds)}s ago` : ""}</div>
     ${systemCard(host)}
@@ -2898,6 +2900,21 @@ function nodeModelsMarkup(name, data) {
                    title="ชื่อที่ API เสิร์ฟออกไป — ย้ายมาจากระบบเดิมแล้วต้องใช้ชื่อเดิม ตั้งตรงนี้">
             <span class="dim">ชื่อที่ client เรียกใช้ (field "model" ใน request)
               ${m.default_served_name ? `· ชื่อเดิมของ bundle: <code>${esc(m.default_served_name)}</code>` : ""}</span>
+          </div>
+          ${m.engine === "vllm" ? `<div class="field">
+            <label>tool parser</label>
+            <input class="n-tool-parser" value="${esc(o.tool_parser ?? "")}" placeholder="e.g. qwen3_xml" style="flex:none;width:150px"
+                   title="--tool-call-parser ที่ใช้ทุกครั้งที่ start (รวม autostart) — ว่าง = ตามที่ bundle ตั้ง">
+            <label>reasoning parser</label>
+            <input class="n-reasoning-parser" value="${esc(o.reasoning_parser ?? "")}" placeholder="e.g. qwen3" style="flex:none;width:130px"
+                   title="--reasoning-parser ที่ใช้ทุกครั้งที่ start — ว่าง = ตามที่ bundle ตั้ง">
+          </div>` : ""}
+          <div class="field" style="width:100%">
+            <label>extra args</label>
+            <input class="n-extra" value="${esc(o.extra_args ?? "")}"
+                   placeholder='e.g. --speculative-config {"method":"mtp","num_speculative_tokens":2}' style="min-width:320px"
+                   title="แฟล็กเพิ่มของ engine คั่นด้วยช่องว่าง — JSON ต้องเขียนติดกัน (ไม่มีช่องว่าง) เพราะถูกแตกเป็น argv ด้วยช่องว่าง">
+            <span class="dim">ส่งต่อให้ engine ตรง ๆ ต่อท้ายแฟล็กที่ bundle ตั้ง · ใช้กับ MTP / attention backend / chunked prefill</span>
           </div>
           <div class="field" style="width:100%">
             <label>image</label>
@@ -3019,7 +3036,7 @@ function paintNodeVersion(row, d, name) {
   if (!row) return;
   if (!d.reachable) { row.version.textContent = "offline"; return; }
   const host = d.host || {};
-  const version = host.lmds_version ? "v" + host.lmds_version : "";
+  const version = host.lmds_version ? "v" + host.lmds_version + (host.lmds_commit ? " (" + host.lmds_commit + ")" : "") : "";
   const commit = host.lmds_commit || "";
   // "ต่างจาก hub" ไม่ได้แปลว่า "เก่ากว่า" — เทียบ hash สองตัวบอกลำดับก่อนหลังไม่ได้
   // เคสจริง: กด update ให้ node ทุกเครื่องจนได้ของล่าสุด แต่ hub เองยังไม่ได้รีสตาร์ต

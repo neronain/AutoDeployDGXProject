@@ -276,7 +276,8 @@ def node_list(
             try:
                 info = probe(node)
                 fields = status_from_probe(info)
-                version = fields.get("lmds_version", node.lmds_version)
+                version = _version_label(fields.get("lmds_version", node.lmds_version),
+                                         fields.get("lmds_commit", node.lmds_commit))
                 local_ip = fields.get("local_ip", local_ip)
                 update(node.name, last_seen=_now(), last_error="", **fields)
                 status = f"[green]ต่อได้[/green] · โมเดล {len(info.get('models', []))} ตัว"
@@ -287,10 +288,10 @@ def node_list(
                     status += f" · [yellow]นอกระบบอีก {outside}[/yellow]"
             except NodeError as exc:
                 update(node.name, last_error=str(exc)[:200])
-                version = node.lmds_version
+                version = _version_label(node.lmds_version, node.lmds_commit)
                 status = f"[red]ต่อไม่ได้[/red] {str(exc)[:60]}"
         else:
-            version = node.lmds_version
+            version = _version_label(node.lmds_version, node.lmds_commit)
             status = node.last_seen or "—"
         return (node.name, f"{node.target}:{node.port}", local_ip or "—",
                 version or "—", status, node.note)
@@ -652,7 +653,7 @@ def node_install(
                 continue
             try:
                 fields = status_from_probe(probe(target))
-                version = fields.get("lmds_version", "")
+                version = _version_label(fields.get("lmds_version", ""), fields.get("lmds_commit", ""))
                 update(target.name, last_seen=_now(), last_error="", **fields)
                 console.print(f"[green]พร้อมแล้ว[/green] — lmds {version}")
             except NodeError as exc:
@@ -698,7 +699,7 @@ def node_install(
         err_console.print(f"[red]ติดตั้งแล้วแต่ยังอ่านสถานะไม่ได้: {exc}[/red]")
         raise typer.Exit(code=1)
     fields = status_from_probe(info)
-    version = fields.get("lmds_version", "")
+    version = _version_label(fields.get("lmds_version", ""), fields.get("lmds_commit", ""))
     update(name, last_seen=_now(), last_error="", **fields)
     console.print(f"[green]พร้อมแล้ว[/green] — {node.name} รัน lmds {version}")
 
@@ -1258,6 +1259,17 @@ def node_run(
     raise typer.Exit(code=result.exit_code)
 
 
+
+def _version_label(version: str, commit: str = "") -> str:
+    """'0.5.0 (f9181ab)' — เลข version อย่างเดียวบอกไม่ได้ว่า node ตามหลัง hub หรือยัง
+
+    เคสจริง 2026-09-03: ทุก node โชว์ 0.5.0 เท่ากันหมดทั้งที่ 13 เครื่องอยู่ af01a1e และ hub
+    อยู่ f9181ab (ต่างกัน 6 คอมมิตที่แก้บั๊ก restart/bundle.env) — ต้องไล่ `lmds node run
+    <n> version` ทีละเครื่องถึงรู้ · host_payload ส่ง lmds_commit มาตลอด แค่ไม่มีใครแสดง
+    """
+    version = version or ""
+    return f"{version} ({commit})" if version and commit else version
+
 @app.command()
 def version() -> None:
     """แสดงเวอร์ชันโปรแกรมและมาตรฐาน template"""
@@ -1285,6 +1297,14 @@ def set_defaults(
     engine_env: Optional[str] = typer.Option(
         None, "--engine-env",
         help='env ของ engine เอง เช่น "VLLM_NVFP4_GEMM_BACKEND=marlin" (หลายตัวคั่นด้วยช่องว่าง)'),
+    tool_parser: Optional[str] = typer.Option(
+        None, "--tool-parser", help="--tool-call-parser ของ vLLM/SGLang ที่จะใช้ทุกครั้งที่ start (เช่น qwen3_xml)"),
+    reasoning_parser: Optional[str] = typer.Option(
+        None, "--reasoning-parser", help="--reasoning-parser ที่จะใช้ทุกครั้งที่ start (เช่น qwen3)"),
+    extra_args: Optional[str] = typer.Option(
+        None, "--extra-args",
+        help='แฟล็กเพิ่มของ engine เช่น \'--speculative-config {"method":"mtp","num_speculative_tokens":2}\' '
+             '(คั่นด้วยช่องว่าง · JSON เขียนติดกันไม่มีช่องว่าง)'),
     clear: bool = typer.Option(False, "--clear", help="ลบค่าที่บันทึกไว้ทั้งหมด"),
 ) -> None:
     """บันทึกค่า start ไว้กับ bundle — ทุกทางที่เรียก controller จะได้ค่าเดียวกัน
@@ -1325,7 +1345,8 @@ def set_defaults(
     incoming = {
         "port": port, "context": context, "slots": slots, "bind": bind,
         "gpu_util": gpu_util, "served_name": model_id, "image": image,
-        "engine_env": engine_env,
+        "engine_env": engine_env, "extra_args": extra_args,
+        "tool_parser": tool_parser, "reasoning_parser": reasoning_parser,
     }
     given = {k: v for k, v in incoming.items() if v is not None}
     if not given:

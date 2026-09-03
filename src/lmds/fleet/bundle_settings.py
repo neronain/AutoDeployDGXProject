@@ -37,7 +37,17 @@ FIELDS: dict[str, tuple[str, ...]] = {
     # env ของ engine เอง — knob ที่ vLLM/SGLang อ่านจาก environment ล้วน ๆ
     # ไม่มีทางส่งเข้าไปได้เลยถ้าไม่มีช่องนี้ (ดู _clean)
     "engine_env": ("ENGINE_ENV",),
+    # parser ของ vLLM/SGLang — เดิมตั้งได้แค่ตอน start (--tool-parser) จึงหายตอน autostart
+    # เคสจริง 2026-09-03: bundle ของ Sehyo/Qwen3.5-122B ที่ plan แบบ rule-based ไม่เปิด tool
+    # ไว้ ต้องใส่ qwen3_xml + qwen3 ทุกครั้งที่ start ไม่งั้น agent เห็น tool call เป็นข้อความ
+    "tool_parser": ("TOOL_CALL_PARSER",),
+    "reasoning_parser": ("REASONING_PARSER",),
+    # แฟล็กเพิ่มของ engine เช่น --speculative-config '{"method":"mtp",...}' · เก็บใน
+    # ไฟล์แยก (bundle.args) ไม่ใช่ bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่
+    # `}` ตัวแรกที่เจอ — JSON จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
+    "extra_args": (),
 }
+ARGS_FILENAME = "bundle.args"
 
 
 class SettingsError(ValueError):
@@ -66,6 +76,17 @@ def _clean(name: str, value: object) -> str:
         if not re.fullmatch(r"[0-9a-zA-Z_.:\[\]-]+", text):
             raise SettingsError(f"bind ไม่ใช่ที่อยู่ที่ใช้ได้ (ได้ {text!r})")
         return text
+    if name in {"tool_parser", "reasoning_parser"}:
+        # ชื่อ parser เป็น identifier ล้วน — ค่าว่างคือปิด ซึ่ง write() ตัดออกก่อนถึงตรงนี้แล้ว
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", text):
+            raise SettingsError(f"{name} ต้องเป็นชื่อ parser เช่น qwen3_xml / qwen3 (ได้ {text!r})")
+        return text
+    if name == "extra_args":
+        # ข้อความอิสระที่ controller จะแตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนแบบไม่มีช่องว่าง
+        # กันเฉพาะสิ่งที่ทำให้เชลล์รันของอื่นได้ ส่วน quote/วงเล็บปีกกาต้องผ่านเพราะ JSON ใช้
+        if any(ch in text for ch in "\n\r\x00`$"):
+            raise SettingsError("extra_args มีอักขระที่เชลล์ตีความ (` $ หรือขึ้นบรรทัดใหม่) — ใส่ไม่ได้")
+        return " ".join(text.split())
     if name == "engine_env":
         # รายการ KEY=VALUE คั่นด้วยช่องว่าง — controller แตกออกเป็น `-e KEY=VALUE` ต่อ docker
         #
@@ -98,6 +119,9 @@ def read(bundle_dir: Path) -> dict[str, str]:
     """ค่าที่บันทึกไว้ — คืน dict ว่างเมื่อยังไม่เคยบันทึก"""
     target = path_for(bundle_dir)
     if not target.is_file():
+        args_file = Path(bundle_dir) / ARGS_FILENAME
+        if args_file.is_file() and args_file.read_text(encoding="utf-8").strip():
+            return {"extra_args": args_file.read_text(encoding="utf-8").strip()}
         return {}
     env: dict[str, str] = {}
     for line in target.read_text(encoding="utf-8").splitlines():
@@ -111,6 +135,11 @@ def read(bundle_dir: Path) -> dict[str, str]:
             if name in env:
                 out[field] = env[name]
                 break
+    args_file = Path(bundle_dir) / ARGS_FILENAME
+    if args_file.is_file():
+        extra = args_file.read_text(encoding="utf-8").strip()
+        if extra:
+            out["extra_args"] = extra
     return out
 
 
@@ -132,10 +161,17 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
             continue
         cleaned[field] = _clean(field, raw)
 
+    args_file = bundle_dir / ARGS_FILENAME
+    extra = cleaned.pop("extra_args", None)
+    if extra:
+        args_file.write_text(extra + "\n", encoding="utf-8")
+    else:
+        args_file.unlink(missing_ok=True)
+
     target = path_for(bundle_dir)
     if not cleaned:
         target.unlink(missing_ok=True)
-        return {}
+        return {"extra_args": extra} if extra else {}
 
     lines = [
         "# สร้างโดย LMDS — ค่าที่ตั้งไว้สำหรับ bundle นี้",
@@ -149,6 +185,8 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
         for name in FIELDS[field]:
             lines.append(f'{name}="${{{name}:-{shlex.quote(value).strip(chr(39))}}}"')
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if extra:
+        cleaned["extra_args"] = extra
     return cleaned
 
 

@@ -82,26 +82,20 @@ def arch_notes(repo_id: str, quantization: str = "",
     notes: list[str] = []
     if "nvfp4" in key or "nvfp4" in quant or "fp4" in quant:
         notes.append(
-            "NVFP4/FP4 บน SM121 (GB10) **ล้มตั้งแต่ start ได้ ไม่ใช่แค่ช้า** — เคสจริง 2026-08-20 "
-            "บน msi-6: ptxas ปฏิเสธ `cvt with .e2m1x2 not supported on .target sm_121` ตอน JIT "
-            "cutlass_fused_moe แล้ว engine core ตายก่อน health · image ต้องมี FP4 kernel ที่ build "
-            "มาสำหรับ sm_121 (เช่น avarok/dgx-vllm-nvfp4-kernel หรือ dspark-vllm-gx10) "
-            "ถ้าหลุดไป Marlin SM80 ก็แค่ช้ามาก (~-42%) · โมเดล MoE เสี่ยงกว่าโมเดล dense"
+            "NVFP4/FP4 บน SM121 (GB10) รันได้เมื่อ image มี FP4 kernel ของ sm_121 และบังคับ Marlin — "
+            "พิสูจน์แล้ว 2026-09-03 บน spark-head: Qwen3-Coder-Next-NVFP4-GB10 (MoE 512 expert) บน "
+            "vllm/vllm-openai:cu130-nightly@3dbe092e + env VLLM_NVFP4_GEMM_BACKEND=marlin "
+            "VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_MARLIN_USE_ATOMIC_ADD=1 "
+            "ได้ 61 tok/s เดี่ยว / 103 tok/s รวม 3 สาย · ตั้ง env ผ่าน --engine-env"
         )
         notes.append(
-            "MoE + NVFP4 บน sm_121 = ทางตัน (ทดสอบบน msi-6 2026-08-20) · vLLM ตรวจว่ามี "
-            "flashinfer cutlass fused-MoE ไหมโดยการ import ซึ่ง JIT ทันที แล้ว ptxas ล้ม "
-            "· VLLM_NVFP4_GEMM_BACKEND=marlin **ไม่ช่วย** (ยืนยันแล้วว่า env ถึง container "
-            "จริงแต่ยังล้มที่เดิม) เพราะมันคุม GEMM ไม่ใช่ MoE · image ที่มี FP4 kernel "
-            "(avarok/dgx-vllm-nvfp4-kernel) ก็ยังล้ม — ใช้ GGUF/llama.cpp หรือ checkpoint "
-            "ที่ไม่ใช่ NVFP4 แทน"
+            "ถ้า image ไม่มี FP4 kernel ของ sm_121 จะ**ล้มตั้งแต่ start ไม่ใช่แค่ช้า** — เคสจริง "
+            "2026-08-20 บน msi-6: ptxas ปฏิเสธ `cvt with .e2m1x2 not supported on .target sm_121` "
+            "ตอน JIT cutlass_fused_moe แล้ว engine core ตายก่อน health · env marlin อย่างเดียว"
+            "ไม่พอกับ image นั้น เพราะ vLLM import flashinfer cutlass fused-MoE (ซึ่ง JIT ทันที) "
+            "ก่อนจะดู env — ต้องปิดด้วย VLLM_USE_FLASHINFER_MOE_FP4=0 ร่วมด้วย หรือใช้ image "
+            "ที่ build มาให้ (avarok/dgx-vllm-nvfp4-kernel, dspark-vllm-gx10)"
         )
-        notes.append(
-            "โมเดล dense NVFP4 ยังไม่ได้ทดสอบว่าล้มด้วยไหม (คนละ kernel path กับ MoE) · "
-            "ถ้าจะลอง ให้ตั้ง --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin\" ไว้ก่อน "
-            "แล้วดู log ว่ามี ptxas error หรือไม่ ก่อนจะสรุปว่ารันได้"
-        )
-
     # จับชื่อ 3.6 ด้วย ไม่ใช่รอ hybrid_attention จากการอ่านไฟล์อย่างเดียว — repo ที่ inspect
     # ไม่ผ่าน (เน็ตสะดุด/ไฟล์ไม่ครบ) จะได้คำเตือนเหมือนกัน
     if (hybrid_attention or "qwen3.5" in key or "qwen3-5" in key

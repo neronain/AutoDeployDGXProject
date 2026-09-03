@@ -1335,3 +1335,125 @@ def test_llamacpp_test_tools_reads_running_state_first(tmp_path):
     script = bundle.controller.read_text(encoding="utf-8")
     gate = script[script.index("adopt_running_state ;;") - 200:script.index("adopt_running_state ;;")]
     assert "test-tools" in gate
+
+
+MTP_ARGS = '--speculative-config {"method":"mtp","num_speculative_tokens":2} --enable-chunked-prefill'
+
+
+def test_llamacpp_serve_args_include_bundle_args_verbatim(tmp_path):
+    """เคสจริง spark-worker (2026-09-03): จะเปิด MTP บน vLLM ต้องส่ง JSON ใน --speculative-config
+    ซึ่ง `lmds set` ตั้งไม่ได้ (docs/USAGE.md ยอมรับไว้เอง) ทั้งที่ plan ของ LMDS แนะให้เปิด
+
+    bundle.args ต้องถูกแตกเป็น argv โดย JSON คงเป็นก้อนเดียว — ทดสอบด้วยคำสั่ง serve-args
+    ที่ประกอบ argv จริงแต่ไม่ start
+    """
+    import os
+    import subprocess
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    (bundle.directory / "bundle.args").write_text(MTP_ARGS + "\n", encoding="utf-8")
+    out = subprocess.run(["bash", str(bundle.controller), "serve-args"],
+                         env={**os.environ, "RUN_DIR": str(tmp_path / "run")},
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    argv = out.stdout.splitlines()
+    assert "--speculative-config" in argv
+    assert '{"method":"mtp","num_speculative_tokens":2}' in argv, "JSON ต้องเป็น argv เดียว"
+    assert "--enable-chunked-prefill" in argv
+    # ยังต้องมีของ bundle เองครบ — extra ต่อท้าย ไม่แทนที่
+    assert "--jinja" in argv and "--ctx-size" in argv
+
+
+def test_extra_args_flag_beats_bundle_args(tmp_path):
+    """ลำดับเดิมต้องจริง: flag บรรทัดคำสั่ง > env > bundle.args"""
+    import os
+    import subprocess
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    (bundle.directory / "bundle.args").write_text("--from-file\n", encoding="utf-8")
+    out = subprocess.run(["bash", str(bundle.controller), "serve-args", "--extra-args", "--from-flag"],
+                         env={**os.environ, "RUN_DIR": str(tmp_path / "run")},
+                         capture_output=True, text=True, timeout=60).stdout.splitlines()
+    assert "--from-flag" in out and "--from-file" not in out
+
+
+def test_vllm_and_stacked_controllers_forward_bundle_args():
+    """ทุก template ของ vLLM ต้องอ่าน bundle.args เหมือนกัน — ตัวที่ลืมจะพังเงียบ:
+    ตั้งค่าแล้ว lmds บอกว่าบันทึกแล้ว แต่ engine ไม่เคยได้รับ"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "lmds" / "generator" / "templates"
+    for name in ("single-vllm-controller.sh.j2", "stacked-vllm-controller.sh.j2"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert 'BUNDLE_ARGS="${BUNDLE_ARGS:-' in text, name
+        assert 'for extra_arg in $EXTRA_SERVE_ARGS' in text, name
+        assert "--extra-args)" in text, name
+
+
+def _vllm_bundle(tmp_path):
+    from lmds.brain import build_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.fit.analyzer import GIB
+    from lmds.generator import render_bundle
+    from lmds.inspector.report import ArtifactType, KvDims, ModelReport
+
+    report = ModelReport(
+        repo_id="Qwen/Qwen3-32B", revision_sha="sha-pinned-123",
+        artifact_type=ArtifactType.SAFETENSORS, weight_bytes=65 * GIB, shard_count=17,
+        context_length=40960, kv_dims=KvDims(layers=64, kv_heads=8, head_dim=128),
+        has_chat_template=True,
+    )
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None)
+    return render_bundle(plan, report, fit, tmp_path)
+
+
+def _dry_run(bundle, tmp_path, *flags):
+    import os
+    import subprocess
+
+    ctl = next(bundle.directory.glob("*-single.sh"))
+    out = subprocess.run(["bash", str(ctl), "start", *flags],
+                         env={**os.environ, "DRY_RUN": "1", "RUN_DIR": str(tmp_path / "run")},
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.splitlines()
+
+
+def test_vllm_bundle_env_overrides_image_and_served_name(tmp_path):
+    """เคสจริง spark-worker (2026-09-03): `lmds set --image <digest ที่พิสูจน์แล้ว>` ให้ bundle
+    ของ Sehyo/Qwen3.5-122B แล้ว controller ยังจะใช้ nvcr.io/nvidia/vllm:26.05 ของ plan อยู่ดี
+
+    บั๊กเดียวกับ llama.cpp เมื่อเช้า: VLLM_IMAGE/SERVED_MODEL_NAME ประกาศเหนือจุด source
+    bundle.env · ที่หลอกคือ API_PORT กับ MAX_MODEL_LEN อยู่ใต้บล็อกจึงทำงานปกติ
+    """
+    bundle = _vllm_bundle(tmp_path)
+    (bundle.directory / "bundle.env").write_text(
+        'VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai@sha256:deadbeef}"\n'
+        'SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-ชื่อจากไฟล์}"\n'
+        'API_PORT="${API_PORT:-8123}"\n', encoding="utf-8")
+    lines = _dry_run(bundle, tmp_path)
+    assert "IMAGE=vllm/vllm-openai@sha256:deadbeef" in lines
+    assert "ชื่อจากไฟล์" in lines and "8123" in lines
+
+
+def test_vllm_bundle_args_reach_serve_args_as_single_argv(tmp_path):
+    """MTP ของ vLLM ต้องส่ง JSON เป็น argv เดียว — คำแนะนำในแผนของ LMDS เองบอกให้เปิด
+    แต่ก่อนหน้านี้ไม่มีช่องให้ตั้ง (docs/USAGE.md ยอมรับไว้)"""
+    bundle = _vllm_bundle(tmp_path)
+    (bundle.directory / "bundle.args").write_text(MTP_ARGS + "\n", encoding="utf-8")
+    lines = _dry_run(bundle, tmp_path)
+    assert "--speculative-config" in lines
+    assert '{"method":"mtp","num_speculative_tokens":2}' in lines
+    assert "--enable-chunked-prefill" in lines
+    assert lines.index("--speculative-config") + 1 == lines.index('{"method":"mtp","num_speculative_tokens":2}')
+
+
+def test_stacked_controller_reads_bundle_env_too():
+    """stacked ไม่เคย source bundle.env เลย — lmds set กับ bundle 2 เครื่องจึงไม่มีผลอะไร"""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "src" / "lmds" / "generator" / "templates"
+            / "stacked-vllm-controller.sh.j2").read_text(encoding="utf-8")
+    assert 'BUNDLE_ENV="${BUNDLE_ENV:-' in text
+    assert text.index('BUNDLE_ENV="${BUNDLE_ENV:-') < text.index("\nVLLM_IMAGE=")

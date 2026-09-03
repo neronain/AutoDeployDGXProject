@@ -1166,7 +1166,8 @@ def create_app(token: str = "") -> FastAPI:
         return {"nodes": [
             {"name": n.name, "host": n.host, "user": n.user, "port": n.port, "note": n.note,
              "site": n.site,
-             "lmds_version": n.lmds_version, "last_seen": n.last_seen, "last_error": n.last_error,
+             "lmds_version": n.lmds_version, "lmds_commit": n.lmds_commit,
+             "last_seen": n.last_seen, "last_error": n.last_error,
              # IP ที่เครื่องนั้นรายงานเอง — ค่าล่าสุดจากทะเบียน จึงบอกได้ทันทีตั้งแต่การ์ดขึ้น
              # และยังบอกได้ตอนเครื่องดับ (host ที่ใช้ SSH เป็นชื่อได้ ไม่ใช่ IP เสมอไป)
              "local_ip": n.local_ip,
@@ -1836,7 +1837,10 @@ def create_app(token: str = "") -> FastAPI:
                      "bind": "--bind", "gpu_util": "--gpu-util",
                      "served_name": "--model-id", "image": "--image",
                      # knob ที่ engine อ่านจาก environment ล้วน ๆ — ส่ง flag ไม่ได้
-                     "engine_env": "--engine-env"}
+                     "engine_env": "--engine-env",
+                     # แฟล็กเพิ่มของ engine (MTP ฯลฯ) — เก็บใน bundle.args ไม่ใช่ bundle.env
+                     "extra_args": "--extra-args",
+                     "tool_parser": "--tool-parser", "reasoning_parser": "--reasoning-parser"}
             parts = ["lmds", "set", shlex.quote(slug)]
             given = [(flags[k], v) for k, v in options.items()
                      if k in flags and str(v).strip() != ""]

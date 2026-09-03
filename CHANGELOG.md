@@ -2,6 +2,46 @@
 
 ## ยังไม่ปล่อย
 
+**แฟล็กเพิ่มของ engine ตั้งผ่าน `lmds set` ได้แล้ว — MTP ของ vLLM ไม่ต้องแก้สคริปต์มือ**
+
+จะเปิด MTP ให้ Qwen3.5-122B บน spark-worker ต้องส่ง
+`--speculative-config '{"method":"mtp","num_speculative_tokens":2}'` ซึ่ง `lmds set` ตั้งไม่ได้
+(`docs/USAGE.md` ยอมรับไว้เองว่า "ยังตั้งผ่าน LMDS ไม่ได้") ทั้งที่คำเตือนในแผนของ LMDS
+แนะให้เปิด · tool/reasoning parser ก็ตั้งได้แค่ตอน `start` จึงหายตอน autostart
+
+ใส่ลง `bundle.env` ไม่ได้: รูป `${VAR:-value}` ของ bash หยุดที่ `}` ตัวแรก —
+`X="${X:---speculative-config {"method":"mtp"} --foo}"` ได้ `{"method":"mtp"` กับ `--foo}`
+(ทดสอบแล้ว) จึงเก็บใน `bundle.args` แยกต่างหาก controller อ่านทั้งบรรทัดแล้วแตกด้วยช่องว่าง
+
+- `lmds set --extra-args / --tool-parser / --reasoning-parser` + ช่องบนหน้าเว็บ · ลำดับเดิมยังจริง:
+  flag > env > ไฟล์ > bundle
+- `DRY_RUN=1 ./xxx-single.sh start` (vLLM) พิมพ์ image + argv ที่จะรันจริงโดยไม่แตะ docker/GPU ·
+  `./xxx-single.sh serve-args` (llama.cpp) — ใช้พิสูจน์ว่าค่าถึง argv ก่อนรอโหลดโมเดลหลายนาที
+- template stacked ครอบด้วย (เดิม stacked ไม่ source `bundle.env` เลย `lmds set` จึงไม่มีผล)
+
+**`lmds set --image` ให้ bundle vLLM ถูกเมินเงียบ ๆ — บั๊กเดียวกับ llama.cpp เมื่อเช้า**
+
+ตั้ง image เป็น digest v0.28.0 ที่พิสูจน์แล้วให้ bundle ของ Sehyo/Qwen3.5-122B แต่ controller
+ยังจะใช้ `nvcr.io/nvidia/vllm:26.05` ของ plan · `VLLM_IMAGE` กับ `SERVED_MODEL_NAME` ประกาศ
+อยู่เหนือจุด source `bundle.env` ใน template vLLM (บรรทัด 17/28 เทียบกับ 38) · ย้ายบล็อกขึ้นบนสุด
+ทั้ง single-vllm และ stacked-vllm พร้อมเทส `DRY_RUN` ที่อ่าน image จริงจาก argv
+
+**คำเตือน "MoE + NVFP4 บน sm_121 = ทางตัน" ผิด — มีสูตรที่รันได้แล้ว**
+
+spark-head 2026-09-03: `ucbye/Qwen3-Coder-Next-NVFP4-GB10` (MoE 512 expert, NVFP4) บน
+`vllm/vllm-openai:cu130-nightly@3dbe092e` + env marlin ครบชุด
+(`VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0
+VLLM_MARLIN_USE_ATOMIC_ADD=1`) ได้ **61 tok/s** เดี่ยว / 103 tok/s รวม 3 สาย test-tools ผ่าน ·
+ที่ msi-6 ล้มเพราะขาด `VLLM_USE_FLASHINFER_MOE_FP4=0` — vLLM import cutlass fused-MoE (JIT
+ทันที) ก่อนดู env marlin · คำเตือนบอกทั้งสูตรที่ผ่านและอาการที่ล้มแทนที่จะบอกให้เลิก
+
+**รายชื่อเครื่องบอก commit แล้ว ไม่ใช่แค่เลข version**
+
+`lmds node list` โชว์ `0.5.0` ทั้ง 13 เครื่องเท่ากันหมด ทั้งที่ทุกเครื่องอยู่ `af01a1e` ส่วน hub อยู่
+`f9181ab` (6 คอมมิตที่แก้ restart/bundle.env) — ต้องไล่ `lmds node run <n> version` ทีละเครื่อง ·
+`host_payload` ส่ง `lmds_commit` มานานแล้ว แค่ `status_from_probe` ทิ้งไป · ตอนนี้แสดง
+`0.5.0 (f9181ab)` ทั้ง CLI, `node install` และหน้าเว็บ
+
 **checkpoint NVFP4 ถูกรายงานพารามิเตอร์แค่ครึ่งเดียว (122B โชว์เป็น 26.8B)**
 
 `lmds inspect scottgl/Qwen3.5-122B-A10B-NVFP4-GB10` บอก **Parameters 26.8B** และ

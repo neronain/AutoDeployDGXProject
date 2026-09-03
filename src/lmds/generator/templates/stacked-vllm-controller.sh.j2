@@ -11,6 +11,16 @@
 #   - แยก lifecycle: prepare-runtime → download → verify-files → sync-worker → verify-worker → start
 #   - ต้องมี fabric ระหว่าง node (200G RoCE/Ethernet) + passwordless SSH master→worker
 set -Eeuo pipefail
+# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
+# ต้องอยู่ **เหนือ** default ทุกตัว เพราะทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ซึ่งไม่ทำอะไรเลย
+# ถ้าตัวแปรถูกตั้งไปแล้ว · เคสจริง spark-worker 2026-09-03: `lmds set --image` ให้ bundle vLLM
+# ถูกเมินเงียบ ๆ เพราะ VLLM_IMAGE/SERVED_MODEL_NAME ประกาศอยู่เหนือจุด source (บั๊กเดียวกับที่
+# แก้ใน llama.cpp ไปก่อนหน้าวันเดียวกัน) · ลำดับความสำคัญ: flag > env ภายนอก > ไฟล์นี้ > bundle
+BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
+if [[ -f "$BUNDLE_ENV" ]]; then
+  set -a; . "$BUNDLE_ENV"; set +a
+fi
+
 
 # ============================ CONFIG (แก้ได้ผ่าน env) ============================
 SLUG="{{ slug }}"
@@ -79,6 +89,15 @@ API_KEY="${API_KEY:-}"
 # env ของ engine เอง — ตั้งด้วย `lmds set <slug> --engine-env "KEY=VALUE ..."`
 # stacked ส่งให้ทั้ง head และ worker เพราะทั้งคู่รัน engine จริง
 ENGINE_ENV="${ENGINE_ENV:-}"
+# แฟล็กเพิ่มของ engine — อ่านทั้งบรรทัดจาก bundle.args (เขียนโดย `lmds set --extra-args`)
+# ไม่เก็บใน bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่ `}` ตัวแรก JSON อย่าง
+# --speculative-config {"method":"mtp"} จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
+# แตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนติดกัน หรือใช้รูป --flag=value
+BUNDLE_ARGS="${BUNDLE_ARGS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.args}"
+if [[ -z "${EXTRA_SERVE_ARGS:-}" && -f "$BUNDLE_ARGS" ]]; then
+  EXTRA_SERVE_ARGS="$(tr '\n' ' ' < "$BUNDLE_ARGS")"
+fi
+EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
 ADVERTISE_IP="${ADVERTISE_IP:-}"
 ADVERTISE_INTERFACE="${ADVERTISE_INTERFACE:-}"
 ROUTE_PROBE_IP="${ROUTE_PROBE_IP:-1.1.1.1}"
@@ -205,6 +224,8 @@ parse_options() {
   while (( $# )); do
     case "$1" in
       --context)         MAX_MODEL_LEN="$2"; shift 2 ;;
+      --extra-args)     EXTRA_SERVE_ARGS="$2"; shift 2 ;;
+      --extra-args=*)   EXTRA_SERVE_ARGS="${1#*=}"; shift ;;
       --context=*)       MAX_MODEL_LEN="${1#*=}"; shift ;;
       --gpu-util)       GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
       --gpu-util=*)   GPU_MEMORY_UTILIZATION="${1#*=}"; shift ;;
@@ -616,6 +637,10 @@ build_common_args() {
     if [[ -n "$tpl" ]]; then
       COMMON_ARGS+=(--chat-template "$tpl")
     fi
+  fi
+  if [[ -n "$EXTRA_SERVE_ARGS" ]]; then
+    local extra_arg
+    for extra_arg in $EXTRA_SERVE_ARGS; do COMMON_ARGS+=("$extra_arg"); done
   fi
   if (( ${#EXTRA_SERVE_FLAGS[@]} > 0 )); then
     COMMON_ARGS+=("${EXTRA_SERVE_FLAGS[@]}")
@@ -1151,6 +1176,7 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port the head node serves on             [default: ${API_PORT}]
   --context N           Max context length in tokens             [default: ${MAX_MODEL_LEN}]
+  --extra-args "..."    Extra engine flags appended verbatim (space-separated; write JSON without spaces) [default: ${EXTRA_SERVE_ARGS}]
   --bind ADDR           Address the head node listens on         [default: ${API_HOST}]
                         0.0.0.0 = whole network · 127.0.0.1 = this machine only
   --advertise-ip ADDR   IP printed for clients (does NOT change the bind address)

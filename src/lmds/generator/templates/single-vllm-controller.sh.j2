@@ -6,6 +6,18 @@
 set -Eeuo pipefail
 
 # ============================ CONFIG (แก้ได้) ============================
+# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
+# ต้องอยู่ **เหนือ** default ทุกตัว เพราะทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ซึ่งไม่ทำอะไรเลย
+# ถ้าตัวแปรถูกตั้งไปแล้ว · เคสจริง spark-worker 2026-09-03: `lmds set --image` ให้ bundle vLLM
+# ถูกเมินเงียบ ๆ เพราะ VLLM_IMAGE/SERVED_MODEL_NAME ประกาศอยู่เหนือจุด source (บั๊กเดียวกับที่
+# แก้ใน llama.cpp ไปก่อนหน้าวันเดียวกัน) · ลำดับความสำคัญ: flag > env ภายนอก > ไฟล์นี้ > bundle
+BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
+if [[ -f "$BUNDLE_ENV" ]]; then
+  set -a; . "$BUNDLE_ENV"; set +a
+fi
+
+
+
 SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
 MODEL_LABEL="${MODEL_LABEL:-{{ model_label }}}"
 RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
@@ -28,23 +40,21 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 VLLM_IMAGE="${{ '{' }}VLLM_IMAGE:-{% if plan.runtime.image_pin %}{{ plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
 
-# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
-# อ่านก่อน default ทั้งหมดข้างล่าง และทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ลำดับ
-# ความสำคัญจึงเป็น: flag บรรทัดคำสั่ง > env จากภายนอก > ไฟล์นี้ > ค่าของ bundle
-#
-# มีไฟล์นี้เพราะค่าที่ตั้งบนหน้าเว็บเคยอยู่แค่ในเบราว์เซอร์: systemd ตอน autostart
-# และปุ่ม test-* เรียก controller เปล่า ๆ ทุกตัวจึงตกไปใช้ default — พอ reboot
-# โมเดลทุกตัวบนเครื่องเดียวกันก็ไปชนกันที่ port เดียว
-BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
-if [[ -f "$BUNDLE_ENV" ]]; then
-  set -a; . "$BUNDLE_ENV"; set +a
-fi
 
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-{{ plan.serving.context }}}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 API_KEY="${API_KEY:-}"
 ENGINE_ENV="${ENGINE_ENV:-}"
+# แฟล็กเพิ่มของ engine — อ่านทั้งบรรทัดจาก bundle.args (เขียนโดย `lmds set --extra-args`)
+# ไม่เก็บใน bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่ `}` ตัวแรก JSON อย่าง
+# --speculative-config {"method":"mtp"} จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
+# แตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนติดกัน หรือใช้รูป --flag=value
+BUNDLE_ARGS="${BUNDLE_ARGS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.args}"
+if [[ -z "${EXTRA_SERVE_ARGS:-}" && -f "$BUNDLE_ARGS" ]]; then
+  EXTRA_SERVE_ARGS="$(tr '\n' ' ' < "$BUNDLE_ARGS")"
+fi
+EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
 ADVERTISE_IP="${ADVERTISE_IP:-}"
 ADVERTISE_INTERFACE="${ADVERTISE_INTERFACE:-}"
 ROUTE_PROBE_IP="${ROUTE_PROBE_IP:-1.1.1.1}"
@@ -120,7 +130,12 @@ print((data[0].get("id") or "").strip() if data else "")
      มีเซิร์ฟเวอร์อื่นยึดพอร์ตนี้อยู่ — ผลทดสอบที่ได้จะเป็นของโมเดลนั้น ไม่ใช่ตัวนี้
      แก้: หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต  $0 restart --port 8001"
 }
-need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+need() {
+  # DRY_RUN ประกอบคำสั่งอย่างเดียว ไม่แตะ docker/nvidia-smi — เครื่องที่ generate bundle
+  # (เช่น hub ที่ไม่มี GPU) ต้องดู argv ที่จะรันได้โดยไม่ต้องมีของพวกนั้นติดตั้ง
+  [[ -n "${DRY_RUN:-}" ]] && return 0
+  command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"
+}
 
 validate_numbers() {
   [[ "$API_PORT" =~ ^[0-9]+$ ]] && (( API_PORT >= 1 && API_PORT <= 65535 )) ||
@@ -154,6 +169,8 @@ parse_options() {
   while (( $# )); do
     case "$1" in
       --context)        MAX_MODEL_LEN="$2"; shift 2 ;;
+      --extra-args)     EXTRA_SERVE_ARGS="$2"; shift 2 ;;
+      --extra-args=*)   EXTRA_SERVE_ARGS="${1#*=}"; shift ;;
       --context=*)      MAX_MODEL_LEN="${1#*=}"; shift ;;
       --gpu-util)      GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
       --gpu-util=*)  GPU_MEMORY_UTILIZATION="${1#*=}"; shift ;;
@@ -557,9 +574,13 @@ start() {
     echo "เก็บซาก container จากรอบก่อน (${CONTAINER_NAME}) แล้วเริ่มใหม่"
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   fi
-  check_gpu >/dev/null
-  verify_files
-  check_architecture
+  # DRY_RUN=1 = ประกอบคำสั่งแล้วพิมพ์ออกมา ไม่แตะ GPU/ไฟล์/docker — ใช้ตรวจว่า flag และ env
+  # ที่ตั้งผ่าน lmds set / bundle.args ไปถึง argv จริง ก่อนจะรอโหลดโมเดลหลายนาทีเพื่อรู้ว่าไม่ถึง
+  if [[ -z "${DRY_RUN:-}" ]]; then
+    check_gpu >/dev/null
+    verify_files
+    check_architecture
+  fi
 
   # สร้าง argument เป็น array ทั้งหมด — ห้ามใช้ line continuation คร่อม template block
   local serve_args=(
@@ -581,6 +602,10 @@ start() {
 {% if plan.serving.kv_cache_dtype != "auto" %}
   serve_args+=(--kv-cache-dtype "{{ plan.serving.kv_cache_dtype }}")
 {% endif %}
+  if [[ -n "$EXTRA_SERVE_ARGS" ]]; then
+    local extra_arg
+    for extra_arg in $EXTRA_SERVE_ARGS; do serve_args+=("$extra_arg"); done
+  fi
   if [[ -n "$TOOL_CALL_PARSER" ]]; then
     serve_args+=(--enable-auto-tool-choice --tool-call-parser "$TOOL_CALL_PARSER")
   fi
@@ -592,6 +617,12 @@ start() {
     if [[ -n "$tpl" ]]; then
       serve_args+=(--chat-template "$tpl")
     fi
+  fi
+
+  if [[ -n "${DRY_RUN:-}" ]]; then
+    printf 'IMAGE=%s\n' "$VLLM_IMAGE"
+    printf '%s\n' "${serve_args[@]}"
+    return 0
   fi
 
   local docker_args=(
@@ -958,6 +989,7 @@ COMMANDS
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port to serve on                          [default: ${API_PORT}]
   --context N           Max context length in tokens              [default: ${MAX_MODEL_LEN}]
+  --extra-args "..."    Extra engine flags appended verbatim (space-separated; write JSON without spaces) [default: ${EXTRA_SERVE_ARGS}]
                         Lower this first if the server runs out of memory.
   --bind ADDR           Address the server listens on             [default: ${API_HOST}]
                         0.0.0.0 = reachable from the whole network

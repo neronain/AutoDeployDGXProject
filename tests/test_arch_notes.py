@@ -79,17 +79,17 @@ def test_non_gemma_models_do_not_get_the_gemma_note():
         assert "gemma4" not in _joined(repo)
 
 
-def test_nvfp4_moe_note_says_it_is_a_dead_end_not_a_tunable():
-    """เคยเขียนว่า marlin แก้ได้ — ผิด · ยืนยันบน msi-6 ว่า env ถึง container จริง
-    แต่ยังล้มที่ ptxas เดิม เพราะ VLLM_NVFP4_GEMM_BACKEND คุม GEMM ไม่ใช่ fused MoE
+def test_nvfp4_moe_note_names_the_working_recipe_and_the_failing_one():
+    """เคยสรุปว่า MoE+NVFP4 บน sm_121 เป็นทางตัน (msi-6, 2026-08-20) — ผิด
 
-    คำเตือนที่บอกทางแก้ผิด แย่กว่าคำเตือนที่บอกตรง ๆ ว่าทางนี้ตัน — ผู้ใช้เสียเวลา
-    ไล่ตั้งค่าที่ไม่มีทางได้ผล
+    2026-09-03 บน spark-head: Qwen3-Coder-Next-NVFP4-GB10 (MoE 512 expert) รันได้ 61 tok/s
+    บน cu130-nightly + env marlin ครบชุด · ที่ msi-6 ล้มเพราะขาด VLLM_USE_FLASHINFER_MOE_FP4=0
+    ไม่ใช่เพราะทางตัน · คำเตือนต้องบอกทั้งสูตรที่ผ่านและเงื่อนไขที่ล้ม ไม่ใช่บอกให้เลิก
     """
     notes = _joined("Qwen/Qwen3.6-35B-A3B-NVFP4")
-    assert "ไม่ช่วย" in notes
-    assert "e2m1x2" in notes and "sm_121" in notes
-    assert "GGUF" in notes           # ต้องบอกทางที่ไปต่อได้
+    assert "61 tok/s" in notes and "VLLM_USE_FLASHINFER_MOE_FP4=0" in notes
+    assert "e2m1x2" in notes and "sm_121" in notes   # เคสที่ล้มยังต้องอยู่ ให้คนรู้จักอาการ
+    assert "ทางตัน" not in notes and "ไม่ช่วย" not in notes
 
 
 def test_nemotron_3x_warns_hybrid_mamba():

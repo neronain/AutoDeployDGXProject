@@ -1761,11 +1761,21 @@ lmds hardware
 พร้อมกันที่ 1M ต่อคำขอ (เดิมเคยสรุปผิดว่าไปไม่ถึง — สรุปจากขนาด KV แบบ dense
 ทั้งที่โมเดลนี้เป็น hybrid)
 
-**flag ที่ยังตั้งผ่าน LMDS ไม่ได้** (ต้องแก้ template ก่อน): `--speculative_config`
-(MTP — เร่งความเร็วได้มาก), `--moe-backend`, `--async-scheduling`,
-`--enable-chunked-prefill`, `--mamba-ssm-cache-dtype` และ env อย่าง
-`VLLM_NVFP4_GEMM_BACKEND` · ที่ตั้งได้ตอนนี้คือ `--context`, `--gpu-mem`,
-`--max-num-seqs`, `--tool-parser`, `--reasoning-parser`
+**ตั้งค่า engine ที่ไม่มี knob เฉพาะ** — ใช้ `lmds set` ได้แล้วทั้งหมด (เดิมหัวข้อนี้เคยเขียนว่า
+`--speculative_config`, `--moe-backend`, `--enable-chunked-prefill` ฯลฯ "ยังตั้งผ่าน LMDS ไม่ได้"):
+
+```bash
+lmds set <slug> --tool-parser qwen3_xml --reasoning-parser qwen3        # ติดถาวร รวม autostart
+lmds set <slug> --engine-env "VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0"
+lmds set <slug> --extra-args '--speculative-config {"method":"mtp","num_speculative_tokens":2} --enable-chunked-prefill'
+DRY_RUN=1 ./xxx-single.sh start        # vLLM: พิมพ์ image + argv ที่จะรันจริง ไม่แตะ docker/GPU
+./xxx-single.sh serve-args             # llama.cpp: พิมพ์ argv ของ llama-server
+```
+
+`--extra-args` เก็บใน `bundle.args` (ไฟล์แยก ไม่ใช่ `bundle.env`) เพราะรูป `${VAR:-value}` ของ
+bash หยุดที่ `}` ตัวแรก JSON จึงถูกตัดกลางคัน · ถูกแตกเป็น argv ด้วยช่องว่าง — **JSON ต้องเขียน
+ติดกันไม่มีช่องว่าง** หรือใช้รูป `--flag=value` · ตรวจผลด้วย `DRY_RUN=1 … start` ก่อนรอโหลดโมเดล
+หลายนาทีเพื่อรู้ว่าแฟล็กไม่ถึง
 
 ---
 

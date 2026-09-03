@@ -107,6 +107,15 @@ API_KEY="${API_KEY:-}"
 # env ของ engine เอง — ตั้งด้วย `lmds set <slug> --engine-env "KEY=VALUE ..."`
 # llama.cpp รัน native จึง export ให้ process ตรง ๆ ไม่ต้องผ่าน docker
 ENGINE_ENV="${ENGINE_ENV:-}"
+# แฟล็กเพิ่มของ engine — อ่านทั้งบรรทัดจาก bundle.args (เขียนโดย `lmds set --extra-args`)
+# ไม่เก็บใน bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่ `}` ตัวแรก JSON อย่าง
+# --speculative-config {"method":"mtp"} จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
+# แตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนติดกัน หรือใช้รูป --flag=value
+BUNDLE_ARGS="${BUNDLE_ARGS:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.args}"
+if [[ -z "${EXTRA_SERVE_ARGS:-}" && -f "$BUNDLE_ARGS" ]]; then
+  EXTRA_SERVE_ARGS="$(tr '\n' ' ' < "$BUNDLE_ARGS")"
+fi
+EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
 if [[ -n "$ENGINE_ENV" ]]; then export ${ENGINE_ENV}; fi
 ADVERTISE_IP="${ADVERTISE_IP:-}"
 ADVERTISE_INTERFACE="${ADVERTISE_INTERFACE:-}"
@@ -193,6 +202,8 @@ parse_options() {
   while (( $# )); do
     case "$1" in
       --context)        CTX_SIZE="$2"; shift 2 ;;
+      --extra-args)     EXTRA_SERVE_ARGS="$2"; shift 2 ;;
+      --extra-args=*)   EXTRA_SERVE_ARGS="${1#*=}"; shift ;;
       --context=*)      CTX_SIZE="${1#*=}"; shift ;;
       --name)           SERVED_MODEL_NAME="$2"; NAME_EXPLICIT=1; shift 2 ;;
       --name=*)         SERVED_MODEL_NAME="${1#*=}"; NAME_EXPLICIT=1; shift ;;
@@ -532,6 +543,11 @@ server_args() {
   SERVER_ARGS+=({{ flag }})
 {% endfor %}
 {% if has_chat_template %}
+  if [[ -n "$EXTRA_SERVE_ARGS" ]]; then
+    local extra_arg
+    for extra_arg in $EXTRA_SERVE_ARGS; do SERVER_ARGS+=("$extra_arg"); done
+  fi
+
   SERVER_ARGS+=(--jinja)
 {% endif %}
 }
@@ -1009,6 +1025,7 @@ COMMANDS
   network-info      Show current bind address and the endpoint advertised to clients
   test-text         Send one chat completion request to verify the model answers
   test-tools [both|auto|required]  Prove tool calling works through the chat template (auto = what agents send)
+  serve-args        Print the exact llama-server arguments this bundle would start with (no start)
 {% if mmproj_basename %}  test-vision       Send a generated red image and check the model actually sees it
 {% endif %}
 
@@ -1030,6 +1047,7 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
 
  Memory & limits
   --context N           Max context length in tokens              [default: ${CTX_SIZE}]
+  --extra-args "..."    Extra engine flags appended verbatim (space-separated; write JSON without spaces) [default: ${EXTRA_SERVE_ARGS}]
                         Lower this first if the server runs out of memory.
   --client-input N|auto Input token budget written into client-config   [default: ${CLIENT_INPUT}]
   --client-output N     Output token budget written into client-config  [default: ${CLIENT_OUTPUT}]
@@ -1090,7 +1108,7 @@ EOF
 parse_options "$@"
 
 case "${1:-help}" in
-  status|logs|client-config|info|banner|network-info|test-text|test-vision|test-tools|wait-health|stop)
+  status|logs|client-config|info|banner|network-info|test-text|test-vision|test-tools|serve-args|wait-health|stop)
     adopt_running_state ;;
 esac
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
@@ -1144,6 +1162,10 @@ case "${1:-help}" in
   network-info) network_info ;;
   test-text)    test_text ;;
   test-tools)   test_tools "${2:-both}" ;;
+  serve-args)
+    # server_args อ้าง MODEL_MOUNT_DIR ซึ่ง start() เป็นคนตั้งตามโหมด — ตั้งให้เหมือนกันตรงนี้
+    if [[ "$RUNTIME_MODE" == "native" ]]; then MODEL_MOUNT_DIR="$MODEL_DIR"; else MODEL_MOUNT_DIR="/models"; fi
+    server_args; printf '%s\n' "${SERVER_ARGS[@]}" ;;
 {% if mmproj_basename %}  test-vision)  test_vision ;;
 {% endif %}
   wait-health)  wait_health ;;
