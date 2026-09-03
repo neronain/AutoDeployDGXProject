@@ -47,6 +47,44 @@ run_docker() {
   fi
 }
 
+# สร้าง venv ให้ได้แม้เครื่องไม่มี python3-venv — โดยไม่ต้องใช้ sudo
+#
+# Ubuntu/Debian แยก ensurepip ออกจาก python3 ไปไว้ใน python3-venv · `python3 -m venv --help`
+# ผ่าน (โมดูล venv มี) แต่ `python3 -m venv DIR` ล้มตอนขอ pip ด้วยข้อความ "ensurepip is not
+# available" · เคสจริง 2026-09-03: เพิ่ม node RTX4000 (Ubuntu 24.04, Python 3.12) จากหน้าเว็บ
+# ซึ่งรัน install.sh แบบไม่มี sudo → ล้มพร้อมคำแนะนำผิด ๆ ว่าให้ลบ venv ทิ้งแล้วลองใหม่
+#
+# ลำดับ: ensurepip มี → สร้างปกติ · ไม่มี + ถาม/ยอมให้ sudo ได้ → apt install python3-venv ·
+# ไม่งั้น → venv --without-pip แล้วดึง pip จาก bootstrap.pypa.io (ต้องถึงเน็ต ซึ่งขั้น pip install
+# ถัดไปก็ต้องถึงอยู่แล้ว)
+make_venv() {
+  local dir="$1" getpip
+  if python3 -c 'import ensurepip' >/dev/null 2>&1; then
+    python3 -m venv --clear "$dir"
+    return $?
+  fi
+  echo "⚠️  python3 ไม่มี ensurepip (Ubuntu/Debian แยกไว้ในแพ็กเกจ python3-venv)"
+  if [ "${LMDS_SKIP_PREREQ:-0}" != "1" ] && sudo -n true >/dev/null 2>&1 &&
+     ask_yes "   ติดตั้ง python3-venv ให้เลยไหม? (sudo apt install python3-venv)"; then
+    sudo_run apt-get install -y python3-venv
+    if python3 -c 'import ensurepip' >/dev/null 2>&1; then
+      python3 -m venv --clear "$dir"
+      return $?
+    fi
+  fi
+  echo "   ใช้ทางที่ไม่ต้อง sudo: venv --without-pip แล้วดึง pip จาก bootstrap.pypa.io"
+  python3 -m venv --clear --without-pip "$dir" || return 1
+  getpip="$(mktemp)"
+  if curl -fsSL --retry 3 -o "$getpip" https://bootstrap.pypa.io/get-pip.py &&
+     "$dir/bin/python" "$getpip" --quiet; then
+    rm -f "$getpip"
+    return 0
+  fi
+  rm -f "$getpip"
+  echo "   ดึง pip ไม่ได้ (ไม่ถึงเน็ต?) — ทางที่เหลือคือ: sudo apt install python3-venv" >&2
+  return 1
+}
+
 # ── ส่วนที่ 1: Python ────────────────────────────────────────────────────────
 command -v python3 >/dev/null 2>&1 || die "ต้องมี python3 (ติดตั้ง: sudo apt install python3 python3-venv)"
 
@@ -70,8 +108,8 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 # --clear เสมอ: ทางอัปเดตที่เอกสารบอกไว้คือรัน install.sh ซ้ำ ซึ่งเจอ venv เดิมอยู่แล้ว
 # venv เดิมอาจถูกสร้างด้วย python คนละตัว (เช่นเปลี่ยนไปใช้ conda ทีหลัง) แล้ว ensurepip จะล้ม
 # แบบอ่านไม่รู้เรื่อง — สร้างทับให้จบ ปลอดภัยเพราะโฟลเดอร์นี้เป็นของ LMDS ตัวเดียว
-python3 -m venv --clear "${INSTALL_DIR}/venv" ||
-  die "สร้าง venv ที่ ${INSTALL_DIR}/venv ไม่ได้ — ลบทิ้งแล้วลองใหม่: rm -rf '${INSTALL_DIR}/venv'"
+make_venv "${INSTALL_DIR}/venv" ||
+  die "สร้าง venv ที่ ${INSTALL_DIR}/venv ไม่ได้ — ถ้าข้อความข้างบนพูดถึง ensurepip ให้ลง: sudo apt install python3-venv"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
 
 # ประทับ commit ที่กำลังติดตั้งลงไปในแพ็กเกจ — ติดตั้งแบบปกติ (ไม่ใช่ editable) ทำให้โค้ดที่รัน

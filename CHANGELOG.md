@@ -5,6 +5,18 @@
 วันเดียวบนฟลีตจริง 14 เครื่อง: deploy 4 โมเดลใหม่ (spark-02 ×2, spark-head, spark-worker, spark04)
 แล้วเก็บทุกอย่างที่พังกลับมาเป็นโค้ด · ทุกข้อมีเทสที่ล้มกับโค้ดเดิม
 
+**install.sh สร้าง venv ได้บนเครื่องที่ไม่มี python3-venv โดยไม่ต้อง sudo**
+
+เพิ่ม node RTX4000 (Ubuntu 24.04, Python 3.12) จากหน้าเว็บ 2026-09-03: `python3 -m venv --help` ผ่าน
+แต่สร้าง venv จริงล้มด้วย "ensurepip is not available" (Ubuntu แยก ensurepip ไปไว้ใน python3-venv)
+· install.sh ตายพร้อมคำแนะนำ "ลบ venv ทิ้งแล้วลองใหม่" ซึ่งไม่เกี่ยวกับสาเหตุ · หน้าเว็บรันแบบไม่มี sudo
+จึงลง apt ไม่ได้อยู่แล้ว
+
+- `make_venv()` ตรวจ `import ensurepip` ตรง ๆ · ไม่มี → ถ้าสั่ง sudo ได้และไม่ได้ skip prereq ก็ลง
+  python3-venv ให้ · ไม่งั้น `venv --without-pip` แล้วดึง pip จาก bootstrap.pypa.io (ขั้น pip install
+  ถัดไปต้องถึงเน็ตอยู่แล้ว) · ล้มจริงค่อยบอกว่า "sudo apt install python3-venv"
+- เทสต์ด้วย python3 ปลอมที่ไม่มี ensurepip: ต้องได้ pip กลับมาโดยไม่แตะ sudo
+
 **publish พับค่าที่ `lmds set` ไว้ลง header — คลังได้สูตรที่รันได้จริง ไม่ใช่ค่าเดาของ plan**
 
 spark04 / spark-worker 2026-09-03: ทั้งคู่รันได้เพราะ `lmds set --image <digest v0.28.0>
