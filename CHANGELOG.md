@@ -29,6 +29,17 @@ node เดียวกัน (Docker 29 + nvidia-container-toolkit 1.20): `dock
 - แถว "Target สำหรับ deploy" ในตาราง hardware — `suggest_target()` แปลงชื่อการ์ด (+จำนวน) เป็นชื่อ preset
   ที่ `lmds deploy --target` รับ (RTX PRO 4000 ×2 → `rtx-pro-4000-dual`, GB10 → `dgx-spark-single`)
 
+**`lmds node clone` ใช้กับโมเดล vLLM/SGLang ได้ · `lmds node run` ส่ง argument ที่มีช่องว่างถึงปลายทางครบ**
+
+RTX4000 2026-09-03: clone Qwen3.6-35B NVFP4 จาก spark04 ตอบ "ยังไม่มีไฟล์โมเดลบน spark-04 ()" ทั้งที่ 22 GB
+อยู่ครบ — controller ของ vLLM ไม่มี `MODEL_DIR` (weight อยู่ใน `HF_HOME/hub/models--org--name`) · และ
+`lmds node run RTX4000 set … --extra-args "--a 1 --b 2"` ถึงปลายทางเป็น 4 argument แยกกัน typer จึงตอบ
+"No such option: --b"
+
+- `inspect_source` หาโฟลเดอร์ HF cache จาก `MODEL_ID`/`HF_HOME` เมื่อไม่มี `MODEL_DIR` นับไฟล์จริงใน blobs
+  (snapshots เป็น symlink) และบอกตำแหน่งที่หาเมื่อไม่เจอ · เทสต์รันสคริปต์ฝั่งต้นทางด้วย bash จริง
+- `node run` quote ทุก argument เหมือนที่ `node ctl` ทำอยู่แล้ว
+
 **publish พับค่าที่ `lmds set` ไว้ลง header — คลังได้สูตรที่รันได้จริง ไม่ใช่ค่าเดาของ plan**
 
 spark04 / spark-worker 2026-09-03: ทั้งคู่รันได้เพราะ `lmds set --image <digest v0.28.0>

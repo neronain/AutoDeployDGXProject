@@ -55,3 +55,29 @@ def test_timeout_leaves_the_job_running_and_says_so(monkeypatch, capsys):
     rc = cli._run_detached(SimpleNamespace(name="n1"), "lmds repair demo", "demo.repair", timeout=0, poll=0)
     assert rc == 124
     assert "ยังรันอยู่บน node" in capsys.readouterr().err
+
+
+def test_node_run_quotes_each_argument_for_the_remote_shell(monkeypatch):
+    """เคสจริง RTX4000 (2026-09-03): `lmds node run X set s --extra-args "--a 1 --b 2"`
+    ถึงปลายทางเป็น 4 argument แยกกัน typer จึงตอบ No such option: --b · ต้อง quote เหมือน node ctl"""
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+
+    captured = {}
+
+    class _Res:
+        stdout, stderr, ok, exit_code = "", "", True, 0
+
+    def fake_run(node, command, timeout=900):
+        captured["command"] = command
+        return _Res()
+
+    class _Node:
+        name = "x"
+
+    monkeypatch.setattr("lmds.nodes.run", fake_run, raising=False)
+    monkeypatch.setattr("lmds.nodes.find", lambda n: _Node(), raising=False)
+    result = CliRunner().invoke(app, ["node", "run", "x", "set", "s", "--extra-args", "--kv-cache-dtype fp8 --max-num-batched-tokens 8192"])
+    assert result.exit_code == 0, result.output
+    assert captured["command"] == "lmds set s --extra-args '--kv-cache-dtype fp8 --max-num-batched-tokens 8192'"

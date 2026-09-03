@@ -1303,8 +1303,12 @@ def node_run(
     if node is None:
         err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
         raise typer.Exit(code=1)
+    # quote ทุก argument — เดิม join ด้วยช่องว่างเฉย ๆ แล้ว shell ปลายทางแตกคำใหม่:
+    # `lmds node run X set s --extra-args "--kv-cache-dtype fp8 --max-num-batched-tokens 8192"`
+    # กลายเป็น 4 argument แยกกัน แล้ว typer ตอบ "No such option: --max-num-batched-tokens"
+    # (เจอจริง RTX4000 2026-09-03) · node ctl ทำถูกอยู่แล้ว — ใช้กติกาเดียวกัน
     try:
-        result = run(node, "lmds " + " ".join(command), timeout=900)
+        result = run(node, "lmds " + " ".join(shlex.quote(c) for c in command), timeout=900)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
