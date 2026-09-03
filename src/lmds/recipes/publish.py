@@ -93,6 +93,10 @@ def fold_overrides(controller_text: str, overrides: dict[str, str]) -> tuple[str
             break
         else:
             skipped.append(key)
+    # `lmds set --image` เขียน image ลงทั้ง VLLM_IMAGE และ LLAMACPP_IMAGE — controller มี engine เดียว
+    # จึงมีแค่ key เดียว · อีก key ไม่ใช่ "พับไม่ได้" แต่ไม่เกี่ยวกับ engine นี้
+    if any(k.endswith("_IMAGE") for k in applied):
+        skipped = [k for k in skipped if not k.endswith("_IMAGE")]
     text = "\n".join(lines) + ("\n" if controller_text.endswith("\n") else "")
     return text, applied, skipped
 
@@ -184,8 +188,22 @@ def _ensure_local_git(path: Path) -> None:
         return
     path.mkdir(parents=True, exist_ok=True)
     _git("init", "-q", "-b", "main", cwd=path)
-    _git("config", "user.email", "lmds@localhost", cwd=path)
-    _git("config", "user.name", "lmds", cwd=path)
+
+
+def _ensure_identity(repo_dir: Path, host: str) -> None:
+    """commit ต้องมี user.email — hub ที่ไม่เคยตั้ง git identity (เคสจริง 2026-09-03) จะล้มที่นี่
+
+    เดิมตั้งให้เฉพาะ repo ที่ init เอง · repo ที่ clone มา (candidates ของทีม) ไม่มี identity
+    แล้ว git ปฏิเสธ commit ด้วย "unable to auto-detect email address" ทั้ง 23 ตัวรวด
+    ตั้งเป็น local config ของ repo นั้น ไม่แตะ global ของเครื่อง
+    """
+    try:
+        if _git("config", "user.email", cwd=repo_dir):
+            return
+    except SyncError:
+        pass                                   # ไม่มีค่า — git คืน exit 1
+    _git("config", "user.email", f"lmds@{host or 'localhost'}", cwd=repo_dir)
+    _git("config", "user.name", f"lmds ({host})" if host else "lmds", cwd=repo_dir)
 
 
 def publish(slug: str, controller_path: Path, profile: dict, *,
@@ -227,6 +245,7 @@ def publish(slug: str, controller_path: Path, profile: dict, *,
         _ensure_local_git(repo_dir)
 
     _write_into(repo_dir, slug, controller_path.name, text, profile_text)
+    _ensure_identity(repo_dir, host)
     _git("add", "-A", cwd=repo_dir)
     status = _git("status", "--porcelain", cwd=repo_dir)
     base = {"target": repo or str(repo_dir), "remote": remote, "features": feats,

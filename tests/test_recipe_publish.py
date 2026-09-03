@@ -237,3 +237,41 @@ def test_header_parser_reads_single_quoted_defaults():
     assert meta["EXTRA_SERVE_ARGS_DEFAULT"] == '--a {"b":1}'
     recipe = recipe_from_controller("q36-single.sh", text)
     assert recipe["extra_args"] == '--a {"b":1}' and recipe["tool_parser"] == "qwen3_xml"
+
+
+def test_publish_commits_into_a_cloned_repo_on_a_hub_with_no_git_identity(tmp_path, monkeypatch):
+    """เคสจริง 2026-09-03: hub ไม่เคยตั้ง user.email · repo candidates เป็น clone ไม่ใช่ init เอง
+    → "unable to auto-detect email address" ทั้ง 23 ตัว · identity ต้องถูกตั้งเป็น local ของ repo นั้น
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home-without-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    (tmp_path / "home-without-gitconfig").mkdir()
+    origin = tmp_path / "origin"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(origin)], check=True)
+    (origin / "README.md").write_text("candidates\n")
+    subprocess.run(["git", "-C", str(origin), "-c", "user.email=a@b", "-c", "user.name=a", "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(origin), "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "init"], check=True)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+
+    result = publish("coder-30b", _ctl(tmp_path), PROFILE, repo=str(clone), now="d", host="hub-x", push=False)
+    assert result["committed"] is True
+    author = subprocess.run(["git", "-C", str(clone), "log", "-1", "--format=%an <%ae>"],
+                            capture_output=True, text=True).stdout.strip()
+    assert author == "lmds (hub-x) <lmds@hub-x>"
+    # ไม่แตะ global ของเครื่อง
+    assert not (tmp_path / "home-without-gitconfig" / ".gitconfig").exists()
+
+
+def test_the_other_engines_image_key_is_not_reported_as_unfolded(tmp_path):
+    """`lmds set --image` เขียนทั้ง VLLM_IMAGE และ LLAMACPP_IMAGE ลง bundle.env · controller vLLM
+    มีแค่ VLLM_IMAGE — LLAMACPP_IMAGE ที่เหลือไม่ใช่ของที่พับไม่ได้ (เจอจริง spark04/spark-worker)"""
+    from lmds.recipes.publish import bundle_overrides, fold_overrides
+
+    _vllm_bundle(tmp_path)
+    (tmp_path / "bundle.env").write_text(
+        'VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai@sha256:61fc}"\n'
+        'LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-vllm/vllm-openai@sha256:61fc}"\n')
+    text, applied, skipped = fold_overrides(VLLM_CONTROLLER, bundle_overrides(tmp_path))
+    assert applied["VLLM_IMAGE"] == "vllm/vllm-openai@sha256:61fc"
+    assert skipped == []

@@ -33,6 +33,9 @@ spark04 / spark-worker 2026-09-03: ทั้งคู่รันได้เพ
   และเตือนเมื่อ controller รุ่นเก่าไม่มีบรรทัดรองรับ (ต้อง `lmds rebuild` ก่อน)
 - ฝั่ง sync อ่าน single quote ได้แล้ว · สูตรพก `tool_parser` / `reasoning_parser` / `engine_env` /
   `extra_args` ไปด้วย
+- publish ตั้ง git identity ให้ repo ที่ clone มา (local config ของ repo นั้น) เมื่อเครื่องไม่เคยตั้ง —
+  hub จริงล้มทั้ง 23 ตัวด้วย "unable to auto-detect email address" · และไม่รายงาน image ของอีก
+  engine (`lmds set --image` เขียนทั้ง VLLM_IMAGE/LLAMACPP_IMAGE) ว่าพับไม่ได้
 
 **controller บอกสาเหตุจริงเมื่อ container ตายก่อน health**
 
