@@ -76,6 +76,12 @@ MODEL_FILE="${MODEL_FILES[0]}"
 # MMPROJ_FILE="" เพื่อเสิร์ฟแบบข้อความล้วน — ใช้ ${VAR-default} ไม่ใช่ ${VAR:-default}
 # ไม่งั้น bash แทนค่าว่างด้วย default แล้วปิดไม่ได้จริง (เจอตอนวัด MTP เปิด/ปิด)
 MMPROJ_FILE="${MMPROJ_FILE-{{ mmproj_basename }}}"
+# llama.cpp เตือนเองตอนโหลดว่า "Qwen-VL models require at minimum 1024 image tokens
+# to function correctly on grounding tasks" (ggml-org/llama.cpp#16842) แล้วปล่อยผ่าน
+# ไปด้วยค่าจากไฟล์ซึ่งต่ำกว่านั้น · ผลคือถามว่า "มีอะไรในภาพ" ตอบได้ แต่ถามว่า "อยู่ตรงไหน"
+# เริ่มเพี้ยน — เป็นความแม่นยำที่หายไปเงียบ ๆ ไม่ใช่ error
+# ตั้งว่างเพื่อใช้ค่าที่ฝังมากับโมเดลแทน
+IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS-1024}"
 {% endif %}
 {% if mtp_embedded and not mtp_basename %}# MTP head ฝังอยู่ในไฟล์โมเดลเอง (nextn) — ไม่มีไฟล์ให้โหลดแยก
 # MTP_EMBEDDED="" เพื่อปิด speculative decoding
@@ -194,6 +200,8 @@ parse_options() {
       --client-output)  CLIENT_OUTPUT="$2"; shift 2 ;;
       --client-output=*) CLIENT_OUTPUT="${1#*=}"; shift ;;
 {% if mmproj_basename %}      --mmproj)         MMPROJ_FILE="$2"; shift 2 ;;
+      --image-min-tokens)   IMAGE_MIN_TOKENS="$2"; shift 2 ;;
+      --image-min-tokens=*) IMAGE_MIN_TOKENS="${1#*=}"; shift ;;
       --mmproj=*)       MMPROJ_FILE="${1#*=}"; shift ;;
       --no-mmproj)      MMPROJ_FILE=""; shift ;;
 {% endif %}{% if mtp_basename %}      --mtp)            MTP_FILE="$2"; shift 2 ;;
@@ -497,6 +505,9 @@ server_args() {
 {% if mmproj_basename %}  # ไม่มีบรรทัดนี้ = llama-server รับแต่ข้อความ ทั้งที่โมเดลมองภาพได้ (พังเงียบ ไม่มี error)
   if [[ -n "$MMPROJ_FILE" ]]; then
     SERVER_ARGS+=(--mmproj "${MODEL_MOUNT_DIR}/${MMPROJ_FILE}")
+    if [[ -n "$IMAGE_MIN_TOKENS" ]]; then
+      SERVER_ARGS+=(--image-min-tokens "$IMAGE_MIN_TOKENS")
+    fi
   fi
 {% endif %}
 {% if mtp_basename %}  # ไม่มีบล็อกนี้ = ไม่มี speculative decoding เสียความเร็วที่ repo ทำมาให้ฟรี ๆ
@@ -866,6 +877,7 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
 {% if mmproj_basename or mtp_basename or mtp_embedded %}
  Model features (this model ships the files for these)
 {% if mmproj_basename %}  --mmproj FILE         Vision projector to load                  [default: ${MMPROJ_FILE}]
+  --image-min-tokens N  Min tokens per image (grounding accuracy)  [default: ${IMAGE_MIN_TOKENS}]
   --no-mmproj           Serve as text-only (skip the vision projector)
 {% endif %}{% if mtp_basename %}  --mtp FILE            MTP draft head for speculative decoding   [default: ${MTP_FILE}]
   --no-mtp              Turn speculative decoding off (slower, identical output)
@@ -897,6 +909,7 @@ ENVIRONMENT VARIABLES
   RUNTIME_MODE        docker | native                            [default: ${RUNTIME_MODE}]
   MODEL_DIR           Where GGUF files are stored                [default: ${MODEL_DIR}]
 {% if mmproj_basename %}  MMPROJ_FILE         Same as --mmproj / --no-mmproj              [default: ${MMPROJ_FILE}]
+  IMAGE_MIN_TOKENS    Same as --image-min-tokens                  [default: ${IMAGE_MIN_TOKENS}]
 {% endif %}{% if mtp_basename %}  MTP_FILE            Same as --mtp / --no-mtp                    [default: ${MTP_FILE}]
 {% endif %}{% if mtp_embedded and not mtp_basename %}  MTP_EMBEDDED        Same as --mtp / --no-mtp (empty = off)      [default: ${MTP_EMBEDDED}]
 {% endif %}  HF_TOKEN            Hugging Face token, needed for gated repos during 'download'

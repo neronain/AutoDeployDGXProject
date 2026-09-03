@@ -2,6 +2,25 @@
 
 ## ยังไม่ปล่อย
 
+**vision ของ Qwen-VL แม่นไม่เต็มที่ เพราะไม่เคยส่ง `--image-min-tokens`**
+
+เจอตอน deploy `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` บน spark-02 · llama-server
+เตือนตั้งแต่ตอนโหลดแล้วเดินต่อเงียบ ๆ:
+
+```
+load_hparams: Qwen-VL models require at minimum 1024 image tokens
+              to function correctly on grounding tasks
+              if you encounter problems with accuracy, try adding --image-min-tokens 1024
+```
+
+controller ไม่เคยส่งค่านี้ จึงใช้ค่าที่ฝังมากับไฟล์ซึ่งต่ำกว่า · อาการคือถาม "ในภาพมีอะไร"
+ตอบถูก แต่ถาม "อยู่ตรงไหน / กล่องไหน" เริ่มเพี้ยน — **ความแม่นยำที่หายไปโดยไม่มี error**
+เป็นอาการเดียวกับตอนลืม `--mmproj` แต่จับยากกว่ามาก เพราะโมเดลยัง "เห็น" ภาพอยู่
+
+- controller ที่มี projector ตั้ง `IMAGE_MIN_TOKENS=1024` เป็นค่าเริ่มต้น
+- ปรับได้ด้วย `--image-min-tokens N` หรือ env · ตั้งว่าง = ใช้ค่าที่ฝังมากับโมเดล
+- โมเดลข้อความล้วนไม่มีแฟล็กนี้โผล่มาให้งง (มีเทสคุมทั้งสองทาง)
+
 **ทุกหน้าจอบอกได้แล้วว่าเครื่องนั้นอยู่ IP ไหน**
 
 ทะเบียนเก็บแค่ **ที่อยู่ที่ใช้ SSH** ซึ่งตอบคำถาม "เครื่องนี้อยู่ IP ไหนในวง" ไม่ได้:

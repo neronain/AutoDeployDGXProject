@@ -434,6 +434,35 @@ def test_multimodal_gguf_downloads_and_loads_projector(tmp_path):
     assert profile["features"]["multimodal"]["projector_files"] == ["mmproj-BF16.gguf"]
 
 
+def test_multimodal_sets_image_min_tokens(tmp_path):
+    """เคสจริง spark-02 (2026-09-03): llama-server เตือนตอนโหลดแล้วเดินต่อเงียบ ๆ
+
+        load_hparams: Qwen-VL models require at minimum 1024 image tokens
+                      to function correctly on grounding tasks
+                      try adding --image-min-tokens 1024
+
+    controller ไม่เคยส่งค่านี้ ผู้ใช้จึงได้ vision ที่ตอบ "มีอะไรในภาพ" ได้ แต่ "อยู่ตรงไหน"
+    เพี้ยน — เป็นความแม่นยำที่หายไปโดยไม่มี error ให้จับ
+    """
+    bundle, _, _ = make_bundle(mmproj_gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+
+    assert "--image-min-tokens" in script
+    assert 'IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS-1024}"' in script
+    # ต้องปิดได้ด้วย ไม่ใช่บังคับ — บางโมเดลค่าที่ฝังมาถูกอยู่แล้ว
+    assert "--image-min-tokens)" in script, "ต้องมีแฟล็กให้ผู้ใช้ override"
+    assert 'if [[ -n "$IMAGE_MIN_TOKENS" ]]' in script, "ตั้งว่างแล้วต้องไม่ส่งแฟล็ก"
+    assert not audit_script(script)
+
+
+def test_image_min_tokens_only_appears_when_there_is_a_projector(tmp_path):
+    """โมเดลข้อความล้วนไม่ควรมีแฟล็กของ vision โผล่มาให้งง"""
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert "--image-min-tokens" not in script
+    assert "IMAGE_MIN_TOKENS" not in script
+
+
 def mtp_gguf_report(**overrides) -> ModelReport:
     """repo GGUF ที่แถม MTP draft head — เคสจริง HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-*-MTP"""
     return gguf_report(
