@@ -110,10 +110,32 @@ def _license_of(info: dict[str, Any]) -> str | None:
     return None
 
 
+# แท็กที่บอกว่า weight ถูกอัดสองพารามิเตอร์ต่อไบต์ (U8 หนึ่งตัว = 4-bit สองตัว)
+_PACKED_4BIT_TAGS = {"nvfp4", "mxfp4", "4-bit", "awq", "gptq", "int4", "w4a16", "w4a4"}
+
+
 def _params_of(info: dict[str, Any]) -> int | None:
+    """จำนวนพารามิเตอร์ — Hub นับ element ไม่ใช่พารามิเตอร์ จึงต้องแก้ให้กับ checkpoint ที่อัด 4-bit
+
+    เคสจริง 2026-09-03: scottgl/Qwen3.5-122B-A10B-NVFP4-GB10 ถูกรายงานว่า **26.8B** และ
+    Sehyo/Qwen3.5-122B-A10B-NVFP4 ว่า 71.2B ทั้งที่ชื่อบอกอยู่ว่า 122B · Hub นับ U8 ที่อัด
+    NVFP4 มาสองตัวต่อไบต์เป็นหนึ่ง และนับ scale F8_E4M3 (หนึ่งตัวต่อ 16 พารามิเตอร์) รวมเข้าไป
+    ด้วย · ตัวเลขนี้ไม่กระทบ fit (ใช้ขนาดไฟล์) แต่โผล่บนหน้า inspect และ MODEL_PROFILE
+    ให้คนเอาไปตัดสินใจผิด ๆ ว่าโมเดล "เล็ก"
+    """
     st = info.get("safetensors") or {}
     total = st.get("total")
-    return int(total) if isinstance(total, (int, float)) and total > 0 else None
+    if not isinstance(total, (int, float)) or total <= 0:
+        return None
+    by_dtype = st.get("parameters") or {}
+    packed = int(by_dtype.get("U8") or 0)
+    tags = {str(t).lower() for t in (info.get("tags") or [])}
+    if packed and tags & _PACKED_4BIT_TAGS:
+        # U8 อัดสองตัว · F8_E4M3 ที่มาคู่กับ U8 คือ scale ของ NVFP4 (117B/16 = 7.3B พอดี
+        # ในเคสจริง) ไม่ใช่พารามิเตอร์ — ส่วน BF16/F16/F32 คือชั้นที่ไม่ได้ quantize
+        others = sum(int(v or 0) for k, v in by_dtype.items() if k not in ("U8", "F8_E4M3"))
+        return packed * 2 + others
+    return int(total)
 
 
 def _fetch_json(
