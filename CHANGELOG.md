@@ -21,7 +21,12 @@ budget ได้ตั้งแต่วันนั้น แต่**หน้�
   `kv_at_context_gb` → หน้า plan วาดแถบ **capacity · OS+engine overhead · already in use · weights · KV ที่
   context ที่เลือก · spare** และวาดใหม่ทันทีที่พิมพ์ context หรือสลับ fp8 (ใช้ `kv_bytes_per_token` ที่
   `/context` ตอบอยู่แล้ว ไม่ยิงเพิ่ม)
-- no-fit บอกว่าหักไปเท่าไรเพราะใครใช้อยู่ — ไม่งั้นผู้ใช้งงว่าทำไมเครื่อง 128 GB ใส่โมเดล 40 GB ไม่ได้
+- **ความแน่นชั่วคราวไม่บล็อกการสร้าง bundle** — ผู้ใช้ทักทันทีที่ลองบนฟลีต: "จริงต้องทำได้ เพราะลูกค้า
+  อาจจะยังไม่ได้รัน เพียงแต่ต้องการรู้ค่าและ deploy ลงไปก่อน" · deploy = วาง bundle ไว้ที่เครื่อง ของอื่น
+  หยุดทีหลังได้ · จึงคิดสองชั้น: **เครื่องเปล่า** ตัดสินว่าสร้างได้ไหม (ใส่ไม่ได้จริงถึงบล็อก) ·
+  **ตอนนี้** (หักของที่รันอยู่) แค่ติดป้าย "deploy ได้ แต่ start ตอนนี้ไม่ได้ — ขาด X GB · ลด context เหลือ N
+  แล้ว start ได้เลย หรือหยุด <ชื่อโมเดล@เครื่อง> ก่อน" · payload มี `now_verdict / now_budget_gb /
+  now_max_safe_context / now_short_gb / running_now`
 - `profiler.memory_held_gb()` เป็นตัวเดียวที่ทั้ง CLI และเว็บใช้ (เดิม CLI มีสำเนาของตัวเองใน main.py)
 - เทส 9 ข้อใน `tests/test_web_reserved_memory.py` + 1 ข้อใน `test_fit_and_checksums.py` — ทุกข้อล้มกับโค้ดเดิม
 

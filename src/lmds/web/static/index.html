@@ -2039,10 +2039,12 @@ let planFit = null;
 function memoryView(f, context, kvAt, dtype = "bf16") {
   const cap = f.capacity_gb || 0;
   if (!cap) return "";
+  // budget คิดจากเครื่องเปล่า (ตัดสินว่าสร้าง bundle ได้) · reserved คือของที่รันอยู่ *ตอนนี้*
+  // spare จึงเป็น "ตอนนี้" — ติดลบ = deploy ได้แต่ start ไม่ได้จนกว่าจะหยุดของอื่น/ลด context
   const reserved = f.reserved_gb || 0, weights = f.weights_gb || 0, budget = f.budget_gb || 0;
   const kv = kvAt == null ? null : Math.max(0, kvAt);
-  const overhead = Math.max(0, cap - reserved - budget);          // OS reserve + engine overhead
-  const spare = kv == null ? null : budget - weights - kv;
+  const overhead = Math.max(0, cap - budget);                     // OS reserve + engine overhead
+  const spare = kv == null ? null : budget - reserved - weights - kv;
   const pct = v => Math.max(0, Math.min(100, v / cap * 100)).toFixed(1) + "%";
   const seg = (v, colour, title) => v > 0
     ? `<span title="${esc(title)}" style="display:block;width:${pct(v)};background:${colour}"></span>` : "";
@@ -2054,8 +2056,8 @@ function memoryView(f, context, kvAt, dtype = "bf16") {
     `<b>${weights} GB</b> weights`,
     kv == null ? "KV: unknown" : `<b>${kv} GB</b> KV at ${Number(context).toLocaleString()} (${esc(dtype)})`,
     spare == null ? "" : spare < 0
-      ? `<b style="color:var(--bad)">${(-spare).toFixed(1)} GB over</b>`
-      : `<b>${spare.toFixed(1)} GB</b> spare`,
+      ? `<b style="color:var(--bad)">${(-spare).toFixed(1)} GB short right now</b>`
+      : `<b>${spare.toFixed(1)} GB</b> spare${reserved > 0 ? " right now" : ""}`,
     overhead > 0 ? `<span class="dim">${overhead.toFixed(1)} GB OS + engine overhead</span>` : "",
   ].filter(Boolean).join(" · ");
   return `<div class="membar" style="margin:10px 0 2px">
@@ -2068,7 +2070,24 @@ function memoryView(f, context, kvAt, dtype = "bf16") {
       ${kv == null ? "" : seg(kv, "var(--meter)", "KV cache at this context")}
     </div>
     <div class="dim gsub" style="margin-top:4px">${legend}</div>
+    ${startNowLine(f, context, spare)}
   </div>`;
+}
+
+// deploy = วาง bundle ไว้ที่เครื่อง · start = อีกเรื่อง — ป้ายนี้แยกสองอย่างนั้นออกจากกัน
+// (ผู้ใช้ 2026-09-04: "ลูกค้าอาจจะยังไม่ได้รัน เพียงแต่ต้องการรู้ค่าและ deploy ลงไปก่อน")
+function startNowLine(f, context, spare) {
+  if (!(f.reserved_gb > 0) || spare == null) return "";
+  const who = (f.running_now || []).length ? esc(f.running_now.join(", ")) : esc(f.reserved_source);
+  if (spare >= 0) {
+    return `<div class="ok-line" style="margin-top:6px">Can start right now — ${esc(f.reserved_source)} still has room \
+next to ${who}.</div>`;
+  }
+  const cap = f.now_max_safe_context;
+  return `<div class="warn-line" style="margin-top:6px"><b>Deployable, but cannot start right now</b> — \
+${(-spare).toFixed(1)} GB short at ${Number(context).toLocaleString()} context. ${
+    cap ? `Lower the context to ${cap.toLocaleString()} to start now, or s` : "S"}top ${who} first. \
+The bundle is built and pushed either way.</div>`;
 }
 
 async function paintContextAdvice() {

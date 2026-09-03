@@ -78,6 +78,14 @@ class FitReport(BaseModel):
     reserved_gb: float = 0.0          # ที่โมเดลอื่นบนเครื่องเป้าหมายถืออยู่แล้ว (หักออกจาก budget แล้ว)
     reserved_source: str = ""         # อ่านมาจากไหน — ชื่อเครื่อง / "this machine" / "" = preset สมมติ
     kv_budget_gb: Optional[float] = None  # budget - weights = ที่เหลือให้ KV cache
+    # ภาพ "ตอนนี้" เมื่อเครื่องเป้าหมายมีโมเดลอื่นรันอยู่ — ค่าข้างบนคิดจากเครื่องเปล่า (ตัดสินว่า
+    # สร้าง bundle ได้ไหม) ส่วนชุดนี้บอกว่า *start ตอนนี้* ได้ไหม · deploy = วาง bundle ไว้ก่อน
+    # ของอื่นหยุดทีหลังได้ จึงห้ามเอาความแน่นชั่วคราวไปบล็อกการสร้าง — แค่ต้องบอกให้ชัด
+    now_verdict: Optional[str] = None          # verdict เมื่อหักของที่รันอยู่ · None = เครื่องว่าง/ไม่รู้
+    now_budget_gb: Optional[float] = None      # budget หลังหัก
+    now_max_safe_context: Optional[int] = None # context สูงสุดที่ start ได้ตอนนี้
+    now_short_gb: Optional[float] = None       # ขาดอีกกี่ GB ถึงจะ start ที่ context ที่แผนเสนอ (0 = พอ)
+    running_now: list[str] = Field(default_factory=list)  # โมเดลที่ถือหน่วยความจำอยู่บนเครื่องนั้น
     verdict: Verdict = Verdict.UNKNOWN
     kv_bytes_per_token: Optional[int] = None
     kv_estimated: bool = False

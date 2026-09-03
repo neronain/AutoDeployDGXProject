@@ -132,28 +132,52 @@ def _plan_payload(session: Session) -> dict:
             "kv_budget_gb": fit.kv_budget_gb,
             "kv_bytes_per_token": fit.kv_bytes_per_token,
             "kv_at_context_gb": _kv_at(fit, plan.serving.context),
+            # ชั้น "ตอนนี้" — None ทั้งชุดเมื่อเครื่องว่าง/ไม่รู้
+            "now_verdict": fit.now_verdict,
+            "now_budget_gb": fit.now_budget_gb,
+            "now_max_safe_context": fit.now_max_safe_context,
+            "now_short_gb": fit.now_short_gb,
+            "running_now": fit.running_now,
             "notes": fit.notes,
         },
         "gated": report.gated,
     }
 
 
-def _held_on_node(name: str) -> float | None:
-    """GB ที่โมเดลบนเครื่อง `name` ถืออยู่ — อ่านจากแคช inventory ของ hub
+def _occupancy(name: str) -> tuple[float, list[str]] | None:
+    """(GB ที่ถืออยู่, โมเดลที่รันอยู่) บนเครื่อง `name` — อ่านจากแคช inventory ของ hub
 
     ไม่ยิง SSH ตรงนี้: refresher สำรวจทุกเครื่องอยู่แล้วทุก 15 วิ และ analyze ก็รอ Hub
     อยู่หลายวินาทีแล้ว · None = ยังไม่มีข้อมูลของเครื่องนั้น (เพิ่งแอด / ต่อไม่ได้) ซึ่งต่างจาก
-    0 = สำรวจแล้วไม่มีใครถือ GPU — ผู้เรียกต้องบอกผู้ใช้ต่างกัน
+    (0, []) = สำรวจแล้วไม่มีใครถือ GPU — ผู้เรียกต้องบอกผู้ใช้ต่างกัน
     """
     from lmds.web import state
 
     entry = state.STORE.snapshot()["nodes"].get(name)
     if not entry or not entry.get("data"):
         return None
-    gpus = ((entry["data"].get("host") or {}).get("gpus")) or []
+    data = entry["data"]
+    gpus = ((data.get("host") or {}).get("gpus")) or []
     if not gpus:
         return None
-    return float(sum((g.get("vram_used_gb") or 0.0) for g in gpus))
+    held = float(sum((g.get("vram_used_gb") or 0.0) for g in gpus))
+    running = [m.get("slug", "") for m in (data.get("models") or []) if m.get("running")]
+    running += [f.get("name", "") for f in ((data.get("host") or {}).get("foreign") or [])]
+    return held, [r for r in running if r]
+
+
+def _held_on_node(name: str) -> float | None:
+    occ = _occupancy(name)
+    return None if occ is None else occ[0]
+
+
+def _running_on(machine: str, worker: str) -> list[str]:
+    names: list[str] = []
+    for m in [machine] + ([worker] if worker and worker != machine else []):
+        occ = _occupancy(m)
+        if occ:
+            names += [f"{slug}@{m}" for slug in occ[1]]
+    return names
 
 
 def _reserved_on_target(spec, target: str, machine: str, worker: str) -> tuple[float, str, list[str]]:
@@ -200,6 +224,33 @@ def _reserved_on_target(spec, target: str, machine: str, worker: str) -> tuple[f
 
         return memory_held_gb(), "this machine", notes
     return 0.0, "", notes
+
+
+def _note_start_now(fit, plan) -> None:
+    """ป้าย "deploy ได้ แต่ start ตอนนี้ได้ไหม" — เติมหลังรู้ context ที่แผนเสนอ"""
+    if fit.now_verdict is None or fit.now_budget_gb is None:
+        return
+    who = ", ".join(fit.running_now) if fit.running_now else fit.reserved_source
+    need = (fit.weights_gb or 0.0) + (_kv_at(fit, plan.serving.context) or 0.0)
+    short = round(need - fit.now_budget_gb, 1)
+    fit.now_short_gb = max(short, 0.0)
+    if short > 0 and fit.now_max_safe_context:
+        fit.notes.append(
+            f"deploy ได้ แต่ start ตอนนี้ที่ context {plan.serving.context:,} ไม่ได้ — "
+            f"{fit.reserved_source} เหลือ {fit.now_budget_gb} GB ต้องใช้ {need:.1f} GB (ขาด {short} GB) · "
+            f"start ได้ทันทีถ้าลด context เหลือ {fit.now_max_safe_context:,} "
+            f"หรือหยุด {who} ก่อน"
+        )
+    elif short > 0:
+        fit.notes.append(
+            f"deploy ได้ แต่ start ตอนนี้ไม่ได้ — {fit.reserved_source} เหลือ {fit.now_budget_gb} GB "
+            f"แค่ weights ก็ {fit.weights_gb} GB แล้ว (ขาด {short} GB) · หยุด {who} ก่อน start"
+        )
+    else:
+        fit.notes.append(
+            f"start ตอนนี้ได้เลย — {fit.reserved_source} เหลือ {fit.now_budget_gb} GB "
+            f"พอสำหรับ {need:.1f} GB ที่ context {plan.serving.context:,} (ของอื่นที่รันอยู่: {who})"
+        )
 
 
 def _kv_at(fit, context: int) -> Optional[float]:
@@ -307,21 +358,28 @@ def analyze(
 
         spec = from_hardware_report(probe()) or PRESETS["dgx-spark-single"]
 
+    # สองชั้น — ชั้นแรกคิดจาก *เครื่องเปล่า*: ตัดสินว่าสร้าง bundle ได้ไหม (ฮาร์ดแวร์ใส่ได้จริงไหม)
+    # ชั้นสองคิดจาก *ตอนนี้* (หักของที่รันอยู่): บอกว่า start ได้เลยไหม ขาดเท่าไร
+    #
+    # ผู้ใช้ 2026-09-04: "จริงต้องทำได้ เพราะลูกค้าอาจจะยังไม่ได้รัน เพียงแต่ต้องการรู้ค่าและ deploy
+    # ลงไปก่อน" — deploy คือวาง bundle ไว้ที่เครื่อง ของอื่นหยุดทีหลังได้ · เวอร์ชันแรกของ 0.5.2
+    # เอาความแน่นชั่วคราวไปบล็อกการสร้างทั้งก้อน ซึ่งผิดความหมายของ deploy
     reserved_gb, reserved_source, reserve_notes = _reserved_on_target(spec, target or "", machine, worker)
-    fit = analyze_fit(report, spec, reserved_gb=reserved_gb)
+    fit = analyze_fit(report, spec)
+    if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
+        raise DeployError(
+            "no-fit", f"โมเดลไม่ fit กับ {fit.target_name} ({fit.verdict.value}) แม้เครื่องว่าง",
+            {"alternatives": fit.alternatives, "budget_gb": fit.budget_gb, "weights_gb": fit.weights_gb},
+        )
+    fit.reserved_gb = round(reserved_gb, 1)
     fit.reserved_source = reserved_source
     fit.notes.extend(reserve_notes)
-    if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
-        why = f"โมเดลไม่ fit กับ {fit.target_name} ({fit.verdict.value})"
-        if fit.reserved_gb > 0:
-            # ไม่บอกตรงนี้ ผู้ใช้จะงงว่าทำไมเครื่อง 128 GB ถึงใส่โมเดล 40 GB ไม่ได้
-            why += (f" — หัก {fit.reserved_gb} GB ที่ {reserved_source} ใช้อยู่แล้ว "
-                    f"เหลือ budget {fit.budget_gb} GB")
-        raise DeployError(
-            "no-fit", why,
-            {"alternatives": fit.alternatives, "budget_gb": fit.budget_gb, "weights_gb": fit.weights_gb,
-             "reserved_gb": fit.reserved_gb, "reserved_source": reserved_source},
-        )
+    if reserved_gb > 0:
+        now = analyze_fit(report, spec, reserved_gb=reserved_gb)
+        fit.now_verdict = now.verdict.value
+        fit.now_budget_gb = now.budget_gb
+        fit.now_max_safe_context = now.max_safe_context
+        fit.running_now = _running_on(machine, worker)
 
     provider = None
     notes: list[str] = []
@@ -340,6 +398,8 @@ def analyze(
     except (PlanError, ProviderError) as exc:
         notes.append(f"LLM ใช้ไม่ได้ ({exc}) — สลับเป็น rule-based")
         plan = build_plan(report, fit, None, engine=chosen)
+
+    _note_start_now(fit, plan)
 
     if len(_SESSIONS) >= _MAX_SESSIONS:
         _SESSIONS.pop(next(iter(_SESSIONS)))

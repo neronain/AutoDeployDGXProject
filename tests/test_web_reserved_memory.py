@@ -10,7 +10,8 @@ llama.cpp สองตัวบนเครื่องเดียว "แล�
   2. preset ล้วนคือเครื่องสมมติ → ไม่หัก · ยังไม่มีข้อมูล → ไม่หักแต่ต้องบอก
   3. stacked หักตามเครื่องที่แน่นสุด × จำนวนเครื่อง (tensor parallel แบ่งเท่ากัน)
   4. payload มีครบสำหรับวาดแถบ capacity / ใช้อยู่แล้ว / weights / KV / เหลือ
-  5. no-fit บอกว่าใครใช้ไปเท่าไร ไม่ใช่แค่ "ไม่ fit"
+  5. ความแน่นชั่วคราวไม่บล็อกการสร้าง bundle — แค่ติดป้าย "deploy ได้ แต่ start ตอนนี้ไม่ได้ ขาด X GB"
+     (ที่ยังบล็อกคือโมเดลที่ใส่ไม่ได้แม้เครื่องเปล่า)
 """
 
 from pathlib import Path
@@ -22,14 +23,14 @@ from tests.test_generator import safetensors_report
 GIB = 1024**3
 
 
-def _seed(name: str, used_gb: float, total_gb: float = 128.0) -> None:
+def _seed(name: str, used_gb: float, total_gb: float = 128.0, running=()) -> None:
     """จำลองว่า refresher สำรวจเครื่องนี้มาแล้ว — รูปเดียวกับ `lmds agent info`"""
     from lmds.web import state
 
     state.STORE.set_node(name, {
         "host": {"memory_model": "unified",
                  "gpus": [{"name": "GB10", "vram_gb": total_gb, "vram_used_gb": used_gb}]},
-        "models": [],
+        "models": [{"slug": r, "running": True} for r in running],
     })
 
 
@@ -53,9 +54,12 @@ def test_choosing_a_fleet_machine_subtracts_what_it_already_holds(thirty_gb_mode
 
     assert busy["reserved_gb"] == 31.0
     assert busy["reserved_source"] == "spark-02"
-    assert round(idle["budget_gb"] - busy["budget_gb"], 1) == 31.0
-    # ผู้ใช้ต้องเห็นว่าโดนหักไปเพราะอะไร ไม่ใช่แค่เห็น budget น้อยลงเฉย ๆ
-    assert any("31.0 GB" in n for n in busy["notes"])
+    # budget (คิดจากเครื่องเปล่า) ต้องเท่ากันทั้งสองกรณี — ความแน่นชั่วคราวไม่เปลี่ยนว่าสร้างได้ไหม
+    assert busy["budget_gb"] == idle["budget_gb"]
+    # แต่ชั้น "ตอนนี้" ต้องหักจริง
+    assert busy["now_budget_gb"] == round(busy["budget_gb"] - 31.0, 1)
+    assert busy["now_short_gb"] == 0.0  # 30 GB บนที่เหลือ 80+ GB ยัง start ได้
+    assert any("start ตอนนี้ได้เลย" in n for n in busy["notes"])
 
 
 def test_a_preset_without_a_machine_is_a_hypothetical_box_so_nothing_is_subtracted(thirty_gb_model):
@@ -63,6 +67,7 @@ def test_a_preset_without_a_machine_is_a_hypothetical_box_so_nothing_is_subtract
     fit = _fit(target="dgx-spark-single")
     assert fit["reserved_gb"] == 0.0
     assert fit["reserved_source"] == ""
+    assert fit["now_verdict"] is None  # ไม่มีชั้น "ตอนนี้" สำหรับเครื่องสมมติ
 
 
 def test_a_machine_with_no_inventory_yet_falls_back_to_full_capacity_and_says_so(thirty_gb_model):
@@ -87,6 +92,7 @@ def test_stacked_is_limited_by_the_busiest_member(thirty_gb_model):
     fit = _fit(target="dgx-spark-stacked", machine="spark-head", worker="spark-worker")
     assert fit["reserved_gb"] == 80.0  # 40 × 2 เครื่อง — ไม่ใช่ 10 + 40
     assert fit["reserved_source"] == "spark-head + spark-worker"
+    assert fit["now_budget_gb"] == round(fit["budget_gb"] - 80.0, 1)
     assert any("แน่นสุด" in n for n in fit["notes"])
 
 
@@ -100,17 +106,49 @@ def test_the_payload_carries_what_the_memory_bar_needs(thirty_gb_model):
     assert f["capacity_gb"] == 128.0
     assert f["kv_budget_gb"] == round(f["budget_gb"] - f["weights_gb"], 1)
     assert f["kv_at_context_gb"] == round(f["kv_bytes_per_token"] * plan["context"] / GIB, 1)
+    for k in ("now_verdict", "now_budget_gb", "now_max_safe_context", "now_short_gb", "running_now"):
+        assert k in f
 
 
-def test_no_fit_explains_that_another_model_is_the_reason(thirty_gb_model):
+def test_a_busy_machine_does_not_block_the_build_it_only_says_it_cannot_start_now(thirty_gb_model):
+    """deploy = วาง bundle ไว้ก่อน · ของอื่นหยุดทีหลังได้ — ห้ามบล็อก แค่ต้องบอกให้ชัดว่าขาดเท่าไร
+
+    ผู้ใช้ 2026-09-04: "จริงต้องทำได้ เพราะลูกค้าอาจจะยังไม่ได้รัน เพียงแต่ต้องการรู้ค่าและ
+    deploy ลงไปก่อน" — เวอร์ชันแรกของ 0.5.2 โยน no-fit ทิ้งทั้งที่เครื่องเปล่าใส่ได้สบาย
+    """
+    _seed("spark-02", 100.0, running=("gemma-4-31b-gguf", "qwen3-8-27b-gguf"))
+    fit = _fit(target="dgx-spark-single", machine="spark-02")   # ต้องไม่ raise
+
+    assert fit["reserved_gb"] == 100.0
+    assert fit["now_verdict"] in ("no-fit", "needs-smaller-quant")
+    assert fit["now_short_gb"] > 0
+    note = next(n for n in fit["notes"] if "deploy ได้ แต่ start ตอนนี้" in n)
+    # บอกชื่อของที่ต้องหยุด ไม่ใช่แค่ "หยุดของอื่น"
+    assert "gemma-4-31b-gguf@spark-02" in note and "qwen3-8-27b-gguf@spark-02" in note
+    assert fit["running_now"] == ["gemma-4-31b-gguf@spark-02", "qwen3-8-27b-gguf@spark-02"]
+
+
+def test_a_model_too_big_for_an_empty_machine_is_still_refused(monkeypatch):
+    """ชั้นแรกยังต้องบล็อก — ฮาร์ดแวร์ใส่ไม่ได้จริง สร้าง bundle ไปก็ start ไม่ขึ้นตลอดกาล"""
     from lmds.web import deploy as dep
 
-    _seed("spark-02", 100.0)
+    monkeypatch.setattr("lmds.inspector.inspect_model",
+                        lambda source, client: safetensors_report(weight_bytes=400 * GIB))
+    _seed("spark-02", 0.0)
     with pytest.raises(dep.DeployError) as err:
-        dep.analyze("Qwen/Qwen3-32B", target="dgx-spark-single", no_llm=True, machine="spark-02")
+        dep.analyze("Qwen/Huge", target="dgx-spark-single", no_llm=True, machine="spark-02")
     assert err.value.kind == "no-fit"
-    assert "spark-02" in err.value.message
-    assert err.value.extra["reserved_gb"] == 100.0
+    assert "แม้เครื่องว่าง" in err.value.message
+
+
+def test_a_tight_machine_offers_a_context_that_starts_now(thirty_gb_model):
+    """พอ weights แต่ KV ไม่พอที่ context ที่แผนเสนอ → ต้องเสนอ context ที่ start ได้ทันที"""
+    _seed("spark-02", 78.0, running=("other",))   # เหลือ ~35 GB: weights 30 + KV นิดหน่อย
+    fit = _fit(target="dgx-spark-single", machine="spark-02")
+    assert fit["now_verdict"] in ("fits", "fits-reduced-context")
+    assert fit["now_max_safe_context"] is not None
+    if fit["now_short_gb"] > 0:
+        assert any(f"{fit['now_max_safe_context']:,}" in n for n in fit["notes"])
 
 
 def test_the_api_forwards_the_chosen_machine(monkeypatch):
