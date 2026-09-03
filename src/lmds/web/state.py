@@ -199,6 +199,12 @@ def _job_payload(jobs_module, slug: str) -> dict | None:
     return job.payload() if job else None
 
 
+def _stamp() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d %H:%M")   # รูปแบบเดียวกับ CLI
+
+
 def _refresh_node(name: str) -> None:
     from lmds.nodes import NodeError, find, probe, status_from_probe, update
 
@@ -208,7 +214,9 @@ def _refresh_node(name: str) -> None:
     try:
         info = probe(node)
         STORE.set_node(name, info)
-        update(name, last_error="", **status_from_probe(info))
+        # last_seen ด้วย — เดิมมีแต่ CLI ที่เขียน ทำให้ `lmds node list` โชว์ "เห็นล่าสุด" ค้างเป็นวัน
+        # ทั้งที่ refresher คุยกับเครื่องนั้นอยู่ทุก 15 วิ
+        update(name, last_error="", last_seen=_stamp(), **status_from_probe(info))
     except NodeError as exc:
         STORE.set_node(name, None, str(exc)[:300])
         try:

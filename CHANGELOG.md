@@ -135,6 +135,17 @@ repo เป็น private ทุกเครื่องที่เพิ่ม
   หน้าเว็บ" · INSTALL.md เพิ่ม §2.1 เปิดคอนโซล / §2.2 เพิ่มเครื่องจากหน้าเว็บ · USAGE §5 มี `--enable/--disable` ·
   badge เวอร์ชัน/จำนวนเทสตรงของจริง · ตัวอย่าง `lmds version` ไม่ใช่ 0.3.6 แล้ว
 
+**พบระหว่าง rollout 0.6.0 บนฟลีตจริง**
+
+- **restart hub ทุกครั้งจบด้วย SIGKILL** — journal: `State 'stop-sigterm' timed out. Killing.` เพราะ uvicorn รอให้
+  connection ปิดหมดก่อนจบ แต่ SSE `/api/events` ของเบราว์เซอร์ที่เปิดค้างไม่มีวันปิด · ตั้ง
+  `timeout_graceful_shutdown=3` และออกทันทีหลัง uvicorn จบ (ThreadPool ของ refresher ถูก atexit join รอ ssh
+  ที่ค้างได้ถึง 30 วิ) → restart ใช้ 3 วิแทน 10 วิ+kill
+- refresher เขียน `last_seen` ลงทะเบียนด้วย — เดิมมีแต่ CLI ที่เขียน `lmds node list` จึงโชว์ "เห็นล่าสุด" ค้างเป็นวัน
+  ทั้งที่ hub คุยกับทุกเครื่องทุก 15 วิ · ข้อความ `lmds node install` บอกว่าโค้ดมาจาก hub ไม่ใช่ GitHub
+- อัปเดตฟลีต 14/15 เครื่องเป็น 4a3ec0a ผ่านทางส่งโค้ดจาก hub (เครื่องละ ~1.5 นาที ไม่แตะ GitHub) · AiTop100 ต่อไม่ติด
+  (Tailscale timeout — ยัง 0.2.0 ต้องอัปเดตเมื่อกลับมาออนไลน์)
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

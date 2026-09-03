@@ -2067,4 +2067,16 @@ def create_app(token: str = "") -> FastAPI:
 def serve(host: str = "127.0.0.1", port: int = 8600, token: Optional[str] = None) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(token or ""), host=host, port=port, log_level="warning")
+    import os
+    import sys
+
+    # SSE (/api/events) เป็น connection ที่ไม่มีวันปิดเอง — uvicorn รอให้ connection หมดก่อนจบ
+    # จึงค้างจน systemd หมดความอดทน (TimeoutStopSec=10) แล้ว SIGKILL ทุก restart
+    # (journal 2026-09-04: "State 'stop-sigterm' timed out. Killing.") · ให้รอแค่ 3 วิ
+    uvicorn.run(create_app(token or ""), host=host, port=port, log_level="warning",
+                timeout_graceful_shutdown=3)
+    # ThreadPoolExecutor ของ refresher ถูก join ตอน interpreter ออก (atexit ของ concurrent.futures)
+    # → รอ ssh probe ที่ค้างอยู่ได้ถึง 30 วิ · หลัง uvicorn จบไม่มีอะไรต้อง flush อีก ออกเลย
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

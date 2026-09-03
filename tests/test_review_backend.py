@@ -233,3 +233,32 @@ def test_adopt_keeps_the_host_ip_of_a_port_binding():
     script = render_controller(adopted, "c")
     assert "--publish 127.0.0.1:8000:8000" in script
     assert "--publish 9000:9000" in script
+
+
+# ── พบระหว่าง rollout 0.6.0 ─────────────────────────────────────────────────────────
+
+def test_the_refresher_stamps_last_seen_like_the_cli(monkeypatch):
+    """เดิมมีแต่ CLI ที่เขียน last_seen → `lmds node list` โชว์ "เห็นล่าสุด" ค้างเป็นวัน"""
+    from lmds.nodes import registry
+    from lmds.web import state
+
+    registry.add(registry.Node(name="n1", host="h", user="u"))
+    monkeypatch.setattr("lmds.nodes.probe", lambda node, timeout=30: {"host": {"lmds_version": "0.6.0"}})
+    state._refresh_node("n1")
+    node = registry.find("n1")
+    assert node.last_seen and node.last_seen[:4].isdigit()
+    assert node.lmds_version == "0.6.0"
+
+
+def test_the_web_server_does_not_wait_forever_for_sse_clients_on_shutdown(monkeypatch):
+    """systemd ต้อง SIGKILL ทุก restart เพราะ uvicorn รอ /api/events ที่ไม่มีวันปิด"""
+    import uvicorn
+
+    from lmds.web import api
+
+    seen = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    monkeypatch.setattr("os._exit", lambda code: seen.setdefault("exit", code))
+    api.serve(host="127.0.0.1", port=0, token="t")
+    assert seen.get("timeout_graceful_shutdown", 0) <= 5
+    assert seen.get("exit") == 0

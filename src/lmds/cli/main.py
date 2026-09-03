@@ -679,7 +679,7 @@ def node_install(
         err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
         raise typer.Exit(code=1)
 
-    console.print(f"ติดตั้ง/อัปเดต LMDS บน {node.target} — ดึงจาก GitHub แล้วรัน install.sh บนเครื่องนั้น")
+    console.print(f"ติดตั้ง/อัปเดต LMDS บน {node.target} — hub ส่งโค้ดไปให้ (หรือดึงจาก GitHub ถ้า hub ไม่มี checkout) แล้วรัน install.sh บนเครื่องนั้น")
     if not with_prereq:
         console.print("[dim]ข้ามขั้น Docker/NVIDIA toolkit (ต้องใช้ sudo ซึ่งไม่มีคนกรอกรหัสผ่าน) "
                       "— ใส่ --with-prereq ถ้า sudo ผ่านโดยไม่ถาม[/dim]")
