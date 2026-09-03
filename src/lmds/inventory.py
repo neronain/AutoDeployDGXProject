@@ -85,10 +85,22 @@ def foreign_workloads() -> list[dict]:
     from lmds.hardware.profiler import compute_apps
 
     managed = {slug for slug, _ in _running_slugs()}
+    # container ที่ bundle ของเราสั่ง (รวม adopt) — ชื่อไม่จำเป็นต้องขึ้นต้นด้วย lmds-
+    managed |= _managed_containers()
+    managed_pids = _managed_pids()
     found: list[dict] = []
 
     for pid, name, mib in compute_apps():
         if not any(hint in name.lower() for hint in _ENGINE_HINTS):
+            continue
+        # llama-server ที่ bundle ของเรา start เอง หรือ EngineCore ของ vLLM ในคอนเทนเนอร์
+        # ที่เราคุมอยู่ — nvidia-smi เห็นเป็น process เหมือนกันหมด · เดิมนับเป็น "นอกระบบ"
+        # ทั้งที่เป็นของเรา: dgx-veerasiam ขึ้น "นอกระบบอีก 3" ทั้งที่ทั้ง 3 คือ bundle ของ LMDS
+        # และทุกเครื่องที่รัน vLLM ขึ้นซ้ำสองรายการ (container + VLLM::EngineCore)
+        if pid in managed_pids or _has_managed_ancestor(pid, managed_pids):
+            continue
+        owner = _container_of_pid(pid)
+        if owner and (owner in managed or any(owner.endswith(slug) for slug in managed)):
             continue
         found.append({"kind": "process", "pid": pid, "name": name, "vram_mib": mib,
                       "detail": _cmdline(pid)})
@@ -102,6 +114,84 @@ def foreign_workloads() -> list[dict]:
         found.append({"kind": "container", "name": container, "image": image,
                       "detail": status})
     return found
+
+
+def _managed_pids() -> set[int]:
+    """pid ของเซิร์ฟเวอร์ native ที่ bundle ของเรา start ไว้ (server.pid ใต้ run root)"""
+    from lmds.fleet.manager import run_root
+
+    pids: set[int] = set()
+    try:
+        for pid_file in run_root().glob("*/server.pid"):
+            text = pid_file.read_text(encoding="utf-8", errors="replace").strip()
+            if text.isdigit():
+                pids.add(int(text))
+    except OSError:
+        pass
+    return pids
+
+
+def _managed_containers() -> set[str]:
+    """ชื่อ container ที่ bundle ของเราลงทะเบียนไว้ (server.meta: container=…)"""
+    from lmds.fleet.manager import run_root
+
+    names: set[str] = set()
+    try:
+        for meta in run_root().glob("*/server.meta"):
+            for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("container=") and line[10:].strip():
+                    names.add(line[10:].strip())
+    except OSError:
+        pass
+    return names
+
+
+def _parent_of(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        return int(stat.rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _has_managed_ancestor(pid: int, managed_pids: set[int], depth: int = 8) -> bool:
+    """llama-server/vLLM แตกลูกได้ — ถ้าบรรพบุรุษเป็นของเรา ลูกก็ของเรา"""
+    while depth > 0 and pid > 1:
+        pid = _parent_of(pid)
+        if pid in managed_pids:
+            return True
+        depth -= 1
+    return False
+
+
+def _container_of_pid(pid: int) -> str:
+    """ชื่อ container ที่ process นี้อยู่ข้างใน — ว่างเมื่อรันบน host ตรง ๆ"""
+    try:
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for token in cgroup.replace("/", " ").replace("-", " ").replace(".scope", " ").split():
+        if len(token) == 64 and all(c in "0123456789abcdef" for c in token):
+            return _container_names_by_id().get(token, "")
+    return ""
+
+
+def _container_names_by_id() -> dict[str, str]:
+    import subprocess
+
+    try:
+        done = subprocess.run(["docker", "ps", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if done.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    for line in done.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2:
+            out[parts[0]] = parts[1]
+    return out
 
 
 def _cmdline(pid: int) -> str:

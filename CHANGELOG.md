@@ -2,6 +2,25 @@
 
 ## ยังไม่ปล่อย
 
+**`lmds adopt` คัดลอก HF_TOKEN ลงสคริปต์บนดิสก์**
+
+`lmds adopt trtllm-nemotron` บน dgx-spark03 เขียน `--env HF_TOKEN=hf_…` ลง
+`bundles/…-adopted.sh` (0755) — ทุก user บนเครื่องอ่านได้ และไฟล์นี้ถูก zip/push ข้ามเครื่องได้ ·
+ขัดกับหลักของ LMDS ที่ความลับเดินทางทาง env/stdin เท่านั้น
+
+- env ที่ชื่อเข้าข่าย TOKEN/SECRET/PASSWORD/API_KEY/CREDENTIAL เหลือแค่ชื่อ (`--env HF_TOKEN`)
+  docker หยิบค่าจากเชลล์ที่สั่ง start · สคริปต์บอกไว้ว่าต้อง export ก่อน
+
+**bundle ของเราเองถูกนับเป็น "นอกระบบ"**
+
+dgx-veerasiam ขึ้น "นอกระบบอีก 3" ทั้งที่ทั้ง 3 คือ llama-server ที่ bundle ของ LMDS start เอง ·
+ทุกเครื่องที่รัน vLLM ขึ้นซ้ำสองรายการ (container + `VLLM::EngineCore`) · `foreign_workloads`
+คัดเฉพาะ container ตามชื่อ แต่ process จาก nvidia-smi ไม่เคยถูกเทียบกับอะไรเลย
+
+- process ที่ pid (หรือบรรพบุรุษ) อยู่ใน `server.pid` ของ bundle = ของเรา
+- process ใน container ที่ `server.meta` ลงทะเบียนไว้ (รวม adopt ที่ชื่อไม่ขึ้นต้น lmds-) = ของเรา
+  อ่านจาก `/proc/<pid>/cgroup` → `docker ps --no-trunc`
+
 **`node push --download` หลุด session แล้วทิ้ง container โหลดไว้โดยไม่มีใครเฝ้า**
 
 download บน node รันผ่าน SSH session ของ hub ตรง ๆ · session หลุด (เน็ตสะดุด / ปิดเทอร์มินัล /

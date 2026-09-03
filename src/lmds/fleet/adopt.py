@@ -21,6 +21,8 @@ process แทน container
 
 from __future__ import annotations
 
+import re
+
 import json
 import shlex
 import subprocess
@@ -392,9 +394,38 @@ def _pid_on_port(port: int) -> int:
     return 0
 
 
+
+# ชื่อ env ที่เป็นความลับ — adopt ต้องไม่คัดลอกค่าลงสคริปต์ที่วางไว้บนดิสก์
+# เคสจริง dgx-spark03 2026-09-03: `lmds adopt trtllm-nemotron` เขียน `--env HF_TOKEN=hf_…`
+# ลง bundles/…-adopted.sh แบบ 0755 อ่านได้ทุก user บนเครื่อง · หลักของ LMDS คือความลับเดินทาง
+# ทาง env/stdin เท่านั้น (ดู node ctl) สคริปต์ที่ adopt สร้างต้องอยู่ใต้กติกาเดียวกัน
+_SECRET_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|CREDENTIAL)", re.IGNORECASE)
+
+
+def redact_secrets(env_items: list[str]) -> tuple[list[str], list[str]]:
+    """คืน (env ที่จะเขียนลงสคริปต์, ชื่อที่ถูกถอดค่าออก)
+
+    ตัวที่เป็นความลับเหลือแค่ชื่อ — `docker run --env NAME` หยิบค่าจาก environment ของ
+    เชลล์ที่สั่ง start ซึ่งเป็นที่ที่ค่านั้นควรอยู่ · ค่าที่ไม่มีอยู่จริงตอน start = docker ข้ามให้
+    """
+    kept, redacted = [], []
+    for item in env_items:
+        name, sep, _ = item.partition("=")
+        if sep and _SECRET_ENV.search(name):
+            kept.append(name)
+            redacted.append(name)
+        else:
+            kept.append(item)
+    return kept, redacted
+
 def render_controller(adopted: Adopted, slug: str) -> str:
     """สคริปต์ที่รัน container เดิมซ้ำได้ — คำสั่งเดียวกับที่มันรันอยู่ตอนนี้"""
-    env_lines = "".join(f'  --env {shlex.quote(e)} \\\n' for e in meaningful_env(adopted))
+    env_items, redacted = redact_secrets(meaningful_env(adopted))
+    env_lines = "".join(f'  --env {shlex.quote(e)} \\\n' for e in env_items)
+    if redacted:
+        names = " ".join(redacted)
+        env_lines = (f"  # ค่าของ {names} ไม่ได้เก็บไว้ในไฟล์นี้ — export ไว้ในเชลล์ก่อน start "
+                     f"(docker หยิบจาก environment ให้เอง)\n") + env_lines
     bind_lines = "".join(f'  --volume {shlex.quote(b)} \\\n' for b in adopted.binds)
     port_lines = "".join(
         f'  --publish {shlex.quote(binding[0]["HostPort"])}:{shlex.quote(spec.split("/")[0])} \\\n'

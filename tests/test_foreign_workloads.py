@@ -89,3 +89,59 @@ def test_our_own_bundle_is_not_reported_as_somebody_elses(monkeypatch):
                         lambda: [("lmds-muse-glimmer-30b-gguf", "vllm/vllm-openai:latest", "Up 1 hour")])
     monkeypatch.setattr(inventory, "_cmdline", lambda pid: "")
     assert inventory.foreign_workloads() == []
+
+
+
+def _quiet(monkeypatch):
+    monkeypatch.setattr(inventory, "_docker_containers", lambda: [])
+    monkeypatch.setattr(inventory, "_cmdline", lambda pid: "")
+    monkeypatch.setattr(inventory, "_managed_containers", set)
+    monkeypatch.setattr(inventory, "_has_managed_ancestor", lambda pid, managed, depth=8: False)
+
+
+def test_our_native_llama_server_is_not_foreign(monkeypatch):
+    """เคสจริง dgx-veerasiam 2026-09-03: hub ขึ้น "นอกระบบอีก 3" ทั้งที่ทั้ง 3 คือ llama-server
+    ที่ bundle ของ LMDS เอง start ไว้ — nvidia-smi เห็นเป็น process เหมือนกันหมด"""
+    _quiet(monkeypatch)
+    monkeypatch.setattr(inventory, "_running_slugs", lambda: [("qwen3-coder-30b-a3b-instruct-gguf", "/x")])
+    monkeypatch.setattr(inventory, "_managed_pids", lambda: {2780313})
+    monkeypatch.setattr(inventory, "_container_of_pid", lambda pid: "")
+    monkeypatch.setattr("lmds.hardware.profiler.compute_apps",
+                        lambda: [(2780313, "llama-server", 41000), (4242, "llama-server", 30000)])
+    found = inventory.foreign_workloads()
+    assert [f["pid"] for f in found] == [4242]      # ตัวที่ไม่มี server.pid ยังต้องรายงาน
+
+
+def test_engine_core_inside_our_container_is_not_foreign(monkeypatch):
+    """vLLM แตก VLLM::EngineCore เป็น process แยก — เครื่องที่รัน vLLM ของเราจึงขึ้นซ้ำสองรายการ"""
+    _quiet(monkeypatch)
+    monkeypatch.setattr(inventory, "_running_slugs", lambda: [("qwen3-coder-next-nvfp4-gb10", "/x")])
+    monkeypatch.setattr(inventory, "_managed_pids", set)
+    monkeypatch.setattr(inventory, "_container_of_pid",
+                        lambda pid: "lmds-qwen3-coder-next-nvfp4-gb10" if pid == 103 else "rogue-vllm")
+    monkeypatch.setattr("lmds.hardware.profiler.compute_apps",
+                        lambda: [(103, "VLLM::EngineCore", 90000), (777, "VLLM::EngineCore", 50000)])
+    found = inventory.foreign_workloads()
+    assert [f["pid"] for f in found] == [777]
+
+
+def test_adopted_container_counts_as_ours_even_without_lmds_prefix(monkeypatch):
+    """adopt ไม่ได้เปลี่ยนชื่อ container — ชื่อจึงไม่ขึ้นต้นด้วย lmds- แต่ต้องถือว่าเป็นของเรา"""
+    monkeypatch.setattr(inventory, "_running_slugs", lambda: [("vllm-gemma4", "/x")])
+    monkeypatch.setattr(inventory, "_managed_containers", lambda: {"vllm-gemma4"})
+    monkeypatch.setattr(inventory, "_managed_pids", set)
+    monkeypatch.setattr(inventory, "_has_managed_ancestor", lambda pid, managed, depth=8: False)
+    monkeypatch.setattr(inventory, "_container_of_pid", lambda pid: "vllm-gemma4")
+    monkeypatch.setattr(inventory, "_cmdline", lambda pid: "")
+    monkeypatch.setattr("lmds.hardware.profiler.compute_apps", lambda: [(55, "VLLM::EngineCore", 80000)])
+    monkeypatch.setattr(inventory, "_docker_containers",
+                        lambda: [("vllm-gemma4", "ghcr.io/aeon-7/aeon-vllm-ultimate", "Up 4 days")])
+    assert inventory.foreign_workloads() == []
+
+
+def test_container_of_pid_reads_the_docker_id_from_cgroup(monkeypatch, tmp_path):
+    cid = "a" * 64
+    monkeypatch.setattr(inventory, "_container_names_by_id", lambda: {cid: "lmds-x"})
+    monkeypatch.setattr(inventory.Path, "read_text",
+                        lambda self, **kw: f"0::/system.slice/docker-{cid}.scope\n")
+    assert inventory._container_of_pid(123) == "lmds-x"
