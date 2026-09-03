@@ -1294,3 +1294,44 @@ def test_bundle_env_loses_to_a_command_line_flag(tmp_path):
                          env={**os.environ, "RUN_DIR": str(tmp_path / "run")},
                          capture_output=True, text=True, timeout=60).stdout
     assert "จากแฟล็ก" in out and "จากไฟล์" not in out.split("model:")[1][:80]
+
+
+def test_llamacpp_controller_can_prove_tool_calling(tmp_path):
+    """เคสจริง spark-02 (2026-09-03): `./xxx-single.sh test-tools` บน bundle llama.cpp
+    พิมพ์ help ออกมาแทน — คำสั่งไม่มี ทั้งที่ docs/USAGE.md บอกว่า "ใช้ได้ทุก bundle"
+    และหน้าเว็บมีปุ่มให้กด · ฝั่ง vLLM มีมาตั้งแต่เคส Nemotron แต่ llama.cpp ตกไป
+    """
+    from lmds.inventory import controller_commands
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)   # text-only ก็ต้องมี
+    script = bundle.controller.read_text(encoding="utf-8")
+    block = script[script.index("test_tools() {"):script.index("PYEOF\n}", script.index("test_tools() {"))]
+
+    # ค่าเริ่มต้นต้องวัด auto — โหมดที่ agent ส่งมาจริง (บทเรียนเดียวกับ test_tool_probe_modes)
+    assert 'test_tools "${2:-both}"' in script
+    assert "FAIL(auto)" in block and "WARN(auto)" not in block
+    assert "sys.exit(1)" in block
+
+    # llama.cpp ไม่มี --tool-parser — คำใบ้แบบ vLLM จะพาคนไปหาแฟล็กที่ไม่มีอยู่จริง
+    # (คอมเมนต์ในโค้ดพูดถึงมันได้ เพื่ออธิบายว่าไม่มี · ที่ห้ามคือบรรทัดที่พิมพ์ให้ผู้ใช้เห็น)
+    hints = [line for line in block.splitlines() if "print(" in line]
+    assert not [line for line in hints if "--tool-parser" in line], "ห้ามแนะแฟล็กที่ llama.cpp ไม่มี"
+    assert "chat_template_caps" in block, "ต้องถาม /props ว่า template รองรับ tools ไหม แทนการเดา"
+    assert "--chat-template-file" in block, "ทางแก้ของ llama.cpp คือเปลี่ยน template ไม่ใช่ parser"
+
+    # ต้องโผล่ทั้งใน help, dispatch และรายการที่หน้าเว็บอ่าน
+    assert "test-tools [both|auto|required]" in script
+    assert "test-tools" in controller_commands(str(bundle.controller))
+    assert not audit_script(script)
+
+
+def test_llamacpp_test_tools_reads_running_state_first(tmp_path):
+    """คำสั่งทดสอบต้องผ่าน adopt_running_state เหมือน test-text/test-vision
+
+    ไม่งั้น port/ชื่อที่ใช้ยิงจะเป็น default ของ bundle ไม่ใช่ของ process ที่รันอยู่จริง
+    (เจอจริงกับ test-text ตอนที่ยังไม่มี gate นี้: ยิงไปโดนโมเดลผิดตัว)
+    """
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller.read_text(encoding="utf-8")
+    gate = script[script.index("adopt_running_state ;;") - 200:script.index("adopt_running_state ;;")]
+    assert "test-tools" in gate

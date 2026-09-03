@@ -140,7 +140,7 @@ cd bundles/qwen3-0-6b-gguf
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
 | `parsers` | ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง |
-| `test-tools` | ตรวจว่า `--tool-parser` แปลงคำตอบเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง |
+| `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม |
 | `test-reasoning` | ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง — ใช้ได้ทุก bundle เช่นกัน |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 

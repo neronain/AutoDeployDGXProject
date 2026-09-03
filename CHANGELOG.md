@@ -2,6 +2,26 @@
 
 ## ยังไม่ปล่อย
 
+**bundle llama.cpp ไม่มี `test-tools` ทั้งที่เอกสารและหน้าเว็บบอกว่ามี**
+
+เจอบน spark-02: `./xxx-single.sh test-tools` บน bundle GGUF พิมพ์ help ออกมาแทน ·
+`docs/USAGE.md` เขียนว่า "ใช้ได้ทุก bundle" และหน้าเว็บมีปุ่มให้กด แต่ controller ของ
+llama.cpp ไม่เคยมีคำสั่งนี้ — มีแต่ฝั่ง vLLM ตั้งแต่เคส Nemotron (2026-08-14)
+
+ต้องยิง `/v1/chat/completions` พร้อม `tools` เองถึงจะรู้ว่า tool calling ใช้ได้ ซึ่งคือ
+สิ่งที่คำสั่งนี้มีไว้กันไม่ให้ต้องทำ
+
+llama.cpp ต่างจาก vLLM ตรงที่ **ไม่มี `--tool-parser`** — chat template ที่โหลดผ่าน
+`--jinja` เป็นทั้งคนสอนโมเดลให้เขียนรูปแบบและคนแปลกลับ · คำใบ้แบบ vLLM ("ลอง parser
+ตัวอื่น") จึงใช้ไม่ได้ ต้องวินิจฉัยคนละทาง:
+
+- ถาม `/props` ก่อน — `chat_template_caps.supports_tools` บอกตรง ๆ ว่า template ที่โหลด
+  อยู่รองรับ tools ไหม ถ้าไม่ ทางแก้คือ `--chat-template-file` ไม่ใช่เปลี่ยน parser
+- call ดิบหลุดมาใน content = โมเดลเรียกแล้วแต่ template แปลไม่ออก → มักเป็น llama.cpp
+  เก่ากว่าโมเดล แนะ `prepare-runtime`
+- คิดจนหมด 2048 tokens ก่อนเรียก tool (reasoning model) → บอกว่ายังสรุปไม่ได้ ไม่ตัดสินว่าพัง
+- ค่าเริ่มต้นวัดโหมด `auto` ที่ agent ใช้จริง และ auto ไม่ผ่าน = FAIL exit 1 เหมือน vLLM
+
 **`lmds set --model-id` เขียนไฟล์สำเร็จ แต่ชื่อที่ API เสิร์ฟไม่เปลี่ยน**
 
 เจอบน spark-02 ตอนตั้งชื่อโมเดลตัวที่สอง · `lmds set … --model-id qwen3-6-35b-uncensored`

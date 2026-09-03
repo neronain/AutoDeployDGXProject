@@ -869,6 +869,123 @@ else:
   fi
 }
 
+test_tools() {
+  assert_our_server
+  need curl
+  command -v python3 >/dev/null 2>&1 || die "ต้องมี python3 เพื่อยิงคำขอทดสอบ"
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${1:-both}" "$0" "${API_KEY:-}" <<'PYEOF'
+import json, re, sys, urllib.error, urllib.request
+
+port, model, mode, prog, api_key = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+headers = {"Content-Type": "application/json"}
+if api_key:
+    headers["Authorization"] = "Bearer " + api_key
+
+# llama.cpp ไม่มี --tool-parser ให้เลือกเหมือน vLLM — chat template ที่โหลดผ่าน --jinja
+# เป็นทั้งคนสอนโมเดลให้เขียนรูปแบบ และคนแปลรูปแบบนั้นกลับเป็น tool_calls
+# /props บอกได้ว่า template ตัวที่ใช้อยู่ทำสองอย่างนั้นได้ไหม — ถามก่อน จะได้ไม่ต้องเดา
+def props():
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                f"http://127.0.0.1:{port}/props", headers=headers), timeout=30) as response:
+            return json.load(response)
+    except Exception:
+        return {}
+
+caps = props().get("chat_template_caps") or {}
+
+# auto คือโหมดที่ Claude Code / Hermes / OpenClaw / agent ทุกตัวส่งมาจริง — โมเดล
+# เขียนตามรูปแบบของมันเอง แล้ว template ต้องแปลให้ได้
+# required บังคับด้วย grammar จึงผ่านได้แม้ template แปลรูปแบบธรรมชาติของโมเดลไม่ออก
+# ทดสอบแค่ required แล้วรายงานว่าใช้ได้ = วัดเส้นทางที่ไม่มีใครเดิน
+TOOLS = [{"type": "function", "function": {
+    "name": "get_weather", "description": "Get current weather for a location",
+    "parameters": {"type": "object",
+                   "properties": {"location": {"type": "string"}},
+                   "required": ["location"]}}}]
+
+# call ดิบที่หลุดมาใน content = โมเดล "พยายาม" เรียก tool แล้ว แต่ template แปลไม่ออก
+# แยกจากเคสที่โมเดลไม่คิดจะเรียกเลย เพราะทางแก้คนละทาง
+LEAKS = [
+    r"<tool_call>", r"<function=", r"<\|tool_call", r"<\|python_tag\|>",
+    r'"name"\s*:\s*"get_weather"', r"^\s*\[?\s*get_weather\s*\(",
+]
+
+
+def ask(choice_mode):
+    # 2048 ไม่ใช่ 512: โมเดลสาย reasoning ใช้ budget ไปกับการคิดก่อนถึงจะเรียก tool
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
+        "tools": TOOLS, "tool_choice": choice_mode, "max_tokens": 2048,
+    }).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                                 data=payload, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=300) as response:
+            choice = json.load(response)["choices"][0]
+    except urllib.error.HTTPError as exc:
+        return None, f"HTTP {exc.code}: {exc.read().decode()[:200]}", "error", ""
+    msg = choice["message"]
+    return (msg.get("tool_calls") or [], msg.get("content") or "",
+            choice.get("finish_reason") or "", msg.get("reasoning_content") or "")
+
+
+def one_line(calls):
+    fn = calls[0]["function"]
+    return f"{fn['name']}({fn['arguments'][:80]})"
+
+
+modes = ["auto", "required"] if mode == "both" else [mode]
+seen = {}
+for m in modes:
+    calls, text, finish, reasoning = ask(m)
+    seen[m] = (calls, text, finish, reasoning)
+    if calls is None:
+        print(f"  {m:9s} → engine ปฏิเสธ ({text})")
+    else:
+        print(f"  {m:9s} → {one_line(calls) if calls else 'ไม่มี tool_calls'}")
+
+print()
+auto_calls, auto_text, auto_finish, auto_reasoning = seen.get("auto", (None, "", "", ""))
+req_calls = seen.get("required", (None, "", "", ""))[0]
+
+if auto_calls:
+    print("PASS: โมเดลเรียก tool ได้เองในโหมด auto — ใช้กับ agent ได้จริง")
+    sys.exit(0)
+
+if "auto" not in modes:                        # ผู้ใช้ขอ required อย่างเดียว
+    if req_calls:
+        print("PASS(required): ผ่านเฉพาะโหมดบังคับ")
+        print(f"  ยังไม่ได้พิสูจน์ว่า agent ใช้ได้ · รัน: {prog} test-tools auto")
+        sys.exit(0)
+    print("FAIL(required): ไม่มี tool_calls แม้จะบังคับ — template ไม่รองรับ tools หรือโมเดลเรียกไม่เป็น")
+    sys.exit(1)
+
+# auto ไม่ผ่าน = agent ใช้ไม่ได้ ไม่ว่า required จะผ่านหรือไม่
+print("FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่นจะเห็นเป็นข้อความเปล่า")
+if caps and not caps.get("supports_tools"):
+    print("  /props บอกว่า chat template ที่โหลดอยู่ **ไม่รองรับ tools** เลย")
+    print("  controller นี้ส่ง --jinja อยู่แล้ว แปลว่า template ในไฟล์ GGUF เองไม่มีส่วน tools")
+    print(f"  ทางแก้: หา template ที่รองรับแล้วส่ง --chat-template-file · ดูของเดิม: curl :{port}/props")
+elif auto_finish == "length" and auto_reasoning and not auto_text.strip():
+    print("  โมเดลใช้ 2048 tokens ไปกับการคิดจนหมดก่อนจะเรียก tool — ยังสรุปไม่ได้")
+    print("  ลองใหม่อีกครั้ง หรือถามผ่าน API ตรง ๆ โดยเพิ่ม max_tokens")
+elif any(re.search(pattern, auto_text, re.M) for pattern in LEAKS):
+    print("  โมเดลเรียก tool แล้ว แต่ call หลุดออกมาเป็นข้อความ = template แปลรูปแบบของมันไม่ออก")
+    print(f"  มักเป็น llama.cpp รุ่นเก่ากว่าโมเดล — อัปเดตด้วย: {prog} prepare-runtime")
+    print("  หรือใช้ template ที่ตรงรุ่นผ่าน --chat-template-file")
+elif req_calls:
+    print("  โหมด required ผ่าน เพราะ grammar บังคับรูปแบบให้เอง")
+    print("  แปลว่าโมเดลเรียก tool เป็น แต่ในโหมดปกติมันเลือกจะไม่เรียก — ดูที่โมเดลเขียนด้านล่าง")
+if auto_text.strip():
+    print("  สิ่งที่โมเดลเขียนออกมาจริง:")
+    print("    " + auto_text.strip()[:200].replace("\n", " "))
+print(f"  ดู caps ของ template: curl -s http://127.0.0.1:{port}/props | python3 -m json.tool | grep -A12 chat_template_caps")
+sys.exit(1)
+PYEOF
+}
+
 usage() {
   cat <<EOF
 {{ slug }} — llama.cpp controller  (model: ${MODEL_ID})
@@ -891,6 +1008,7 @@ COMMANDS
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
   test-text         Send one chat completion request to verify the model answers
+  test-tools [both|auto|required]  Prove tool calling works through the chat template (auto = what agents send)
 {% if mmproj_basename %}  test-vision       Send a generated red image and check the model actually sees it
 {% endif %}
 
@@ -972,7 +1090,7 @@ EOF
 parse_options "$@"
 
 case "${1:-help}" in
-  status|logs|client-config|info|banner|network-info|test-text|test-vision|wait-health|stop)
+  status|logs|client-config|info|banner|network-info|test-text|test-vision|test-tools|wait-health|stop)
     adopt_running_state ;;
 esac
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
@@ -1025,6 +1143,7 @@ case "${1:-help}" in
   info|banner) info ;;
   network-info) network_info ;;
   test-text)    test_text ;;
+  test-tools)   test_tools "${2:-both}" ;;
 {% if mmproj_basename %}  test-vision)  test_vision ;;
 {% endif %}
   wait-health)  wait_health ;;
