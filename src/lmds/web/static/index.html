@@ -2691,6 +2691,80 @@ const pinnedOutput = new Set();
 function nodeOpts(key) {
   try { return JSON.parse(localStorage.getItem("lmds:node:" + key) || "{}"); } catch { return {}; }
 }
+// ── ต้องใช้แรมเท่าไรตามค่าที่กรอก — คำนวณสดในเบราว์เซอร์ทุกครั้งที่พิมพ์ ──
+// hub ส่งข้อเท็จจริง (weights, KV/token, ความจุ, ว่างตอนนี้, overhead) มาครั้งเดียวตอนเปิดแผง
+// ส่วนเลขคณิตอยู่ตรงนี้ จะได้ขยับตาม context/slots/gpu-util โดยไม่ยิง request
+async function hydrateMemoryLine(node, slug) {
+  const row = nodeRows.get(node);
+  const box = row && row.body.querySelector(`.submenu[data-for="${CSS.escape(slug)}"]`);
+  const line = box && box.querySelector(".n-mem");
+  if (!line) return;
+  let f;
+  try {
+    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/memory`);
+    f = await r.json();
+    if (!r.ok) { line.textContent = "คำนวณหน่วยความจำไม่ได้: " + (f.detail || r.status); return; }
+  } catch (e) { line.textContent = "คำนวณหน่วยความจำไม่ได้: " + e; return; }
+  const paint = () => paintMemoryLine(box, f);
+  box.querySelectorAll(".n-ctx, .n-slots, .n-gpu").forEach(el => el.addEventListener("input", paint));
+  paint();
+}
+
+function paintMemoryLine(box, f) {
+  const line = box.querySelector(".n-mem");
+  if (!line) return;
+  const val = sel => { const el = box.querySelector(sel); return el && el.value !== "" ? +el.value : null; };
+  const gb = x => (Math.round(x * 10) / 10).toFixed(1);
+  const cap = f.capacity_gb || 0, free = f.free_gb_now;
+  const d = f.defaults || {};
+  const ctx = val(".n-ctx") || d.context || f.native_context || 0;
+  const slots = val(".n-slots") || d.max_num_seqs || 1;
+  const util = val(".n-gpu") || d.gpu_util || 0.85;
+  if (!cap || f.weights_gb == null) {
+    line.innerHTML = `<span class="dim">ไม่มีข้อมูลพอคำนวณ — ${esc((f.notes || []).join(" · "))}</span>`;
+    return;
+  }
+  const perSeq = f.kv_bytes_per_token ? f.kv_bytes_per_token * ctx / 1073741824 : null;
+  const parts = [];
+  if (f.engine === "vllm") {
+    const pool = util * cap;
+    const kvLeft = pool - f.weights_gb - f.overhead_gb;
+    const fullSeqs = perSeq ? Math.max(0, Math.floor(kvLeft / perSeq)) : null;
+    parts.push(`gpu-util ${util} × ${cap} GB = <b>${gb(pool)} GB</b> ที่ vLLM จะจอง → weights ${gb(f.weights_gb)} + overhead ${gb(f.overhead_gb)} → เหลือให้ KV <b>${gb(kvLeft)} GB</b>`);
+    if (perSeq) parts.push(`KV ที่ context ${ctx.toLocaleString()} = ${gb(perSeq)} GB ต่อคำขอ → รับได้ <b>${fullSeqs}</b> คำขอเต็ม context พร้อมกัน (slots ที่ตั้ง ${slots})`);
+    let verdict;
+    // ขั้นต่ำที่โมเดลนี้ต้องมีเพื่อ start ที่ context นี้ (weights + overhead + KV 1 คำขอ)
+    const needMin = f.weights_gb + f.overhead_gb + (perSeq || 0);
+    if (free != null && pool > free) {
+      const fitUtil = (free - 2) / cap;              // จองได้มากสุดเท่านี้ในสภาพเครื่องตอนนี้ (เผื่อ 2 GB)
+      verdict = fitUtil * cap < needMin
+        ? `<span class="warn-line">❌ start ตอนนี้ไม่ได้ — เครื่องว่าง ${gb(free)} GB แต่โมเดลนี้ต้องมีอย่างน้อย <b>${gb(needMin)} GB</b> (weights + overhead + KV 1 คำขอ) · ลด gpu-util ก็ไม่ช่วย ต้อง<b>หยุดโมเดลอื่นก่อน</b></span>`
+        : `<span class="warn-line">❌ start ตอนนี้ไม่ได้ — จะจอง ${gb(pool)} GB แต่เครื่องว่างแค่ ${gb(free)} GB · ตั้ง gpu-util ≤ <b>${fitUtil.toFixed(2)}</b> (ได้ KV ${gb(fitUtil * cap - f.weights_gb - f.overhead_gb)} GB) หรือหยุดโมเดลอื่นก่อน</span>`;
+    } else if (perSeq && kvLeft < perSeq) {
+      const minUtil = Math.min(0.98, needMin / cap + 0.02);
+      const maxCtx = Math.floor(Math.max(0, kvLeft) * 1073741824 / f.kv_bytes_per_token / 1024) * 1024;
+      verdict = `<span class="warn-line">❌ vLLM จะไม่ start — ${kvLeft <= 0
+        ? `แค่ weights + overhead (${gb(f.weights_gb + f.overhead_gb)} GB) ก็เกินที่จอง ${gb(pool)} GB แล้ว`
+        : `KV เหลือ ${gb(kvLeft)} GB น้อยกว่า 1 คำขอที่ context นี้ (${gb(perSeq)} GB)`} · ตั้ง gpu-util ≥ <b>${minUtil.toFixed(2)}</b>${
+        maxCtx >= 4096 ? ` หรือลด context เหลือ ≤ <b>${maxCtx.toLocaleString()}</b>` : ""}</span>`;
+    } else if (perSeq && fullSeqs < slots) {
+      verdict = `<span class="warn-line">⚠️ KV พอสำหรับ ${fullSeqs} คำขอเต็ม context แต่ตั้ง slots ${slots} — ใช้จริงคำขอมักสั้นกว่า context จึงมักไม่ชน แต่ถ้าเต็มพร้อมกันคำขอที่เกินจะรอ</span>`;
+    } else {
+      verdict = `<span class="ok-line">✅ พอ${free != null ? ` · เครื่องว่าง ${gb(free)} GB` : ""}</span>`;
+    }
+    parts.push(verdict);
+  } else {
+    // llama.cpp จอง KV ทั้งก้อนล่วงหน้าตาม --ctx-size (แบ่งให้ทุก slot) ไม่ยืดตามโหลดแบบ vLLM
+    const total = f.weights_gb + (perSeq || 0) + f.overhead_gb;
+    parts.push(`weights ${gb(f.weights_gb)} + KV(${ctx.toLocaleString()}) ${perSeq ? gb(perSeq) : "?"} + overhead ${gb(f.overhead_gb)} = <b>${gb(total)} GB</b> จองตอน start · ${slots} slot → context ต่อ slot ${Math.floor(ctx / Math.max(1, slots)).toLocaleString()}`);
+    if (free != null && total > free) parts.push(`<span class="warn-line">❌ ต้องการ ${gb(total)} GB แต่เครื่องว่าง ${gb(free)} GB — ลด context หรือหยุดโมเดลอื่นก่อน</span>`);
+    else parts.push(`<span class="ok-line">✅ พอ${free != null ? ` · เครื่องว่าง ${gb(free)} GB` : ""}</span>`);
+  }
+  if (ctx && ctx % 4096 !== 0) parts.push(`<span class="dim">context ${ctx.toLocaleString()} ไม่ใช่ขั้นมาตรฐาน (เช่น 131,072) — engine บางตัวปัดลงให้เงียบ ๆ</span>`);
+  if ((f.notes || []).length) parts.push(`<span class="dim">${esc(f.notes.join(" · "))}</span>`);
+  line.innerHTML = parts.join("<br>");
+}
+
 function readNodeOpts(node, slug) {
   const row = nodeRows.get(node);
   const box = row && row.body.querySelector(`.submenu[data-for="${CSS.escape(slug)}"]`);
@@ -2945,22 +3019,26 @@ function nodeModelsMarkup(name, data) {
           ${servedLine(m)}
           <div class="dim" style="width:100%">ตั้งค่าตอน start — เหมือน
             <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
-          <div class="field" style="width:100%">
-            <label>port</label>
+          <div class="field" style="width:100%;flex-wrap:nowrap;overflow-x:auto">
+            <label style="flex:none">port</label>
             <input type="number" class="n-port" value="${esc(o.port ?? "")}"
-                   placeholder="${esc(m.port ?? 8000)}" style="flex:none;width:100px">
-            <label>context</label>
+                   placeholder="${esc(m.port ?? 8000)}" style="flex:none;width:96px">
+            <label style="flex:none">context</label>
             <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
-                   placeholder="${esc(m.context_configured ?? m.context ?? "")}" style="flex:none;width:120px"
-                   title="tokens — เกินที่หน่วยความจำรับไหว vLLM จะไม่ขึ้น">
-            <label>slots</label>
+                   placeholder="${esc(m.context_configured ?? m.context ?? "")}" style="flex:none;width:130px"
+                   title="tokens ต่อ 1 คำขอ (input + output) — ดูบรรทัดคำนวณข้างล่างว่าพอไหม">
+            <label style="flex:none">slots</label>
             <input type="number" class="n-slots" value="${esc(o.slots ?? "")}"
                    placeholder="${esc(m.max_num_seqs ?? 4)}" style="flex:none;width:80px"
                    title="จำนวน request พร้อมกัน — llama.cpp แบ่ง context เท่า ๆ กันให้ทุก slot">
-            ${m.engine === "vllm" ? `<label>gpu-util</label>
-            <input type="number" step="0.01" min="0.3" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
-                   placeholder="0.85" style="flex:none;width:85px"
-                   title="สัดส่วนหน่วยความจำที่ vLLM จองไว้ (0.3–0.98)">` : ""}
+            ${m.engine === "vllm" ? `<label style="flex:none">gpu-util</label>
+            <input type="number" step="0.01" min="0.1" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
+                   placeholder="0.85" style="flex:none;width:90px"
+                   title="สัดส่วนของแรม GPU ทั้งเครื่องที่ vLLM จองตอน start (0.1–0.98) — บนเครื่องที่รันตัวอื่นอยู่ต้องลด">` : ""}
+          </div>
+          <!-- ต้องใช้แรมเท่าไรตามค่าที่กรอก — เห็นก่อนกด start ไม่ใช่รู้ตอนพัง (ผู้ใช้ 2026-09-04) -->
+          <div class="n-mem dim" style="width:100%;line-height:1.55;margin:-4px 0 10px">กำลังคำนวณหน่วยความจำ…</div>
+          <div class="field" style="width:100%">
             <label>bind</label>
             <select class="n-bind" style="flex:none">
               <option value=""${!o.bind ? " selected" : ""}>Bundle default</option>
@@ -3160,6 +3238,10 @@ async function loadNode(name) {
   lastNodeData.set(name, d);
   paintSummary(name, d.host, d.summary);
   row.body.innerHTML = nodeModelsMarkup(name, d);
+  // แผงที่เปิดค้างอยู่ต้องได้บรรทัดคำนวณกลับมาด้วย (ค่า "ว่างตอนนี้" เปลี่ยนตามการ์ดที่เพิ่ง refresh)
+  for (const key of openModelMenus) {
+    if (key.startsWith(name + "/")) hydrateMemoryLine(name, key.slice(name.length + 1));
+  }
 }
 
 async function refreshNodes() {
@@ -3278,7 +3360,7 @@ document.addEventListener("click", async e => {
     openModelMenus.has(key) ? openModelMenus.delete(key) : openModelMenus.add(key);
     const row = nodeRows.get(node);
     if (row) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
-    if (openModelMenus.has(key)) fillCloneTargets(node, slug);
+    if (openModelMenus.has(key)) { fillCloneTargets(node, slug); hydrateMemoryLine(node, slug); }
     return;
   }
   if (nact === "clone") {

@@ -427,6 +427,33 @@ def create_app(token: str = "") -> FastAPI:
             projector=bool(mm.get("projector_files")),
         )}
 
+    @app.get("/api/models/{slug}/memory", dependencies=guarded)
+    def model_memory(slug: str) -> dict:
+        """ข้อเท็จจริงสำหรับบรรทัด "ต้องใช้แรมเท่าไร" ใต้ฟอร์ม settings (เลขคณิตทำที่หน้าเว็บ)"""
+        from lmds.fleet import bundle_profile, find
+        from .memory import memory_facts
+        server = find(slug)
+        if server is None or not server.controller:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        host = ((state.STORE.snapshot().get("host") or {}).get("data") or {}).get("host") or {}
+        return {"slug": slug, **memory_facts(bundle_profile(server.controller), host)}
+
+    @app.get("/api/nodes/{name}/models/{slug}/memory", dependencies=guarded)
+    def node_model_memory(name: str, slug: str) -> dict:
+        """เหมือน model_memory แต่สำหรับ bundle บนเครื่องอื่น — host จากแคช · profile อ่านผ่าน SSH ครั้งเดียว"""
+        from lmds.nodes import NodeError, find
+        from .memory import memory_facts, read_node_profile
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        data = (state.STORE.snapshot()["nodes"].get(name) or {}).get("data") or {}
+        entry = next((m for m in (data.get("models") or []) if m.get("slug") == slug), None)
+        try:
+            profile = read_node_profile(node, slug)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "slug": slug, **memory_facts(profile, data.get("host") or {}, entry)}
+
     @app.get("/api/nodes/{name}/models/{slug}/settings/suggest", dependencies=guarded)
     def node_settings_suggest(name: str, slug: str) -> dict:
         """เหมือน settings_suggest แต่สำหรับ bundle บนเครื่องอื่น — อ่านจากแคช inventory ไม่ยิง SSH"""

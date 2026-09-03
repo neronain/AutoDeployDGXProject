@@ -277,6 +277,9 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "params_total": report.params_total,
             "weight_bytes": report.weight_bytes,
             "native_context": report.context_length,
+            # หน้า settings ใช้คำนวณสดว่า context/slots/gpu-util ที่กรอกต้องใช้แรมเท่าไร
+            # ไม่มีค่านี้ hub ต้องไปถาม Hugging Face ใหม่ทุกครั้งที่เปิดแผง
+            "kv_bytes_per_token": fit.kv_bytes_per_token,
         },
         "runtime": {
             "engine": plan.runtime.engine.value,
