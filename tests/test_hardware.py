@@ -126,3 +126,33 @@ def test_probe_warns_when_disk_low(monkeypatch):
     report = profiler.probe()
     assert report.disk_free_gb == 12.0
     assert any("ดิสก์เหลือ" in note for note in report.notes)
+
+
+def test_toolkit_counts_when_binary_exists_but_runtime_is_not_registered(monkeypatch):
+    """เคสจริง RTX4000 (Docker 29 + toolkit 1.20): --gpus all ใช้ได้ แต่ docker info ไม่มี runtime nvidia
+    → เดิมรายงาน ❌ แล้วสั่งให้ไปลง toolkit ที่ลงอยู่แล้ว"""
+    import shutil as _shutil
+
+    from lmds.hardware import profiler
+    monkeypatch.setattr(profiler, "_run", lambda cmd, timeout=15: '{"runc":{"path":"runc"}}')
+    monkeypatch.setattr(_shutil, "which", lambda n: "/usr/bin/" + n if n in ("docker", "nvidia-ctk") else None)
+    assert profiler.detect_docker() == (True, True)
+    # ไม่มีทั้ง runtime ทั้ง binary → ❌ จริง
+    monkeypatch.setattr(_shutil, "which", lambda n: "/usr/bin/docker" if n == "docker" else None)
+    monkeypatch.setattr(profiler.Path, "is_file", lambda self: False)
+    assert profiler.detect_docker() == (True, False)
+
+
+def test_suggest_target_maps_cards_to_a_real_preset():
+    from lmds.fit import PRESETS
+    from lmds.hardware.profiler import DetectedGpu, suggest_target
+
+    g = lambda name: DetectedGpu(name=name, vram_mib=24467, compute_capability="12.0")
+    assert suggest_target([g("NVIDIA RTX PRO 4000 Blackwell"), g("NVIDIA RTX PRO 4000 Blackwell")]) == "rtx-pro-4000-dual"
+    assert suggest_target([g("NVIDIA RTX PRO 4000 Blackwell")]) == "rtx-pro-4000"
+    assert suggest_target([g("NVIDIA GeForce RTX 5090")]) == "rtx-5090"
+    assert suggest_target([g("NVIDIA GeForce RTX 4070 Ti SUPER")]) == "rtx-4070-ti-super"
+    assert suggest_target([g("NVIDIA GB10")]) == "dgx-spark-single"
+    assert suggest_target([g("Tesla T4")]) == ""
+    for name in ("rtx-pro-4000-dual", "rtx-5090", "rtx-4070-ti-super"):
+        assert name in PRESETS

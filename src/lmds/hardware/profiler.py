@@ -491,12 +491,27 @@ def detect_fabric() -> dict:
 
 
 def detect_docker() -> tuple[bool, bool]:
+    """(docker ใช้ได้, มี NVIDIA Container Toolkit)
+
+    "มี toolkit" ไม่เท่ากับ "runtime ชื่อ nvidia ลงทะเบียนกับ docker" — Docker ≥25 ส่ง GPU ให้
+    container ด้วย `--gpus` ผ่าน CDI ได้โดยไม่ต้องลงทะเบียน runtime · เคสจริง 2026-09-03 RTX4000
+    (Docker 29, toolkit 1.20): `docker run --gpus all … nvidia-smi -L` เห็น GPU ครบสองใบ แต่ตรวจ
+    แบบเดิมรายงาน ❌ แล้วบอกให้ไปลง toolkit ที่ลงอยู่แล้ว
+    """
     if shutil.which("docker") is None:
         return False, False
     info = _run(["docker", "info", "--format", "{{json .Runtimes}}"], timeout=20)
-    if info is None:
-        return True, False
-    return True, "nvidia" in info
+    if info and "nvidia" in info:
+        return True, True
+    toolkit_binary = shutil.which("nvidia-ctk") or shutil.which("nvidia-container-cli")
+    cdi_spec = any(Path(p).is_file() for p in ("/etc/cdi/nvidia.yaml", "/var/run/cdi/nvidia.yaml"))
+    return True, bool(toolkit_binary or cdi_spec)
+
+
+def nvidia_runtime_registered() -> bool:
+    """runtime ชื่อ nvidia อยู่ใน docker info ไหม — ใช้แยกโน้ต ไม่ใช่เงื่อนไขว่าใช้ GPU ได้"""
+    info = _run(["docker", "info", "--format", "{{json .Runtimes}}"], timeout=20)
+    return bool(info and "nvidia" in info)
 
 
 def probe() -> HardwareReport:
@@ -515,10 +530,40 @@ def probe() -> HardwareReport:
         notes=notes,
     )
     if docker and not toolkit and gpus:
-        report.notes.append("Docker ใช้ได้แต่ไม่พบ nvidia runtime — ติดตั้ง NVIDIA Container Toolkit ก่อนรัน bundle")
+        report.notes.append("Docker ใช้ได้แต่ไม่พบ NVIDIA Container Toolkit — ติดตั้งก่อนรัน bundle "
+                            "(sudo apt install nvidia-container-toolkit)")
+    elif docker and toolkit and gpus and not nvidia_runtime_registered():
+        report.notes.append("มี toolkit แต่ runtime nvidia ยังไม่ลงทะเบียนกับ docker — Docker ≥25 ใช้ --gpus "
+                            "ผ่าน CDI ได้อยู่แล้ว · ถ้า start แล้ว container ไม่เห็น GPU: "
+                            "sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker")
     if disk_free is not None and disk_free < 50:
         report.notes.append(
             f"ดิสก์เหลือ {disk_free} GB — โมเดลขนาดกลางขึ้นไปอาจโหลดไม่ลง "
             "(runtime image ~10-20 GB + weight) ย้ายที่เก็บด้วย HF_HOME/MODEL_DIR ได้"
         )
     return report
+
+
+def suggest_target(gpus: list) -> str:
+    """ชื่อ preset ของ `lmds deploy --target` ที่ตรงกับการ์ดในเครื่อง — "" ถ้าเดาไม่ได้
+
+    หน้า hardware โชว์ profile (`rtx-multi-gpu`) ซึ่งไม่ใช่ชื่อ target · เคสจริง 2026-09-03: เอาชื่อนั้น
+    ไปใส่ --target แล้วโดนปฏิเสธ ทั้งที่ preset `rtx-pro-4000-dual` มีอยู่ — ระบบควรบอกชื่อที่ใช้ได้เอง
+    """
+    from lmds.fit import PRESETS
+
+    if not gpus:
+        return ""
+    name = (gpus[0].name or "").lower()
+    if "gb10" in name or "dgx spark" in name:
+        return "dgx-spark-single"
+    m = re.search(r"rtx\s*(pro)?\s*(\d{4})\s*(ti\s*super|ti|super)?", name)
+    if not m:
+        return ""
+    base = f"rtx-{'pro-' if m.group(1) else ''}{m.group(2)}"
+    suffix = (m.group(3) or "").replace(" ", "")
+    if suffix:
+        base += "-" + ("ti-super" if suffix == "tisuper" else suffix)
+    if len(gpus) >= 2 and f"{base}-dual" in PRESETS:
+        return f"{base}-dual"
+    return base if base in PRESETS else ""

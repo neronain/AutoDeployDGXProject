@@ -3668,6 +3668,9 @@ def hardware() -> None:
     table.add_row("Docker", "✅" if report.docker else "❌")
     table.add_row("NVIDIA Container Toolkit", "✅" if report.nvidia_container_toolkit else "❌")
     table.add_row("Profile", report.profile.value)
+    from lmds.hardware.profiler import suggest_target
+    target = suggest_target(report.gpus)
+    table.add_row("Target สำหรับ deploy", f"--target {target}" if target else "ไม่มี preset ตรงรุ่น — ดู lmds deploy --help")
     console.print(table)
     for note in report.notes:
         err_console.print(f"[yellow]• {note}[/yellow]")

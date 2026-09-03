@@ -17,6 +17,18 @@
   ถัดไปต้องถึงเน็ตอยู่แล้ว) · ล้มจริงค่อยบอกว่า "sudo apt install python3-venv"
 - เทสต์ด้วย python3 ปลอมที่ไม่มี ensurepip: ต้องได้ pip กลับมาโดยไม่แตะ sudo
 
+**`lmds hardware` บน Docker รุ่นใหม่: toolkit ที่ลงแล้วไม่ถูกรายงานว่าหาย และบอกชื่อ target ที่ใช้ได้จริง**
+
+node เดียวกัน (Docker 29 + nvidia-container-toolkit 1.20): `docker run --gpus all … nvidia-smi -L` เห็น GPU
+ครบสองใบ แต่ตารางบอก "NVIDIA Container Toolkit ❌ — ติดตั้งก่อน" เพราะตรวจแค่ว่า docker info มี runtime
+ชื่อ nvidia ซึ่ง Docker ≥25 ไม่ต้องมี (ส่ง GPU ผ่าน CDI) · และ "Profile: rtx-multi-gpu" ถูกเอาไปใส่
+`--target` แล้วโดนปฏิเสธ ทั้งที่ preset `rtx-pro-4000-dual` มีอยู่
+
+- toolkit นับว่ามีเมื่อมี runtime nvidia **หรือ** มี `nvidia-ctk`/`nvidia-container-cli` **หรือ** มี CDI spec ·
+  โน้ตแยกกรณี "มี toolkit แต่ runtime ยังไม่ลงทะเบียน" พร้อมคำสั่งที่ใช้เมื่อ container ไม่เห็น GPU จริง ๆ
+- แถว "Target สำหรับ deploy" ในตาราง hardware — `suggest_target()` แปลงชื่อการ์ด (+จำนวน) เป็นชื่อ preset
+  ที่ `lmds deploy --target` รับ (RTX PRO 4000 ×2 → `rtx-pro-4000-dual`, GB10 → `dgx-spark-single`)
+
 **publish พับค่าที่ `lmds set` ไว้ลง header — คลังได้สูตรที่รันได้จริง ไม่ใช่ค่าเดาของ plan**
 
 spark04 / spark-worker 2026-09-03: ทั้งคู่รันได้เพราะ `lmds set --image <digest v0.28.0>
