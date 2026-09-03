@@ -1110,6 +1110,52 @@ def node_clone(
 
 # flag ของคำสั่งปลายทางต้องผ่านไปทั้งดุ้น — ไม่งั้น `node run x logs y -n 100`
 # จะโดน typer กินไปเป็น option ของ node run เอง
+
+def _run_detached(node, command: str, log_name: str, timeout: int = 7200, poll: int = 15) -> int:
+    """รันคำสั่งยาว ๆ บน node แบบ *ไม่ผูกกับ SSH session* แล้วคอยอ่าน log จนจบ
+
+    เดิม push --download / node ctl download รันผ่าน `run()` ตรง ๆ — controller บน node เป็น
+    ลูกของ session SSH · พอ session หลุด (เน็ตสะดุด, hub ปิดเทอร์มินัล, timeout) controller
+    ตายแต่ container ที่มันสั่งไว้ยังอยู่ **โดยไม่มีใครเฝ้า** · watchdog กันค้าง (Xet) อยู่ใน
+    controller จึงตายไปด้วย · เคสจริง spark-worker 2026-09-03: container โหลด scottgl ค้างที่
+    "Fetching 33 files 0%" rx 0 MB/s อยู่ 90 นาทีหลัง session หลุด ส่วน hub ก็ค้างที่
+    "โหลด weight บน spark-worker…" ตลอด
+
+    ตอนนี้: setsid+nohup บน node → เขียน log + บรรทัด __RC=<code> ตอนจบ → hub อ่าน log
+    เป็นช่วง ๆ · session หลุดกลางทางก็สั่ง `lmds node ctl <n> <slug> download` ซ้ำได้ มันจะ
+    เห็นว่ายังรันอยู่หรือจบแล้วจากไฟล์เดียวกัน
+    """
+    import time
+
+    from lmds.nodes import run
+
+    log = f"~/.lmds/run/{log_name}.detached.log"
+    launch = (
+        f"mkdir -p ~/.lmds/run && rm -f {log} && "
+        f"(setsid nohup bash -lc {shlex.quote(command + '; echo __RC=$? >> ' + log)} "
+        f"> {log} 2>&1 < /dev/null &) ; sleep 1; echo started"
+    )
+    started = run(node, launch, timeout=60)
+    if not started.ok:
+        err_console.print(started.stderr.rstrip()[:400])
+        return started.exit_code or 1
+    shown = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(poll)
+        probe = run(node, f"cat {log} 2>/dev/null", timeout=60)
+        text = probe.stdout or ""
+        # พิมพ์เฉพาะส่วนใหม่ — ผู้ใช้เห็นความคืบหน้าเหมือนรันสด
+        fresh = text[shown:]
+        rc_at = fresh.find("__RC=")
+        if rc_at != -1:
+            print(fresh[:rc_at], end="")
+            return int(fresh[rc_at + 5:].strip().splitlines()[0] or 1)
+        print(fresh, end="", flush=True)
+        shown = len(text)
+    err_console.print(f"[yellow]เกิน {timeout}s — งานยังรันอยู่บน node · ดูต่อ: lmds node run {node.name} logs[/yellow]")
+    return 124
+
 @node_app.command("push")
 def node_push(
     name: str = typer.Argument(..., help="ชื่อเครื่องปลายทาง", autocompletion=_complete_node),
@@ -1170,13 +1216,10 @@ def node_push(
         for flag, command, note in ((download, "repair", "โหลด weight"), (start, "start", "สั่งรัน")):
             if not flag:
                 continue
-            console.print(f"{note} บน {name}…")
-            step = run(node, f"lmds {command} {shlex.quote(slug)}", timeout=7200)
-            if step.stdout:
-                print(step.stdout, end="")
-            if not step.ok:
-                err_console.print(step.stderr.rstrip()[:600])
-                raise typer.Exit(code=step.exit_code)
+            console.print(f"{note} บน {name}… (รันแยกจาก session นี้ — หลุดกลางทางงานยังเดินต่อ)")
+            rc = _run_detached(node, f"lmds {command} {shlex.quote(slug)}", f"{slug}.{command}")
+            if rc != 0:
+                raise typer.Exit(code=rc)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)

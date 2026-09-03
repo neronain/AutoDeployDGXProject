@@ -2,6 +2,18 @@
 
 ## ยังไม่ปล่อย
 
+**`node push --download` หลุด session แล้วทิ้ง container โหลดไว้โดยไม่มีใครเฝ้า**
+
+download บน node รันผ่าน SSH session ของ hub ตรง ๆ · session หลุด (เน็ตสะดุด / ปิดเทอร์มินัล /
+timeout) → controller บน node ตาย แต่ container `lmds-dl-*` ที่มันสั่งไว้ยังอยู่ **โดยไม่มี
+watchdog** (ตัวกัน Xet ค้างอยู่ใน controller จึงตายไปด้วย) · เคสจริง spark-worker 2026-09-03:
+container โหลด scottgl ค้างที่ "Fetching 33 files 0%" rx 0 MB/s อยู่ 90 นาที ส่วน hub ก็ค้างที่
+"โหลด weight บน spark-worker…"
+
+- push --download/--start รันคำสั่งบน node ด้วย setsid+nohup เขียน log + `__RC=` ตอนจบ แล้ว hub
+  อ่าน log เป็นช่วง ๆ · session หลุดกลางทางงานยังเดินต่อ สั่งซ้ำได้จากไฟล์เดียวกัน
+- `node ctl … download` ยังสตรีมผ่าน session (ต้องส่ง HF_TOKEN ทาง stdin) — ข้อจำกัดที่รู้อยู่
+
 **`lmds node push` ส่ง zip เก่า — ค่าจาก `lmds set` ไม่เคยไปถึงเครื่องปลายทาง**
 
 zip ถูกสร้างตอน `deploy` แล้ว push หยิบไฟล์นั้นส่งตรง ๆ · ทุกอย่างที่ `lmds set` เขียนทีหลัง
