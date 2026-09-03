@@ -181,3 +181,64 @@ def test_targets_put_the_same_site_and_fast_link_first(fleet):
     rows.sort(key=lambda r: (not r["same_site"], r["link"] != "cluster", r["name"]))
 
     assert [r["name"] for r in rows] == ["msi-2", "slow", "far"]
+
+
+class _Result:
+    def __init__(self, done):
+        self.ok, self.stdout, self.stderr = done.returncode == 0, done.stdout, done.stderr
+
+
+def _run_locally(cwd):
+    import subprocess
+
+    def run(node, script, timeout=120):
+        return _Result(subprocess.run(["bash", "-c", script], cwd=cwd, capture_output=True, text=True, timeout=timeout))
+    return run
+
+
+def test_inspect_source_finds_a_vllm_model_in_the_hugging_face_cache(fleet, monkeypatch, tmp_path):
+    """เคสจริง 2026-09-03: clone Qwen3.6-35B NVFP4 จาก spark04 → RTX4000 ตอบ "ยังไม่มีไฟล์โมเดล ()"
+
+    controller ของ vLLM ไม่มี MODEL_DIR — weight อยู่ใน HF_HOME/hub/models--org--name
+    (blobs/ + snapshots/ ที่เป็น symlink) · ต้องหาเจอเองจาก MODEL_ID และนับไฟล์ใน blobs
+    """
+    from lmds.fleet.clone import inspect_source
+
+    home = tmp_path / "home"; bundle = tmp_path / "bundles" / "demo"; bundle.mkdir(parents=True)
+    (bundle / "demo-single.sh").write_text(
+        '#!/bin/bash\nMODEL_ID="nvidia/Qwen3.6-35B-A3B-NVFP4"\nHF_HOME="${HF_HOME:-' + str(home) + '/.cache/huggingface}"\n')
+    cache = home / ".cache/huggingface/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4"
+    (cache / "blobs").mkdir(parents=True); (cache / "snapshots/abc").mkdir(parents=True)
+    (cache / "blobs" / "sha-1").write_bytes(b"x" * 1000)
+    (cache / "snapshots/abc/model.safetensors").symlink_to("../../blobs/sha-1")
+    monkeypatch.setattr("lmds.nodes.run", _run_locally(tmp_path), raising=False)
+
+    plan = inspect_source(plan_clone("demo", "msi-1", "msi-2"))
+    assert plan.model_dir == str(cache)
+    assert plan.files == [("blobs/sha-1", 1000)], "ต้องนับไฟล์จริงใน blobs ไม่ใช่ symlink"
+    assert plan.bundle_dir.endswith("bundles/demo")
+
+
+def test_inspect_source_still_reads_model_dir_from_llamacpp_controllers(fleet, monkeypatch, tmp_path):
+    from lmds.fleet.clone import inspect_source
+
+    bundle = tmp_path / "bundles" / "gg"; bundle.mkdir(parents=True)
+    models = tmp_path / "models" / "gg"; models.mkdir(parents=True)
+    (models / "a.gguf").write_bytes(b"g" * 10)
+    (bundle / "gg-single.sh").write_text('#!/bin/bash\nMODEL_DIR="' + str(models) + '"\nMODEL_ID="org/gg-GGUF"\n')
+    monkeypatch.setattr("lmds.nodes.run", _run_locally(tmp_path), raising=False)
+
+    plan = inspect_source(plan_clone("gg", "msi-1", "msi-2"))
+    assert plan.model_dir == str(models) and plan.files == [("a.gguf", 10)]
+
+
+def test_inspect_source_names_the_missing_location(fleet, monkeypatch, tmp_path):
+    """ข้อความเดิม "ยังไม่มีไฟล์โมเดลบน host ()" — วงเล็บว่างบอกอะไรไม่ได้"""
+    from lmds.fleet.clone import inspect_source
+
+    bundle = tmp_path / "bundles" / "x"; bundle.mkdir(parents=True)
+    (bundle / "x-single.sh").write_text('#!/bin/bash\nMODEL_ID="org/x"\nHF_HOME="' + str(tmp_path) + '/nohf"\n')
+    monkeypatch.setattr("lmds.nodes.run", _run_locally(tmp_path), raising=False)
+    with pytest.raises(CloneError) as err:
+        inspect_source(plan_clone("x", "msi-1", "msi-2"))
+    assert "models--org--x" in str(err.value)

@@ -104,9 +104,19 @@ def inspect_source(plan: ClonePlan) -> ClonePlan:
         # MODEL_DIR ประกาศไว้ในตัว controller เอง — ถามมันดีกว่าเดา path
         'md="$(grep -m1 "^MODEL_DIR=" "$ctl" | sed "s/^MODEL_DIR=//")"; '
         'md="$(eval echo "$md")"; '
+        # controller ของ vLLM/SGLang ไม่มี MODEL_DIR — weight อยู่ใน cache ของ Hugging Face
+        # (HF_HOME/hub/models--org--name ซึ่งมี blobs/ + snapshots/ ที่เป็น symlink) · เคสจริง
+        # 2026-09-03: clone Qwen3.6-35B NVFP4 จาก spark04 → RTX4000 ได้ "ยังไม่มีไฟล์โมเดล ()"
+        # ทั้งที่ 22 GB อยู่บนเครื่องครบ · ต้อง copy ทั้งโฟลเดอร์ models--… ไม่ใช่แค่ snapshot
+        'if [ -z "$md" ]; then '
+        '  hf="$(grep -m1 "^HF_HOME=" "$ctl" | sed "s/^HF_HOME=//")"; hf="$(eval echo "${hf:-\\$HOME/.cache/huggingface}")"; '
+        '  mid="$(grep -m1 "^MODEL_ID=" "$ctl" | cut -d= -f2- | tr -d "\\"")"; '
+        '  [ -n "$mid" ] && md="$hf/hub/models--$(echo "$mid" | sed "s#/#--#g")"; '
+        'fi; '
         'echo "BUNDLE=$dir"; echo "MODELDIR=$md"; '
-        '[ -d "$md" ] || { echo "ยังไม่มีไฟล์โมเดลบน '"$(hostname)"' ($md)" >&2; exit 2; }; '
-        'find "$md" -maxdepth 1 -type f -printf "FILE=%s %f\\n"'
+        '[ -n "$md" ] && [ -d "$md" ] || { echo "ยังไม่มีไฟล์โมเดลบน '"$(hostname)"' (${md:-controller ไม่บอกที่เก็บ})" >&2; exit 2; }; '
+        # -type f ไล่ลึก: layout ของ HF เก็บไฟล์จริงใน blobs/ ส่วน snapshots/ เป็น symlink
+        'find "$md" -type f -printf "FILE=%s %P\\n"'
     )
     try:
         result = run(source, script, timeout=120)
