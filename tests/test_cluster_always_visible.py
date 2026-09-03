@@ -24,6 +24,12 @@ def client(monkeypatch):
 
     state.STORE.__init__()
     made = TestClient(create_app())
+    # `create_app()` สตาร์ต refresher เสมอ — ปิดทันที ไม่งั้นเทสในไฟล์นี้แข่งกับมัน:
+    # เทสนับว่า `/api/cluster` ไป probe กี่ครั้ง ส่วน refresher ก็ probe เครื่องเดียวกัน
+    # อยู่เบื้องหลัง แล้วนับรวมเข้ามาด้วย · บนเครื่องที่ probe ไวพอ (Linux ในคอนเทนเนอร์)
+    # เทสนี้ตกประมาณ 5 ใน 6 ครั้ง ส่วนบน macOS ผ่านตลอด — ผลจึงขึ้นกับว่ารันที่ไหน
+    # ไม่ใช่ขึ้นกับสิ่งที่ตั้งใจวัด
+    state.stop_refresher()
     yield made
     state.stop_refresher()
     state.STORE.__init__()
