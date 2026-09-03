@@ -418,14 +418,35 @@ def redact_secrets(env_items: list[str]) -> tuple[list[str], list[str]]:
             kept.append(item)
     return kept, redacted
 
+
+# คำสั่ง start ที่ไป "ดาวน์โหลดก่อนแล้วค่อยเสิร์ฟ" (`hf download X && …serve X`) ทำงานได้ตอนแรก
+# แต่กลายเป็นระเบิดเวลา: repo ที่ gated + token หมดอายุ = ดึง revision ใหม่ได้ครึ่งเดียว (401)
+# แล้ว serve ชี้ไปที่ snapshot ที่ไม่ครบ · เคสจริง dgx-spark03 2026-09-03: สร้าง container ใหม่
+# จากคำสั่งเดิมเป๊ะ → วนล้ม 15 รอบ ทั้งที่ snapshot ที่ครบอยู่บนดิสก์มาตั้งแต่ มิ.ย.
+_DOWNLOAD_THEN_SERVE = re.compile(r"^\s*(hf|huggingface-cli)\s+download\s+(\S+)[^&]*&&", re.MULTILINE)
+
+
+def download_before_serve(command: str) -> str:
+    """repo id ที่คำสั่งจะไปดึงก่อนเสิร์ฟ — ว่างเมื่อไม่มีขั้นนั้น"""
+    m = _DOWNLOAD_THEN_SERVE.search(command or "")
+    return m.group(2) if m else ""
+
 def render_controller(adopted: Adopted, slug: str) -> str:
     """สคริปต์ที่รัน container เดิมซ้ำได้ — คำสั่งเดียวกับที่มันรันอยู่ตอนนี้"""
     env_items, redacted = redact_secrets(meaningful_env(adopted))
+    fetch_repo = download_before_serve(" ".join(adopted.args or []))
+    if fetch_repo:
+        env_lines_note = (f"  # ⚠ คำสั่งนี้ไป `hf download {fetch_repo}` ก่อนเสิร์ฟทุกครั้งที่ start — ถ้า repo\n"
+                          f"  #   gated และ token หมดอายุ จะได้ snapshot ใหม่ที่ไม่ครบแล้วเสิร์ฟล้ม (dgx-spark03 2026-09-03)\n"
+                          f"  #   ถ้า weight อยู่ครบแล้ว ให้ชี้ path ของ snapshot ตรง ๆ และตั้ง HF_HUB_OFFLINE=1\n")
+    else:
+        env_lines_note = ""
     env_lines = "".join(f'  --env {shlex.quote(e)} \\\n' for e in env_items)
     if redacted:
         names = " ".join(redacted)
         env_lines = (f"  # ค่าของ {names} ไม่ได้เก็บไว้ในไฟล์นี้ — export ไว้ในเชลล์ก่อน start "
                      f"(docker หยิบจาก environment ให้เอง)\n") + env_lines
+    env_lines = env_lines_note + env_lines
     bind_lines = "".join(f'  --volume {shlex.quote(b)} \\\n' for b in adopted.binds)
     port_lines = "".join(
         f'  --publish {shlex.quote(binding[0]["HostPort"])}:{shlex.quote(spec.split("/")[0])} \\\n'

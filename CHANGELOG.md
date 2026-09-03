@@ -2,6 +2,16 @@
 
 ## ยังไม่ปล่อย
 
+**adopt เตือนเมื่อคำสั่ง start ไป `hf download` ก่อนเสิร์ฟ**
+
+dgx-spark03 2026-09-03: สร้าง container Nemotron ใหม่จากคำสั่งเดิมเป๊ะ
+(`hf download nvidia/… && trtllm-serve nvidia/…`) แล้ววนล้ม 15 รอบ — repo gated + HF_TOKEN
+หมดอายุ → ดึง revision ใหม่ได้ครึ่งเดียว (401, 6 ไฟล์ ไม่มี safetensors) แล้ว serve ชี้ไปที่นั่น
+ทั้งที่ snapshot ที่ครบ (44 ไฟล์) อยู่บนดิสก์มาตั้งแต่ มิ.ย. · ตัวเดิมรอดมาได้เพราะไม่เคย restart
+
+- สคริปต์ที่ adopt สร้างมีคำเตือนติดไว้ตรงคำสั่ง พร้อมทางแก้: ชี้ path ของ snapshot ที่ครบตรง ๆ
+  และตั้ง `HF_HUB_OFFLINE=1`
+
 **`lmds adopt` คัดลอก HF_TOKEN ลงสคริปต์บนดิสก์**
 
 `lmds adopt trtllm-nemotron` บน dgx-spark03 เขียน `--env HF_TOKEN=hf_…` ลง

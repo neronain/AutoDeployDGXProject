@@ -26,3 +26,17 @@ def test_render_controller_goes_through_the_redaction():
     src = inspect.getsource(adopt.render_controller)
     assert "redact_secrets(" in src
     assert "for e in meaningful_env(adopted))" not in src, "ยังเขียน env ดิบลงสคริปต์อยู่"
+
+
+def test_download_then_serve_is_detected():
+    """เคสจริง dgx-spark03: `hf download nvidia/X && trtllm-serve nvidia/X …` วนล้ม 15 รอบหลัง
+    token หมดอายุ — adopt ต้องชี้ให้เห็นตั้งแต่ตอนสร้างสคริปต์"""
+    cmd = "hf download nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 && PYTORCH_ALLOC_CONF=x trtllm-serve nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 --port 8355"
+    assert adopt.download_before_serve(cmd) == "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16"
+    assert adopt.download_before_serve("trtllm-serve /root/.cache/huggingface/hub/x --port 8355") == ""
+    assert adopt.download_before_serve("") == ""
+
+
+def test_render_controller_warns_about_download_before_serve():
+    src = inspect.getsource(adopt.render_controller)
+    assert "download_before_serve(" in src and "HF_HUB_OFFLINE" in src
