@@ -1457,3 +1457,53 @@ def test_stacked_controller_reads_bundle_env_too():
             / "stacked-vllm-controller.sh.j2").read_text(encoding="utf-8")
     assert 'BUNDLE_ENV="${BUNDLE_ENV:-' in text
     assert text.index('BUNDLE_ENV="${BUNDLE_ENV:-') < text.index("\nVLLM_IMAGE=")
+
+
+def test_vllm_controller_explains_engine_crash_from_log(tmp_path):
+    """เคสจริง dgx-spark04 (2026-09-03): gpu-memory-utilization 0.4 กับ ctx 262144
+
+    engine core โยน ValueError "No available memory for the cache blocks" แต่ hub เห็นแค่
+    บรรทัดสุดท้ายของ log คือ "Engine core initialization failed" ต้อง ssh ไป grep เอง
+    controller ต้องหยิบสาเหตุจริง (ไม่ใช่บรรทัด wrapper) พร้อมบอกวิธีแก้ที่ผูกกับค่าที่ตั้งอยู่
+    """
+    import subprocess
+
+    bundle = _vllm_bundle(tmp_path)
+    ctl = next(bundle.directory.glob("*-single.sh")).read_text(encoding="utf-8")
+    fn = ctl[ctl.index("explain_crash() {"):]
+    fn = fn[: fn.index("\n}\n") + 3]
+    fake_log = (
+        '(EngineCore pid=325) ERROR [core.py:1346]   File "core.py", line 1073, in __init__\n'
+        "(EngineCore pid=325) ERROR [core.py:1346] ValueError: No available memory for the cache blocks."
+        " Try increasing `gpu_memory_utilization` when initializing the engine\n"
+        "(APIServer pid=1) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}\n"
+    )
+    script = (fn + "\ndocker() { printf '%s' \"$FAKE_LOG\"; }\n"
+              "CONTAINER_NAME=x GPU_MEMORY_UTILIZATION=0.4 MAX_MODEL_LEN=262144 explain_crash\n")
+    out = subprocess.run(["bash", "-c", script], env={"FAKE_LOG": fake_log, "PATH": "/usr/bin:/bin"},
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert "ValueError: No available memory for the cache blocks" in out.stderr
+    assert "Engine core initialization failed" not in out.stderr   # wrapper line ไม่ใช่สาเหตุ
+    assert "0.4" in out.stderr and "262144" in out.stderr           # ผูกกับค่าที่ตั้งอยู่จริง
+    assert "--gpu-util" in out.stderr
+
+    # log ที่ไม่มี exception เลย (เช่น โดน OOM-kill) ต้องเงียบ ไม่พ่นบรรทัดว่าง
+    quiet = subprocess.run(["bash", "-c", fn + "\ndocker() { echo 'INFO loading weights'; }\nCONTAINER_NAME=x explain_crash\n"],
+                           env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=30)
+    assert quiet.returncode == 0 and quiet.stderr.strip() == ""
+
+
+def test_every_docker_controller_template_explains_crashes():
+    """stacked head กับ SGLang ตายแบบเดียวกัน — คำอธิบายต้องไม่มีเฉพาะ single-vllm"""
+    from pathlib import Path
+    root = Path(renderer.__file__).parent / "templates"
+    hooked = {
+        "single-vllm-controller.sh.j2": 'explain_crash; die "container หยุดก่อน health',
+        "single-sglang-controller.sh.j2": 'explain_crash; die "container หยุดก่อน health',
+        "stacked-vllm-controller.sh.j2": 'CONTAINER_NAME="$MASTER_CONTAINER" explain_crash',
+    }
+    for name, call in hooked.items():
+        text = (root / name).read_text(encoding="utf-8")
+        assert text.count("explain_crash() {") == 1, name
+        assert call in text, name

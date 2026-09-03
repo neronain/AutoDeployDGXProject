@@ -473,6 +473,32 @@ print('download complete:', path, flush=True)
 }
 
 # ─────────────────────────── verify-files ───────────────────────────
+# container ตายก่อน health — ดึงสาเหตุจริงจาก log มาบอก ไม่ใช่แค่ "ดู logs"
+#
+# เคสจริง 2026-09-03 บน dgx-spark04: gpu-memory-utilization 0.4 กับ ctx 262144
+# engine core โยน ValueError "No available memory for the cache blocks" แต่บรรทัดสุดท้าย
+# ของ log คือ RuntimeError "Engine core initialization failed. See root cause above"
+# hub เห็นแค่บรรทัดสุดท้าย คนจึงต้อง ssh ไป grep เอง · สาเหตุจริงอยู่สูงกว่านั้นเสมอ
+explain_crash() {
+  local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError'
+  local cause
+  cause="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 \
+    | grep -E "(${errs}): " \
+    | grep -vE 'Engine core initialization failed|See root cause above' \
+    | sed -E "s/^.*(${errs}): /\\1: /" \
+    | head -1 | cut -c1-300)"
+  [[ -n "$cause" ]] || return 0
+  echo "สาเหตุจาก log: ${cause}" >&2
+  case "$cause" in
+    *"No available memory for the cache blocks"*|*"Not enough memory"*|*OutOfMemoryError*)
+      echo "  หน่วยความจำที่กันไว้ให้ engine (GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-?}) ไม่พอสำหรับ KV cache ที่ context ${MAX_MODEL_LEN:-?}" >&2
+      echo "  แก้ถาวร:  lmds set <bundle> --gpu-util 0.85   (หรือลด --context)" >&2
+      echo "  ลองทันที: GPU_MEMORY_UTILIZATION=0.85 $0 restart" >&2 ;;
+    *e2m1*|*ptxas*)
+      echo "  FP4 kernel นี้ใช้บน sm_121 ไม่ได้ — ตั้ง ENGINE_ENV ให้ใช้ marlin (ดู lmds set --help)" >&2 ;;
+  esac
+}
+
 warn_open_endpoint() {
   # bind 0.0.0.0 + ไม่มี key = ใครก็ตามในวง network ยิง API ได้โดยไม่ต้องยืนยันตัวตน
   [[ "$API_HOST" == "0.0.0.0" && -z "$API_KEY" ]] || return 0
@@ -984,6 +1010,7 @@ WSCRIPT
       return 0
     fi
     if [[ "$(docker inspect -f '{{.State.Running}}' "$MASTER_CONTAINER" 2>/dev/null || true)" != "true" ]]; then
+      CONTAINER_NAME="$MASTER_CONTAINER" explain_crash
       die "head container หยุดก่อน health ผ่าน — ดู: $0 logs head 200"
     fi
     sleep 10

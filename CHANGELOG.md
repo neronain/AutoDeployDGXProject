@@ -2,6 +2,18 @@
 
 ## ยังไม่ปล่อย
 
+**controller บอกสาเหตุจริงเมื่อ container ตายก่อน health**
+
+dgx-spark04 2026-09-03: bundle ตั้ง gpu-util 0.4 กับ context 262144 → vLLM โยน
+`ValueError: No available memory for the cache blocks` แต่บรรทัดสุดท้ายของ log คือ
+`RuntimeError: Engine core initialization failed. See root cause above` · hub เห็นแค่นั้น
+กับข้อความ "container หยุดก่อน health ผ่าน — ดู logs" คนจึงต้อง ssh ไป grep เอง
+
+- `explain_crash()` ใน single-vllm / single-sglang / stacked (head) หยิบ exception บรรทัดแรก
+  ที่ไม่ใช่ wrapper ออกมาแสดง พร้อมคำแนะนำที่ผูกกับค่าที่ตั้งอยู่จริง (KV cache ไม่พอ →
+  `lmds set --gpu-util` / ลด `--context` · ptxas e2m1 → ENGINE_ENV marlin)
+- log ที่ไม่มี exception (เช่นโดน OOM-kill) ยังคงเงียบ ไม่พ่นบรรทัดว่าง
+
 **adopt เตือนเมื่อคำสั่ง start ไป `hf download` ก่อนเสิร์ฟ**
 
 dgx-spark03 2026-09-03: สร้าง container Nemotron ใหม่จากคำสั่งเดิมเป๊ะ
