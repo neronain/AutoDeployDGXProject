@@ -1201,3 +1201,57 @@ def test_the_container_is_told_what_to_call_itself(isolated_config, tmp_path):
     assert "-e USER=" in text
     # ต้องอยู่คู่กับทุกที่ที่รันด้วย --user ไม่ใช่แค่ที่เดียว
     assert text.count("-e USER=") == text.count("-e HOME=/tmp")
+
+
+def test_stop_waits_for_the_process_to_actually_die(tmp_path):
+    """เคสจริง spark-02 (2026-09-03): `lmds restart` พิมพ์ stopped แล้ว start ทับทันที
+
+    `kill` คืนค่าทันทีที่ *ส่งสัญญาณ* สำเร็จ ไม่ได้แปลว่า process จบ · ของเดิมลบ
+    PID_FILE แล้วรายงาน stopped ต่อเลย ตัวเก่าจึงยังถือโมเดลทั้งก้อนอยู่ ส่วนตัวใหม่
+    bind ทับได้เพราะ SO_REUSEADDR — ไม่มี error ให้เห็น และ `lmds ps` ก็เขียว
+    เพราะอ่านจาก pid file ของตัวใหม่ · วัดจริง: Q8 39 GB ค้างสองชุด RAM เหลือ 25/121 GB
+    """
+    import os
+    import signal
+    import subprocess
+    import time
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    script = bundle.controller
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    pid_file = run_dir / "server.pid"
+
+    # process ที่เมิน SIGTERM — จำลอง llama-server ที่กำลังคืนหน่วยความจำก้อนใหญ่
+    victim = subprocess.Popen(["bash", "-c", "trap '' TERM; sleep 60"])
+    pid_file.write_text(str(victim.pid), encoding="utf-8")
+
+    env = {**os.environ, "RUNTIME_MODE": "native", "RUN_DIR": str(run_dir),
+           "PID_FILE": str(pid_file), "STOP_TIMEOUT": "2"}
+    try:
+        t0 = time.monotonic()
+        done = subprocess.run(["bash", str(script), "stop"], env=env,
+                              capture_output=True, text=True, timeout=60)
+        elapsed = time.monotonic() - t0
+
+        assert done.returncode == 0, done.stderr
+        # ต้องรอจริง ไม่ใช่คืนทันที
+        assert elapsed >= 2, f"stop คืนเร็วเกินไป ({elapsed:.1f}s) — แปลว่าไม่ได้รอ"
+        # และต้องตายจริงหลัง SIGKILL
+        assert victim.poll() is not None or _reap(victim), "process ยังไม่ตายหลัง stop"
+        assert not pid_file.exists()
+    finally:
+        if victim.poll() is None:
+            victim.send_signal(signal.SIGKILL)
+        victim.wait(timeout=10)
+
+
+def _reap(proc, tries: int = 20) -> bool:
+    """รอสั้น ๆ ให้ระบบเก็บศพ — SIGKILL ไม่ได้สะท้อนใน poll() ทันทีเสมอ"""
+    import time
+    for _ in range(tries):
+        if proc.poll() is not None:
+            return True
+        time.sleep(0.1)
+    return False
