@@ -87,7 +87,9 @@ MMPROJ_FILE="${MMPROJ_FILE-{{ mmproj_basename }}}"
 # ไปด้วยค่าจากไฟล์ซึ่งต่ำกว่านั้น · ผลคือถามว่า "มีอะไรในภาพ" ตอบได้ แต่ถามว่า "อยู่ตรงไหน"
 # เริ่มเพี้ยน — เป็นความแม่นยำที่หายไปเงียบ ๆ ไม่ใช่ error
 # ตั้งว่างเพื่อใช้ค่าที่ฝังมากับโมเดลแทน
-IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS-1024}"
+# ⚠️ 1024 ใช้กับ Qwen-VL เท่านั้น — projector ตระกูลอื่นมีเพดานของตัวเอง (Gemma-4 = 280 tokens)
+# บังคับเกินเพดาน = clip_init ปฏิเสธ → start พัง · ตระกูลอื่น default จึงว่าง (ค่าจากไฟล์)
+IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS-{{ image_min_tokens_default }}}"
 {% endif %}
 {% if mtp_embedded and not mtp_basename %}# MTP head ฝังอยู่ในไฟล์โมเดลเอง (nextn) — ไม่มีไฟล์ให้โหลดแยก
 # MTP_EMBEDDED="" เพื่อปิด speculative decoding

@@ -42,6 +42,11 @@ FIELDS: dict[str, tuple[str, ...]] = {
     # ไว้ ต้องใส่ qwen3_xml + qwen3 ทุกครั้งที่ start ไม่งั้น agent เห็น tool call เป็นข้อความ
     "tool_parser": ("TOOL_CALL_PARSER",),
     "reasoning_parser": ("REASONING_PARSER",),
+    # --image-min-tokens ของ llama.cpp (vision) — ตัวเลข หรือ "auto" = ใช้ค่าที่ฝังมากับ projector
+    # "auto" ต้องเขียนลงไฟล์เป็นค่าว่าง (set แต่ว่าง) ไม่ใช่ลบทิ้ง: controller ที่สร้างก่อน
+    # 0.5.2 มี default 1024 ฝังอยู่ ($\{VAR-1024\}) — ลบทิ้ง = กลับไปพังกับ Gemma-4
+    # (เคสจริง 2026-09-04 dgx-veerasiam: clip_init ปฏิเสธเพราะ 1024 > เพดาน 280 ของ Gemma-4)
+    "image_min_tokens": ("IMAGE_MIN_TOKENS",),
     # แฟล็กเพิ่มของ engine เช่น --speculative-config '{"method":"mtp",...}' · เก็บใน
     # ไฟล์แยก (bundle.args) ไม่ใช่ bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่
     # `}` ตัวแรกที่เจอ — JSON จึงถูกตัดกลางคัน (ทดสอบแล้ว 2026-09-03)
@@ -75,6 +80,12 @@ def _clean(name: str, value: object) -> str:
     if name == "bind":
         if not re.fullmatch(r"[0-9a-zA-Z_.:\[\]-]+", text):
             raise SettingsError(f"bind ไม่ใช่ที่อยู่ที่ใช้ได้ (ได้ {text!r})")
+        return text
+    if name == "image_min_tokens":
+        if text.lower() in {"auto", "file", "none"}:
+            return ""  # set แต่ว่าง — controller จะไม่ส่ง --image-min-tokens
+        if not text.isdigit() or int(text) < 1:
+            raise SettingsError(f"image_min_tokens ต้องเป็นจำนวนเต็มบวก หรือ auto (ได้ {text!r})")
         return text
     if name in {"tool_parser", "reasoning_parser"}:
         # ชื่อ parser เป็น identifier ล้วน — ค่าว่างคือปิด ซึ่ง write() ตัดออกก่อนถึงตรงนี้แล้ว
@@ -133,7 +144,10 @@ def read(bundle_dir: Path) -> dict[str, str]:
     for field, names in FIELDS.items():
         for name in names:
             if name in env:
-                out[field] = env[name]
+                value = env[name]
+                if field == "image_min_tokens" and value == "":
+                    value = "auto"  # ค่าว่างในไฟล์ = auto — ให้ round-trip ผ่าน write() ได้โดยไม่หาย
+                out[field] = value
                 break
     args_file = Path(bundle_dir) / ARGS_FILENAME
     if args_file.is_file():
@@ -159,7 +173,7 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
             continue  # ไม่รู้จักก็ไม่เขียน — รวมถึง api_key ที่ตั้งใจไม่เก็บ
         if raw is None or str(raw).strip() == "":
             continue
-        cleaned[field] = _clean(field, raw)
+        cleaned[field] = _clean(field, raw)  # image_min_tokens=auto → "" โดยตั้งใจ (ดู FIELDS)
 
     args_file = bundle_dir / ARGS_FILENAME
     extra = cleaned.pop("extra_args", None)

@@ -2705,6 +2705,7 @@ function readNodeOpts(node, slug) {
     image: num(".n-image"), served_name: num(".n-served"),
     extra_args: num(".n-extra"),
     tool_parser: num(".n-tool-parser"), reasoning_parser: num(".n-reasoning-parser"),
+    image_min_tokens: num(".n-image-min-tokens"),
   };
   Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
   // ติ๊กออก = ปิดฟีเจอร์ ซึ่งต้องส่ง "" ไปจริง ๆ ไม่ใช่ไม่ส่ง (ไม่ส่ง = ใช้ค่า default ของ bundle)
@@ -2987,6 +2988,12 @@ function nodeModelsMarkup(name, data) {
             <label>reasoning parser</label>
             <input class="n-reasoning-parser" value="${esc(o.reasoning_parser ?? "")}" placeholder="e.g. qwen3" style="flex:none;width:130px"
                    title="--reasoning-parser ที่ใช้ทุกครั้งที่ start — ว่าง = ตามที่ bundle ตั้ง">
+          </div>` : ""}
+          ${m.engine === "llamacpp" && m.projector ? `<div class="field">
+            <label>image min tokens</label>
+            <input class="n-image-min-tokens" value="${esc(o.image_min_tokens ?? "")}" placeholder="auto · or 1024 for Qwen-VL" style="flex:none;width:200px"
+                   title="--image-min-tokens ของ llama.cpp · auto = ค่าที่ฝังมากับ projector (Gemma-4 ต้องใช้ auto — เพดาน 280) · 1024 = Qwen-VL · ว่าง = ตามที่ bundle ตั้ง">
+            <span class="dim">Gemma-4 → auto · Qwen-VL → 1024 · ตั้งเกินเพดานของ projector = start พัง (clip_init)</span>
           </div>` : ""}
           <div class="field" style="width:100%">
             <label>extra args</label>

@@ -444,7 +444,9 @@ def test_multimodal_sets_image_min_tokens(tmp_path):
     controller ไม่เคยส่งค่านี้ ผู้ใช้จึงได้ vision ที่ตอบ "มีอะไรในภาพ" ได้ แต่ "อยู่ตรงไหน"
     เพี้ยน — เป็นความแม่นยำที่หายไปโดยไม่มี error ให้จับ
     """
-    bundle, _, _ = make_bundle(mmproj_gguf_report(), tmp_path=tmp_path)
+    # คำเตือนนั้นเป็นของ Qwen-VL — fixture ต้องเป็น Qwen ไม่ใช่ Gemma (บั๊กเดิมคือใช้ Gemma
+    # แล้ว assert 1024 จน template บังคับ 1024 ให้ทุกตระกูล → Gemma-4 start พัง 2026-09-04)
+    bundle, _, _ = make_bundle(qwen_vl_gguf_report(), tmp_path=tmp_path)
     script = bundle.controller.read_text(encoding="utf-8")
 
     assert "--image-min-tokens" in script
@@ -453,6 +455,37 @@ def test_multimodal_sets_image_min_tokens(tmp_path):
     assert "--image-min-tokens)" in script, "ต้องมีแฟล็กให้ผู้ใช้ override"
     assert 'if [[ -n "$IMAGE_MIN_TOKENS" ]]' in script, "ตั้งว่างแล้วต้องไม่ส่งแฟล็ก"
     assert not audit_script(script)
+
+
+def test_non_qwen_projector_keeps_the_file_default_instead_of_1024(tmp_path):
+    """เคสจริง 2026-09-04 dgx-veerasiam/gemma-4-12b หลัง 17ed363:
+
+        clip_init: failed to load mmproj-BF16.gguf:
+          image_max_pixels (645120) is less than image_min_pixels (2359296)
+
+    1024 tokens × 48² = 2,359,296 px > เพดาน 645,120 ของ Gemma-4 → llama-server ตายก่อน health
+    ทั้งที่เมื่อวานยังรันได้ · ตระกูลอื่นที่ไม่ใช่ Qwen จึงต้อง default ว่าง (ค่าจากไฟล์)
+    """
+    bundle, _, _ = make_bundle(mmproj_gguf_report(), tmp_path=tmp_path)   # Gemma-4
+    script = bundle.controller.read_text(encoding="utf-8")
+    assert 'IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS-}"' in script
+    assert "1024" not in script.split("IMAGE_MIN_TOKENS=")[1].split("\n")[0]
+    # แฟล็กยังตั้งเองได้ (ผู้ใช้อาจรู้ค่าที่ถูกของ projector ตัวนั้น)
+    assert "--image-min-tokens)" in script
+
+
+def qwen_vl_gguf_report(**overrides) -> ModelReport:
+    """repo GGUF ของ Qwen3-VL ที่มี mmproj — ตระกูลเดียวที่ llama.cpp ขอ --image-min-tokens 1024"""
+    return gguf_report(
+        repo_id="unsloth/Qwen3-VL-8B-Instruct-GGUF",
+        architecture="qwen3vl",
+        selected_gguf="Qwen3-VL-8B-Instruct-Q8_0.gguf",
+        gguf_variants=[
+            GgufVariant(filename="Qwen3-VL-8B-Instruct-Q8_0.gguf", size_bytes=9 * GIB, sha256="a" * 64),
+            GgufVariant(filename="mmproj-BF16.gguf", size_bytes=1 * GIB, sha256="b" * 64, is_mmproj=True),
+        ],
+        **overrides,
+    )
 
 
 def test_image_min_tokens_only_appears_when_there_is_a_projector(tmp_path):

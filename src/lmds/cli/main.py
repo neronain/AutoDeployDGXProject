@@ -1361,6 +1361,10 @@ def set_defaults(
         None, "--tool-parser", help="--tool-call-parser ของ vLLM/SGLang ที่จะใช้ทุกครั้งที่ start (เช่น qwen3_xml)"),
     reasoning_parser: Optional[str] = typer.Option(
         None, "--reasoning-parser", help="--reasoning-parser ที่จะใช้ทุกครั้งที่ start (เช่น qwen3)"),
+    image_min_tokens: Optional[str] = typer.Option(
+        None, "--image-min-tokens",
+        help="--image-min-tokens ของ llama.cpp (vision): ตัวเลข เช่น 1024 สำหรับ Qwen-VL · "
+             "auto = ใช้ค่าที่ฝังมากับ projector (Gemma-4 ต้องใช้ auto — เพดานแค่ 280)"),
     extra_args: Optional[str] = typer.Option(
         None, "--extra-args",
         help='แฟล็กเพิ่มของ engine เช่น \'--speculative-config {"method":"mtp","num_speculative_tokens":2}\' '
@@ -1407,6 +1411,7 @@ def set_defaults(
         "gpu_util": gpu_util, "served_name": model_id, "image": image,
         "engine_env": engine_env, "extra_args": extra_args,
         "tool_parser": tool_parser, "reasoning_parser": reasoning_parser,
+        "image_min_tokens": image_min_tokens,
     }
     given = {k: v for k, v in incoming.items() if v is not None}
     if not given:

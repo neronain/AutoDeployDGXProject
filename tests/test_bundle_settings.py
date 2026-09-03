@@ -109,3 +109,26 @@ def test_two_bundles_keep_their_own_ports(tmp_path):
     write(second, {"port": 8001})
     assert _resolve(first)["PORT"] == "8000"
     assert _resolve(second)["PORT"] == "8001"
+
+
+def test_image_min_tokens_auto_is_written_as_an_empty_value_not_removed(tmp_path):
+    """auto = "set แต่ว่าง" — controller ${IMAGE_MIN_TOKENS-1024} จะไม่ตกไปใช้ 1024
+
+    ลบทิ้ง (พฤติกรรม "ค่าว่าง = เอาออก" ของ knob อื่น) จะทำให้ bundle ที่สร้างก่อน 0.5.2
+    กลับไปพังกับ Gemma-4 · และต้อง round-trip ผ่าน read() → write() ได้โดยไม่หาย
+    เพราะ `lmds set` merge ค่าเดิมทุกครั้ง
+    """
+    bundle_dir = tmp_path / "b"
+    bundle_dir.mkdir()
+    write(bundle_dir, {"image_min_tokens": "auto"})
+    text = (bundle_dir / FILENAME).read_text(encoding="utf-8")
+    assert 'IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS:-}"' in text
+    assert read(bundle_dir) == {"image_min_tokens": "auto"}
+    # merge แบบที่ lmds set ทำ — ค่าต้องยังอยู่
+    write(bundle_dir, {**read(bundle_dir), "port": "8010"})
+    assert 'IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS:-}"' in (bundle_dir / FILENAME).read_text(encoding="utf-8")
+
+    write(bundle_dir, {"image_min_tokens": "1024"})
+    assert 'IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS:-1024}"' in (bundle_dir / FILENAME).read_text(encoding="utf-8")
+    with pytest.raises(SettingsError):
+        write(bundle_dir, {"image_min_tokens": "lots"})

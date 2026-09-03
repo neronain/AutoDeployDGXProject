@@ -35,6 +35,23 @@ budget ได้ตั้งแต่วันนั้น แต่**หน้�
 ยังไม่ทำในรอบนี้ (คนละเรื่อง ต้องตกลงสมมติฐานก่อน): แปลง concurrency เป็น "จำนวนคน" ด้วยความยาวคำขอปกติ ·
 โมเดลคำนวณของ llama.cpp `--parallel` ที่จอง KV ทั้งก้อนล่วงหน้า (ตารางตอนนี้คิดแบบ paged ของ vLLM ให้ทั้งคู่)
 
+**`--image-min-tokens 1024` บังคับเฉพาะ Qwen-VL — Gemma-4 และตระกูลอื่นกลับไปใช้ค่าของ projector**
+
+0.5.1 (17ed363) ใส่ `IMAGE_MIN_TOKENS=1024` ให้ทุก controller ที่มี projector เพื่อแก้ความแม่นของ Qwen-VL
+แต่คำเตือนนั้นเป็นของ Qwen-VL เท่านั้น · projector ตระกูลอื่นมีเพดานของตัวเอง — Gemma-4 รับได้ 280 tokens
+(645,120 px) · บังคับ 1024 (2,359,296 px) → llama.cpp `clip_init: image_max_pixels is less than
+image_min_pixels` → server ตายก่อน health · เคสจริง 2026-09-04 dgx-veerasiam/gemma-4-12b start ไม่ขึ้น
+"ทั้งที่เมื่อวานยังรัน" · สแกนฟลีตพบ 5 bundle ที่จะพังเหมือนกันทันทีที่ถูก restart (รวม muse-glimmer บน msi-4
+ที่กำลังรันอยู่)
+
+- renderer ส่ง `image_min_tokens_default` = 1024 เมื่อ architecture/model_id เป็นตระกูล Qwen · อื่น ๆ ว่าง
+  (ค่าจากไฟล์ = พฤติกรรมก่อน 0.5.1 ที่ผ่านการใช้งานจริง) · เทสเดิมใช้ fixture Gemma แต่ assert 1024 —
+  คือบั๊กในเทสเอง แก้เป็น fixture Qwen3-VL และเพิ่มเคส Gemma ต้องว่าง
+- `lmds set --image-min-tokens N|auto` และหน้าเว็บ settings — `auto` เขียนลง bundle.env เป็นค่าว่างแบบ
+  "set แต่ว่าง" (`IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS:-}"`) ไม่ใช่ลบทิ้ง เพราะ controller ที่สร้างก่อนหน้านี้
+  มี 1024 ฝังอยู่ · read() คืน `auto` กลับมาให้ round-trip ผ่าน `lmds set` ครั้งถัดไปได้
+- bundle ที่ deploy ไปแล้ว 5 ตัวถูกตั้ง `auto` ให้ตรง ๆ บน node แล้ว (ไม่ต้องอัปเดต node ก่อน)
+
 **ไฟล์ mmproj ที่ชื่อขึ้นต้นด้วยชื่อโมเดล ถูกจำได้แล้ว — vision ไม่หายเงียบ ๆ**
 
 เจอตอนลองฟีเจอร์ข้างบนกับ `llmfan46/gemma-4-31B-it-uncensored-heretic-NVFP4-GGUF`: หน้าเลือกไฟล์เสนอ

@@ -43,6 +43,12 @@ def _environment() -> Environment:
     return env
 
 
+def _is_qwen_family(report, plan) -> bool:
+    """Qwen-VL / Qwen3-VL — ตระกูลเดียวที่ llama.cpp ขอ --image-min-tokens 1024"""
+    hay = " ".join(str(x or "") for x in (report.architecture, report.model_type, plan.model_id)).lower()
+    return "qwen" in hay
+
+
 def _client_input(plan: DeploymentPlan) -> int:
     return max(plan.serving.context - plan.serving.max_output_tokens - 2048, 0)
 
@@ -229,6 +235,12 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "gguf_sha256": gguf_sha,
         "gguf_parts": gguf_parts,
         "mmproj_basename": mmproj_basename,
+        # --image-min-tokens 1024 คือคำเตือนของ llama.cpp สำหรับ *Qwen-VL* โดยเฉพาะ (#16842)
+        # projector ตระกูลอื่นมีเพดานของตัวเอง: Gemma-4 รับได้สูงสุด 280 tokens (645,120 px)
+        # บังคับ 1024 → min > max → clip_init ปฏิเสธ → start พังทั้งที่เมื่อวานยังรันได้
+        # (เคสจริง 2026-09-04 dgx-veerasiam/gemma-4-12b หลัง 17ed363 ใส่ 1024 ให้ทุกตัว)
+        # ตระกูลอื่นจึงปล่อยว่าง = ใช้ค่าที่ฝังมากับไฟล์ ซึ่งเป็นพฤติกรรมเดิมที่ผ่านการใช้งานจริง
+        "image_min_tokens_default": "1024" if _is_qwen_family(report, plan) else "",
         "mtp_basename": mtp_basename,
         "mtp_embedded": mtp_embedded,
         # llama.cpp บน DGX Spark (unified/ARM64) ไม่มี docker image ทางการ — ใช้ native source build
