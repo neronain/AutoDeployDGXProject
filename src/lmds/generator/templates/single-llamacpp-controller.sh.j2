@@ -7,6 +7,23 @@
 set -Eeuo pipefail
 
 # ============================ CONFIG (แก้ได้) ============================
+# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
+# ต้องอยู่ **เหนือ** default ทุกตัว เพราะทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ซึ่งไม่ทำ
+# อะไรเลยถ้าตัวแปรถูกตั้งไปแล้ว · เดิมบล็อกนี้อยู่กลางไฟล์ ค่าที่ประกาศเหนือมัน
+# (SERVED_MODEL_NAME, LLAMACPP_IMAGE, RUNTIME_MODE, CUDA_ARCHITECTURES) จึงถูกเมิน
+# เงียบ ๆ — `lmds set --model-id` เขียนไฟล์สำเร็จ แต่ชื่อที่ API เสิร์ฟไม่เปลี่ยน
+# (เจอจริงบน spark-02 2026-09-03 · CTX_SIZE ที่อยู่ใต้บล็อกทำงานปกติ จึงดูเหมือน
+# ไฟล์นี้ถูกอ่านแล้ว) · ลำดับ
+# ความสำคัญจึงเป็น: flag บรรทัดคำสั่ง > env จากภายนอก > ไฟล์นี้ > ค่าของ bundle
+#
+# มีไฟล์นี้เพราะค่าที่ตั้งบนหน้าเว็บเคยอยู่แค่ในเบราว์เซอร์: systemd ตอน autostart
+# และปุ่ม test-* เรียก controller เปล่า ๆ ทุกตัวจึงตกไปใช้ default — พอ reboot
+# โมเดลทุกตัวบนเครื่องเดียวกันก็ไปชนกันที่ port เดียว
+BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
+if [[ -f "$BUNDLE_ENV" ]]; then
+  set -a; . "$BUNDLE_ENV"; set +a
+fi
+
 SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
 MODEL_LABEL="${MODEL_LABEL:-{{ model_label }}}"
 RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
@@ -40,17 +57,6 @@ LLAMA_SERVER="${LLAMA_SERVER:-${LLAMA_CPP_DIR}/build/bin/llama-server}"
 CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES:-{{ cuda_architectures }}}"
 CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
 
-# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
-# อ่านก่อน default ทั้งหมดข้างล่าง และทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ลำดับ
-# ความสำคัญจึงเป็น: flag บรรทัดคำสั่ง > env จากภายนอก > ไฟล์นี้ > ค่าของ bundle
-#
-# มีไฟล์นี้เพราะค่าที่ตั้งบนหน้าเว็บเคยอยู่แค่ในเบราว์เซอร์: systemd ตอน autostart
-# และปุ่ม test-* เรียก controller เปล่า ๆ ทุกตัวจึงตกไปใช้ default — พอ reboot
-# โมเดลทุกตัวบนเครื่องเดียวกันก็ไปชนกันที่ port เดียว
-BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
-if [[ -f "$BUNDLE_ENV" ]]; then
-  set -a; . "$BUNDLE_ENV"; set +a
-fi
 
 MODEL_DIR="${MODEL_DIR:-${HOME}/models/{{ slug }}}"
 RUN_DIR="${RUN_DIR:-${HOME}/.lmds/run/{{ slug }}}"

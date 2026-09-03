@@ -1255,3 +1255,42 @@ def _reap(proc, tries: int = 20) -> bool:
             return True
         time.sleep(0.1)
     return False
+
+
+def test_bundle_env_can_override_the_served_model_name(tmp_path):
+    """เคสจริง spark-02 (2026-09-03): `lmds set --model-id` เขียนไฟล์สำเร็จ แต่ชื่อไม่เปลี่ยน
+
+    bundle.env ทุกบรรทัดเป็น ${VAR:-value} ซึ่งไม่ทำอะไรเลยถ้าตัวแปรถูกตั้งไปแล้ว ·
+    เดิม SERVED_MODEL_NAME ถูกตั้งเหนือจุดที่ source ไฟล์ ค่าจากไฟล์จึงตกทุกครั้ง
+    ส่วน CTX_SIZE ที่อยู่ใต้บล็อกทำงานปกติ — จึงดูเหมือนไฟล์ถูกอ่านแล้ว หลอกให้
+    มองข้ามได้ง่ายมาก
+    """
+    import os
+    import subprocess
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    (bundle.directory / "bundle.env").write_text(
+        'SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-ชื่อที่ลูกค้าใช้อยู่}"\n'
+        'CTX_SIZE="${CTX_SIZE:-4096}"\n',
+        encoding="utf-8",
+    )
+    out = subprocess.run(["bash", str(bundle.controller), "status"],
+                         env={**os.environ, "RUN_DIR": str(tmp_path / "run")},
+                         capture_output=True, text=True, timeout=60).stdout
+
+    assert "ชื่อที่ลูกค้าใช้อยู่" in out, f"bundle.env ไม่มีผลกับชื่อที่เสิร์ฟ:\n{out}"
+
+
+def test_bundle_env_loses_to_a_command_line_flag(tmp_path):
+    """ลำดับที่ประกาศไว้ต้องยังจริง: flag > env > bundle.env > ค่าของ bundle"""
+    import os
+    import subprocess
+
+    bundle, _, _ = make_bundle(gguf_report(), tmp_path=tmp_path)
+    (bundle.directory / "bundle.env").write_text(
+        'SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-จากไฟล์}"\n', encoding="utf-8")
+
+    out = subprocess.run(["bash", str(bundle.controller), "status", "--name", "จากแฟล็ก"],
+                         env={**os.environ, "RUN_DIR": str(tmp_path / "run")},
+                         capture_output=True, text=True, timeout=60).stdout
+    assert "จากแฟล็ก" in out and "จากไฟล์" not in out.split("model:")[1][:80]
