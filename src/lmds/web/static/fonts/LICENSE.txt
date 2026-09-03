@@ -1,0 +1,4 @@
+Geist and Geist Mono — Copyright (c) 2023 Vercel, in collaboration with basement.studio
+Licensed under the SIL Open Font License 1.1 (https://openfontlicense.org)
+Files here are the woff2 builds served by Google Fonts (latin, latin-ext, box-drawing subsets),
+bundled so the LMDS console never loads anything from the internet (air-gapped installs).

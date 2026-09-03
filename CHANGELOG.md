@@ -146,6 +146,12 @@ repo เป็น private ทุกเครื่องที่เพิ่ม
 - อัปเดตฟลีต 14/15 เครื่องเป็น 4a3ec0a ผ่านทางส่งโค้ดจาก hub (เครื่องละ ~1.5 นาที ไม่แตะ GitHub) · AiTop100 ต่อไม่ติด
   (Tailscale timeout — ยัง 0.2.0 ต้องอัปเดตเมื่อกลับมาออนไลน์)
 
+**ฟอนต์ของคอนโซลอยู่ในแพ็กเกจ** — ผู้ใช้ 2026-09-04: "โหลดฟอนต์มาเพิ่มได้เพื่อให้ธีมสมบูรณ์ที่สุด" โดยกฎ
+air-gapped ยังอยู่ · Geist + Geist Mono (OFL, woff2 ชุด latin/latin-ext/box-drawing รวม ~90 KB) อยู่ที่
+`lmds/web/static/fonts/` · hub เสิร์ฟเองที่ `GET /fonts/<ชื่อ>` (ไม่ต้องใช้ token — หน้า login ก็ใช้ · รับเฉพาะชื่อ
+ในรายการ · แคช 1 ปี immutable) · `--sans`/`--mono` ขึ้นต้นด้วย Geist แล้วตกไปฟอนต์ระบบสำหรับภาษาไทย ·
+เทส `test_the_console_typefaces_are_served_by_the_hub_not_the_internet` + `test_page_is_self_contained` คุม
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

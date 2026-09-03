@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 import lmds
 from lmds.config import SettingsError
@@ -186,6 +186,20 @@ def create_app(token: str = "") -> FastAPI:
             (STATIC / "index.html").read_text(encoding="utf-8"),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
+
+    # ฟอนต์ของหน้าเว็บ (Geist / Geist Mono, OFL) อยู่ในแพ็กเกจ — เสิร์ฟจากที่นี่ ไม่ใช่ Google Fonts
+    # เพราะเครื่องลูกค้าอาจ air-gapped · ไม่ต้องใช้ token: หน้า login ก็ใช้ฟอนต์นี้ และไฟล์ไม่มีความลับ
+    # · ชื่อไฟล์ต้องอยู่ในรายการเท่านั้น ไม่รับ path จากภายนอก
+    _fonts = {f.name: f for f in (STATIC / "fonts").glob("*.woff2")}
+
+    @app.get("/fonts/{name}")
+    def font(name: str) -> FileResponse:
+        path = _fonts.get(name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="ไม่มีฟอนต์ชื่อนี้")
+        # ไฟล์เปลี่ยนเฉพาะตอนอัปเดตแพ็กเกจ — ให้เบราว์เซอร์แคชได้นาน
+        return FileResponse(path, media_type="font/woff2",
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     @app.get("/api/version", dependencies=guarded)
     def version(check_repo: bool = False) -> dict:

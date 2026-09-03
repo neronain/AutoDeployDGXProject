@@ -355,3 +355,29 @@ def test_bad_local_options_are_400_not_500(fleet, monkeypatch):
         assert "port" in r.json()["detail"]
     r = client.post(f"/api/models/{fleet}/run/start", json={"image": "evil.example/x:latest"})
     assert r.status_code == 400 and "image" in r.json()["detail"]
+
+
+# ── ฟอนต์อยู่ในแพ็กเกจ เสิร์ฟจาก hub เอง (air-gapped) ──────────────────────────────
+
+def test_the_console_typefaces_are_served_by_the_hub_not_the_internet():
+    """ผู้ใช้ 2026-09-04: "โหลดฟอนต์มาเพิ่มได้เพื่อให้ธีมสมบูรณ์" — แต่กฎห้ามดึงจากเน็ตยังอยู่"""
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from lmds.web.api import create_app
+
+    client = TestClient(create_app())
+    page = client.get("/").text
+    urls = re.findall(r"url\((/fonts/[^)]+\.woff2)\)", page)
+    assert {"/fonts/geist-latin.woff2", "/fonts/geist-mono-latin.woff2"} <= set(urls)
+    assert "fonts.gstatic.com" not in page and "fonts.googleapis.com" not in page
+    assert '--sans: "Geist"' in page and '--mono: "Geist Mono"' in page
+    for url in set(urls):
+        r = client.get(url)                       # ไม่ต้องมี token — หน้า login ก็ใช้
+        assert r.status_code == 200, url
+        assert r.headers["content-type"].startswith("font/woff2")
+        assert "immutable" in r.headers["cache-control"]
+        assert r.content[:4] == b"wOF2"
+    assert client.get("/fonts/nope.woff2").status_code == 404
+    assert client.get("/fonts/..%2F..%2Findex.html").status_code == 404
