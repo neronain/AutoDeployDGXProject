@@ -1135,6 +1135,13 @@ def node_push(
 
     zips = [root / f"{slug}.zip" for root in bundle_roots()]
     archive = next((z for z in zips if z.is_file()), None)
+    # zip ถูกสร้างตอน generate — ค่าที่ `lmds set` เขียนทีหลัง (bundle.env / bundle.args)
+    # ไม่เคยไปถึงเครื่องปลายทาง · เคสจริง 2026-09-03: ตั้ง --engine-env ให้ Coder-Next แล้ว push
+    # ไป spark-head container ขึ้นมาโดยไม่มี env สักตัว และ bundle.args ของ Sehyo ไม่ถึง
+    # spark-worker ทั้งที่ hub บอกว่าบันทึกแล้ว · แพ็กใหม่จากโฟลเดอร์ทุกครั้งก่อนส่ง
+    if archive is not None and archive.with_suffix("").is_dir():
+        from lmds.packager.bundle import make_zip
+        archive = make_zip(archive.with_suffix(""))
     if archive is None:
         err_console.print(f"[red]ไม่พบ {slug}.zip ในเครื่องนี้[/red] — ดูรายชื่อ: lmds list")
         err_console.print(f"[dim]ที่ค้นหา: {', '.join(str(z) for z in zips)}[/dim]")

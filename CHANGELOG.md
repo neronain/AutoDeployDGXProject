@@ -2,6 +2,17 @@
 
 ## ยังไม่ปล่อย
 
+**`lmds node push` ส่ง zip เก่า — ค่าจาก `lmds set` ไม่เคยไปถึงเครื่องปลายทาง**
+
+zip ถูกสร้างตอน `deploy` แล้ว push หยิบไฟล์นั้นส่งตรง ๆ · ทุกอย่างที่ `lmds set` เขียนทีหลัง
+(`bundle.env`, `bundle.args`) จึงตกหล่น · เคสจริง 2026-09-03: ตั้ง `--engine-env` marlin ให้
+Coder-Next แล้ว push ไป spark-head — container ขึ้นมาโดย**ไม่มี env สักตัว** (`docker inspect`
+ว่างเปล่า) · bundle.args ของ Sehyo/Qwen3.5-122B ไม่ถึง spark-worker · ทั้งสองเคส hub รายงาน
+"บันทึกแล้ว" และ push รายงาน "ติดตั้งแล้ว" — เงียบทั้งสาย
+
+- push แพ็ก zip ใหม่จากโฟลเดอร์ทุกครั้งก่อนส่ง (`make_zip`) · เทสยืนยันว่าไฟล์ที่เขียนหลัง
+  generate อยู่ใน zip และไม่ยัด zip ซ้อน zip
+
 **แฟล็กเพิ่มของ engine ตั้งผ่าน `lmds set` ได้แล้ว — MTP ของ vLLM ไม่ต้องแก้สคริปต์มือ**
 
 จะเปิด MTP ให้ Qwen3.5-122B บน spark-worker ต้องส่ง
