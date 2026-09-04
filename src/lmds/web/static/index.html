@@ -1273,7 +1273,10 @@ function servedLine(m) {
 function modelTags(m) {
   const out = [];
   const ico = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
-  if (m.topology === "stacked") out.push(`<span class="tag">stacked</span>`);
+  // stacked: บอกบทบาทและอีกฝั่งด้วย — "stacked" เฉย ๆ ไม่บอกว่าใครเป็น head และ worker คือเครื่องไหน
+  if (m.stacked_role === "head")
+    out.push(`<span class="tag" data-stacked-role="head" title="Tensor-parallel across machines — this card is the head; the worker runs what the head tells it">stacked head · worker ${esc((m.stacked_peers || []).join(", ") || "?")}</span>`);
+  else if (m.topology === "stacked") out.push(`<span class="tag">stacked</span>`);
   if (m.projector || (m.features || "").includes("image"))
     out.push(`<span class="tag feat" title="รับภาพได้ (mmproj)">${ico("i-eye")}vision</span>`);
   if (m.moe && m.moe.experts) {
@@ -2098,20 +2101,29 @@ async function pushAfterBuild(built, machine, stacked = false) {
                       { method: "POST" });
   const d = await r.json();
   if (r.ok) {
-    let cluster = null;
+    let cluster = null, paired = null;
     if (stacked) {
-      wizBusy(`ส่งถึง ${machine} แล้ว — กำลังเขียน cluster.env…`);
+      wizBusy(`Installed on ${machine} — writing cluster.env…`);
       cluster = await writeClusterEnv(slug, machine, draft.worker || "");
+      // กุญแจ head → worker: controller ssh ไป worker ด้วยกุญแจของ head เอง ซึ่งไม่มีใครเคยติดตั้งให้
+      // (node setup ติดตั้งแต่กุญแจของ hub) — sync-worker/start จึงตายด้วย Permission denied
+      if (cluster.ok && draft.worker) {
+        wizBusy(`cluster.env written — pairing ssh ${machine} → ${draft.worker}…`);
+        paired = await pairClusterSsh(machine, draft.worker);
+      }
     }
     wiz.innerHTML = `<div class="pad">
-      <div class="name">ติดตั้ง ${esc(slug)} บน ${esc(machine)} แล้ว</div>
+      <div class="name">Installed ${esc(slug)} on ${esc(machine)}</div>
       <div class="muted">${esc(d.path || "")} · ${d.size_mb} MB</div>
       ${cluster ? `<div class="warn-line" style="color:var(--${cluster.ok ? "ok" : "bad"})">${esc(cluster.text)}</div>` : ""}
-      ${cluster && !cluster.ok ? `<div class="dim">เขียนเองได้ด้วย
-        <code>lmds node cluster --write ${esc(slug)} --on ${esc(machine)}</code></div>` : ""}
-      <div class="dim" style="margin-top:8px">สั่ง download แล้ว start ได้จากการ์ดของ
-        ${esc(machine)} ด้านล่าง — ความคืบหน้าจะขึ้นให้เห็นระหว่างทำงาน${
-        stacked ? " · stacked ต้อง sync-worker ก่อน start" : ""}</div>
+      ${cluster && !cluster.ok ? `<div class="dim">Or from a terminal:
+        <code>lmds cluster write ${esc(slug)} --head ${esc(machine)} --worker ${esc(draft.worker || "<worker>")}</code>
+        · reasons: <code>lmds cluster doctor ${esc(machine)} ${esc(draft.worker || "<worker>")}</code></div>` : ""}
+      ${paired ? `<div class="warn-line" style="color:var(--${paired.ok ? "ok" : "bad"})">${esc(paired.text)}</div>
+        ${paired.ok ? "" : (paired.steps || []).map(s => `<div class="dim">${esc(s)}</div>`).join("")}` : ""}
+      <div class="dim" style="margin-top:8px">Press download on the ${esc(machine)} card below — ${
+        stacked ? "for stacked it downloads on the head, syncs to the worker and verifies both in one job; then start"
+                : "it downloads and verifies, then start becomes available"}</div>
       <div class="field" style="margin-top:10px"><button id="w-close">Close</button></div>
     </div>`;
     refreshNodes();
@@ -2389,7 +2401,9 @@ async function analyzeNow(overrides = {}) {
       body: JSON.stringify({ model, target, engine, no_llm: noLlm, hf_token: hfToken,
                              // เครื่องปลายทาง — server หักหน่วยความจำที่เครื่องนั้นใช้อยู่แล้วออกจาก budget
                              // (ไม่ส่ง = วางแผนจาก "เครื่องว่าง" ทุกครั้ง ซึ่งคือบั๊กเดิม)
-                             machine: draft.machine || "", worker: draft.worker || "", ...overrides }),
+                             // worker มีความหมายเฉพาะ stacked — draft จำ worker ไว้ข้ามการเปลี่ยน target
+                             // แล้ว single ก็ถูกหักหน่วยความจำของ worker ที่ไม่เกี่ยว
+                             machine: draft.machine || "", worker: isStackedTarget(target) ? (draft.worker || "") : "", ...overrides }),
     });
     const d = await r.json();
     if (r.ok) { planView(d); return; }
@@ -3124,6 +3138,22 @@ function loadColour(pct) {
 }
 
 
+// โมเดล stacked บนการ์ดของ worker — เงาของ bundle ที่อยู่บน head (hub เติมให้จาก cluster.env ของ head)
+// ไม่มีปุ่ม: ทุกคำสั่งสั่งที่ head · มีไว้ให้เห็นว่าเครื่องนี้ถูกใช้อยู่และพอร์ตไหน ก่อนจะ deploy ตัวอื่นทับ
+function stackedWorkerRow(name, m) {
+  const state = m.running ? (m.healthy ? "on" : "load") : "";
+  return `<div style="margin-bottom:6px" data-stacked-role="worker">
+    <div class="field">
+      <span class="dot ${state}"></span>
+      <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
+        <span class="muted"> ${esc(m.engine || "")}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+        <span class="tag" title="This machine is a tensor-parallel worker — the bundle, the buttons and the API live on the head">stacked worker of ${esc(m.stacked_head || "?")}</span></span>
+      <span class="mono muted">:${m.port || "—"}</span>
+      <span class="muted">${m.running ? (m.healthy ? "running" : "loading") : "stopped"} · controlled from ${esc(m.stacked_head || "the head")}</span>
+    </div>
+  </div>`;
+}
+
 function nodeModelsMarkup(name, data) {
   if (!data.reachable) {
     // ต่อ SSH ได้แต่ไม่มี lmds = ติดตั้งให้จากที่นี่ได้เลย · ต่อ SSH ไม่ได้เป็นคนละเรื่อง
@@ -3161,6 +3191,7 @@ function nodeModelsMarkup(name, data) {
     ${head}
     <div style="margin-top:10px"></div>
     ${models.map(m => {
+      if (m.stacked_role === "worker") return stackedWorkerRow(name, m);
       // ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าตัวอื่นรันอยู่บนพอร์ตนี้ ชุดทดสอบของตัวนี้
       // จะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล (bundle เก่ายังไม่มีตัวตรวจในสคริปต์)
       const rival = models.find(x => x.slug !== m.slug && x.running && x.port === m.port);
@@ -3368,7 +3399,9 @@ function nodeModelsMarkup(name, data) {
             ${ctl("prepare-runtime", "Prepare the runtime on every machine in the group")}
             ${ctl("sync-worker", "Sync the files to the worker")}
             ${ctl("verify-worker", "Check the worker is ready")}
+            ${ctl("logs-worker", "Last 200 log lines of the worker container(s) — the plain logs button shows the head only")}
             ${ctl("clear-fi-cache", "Clear the FlashInfer cache")}
+            <span class="dim">download here = download + sync-worker + verify-worker in one job</span>
           </div>` : ""}
 
           <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-sliders"/></svg><span class="sec-title">Manage</span></div>
@@ -4023,6 +4056,14 @@ function groupHeader(g, index) {
       ? `<div class="warn-line">${g.world_size} GPUs do not divide the attention-head count of most models —
          use tensor-parallel ${g.parallelism.largest_tp} + pipeline stages instead of TP ${g.world_size}</div>` : ""}
     ${blockers}${warnings}${excluded}
+    ${g.members.length >= 2 ? `<div class="gsub">
+      <button data-cact="doctor" data-head="${esc(g.members[0].name)}" data-worker="${esc(g.members[1].name)}"
+              title="Why this pair is (not) ready — every check with the command that fixes it; read-only">Doctor</button>
+      <button data-cact="pair-ssh" data-head="${esc(g.members[0].name)}" data-worker="${esc(g.members[1].name)}"
+              title="Let the head ssh into the worker without a password — the stacked controller needs this for sync-worker/start">Pair SSH</button>
+      <span class="dim">head → worker: ${esc(g.members[0].name)} → ${esc(g.members[1].name)}</span>
+    </div>
+    <div class="gdoctor" hidden></div>` : ""}
     ${g.ready ? `<div class="gsub">
       <button class="deploy-stack" data-head="${esc(g.members[0].name)}"
               data-worker="${esc((g.members[1] || {}).name || "")}"
@@ -4033,7 +4074,8 @@ function groupHeader(g, index) {
         และเขียน <code>cluster.env</code> (IP/SSH user/NCCL iface) ให้เองตอนจบ</span>
       <div class="dim" style="margin-top:4px">เทียบเท่าคำสั่ง:
         <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> +
-        <code>lmds node cluster --write &lt;slug&gt; --on ${esc(g.members[0].name)}</code></div>
+        <code>lmds node push ${esc(g.members[0].name)} &lt;slug&gt; --download --start</code>
+        (writes cluster.env, pairs ssh, syncs the worker)</div>
     </div>` : ""}`;
 }
 
@@ -4084,7 +4126,12 @@ function layoutClusterGroups() {
     const line = document.createElement("div");
     line.className = "hubstack dim";
     line.style.margin = "0 0 10px";
-    line.innerHTML = `This machine (hub) <b style="font-weight:500">${esc(hub.name)}</b> —
+    // hub ที่เป็น VM ควบคุม (ไม่มี GPU) ไม่มีวันเข้ากลุ่มได้ — เดิมขึ้นว่า "not ready · 10G too slow"
+    // พร้อมปุ่ม Include/Exclude เหมือนเป็นเครื่องที่ต้องไปแก้ ทั้งที่มันไม่ใช่ผู้สมัครตั้งแต่แรก
+    line.innerHTML = hub.candidate === false
+      ? `This machine (hub) <b style="font-weight:500">${esc(hub.name)}</b> — a control plane without a GPU;
+         not a stacked candidate (${esc((hub.fabric || {}).summary || "no fast link")})`
+      : `This machine (hub) <b style="font-weight:500">${esc(hub.name)}</b> —
       ${hub.stack === false ? "is not offered for stacked groups" : "is also counted as a stacked-group candidate"}
       <button data-cact="toggle-stack" data-node="${esc(hub.name)}" data-self="1"
         data-stack="${hub.stack === false ? "" : "1"}" style="font-size:calc(12px * var(--fs))"
@@ -4202,8 +4249,55 @@ async function loadCluster(live = false) {
   }
 }
 
+// หมอของคู่ — เหตุผลทีละข้อว่าทำไมยัง stacked ไม่ได้ พร้อมคำสั่งแก้ (เดิมเห็นแค่ "not ready")
+async function runPairDoctor(btn) {
+  const { head, worker } = btn.dataset;
+  const panel = btn.closest(".gbar")?.querySelector(".gdoctor");
+  if (!panel) return;
+  panel.hidden = false;
+  panel.innerHTML = `<div class="dim">Checking ${esc(head)} ⇄ ${esc(worker)}… (asks the head over ssh)</div>`;
+  const d = await withButton(btn, "Checking…", () =>
+    api(`/api/cluster/doctor?head=${encodeURIComponent(head)}&worker=${encodeURIComponent(worker)}`));
+  if (!d) { panel.innerHTML = `<div class="warn-line">Doctor failed — see the error above</div>`; return; }
+  const mark = f => f.level === "pass" ? "✓" : f.level === "warn" ? "!" : "✕";
+  const colour = f => f.level === "pass" ? "var(--ok)" : f.level === "warn" ? "var(--warn)" : "var(--bad)";
+  panel.innerHTML = `<div class="dim" style="margin-bottom:4px">${d.ok ? "Ready for stacked" : "Not ready — fix the ✕ lines first"}</div>
+    ${(d.findings || []).map(f => `<div class="${f.level === "fail" ? "warn-line" : "dim"}" style="color:${colour(f)}">${mark(f)} ${esc(f.text || f.kind)}${
+      f.fix ? ` <code>${esc(f.fix)}</code>` : ""}</div>`).join("")}`;
+}
+
+async function pairClusterSsh(head, worker) {
+  const r = await api("/api/cluster/pair", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ head, worker }),
+  });
+  const d = await r.json().catch(() => ({}));
+  const steps = (d.steps || []).map(s => `${s.ok ? "✓" : "✕"} ${s.step}${s.ok || !s.detail ? "" : " — " + s.detail}`);
+  return r.ok && d.ok
+    ? { ok: true, text: `ssh ${head} → ${worker}: paired`, steps }
+    : { ok: false, text: (typeof d.detail === "string" ? d.detail : "") || `ssh ${head} → ${worker}: not paired`, steps };
+}
+
 document.addEventListener("click", async e => {
   if (e.target.id === "cluster-check") { loadCluster(true); return; }
+
+  const doctorBtn = e.target.closest('button[data-cact="doctor"]');
+  if (doctorBtn) { runPairDoctor(doctorBtn); return; }
+  const pairBtn = e.target.closest('button[data-cact="pair-ssh"]');
+  if (pairBtn) {
+    const panel = pairBtn.closest(".gbar")?.querySelector(".gdoctor");
+    const label = pairBtn.textContent;
+    pairBtn.disabled = true; pairBtn.textContent = "Pairing…";
+    let result;
+    try { result = await pairClusterSsh(pairBtn.dataset.head, pairBtn.dataset.worker); }
+    catch (err) { result = { ok: false, text: `Could not reach LMDS — ${String(err && err.message || err)}`, steps: [] }; }
+    finally { pairBtn.disabled = false; pairBtn.textContent = label; }
+    if (!panel) return;
+    panel.hidden = false;
+    panel.innerHTML = `<div class="${result.ok ? "dim" : "warn-line"}" style="color:${result.ok ? "var(--ok)" : "var(--bad)"}">${esc(result.text)}</div>
+      ${(result.steps || []).map(s => `<div class="dim">${esc(s)}</div>`).join("")}`;
+    return;
+  }
 
   // เอาเข้า/ไม่เอาเข้ากลุ่ม — hub เก็บใน config, node อื่นเก็บในทะเบียน จึงคนละ endpoint
   const toggle = e.target.closest('button[data-cact="toggle-stack"]');

@@ -123,9 +123,18 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
 
     # image ตั้งต้นต้องตรงกับเครื่องเป้าหมาย — DGX Spark ใช้ NGC ไม่ใช่ upstream
     # (upstream มี manifest arm64 แต่ไม่ได้ build kernel ให้ SM121)
-    from .rulebased import default_image
+    from .rulebased import apply_nvfp4_defaults, default_image, is_nvfp4
 
-    fallback = default_image(plan.runtime.engine, fit.memory_model)
+    # fallback ต้องตรงกับโมเดลด้วย ไม่ใช่แค่เครื่อง: NVFP4 บน GB10 ถอยไป nvcr 26.05 = ตายตอน start
+    # (ไม่มี FP4 kernel ของ sm_121) — เคสจริง 2026-09-04 ที่ stacked ของลูกค้าไม่เคยขึ้น
+    fallback = default_image(plan.runtime.engine, fit.memory_model, nvfp4=is_nvfp4(report))
+    recipe = find_recipe(report.repo_id)
+    # image ของสูตร = หลักฐานว่ารันผ่านจริงบนเครื่อง (อาจเป็น build ในเครื่อง / digest ที่ registry
+    # สาธารณะไม่ตอบ) · registry ตอบ "ไม่มี" จึงไม่ใช่เหตุผลที่จะลดรุ่นเงียบ ๆ — คงไว้แล้วเตือน
+    from_recipe = bool(
+        recipe is not None and recipe.image and recipe.image == plan.runtime.image_ref
+        and (not recipe.engine or recipe.engine == plan.runtime.engine.value)
+    )
 
     if not is_known_image(plan.runtime.engine, plan.runtime.image_ref):
         plan.warnings.append(
@@ -140,12 +149,21 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         from .registry import tag_exists
 
         if tag_exists(plan.runtime.image_ref) is False:
-            plan.warnings.append(
-                f"tag ของ image ที่แผนเสนอ ({plan.runtime.image_ref}) ไม่มีอยู่จริงบน registry — "
-                f"เปลี่ยนเป็น {fallback}"
-            )
-            plan.runtime.image_ref = fallback
-            plan.runtime.image_pin = None
+            if from_recipe:
+                plan.warnings.append(
+                    f"registry ตอบว่าไม่พบ {plan.runtime.image_ref} แต่เป็น image ของสูตรที่รันผ่านจริง "
+                    f"({recipe.validated_on or recipe.source}) — คงไว้ · ถ้าเครื่องปลายทาง pull ไม่ได้ "
+                    "ให้เปลี่ยนด้วย lmds set --image"
+                )
+            else:
+                plan.warnings.append(
+                    f"tag ของ image ที่แผนเสนอ ({plan.runtime.image_ref}) ไม่มีอยู่จริงบน registry — "
+                    f"เปลี่ยนเป็น {fallback}"
+                )
+                plan.runtime.image_ref = fallback
+                plan.runtime.image_pin = None
+    # env ของ NVFP4 บน GB10 — ทางของ LLM ไม่ผ่าน rule_based_plan จึงต้องเติมตรงนี้ด้วย
+    apply_nvfp4_defaults(plan, report, fit.memory_model, recipe)
 
     # ตรึง image ที่ digest — tag เคลื่อนที่ได้ digest ไม่เคลื่อน · bundle ที่ทดสอบ
     # ผ่านเมื่อวานจึงไม่กลายเป็นคนละ runtime วันนี้โดยไม่มีอะไรในไฟล์เปลี่ยน
@@ -190,7 +208,7 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     # รวม flag+ค่าที่ LLM แยก item มา ('--threads','4' → '--threads 4') ก่อนตรวจ allowlist
     from .allowlists import coalesce_flag_tokens
 
-    coalesced = coalesce_flag_tokens(plan.serving.extra_flags)
+    coalesced = _strip_controller_owned_flags(plan, coalesce_flag_tokens(plan.serving.extra_flags))
     allowed, needs_approval = split_flags(plan.runtime.engine, coalesced)
     if plan.runtime.engine is Engine.LLAMACPP:
         # llama.cpp ใหม่: --flash-attn ต้องมีค่า — เติม 'on' ให้ flag ที่ LLM ใส่มาแบบ bare
@@ -220,6 +238,33 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+# flag ที่ controller ตั้งเองจาก target (TP = จำนวน GPU/เครื่อง · nnodes/node-rank/backend ของ stacked)
+# — LLM ใส่ `--tensor-parallel-size 1` มาด้วยได้เพราะอยู่ใน allowlist · vLLM ให้ตัวหลังชนะ
+# → TP=1 บน 2 เครื่อง head รอ worker ที่ไม่มีวันมา (audit stacked 2026-09-04)
+_CONTROLLER_OWNED_FLAGS = {
+    "--tensor-parallel-size", "-tp", "--tp-size", "--tp",
+    "--pipeline-parallel-size", "-pp", "--data-parallel-size", "-dp",
+    "--nnodes", "--node-rank", "--distributed-executor-backend", "--headless",
+    "--master-addr", "--master-port", "--dist-init-addr", "--nodes",
+}
+
+
+def _strip_controller_owned_flags(plan: DeploymentPlan, flags: list[str]) -> list[str]:
+    from .allowlists import flag_name
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    for flag in flags:
+        (dropped if flag_name(flag) in _CONTROLLER_OWNED_FLAGS else kept).append(flag)
+    if dropped:
+        plan.warnings.append(
+            "ตัด flag ที่ controller ตั้งเองจาก target ออก: " + " ".join(dropped)
+            + " — tensor-parallel/nnodes/node-rank มาจากจำนวนเครื่องของ target "
+            f"({plan.topology.value}) การใส่ซ้ำทำให้ค่าของ LLM ชนะแล้ว TP ไม่ตรงกับเครื่องที่มี"
+        )
+    return kept
 
 
 # ชื่อ parser ที่ engine แต่ละตัวรู้จักจริง — อ่านมาจากรายการที่ตัวมันเองพิมพ์ออกมาตอน

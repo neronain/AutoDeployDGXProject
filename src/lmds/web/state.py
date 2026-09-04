@@ -52,6 +52,67 @@ class Entry:
         }
 
 
+def decorate_stacked(nodes: dict) -> None:
+    """เติมบทบาท stacked ลง snapshot — โมเดล stacked ต้องขึ้น **ทั้งสองการ์ด** พร้อมบทบาท
+
+    bundle อยู่ที่ head เท่านั้น · worker มีแต่ weight ในแคชกับ container ที่ head สั่งผ่าน ssh
+    การ์ดของ worker จึงว่างเปล่า — คนดูไม่รู้ว่าเครื่องนี้ถูกใช้อยู่ พอร์ตไหน และไป deploy ตัวอื่นทับ
+    · head บอก worker ของตัวเองผ่าน `cluster` (อ่านจาก cluster.env โดย `lmds agent info`) แล้ว hub
+    เทียบ IP นั้นกับ cluster_ip ในทะเบียนเพื่อหาว่าเป็นการ์ดใบไหน
+
+    ทำงานบน *สำเนา* ของรายการโมเดล — ห้ามเขียนเงาลงแคชจริง ไม่งั้นสะสมซ้ำทุก snapshot
+    """
+    try:
+        from lmds.nodes import load
+
+        by_ip = {n.cluster_ip: n.name for n in load() if n.cluster_ip}
+    except Exception:  # noqa: BLE001 — ทะเบียนอ่านไม่ได้ = ไม่มีบทบาทให้เติม ไม่ใช่ snapshot พัง
+        by_ip = {}
+
+    shadows: dict[str, list[dict]] = {}
+    for name, entry in nodes.items():
+        data = entry.get("data")
+        if not data:
+            continue
+        models = [dict(m) for m in (data.get("models") or [])]
+        for model in models:
+            cluster = model.get("cluster") or {}
+            worker_ips = cluster.get("worker_ips") or []
+            if model.get("topology") != "stacked" or not worker_ips:
+                continue
+            model["stacked_role"] = "head"
+            model["stacked_peers"] = [by_ip.get(ip) or ip for ip in worker_ips]
+            for ip in worker_ips:
+                peer = by_ip.get(ip)
+                if not peer or peer == name:
+                    continue
+                shadows.setdefault(peer, []).append({
+                    "slug": model.get("slug"), "model_id": model.get("model_id"),
+                    "engine": model.get("engine"), "mode": model.get("mode"), "port": model.get("port"),
+                    "running": model.get("running"), "healthy": model.get("healthy"),
+                    "endpoint": model.get("endpoint"), "context": model.get("context"),
+                    "features": model.get("features"), "downloaded": model.get("downloaded"),
+                    "topology": "stacked", "stacked_role": "worker", "stacked_head": name,
+                    # ไม่มีอะไรให้สั่งที่นี่ — ทุกปุ่มอยู่ที่ head
+                    "commands": [], "controller_exists": False, "registered": False,
+                    "external": False, "autostart": "n/a", "job": None,
+                })
+        entry["data"] = {**data, "models": models}
+
+    for peer, rows in shadows.items():
+        entry = nodes.get(peer)
+        data = (entry or {}).get("data")
+        if not data:
+            continue
+        # bundle จริงชื่อเดียวกันบน worker (เช่น เคย deploy single ไว้) ชนะเงา
+        known = {m.get("slug") for m in data.get("models") or []}
+        data["models"] = [*(data.get("models") or []), *[r for r in rows if r["slug"] not in known]]
+        summary = dict(data.get("summary") or {})
+        summary["total"] = len(data["models"])
+        summary["running"] = sum(1 for m in data["models"] if m.get("running"))
+        data["summary"] = summary
+
+
 class Store:
     """แคชกลาง + ตัวนับเวอร์ชัน — ตัวนับใช้บอก SSE ว่ามีอะไรเปลี่ยนจริงหรือเปล่า"""
 
@@ -91,6 +152,7 @@ class Store:
             for model in ((entry.get("data") or {}).get("models") or []):
                 job = jobs.active_for(model.get("slug", ""), name)
                 model["job"] = job.payload() if job else None
+        decorate_stacked(snap["nodes"])
         return snap
 
     def wait_for_change(self, since: int, timeout: float) -> bool:

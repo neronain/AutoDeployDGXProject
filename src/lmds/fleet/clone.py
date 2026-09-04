@@ -113,7 +113,13 @@ def inspect_source(plan: ClonePlan) -> ClonePlan:
         'if [ -z "$md" ]; then '
         '  hf="$(grep -m1 "^HF_HOME=" "$ctl" | sed "s/^HF_HOME=//")"; hf="$(eval echo "${hf:-\\$HOME/.cache/huggingface}")"; '
         '  mid="$(grep -m1 "^MODEL_ID=" "$ctl" | cut -d= -f2- | tr -d "\\"")"; '
-        '  [ -n "$mid" ] && md="$hf/hub/models--$(echo "$mid" | sed "s#/#--#g")"; '
+        # HF cache มีสองเลย์เอาต์: มาตรฐาน $HF_HOME/hub/models--X และแบบแบน $HF_HOME/models--X
+        # (head ของ stacked ที่โหลดด้วย cache_dir=/cache ก่อน 0.6.0 ได้แบบแบน) · มองแค่ hub/ =
+        # "ยังไม่มีไฟล์โมเดล" ทั้งที่ 170 GB อยู่บนเครื่อง — controller เองหาเจอทั้งสองแบบมาตลอด
+        '  if [ -n "$mid" ]; then '
+        '    sl="$(echo "$mid" | sed "s#/#--#g")"; md="$hf/hub/models--$sl"; '
+        '    [ -d "$md" ] || [ ! -d "$hf/models--$sl" ] || md="$hf/models--$sl"; '
+        '  fi; '
         'fi; '
         'echo "BUNDLE=$dir"; echo "MODELDIR=$md"; '
         '[ -n "$md" ] && [ -d "$md" ] || { echo "ยังไม่มีไฟล์โมเดลบน '"$(hostname)"' (${md:-controller ไม่บอกที่เก็บ})" >&2; exit 2; }; '
@@ -208,7 +214,10 @@ def build_rsync_command(plan: ClonePlan, target_user: str, dry_run: bool = False
         f'unset KEY; '
         f'{ssh_opts} {shlex.quote(dest)} "mkdir -p {md} {bd}"; '
         f'rsync {flags} -e {shlex.quote(ssh_opts)} {md}/ {shlex.quote(dest + ":" + plan.model_dir + "/")}; '
-        f'rsync -a --no-owner --no-group -e {shlex.quote(ssh_opts)} {bd}/ '
+        # cluster.env ผูกกับคู่เครื่องต้นทาง (IP/interface ของ head-worker คู่นั้น) — ลากไปด้วยแล้ว
+        # controller บนปลายทางจะ ssh ไปหา worker ของคู่เก่าเงียบ ๆ · ไม่มีไฟล์ = controller ใหม่
+        # ปฏิเสธพร้อมบอกให้ hub เขียนให้ (`lmds node cluster --write`) ซึ่งถูกกับคู่ใหม่เสมอ
+        f'rsync -a --no-owner --no-group --exclude=cluster.env -e {shlex.quote(ssh_opts)} {bd}/ '
         f'{shlex.quote(dest + ":" + plan.bundle_dir + "/")}'
     )
 

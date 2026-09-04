@@ -38,6 +38,10 @@ app.add_typer(config_app, name="config")
 
 node_app = typer.Typer(help="คุมเครื่องอื่นจากเครื่องนี้ (fleet หลายเครื่อง)", no_args_is_help=True)
 app.add_typer(node_app, name="node")
+# stacked (หลายเครื่อง = โมเดลเดียว) มีคำสั่งของตัวเอง — เดิมซ่อนอยู่ใต้ `node cluster` คำสั่งเดียว
+cluster_app = typer.Typer(help="คลัสเตอร์ stacked: ดูคู่ · เขียน cluster.env · กุญแจ head→worker · หมอ",
+                          no_args_is_help=True)
+app.add_typer(cluster_app, name="cluster")
 
 agent_app = typer.Typer(help="ให้ hub เรียกผ่าน SSH — ปกติผู้ใช้ไม่ต้องเรียกเอง", no_args_is_help=True)
 app.add_typer(agent_app, name="agent")
@@ -1030,6 +1034,157 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
     console.print("[dim]controller จะใช้ค่านี้เองตอน start — ไม่ถาม IP ซ้ำ[/dim]")
 
 
+# ── lmds cluster … ──────────────────────────────────────────────────────────
+def _live_cluster_groups(names: set[str] | None = None) -> tuple[dict, dict, dict, list]:
+    """(ทะเบียน, host payload, error, กลุ่ม) จากการต่อเครื่องจริง — ชุดเดียวกับที่หน้า Cluster ใช้
+
+    `names` = ต่อเฉพาะเครื่องเหล่านี้ (หมอ/pair สนใจแค่คู่เดียว ไม่ต้องรอทั้งฟลีต)
+    """
+    from lmds.config import Settings
+    from lmds.nodes import NodeError, cluster_groups, in_saved_order, load, probe
+
+    nodes = {n.name: n for n in in_saved_order(load(), Settings.load().ui.node_order)}
+    hosts: dict[str, dict | None] = {}
+    errors: dict[str, str] = {}
+    machines = []
+    for node in nodes.values():
+        if names is not None and node.name not in names:
+            continue
+        try:
+            host = probe(node).get("host") or {}
+        except NodeError as exc:
+            hosts[node.name], errors[node.name] = None, str(exc)
+            continue
+        hosts[node.name] = host
+        machines.append({"name": node.name, "host": host, "cluster_ip": node.cluster_ip,
+                         "site": node.site, "cluster_name": node.cluster_name, "stack": node.stack})
+    return nodes, hosts, errors, cluster_groups(machines)
+
+
+def _require_nodes(*names: str):
+    from lmds.nodes import find
+
+    found = []
+    for name in names:
+        node = find(name)
+        if node is None:
+            err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
+            raise typer.Exit(code=1)
+        found.append(node)
+    return found
+
+
+def _print_pair_steps(steps: list[dict]) -> bool:
+    for step in steps:
+        mark = "[green]✓[/green]" if step["ok"] else "[red]✕[/red]"
+        console.print(f"  {mark} {step['step']}" + (f" — {step['detail']}" if step.get("detail") and not step["ok"] else ""))
+    return bool(steps) and all(s["ok"] for s in steps)
+
+
+def _pair_cluster_ssh(head, workers) -> bool:
+    """กุญแจ head → worker ทุกตัว — พิมพ์ผลทีละขั้น คืน True เมื่อครบ"""
+    from lmds.nodes import NodeError, run
+    from lmds.nodes.cluster_ssh import pair_workers
+
+    missing = [w.name for w in workers if not w.cluster_ip]
+    if missing:
+        err_console.print(f"[red]{', '.join(missing)} ยังไม่มี cluster IP[/red] — head ต้องเข้า worker ทางที่อยู่นั้น: "
+                          f"lmds node set <ชื่อ> --cluster-ip <ip>")
+        return False
+    console.print(f"กุญแจ {head.name} → {', '.join(w.name for w in workers)} (สร้างบน head ไม่ผ่านเครื่องนี้)")
+    try:
+        steps = pair_workers(head, [(w, w.cluster_ip) for w in workers], runner=run)
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        return False
+    return _print_pair_steps(steps)
+
+
+@cluster_app.command("show")
+def cluster_show(
+    self_stack: Optional[bool] = typer.Option(
+        None, "--self-stack/--no-self-stack",
+        help="เอา 'เครื่องนี้' (hub) เข้ากลุ่ม stacked ด้วยไหม — จำค่าไว้ใน config"),
+) -> None:
+    """เครื่องไหนจับคู่ stacked กันได้บ้าง (เหมือน `lmds node cluster`)"""
+    node_cluster(write=None, worker=None, head=None, on=None, self_stack=self_stack)
+
+
+@cluster_app.command("write")
+def cluster_write_cmd(
+    slug: str = typer.Argument(..., help="ชื่อ bundle", autocompletion=_complete_slug),
+    head: str = typer.Option(..., "--head", help="เครื่องที่จะเป็น head", autocompletion=_complete_node),
+    worker: list[str] = typer.Option([], "--worker", help="worker เรียงตาม rank (ซ้ำได้หลายตัว · ว่าง = ตามกลุ่ม)"),
+    on: Optional[str] = typer.Option(None, "--on", metavar="NODE",
+                                     help="เขียนลง bundle บนเครื่องนั้น (ว่าง = head)"),
+    nnodes: Optional[int] = typer.Option(None, "--nnodes", help="จำนวนเครื่อง (ว่าง = อ่านจาก bundle บนเครื่องนี้)"),
+) -> None:
+    """เขียน cluster.env ของ bundle ให้ตรงกับจำนวนเครื่องที่ bundle ถูก render มา"""
+    from lmds.fleet import bundle_roots
+    from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
+    from lmds.nodes.stacked import StackedError, bundle_node_count, select_members
+
+    _require_nodes(head, *worker)
+    if nnodes is None:
+        local = next((r / slug for r in bundle_roots() if (r / slug).is_dir()), None)
+        nnodes = bundle_node_count(local) if local is not None else None
+        if nnodes == 1:
+            nnodes = None      # ไม่ใช่ stacked บนเครื่องนี้ — เขียนตามทั้งกลุ่ม
+    _, _, _, groups = _live_cluster_groups()
+    try:
+        trimmed = select_members(groups, head, workers=list(worker), nnodes=nnodes)
+        result = write_cluster_env(slug, [trimmed], head, None, on or head)
+    except (StackedError, ClusterEnvError) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]เขียน {result.target} แล้ว[/green]")
+    console.print(f"[dim]head {result.head_ip} · worker {' '.join(result.worker_ips)} "
+                  f"({', '.join(m['name'] for m in trimmed['members'][1:])}) · {result.nnodes} เครื่อง"
+                  f"{' · NCCL ' + result.iface if result.iface else ''}[/dim]")
+
+
+@cluster_app.command("pair")
+def cluster_pair_cmd(
+    head: str = typer.Argument(..., autocompletion=_complete_node),
+    workers: list[str] = typer.Argument(..., help="worker หนึ่งตัวหรือมากกว่า"),
+) -> None:
+    """ให้ head ssh เข้า worker ได้โดยไม่ถามรหัส — สิ่งที่ controller stacked ต้องใช้ตอน sync/start
+
+    `lmds node setup` ติดตั้งแต่กุญแจของเครื่องนี้ (hub) · controller บน head ใช้กุญแจของ head เอง
+    จึงตายด้วย Permission denied ที่ sync-worker/start มาตลอด · กุญแจถูกสร้างบน head ไม่ผ่านเครื่องนี้
+    """
+    nodes = _require_nodes(head, *workers)
+    if not _pair_cluster_ssh(nodes[0], nodes[1:]):
+        raise typer.Exit(code=1)
+    console.print("[green]head เข้า worker ได้แล้ว[/green]")
+
+
+@cluster_app.command("doctor")
+def cluster_doctor_cmd(
+    head: str = typer.Argument(..., autocompletion=_complete_node),
+    worker: str = typer.Argument(..., autocompletion=_complete_node),
+    slug: Optional[str] = typer.Option(None, "--slug", help="ตรวจ bundle บน head ด้วย (cluster.env ตรงทะเบียนไหม)"),
+) -> None:
+    """ทำไมคู่นี้ยังใช้ stacked ไม่ได้ — ทีละข้อพร้อมคำสั่งแก้ · อ่านอย่างเดียว ไม่แตะอะไรบนเครื่อง"""
+    from lmds.nodes import run
+    from lmds.nodes.doctor import describe, diagnose_pair
+
+    nodes, hosts, errors, _ = _live_cluster_groups({head, worker})
+    report = diagnose_pair(head, worker, nodes=nodes, hosts=hosts, errors=errors,
+                           runner=run, slug=slug or "")
+    console.print(f"[bold]{head} ⇄ {worker}[/bold]")
+    for finding in report["findings"]:
+        mark = {"pass": "[green]✓[/green]", "warn": "[yellow]![/yellow]"}.get(finding["level"], "[red]✕[/red]")
+        console.print(f"  {mark} {describe(finding, 'th')}")
+        if finding.get("fix"):
+            console.print(f"      [dim]แก้: {finding['fix']}[/dim]")
+    if report["ok"]:
+        console.print("[green]คู่นี้พร้อมสำหรับ stacked[/green]")
+    else:
+        console.print("[red]ยังไม่พร้อม — แก้ตามข้อที่ ✕ ก่อน[/red]")
+        raise typer.Exit(code=1)
+
+
 @node_app.command("clone")
 def node_clone(
     slug: str = typer.Argument(..., help="ชื่อ bundle ที่จะทำสำเนา", autocompletion=_complete_slug),
@@ -1245,11 +1400,27 @@ def node_push(
             raise typer.Exit(code=1)
         console.print(f"[green]ติดตั้งแล้วที่[/green] {unpacked.stdout.strip()}")
 
-        for flag, command, note in ((download, "repair", "โหลด weight"), (start, "start", "สั่งรัน")):
+        # stacked: bundle ที่ไปถึง head ยังไม่รู้ IP ของคู่ตัวเอง (start จะถาม IP ซึ่งไม่มีใครตอบ
+        # ใน session ที่ไม่มี tty) · head ไม่มีกุญแจไป worker · และ download ที่ head อย่างเดียว
+        # ไม่ทำให้ worker มี weight — เดิม `push --download --start` จบด้วย "สำเร็จ" ที่ head แล้ว
+        # ตายที่ worker ทุกครั้ง
+        download_cmd = f"lmds repair {shlex.quote(slug)}"
+        local_bundle = archive.with_suffix("")
+        if local_bundle.is_dir() and any(local_bundle.glob("*-stacked.sh")):
+            if not _prepare_stacked_push(node, slug, local_bundle) and (download or start):
+                raise typer.Exit(code=1)
+            controller = (
+                f"dir=\"$(ls -d ~/bundles/{shlex.quote(slug)} 2>/dev/null | head -1)\" && cd \"$dir\" && "
+                f"ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\""
+            )
+            download_cmd = f"{download_cmd} && {controller} && \"$ctl\" sync-worker && \"$ctl\" verify-worker"
+
+        for flag, command, note in ((download, download_cmd, "โหลด weight"),
+                                    (start, f"lmds start {shlex.quote(slug)}", "สั่งรัน")):
             if not flag:
                 continue
             console.print(f"{note} บน {name}… (รันแยกจาก session นี้ — หลุดกลางทางงานยังเดินต่อ)")
-            rc = _run_detached(node, f"lmds {command} {shlex.quote(slug)}", f"{slug}.{command}")
+            rc = _run_detached(node, command, f"{slug}.{command.split()[1]}")
             if rc != 0:
                 raise typer.Exit(code=rc)
     except NodeError as exc:
@@ -1259,6 +1430,31 @@ def node_push(
     console.print(f"\n[dim]ต่อจากนี้สั่งจากที่นี่ได้เลย: "
                   f"[bold]lmds node run {name} doctor {slug}[/bold] · "
                   f"[bold]lmds node run {name} start {slug}[/bold][/dim]")
+
+
+def _prepare_stacked_push(head, slug: str, local_bundle) -> bool:
+    """หลัง push bundle stacked ถึง head: เขียน cluster.env ตามกลุ่มจริง + กุญแจ head→worker
+
+    คืน False เมื่อทำไม่ครบ (พิมพ์เหตุผลแล้ว) — ผู้เรียกตัดสินว่าจะไปต่อไหม
+    """
+    from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
+    from lmds.nodes import find
+    from lmds.nodes.stacked import StackedError, bundle_node_count, select_members
+
+    nnodes = bundle_node_count(local_bundle)
+    console.print(f"bundle นี้เป็น stacked {nnodes} เครื่อง — หา worker ของ {head.name} จากทะเบียน…")
+    _, _, _, groups = _live_cluster_groups()
+    try:
+        trimmed = select_members(groups, head.name, nnodes=nnodes)
+        result = write_cluster_env(slug, [trimmed], head.name, None, head.name)
+    except (StackedError, ClusterEnvError) as exc:
+        err_console.print(f"[red]เขียน cluster.env ไม่ได้: {exc}[/red]")
+        err_console.print("[dim]ดูเหตุผลทีละข้อ: lmds cluster doctor <head> <worker>[/dim]")
+        return False
+    workers = [find(m["name"]) for m in trimmed["members"][1:]]
+    console.print(f"[green]เขียน {result.target}[/green] [dim]head {result.head_ip} · worker "
+                  f"{' '.join(result.worker_ips)} · {result.nnodes} เครื่อง[/dim]")
+    return _pair_cluster_ssh(head, [w for w in workers if w is not None])
 
 
 @node_app.command("setup")

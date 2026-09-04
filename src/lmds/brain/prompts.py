@@ -42,6 +42,30 @@ def build_system_prompt(schema: dict[str, Any]) -> str:
     return SYSTEM_PROMPT.format(schema=json.dumps(schema, ensure_ascii=False))
 
 
+def _topology_block(evidence: dict[str, Any]) -> str:
+    """บอก LLM ว่า target นี้กี่เครื่องและใครเป็นคนตั้ง TP — เดิมเห็นแค่ชื่อ target
+
+    audit stacked 2026-09-04: prompt บอกแค่ `dgx-spark-stacked` · LLM ไม่รู้ว่า = 2 เครื่อง TP ข้าม
+    เครื่อง และ controller ตั้ง --tensor-parallel-size/--nnodes เอง จึงชอบเติม TP มาใน extra_flags
+    (harden ตัดทิ้งให้ แต่ควรบอกตั้งแต่ต้นจะได้ไม่ต้องเสียรอบ)
+    """
+    fit = evidence.get("fit") if isinstance(evidence, dict) else None
+    try:
+        nodes = int((fit or {}).get("node_count") or 1)
+    except (TypeError, ValueError):
+        nodes = 1
+    if nodes <= 1:
+        return ""
+    return (
+        f"\nTARGET TOPOLOGY: stacked — {nodes} nodes (DGX Spark, one GPU each) joined by tensor "
+        f"parallel across nodes over 200G RoCE (tensor_parallel={nodes}). The controller sets "
+        "--tensor-parallel-size, --nnodes, --node-rank and --distributed-executor-backend itself "
+        "from the target — do NOT put them in serving.extra_flags. Memory figures in `fit` are for the "
+        f"whole cluster; each node holds weights/{nodes} plus its share of the KV cache. Only vllm "
+        "supports this topology.\n"
+    )
+
+
 def build_user_prompt(evidence: dict[str, Any], target: str, feedback: str = "") -> str:
     feedback_block = (
         f"\nYour previous output failed validation with these errors — fix them and resend the full JSON:\n{feedback}"
@@ -51,5 +75,5 @@ def build_user_prompt(evidence: dict[str, Any], target: str, feedback: str = "")
     return USER_TEMPLATE.format(
         evidence=json.dumps(evidence, ensure_ascii=False, indent=1),
         target=target,
-        feedback=feedback_block,
+        feedback=_topology_block(evidence) + feedback_block,
     )

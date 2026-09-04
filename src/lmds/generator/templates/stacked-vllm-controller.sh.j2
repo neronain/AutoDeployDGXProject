@@ -55,9 +55,18 @@ if [[ -f "$CLUSTER_ENV" ]]; then
   set -a; . "$CLUSTER_ENV"; set +a
 fi
 
+# จำไว้ว่าผู้ใช้ตั้ง IP มาเองไหม (env หรือ cluster.env) — ค่า 10.100.152.x ข้างล่างเป็นแค่ตัวอย่าง
+# คำสั่งที่แตะ worker (prepare-runtime/sync-worker/verify-worker/start) ต้องรู้ว่ากำลังจะ ssh ไป
+# เครื่องตัวอย่างหรือเครื่องจริง · เดิม prepare-runtime จาก hub (ไม่มี tty จึงไม่ถาม) ssh ไป
+# 10.100.152.2 เงียบ ๆ แล้วตายด้วย "เช็ค SSH" หลังรอ 10 วิ ทั้งที่ปัญหาคือยังไม่มี cluster.env
+MASTER_IP_EXPLICIT="${MASTER_IP:-}"
+WORKER_IP_EXPLICIT="${WORKER_IP:-}"
 MASTER_IP="${MASTER_IP:-10.100.152.1}"
 WORKER_IP="${WORKER_IP:-10.100.152.2}"
 SSH_USER="${SSH_USER:-${USER:-$(id -un)}}"
+# transport IP ของ worker ทุกตัวเมื่อ fabric แยกจาก management (เรียงตาม node-rank · ช่องว่างคั่น)
+# ว่าง = worker ตัวแรกใช้ TRANSPORT_IP_WORKER ตัวที่เหลือใช้ IP ใน WORKER_IPS ของมันเอง
+TRANSPORT_IPS_WORKER="${TRANSPORT_IPS_WORKER:-}"
 # ค่าที่ derive จาก MASTER_IP/WORKER_IP ต้องคำนวณใหม่ **หลัง** prompt ด้วย ไม่ใช่แค่ตอนโหลดไฟล์
 #
 # เดิม TRANSPORT_IP_* กับ WORKER_IPS ถูกตั้งตรงนี้จาก placeholder 10.100.152.x แล้ว
@@ -208,6 +217,92 @@ ssh_at() { local host="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 "${
 ssh_worker() { ssh_at "$WORKER_IP" "$@"; }
 worker_count() { set -- $WORKER_IPS; echo "$#"; }
 
+# ยังไม่มีใครบอก IP จริงเลย (ไม่มี env · ไม่มี cluster.env) = ค่าที่ถืออยู่คือตัวอย่าง 10.100.152.x
+_cluster_config_is_placeholder() {
+  [[ -z "${MASTER_IP_EXPLICIT:-}" && -z "${WORKER_IP_EXPLICIT:-}" ]]
+}
+
+# ทุกคำสั่งที่จะ ssh ไป worker ต้องผ่านตรงนี้ก่อน — มี tty ก็ถาม ไม่มี tty ก็บอกทางแก้แล้วหยุด
+# ไม่ใช่ปล่อยให้ ssh ไป 10.100.152.2 (เครื่องตัวอย่าง) แล้วตายด้วยข้อความ "เช็ค SSH" ที่พาไปผิดทาง
+_require_cluster_config() {
+  local cmd="${1:-start}"
+  if [[ -t 0 ]]; then prompt_cluster_config; fi
+  _cluster_config_is_placeholder || return 0
+  die "ยังไม่ได้ตั้งค่าคลัสเตอร์ — MASTER_IP/WORKER_IP ยังเป็นค่าตัวอย่าง (${MASTER_IP}/${WORKER_IP}) และไม่มี ${CLUSTER_ENV}
+  จาก hub (เขียน cluster.env ให้จากทะเบียนเครื่อง):
+      lmds node cluster --write ${SLUG} --head <ชื่อเครื่อง head>
+  หรือระบุเอง (ค่าจะถูกจำเฉพาะครั้งนี้ — เขียนลง ${CLUSTER_ENV} ถ้าอยากให้อยู่ถาวร):
+      MASTER_IP=<ip head> WORKER_IP=<ip worker> SSH_USER=<user บน worker> $0 ${cmd}"
+}
+
+# SSH head→worker ต้องผ่านแบบไม่ถามรหัส — ตรวจก่อนทำงานที่กินเวลา (pull image / rsync 150 GB)
+# key ที่ hub ใช้เข้าเครื่องนี้ **ไม่ใช่** key ของเครื่องนี้ · ผู้ใช้ที่ deploy ผ่าน hub สำเร็จมักคิดว่า
+# SSH "ตั้งแล้ว" ทั้งที่ head ยังไม่มี key ของตัวเองไปหา worker · ข้อความ "Permission denied
+# (publickey)" ดิบ ๆ ของ ssh ไม่บอกว่าต้องทำอะไรที่เครื่องไหน
+_check_worker_ssh() {
+  local wip err
+  for wip in $WORKER_IPS; do
+    if err="$(ssh_at "$wip" true 2>&1)"; then continue; fi
+    err="$(printf '%s' "$err" | tail -1)"
+    die "SSH จาก head ไป ${SSH_USER}@${wip} ไม่ผ่าน: ${err:-ไม่มีข้อความ}
+  controller สั่งงาน worker ผ่าน SSH แบบไม่ถามรหัส ด้วย key ของเครื่อง head เอง (ไม่ใช่ key ของ hub)
+  ตั้งครั้งเดียวบน head (เครื่องนี้):
+      [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
+      ssh-copy-id ${SSH_USER}@${wip}
+      ssh -o BatchMode=yes ${SSH_USER}@${wip} true     # ต้องเงียบและคืน 0
+  user บน worker ไม่ใช่ '${SSH_USER}' → ตั้ง SSH_USER=<user> (หรือแก้ใน ${CLUSTER_ENV})
+  ต่อไม่ถึงเลย (timeout) → เช็คว่า ${wip} คือ IP ของ worker บนสายที่ head มองเห็น (ip -br addr บน worker)"
+  done
+}
+
+# IP ที่ worker rank N ใช้คุย NCCL — ไม่ใช่ IP ที่ head ใช้ ssh ไปหา (คนละสายได้เมื่อ fabric แยก)
+#
+# เดิม worker.sh ตั้ง VLLM_HOST_IP=<IP ใน WORKER_IPS> ซึ่งเป็น management IP ทั้งที่ head เอง
+# ผูกกับ TRANSPORT_IP_MASTER · torch.distributed จึงจับคู่ head บนสาย 200G กับ worker บนสาย 1G →
+# ช้าลงเป็นสิบเท่าแบบเงียบ ๆ หรือต่อกันไม่ได้เลยถ้า subnet ต่างกัน (ค่า TRANSPORT_IP_WORKER
+# ที่ผู้ใช้ตั้งไว้ไม่เคยถูกใช้ที่ไหนนอกจาก network-info)
+_worker_transport_ip() {
+  local rank="$1" wip="$2" i=0 ip
+  if [[ -n "$TRANSPORT_IPS_WORKER" ]]; then
+    for ip in $TRANSPORT_IPS_WORKER; do
+      i=$(( i + 1 ))
+      if (( i == rank )); then printf '%s' "$ip"; return 0; fi
+    done
+  fi
+  if (( rank == 1 )); then printf '%s' "$TRANSPORT_IP_WORKER"; else printf '%s' "$wip"; fi
+}
+
+# KB → ข้อความอ่านง่าย (GB เมื่อถึง ไม่งั้น MB) — ตัวเลข "0 GB" บอกอะไรไม่ได้
+_human_kb() {
+  local kb="${1:-0}"
+  if (( kb >= 1024 * 1024 )); then echo "$(( kb / 1024 / 1024 )) GB"; else echo "$(( kb / 1024 )) MB"; fi
+}
+
+# KB ว่างของ filesystem ที่ถือ path นี้ (ไต่ขึ้นไปหา parent ที่มีอยู่จริง) · อ่านไม่ได้ = 0
+_free_kb() {
+  local p="$1"
+  while [[ ! -e "$p" && "$p" != "/" ]]; do p="$(dirname "$p")"; done
+  df -Pk "$p" 2>/dev/null | awk 'NR == 2 { print $4 }' || echo 0
+}
+
+# ทำไม pull ไม่ได้ — registry แต่ละแห่งล้มคนละแบบ และข้อความของ docker ไม่บอกว่าต้องทำอะไร
+_pull_hints() {
+  local image="$1" node="${2:-เครื่องนี้}"
+  echo "  ดึง image ${image} บน ${node} ไม่สำเร็จ — สาเหตุที่พบบ่อย:" >&2
+  case "$image" in
+    ghcr.io/*)
+      echo "    · ghcr.io จำกัดจำนวน pull แบบไม่ login (toomanyrequests / 429) → docker login ghcr.io -u <github user> (ใช้ PAT read:packages)" >&2 ;;
+    nvcr.io/*)
+      echo "    · nvcr.io ต้อง login เมื่อ image ไม่ public → docker login nvcr.io (user = \$oauthtoken · password = NGC API key)" >&2 ;;
+    *)
+      echo "    · Docker Hub จำกัด pull ของ user นิรนาม (100 ครั้ง/6 ชม. ต่อ IP) → docker login" >&2 ;;
+  esac
+  echo "    · manifest unknown / not found = tag/digest นี้ไม่มีแล้ว → เลือก image อื่น: lmds set ${SLUG} --image <image>" >&2
+  echo "    · เครื่องออกเน็ตผ่าน proxy: docker daemon ไม่อ่าน HTTP_PROXY ของ shell → ตั้งใน /etc/systemd/system/docker.service.d/http-proxy.conf แล้ว systemctl restart docker" >&2
+  echo "    · ${node} ไม่มีทางออกเน็ตเลย: ส่ง image จากเครื่องที่มี → docker save <image> | ssh <user>@<${node}> docker load" >&2
+  echo "      (image ที่ load แบบนี้ไม่มี digest — ต้อง lmds set ${SLUG} --image <repo:tag> ให้ทุก node อ้างชื่อเดียวกัน)" >&2
+}
+
 _require_non_root() {
   if (( EUID == 0 )); then
     die "อย่ารัน controller ด้วย sudo/root — ให้รันเป็น user ปกติที่เป็นเจ้าของ HF cache และตั้ง SSH key ไว้ (sudo เปลี่ยน HOME/SSH_USER ทำให้ image check ชี้ไป root@worker)"
@@ -316,42 +411,66 @@ _snapshot_path() {
 # ─────────────────────── runtime image lock ───────────────────────
 _current_image_id() { docker inspect "$VLLM_IMAGE" --format '{{.Id}}' 2>/dev/null || true; }
 
+_worker_image_id() { ssh_at "$1" "docker inspect '$VLLM_IMAGE' --format '{{.Id}}' 2>/dev/null" 2>/dev/null || true; }
+
 prepare_runtime() {
   _require_non_root
   need docker
+  _check_worker_ssh
   mkdir -p "$HF_HOME"
+  # idempotent: image ที่มีแล้ว docker pull แค่เช็ค digest แล้วจบใน 1-2 วิ · ล้มต้องบอกเหตุ+ทางแก้
+  # ไม่ใช่ตายเงียบด้วย exit code ของ docker ใต้ set -e (เดิมบรรทัดนี้ไม่มี || อะไรเลย)
   log "Pulling runtime image on head node …"
-  docker pull "$VLLM_IMAGE"
+  if ! docker pull "$VLLM_IMAGE"; then
+    _pull_hints "$VLLM_IMAGE" "head"
+    die "prepare-runtime หยุดที่ head — แก้ตามข้างบนแล้วสั่งใหม่: $0 prepare-runtime"
+  fi
   local head_id worker_id
   head_id="$(_current_image_id)"
   [[ -n "$head_id" ]] || die "pull head image ไม่สำเร็จ"
   echo "$head_id" > "$IMAGE_LOCK_FILE"
   log "Head image locked: $head_id"
 
+  # worker ทุกตัว: ตัวไหนล้มก็บอกชื่อตัวนั้นพร้อมคำสั่งที่รันบนเครื่องนั้นได้เลย
   local wip
   for wip in $WORKER_IPS; do
     log "Pulling runtime image on worker node (${wip}) …"
-    ssh_at "$wip" "docker pull '$VLLM_IMAGE'" || die "pull image บน ${wip} ไม่สำเร็จ (เช็ค SSH/docker)"
+    if ! ssh_at "$wip" "docker pull '$VLLM_IMAGE'"; then
+      _pull_hints "$VLLM_IMAGE" "worker ${wip}"
+      die "prepare-runtime หยุดที่ worker ${wip} — บนเครื่องนั้น: ssh ${SSH_USER}@${wip} docker pull '${VLLM_IMAGE}'
+  แล้วสั่งซ้ำ: $0 prepare-runtime   (head ที่ pull แล้วจะผ่านทันที)"
+    fi
   done
   for wip in $WORKER_IPS; do
-    worker_id="$(ssh_at "$wip" "docker inspect '$VLLM_IMAGE' --format '{{.Id}}'" || true)"
-    [[ -n "$worker_id" ]] || die "อ่าน image id ของ ${wip} ไม่ได้"
+    worker_id="$(_worker_image_id "$wip")"
+    [[ -n "$worker_id" ]] || die "อ่าน image id ของ ${wip} ไม่ได้ — ssh ${SSH_USER}@${wip} docker inspect '${VLLM_IMAGE}'"
     [[ "$head_id" == "$worker_id" ]] ||
-      die "image ต่างกันระหว่าง head ($head_id) กับ ${wip} ($worker_id) — re-pull ทุก node"
+      die "image ต่างกันระหว่าง head (${head_id:0:19}…) กับ worker ${wip} (${worker_id:0:19}…)
+  image ถูก tag ซ้ำคนละ build (tag ไม่ตรึง digest) — ให้ทุก node ดึงตัวเดียวกัน:
+      ssh ${SSH_USER}@${wip} docker pull '${VLLM_IMAGE}'   แล้ว   $0 prepare-runtime"
+    log "worker ${wip}: image ${worker_id:0:19}… ตรงกับ head"
   done
   log "Runtime images ตรงกันทุก node ($(( $(worker_count) + 1 )) เครื่อง). Lock: ${head_id:0:32}…"
 }
 
+# ก่อน start: image เดียวกันเป๊ะ (ID) บน head และ **worker ทุกตัว** · เดิมถามแค่ worker ตัวแรก
+# คลัสเตอร์ 3-4 เครื่องที่ตัวท้ายยังไม่มี image จึงผ่านด่านนี้ไปตายตอน docker run บน worker
+# นั้นด้วย "Unable to find image" ระหว่างที่ตัวอื่นเปิดไปแล้ว
 _assert_runtime_images() {
-  local head_id worker_id locked=""
+  local head_id worker_id locked="" wip
   head_id="$(_current_image_id)"
   [[ -n "$head_id" ]] || die "ไม่พบ runtime image บน head: ${VLLM_IMAGE} — รัน: $0 prepare-runtime"
-  worker_id="$(ssh_worker "docker inspect '$VLLM_IMAGE' --format '{{.Id}}'" 2>/dev/null || true)"
-  [[ -n "$worker_id" ]] || die "ไม่พบ runtime image บน worker — รัน: $0 prepare-runtime"
-  [[ "$head_id" == "$worker_id" ]] || die "image mismatch head=${head_id} worker=${worker_id} — prepare-runtime ใหม่"
+  for wip in $WORKER_IPS; do
+    worker_id="$(_worker_image_id "$wip")"
+    [[ -n "$worker_id" ]] || die "ไม่พบ runtime image บน worker ${wip}: ${VLLM_IMAGE}
+  รัน: $0 prepare-runtime   (หรือเฉพาะเครื่องนั้น: ssh ${SSH_USER}@${wip} docker pull '${VLLM_IMAGE}')"
+    [[ "$head_id" == "$worker_id" ]] || die "image ต่างกัน: head=${head_id:0:19}… worker ${wip}=${worker_id:0:19}…
+  ทุก node ต้องใช้ build เดียวกัน (bundle.env VLLM_IMAGE ใช้ร่วมกัน) — รัน: $0 prepare-runtime
+  (หรือเฉพาะเครื่องนั้น: ssh ${SSH_USER}@${wip} docker pull '${VLLM_IMAGE}')"
+  done
   [[ -f "$IMAGE_LOCK_FILE" ]] && locked="$(cat "$IMAGE_LOCK_FILE")"
   [[ -z "$locked" || "$locked" == "$head_id" ]] ||
-    die "image ปัจจุบันต่างจากที่ lock ไว้ — รัน prepare-runtime ใหม่ก่อน start"
+    die "image ปัจจุบัน (${head_id:0:19}…) ต่างจากที่ lock ไว้ (${locked:0:19}…) — รัน prepare-runtime ใหม่ก่อน start"
   printf '%s' "$head_id"
 }
 
@@ -375,6 +494,75 @@ _download_bytes() {
   du -sb "$(_model_cache_dir)" 2>/dev/null | cut -f1 || echo 0
 }
 
+# โฟลเดอร์ hub cache ฝั่งคอนเทนเนอร์ที่ snapshot_download จะเขียนลง
+#
+# เดิมใช้ cache_dir='/cache' = เลย์เอาต์แบน ($HF_HOME/models--…) ซึ่งต่างจากทุกทางอื่นของระบบ
+# (single-vLLM · rsync ไป worker · lmds clone · hf CLI ใช้ $HF_HOME/hub/models--…) — head กับ
+# worker จึงถือคนละเลย์เอาต์เสมอ และเครื่องมือที่มองหา hub/ ตอบว่า "ยังไม่มีไฟล์" ทั้งที่โหลดครบ
+# ของที่โหลดค้างไว้แบบแบนอยู่แล้วต้องโหลดต่อที่เดิม (ย้ายไป hub/ = เริ่มใหม่ 150 GB)
+_download_cache_dir() {
+  if [[ -d "${HF_HOME}/models--$(_model_slug)" && ! -d "${HF_HOME}/hub/models--$(_model_slug)" ]]; then
+    printf '/cache'
+  else
+    printf '/cache/hub'
+  fi
+}
+
+# ดิสก์ต้องพอสำหรับส่วนที่ยังไม่ได้โหลด — โมเดลระดับนี้ 150-220 GB · เต็มกลางทางคือ
+# "download ล้มเหลว" ที่คนโทษเน็ต/Xet ไปหลายรอบก่อนจะเห็น No space left ใน log
+_check_download_disk() {
+  (( TOTAL_SIZE_APPROX_GB > 0 )) || return 0
+  local have need free_kb need_kb
+  have="$(_download_bytes)"
+  need=$(( TOTAL_SIZE_APPROX_GB * 1024 * 1024 * 1024 - ${have:-0} ))
+  (( need > 0 )) || return 0
+  need_kb=$(( need / 1024 * 105 / 100 ))          # เผื่อ 5% ให้ .incomplete/metadata
+  free_kb="$(_free_kb "$HF_HOME")"
+  (( ${free_kb:-0} > 0 )) || return 0              # df อ่านไม่ได้ = ไม่ฟันธง
+  (( free_kb >= need_kb )) && return 0
+  die "ดิสก์ที่ ${HF_HOME} เหลือ $(_human_kb "$free_kb") แต่ยังต้องโหลดอีก ~$(_human_kb "$need_kb") (โมเดล ~${TOTAL_SIZE_APPROX_GB} GB)
+  ย้าย cache ไปดิสก์ที่ว่างพอ (ต้องใช้ path นี้ทุกคำสั่งหลังจากนี้ หรือเขียนลง bundle.env):
+      HF_HOME=/data/hf $0 download
+  worker ต้องมีที่เท่ากัน (sync-worker ตรวจให้อีกที) — ตั้ง WORKER_HF_HOME ถ้า path ฝั่งนั้นต่าง"
+}
+
+# log ของคอนเทนเนอร์ download บอกสาเหตุอยู่แล้ว แต่ผู้ใช้เห็นมันไหลผ่านไปหลายร้อยบรรทัด
+# แล้วได้ "download ล้มเหลว" ปิดท้าย — หยิบบรรทัดที่เป็นสาเหตุมาพูด และบอกว่าต้องแก้ที่ไหน
+# พิมพ์ชนิด (auth/notfound/disk/network/xet/unknown) ออก stdout · คำอธิบายออก stderr
+_explain_download_failure() {
+  local name="$1" text kind="unknown"
+  text="$(docker logs --tail 80 "$name" 2>&1 || true)"
+  if grep -qE 'GatedRepoError|401 Client Error|Access to model .* is restricted|is a gated' <<< "$text"; then
+    kind="auth"
+    echo "สาเหตุ: repo ปฏิเสธการเข้าถึง (gated / token ไม่มีสิทธิ์)" >&2
+    echo "  1) กดขอสิทธิ์ที่ https://huggingface.co/${MODEL_ID} ให้ขึ้น ACCEPTED" >&2
+    echo "  2) export HF_TOKEN=hf_xxx (token ของบัญชีที่ได้สิทธิ์) แล้ว: $0 download" >&2
+  elif grep -qE '403 Client Error|Forbidden' <<< "$text"; then
+    kind="auth"
+    echo "สาเหตุ: token นี้ไม่มีสิทธิ์อ่าน ${MODEL_ID} (403) — ใช้ token ของบัญชีที่ได้รับสิทธิ์แล้ว" >&2
+  elif grep -qE 'RepositoryNotFoundError|RevisionNotFoundError|404 Client Error' <<< "$text"; then
+    kind="notfound"
+    echo "สาเหตุ: ไม่พบ repo/revision ${MODEL_ID}@${MODEL_REVISION} (404) — repo ถูกลบ/เปลี่ยนชื่อ หรือ revision ไม่มีแล้ว" >&2
+    echo "  สร้าง bundle ใหม่จาก hub (revision ล่าสุด) หรือ MODEL_REVISION=<commit> $0 download" >&2
+  elif grep -qE 'No space left on device|OSError: \[Errno 28\]' <<< "$text"; then
+    kind="disk"
+    echo "สาเหตุ: ดิสก์เต็ม (${HF_HOME}) — ย้าย cache: HF_HOME=/data/hf $0 download" >&2
+  elif grep -qE 'hex hash value|xet|Xet' <<< "$text"; then
+    kind="xet"
+    echo "สาเหตุ: Xet transfer ล้ม — จะลองใหม่โดยปิด Xet ให้เอง" >&2
+  elif grep -qE 'Name or service not known|Temporary failure in name resolution|Connection refused|ProxyError|Max retries exceeded|ConnectionError|Read timed out|ConnectTimeout|SSLError|Network is unreachable' <<< "$text"; then
+    kind="network"
+    echo "สาเหตุ: ต่อ Hugging Face ไม่ได้จากในคอนเทนเนอร์ (เน็ต/DNS/proxy)" >&2
+    echo "  ทดสอบจาก host: curl -sSI https://huggingface.co/api/models/${MODEL_ID} | head -1" >&2
+    echo "  ออกเน็ตผ่าน proxy → export HTTPS_PROXY=http://proxy:port (controller ส่งต่อให้คอนเทนเนอร์เอง)" >&2
+    echo "  ใช้ mirror → export HF_ENDPOINT=https://hf-mirror.com" >&2
+  else
+    echo "สาเหตุ (ท้าย log ของตัวโหลด):" >&2
+    printf '%s\n' "$text" | grep -vE '^\s*$' | tail -6 | sed 's/^/  | /' >&2
+  fi
+  printf '%s' "$kind"
+}
+
 download() {
   need docker
   # ยืนยันว่ามี image ก่อนแตะเรื่องน้ำหนักโมเดล
@@ -393,6 +581,7 @@ download() {
 หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
   fi
 {% endif %}{% raw %}  mkdir -p "$HF_HOME"
+  _check_download_disk
   log "Downloading ${MODEL_ID} @ ${MODEL_REVISION} (resume-safe) …"
   # PYTHONUNBUFFERED / -u: ในคอนเทนเนอร์ไม่มี tty แถบ progress ของ huggingface_hub
   # เลื่อนตัวเลขด้วย \r ล้วน ๆ ไม่เคยขึ้นบรรทัดใหม่ — stderr ที่ line-buffer ไว้จึงไม่ flush
@@ -414,25 +603,33 @@ download() {
   # 2026-08-31: token โผล่เต็ม ๆ ในบรรทัดคำสั่ง) · LMDS มีหลักเรื่องนี้อยู่แล้วในเส้นทาง
   # SSH ที่ส่งความลับทาง stdin เท่านั้น — เส้นทาง docker หลุดหลักนั้นไป
   [[ -n "${HF_TOKEN:-}" ]] && dl_args+=(-e HF_TOKEN)
+  # proxy / mirror ของ shell ไม่ได้ติดเข้าคอนเทนเนอร์เอง (--network host แชร์แค่ network stack
+  # ไม่ใช่ env) — ไซต์ที่ออกเน็ตผ่าน proxy หรือใช้ HF_ENDPOINT=hf-mirror จึง "download ล้มเหลว"
+  # ด้วย Name or service not known ทั้งที่ curl จาก host ได้ · ส่งต่อเฉพาะที่ตั้งไว้ ด้วยชื่อ
+  # (ไม่ใส่ค่า) เหมือน HF_TOKEN — proxy URL มักมีรหัสผ่านฝังอยู่ ไม่ควรโผล่ใน ps
+  local passthru
+  for passthru in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy \
+                  HF_ENDPOINT HF_HUB_ETAG_TIMEOUT HF_XET_HIGH_PERFORMANCE HF_XET_NUM_CONCURRENT_RANGE_GETS; do
+    [[ -n "${!passthru:-}" ]] && dl_args+=(-e "$passthru")
+  done
   # Xet เป็น backend ใหม่ของ Hub ที่บาง repo (เช่นตระกูล Llama) ยังพังด้วย
   # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
   [[ -n "${HF_HUB_DISABLE_XET:-}" ]] && dl_args+=(-e "HF_HUB_DISABLE_XET=1")
+  dl_args+=(-e "CACHE_DIR=$(_download_cache_dir)")
   dl_args+=(--entrypoint python3 "$VLLM_IMAGE" -u -c "
 import os
 from huggingface_hub import snapshot_download
 path = snapshot_download(
     repo_id=os.environ['MODEL_ID'],
     revision=os.environ['MODEL_REVISION'],
-    cache_dir='/cache',
+    cache_dir=os.environ['CACHE_DIR'],
 )
 print('download complete:', path, flush=True)
 ")
 
   if ! docker "${dl_args[@]}" >/dev/null; then
-    [[ -z "${HF_HUB_DISABLE_XET:-}" ]] || die "download ล้มเหลวแม้ปิด Xet แล้ว — ดูข้อความด้านบน"
-    log "download ล้มเหลว — ลองใหม่โดยปิด Xet transfer (ไฟล์ที่โหลดแล้วยังอยู่ โหลดต่อจากเดิม)"
-    HF_HUB_DISABLE_XET=1 download
-    return
+    # ถึงตรงนี้ image มีแล้ว (ensure_image) — ที่ล้มคือ docker เอง (daemon / สิทธิ์ / disk ของ docker)
+    die "docker run ตัวโหลดไม่ขึ้นเลย (ดูข้อความของ docker ด้านบน) — เช็ค: docker info · id -nG | grep docker · df -h /var/lib/docker"
   fi
 
   # เฝ้าว่ายังคืบหน้าอยู่ไหม — ไม่ใช่แค่ "process ยังไม่ตาย"
@@ -487,13 +684,22 @@ print('download complete:', path, flush=True)
   done
   kill "$logs_pid" 2>/dev/null || true
   local code; code="$(docker wait "$dl_name" 2>/dev/null || echo 1)"
-  docker rm -f "$dl_name" >/dev/null 2>&1 || true
   if [[ "${code:-1}" != "0" ]]; then
-    [[ -z "${HF_HUB_DISABLE_XET:-}" ]] || die "download ล้มเหลวแม้ปิด Xet แล้ว — ดูข้อความด้านบน"
+    # อ่าน log ก่อน rm — หลังจากนั้นสาเหตุหายไปกับคอนเทนเนอร์
+    local kind; kind="$(_explain_download_failure "$dl_name")"
+    docker rm -f "$dl_name" >/dev/null 2>&1 || true
+    case "$kind" in
+      # ปิด Xet แล้วลองใหม่ไม่ช่วยกับพวกนี้ — เสียเวลาอีกรอบเปล่า ๆ แล้วได้ข้อความเดิม
+      auth|notfound|disk)
+        die "download ล้มเหลว — แก้ตามข้างบนแล้วสั่งซ้ำได้ (โหลดต่อจากเดิม): $0 download" ;;
+    esac
+    [[ -z "${HF_HUB_DISABLE_XET:-}" ]] ||
+      die "download ล้มเหลวแม้ปิด Xet แล้ว — แก้ตามข้างบนแล้วสั่งซ้ำได้ (โหลดต่อจากเดิม): $0 download"
     log "download ล้มเหลว — ลองใหม่โดยปิด Xet transfer (ไฟล์ที่โหลดแล้วยังอยู่ โหลดต่อจากเดิม)"
     HF_HUB_DISABLE_XET=1 download
     return
   fi
+  docker rm -f "$dl_name" >/dev/null 2>&1 || true
   log "Download complete."
 }
 
@@ -505,25 +711,43 @@ print('download complete:', path, flush=True)
 # ของ log คือ RuntimeError "Engine core initialization failed. See root cause above"
 # hub เห็นแค่บรรทัดสุดท้าย คนจึงต้อง ssh ไป grep เอง · สาเหตุจริงอยู่สูงกว่านั้นเสมอ
 explain_crash() {
-  local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError'
-  local cause
+  # NCCL/torch.distributed ตายด้วย DistBackendError/ncclSystemError ซึ่งไม่อยู่ในรายการเดิม —
+  # stacked ตายแบบนี้บ่อยกว่า OOM เสียอีก (interface ผิด · worker ไม่มา · firewall กั้น MASTER_PORT)
+  local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError|DistBackendError|DistNetworkError|DistStoreError|TimeoutError|ncclSystemError|ncclInternalError|ncclInvalidUsage|ncclRemoteError'
+  local cause text
+  # log มาจากที่ไหนก็ได้: head = docker บนเครื่องนี้ · worker = ผู้เรียกดึงผ่าน ssh มาใส่ CRASH_LOG_TEXT
+  # (ฟังก์ชันเดียว ตัวจำแนกเดียว — worker เคยได้แค่ log ดิบ 100 บรรทัดโดยไม่มีคำอธิบาย)
+  if [[ -n "${CRASH_LOG_TEXT-}" ]]; then
+    text="$CRASH_LOG_TEXT"
+  else
+    text="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 || true)"
+  fi
   # `|| true` ท้าย pipeline จำเป็น: grep ที่ไม่เจอบรรทัด Error คืน 1 → ใต้ set -e + pipefail การ assign
   # นี้ทำสคริปต์ตายทันที ก่อนจะถึง die "container หยุดก่อน health" ของผู้เรียก · crash ที่ log ไม่มี
   # exception (โดน OOM-kill, image พัง) จึงถูกรายงานเป็นความว่างเปล่า exit 1 ไม่มีข้อความสักบรรทัด
-  cause="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 \
+  cause="$(printf '%s\n' "$text" \
     | grep -E "(${errs}): " \
     | grep -vE 'Engine core initialization failed|See root cause above' \
     | sed -E "s/^.*(${errs}): /\\1: /" \
     | head -1 | cut -c1-300 || true)"
   [[ -n "$cause" ]] || return 0
-  echo "สาเหตุจาก log: ${cause}" >&2
+  echo "สาเหตุจาก log${CRASH_LOG_LABEL:+ (${CRASH_LOG_LABEL})}: ${cause}" >&2
   case "$cause" in
     *"No available memory for the cache blocks"*|*"Not enough memory"*|*OutOfMemoryError*)
       echo "  หน่วยความจำที่กันไว้ให้ engine (GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-?}) ไม่พอสำหรับ KV cache ที่ context ${MAX_MODEL_LEN:-?}" >&2
       echo "  แก้ถาวร:  lmds set <bundle> --gpu-util 0.85   (หรือลด --context)" >&2
       echo "  ลองทันที: GPU_MEMORY_UTILIZATION=0.85 $0 restart" >&2 ;;
-    *e2m1*|*ptxas*)
-      echo "  FP4 kernel นี้ใช้บน sm_121 ไม่ได้ — ตั้ง ENGINE_ENV ให้ใช้ marlin (ดู lmds set --help)" >&2 ;;
+    *e2m1*|*ptxas*|*"cutlass"*"sm_121"*)
+      echo "  FP4 kernel นี้ใช้บน sm_121 (GB10) ไม่ได้ — ต้องบังคับ Marlin ทั้ง head และ worker:" >&2
+      echo "  lmds set ${SLUG} --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_MARLIN_USE_ATOMIC_ADD=1\"" >&2 ;;
+    *"only supports fp8 kv-cache"*|*"ds_mla"*)
+      echo "  สถาปัตยกรรมนี้ (DeepSeek MLA) บังคับ kv-cache fp8 — KV_CACHE_DTYPE=fp8 $0 restart  (ถาวร: bundle.env KV_CACHE_DTYPE=fp8)" >&2 ;;
+    *NCCL*|*nccl*|*"Socket Timeout"*|*"process group"*|*"No route to host"*|*"Connection refused"*|*"Connection reset"*)
+      echo "  NCCL/torch.distributed ระหว่าง node ล้ม — เช็คตามลำดับ:" >&2
+      echo "    1) worker ยังอยู่ไหม: $0 logs worker 100   (worker ที่ตายทำให้ head ค้าง/ล้มตรงนี้)" >&2
+      echo "    2) interface/IP ที่ใช้คุย: $0 network-info — NCCL_SOCKET_IFNAME ต้องเป็นสายที่มี TRANSPORT_IP_* จริงทั้งสองเครื่อง" >&2
+      echo "    3) MASTER_PORT=${MASTER_PORT:-25000} + ช่วง ephemeral เปิดถึงกันบนสายนั้น (ufw/iptables)" >&2
+      echo "    4) แยกว่าเป็น RoCE ไหม: NCCL_IB_DISABLE=1 $0 restart  (ขึ้นได้แต่ช้า = ปัญหาที่ HCA/GID_INDEX ไม่ใช่สาย)" >&2 ;;
   esac
 }
 
@@ -577,34 +801,90 @@ verify_files() {
 }
 
 # ─────────────────────────── sync-worker ───────────────────────────
+# ssh ที่ rsync ใช้ต้องเป็นตัวเดียวกับ ssh_at — เดิม rsync เรียก ssh เปล่า ๆ ซึ่ง (1) ถามรหัสผ่าน/
+# host key แล้วค้างเงียบเมื่อรันจาก hub ที่ไม่มี tty (2) ไม่มี ConnectTimeout สายที่ตายรอไปเรื่อย ๆ
+_RSYNC_SSH="ssh -o BatchMode=yes -o ConnectTimeout=10"
+
 sync_worker() {
   need rsync
+  _check_worker_ssh
+  # ส่งของที่ยังไม่ครบไปก็ได้ worker ที่ไม่ครบ — verify ฝั่ง head ก่อนเสมอ ล้มตรงนี้ถูกกว่าไป
+  # ล้มที่ verify-worker หลังลาก 150 GB (ข้อความของ verify_files บอกวิธี resume เอง)
+  verify_files
   local snap; snap="$(_snapshot_path "$HF_HOME")"
-  [[ -d "$snap" ]] || die "ยังไม่มี snapshot ในเครื่อง — รัน download ก่อน"
-  local model_cache cache_name worker_hf
+  local model_cache cache_name worker_hf have_bytes need_kb free_kb rc
   model_cache="$(_model_cache_dir "$HF_HOME")"
   cache_name="$(basename "$model_cache")"
   worker_hf="${WORKER_HF_HOME}"
+  have_bytes="$(du -sb "$model_cache" 2>/dev/null | cut -f1 || echo 0)"
   local wip
   for wip in $WORKER_IPS; do
-    log "Syncing model cache → worker ${wip} (~${TOTAL_SIZE_APPROX_GB} GB ครั้งแรก)…"
+    # rsync ต้องมีทั้งสองฝั่ง — ฝั่ง worker ที่ไม่มีจบด้วย "bash: rsync: command not found" exit 127
+    # ที่ไม่บอกว่าเป็นเครื่องไหน
+    ssh_at "$wip" "command -v rsync >/dev/null" ||
+      die "worker ${wip} ไม่มี rsync — บนเครื่องนั้น: sudo apt-get install -y rsync   แล้วสั่งซ้ำ: $0 sync-worker"
     ssh_at "$wip" "mkdir -p '${worker_hf}/hub' '${WORKER_VLLM_CACHE}' '${WORKER_FLASHINFER_CACHE}'" ||
-      die "สร้าง dir บน ${wip} ไม่ได้ (เช็ค SSH)"
+      die "สร้าง dir บน ${wip} ไม่ได้: ${worker_hf} (สิทธิ์เขียนของ ${SSH_USER} บนเครื่องนั้น)"
+    # ปลายทางที่คอนเทนเนอร์รอบก่อนเขียนเป็น root → rsync ล้มด้วย Permission denied ทีละไฟล์ (exit 23)
+    # ซ่อมด้วยกลไกเดียวกับ start (chown ผ่านคอนเทนเนอร์ ไม่ต้อง sudo บน worker)
+    WORKER_IPS="$wip" _ensure_worker_owned_dir "${worker_hf}/hub/${cache_name}"
+    # ดิสก์ฝั่ง worker: ส่วนที่ยังไม่มี (ครั้งแรก = ทั้งก้อน) ต้องพอ — เต็มกลางทางคือ rsync exit 11
+    # หลังผ่านไปครึ่งชั่วโมง แล้วต้องมาไล่ว่าเครื่องไหนเต็ม
+    if (( ${have_bytes:-0} > 0 )); then
+      local there_bytes
+      there_bytes="$(ssh_at "$wip" "du -sb '${worker_hf}/hub/${cache_name}' 2>/dev/null | cut -f1" 2>/dev/null || echo 0)"
+      need_kb=$(( ((have_bytes - ${there_bytes:-0}) * 105 / 100 + 1023) / 1024 ))
+      free_kb="$(ssh_at "$wip" "df -Pk '${worker_hf}' 2>/dev/null || df -Pk \"\$HOME\"" 2>/dev/null | awk 'NR == 2 { print $4 }' || echo 0)"
+      if (( ${free_kb:-0} > 0 && need_kb > 0 && free_kb < need_kb )); then
+        die "ดิสก์บน worker ${wip} (${worker_hf}) เหลือ $(_human_kb "$free_kb") แต่ต้องรับอีก ~$(_human_kb "$need_kb")
+  ย้าย cache ฝั่ง worker: WORKER_HF_HOME=/data/hf $0 sync-worker   (start ใช้ค่าเดียวกัน — เขียนลง bundle.env ให้ถาวร)"
+      fi
+    fi
+    log "Syncing model cache → worker ${wip} (~${TOTAL_SIZE_APPROX_GB} GB ครั้งแรก · สั่งซ้ำได้ ต่อจากเดิม)…"
+    # .incomplete = เศษของ download รอบที่ค้าง (verify_files ผ่านแล้วแปลว่าไฟล์จริงครบ) ไม่ต้องลากไป
+    rc=0
     rsync -aH --info=progress2 --no-owner --no-group --partial --append-verify \
-      --exclude='*.lock' --exclude='tmp_*' \
+      --exclude='*.lock' --exclude='tmp_*' --exclude='*.incomplete' \
+      -e "$_RSYNC_SSH" \
       "${model_cache}/" \
-      "${SSH_USER}@${wip}:${worker_hf}/hub/${cache_name}/"
+      "${SSH_USER}@${wip}:${worker_hf}/hub/${cache_name}/" || rc=$?
+    if (( rc != 0 )); then
+      local why="rsync exit ${rc}"
+      case "$rc" in
+        11) why="ดิสก์ปลายทางเต็ม / เขียนไม่ได้ (rsync exit 11)" ;;
+        12|255) why="สาย SSH/rsync ขาดกลางทาง (rsync exit ${rc})" ;;
+        23) why="บางไฟล์คัดลอกไม่ได้ — มักเป็นสิทธิ์ของไฟล์ปลายทาง (rsync exit 23)" ;;
+        30) why="ปลายทางไม่ตอบ (rsync timeout)" ;;
+      esac
+      die "sync ไป worker ${wip} ไม่สำเร็จ: ${why}
+  สั่งซ้ำได้เลย โหลดต่อจากที่ค้าง: $0 sync-worker
+  ดูของบน worker: ssh ${SSH_USER}@${wip} ls -la '${worker_hf}/hub/${cache_name}/blobs'"
+    fi
   done
-  log "sync-worker: DONE"
+  log "sync-worker: DONE — ตรวจต่อ: $0 verify-worker"
 }
 
 # ─────────────────────────── verify-worker ───────────────────────────
 verify_worker() {
-  local worker_hf="${WORKER_HF_HOME}" slug wip
+  local worker_hf="${WORKER_HF_HOME}" slug wip spec=""
   slug="$(_model_slug)"
-  for wip in $WORKER_IPS; do
-  log "Verifying worker (${wip}) shards …"
-  ssh_at "$wip" "docker run --rm -v '${worker_hf}:/cache' -e HF_HOME=/cache -e SHARD_COUNT='${SHARD_COUNT}' -e MODEL_REVISION='${MODEL_REVISION}' -e MODEL_SLUG='${slug}' --entrypoint python3 '$VLLM_IMAGE' - <<'PYEOF'
+  _check_worker_ssh
+  # ชื่อ+ขนาดจาก Hub ไปตรวจทีละไฟล์บน worker — นับจำนวนอย่างเดียวจับ rsync ที่ขาดกลางไฟล์ไม่ได้
+  # (--partial ทิ้งไฟล์ครึ่งเดียวไว้ชื่อเดิม) แล้ว start ไปตายที่ safetensors header บน worker
+  # ซึ่งข้อความบอกแค่ "unexpected end of file" ไม่บอกว่าไฟล์ไหน
+  if declare -p SHARD_FILES >/dev/null 2>&1; then
+    local i
+    for i in "${!SHARD_FILES[@]}"; do spec+="${SHARD_FILES[$i]}=${SHARD_SIZES[$i]:-} "; done
+  fi
+  # สคริปต์ Python เดินทางเป็น base64 ทาง stdin — ห้ามฝังใน string ที่ส่งให้ ssh ตรง ๆ
+  #
+  # เดิม heredoc ของ Python อยู่ **ใน double quote** ของ argument ที่ส่งให้ ssh_at → bash ฝั่ง head
+  # ถอด " ทุกตัวในโค้ดออกก่อนส่ง (os.environ["MODEL_SLUG"] กลายเป็น os.environ[MODEL_SLUG] ·
+  # "/cache/hub/models--"+slug กลายเป็น /cache/hub/models--+slug) worker จึงตอบ SyntaxError ทุกครั้ง
+  # และ verify-worker ไม่เคยผ่านเลยบนเครื่องจริง — ผู้ใช้เห็นแค่ "verify-worker ล้มเหลว" แล้วโทษ rsync
+  # (พบตอน audit 2026-09-04 ด้วยเทสที่รัน python3 จริงผ่าน docker ปลอม)
+  local py b64
+  py="$(cat <<'PYEOF'
 import os, pathlib, sys
 slug = os.environ["MODEL_SLUG"]
 rev = os.environ["MODEL_REVISION"]
@@ -619,16 +899,36 @@ if not snap.exists():
     snaps = sorted((model_dir/'snapshots').glob('*')) if (model_dir/'snapshots').exists() else []
     if snaps: snap = snaps[-1]
 if not snap.exists():
-    sys.exit('worker snapshot missing: '+str(snap))
+    sys.exit('worker snapshot missing: '+str(snap)+'  (run sync-worker)')
 shards = sorted(snap.glob('*.safetensors'))
 if not shards:
-    sys.exit('no shards on worker')
+    sys.exit('no shards on worker  (run sync-worker)')
 print('worker shards:', len(shards))
 if want and len(shards) != want:
-    sys.exit('worker shard count %d != expected %d' % (len(shards), want))
+    sys.exit('worker shard count %d != expected %d  (run sync-worker to resume)' % (len(shards), want))
+bad = []
+for item in os.environ.get('SHARD_SPEC', '').split():
+    name, _, size = item.partition('=')
+    path = snap/name
+    if not path.exists():
+        bad.append('%s: missing' % name); continue
+    if path.is_symlink() and not path.resolve().exists():
+        bad.append('%s: broken symlink' % name); continue
+    if size and path.stat().st_size != int(size):
+        bad.append('%s: size %d != %s' % (name, path.stat().st_size, size))
+if bad:
+    print('\n'.join(bad))
+    sys.exit('worker shards incomplete: %d file(s)  (run sync-worker to resume)' % len(bad))
+if not (snap/'config.json').exists():
+    sys.exit('worker config.json missing  (run sync-worker)')
 print('verify-worker: PASS')
 PYEOF
-" || die "verify-worker ล้มเหลวที่ ${wip}"
+)"
+  b64="$(printf '%s\n' "$py" | base64 | tr -d '\n')"
+  for wip in $WORKER_IPS; do
+  log "Verifying worker (${wip}) shards …"
+  ssh_at "$wip" "echo '${b64}' | base64 -d | docker run -i --rm -v '${worker_hf}:/cache' -e HF_HOME=/cache -e SHARD_COUNT='${SHARD_COUNT}' -e MODEL_REVISION='${MODEL_REVISION}' -e MODEL_SLUG='${slug}' -e SHARD_SPEC='${spec}' --entrypoint python3 '$VLLM_IMAGE' -" ||
+    die "verify-worker ล้มเหลวที่ worker ${wip} — โหลดต่อ (resume): $0 sync-worker   แล้ว: $0 verify-worker"
   done
   log "verify-worker: PASS"
 }
@@ -804,6 +1104,9 @@ prompt_cluster_config() {
   fi
   # คำตอบต้องไปถึง TRANSPORT_IP_* / WORKER_IPS ด้วย — ดูคำอธิบายที่ _derive_cluster_defaults
   _derive_cluster_defaults
+  # กด Enter ยืนยัน = ผู้ใช้บอกว่าค่านี้คือเครื่องจริง (คลัสเตอร์ที่ใช้ 10.100.152.x จริงมีอยู่)
+  # ไม่ใช่ค่าตัวอย่างอีกต่อไป — ไม่งั้น _require_cluster_config จะปฏิเสธทั้งที่เพิ่งถามไป
+  MASTER_IP_EXPLICIT="$MASTER_IP"; WORKER_IP_EXPLICIT="$WORKER_IP"
   printf '\n'
 }
 
@@ -890,7 +1193,10 @@ ensure_image() {
   local image="$1"
   docker image inspect "$image" >/dev/null 2>&1 && return 0
   echo "ดึง image ${image} (ยังไม่มีในเครื่อง — ขนาดหลาย GB ใช้เวลาสักครู่)…"
-  docker pull "$image" || die "ดึง image ${image} ไม่สำเร็จ"
+  if ! docker pull "$image"; then
+    _pull_hints "$image" "head"
+    die "ดึง image ${image} ไม่สำเร็จ — แก้ตามข้างบนแล้วสั่งซ้ำ (หรือดึงให้ครบทุก node ทีเดียว: $0 prepare-runtime)"
+  fi
 }
 
 # port ว่างบน head? — container รันด้วย --network host จึงไม่ "publish" port
@@ -914,6 +1220,7 @@ start() {
   _require_non_root
   need docker; need curl
   check_running_on_master
+  _check_worker_ssh
   _resolve_ifname
   _resolve_hca
   local WORKER_IFNAME="$NCCL_SOCKET_IFNAME"
@@ -963,12 +1270,16 @@ start() {
 
   # ── Step 1: worker ทุกตัว (rank 1..N-1, headless) ก่อน ──
   # container ชื่อเดียวกันได้เพราะอยู่คนละเครื่อง · rank เรียงตามลำดับใน WORKER_IPS
-  local rank=0 worker_script wifname whca
+  local rank=0 worker_script wifname whca wtip
   for wip in $WORKER_IPS; do
     rank=$(( rank + 1 ))
-    wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wip}' \
+    # interface/IP ที่ worker ใช้คุย NCCL คือฝั่ง transport (สาย 200G) ไม่ใช่ IP ที่ head ssh ไปหา
+    wtip="$(_worker_transport_ip "$rank" "$wip")"
+    wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wtip}' \
       '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true)"
-    [[ -n "$wifname" ]] || wifname="$NCCL_SOCKET_IFNAME"
+    [[ -n "$wifname" ]] || die "worker ${wip} ไม่มี IP ${wtip} บน interface ไหนเลย (ip -br addr บนเครื่องนั้น)
+  IP ที่ worker ใช้คุย NCCL ต้องอยู่บนเครื่อง worker จริง — ตั้ง TRANSPORT_IP_WORKER (worker ตัวแรก) หรือ
+  TRANSPORT_IPS_WORKER=\"<ip rank1> <ip rank2> …\" ให้ตรงกับสายที่ต่อถึง ${TRANSPORT_IP_MASTER} ของ head · ดู: $0 network-info"
     # HCA ของ worker หาบนเครื่อง worker เอง (sysfs เดียวกับ detect_hca_for_interface ของ head)
     # ค่าที่ผู้ใช้ตั้ง NCCL_IB_HCA มาเองใช้ทั้งคลัสเตอร์ · หาไม่เจอ = worker ตัวนั้นใช้ TCP ไม่ยืมชื่อของ head
     whca="$NCCL_IB_HCA_EXPLICIT"
@@ -977,11 +1288,13 @@ start() {
       whca="${whca%%$'\n'*}"
     fi
     [[ -z "$whca" || "$whca" == "$NCCL_IB_HCA" ]] || log "worker ${wip} ใช้ HCA คนละตัวกับ head: ${whca}"
-    log "Starting worker rank ${rank} (headless) on ${wip} [${wifname:-auto}${whca:+ / ${whca}}] …"
+    log "Starting worker rank ${rank} (headless) on ${wip} [${wtip} · ${wifname:-auto}${whca:+ / ${whca}}] …"
+    # env ทุกตัวผ่าน %q — ค่าที่มีช่องว่าง/อักขระพิเศษ (เช่น JSON ใน VLLM_* หรือ path) เคยถูก
+    # แตกเป็นหลาย token ตอน export ในสคริปต์ของ worker ทั้งที่ head ได้ค่าถูกผ่าน docker -e
     worker_script="$(cat <<WSCRIPT
 #!/bin/bash
 set -e
-export VLLM_HOST_IP=${wip}
+export VLLM_HOST_IP=${wtip}
 export HF_HOME=/cache
 # เลย์เอาต์ hub cache ต้องดูจากดิสก์ของ **worker เอง** ไม่ใช่ของ head
 #
@@ -1000,7 +1313,8 @@ fi
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 $(_nccl_env_pairs "$wifname" "$whca" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
-$(for pair in "${EXTRA_DOCKER_ENV[@]}"; do printf 'export %s\n' "$pair"; done)
+$(for pair in "${EXTRA_DOCKER_ENV[@]}"; do printf 'export %q\n' "$pair"; done)
+$(for pair in ${ENGINE_ENV}; do printf 'export %q\n' "$pair"; done)
 exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port 18000 --headless
 WSCRIPT
 )"
@@ -1025,7 +1339,8 @@ WSCRIPT
   for wip in $WORKER_IPS; do
     if [[ "$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
       ssh_at "$wip" "docker logs --tail 200 '${WORKER_CONTAINER}' 2>&1" || true
-      die "worker container บน ${wip} หยุดก่อน head จะเริ่ม — ดู log ด้านบน"
+      _explain_worker_crash "$wip"
+      die "worker container บน ${wip} หยุดก่อน head จะเริ่ม — ดู log ด้านบน (เพิ่มเติม: $0 logs worker 500)"
     fi
   done
 
@@ -1077,6 +1392,7 @@ WSCRIPT
       for wip in $WORKER_IPS; do
         if [[ "$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
           ssh_at "$wip" "docker logs --tail 100 '${WORKER_CONTAINER}' 2>&1" || true
+          _explain_worker_crash "$wip"
           docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
           die "worker container บน ${wip} ตายระหว่างรอ head health — หยุด head แล้ว · log ของ worker อยู่ด้านบน (เพิ่มเติม: $0 logs worker 200)"
         fi
@@ -1086,6 +1402,30 @@ WSCRIPT
     sleep 10
   done
   die "ไม่ health ภายใน ${STARTUP_TIMEOUT}s — container ยังรันอยู่ ดู: $0 logs head 200"
+}
+
+# worker ตายแล้วได้แต่ log ดิบ — ให้ตัวจำแนกเดียวกับ head อ่านให้ (ดึง log ผ่าน ssh มาใส่ CRASH_LOG_TEXT)
+_explain_worker_crash() {
+  local wip="$1" text
+  text="$(ssh_at "$wip" "docker logs --tail 500 '${WORKER_CONTAINER}' 2>&1" 2>/dev/null || true)"
+  [[ -n "$text" ]] || return 0
+  CRASH_LOG_TEXT="$text" CRASH_LOG_LABEL="worker ${wip}" explain_crash || true
+}
+
+# argv จริงที่ vLLM จะได้ — ไม่แตะ docker/ssh · ใช้เทียบว่า bundle.env/bundle.args/สูตร ถึง argv ไหม
+# (hub และผู้ใช้ตรวจสอบ stacked ได้เหมือน single ที่มี serve-args มาก่อน)
+serve_args() {
+  build_common_args
+  echo "# head (rank 0):"
+  printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 0 --host "$API_HOST" --port "$API_PORT"
+  echo "# worker rank 1..$(worker_count) (headless, ต่างกันแค่ --node-rank N):"
+  printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 1 --host 127.0.0.1 --port 18000 --headless
+  if [[ -n "$ENGINE_ENV" || ${#EXTRA_DOCKER_ENV[@]} -gt 0 ]]; then
+    echo "# engine env (ทั้ง head และ worker ทุกตัว):"
+    local pair
+    for pair in "${EXTRA_DOCKER_ENV[@]}"; do printf '%s\n' "$pair"; done
+    for pair in ${ENGINE_ENV}; do printf '%s\n' "$pair"; done
+  fi
 }
 
 write_meta() {
@@ -1128,6 +1468,9 @@ stop() {
 status() {
   echo "Model   : ${SERVED_MODEL_NAME} (${MODEL_ID})"
   echo "Topology: stacked TP=${TENSOR_PARALLEL_SIZE} nnodes=${NNODES}  head=${MASTER_IP} worker(s)=${WORKER_IPS}"
+  if _cluster_config_is_placeholder; then
+    echo "Cluster : ยังไม่ตั้งค่า (IP ข้างบนเป็นตัวอย่าง — ไม่มี ${CLUSTER_ENV}) → lmds node cluster --write ${SLUG} --head <เครื่อง head>"
+  fi
   echo "--- Head (local) ---"
   docker ps -a --filter "name=^${MASTER_CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
   echo "--- Worker(s) (${WORKER_IPS}) ---"
@@ -1139,9 +1482,25 @@ status() {
   echo "--- API ---"
   if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
     echo "API: healthy"
-    curl -fsS ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
-      "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null || true
-    echo ""
+    local models seen
+    models="$(curl -fsS ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
+      "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null || true)"
+    printf '%s\n' "$models"
+    # พอร์ตเดียวกันอาจเป็นของโมเดลอื่นที่รันอยู่ก่อน (เคสจริง spark-head 2026-09-04: status ของ bundle
+    # stacked บอก healthy ทั้งที่ container ของมันไม่มีสักตัว — 8000 เป็นของ qwen3-coder-next แบบ single)
+    # "healthy" เฉย ๆ จึงหลอกให้คิดว่า stacked ขึ้นแล้ว
+    seen="$(printf '%s' "$models" | { command -v python3 >/dev/null 2>&1 && python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)["data"]
+except Exception:
+    sys.exit(0)
+print((data[0].get("id") or "").strip() if data else "")
+' || true; })"
+    if [[ -n "$seen" && "$seen" != "$SERVED_MODEL_NAME" ]]; then
+      echo "⚠ พอร์ต ${API_PORT} ตอบเป็นโมเดล '${seen}' ไม่ใช่ '${SERVED_MODEL_NAME}' — เซิร์ฟเวอร์อื่นยึดพอร์ตอยู่ (bundle นี้ยังไม่ขึ้น)"
+      echo "  หยุดตัวนั้นก่อน หรือรันตัวนี้คนละพอร์ต: $0 start --port 8001  (ถาวร: lmds set ${SLUG} --port 8001)"
+    fi
   else
     echo "API: not responding (http://127.0.0.1:${API_PORT})"
   fi
@@ -1169,8 +1528,19 @@ logs() {
 # ─────────────────────────── network-info ───────────────────────────
 network_info() {
   local adv; adv="$(detect_advertise_ip)"
+  # หา interface/HCA แบบเดียวกับ start (อ่าน ip + sysfs เท่านั้น) — เดิม network-info พิมพ์
+  # "HCA <ยังไม่ตั้ง — จะ fallback TCP>" บนเครื่องจริงที่ start หา rocep1s0f1 เจอ ทำให้คนไปไล่ปัญหา RoCE ที่ไม่มี
+  _resolve_ifname >/dev/null 2>&1 || true
+  _resolve_hca >/dev/null 2>&1 || true
   echo "Head IP    : ${MASTER_IP}  (transport ${TRANSPORT_IP_MASTER})"
   echo "Worker IP  : ${WORKER_IP}  (transport ${TRANSPORT_IP_WORKER})"
+  if (( $(worker_count) > 1 )); then
+    local wip r=0
+    for wip in $WORKER_IPS; do r=$(( r + 1 )); echo "  rank ${r}   : ${wip}  (transport $(_worker_transport_ip "$r" "$wip"))"; done
+  fi
+  if _cluster_config_is_placeholder; then
+    echo "Cluster    : ยังไม่ตั้งค่า — IP ข้างบนเป็นตัวอย่าง (ไม่มี ${CLUSTER_ENV})"
+  fi
   echo "NCCL if    : ${NCCL_SOCKET_IFNAME:-<ยังไม่ตั้ง — แนะนำให้ตั้ง>}"
   echo "NCCL HCA   : ${NCCL_IB_HCA:-<ยังไม่ตั้ง — จะ fallback TCP>}"
   echo "Master port: ${MASTER_PORT}"
@@ -1242,15 +1612,18 @@ else:
 
 usage() {
   cat <<EOF
-{{ slug }} — vLLM stacked (multi-node) controller  (model: ${MODEL_ID})
+${SLUG} — vLLM stacked (multi-node) controller  (model: ${MODEL_ID})
 
 USAGE
   $0 <command> [options]
 
 Run every command from the MASTER node as a normal user (never sudo).
-Before the first start you MUST set MASTER_IP / WORKER_IP / SSH_USER /
-NCCL_SOCKET_IFNAME / NCCL_IB_HCA in the CONFIG block at the top of this file,
-and set up passwordless SSH from master to worker.
+Before the first command that touches the worker(s) the cluster must be known:
+  from the hub:   lmds node cluster --write ${SLUG} --head <head machine>   (writes cluster.env)
+  or by hand:     cluster.env next to this script, or MASTER_IP / WORKER_IP / SSH_USER env
+NCCL_SOCKET_IFNAME / NCCL_IB_HCA are auto-detected from the transport IPs (override via env).
+Passwordless SSH from the MASTER node to every worker is required (the head's own key,
+not the hub's): ssh-keygen -t ed25519 -N '' && ssh-copy-id <user>@<worker>.
 
 COMMANDS (Thai descriptions kept — same wording as the run output):
   prepare-runtime  pull + lock image ให้ตรงกันทั้งสอง node
@@ -1266,6 +1639,8 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
   logs [head|worker] [N]   log (หรือ logs N = head N บรรทัด)
   client-config    ค่าตั้ง client (JSON) พร้อม token budget
   network-info     IP/fabric/endpoint
+  serve-args       argv จริงของ vllm บน head/worker + engine env (ไม่แตะ docker/ssh)
+  info             สรุปโมเดล/พอร์ต/สถานะ
   props            รายการโมเดลจาก /v1/models
   clear-fi-cache   หยุดแล้วล้าง FlashInfer JIT cache ทั้งสอง node
                    ใช้เมื่อ start พังหลังเปลี่ยน image (cache เก่าคนละ signature)
@@ -1305,7 +1680,11 @@ ENVIRONMENT VARIABLES
   API_PORT / API_HOST   Same as --port / --bind
   MAX_MODEL_LEN         Same as --context
   HF_TOKEN              Hugging Face token, needed for gated repos during 'download'
-  HF_HOME               Where model weights live on BOTH nodes    [default: \${HOME}/.cache/huggingface]
+  HF_HOME               Where model weights live on the head      [default: \${HOME}/.cache/huggingface]
+  WORKER_HF_HOME        Same on the worker(s)                     [default: same as HF_HOME]
+  HTTPS_PROXY / HF_ENDPOINT  Forwarded into the download container when set (proxy / mirror)
+  TRANSPORT_IP_WORKER   IP the first worker uses for NCCL (fabric) [default: WORKER_IP]
+  TRANSPORT_IPS_WORKER  Same for every worker, rank order, space-separated (3+ nodes)
   SHARD_COUNT           Expected shard count (0 = do not enforce) [default: ${SHARD_COUNT}]
   STARTUP_TIMEOUT       Seconds to wait for /health on start      [default: ${STARTUP_TIMEOUT}]
 
@@ -1357,10 +1736,15 @@ info() {
   printf '  State     : %s  (port %s)\n\n' "${state}" "${API_PORT}"
 }
 
-case "${1:-}" in start|restart) prompt_cluster_config ;; esac
+# ทุกคำสั่งที่จะ ssh ไป worker: มี tty ถามยืนยัน IP (เหมือน start เดิม) · ไม่มี tty และยังเป็นค่า
+# ตัวอย่าง = หยุดพร้อมบอกทาง — stop/status/logs ปล่อยผ่าน (hub เรียกบ่อย และล้มไม่เสียหาย)
+case "${1:-}" in
+  prepare-runtime|sync-worker|verify-worker|start|restart|clear-fi-cache|doctor) _require_cluster_config "$1" ;;
+esac
 
 case "${1:-help}" in
   prepare-runtime) prepare_runtime ;;
+  serve-args)      serve_args ;;
   runtime-info)    runtime_info ;;
   download)        download ;;
   verify-files)    verify_files ;;

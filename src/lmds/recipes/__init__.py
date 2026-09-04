@@ -35,6 +35,9 @@ class Recipe:
     reasoning: dict = field(default_factory=dict)
     speculative: dict = field(default_factory=dict)
     env: dict = field(default_factory=dict)
+    # แฟล็กเพิ่มที่ controller ที่พิสูจน์แล้วส่งให้ engine (`EXTRA_SERVE_ARGS_DEFAULT` ที่ publish พับมา)
+    # — รูป "--flag value" ต่อรายการ · ยังผ่าน allowlist ของ harden เหมือนแฟล็กจาก LLM
+    extra_flags: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     source: str = ""
     validated_on: str = ""
@@ -79,6 +82,89 @@ def synced_path() -> Path:
 # ความสามารถของโมเดล ไม่ใช่การตั้งค่าของเครื่อง — สูตรที่ดึงมาทับได้ถ้ามันระบุเอง
 # แต่ถ้าเงียบ ต้องไม่ไปลบของที่ catalog รู้อยู่แล้ว (ดูเหตุผลใน load_catalog)
 CAPABILITY_FIELDS = ("tool_calling", "reasoning")
+# ฟิลด์ที่เป็น dict — รวมทีละคีย์ ไม่ใช่ทับทั้งก้อน (ดู _merge_entries)
+_DICT_FIELDS = ("serving", "env", "tool_calling", "reasoning", "speculative")
+
+
+def _parse_env(text: str) -> dict[str, str]:
+    """`"K=V K2=V2"` (รูปที่ controller เก็บใน ENGINE_ENV) → {K: V}"""
+    import shlex
+
+    out: dict[str, str] = {}
+    try:
+        tokens = shlex.split(str(text))
+    except ValueError:
+        tokens = str(text).split()
+    for token in tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            if key:
+                out[key] = value
+    return out
+
+
+def _parse_flags(text: str) -> list[str]:
+    """`"--a 1 --b"` → ["--a 1", "--b"] — รูปเดียวกับ Serving.extra_flags"""
+    import shlex
+
+    try:
+        tokens = shlex.split(str(text))
+    except ValueError:
+        tokens = str(text).split()
+    out: list[str] = []
+    for token in tokens:
+        if token.startswith("-") or not out:
+            out.append(token)
+        else:
+            out[-1] = f"{out[-1]} {token}"
+    return [t for t in out if t.startswith("-")]
+
+
+def _normalize(entry: dict) -> dict:
+    """แปลงคีย์ที่ controller/publish เขียน (ระดับบนสุด) ให้เป็นฟิลด์ที่ Recipe รู้จัก
+
+    controller ที่ publish มาเก็บ env ไว้ที่ `engine_env: "K=V K=V"` · parser ที่ `tool_parser` /
+    `reasoning_parser` · แฟล็กเพิ่มที่ `extra_args` — ไม่ใช่ `env:`/`tool_calling:` แบบ catalog
+    ของเดิมกรองด้วย "ชื่อฟิลด์ที่ Recipe มี" จึงทิ้งทั้งหมดเงียบ ๆ
+
+    เคสจริง 2026-09-04: ucbye/Qwen3-Coder-Next-NVFP4-GB10 รันบน spark-head ได้ก็เพราะ
+    `ENGINE_ENV=VLLM_NVFP4_GEMM_BACKEND=marlin …` สี่ตัว (อยู่ในสูตรที่ sync มาครบ) แต่แผนที่ hub
+    สร้างให้ไม่มี env เลย → ptxas ตายตอน start บน image ที่ไม่มี FP4 kernel
+    """
+    out = dict(entry)
+    if out.get("engine_env") and not out.get("env"):
+        out["env"] = _parse_env(out["engine_env"])
+    if out.get("tool_parser") and not out.get("tool_calling"):
+        out["tool_calling"] = {"enabled": True, "parser": str(out["tool_parser"])}
+    if out.get("reasoning_parser") and not out.get("reasoning"):
+        out["reasoning"] = {"enabled": True, "parser": str(out["reasoning_parser"])}
+    if out.get("extra_args") and not out.get("extra_flags"):
+        out["extra_flags"] = _parse_flags(out["extra_args"])
+    for name in _DICT_FIELDS:
+        if not isinstance(out.get(name), dict):
+            out.pop(name, None)
+    return out
+
+
+def _merge_entries(previous: dict, entry: dict) -> dict:
+    """สูตรที่ดึงมา (entry) ทับของ catalog (previous) เฉพาะ *สิ่งที่มันพูดถึง* — ทีละคีย์ ไม่ใช่ทั้งก้อน
+
+    สูตรที่ sync มาสร้างจาก header ของ controller จึงรู้แค่ "สั่งรันยังไง" (image · gpu_util · max_num_seqs
+    · env) ส่วน catalog รู้ "โมเดลนี้ต้องการอะไร" (kv_cache_dtype ของ DeepSeek V4 · block-size 256 ·
+    compilation_config PIECEWISE · env ปิด profiler) · เคสจริง 2026-09-04 บน hub: entry ของ DeepSeek ที่
+    sync มามี serving แค่สองคีย์ แล้วทับทั้ง dict → ทุกอย่างที่ catalog รู้หายหมด แผนออกมา
+    extra_flags=[] extra_env={} ทั้ง single และ stacked → vLLM ตาย "Expected 7 but got 8 arguments"
+    """
+    merged = dict(entry)
+    for name in _DICT_FIELDS:
+        merged[name] = {**(previous.get(name) or {}), **(entry.get(name) or {})}
+    flags = list(previous.get("extra_flags") or []) + list(entry.get("extra_flags") or [])
+    merged["extra_flags"] = list(dict.fromkeys(flags))
+    # image_for ผูกกับ image — คงของ catalog ไว้เฉพาะเมื่อ image ยังเป็นตัวเดียวกัน (หรือ entry ไม่พูดถึง image)
+    same_image = not entry.get("image") or entry.get("image") == previous.get("image")
+    if "image_for" not in entry and same_image and previous.get("image_for"):
+        merged["image_for"] = previous["image_for"]
+    return merged
 
 
 def load_catalog() -> list[Recipe]:
@@ -107,20 +193,19 @@ def _load_catalog_cached(synced: str, stamp: float) -> list[Recipe]:
     merged: dict[str, dict] = {}
     for entry in [*_read(CATALOG_PATH), *_read(Path(synced))]:
         key = str(entry["match"]).lower()
+        entry = _normalize(entry)
         previous = merged.get(key)
         if previous:
-            # ของที่ดึงมาชนะทุกอย่างที่มันพูดถึง (ตามเดิม) แต่ "ความสามารถของโมเดล"
-            # ที่มันเงียบไว้ ต้องไม่หายไป — สูตรที่ดึงมาสร้างจากสคริปต์ controller
-            # จึงบอกว่า "สั่งรันยังไง" ส่วน catalog บอกว่า "โมเดลทำอะไรได้"
+            # ของที่ดึงมาชนะทุกอย่างที่มันพูดถึง (ตามเดิม) แต่สิ่งที่มันเงียบไว้ต้องไม่หายไป —
+            # สูตรที่ดึงมาสร้างจากสคริปต์ controller จึงบอกว่า "สั่งรันยังไง" ส่วน catalog
+            # บอกว่า "โมเดลทำอะไรได้/ต้องการอะไร"
             #
-            # ของจริง: สูตรที่ดึงมาของ ucbye/Qwen3-Coder-Next-NVFP4-GB10 เขียน
+            # ของจริง (1): สูตรที่ดึงมาของ ucbye/Qwen3-Coder-Next-NVFP4-GB10 เขียน
             # "tools (qwen3_coder)" ไว้ใน notes ซึ่งเป็นข้อความให้คนอ่าน ไม่มี
             # field tool_calling · พอทับทั้งก้อน สิ่งที่ catalog ยืนยันไว้ก็หาย
             # โมเดลจึง deploy ออกมาโดยไม่มี --enable-auto-tool-choice
-            entry = dict(entry)
-            for field_name in CAPABILITY_FIELDS:
-                if not entry.get(field_name) and previous.get(field_name):
-                    entry[field_name] = previous[field_name]
+            # ของจริง (2) 2026-09-04: serving/env ของ DeepSeek V4 หายทั้งชุด — ดู _merge_entries
+            entry = _merge_entries(previous, entry)
         merged[key] = entry
     return [Recipe(**{k: v for k, v in entry.items() if k in known}) for entry in merged.values()]
 

@@ -49,10 +49,23 @@ _ANON_TOKEN = {
 
 
 def split_ref(image_ref: str) -> tuple[str, str, str]:
-    """`ghcr.io/org/name:tag` → (host, repo, tag) · ไม่มี host = Docker Hub"""
+    """`ghcr.io/org/name:tag` → (host, repo, tag) · ไม่มี host = Docker Hub
+
+    `repo@sha256:…` (ตรึง digest) → (host, repo, "sha256:…") — ส่วนที่สามใช้เป็น reference ของ
+    manifests/ ได้ตรง ๆ ทั้ง tag และ digest
+
+    เคสจริง 2026-09-04 (ucbye/Qwen3-Coder-Next-NVFP4-GB10): สูตรที่ sync มาใช้ image ที่ตรึง digest
+    `avarok/dgx-vllm-nvfp4-kernel@sha256:3654…` ซึ่งคือตัวที่รันอยู่จริงบน spark-head · ของเดิมตัดที่
+    ':' ตัวสุดท้าย → repo กลายเป็น `…kernel@sha256` และ "tag" เป็นเลข digest → registry ตอบ 404 →
+    แผนสรุปว่า "image ไม่มีอยู่จริง" แล้วเปลี่ยนเป็น nvcr 26.05 ที่ไม่มี FP4 kernel ของ sm_121
+    → stacked start ตายด้วย `cvt .e2m1x2 not supported on sm_121` ทั้งที่ image ที่สูตรบอกมาถูกอยู่แล้ว
+    """
     ref = (image_ref or "").strip()
     tag = "latest"
-    if ":" in ref.rsplit("/", 1)[-1]:
+    if "@" in ref.rsplit("/", 1)[-1]:
+        ref, digest = ref.split("@", 1)
+        tag = digest
+    elif ":" in ref.rsplit("/", 1)[-1]:
         ref, tag = ref.rsplit(":", 1)
     head = ref.split("/", 1)[0]
     if "." in head or ":" in head or head == "localhost":
@@ -77,9 +90,13 @@ def resolve_digest(image_ref: str, client: httpx.Client | None = None) -> str | 
     เครื่องที่ไม่มีเน็ต หรือ proxy ที่บล็อก ล้วนถามไม่ได้ — และไม่ใช่เหตุผลที่จะ
     ห้าม deploy ผู้เรียกจึงต้องรับมือกับ None เสมอ
     """
+    host, repo, tag = split_ref(image_ref)
+    # ตรึงมาแล้ว = คำตอบอยู่ในชื่อ — ไม่ต้องถาม registry (และเครื่อง air-gapped ที่ใช้ digest ของ
+    # image ในเครื่องจะได้ไม่เสียเวลารอ timeout ทุกครั้งที่วางแผน)
+    if tag.startswith("sha256:"):
+        return tag
     if os.environ.get(SKIP_ENV):
         return None
-    host, repo, tag = split_ref(image_ref)
     token_url = _ANON_TOKEN.get(host)
     if not token_url or not repo:
         return None

@@ -1,0 +1,258 @@
+"""หมอของคู่ stacked — บอก *เหตุผล* ที่คู่นี้ยังใช้ไม่ได้ ไม่ใช่แค่ "ไม่ผ่าน"
+
+ลูกค้าเห็นแค่ป้าย "not ready"/"ไม่ผ่าน" บนหน้า Cluster · เหตุผลจริงกระจายอยู่หลายที่:
+cluster IP ยังไม่ตั้ง · IP ตั้งแล้วแต่คนละวง · การ์ดขึ้นแค่ 50G · head ไม่มีกุญแจไป worker ·
+ดิสก์ worker ไม่พอรับ weight · bundle ยังไม่มี cluster.env — แต่ละอย่างแก้คนละวิธี
+
+ทุกข้อตรวจเป็น **รหัส** (`kind`) + ข้อมูลดิบ · ประโยคมีสองภาษาในตารางเดียว (`describe`)
+เพราะ CLI พูดไทยและหน้าเว็บพูดอังกฤษ · ตรวจอ่านอย่างเดียว: ไม่ start/stop/เขียนอะไรทั้งสิ้น
+"""
+
+from __future__ import annotations
+
+import shlex
+
+from .cluster import (
+    MIN_STACK_GBPS,
+    check_cluster_ip,
+    link_network,
+    link_warning,
+    machine_signature,
+)
+from .registry import Node
+
+# ต่ำกว่านี้ weight ของโมเดล 70B (~140 GB bf16) ลงไม่ครบทั้งสองเครื่อง — เตือน ไม่บล็อก
+LOW_DISK_GB = 150
+
+_TEXT = {
+    "registered": ("{names} is not in the registry — add it first (lmds node add)",
+                   "{names} ไม่อยู่ในทะเบียน — เพิ่มก่อน (lmds node add)"),
+    "reachable": ("{names} is unreachable from the hub: {error}",
+                  "hub ต่อ {names} ไม่ได้: {error}"),
+    "gpu": ("{names} reports no GPU — cannot be a stacked member",
+            "{names} ไม่พบ GPU — เป็นสมาชิก stacked ไม่ได้"),
+    "opted-out": ("{names} is excluded from stacked groups (stack = off)",
+                  "{names} ถูกตั้งไม่เอาเข้ากลุ่ม stacked (stack = off)"),
+    "same-site": ("machines are in different sites ({sites}) — stacked needs one rack, not a WAN",
+                  "เครื่องอยู่คนละไซต์ ({sites}) — stacked ต้องอยู่แร็คเดียวกัน ไม่ใช่ข้าม WAN"),
+    "hardware": ("hardware differs: {signatures} — every rank must be the same GPU model and count",
+                 "ฮาร์ดแวร์ไม่ตรงกัน: {signatures} — ทุก rank ต้อง GPU รุ่นเดียวกัน จำนวนเท่ากัน"),
+    "cluster-ip": ("cluster IP on {names}: {state}{hint}",
+                   "cluster IP ของ {names}: {state}{hint}"),
+    "same-subnet": ("cluster IPs are on different subnets ({networks}) — NCCL cannot connect",
+                    "cluster IP อยู่คนละวง ({networks}) — NCCL ต่อกันไม่ติด"),
+    "iface-up": ("the fast link on {names} ({iface}) is not up",
+                 "สายเร็วของ {names} ({iface}) ยังไม่ขึ้น"),
+    "link-speed": ("link on {names} negotiated at {speed}G (expected ≥{expected}G) — works but slow; "
+                   "check the switch port speed",
+                   "สายของ {names} ได้แค่ {speed}G (ควร ≥{expected}G) — ใช้ได้แต่ช้า ตรวจ port speed ที่ switch"),
+    "ssh-head-to-worker": ("{head} cannot ssh to {user}@{ip} without a password: {error}",
+                           "{head} ssh ไป {user}@{ip} แบบไม่ถามรหัสไม่ได้: {error}"),
+    "fabric-ping": ("{head} cannot ping {ip} over the cluster link (ICMP may be blocked — verify with ssh)",
+                    "{head} ping {ip} บนสายคลัสเตอร์ไม่ถึง (อาจแค่บล็อก ICMP — ยืนยันด้วย ssh)"),
+    "disk": ("{names} has only {free} GB free — stacked weights land on every machine",
+             "{names} เหลือดิสก์ {free} GB — weight ของ stacked ต้องอยู่ทุกเครื่อง"),
+    "bundle-on-head": ("bundle '{slug}' is not on {head} — push it first",
+                       "ไม่มี bundle '{slug}' บน {head} — push ไปก่อน"),
+    "cluster-env": ("bundle '{slug}' on {head} has no cluster.env — start would prompt for IPs "
+                    "(which cannot happen from the web)",
+                    "bundle '{slug}' บน {head} ยังไม่มี cluster.env — start จะถาม IP (ซึ่งทำจากหน้าเว็บไม่ได้)"),
+    "cluster-env-match": ("cluster.env on {head} points at {found} but the registry says {expected}",
+                          "cluster.env บน {head} ชี้ไป {found} แต่ทะเบียนบอก {expected}"),
+    "ok": ("{what}", "{what}"),
+}
+
+# ประโยคตอน "ผ่าน" — ต้องมีคนละชุด ไม่งั้น ✓ ตามด้วยประโยคของอาการล้ม อ่านแล้วขัดกันเอง
+_PASS = {
+    "registered": ("both machines are in the registry", "ทั้งสองเครื่องอยู่ในทะเบียน"),
+    "reachable": ("the hub reaches both machines", "hub ต่อได้ทั้งสองเครื่อง"),
+    "gpu": ("GPU present on both", "มี GPU ทั้งสองเครื่อง"),
+    "opted-out": ("both allowed in stacked groups", "ทั้งคู่ยอมเข้ากลุ่ม stacked"),
+    "same-site": ("same site ({sites})", "ไซต์เดียวกัน ({sites})"),
+    "hardware": ("same hardware on every rank ({signatures})", "ฮาร์ดแวร์ตรงกันทุก rank ({signatures})"),
+    "cluster-ip": ("cluster IP on {names}: {state}", "cluster IP ของ {names}: {state}"),
+    "same-subnet": ("cluster IPs share one subnet ({networks})", "cluster IP อยู่วงเดียวกัน ({networks})"),
+    "iface-up": ("fast link on {names} ({iface}) is up", "สายเร็วของ {names} ({iface}) ขึ้นแล้ว"),
+    "link-speed": ("link speed on {names} is as expected", "สายของ {names} ได้ความเร็วตามที่ควร"),
+    "ssh-head-to-worker": ("{head} reaches {user}@{ip} over ssh without a password",
+                           "{head} ssh ไป {user}@{ip} ได้โดยไม่ถามรหัส"),
+    "fabric-ping": ("{head} pings {ip} over the cluster link", "{head} ping {ip} บนสายคลัสเตอร์ถึง"),
+    "disk": ("enough disk on {names}", "ดิสก์ของ {names} พอ"),
+    "bundle-on-head": ("bundle '{slug}' is on {head}", "มี bundle '{slug}' บน {head}"),
+    "cluster-env": ("bundle '{slug}' on {head} has a cluster.env", "bundle '{slug}' บน {head} มี cluster.env"),
+    "cluster-env-match": ("cluster.env on {head} matches the registry ({found})",
+                          "cluster.env บน {head} ตรงกับทะเบียน ({found})"),
+}
+
+_FIX = {
+    "cluster-ip": "lmds node set {name} --cluster-ip {suggested}",
+    "same-subnet": "lmds node set <name> --cluster-ip <ip on the shared subnet>",
+    "ssh-head-to-worker": "lmds cluster pair {head} {worker}   (or the Pair SSH button)",
+    "cluster-env": "lmds cluster write {slug} --head {head} --worker {worker}",
+    "cluster-env-match": "lmds cluster write {slug} --head {head} --worker {worker}",
+    "opted-out": "lmds node set {name} --stack",
+    "same-site": "lmds node set <name> --site <same site>",
+}
+
+
+def describe(finding: dict, lang: str = "en") -> str:
+    """ประโยคของ finding หนึ่งข้อ — en สำหรับหน้าเว็บ · th สำหรับ CLI"""
+    table = _PASS if finding.get("ok") else _TEXT
+    en, th = table.get(finding["kind"], ("{kind}", "{kind}"))
+    template = th if lang == "th" else en
+    data = {"kind": finding["kind"], "names": ", ".join(finding.get("names") or []),
+            **(finding.get("data") or {})}
+    try:
+        return template.format(**data)
+    except (KeyError, IndexError):
+        return template
+
+
+def _fix_for(kind: str, data: dict) -> str:
+    template = _FIX.get(kind, "")
+    try:
+        return template.format(**data)
+    except (KeyError, IndexError):
+        return template
+
+
+def _finding(kind: str, ok: bool, names: list[str], level: str = "fail", **data) -> dict:
+    item = {"kind": kind, "ok": ok, "level": "pass" if ok else level, "names": names,
+            "data": data}
+    if not ok:
+        item["fix"] = _fix_for(kind, data)
+    return item
+
+
+def _fast_link(host: dict, cluster_ip: str) -> dict | None:
+    for link in (host.get("fabric") or {}).get("links") or []:
+        if link.get("ip") == cluster_ip:
+            return link
+    return None
+
+
+def diagnose_pair(head_name: str, worker_name: str, *, nodes: dict[str, Node],
+                  hosts: dict[str, dict | None], errors: dict[str, str] | None = None,
+                  runner=None, slug: str = "", bundle_dir: str = "") -> dict:
+    """ตรวจคู่ (head, worker) ทีละข้อ — คืน {"ok", "findings": [...], "head", "worker"}
+
+    `hosts` = host payload ที่ hub มีอยู่แล้ว (แคชของ refresher) · None = ต่อไม่ได้ (เหตุผลใน
+    `errors`) · `runner` = ตัวรันคำสั่งบน node (แทน `lmds.nodes.run` ในเทส) — ใช้เฉพาะข้อที่ต้อง
+    ถาม head จริง (ssh/ping/cluster.env) และไม่ถูกเรียกเลยเมื่อของพื้นฐานยังไม่ผ่าน
+    """
+    errors = errors or {}
+    findings: list[dict] = []
+    pair = [head_name, worker_name]
+
+    missing = [n for n in pair if n not in nodes]
+    findings.append(_finding("registered", not missing, missing or pair))
+    if missing:
+        return _result(head_name, worker_name, findings)
+
+    down = [n for n in pair if not hosts.get(n)]
+    findings.append(_finding("reachable", not down, down or pair,
+                             error="; ".join(errors.get(n, "no data yet") for n in down)))
+    if down:
+        return _result(head_name, worker_name, findings)
+
+    head, worker = nodes[head_name], nodes[worker_name]
+    head_host, worker_host = hosts[head_name] or {}, hosts[worker_name] or {}
+
+    no_gpu = [n for n in pair if not (hosts[n] or {}).get("gpus")]
+    findings.append(_finding("gpu", not no_gpu, no_gpu or pair))
+
+    opted_out = [n for n in pair if nodes[n].stack is False]
+    findings.append(_finding("opted-out", not opted_out, opted_out or pair,
+                             name=(opted_out or [""])[0]))
+
+    sites = {head.site or "(no site)", worker.site or "(no site)"}
+    findings.append(_finding("same-site", len(sites) == 1, pair, sites=" vs ".join(sorted(sites))))
+
+    signatures = [machine_signature(head_host), machine_signature(worker_host)]
+    findings.append(_finding("hardware", signatures[0] == signatures[1], pair,
+                             signatures=" vs ".join(f"{n}: {s[2]} ×{s[3]} {s[0]}"
+                                                    for n, s in zip(pair, signatures))))
+
+    checks = {n: check_cluster_ip(hosts[n] or {}, nodes[n].cluster_ip) for n in pair}
+    for name in pair:
+        check = checks[name]
+        ok = check["state"] == "ok"
+        hint = ""
+        if not ok:
+            from .cluster import suggest_cluster_ip
+
+            suggested = suggest_cluster_ip(hosts[name] or {})
+            hint = f" — suggested {suggested}" if suggested else ""
+            findings.append(_finding("cluster-ip", False, [name], state=check["state"], hint=hint,
+                                     name=name, suggested=suggested or "<ip>"))
+        else:
+            findings.append(_finding("cluster-ip", True, [name], state=f"{nodes[name].cluster_ip} on "
+                                     f"{check['iface']} {check['speed_gbps']}G", hint=""))
+    ips_ok = all(checks[n]["state"] == "ok" for n in pair)
+
+    if ips_ok:
+        networks = {n: link_network(_fast_link(hosts[n], nodes[n].cluster_ip) or
+                                    {"ip": nodes[n].cluster_ip}) for n in pair}
+        findings.append(_finding("same-subnet", len(set(networks.values())) == 1, pair,
+                                 networks=" vs ".join(f"{n}: {v}" for n, v in networks.items())))
+        for name in pair:
+            link = _fast_link(hosts[name], nodes[name].cluster_ip) or {}
+            state = (link.get("state") or "up").lower()
+            findings.append(_finding("iface-up", state in {"up", "unknown", ""}, [name],
+                                     iface=link.get("iface") or "?"))
+            warning = link_warning(hosts[name], link)
+            if warning:
+                findings.append(_finding("link-speed", False, [name], level="warn",
+                                         speed=warning["speed_gbps"], expected=warning["expected_gbps"]))
+
+    for name in pair:
+        free = (hosts[name] or {}).get("disk_free_gb")
+        if isinstance(free, (int, float)) and free < LOW_DISK_GB:
+            findings.append(_finding("disk", False, [name], level="warn", free=round(free)))
+
+    # ข้อที่ต้องถาม head จริง — ต่อเมื่อ IP ครบและเครื่องคุยกับ hub ได้ ไม่งั้นผลจะเป็น noise
+    basics_ok = not no_gpu and not opted_out and len(sites) == 1 and signatures[0] == signatures[1]
+    if runner is not None and ips_ok and basics_ok:
+        worker_ip = worker.cluster_ip
+        target = shlex.quote(f"{worker.user}@{worker_ip}")
+        reached = runner(head, f"ssh -o BatchMode=yes -o ConnectTimeout=8 {target} true", timeout=40)
+        findings.append(_finding("ssh-head-to-worker", reached.ok, [head_name],
+                                 head=head_name, worker=worker_name, user=worker.user, ip=worker_ip,
+                                 error=(reached.stderr or reached.stdout or "").strip()[-200:]))
+        if not reached.ok:
+            pinged = runner(head, f"ping -c1 -W2 {shlex.quote(worker_ip)} >/dev/null 2>&1", timeout=20)
+            findings.append(_finding("fabric-ping", pinged.ok, [head_name], level="warn",
+                                     head=head_name, ip=worker_ip))
+        if slug:
+            quoted = shlex.quote(slug)
+            probe = runner(head, (
+                f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\"; "
+                f"[ -n \"$dir\" ] || {{ echo NOBUNDLE; exit 0; }}; "
+                f"[ -f \"$dir/cluster.env\" ] && cat \"$dir/cluster.env\" || echo NOENV"
+            ), timeout=30)
+            text = (probe.stdout or "").strip()
+            if not probe.ok or text == "NOBUNDLE":
+                findings.append(_finding("bundle-on-head", False, [head_name], slug=slug, head=head_name))
+            elif text in {"NOENV", ""}:
+                findings.append(_finding("cluster-env", False, [head_name], slug=slug,
+                                         head=head_name, worker=worker_name))
+            else:
+                env = dict(line.split("=", 1) for line in text.splitlines()
+                           if "=" in line and not line.startswith("#"))
+                found = f"MASTER_IP={env.get('MASTER_IP', '?')} WORKER_IPS={env.get('WORKER_IPS', '?').strip(chr(34))}"
+                expected = f"MASTER_IP={head.cluster_ip} WORKER_IPS={worker_ip}"
+                matches = (env.get("MASTER_IP") == head.cluster_ip
+                           and worker_ip in env.get("WORKER_IPS", "").strip('"').split())
+                findings.append(_finding("cluster-env-match", matches, [head_name], slug=slug,
+                                         head=head_name, worker=worker_name, found=found,
+                                         expected=expected))
+    return _result(head_name, worker_name, findings)
+
+
+def _result(head: str, worker: str, findings: list[dict]) -> dict:
+    return {
+        "head": head,
+        "worker": worker,
+        "ok": not any(f["level"] == "fail" for f in findings),
+        "findings": findings,
+    }

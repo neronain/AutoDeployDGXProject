@@ -45,10 +45,42 @@ SPARK_VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.05-py3"
 # พร้อมบอกให้เปลี่ยน image — ไม่ปล่อยให้ไปตายตอนอ่าน config
 SPARK_SGLANG_IMAGE = "scitrera/dgx-spark-sglang-mm:v0"
 
+# NVFP4 บน GB10 (sm_121) ต้องการ image ที่ build FP4 kernel ให้ sm_121 — NGC 26.05 ไม่มี
+# → ptxas ปฏิเสธ `cvt with .e2m1x2 not supported on .target sm_121` ตอน JIT แล้ว engine core ตาย
+# ก่อน health (เคสจริง msi-6 2026-08-20 · และ stacked ของลูกค้า 2026-09-04 ที่แผนถอยมาใช้ nvcr)
+#
+# ตัวที่พิสูจน์แล้ว: vllm/vllm-openai (cu130) digest นี้รันอยู่จริงบน spark04/dgx-veerasiam/spark-head
+# กับ Qwen3-Coder-Next-NVFP4-GB10 (61 tok/s เดี่ยว / 103 tok/s รวม 3 สาย, 2026-09-03) — ตรึง digest
+# เพราะ tag ของ upstream เคลื่อนที่ และ build ที่มี kernel ครบคือตัวนี้ ไม่ใช่ "ตัวล่าสุด"
+SPARK_NVFP4_VLLM_IMAGE = (
+    "vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14"
+)
+# env คู่กัน: บังคับ Marlin สำหรับ GEMM/MoE FP4 และปิด flashinfer cutlass MoE ที่ JIT ทันทีตอน import
+# (ก่อน vLLM จะดู env ตัวอื่น) — ตั้งผ่าน --engine-env · สูตรที่รันผ่านจริงทับได้เสมอ
+SPARK_NVFP4_ENV: dict[str, str] = {
+    "VLLM_NVFP4_GEMM_BACKEND": "marlin",
+    "VLLM_TEST_FORCE_FP8_MARLIN": "1",
+    "VLLM_USE_FLASHINFER_MOE_FP4": "0",
+    "VLLM_MARLIN_USE_ATOMIC_ADD": "1",
+}
 
-def default_image(engine: Engine, memory_model) -> str:
-    """image ตั้งต้นตามเครื่องเป้าหมาย — unified memory = DGX Spark"""
+
+def is_nvfp4(report: ModelReport) -> bool:
+    """checkpoint NVFP4 — ดูทั้งชื่อ repo และ quantization ที่อ่านจาก config
+
+    DeepSeek-V4-Flash-NVFP4 รายงาน quantization="fp8" (hf_quant_config ของ ModelOpt บอก kv/attn เป็น fp8)
+    ทั้งที่ weight เป็น NVFP4 — ชื่อ repo จึงเป็นหลักฐานที่ต้องดูด้วย
+    """
+    key = (report.repo_id or "").lower()
+    quant = (report.quantization or "").lower()
+    return "nvfp4" in key or "nvfp4" in quant
+
+
+def default_image(engine: Engine, memory_model, nvfp4: bool = False) -> str:
+    """image ตั้งต้นตามเครื่องเป้าหมาย — unified memory = DGX Spark · nvfp4 = ต้องมี FP4 kernel ของ sm_121"""
     unified = getattr(memory_model, "value", memory_model) == "unified"
+    if unified and engine is Engine.VLLM and nvfp4:
+        return SPARK_NVFP4_VLLM_IMAGE
     if unified and engine is Engine.VLLM:
         return SPARK_VLLM_IMAGE
     if unified and engine is Engine.SGLANG:
@@ -226,6 +258,9 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
             extra.append(f"--{key.replace('_', '-')}")
         else:
             extra.extend([f"--{key.replace('_', '-')}", str(value)])
+    # แฟล็กเพิ่มที่ controller ที่พิสูจน์แล้วใช้ (`EXTRA_SERVE_ARGS_DEFAULT` ที่ publish พับมา) —
+    # ยังผ่าน allowlist ของ harden เหมือนแฟล็กจาก LLM ไม่ได้ข้ามด่าน
+    extra += [f for f in (getattr(recipe, "extra_flags", None) or []) if f]
     if extra:
         plan.serving.extra_flags = list(dict.fromkeys(plan.serving.extra_flags + extra))
 
@@ -271,6 +306,13 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         if topology is not Topology.SINGLE:
             raise PlanError(
                 "โมเดล embedding รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single)")
+    # stacked (TP ข้ามเครื่อง) มี controller เฉพาะ vLLM — SGLang stacked ยังไม่มี reference ที่รันผ่าน
+    # เดิม renderer ปฏิเสธเฉพาะ llama.cpp ส่วน SGLang หลุดไป render ด้วย template ของ vLLM
+    # → bundle ผ่าน gate แต่ควบคุมคนละ engine กับที่ผู้ใช้เลือก
+    if topology is Topology.STACKED and engine is Engine.SGLANG:
+        raise PlanError(
+            "SGLang ยังไม่มี controller แบบ stacked (หลายเครื่อง) — ใช้ --engine vllm กับ target stacked "
+            "หรือใช้ SGLang กับ target แบบ single")
 
     # llama.cpp: fit หาร context ด้วย concurrency ที่ขอมาแล้ว (ค่าต่อ 1 sequence) แต่ --ctx-size
     # ของ llama-server คือ pool ที่แบ่งให้ทุก slot เท่า ๆ กัน → คูณกลับ และตั้ง slot = concurrency
@@ -292,7 +334,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         facts=build_facts(report),
         runtime=RuntimeChoice(
             engine=engine,
-            image_ref=default_image(engine, fit.memory_model),
+            image_ref=default_image(engine, fit.memory_model, nvfp4=is_nvfp4(report)),
             rationale="rule-based: เลือกตาม decision matrix (GGUF→llama.cpp, safetensors→vLLM)"
             " + image ตามเครื่องเป้าหมาย (unified memory → NGC build ของ DGX Spark)",
         ),
@@ -360,4 +402,27 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     recipe = find_recipe(report.repo_id)
     if recipe is not None:
         plan = apply_recipe(plan, recipe, fit.memory_model.value)
+    apply_nvfp4_defaults(plan, report, fit.memory_model, recipe)
     return plan
+
+
+def apply_nvfp4_defaults(plan: DeploymentPlan, report: ModelReport, memory_model, recipe) -> None:
+    """NVFP4 บน DGX Spark ที่ไม่มีสูตรบอก image: ใส่ env ที่พิสูจน์แล้ว (ดู SPARK_NVFP4_ENV)
+
+    ไม่ตั้ง = image ทั่วไปเลือก flashinfer cutlass MoE ซึ่ง JIT kernel FP4 ที่ sm_121 ไม่มี → ตายตอน start
+    · สูตรที่ระบุ image เอง (dspark สำหรับ DeepSeek V4, avarok) มี kernel ของตัวเอง — ไม่ยุ่ง
+    · เครื่องการ์ดแยก (RTX) ไม่เกี่ยว: kernel ของ sm_121 เป็นเรื่องของ GB10 เท่านั้น
+    """
+    unified = getattr(memory_model, "value", memory_model) == "unified"
+    if not (unified and plan.runtime.engine is Engine.VLLM and is_nvfp4(report)):
+        return
+    if recipe is not None and recipe.image:
+        return
+    missing = {k: v for k, v in SPARK_NVFP4_ENV.items() if k not in plan.serving.extra_env}
+    if not missing:
+        return
+    plan.serving.extra_env = {**plan.serving.extra_env, **missing}
+    plan.warnings.append(
+        "NVFP4 บน GB10: ตั้ง env " + " ".join(f"{k}={v}" for k, v in missing.items())
+        + " ให้แล้ว (ค่าที่รันผ่านจริงบน spark-head 2026-09-03) · แก้ได้ด้วย --engine-env"
+    )

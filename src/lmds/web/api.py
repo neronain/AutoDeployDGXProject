@@ -918,21 +918,76 @@ def create_app(token: str = "") -> FastAPI:
         model = (body.get("model") or "").strip()
         if not model:
             raise HTTPException(status_code=400, detail="ต้องระบุลิงก์โมเดล")
+        target = body.get("target") or ""
+        machine = (body.get("machine") or "").strip()
+        # worker มีความหมายเฉพาะ target แบบ stacked — draft ของหน้าเว็บจำ worker ไว้ข้ามการเปลี่ยน target
+        # (เลือก stacked แล้วเปลี่ยนใจเป็น single) แล้ว budget ก็หักหน่วยความจำของ worker ที่ไม่เกี่ยวด้วย
+        # · ไม่ระบุ target = ส่งต่อตามเดิม (analyze เดา preset จากเครื่องเอง)
+        worker = (body.get("worker") or "").strip()
+        if target and not _is_stacked_target(target):
+            worker = ""
+        if _is_stacked_target(target) and machine:
+            # ตรวจคู่ก่อนไปดึง metadata — เดิมรับอะไรก็ได้ แล้วไปตายที่ push/cluster.env ทีหลังโดยไม่มีเหตุผล
+            problem = _stacked_pair_problem(machine, worker, _target_node_count(target))
+            if problem:
+                raise HTTPException(status_code=422, detail={"kind": "cluster", "message": problem})
         try:
             return analyze(
                 model,
-                target=body.get("target") or None,
+                target=target or None,
                 revision=body.get("revision") or None,
                 no_llm=bool(body.get("no_llm")),
                 hf_token=body.get("hf_token") or "",
                 selected_gguf=body.get("selected_gguf") or "",
                 engine=body.get("engine") or "",
                 # เครื่องปลายทางในฟลีต — fit ต้องหักหน่วยความจำที่เครื่องนั้นใช้อยู่แล้ว
-                machine=body.get("machine") or "",
-                worker=body.get("worker") or "",
+                machine=machine,
+                worker=worker,
             )
         except DeployError as exc:
             raise _deploy_error(exc) from exc
+
+    def _is_stacked_target(target: str) -> bool:
+        return _target_node_count(target) > 1
+
+    def _target_node_count(target: str) -> int:
+        """จำนวนเครื่องของ preset — ชื่อที่ไม่รู้จักถือเป็นเครื่องเดียว"""
+        if not target:
+            return 1
+        try:
+            from lmds.fit import PRESETS
+
+            spec = PRESETS.get(target)
+            return int(getattr(spec, "node_count", 1) or 1) if spec is not None else (
+                2 if "stacked" in target else 1)
+        except Exception:  # noqa: BLE001 — preset table ไม่พร้อม = อย่าให้ analyze ล้มเพราะเรื่องนี้
+            return 2 if "stacked" in target else 1
+
+    def _stacked_pair_problem(machine: str, worker: str, nnodes: int = 2) -> str:
+        """ทำไม (head, worker) คู่นี้ deploy แบบ stacked ไม่ได้ — ว่าง = ไม่มีปัญหา
+
+        ใช้กติกาเดียวกับหน้า Cluster (cluster_groups จากแคชของ refresher) เพื่อให้ wizard กับ
+        กลุ่มที่โชว์อยู่บนหน้าจอพูดตรงกัน · ข้อความเป็นอังกฤษเพราะหน้าเว็บโชว์ตรง ๆ
+        """
+        from lmds.nodes.stacked import StackedError, select_members
+
+        if not worker:
+            return (f"a stacked deployment needs a worker next to {machine} — pick one in the "
+                    "Worker box (or press Deploy on a ready group in the cluster view)")
+        if worker == machine:
+            return f"'{machine}' cannot be both head and worker — pick a different worker"
+        groups = (cluster_view() or {}).get("groups") or []
+        try:
+            select_members(groups, machine, workers=[worker])
+        except StackedError as exc:
+            return str(exc)
+        # wizard เลือก worker ได้ตัวเดียว — target 4 เครื่องแค่ต้องมีกลุ่มที่ใหญ่พอ ที่เหลือเติมตอนเขียน cluster.env
+        size = max((len(g["members"]) for g in groups if g.get("ready")
+                    and any(m["name"] == machine for m in g["members"])), default=0)
+        if size < nnodes:
+            return (f"this target needs {nnodes} machines but the ready group of '{machine}' has {size} — "
+                    "set the cluster IP on the other machines or pick a 2-machine target")
+        return ""
 
     @app.get("/api/deploy/{session_id}/context", dependencies=guarded)
     def deploy_context_advice(session_id: str, value: int, kv_dtype: str = "bf16") -> dict:
@@ -978,7 +1033,11 @@ def create_app(token: str = "") -> FastAPI:
             "test-text", "test-vision", "test-reasoning", "test-tools", "test-embed",
             "bench", "stress", "client-config", "network-info", "status", "props",
             "verify-files", "prepare-runtime", "sync-worker", "verify-worker", "clear-fi-cache",
+            # log ของ worker อยู่อีกเครื่อง — ปุ่ม logs ธรรมดาเห็นแต่ head · controller มี `logs worker`
+            "logs-worker",
         }
+        # ชื่อปุ่ม → argv จริงของ controller (คำสั่งที่มี argument ผ่านทางเดียวไม่ได้)
+        argv = {"logs-worker": "logs worker 200"}
         # คำสั่งที่กินเวลาเป็นสิบนาทีขึ้นไป — sync-worker คัดลอก weight ทั้งก้อนข้ามเครื่อง,
         # prepare-runtime สร้าง/ดึง image, stress ยิงโหลดยาว · รอใน HTTP request เดียวแปลว่า
         # ผู้ใช้เห็นปุ่มค้างเงียบ ๆ แล้วสายมักถูกตัดกลางทางก่อนงานจบด้วย (เจอจริงกับ sync-worker)
@@ -998,7 +1057,7 @@ def create_app(token: str = "") -> FastAPI:
             f"cd \"$dir\" || exit 1; "
             f"ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
             f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
-            f"\"$ctl\" {shlex.quote(command)}"
+            f"\"$ctl\" {argv.get(command) or shlex.quote(command)}"
         )
         if command in long_running:
             try:
@@ -1284,7 +1343,23 @@ def create_app(token: str = "") -> FastAPI:
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="ไม่พบงานนี้")
-        return {"id": job.id, "cancelled": jobs.cancel(job)}
+        cancelled = jobs.cancel(job)
+        # stacked: ที่ถูกฆ่าคือ ssh ไป head — container ของ worker ที่ head สั่งไว้ยังอยู่จนกว่าจะ stop
+        if cancelled and job.node and job.command in {"start", "restart"} and _is_stacked_model(job.node, job.slug):
+            job.lines.append("stacked: the worker container(s) may still be running — "
+                             f"press stop on {job.slug} (lmds node run {job.node} stop {job.slug}) before starting again\n")
+        return {"id": job.id, "cancelled": cancelled}
+
+    def _cached_model(name: str, slug: str) -> dict | None:
+        cached = state.STORE.snapshot()["nodes"].get(name) or {}
+        for model in ((cached.get("data") or {}).get("models") or []):
+            if model.get("slug") == slug:
+                return model
+        return None
+
+    def _is_stacked_model(name: str, slug: str) -> bool:
+        model = _cached_model(name, slug) or {}
+        return model.get("topology") == "stacked" and model.get("stacked_role", "head") == "head"
 
     # ── ลบ / autostart — ทำผ่าน fleet ตรง ๆ ไม่ใช่ job เพราะไม่ใช่คำสั่งของ controller ──
     @app.get("/api/models/{slug}/removal-plan", dependencies=guarded)
@@ -1578,7 +1653,9 @@ def create_app(token: str = "") -> FastAPI:
             return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
         state.STORE.set_node(name, info)
         remember(last_error="", **status_from_probe(info))
-        return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **info})
+        # อ่านกลับจากแคชเพื่อให้ได้บทบาท stacked (decorate_stacked) เหมือนทางแคช/SSE
+        decorated = (state.STORE.snapshot()["nodes"].get(name) or {}).get("data") or info
+        return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **decorated})
 
     @app.get("/api/scan", dependencies=guarded)
     def scan_weights(all_nodes: bool = False) -> dict:
@@ -1665,20 +1742,28 @@ def create_app(token: str = "") -> FastAPI:
 
         def row(name, host, cluster_ip, is_self, stack, cluster_name: str = ""):
             # ส่งข้อมูลดิบอย่างเดียว — หน้าเว็บเป็นภาษาอังกฤษ จึงเรียบเรียงประโยคฝั่ง JS
+            check = check_cluster_ip(host, cluster_ip)
+            has_gpu = bool(host.get("gpus"))
             return {
                 "name": name, "self": is_self, "reachable": True,
                 # ผู้ใช้สั่งไว้ว่าเครื่องนี้เอาไปจับกลุ่มได้ไหม — ต่างจาก ready ที่มาจากการตรวจ
                 "stack": stack,
+                # เครื่องที่ไม่มี GPU (hub ที่เป็น VM ควบคุม) ไม่มีวันเข้ากลุ่มได้ — เดิมขึ้นแถวแรกว่า
+                # "not ready · 10G too slow" เหมือนเป็นเครื่องที่ต้องไปแก้ ทั้งที่มันไม่ใช่ผู้สมัครตั้งแต่แรก
+                "candidate": has_gpu,
+                "reason": "" if has_gpu else "control-plane",
                 # ชื่อจริงของเครื่อง — ต่างจากชื่อในทะเบียน จึงเป็นทางเดียวที่ผู้ใช้จะเห็นว่า
                 # สองรายการนี้คือเครื่องเดียวกันที่ถูกเพิ่มไว้สองชื่อ
                 "hostname": host.get("hostname") or "",
-                "ready": stack_ready(host), "has_gpu": bool(host.get("gpus")),
+                "ready": stack_ready(host), "has_gpu": has_gpu,
                 "fabric": host.get("fabric"), "cluster_ip": cluster_ip,
                 # ชื่อคลัสเตอร์ที่ตั้งเอง — ช่องแก้ในหน้าเว็บอ่านค่านี้ ถ้าไม่ส่งมาช่องจะว่าง
                 # ทุกครั้งที่รีเฟรช แล้วดูเหมือนกด Save ไม่ติด
                 "cluster_name": cluster_name,
-                "suggested_ip": suggest_cluster_ip(host),
-                "ip": check_cluster_ip(host, cluster_ip),
+                # IP ที่ตั้งไว้แล้วและผ่านการตรวจ = คำแนะนำที่ดีที่สุด · เดิมเสนอเส้น 200G อีกเส้น
+                # (spark-head: ตั้ง 10.100.152.1 แต่ช่องเสนอ 10.100.153.1) ดูเหมือนตั้งผิดทั้งที่ถูก
+                "suggested_ip": cluster_ip if check["state"] == "ok" else suggest_cluster_ip(host),
+                "ip": check,
             }
 
         local = host_payload()
@@ -1822,24 +1907,110 @@ def create_app(token: str = "") -> FastAPI:
         NCCL init โดยไม่มีอะไรบอกว่าเพราะอะไร
         """
         from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
+        from lmds.nodes.stacked import StackedError, select_members
 
         slug = (body.get("slug") or "").strip()
         head = (body.get("head") or "").strip()
         if not slug or not head:
             raise HTTPException(status_code=400, detail="ต้องระบุ slug และ head")
+        _check_slug(slug)
+        workers = [str(w).strip() for w in (body.get("workers") or []) if str(w).strip()]
+        if body.get("worker"):
+            workers = [str(body["worker"]).strip(), *[w for w in workers if w != str(body["worker"]).strip()]]
 
         groups = (cluster_view() or {}).get("groups") or []
         try:
-            result = write_cluster_env(
-                slug, groups, head,
-                (body.get("worker") or "").strip() or None,
-                (body.get("on") or "").strip() or None,
-            )
-        except ClusterEnvError as exc:
+            # จำนวนเครื่องตาม bundle ที่ render ไว้บน hub — ไม่ใช่ตามขนาดกลุ่ม (กลุ่ม 4 เครื่องกับ
+            # bundle 2 เครื่องเคยได้ NNODES=4 ทับแผน) และไม่ใช่ตามจำนวน worker ที่ส่งมา
+            nnodes = body.get("nnodes") or _local_bundle_node_count(slug)
+            trimmed = select_members(groups, head, workers=workers, nnodes=nnodes)
+            result = write_cluster_env(slug, [trimmed], head, None,
+                                       (body.get("on") or "").strip() or None)
+        except (ClusterEnvError, StackedError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"target": result.target, "head_ip": result.head_ip,
                 "worker_ips": result.worker_ips, "nnodes": result.nnodes,
+                "workers": [m["name"] for m in trimmed["members"][1:]],
                 "iface": result.iface}
+
+    def _local_bundle_node_count(slug: str) -> int | None:
+        """NNODES ของ bundle ที่อยู่บน hub — None เมื่อไม่มี bundle ที่นี่ (เขียนตามทั้งกลุ่ม)"""
+        from lmds.fleet import bundle_roots
+        from lmds.nodes.stacked import bundle_node_count
+
+        for root in bundle_roots():
+            if (root / slug).is_dir():
+                return bundle_node_count(root / slug)
+        return None
+
+    def _cluster_hosts() -> tuple[dict, dict, dict]:
+        """(ทะเบียน, host payload จากแคช, error จากแคช) — ของที่หมอและการจับคู่ต้องใช้"""
+        from lmds.nodes import load
+
+        nodes = {n.name: n for n in load()}
+        snap = state.STORE.snapshot()["nodes"]
+        hosts = {name: ((entry.get("data") or {}).get("host")) for name, entry in snap.items()}
+        errors = {name: entry.get("error") or "" for name, entry in snap.items()}
+        return nodes, hosts, errors
+
+    def _pair_names(body: dict) -> tuple[str, list[str]]:
+        head = (body.get("head") or "").strip()
+        workers = [str(w).strip() for w in (body.get("workers") or []) if str(w).strip()]
+        if body.get("worker"):
+            workers = [str(body["worker"]).strip(), *[w for w in workers if w != str(body["worker"]).strip()]]
+        if not head or not workers:
+            raise HTTPException(status_code=400, detail="ต้องระบุ head และ worker")
+        return head, workers
+
+    @app.post("/api/cluster/pair", dependencies=guarded)
+    def cluster_pair(body: dict) -> dict:
+        """ให้ head เข้า worker ได้โดยไม่ถามรหัส — ข้อต่อที่ controller stacked ต้องใช้แต่ไม่มีใครติดตั้งให้
+
+        `lmds node setup` ติดตั้งแต่กุญแจของ hub · controller บน head ssh ไป worker ด้วยกุญแจของ
+        head เอง จึงตายด้วย "Permission denied (publickey)" ที่ sync-worker/start — เหตุผลอันดับต้น
+        ที่ลูกค้าบอกว่า "multi-node ไม่เคยติด" · กุญแจเกิดบน head ไม่ผ่าน hub (ดู nodes/cluster_ssh)
+        """
+        from lmds.nodes import NodeError, find, run
+        from lmds.nodes.cluster_ssh import pair_workers
+
+        head_name, worker_names = _pair_names(body)
+        head = find(head_name)
+        if head is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {head_name}")
+        workers = []
+        for name in worker_names:
+            worker = find(name)
+            if worker is None:
+                raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+            if not worker.cluster_ip:
+                raise HTTPException(status_code=400,
+                                    detail=f"{name} has no cluster IP yet — set it first, the head reaches "
+                                           "the worker over that address")
+            workers.append((worker, worker.cluster_ip))
+        try:
+            steps = pair_workers(head, workers, runner=run)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"head": head_name, "workers": worker_names, "steps": steps,
+                "ok": bool(steps) and all(s["ok"] for s in steps)}
+
+    @app.get("/api/cluster/doctor", dependencies=guarded)
+    def cluster_doctor(head: str = "", worker: str = "", slug: str = "") -> dict:
+        """ทำไมคู่นี้ยังใช้ stacked ไม่ได้ — ทีละข้อพร้อมคำสั่งแก้ (อ่านอย่างเดียว ไม่แตะอะไรบนเครื่อง)"""
+        from lmds.nodes import run
+        from lmds.nodes.doctor import describe, diagnose_pair
+
+        head, worker = head.strip(), worker.strip()
+        if not head or not worker:
+            raise HTTPException(status_code=400, detail="ต้องระบุ head และ worker")
+        if slug:
+            _check_slug(slug)
+        nodes, hosts, errors = _cluster_hosts()
+        report = diagnose_pair(head, worker, nodes=nodes, hosts=hosts, errors=errors,
+                               runner=run, slug=slug)
+        for finding in report["findings"]:
+            finding["text"] = describe(finding, "en")
+        return report
 
     @app.patch("/api/cluster/self", dependencies=guarded)
     def cluster_self_patch(body: dict) -> dict:
@@ -2065,6 +2236,18 @@ def create_app(token: str = "") -> FastAPI:
         if allowed[command]:
             parts.append(allowed[command])
         remote = " ".join(parts)
+        label = command
+        # stacked: download ที่ head อย่างเดียวไม่พอ — weight ต้องไปถึง worker ก่อน start ไม่งั้น
+        # head รอ NCCL แล้ว worker ตายด้วย "snapshot missing" · ต่อ sync-worker + verify-worker
+        # ให้เลย (ขั้นถัดไปรันเมื่อขั้นก่อนสำเร็จเท่านั้น) — ผู้ใช้หน้าเว็บไม่มีทางรู้ว่าต้องกดสามปุ่มตามลำดับ
+        if command == "repair" and _is_stacked_model(name, slug):
+            quoted = shlex.quote(slug)
+            controller = (
+                f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\" && "
+                f"cd \"$dir\" && ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\""
+            )
+            remote = f"{remote} && {controller} && \"$ctl\" sync-worker && \"$ctl\" verify-worker"
+            label = "download + sync-worker + verify-worker"
 
         from . import jobs
 
@@ -2076,7 +2259,7 @@ def create_app(token: str = "") -> FastAPI:
         if long_running:
             try:
                 return {"node": name, "slug": slug, "command": command,
-                        "job": jobs.start_remote(name, slug, command, remote,
+                        "job": jobs.start_remote(name, slug, label, remote,
                                                  _borrowed_secrets(command)).payload()}
             except jobs.JobError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -62,6 +62,32 @@ def _controller_owner(controller: str) -> str:
         return getpass.getuser()
 
 
+def controller_startup_timeout(controller: str | Path) -> int | None:
+    """STARTUP_TIMEOUT ที่ controller จะรอ /health จริง — ค่าใน bundle.env ชนะ default ในสคริปต์
+
+    renderer สเกลค่านี้ตามขนาดโมเดล (~30 วิ/GB): stacked DeepSeek-V4 157 GB = 5001 วิ ·
+    Qwen3-235B FP8 220 GB = 6906 วิ — ทั้งคู่เกิน 1800 ที่ unit เคยใช้เป็นเพดานตายตัว
+    """
+    controller = Path(controller)
+    try:
+        text = controller.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    pattern = re.compile(r'^STARTUP_TIMEOUT="\$\{STARTUP_TIMEOUT:-(\d+)\}"', flags=re.M)
+    match = pattern.search(text)
+    value = int(match.group(1)) if match else None
+    # bundle.env ใช้รูปเดียวกัน (NAME="${NAME:-value}") และถูก source ก่อน default ของสคริปต์ — ค่าที่ผู้ใช้
+    # ตั้งไว้ตรงนั้นคือค่าที่ start จะรอจริง · ไม่ผ่าน bundle_settings.read เพราะมันคืนเฉพาะ knob ในรายการ
+    bundle_env = controller.parent / "bundle.env"
+    try:
+        override = pattern.search(bundle_env.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        override = None
+    if override:
+        value = int(override.group(1))
+    return value
+
+
 def render_unit(info: "ServerInfo", timeout: int = 1800, scope: str = "system") -> str:
     """สร้างเนื้อ systemd unit สำหรับ autostart ของ bundle นี้
 
@@ -87,6 +113,14 @@ def render_unit(info: "ServerInfo", timeout: int = 1800, scope: str = "system") 
     controller = info.controller
     workdir = str(Path(controller).parent)
     model = info.model or info.model_id or info.slug
+    # TimeoutStartSec ต้องไม่สั้นกว่าเวลาที่ controller เองยอมรอ /health — ไม่งั้น systemd ฆ่า
+    # `start` ตอน 30 นาทีระหว่างที่โมเดล 150-220 GB (stacked) ยังโหลดอยู่ · container ที่ detach
+    # ไปแล้วรันต่อจนขึ้นเอง แต่ unit เป็น failed และ server.meta/ข้อความ "started" ไม่เคยถูกเขียน
+    # → หน้าเว็บ/`lmds ps` บอกว่า autostart ล้มทั้งที่โมเดลรันอยู่ (เจอเมื่อดู timeout ของ bundle
+    # stacked จริง 2026-09-04: 5001 และ 6906 วิ) · +300 เผื่อ ExecStartPre=stop กับ worker-first
+    floor = controller_startup_timeout(controller)
+    if floor:
+        timeout = max(timeout, floor + 300)
     lines = [
         "[Unit]",
         f"Description=LMDS model: {info.slug} ({model})",

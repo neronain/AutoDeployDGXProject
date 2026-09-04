@@ -32,6 +32,40 @@ def controller_commands(controller: str) -> list[str]:
     return sorted({m for m in _COMMAND_RE.findall(text) if m in KNOWN_COMMANDS})
 
 
+def read_cluster_env(controller: str) -> dict | None:
+    """ค่าคลัสเตอร์ที่ bundle stacked นี้จะใช้จริง — จาก cluster.env ข้าง controller (None = ยังไม่มี)
+
+    hub ต้องรู้ว่า head ตัวนี้จับคู่กับ worker ไหน ถึงจะโชว์โมเดลบนการ์ดของ worker ด้วยได้ ·
+    worker ไม่มี bundle ของตัวเอง (weight อยู่ในแคช HF + container ที่ head สั่ง) การ์ดของมันจึง
+    ว่างเปล่าทั้งที่เครื่องถูกใช้อยู่ · อ่านเฉพาะคีย์ที่ hub ใช้ ไม่ส่ง env ทั้งไฟล์ออกไป
+    """
+    if not controller:
+        return None
+    path = Path(controller).parent / "cluster.env"
+    if not path.is_file():
+        return None
+    values: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        return None
+    master = values.get("MASTER_IP", "")
+    workers = (values.get("WORKER_IPS") or values.get("WORKER_IP") or "").split()
+    if not master and not workers:
+        return None
+    try:
+        nnodes = int(values.get("NNODES") or (len(workers) + 1))
+    except ValueError:
+        nnodes = len(workers) + 1
+    return {"master_ip": master, "worker_ips": workers, "nnodes": nnodes,
+            "ssh_user": values.get("SSH_USER", "")}
+
+
 def self_managed_weights(profile) -> bool:
     """bundle นี้เป็นแบบที่ผู้ใช้ดูแล weight เอง ไม่ใช่ของที่ LMDS โหลดมาไหม
 
@@ -500,6 +534,8 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         ),
         "autostart": autostart_status(server.slug),
         "topology": (profile or {}).get("topology"),
+        # stacked: head ตัวนี้จับคู่กับ worker ไหน (จาก cluster.env) — hub เอาไปวาดการ์ดของ worker
+        "cluster": read_cluster_env(server.controller) if (profile or {}).get("topology") == "stacked" else None,
         "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
         "commands": commands,
         "started_at": server.started_at,

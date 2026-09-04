@@ -307,6 +307,144 @@ verify-files ยังเป็นด่านสุดท้าย (`tests/test
   ไล่อัปเดตฟลีต 2026-09-04) · ตอนนี้ติดตั้งลง `venv.new` ก่อน สำเร็จค่อยสลับ (`venv.old` ลบหลังสลับ) ล้ม = ของเดิม
   ยังใช้ได้และบอกชัด · `PIP_RETRIES=8 PIP_TIMEOUT=60` เป็นค่าเริ่มต้น
 
+**Audit stacked (vLLM TP ข้าม 2–4 Spark) ฝั่ง hub: web / nodes / cli** — ลูกค้า: "download ไม่ผ่าน · analyze ไม่ผ่าน ·
+runtime ไม่ผ่าน · multi-node ไม่เคยติด" · ไล่จากหน้าเว็บ/CLI ถึง controller บน head แล้วพบว่าข้อต่อระหว่าง hub กับ
+controller ขาดหลายจุด · ทุกข้อล้มก่อนแก้ใน `tests/test_audit_stacked_orchestration.py` (SSH ปลอมทั้งหมด) · รันหมอ
+อ่านอย่างเดียวกับคู่จริง spark-head ⇄ spark-worker ผ่านทุกข้อ (ssh head→worker เคยตั้งมือไว้แล้ว · cluster.env ของ
+llama-3-3-70b-instruct ตรงทะเบียน)
+
+- **[สูง] head ไม่เคยมีกุญแจไป worker** — `lmds node setup`/หน้าเว็บติดตั้งแต่กุญแจของ *hub* ลงทุกเครื่อง แต่ controller
+  stacked รันบน head แล้ว `ssh ${SSH_USER}@${WORKER_IP}` ด้วยกุญแจของ head เอง → sync-worker/start ตายด้วย
+  "Permission denied (publickey)" ทุกครั้งที่ไม่ได้ตั้งมือ · ใหม่ `lmds cluster pair <head> <worker…>` +
+  `POST /api/cluster/pair` + ปุ่ม Pair SSH บนหัวกลุ่ม (`nodes/cluster_ssh.py`): กุญแจ**เกิดบน head** (ไม่ผ่าน hub) ·
+  public key ลง authorized_keys ของ worker · stanza ใน `~/.ssh/config` ของ head (IdentityFile + `StrictHostKeyChecking
+  accept-new` — BatchMode ตอบคำถาม host key ครั้งแรกไม่ได้) ทำซ้ำได้ ไม่แตะบรรทัดของผู้ใช้ · ยืนยันด้วย ssh เปล่า ๆ แบบ
+  เดียวกับ controller · หน้าเว็บทำให้เองหลังเขียน cluster.env ตอน push จาก wizard
+- **[สูง] cluster.env ไม่เคยดูว่า bundle ถูก render มากี่เครื่อง** — กลุ่ม 4 เครื่องกับ bundle 2 เครื่องได้ `NNODES=4/TP=4`
+  ทับแผน (ไฟล์ถูก source ก่อน default ของสคริปต์จึงชนะ) · bundle 4 เครื่องที่เลือก worker ตัวเดียวจากหน้าเว็บได้ TP=2 ที่
+  โมเดลไม่ fit · ตอนนี้ `/api/cluster/write` และ `lmds cluster write` อ่าน `NNODES` จาก controller ใน bundle บน hub
+  (`nodes/stacked.py`) แล้วตัดกลุ่มให้เหลือ head + worker ตามจำนวนนั้น (ระบุ `workers` เรียง rank ได้) · ไม่พอ/เกิน =
+  ปฏิเสธพร้อมบอกว่าต้อง target ไหน
+- **wizard ตรวจคู่ก่อน analyze** — เดิม target stacked รับ machine/worker อะไรก็ได้ (ไม่มี worker · worker = head ·
+  คนละไซต์/ไม่มีวงร่วม) แล้วไปตายที่ push/cluster.env ทีหลังโดยไม่มีเหตุผล → 422 `{kind:"cluster"}` ด้วยกติกาเดียวกับ
+  หน้า Cluster ก่อนแตะ Hugging Face · worker ถูกส่งเฉพาะ target stacked — เลือก stacked แล้วเปลี่ยนใจเป็น single เคยหัก
+  หน่วยความจำของ worker ที่ไม่เกี่ยวออกจาก budget ทั้งฝั่ง JS และ server
+- **download บน head ไม่ทำให้ worker มี weight** — ปุ่ม download (repair) บนการ์ด head ของโมเดล stacked ต่อ
+  `sync-worker && verify-worker` ให้เป็นงานเดียว (ขั้นถัดไปรันเมื่อขั้นก่อนสำเร็จ) · `lmds node push <head> <slug>
+  --download --start` กับ bundle stacked เขียน cluster.env ตามกลุ่มจริง + จับคู่กุญแจ + ต่อ sync/verify ก่อน start —
+  เดิมจบ "สำเร็จ" ที่ head แล้ว start ถาม IP ที่ไม่มีใครตอบ/ตายที่ worker
+- **โมเดล stacked ขึ้นทั้งสองการ์ด** — bundle อยู่ที่ head เท่านั้น การ์ด worker จึงว่างทั้งที่เครื่องถูกใช้อยู่ · `lmds agent
+  info` อ่าน cluster.env ข้าง controller (`inventory.read_cluster_env` → `model.cluster`) · hub เทียบ IP กับ
+  cluster_ip ในทะเบียนแล้วเติมเงาลง snapshot (`state.decorate_stacked` — บนสำเนา ไม่สะสมในแคช): head ได้ป้าย
+  "stacked head · worker <ชื่อ>" · worker ได้แถว "stacked worker of <head>" พอร์ตเดียวกัน ไม่มีปุ่ม · ทั้งทาง SSE และ
+  `/api/nodes/<n>/inventory`
+- **`lmds cluster doctor <head> <worker> [--slug]` + `GET /api/cluster/doctor` + ปุ่ม Doctor บนหัวกลุ่ม**
+  (`nodes/doctor.py`) — เดิมเห็นแค่ "not ready" · ตรวจทีละข้อพร้อมคำสั่งแก้: ทะเบียน · ต่อถึง · GPU · opt-out · ไซต์ ·
+  ฮาร์ดแวร์ · cluster IP (unset/mismatch/slow/link-local + IP ที่เสนอ) · วงเดียวกัน · สายขึ้น · negotiate ต่ำ (เตือน) ·
+  ดิสก์ < 150 GB (เตือน) · **ssh head→worker จริง** (+ ping เมื่อล้ม) · bundle/cluster.env บน head ตรงทะเบียนไหม ·
+  รหัส + ประโยคสองภาษา (CLI ไทย · เว็บอังกฤษ) · อ่านอย่างเดียว
+- `lmds cluster` เป็นกลุ่มคำสั่งของตัวเอง (`show` · `write` · `pair` · `doctor`) — `node cluster` ยังใช้ได้ · ปุ่ม
+  `logs-worker` บนการ์ด head (log ของ container บน worker — ปุ่ม logs เดิมเห็นแต่ head) · ยกเลิก start ของ stacked
+  บอกว่า container บน worker อาจยังรันอยู่ต้อง stop ก่อน · hub ที่ไม่มี GPU (VM ควบคุม) ขึ้นเป็น "control plane —
+  not a stacked candidate" แทน "not ready · 10G too slow" พร้อมปุ่ม Include/Exclude ที่ไม่มีความหมาย ·
+  `suggested_ip` = IP ที่ตั้งไว้เมื่อผ่านการตรวจแล้ว (spark-head เคยถูกเสนอ 10.100.153.1 ทั้งที่ 10.100.152.1 ถูกอยู่แล้ว)
+
+**Audit stacked รอบวางแผน 2026-09-04 (ชุด planner: inspector / fit / brain / recipes / web deploy.analyze)** — ลูกค้า:
+"analyze ล้ม" · "deploy หลายเครื่องไม่เคยขึ้น" · "DeepSeek-V4-Flash-NVFP4 ไม่ผ่าน" · ไล่จาก spark-head + spark-worker
+บน hub จริง (HF จริง, ทะเบียนจริง) · ทุกข้อมีเทสที่ล้มก่อนแก้ใน `tests/test_audit_stacked_plan.py`
+
+- **[สูง] image ที่ตรึง digest ถูกตัดสินว่า "ไม่มีอยู่จริง" แล้วลดรุ่นเงียบ ๆ เป็น nvcr ที่ไม่มี FP4 kernel** — สูตรที่ sync
+  มาของ ucbye/Qwen3-Coder-Next-NVFP4-GB10 ใช้ `avarok/dgx-vllm-nvfp4-kernel@sha256:3654…` (ตัวที่รันอยู่จริงบน
+  spark-head) · `split_ref` ตัดที่ `:` ตัวสุดท้าย → repo `…kernel@sha256` + "tag" = เลข digest → registry 404 → แผน
+  เปลี่ยนเป็น nvcr 26.05 → stacked start ตายด้วย `cvt .e2m1x2 not supported on sm_121` ทุกครั้ง · ตอนนี้ digest ถูกตรวจ
+  เป็น digest (`manifests/sha256:…`) และ `resolve_digest` ไม่ถาม registry ซ้ำ · image ของ**สูตร**ที่ registry ตอบไม่พบ
+  ถูกคงไว้พร้อมเตือน (สูตรคือหลักฐานว่ารันจริง) · NVFP4 บน GB10 ที่ต้องถอย image ถอยไป
+  `vllm/vllm-openai@sha256:61fc…` (ตัวที่ spark04/veerasiam รันอยู่) + env marlin 4 ตัว — ไม่ใช่ nvcr อีกต่อไป
+- **[สูง] สูตรที่ sync มาทับของ catalog ทั้งก้อน — env/flag ของ DeepSeek-V4 หายหมดทั้ง single และ stacked** — entry ที่
+  sync จาก header ของ controller รู้แค่ `serving: {gpu_util, max_num_seqs}` แล้วทับ dict ทั้งก้อน → kv_cache_dtype
+  nvfp4_ds_mla · --block-size 256 · compilation_config PIECEWISE · env ปิด CUDA-graph profiler หายหมด แผนบน hub ออกมา
+  `extra_flags: []` (vLLM ตาย "Expected 7 but got 8 arguments") · และคีย์ที่ publish เขียนไว้ระดับบนสุด (`engine_env` ·
+  `tool_parser` · `reasoning_parser` · `extra_args`) ไม่ใช่ฟิลด์ของ Recipe จึงถูกทิ้งตอนโหลด — env marlin ของ ucbye
+  ไม่เคยถึงแผน · ตอนนี้รวมทีละคีย์ (ที่ sync พูดถึงชนะ ที่เงียบไว้คงของ catalog · `image_for` คงเมื่อ image เดียวกัน)
+  และแปลงคีย์เหล่านั้นให้ · แผนที่หน้าเว็บได้ (`_plan_payload`) แสดง `kv_cache_dtype` / `extra_env` / `node_count` /
+  `tensor_parallel` ด้วย — เดิมไม่มีจึงดูเหมือน "สูตรไม่ทำงาน" ทั้งที่ค่าอยู่ใน bundle
+- **flag ที่ controller เป็นเจ้าของหลุดมาจาก LLM** — `--tensor-parallel-size 1` / `--nnodes` / `--node-rank` /
+  `--distributed-executor-backend` อยู่ใน allowlist · vLLM ให้ตัวหลังชนะ → TP=1 บน 2 เครื่อง head รอ worker ที่ไม่มีวันมา ·
+  harden ตัดทิ้งพร้อมเตือน และ prompt บอก LLM ตั้งแต่ต้นว่า target กี่เครื่อง/ใครตั้ง TP (เดิมเห็นแค่ชื่อ target)
+- **fit ของ stacked ไม่มีตัวเลขต่อเครื่องและไม่เคยหัก NCCL buffer จริง** — budget รวม 227 GB มีแต่โน้ต "ต้องเผื่อ" ·
+  ตอนนี้หัก 3 GB/เครื่อง (221 GB) และ FitReport/payload มี `per_node` (capacity · OS · engine · comm buffer · budget ·
+  weights/N · KV/N · reserved ของเครื่องที่แน่นสุด) · vLLM ที่เหลือ KV < 2 GB = start ไม่ขึ้น ("No available memory for
+  the cache blocks") ไม่ใช่ "fits ที่ context 4096" — Qwen3-235B-A22B FP8 (220 GiB) บน 2×Spark เคยตอบ
+  fits-reduced-context · ทางเลือกชี้ preset ที่พอจริง (`dgx-spark-stacked-4`) แทน "ใช้ stacked" ทั้งที่กำลัง stacked อยู่
+- **deploy.analyze กับคู่เครื่องที่จับกันไม่ได้ตอบ 200 ด้วยแผนที่ไม่รู้ว่าเครื่องที่สองคือใคร** — ไม่เลือก worker · worker = head ·
+  ไม่มี cluster IP · `stack: false` · คนละไซต์ · เลือก worker แต่ target single (เดิมได้แผน single เงียบ ๆ push ไป head
+  เครื่องเดียว) · GGUF/SGLang กับ stacked (เดิมผ่าน analyze แล้วตาย ValueError ตอน generate / render ด้วย template ของ
+  vLLM) · embedding+stacked เคย 500 (PlanError จาก rule-based ไม่ถูกจับเมื่อไม่มี LLM) → ทั้งหมดเป็น 422 `{kind, message}`
+  พร้อมทางออก · มี worker แต่ไม่ส่ง target = ตั้งใจ stacked จึงเลือก `dgx-spark-stacked` ให้ · gated บอกวิธีใส่ token
+  ตรง ๆ (ช่อง HF token บนหน้าเว็บ / `lmds config set-key hf`) · พอร์ตของ stacked เลือกที่ว่างบนทั้ง head และ worker
+- ยืนยันว่าถูกอยู่แล้ว (จาก hub จริง): DeepSeek-V4-Flash-NVFP4 ไม่ gated/ไม่ private (analyze ผ่านโดยไม่มี token · 46 shard ·
+  ctx 1M) · payload `fit` ของ stacked มีครบ (reserved = เครื่องที่แน่นสุด × N) · MLA: config ของ V4 ไม่มี kv_lora_rank
+  จึงคิดแบบ 1 kv-head × head_dim 512 (88 KB/token bf16) · `from_hardware_report` นับ dual-GPU เป็นเครื่องเดียว
+
+**Audit stacked controller ทั้ง lifecycle (ชุด generator / fleet) — "download fails · prepare-runtime fails · multi-node
+never comes up · DeepSeek-V4 does not pass"** — ไล่ทุกคำสั่งอย่างที่ลูกค้ารันจาก head แบบไม่มี tty (hub สั่ง) ด้วย
+docker/ssh/rsync/ip/df ปลอมที่บันทึก argv ต่อ node · เทียบกับ bundle จริงที่ generate จาก hub (DeepSeek-V4-Flash-NVFP4 ·
+Qwen3-235B FP8) และคำสั่งอ่านอย่างเดียวบน spark-head/spark-worker · ทุกข้อมีเทสล้มก่อนแก้ใน
+`tests/test_audit_stacked_controller.py`
+
+- **[สูง] `verify-worker` ไม่เคยตรวจอะไรเลย** — บนเครื่องจริงพิมพ์ PASS ใน 1 วิ โดยไม่มีบรรทัด "worker shards:" ·
+  สองสาเหตุซ้อนกัน: (1) `docker run` ไม่มี `-i` → stdin ไม่ถึงคอนเทนเนอร์ python3 ได้สคริปต์ว่างแล้วจบ 0 (2) heredoc ของ
+  Python อยู่**ใน double quote** ของ argument ที่ส่งให้ ssh → bash ถอด `"` ทุกตัวในโค้ด (`os.environ[MODEL_SLUG]`) ถ้า
+  stdin ถึงจริงจะ SyntaxError ทุกครั้ง · ตอนนี้ส่งสคริปต์เป็น base64 ทาง stdin + `-i` และตรวจ**ขนาดทุก shard** เทียบ Hub
+  (rsync `--partial` ทิ้งไฟล์ครึ่งเดียวชื่อเดิมไว้ นับจำนวนผ่านแล้ว start ไปตายที่ safetensors header บน worker)
+- **[สูง] worker คุย NCCL ด้วย management IP ไม่ใช่ transport IP** — `worker.sh` ตั้ง `VLLM_HOST_IP=<IP ใน WORKER_IPS>`
+  และหา interface จาก IP นั้น ขณะที่ head ผูกกับ `TRANSPORT_IP_MASTER` → คลัสเตอร์ที่แยกสาย 200G จาก management ได้
+  head บนสายเร็ว/worker บนสายช้า หรือต่อกันไม่ได้เลย (`TRANSPORT_IP_WORKER` ที่ผู้ใช้ตั้งไม่เคยถูกใช้นอกจาก network-info) ·
+  เพิ่ม `TRANSPORT_IPS_WORKER` สำหรับ 3-4 เครื่อง · worker ที่ไม่มี IP นั้น = die ทันทีพร้อมบอกให้ตั้งตัวไหน
+- **[สูง] ตรวจ image ก่อน start ถามแค่ worker ตัวแรก** — 4 เครื่องที่ตัวท้ายไม่มี image ผ่านด่านไปตายตอน `docker run`
+  บนเครื่องนั้นระหว่างตัวอื่นเปิดไปแล้ว · ตอนนี้วนทุก worker และทุก die บอกชื่อเครื่อง + คำสั่ง `ssh <user>@<ip> docker pull
+  '<image>'` · `prepare-runtime` ไม่ตาย raw ใต้ set -e อีก: pull ล้มที่ node ไหนบอก node นั้นพร้อมสาเหตุที่พบบ่อยของ
+  registry นั้น (ghcr rate-limit → `docker login ghcr.io` · nvcr → NGC key · proxy ของ docker daemon · เครื่องไม่มีเน็ต →
+  `docker save | ssh docker load`) · สั่งซ้ำผ่านทันที (idempotent)
+- **คำสั่งที่แตะ worker จาก hub (ไม่มี tty) ssh ไปเครื่องตัวอย่าง 10.100.152.2 เงียบ ๆ** — prompt ถามเฉพาะ start/restart
+  และเฉพาะเมื่อมี tty · prepare-runtime/sync-worker/verify-worker ไม่มี cluster.env จึงตายหลัง 10 วิด้วย "เช็ค SSH" ที่พาไป
+  ผิดทาง · ตอนนี้ทุกคำสั่งที่แตะ worker ต้องรู้คลัสเตอร์ก่อน: มี tty ถาม · ไม่มี = die บอก `lmds node cluster --write <slug>
+  --head <เครื่อง>` หรือ env · `status`/`network-info` ติดป้าย "ยังไม่ตั้งค่า" · กด Enter ยืนยันค่าเดิม = นับเป็นค่าจริง
+- **SSH head→worker ล้มได้แค่ "Permission denied (publickey)" ดิบ ๆ** — key ที่ hub ใช้เข้า head ไม่ใช่ key ของ head ·
+  ทุกคำสั่งที่แตะ worker ทดสอบ `ssh -o BatchMode=yes` ก่อนงานยาว แล้วบอกทีละขั้นว่าทำอะไรบนเครื่องไหน (`ssh-keygen` ·
+  `ssh-copy-id <user>@<worker>` · SSH_USER ต่าง · timeout = IP ผิดสาย) · rsync ของ sync-worker ใช้ ssh ตัวเดียวกัน
+  (`-e "ssh -o BatchMode=yes -o ConnectTimeout=10"`) — เดิมเรียก ssh เปล่าที่ถามรหัส/host key แล้วค้างเงียบเมื่อไม่มี tty
+- **download**: ตรวจดิสก์ก่อนเริ่ม (โมเดล 150-220 GB · บอก `HF_HOME=/data/hf`) · ส่ง `HTTP(S)_PROXY`/`NO_PROXY`/`HF_ENDPOINT`
+  เข้าคอนเทนเนอร์ด้วยชื่อ (proxy URL มักมีรหัสผ่าน ไม่ขึ้น argv) — `--network host` แชร์แค่ network ไม่ใช่ env ไซต์หลัง proxy จึง
+  "download ล้มเหลว" ทั้งที่ curl จาก host ได้ · ล้มแล้วอ่าน log ของตัวโหลดมาบอกชนิดสาเหตุ (401 gated → HF_TOKEN · 403 · 404
+  revision · No space left · DNS/proxy → HTTPS_PROXY/HF_ENDPOINT · Xet) และ**ไม่ลองซ้ำโดยปิด Xet** กับพวกที่ปิด Xet ไม่ช่วย ·
+  เขียนลง `$HF_HOME/hub/` (เลย์เอาต์มาตรฐานเดียวกับ worker/single/clone/hf CLI) แทนแบบแบน — ของเก่าที่ค้างแบบแบนโหลดต่อที่เดิม
+- **sync-worker**: verify ฝั่ง head ก่อนลาก 150 GB · เช็คว่า worker มี rsync (เดิมจบด้วย exit 127 ไม่บอกเครื่อง) · ซ่อม dir
+  ปลายทางที่ container เขียนเป็น root ด้วยกลไกเดียวกับ start · เช็คดิสก์ worker · ไม่ลาก `*.incomplete` · rsync ล้ม = แปล exit
+  code (11 ดิสก์เต็ม · 12/255 สายหลุด · 23 สิทธิ์) + บอกว่าสั่งซ้ำได้ resume — เดิมตาย raw ใต้ set -e
+- **start**: env ของสูตร (`extra_env`) และ `ENGINE_ENV` ถึง worker ผ่าน `export %q` (ค่าที่มีช่องว่าง/JSON เคยแตกเป็นหลาย
+  token) · ยืนยันด้วยเทสที่รัน start ทั้งสคริปต์ว่า head `docker run` และ `worker.sh` ทุกตัวได้ env marlin 4 ตัว · image
+  digest จาก bundle.env · `TOOL_CALL_PARSER` จาก bundle.env · `--block-size 256` / `--compilation-config {…}` /
+  bundle.args ถึง argv ทั้งสองฝั่ง · worker ตายได้คำอธิบายเดียวกับ head (`explain_crash` อ่าน log ผ่าน ssh) · ตัวจำแนกรู้จัก
+  `DistBackendError`/`ncclSystemError`/`DistStoreError` (บอกลำดับเช็ค interface · MASTER_PORT · `NCCL_IB_DISABLE=1`) ·
+  `fp8_ds_mla layout only supports fp8 kv-cache` → `KV_CACHE_DTYPE=fp8` · ptxas e2m1 → คำสั่ง `lmds set --engine-env` ครบ 4 ตัว
+- **`serve-args` สำหรับ stacked** (เดิมมีแต่ single/llama.cpp) — argv ของ head/worker + engine env โดยไม่แตะ docker/ssh ·
+  ยืนยันกับ bundle จริงจาก hub: `--kv-cache-dtype`/parser/`--nnodes`/`--master-addr` ถึง argv (extra_flags/extra_env ของ
+  DeepSeek ยังว่างที่ฝั่ง planner — แก้ในชุด brain/recipes) · usage เคยพิมพ์ `{{ slug }}` ดิบ (heredoc อยู่ใน raw) ·
+  usage/README ชี้ `lmds node cluster --write` + key ของ head แทน "แก้ CONFIG ในสคริปต์"
+- **`status` บอก "API: healthy" ทั้งที่ container ของ bundle นี้ไม่มีสักตัว** (เคสจริง spark-head: 8000 เป็นของ
+  qwen3-coder-next แบบ single) → เทียบ id จาก `/v1/models` กับ served name แล้วเตือนพร้อม `--port` · `network-info` หา
+  HCA แบบเดียวกับ start (เดิมพิมพ์ "จะ fallback TCP" บนเครื่องที่ start เจอ rocep1s0f1)
+- **systemd unit ฆ่า `start` ที่ 1800 วิ ระหว่าง stacked ยังโหลด** — controller เองรอ /health ถึง 5001 (DeepSeek 157 GB) /
+  6906 วิ (Qwen3-235B) · `render_unit` ใช้ `TimeoutStartSec` ≥ STARTUP_TIMEOUT ของ bundle (+300 · bundle.env ชนะ)
+- **`lmds clone` กับ head ของ stacked** — มองแค่ `$HF_HOME/hub/` จึงตอบ "ยังไม่มีไฟล์โมเดล" กับ cache แบบแบนที่ download
+  เดิมสร้าง · และ `cluster.env` ของคู่เก่าไม่ติดไปคู่ใหม่ (`--exclude=cluster.env` — controller ใหม่บอกให้ hub เขียนให้)
+- ยืนยันว่าถูกอยู่แล้ว (จากเครื่องจริง/เทส): head มี key ไป worker (`ssh -o BatchMode=yes` ผ่าน) · rsync ทั้งสองเครื่อง ·
+  HCA ชื่อ `rocep1s0f1` (ไม่ใช่ mlx5_N — sysfs walk รองรับ) · `NCCL_SOCKET_IFNAME` ใน cluster.env ตรง interface จริง ·
+  API key ผ่าน env ไม่ขึ้น argv · worker ตัดสินเลย์เอาต์ HF cache เองตอนรัน · ทั้ง head และ worker ไม่มี image ของ DeepSeek
+  (`ghcr.io/anemll/dspark-vllm-gx10`) และ worker ไม่มี `vllm/vllm-openai:cu130-nightly` ของ Qwen3-Coder-Next → ต้อง
+  `prepare-runtime` ก่อน start (ตอนนี้บอกชัดว่าเครื่องไหนขาด) · ยังไม่ได้ตรวจ: hf_xet/Xet ในสอง image ที่ตรึงไว้ (ไม่ได้ pull)
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

@@ -82,6 +82,16 @@ def _plan_payload(session: Session) -> dict:
     # สูตรถูกเติมลงแผนแบบเงียบ ๆ มาตลอด ผู้ใช้จึงไม่รู้ว่าค่าที่เห็นมาจากของที่เคยรันผ่านจริง
     # หรือมาจากค่าตั้งต้น — ต่างกันมากตอนตัดสินใจว่าจะเชื่อแผนนี้ไหม
     recipe = find_recipe(plan.model_id)
+    # stacked: กี่เครื่อง / TP เท่าไร — ตัวเดียวกับที่ renderer ใช้เขียน controller (จาก preset ของ target)
+    from lmds.fit import PRESETS
+
+    spec = PRESETS.get(fit.target_name)
+    is_stacked = plan.topology.value == "stacked"
+    node_count = (spec.node_count if spec else 2) if is_stacked else 1
+    tensor_parallel = (spec.gpu_count if spec else 2) if is_stacked else (
+        2 if plan.topology.value == "multi-gpu" else 1)
+    nodes = max(1, node_count)
+    kv_at = _kv_at(fit, plan.serving.context)
     return {
         "recipe": None if recipe is None else {
             "label": recipe.label or recipe.match,
@@ -103,12 +113,19 @@ def _plan_payload(session: Session) -> dict:
         "engine_reason": _engine_reason(plan, report),
         "image": plan.runtime.image_ref,
         "topology": plan.topology.value,
+        # stacked ต้องบอกว่ากี่เครื่อง/TP เท่าไร — หน้าเว็บเคยเห็นแค่คำว่า "stacked"
+        "node_count": node_count,
+        "tensor_parallel": tensor_parallel,
         "generator": plan.generator,
         "selected_gguf": plan.selected_gguf,
         "context": plan.serving.context,
         "max_output_tokens": plan.serving.max_output_tokens,
         "gpu_memory_utilization": plan.serving.gpu_memory_utilization,
         "max_num_seqs": plan.serving.max_num_seqs,
+        # ค่าที่สูตรตั้งให้ (kv-cache layout ของ DeepSeek V4 · env marlin ของ NVFP4) เคยไม่โผล่ในแผนเลย
+        # ผู้ใช้จึงสรุปว่า "สูตรไม่ทำงาน" ทั้งที่ค่าอยู่ใน bundle (audit stacked 2026-09-04)
+        "kv_cache_dtype": plan.serving.kv_cache_dtype,
+        "extra_env": dict(plan.serving.extra_env or {}),
         "extra_flags": plan.serving.extra_flags,
         "flags_needing_approval": plan.flags_needing_approval,
         "assets_needing_approval": [
@@ -134,7 +151,22 @@ def _plan_payload(session: Session) -> dict:
             "reserved_source": fit.reserved_source,
             "kv_budget_gb": fit.kv_budget_gb,
             "kv_bytes_per_token": fit.kv_bytes_per_token,
-            "kv_at_context_gb": _kv_at(fit, plan.serving.context),
+            "kv_at_context_gb": kv_at,
+            # ต่อเครื่อง — stacked แบ่งเท่ากันทุกเครื่อง (single = ค่าเดียวกับยอดรวม) · เครื่องที่แน่นสุด
+            # เป็นตัวจำกัด reserved จึงเป็น "ของเครื่องที่ใช้อยู่มากสุด" ไม่ใช่ค่าเฉลี่ย
+            "node_count": nodes,
+            "per_node": {
+                "capacity_gb": fit.per_node_capacity_gb or round(fit.capacity_gb / nodes, 1),
+                "os_reserve_gb": _os_reserve_gb(fit),
+                "engine_overhead_gb": _engine_overhead_gb(fit),
+                "comm_buffer_gb": round(fit.comm_buffer_gb / nodes, 1),
+                "budget_gb": fit.per_node_budget_gb or round(fit.budget_gb / nodes, 1),
+                "weights_gb": fit.per_node_weights_gb,
+                "kv_budget_gb": fit.per_node_kv_budget_gb,
+                "kv_at_context_gb": None if kv_at is None else round(kv_at / nodes, 1),
+                "reserved_gb": round(fit.reserved_gb / nodes, 1),
+                "now_budget_gb": None if fit.now_budget_gb is None else round(fit.now_budget_gb / nodes, 1),
+            },
             # ชั้น "ตอนนี้" — None ทั้งชุดเมื่อเครื่องว่าง/ไม่รู้
             "now_verdict": fit.now_verdict,
             "now_budget_gb": fit.now_budget_gb,
@@ -176,13 +208,18 @@ def used_ports(machine: str = "") -> set[int]:
     return ports
 
 
-def suggest_port(machine: str = "", start: int = DEFAULT_PORT) -> int:
+def suggest_port(machine: str = "", start: int = DEFAULT_PORT, worker: str = "") -> int:
     """พอร์ตว่างตัวแรกตั้งแต่ `start` บนเครื่องนั้น — ไม่มีข้อมูล = `start` (ค่าเดิม ไม่เดา)
 
     เคสจริง 2026-09-04: deploy ตัวที่สองลงเครื่องเดิมได้ 8000 ซ้ำ หน้าภาพรวมขึ้น "port shared" ทันที
     และ autostart หลัง reboot ก็ชนกันจนขึ้นได้ตัวเดียว · แผนรู้อยู่แล้วว่าไปเครื่องไหน จึงเลือกให้ได้
+
+    stacked: API เปิดที่ head แต่ bundle เดียวกันถูก push ไปทั้งสองเครื่อง (worker ถือ controller
+    เดียวกันและอาจถูกสลับเป็น head ในคู่ถัดไป) — เลือกพอร์ตที่ว่างบน *ทั้งคู่* จะได้ไม่ชนตอนสลับบทบาท
     """
     taken = used_ports(machine)
+    if worker and worker != machine:
+        taken |= used_ports(worker)
     port = start
     while port in taken and port < 65535:
         port += 1
@@ -331,6 +368,73 @@ def _kv_at(fit, context: int) -> Optional[float]:
     return round(fit.kv_bytes_per_token * context / GIB, 1)
 
 
+def _os_reserve_gb(fit) -> float:
+    from lmds.fit.analyzer import UNIFIED_OS_RESERVE_GB
+
+    return UNIFIED_OS_RESERVE_GB if fit.memory_model.value == "unified" else 0.0
+
+
+def _engine_overhead_gb(fit) -> float:
+    from lmds.fit.analyzer import LLAMACPP_OVERHEAD_GB, VLLM_OVERHEAD_GB_PER_GPU
+
+    return VLLM_OVERHEAD_GB_PER_GPU if fit.engine_assumed == "vllm" else LLAMACPP_OVERHEAD_GB
+
+
+def _check_stacked_pair(target: str, machine: str, worker: str, node_count: int) -> list[str]:
+    """เครื่องคู่ stacked ต้องจับคู่กันได้จริง — ตอบ 4xx พร้อมเหตุผลตั้งแต่วิเคราะห์ ไม่ใช่ไปล้มตอน push
+
+    ลูกค้า 2026-09-04: "deploy หลายเครื่องไม่เคยขึ้น" · ไล่ดูแล้วครึ่งหนึ่งคือคู่ที่จับกันไม่ได้ตั้งแต่ต้น
+    (ไม่ได้เลือก worker · worker ไม่มี cluster IP · ปิด stack · คนละไซต์) แต่ analyze ตอบ 200 ด้วยแผน
+    2 เครื่องที่ไม่รู้ว่าเครื่องที่สองคือใคร แล้วไปล้มที่ cluster.env/NCCL ด้วยข้อความที่อ่านไม่รู้เรื่อง
+    · คืนโน้ต (ไม่ใช่ error) สำหรับสิ่งที่ยังเดินต่อได้ เช่น stacked-4 ที่ต้องเติม worker ที่เหลือใน cluster.env
+    """
+    from lmds.nodes import find
+
+    notes: list[str] = []
+    if node_count <= 1 or not machine:
+        return notes
+    if not worker:
+        raise DeployError(
+            "input",
+            f"target {target} ใช้ {node_count} เครื่อง — เลือก worker (เครื่องที่สอง) ในช่อง Worker ก่อน "
+            "· ต้องการเครื่องเดียวให้เลือก target แบบ single (dgx-spark-single)",
+        )
+    if worker == machine:
+        raise DeployError("input", f"worker เป็นเครื่องเดียวกันกับ head ({machine}) — เลือกเครื่องที่สองที่ต่อสาย 200G ถึงกัน")
+    head, second = find(machine), find(worker)
+    for role, name, node in (("head", machine, head), ("worker", worker, second)):
+        if node is None:
+            # ไม่อยู่ในทะเบียนแต่ refresher เคยสำรวจได้ = เรียกตรงจากเทส/สคริปต์ที่ป้อนแคชเอง — ปล่อยผ่าน
+            # (ตรวจ cluster IP/site ไม่ได้ก็จริง แต่ชั้น route ของหน้าเว็บตรวจกลุ่ม cluster อีกชั้นอยู่แล้ว)
+            if _cached_inventory(name):
+                continue
+            raise DeployError("input", f"{role} '{name}' ไม่มีในทะเบียนเครื่อง — เพิ่มเครื่องก่อน (หน้าเว็บ: Add machine / lmds node add)")
+        if not node.cluster_ip:
+            raise DeployError(
+                "input",
+                f"{role} '{name}' ยังไม่มี cluster IP (ที่อยู่บนสาย 200G/ConnectX) — ตั้งที่การ์ดเครื่องนั้น "
+                "หรือ lmds node update --cluster-ip · NCCL ต้องวิ่งบนสายเร็ว ไม่ใช่สายบริหารจัดการ",
+            )
+        if not getattr(node, "stack", True):
+            raise DeployError(
+                "input",
+                f"{role} '{name}' ถูกตั้งไม่ให้จับกลุ่ม stacked (stack: false) — เปิดที่การ์ดเครื่องนั้นก่อน "
+                "หรือเลือกเครื่องอื่น",
+            )
+    if head and second and head.site and second.site and head.site != second.site:
+        raise DeployError(
+            "input",
+            f"{machine} (ไซต์ {head.site}) กับ {worker} (ไซต์ {second.site}) อยู่คนละไซต์ — stacked ข้ามไซต์ทำไม่ได้ "
+            "(NCCL วิ่งบนสายในแร็ค ไม่ใช่ WAN) · เลือก worker ในไซต์เดียวกัน",
+        )
+    if node_count > 2:
+        notes.append(
+            f"target {target} ใช้ {node_count} เครื่อง แต่หน้าเว็บเลือก worker ได้ตัวเดียว — เครื่องที่เหลือต้องระบุ "
+            "ใน cluster.env (WORKER_IPS) บน head ก่อน start"
+        )
+    return notes
+
+
 def analyze(
     model: str,
     target: Optional[str] = None,
@@ -353,6 +457,7 @@ def analyze(
     from lmds.fit import PRESETS, Verdict, analyze as analyze_fit
     from lmds.fit.targets import from_hardware_report
     from lmds.inspector import AuthRequired, HfClient, HfError, RepoNotFound, inspect_model
+    from lmds.inspector.report import ArtifactType
     from lmds.resolver import SourceError, parse_source
 
     # ตรวจ input ที่ตรวจได้ทันทีให้หมดก่อนแตะเครือข่าย — ชื่อ engine พิมพ์ผิดไม่ควร
@@ -377,17 +482,73 @@ def analyze(
 
         source = replace(source, revision=revision)
 
+    # เลือก target/เครื่องปลายทางให้จบก่อนแตะเครือข่าย — คู่ stacked ที่จับกันไม่ได้ (ไม่มี worker ·
+    # คนละไซต์ · ไม่มี cluster IP) รู้ได้ทันทีจากทะเบียน ไม่ต้องรอดึง metadata ก่อน
+    target_notes: list[str] = []
+    guessed_target = False
+    if not target and machine:
+        # เครื่องปลายทางคือเครื่องอื่น — ฮาร์ดแวร์ของ hub ไม่เกี่ยว ต้องคิดจากของเครื่องนั้น
+        target, why = _target_for_machine(machine)
+        guessed_target = True
+        if why:
+            target_notes.append(why)
+    if worker and worker != machine and (not target or (guessed_target and PRESETS.get(target) and PRESETS[target].node_count <= 1)):
+        # เลือก worker มา = ตั้งใจ stacked · target ที่ "เดา" จากเครื่องเดียวเป็น single เสมอ จึงต้องไม่ทับเจตนา
+        target = "dgx-spark-stacked"
+        target_notes = [n for n in target_notes if "วิเคราะห์ด้วยฮาร์ดแวร์ของเครื่องนี้" not in n]
+    if target:
+        if target not in PRESETS:
+            raise DeployError("input", f"ไม่รู้จัก target '{target}'")
+        spec = PRESETS[target]
+    else:
+        from lmds.hardware import probe
+
+        spec = from_hardware_report(probe()) or PRESETS["dgx-spark-single"]
+    if worker and worker != machine and spec.node_count <= 1:
+        # เลือก worker แล้วแต่ target เป็น single = แผนเครื่องเดียวที่ push ไป head เฉย ๆ ผู้ใช้เข้าใจว่า
+        # deploy 2 เครื่องแล้ว — ขัดกันต้องบอก ไม่ใช่เลือกให้เงียบ ๆ
+        raise DeployError(
+            "input",
+            f"เลือก worker ({worker}) แต่ target '{spec.name}' เป็นเครื่องเดียว — เลือก target แบบ stacked "
+            "(dgx-spark-stacked = 2 เครื่อง, dgx-spark-stacked-4 = 4 เครื่อง) หรือเอา worker ออก",
+        )
+    if chosen is Engine.SGLANG and spec.node_count > 1:
+        raise DeployError(
+            "input",
+            "SGLang ยังไม่มี controller แบบ stacked (หลายเครื่อง) — เลือก engine vllm กับ target stacked "
+            "หรือใช้ SGLang กับ target แบบ single",
+        )
+    target_notes += _check_stacked_pair(spec.name, machine, worker, spec.node_count)
+
     from lmds.secrets import get_secret
 
     token = hf_token or get_secret("hf") or ""
     try:
         report = inspect_model(source, HfClient(token=token or None))
     except AuthRequired as exc:
-        raise DeployError("gated", str(exc)) from exc
+        # บอกทางแก้ที่กดได้เลย — "ต้องใช้ token" เฉย ๆ ผู้ใช้ไม่รู้ว่าใส่ที่ไหน (ลูกค้า 2026-09-04: "analyze ล้ม")
+        raise DeployError(
+            "gated",
+            f"{exc} · ใส่ token: หน้าเว็บกรอกช่อง HF token (ติ๊ก Save) แล้ววิเคราะห์ใหม่ · CLI: "
+            "lmds config set-key hf · repo ที่ต้องกดยอมรับเงื่อนไข ให้กดบนเว็บ Hugging Face ด้วยบัญชีของ token นั้นก่อน",
+        ) from exc
     except RepoNotFound as exc:
         raise DeployError("not-found", str(exc)) from exc
     except HfError as exc:
         raise DeployError("hub", str(exc)) from exc
+
+    if spec.node_count > 1 and (
+        report.artifact_type is ArtifactType.GGUF
+        or (report.artifact_type is ArtifactType.MIXED and (selected_gguf or report.selected_gguf))
+    ):
+        # เดิมผ่าน analyze (200) แล้วไปตาย ValueError ตอน generate — llama.cpp ไม่ทำ tensor parallel
+        # ข้ามเครื่อง (ไม่มี reference ที่รันผ่าน) · บอกตั้งแต่ตรงนี้พร้อมทางออก
+        raise DeployError(
+            "input",
+            f"repo นี้เป็น GGUF → llama.cpp ซึ่งทำ tensor parallel ข้ามเครื่องไม่ได้ — target {spec.name} "
+            "ใช้ไม่ได้ · เลือก target แบบ single (dgx-spark-single) หรือหา repo safetensors ของโมเดลนี้เพื่อใช้ vLLM stacked",
+        )
+
 
     # repo GGUF หลาย variant ต้องเลือกไฟล์ก่อน ไม่งั้นไปพังตอนท้าย
     weights = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
@@ -420,21 +581,6 @@ def analyze(
             report.selected_gguf = selected_gguf
             if variant is not None:
                 report.weight_bytes = variant.size_bytes
-
-    target_notes: list[str] = []
-    if not target and machine:
-        # เครื่องปลายทางคือเครื่องอื่น — ฮาร์ดแวร์ของ hub ไม่เกี่ยว ต้องคิดจากของเครื่องนั้น
-        target, why = _target_for_machine(machine)
-        if why:
-            target_notes.append(why)
-    if target:
-        if target not in PRESETS:
-            raise DeployError("input", f"ไม่รู้จัก target '{target}'")
-        spec = PRESETS[target]
-    else:
-        from lmds.hardware import probe
-
-        spec = from_hardware_report(probe()) or PRESETS["dgx-spark-single"]
 
     # สองชั้น — ชั้นแรกคิดจาก *เครื่องเปล่า*: ตัดสินว่าสร้าง bundle ได้ไหม (ฮาร์ดแวร์ใส่ได้จริงไหม)
     # ชั้นสองคิดจาก *ตอนนี้* (หักของที่รันอยู่): บอกว่า start ได้เลยไหม ขาดเท่าไร
@@ -474,16 +620,25 @@ def analyze(
     try:
         plan = build_plan(report, fit, provider, engine=chosen)
     except (PlanError, ProviderError) as exc:
+        if provider is None:
+            # rule-based เองปฏิเสธ (embedding/SGLang กับ stacked) — ไม่มีอะไรให้ fallback อีก
+            # เดิมเรียก rule-based ซ้ำแล้วยกซ้ำ → 500 เปล่า ๆ ทั้งที่เป็น input ของผู้ใช้
+            raise DeployError("input", str(exc)) from exc
         notes.append(f"LLM ใช้ไม่ได้ ({exc}) — สลับเป็น rule-based")
-        plan = build_plan(report, fit, None, engine=chosen)
+        try:
+            plan = build_plan(report, fit, None, engine=chosen)
+        except PlanError as again:
+            raise DeployError("input", str(again)) from again
 
     _note_start_now(fit, plan)
 
     # พอร์ตว่างของเครื่องปลายทาง (hub เองเมื่อไม่เลือกเครื่อง) — บอกไว้ในโน้ตให้เห็นว่าไม่ใช่ 8000
-    # ตามเคย และทำไม · stacked ใช้พอร์ตของ head ซึ่งคือ `machine`
-    port = suggest_port(machine)
+    # ตามเคย และทำไม · stacked: API อยู่ที่ head (`machine`) แต่เลือกที่ว่างบน worker ด้วย (ดู suggest_port)
+    port = suggest_port(machine, worker=worker if spec.node_count > 1 else "")
     if port != DEFAULT_PORT:
         who = machine or "เครื่องนี้"
+        if spec.node_count > 1 and worker:
+            who = f"{machine}/{worker}"
         fit.notes.append(f"พอร์ต {port} — {DEFAULT_PORT} ถึง {port - 1} มี bundle/container บน {who} ถืออยู่แล้ว")
 
     if len(_SESSIONS) >= _MAX_SESSIONS:

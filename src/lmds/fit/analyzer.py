@@ -31,6 +31,14 @@ UNTESTED_BUDGET_FACTOR = 0.95  # หักเพิ่ม 5% เมื่อ tar
 UNKNOWN_KV_RESERVE_FRAC = 0.20  # ไม่รู้มิติ KV → กัน budget 20%
 RAM_OFFLOAD_FRAC = 0.70  # llama.cpp offload: ใช้ RAM ได้ไม่เกิน 70%
 MIN_PRACTICAL_CONTEXT = 4096
+# stacked (TP ข้ามเครื่อง): NCCL buffer + torch.distributed + CUDA graph pool ของ all-reduce ต่อเครื่อง
+# — เดิมเป็นแค่โน้ต "ต้องเผื่อ communication buffer" ไม่เคยถูกหักจริง budget รวม 227 GB จึงสูงเกินจริง
+# และผู้ใช้ไม่เห็นตัวเลขต่อเครื่องเลย (audit stacked 2026-09-04) · ค่านี้เผื่อจากที่วัดบน 2×Spark:
+# ~2–3 GB ต่อ rank สำหรับ NCCL ring/tree + pool ของ TP all-reduce ที่ ctx ยาว
+STACKED_COMM_BUFFER_GB_PER_NODE = 3.0
+# vLLM: หลังโหลด weight ต้องเหลือให้ profiling run (activation ที่ max_num_batched_tokens) + cache blocks
+# ต่ำกว่านี้ไม่ใช่ "context เล็ก" แต่คือ start ไม่ขึ้น ("No available memory for the cache blocks")
+VLLM_MIN_KV_GB = 2.0
 
 # บันไดต้องยาวถึงที่โมเดลรุ่นใหม่ไปได้จริง ไม่งั้นบันไดเองกลายเป็นเพดาน
 #
@@ -86,6 +94,13 @@ class FitReport(BaseModel):
     now_max_safe_context: Optional[int] = None # context สูงสุดที่ start ได้ตอนนี้
     now_short_gb: Optional[float] = None       # ขาดอีกกี่ GB ถึงจะ start ที่ context ที่แผนเสนอ (0 = พอ)
     running_now: list[str] = Field(default_factory=list)  # โมเดลที่ถือหน่วยความจำอยู่บนเครื่องนั้น
+    # ภาพ "ต่อเครื่อง" ของ stacked — tensor parallel แบ่ง weights/KV เท่ากันทุกเครื่อง ผู้ใช้ต้องเห็นว่า
+    # แต่ละเครื่องจะถืออะไรเท่าไร ไม่ใช่แค่ยอดรวมของคลัสเตอร์ (single: เท่ากับค่ารวม)
+    comm_buffer_gb: float = 0.0             # NCCL/communication buffer ที่หักแล้ว (รวมทุกเครื่อง)
+    per_node_capacity_gb: float = 0.0
+    per_node_budget_gb: float = 0.0
+    per_node_weights_gb: Optional[float] = None
+    per_node_kv_budget_gb: Optional[float] = None
     verdict: Verdict = Verdict.UNKNOWN
     kv_bytes_per_token: Optional[int] = None
     kv_estimated: bool = False
@@ -108,8 +123,13 @@ def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tup
     if target.memory_model is MemoryModel.UNIFIED:
         overhead = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB
         budget = target.total_gpu_memory_gb - UNIFIED_OS_RESERVE_GB * target.gpu_count - overhead * target.gpu_count
-        if target.gpu_count > 1:
-            notes.append("stacked: ตัวเลขเป็นการประมาณรวม — ต้องเผื่อ communication buffer ต่อ node เพิ่ม")
+        if target.node_count > 1:
+            # หักจริง ไม่ใช่แค่โน้ต — ดู STACKED_COMM_BUFFER_GB_PER_NODE
+            budget -= STACKED_COMM_BUFFER_GB_PER_NODE * target.node_count
+            notes.append(
+                f"stacked {target.node_count} เครื่อง: ตัวเลขเป็นยอดรวมของคลัสเตอร์ — หัก communication buffer "
+                f"(NCCL/TP) {STACKED_COMM_BUFFER_GB_PER_NODE:.0f} GB ต่อเครื่องแล้ว · ดูค่าต่อเครื่องที่ per_node"
+            )
     else:
         usable = target.total_gpu_memory_gb * GPU_MEMORY_UTILIZATION
         overhead = (VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB) * target.gpu_count
@@ -163,6 +183,10 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
         concurrency=concurrency,
         notes=notes,
     )
+    nodes = max(1, target.node_count)
+    fit.comm_buffer_gb = round(STACKED_COMM_BUFFER_GB_PER_NODE * nodes, 1) if nodes > 1 else 0.0
+    fit.per_node_capacity_gb = round(target.total_gpu_memory_gb / nodes, 1)
+    fit.per_node_budget_gb = round(budget / nodes, 1)
 
     weights_bytes = report.weight_bytes
     if weights_bytes is None:
@@ -182,9 +206,21 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
     fit.weights_gb = round(weights_gb, 1)
     kv_budget_gb = budget - weights_gb
     fit.kv_budget_gb = round(kv_budget_gb, 1)
+    # tensor parallel แบ่ง weights และ KV เท่ากันทุกเครื่อง
+    fit.per_node_weights_gb = round(weights_gb / nodes, 1)
+    fit.per_node_kv_budget_gb = round(max(kv_budget_gb, 0.0) / nodes, 1)
 
     if kv_budget_gb <= 0:
         return _handle_no_headroom(report, target, fit, weights_gb, budget)
+    if engine == "vllm" and kv_budget_gb < VLLM_MIN_KV_GB:
+        # weight ชิด budget จนเหลือ KV ไม่ถึงที่ profiling run ของ vLLM ต้องใช้ — vLLM ตายตอน start ด้วย
+        # "No available memory for the cache blocks" ไม่ใช่ "ได้ context 4096" · เคสจริง audit 2026-09-04:
+        # Qwen3-235B FP8 (220.2 GiB) บน 2×Spark เหลือ 0.8 GB แล้วรายงานว่า fits-reduced-context
+        return _handle_no_headroom(
+            report, target, fit, weights_gb, budget,
+            reason=(f"weight {weights_gb:.1f} GB เหลือที่ให้ KV แค่ {kv_budget_gb:.1f} GB "
+                    f"(vLLM ต้องการอย่างน้อย ~{VLLM_MIN_KV_GB:.0f} GB สำหรับ profiling run + cache blocks)"),
+        )
 
     dims = report.kv_dims
     if dims is None:
@@ -296,8 +332,15 @@ def _handle_no_headroom(
 
     if target.memory_model is MemoryModel.DISCRETE:
         fit.alternatives.append("เพิ่ม GPU (tensor parallel) หรือใช้เครื่องที่ VRAM มากกว่า")
-    else:
-        fit.alternatives.append("ใช้ DGX Spark แบบ stacked (2+ เครื่อง)")
+    elif target.node_count <= 1:
+        fit.alternatives.append("ใช้ DGX Spark แบบ stacked (2+ เครื่อง: target dgx-spark-stacked)")
+    elif target.node_count < 4:
+        # กำลังวิเคราะห์ stacked อยู่แล้ว — "ใช้ stacked" ไม่ได้บอกอะไร ต้องชี้ preset ที่พอจริง
+        # (235B FP8 = 220 GiB ไม่ลง 2×128 แต่ลง 4×128 · audit stacked 2026-09-04)
+        fit.alternatives.append(
+            f"เพิ่มเครื่อง: target dgx-spark-stacked-4 (4 เครื่อง = 512 GB) — {target.node_count} เครื่อง "
+            f"มี budget {budget:.0f} GB แต่ weight {weights_gb:.0f} GB"
+        )
     return fit
 
 

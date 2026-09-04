@@ -46,7 +46,9 @@
 
 ## First-run
 {% if is_stacked %}
-> ก่อนเริ่ม: แก้ค่าใน CONFIG ด้านบนของสคริปต์ (หรือ export env) — `MASTER_IP`, `WORKER_IP`, `SSH_USER`, `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA`
+> ก่อนเริ่ม: บอก controller ว่าคลัสเตอร์คือเครื่องไหน — จาก hub `lmds node cluster --write {{ slug }} --head <เครื่อง head>` (เขียน `cluster.env` ข้างสคริปต์ให้)
+> หรือเขียน `cluster.env` เอง / export env: `MASTER_IP`, `WORKER_IP`, `SSH_USER` (`TRANSPORT_IP_*` เมื่อสาย NCCL แยกจาก management · `NCCL_SOCKET_IFNAME`/`NCCL_IB_HCA` หาให้เองจาก IP)
+> ทุกคำสั่งที่แตะ worker ตรวจ SSH head→worker ก่อน — ต้องเป็น key ของเครื่อง head เอง (`ssh-keygen -t ed25519 -N '' && ssh-copy-id <user>@<worker>`) ไม่ใช่ key ของ hub
 
 ```bash
 chmod +x {{ controller_name }}
