@@ -152,6 +152,20 @@ air-gapped ยังอยู่ · Geist + Geist Mono (OFL, woff2 ชุด lat
 ในรายการ · แคช 1 ปี immutable) · `--sans`/`--mono` ขึ้นต้นด้วย Geist แล้วตกไปฟอนต์ระบบสำหรับภาษาไทย ·
 เทส `test_the_console_typefaces_are_served_by_the_hub_not_the_internet` + `test_page_is_self_contained` คุม
 
+**ปุ่ม Update: hub ผ่านแต่ node "ไม่ผ่าน"** — รายงานจากลูกค้า 2026-09-04 · ไล่เส้นทางจริงแล้วเจอ 3 จุด
+(`tests/test_install_ship.py` รันสคริปต์ติดตั้งกับ git จริง · `test_commit_badges_tolerate_short_hashes_of_different_length`)
+
+- **clone จาก bundle บนเครื่องที่ยังไม่มี checkout ได้โฟลเดอร์เปล่า** — bundle มีแต่ ref `main` ไม่มี HEAD →
+  `git clone` เตือน "remote HEAD refers to nonexistent ref" แล้ว *ไม่ checkout ไฟล์* → `./install.sh: No such
+  file` exit 127 · ฟลีตนี้ไม่เจอเพราะทุกเครื่องมี checkout อยู่แล้ว (เดินทาง pull) · แก้: `git clone -b main`
+- **hash ย่อยาวไม่เท่ากัน = ป้าย "ยังไม่ตรง hub" หลังอัปเดตสำเร็จ** — git เลือกความยาวเองตามจำนวน object
+  (spark-head ได้ `0ad1a59e`, hub ได้ `0ad1a59`) หน้าเว็บเทียบเท่ากันเป๊ะ 3 จุด (ป้ายบนการ์ด · Needs attention ·
+  ป้าย hub ต้อง restart) จึงรายงานว่าเครื่องที่เพิ่งอัปเดตยังตามหลัง · เทียบแบบ prefix (`sameCommit`) และ
+  `install.sh` ประทับ `--short=7` คงที่
+- **โฟลเดอร์ที่ไม่ใช่ git (ติดตั้งแบบ copy) / checkout ที่แก้ไว้หรือแยกสาย** ทำให้ clone ชน หรือ ff-only ล้ม exit 128 ·
+  สคริปต์บน node ย้ายโฟลเดอร์เดิมไป `.bak-<เวลา>` · checkout ที่แยกสายเก็บไว้ที่ branch `local-<เวลา>` + stash
+  แล้วตามโค้ดของ hub — node เป็นของ hub ไม่ใช่ที่พัฒนาโค้ด
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

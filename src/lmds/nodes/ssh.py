@@ -340,13 +340,31 @@ LMDS_ASSUME_YES=1 {skip}./install.sh
 # "could not read Username" — คือขั้นที่ยุ่งยากที่สุดของการติดตั้ง และเป็นเหตุผลที่เคยต้องส่ง
 # bundle ด้วยมือ (13 ส.ค. 69) · hub มี checkout อยู่แล้ว ส่งไปเองได้ (pack ทั้ง repo ~2 MB)
 # · clone จาก bundle แล้วชี้ origin กลับไป GitHub เผื่อวันหน้าเครื่องนั้นได้ key เอง
+# สองเคสที่เคยทำให้ node "update ไม่ผ่าน" (exit 128) ทั้งที่ไม่ใช่ความผิดใคร:
+#   · โฟลเดอร์ AutoDeployDGXProject มีอยู่แต่ไม่ใช่ git (ติดตั้งแบบ copy — เช่น 10.2.3.100) → clone ชน
+#   · checkout แก้ไว้/แยกสายจาก hub (แพตช์มือ, commit ค้าง) → ff-only ล้ม
+# node เป็นของ hub: เก็บของเดิมไว้ (โฟลเดอร์ .bak-<เวลา> / branch local-<เวลา> + stash) แล้วตาม hub
 _INSTALL_FROM_BUNDLE_SCRIPT = """
 set -e
 cd "$HOME"
+stamp=$(date +%Y%m%d-%H%M)
 if [ -d AutoDeployDGXProject/.git ]; then
-  cd AutoDeployDGXProject && git pull --ff-only {bundle} main
+  cd AutoDeployDGXProject
+  git fetch -q {bundle} main
+  if ! git merge -q --ff-only FETCH_HEAD >/dev/null 2>&1; then
+    echo "checkout บนเครื่องนี้แก้ไว้/แยกสายจาก hub — เก็บของเดิมไว้ที่ branch local-$stamp (+stash) แล้วตามโค้ดของ hub"
+    git branch -f "local-$stamp" HEAD
+    git stash push -q -u -m "lmds node install $stamp" >/dev/null 2>&1 || true
+    git checkout -q -B main FETCH_HEAD
+  fi
 else
-  git clone {bundle} AutoDeployDGXProject && cd AutoDeployDGXProject && git remote set-url origin {repo}
+  if [ -e AutoDeployDGXProject ]; then
+    echo "AutoDeployDGXProject เดิมไม่ใช่ git checkout (ติดตั้งแบบ copy) — ย้ายไป AutoDeployDGXProject.bak-$stamp"
+    mv AutoDeployDGXProject "AutoDeployDGXProject.bak-$stamp"
+  fi
+  # -b main จำเป็น: bundle มีแต่ ref main ไม่มี HEAD → clone เฉย ๆ เตือน "remote HEAD refers to
+  # nonexistent ref" แล้วไม่ checkout ไฟล์ให้เลย → ./install.sh: No such file (exit 127)
+  git clone -q -b main {bundle} AutoDeployDGXProject && cd AutoDeployDGXProject && git remote set-url origin {repo}
 fi
 rm -f {bundle}
 LMDS_ASSUME_YES=1 {skip}./install.sh

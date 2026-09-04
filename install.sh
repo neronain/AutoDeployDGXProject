@@ -131,7 +131,8 @@ make_venv "${INSTALL_DIR}/venv" ||
 #
 # ประทับ *ที่อยู่ของ checkout* ไปด้วย — ปุ่มอัปเดตบนหน้าเว็บต้องรู้ว่าจะไป `git pull` ที่ไหน
 # เดาจากตำแหน่งโค้ดที่รันอยู่ไม่ได้ เพราะมันอยู่ใน site-packages ของ venv ไปแล้ว
-BUILD_COMMIT="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+# --short=7 คงที่: ปล่อยให้ git เลือกเองจะได้ 7 บ้าง 8 บ้างตามจำนวน object ของแต่ละเครื่อง
+BUILD_COMMIT="$(git -C "$REPO_DIR" rev-parse --short=7 HEAD 2>/dev/null || true)"
 BUILD_SOURCE=""
 [ -d "${REPO_DIR}/.git" ] && BUILD_SOURCE="$REPO_DIR"
 printf '# สร้างโดย install.sh — commit และ checkout ที่ติดตั้งไว้ ณ ตอนนั้น\nCOMMIT = "%s"\nSOURCE = "%s"\n' \

@@ -3377,7 +3377,15 @@ let hubBuild = { version: "", commit: "", installed: "", upstream: "", boot: "" 
 // hub ตามหลังตัวเองอยู่หรือเปล่า — ติดตั้งของใหม่ไว้แล้วแต่ process ที่รันยังเป็นของเก่า
 // ตอนนั้น commit ของ hub เชื่อไม่ได้ จะเอาไปตัดสินว่า node ไหนเก่าไม่ได้เลย
 function hubNeedsRestart() {
-  return Boolean(hubBuild.installed && hubBuild.commit && hubBuild.installed !== hubBuild.commit);
+  return Boolean(hubBuild.installed && hubBuild.commit && !sameCommit(hubBuild.installed, hubBuild.commit));
+}
+
+// hash ย่อของ git ยาวไม่เท่ากันทุกเครื่อง — repo ที่มี object มากกว่าจะได้ 8 ตัว (spark-head:
+// 0ad1a59e) ขณะที่ hub ได้ 7 (0ad1a59) · เทียบเท่ากันเป๊ะจึงขึ้น "ยังไม่ตรง hub" ทั้งที่เพิ่งอัปเดต
+// สำเร็จ (ลูกค้า 2026-09-04: "กด update แล้ว node ติด ไม่ผ่าน") — เทียบแบบตัวหนึ่งเป็น prefix ของอีกตัว
+function sameCommit(a, b) {
+  a = String(a || ""); b = String(b || "");
+  return Boolean(a && b && (a.startsWith(b) || b.startsWith(a)));
 }
 
 function paintNodeVersion(row, d, name) {
@@ -3390,7 +3398,7 @@ function paintNodeVersion(row, d, name) {
   // เคสจริง: กด update ให้ node ทุกเครื่องจนได้ของล่าสุด แต่ hub เองยังไม่ได้รีสตาร์ต
   // ป้ายเดิมเขียนว่า "โค้ดเก่า" จึงไปกล่าวหาเครื่องที่ทันสมัยที่สุดทั้งฟลีต แล้วชวนให้กด
   // update ซ้ำทั้งที่ไม่มีอะไรต้องอัป · ตอน hub ยังไม่รีสตาร์ต อย่าตัดสิน node เลยดีกว่า
-  const differs = Boolean(commit && hubBuild.commit && commit !== hubBuild.commit);
+  const differs = Boolean(commit && hubBuild.commit && !sameCommit(commit, hubBuild.commit));
   const stale = differs && !hubNeedsRestart();
   row.version.innerHTML = `${esc(version)}${commit ? ` <span class="dim">${esc(commit)}</span>` : ""}`
     + (stale ? ` <span class="tag warn" title="เครื่องนี้รัน ${esc(commit)} ส่วน hub อยู่ที่ ${esc(hubBuild.commit)}
@@ -4994,7 +5002,7 @@ function ovAlerts() {
       if (ms.length > 1 && ms.some(m => m.running) && ms.some(m => !m.running))
         out.push({ lv: "warn", t: `${name}: port ${port} shared`, s: ms.map(m => m.slug).join(" · ") + " — the stopped one cannot start until its port changes", href: `#/node/${encodeURIComponent(name)}` });
     }
-    if (hubBuild.commit && reg.lmds_commit && reg.lmds_commit !== hubBuild.commit)
+    if (hubBuild.commit && reg.lmds_commit && !sameCommit(reg.lmds_commit, hubBuild.commit))
       out.push({ lv: "info", t: `${name} runs LMDS ${reg.lmds_version || "?"} (${reg.lmds_commit})`, s: `hub is at ${hubBuild.version} · ${hubBuild.commit} — update when convenient`, href: `#/node/${encodeURIComponent(name)}` });
   }
   return out;

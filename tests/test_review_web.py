@@ -381,3 +381,16 @@ def test_the_console_typefaces_are_served_by_the_hub_not_the_internet():
         assert r.content[:4] == b"wOF2"
     assert client.get("/fonts/nope.woff2").status_code == 404
     assert client.get("/fonts/..%2F..%2Findex.html").status_code == 404
+
+
+def test_commit_badges_tolerate_short_hashes_of_different_length():
+    """spark-head ประทับ 0ad1a59e (8 ตัว) hub เป็น 0ad1a59 (7) — เทียบเป๊ะ = ขึ้น "ยังไม่ตรง" หลังอัปเดตสำเร็จ"""
+    from pathlib import Path
+
+    page = Path(__file__).resolve().parents[1].joinpath("src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert "function sameCommit(a, b)" in page
+    assert "commit !== hubBuild.commit" not in page
+    assert "reg.lmds_commit !== hubBuild.commit" not in page
+    assert "hubBuild.installed !== hubBuild.commit" not in page
+    text = Path(__file__).resolve().parents[1].joinpath("install.sh").read_text(encoding="utf-8")
+    assert "rev-parse --short=7 HEAD" in text
