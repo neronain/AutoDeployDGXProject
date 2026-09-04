@@ -80,6 +80,8 @@ class ModelReport(BaseModel):
     private: bool = False
     license: Optional[str] = None
     artifact_type: ArtifactType = ArtifactType.UNKNOWN
+    # "generate" (chat) หรือ "embed" — จาก pipeline_tag/tags/ชื่อ repo · เปลี่ยนได้ด้วย --task
+    task: str = "generate"
 
     # ตัวเลขสำหรับ Fit Analyzer
     params_total: Optional[int] = None  # จาก Hub safetensors metadata

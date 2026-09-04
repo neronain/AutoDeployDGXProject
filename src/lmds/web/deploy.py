@@ -94,6 +94,7 @@ def _plan_payload(session: Session) -> dict:
         "revision": plan.revision,
         "served_model_name": plan.served_model_name,
         "engine": plan.runtime.engine.value,
+        "task": plan.task,
         # ทำไมถึงได้ engine ตัวนี้ — ผู้ใช้เห็นแค่ชื่อ engine แล้วเดาเองไม่ออกว่าเลือกเองได้ไหม
         # เคสจริง 2026-08-19: repo safetensors ล้วน ผู้ใช้หา llama.cpp ในช่อง Engine ไม่เจอ
         # แล้วสรุปว่า LMDS พัง ทั้งที่ llama.cpp อ่าน safetensors ไม่ได้ตั้งแต่แรก

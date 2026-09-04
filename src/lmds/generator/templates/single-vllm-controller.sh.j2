@@ -598,6 +598,11 @@ start() {
     --host "$API_HOST"
     --port "$API_PORT"
   )
+{% if is_embed %}
+  # embedding: vLLM ≥0.10 ใช้ runner/convert แทน --task ที่เลิกใช้ · โมเดล decoder (Qwen3-Embedding)
+  # ถูกแปลงเป็น pooling model ให้เอง — /v1/embeddings ขึ้น /v1/chat/completions ไม่ขึ้น
+  serve_args+=(--runner pooling --convert embed)
+{% endif %}
 {% if tensor_parallel > 1 %}
   serve_args+=(--tensor-parallel-size "$TENSOR_PARALLEL_SIZE")
 {% endif %}
@@ -766,6 +771,7 @@ client_config() {
 {
   "base_url": "http://$(detect_advertise_ip):${API_PORT}/v1",
   "model": "${SERVED_MODEL_NAME}",
+  "task": "{{ plan.task }}",
   "api_key": "${API_KEY:-not-required}",
   "max_input_tokens": ${input_budget},
   "max_output_tokens": ${CLIENT_OUTPUT},
@@ -773,6 +779,54 @@ client_config() {
 }
 EOF
 }
+
+{% if is_embed %}
+# ยิง /v1/embeddings จริง 3 ประโยค (ไทย · อังกฤษความหมายเดียวกัน · ไทยคนละเรื่อง) แล้วเช็คว่า
+# คู่ความหมายเดียวกันข้ามภาษาได้ cosine สูงกว่าคู่ที่ไม่เกี่ยวกัน — vector ที่ "ออกมาได้" แต่ pooling ผิด
+# จะดูปกติทุกอย่างยกเว้นข้อนี้ · python3 stdlib ล้วน
+test_embed() {
+  assert_our_server
+  command -v python3 >/dev/null 2>&1 || die "ต้องมี python3"
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" "${POOLING:-engine-default}" <<'PYEOF'
+import json, math, sys, urllib.error, urllib.request
+
+port, model, key, pooling = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+texts = ["แมวนอนอยู่บนโซฟา", "A cat is sleeping on the sofa", "รายงานงบการเงินไตรมาสที่สาม"]
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
+req = urllib.request.Request("http://127.0.0.1:%d/v1/embeddings" % port,
+                             data=json.dumps({"model": model, "input": texts}).encode(), headers=headers)
+try:
+    with urllib.request.urlopen(req, timeout=180) as r:
+        body = json.load(r)
+except urllib.error.HTTPError as exc:
+    print("test-embed: FAIL — HTTP %s: %s" % (exc.code, exc.read()[:300].decode("utf-8", "replace")))
+    sys.exit(1)
+except Exception as exc:  # noqa: BLE001
+    print("test-embed: FAIL — %s" % exc)
+    sys.exit(1)
+try:
+    vecs = [d["embedding"] for d in sorted(body["data"], key=lambda d: d["index"])]
+except (KeyError, TypeError):
+    print("test-embed: FAIL — คำตอบไม่ใช่รูป OpenAI embeddings: %s" % json.dumps(body)[:300])
+    sys.exit(1)
+
+def cos(a, b):
+    na = math.sqrt(sum(x * x for x in a)) or 1.0
+    nb = math.sqrt(sum(y * y for y in b)) or 1.0
+    return sum(x * y for x, y in zip(a, b)) / (na * nb)
+
+same, other = cos(vecs[0], vecs[1]), cos(vecs[0], vecs[2])
+print("test-embed: dims=%d · TH↔EN same meaning=%.3f · unrelated=%.3f" % (len(vecs[0]), same, other))
+if same > other:
+    print("test-embed: OK — คู่ความหมายเดียวกันข้ามภาษาได้คะแนนสูงกว่าข้อความที่ไม่เกี่ยวกัน")
+else:
+    print("test-embed: WARN — คู่ความหมายเดียวกันไม่ได้คะแนนสูงกว่า · ตรวจ pooling (ตอนนี้: %s)" % pooling)
+    sys.exit(2)
+PYEOF
+}
+{% endif %}
 
 test_text() {
   assert_our_server
@@ -1014,11 +1068,12 @@ COMMANDS
   wait-health       Keep waiting for /health (use if start timed out but the model is still loading)
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
-  test-text         Send one chat completion request to verify the model answers
+{% if is_embed %}  test-embed        Embed 3 sentences via /v1/embeddings; the TH↔EN same-meaning pair must beat unrelated text
+{% else %}  test-text         Send one chat completion request to verify the model answers
   test-reasoning    ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
   test-tools [both|auto|required]  ตรวจว่า --tool-parser แปลงเป็น tool_calls ได้จริง
                     ค่าตั้งต้น both = ทดสอบ auto ก่อน ซึ่งเป็นโหมดที่ agent ใช้จริง
-  parsers           สิ่งที่ engine รู้จัก: ชื่อ --tool-parser และ --reasoning-parser ที่ใส่ได้จริง
+{% endif %}  parsers           สิ่งที่ engine รู้จัก: ชื่อ --tool-parser และ --reasoning-parser ที่ใส่ได้จริง
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port to serve on                          [default: ${API_PORT}]
@@ -1134,13 +1189,15 @@ case "${1:-help}" in
   restart)      stop; start ;;
   status)       status ;;
   logs)         logs "${2:-300}" ;;
-  test-reasoning)  test_reasoning ;;
+{% if is_embed %}  test-embed)      test_embed ;;
+  test-text|test-tools|test-reasoning) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+{% else %}  test-reasoning)  test_reasoning ;;
   test-tools)      test_tools "${2:-both}" ;;
-  parsers)         list_parsers ;;
+{% endif %}  parsers)         list_parsers ;;
   client-config) client_config ;;
   info|banner) info ;;
   network-info) network_info ;;
-  test-text)    test_text ;;
-  wait-health)  wait_health ;;
+{% if not is_embed %}  test-text)    test_text ;;
+{% endif %}  wait-health)  wait_health ;;
   *)            usage ;;
 esac

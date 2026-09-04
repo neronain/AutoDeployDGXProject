@@ -775,6 +775,10 @@ def feature_summary(profile: dict | None) -> str:
     spec = feats.get("speculative") or {}
     if spec.get("draft_files") or spec.get("embedded"):
         labels.append("MTP")
+    embedding = feats.get("embedding") or {}
+    if embedding:
+        pooling = embedding.get("pooling")
+        labels.append(f"embedding ({pooling})" if pooling else "embedding")
     return ", ".join(labels) if labels else "text"
 
 

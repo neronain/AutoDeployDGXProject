@@ -19,6 +19,7 @@ from .plan_schema import (
     Fact,
     RuntimeChoice,
     Serving,
+    PlanError,
     Topology,
 )
 
@@ -262,6 +263,14 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     elif engine is None:
         engine = Engine.VLLM
     topology = topology_for_target(fit.target_name)
+    is_embed = report.task == "embed"
+    if is_embed:
+        # embedding: SGLang ไม่มีทาง pooling ในเส้นทางของเรา · stacked ไม่มีเหตุผล (โมเดล ≤ 8B ลงเครื่องเดียว)
+        if engine is Engine.SGLANG:
+            engine = Engine.VLLM
+        if topology is not Topology.SINGLE:
+            raise PlanError(
+                "โมเดล embedding รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single)")
 
     # llama.cpp: fit หาร context ด้วย concurrency ที่ขอมาแล้ว (ค่าต่อ 1 sequence) แต่ --ctx-size
     # ของ llama-server คือ pool ที่แบ่งให้ทุก slot เท่า ๆ กัน → คูณกลับ และตั้ง slot = concurrency
@@ -297,6 +306,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
             max_num_seqs=slots,
             **arch_requirements(report.repo_id),
         ),
+        task="embed" if is_embed else "generate",
         special_files=list(report.trust_remote_code_files),
         warnings=[
             "plan นี้สร้างแบบ rule-based (ไม่มี LLM) — ไม่มีการวิจัย parser/feature เชิงลึก",
@@ -304,6 +314,17 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         ],
         generator="rule-based",
     )
+    if is_embed:
+        # ไม่มี chat ไม่มี tool ไม่มี reasoning — ให้ค่าที่เหลือเป็นของ embedding ล้วน
+        plan.serving.max_output_tokens = 16
+        plan.warnings.insert(0,
+            "โมเดล embedding — เสิร์ฟ /v1/embeddings ("
+            + ("llama.cpp --embedding" if engine is Engine.LLAMACPP else "vLLM --runner pooling")
+            + ") · ไม่มี chat/tool calling · ทดสอบด้วยคำสั่ง test-embed · เดาผิด? --task generate")
+        recipe = find_recipe(report.repo_id)
+        if recipe is not None:
+            plan = apply_recipe(plan, recipe, fit.memory_model.value)
+        return plan
     if report.has_chat_template is False:
         plan.warnings.append("ไม่พบ chat template — ต้องระบุ template เองตอนใช้งาน chat")
     if report.trust_remote_code_files:

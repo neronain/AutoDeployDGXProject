@@ -279,6 +279,9 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 
 ## รองรับอะไรบ้าง
 
+> **0.6.0:** โมเดล **embedding** ด้วย (Qwen3-Embedding, bge-m3, embeddinggemma …) — ตรวจจับเองจาก repo, เสิร์ฟ `/v1/embeddings`
+> ผ่าน llama.cpp `--embedding` หรือ vLLM pooling, ทดสอบด้วย `test-embed` (ดู USAGE §4.9)
+
 | | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
 |---|---|---|
 | **llama.cpp** | ✅ native build | ✅ docker (+ multimodal) |

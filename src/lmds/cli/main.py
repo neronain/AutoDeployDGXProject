@@ -2428,6 +2428,8 @@ def deploy(
     engine: Optional[str] = typer.Option(
         None, "--engine",
         help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
+    task: Optional[str] = typer.Option(
+        None, "--task", help="generate | embed — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ) · ใส่เมื่อเดาผิด"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
 ) -> None:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
@@ -2451,6 +2453,13 @@ def deploy(
     interactive = sys.stdin.isatty() and not yes
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
     report = _ensure_gguf_selected(source, report, interactive=interactive)
+    if task:
+        if task.strip().lower() not in {"generate", "embed"}:
+            err_console.print(f"[red]--task ต้องเป็น generate หรือ embed (ได้ '{task}')[/red]")
+            raise typer.Exit(code=2)
+        report.task = task.strip().lower()
+    if report.task == "embed":
+        console.print("[cyan]โมเดล embedding[/cyan] — จะเสิร์ฟ /v1/embeddings ไม่มี chat · เดาผิด? --task generate")
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):

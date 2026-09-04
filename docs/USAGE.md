@@ -1401,6 +1401,30 @@ lmds enable qwen35-a3b-opus          # ให้กลับมาเองห�
 > จึงรันตัวเก่ากว่าที่ทุกคนคิดอยู่หลายเดือน · `lmds adopt` ยกมาตามที่มันรันจริง ซึ่งถูกต้อง
 > แต่ถ้าจะอัป llama.cpp ต้อง copy ทับตัวที่ unit ใช้จริง ไม่ใช่แค่ `cmake --build`
 
+## 4.9 โมเดล embedding (`/v1/embeddings`)
+
+ระบบดูจาก repo เองว่าเป็นโมเดล embedding (pipeline_tag `feature-extraction`/`sentence-similarity`, tag
+`sentence-transformers`, หรือชื่อมีคำว่า embed) แล้ววางแผนเป็น embedding ให้ — ไม่มี chat, tool calling, reasoning
+
+```bash
+lmds deploy Qwen/Qwen3-Embedding-0.6B --no-llm            # safetensors → vLLM --runner pooling --convert embed
+lmds deploy VesNFF/Qwen3-VL-Embedding-8B-GGUF --no-llm    # GGUF → llama.cpp --embedding --pooling last
+lmds deploy <repo> --task embed                           # เดาผิด (ชื่อไม่บอก) → บังคับเอง · --task generate กลับด้าน
+./<slug>-single.sh test-embed                             # ยิง /v1/embeddings 3 ประโยค เช็ค cosine ข้ามภาษา
+POOLING=mean EMBED_UBATCH=4096 ./<slug>-single.sh restart # llama.cpp: เปลี่ยนวิธี pool / ขนาด batch
+```
+
+| | llama.cpp (GGUF) | vLLM (safetensors) |
+|---|---|---|
+| flag ที่ controller ใส่ | `--embedding --pooling <p> --batch-size N --ubatch-size N` | `--runner pooling --convert embed` |
+| pooling ตั้งต้น | Qwen → `last` · BERT/XLM-R/bge/e5/gte → `cls` · อื่น `mean` | vLLM อ่านจาก config ของโมเดลเอง |
+| ทดสอบ | `test-embed` | `test-embed` |
+| client | `client-config` → `"task": "embed"` · เรียก `POST /v1/embeddings` ด้วย `model` = served name | เหมือนกัน |
+
+> **`test-embed` ขึ้น WARN** = คู่ประโยคความหมายเดียวกัน (ไทย↔อังกฤษ) ได้คะแนนไม่สูงกว่าประโยคที่ไม่เกี่ยวกัน
+> มักเป็น pooling ผิดตระกูล — ลอง `POOLING=mean` หรือ `cls` แล้ว restart · stacked ไม่รองรับ (โมเดล embed ≤ 8B
+> ลงเครื่องเดียวเสมอ) · แนะนำโมเดลไทย: Qwen3-Embedding-0.6B/4B (ทั่วไป) · bge-m3 (hybrid + reranker คู่กัน)
+
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
 สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**

@@ -166,6 +166,21 @@ air-gapped ยังอยู่ · Geist + Geist Mono (OFL, woff2 ชุด lat
   สคริปต์บน node ย้ายโฟลเดอร์เดิมไป `.bak-<เวลา>` · checkout ที่แยกสายเก็บไว้ที่ branch `local-<เวลา>` + stash
   แล้วตามโค้ดของ hub — node เป็นของ hub ไม่ใช่ที่พัฒนาโค้ด
 
+**โหมด embedding** — ผู้ใช้ 2026-09-04: "ทำโหมด embedding ใน LMDS ให้ด้วยเลย" (เคสจริง: VesNFF/Qwen3-VL-Embedding-8B-GGUF
+→ dgx-spark03) · เดิมระบบวางแผนได้แต่โมเดล chat · `tests/test_embed_mode.py`
+
+- **ตรวจจับเอง**: `report.task` = embed จาก pipeline_tag (`feature-extraction` / `sentence-similarity`) → tags
+  (`sentence-transformers` …) → ชื่อ repo มีคำว่า embed (GGUF ที่คนแปลงเองมักไม่มี tag) · เดาผิดแก้ด้วย
+  `lmds deploy --task embed|generate` · แผนจาก LLM ตั้ง task เองไม่ได้ (harden บังคับจาก repo)
+- **แผน**: GGUF → llama.cpp `--embedding --pooling <ตามตระกูล> --batch-size/--ubatch-size` (Qwen = last ·
+  BERT/XLM-R/bge/e5/gte = cls · อื่น mean · ubatch ≥ token ของอินพุตทั้งก้อน) · safetensors → vLLM
+  `--runner pooling --convert embed` (SGLang ที่ขอมาถอยเป็น vLLM) · ไม่มี tool/reasoning parser · stacked ปฏิเสธ
+  (โมเดล embed ลงเครื่องเดียวเสมอ) · `POOLING=` / `EMBED_UBATCH=` แก้ได้ตอน restart
+- **controller**: คำสั่ง `test-embed` ยิง `/v1/embeddings` จริง 3 ประโยค (ไทย · อังกฤษความหมายเดียวกัน · ไทยคนละเรื่อง)
+  แล้วเช็คว่าคู่ความหมายเดียวกันข้ามภาษาได้ cosine สูงกว่า — vector ที่ออกมาได้แต่ pooling ผิดจะดูปกติทุกอย่าง
+  ยกเว้นข้อนี้ · `test-text`/`test-tools` บอกให้ไปใช้ `test-embed` แทน · `client-config` มี `"task"` ·
+  MODEL_PROFILE มี `task` + `features.embedding.pooling` → หน้าเว็บ/CLI ติดป้าย "embedding (last)"
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

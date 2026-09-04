@@ -207,7 +207,15 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     _harden_projector(plan, report)
     _harden_draft(plan, report)
     _harden_moe(plan, report)
-    _harden_parsers(plan)
+    # งานของโมเดลเป็นข้อเท็จจริงจาก repo — LLM ที่วางแผนตั้งเองไม่ได้ · embedding ไม่มี parser ให้ตั้ง
+    plan.task = "embed" if getattr(report, "task", "generate") == "embed" else "generate"
+    if plan.task == "embed":
+        plan.tool_calling.enabled = False
+        plan.tool_calling.parser = None
+        plan.reasoning.enabled = False
+        plan.reasoning.parser = None
+    else:
+        _harden_parsers(plan)
 
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf

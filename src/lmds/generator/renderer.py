@@ -54,6 +54,17 @@ def _client_input(plan: DeploymentPlan) -> int:
     return max(plan.serving.context - plan.serving.max_output_tokens - 2048, 0)
 
 
+def embed_pooling_for(report: ModelReport) -> str:
+    """--pooling ของ llama-server ตามตระกูลโมเดล — ใส่ผิดได้ vector ที่ดูปกติแต่ค้นหาแล้วเพี้ยน"""
+    text = " ".join(filter(None, [report.architecture or "", report.model_type or "",
+                                  report.repo_id.split("/")[-1]])).lower()
+    if "qwen" in text:
+        return "last"      # Qwen3-Embedding / Qwen3-VL-Embedding: last-token pooling ตาม model card
+    if any(k in text for k in ("bert", "roberta", "xlm", "bge", "e5", "gte", "arctic")):
+        return "cls"
+    return "mean"
+
+
 def _quote_flag(flag: str) -> str:
     """'--kv-cache-dtype=fp8' → "--kv-cache-dtype fp8" (quoted ปลอดภัยสำหรับ bash array)
 
@@ -199,6 +210,9 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         features.append("reasoning")
     if plan.multimodal.modalities:
         features.append("+".join(plan.multimodal.modalities))
+    is_embed = plan.task == "embed"
+    if is_embed:
+        features.append("embedding")
     engine_name = {
         Engine.VLLM: "vLLM",
         Engine.SGLANG: "SGLang",
@@ -264,6 +278,12 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         # repo ของ image สำหรับตรึง digest — ตัดที่ ':' ตัวแรกไม่ได้ เพราะ registry ที่มีพอร์ต
         # (registry.local:5000/vllm:tag) จะเหลือแค่ registry.local
         "image_repo": image_repo(plan.runtime.image_ref),
+        # embedding: llama.cpp ต้องรู้วิธี pool token → vector (Qwen3-Embedding ใช้ token สุดท้าย
+        # · BERT/XLM-R ใช้ [CLS] · Gemma/ทั่วไป mean) และ ubatch ต้อง ≥ จำนวน token ของอินพุตทั้งก้อน
+        # (โมเดลแบบ non-causal encode ทั้งประโยคใน batch เดียว · ค่าเดิม 512 ทำให้ข้อความยาวล้มเงียบ)
+        "is_embed": is_embed,
+        "embed_pooling": embed_pooling_for(report),
+        "embed_ubatch": max(512, min(plan.serving.context, 8192)),
         "n_gpu_layers": n_gpu_layers,
         "client_input": _client_input(plan),
         "context_env": "MAX_MODEL_LEN" if not is_gguf else "CTX_SIZE",
@@ -286,6 +306,7 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "served_name": plan.served_model_name,
             "artifact_type": plan.artifact_type.value,
             "selected_gguf": plan.selected_gguf,
+            "task": plan.task,
             # lmds doctor ใช้ตรวจว่าต้องมี HF_TOKEN ตอน download ไหม
             "gated": report.gated,
             "license": report.license,
@@ -328,6 +349,8 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "multimodal": plan.multimodal.model_dump(mode="json"),
             "moe": plan.moe.model_dump(mode="json"),
             "speculative": plan.speculative.model_dump(mode="json"),
+            # embedding: pooling ที่ controller ใช้ — หน้าเว็บ/CLI ติดป้าย "embedding" จากตรงนี้
+            "embedding": ({"pooling": embed_pooling_for(report)} if plan.task == "embed" else None),
         },
         "facts": [f.model_dump(mode="json") for f in plan.facts],
         "warnings": plan.warnings,

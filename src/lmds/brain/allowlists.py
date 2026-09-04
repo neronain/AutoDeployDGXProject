@@ -33,6 +33,10 @@ VLLM_FLAGS = {
     "--block-size",
     "--generation-config",
     "--async-scheduling",
+    # embedding (โหมด pooling) — controller ใส่ให้เองเมื่อ plan.task == embed
+    "--runner",
+    "--convert",
+    "--task",
 }
 
 LLAMACPP_FLAGS = {
@@ -53,6 +57,10 @@ LLAMACPP_FLAGS = {
     "--batch-size",
     "--ubatch-size",
     "--rope-scaling",
+    # embedding — controller ใส่ให้เองเมื่อ plan.task == embed
+    "--embedding",
+    "--pooling",
+    "--embd-normalize",
 }
 
 SGLANG_FLAGS = {

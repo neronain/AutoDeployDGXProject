@@ -33,6 +33,28 @@ _SAFETENSORS_INDEX = "model.safetensors.index.json"
 _TOKENIZER_FILES = {"tokenizer.json", "tokenizer_config.json", "tokenizer.model", "vocab.json", "merges.txt"}
 
 
+_EMBED_PIPELINES = {"feature-extraction", "sentence-similarity"}
+_EMBED_TAGS = {"sentence-transformers", "sentence-similarity", "feature-extraction",
+               "text-embeddings-inference", "embeddings", "embedding"}
+_EMBED_NAME_RE = re.compile(r"embed", re.I)
+
+
+def task_of(info: dict, repo_id: str) -> str:
+    """โมเดลนี้เอาไว้ทำอะไร — embedding หรือ chat
+
+    ดูจาก pipeline_tag ก่อน (Hub ติดให้จากไลบรารี) · tags · แล้วค่อยชื่อ repo (GGUF ที่คนแปลงเอง
+    มักไม่มี tag อะไรเลย เช่น VesNFF/Qwen3-VL-Embedding-8B-GGUF) · เดาผิดแก้ได้ด้วย `--task`
+    """
+    if (info.get("pipeline_tag") or "") in _EMBED_PIPELINES:
+        return "embed"
+    tags = {t.lower() for t in info.get("tags", []) if isinstance(t, str)}
+    if tags & _EMBED_TAGS:
+        return "embed"
+    if _EMBED_NAME_RE.search(repo_id.split("/")[-1]):
+        return "embed"
+    return "generate"
+
+
 def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     info = client.model_info(source.repo_id, source.revision)
     revision_sha = info.get("sha") or (source.revision or "main")
@@ -52,6 +74,7 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         artifact_type=artifact,
         params_total=_params_of(info),
         tags=[t for t in info.get("tags", []) if isinstance(t, str)],
+        task=task_of(info, source.repo_id),
         file_count=len(files),
         trust_remote_code_files=sorted(
             name for name, _, _ in files
