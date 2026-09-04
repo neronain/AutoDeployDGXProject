@@ -170,11 +170,12 @@ def test_node_script_follows_the_hub_when_the_checkout_was_edited_or_diverged(tm
 def test_install_builds_a_new_venv_and_swaps_only_on_success():
     """spark-head 2026-09-04: pip ล้มเพราะ PyPI ช้า แต่ --clear ลบ venv เดิมไปแล้ว → node ไม่มี lmds เลย"""
     text = Path(__file__).resolve().parents[1].joinpath("install.sh").read_text(encoding="utf-8")
-    assert 'NEW_VENV="${INSTALL_DIR}/venv.new"' in text
-    assert 'make_venv "$NEW_VENV"' in text
+    # venv ต้องถูกสร้าง *ที่ path จริง* (shebang ฝัง path) — ของเดิมย้ายไป venv.old ก่อน ล้มค่อยย้ายกลับ
+    assert 'NEW_VENV="${INSTALL_DIR}/venv"' in text and 'OLD_VENV="${INSTALL_DIR}/venv.old"' in text
+    assert 'make_venv "$NEW_VENV"' in text and "restore_old_venv" in text
     assert 'if ! "${NEW_VENV}/bin/pip" install --quiet "$REPO_DIR"; then' in text
     assert "รุ่นเดิมยังอยู่และใช้ได้ตามปกติ" in text
-    assert 'mv "$NEW_VENV" "${INSTALL_DIR}/venv"' in text
+    assert "venv.new" not in text.replace("ห้ามสร้างที่ venv.new", "").replace("venv.new/bin/python", "")
     assert 'PIP_RETRIES="${PIP_RETRIES:-8}" PIP_TIMEOUT="${PIP_TIMEOUT:-60}"' in text
     assert 'python3 -m venv --clear "${INSTALL_DIR}/venv"' not in text
     import subprocess

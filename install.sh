@@ -121,13 +121,23 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 # --clear เสมอ: ทางอัปเดตที่เอกสารบอกไว้คือรัน install.sh ซ้ำ ซึ่งเจอ venv เดิมอยู่แล้ว
 # venv เดิมอาจถูกสร้างด้วย python คนละตัว (เช่นเปลี่ยนไปใช้ conda ทีหลัง) แล้ว ensurepip จะล้ม
 # แบบอ่านไม่รู้เรื่อง — สร้างทับให้จบ ปลอดภัยเพราะโฟลเดอร์นี้เป็นของ LMDS ตัวเดียว
-# สร้างลง venv.new ก่อน แล้วค่อยสลับเมื่อติดตั้งสำเร็จ — เดิม `--clear` ทับ venv เดิมทันที ทำให้ pip ที่ล้ม
-# กลางทาง (เคสจริง 2026-09-04: PyPI จากไซต์ Neronain ตอบช้า 10 วิ/คำขอ → build wheel ล้ม) ทิ้ง node
-# ไว้แบบ **ไม่มี lmds เลย** (spark-head) ทั้งที่ของเดิมใช้ได้ดี · ตอนนี้ล้ม = ของเดิมยังอยู่ครบ
-NEW_VENV="${INSTALL_DIR}/venv.new"
-rm -rf "$NEW_VENV"
-make_venv "$NEW_VENV" ||
-  die "สร้าง venv ที่ ${NEW_VENV} ไม่ได้ — ถ้าข้อความข้างบนพูดถึง ensurepip ให้ลง: sudo apt install python3-venv"
+# ย้าย venv เดิมไป venv.old ก่อน แล้วสร้างใหม่ *ที่ path จริง* — ล้มค่อยย้ายกลับ · เดิม `--clear` ทับของเดิมทันที
+# ทำให้ pip ที่ล้มกลางทาง (เคสจริง 2026-09-04: PyPI จากไซต์ Neronain ตอบช้า 10 วิ/คำขอ → build wheel ล้ม) ทิ้ง
+# spark-head ไว้แบบ **ไม่มี lmds เลย** · ห้ามสร้างที่ venv.new แล้ว mv มา: script ใน venv ฝัง path ตอนสร้างไว้ใน
+# shebang (#!…/venv.new/bin/python) ย้ายแล้วทุกคำสั่งพัง "required file not found" (เจอจริงบน hub ทันที)
+OLD_VENV="${INSTALL_DIR}/venv.old"
+NEW_VENV="${INSTALL_DIR}/venv"
+rm -rf "$OLD_VENV"
+[ -d "$NEW_VENV" ] && mv "$NEW_VENV" "$OLD_VENV"
+restore_old_venv() {
+  rm -rf "$NEW_VENV"
+  [ -d "$OLD_VENV" ] && mv "$OLD_VENV" "$NEW_VENV"
+  return 0
+}
+make_venv "$NEW_VENV" || {
+  restore_old_venv
+  die "สร้าง venv ที่ ${NEW_VENV} ไม่ได้ — ถ้าข้อความข้างบนพูดถึง ensurepip ให้ลง: sudo apt install python3-venv (รุ่นเดิมยังอยู่)"
+}
 # เน็ตช้าไม่ควรทำให้ติดตั้งล้ม — pip ค่าเริ่มต้นลอง 5 ครั้ง timeout 15 วิ ซึ่งไม่พอสำหรับไซต์ที่ PyPI ตอบช้า
 export PIP_RETRIES="${PIP_RETRIES:-8}" PIP_TIMEOUT="${PIP_TIMEOUT:-60}"
 "${NEW_VENV}/bin/pip" install --quiet --upgrade pip
@@ -146,9 +156,9 @@ printf '# สร้างโดย install.sh — commit และ checkout ท�
   "$BUILD_COMMIT" "$BUILD_SOURCE" > "${REPO_DIR}/src/lmds/_build.py"
 
 if ! "${NEW_VENV}/bin/pip" install --quiet "$REPO_DIR"; then
-  rm -rf "$NEW_VENV"
-  if [ -x "${INSTALL_DIR}/venv/bin/lmds" ]; then
-    die "ติดตั้งรุ่นใหม่ไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · รุ่นเดิมยังอยู่และใช้ได้ตามปกติ: $(LMDS_NO_BANNER=1 "${INSTALL_DIR}/venv/bin/lmds" version 2>/dev/null | head -1) · ลองใหม่: ./install.sh"
+  restore_old_venv
+  if [ -x "${NEW_VENV}/bin/lmds" ]; then
+    die "ติดตั้งรุ่นใหม่ไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · รุ่นเดิมยังอยู่และใช้ได้ตามปกติ: $(LMDS_NO_BANNER=1 "${NEW_VENV}/bin/lmds" version 2>/dev/null | head -1) · ลองใหม่: ./install.sh"
   fi
   die "ติดตั้งไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · ลองใหม่: PIP_TIMEOUT=120 ./install.sh"
 fi
@@ -168,11 +178,8 @@ else
   echo "ข้ามหน้าเว็บ (ติดตั้ง fastapi/uvicorn ไม่สำเร็จ) — CLI ใช้ได้ตามปกติ"
 fi
 
-# สลับเข้าที่ — ทุกอย่างในรุ่นใหม่พร้อมแล้ว · venv.old ลบทิ้งหลังสลับ (ล้มตรงนี้ยังมีของครบทั้งสองชุด)
-rm -rf "${INSTALL_DIR}/venv.old"
-[ -d "${INSTALL_DIR}/venv" ] && mv "${INSTALL_DIR}/venv" "${INSTALL_DIR}/venv.old"
-mv "$NEW_VENV" "${INSTALL_DIR}/venv"
-rm -rf "${INSTALL_DIR}/venv.old"
+# รุ่นใหม่พร้อมแล้ว — ของเดิมไม่ต้องเก็บ
+rm -rf "$OLD_VENV"
 ln -sf "${INSTALL_DIR}/venv/bin/lmds" "${BIN_DIR}/lmds"
 LMDS="${BIN_DIR}/lmds"
 
