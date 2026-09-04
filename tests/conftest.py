@@ -176,3 +176,19 @@ def _sandbox_holds(isolated_config):
     yield
     leaks = _escaped("ระหว่างเทส")
     assert not leaks, "เทสนี้ย้าย path ไปที่ของจริง:\n  " + "\n  ".join(leaks)
+
+
+@pytest.fixture(autouse=True)
+def _purge_big_tmp_files(request):
+    """ไฟล์ทดสอบขนาด ≥256 MB (โหลดขนาน) ค้างใน /tmp ของ VM ข้าม 3 รอบ pytest จน tmpfs 9.4 GB เต็ม 100%
+    (2026-09-04 — เทสอื่นล้มด้วย "ดิสก์เหลือ 66 MB") · ลบไฟล์ >64 MB ใต้ tmp_path ทันทีที่เทสจบ"""
+    yield
+    tmp = request.node.funcargs.get("tmp_path") if hasattr(request.node, "funcargs") else None
+    if tmp is None:
+        return
+    try:
+        for f in tmp.rglob("*"):
+            if f.is_file() and not f.is_symlink() and f.stat().st_size > 64 * 1024 * 1024:
+                f.unlink()
+    except OSError:
+        pass
