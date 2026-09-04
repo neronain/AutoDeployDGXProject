@@ -211,10 +211,14 @@ def test_start_builds_llama_cpp_itself_when_the_binary_is_missing(tmp_path):
     assert (tmp_path / "run" / "runtime.lock").read_text().strip() == "deadbeef"
     assert (tmp_path / "run" / "server.pid").is_file() and "started: 10.0.0.9" in done.stdout
 
-    # ── API key ต้องไปทาง env ไม่ใช่ argv (ps อ่าน argv ได้ทั้งเครื่อง) ──
+    # ── API key ไปทางไฟล์ 0600 + --api-key-file ไม่ใช่ argv และ *ไม่ใช่* env LLAMA_ARG_API_KEY
+    # (build จริง b10799 ไม่มี env ตัวนั้น — ตั้งแล้วเซิร์ฟเวอร์รันแบบไม่มี auth · พิสูจน์บน dgx-spark03 2026-09-04)
     argv_lines = [l for l in log.splitlines() if l.startswith("llama-server argv:") and "--version" not in l]
-    assert argv_lines and "sekrit-123" not in argv_lines[-1] and "--api-key" not in argv_lines[-1]
-    assert "llama-server env: LLAMA_ARG_API_KEY=sekrit-123" in log
+    assert argv_lines and "sekrit-123" not in argv_lines[-1] and "--api-key " not in argv_lines[-1]
+    assert "--api-key-file" in argv_lines[-1]
+    key_file = argv_lines[-1].split("--api-key-file ", 1)[1].split()[0]
+    assert Path(key_file).read_text(encoding="utf-8").strip() == "sekrit-123"
+    assert oct(Path(key_file).stat().st_mode & 0o777) == "0o600"
 
 
 def _path_without(tmp_path: Path, hidden: set[str]) -> str:

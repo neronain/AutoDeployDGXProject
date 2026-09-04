@@ -297,6 +297,11 @@ verify-files ยังเป็นด่านสุดท้าย (`tests/test
 - ยืนยันว่าถูกอยู่แล้ว (เทสคุมไว้): ทุกคำสั่งในบล็อก COMMANDS ของ usage ถูก dispatch จริงในทั้ง 6 รูปแบบ controller ·
   resume รายส่วนของ fetch_parallel · `--jinja`/`bundle.args` ถึง argv · เอกสาร USAGE §2/§3.5/§4.9/§8 + INSTALL §4.3
 
+- **[สูง] แก้ทับงาน audit: llama.cpp API key ต้องเป็น `--api-key-file` ไม่ใช่ env `LLAMA_ARG_API_KEY`** — ทดสอบกับ
+  llama-server จริง (b10799, dgx-spark03): env ตัวนั้น**ไม่มี** → ตั้ง API_KEY แล้วเซิร์ฟเวอร์รันแบบไม่มี auth เงียบ ๆ
+  (ไม่ใส่ key ก็ 200) · `--api-key-file` (ไฟล์ 0600 ใน RUN_DIR, mount ro ใน docker) ให้ 401/401/200 ถูกต้องและ key
+  ไม่อยู่บน argv · เทสตรวจไฟล์+สิทธิ์แทนการเชื่อ env · บทเรียน: การเปลี่ยนเรื่อง auth ต้องรันกับ binary จริงก่อนเสมอ
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

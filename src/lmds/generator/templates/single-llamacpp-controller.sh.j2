@@ -62,6 +62,11 @@ CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
 
 MODEL_DIR="${MODEL_DIR:-${HOME}/models/{{ slug }}}"
 RUN_DIR="${RUN_DIR:-${HOME}/.lmds/run/{{ slug }}}"
+API_KEY_FILE="${RUN_DIR}/api-key"   # เขียนตอน start เมื่อมี API_KEY · ลบตอน stop
+_write_api_key_file() {
+  mkdir -p "$RUN_DIR"
+  ( umask 077; printf '%s\n' "$API_KEY" > "$API_KEY_FILE" )
+}
 PID_FILE="${RUN_DIR}/server.pid"
 LOG_FILE="${RUN_DIR}/server.log"
 RUNTIME_LOCK="${RUN_DIR}/runtime.lock"
@@ -720,7 +725,7 @@ server_args() {
     --port "$API_PORT"
   )
   # API key ไม่ไปบน argv: `ps` ให้ทุก user บนเครื่องอ่าน argv ของกันได้ — หลักเดียวกับ HF_TOKEN ของ curl
-  # (-K -) และ VLLM_API_KEY ฝั่ง vLLM · llama-server อ่าน LLAMA_ARG_API_KEY จาก environment แทน --api-key
+  # (-K -) และ VLLM_API_KEY ฝั่ง vLLM · llama-server อ่าน key จาก --api-key-file (ไฟล์ 0600) แทน argv · ไม่ใช่ env LLAMA_ARG_API_KEY ซึ่ง build จริงไม่มี — ดู environment แทน --api-key
   # ได้ (ทุก flag ของ server มีคู่ LLAMA_ARG_* ตั้งแต่ b3700) → start() เป็นคน export ให้ ตรงนี้จึงไม่ใส่
   # (เดิม `--api-key "$API_KEY"` อยู่ตรงนี้ · รีวิว 2026-09-04)
 {% if is_embed %}
@@ -840,8 +845,10 @@ start() {
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="$MODEL_DIR"
     server_args
-    # key ผ่าน env ไม่ใช่ argv — ดูเหตุผลใน server_args
-    if [[ -n "$API_KEY" ]]; then export LLAMA_ARG_API_KEY="$API_KEY"; fi
+    # key ผ่านไฟล์ 0600 ไม่ใช่ argv (ps อ่าน argv ได้ทั้งเครื่อง) — และ **ไม่ใช่ env LLAMA_ARG_API_KEY**:
+    # ทดสอบกับ build จริง b10799 บน dgx-spark03 (2026-09-04) env ตัวนั้นไม่มี → เซิร์ฟเวอร์รันแบบไม่มี auth
+    # เงียบ ๆ (ไม่ใส่ key ก็ได้ 200) · มีแต่ --api-key-file / LLAMA_ARG_API_KEY_FILE ซึ่งพิสูจน์แล้ว 401/200 ถูก
+    if [[ -n "$API_KEY" ]]; then _write_api_key_file; SERVER_ARGS+=(--api-key-file "$API_KEY_FILE"); fi
     nohup "$LLAMA_SERVER" "${SERVER_ARGS[@]}" >> "$LOG_FILE" 2>&1 &
     echo "$!" > "$PID_FILE"
   else
@@ -860,11 +867,12 @@ start() {
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="/models"
     server_args
-    # `-e LLAMA_ARG_API_KEY` เฉย ๆ (ไม่มี =ค่า) = docker หยิบค่าจาก env ของเชลล์นี้ — ไม่โผล่ใน argv ของ docker run
-    if [[ -n "$API_KEY" ]]; then export LLAMA_ARG_API_KEY="$API_KEY"; fi
+    # key เป็นไฟล์ 0600 mount แบบ ro เข้า container แล้วชี้ด้วย --api-key-file — ไม่อยู่บน argv ของ docker run
+    # (env LLAMA_ARG_API_KEY ไม่มีใน llama-server จริง — ดูหมายเหตุในโหมด native)
+    if [[ -n "$API_KEY" ]]; then _write_api_key_file; SERVER_ARGS+=(--api-key-file /run/lmds-api-key); fi
     docker run -d --name "$CONTAINER_NAME" \
       --network host --gpus all \
-      ${API_KEY:+-e LLAMA_ARG_API_KEY} \
+      ${API_KEY:+-v} ${API_KEY:+"${API_KEY_FILE}:/run/lmds-api-key:ro"} \
       -v "${MODEL_DIR}:/models:ro" \
       "$LLAMACPP_IMAGE" \
       "${SERVER_ARGS[@]}"
@@ -922,6 +930,7 @@ pid_alive() {
 }
 
 stop() {
+  rm -f "$API_KEY_FILE" 2>/dev/null || true
   # รายงานตามความจริง — เดิมพิมพ์ "stopped" เสมอแม้ไม่มีอะไรรันอยู่เลย
   # ซึ่งอันตรายเงียบ ๆ: ถ้า PID/ชื่อ container เพี้ยน ผู้ใช้จะเชื่อว่าหยุดแล้วทั้งที่ยังรันอยู่
   local stopped=0
@@ -1358,7 +1367,7 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
 {% endif %}{% endif %}
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
-  Set one with the API_KEY environment variable — it reaches llama-server as the LLAMA_ARG_API_KEY
+  Set one with the API_KEY environment variable — the controller writes it to a 0600 file and passes --api-key-file (never on argv)
   environment variable (never on the command line, so 'ps' cannot show it):
 
     API_KEY=my-secret-token $0 restart          # start the server with authentication on
