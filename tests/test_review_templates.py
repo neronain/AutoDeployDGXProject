@@ -505,3 +505,24 @@ def test_sglang_drops_a_vllm_only_dtype_loudly(tmp_path):
     # ตั้งเองได้ผ่าน env เหมือน knob อื่น
     forced = _sglang_dry_run(bundle, tmp_path, env={"KV_CACHE_DTYPE": "fp8_e5m2"}).stdout.splitlines()
     assert forced[forced.index("--kv-cache-dtype") + 1] == "fp8_e5m2"
+
+
+def test_stacked_start_checks_the_architecture_before_launching_workers(tmp_path):
+    """Qwen3.8-Flash-Next stacked 2026-09-05: ทำครบทุกขั้นแล้ว head ตายที่ config (qwen4_exp) — ต้องรู้ก่อนปล่อย worker"""
+    from lmds.brain import build_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.generator import render_bundle
+    from lmds.fit.analyzer import GIB
+    from lmds.inspector.report import ArtifactType, KvDims, ModelReport
+
+    report = ModelReport(repo_id="acme/big-moe", revision_sha="sha", artifact_type=ArtifactType.SAFETENSORS,
+                         weight_bytes=int(170 * GIB), context_length=262144, architecture="Qwen4ExpForCausalLM",
+                         kv_dims=KvDims(layers=48, kv_heads=4, head_dim=128), shard_count=95)
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    plan = build_plan(report, fit, provider=None)
+    bundle = render_bundle(plan, report, fit, tmp_path)
+    text = next(bundle.directory.glob("*-stacked.sh")).read_text(encoding="utf-8")
+    assert "check_architecture() {" in text
+    start = text.index("start() {")
+    assert text.index("  check_architecture\n", start) < text.index("Starting worker rank", start)
+    assert "lmds set acme-big-moe --image <image>" in text or "lmds set " in text

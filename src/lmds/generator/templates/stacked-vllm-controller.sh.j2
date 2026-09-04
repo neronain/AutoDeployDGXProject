@@ -1215,6 +1215,38 @@ _head_port_in_use() {
   grep -Eq "[:.]${API_PORT}([[:space:]]|$)" <<< "$listening"
 }
 
+# image รู้จักสถาปัตยกรรมของโมเดลไหม — ถามก่อนปล่อย worker/HCA/NCCL ทั้งคลัสเตอร์
+# เคสจริง 2026-09-05 (Qwen3.8-Flash-Next-NVFP4 stacked บน spark-head+worker): ทำครบทุกขั้น 2.5 ชม. แล้ว head
+# ตายตอนอ่าน config "model type qwen4_exp … Transformers does not recognize" — single controller มีด่านนี้
+# มาตั้งแต่ต้น แต่ stacked ไม่มี · ถามด้วย image ตัวเดียวกับที่จะ start (VLLM_IMAGE/bundle.env)
+check_architecture() {
+  local snapshot config model_type verdict
+  snapshot="$(_snapshot_path 2>/dev/null || true)"
+  config="${snapshot}/config.json"
+  [[ -n "$snapshot" && -f "$config" ]] || return 0
+  model_type="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('model_type',''))" "$config" 2>/dev/null || true)"
+  [[ -n "$model_type" ]] || return 0
+  verdict="$(docker run --rm --entrypoint python3 "$VLLM_IMAGE" -c "
+import sys
+try:
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+    import transformers
+except Exception:
+    sys.exit(0)
+print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformers.__version__)
+" "$model_type" 2>/dev/null | tail -1 || true)"
+  case "$verdict" in
+    UNKNOWN*)
+      echo "ERROR: image นี้ไม่รู้จักสถาปัตยกรรม '${model_type}' (transformers ${verdict#UNKNOWN }) — ยังไม่ปล่อย worker" >&2
+      echo "  โมเดลใหม่กว่ารันไทม์ — ต้องใช้ image ที่ใหม่กว่า (เช่น vllm/vllm-openai:nightly) ทั้ง head และ worker:" >&2
+      echo "    lmds set {{ slug }} --image <image>   แล้ว   $0 prepare-runtime   แล้ว   $0 start" >&2
+      echo "  เช็คก่อนได้ว่าตัวไหนรู้จัก:  docker run --rm --entrypoint python3 <image> -c \\" >&2
+      echo "    \"from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m; print('${model_type}' in m)\"" >&2
+      exit 1 ;;
+    KNOWN*) echo "architecture: ${model_type} — รองรับ (transformers ${verdict#KNOWN })" ;;
+  esac
+}
+
 start() {
   ensure_image "${VLLM_IMAGE}"
   _require_non_root
@@ -1246,6 +1278,7 @@ start() {
   done
 
   verify_files
+  check_architecture
   _ensure_local_owned_dir "$FLASHINFER_CACHE"
   _ensure_local_owned_dir "$head_fi"
   _ensure_local_owned_dir "$VLLM_CACHE"
