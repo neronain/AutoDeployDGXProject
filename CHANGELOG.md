@@ -444,6 +444,15 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   API key ผ่าน env ไม่ขึ้น argv · worker ตัดสินเลย์เอาต์ HF cache เองตอนรัน · ทั้ง head และ worker ไม่มี image ของ DeepSeek
   (`ghcr.io/anemll/dspark-vllm-gx10`) และ worker ไม่มี `vllm/vllm-openai:cu130-nightly` ของ Qwen3-Coder-Next → ต้อง
   `prepare-runtime` ก่อน start (ตอนนี้บอกชัดว่าเครื่องไหนขาด) · ยังไม่ได้ตรวจ: hf_xet/Xet ในสอง image ที่ตรึงไว้ (ไม่ได้ pull)
+- **stacked ไม่มีชุดทดสอบ tool/reasoning/bench** — `./<slug>-stacked.sh test-tools` และ `bench` พิมพ์ usage เฉย ๆ ทั้งที่ปุ่มบน
+  หน้าเว็บกับ allowlist ของ hub มีชื่อพวกนี้อยู่แล้ว (เจอจริง 2026-09-04) · ย้าย `test-reasoning` / `test-tools [both|auto|required]` /
+  `parsers` มาจาก controller เดี่ยว และเพิ่ม `test-vision` (เฉพาะ plan multimodal — vLLM ฝัง projector ใน weight ไม่มีไฟล์แยก) /
+  `bench [RUNS] [TOKENS]` (ttft + tok/s ผ่าน stream) / `stress [REQUESTS] [CONC]` (p50/p95 + จำนวนที่ล้ม) ให้ทั้ง stacked และ single
+  vLLM — `bench`/`stress` เคยมีแต่ชื่อใน allowlist ไม่มีตัวจริงใน template ไหนเลย · ชุดนี้คุยกับ head ที่ 127.0.0.1 เท่านั้น จึงไม่ต้องมี
+  cluster.env (`_require_cluster_config` ยังกันเฉพาะคำสั่งที่แตะ worker) · `parsers` อ่าน registry จาก `vllm.tool_parsers` ก่อน (0.28 ย้าย
+  ออกจาก `vllm.entrypoints.openai.tool_parsers`) แล้วถ้าอ่านจาก module ไม่ได้เลยก็ grep choices จาก `vllm serve --help` แทนการตอบว่า
+  "อ่านไม่ได้" · เทส `tests/test_stacked_test_commands.py` รัน controller จริงกับเซิร์ฟเวอร์ HTTP ปลอม และยืนยันว่า usage กับ dispatch
+  table ตรงกันทั้งสอง template (usage ของ single เคยลืม `info`)
 
 ## 0.5.2 — 2026-09-04
 

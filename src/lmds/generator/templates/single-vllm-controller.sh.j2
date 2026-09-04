@@ -923,8 +923,12 @@ list_parsers() {
   ensure_image "${VLLM_IMAGE}"
   # ถามชื่อจาก engine เอง — ชื่อไฟล์ในซอร์สไม่ตรงกับชื่อที่ลงทะเบียน
   # (เช่นไฟล์ qwen3xml.py แต่ชื่อจริงคือ qwen3_xml) และรายชื่อเปลี่ยนไปตามเวอร์ชัน
+  # vLLM 0.28 ย้าย registry จาก vllm.entrypoints.openai.tool_parsers ไป vllm.tool_parsers —
+  # ลองที่ใหม่ก่อน ที่เก่าตาม · อ่านจาก module ไม่ได้เลย (ย้ายอีกรอบ/เปลี่ยนชื่อ class) ก็ยัง
+  # เหลือ `vllm serve --help` ที่ argparse พิมพ์ choices ให้ — ดีกว่าตอบว่า "อ่านไม่ได้" แล้วให้
+  # คนไปเปิด --help เอง ซึ่งเจอจริงกับ image nightly cu130 (0.28)
   docker run --rm --entrypoint python3 "${VLLM_IMAGE}" -c '
-import sys
+import os, re, subprocess, sys
 
 def registry(module, cls_name):
     m = __import__(module, fromlist=["*"])
@@ -937,7 +941,36 @@ def registry(module, cls_name):
                 found |= set(value)
     return sorted(found)
 
-def report(label, candidates):
+HELP = None
+
+def help_text():
+    global HELP
+    if HELP is None:
+        HELP = ""
+        env = dict(os.environ, COLUMNS="200")
+        for argv in (["vllm", "serve", "--help"],
+                     [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", "--help"]):
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=180, env=env)
+            except Exception:
+                continue
+            if proc.stdout.strip():
+                HELP = proc.stdout
+                break
+    return HELP
+
+def from_help(flag):
+    # argparse พิมพ์ choices เป็น  --flag {a,b,c}  ติดกับ flag หรือขึ้นบรรทัดถัดไปในย่อหน้าเดียวกัน
+    text = help_text()
+    m = re.search(re.escape(flag) + r"\s+\{([^}]+)\}", text)
+    if not m:
+        para = re.search(re.escape(flag) + r"[^\n]*\n((?:[ \t]+[^\n]*\n)*)", text)
+        m = re.search(r"\{([^}]+)\}", para.group(0)) if para else None
+    if not m:
+        return []
+    return sorted(x.strip() for x in m.group(1).split(",") if x.strip())
+
+def report(label, flag, candidates):
     for module, cls_name in candidates:
         try:
             names = registry(module, cls_name)
@@ -947,14 +980,19 @@ def report(label, candidates):
             print(f"{label}:")
             print("  " + " ".join(names))
             return
+    names = from_help(flag)
+    if names:
+        print(f"{label}:  (จาก vllm serve --help)")
+        print("  " + " ".join(names))
+        return
     print(f"{label}: อ่านจาก engine ไม่ได้ — ดูจาก --help ของ engine แทน")
 
-report("tool parsers  (--tool-parser)", [
+report("tool parsers  (--tool-parser)", "--tool-call-parser", [
     ("vllm.tool_parsers", "ToolParserManager"),
     ("vllm.entrypoints.openai.tool_parsers", "ToolParserManager"),
     ("sglang.srt.function_call.function_call_parser", "FunctionCallParser"),
 ])
-report("reasoning parsers  (--reasoning-parser)", [
+report("reasoning parsers  (--reasoning-parser)", "--reasoning-parser", [
     ("vllm.reasoning", "ReasoningParserManager"),
     ("sglang.srt.reasoning_parser", "ReasoningParser"),
 ])
@@ -1056,6 +1094,218 @@ else:
 sys.exit(1)
 PYEOF
 }
+{% if not is_embed %}{% if plan.multimodal.modalities %}
+# ─────────────────────────── test-vision ───────────────────────────
+# ทดสอบว่า vision ใช้ได้จริง ไม่ใช่แค่ plan บอกว่า multimodal — สร้าง PNG สีแดงล้วนแล้วถามโมเดล
+# ว่าเห็นสีอะไร · vLLM ฝัง projector มากับ weight (ไม่มีไฟล์แยกแบบ llama.cpp) พังได้ที่ image
+# รุ่นเก่าไม่รู้จักสถาปัตยกรรม หรือ --limit-mm-per-prompt ถูกปิด · python3 stdlib ล้วน ไม่ต้องต่อเน็ต
+test_vision() {
+  assert_our_server
+  need curl
+  command -v python3 >/dev/null 2>&1 || die "ต้องมี python3 เพื่อสร้างภาพทดสอบ"
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
+import base64, json, struct, sys, urllib.error, urllib.request, zlib
+
+port, model, api_key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+def png(width, height, rgb):
+    raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+data_uri = "data:image/png;base64," + base64.b64encode(png(64, 64, (220, 20, 20))).decode()
+payload = json.dumps({
+    "model": model, "max_tokens": 512,
+    "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "What single colour fills this image? Answer in one word."},
+        {"type": "image_url", "image_url": {"url": data_uri}}]}],
+}).encode()
+headers = {"Content-Type": "application/json"}
+if api_key:
+    headers["Authorization"] = "Bearer " + api_key
+
+try:
+    with urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers),
+            timeout=300) as response:
+        body = json.load(response)
+except urllib.error.HTTPError as exc:
+    detail = exc.read().decode()[:300]
+    print(f"FAIL: HTTP {exc.code} — {detail}")
+    print("ถ้าขึ้นว่าไม่รองรับ image แปลว่า image นี้ไม่ได้โหลด projector ของโมเดล (ตรวจด้วย: logs 200)")
+    sys.exit(1)
+
+message = body["choices"][0]["message"]
+answer = (message.get("content") or "").strip()
+if not answer and (message.get("reasoning_content") or message.get("reasoning") or "").strip():
+    print("WARN: โมเดลตอบแต่ยังคิดไม่จบใน 512 tokens")
+    sys.exit(0)
+if "red" in answer.lower() or "แดง" in answer:
+    print(f"PASS: โมเดลเห็นภาพและตอบถูก — {answer[:120]}")
+else:
+    print(f"FAIL: ตอบว่า '{answer[:120]}' (ภาพเป็นสีแดงล้วน)")
+    sys.exit(1)
+PYEOF
+}
+{% endif %}
+
+# ─────────────────────────── bench ───────────────────────────
+# วัดจากฝั่ง client ผ่าน API จริง (stream) — ตัวเลขที่คนใช้จะเจอ ไม่ใช่ตัวเลขภายใน engine ·
+# ttft = รอ token แรก (prefill + คิว) · decode = ความเร็วหลังจากนั้น · ใช้ usage จาก
+# stream_options ถ้า engine ให้มา ไม่ให้ก็นับ chunk แทน · python3 stdlib ล้วน
+bench() {
+  assert_our_server
+  need curl
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" "${1:-3}" "${2:-256}" <<'PYEOF'
+import json, statistics, sys, time, urllib.error, urllib.request
+
+port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+runs, max_tokens = int(sys.argv[4]), int(sys.argv[5])
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
+prompt = ("Write a detailed, multi-paragraph explanation of how a transformer language model "
+          "generates text one token at a time.")
+
+
+def one_run():
+    payload = json.dumps({
+        "model": model, "max_tokens": max_tokens, "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True, "stream_options": {"include_usage": True},
+    }).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers)
+    started = time.monotonic()
+    first = None
+    chunks = 0
+    completion = None
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            body = line[5:].strip()
+            if body == "[DONE]":
+                break
+            try:
+                event = json.loads(body)
+            except ValueError:
+                continue
+            usage = event.get("usage") or {}
+            if usage.get("completion_tokens") is not None:
+                completion = usage["completion_tokens"]
+            for choice in event.get("choices") or []:
+                delta = choice.get("delta") or {}
+                if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
+                    chunks += 1
+                    if first is None:
+                        first = time.monotonic() - started
+    total = time.monotonic() - started
+    return first, total, (completion if completion is not None else chunks)
+
+
+rows = []
+for i in range(1, runs + 1):
+    try:
+        ttft, total, tokens = one_run()
+    except urllib.error.HTTPError as exc:
+        print(f"bench: FAIL — HTTP {exc.code}: {exc.read()[:300].decode('utf-8', 'replace')}")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        print(f"bench: FAIL — {exc}")
+        sys.exit(1)
+    if not tokens:
+        print(f"bench: FAIL — รอบ {i} ไม่ได้ token กลับมาเลย · ดู log: logs 200")
+        sys.exit(1)
+    ttft = total if ttft is None else ttft
+    overall = tokens / total if total > 0 else 0.0
+    decode = (tokens - 1) / (total - ttft) if tokens > 1 and total > ttft else overall
+    rows.append((ttft, overall, decode))
+    print(f"  run {i}: ttft {ttft:.2f}s · {tokens} tokens in {total:.2f}s → {overall:.1f} tok/s (decode {decode:.1f} tok/s)")
+
+print()
+print(f"bench: median ttft {statistics.median(r[0] for r in rows):.2f}s · "
+      f"{statistics.median(r[1] for r in rows):.1f} tok/s overall · "
+      f"decode {statistics.median(r[2] for r in rows):.1f} tok/s  ({runs} runs × {max_tokens} tokens)")
+PYEOF
+}
+
+# ─────────────────────────── stress ───────────────────────────
+# ยิงพร้อมกันหลายสาย — max-num-seqs ที่ตั้งไว้รับได้จริงไหม เห็นจาก p95 กับจำนวนที่ล้ม
+# (เซิร์ฟเวอร์ที่รับทีละคน: สายที่เหลือรอจน timeout — ดูเหมือน "ช้า" ทั้งที่จริงคือคิว)
+stress() {
+  assert_our_server
+  need curl
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" "${1:-16}" "${2:-4}" <<'PYEOF'
+import json, statistics, sys, threading, time, urllib.error, urllib.request
+
+port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+total, workers = int(sys.argv[4]), max(1, int(sys.argv[5]))
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
+payload = json.dumps({
+    "model": model, "max_tokens": 128, "temperature": 0,
+    "messages": [{"role": "user", "content": "List ten animals and one fact about each."}],
+}).encode()
+
+lock = threading.Lock()
+results = []          # (latency, completion_tokens) ของสายที่สำเร็จ
+errors = []
+queue = list(range(total))
+
+
+def worker():
+    while True:
+        with lock:
+            if not queue:
+                return
+            queue.pop()
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers)
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                body = json.load(resp)
+            tokens = (body.get("usage") or {}).get("completion_tokens") or 0
+            with lock:
+                results.append((time.monotonic() - started, tokens))
+        except urllib.error.HTTPError as exc:
+            with lock:
+                errors.append(f"HTTP {exc.code}: {exc.read()[:120].decode('utf-8', 'replace')}")
+        except Exception as exc:  # noqa: BLE001
+            with lock:
+                errors.append(str(exc)[:160])
+
+
+started = time.monotonic()
+threads = [threading.Thread(target=worker, daemon=True) for _ in range(workers)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+wall = time.monotonic() - started or 1e-9
+
+print(f"stress: {total} requests · {workers} concurrent · {wall:.1f}s wall")
+if results:
+    lat = sorted(r[0] for r in results)
+    p95 = lat[min(len(lat) - 1, int(round(0.95 * (len(lat) - 1))))]
+    tokens = sum(r[1] for r in results)
+    print(f"  ok {len(results)}/{total} · latency p50 {statistics.median(lat):.2f}s · p95 {p95:.2f}s · max {lat[-1]:.2f}s")
+    print(f"  {tokens} completion tokens → {tokens / wall:.1f} tok/s aggregate · {len(results) / wall:.2f} req/s")
+if errors:
+    print(f"  FAIL {len(errors)}/{total}:")
+    for line in sorted(set(errors))[:5]:
+        print("    " + line)
+    sys.exit(1)
+print("stress: PASS — ทุกสายได้คำตอบ")
+PYEOF
+}
+{% endif %}
+
 usage() {
   cat <<EOF
 {{ slug }} — vLLM controller  (model: ${MODEL_ID})
@@ -1076,11 +1326,15 @@ COMMANDS
   wait-health       Keep waiting for /health (use if start timed out but the model is still loading)
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
+  info              Model / port / running-or-not summary (also printed by start)
 {% if is_embed %}  test-embed        Embed 3 sentences via /v1/embeddings; the TH↔EN same-meaning pair must beat unrelated text
 {% else %}  test-text         Send one chat completion request to verify the model answers
   test-reasoning    ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
   test-tools [both|auto|required]  ตรวจว่า --tool-parser แปลงเป็น tool_calls ได้จริง
                     ค่าตั้งต้น both = ทดสอบ auto ก่อน ซึ่งเป็นโหมดที่ agent ใช้จริง
+{% if plan.multimodal.modalities %}  test-vision       ส่งภาพ PNG สีแดงล้วนที่สร้างเอง แล้วเช็คว่าโมเดลเห็นจริง
+{% endif %}  bench [RUNS] [TOKENS]       วัด ttft / tok/s ผ่าน API จริง (ค่าตั้งต้น 3 รอบ × 256 tokens)
+  stress [REQUESTS] [CONC]    ยิงพร้อมกันหลายสาย ดู p50/p95 และจำนวนที่ล้ม (ค่าตั้งต้น 16 × 4)
 {% endif %}  parsers           สิ่งที่ engine รู้จัก: ชื่อ --tool-parser และ --reasoning-parser ที่ใส่ได้จริง
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
@@ -1198,9 +1452,12 @@ case "${1:-help}" in
   status)       status ;;
   logs)         logs "${2:-300}" ;;
 {% if is_embed %}  test-embed)      test_embed ;;
-  test-text|test-tools|test-reasoning) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+  test-text|test-tools|test-reasoning|test-vision|bench|stress) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
 {% else %}  test-reasoning)  test_reasoning ;;
   test-tools)      test_tools "${2:-both}" ;;
+{% if plan.multimodal.modalities %}  test-vision)     test_vision ;;
+{% endif %}  bench)           bench "${2:-3}" "${3:-256}" ;;
+  stress)          stress "${2:-16}" "${3:-4}" ;;
 {% endif %}  parsers)         list_parsers ;;
   client-config) client_config ;;
   info|banner) info ;;
