@@ -25,8 +25,8 @@ def test_node_suggest_reads_the_cached_inventory_not_ssh():
     d = r.json()
     assert d["values"]["tool_parser"] == "qwen3_xml"
     assert d["values"]["reasoning_parser"] == "qwen3"
-    assert "marlin" in d["values"]["engine_env"]
-    assert d["values"]["image"] == "avarok/dgx-vllm-nvfp4-kernel:latest"
+    assert "engine_env" not in d["values"] and "image" not in d["values"]   # แนะนำเป็น note เท่านั้น
+    assert any("marlin" in n for n in d["notes"])
     assert set(d["sources"]) == set(d["values"])
 
 

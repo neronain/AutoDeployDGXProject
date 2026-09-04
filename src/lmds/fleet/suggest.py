@@ -44,9 +44,14 @@ def suggest_settings(model_id: str, engine: str, *, architecture: str = "",
     put("tool_parser", choice.tool, f"กฎตระกูล: {choice.why}")
     put("reasoning_parser", choice.reasoning, f"กฎตระกูล: {choice.why}")
 
+    # NVFP4 บน SM121: image ที่มี FP4 kernel เร็วกว่าจริง แต่**ไม่ใส่เป็นค่าให้** — image community อาจไม่รู้จัก
+    # สถาปัตยกรรมใหม่ (เคสจริง 2026-09-04: avarok/dgx-vllm-nvfp4-kernel ไม่มี qwen3_5_moe → start ล้มทั้งที่
+    # image เดิมของ bundle รันได้) · บอกเป็นหมายเหตุให้คนตัดสินใจเอง เฉพาะสูตรที่รันผ่านจริงเท่านั้นที่ใส่ image ให้
     hint = nvfp4_on_sm121(model_id, quantization, engine, memory_model)
-    put("image", hint.image, hint.why)
-    put("engine_env", hint.engine_env, hint.why)
+    if hint.image or hint.engine_env:
+        notes.append(
+            f"{hint.why} — ถ้าต้องการลอง: image {hint.image} · engine env {hint.engine_env} "
+            "(ไม่ใส่ให้อัตโนมัติ เพราะ image นั้นอาจไม่รู้จักโมเดลรุ่นใหม่)")
 
     # llama.cpp + projector: --image-min-tokens 1024 ใช้กับ Qwen-VL เท่านั้น — ตระกูลอื่นเกินเพดาน
     # ของ projector แล้ว start พัง (dgx-veerasiam/gemma-4-12b 2026-09-04) · auto = ค่าจากไฟล์

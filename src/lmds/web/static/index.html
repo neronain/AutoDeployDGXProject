@@ -719,6 +719,12 @@ pre {
 #lmds-credit a { color: inherit; }
 #lmds-credit .grow { flex: 1; }
 
+/* advanced settings — พับไว้ก่อน */
+details.adv > summary { cursor: pointer; font-size: calc(12px * var(--fs)); padding: 4px 0; list-style: none; }
+details.adv > summary::before { content: "▸ "; }
+details.adv[open] > summary::before { content: "▾ "; }
+details.adv[open] { border-top: 1px dashed var(--line); padding-top: 6px; margin-top: 4px; }
+
 /* ── 0.6 app shell: rail ซ้าย · เนื้อหาตรงกลางสลับตาม route ─────────────────────
    การ์ดเครื่อง/แผงเดิมทั้งหมดยังอยู่ที่เดิม (nodeRows, handler, เทสไม่เปลี่ยน) — shell แค่ตัดสิน
    ว่า view ไหนโชว์ และในหน้าเครื่องโชว์การ์ดของเครื่องไหน */
@@ -3235,6 +3241,11 @@ function nodeModelsMarkup(name, data) {
             <span class="dim">ชื่อที่ client เรียกใช้ (field "model" ใน request)
               ${m.default_served_name ? `· ชื่อเดิมของ bundle: <code>${esc(m.default_served_name)}</code>` : ""}</span>
           </div>
+          <!-- ค่าขั้นสูงซ่อนไว้ก่อน — ผู้ใช้ 2026-09-04: "tool, parser, engine env, extra, image ไม่ได้ช่วยอะไร
+               ใช้ค่าที่มาตอนแรกแล้วปรับแค่ port/context ก็พอ" · ค่าพวกนี้มาจาก bundle ถูกอยู่แล้ว
+               เปิดเฉพาะตอนที่รู้ว่าจะแก้อะไร -->
+          <details class="adv" style="width:100%">
+            <summary class="dim">Advanced — parsers · engine env · extra args · image (leave as the bundle set them)</summary>
           ${m.engine === "vllm" ? `<div class="field">
             <label>tool parser</label>
             <input class="n-tool-parser" value="${esc(o.tool_parser ?? "")}" placeholder="e.g. qwen3_xml" style="flex:none;width:150px"
@@ -3269,18 +3280,21 @@ function nodeModelsMarkup(name, data) {
                    title="ใช้ตอน image ของ bundle ใช้ไม่ได้ (tag ผิด/ถูกถอน) — ไม่ต้อง deploy ใหม่">
             <span class="dim">ตรวจกับ registry ก่อนเสมอ · รับเฉพาะ repo ที่อยู่ในรายการที่ยอมรับ</span>
           </div>
+            <div class="field" style="width:100%">
+            <button data-nact="suggest-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="ระบบเติม parser / image / env ให้ตามโมเดล จากสูตรที่รันผ่านจริงหรือกฎตระกูล — แค่เติมให้ดู ยังไม่บันทึกจนกด บันทึกค่า">Fill from model (parsers)</button>
+            <span class="n-suggest-note dim" style="width:100%"></span>
+            </div>
+          </details>
           <!-- ปุ่มสองตัวนี้เคยหายไปทั้งที่ handler กับ endpoint พร้อมมาตั้งแต่ dcf58be
                ผลคือช่องข้างบนกรอกได้แต่ไม่มีอะไรให้กด · ค่าไปถึงปลายทางเฉพาะตอนกด start
                จากหน้านี้เท่านั้น พอ restart/reboot/autostart ก็หายหมด
                ลูกค้ารายงานว่า "เปลี่ยน ID ไม่ได้ เปลี่ยน port ไม่ได้" ซึ่งถูกต้องตามที่เห็น -->
           <div class="field" style="width:100%">
             <button data-nact="save-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                    title="เขียนค่าข้างบนลง bundle.env บนเครื่องปลายทาง — มีผลกับ start ทุกทาง รวม autostart ตอน reboot">บันทึกค่า</button>
+                    title="เขียนค่าข้างบนลง bundle.env บนเครื่องปลายทาง — มีผลกับ start ทุกทาง รวม autostart ตอน reboot">Save</button>
             <button data-nact="clear-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                    title="ลบค่าที่บันทึกไว้ กลับไปใช้ค่าของ bundle">ล้างค่า</button>
-            <button data-nact="suggest-settings" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
-                    title="ระบบเติม parser / image / env ให้ตามโมเดล จากสูตรที่รันผ่านจริงหรือกฎตระกูล — แค่เติมให้ดู ยังไม่บันทึกจนกด บันทึกค่า">เติมให้ตามโมเดล</button>
-            <span class="n-suggest-note dim" style="width:100%"></span>
+                    title="ลบค่าที่บันทึกไว้ กลับไปใช้ค่าของ bundle">Reset to bundle</button>
             <span class="dim">ไม่กดบันทึก = ค่าถูกใช้เฉพาะตอนกด start จากหน้านี้ครั้งนี้เท่านั้น
               · API key ไม่ถูกเขียนลง bundle ไม่ว่ากรณีใด</span>
           </div>

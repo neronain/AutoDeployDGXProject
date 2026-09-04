@@ -50,8 +50,10 @@ def test_suggest_for_the_real_bundle_on_veerasiam():
                          architecture="Qwen3_5MoeForConditionalGeneration", memory_model="unified")
     v = s["values"]
     assert v["tool_parser"] == "qwen3_xml" and v["reasoning_parser"] == "qwen3"
-    assert v["image"] == "avarok/dgx-vllm-nvfp4-kernel:latest"
-    assert "VLLM_NVFP4_GEMM_BACKEND=marlin" in v["engine_env"]
+    # 2026-09-04: image community ถูกใส่ให้อัตโนมัติแล้ว start ล้ม (ไม่รู้จัก qwen3_5_moe) ทั้งที่ image เดิมรันได้
+    # → เหลือเป็นหมายเหตุให้คนตัดสินใจ ไม่ใส่เป็นค่า
+    assert "image" not in v and "engine_env" not in v
+    assert any("avarok/dgx-vllm-nvfp4-kernel" in n and "marlin" in n for n in s["notes"])
     assert all(s["sources"].get(k) for k in v)   # ทุกค่าบอกที่มา
 
 
