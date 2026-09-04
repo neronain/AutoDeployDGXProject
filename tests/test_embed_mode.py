@@ -60,6 +60,7 @@ def test_embedding_plan_has_no_chat_machinery():
     plan = build_plan(report, fit, provider=None)
     assert plan.task == "embed"
     assert plan.runtime.engine is Engine.LLAMACPP
+    assert plan.serving.context <= 32768, "header 262k ของ Qwen3-VL ไม่ใช่ความยาวเอกสารที่ embed จริง"
     assert not plan.tool_calling.enabled and plan.tool_calling.parser is None
     assert not plan.reasoning.enabled
     assert any("embedding" in w for w in plan.warnings)

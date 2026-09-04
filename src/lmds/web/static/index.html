@@ -1384,6 +1384,7 @@ function testsMarkup(m) {
       ${btn("test-vision", "Send a generated red image and check the model really sees it")}
       ${btn("test-reasoning", "Check the reasoning parser separates chain-of-thought")}
       ${btn("test-tools", "Check the tool-call parser produces tool_calls")}
+      ${btn("test-embed", "Embed 3 sentences and check the TH↔EN pair beats unrelated text")}
     </div>
     <div class="field">
       ${btn("bench", "Single-stream throughput")}
@@ -3319,6 +3320,7 @@ function nodeModelsMarkup(name, data) {
             ${ctl("test-vision", "ส่งภาพสีแดงไปถามว่าเห็นสีอะไร")}
             ${ctl("test-reasoning", "ตรวจว่า parser แยก chain-of-thought ออกจริง")}
             ${ctl("test-tools", "ตรวจว่า parser ออก tool_calls จริง")}
+            ${ctl("test-embed", "ยิง /v1/embeddings 3 ประโยค เช็คว่าคู่ความหมายเดียวกันข้ามภาษาชนะประโยคไม่เกี่ยว")}
             ${m.running ? `<button data-nact="nbench:full" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                       title="วัดความเร็ว 6 งาน + ความสามารถ 7 ข้อ ด้วย lmds bench (หลายนาที)">วัดคะแนน</button>
               <button data-nact="nbench:quick" data-node="${esc(name)}" data-slug="${esc(m.slug)}"

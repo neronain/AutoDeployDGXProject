@@ -276,6 +276,11 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     # ของ llama-server คือ pool ที่แบ่งให้ทุก slot เท่า ๆ กัน → คูณกลับ และตั้ง slot = concurrency
     # เดิมขอ --concurrency 4 แล้วได้ slot เดียวกับ context หารสี่ = แย่กว่าไม่ใส่ (รีวิว 2026-09-04)
     per_sequence = fit.recommended_context or 8192
+    if is_embed:
+        # embedding ไม่ generate — context คือความยาวเอกสารที่ embed ได้ต่อชิ้น · header ของ Qwen3-VL บอก 262k
+        # แต่โมเดล embedding ใช้จริงไม่เกิน 32k (Qwen3-Embedding: 32k) · ตั้งตาม header = KV ก้อนใหญ่เปล่า ๆ
+        # และ start ช้า · เพิ่มเองได้ด้วย --context ตอน start ถ้าเอกสารยาวกว่านั้นจริง
+        per_sequence = min(per_sequence, 32768)
     slots = max(1, int(getattr(fit, "concurrency", 1) or 1)) if engine is Engine.LLAMACPP else 4
     context = per_sequence * slots if engine is Engine.LLAMACPP else per_sequence
     plan = DeploymentPlan(

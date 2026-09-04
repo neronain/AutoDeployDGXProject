@@ -973,7 +973,7 @@ def create_app(token: str = "") -> FastAPI:
         from . import jobs
 
         allowed = {
-            "test-text", "test-vision", "test-reasoning", "test-tools",
+            "test-text", "test-vision", "test-reasoning", "test-tools", "test-embed",
             "bench", "stress", "client-config", "network-info", "status", "props",
             "verify-files", "prepare-runtime", "sync-worker", "verify-worker", "clear-fi-cache",
         }
