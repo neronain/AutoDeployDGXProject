@@ -52,6 +52,31 @@ recipes:
     source: https://github.com/neronain/deepseek-v4-flash-nvfp4-stacked-on-DGX-Spark
     validated_on: 2x DGX Spark (GB10) · vLLM dspark build · TP=2 · test-text ผ่าน 5 ส.ค. 2569
 
+  - match: mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4
+    label: Qwen3.8-Flash-Next Uncensored (NVFP4) · 2-node
+    engine: vllm
+    # สถาปัตยกรรม qwen4_exp ใหม่มาก — vLLM 0.20 (image NVFP4 ตัวเดิม) ไม่รู้จัก ต้อง nightly ≥ 0.28 (transformers 5.16)
+    # digest นี้ = vllm/vllm-openai:nightly 4 ก.ย. 2569 (arm64) · pin ไว้เพราะ tag nightly เลื่อนทุกวัน
+    image: vllm/vllm-openai@sha256:f5df5cc3302b5f404848c4eca88d7bf7ed5226e151c056da22816d7734644d67
+    image_for: [unified]   # ทดสอบบน DGX Spark
+    env:
+      # NVFP4 บน SM121: บังคับ Marlin ไม่งั้น JIT cutlass FP4 แล้วตาย (ptxas .e2m1x2)
+      VLLM_NVFP4_GEMM_BACKEND: marlin
+      VLLM_TEST_FORCE_FP8_MARLIN: "1"
+      VLLM_USE_FLASHINFER_MOE_FP4: "0"
+      VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+    tool_calling:
+      enabled: true
+      parser: qwen3_xml
+    reasoning:
+      enabled: true
+      parser: qwen3
+    notes:
+      - 173.6 GB safetensors (95 shard) → ต้อง 2 เครื่องบน DGX Spark · repo เป็น gated ต้องมี HF token
+      - Qwen3.5+ DeltaNet — อย่าเปิด --enable-prefix-caching
+    source: LMDS stacked deploy บน spark-head+spark-worker
+    validated_on: 2x DGX Spark (GB10) · vLLM 0.28.1rc1 nightly · TP=2 · download 134 นาที · test-text ผ่าน 5 ก.ย. 2569
+
   - match: meta-llama/Llama-3.3-70B-Instruct
     label: Llama-3.3-70B-Instruct
     engine: vllm
