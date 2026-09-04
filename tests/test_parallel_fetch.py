@@ -58,7 +58,7 @@ def _bin(tmp_path: Path) -> Path:
 
 def _script(tmp_path: Path, out: Path, want: int, extra_env: str = "") -> str:
     text = _controller(tmp_path)
-    funcs = "\n".join(_extract(text, n) for n in ("file_size", "curl_retry_all", "fetch_parallel", "fetch_one"))
+    funcs = "\n".join(_extract(text, n) for n in ("file_size", "curl_retry_all", "parts_size", "fetch_parallel", "fetch_one"))
     return (
         "set -euo pipefail\nFETCH_MAX_ATTEMPTS=3\ndie() { echo \"DIE: $*\" >&2; exit 9; }\n"
         f"{extra_env}\n{funcs}\n"
@@ -103,12 +103,15 @@ def test_a_part_that_dies_halfway_is_resumed_from_where_it_stopped(tmp_path):
     chunk = (want + 7) // 8
     fail_start = 3 * chunk                                   # ส่วนที่ 3 ตายกลางคันในรอบแรก
     done, out = _run(tmp_path, src, want, env_extra={"FAKE_FAIL_PART": str(fail_start)})
-    # รอบแรก ส่วน 3 ไม่ครบ → fetch_parallel คืน 1 → ถอยไป curl เดี่ยว "ต่อจากที่มี" ซึ่งของเรา
-    # ไฟล์ out ยังไม่มี → curl เดี่ยวโหลดทั้งไฟล์ (fake ไม่รองรับ -C แต่ cat ทั้งไฟล์) → ครบ
+    # รอบแรก ส่วน 3 ได้ครึ่งเดียว → รอบสองต้องยิง range ต่อจากครึ่งนั้น (ไม่ใช่ถอยไป curl เดี่ยวทั้งไฟล์)
     assert done.returncode == 0, done.stderr + done.stdout
     assert out.read_bytes() == src.read_bytes()
     log = (tmp_path / "curl.log").read_text()
     assert f"range={fail_start}-" in log, "ส่วนที่ 3 ต้องถูกยิงในรอบแรก"
+    half = fail_start + (min(4 * chunk, want) - fail_start) // 2
+    assert f"range={half}-" in log, "รอบสองต้องต่อจากครึ่งที่ได้แล้ว"
+    assert "range=none" not in log, "ต้องไม่ถอยไป curl เดี่ยวทั้งไฟล์"
+    assert "โหลดส่วนที่ขาดต่อ" in done.stdout
 
 
 def test_small_files_and_fetch_parts_1_keep_the_single_stream_path(tmp_path):

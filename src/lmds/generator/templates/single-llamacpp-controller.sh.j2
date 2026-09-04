@@ -343,6 +343,12 @@ curl_retry_all() {
 # ติดตั้งให้ต้อง sudo — ทำเองด้วย curl ที่มีทุกเครื่องดีกว่า · แต่ละส่วนเป็นไฟล์ใน <out>.parts/
 # resume ต่อได้เป็นรายส่วน · ครบแล้วต่อกันเป็นไฟล์เดียว (ใช้ดิสก์ชั่วคราว 2 เท่า) · verify_files
 # ยังเป็นด่านสุดท้ายเหมือนเดิม (ขนาด + SHA-256)
+parts_size() {   # ไบต์รวมของส่วนที่โหลดไว้ใน <out>.parts/ (0 ถ้าไม่มี)
+  local total=0 f
+  for f in "$1".parts/*; do [[ -f "$f" ]] && total=$(( total + $(file_size "$f") )); done
+  echo "$total"
+}
+
 fetch_parallel() {
   local url="$1" out="$2" want="$3"
   local parts="${FETCH_PARTS:-8}" tmp="${out}.parts" chunk i start end have need pid rc=0
@@ -399,7 +405,7 @@ fetch_parallel() {
 
 fetch_one() {
   local url="$1" out="$2" want="${3:-}"
-  local attempt=0 rc have prev=-1
+  local attempt=0 rc have prev=-1 parts_have prev_parts=-1
   # token ต้องไม่อยู่บน argv — `ps` ให้ทุก user บนเครื่องอ่าน argv ของกันได้ (เจอจริงบน spark-head
   # กับ `docker run -e HF_TOKEN="$HF_TOKEN"` ฝั่ง vLLM ซึ่งแก้ไปแล้ว) · เส้นทาง GGUF เคยส่ง Bearer
   # ผ่าน --header ของ curl/aria2c ตรง ๆ ซึ่งเป็นรูเดียวกัน · curl อ่าน config จาก stdin (-K -) ได้
@@ -428,7 +434,19 @@ fetch_one() {
       # ไม่มี aria2c (หรือมันล้ม) + รู้ขนาด + ไฟล์ใหญ่ → หลายส่วนพร้อมกัน (Xet bridge สตรีมเดี่ยวช้ามาก)
       rc=0
       fetch_parallel "$url" "$out" "$want" || rc=$?
-      (( rc == 0 )) || echo "  โหลดขนานไม่ครบ (exit ${rc}) — ถอยไป curl เดี่ยวต่อจากที่มี"
+      if (( rc != 0 )); then
+        # ส่วนไหนหลุด (เช่น curl 92 HTTP/2 CANCEL) ให้วนกลับมาโหลดขนานต่อจากส่วนที่มี — ห้ามถอยไป
+        # curl เดี่ยวทันที ไม่งั้นทิ้งส่วนที่ได้มาแล้ว 10 GB ไปเริ่มสตรีมเดี่ยวช้า ๆ ใหม่ทั้งไฟล์
+        # (เจอจริง 2026-09-04) · ถอยไป curl เดี่ยวเฉพาะเมื่อขนานไม่คืบหน้าเลยสองรอบติด
+        parts_have="$(parts_size "$out")"
+        if (( parts_have > prev_parts )) && (( attempt < FETCH_MAX_ATTEMPTS )); then
+          prev_parts="$parts_have"
+          echo "  โหลดขนานหลุดบางส่วน (${parts_have}/${want} ไบต์) — โหลดส่วนที่ขาดต่อ (รอบที่ $(( attempt + 1 )))"
+          sleep 5
+          continue
+        fi
+        echo "  โหลดขนานไม่คืบหน้า — ถอยไป curl เดี่ยว"
+      fi
     fi
     if (( rc != 0 )) && [[ ! -f "$out" || "$(file_size "$out")" -lt "${want:-0}" || -z "$want" ]]; then
       # --speed-limit/--speed-time = กันค้างตาย: สลับเน็ต/สาย NAT หลุด ทำให้ TCP
