@@ -181,6 +181,13 @@ air-gapped ยังอยู่ · Geist + Geist Mono (OFL, woff2 ชุด lat
   ยกเว้นข้อนี้ · `test-text`/`test-tools` บอกให้ไปใช้ `test-embed` แทน · `client-config` มี `"task"` ·
   MODEL_PROFILE มี `task` + `features.embedding.pooling` → หน้าเว็บ/CLI ติดป้าย "embedding (last)"
 
+**โหลด GGUF ใหญ่เร็วขึ้น 30–50 เท่าเมื่อไม่มี aria2c** — เคสจริงตอน deploy Qwen3-VL-Embedding f16 (14 GB) ไป dgx-spark03:
+HF ย้ายไฟล์ใหญ่ไป Xet bridge ซึ่งสตรีมเดี่ยวจากไทยได้ 0.3–1.4 MB/s (= 11 ชั่วโมง) ทั้งที่ API ตอบใน 0.3 วิ แต่ยิง
+range 8 ส่วนพร้อมกันได้รวม ~50 MB/s · node ไม่มี aria2c (ติดตั้งต้อง sudo) · controller llama.cpp จึงมี
+`fetch_parallel`: ไฟล์ ≥256 MB ที่รู้ขนาด → curl `-r` 8 ส่วนพร้อมกัน (`FETCH_PARTS=` ปรับได้ · 1 = ปิด) ลงไฟล์ส่วนใน
+`<ไฟล์>.parts/` resume รายส่วน รายงานความคืบหน้าทุก 30 วิ ครบแล้วต่อกัน · ล้ม → ถอยไป curl เดี่ยวตามเดิม ·
+verify-files ยังเป็นด่านสุดท้าย (`tests/test_parallel_fetch.py` รันกับ curl ปลอมที่รองรับ range)
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

@@ -316,6 +316,8 @@ download() {
 # ทั้งที่เครื่องมีแบนด์วิดท์เหลือ — aria2c -x16 เปิด 16 ช่องขนานจึงเลี่ยงได้
 # ทั้งคู่ resume ได้ (-C - / --continue) รอบถัดไปจึงต่อจากของเดิม ไม่เริ่มใหม่
 FETCH_MAX_ATTEMPTS="${FETCH_MAX_ATTEMPTS:-20}"
+# ไฟล์ใหญ่ที่ไม่มี aria2c: โหลดเป็นกี่ส่วนพร้อมกัน (1 = ปิด · ค่าเริ่มต้น 8) — ดู fetch_parallel
+FETCH_PARTS="${FETCH_PARTS:-8}"
 
 # --retry-all-errors มีตั้งแต่ curl 7.71 (2020) · Ubuntu 20.04 มากับ 7.68 ซึ่งไม่มี
 # แล้ว curl จะตายทันทีด้วย "option --retry-all-errors: is unknown" — ถามก่อนใช้
@@ -331,6 +333,69 @@ curl_retry_all() {
   fi
   printf '%s' "$_CURL_RETRY_ALL"
 }
+
+{% raw %}
+# ไฟล์ใหญ่ (≥256 MB) ที่รู้ขนาด และไม่มี aria2c: ดึงเป็นหลายส่วนพร้อมกันด้วย curl -r ล้วน ๆ
+#
+# เคสจริง 2026-09-04 (Qwen3-VL-Embedding f16 14 GB → dgx-spark03): HF ย้ายไฟล์ใหญ่ไป Xet bridge
+# (us.aws.cdn.hf.co/xet-bridge-us) ซึ่งสตรีมเดี่ยวจากไทยได้ 0.3–1.4 MB/s = 11 ชั่วโมง ทั้งที่ API ตอบใน
+# 0.3 วิ · แต่ range 8 ส่วนพร้อมกันได้รวม ~50 MB/s (ช้าเฉพาะที่ "ต้นไฟล์") · node ไม่มี aria2c และ
+# ติดตั้งให้ต้อง sudo — ทำเองด้วย curl ที่มีทุกเครื่องดีกว่า · แต่ละส่วนเป็นไฟล์ใน <out>.parts/
+# resume ต่อได้เป็นรายส่วน · ครบแล้วต่อกันเป็นไฟล์เดียว (ใช้ดิสก์ชั่วคราว 2 เท่า) · verify_files
+# ยังเป็นด่านสุดท้ายเหมือนเดิม (ขนาด + SHA-256)
+fetch_parallel() {
+  local url="$1" out="$2" want="$3"
+  local parts="${FETCH_PARTS:-8}" tmp="${out}.parts" chunk i start end have need pid rc=0
+  local -a pids=()
+  (( parts >= 2 )) || return 1
+  chunk=$(( (want + parts - 1) / parts ))
+  mkdir -p "$tmp"
+  for (( i = 0; i < parts; i++ )); do
+    start=$(( i * chunk )); end=$(( start + chunk - 1 ))
+    (( end >= want )) && end=$(( want - 1 ))
+    (( start > end )) && break
+    have="$(file_size "${tmp}/${i}")"
+    need=$(( end - start + 1 ))
+    (( have >= need )) && continue
+    # -r ต่อจากที่มีแล้ว append เข้าไฟล์ส่วน — ตายกลางคันก็เก็บส่วนที่ได้ไว้ รอบหน้าเริ่มจากตรงนั้น
+    ( curl -fsSL --retry 5 --retry-delay 5 $(curl_retry_all) \
+        --connect-timeout 20 --speed-limit 10240 --speed-time 60 \
+        -r "$(( start + have ))-${end}" -K - "$url" <<< "$curl_auth" >> "${tmp}/${i}" ) &
+    pids+=($!)
+  done
+  if (( ${#pids[@]} > 0 )); then
+    echo "  โหลดขนาน ${#pids[@]} ส่วน (FETCH_PARTS=${parts}) …"
+    # รายงานความคืบหน้ารวมทุก 30 วิ — curl -s เงียบ ไม่งั้นผู้ใช้เห็นแค่จอนิ่ง
+    while :; do
+      sleep 30
+      local alive=0 total=0
+      for pid in "${pids[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+      for (( i = 0; i < parts; i++ )); do total=$(( total + $(file_size "${tmp}/${i}") )); done
+      echo "  … $(( total / 1048576 )) / $(( want / 1048576 )) MB"
+      (( alive )) || break
+    done
+    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+  fi
+  # ครบทุกส่วนไหม — ส่วนที่เกิน (server ไม่รับ range แล้วส่งทั้งไฟล์) ก็ถือว่าใช้ไม่ได้
+  for (( i = 0; i < parts; i++ )); do
+    start=$(( i * chunk )); end=$(( start + chunk - 1 ))
+    (( end >= want )) && end=$(( want - 1 ))
+    (( start > end )) && break
+    have="$(file_size "${tmp}/${i}")"
+    if (( have > end - start + 1 )); then rm -f "${tmp}/${i}"; rc=1; fi
+    (( have == end - start + 1 )) || rc=1
+  done
+  (( rc == 0 )) || return 1
+  : > "${out}.tmp"
+  for (( i = 0; i < parts; i++ )); do
+    start=$(( i * chunk )); (( start >= want )) && break
+    cat "${tmp}/${i}" >> "${out}.tmp"
+  done
+  mv -f "${out}.tmp" "$out"
+  rm -rf "$tmp"
+  return 0
+}
+{% endraw %}
 
 fetch_one() {
   local url="$1" out="$2" want="${3:-}"
@@ -359,7 +424,13 @@ fetch_one() {
       rm -f "$aria2_auth"
       (( rc == 0 )) || echo "  aria2c ล้ม (exit ${rc}) — ถอยไป curl"
     fi
-    if (( rc != 0 )); then
+    if (( rc != 0 )) && [[ -n "$want" ]] && (( want >= 268435456 )) && (( ${FETCH_PARTS:-8} >= 2 )); then
+      # ไม่มี aria2c (หรือมันล้ม) + รู้ขนาด + ไฟล์ใหญ่ → หลายส่วนพร้อมกัน (Xet bridge สตรีมเดี่ยวช้ามาก)
+      rc=0
+      fetch_parallel "$url" "$out" "$want" || rc=$?
+      (( rc == 0 )) || echo "  โหลดขนานไม่ครบ (exit ${rc}) — ถอยไป curl เดี่ยวต่อจากที่มี"
+    fi
+    if (( rc != 0 )) && [[ ! -f "$out" || "$(file_size "$out")" -lt "${want:-0}" || -z "$want" ]]; then
       # --speed-limit/--speed-time = กันค้างตาย: สลับเน็ต/สาย NAT หลุด ทำให้ TCP
       # ค้างใน recv() ไม่มี error ไม่มี timeout --retry จึงไม่เคยทำงาน — process
       # ค้างถาวรจน stop ไม่ได้ · ต่ำกว่า 10KB/s ติดกัน 60s = ถือว่าตาย ยิง error
