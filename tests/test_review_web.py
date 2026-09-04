@@ -394,3 +394,15 @@ def test_commit_badges_tolerate_short_hashes_of_different_length():
     assert "hubBuild.installed !== hubBuild.commit" not in page
     text = Path(__file__).resolve().parents[1].joinpath("install.sh").read_text(encoding="utf-8")
     assert "rev-parse --short=7 HEAD" in text
+
+
+def test_advanced_options_are_neither_remembered_nor_sent_unless_the_section_is_open():
+    """dgx-veerasiam 2026-09-04: image ชุมชนที่ค้างใน localStorage ถูกส่งทับ bundle ทุกครั้งที่กด start"""
+    from pathlib import Path
+
+    page = Path(__file__).resolve().parents[1].joinpath("src/lmds/web/static/index.html").read_text(encoding="utf-8")
+    assert 'const ADV_OPTS = ["image", "engine_env", "extra_args", "tool_parser", "reasoning_parser", "image_min_tokens"]' in page
+    assert "return stripAdv(JSON.parse(localStorage.getItem(\"lmds:node:\" + key)" in page
+    assert 'if (!adv || !adv.open) stripAdv(o);' in page
+    assert 'JSON.stringify(stripAdv({ ...o }))' in page
+    assert 'localStorage.removeItem("lmds:node:" + node + "/" + slug)' in page

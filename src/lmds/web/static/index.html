@@ -2869,8 +2869,14 @@ const collapsedSites = new Set();
 const pinnedOutput = new Set();
 // option ต่อโมเดลบนเครื่องอื่น เก็บในเบราว์เซอร์ — ไม่ส่งไปเขียนทับ bundle ปลายทาง
 // เพราะค่าที่ใช้ทดลอง (port ชนกัน, context ลดลงชั่วคราว) ไม่ควรกลายเป็นค่าถาวรของเครื่องนั้น
+// ค่าขั้นสูง (image / engine env / parsers / extra args / image-min-tokens) **ไม่จำในเบราว์เซอร์และไม่ส่งตอน
+// start** เว้นแต่หมวด Advanced เปิดอยู่ตอนกด — เคสจริง 2026-09-04 dgx-veerasiam: ปุ่ม "เติมให้ตามโมเดล"
+// ใส่ image ชุมชนลงช่อง → readNodeOpts จำลง localStorage → ทุก start จากหน้าเว็บส่ง image นั้นไปทับ
+// bundle ที่รันได้ → ล้มด้วย "image ไม่รู้จัก qwen3_5_moe" แม้หลังแก้ bundle.env บนเครื่องแล้ว
+const ADV_OPTS = ["image", "engine_env", "extra_args", "tool_parser", "reasoning_parser", "image_min_tokens"];
+function stripAdv(o) { for (const k of ADV_OPTS) delete o[k]; return o; }
 function nodeOpts(key) {
-  try { return JSON.parse(localStorage.getItem("lmds:node:" + key) || "{}"); } catch { return {}; }
+  try { return stripAdv(JSON.parse(localStorage.getItem("lmds:node:" + key) || "{}")); } catch { return {}; }
 }
 // ── ต้องใช้แรมเท่าไรตามค่าที่กรอก — คำนวณสดในเบราว์เซอร์ทุกครั้งที่พิมพ์ ──
 // hub ส่งข้อเท็จจริง (weights, KV/token, ความจุ, ว่างตอนนี้, overhead) มาครั้งเดียวตอนเปิดแผง
@@ -2969,7 +2975,10 @@ function readNodeOpts(node, slug) {
   box.querySelectorAll("input.n-toggle").forEach(el => {
     if (!el.checked) o[el.dataset.opt] = "";
   });
-  localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(o));
+  // ค่าขั้นสูงส่งเฉพาะตอนที่หมวด Advanced เปิดอยู่ (= ผู้ใช้ตั้งใจแก้) และไม่จำข้ามครั้ง — ดู ADV_OPTS
+  const adv = box.querySelector("details.adv");
+  if (!adv || !adv.open) stripAdv(o);
+  localStorage.setItem("lmds:node:" + node + "/" + slug, JSON.stringify(stripAdv({ ...o })));
   return o;
 }
 
@@ -3245,7 +3254,7 @@ function nodeModelsMarkup(name, data) {
                ใช้ค่าที่มาตอนแรกแล้วปรับแค่ port/context ก็พอ" · ค่าพวกนี้มาจาก bundle ถูกอยู่แล้ว
                เปิดเฉพาะตอนที่รู้ว่าจะแก้อะไร -->
           <details class="adv" style="width:100%">
-            <summary class="dim">Advanced — parsers · engine env · extra args · image (leave as the bundle set them)</summary>
+            <summary class="dim">Advanced — parsers · engine env · extra args · image (leave as the bundle set them · sent only while this section is open)</summary>
           ${m.engine === "vllm" ? `<div class="field">
             <label>tool parser</label>
             <input class="n-tool-parser" value="${esc(o.tool_parser ?? "")}" placeholder="e.g. qwen3_xml" style="flex:none;width:150px"
@@ -3743,6 +3752,8 @@ document.addEventListener("click", async e => {
     // ค่าที่กรอกเคยอยู่แค่ในเบราว์เซอร์ · systemd ตอน autostart และปุ่ม test-* เรียก
     // controller เปล่า ๆ จึงตกไปใช้ default — reboot ทีเดียวพอร์ตชนกันทั้งเครื่อง
     const clearing = nact === "clear-settings";
+    // Reset ต้องล้างของที่เบราว์เซอร์จำไว้ด้วย ไม่งั้นค่าเก่ากลับมาโผล่ในฟอร์มรอบหน้า
+    if (clearing) { try { localStorage.removeItem("lmds:node:" + node + "/" + slug); } catch {} }
     const body = clearing ? {} : readNodeOpts(node, slug);
     if (body) delete body.api_key;   // หน้าเว็บสัญญาไว้ว่า key ไม่ถูกเขียนลง bundle
     const d = await withButton(btn, clearing ? "clearing…" : "saving…", () =>
