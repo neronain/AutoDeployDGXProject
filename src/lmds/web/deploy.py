@@ -26,6 +26,8 @@ class Session:
     plan: Any
     created_by: str = ""
     warnings: list[str] = field(default_factory=list)
+    # พอร์ตที่แผนเลือกให้ (ว่างของเครื่องปลายทาง) — generate เขียนลง bundle.env
+    port: int = 0
 
 
 _SESSIONS: dict[str, Session] = {}
@@ -142,7 +144,73 @@ def _plan_payload(session: Session) -> dict:
             "notes": fit.notes,
         },
         "gated": report.gated,
+        # พอร์ตว่างตัวแรกของเครื่องปลายทาง — เดิมทุก bundle เกิดมาที่ 8000 แล้วชนกันบนเครื่องเดียว
+        "port": session.port,
     }
+
+
+DEFAULT_PORT = 8000
+
+
+def _cached_inventory(machine: str) -> dict | None:
+    """inventory ที่ refresher เก็บไว้ของเครื่องนั้น (ว่าง = hub เอง) — None เมื่อยังไม่มี"""
+    from lmds.web import state
+
+    snap = state.STORE.snapshot()
+    entry = snap["host"] if not machine else snap["nodes"].get(machine)
+    return (entry or {}).get("data") or None
+
+
+def used_ports(machine: str = "") -> set[int]:
+    """พอร์ตที่ bundle/container บนเครื่องนั้นถืออยู่ — จากแคช inventory ไม่ยิง SSH
+
+    นับทุก bundle ไม่ใช่แค่ที่รันอยู่: bundle ที่หยุดอยู่ก็จะกลับมาที่พอร์ตเดิมตอน start/autostart
+    · container นอกระบบ (`external`) อยู่ในรายการ models อยู่แล้วพร้อมพอร์ตฝั่ง host
+    """
+    data = _cached_inventory(machine) or {}
+    ports: set[int] = set()
+    for model in data.get("models") or []:
+        port = model.get("port")
+        if isinstance(port, int) and port > 0:
+            ports.add(port)
+    return ports
+
+
+def suggest_port(machine: str = "", start: int = DEFAULT_PORT) -> int:
+    """พอร์ตว่างตัวแรกตั้งแต่ `start` บนเครื่องนั้น — ไม่มีข้อมูล = `start` (ค่าเดิม ไม่เดา)
+
+    เคสจริง 2026-09-04: deploy ตัวที่สองลงเครื่องเดิมได้ 8000 ซ้ำ หน้าภาพรวมขึ้น "port shared" ทันที
+    และ autostart หลัง reboot ก็ชนกันจนขึ้นได้ตัวเดียว · แผนรู้อยู่แล้วว่าไปเครื่องไหน จึงเลือกให้ได้
+    """
+    taken = used_ports(machine)
+    port = start
+    while port in taken and port < 65535:
+        port += 1
+    return port
+
+
+def _target_for_machine(machine: str) -> tuple[str, str]:
+    """(ชื่อ preset, โน้ต) จากฮาร์ดแวร์ที่ refresher เห็นของเครื่องนั้น — ว่างเมื่อเดาไม่ได้
+
+    เลือกเครื่องในฟลีตแต่ไม่เลือก preset เคยตกไปใช้ฮาร์ดแวร์ของ *hub* (VM ไม่มี GPU → dgx-spark-single
+    128 GB) ทั้งที่ปลายทางคือ RTX 5090 32 GB → แผนเสนอ context ที่การ์ดนั้นรับไม่ไหว
+    """
+    from lmds.fit.targets import PRESETS
+
+    host = (_cached_inventory(machine) or {}).get("host") or {}
+    gpus = host.get("gpus") or []
+    if not gpus:
+        return "", (f"ยังไม่มีข้อมูลฮาร์ดแวร์ของ {machine} — วิเคราะห์ด้วยฮาร์ดแวร์ของเครื่องนี้แทน "
+                    "· เลือก target ให้ตรงเครื่องปลายทาง หรือกด refresh ที่การ์ดเครื่องนั้นแล้ววิเคราะห์ใหม่")
+    if host.get("memory_model") == "unified":
+        return "dgx-spark-single", ""
+    name = (gpus[0].get("name") or "").lower().replace("nvidia ", "").replace("geforce ", "").strip()
+    slug = name.replace(" ", "-")
+    for preset in PRESETS:
+        if preset == slug or slug.endswith(preset):
+            return preset, ""
+    return "", (f"ไม่รู้จัก GPU '{gpus[0].get('name')}' ของ {machine} เป็น preset ไหน — "
+                "วิเคราะห์ด้วยฮาร์ดแวร์ของเครื่องนี้แทน · เลือก target เองให้ตรงเครื่องปลายทาง")
 
 
 def _occupancy(name: str) -> tuple[float, list[str]] | None:
@@ -353,6 +421,12 @@ def analyze(
             if variant is not None:
                 report.weight_bytes = variant.size_bytes
 
+    target_notes: list[str] = []
+    if not target and machine:
+        # เครื่องปลายทางคือเครื่องอื่น — ฮาร์ดแวร์ของ hub ไม่เกี่ยว ต้องคิดจากของเครื่องนั้น
+        target, why = _target_for_machine(machine)
+        if why:
+            target_notes.append(why)
     if target:
         if target not in PRESETS:
             raise DeployError("input", f"ไม่รู้จัก target '{target}'")
@@ -386,7 +460,7 @@ def analyze(
         fit.running_now = _running_on(machine, worker)
 
     provider = None
-    notes: list[str] = []
+    notes: list[str] = list(target_notes)
     if not no_llm:
         settings = Settings.load()
         if settings.provider is not None:
@@ -405,10 +479,17 @@ def analyze(
 
     _note_start_now(fit, plan)
 
+    # พอร์ตว่างของเครื่องปลายทาง (hub เองเมื่อไม่เลือกเครื่อง) — บอกไว้ในโน้ตให้เห็นว่าไม่ใช่ 8000
+    # ตามเคย และทำไม · stacked ใช้พอร์ตของ head ซึ่งคือ `machine`
+    port = suggest_port(machine)
+    if port != DEFAULT_PORT:
+        who = machine or "เครื่องนี้"
+        fit.notes.append(f"พอร์ต {port} — {DEFAULT_PORT} ถึง {port - 1} มี bundle/container บน {who} ถืออยู่แล้ว")
+
     if len(_SESSIONS) >= _MAX_SESSIONS:
         _SESSIONS.pop(next(iter(_SESSIONS)))
     session_id = uuid.uuid4().hex
-    _SESSIONS[session_id] = Session(source, report, fit, plan, warnings=notes)
+    _SESSIONS[session_id] = Session(source, report, fit, plan, warnings=notes, port=port)
     return {"id": session_id, "notes": notes, "plan": _plan_payload(_SESSIONS[session_id])}
 
 
@@ -457,8 +538,12 @@ def generate(
     approved_flags: Optional[list[str]] = None,
     approved_assets: Optional[list[str]] = None,
     output: str = "./bundles",
+    port: Optional[int] = None,
 ) -> dict:
-    """render → 9 gates → checksums → ZIP · ไม่ผ่าน gates = ไม่มี ZIP (เหมือน CLI)"""
+    """render → 9 gates → checksums → ZIP · ไม่ผ่าน gates = ไม่มี ZIP (เหมือน CLI)
+
+    `port` = ผู้ใช้แก้พอร์ตในหน้า wizard · None = ใช้ที่ analyze เลือกไว้ (พอร์ตว่างของเครื่องปลายทาง)
+    """
     from lmds.brain import apply_asset_approvals, apply_flag_approvals
     from lmds.generator import render_bundle
     from lmds.packager import make_zip, write_checksums
@@ -467,6 +552,10 @@ def generate(
     session = _SESSIONS.get(session_id)
     if session is None:
         raise DeployError("expired", "ผลวิเคราะห์หมดอายุแล้ว — วิเคราะห์ใหม่อีกครั้ง")
+
+    # ตรวจค่าจาก body ก่อนแตะแผน — เดิม int("abc") ระเบิดเป็น 500 เปล่า ๆ ทั้งที่แค่พิมพ์ผิด
+    context = _positive_int("context", context, 256, 10_000_000)
+    port = _positive_int("port", port, 1, 65535)
 
     plan, report, fit = session.plan, session.report, session.fit
     if approved_flags:
@@ -477,6 +566,7 @@ def generate(
     if context:
         ceiling = fit.max_safe_context or plan.serving.context
         plan.serving.context = min(int(context), ceiling)
+    chosen_port = port or session.port or DEFAULT_PORT
 
     try:
         bundle = render_bundle(plan, report, fit, Path(output))
@@ -489,6 +579,13 @@ def generate(
         raise DeployError("gates", "bundle ไม่ผ่าน quality gates — ไม่สร้าง ZIP", {"gates": gates})
 
     checksums = write_checksums(bundle.directory)
+    # พอร์ตอยู่ใน bundle.env (ทางเดียวกับ `lmds set --port`) ไม่ใช่ใน template — controller ทุก engine
+    # อ่านไฟล์นี้ก่อน default ทั้ง start/autostart/ปุ่ม test-* จึงได้พอร์ตเดียวกันบนเครื่องปลายทาง ·
+    # เขียน *หลัง* checksums (ไฟล์นี้ผู้ใช้แก้ได้ ไม่ควรทำให้ verify-files ล้ม) แต่ *ก่อน* zip ให้ push ติดไปด้วย
+    from lmds.fleet.bundle_settings import write as write_settings
+
+    if chosen_port != DEFAULT_PORT:
+        write_settings(bundle.directory, {"port": chosen_port})
     zip_path = make_zip(bundle.directory)
     # ลงทะเบียนทันที ไม่งั้น bundle ที่เพิ่งสร้างจะไม่โผล่ในรายการ แล้วผู้ใช้ไปต่อไม่ถูก
     from lmds.fleet import register_bundle
@@ -499,7 +596,21 @@ def generate(
         "slug": bundle.directory.name,
         "directory": str(bundle.directory),
         "context": plan.serving.context,
+        "port": chosen_port,
         "gates": gates,
         "files": [str(p) for p in [*bundle.files, checksums, zip_path]],
         "zip": str(zip_path),
     }
+
+
+def _positive_int(name: str, value, low: int, high: int) -> Optional[int]:
+    """ค่าจาก JSON ของหน้าเว็บ — None/ว่าง = ไม่ระบุ · อย่างอื่นต้องเป็นจำนวนเต็มในช่วง ไม่งั้น 4xx"""
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise DeployError("input", f"{name} ต้องเป็นตัวเลข (ได้ {str(value)[:20]!r})") from None
+    if not low <= number <= high:
+        raise DeployError("input", f"{name} ต้องอยู่ระหว่าง {low:,} ถึง {high:,}")
+    return number

@@ -131,11 +131,11 @@ cd bundles/qwen3-0-6b-gguf
 |---|---|
 | `download` | ดาวน์โหลดโมเดล (pin revision, resume ได้) |
 | `verify-files` | ตรวจความครบถ้วน/ความถูกต้องของไฟล์ |
-| `prepare-runtime` | เตรียม engine — **จำเป็นเฉพาะบางกรณี ดูด้านล่าง** |
-| `start` / `stop` / `restart` | เปิด-ปิดเซิร์ฟเวอร์ (ตรวจ GPU + ไฟล์ก่อน start เสมอ) |
+| `prepare-runtime` | เตรียม engine — **จำเป็นเฉพาะบางกรณี ดูด้านล่าง** (llama.cpp native: `start` เรียกให้เองถ้ายังไม่มี `llama-server`) |
+| `start` / `stop` / `restart` | เปิด-ปิดเซิร์ฟเวอร์ (ตรวจ GPU + ไฟล์ก่อน start เสมอ · GGUF บน ARM64 ที่ยังไม่มี binary จะ build llama.cpp ให้ก่อน) |
 | `status` | สถานะ container + API health |
 | `logs [N]` | log ล่าสุด N บรรทัด (default 300) |
-| `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget |
+| `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget (bundle embedding: `max_input_tokens` = context ต่อ slot ทั้งก้อน · มี `pooling` · ไม่มี `max_output_tokens`) |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
@@ -148,7 +148,7 @@ cd bundles/qwen3-0-6b-gguf
 > `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด
 
 > **`prepare-runtime` ต้องรันเมื่อไหร่?** ตอน deploy เสร็จ ระบบจะพิมพ์ลำดับคำสั่งที่ถูกต้องของ bundle นั้นให้เสมอ — ทำตามนั้นได้เลย
-> - **GGUF บน DGX Spark (ARM64)** — จำเป็น ✅ เพราะไม่มี Docker image ทางการ ต้อง build llama.cpp จาก source (ครั้งแรกครั้งเดียว ~10–30 นาที, ขอ sudo ติดตั้ง build deps)
+> - **GGUF บน DGX Spark (ARM64)** — ต้อง build llama.cpp จาก source เพราะไม่มี Docker image ทางการ (ครั้งแรกครั้งเดียว ~10–30 นาที) · **`start` ทำให้เองถ้ายังไม่มี `llama-server`** — รัน `prepare-runtime` แยกเมื่ออยาก build ล่วงหน้า หรืออัปเดต (`LLAMA_CPP_UPDATE=1`) · ขอ sudo เฉพาะเมื่อขาด build deps จริง (ไม่มี sudo = บอกคำสั่ง apt ให้รันเอง)
 > - **stacked (2 เครื่อง)** — จำเป็น ✅ เพื่อ pull + ล็อค image-ID ให้ตรงกันทั้งสอง node
 > - **GGUF/safetensors บน x86_64 (RTX)** — ไม่ต้อง ใช้ image ทางการได้เลย
 >
@@ -627,7 +627,13 @@ cd bundles/<slug>
 --revision SHA      # ล็อค revision เอง (default: ล่าสุด ณ ตอนนั้น แล้ว pin ให้)
 --target PRESET     # เครื่องเป้าหมาย (ดู 3.4) — ว่าง = เครื่องที่รันคำสั่งอยู่
 --concurrency N     # จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1)
+--gguf FILE|QUANT   # repo GGUF หลาย variant: เลือกไฟล์โดยไม่ต้องมี tty — ชื่อไฟล์เต็ม หรือชื่อ quant (Q8_K_XL, Q4_K_M)
+--engine vllm|sglang  # เลือกรันไทม์เอง (ดู §5) · --task generate|embed บังคับชนิดงานเมื่อเดาผิด (ดู §4.9)
 ```
+
+> **`--gguf`** — repo แบบ `unsloth/…-GGUF` มักมี 10–20 quant · โหมดโต้ตอบจะแสดงรายการให้เลือกหมายเลข แต่ script/hub
+> ไม่มี tty จึงเคย exit 1 "ต้องระบุไฟล์" · ใส่ `--gguf Q8_0` (ไม่สนตัวพิมพ์) หรือชื่อไฟล์เต็ม · ชื่อที่ตรงหลายไฟล์
+> (`--gguf q8` เจอทั้ง Q8_0 และ Q8_K_XL) จะถูกปฏิเสธพร้อมรายการให้เลือกใหม่ ไม่เดาให้ · ใช้กับ `generate` ได้เหมือนกัน
 
 > **`--concurrency` มีผลกับ memory โดยตรง** — KV cache โตตามจำนวน request ที่รันพร้อมกัน
 > ใส่ `--concurrency 4` แปลว่า "กันหน่วยความจำเผื่อ 4 คนใช้พร้อมกัน" ผลคือ context ที่แนะนำจะลดลง
@@ -1419,7 +1425,7 @@ POOLING=mean EMBED_UBATCH=4096 ./<slug>-single.sh restart # llama.cpp: เปล
 | flag ที่ controller ใส่ | `--embedding --pooling <p> --batch-size N --ubatch-size N` | `--runner pooling --convert embed` |
 | pooling ตั้งต้น | Qwen → `last` · BERT/XLM-R/bge/e5/gte → `cls` · อื่น `mean` | vLLM อ่านจาก config ของโมเดลเอง |
 | ทดสอบ | `test-embed` | `test-embed` |
-| client | `client-config` → `"task": "embed"` · เรียก `POST /v1/embeddings` ด้วย `model` = served name | เหมือนกัน |
+| client | `client-config` → `"task": "embed"`, `"endpoint": "/v1/embeddings"`, `max_input_tokens` = context ต่อ slot ทั้งก้อน (ไม่มี output token จึงไม่มี `max_output_tokens`), `pooling` · เรียก `POST /v1/embeddings` ด้วย `model` = served name | `"task": "embed"` · budget แบบเดียวกับ chat (vLLM ไม่แบ่ง slot) |
 
 > **`test-embed` ขึ้น WARN** = คู่ประโยคความหมายเดียวกัน (ไทย↔อังกฤษ) ได้คะแนนไม่สูงกว่าประโยคที่ไม่เกี่ยวกัน
 > มักเป็น pooling ผิดตระกูล — ลอง `POOLING=mean` หรือ `cls` แล้ว restart · stacked ไม่รองรับ (โมเดล embed ≤ 8B
@@ -1773,7 +1779,9 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | `start` ครั้งแรกค้างนานผิดปกติ ยังไม่ขึ้น log อะไร | Docker กำลัง pull image (~10–20 GB) | ปกติ — ดูความคืบหน้าด้วย `docker pull vllm/vllm-openai:latest` แยกอีก terminal · ดึงล่วงหน้าได้ตาม [INSTALL §1.7](INSTALL.md) |
 | `docker pull` ล้ม / `TLS handshake timeout` | เครื่องอยู่หลัง proxy หรือโดน rate limit | ตั้ง proxy ให้ **docker daemon** ด้วย ไม่ใช่แค่ shell ([INSTALL §1.7](INSTALL.md)) |
 | `prepare-runtime` build ล้มบน DGX Spark | ขาด CUDA Toolkit หรือ CUDA arch ไม่ตรง | ดูบรรทัดเตือน `ไม่พบ nvcc` · override ได้: `CUDA_ARCHITECTURES=121 ./xxx-single.sh prepare-runtime` |
-| `ยังไม่มี llama-server — รัน: ... prepare-runtime` | ข้ามขั้น prepare-runtime บนเครื่อง ARM64 | รัน `./xxx-single.sh prepare-runtime` ก่อน start (ดู §2) |
+| `start` บนเครื่อง ARM64 ใหม่ขึ้น `ยังไม่มี llama-server … build ให้ก่อน` แล้วเงียบนาน | กำลัง build llama.cpp ให้เอง (~10–30 นาที ครั้งแรกครั้งเดียว) | ปกติ — ไม่ต้องรัน `prepare-runtime` เองแล้ว · ถ้าจบด้วย `sudo apt-get … install -y git cmake` = ขาด build deps และ sudo ต้องใส่รหัส → รันคำสั่งนั้นเองแล้ว start ใหม่ |
+| `download` ขึ้น `กำลังรันอยู่แล้ว (อีก process ถือ …/.download.lock)` | สั่ง download ซ้อนกัน (hub + CLI, หรือตัวเก่าที่ session หลุดแต่ curl ยังโหลดอยู่) | รอให้ตัวเดิมจบ (`ps -ef \| grep curl`) แล้วสั่งซ้ำ — มันจะต่อไฟล์ให้ครบเอง ไม่โหลดใหม่ |
+| `download` ขึ้น `ดิสก์ … เหลือ X MB แต่ไฟล์ต้องการ Y MB` / `ถอยไปสตรีมเดี่ยว` | ดิสก์ไม่พอ · โหลดขนาน (`FETCH_PARTS`) ต้องมีที่ว่าง ~2 เท่าของไฟล์ชั่วคราว | ล้างที่ว่าง หรือ `MODEL_DIR=/data/models ./xxx-single.sh download` (ตั้ง `MODEL_DIR` เดียวกันตอน start) · ที่ว่างพอไฟล์เดียวแต่ไม่ถึง 2 เท่า = โหลดสตรีมเดี่ยวช้ากว่าแต่ได้ไฟล์ |
 | ลิงก์ `ollama.com/...` ใช้ไม่ได้ | ยังรองรับเฉพาะ Hugging Face | ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน (roadmap เฟส 2) |
 | `verify-files` แจ้ง shard หาย / ขนาดไม่ตรง | download ไม่ครบ หรือไฟล์ใน cache ถูกลบ | `lmds repair <ชื่อ>` (โหลดเฉพาะส่วนที่ขาด) |
 | `lmds list` ขึ้น ⚠ (ไฟล์ controller หาย) | โฟลเดอร์ bundle ถูกลบ/ย้าย | `lmds deploy` ลิงก์เดิมเพื่อสร้าง bundle ใหม่ — weight เดิมใช้ต่อได้ · หรือ `lmds remove <ชื่อ>` ถ้าไม่ใช้แล้ว |

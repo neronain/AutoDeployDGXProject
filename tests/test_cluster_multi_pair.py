@@ -161,7 +161,7 @@ def test_the_console_can_set_a_cluster_name():
     assert 'data-cact="save-clname"' in page, "ไม่มีปุ่ม Save ของชื่อคลัสเตอร์"
     assert "cluster_name:" in page or "cluster_name" in page
     # หัวกลุ่มต้องบอกว่าแบ่งเองหรือระบบแบ่ง ไม่งั้นดูไม่ออกว่าทำไมกลุ่มออกมาแบบนี้
-    assert "แบ่งอัตโนมัติ" in page
+    assert "grouped by subnet" in page   # UI เป็นอังกฤษตั้งแต่ 0.6.0
 
 
 def test_the_api_accepts_a_cluster_name_change():

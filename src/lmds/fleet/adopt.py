@@ -264,6 +264,50 @@ def _features_from_model(adopted: "Adopted") -> dict:
         features["speculative"] = {"embedded_mtp": True}
     return features
 
+def weights_on_host(adopted: "Adopted") -> dict:
+    """ที่เก็บ weight บนเครื่อง — อ่านจาก bind mount ที่ container ใช้อยู่จริง ไม่ได้เดา
+
+    `lmds remove` ต้องรู้ว่าจะลบอะไร: bundle ที่ adopt มาไม่มี MODEL_DIR/HF cache แบบ bundle ปกติ
+    weight อยู่ที่ไหนสักแห่งใน `-v` ของ docker run — HF cache ที่ mount เป็น /root/.cache/huggingface
+    หรือโฟลเดอร์โมเดลตรง ๆ · เคสจริง 2026-09-04: remove บอกแค่ "ต้องใช้ sudo rm -rf …" โดยไม่มี path
+    ให้ เพราะไม่มีใครจดไว้ตอน adopt · จดลง MODEL_PROFILE["weights"] ให้ remove/status ใช้ต่อ
+
+    คืน {} เมื่อไม่รู้ — ดีกว่าเดามั่วแล้วลบผิดโฟลเดอร์
+    """
+    model = adopted.model or ""
+    out: dict = {}
+    if model.startswith("/"):
+        host = _host_path(adopted, model)
+        if host is not None:
+            out = {"path": str(host), "kind": "dir" if host.is_dir() else "file", "source": "bind-mount"}
+    elif "/" in model:
+        slug = f"models--{model.replace('/', '--')}"
+        for bind in adopted.binds:
+            host_dir = Path(bind.split(":")[0])
+            for candidate in (host_dir / "hub" / slug, host_dir / slug):
+                if candidate.is_dir():
+                    out = {"path": str(candidate), "kind": "hf-cache", "source": "bind-mount"}
+                    break
+            if out:
+                break
+        if not out:
+            # container ใช้ cache ในตัวเอง (ไม่ได้ mount) หรือ weight ยังไม่มาถึงเครื่อง — จดชื่อ repo ไว้ให้
+            # remove ค้นใน HF cache ของเครื่องต่อได้ ไม่ต้องเดาจาก container ที่ตายไปแล้ว
+            out = {"hf_repo": model, "kind": "hf-cache"}
+    if adopted.binds:
+        out["binds"] = list(adopted.binds)
+    return out
+
+
+def _weights_label(weights: dict) -> str:
+    """บรรทัดที่ controller/remove พิมพ์ — path จริงถ้ารู้ ไม่รู้ก็บอกว่าไม่รู้ ไม่พิมพ์ path เดา"""
+    if weights.get("path"):
+        return weights["path"]
+    if weights.get("hf_repo"):
+        return f"HF cache ของ {weights['hf_repo']} (ยังไม่พบบนเครื่อง — ดู lmds weights)"
+    return "(ไม่ทราบ — ดู bind mount ใน docker inspect)"
+
+
 # env ของ image เองมีเป็นร้อยตัว (PATH, CUDA_*, LD_*) — เอาไปใส่ใน docker run ซ้ำ
 # ไม่ได้ช่วยอะไรและทำให้สคริปต์อ่านไม่รู้เรื่อง · เก็บเฉพาะที่ผู้ใช้ตั้งเองจริง ๆ
 _KEEP_ENV_PREFIXES = ("MODEL", "PORT", "MAX_", "VLLM_", "HF_", "CTX_", "API_", "SERVED_",
@@ -489,6 +533,8 @@ def render_controller(adopted: Adopted, slug: str) -> str:
     ipc = f'  --ipc {shlex.quote(adopted.ipc_mode)} \\\n' if adopted.ipc_mode not in ("", "private") else ""
     shm = f'  --shm-size {adopted.shm_size} \\\n' if adopted.shm_size > 67108864 else ""
     args = " ".join(shlex.quote(a) for a in adopted.args)
+    # สิ่งที่ lmds remove จะแตะ — status/info/remove-plan พิมพ์ให้เห็นก่อน ไม่ใช่รู้ตอนที่ลบไปแล้ว
+    weights_label = shlex.quote(_weights_label(weights_on_host(adopted)))
 
     return f'''#!/usr/bin/env bash
 # LMDS adopted controller — สร้างจาก container ที่รันอยู่ก่อนหน้า ไม่ได้ deploy ผ่าน LMDS
@@ -526,9 +572,20 @@ banner() {{
 info() {{
   banner
   echo "model:     {adopted.model or '(ไม่ระบุใน env)'}"
+  echo "weights:   "{weights_label}
   echo "context:   {adopted.context or 0}"
   echo "port:      ${{API_PORT}}"
   echo "adopted:   ใช่ — สร้างจาก container ที่รันอยู่ก่อน LMDS"
+}}
+
+# สิ่งที่ `lmds remove {slug}` จะลบ — weight ของ bundle ที่ adopt มาอยู่นอกที่ที่ LMDS จัดการ
+# จึงต้องบอกเป็น path ตรง ๆ ก่อนใครกดลบ (เดิมรู้ตอนที่ remove ตอบ "ต้องใช้ sudo rm -rf" แล้ว)
+remove_plan() {{
+  echo "lmds remove {slug} จะลบ:"
+  echo "  bundle:    $(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+  echo "  ทะเบียน:   ${{LMDS_RUN_ROOT:-${{HOME}}/.lmds/run}}/{slug}"
+  echo "  weights:   "{weights_label}
+  echo "  container: {adopted.container} (หยุดและลบ · image {adopted.image} ไม่ถูกลบ)"
 }}
 
 start() {{
@@ -558,6 +615,7 @@ status() {{
   docker ps -a --filter "name=^${{CONTAINER_NAME}}$" --format 'container: {{{{.Names}}}} · {{{{.Status}}}}'
   curl -fsS -m 5 "http://127.0.0.1:${{API_PORT}}/v1/models" >/dev/null 2>&1 \\
     && echo "api: ตอบปกติ" || echo "api: ยังไม่ตอบ"
+  echo "weights: "{weights_label}"  (lmds remove {slug} ลบด้วย — ดู: $0 remove-plan)"
 }}
 
 logs() {{ docker logs --tail "${{1:-300}}" "${{CONTAINER_NAME}}"; }}
@@ -592,6 +650,7 @@ usage() {{
   logs [N]                    log ล่าสุด N บรรทัด
   test-text                   ถามจริงแล้วดูว่าตอบไหม
   client-config               ค่าที่ client ต้องใช้
+  remove-plan                 สิ่งที่ lmds remove จะลบ (bundle · ทะเบียน · weight · container)
   info | banner               ข้อมูลของ bundle นี้
 
 ไม่มี download / verify-files: weight ของ container นี้เป็น path ที่คุณจัดการเอง
@@ -607,6 +666,7 @@ case "${{1:-}}" in
   logs)           shift; logs "${{1:-300}}" ;;
   test-text)      test_text ;;
   client-config)  client_config ;;
+  remove-plan)    remove_plan ;;
   info|banner)    info ;;
   *)              usage ;;
 esac
@@ -639,6 +699,10 @@ def adopt(container: str, slug: str = "", output: Path | None = None) -> Path:
     features = _features_from_model(adopted)
     if features:
         profile["features"] = features
+    # ที่เก็บ weight — lmds remove/status อ่านจากตรงนี้ (ดู weights_on_host)
+    weights = weights_on_host(adopted)
+    if weights:
+        profile["weights"] = weights
     import yaml
 
     (directory / "MODEL_PROFILE.yaml").write_text(
@@ -776,6 +840,7 @@ def render_native_controller(proc: AdoptedProcess, slug: str) -> str:
         f"# ถ้ามันยัง enable อยู่ มันจะแย่ง port กลับทุกครั้งที่ LMDS stop\n"
         if proc.unit else ""
     )
+    weights_label = shlex.quote(proc.model_path or "(ไม่ระบุใน argv)")
 
     return f"""#!/usr/bin/env bash
 # LMDS adopted controller (native) — สร้างจาก process ที่รันอยู่ก่อนหน้า ไม่ได้ deploy ผ่าน LMDS
@@ -874,8 +939,19 @@ stop() {{
 
 restart() {{ stop; start; }}
 
+# สิ่งที่ `lmds remove {slug}` จะลบ — weight เป็นไฟล์ที่คุณจัดการเอง จึงต้องเห็น path ก่อนกดลบ
+remove_plan() {{
+  echo "lmds remove {slug} จะลบ:"
+  echo "  bundle:    $(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+  echo "  ทะเบียน:   ${{RUN_DIR}}"
+  echo "  weights:   "{weights_label}
+  [[ -n "$OWNING_UNIT" ]] && echo "  unit เดิม:  ${{OWNING_UNIT}} ไม่ถูกแตะ — ปิดเองถ้าไม่ใช้แล้ว: sudo systemctl disable --now ${{OWNING_UNIT}}"
+  true
+}}
+
 status() {{
   echo "model:     {proc.model or slug}"
+  echo "weights:   "{weights_label}"  (lmds remove {slug} ลบด้วย — ดู: $0 remove-plan)"
   if server_alive; then echo "process: running (PID $(cat "$PID_FILE"))"; else echo "process: stopped"; fi
   curl -fsS -m 5 "http://127.0.0.1:${{API_PORT}}/v1/models" >/dev/null 2>&1 \\
     && echo "api: ตอบปกติ" || echo "api: ยังไม่ตอบ"
@@ -924,6 +1000,7 @@ usage() {{
   test-text                   ถามจริงแล้วดูว่าตอบไหม
   client-config               ค่าที่ client ต้องใช้
   network-info                bind + endpoint
+  remove-plan                 สิ่งที่ lmds remove จะลบ (bundle · ทะเบียน · weight)
   info | banner               ข้อมูลของ bundle นี้
 
 ไม่มี download / verify-files: weight เป็น path ที่คุณจัดการเอง
@@ -955,6 +1032,7 @@ case "${{1:-}}" in
   test-text)      test_text ;;
   client-config)  client_config ;;
   network-info)   network_info ;;
+  remove-plan)    remove_plan ;;
   info|banner)    info ;;
   *)              usage ;;
 esac
@@ -1011,6 +1089,9 @@ def adopt_process(pid: int = 0, port: int = 0, slug: str = "",
         "features": features_from_probe(probe, proc.argv),
         "source_process": {"pid": proc.pid, "unit": proc.unit, "argv": proc.argv},
     }
+    if proc.model_path:
+        # ไฟล์ที่ process ถืออยู่จริง (-m บน argv) — lmds remove ถามก่อนลบ ไม่เดาจาก ~/models/<slug>
+        profile["weights"] = {"path": proc.model_path, "kind": "file", "source": "argv"}
     import yaml
 
     (directory / "MODEL_PROFILE.yaml").write_text(

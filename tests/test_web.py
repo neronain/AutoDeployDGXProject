@@ -1491,7 +1491,7 @@ def test_page_warns_when_another_model_owns_the_port():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert "const rival = models.find(" in page
     assert "x.running && x.port === m.port" in page, "ต้องนับเฉพาะตัวที่รันอยู่จริงบนพอร์ตเดียวกัน"
-    assert "ผลทดสอบที่ได้จะเป็นของตัวนั้น" in page
+    assert "test results would be for that model" in page
 
 
 def test_long_node_commands_stream_instead_of_blocking(registered, monkeypatch):
@@ -1724,8 +1724,8 @@ def test_the_nodes_list_never_breaks_the_whole_page(registered, monkeypatch):
 def test_the_page_says_something_when_a_list_cannot_be_read():
     """ค้างที่ "Loading…" ตลอดกาลคือบอกผู้ใช้ว่า "รอไปเรื่อย ๆ" ทั้งที่มันจะไม่มาแล้ว"""
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
-    block = page.split("async function refreshNodes()")[1][:900]
-    assert "catch" in block and "อ่านรายชื่อเครื่องไม่ได้" in block
+    block = page.split("async function refreshNodes()")[1][:1800]
+    assert "catch" in block and "Could not read the machine list" in block
 
 
 def test_the_image_can_be_overridden_without_a_redeploy(registered, monkeypatch):
@@ -1842,7 +1842,7 @@ def test_the_console_waits_for_a_new_process_not_a_new_commit():
     assert "waitForHub(beforeBoot)" in page
     assert "d.boot !== previousBoot" in page
     # อัปเดตแล้วไม่มีอะไรใหม่ = สำเร็จ แล้วต้องไปต่อที่ node
-    assert "อยู่ที่ ${now.commit || \"?\"} อยู่แล้ว" in page
+    assert "already at ${now.commit || \"?\"}" in page
 
 
 def test_version_endpoint_can_ask_the_repo(monkeypatch):
@@ -1930,7 +1930,7 @@ def test_adopted_bundle_is_not_told_to_download(registered, monkeypatch):
     assert self_managed_weights({"model": {"id": "org/model"}}) is False
 
     page = TestClient(create_app()).get("/").text
-    assert "self_managed_weights" in page and "weight จัดการเอง" in page
+    assert "self_managed_weights" in page and "self-managed weights" in page
 
 
 def test_fix_permissions_only_touches_the_model_cache(registered, monkeypatch):
@@ -2147,7 +2147,7 @@ def test_the_output_panel_button_does_not_claim_to_delete_anything():
     page = (Path(__file__).resolve().parents[1]
             / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert ">ลบผลลัพธ์<" not in page
-    assert ">ปิดข้อความนี้<" in page
+    assert ">Close this message<" in page
     # และไม่มีคำอังกฤษหลงเหลือในปุ่มของหน้าที่เป็นไทยทั้งหน้า
     assert ">Dismiss<" not in page
 

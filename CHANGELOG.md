@@ -188,6 +188,115 @@ range 8 ส่วนพร้อมกันได้รวม ~50 MB/s · node 
 `<ไฟล์>.parts/` resume รายส่วน รายงานความคืบหน้าทุก 30 วิ ครบแล้วต่อกัน · ล้ม → ถอยไป curl เดี่ยวตามเดิม ·
 verify-files ยังเป็นด่านสุดท้าย (`tests/test_parallel_fetch.py` รันกับ curl ปลอมที่รองรับ range)
 
+### หน้าเว็บ: กด site/node ที่เมนูซ้ายแล้วตรงกลางว่าง (ลูกค้า 2026-09-04)
+
+- ทำซ้ำได้: ยุบไซต์ไว้ในหน้า All machines (หัวไซต์ "+") แล้วกดเครื่องในไซต์นั้นที่ rail →
+  หน้าเครื่องว่างเปล่า ต้องกลับไป All machines กางไซต์ก่อน · เพราะการยุบใช้ `style.display`
+  บนการ์ด ส่วนตัวกรองตาม route ปลดแค่ `hidden` — สองกลไกไม่รู้จักกัน
+- route ชนะการยุบเสมอ: `applyRouteFilter()` กางไซต์ที่หน้านั้นต้องโชว์ให้เอง (ลบออกจาก
+  `collapsedSites` + ล้าง display ของการ์ดในนั้น) · หน้าไซต์ซ่อนหัวไซต์ (`#nodes.route-site`)
+  เพราะมี section เดียวและปุ่มยุบบนหัวนั้นคือทางที่ทำให้หน้าว่างทั้งหน้า
+- `layoutClusterGroups()` จบด้วย `applyRouteFilter()` ในตัว — เดิมมีแค่ `loadCluster` ที่กรองต่อ
+  ส่วนกดหัวไซต์ / ลากการ์ด / `revealNode` สร้าง `.sitesec`/`.gwrap` ใหม่โดยไม่มี `hidden` ติดมา
+  ไซต์อื่นจึงทะลักกลับมาบนหน้า `#/site/…`
+- ชี้ไปเครื่อง/ไซต์ที่ไม่มีแล้ว (bookmark เก่า · ถูก Forget/เปลี่ยนชื่อ) ขึ้นบอกตรง ๆ พร้อมลิงก์
+  กลับ All machines — หน้าว่างเฉย ๆ แยกไม่ออกจากบั๊กข้างบน
+- `/api/nodes` ล้มชั่วคราว (SQLite ล็อก) เดิมล้าง `#nodes` ทั้งกล่องแต่ `nodeRows` ยังชี้การ์ดเดิม
+  รอบถัดไป layout ดึงการ์ดกลับมาต่อท้ายข้อความ error ที่ค้างจนกว่าจะ reload → เป็นแถบเหนือ
+  การ์ดแทน ถอดเองเมื่อรอบถัดไปสำเร็จ · ข้อความเป็นอังกฤษ
+- กด Forget แล้ว hub ลืมเครื่อง แต่ `lastNodeRegistry` ฝั่งเบราว์เซอร์ไม่เคยถูกตัด — ภาพรวมยังขึ้น
+  "unreachable" และตารางไซต์ยังนับเครื่องนั้นจน reload → `refreshNodes` ตัดทะเบียนตามที่ hub ส่งมา
+- SSE หลุดแล้วถอยไป poll เดิมดึงแค่ `/api/host` + `/api/models` การ์ดเครื่องอื่น/rail/ภาพรวม
+  แช่แข็งเงียบ ๆ → `pollNodesFallback()` อ่านแคช `/api/nodes/<n>/inventory` (ไม่ SSH) ทุก 5 วิ
+  แล้วป้อนเข้า `applySnapshot` รูปเดียวกับ frame ของ SSE
+- rail ถูกวาดใหม่ทุก frame ของ SSE แม้เนื้อหาเหมือนเดิม — hover/focus หลุด และคลิกที่
+  mousedown ค้างบน element เก่าหายไปเฉย ๆ → เทียบสตริงก่อน ไม่เปลี่ยนไม่แตะ DOM
+- ป้ายหัวไซต์ในหน้า All machines เป็นอังกฤษ ("Unassigned site" · "2 machines") ตรงกับ rail
+- เทสใหม่ `tests/test_console_shell.py` บูตสคริปต์จริงของหน้าเว็บใน node ด้วย DOM ย่อส่วน
+  (`tests/console_shell_dom.js` — parser/selector/event bubbling ที่หน้านี้ใช้จริง) แล้วถามว่า
+  การ์ดไหน "มองเห็น" จริง · ไม่มี node บนเครื่อง = ข้ามพร้อมเหตุผล (hub ตอนนี้ยังไม่มี node)
+- ข้อความที่ผู้ใช้เห็นบนหน้าเว็บที่ยังเป็นไทยแปลเป็นอังกฤษ (หน้าเว็บประกาศตัวเป็นอังกฤษ): กล่อง
+  Update LMDS ทุกขั้น · แผงผลคำสั่ง/งาน ("Close this message" · "running…" · "failed (exit N)" ·
+  "Run <command>") · สถานะ/ป้ายบนการ์ดเครื่อง ("stopped · self-managed weights" · "differs from hub" ·
+  "port clash with …" · "custom") · ฟอร์มตั้งค่าและ tooltip ทั้งหมด · บรรทัดคำนวณหน่วยความจำ ·
+  บล็อก "Copy to another machine" · ปุ่ม Tests/Score · แถบ cluster และหัวกลุ่ม · ปุ่ม Adopt / Send to a
+  serving machine · เทสที่เคยยึดสตริงไทยเหล่านั้นชี้ไปสตริงใหม่ · คอมเมนต์ยังเป็นไทยตามเดิม
+
+**Audit รอบสอง 2026-09-04 (ชุด backend: web / fleet / nodes)** — เริ่มจากเคสที่ผู้ใช้ชนวันนี้ แล้วไล่ทุก
+เส้นทางต่อ · ทุกข้อมีเทสที่ล้มก่อนแก้ใน `tests/test_audit_backend.py`
+
+- **`lmds remove` / ปุ่ม Remove กับ weight ที่ container เขียนเป็น root** — เดิมจบที่ "ต้องใช้ sudo rm -rf"
+  ซึ่งคนสั่งผ่านหน้าเว็บ/ssh ไม่มี tty กรอกรหัส แต่เขาอยู่ในกลุ่ม docker อยู่แล้ว → เมื่อ rm ล้มด้วย
+  EACCES ให้ root *ในคอนเทนเนอร์* ลบแทน (`docker run --rm -v <parent>:/x <image ในเครื่อง> rm -rf /x/<ชื่อ>`)
+  · รั้ว: เฉพาะใต้ home / HF cache เท่านั้น ไม่ pull image ใหม่ (เทสด้วย docker ปลอมบน PATH)
+- **bundle ใหม่ได้พอร์ต 8000 ซ้ำกับตัวที่มีอยู่บนเครื่องเดียวกัน** — หน้าภาพรวมขึ้น "port shared" ทันทีหลัง
+  deploy และ autostart หลัง reboot ชนกัน · `analyze` เลือกพอร์ตว่างตัวแรกจาก inventory ของเครื่องปลายทาง
+  (ทุก bundle + container นอกระบบ ไม่ใช่แค่ที่รันอยู่) ส่งใน `plan.port` + โน้ตว่าทำไม · `generate` เขียนลง
+  `bundle.env` (ทางเดียวกับ `lmds set --port` → start/autostart/ปุ่ม test-* บนเครื่องนั้นได้พอร์ตเดียวกัน)
+  แก้เองได้ด้วย `port` ใน body · `register_bundle` อ่านพอร์ตจาก bundle.env ด้วย — เดิมทะเบียนของ bundle ที่ยัง
+  ไม่เคย start เขียน 8000 เสมอ การ์ดจึงโชว์พอร์ตผิดจนกว่าจะ start ครั้งแรก
+- **เลือกเครื่องในฟลีตแต่ไม่เลือก preset = วิเคราะห์ด้วยฮาร์ดแวร์ของ hub** — hub เป็น VM ไม่มี GPU ตกไป
+  dgx-spark-single 128 GB ทั้งที่ปลายทางคือ RTX 5090 32 GB → เสนอ context ที่การ์ดรับไม่ไหว · เดา preset
+  จาก GPU/memory_model ที่ refresher เห็นของเครื่องนั้น (ตัวเดียวกับ `suggested_target` ของการ์ด) ·
+  เดาไม่ได้ = บอกในโน้ตให้เลือกเอง
+- **analyze repo ที่ไฟล์อยู่บน Xet ล้มเป็น "ต่อ Hugging Face ไม่ได้"** — byte แรกจาก Xet bridge มาช้าได้ 20–60 วิ
+  แต่ read timeout ของ `HfClient` คือ 30 วิ · แยก read=120 / connect=30 (ไม่มีเน็ตยังรู้เร็ว) · ยืนยันว่า
+  `HfError` ถึงเบราว์เซอร์เป็น 422 `{kind:"hub", message}` ไม่ใช่ 500
+- **ปุ่ม push บนหน้าเว็บส่ง zip ที่แพ็กตอน generate** — CLI `node push` แพ็กใหม่ตั้งแต่ 2026-09-03 แต่ทางเว็บ
+  ยังส่งของเก่า → bundle.env/bundle.args ที่ตั้งจากหน้าเว็บไม่ถึง node แล้ว start "สำเร็จ" ด้วยค่า default ·
+  แพ็กจากโฟลเดอร์ทุกครั้งก่อนส่ง
+- **token ที่ยืมให้ node โผล่ในผลงานสด ๆ** — `_scrub_secrets` กรอง *หลัง* ท่อปิด แต่หน้าเว็บ poll ทุกวิระหว่าง
+  download 20 นาที จึงได้บรรทัดที่มี token เต็ม ๆ (curl -v / echo env) ไปแสดงและเก็บในแท็บ · กรองตั้งแต่
+  ตอนรับแต่ละบรรทัดใน `_pump`
+- **probe ที่ออกตัวก่อน job บน node จบ เขียนภาพเก่าทับแล้วนอน 15 วิ** — โมเดลที่ job บอกว่า start แล้วยังขึ้น
+  "หยุด" · `set_local` มี epoch กันเรื่องนี้มาตั้งแต่ 0.5 แต่ `set_node` ไม่เคยมี → `force()` ขยับ epoch ต่อเครื่อง
+  ผล probe ที่เลขไม่ตรงยังเขียน (ดีกว่าการ์ดว่าง) แต่ครบกำหนดทันที
+- **SSE ส่ง snapshot ทั้งฟลีตให้ทุกเบราว์เซอร์วินาทีละครั้งแม้ไม่มีอะไรเปลี่ยน** — `drop_missing()` ในลูป
+  refresher ขยับ version ทุกรอบแม้ไม่ได้ลบใคร `wait_for_change` จึงไม่เคยได้รอ · ขยับเฉพาะเมื่อลบจริง
+- **สาย ssh ขาดกลาง job (exit 255) รายงานว่า "ล้ม" เฉย ๆ** — คำสั่งปลายทางไม่ได้ SIGHUP จึงมักรันต่อ ผู้ใช้
+  สั่งซ้ำแล้วชน "กำลังรัน" หรือ download ซ้อน · บอกว่าอาจยังรันอยู่และให้ดู `lmds node run <n> logs` ก่อน
+- `generate` กับ `context`/`port` ที่ไม่ใช่เลข และ `POST /api/nodes` กับ `port` ที่ไม่ใช่เลข/นอกช่วง เคย 500
+  เปล่า ๆ → 422 `{kind:"input"}` / 400 พร้อมข้อความ
+- ยืนยันว่าถูกอยู่แล้ว (เทสคุมไว้): สอง tab สั่ง start เครื่อง/โมเดลเดียวกันพร้อมกันได้ job เดียว (409 อีกตัว) ·
+  `HfError` → 422 พร้อมเหตุผล · ทะเบียน nodes.yaml ใต้ RLock+flock (เทสของ 0.6.0)
+
+**รีวิวโค้ดทั้งระบบ (ชุด CLI / controller templates / adopt)** — เคสจริงวันนี้ + ไล่อ่าน template ทั้งสี่ตัวแบบลูกค้ารัน
+(download → verify → start → status → stop) · ทุกข้อรัน controller ที่ render จริงใต้ bash หรือ CLI จริง
+(`tests/test_audit_cli_controllers.py`)
+
+- **`start` บนเครื่องที่ยังไม่เคยรัน llama.cpp build ให้เอง** — เดิมตายด้วย "ยังไม่มี llama-server — รัน prepare-runtime"
+  ทั้งที่ prepare-runtime ไม่ต้องถามอะไรเมื่อ build deps ครบ · ขาด deps + sudo ขอรหัส = die พร้อมคำสั่ง
+  `sudo apt-get update -y && sudo apt-get install -y <ที่ขาด>` (เทสรัน start ทั้งสคริปต์กับ git/cmake/nvcc ปลอม)
+- **`lmds deploy --gguf <ไฟล์|quant>`** (`generate` ด้วย) — repo หลาย variant แบบ non-interactive เคย exit 1 "ต้องระบุไฟล์"
+  ทั้งที่หน้าเว็บให้เลือกไว้แล้ว · รับชื่อไฟล์เต็ม / ชื่อ quant (`Q8_K_XL` ไม่สนตัวพิมพ์) / ส่วนของชื่อที่ตรงไฟล์เดียว ·
+  ตรงหลายไฟล์ = ปฏิเสธพร้อมรายการ ไม่เดา · ข้อความ non-interactive ชี้ไปที่ `--gguf`
+- **โหลดขนาน (`fetch_parallel`) ตรวจดิสก์ก่อน** — ส่วนย่อยใน `.parts/` + ไฟล์รวมตอนต่อกัน = 2 เท่าของไฟล์ · ดิสก์ไม่ถึง
+  = บอกแล้วถอยไปสตรีมเดี่ยว (ใช้ 1 เท่า) · ไม่พอแม้ไฟล์เดียว = die ตั้งแต่ต้นพร้อมทาง `MODEL_DIR=/data/models` ·
+  ลูปคืบหน้าเช็คทุกวินาที (เดิม `sleep 30` ก่อนดูครั้งแรก — ไฟล์ที่เสร็จใน 2 วิ นั่งรออีก 28 วิ ทุกรอบ resume)
+- **`download` ซ้อนกันบน bundle เดียวถูกปฏิเสธ** (`flock` บน `MODEL_DIR/.download.lock`) — เคสจริง `node push --download`
+  จบ exit 1 ขณะ curl ยังโหลดต่อ: สอง download เขียน `.parts/` ชุดเดียวกัน ส่วนถูก append ซ้ำ → ลบ → อีกตัวเห็น
+  "ไม่คืบหน้า" แล้ว die · ล็อกผูกกับ fd ที่ curl ลูกสืบไป — ตัวแม่ตายแต่ curl ยังเขียนอยู่ ล็อกยังถือ ซึ่งตรงกับความจริง
+- **API key ไม่อยู่บน argv อีก** — llama.cpp เคยส่ง `--api-key <ค่า>` ให้ llama-server (`ps` อ่านได้ทั้งเครื่อง) →
+  ใช้ env `LLAMA_ARG_API_KEY` (native export · docker `-e` ไม่มีค่า) · vLLM/stacked เคย `-e VLLM_API_KEY=<ค่า>`
+  บน argv ของ docker run → export แล้ว `-e VLLM_API_KEY` เฉย ๆ เหมือน HF_TOKEN · `serve-args` ไม่พิมพ์ key ·
+  SGLang ยังต้อง `--api-key` (ไม่มี env คู่)
+- **embedding**: renderer ปฏิเสธแผน embed บน SGLang (เดิม render controller แบบ chat ให้เงียบ ๆ) · README ของ bundle
+  embed แนะ `test-embed` ไม่ใช่ `test-text` และบอกว่าไม่มี output token · `client-config` ของ llama.cpp embed ให้
+  `max_input_tokens` = context ต่อ slot ทั้งก้อน + `pooling` + `endpoint` (สูตร chat เคยติดลบกับ context 512 แล้ว die) ·
+  ยืนยันกับ image จริง (nvcr vLLM 0.20.1): `--runner pooling --convert embed` มีอยู่ (`ConvertType = none|embed|classify`)
+  และ `HF_HUB_ENABLE_HF_TRANSFER` เลิกใช้แล้วใน huggingface_hub 1.x (hf-xet 1.5 ทำ chunk ขนานเอง) — ทาง vLLM/SGLang/stacked
+  จึงไม่ต้อง port curl -r
+- **adopt จดที่เก็บ weight** (`MODEL_PROFILE["weights"]`: path/kind/binds จาก bind mount ที่ container ใช้จริง · native = ไฟล์
+  บน `-m`) — เดิม remove บอกแค่ "ต้องใช้ sudo rm -rf" โดยไม่มี path · controller ที่ adopt มีคำสั่ง `remove-plan` และ
+  `status`/`info` พิมพ์ weight ที่ `lmds remove` จะลบ
+- **commit ย่อ 7 vs 8 ตัวใน CLI** — `_same_commit` เทียบแบบ prefix (กติกาเดียวกับ `sameCommit` บนหน้าเว็บ) ·
+  `node list` ป้าย `≠ hub` เฉพาะเครื่องที่ต่างจริง · สรุปหลัง `node install` บอก "ตรง hub" / "ยังไม่ตรง hub (hub: …)"
+  แทนที่จะให้คนเทียบ hash เอง
+- `_run_detached`: ssh สะดุดหนึ่งรอบเคยรีเซ็ต `shown` แล้วพิมพ์ log ทั้งก้อนซ้ำ · stacked `status`/`stop` พูดถึง worker
+  ทุกตัว (`WORKER_IPS`) ไม่ใช่แค่ตัวแรก · docstring ของ `generate` บอกว่ายังไม่ validate/zip ทั้งที่ทำแล้ว
+- ยืนยันว่าถูกอยู่แล้ว (เทสคุมไว้): ทุกคำสั่งในบล็อก COMMANDS ของ usage ถูก dispatch จริงในทั้ง 6 รูปแบบ controller ·
+  resume รายส่วนของ fetch_parallel · `--jinja`/`bundle.args` ถึง argv · เอกสาร USAGE §2/§3.5/§4.9/§8 + INSTALL §4.3
+
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

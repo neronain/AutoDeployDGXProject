@@ -956,6 +956,8 @@ def create_app(token: str = "") -> FastAPI:
                 approved_flags=body.get("approved_flags") or [],
                 approved_assets=body.get("approved_assets") or [],
                 output=body.get("output") or "./bundles",
+                # ผู้ใช้แก้พอร์ตในหน้า wizard ได้ — ว่าง = พอร์ตว่างที่ analyze เลือกให้
+                port=body.get("port"),
             )
         except DeployError as exc:
             raise _deploy_error(exc) from exc
@@ -1103,6 +1105,13 @@ def create_app(token: str = "") -> FastAPI:
         archive = next((r / f"{slug}.zip" for r in bundle_roots() if (r / f"{slug}.zip").is_file()), None)
         if archive is None:
             raise HTTPException(status_code=404, detail=f"ไม่พบ {slug}.zip ในเครื่องนี้")
+        # zip ถูกสร้างตอน generate — bundle.env/bundle.args ที่บันทึกจากหน้าเว็บทีหลังไม่อยู่ในนั้น ·
+        # CLI `node push` แพ็กใหม่ตั้งแต่ 2026-09-03 แต่ปุ่มบนหน้าเว็บยังส่งของเก่า → node start ด้วย
+        # ค่า default ทั้งที่ hub บอกว่าบันทึกแล้ว (audit 2026-09-04) · แพ็กจากโฟลเดอร์ทุกครั้งก่อนส่ง
+        if archive.with_suffix("").is_dir():
+            from lmds.packager.bundle import make_zip
+
+            archive = make_zip(archive.with_suffix(""))
         try:
             sent = push_file(node, str(archive), f"/tmp/{slug}.zip")
             if not sent.ok:
@@ -1878,7 +1887,13 @@ def create_app(token: str = "") -> FastAPI:
         user = (body.get("user") or "").strip()
         if not host or not user:
             raise HTTPException(status_code=400, detail="ต้องระบุทั้ง host และ user")
-        port = int(body.get("port") or 22)
+        # int("ssh") จากช่องกรอกเคยระเบิดเป็น 500 เปล่า ๆ — หน้าเว็บได้แค่ "Internal Server Error"
+        try:
+            port = int(body.get("port") or 22)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="port ต้องเป็นตัวเลข 1-65535") from None
+        if not 1 <= port <= 65535:
+            raise HTTPException(status_code=400, detail="port ต้องเป็นตัวเลข 1-65535")
         password = body.get("password") or ""
 
         try:

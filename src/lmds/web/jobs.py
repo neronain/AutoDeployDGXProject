@@ -46,12 +46,16 @@ _LINE_END = re.compile(r"\r\n|\r|\n")
 _READ_CHUNK = 8192
 
 
-def _pump(job: "Job", proc: subprocess.Popen) -> None:
+def _pump(job: "Job", proc: subprocess.Popen, secrets: list[str] | None = None) -> None:
     """ย้ายผลจาก process เข้า job ทีละบรรทัด — นับ \\r เป็นตัวจบบรรทัดด้วย
 
     บรรทัดที่จบด้วย \\r คือ "เฟรม" ของ progress bar ตัวถัดไปตั้งใจจะทับของเดิม
     ไม่ใช่ต่อท้าย · ถ้า append ทุกเฟรม deque 400 บรรทัดจะเต็มไปด้วยเลข % ของ
     วินาทีที่แล้ว แล้วดันบรรทัดที่บอกสาเหตุจริงหายไปหมด
+
+    `secrets` = ค่าที่ต้องไม่โผล่ในผลงาน (token ที่ยืมให้ node) — กรอง *ตอนรับแต่ละบรรทัด*
+    ไม่ใช่หลังท่อปิด: download กินเวลาเป็นสิบนาที หน้าเว็บ poll ทุกวิและได้บรรทัดที่มี token
+    เต็ม ๆ ไปแสดง (curl -v, สคริปต์ที่ echo env) ก่อนที่ _scrub_secrets จะได้ทำงาน
     """
     # read1() ไม่ใช่ read(): คืนเท่าที่มีอยู่ทันที ส่วน read(n) จะรอจนครบ n
     # ซึ่งแปลว่าไม่สตรีม · ไม่ใช้ os.read(fileno) เพราะผูกกับ pipe จริงโดยไม่จำเป็น
@@ -60,9 +64,14 @@ def _pump(job: "Job", proc: subprocess.Popen) -> None:
     read = getattr(stream, "read1", None) or stream.read
     pending = ""
     overwrite = False   # เฟรมก่อนหน้าจบด้วย \r → บรรทัดถัดไปทับตัวเดิม
+    values = [v for v in (secrets or []) if v]
+    if values:
+        from lmds.secrets import redact
 
     def emit(text: str) -> None:
         nonlocal overwrite
+        if values:
+            text = redact(text, values)
         if overwrite and job.lines:
             job.lines[-1] = text
         else:
@@ -402,7 +411,7 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
 REMOTE_LONG = {"start", "stop", "restart", "repair", "remove"}
 
 
-def explain_failure(output: str) -> str:
+def explain_failure(output: str, exit_code: int | None = None, node: str = "", slug: str = "") -> str:
     """แปล error ที่เจอบ่อยให้เป็นสิ่งที่กดทำต่อได้ — ไม่ใช่ให้ไปนั่งอ่าน log ของ rsync เอง"""
     text = output or ""
     if "Permission denied" in text and ("rsync" in text or "failed to open" in text):
@@ -411,6 +420,15 @@ def explain_failure(output: str) -> str:
             "แล้วโหลด weight ลงมา) — คัดลอกไป worker ในฐานะ user จึงอ่านไม่ได้\n"
             "กดปุ่ม \"แก้สิทธิ์ไฟล์\" ที่การ์ดของเครื่องนี้ (ถามรหัส sudo ครั้งเดียว) "
             "หรือรันบนเครื่องนั้นเอง: sudo chown -R $USER:$USER ~/.cache/huggingface"
+        )
+    # 255 คือ ssh เอง ไม่ใช่คำสั่งปลายทาง (สายตายเงียบ → ServerAlive ยอมแพ้ใน ~60 วิ) · คำสั่งที่ไม่มี
+    # tty ไม่ได้ SIGHUP จึงมักรันต่อบนเครื่องนั้น — รายงานว่า "ล้ม" เฉย ๆ ทำให้ผู้ใช้สั่งซ้ำแล้วชน
+    # "กำลังรันอยู่" หรือ download ซ้อน download (audit 2026-09-04)
+    if exit_code == 255 and node:
+        where = f"{node}" + (f" ({slug})" if slug else "")
+        return (
+            f"สาย ssh ไป {where} ขาดกลางงาน (exit 255) — งานบนเครื่องนั้นอาจยังรันอยู่ ไม่ได้ล้ม\n"
+            f"ดูก่อนสั่งซ้ำ: lmds node run {node} logs {slug or '<slug>'}  · หรือ refresh การ์ดเครื่องนั้น"
         )
     return ""
 
@@ -469,7 +487,8 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str,
             return
         job.process = proc
         assert proc.stdout is not None
-        _pump(job, proc)
+        # กรองตั้งแต่ตอนรับ (ดู _pump) · _scrub_secrets ยังอยู่เป็นด่านสุดท้ายเผื่อค่าที่คร่อมสอง chunk
+        _pump(job, proc, list((secret_env or {}).values()))
         _scrub_secrets(job, secret_env)
         code = proc.wait()
         # error ของ git/rsync อ่านแล้วไม่รู้ว่าต้องทำอะไร — แปลให้ตรงจุดก่อนจบงาน
@@ -478,7 +497,8 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str,
 
             target = find(self_node)
             output = "".join(job.lines)
-            hint = (explain_install_failure(output, target) if target else "") or explain_failure(output)
+            hint = (explain_install_failure(output, target) if target else "") or explain_failure(
+                output, exit_code=code, node=self_node, slug=slug)
             if hint:
                 job.lines.append("\n" + hint + "\n")
         job.exit_code = code

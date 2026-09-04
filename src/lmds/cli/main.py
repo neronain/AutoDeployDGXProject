@@ -268,6 +268,11 @@ def node_list(
         console.print("ยังไม่มีเครื่องในทะเบียน — เพิ่มด้วย: lmds node add <ip> --user <ชื่อ>")
         return
 
+    # commit ของ hub ตัวนี้ — ไว้ป้าย "≠ hub" ให้เครื่องที่ยังรันโค้ดเก่า (เทียบแบบ prefix · ดู _same_commit)
+    from lmds.inventory import source_commit
+
+    hub_commit = source_commit()
+
     def row_for(node):
         # host ในทะเบียนคือ "ที่อยู่ที่ hub ใช้ SSH" ซึ่งเป็นชื่อได้ (`orb`, ชื่อบน Tailscale)
         # และเครื่องหลัง NAT มองจาก hub เป็นคนละที่อยู่กับที่เครื่องในวงเดียวกันใช้เรียกมัน
@@ -278,6 +283,7 @@ def node_list(
                 fields = status_from_probe(info)
                 version = _version_label(fields.get("lmds_version", node.lmds_version),
                                          fields.get("lmds_commit", node.lmds_commit))
+                node_commit = fields.get("lmds_commit", node.lmds_commit)
                 local_ip = fields.get("local_ip", local_ip)
                 update(node.name, last_seen=_now(), last_error="", **fields)
                 status = f"[green]ต่อได้[/green] · โมเดล {len(info.get('models', []))} ตัว"
@@ -289,10 +295,14 @@ def node_list(
             except NodeError as exc:
                 update(node.name, last_error=str(exc)[:200])
                 version = _version_label(node.lmds_version, node.lmds_commit)
+                node_commit = node.lmds_commit
                 status = f"[red]ต่อไม่ได้[/red] {str(exc)[:60]}"
         else:
             version = _version_label(node.lmds_version, node.lmds_commit)
+            node_commit = node.lmds_commit
             status = node.last_seen or "—"
+        if version and hub_commit and node_commit and not _same_commit(node_commit, hub_commit):
+            version += " [yellow]≠ hub[/yellow]"
         return (node.name, f"{node.target}:{node.port}", local_ip or "—",
                 version or "—", status, node.note)
 
@@ -316,7 +326,9 @@ def node_list(
         console.print(table)
 
     console.print("[dim]จัดกลุ่มตามไซต์: lmds node set <ชื่อ> --site <ไซต์>"
-                  + ("" if check else " · เช็กสถานะจริง: lmds node list --check") + "[/dim]")
+                  + ("" if check else " · เช็กสถานะจริง: lmds node list --check")
+                  + (f" · hub อยู่ที่ {hub_commit} — ≠ hub = อัปเดตด้วย lmds node install <ชื่อ>" if hub_commit else "")
+                  + "[/dim]")
 
 
 @node_app.command("remove")
@@ -644,6 +656,12 @@ def node_install(
 
     # อัปเดตทีละเครื่องด้วยมือแปลว่ามีวันลืมเครื่องหนึ่ง แล้วมันค้างเวอร์ชันเก่าอยู่เงียบ ๆ
     # จนกว่าจะมีคนสังเกตเห็น (เจอจริง: msi-6 ค้างที่ 0.1.0 อยู่หลายรอบ)
+    # หลังติดตั้ง สรุปให้ชัดว่าเครื่องนั้น *ตรงกับ hub แล้วหรือยัง* — เดิมพิมพ์แค่ "รัน lmds 0.6.0 (0ad1a59e)"
+    # ซึ่งคนอ่านต้องไปเทียบ hash เอง และเทียบเป๊ะ ๆ จะผิดเมื่อ hash ย่อยาวไม่เท่ากัน (ดู _same_commit)
+    from lmds.inventory import source_commit
+
+    hub_commit = source_commit()
+
     if all_nodes:
         nodes = load()
         if not nodes:
@@ -661,7 +679,8 @@ def node_install(
                 fields = status_from_probe(probe(target))
                 version = _version_label(fields.get("lmds_version", ""), fields.get("lmds_commit", ""))
                 update(target.name, last_seen=_now(), last_error="", **fields)
-                console.print(f"[green]พร้อมแล้ว[/green] — lmds {version}")
+                console.print(f"[green]พร้อมแล้ว[/green] — lmds {version}"
+                              + _hub_commit_note(fields.get("lmds_commit", ""), hub_commit))
             except NodeError as exc:
                 failed.append(target.name)
                 err_console.print(f"[red]ติดตั้งแล้วแต่อ่านสถานะไม่ได้: {exc}[/red]")
@@ -707,7 +726,8 @@ def node_install(
     fields = status_from_probe(info)
     version = _version_label(fields.get("lmds_version", ""), fields.get("lmds_commit", ""))
     update(name, last_seen=_now(), last_error="", **fields)
-    console.print(f"[green]พร้อมแล้ว[/green] — {node.name} รัน lmds {version}")
+    console.print(f"[green]พร้อมแล้ว[/green] — {node.name} รัน lmds {version}"
+                  + _hub_commit_note(fields.get("lmds_commit", ""), hub_commit))
 
 @node_app.command("set")
 def node_set(
@@ -1150,7 +1170,13 @@ def _run_detached(node, command: str, log_name: str, timeout: int = 7200, poll: 
     while time.time() < deadline:
         time.sleep(poll)
         probe = run(node, f"cat {log} 2>/dev/null", timeout=60)
+        # ssh สะดุดหนึ่งรอบ (probe ล้ม / stdout ว่าง) ไม่ใช่ "log ถูกล้าง" — เดิม shown ถูกรีเซ็ตเป็น 0
+        # แล้วรอบถัดไปพิมพ์ log ทั้งก้อนซ้ำตั้งแต่บรรทัดแรก (รีวิว 2026-09-04)
+        if not probe.ok:
+            continue
         text = probe.stdout or ""
+        if len(text) < shown:
+            continue
         # พิมพ์เฉพาะส่วนใหม่ — ผู้ใช้เห็นความคืบหน้าเหมือนรันสด
         fresh = text[shown:]
         rc_at = fresh.find("__RC=")
@@ -1318,6 +1344,28 @@ def node_run(
         err_console.print(result.stderr.rstrip())
     raise typer.Exit(code=result.exit_code)
 
+
+
+def _same_commit(a: str, b: str) -> bool:
+    """hash ย่อสองตัวชี้ commit เดียวกันไหม — เทียบแบบ prefix ไม่ใช่เท่ากันเป๊ะ
+
+    git เลือกความยาว hash ย่อเองตามจำนวน object ของแต่ละเครื่อง: spark-head รายงาน `0ad1a59e`
+    ส่วน hub ได้ `0ad1a59` (2026-09-04) · เทียบเท่ากันเป๊ะ = เครื่องที่เพิ่งอัปเดตสำเร็จถูกป้ายว่า
+    "ยังไม่ตรง hub" ตลอดกาล · หน้าเว็บมี sameCommit อยู่แล้ว — CLI ต้องใช้กติกาเดียวกัน
+    สั้นกว่า 7 ตัวไม่ฟันธง (ชนกันได้ง่ายเกิน)
+    """
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    n = min(len(a), len(b))
+    return n >= 7 and a[:n] == b[:n]
+
+
+def _hub_commit_note(commit: str, hub_commit: str) -> str:
+    """ท้ายป้าย version ของ node: ตรง hub หรือยัง — ว่างเมื่อฝั่งใดฝั่งหนึ่งไม่รู้ commit"""
+    if not commit or not hub_commit:
+        return ""
+    if _same_commit(commit, hub_commit):
+        return " · [green]ตรง hub[/green]"
+    return f" · [yellow]ยังไม่ตรง hub (hub: {hub_commit})[/yellow]"
 
 
 def _version_label(version: str, commit: str = "") -> str:
@@ -1598,16 +1646,80 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
         raise typer.Exit(code=5)
 
 
-def _ensure_gguf_selected(source, report, interactive: bool):
+def _pick_gguf_variant(variants, wanted: str):
+    """หา variant จาก --gguf: ชื่อไฟล์เต็ม → ชื่อ quant (Q8_K_XL) → ส่วนของชื่อ · คืน (ตัวที่เจอ, ตัวที่ชนกัน)
+
+    หน้าเว็บส่ง selected_gguf เป็นชื่อไฟล์เต็มอยู่แล้ว ส่วนคนที่พิมพ์เองจำได้แค่ quant — รับทั้งสองแบบ
+    """
+    key = (wanted or "").strip().lower()
+    if not key:
+        return None, []
+    by_name = [v for v in variants
+               if v.filename.lower() == key or v.filename.rsplit("/", 1)[-1].lower() == key]
+    if by_name:
+        return by_name[0], []
+    by_quant = [v for v in variants if _quant_from_filename(v.filename).lower() == key]
+    if len(by_quant) == 1:
+        return by_quant[0], []
+    if by_quant:
+        return None, by_quant
+    by_part = [v for v in variants if key in v.filename.lower()]
+    if len(by_part) == 1:
+        return by_part[0], []
+    return None, by_part
+
+
+def _reinspect_gguf(source, report, chosen):
+    """inspect ซ้ำด้วยไฟล์ที่เลือก → ได้ GGUF header (architecture/context/kv dims) มาคำนวณ fit จริง"""
+    from dataclasses import replace as dc_replace
+
+    from lmds.inspector import HfClient, HfError, inspect_model
+
+    try:
+        return inspect_model(dc_replace(source, filename=chosen.filename), HfClient(token=get_secret("hf")))
+    except HfError as exc:
+        err_console.print(f"[yellow]อ่าน header ของไฟล์ที่เลือกไม่ได้ ({exc}) — ใช้ขนาดไฟล์อย่างเดียว[/yellow]")
+        report.selected_gguf = chosen.filename
+        report.weight_bytes = chosen.size_bytes
+        return report
+
+
+def _ensure_gguf_selected(source, report, interactive: bool, wanted: str = ""):
     """repo GGUF หลาย variant ที่ยังไม่เลือกไฟล์ — ให้เลือกตั้งแต่ต้น flow ไม่ใช่ไปพังตอนท้าย
 
+    wanted (--gguf): ชื่อไฟล์หรือชื่อ quant ที่ระบุมา — script/hub เลือกได้โดยไม่ต้องมี tty
     interactive: แสดงรายการให้เลือกหมายเลข แล้ว inspect ซ้ำด้วยไฟล์ที่เลือก (ได้ header/kv dims จริง)
-    non-interactive: จบพร้อมวิธีระบุไฟล์ตรง
+    non-interactive: จบพร้อมวิธีระบุไฟล์ (--gguf หรือลิงก์ตรง)
     """
     from lmds.inspector import ArtifactType
 
     weight_variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
-    if report.artifact_type is not ArtifactType.GGUF or report.selected_gguf or len(weight_variants) <= 1:
+    if report.artifact_type is not ArtifactType.GGUF:
+        if wanted:
+            err_console.print(f"[red]{report.repo_id} ไม่ใช่ repo GGUF — --gguf ใช้กับ repo นี้ไม่ได้[/red]")
+            raise typer.Exit(code=1)
+        return report
+
+    if wanted:
+        # เคสจริง 2026-09-04: hub สั่ง `lmds deploy` แบบ non-interactive กับ repo 22 variant แล้วได้ exit 1
+        # "ต้องระบุไฟล์" ทั้งที่หน้าเว็บให้ผู้ใช้เลือกไฟล์ไว้แล้ว — ต้องมีทางส่งชื่อนั้นมาโดยไม่ต้องมี tty
+        chosen, clash = _pick_gguf_variant(weight_variants, wanted)
+        if chosen is None:
+            pool = clash or sorted(weight_variants, key=lambda v: v.size_bytes or 0)
+            err_console.print(
+                f"[red]--gguf '{wanted}' "
+                + ("ตรงกับหลายไฟล์ — ระบุให้เจาะจงกว่านี้:" if clash else f"ไม่ตรงกับไฟล์ไหนใน {report.repo_id}:")
+                + "[/red]"
+            )
+            for variant in pool:
+                size = f"{variant.size_bytes / 1e9:.1f} GB" if variant.size_bytes else "?"
+                err_console.print(f"  • {variant.filename} ({size})")
+            raise typer.Exit(code=1)
+        if report.selected_gguf == chosen.filename:
+            return report
+        return _reinspect_gguf(source, report, chosen)
+
+    if report.selected_gguf or len(weight_variants) <= 1:
         return report
 
     variants = sorted(weight_variants, key=lambda v: v.size_bytes or 0)
@@ -1625,7 +1737,9 @@ def _ensure_gguf_selected(source, report, interactive: bool):
         # การยกตัวกลาง ๆ มาเป็นตัวอย่างสะท้อนความตั้งใจจริงมากกว่า
         example = variants[len(variants) // 2]
         err_console.print(
-            f'\nระบุไฟล์ด้วยลิงก์ตรง เช่น:\n  lmds deploy "https://huggingface.co/{report.repo_id}/blob/main/{example.filename}"'
+            f"\nระบุไฟล์ด้วย --gguf (ชื่อไฟล์ หรือชื่อ quant) เช่น:\n"
+            f"  lmds deploy {report.repo_id} --gguf {_quant_from_filename(example.filename) or example.filename}\n"
+            f'หรือลิงก์ตรง:\n  lmds deploy "https://huggingface.co/{report.repo_id}/blob/main/{example.filename}"'
         )
         raise typer.Exit(code=1)
 
@@ -1642,20 +1756,7 @@ def _ensure_gguf_selected(source, report, interactive: bool):
     if not 1 <= choice <= len(variants):
         err_console.print("[red]หมายเลขไม่ถูกต้อง[/red]")
         raise typer.Exit(code=1)
-    chosen = variants[choice - 1]
-
-    # inspect ซ้ำด้วยไฟล์ที่เลือก → ได้ GGUF header (architecture/context/kv dims) มาคำนวณ fit จริง
-    from dataclasses import replace as dc_replace
-
-    from lmds.inspector import HfClient, HfError, inspect_model
-
-    try:
-        return inspect_model(dc_replace(source, filename=chosen.filename), HfClient(token=get_secret("hf")))
-    except HfError as exc:
-        err_console.print(f"[yellow]อ่าน header ของไฟล์ที่เลือกไม่ได้ ({exc}) — ใช้ขนาดไฟล์อย่างเดียว[/yellow]")
-        report.selected_gguf = chosen.filename
-        report.weight_bytes = chosen.size_bytes
-        return report
+    return _reinspect_gguf(source, report, variants[choice - 1])
 
 
 # สำนวนไทยของรหัสคำแนะนำ — หน้าเว็บมีสำนวนอังกฤษของตัวเอง และผู้ช่วย LLM ได้รหัส
@@ -2008,8 +2109,11 @@ def generate(
     engine: Optional[str] = typer.Option(
         None, "--engine",
         help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
+    gguf: Optional[str] = typer.Option(
+        None, "--gguf",
+        help="repo GGUF หลาย variant: เลือกไฟล์ด้วยชื่อเต็ม หรือชื่อ quant เช่น Q8_K_XL / Q4_K_M"),
 ) -> None:
-    """สร้าง deployment bundle: plan → render controller/README/MODEL_PROFILE (ยังไม่ validate/zip — M6)
+    """สร้าง deployment bundle โดยไม่ถามยืนยัน: plan → render → quality gates → ZIP (เหมือน deploy --yes แต่ไม่ต่อรอง flag)
 
     Exit codes: 0 สำเร็จ, 1 input ผิด, 3 โมเดลไม่ fit, 4 ต้องการ token, 5 ปัญหา provider
     """
@@ -2021,7 +2125,7 @@ def generate(
     from lmds.generator import render_bundle
 
     source, report = _resolve_and_inspect(model, revision, interactive_ok=True)
-    report = _ensure_gguf_selected(source, report, interactive=False)
+    report = _ensure_gguf_selected(source, report, interactive=False, wanted=gguf or "")
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
@@ -2430,6 +2534,10 @@ def deploy(
         help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
     task: Optional[str] = typer.Option(
         None, "--task", help="generate | embed — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ) · ใส่เมื่อเดาผิด"),
+    gguf: Optional[str] = typer.Option(
+        None, "--gguf",
+        help="repo GGUF หลาย variant: เลือกไฟล์ด้วยชื่อเต็ม หรือชื่อ quant เช่น Q8_K_XL / Q4_K_M "
+             "(จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข — script/hub ใช้ทางนี้)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
 ) -> None:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
@@ -2452,7 +2560,7 @@ def deploy(
 
     interactive = sys.stdin.isatty() and not yes
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
-    report = _ensure_gguf_selected(source, report, interactive=interactive)
+    report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
         if task.strip().lower() not in {"generate", "embed"}:
             err_console.print(f"[red]--task ต้องเป็น generate หรือ embed (ได้ '{task}')[/red]")

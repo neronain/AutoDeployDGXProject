@@ -244,9 +244,16 @@ def test_fleet_scan_asks_every_node_at_once(monkeypatch):
 
     monkeypatch.setattr("lmds.nodes.run", slow)
     started = time.monotonic()
-    payload = TestClient(create_app()).get("/api/scan?all_nodes=true").json()
-    assert time.monotonic() - started < 3.0, "ต้องถามพร้อมกัน ไม่ใช่เรียงคิว 8 วิ"
-    assert all(payload[f"n{i}"][0]["name"] == "m" for i in range(8))
+    from lmds.web import state
+
+    try:
+        payload = TestClient(create_app()).get("/api/scan?all_nodes=true").json()
+        assert time.monotonic() - started < 3.0, "ต้องถามพร้อมกัน ไม่ใช่เรียงคิว 8 วิ"
+        assert all(payload[f"n{i}"][0]["name"] == "m" for i in range(8))
+    finally:
+        # refresher ที่ create_app() ปลุกไว้จะยังจำ n0…n7 ใน _inflight หลังเทสจบ ทำให้
+        # test_refresher_concurrency ที่รันถัดมาล้ม (เจอจริง 2026-09-04 ตอนรวมงาน audit)
+        state.stop_refresher()
 
 
 def test_remote_stop_streams_as_a_job(registered, monkeypatch):

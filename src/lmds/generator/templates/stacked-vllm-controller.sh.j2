@@ -1045,7 +1045,9 @@ WSCRIPT
   for pair in "${EXTRA_DOCKER_ENV[@]}"; do hrun+=(-e "$pair"); done
   for pair in ${ENGINE_ENV}; do hrun+=(-e "$pair"); done
   hrun+=("${nccl_docker[@]}")
-  [[ -n "$API_KEY" ]] && hrun+=(-e "VLLM_API_KEY=${API_KEY}")
+  # ค่า key ไม่ไปบน argv ของ docker run (`ps` อ่านได้ทั้งเครื่อง) — export แล้วให้ docker หยิบจาก env
+  # (หลักเดียวกับ single-vLLM · รีวิว 2026-09-04)
+  if [[ -n "$API_KEY" ]]; then export VLLM_API_KEY="$API_KEY"; hrun+=(-e VLLM_API_KEY); fi
   hrun+=(--entrypoint bash "$VLLM_IMAGE"
     -lc "exec vllm${quoted_common} --node-rank 0 --host $(printf '%q' "$API_HOST") --port $(printf '%q' "$API_PORT")")
   # array ขึ้นต้นด้วย docker อยู่แล้ว — เรียกซ้ำจะได้ `docker docker run -d …`
@@ -1108,7 +1110,8 @@ EOF
 stop() {
   log "Stopping head …"
   docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
-  log "Stopping worker on ${WORKER_IP} …"
+  # worker มีได้มากกว่าหนึ่ง (dgx-spark-stacked-4) — ข้อความต้องพูดถึงทุกตัว ไม่ใช่แค่ WORKER_IP ตัวแรก
+  log "Stopping worker(s) on ${WORKER_IPS} …"
   local wip
   for wip in $WORKER_IPS; do
     ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
@@ -1124,10 +1127,10 @@ stop() {
 # ─────────────────────────── status ───────────────────────────
 status() {
   echo "Model   : ${SERVED_MODEL_NAME} (${MODEL_ID})"
-  echo "Topology: stacked TP=${TENSOR_PARALLEL_SIZE} nnodes=${NNODES}  head=${MASTER_IP} worker=${WORKER_IP}"
+  echo "Topology: stacked TP=${TENSOR_PARALLEL_SIZE} nnodes=${NNODES}  head=${MASTER_IP} worker(s)=${WORKER_IPS}"
   echo "--- Head (local) ---"
   docker ps -a --filter "name=^${MASTER_CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
-  echo "--- Worker (${WORKER_IP}) ---"
+  echo "--- Worker(s) (${WORKER_IPS}) ---"
   local wip
   for wip in $WORKER_IPS; do
     echo "-- worker ${wip}"

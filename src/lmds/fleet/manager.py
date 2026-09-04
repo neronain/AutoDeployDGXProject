@@ -994,6 +994,13 @@ def register_bundle(controller: Path | str) -> Path:
     if meta.exists():
         return meta  # เคย start แล้ว — ของจริงจาก controller ละเอียดกว่า อย่าเขียนทับ
 
+    # พอร์ตที่บันทึกไว้กับ bundle (bundle.env — จาก wizard ที่เลือกพอร์ตว่างให้ หรือ `lmds set --port`)
+    # ต้องชนะ 8000 ตั้งแต่ยังไม่เคย start · ไม่งั้นการ์ด/หน้าภาพรวมขึ้น "port shared" กับ bundle ที่จะ
+    # ไม่มีวันรันที่ 8000 และ suggest_port ก็นับ 8000 เป็นของมันโดยไม่จำเป็น (audit 2026-09-04)
+    from lmds.fleet.bundle_settings import read as read_settings
+
+    saved_port = (read_settings(controller.parent) or {}).get("port", "")
+    port = int(saved_port) if str(saved_port).isdigit() else serving.get("port", 8000)
     meta.write_text(
         f"slug={slug}\n"
         f"model={model.get('served_name', slug)}\n"
@@ -1001,7 +1008,7 @@ def register_bundle(controller: Path | str) -> Path:
         f"model_id={model.get('id', '')}\n"
         f"engine={runtime.get('engine', '')}\n"
         f"mode={'native' if runtime.get('native_build') else 'docker'}\n"
-        f"port={serving.get('port', 8000)}\n"
+        f"port={port}\n"
         f"container=lmds-{slug}\n"
         "pid_file=\n"
         f"controller={controller}\n"
@@ -1052,6 +1059,17 @@ def weights_path(info: ServerInfo) -> Path | None:
     คืน None เมื่อเดาไม่ได้ (ไม่มี profile) — ดีกว่าเดามั่วแล้วลบผิดโฟลเดอร์
     """
     profile = bundle_profile(info.controller) if info.controller_exists else None
+    # bundle ที่มาจาก `lmds adopt` บันทึกตำแหน่ง weight ที่อ่านได้จาก bind mount ไว้ใน profile["weights"]
+    # (audit 2026-09-04) — ใช้ค่านั้นก่อนเดาจากชื่อโมเดล · เชื่อเฉพาะ path ใต้ home ของผู้ใช้
+    recorded = str(((profile or {}).get("weights") or {}).get("path") or "")
+    if recorded:
+        candidate = Path(recorded).expanduser()
+        try:
+            candidate.resolve().relative_to(Path.home().resolve())
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.exists():
+            return candidate
     engine = ((profile or {}).get("runtime") or {}).get("engine") or info.engine
     model_id = ((profile or {}).get("model") or {}).get("id") or info.model_id
     if engine == "llamacpp":
@@ -1133,6 +1151,14 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
                 _shutil.rmtree(item.path)
             else:
                 item.path.unlink(missing_ok=True)
+        except PermissionError as exc:
+            # ไฟล์ของ root (container ที่รันเป็น root โหลด weight ลงมา — bundle ที่ adopt มาเป็นแบบนี้
+            # แทบทุกตัว) · เดิมจบที่ "ต้องใช้ sudo rm -rf" ซึ่งคนที่สั่งผ่านหน้าเว็บ/ssh ไม่มี tty ให้
+            # กรอกรหัส แต่เขาอยู่ในกลุ่ม docker อยู่แล้ว — root ในคอนเทนเนอร์ลบให้ได้ (เคสจริง 2026-09-04)
+            if _docker_rm(item.path):
+                done.append(f"ลบผ่าน docker (ไฟล์เป็นของ root): {item.path}")
+            else:
+                done.append(f"ลบ {item.path} ไม่ได้: {exc}")
         except OSError as exc:
             done.append(f"ลบ {item.path} ไม่ได้: {exc}")
         # ไม่ยอมเชื่อว่า rmtree สำเร็จเพราะมันไม่ throw — ถามดิสก์อีกที
@@ -1144,6 +1170,43 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
         else:
             done.append(f"ลบ {item.label}: {item.path}")
     return done
+
+
+def _docker_rm(path: Path) -> bool:
+    """ลบโฟลเดอร์ที่ user ลบไม่ได้ (ของ root) ด้วย root *ในคอนเทนเนอร์* — คืน True เมื่อหายไปจริง
+
+    ทำไมทางนี้ถึงถูก: คนที่ deploy โมเดลอยู่ในกลุ่ม docker อยู่แล้ว (ไม่งั้นรันโมเดลไม่ได้ตั้งแต่แรก)
+    และ `docker run -v` ให้ root ในคอนเทนเนอร์เขียนโฟลเดอร์ที่ mount ได้ — คือสิทธิ์เดียวกับที่
+    container ตัวเดิมใช้ตอน *สร้าง* ไฟล์พวกนี้ · ไม่ต้องใช้ sudo ไม่ต้องมี tty
+
+    รั้ว: ลบได้เฉพาะใต้ home ของผู้ใช้หรือ HF cache เท่านั้น และไม่ใช่ตัว home เอง — `-v` ในฐานะ root
+    ลบอะไรก็ได้บนเครื่อง จึงจำกัดไว้ที่ที่ที่ remove มีสิทธิ์ลบอยู่แล้วตามปกติ · ใช้ image ที่มีในเครื่อง
+    (ไม่ pull — เครื่อง air-gapped และไม่ควรดึงของใหม่แค่เพื่อลบไฟล์)
+    """
+    if shutil.which("docker") is None:
+        return False
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        return False
+    hf_home = os.environ.get("HF_HOME")
+    roots = [Path.home().resolve()] + ([Path(hf_home).resolve()] if hf_home else [])
+    if not any(root in target.parents for root in roots):
+        return False
+    proc = _bounded(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+                    capture_output=True, text=True)
+    images = [line.strip() for line in (proc.stdout or "").splitlines()
+              if line.strip() and "<none>" not in line]
+    if proc.returncode != 0 or not images:
+        return False
+    # image เล็ก ๆ ก่อน — vLLM 20 GB ก็ใช้ได้แต่ start ช้ากว่าโดยไม่จำเป็น
+    images.sort(key=lambda name: (not any(k in name for k in ("alpine", "busybox", "ubuntu", "debian")), name))
+    done = _bounded(
+        ["docker", "run", "--rm", "-v", f"{target.parent}:/x", images[0],
+         "rm", "-rf", "--", f"/x/{target.name}"],
+        capture_output=True, text=True, timeout=600,
+    )
+    return done.returncode == 0 and not target.exists()
 
 
 def removal_failed(lines: list[str]) -> list[str]:

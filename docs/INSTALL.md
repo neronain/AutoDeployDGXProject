@@ -503,17 +503,19 @@ HF_HOME=/data/hf-cache ./<slug>-single.sh download   # เก็บ weight ไ�
 ```
 
 **โหมด native** — DGX Spark (ARM64, SM121) ไม่มี image ทางการ จึง **build llama.cpp จาก source**
-ต้องรัน `prepare-runtime` เพิ่ม **หนึ่งครั้ง** ก่อน start ครั้งแรก:
+`start` ครั้งแรกจะ build ให้เองเมื่อยังไม่มี `llama-server` · รัน `prepare-runtime` แยกเมื่ออยาก build ล่วงหน้า
+(เช่นก่อนส่งมอบเครื่อง) หรืออัปเดต llama.cpp (`LLAMA_CPP_UPDATE=1`):
 
 ```bash
 ./<slug>-single.sh download
 ./<slug>-single.sh verify-files
-./<slug>-single.sh prepare-runtime   # ← เฉพาะโหมด native
+./<slug>-single.sh prepare-runtime   # ← เฉพาะโหมด native · ข้ามได้: start จะ build ให้เองถ้ายังไม่มี binary
 ./<slug>-single.sh start
 ```
 
-`prepare-runtime` จะ:
-1. ติดตั้ง build deps ที่ขาด (`git`, `cmake`, `ninja-build`, `build-essential`, `curl`) ผ่าน `apt-get` — **ขอ sudo ครั้งเดียว**
+`prepare-runtime` (หรือ `start` ที่เรียกมันให้) จะ:
+1. ติดตั้ง build deps ที่ขาด (`git`, `cmake`, `build-essential`, `curl` — `ninja` ไม่จำเป็น cmake ถอยไป Makefiles เอง) ผ่าน `apt-get` —
+   **ขอ sudo เฉพาะเมื่อขาดจริง** · เครื่องที่ sudo ต้องใส่รหัสจะหยุดพร้อมบอกคำสั่ง `sudo apt-get … install -y <ที่ขาด>` ให้รันเอง
    (ถ้าไม่พบ `nvcc` จะเตือน แต่ยัง build ต่อ — DGX OS มี CUDA Toolkit มาให้แล้ว)
 2. `git clone` llama.cpp ไปที่ `~/src/llama.cpp` แล้ว build ด้วย CUDA (`-DGGML_CUDA=ON`) — ใช้เวลา ~10–30 นาที
 3. **ล็อค commit ที่ build สำเร็จ**ไว้ใน `~/.lmds/run/<slug>/runtime.lock` → build ครั้งถัดไปได้ binary เดิมเป๊ะ

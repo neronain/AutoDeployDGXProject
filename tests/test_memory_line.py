@@ -119,7 +119,7 @@ def test_page_has_the_live_line_and_recomputes_on_input():
     hydrate = page[page.index("async function hydrateMemoryLine("):][:1500]
     assert '".n-ctx, .n-slots, .n-gpu"' in hydrate and 'addEventListener("input"' in hydrate
     # ข้อความสำคัญสองแบบที่ผู้ใช้ถามถึงต้องมี: จองเกินที่ว่าง และ KV ไม่พอ 1 คำขอ
-    assert "start ตอนนี้ไม่ได้" in page and "vLLM จะไม่ start" in page
+    assert "Cannot start now" in page and "vLLM will not start" in page   # UI เป็นอังกฤษตั้งแต่ 0.6.0
     # แถว port/context/slots/gpu-util ต้องไม่ห่อบรรทัดจน gpu-util ตกไปอยู่แถวล่าง
     row = page[page.index('class="n-port"') - 200:page.index('class="n-port"')]
     assert "flex-wrap:nowrap" in row

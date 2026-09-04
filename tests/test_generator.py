@@ -1111,7 +1111,8 @@ def test_start_clears_a_dead_container_instead_of_dead_ending(isolated_config, t
     assert "กำลังรันอยู่ — รัน: $0 stop ก่อน" in text, "ปฏิเสธเฉพาะตอนมันรันอยู่จริง"
     assert "เก็บซาก container จากรอบก่อน" in text, "ซากของรอบก่อนต้องถูกเก็บกวาดเอง"
     # ต้องแยก `docker ps` (รันอยู่) ออกจาก `docker ps -a` (รวมที่ตายแล้ว) จริง ๆ
-    start_block = text.split("start() {")[1][:1400]
+    # (หน้าต่าง 2600 ตัวอักษร: ทาง native ของ llama.cpp ที่อยู่ก่อนบล็อก docker ยาวขึ้นหลัง start build ให้เอง)
+    start_block = text.split("start() {")[1][:2600]
     assert 'docker ps --filter "name=^${CONTAINER_NAME}$"' in start_block
 
 

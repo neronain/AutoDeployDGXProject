@@ -279,6 +279,17 @@ download() {
 หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
   fi
 {% endif %}  mkdir -p "$MODEL_DIR"
+  # กันสั่ง download ซ้อนกันบน bundle เดียว — สองตัวเขียน <ไฟล์>.parts/ ชุดเดียวกันพร้อมกัน = แต่ละส่วน
+  # ถูก append ซ้ำจนใหญ่เกิน → ถูกลบ → โหลดใหม่ → อีกตัวก็เห็น "ไม่คืบหน้า" แล้ว die (exit 1) ทั้งที่
+  # curl ของอีกตัวยังวิ่งอยู่ · เคสจริง 2026-09-04: `node push --download` จบ exit 1 แต่ curl ยังโหลดต่อ
+  # (hub กับ CLI สั่งซ้อนกัน) · ล็อกไฟล์ผูกกับ fd ของ process นี้และ curl ลูก ๆ ที่สืบ fd ไป — ตัวแม่ถูกฆ่า
+  # แต่ curl ยังเขียนอยู่ ล็อกก็ยังถูกถือ ซึ่งตรงกับความจริงว่ายังมีคนเขียนไฟล์ · ไม่มี flock (macOS) = ข้าม
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"${MODEL_DIR}/.download.lock"
+    flock -n 9 || die "download ของ bundle นี้กำลังรันอยู่แล้ว (อีก process ถือ ${MODEL_DIR}/.download.lock)
+รอให้ตัวนั้นจบก่อน — ดูว่าใคร: ps -ef | grep -E 'curl|aria2c|$(basename "$0")'   หรือดู log ของงานนั้น
+(ถ้าตัวแม่ตายไปแล้วแต่ curl ยังโหลดค้าง ปล่อยให้มันโหลดจบ แล้วสั่ง download ซ้ำเพื่อต่อไฟล์ให้ครบ)"
+  fi
   local i have
   for i in "${!MODEL_FILES[@]}"; do
     echo "download [$(( i + 1 ))/{{ '${#MODEL_FILES[@]}' }}]: ${MODEL_URLS[$i]}"
@@ -349,6 +360,25 @@ parts_size() {   # ไบต์รวมของส่วนที่โหล�
   echo "$total"
 }
 
+_free_bytes() {   # ไบต์ว่างบนระบบไฟล์ของโฟลเดอร์นั้น (0 = ถามไม่ได้ · %.0f กัน awk พิมพ์เป็น 1.5e+12)
+  local kb
+  kb="$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { printf "%.0f", $4 * 1024 }' || true)"
+  echo "${kb:-0}"
+}
+
+# ทางขนานใช้ดิสก์ชั่วคราว ~2 เท่าของไฟล์ (ส่วนย่อยใน .parts/ + ไฟล์รวมตอน cat ต่อกัน) — ดิสก์ที่เหลือ
+# 1.2 เท่าจะโหลดขนานได้จนจบแล้วมาตายตอนต่อไฟล์ด้วย "No space left" ทิ้งส่วนที่ได้มาหลาย GB ไว้โดย
+# ไม่มีใครบอกว่าเกิดอะไรขึ้น (รีวิว 2026-09-04) · ไม่พอ = บอกตรง ๆ แล้วถอยไปสตรีมเดี่ยวซึ่งใช้ 1 เท่า
+parallel_fits_on_disk() {
+  local out="$1" want="$2" free need
+  free="$(_free_bytes "$(dirname "$out")")"
+  (( free > 0 )) || return 0          # df ตอบไม่ได้ (ระบบไฟล์แปลก) → ไม่ฟันธง ปล่อยผ่าน
+  need=$(( 2 * want - $(parts_size "$out") ))
+  (( free >= need )) && return 0
+  echo "  ดิสก์ที่ $(dirname "$out") เหลือ $(( free / 1048576 )) MB — โหลดขนานต้องมีที่ว่าง ~2 เท่าของไฟล์ ($(( need / 1048576 )) MB: ส่วนย่อย + ไฟล์รวม) → ถอยไปสตรีมเดี่ยว (ใช้ที่เท่าขนาดไฟล์)"
+  return 1
+}
+
 fetch_parallel() {
   local url="$1" out="$2" want="$3"
   local parts="${FETCH_PARTS:-8}" tmp="${out}.parts" chunk i start end have need pid rc=0
@@ -374,12 +404,19 @@ fetch_parallel() {
   if (( ${#pids[@]} > 0 )); then
     echo "  โหลดขนาน ${#pids[@]} ส่วน (FETCH_PARTS=${parts}) …"
     # รายงานความคืบหน้ารวมทุก 30 วิ — curl -s เงียบ ไม่งั้นผู้ใช้เห็นแค่จอนิ่ง
+    # แต่เช็คว่ายังมีส่วนไหนโหลดอยู่ทุกวินาที: เดิม sleep 30 ก่อนดูครั้งแรก ไฟล์ที่เสร็จใน 2 วิ
+    # จึงต้องนั่งรออีก 28 วิเปล่า ๆ และทุกรอบ resume ก็โดนซ้ำ (รีวิว 2026-09-04)
+    local tick=0 alive total
     while :; do
-      sleep 30
-      local alive=0 total=0
+      sleep 1
+      alive=0
       for pid in "${pids[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
-      for (( i = 0; i < parts; i++ )); do total=$(( total + $(file_size "${tmp}/${i}") )); done
-      echo "  … $(( total / 1048576 )) / $(( want / 1048576 )) MB"
+      tick=$(( tick + 1 ))
+      if (( ! alive )) || (( tick % 30 == 0 )); then
+        total=0
+        for (( i = 0; i < parts; i++ )); do total=$(( total + $(file_size "${tmp}/${i}") )); done
+        echo "  … $(( total / 1048576 )) / $(( want / 1048576 )) MB"
+      fi
       (( alive )) || break
     done
     for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
@@ -416,6 +453,17 @@ fetch_one() {
   local curl_auth="" aria2_auth
   [[ -z "${HF_TOKEN:-}" ]] || curl_auth="header = \"Authorization: Bearer ${HF_TOKEN}\""
 
+  # ดิสก์ไม่พอแม้แต่ไฟล์เดียว — บอกก่อนเสียเวลาโหลด ไม่ใช่ปล่อยให้ curl ตายด้วย "No space left"
+  # กลางทางที่ 60 GB (ของที่โหลดมาแล้วและส่วนใน .parts/ นับเป็นที่ที่ใช้ไปแล้ว)
+  if [[ -n "$want" ]]; then
+    local free_now
+    free_now="$(_free_bytes "$(dirname "$out")")"
+    if (( free_now > 0 )) && (( free_now + $(file_size "$out") + $(parts_size "$out") < want )); then
+      die "$(basename "$out"): ดิสก์ที่ $(dirname "$out") เหลือ $(( free_now / 1048576 )) MB แต่ไฟล์ต้องการ $(( want / 1048576 )) MB
+ล้างที่ว่าง หรือเก็บไฟล์ไว้ดิสก์อื่น:  MODEL_DIR=/data/models $0 download   (ตอน start ต้องตั้ง MODEL_DIR เดียวกัน)"
+    fi
+  fi
+
   while :; do
     attempt=$(( attempt + 1 ))
     rc=1
@@ -432,8 +480,9 @@ fetch_one() {
       rm -f "$aria2_auth"
       (( rc == 0 )) || echo "  aria2c ล้ม (exit ${rc}) — ถอยไป curl"
     fi
-    if (( rc != 0 )) && [[ -n "$want" ]] && (( want >= 268435456 )) && (( ${FETCH_PARTS:-8} >= 2 )); then
-      # ไม่มี aria2c (หรือมันล้ม) + รู้ขนาด + ไฟล์ใหญ่ → หลายส่วนพร้อมกัน (Xet bridge สตรีมเดี่ยวช้ามาก)
+    if (( rc != 0 )) && [[ -n "$want" ]] && (( want >= 268435456 )) && (( ${FETCH_PARTS:-8} >= 2 )) \
+        && parallel_fits_on_disk "$out" "$want"; then
+      # ไม่มี aria2c (หรือมันล้ม) + รู้ขนาด + ไฟล์ใหญ่ + ดิสก์พอ 2 เท่า → หลายส่วนพร้อมกัน (Xet bridge สตรีมเดี่ยวช้ามาก)
       rc=0
       fetch_parallel "$url" "$out" "$want" || rc=$?
       if (( rc != 0 )); then
@@ -670,7 +719,10 @@ server_args() {
     --host "$API_HOST"
     --port "$API_PORT"
   )
-  if [[ -n "$API_KEY" ]]; then SERVER_ARGS+=(--api-key "$API_KEY"); fi
+  # API key ไม่ไปบน argv: `ps` ให้ทุก user บนเครื่องอ่าน argv ของกันได้ — หลักเดียวกับ HF_TOKEN ของ curl
+  # (-K -) และ VLLM_API_KEY ฝั่ง vLLM · llama-server อ่าน LLAMA_ARG_API_KEY จาก environment แทน --api-key
+  # ได้ (ทุก flag ของ server มีคู่ LLAMA_ARG_* ตั้งแต่ b3700) → start() เป็นคน export ให้ ตรงนี้จึงไม่ใส่
+  # (เดิม `--api-key "$API_KEY"` อยู่ตรงนี้ · รีวิว 2026-09-04)
 {% if is_embed %}
   SERVER_ARGS+=(--embedding --pooling "$POOLING" --batch-size "$EMBED_UBATCH" --ubatch-size "$EMBED_UBATCH")
 {% endif %}
@@ -773,13 +825,23 @@ start() {
   check_port_free
 
   if [[ "$RUNTIME_MODE" == "native" ]]; then
-    [[ -x "$LLAMA_SERVER" ]] || die "ยังไม่มี llama-server — รัน: $0 prepare-runtime"
+    if [[ ! -x "$LLAMA_SERVER" ]]; then
+      # เครื่องที่ยังไม่เคยรัน llama.cpp: เดิม start ตายด้วย "ยังไม่มี llama-server — รัน prepare-runtime"
+      # ทั้งที่ prepare-runtime ไม่ต้องถามอะไรเลยเมื่อ build deps ครบ (เจอจริง 2026-09-04: กด start จาก
+      # หน้าเว็บบน node ใหม่แล้วได้แต่ error ให้ไป ssh รันเอง) · build ให้เลย — ถ้าขาด deps และ sudo
+      # ต้องใส่รหัส install_build_dependencies จะ die พร้อมคำสั่ง apt ที่ต้องรันเอง ซึ่งเป็นคำตอบเดียว
+      # กับที่ prepare-runtime ให้อยู่แล้ว ไม่ได้แย่ลง
+      echo "ยังไม่มี llama-server ที่ ${LLAMA_SERVER} — build ให้ก่อน (เท่ากับรัน: $0 prepare-runtime)"
+      prepare_runtime
+    fi
     if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
       die "เซิร์ฟเวอร์รันอยู่แล้ว (PID $(cat "$PID_FILE")) — รัน: $0 stop ก่อน"
     fi
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="$MODEL_DIR"
     server_args
+    # key ผ่าน env ไม่ใช่ argv — ดูเหตุผลใน server_args
+    if [[ -n "$API_KEY" ]]; then export LLAMA_ARG_API_KEY="$API_KEY"; fi
     nohup "$LLAMA_SERVER" "${SERVER_ARGS[@]}" >> "$LOG_FILE" 2>&1 &
     echo "$!" > "$PID_FILE"
   else
@@ -798,8 +860,11 @@ start() {
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="/models"
     server_args
+    # `-e LLAMA_ARG_API_KEY` เฉย ๆ (ไม่มี =ค่า) = docker หยิบค่าจาก env ของเชลล์นี้ — ไม่โผล่ใน argv ของ docker run
+    if [[ -n "$API_KEY" ]]; then export LLAMA_ARG_API_KEY="$API_KEY"; fi
     docker run -d --name "$CONTAINER_NAME" \
       --network host --gpus all \
+      ${API_KEY:+-e LLAMA_ARG_API_KEY} \
       -v "${MODEL_DIR}:/models:ro" \
       "$LLAMACPP_IMAGE" \
       "${SERVER_ARGS[@]}"
@@ -926,6 +991,28 @@ client_config() {
   # llama.cpp แบ่ง --ctx-size เท่า ๆ กันให้ทุก slot (--parallel) — budget ต้องคิดจาก context ต่อ slot จริง
   local slot_context input_budget
   slot_context=$(( CTX_SIZE / PARALLEL_SEQS ))
+{% if is_embed %}
+  # embedding ไม่มี output token — งบอินพุตคือ context ต่อ slot ทั้งก้อน ไม่หัก CLIENT_OUTPUT/template
+  # สูตรของ chat ข้างล่างได้ค่าติดลบกับโมเดล embed context สั้น (bge 512/8192) แล้ว die ทั้งที่
+  # เซิร์ฟเวอร์ปกติดี และ max_output_tokens ที่พิมพ์ออกไปไม่มีความหมายกับ /v1/embeddings
+  input_budget="$slot_context"
+  [[ "$CLIENT_INPUT" == "auto" ]] || input_budget="$CLIENT_INPUT"
+  cat <<EOF
+{
+  "base_url": "http://$(detect_advertise_ip):${API_PORT}/v1",
+  "model": "${SERVED_MODEL_NAME}",
+  "task": "embed",
+  "endpoint": "/v1/embeddings",
+  "api_key": "${API_KEY:-not-required}",
+  "max_input_tokens": ${input_budget},
+  "pooling": "${POOLING}",
+  "server_context_total": ${CTX_SIZE},
+  "context_per_slot": ${slot_context},
+  "parallel_slots": ${PARALLEL_SEQS}
+}
+EOF
+  return 0
+{% endif %}
   if [[ "$CLIENT_INPUT" == "auto" ]]; then
     input_budget=$(( slot_context - CLIENT_OUTPUT - TEMPLATE_OVERHEAD_TOKENS ))
   else
@@ -1217,11 +1304,12 @@ USAGE
   $0 <command> [options]
 
 COMMANDS
-  prepare-runtime   Build llama.cpp from source. REQUIRED once in 'native' mode
-                    (DGX Spark / ARM64 has no official image). Installs build deps via apt (sudo).
+  prepare-runtime   Build llama.cpp from source ('native' mode — DGX Spark / ARM64 has no official
+                    image). 'start' runs this by itself when llama-server is missing; call it directly
+                    to rebuild (LLAMA_CPP_UPDATE=1). Installs build deps via apt (sudo only if missing).
   download          Download every model part (resumable, revision pinned)
   verify-files      Verify all files: exact size + SHA-256 + GGUF magic
-  start             Verify GPU + files, then start llama-server and wait for /health
+  start             Verify GPU + files (build llama.cpp first if needed), start llama-server, wait for /health
   stop              Stop the server
   restart           stop + start (use this to apply new options)
   status            Process/container state + API health
@@ -1270,7 +1358,8 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
 {% endif %}{% endif %}
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
-  Set one with the API_KEY environment variable — it is passed to llama-server as --api-key:
+  Set one with the API_KEY environment variable — it reaches llama-server as the LLAMA_ARG_API_KEY
+  environment variable (never on the command line, so 'ps' cannot show it):
 
     API_KEY=my-secret-token $0 restart          # start the server with authentication on
     API_KEY=\$(openssl rand -hex 24) $0 restart  # or generate a random one

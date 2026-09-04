@@ -54,7 +54,11 @@ class BudgetExceeded(HfError):
 class HfClient:
     def __init__(self, token: str | None = None, client: httpx.Client | None = None):
         self.token = token
-        self._client = client or httpx.Client(timeout=30.0, follow_redirects=True)
+        # read นานกว่า connect: ไฟล์ที่ HF ย้ายไป Xet bridge ตอบ byte แรกช้าได้ 20–60 วิ (วัดจริง
+        # 2026-09-04 ตอน analyze GGUF ที่ต้องอ่าน header ด้วย range request) · 30 วิเดิมทำให้ analyze
+        # ล้มเป็น "ต่อ Hugging Face ไม่ได้" ทั้งที่ Hub ปกติดี — ส่วน connect ยัง 30 วิ จะได้รู้เร็วเมื่อไม่มีเน็ต
+        self._client = client or httpx.Client(
+            timeout=httpx.Timeout(30.0, read=120.0), follow_redirects=True)
 
     def _headers(self) -> dict[str, str]:
         headers = {"User-Agent": "lmds"}

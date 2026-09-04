@@ -80,7 +80,8 @@ def _run(tmp_path, bin_dir, out, want, max_attempts=5):
         FETCH_MAX_ATTEMPTS={max_attempts}
         HF_TOKEN=""
     """) + "\n".join(
-        _extract(text, name) for name in ("file_size", "curl_retry_all", "fetch_one")
+        _extract(text, name)
+        for name in ("file_size", "curl_retry_all", "parts_size", "_free_bytes", "parallel_fits_on_disk", "fetch_one")
     ) + f'\nfetch_one "https://example.invalid/model.gguf" "{out}" {want}\n'
 
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}

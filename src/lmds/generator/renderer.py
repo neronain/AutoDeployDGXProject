@@ -371,6 +371,16 @@ def render_bundle(
     if plan.runtime.engine is Engine.LLAMACPP and not plan.selected_gguf:
         raise ValueError("llama.cpp bundle ต้องเลือกไฟล์ GGUF ก่อน (ใช้ลิงก์ไฟล์ตรง หรือระบุ variant)")
 
+    # embedding มีทางเดินแค่ llama.cpp (--embedding) กับ vLLM (--runner pooling) — template ของ SGLang
+    # ไม่รู้จัก task นี้ และจะ render controller แบบ chat ให้เงียบ ๆ: start ขึ้น /v1/chat/completions
+    # ได้ปกติ แต่ /v1/embeddings ไม่มี test-embed ก็ไม่มี (rule-based ถอยไป vLLM ให้อยู่แล้ว —
+    # แต่แผนจาก LLM หรือ plan ที่แก้มือยังหลุดมาถึงนี่ได้ · รีวิว 2026-09-04)
+    if plan.task == "embed" and plan.runtime.engine is Engine.SGLANG:
+        raise ValueError(
+            "โมเดล embedding ยังไม่มี controller ของ SGLang — ใช้ --engine vllm "
+            "(safetensors → vLLM --runner pooling --convert embed) หรือไฟล์ GGUF → llama.cpp --embedding"
+        )
+
     is_stacked = plan.topology is Topology.STACKED
     if is_stacked and plan.runtime.engine is Engine.LLAMACPP:
         raise ValueError(

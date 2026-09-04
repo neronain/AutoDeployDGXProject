@@ -262,3 +262,21 @@ def test_the_web_server_does_not_wait_forever_for_sse_clients_on_shutdown(monkey
     api.serve(host="127.0.0.1", port=0, token="t")
     assert seen.get("timeout_graceful_shutdown", 0) <= 5
     assert seen.get("exit") == 0
+
+
+def test_weights_path_prefers_the_location_adopt_recorded(tmp_path, monkeypatch):
+    """adopt บันทึก profile["weights"]["path"] จาก bind mount — remove ต้องใช้ค่านั้น ไม่เดาจากชื่อ"""
+    from lmds.fleet import manager
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    recorded = tmp_path / ".cache" / "huggingface" / "hub" / "models--nvidia--X"
+    recorded.mkdir(parents=True)
+    ctl = tmp_path / "bundles" / "x" / "x-adopted.sh"
+    ctl.parent.mkdir(parents=True); ctl.write_text("#!/bin/bash\n")
+    monkeypatch.setattr(manager, "bundle_profile",
+                        lambda c: {"weights": {"path": str(recorded)}, "runtime": {"engine": "tensorrt-llm"}})
+    info = SimpleNamespace(slug="x", controller=str(ctl), controller_exists=True, engine="tensorrt-llm", model_id="")
+    assert manager.weights_path(info) == recorded
+    # path นอก home ต้องไม่ถูกเชื่อ
+    monkeypatch.setattr(manager, "bundle_profile", lambda c: {"weights": {"path": "/etc"}, "runtime": {"engine": "llamacpp"}})
+    assert manager.weights_path(info) is None

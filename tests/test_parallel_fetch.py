@@ -58,7 +58,8 @@ def _bin(tmp_path: Path) -> Path:
 
 def _script(tmp_path: Path, out: Path, want: int, extra_env: str = "") -> str:
     text = _controller(tmp_path)
-    funcs = "\n".join(_extract(text, n) for n in ("file_size", "curl_retry_all", "parts_size", "fetch_parallel", "fetch_one"))
+    funcs = "\n".join(_extract(text, n) for n in (
+        "file_size", "curl_retry_all", "parts_size", "_free_bytes", "parallel_fits_on_disk", "fetch_parallel", "fetch_one"))
     return (
         "set -euo pipefail\nFETCH_MAX_ATTEMPTS=3\ndie() { echo \"DIE: $*\" >&2; exit 9; }\n"
         f"{extra_env}\n{funcs}\n"

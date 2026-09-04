@@ -10,9 +10,11 @@
 | Runtime | {{ plan.runtime.engine.value }} — `{{ plan.runtime.image_ref }}` |
 | Topology | {{ plan.topology.value }} (target: {{ fit.target_name }}) |
 {% if plan.selected_gguf %}| GGUF file | `{{ plan.selected_gguf }}` |
-{% endif %}| Context เริ่มต้น | {{ "{:,}".format(plan.serving.context) }} tokens |
-| Client budget | input {{ "{:,}".format(client_input) }} / output {{ "{:,}".format(plan.serving.max_output_tokens) }} tokens |
-| License | {{ report.license or "ไม่ระบุ — ตรวจก่อนใช้เชิงพาณิชย์" }} |
+{% endif %}{% if is_embed %}| Task | **embedding** — เสิร์ฟ `/v1/embeddings` เท่านั้น ไม่มี chat / tool calling / reasoning{% if plan.runtime.engine.value == "llamacpp" %} · pooling `{{ embed_pooling }}` (`POOLING=` เปลี่ยนได้ตอน restart){% endif %} |
+{% endif %}| Context เริ่มต้น | {{ "{:,}".format(plan.serving.context) }} tokens{% if is_embed %} (= ความยาวเอกสารสูงสุดต่อชิ้นที่ embed ได้){% endif %} |
+{% if is_embed %}| Client budget | input {{ "{:,}".format(plan.serving.context) }} tokens ต่อคำขอ — embedding ไม่มี output token |
+{% else %}| Client budget | input {{ "{:,}".format(client_input) }} / output {{ "{:,}".format(plan.serving.max_output_tokens) }} tokens |
+{% endif %}| License | {{ report.license or "ไม่ระบุ — ตรวจก่อนใช้เชิงพาณิชย์" }} |
 
 {% if plan.runtime.rationale %}> เหตุผลการเลือก runtime: {{ plan.runtime.rationale }}
 {% endif %}
@@ -62,13 +64,17 @@ chmod +x {{ controller_name }}
 chmod +x {{ controller_name }}
 ./{{ controller_name }} download
 ./{{ controller_name }} verify-files
-{% if native_llamacpp %}./{{ controller_name }} prepare-runtime   # ครั้งแรกครั้งเดียว — ติดตั้ง deps + build llama.cpp อัตโนมัติ
+{% if native_llamacpp %}./{{ controller_name }} prepare-runtime   # ครั้งแรกครั้งเดียว — ติดตั้ง deps + build llama.cpp (ข้ามได้: start จะ build ให้เองถ้ายังไม่มี llama-server)
 {% endif %}./{{ controller_name }} start
 ./{{ controller_name }} status
-./{{ controller_name }} test-text
-./{{ controller_name }} client-config
+{% if is_embed %}./{{ controller_name }} test-embed     # ยิง /v1/embeddings 3 ประโยค — คู่ความหมายเดียวกัน (ไทย↔อังกฤษ) ต้องได้คะแนนสูงกว่าประโยคที่ไม่เกี่ยว
+{% else %}./{{ controller_name }} test-text
+{% endif %}./{{ controller_name }} client-config
 ```
-{% endif %}
+{% if is_embed %}
+> โมเดลนี้เป็น **embedding**: client เรียก `POST /v1/embeddings` ด้วย `"model"` = ชื่อใน `client-config` · ไม่มี `test-text`/`test-tools`
+> (สั่งแล้วจะบอกให้ใช้ `test-embed`) · `client-config` ให้ `max_input_tokens` เต็ม context ต่อ slot เพราะไม่มี output
+{% endif %}{% endif %}
 
 ## Conflict shutdown
 

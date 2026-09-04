@@ -35,6 +35,8 @@ class Entry:
     updated_at: float = 0.0
     interval: float = NODE_INTERVAL
     refreshing: bool = False
+    # นับครั้งที่ผู้ใช้/งานสั่ง force() — probe ที่ออกตัวก่อนเลขขยับถือเป็นภาพเก่า (ดู set_node)
+    epoch: int = 0
 
     @property
     def age_seconds(self) -> float:
@@ -122,7 +124,20 @@ class Store:
             self._bump()
             return True
 
-    def set_node(self, name: str, data: dict | None, error: str = "") -> None:
+    def node_epoch(self, name: str) -> int:
+        """เลขรุ่นของแคชเครื่องนั้น — refresher อ่านไว้ *ก่อน* probe แล้วส่งคืนตอน set_node"""
+        with self._lock:
+            return self._nodes.setdefault(name, Entry()).epoch
+
+    def set_node(self, name: str, data: dict | None, error: str = "", *,
+                 epoch: int | None = None) -> None:
+        """เขียนผล probe ของเครื่องนั้น — `epoch` คือเลขที่อ่านไว้ก่อนออกตัว
+
+        เลขไม่ตรง = ระหว่าง probe มีงานที่เปลี่ยนสถานะจริงบนเครื่องนั้นจบไป (job start/stop/remove
+        → STORE.force) ภาพที่ถืออยู่จึงเป็น "ก่อนเปลี่ยน" · ต่างจาก set_local ที่ทิ้งผลไปเลย ตรงนี้
+        ยังเขียน (มีภาพเก่าดีกว่าการ์ดว่าง) แต่ตั้งให้ครบกำหนดทันที — เดิมนอนทับอยู่ 15 วิ ผู้ใช้เห็น
+        โมเดลที่เพิ่ง start ว่ายัง "หยุด" อยู่ทั้งที่ job บอกว่าเสร็จแล้ว
+        """
         with self._lock:
             entry = self._nodes.setdefault(name, Entry())
             entry.data, entry.error = data, error
@@ -130,6 +145,8 @@ class Store:
             entry.refreshing = False
             # ต่อไม่ได้ = ถอยห่างขึ้นเรื่อย ๆ · ต่อได้เมื่อไรกลับมาถี่ปกติทันที
             entry.interval = min(entry.interval * 2, NODE_BACKOFF_MAX) if error else NODE_INTERVAL
+            if epoch is not None and epoch != entry.epoch:
+                entry.interval = 0.0
             self._bump()
 
     def mark_refreshing(self, name: str | None) -> None:
@@ -152,6 +169,8 @@ class Store:
             entry = self._local if name is None else self._nodes.setdefault(name, Entry())
             entry.updated_at = 0.0
             entry.interval = NODE_INTERVAL if name is not None else LOCAL_INTERVAL
+            # probe ที่กำลังวิ่งอยู่ตอนนี้ถือภาพก่อนสั่ง — พอมันเขียนกลับจะได้รู้ว่าต้องไปดูใหม่
+            entry.epoch += 1
 
     def invalidate_local(self) -> None:
         """ทิ้งแคชของเครื่องนี้ — ใช้หลังคำสั่งที่เปลี่ยนสถานะจริง (start/stop/remove)
@@ -171,9 +190,13 @@ class Store:
 
     def drop_missing(self, keep: set[str]) -> None:
         with self._lock:
-            for name in [n for n in self._nodes if n not in keep]:
+            gone = [n for n in self._nodes if n not in keep]
+            for name in gone:
                 del self._nodes[name]
-            self._bump()
+            # ขยับ version เฉพาะเมื่อลบจริง — ลูปเรียกทุกวิ เดิม bump เสมอจึงเท่ากับ SSE ส่ง snapshot
+            # ทั้งฟลีตให้ทุกเบราว์เซอร์วินาทีละครั้งแม้ไม่มีอะไรเปลี่ยน (wait_for_change ไม่เคยได้รอ)
+            if gone:
+                self._bump()
 
 
 STORE = Store()
@@ -211,9 +234,11 @@ def _refresh_node(name: str) -> None:
     node = find(name)
     if node is None:
         return
+    # อ่านเลขรุ่นก่อนออกตัว — probe ผ่าน ssh กินเวลาเป็นวินาที ซึ่งนานพอให้ job บนเครื่องนั้นจบคั่นกลาง
+    epoch = STORE.node_epoch(name)
     try:
         info = probe(node)
-        STORE.set_node(name, info)
+        STORE.set_node(name, info, epoch=epoch)
         # last_seen ด้วย — เดิมมีแต่ CLI ที่เขียน ทำให้ `lmds node list` โชว์ "เห็นล่าสุด" ค้างเป็นวัน
         # ทั้งที่ refresher คุยกับเครื่องนั้นอยู่ทุก 15 วิ
         update(name, last_error="", last_seen=_stamp(), **status_from_probe(info))

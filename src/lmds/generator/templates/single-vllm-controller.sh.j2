@@ -297,6 +297,11 @@ download() {
   # กลายเป็นกองซ้อนกันสามตัวที่ไม่มีตัวไหนทำงานเลย (เจอจริงเช่นกัน)
   DOWNLOAD_STALL_SECONDS="${DOWNLOAD_STALL_SECONDS:-600}"
 
+  # ทำไมทางนี้ไม่มี "โหลดขนานด้วย curl -r" แบบ controller ของ llama.cpp: safetensors หลายสิบ shard โหลด
+  # ผ่าน huggingface_hub ในคอนเทนเนอร์ ซึ่งมี hf_xet มากับ image (Xet = แบ่ง chunk ดึงขนานเองอยู่แล้ว)
+  # · HF_HUB_ENABLE_HF_TRANSFER จงใจไม่ตั้ง — huggingface_hub 1.x (image v0.20: hub 1.14 + hf-xet 1.5) เลิกใช้
+  # hf_transfer แล้ว ตั้งไปได้แค่คำเตือน deprecated · ถ้า Xet ค้าง (ดู _snapshot_download_resilient)
+  # ระบบปิด Xet แล้วต่อจากเดิมให้เอง — ผู้ใช้ตั้ง HF_HUB_DISABLE_XET=1 ล่วงหน้าได้เมื่อรู้ว่าเครือข่ายมีปัญหา
   _download_bytes() {
     du -sb "$(_model_cache_dir)" 2>/dev/null | cut -f1 || echo 0
   }
@@ -652,7 +657,10 @@ start() {
     docker_args+=(--user "$(id -u):$(id -g)")
   fi
   if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e HF_TOKEN); fi
-  if [[ -n "$API_KEY" ]]; then docker_args+=(-e "VLLM_API_KEY=${API_KEY}"); fi
+  # `-e VLLM_API_KEY` เฉย ๆ (ไม่มี =ค่า) = docker หยิบค่าจาก env ของเชลล์นี้ — เดิม `-e "VLLM_API_KEY=${API_KEY}"`
+  # เอาค่าจริงไปแปะบน argv ของ docker run ซึ่ง `ps` ให้ทุก user บนเครื่องอ่านได้ (รูเดียวกับ HF_TOKEN
+  # ที่อุดไปแล้วข้างบน · รีวิว 2026-09-04) · ตัว container เองยังเห็นค่าเต็มตามเดิม
+  if [[ -n "$API_KEY" ]]; then export VLLM_API_KEY="$API_KEY"; docker_args+=(-e VLLM_API_KEY); fi
 {% if runtime_assets -%}
   verify_assets
   docker_args+=(-v "${PLUGIN_DIR}:${PLUGIN_MOUNT}:ro")
