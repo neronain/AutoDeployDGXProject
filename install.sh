@@ -121,9 +121,16 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 # --clear เสมอ: ทางอัปเดตที่เอกสารบอกไว้คือรัน install.sh ซ้ำ ซึ่งเจอ venv เดิมอยู่แล้ว
 # venv เดิมอาจถูกสร้างด้วย python คนละตัว (เช่นเปลี่ยนไปใช้ conda ทีหลัง) แล้ว ensurepip จะล้ม
 # แบบอ่านไม่รู้เรื่อง — สร้างทับให้จบ ปลอดภัยเพราะโฟลเดอร์นี้เป็นของ LMDS ตัวเดียว
-make_venv "${INSTALL_DIR}/venv" ||
-  die "สร้าง venv ที่ ${INSTALL_DIR}/venv ไม่ได้ — ถ้าข้อความข้างบนพูดถึง ensurepip ให้ลง: sudo apt install python3-venv"
-"${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
+# สร้างลง venv.new ก่อน แล้วค่อยสลับเมื่อติดตั้งสำเร็จ — เดิม `--clear` ทับ venv เดิมทันที ทำให้ pip ที่ล้ม
+# กลางทาง (เคสจริง 2026-09-04: PyPI จากไซต์ Neronain ตอบช้า 10 วิ/คำขอ → build wheel ล้ม) ทิ้ง node
+# ไว้แบบ **ไม่มี lmds เลย** (spark-head) ทั้งที่ของเดิมใช้ได้ดี · ตอนนี้ล้ม = ของเดิมยังอยู่ครบ
+NEW_VENV="${INSTALL_DIR}/venv.new"
+rm -rf "$NEW_VENV"
+make_venv "$NEW_VENV" ||
+  die "สร้าง venv ที่ ${NEW_VENV} ไม่ได้ — ถ้าข้อความข้างบนพูดถึง ensurepip ให้ลง: sudo apt install python3-venv"
+# เน็ตช้าไม่ควรทำให้ติดตั้งล้ม — pip ค่าเริ่มต้นลอง 5 ครั้ง timeout 15 วิ ซึ่งไม่พอสำหรับไซต์ที่ PyPI ตอบช้า
+export PIP_RETRIES="${PIP_RETRIES:-8}" PIP_TIMEOUT="${PIP_TIMEOUT:-60}"
+"${NEW_VENV}/bin/pip" install --quiet --upgrade pip
 
 # ประทับ commit ที่กำลังติดตั้งลงไปในแพ็กเกจ — ติดตั้งแบบปกติ (ไม่ใช่ editable) ทำให้โค้ดที่รัน
 # อยู่ไม่ได้อยู่ใน git checkout อีกต่อไป จึงถามภายหลังไม่ได้ว่านี่คือโค้ดรุ่นไหน · เลข version
@@ -138,23 +145,34 @@ BUILD_SOURCE=""
 printf '# สร้างโดย install.sh — commit และ checkout ที่ติดตั้งไว้ ณ ตอนนั้น\nCOMMIT = "%s"\nSOURCE = "%s"\n' \
   "$BUILD_COMMIT" "$BUILD_SOURCE" > "${REPO_DIR}/src/lmds/_build.py"
 
-"${INSTALL_DIR}/venv/bin/pip" install --quiet "$REPO_DIR"
+if ! "${NEW_VENV}/bin/pip" install --quiet "$REPO_DIR"; then
+  rm -rf "$NEW_VENV"
+  if [ -x "${INSTALL_DIR}/venv/bin/lmds" ]; then
+    die "ติดตั้งรุ่นใหม่ไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · รุ่นเดิมยังอยู่และใช้ได้ตามปกติ: $(LMDS_NO_BANNER=1 "${INSTALL_DIR}/venv/bin/lmds" version 2>/dev/null | head -1) · ลองใหม่: ./install.sh"
+  fi
+  die "ติดตั้งไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · ลองใหม่: PIP_TIMEOUT=120 ./install.sh"
+fi
 
 # keyring เป็น optional extra — ถ้าลงได้ key จะไปอยู่ใน keyring ของ OS แทนไฟล์ 0600
 # เครื่อง server ที่ไม่มี desktop session มักไม่มี backend ที่ใช้ได้ → ข้ามไปเงียบ ๆ ไม่ให้ติดตั้งพัง
-if "${INSTALL_DIR}/venv/bin/pip" install --quiet 'keyring>=24.0' 2>/dev/null; then
+if "${NEW_VENV}/bin/pip" install --quiet 'keyring>=24.0' 2>/dev/null; then
   echo "เก็บ key ผ่าน OS keyring ได้ (ถ้าเครื่องมี backend รองรับ)"
 else
   echo "ไม่ได้ติดตั้ง keyring — key จะเก็บที่ ~/.config/lmds/credentials (สิทธิ์ 0600)"
 fi
 
 # ส่วนเว็บ (lmds web) เป็น optional extra — ลงให้ถ้าลงได้ ไม่ได้ก็ไม่กระทบ CLI
-if "${INSTALL_DIR}/venv/bin/pip" install --quiet 'fastapi>=0.110' 'uvicorn>=0.27' 2>/dev/null; then
+if "${NEW_VENV}/bin/pip" install --quiet 'fastapi>=0.110' 'uvicorn>=0.27' 2>/dev/null; then
   echo "ติดตั้งหน้าเว็บด้วย — เปิดด้วย: lmds web"
 else
   echo "ข้ามหน้าเว็บ (ติดตั้ง fastapi/uvicorn ไม่สำเร็จ) — CLI ใช้ได้ตามปกติ"
 fi
 
+# สลับเข้าที่ — ทุกอย่างในรุ่นใหม่พร้อมแล้ว · venv.old ลบทิ้งหลังสลับ (ล้มตรงนี้ยังมีของครบทั้งสองชุด)
+rm -rf "${INSTALL_DIR}/venv.old"
+[ -d "${INSTALL_DIR}/venv" ] && mv "${INSTALL_DIR}/venv" "${INSTALL_DIR}/venv.old"
+mv "$NEW_VENV" "${INSTALL_DIR}/venv"
+rm -rf "${INSTALL_DIR}/venv.old"
 ln -sf "${INSTALL_DIR}/venv/bin/lmds" "${BIN_DIR}/lmds"
 LMDS="${BIN_DIR}/lmds"
 
