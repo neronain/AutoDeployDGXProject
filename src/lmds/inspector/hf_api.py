@@ -62,6 +62,21 @@ class HfClient:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
+    def _get(self, url: str, **kw) -> httpx.Response:
+        """GET ที่แปล error ระดับเครือข่ายเป็น HfError — ไม่ปล่อย httpx.ConnectError หลุดขึ้นไป
+
+        เคสจริง 2026-09-04: HF ล่มชั่วคราว (SSL EOF / handshake timeout) → หน้าเว็บได้ 500 "Internal
+        Server Error" เปล่า ๆ และ CLI ได้ traceback ยาวของ httpx ทั้งที่ความหมายแค่ "ต่อ Hugging Face
+        ไม่ได้ตอนนี้ ลองใหม่" · ทุกที่ที่จับ HfError อยู่แล้วจึงได้ข้อความที่ทำต่อได้
+        """
+        try:
+            return self._client.get(url, **kw)
+        except httpx.HTTPError as exc:
+            raise HfError(
+                f"ต่อ Hugging Face ไม่ได้ ({type(exc).__name__}: {exc or 'timeout'}) — "
+                "เช็คอินเทอร์เน็ต/proxy ของเครื่องนี้ แล้วลองใหม่ · เครื่อง air-gapped ใช้ mirror ภายในผ่าน HF_ENDPOINT"
+            ) from exc
+
     def _raise_for_access(self, repo_id: str, status: int) -> None:
         if status in (401, 403):
             raise AuthRequired(repo_id, status, had_token=self.token is not None)
@@ -73,7 +88,7 @@ class HfClient:
         path = f"/api/models/{repo_id}"
         if revision:
             path += f"/revision/{revision}"
-        resp = self._client.get(f"{HF_BASE}{path}", params={"blobs": "true"}, headers=self._headers())
+        resp = self._get(f"{HF_BASE}{path}", params={"blobs": "true"}, headers=self._headers())
         self._raise_for_access(repo_id, resp.status_code)
         if resp.status_code != 200:
             raise HfError(f"Hub API ตอบ HTTP {resp.status_code} สำหรับ {repo_id}")
@@ -84,7 +99,7 @@ class HfClient:
     ) -> bytes | None:
         """ดึงไฟล์เล็ก (config/tokenizer/index) — คืน None ถ้าไม่มีไฟล์นั้น"""
         url = f"{HF_BASE}/{repo_id}/resolve/{revision}/{filename}"
-        resp = self._client.get(url, headers=self._headers())
+        resp = self._get(url, headers=self._headers())
         if resp.status_code == 404:
             return None
         self._raise_for_access(repo_id, resp.status_code)
@@ -102,7 +117,7 @@ class HfClient:
         headers = self._headers()
 
         def fetch(start: int, end: int) -> bytes:
-            resp = self._client.get(url, headers={**headers, "Range": f"bytes={start}-{end}"})
+            resp = self._get(url, headers={**headers, "Range": f"bytes={start}-{end}"})
             if resp.status_code == 404:
                 raise RepoNotFound(repo_id)
             self._raise_for_access(repo_id, resp.status_code)

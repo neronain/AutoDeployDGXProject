@@ -157,3 +157,22 @@ def test_feature_summary_shows_embedding():
 
     assert feature_summary({"features": {"embedding": {"pooling": "last"}}}) == "embedding (last)"
     assert feature_summary({"features": {"embedding": None}}) == "text"
+
+
+# ── พบระหว่าง deploy จริง: HF ล่ม → 500 เปล่า ๆ ──────────────────────────────────────
+
+def test_a_network_failure_to_hugging_face_is_an_hf_error_not_a_traceback():
+    import httpx
+
+    from lmds.inspector.hf_api import HfClient, HfError
+
+    class Dead:
+        def get(self, *a, **k):
+            raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING]")
+
+    client = HfClient(client=Dead())
+    with pytest.raises(HfError) as exc:
+        client.model_info("Qwen/Qwen3-0.6B")
+    assert "ต่อ Hugging Face ไม่ได้" in str(exc.value)
+    with pytest.raises(HfError):
+        client.fetch_small_file("Qwen/Qwen3-0.6B", "main", "config.json")
