@@ -364,8 +364,10 @@ fetch_parallel() {
     need=$(( end - start + 1 ))
     (( have >= need )) && continue
     # -r ต่อจากที่มีแล้ว append เข้าไฟล์ส่วน — ตายกลางคันก็เก็บส่วนที่ได้ไว้ รอบหน้าเริ่มจากตรงนั้น
-    ( curl -fsSL --retry 5 --retry-delay 5 $(curl_retry_all) \
-        --connect-timeout 20 --speed-limit 10240 --speed-time 60 \
+    # **ห้ามใส่ --retry ตรงนี้**: curl retry เองจะยิง range เดิมซ้ำแล้วเขียน body ซ้ำต่อท้ายส่วน (stdout
+    # append ไม่รู้จัก -C) → ขนาดสุดท้ายถูกแต่เนื้อหาซ้ำที่จุดหลุด SHA-256 ไม่ตรงทั้งไฟล์ (เจอจริง 14 GB
+    # หลุดที่ offset 236 MB ของส่วน 0) · ให้ลูปนอกของ fetch_one เป็นคน resume จากขนาดไฟล์จริงแทน
+    ( curl -fsSL --connect-timeout 20 --speed-limit 10240 --speed-time 60 \
         -r "$(( start + have ))-${end}" -K - "$url" <<< "$curl_auth" >> "${tmp}/${i}" ) &
     pids+=($!)
   done
