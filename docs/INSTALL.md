@@ -168,10 +168,13 @@ cd AutoDeployDGXProject
 > hub ส่งโค้ดของตัวเองไปติดตั้งให้ ไม่ต้อง clone repo บนเครื่องนั้น
 
 สคริปต์จะ:
-1. ตรวจ Python ≥ 3.10 · ถ้าขาดโมดูล `venv` **ถามติดตั้งให้** (`sudo apt install python3-venv`)
-2. สร้าง virtualenv ที่ `~/.local/share/lmds/venv` (ไม่ยุ่งกับ Python ระบบ)
-3. ติดตั้ง lmds ลง venv นั้น
-4. symlink คำสั่ง `lmds` ไปที่ `~/.local/bin/lmds`
+1. ตรวจ Python ≥ 3.10 · ถ้าขาดโมดูล `venv` **ถามติดตั้งให้** (`sudo apt install python3-venv`) — sudo ไม่ได้ก็ถอยไป
+   `venv --without-pip` แล้วดึง pip จาก bootstrap.pypa.io
+2. **ย้าย venv เดิม (ถ้ามี) ไป `venv.old`** แล้วสร้างใหม่ที่ `~/.local/share/lmds/venv` (ไม่ยุ่งกับ Python ระบบ)
+3. ติดตั้ง lmds ลง venv นั้น — pip ใช้ `PIP_RETRIES=8 PIP_TIMEOUT=60` เป็นค่าเริ่มต้น (ไซต์ที่ PyPI ตอบช้าเคยล้ม) ·
+   **ล้ม = ย้าย `venv.old` กลับมาแล้วบอกชัดว่ารุ่นเดิมยังใช้ได้** ไม่ทิ้งเครื่องไว้แบบไม่มี `lmds` · สำเร็จค่อยลบ `venv.old`
+4. symlink คำสั่ง `lmds` ไปที่ `~/.local/bin/lmds` และประทับ commit (`--short=7`) + ที่อยู่ checkout ลงแพ็กเกจ
+   (ป้ายเทียบรุ่นกับ hub และปุ่ม Update ใช้ค่านี้)
 5. เติม `~/.local/bin` ลง PATH ใน `~/.bashrc` (หรือ `~/.zshrc`) ให้อัตโนมัติถ้ายังไม่มี
 6. **ตรวจความพร้อมของเครื่อง แล้วติดตั้งของที่ขาดให้** — ดูตารางข้างล่าง
 7. **ถามตั้งค่า LLM provider + API key** (ดู §3.2) — ข้ามได้
@@ -195,14 +198,16 @@ cd AutoDeployDGXProject
 
 ### env สำหรับติดตั้งแบบอัตโนมัติ / ในสคริปต์
 
-| env | ผล |
+| env / flag | ผล |
 |---|---|
+| `./install.sh -y` / `--yes` | เท่ากับ `LMDS_ASSUME_YES=1` — พิมพ์ง่ายกว่าและเห็นในประวัติคำสั่งชัดกว่า · `--help` แสดง env ทั้งหมด |
 | `LMDS_ASSUME_YES=1` | ตอบ Y ทุกคำถาม — ติดตั้งของที่ขาดให้เลยโดยไม่ถาม (ต้องรันได้ `sudo` โดยไม่ถามรหัส) |
-| `LMDS_SKIP_PREREQ=1` | ข้ามการติดตั้ง Docker/toolkit ทั้งหมด — ตรวจแล้วรายงานอย่างเดียว |
+| `LMDS_SKIP_PREREQ=1` | ข้ามการติดตั้ง Docker/toolkit ทั้งหมด — ตรวจแล้วรายงานอย่างเดียว (ปุ่ม Update บนหน้าเว็บใช้แบบนี้) |
 | `LMDS_INSTALL_DIR` / `LMDS_BIN_DIR` | เปลี่ยนที่ติดตั้ง |
+| `PIP_RETRIES` / `PIP_TIMEOUT` | ค่าเริ่มต้น `8` / `60` — ไซต์ที่ PyPI ตอบช้าตั้ง `PIP_TIMEOUT=120` |
 
 ```bash
-sudo -v && LMDS_ASSUME_YES=1 ./install.sh     # ติดตั้งรวดเดียวไม่ต้องนั่งตอบ
+sudo -v && ./install.sh -y                    # ติดตั้งรวดเดียวไม่ต้องนั่งตอบ
 ```
 
 > เมื่อไม่ได้รันบน terminal จริง (CI, `curl | bash`, pipe) สคริปต์จะ**ไม่แตะเครื่องเลย** —
@@ -234,14 +239,17 @@ lmds web --enable --bind 0.0.0.0     # systemd user service — ขึ้นเ�
 (ใช้ครั้งเดียว ไม่ถูกเก็บ) → hub ทำให้ตามลำดับ:
 
 1. ใส่ SSH key ของ hub ลง `~/.ssh/authorized_keys` ของเครื่องนั้น
-2. **ส่งโค้ดของ hub ไป** (git bundle ~2 MB ผ่าน scp) แล้วรัน `install.sh` บนเครื่องนั้น — เครื่องนั้น
-   **ไม่ต้องเข้าถึง GitHub** และไม่ต้องมี deploy key (hub ที่ไม่ได้ติดตั้งจาก git checkout จะถอยไป
-   `git clone` จาก GitHub ตามเดิม)
-3. ติดตั้ง Docker / NVIDIA Container Toolkit / กลุ่ม docker / linger ด้วยรหัสผ่านที่ให้มา
+2. **ส่งโค้ดของ hub ไป** (git bundle ~2 MB ผ่าน scp แล้ว `git clone -b main` / `git pull` จากไฟล์นั้น · origin ชี้กลับ
+   GitHub เผื่อวันหน้า) แล้วรัน `install.sh` บนเครื่องนั้น — เครื่องนั้น **ไม่ต้องเข้าถึง GitHub** และไม่ต้องมี deploy key
+   ต้องมีแค่ `git` + `python3` (hub ที่ไม่ได้ติดตั้งจาก git checkout จะถอยไป `git clone` จาก GitHub ตามเดิม) ·
+   โฟลเดอร์ `~/AutoDeployDGXProject` เดิมที่ไม่ใช่ git (ติดตั้งแบบ copy) ถูกย้ายไป `.bak-<เวลา>` · checkout ที่แก้ไว้/แยกสาย
+   ถูกเก็บที่ branch `local-<เวลา>` + stash แล้วตามโค้ดของ hub
+3. ติดตั้ง Docker / NVIDIA Container Toolkit / กลุ่ม docker / linger ด้วยรหัสผ่านที่ให้มา (ส่งทาง stdin ไม่เขียนดิสก์)
 4. สำรวจเครื่อง (`lmds agent info`) แล้วขึ้นในเมนูซ้ายภายใต้ไซต์ที่ตั้งไว้
 
-จาก CLI: `lmds node add <ชื่อ> <user>@<host> --install` แล้ว `lmds node setup <ชื่อ>` (ขั้นที่ใช้ sudo)
-· อัปเดตภายหลัง: ปุ่ม **Update** บนการ์ดเครื่อง หรือ `lmds node install --all`
+จาก CLI: `lmds node add <host> --user <user> [--name <ชื่อ>] --install` แล้ว `lmds node setup <ชื่อ> --with-prereq` (ขั้นที่ใช้
+sudo — ถามรหัสตอนนั้น ใช้ครั้งเดียว) · อัปเดตภายหลัง: ปุ่ม **Update** ที่แถบบน (hub ก่อนแล้วไล่ทุก node) หรือ
+`lmds node install --all` · เครื่องที่ต่อไม่ติดตอนนั้นข้ามไป อัปเดตเมื่อกลับมาออนไลน์
 
 ### ตรวจว่าติดตั้งสำเร็จ
 
@@ -268,6 +276,20 @@ Local Model Deploy Studio — สร้างโดย neronain ⚡ fb.com/neron
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+### ปัญหาตอนติดตั้ง / อัปเดตที่เจอบ่อย
+
+| อาการ | สาเหตุ | วิธีแก้ |
+|---|---|---|
+| `install.sh` ล้มที่ pip (`Read timed out` / build wheel ล้ม) | PyPI ตอบช้า (บางไซต์ 10 วิ/คำขอ) | สคริปต์คืน `venv.old` ให้แล้ว — รุ่นเดิมยังใช้ได้ · ลองใหม่ `PIP_TIMEOUT=120 ./install.sh` · เครื่องหลัง proxy ตั้ง `HTTPS_PROXY` ให้ shell |
+| `ensurepip is not available` | Ubuntu แยก `python3-venv` ออก | สคริปต์ถามติดตั้งให้ถ้า sudo ได้ · ไม่ได้ก็ถอยไป `--without-pip` + bootstrap.pypa.io เอง (ต้องถึงเน็ต) |
+| ปุ่ม Update: hub ผ่าน แต่ node ขึ้น `./install.sh: No such file` (exit 127) | node ยังไม่มี checkout แล้ว clone จาก bundle ได้โฟลเดอร์เปล่า (bundle ไม่มี HEAD) — รุ่นก่อน 0.6.0 | อัปเดต hub เป็น 0.6.0+ แล้วกด Update ใหม่ (`git clone -b main`) |
+| node install ล้ม `exit 128` / clone ชน | โฟลเดอร์ `~/AutoDeployDGXProject` บน node ไม่ใช่ git (copy มา) หรือแก้ไว้/แยกสาย | 0.6.0+ จัดการเอง (ย้ายไป `.bak-<เวลา>` / branch `local-<เวลา>`) · เก่ากว่านั้นย้ายโฟลเดอร์เองแล้วสั่งใหม่ |
+| หน้าเว็บบอก node "ยังไม่ตรง hub" ทั้งที่เพิ่งอัปเดตสำเร็จ | git ย่อ hash 7 กับ 8 ตัวต่างกันตามเครื่อง | แก้แล้ว 0.6.0 (เทียบ prefix + `install.sh` ประทับ `--short=7`) — อัปเดต hub |
+| `lmds remove` / ปุ่ม Remove ขึ้น "ต้องใช้ sudo rm -rf" | weight ที่ container เขียนเป็น root | 0.6.0+ ลบผ่าน `docker run --rm … rm -rf` ให้เอง (เฉพาะใต้ home / HF cache · ใช้ image ที่มีอยู่ ไม่ pull) · ผู้ใช้ต้องอยู่กลุ่ม docker |
+| `start` บน DGX Spark ขึ้น `ยังไม่มี llama-server … build ให้ก่อน` แล้วเงียบ 10–30 นาที | build llama.cpp จาก source ครั้งแรก | ปกติ — ไม่ต้องรัน `prepare-runtime` เอง · จบด้วย `sudo apt-get … install -y git cmake …` = ขาด build deps และ sudo ต้องใส่รหัส → รันคำสั่งนั้นเองแล้ว start ใหม่ |
+| ขั้น prereq ใต้ sudo ขึ้น `cd ~/AutoDeployDGXProject: No such file` | `~` ใต้ `sudo bash -c` คือ home ของ root | แก้แล้ว 0.6.0 (ส่ง `HOME` ของผู้ใช้เข้าไป + chown คืน) |
+| hub restart ทุกครั้งใช้ 10 วิ+ แล้ว journal ขึ้น `Killing` | uvicorn รอ SSE ของเบราว์เซอร์ที่ไม่มีวันปิด | แก้แล้ว 0.6.0 (`timeout_graceful_shutdown=3`) — restart ใช้ ~3 วิ |
 
 ### (ทางเลือก) เก็บ API key ใน OS keyring แทนไฟล์
 
@@ -565,7 +587,8 @@ cd bundles/qwen3-0-6b-gguf
 ./qwen3-0-6b-gguf-single.sh stop
 ```
 
-> DGX Spark: ขั้นที่ 5 ต้องแทรก `./qwen3-0-6b-gguf-single.sh prepare-runtime` ก่อน `start` (ดู §4.3)
+> DGX Spark: ขั้นที่ 5 ครั้งแรก `start` จะ build llama.cpp จาก source ให้เอง (~10–30 นาที) — จะแทรก
+> `./qwen3-0-6b-gguf-single.sh prepare-runtime` ก่อนก็ได้ถ้าอยาก build แยกให้เห็นชัด (ดู §4.3)
 
 ผ่านครบ = เครื่องพร้อม deploy โมเดลจริง · ไม่ผ่านข้อไหน กลับไปดูข้อนั้นในตารางของ [USAGE.md §7](USAGE.md)
 
@@ -576,11 +599,14 @@ cd bundles/qwen3-0-6b-gguf
 ```bash
 cd AutoDeployDGXProject
 git pull
-./install.sh          # รันซ้ำได้เลย — config/key เดิมอยู่ครบ
+./install.sh          # รันซ้ำได้เลย — config/key เดิมอยู่ครบ · ล้ม = venv.old ถูกคืน รุ่นเดิมยังใช้ได้
+lmds web --restart    # hub ที่รันคอนโซลอยู่ (ปุ่ม Update บนหน้าเว็บทำสามขั้นนี้ให้ แล้วไล่อัปเดต node ต่อ)
+lmds node install --all   # เครื่องอื่นทั้งฟลีต — hub ส่งโค้ดที่ตัวเองรันอยู่ไป ไม่แตะ GitHub
 ```
 
 > ⚠️ **`git pull` อย่างเดียวไม่พอ** — ติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds` จึงยังเป็นโค้ดเก่าจนกว่าจะรัน `./install.sh` ซ้ำ
-> bundle ที่ generate ไว้แล้ว**ไม่ถูกแก้ย้อนหลัง** — อยากได้ template ใหม่ต้อง `lmds deploy` โมเดลนั้นใหม่
+> bundle ที่ generate ไว้แล้ว**ไม่ถูกแก้ย้อนหลัง** — อยากได้ template ใหม่ใช้ `lmds rebuild <ชื่อ>` (ไม่เรียก LLM ซ้ำ) หรือ `lmds deploy` โมเดลนั้นใหม่
+> · ตรวจว่าทุกเครื่องตรงกัน: `lmds node list` (ป้าย ≠ hub เฉพาะที่ต่างจริง) หรือ Needs attention บนหน้าภาพรวม
 
 ## การถอนการติดตั้ง
 

@@ -8,7 +8,7 @@
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
 [![version](https://img.shields.io/badge/version-0.6.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1556-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-1720-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -64,8 +64,9 @@ lmds web --enable --bind 0.0.0.0     # คอนโซลที่ http://<ip>:8
 ```
 
 **เครื่องอื่นในฟลีตไม่ต้องติดตั้งเอง** — บนหน้าเว็บกด *Add machine* ใส่ host / user / รหัสผ่าน sudo
-ครั้งเดียว: hub ใส่ SSH key ให้, **ส่งโค้ดของตัวเองไปติดตั้ง** (ไม่ต้อง clone repo หรือมี deploy key
-บนเครื่องนั้น), ตั้ง Docker / NVIDIA toolkit ให้ แล้วเครื่องนั้นโผล่ในเมนูซ้ายทันที
+ครั้งเดียว: hub ใส่ SSH key ให้, **ส่งโค้ดของตัวเองไปติดตั้ง** (git bundle ~2 MB ผ่าน scp — ไม่ต้อง clone repo
+หรือมี deploy key บนเครื่องนั้น, เครื่องนั้นไม่ต้องเข้าถึง GitHub เลย), ตั้ง Docker / NVIDIA toolkit ให้
+แล้วเครื่องนั้นโผล่ในเมนูซ้ายทันที · `install.sh` ล้มกลางทาง (PyPI ช้า) = รุ่นเดิมยังอยู่ ไม่ทิ้งเครื่องไว้แบบไม่มี `lmds`
 
 ถนัด CLI มากกว่า: `lmds hardware` (เครื่องนี้คือ target อะไร) → `lmds deploy Qwen/Qwen3-32B`
 (วิเคราะห์ → วางแผน → ให้ยืนยัน → bundle + ZIP ที่ผ่านทุกด่าน)
@@ -85,6 +86,12 @@ lmds deploy meta-llama/Llama-3.3-70B-Instruct --target dgx-spark-single
 
 # ใหญ่เกินหนึ่งเครื่อง → stacked (worker-first + sync-worker ให้อัตโนมัติ)
 lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
+
+# repo GGUF หลาย quant โดยไม่มี tty ให้เลือกหมายเลข (script / hub)
+lmds deploy unsloth/gemma-4-26B-A4B-it-GGUF --gguf Q8_K_XL --yes
+
+# โมเดล embedding — ระบบเดาจาก repo เอง · เดาผิดบังคับด้วย --task embed|generate
+lmds deploy VesNFF/Qwen3-VL-Embedding-8B-GGUF --task embed
 ```
 
 </details>
@@ -119,14 +126,28 @@ KV bf16 · 120 KiB ต่อ token
 
 | | เครื่องเดียว | Stacked |
 |---|---|---|
-| Engine | vLLM **หรือ** llama.cpp | **vLLM เท่านั้น** |
+| Engine | vLLM · llama.cpp · SGLang | **vLLM เท่านั้น** |
 | Artifact | safetensors หรือ GGUF | **safetensors เท่านั้น** |
+| งาน | chat · vision · embedding | chat · vision (embedding ปฏิเสธ — ลงเครื่องเดียวเสมอ) |
 | สายเชื่อม | ไม่ต้อง | **ต้องมี** ≥25G (ของจริง 200G RoCE) |
 | จำนวนเครื่อง | 1 | ต่อตรง ≤3 · ผ่าน switch ≤4 |
+| ที่ได้จริง | เร็วสุด | **หน่วยความจำ/KV/จำนวนคนพร้อมกันเพิ่ม** — ไม่ใช่ tok/s ต่อคน |
 
 ระบบตรวจ ConnectX/RDMA ให้เอง บอกว่าเครื่องคู่ไหน stacked กันได้ เขียน `cluster.env` ให้
 และ**เตือนเมื่อลิงก์ negotiate ได้ต่ำกว่าที่การ์ดทำได้** (NVIDIA ตรวจรับที่ ≥184 Gbit/s —
 พอร์ตที่ปล่อย auto มักลงมาเหลือ 50G แล้วทุกอย่างยังดูปกติ)
+
+**รันจริงแล้วบน 2× DGX Spark**: Llama 3.3 70B (2026-08-05) · `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4`
+173 GB บน vLLM 0.28 nightly TP=2 tool calling ผ่าน · `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4`
+(`--trust-remote-code --mamba-ssm-cache-dtype float16` · parser `qwen3_coder`/`nemotron_v3`) (2026-09-04)
+
+**0.6 ทำให้ stacked ตั้งจาก hub ได้จริง** — fit รายงาน**ตัวเลขต่อเครื่อง** (capacity · OS · engine · NCCL buffer
+3 GB/เครื่อง · weights/N · KV/N) แทนงบรวมก้อนเดียว · `lmds cluster pair` สร้างกุญแจ **บน head** ให้ head ssh
+เข้า worker ได้ (controller stacked รันบน head ไม่ใช่ hub) · `lmds cluster doctor <head> <worker>` ไล่ทีละข้อว่า
+ทำไมคู่นี้ยังไม่ได้ พร้อมคำสั่งแก้ · controller ตรวจ**สถาปัตยกรรม**และ **image บนทุก node** ก่อนปล่อย worker ·
+`verify-worker` ตรวจขนาดทุก shard จริง · ชุด `test-tools` `test-reasoning` `test-vision` `bench` `stress` ใช้บน
+stacked ได้แล้ว · คู่ที่เป็นไปไม่ได้ (ไม่มี worker · คนละไซต์ · ไม่มี cluster IP · GGUF/SGLang/embedding) ถูกปฏิเสธ
+ตั้งแต่ analyze (422) ไม่ใช่ไปตายตอน push
 
 **ตั้งแต่ v0.5** กด **Deploy ลงกลุ่มนี้** ได้จากหน้าเว็บโดยตรง (เดิมพิมพ์คำสั่งให้ไปก็อป) ·
 จับกลุ่ม**เฉพาะเครื่องในไซต์เดียวกัน** และแยก**หลายคลัสเตอร์ในไซต์เดียวได้**ด้วยการตั้งชื่อ:
@@ -147,15 +168,22 @@ lmds web --enable --bind 0.0.0.0   # systemd user service — ขึ้นเอ
 lmds web --bind 0.0.0.0 -b         # หรือรันเบื้องหลังชั่วคราว — ถาม token ก่อน แล้วจำไว้
 ```
 
-**0.6 จัดหน้าใหม่แบบแดชบอร์ด** — เมนูซ้าย: ภาพรวม · เครื่องนี้ · ต้นไม้ **ไซต์ → เครื่อง** (จุดสถานะ +
-% หน่วยความจำ) · คลัง (โมเดลทั้งฟลีต / คะแนน / สูตร / weights / ตั้งค่า) · กดรายการแล้วรายละเอียด
+**0.6 จัดหน้าใหม่แบบแดชบอร์ด** — เมนูซ้าย: Overview · This machine · All machines · ต้นไม้ **ไซต์ → เครื่อง**
+(จุดสถานะ + % หน่วยความจำ) · Library (โมเดลทั้งฟลีต / คะแนน / สูตร / weights / ตั้งค่า) · กดรายการแล้วรายละเอียด
 ออกตรงกลาง · หน้าภาพรวมมีแถบหน่วยความจำต่อเครื่อง โดนัท engine และ **"Needs attention"** ที่คำนวณ
-จากข้อมูลจริง (เครื่องต่อไม่ได้ · เกิน 90% · พอร์ตซ้อน · commit ไม่ตรง hub) · ลิงก์ตรงถึงเครื่องได้
-(`#/node/<ชื่อ>`) · เมนูและหน้าเว็บทั้งหมดเป็นภาษาอังกฤษ
+จากข้อมูลจริง (เครื่องต่อไม่ได้ · เกิน 90% · พอร์ตซ้อน · commit ไม่ตรง hub) · หน้าเครื่อง = การ์ดของเครื่องนั้น
+กางเต็ม · ลิงก์ตรงถึงเครื่อง/ไซต์ได้ (`#/node/<ชื่อ>` `#/site/<ไซต์>`) กด back/reload ได้ · เมนูและหน้าเว็บทั้งหมด
+เป็นภาษาอังกฤษ (CLI ยังไทย)
 
-deploy wizard, download + verify, start/stop/restart, ตั้ง port/context/slots/API key/bind,
-doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-tools` `bench` `stress`), autostart,
-คำสั่ง stacked, repair, remove — **และคุมโมเดลบนเครื่องอื่นได้เท่ากับเครื่องตัวเอง**
+**ฟอร์มตั้งค่าโมเดลเหลือช่องที่ใช้จริง** — port · context · slots · bind · API key · gpu-util (vLLM) · ค่าที่เหลือ
+(parsers · engine env · extra args · image) พับอยู่ใน **Advanced** และ**ส่งเฉพาะตอนที่เปิดหมวดนั้นอยู่** ไม่จำข้ามครั้ง
+— ค่าที่ตั้งใจให้ติดถาวรใช้ **Save** (= `lmds set`) และ **Reset to bundle** ลบค่าที่บันทึกไว้กลับไปใช้ของ bundle
+
+deploy wizard (เลือกเครื่องปลายทาง/กลุ่ม stacked ตั้งแต่ต้น · เสนอพอร์ตว่างของเครื่องนั้น), download + verify,
+start/stop/restart, doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-reasoning` `test-tools` `test-embed`
+`parsers` `bench` `stress`), autostart, คำสั่ง stacked (`sync-worker` `verify-worker` `logs-worker` · ปุ่ม
+**Pair SSH** / **Doctor** บนหัวกลุ่ม), repair, remove, ยกเลิกงานที่ค้าง, กล่อง **Update** (pull → ติดตั้งบน hub →
+restart → อัปเดตทุก node ด้วยโค้ดจาก hub) — **และคุมโมเดลบนเครื่องอื่นได้เท่ากับเครื่องตัวเอง**
 
 - **อ่านสถานะได้ก่อนอ่านตัวหนังสือ** — เกจ CPU / Unified·RAM / VRAM / Disk ชุดเดียวกันทุกเครื่อง
   พร้อมสีเตือนก่อนของหมด · ค่าที่การ์ดไม่รายงานถูกซ่อน ไม่ใช่โชว์ 0
@@ -171,7 +199,8 @@ doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-tools` `
 
 > 🔒 หน้านี้สั่ง start/stop/ลบโมเดลได้ จึง bind `127.0.0.1` เป็นค่าเริ่มต้น · **ลิงก์ที่พิมพ์ออกมา
 > ไม่มี token ติดไปด้วย** เพราะ URL ไปโผล่ใน history, log ของ proxy และ referrer · เดา token
-> ผิดติดกันจาก IP เดิมโดนหน่วงแบบทวีคูณ
+> ผิดติดกันจาก IP เดิมโดนหน่วงแบบทวีคูณ · API key ของโมเดล**ไม่เคยอยู่บน argv** (llama.cpp ใช้ไฟล์ 0600
+> ผ่าน `--api-key-file` · vLLM ผ่าน env) และ token ที่ยืมให้ node ถูกกรองออกจากผลงานสดก่อนถึงเบราว์เซอร์
 
 **ผู้ช่วยมุมขวาล่าง** ตอบจาก*สถานะจริงของ fleet นี้* ไม่ใช่ความรู้ทั่วไป — "เครื่องไหนต่อไม่ติด",
 "ทำไม msi-6 ยัง start ไม่ได้" · ใช้ LLM ตัวเดียวกับที่วางแผน deploy (ตั้งครั้งเดียวได้ทั้งสองอย่าง)
@@ -202,7 +231,10 @@ catalog.py`) คำสั่งจริงประกอบด้วยโค�
 ```bash
 lmds node add 192.168.10.21 --user ops --install   # ถามรหัสผ่านครั้งเดียว → ติดตั้ง key + LMDS ให้
 lmds ps --all                     # โมเดลของทุกเครื่องในตารางเดียว
-lmds node cluster                 # เครื่องไหนมี 200G และจับคู่ stacked กันได้
+lmds cluster show                 # เครื่องไหนมี 200G และจับคู่ stacked กันได้ (= lmds node cluster)
+lmds cluster doctor spark-head spark-worker --slug <slug>   # ทำไมคู่นี้ยัง stacked ไม่ได้ — ทีละข้อ อ่านอย่างเดียว
+lmds cluster pair spark-head spark-worker                   # ให้ head ssh เข้า worker ได้ (กุญแจเกิดบน head)
+lmds cluster write <slug> --head spark-head                 # เขียน cluster.env ให้ตรงจำนวนเครื่องของ bundle
 lmds scan --all                   # weight ที่มีอยู่แล้วบนทุกเครื่อง — ไม่ต้องโหลดซ้ำ
 lmds node push spark2 <slug>      # ส่ง bundle ตัวที่อนุมัติแล้วไปติดตั้งเครื่องอื่น
 lmds node clone <slug> --from msi-1 --to msi-2   # สำเนาโมเดลข้ามเครื่อง ไม่โหลดจาก HF ใหม่
@@ -234,7 +266,9 @@ lmds doctor <ชื่อ>        # ทำไมยัง download/start ไม�
 lmds repair <ชื่อ>        # โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ
 lmds rebuild <ชื่อ>       # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน
 lmds set <ชื่อ> --image <digest> --tool-parser qwen3_xml --extra-args "…"   # ค่าที่ทุกทาง start ใช้เหมือนกัน (0.5)
-lmds remove <ชื่อ>        # ลบทั้งหมด (--keep-weights = เก็บ weight)
+lmds set <ชื่อ> --engine-env "VLLM_NVFP4_GEMM_BACKEND=marlin" --image-min-tokens 1024 · --auto = เติมจากสูตร
+lmds adopt <container> / --port N   # รับโมเดลที่รันอยู่ก่อน LMDS เข้ามาในระบบ
+lmds remove <ชื่อ>        # ลบทั้งหมด (--keep-weights = เก็บ weight · ไฟล์ที่ root เป็นเจ้าของลบผ่าน docker ให้)
 lmds recipes             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key
 lmds recipes --sync      # ดึงสูตรใหม่จากคลัง controller ของทีม
 lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งสูตรที่เทสต์ผ่านขึ้นคลัง
@@ -280,14 +314,26 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 ## รองรับอะไรบ้าง
 
 > **0.6.0:** โมเดล **embedding** ด้วย (Qwen3-Embedding, bge-m3, embeddinggemma …) — ตรวจจับเองจาก repo, เสิร์ฟ `/v1/embeddings`
-> ผ่าน llama.cpp `--embedding` หรือ vLLM pooling, ทดสอบด้วย `test-embed` (ดู USAGE §4.9)
+> ผ่าน llama.cpp `--embedding --pooling` หรือ vLLM `--runner pooling`, ทดสอบด้วย `test-embed` (ดู USAGE §4.9) ·
+> รันจริงแล้ว: `VesNFF/Qwen3-VL-Embedding-8B-GGUF` บน dgx-spark03
 
 | | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
 |---|---|---|
-| **llama.cpp** | ✅ native build | ✅ docker (+ multimodal) |
-| **vLLM** | ✅ docker | ✅ docker |
+| **llama.cpp** | ✅ native build (`start` build ให้เอง) | ✅ docker (+ multimodal) |
+| **vLLM** | ✅ docker · ✅ stacked 2 เครื่อง | ✅ docker |
+| **SGLang** | ✅ docker (`--engine sglang`) | ✅ docker |
 
-ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo
+| งาน | llama.cpp (GGUF) | vLLM (safetensors) | stacked |
+|---|---|---|---|
+| chat / tool calling / reasoning | ✅ (`--jinja`) | ✅ (`--tool-parser` `--reasoning-parser`) | ✅ |
+| vision | ✅ mmproj (+ `--image-min-tokens`) | ✅ | ✅ (projector ฝังใน weight) |
+| embedding | ✅ `--embedding --pooling` | ✅ `--runner pooling` | ❌ ปฏิเสธ |
+| MTP / speculative | ✅ draft head จาก repo | ผ่าน `--extra-args` | ผ่าน `--extra-args` |
+
+ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo · ล่าสุด (2026-09-04):
+`unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF` (llama.cpp + vision, spark03) · embedding
+`VesNFF/Qwen3-VL-Embedding-8B-GGUF` (spark03) · stacked `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4` 173 GB และ
+`nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` บน 2× DGX Spark
 
 **MoE กับ MTP ถูกรายงานเป็นข้อเท็จจริงจากไฟล์** ไม่ใช่สิ่งที่ LLM เดา — จำนวน expert
 ทั้งหมด/ที่เปิดต่อ token อ่านจาก `config.json` หรือ GGUF metadata แล้วโชว์ตั้งแต่ตอน
@@ -295,20 +341,23 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 เท่าไร ส่วน active บอกว่าจะได้ความเร็วเท่าไร* — บนเครื่องที่คอขวดคือ bandwidth สองค่านี้
 ต่างกันหลายเท่า · repo ที่แถม MTP draft head มาให้จะถูกโหลด + ต่อสายให้อัตโนมัติ
 (วัดจริงบน DGX Spark: gemma4-26B-A4B ได้ **1.78x** โดย output เท่าเดิม)
-· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **903 เทสต์**
+· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **1,720 เทสต์**
 
 > **แหล่งโมเดล: Hugging Face เท่านั้น** — Ollama registry และ NVIDIA NGC อยู่ในเฟส 2
-> (ใส่ลิงก์เข้าไปแล้วระบบบอกเองว่ายังไม่รองรับ พร้อมแนะทางอื่น)
+> (ใส่ลิงก์เข้าไปแล้วระบบบอกเองว่ายังไม่รองรับ พร้อมแนะทางอื่น) · HF ย้ายไฟล์ใหญ่ไป **Xet** แล้ว —
+> สตรีมเดี่ยวจากไทยได้ ~0.3 MB/s แต่ controller llama.cpp โหลดขนาน 8 ส่วน (`FETCH_PARTS`) ได้ ~50 MB/s เอง
 
 ## อัปเดต
 
 ```bash
-cd ~/AutoDeployDGXProject && git pull && ./install.sh     # hub — หรือกดปุ่ม Update บนหน้าเว็บ
-lmds node install --all                                  # เครื่องอื่นทั้งฟลีต — hub ส่งโค้ดไปให้เอง
+cd ~/AutoDeployDGXProject && git pull && ./install.sh     # hub — หรือกดปุ่ม Update บนหน้าเว็บ (pull → ติดตั้ง → restart → node)
+lmds node install --all                                  # เครื่องอื่นทั้งฟลีต — hub ส่งโค้ดไปให้เอง ไม่แตะ GitHub
+lmds node list                                           # ป้าย ≠ hub เฉพาะเครื่องที่ commit ต่างจริง (เทียบ prefix 7/8 ตัว)
 ```
 
 > ⚠️ **`git pull` อย่างเดียวไม่พอ** — ติดตั้งแบบ copy เข้า venv (ไม่ใช่ editable) คำสั่ง `lmds`
-> จะยังเป็นโค้ดเก่าจนกว่าจะรัน `./install.sh` ซ้ำ · config และ key เดิมอยู่ครบ ไม่ต้องตั้งใหม่
+> จะยังเป็นโค้ดเก่าจนกว่าจะรัน `./install.sh` ซ้ำ · config และ key เดิมอยู่ครบ ไม่ต้องตั้งใหม่ ·
+> `install.sh` ย้าย venv เดิมไป `venv.old` ก่อน แล้วคืนให้ถ้า pip ล้ม — รุ่นเดิมยังใช้ได้เสมอ
 
 ## ใช้คู่กับ LiteGate (ทางเลือก)
 
@@ -356,7 +405,7 @@ script-update (candidates) เพื่อรอ review → promote ขึ้น
 | [PREFLIGHT.md](docs/PREFLIGHT.md) | สิ่งที่ระบบตรวจให้ก่อน deploy และทำไม — ทุกข้อมาจากของที่พังจริง |
 | [NETWORK.md](docs/NETWORK.md) | พอร์ตและโปรโตคอลทุกตัวที่ระบบใช้ ใครคุยกับใคร และต้องเปิดอะไรเวลา forward port หรืออยู่หลัง reverse proxy |
 | [RUNBOOK-MULTI-NODE.md](docs/RUNBOOK-MULTI-NODE.md) | ลำดับคำสั่งข้ามเครื่องที่รันจริงแล้ว พร้อมตัวเลขและเวลาที่ใช้แต่ละขั้น |
-| [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | คุมหลายเครื่องจากเครื่องเดียว |
+| [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | คุมหลายเครื่องจากเครื่องเดียว — ติดตั้ง/อัปเดต node จาก hub, `lmds cluster pair/doctor/write`, cluster.env |
 | [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | เอกสารคลัสเตอร์ของ NVIDIA — อะไรยืนยันของเรา อะไรเติมของใหม่ |
 | [PRD.md](docs/PRD.md) · [CLI_SPEC.md](docs/CLI_SPEC.md) · [ROADMAP.md](docs/ROADMAP.md) | ข้อกำหนด, สเปกคำสั่ง, แผนพัฒนา |
 | [SECURITY.md](SECURITY.md) | ข้อมูลอะไรออกนอกเครื่อง, secret เก็บที่ไหน, แจ้งช่องโหว่ |
@@ -366,8 +415,11 @@ script-update (candidates) เพื่อรอ review → promote ขึ้น
 
 - **Ubuntu 22.04 / 24.04** (ARM64 หรือ x86_64) — พัฒนาบน macOS ได้
 - **Python 3.10+**
-- **Docker + NVIDIA Container Toolkit** บนเครื่องเป้าหมาย (`./install.sh` ลงให้ได้)
-- **ดิสก์ว่าง** ≈ *(ขนาดโมเดล × 1.2) + 25 GB* — runtime image ของ vLLM อย่างเดียว ~10–20 GB
+- **Docker + NVIDIA Container Toolkit** บนเครื่องเป้าหมาย (`./install.sh` ลงให้ได้ · จากหน้าเว็บ *Add machine* ลงให้ด้วยรหัส sudo ครั้งเดียว)
+- **git + python3** บนเครื่อง node — hub ส่งโค้ดเป็น git bundle ไปให้ clone เอง ไม่ต้องมีสิทธิ์เข้า GitHub
+- **ดิสก์ว่าง** ≈ *(ขนาดโมเดล × 1.2) + 25 GB* — runtime image ของ vLLM อย่างเดียว ~10–20 GB · โหลด GGUF แบบขนาน
+  ต้องมีที่ว่างชั่วคราว ~2 เท่าของไฟล์ (ไม่พอ = ถอยไปสตรีมเดี่ยวเอง)
+- **stacked**: สายเร็ว ≥25G ระหว่าง DGX Spark + head ssh ถึง worker (`lmds cluster pair` ทำให้)
 - **LLM provider** (ทางเลือก): OpenAI / Gemini / MiniMax / OpenAI-compatible — หรือไม่มีเลยก็ได้ ใช้ `--no-llm`
 
 ข้อเดียวที่ `install.sh` ไม่ทำให้คือ **NVIDIA driver** เพราะต้อง reboot และบางเครื่องมี driver ที่ใช้ได้

@@ -234,13 +234,163 @@ cmake --build build -j "$(nproc)" --target llama-server
 
 ---
 
+## stacked: ทำครบทุกขั้น 2.5 ชั่วโมง แล้ว head ตายตอนอ่าน config
+
+**อาการ** — `prepare-runtime` → `download` → `sync-worker` → `verify-worker` ผ่านหมด `start` ปล่อย
+worker ต่อ NCCL แล้ว head ตายด้วย `model type qwen4_exp … Transformers does not recognize`
+
+**เคสจริง (2026-09-05)** — Qwen3.8-Flash-Next-NVFP4 บน spark-head + spark-worker · controller
+เดี่ยวมีด่าน "image รู้จักสถาปัตยกรรมนี้ไหม" มาตั้งแต่ต้น แต่ stacked ไม่มี
+
+**ตอนนี้** — `check_architecture` ใน controller stacked ถาม image ตัวเดียวกับที่จะ start
+(`VLLM_IMAGE` จาก `bundle.env`) ว่ามี `model_type` ของ `config.json` ใน `CONFIG_MAPPING_NAMES`
+ไหม **ก่อนปล่อย worker/HCA/NCCL ทั้งคลัสเตอร์** — ไม่รู้จัก = หยุดพร้อมคำสั่ง `lmds set <slug>
+--image <ใหม่กว่า>` → `prepare-runtime` → `start` และคำสั่ง `docker run … CONFIG_MAPPING_NAMES`
+ให้เช็คเองก่อน · ไม่มี config / ถาม image ไม่ได้ = ปล่อยผ่านให้ vLLM ตัดสิน
+
+---
+
+## stacked: image ครบที่ worker ตัวแรก แต่ตัวท้ายไม่มี
+
+**อาการ** — 4 เครื่อง ผ่านด่านตรวจ image แล้วไปตายตอน `docker run` บนเครื่องท้ายสุด ระหว่างที่
+เครื่องอื่นเปิด container ไปแล้ว
+
+**ต้นเหตุ** — ด่านตรวจ image ก่อน start ถามแค่ worker ตัวแรก
+
+**ตอนนี้** — วนทุก worker · ทุก `die` บอกชื่อเครื่อง + คำสั่ง `ssh <user>@<ip> docker pull '<image>'`
+· `prepare-runtime` ไม่ตาย raw ใต้ `set -e` อีก: pull ล้มที่ node ไหนบอก node นั้นพร้อมสาเหตุที่พบบ่อยของ
+registry นั้น (ghcr rate-limit → `docker login ghcr.io` · nvcr → NGC key · proxy ของ docker daemon ·
+ไม่มีเน็ต → `docker save | ssh docker load`) · สั่งซ้ำผ่านทันที
+
+---
+
+## image ที่ตรึง digest ถูกตัดสินว่า "ไม่มีอยู่จริง" แล้วลดรุ่นเงียบ ๆ
+
+**อาการ** — สูตรที่ sync มาระบุ `avarok/dgx-vllm-nvfp4-kernel@sha256:3654…` (ตัวที่รันอยู่จริงบน
+spark-head) แต่แผนบน hub ออกมาเป็น nvcr 26.05 → stacked start ตาย `cvt .e2m1x2 not supported on
+sm_121` ทุกครั้ง
+
+**ต้นเหตุ** — `split_ref` ตัดที่ `:` ตัวสุดท้าย → repo `…kernel@sha256` + "tag" = เลข digest → registry
+404 → แผนเปลี่ยน image ให้โดยไม่มีใครขอ
+
+**ตอนนี้** — digest ถูกตรวจเป็น digest (`manifests/sha256:…`) และ `resolve_digest` ไม่ถาม registry ซ้ำ
+· image ของ**สูตร**ที่ registry ตอบไม่พบถูกคงไว้พร้อมเตือน (สูตรคือหลักฐานว่ารันจริง registry ที่ถามไม่ได้
+ไม่ใช่) · NVFP4 บน GB10 ที่ต้องถอย image ถอยไป `vllm/vllm-openai@sha256:61fc…` + env marlin ไม่ใช่ nvcr
+· registry ที่มีพอร์ต (`registry.local:5000/vllm:tag`) ไม่ถูกตัดที่ `:` ตัวแรกอีก
+
+---
+
+## โหลดขนานแล้วดิสก์เต็มกลางทาง
+
+**อาการ** — `download` ของ GGUF 60 GB ตายที่ 90% ด้วย `No space left` ทั้งที่ `df` ก่อนเริ่มเหลือ 70 GB
+
+**ต้นเหตุ** — `fetch_parallel` เขียนส่วนย่อยลง `<ไฟล์>.parts/` แล้วต่อกันเป็นไฟล์รวม = ต้องมีที่ว่าง
+**2 เท่า** ของไฟล์ชั่วขณะ
+
+**ตอนนี้** — ตรวจดิสก์ก่อนเริ่ม: ไม่ถึง 2 เท่า = บอกแล้วถอยไปสตรีมเดี่ยว (ใช้ 1 เท่า ช้ากว่าแต่ได้ไฟล์)
+· ไม่พอแม้ไฟล์เดียว = die ตั้งแต่ต้นพร้อมทาง `MODEL_DIR=/data/models` · stacked `download` ตรวจดิสก์
+ก่อนเช่นกัน (โมเดล 150–220 GB · บอก `HF_HOME=/data/hf`) · `sync-worker` เช็คดิสก์ฝั่ง worker ก่อนลาก
+
+---
+
+## bundle ใหม่ได้พอร์ต 8000 ซ้ำกับตัวที่มีอยู่
+
+**อาการ** — หน้าภาพรวมขึ้น "port shared" ทันทีหลัง deploy · autostart หลัง reboot ชนกัน ตัวหลังล้มเสมอ
+
+**ต้นเหตุ** — ทุก bundle ตั้งต้นที่ 8000 · การ์ดยังโชว์พอร์ตผิดจนกว่าจะ start ครั้งแรก เพราะทะเบียนของ
+bundle ที่ยังไม่เคย start เขียน 8000 เสมอ
+
+**ตอนนี้** — `analyze` เลือกพอร์ตว่างตัวแรกจาก inventory ของ**เครื่องปลายทาง** (ทุก bundle + container
+นอกระบบ ไม่ใช่แค่ที่รันอยู่ · stacked ดูทั้ง head และ worker) ส่งใน `plan.port` พร้อมโน้ตว่าทำไม ·
+`generate` เขียนลง `bundle.env` (ทางเดียวกับ `lmds set --port` → start/autostart/ปุ่ม test-* ได้พอร์ต
+เดียวกัน) · `register_bundle` อ่านพอร์ตจาก bundle.env ด้วย · ระบบยังไม่ยึดพอร์ตแทนคน — แก้เองได้ในช่อง port
+
+---
+
+## hub ที่ไม่มี GPU ดูด weight ลงมาเอง / ถูกเสนอเป็นสมาชิก stacked
+
+**อาการ** — `lmds repair` บน hub VM (ไม่มี GPU/docker/llama.cpp, RAM 12 GB) เริ่มโหลด weight 15.6 GB
+อย่างว่าง่าย · หน้า Cluster ขึ้น hub เป็น "not ready · 10G too slow" พร้อมปุ่ม Include/Exclude ที่ไม่มีความหมาย
+· เลือกเครื่องในฟลีตแต่ไม่เลือก preset = วิเคราะห์ด้วยฮาร์ดแวร์ของ hub (VM ไม่มี GPU ตกไป dgx-spark-single
+128 GB ทั้งที่ปลายทางคือ RTX 5090 32 GB → เสนอ context ที่การ์ดรับไม่ไหว)
+
+**ตอนนี้** — LMDS ตรวจว่าเครื่องนี้รันโมเดลได้จริงไหมจากของที่มี (`llama-server` / docker คู่กับ GPU)
+ไม่ใช่ชื่อเครื่อง: ไม่มีสักอย่าง = **control plane** — `download` `repair` `start` `restart`
+`prepare-runtime` ถูกปฏิเสธพร้อมบอกคำสั่ง push (`--force` / `LMDS_ROLE=serving` ทับได้) · `lmds doctor`
+ขึ้นข้อ **บทบาท** เป็นข้อแรก · หน้า Cluster ขึ้น "control plane — not a stacked candidate" ·
+wizard เดา preset จาก GPU/memory ที่ refresher เห็นของเครื่องปลายทาง เดาไม่ได้ = บอกให้เลือกเอง
+
+---
+
+## stacked: คู่ที่เป็นไปไม่ได้ผ่าน analyze แล้วไปตายที่ push
+
+**อาการ** — เลือก target stacked แต่ไม่เลือก worker / worker = head / คนละไซต์ / ไม่มี cluster IP /
+GGUF หรือ SGLang / embedding → analyze ตอบ 200 ด้วยแผนที่ไม่รู้ว่าเครื่องที่สองคือใคร แล้วตายทีหลังที่
+push/cluster.env/ValueError ตอน generate หรือ 500 เฉย ๆ
+
+**ตอนนี้** — wizard ตรวจคู่ด้วยกติกาเดียวกับหน้า Cluster **ก่อนแตะ Hugging Face** → 422 `{kind:"cluster"}`
+พร้อมทางออก · มี worker แต่ไม่ส่ง target = ตั้งใจ stacked จึงเลือก `dgx-spark-stacked` ให้ · worker ถูกส่ง
+เฉพาะ target stacked (เลือก stacked แล้วเปลี่ยนใจเป็น single เคยหักหน่วยความจำของ worker ออกจาก budget) ·
+`cluster write` อ่าน `NNODES` จาก bundle แล้วตัดกลุ่มให้ตรง — กลุ่ม 4 เครื่องกับ bundle 2 เครื่องไม่ได้
+`NNODES=4/TP=4` ทับแผนอีก · `lmds cluster doctor <head> <worker>` ไล่ทีละข้อพร้อมคำสั่งแก้ก่อนลงมือ
+
+---
+
+## stacked: `verify-worker` พิมพ์ PASS ใน 1 วินาทีโดยไม่ตรวจอะไร
+
+**อาการ** — `verify-worker` ผ่านทุกครั้ง แล้ว `start` ไปตายที่ safetensors header บน worker
+
+**ต้นเหตุ** — สองชั้น: `docker run` ไม่มี `-i` → stdin ไม่ถึงคอนเทนเนอร์ python3 ได้สคริปต์ว่างแล้วจบ 0
+· heredoc ของ Python อยู่ใน double quote ของ argument ที่ส่งให้ ssh → bash ถอด `"` ในโค้ด ถ้า stdin ถึงจริง
+จะ SyntaxError · และ rsync `--partial` ทิ้งไฟล์ครึ่งเดียวชื่อเดิมไว้ นับจำนวนผ่านแล้ว
+
+**ตอนนี้** — ส่งสคริปต์เป็น base64 ทาง stdin + `-i` และตรวจ**ขนาดทุก shard** เทียบ Hub · worker คุย
+NCCL ด้วย transport IP (`TRANSPORT_IP_WORKER` / `TRANSPORT_IPS_WORKER`) ไม่ใช่ management IP · ระหว่างรอ
+head health แวะดู worker ทุก 60 วิ — worker ตายแล้วไม่ต้องรอ NCCL timeout จนครบ
+
+---
+
+## fit ของ stacked บอกว่า "fits ที่ context 4096" ทั้งที่ start ไม่ขึ้น
+
+**อาการ** — Qwen3-235B-A22B FP8 (220 GiB) บน 2×Spark ตอบ fits-reduced-context แล้ว vLLM ตาย
+`No available memory for the cache blocks`
+
+**ต้นเหตุ** — งบรวม 227 GB มีแต่โน้ต "ต้องเผื่อ NCCL" ไม่เคยหักจริง และไม่มีตัวเลขต่อเครื่อง
+
+**ตอนนี้** — หัก NCCL buffer 3 GB/เครื่อง (221 GB) · FitReport/payload มี `per_node` (capacity · OS · engine ·
+comm buffer · budget · weights/N · KV/N · reserved ของเครื่องที่แน่นสุด) · vLLM ที่เหลือ KV < 2 GB = ไม่ fit
+· ทางเลือกชี้ preset ที่พอจริง (`dgx-spark-stacked-4`) แทน "ใช้ stacked" ทั้งที่กำลัง stacked อยู่ ·
+flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`) ที่หลุดมาจาก LLM ถูก
+harden ตัดทิ้งพร้อมเตือน — vLLM ให้ตัวหลังชนะ TP=1 บน 2 เครื่องเคยทำให้ head รอ worker ที่ไม่มีวันมา
+
+---
+
+## ตั้ง `API_KEY` แล้วเซิร์ฟเวอร์รันแบบไม่มี auth เงียบ ๆ
+
+**อาการ** — ตั้ง `API_KEY` กับ llama.cpp แล้วยิงโดยไม่ใส่ key ก็ได้ 200
+
+**เคสจริง (2026-09-04, dgx-spark03, llama-server b10799)** — งาน audit ย้าย key ออกจาก argv ไปเป็น env
+`LLAMA_ARG_API_KEY` ซึ่ง build จริง**ไม่มี** · env ที่ engine ไม่รู้จักไม่ error แต่เปิดประตูทิ้งไว้ · เทสที่เชื่อ env
+ผ่านทั้งชุด
+
+**ตอนนี้** — llama.cpp ใช้ `--api-key-file` (ไฟล์ 0600 ใน `RUN_DIR` · docker mount ro) พิสูจน์ 401/401/200
+กับ binary จริง · เทสตรวจไฟล์+สิทธิ์แทนการเชื่อ env · vLLM/stacked ผ่าน env `VLLM_API_KEY` ที่ export
+แล้ว `-e` ไม่มีค่า · **บทเรียน**: การเปลี่ยนเรื่อง auth ต้องรันกับ binary จริงก่อนเสมอ
+
+---
+
 ## ตรวจเองก่อน deploy
 
 ```bash
-lmds doctor <slug>          # architecture, weight, image/build, port, สภาพ server
-lmds inspect <repo>         # context, KV dims, capability 6 อย่าง, variant ทั้งหมด
+lmds doctor <slug>                          # บทบาทเครื่อง, architecture, weight, image/build, grammar, port, สภาพ server
+lmds inspect <repo>                         # context, KV dims, capability 6 อย่าง, variant ทั้งหมด
+lmds inspect <repo> --target dgx-spark-stacked --context 262144   # ค่านี้ได้กี่คนพร้อมกัน (fp8 ด้วย --kv-dtype)
+lmds cluster doctor <head> <worker> --slug <slug>   # stacked: ทำไมคู่นี้ยังไม่พร้อม — ทีละข้อพร้อมคำสั่งแก้
+./<slug>-single.sh serve-args               # argv จริงที่จะส่งให้ engine (vLLM: DRY_RUN=1 start) ก่อนรอโหลดหลายนาที
 ```
 
 `inspect` รายงาน Tool Calling · Vision · JSON Mode · Streaming · System Prompt ·
 Reasoning พร้อมหลักฐานว่าดูจากอะไร และคำเตือนเมื่ออ่านไม่ชัด — ดูก่อนตัดสินใจ deploy
-เครื่องจริงได้
+เครื่องจริงได้ · `doctor` ตรวจ `role` · `controller` · `hf-token` · `weights` · `permissions` · `disk` ·
+`docker` · `image` · `architecture` · `grammar` (llama.cpp เก่ากว่า `cd0fa6051`) · `port` · `server`
+· บน control plane ข้อที่แปลว่า "รันไม่ได้" ไม่นับเป็นตัวบล็อก

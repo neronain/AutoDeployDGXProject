@@ -2012,6 +2012,189 @@ def create_app(token: str = "") -> FastAPI:
             finding["text"] = describe(finding, "en")
         return report
 
+    # ── ตั้งค่าสาย ConnectX จาก hub (เทียบเท่า Cluster Assistant ของ NVIDIA Sync) ──
+    # apply ใช้เวลาเป็นนาที (netplan apply + ยืนยัน + ping + กุญแจ หลายเครื่อง) จึงเป็น job ที่หน้าเว็บตามด้วย
+    # GET /api/jobs/{id} เหมือนงานอื่น — แต่ไม่ใช่ "หนึ่ง ssh หนึ่งงาน" ของ jobs.start_remote จึงสร้าง Job เองแล้ว
+    # ป้อน output เป็นบรรทัด `[เครื่อง] ขั้น: ok|failed — รายละเอียด` ที่ wizard แปลงเป็นติ๊กต่อเครื่อง
+    _net_results: dict[str, dict] = {}
+    _net_lock = threading.Lock()
+    NET_JOB_SLUG = "cluster-network"
+
+    def _net_order(body: dict) -> list[str]:
+        from lmds.nodes import find
+
+        names = [str(n).strip() for n in (body.get("nodes") or []) if str(n).strip()]
+        if len(names) < 2:
+            raise HTTPException(status_code=400, detail="ต้องระบุ nodes อย่างน้อย 2 เครื่อง")
+        unknown = [n for n in names if find(n) is None]
+        if unknown:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {', '.join(unknown)}")
+        return names
+
+    @app.post("/api/cluster/inspect", dependencies=guarded)
+    def cluster_inspect(body: dict) -> dict:
+        """ดูสาย/พอร์ต/IP ปัจจุบันของเครื่องที่เลือก แล้วเดา topology — อ่านจากแคช ไม่แตะเครื่อง
+
+        body: {"nodes": [...], "topology"?: direct|ring|switch (หรือค่า kind ที่เคยตอบไป)}
+        → {"nodes": {name: {reachable, error, hostname, spark, sudo_needed,
+             fabric: {ports: [{qsfp_port, carrier, speed_gbps, interfaces: [{iface, function, carrier, speed_gbps,
+                               ip, prefix, rdma_device, netplan_managed}]}], links, netplan_files, nvidia_sync},
+             ports, netplan_files, nvidia_sync}},
+           "topology": {kind, topology, links, reason, order, cabled}, "findings": [...doctor...], "ok"}
+        """
+        from lmds.nodes.doctor import describe, diagnose_network
+        from lmds.nodes.netplan import inspect_nodes
+
+        order = _net_order(body)
+        nodes, hosts, errors = _cluster_hosts()
+        topology = str(body.get("topology") or "")
+        result = inspect_nodes(order, hosts, errors, topology)
+        report = diagnose_network(order, nodes=nodes, hosts=hosts, errors=errors, topology=topology)
+        for finding in report["findings"]:
+            finding["text"] = describe(finding, "en")
+        return {**result, "findings": report["findings"], "ok": report["ok"]}
+
+    @app.post("/api/cluster/plan", dependencies=guarded)
+    def cluster_plan(body: dict) -> dict:
+        """วางแผน IP/netplan ให้กลุ่ม — body: {"nodes", "base_subnet"?, "topology"?} → แผน (netplan.build_plan)
+
+        `ok: false` + `reason` เมื่อสายไม่ตรงผัง (200 ไม่ใช่ 4xx — หน้าเว็บโชว์เหตุผลให้คนไปเสียบสาย)
+        """
+        from lmds.nodes.netplan import DEFAULT_BASE_SUBNET, NetplanError, build_plan
+
+        order = _net_order(body)
+        nodes, hosts, _errors = _cluster_hosts()
+        try:
+            return build_plan(order, hosts, base_subnet=str(body.get("base_subnet") or DEFAULT_BASE_SUBNET),
+                              topology=str(body.get("topology") or ""), nodes=nodes)
+        except NetplanError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _net_step_lines(step: dict) -> list[str]:
+        """แปลง step ของ apply_plan เป็นบรรทัดในภาษาที่ wizard อ่าน (write netplan · netplan apply · verify addresses ·
+        ping X (ip) · pair SSH · registry) — คำว่า ok/failed ตัดสินสี"""
+        node = step.get("node") or "hub"
+        what, ok, detail = step.get("step", ""), step.get("ok"), step.get("detail") or ""
+        tail = f" — {detail}" if detail else ""
+        state = "ok" if ok else "failed"
+        if what == "stage netplan file":
+            return [f"[{node}] write netplan: {state}{tail}"]
+        if what.startswith("write ") and "netplan apply" in what:
+            return [f"[{node}] netplan apply: {state}{tail}"]
+        if what.startswith("verify addresses"):
+            return [f"[{node}] verify addresses: {state}{tail}"]
+        if what.startswith("rollback"):
+            return [f"[{node}] rolled back to the previous netplan: {state}{tail}"]
+        if what.startswith("ping "):
+            _, peer, ip, _via, iface = what.split(" ", 4)
+            return [f"[{node}] ping {peer} ({ip}) via {iface}: {state}{tail}"]
+        if what.startswith("registry updated"):
+            return [f"[{node}] registry: {detail} saved" if ok else f"[{node}] registry: failed{tail}"]
+        if what.startswith("iperf3"):
+            return [f"[{node}] {what}: {detail or state}"]
+        if what.startswith("sudo password"):
+            return [f"[{node}] sudo: {state}{tail}"]
+        # ขั้นของ cluster_ssh.pair_workers (กุญแจ/authorized_keys/config/ทดสอบ)
+        return [f"[{node}] pair SSH — {what}: {'paired' if ok else 'failed'}{tail}"]
+
+    @app.post("/api/cluster/apply", dependencies=guarded)
+    def cluster_apply(body: dict) -> dict:
+        """ตั้งค่าตามแผน — body: {"plan", "passwords": {node: sudo pw}, "wait"?: bool, "pair"?, "speed_test"?}
+
+        → {"job": {...jobs payload...}} แล้วตามด้วย GET /api/jobs/{id} (output = บรรทัด `[node] step: ok|failed`,
+        exit_code 0 = IP ขึ้นครบ ping ถึง กุญแจใช้ได้) · ผลเต็ม (netplan.apply_plan: {ok, applied, steps, nodes,
+        pings, pairing, speed, registry}) อยู่ที่ GET /api/cluster/apply/{id} · `wait: true` = รอในคำขอเดียว
+        แล้วคืน {"job", "result"} · รหัสอยู่แค่ในหน่วยความจำระหว่างงานรัน
+        """
+        import uuid
+
+        from lmds.nodes import find, run
+        from lmds.nodes.netplan import apply_plan
+        from lmds.web import jobs
+
+        plan = body.get("plan") or {}
+        passwords = {str(k): str(v) for k, v in (body.get("passwords") or {}).items()}
+        if not isinstance(plan, dict) or not plan.get("nodes"):
+            raise HTTPException(status_code=400, detail="ต้องส่ง plan จาก /api/cluster/plan")
+        order = [str(n) for n in plan.get("order") or []]
+        missing = [n for n in order if not passwords.get(n)]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"ต้องใส่รหัส sudo ของ {', '.join(missing)}")
+        nodes = {n: find(n) for n in order}
+        if any(v is None for v in nodes.values()):
+            raise HTTPException(status_code=404, detail="มีเครื่องในแผนที่ไม่อยู่ในทะเบียนแล้ว")
+        options = {"pair": bool(body.get("pair", True)), "speed_test": bool(body.get("speed_test", True))}
+
+        with jobs._LOCK:
+            current = jobs._JOBS.get(jobs._ACTIVE.get(NET_JOB_SLUG, ""))
+            if current and current.running:
+                raise HTTPException(status_code=409, detail="a cluster network apply is already running — wait for it")
+            job = jobs.Job(id=uuid.uuid4().hex, slug=NET_JOB_SLUG, command="cluster-apply",
+                           steps=["cluster-apply"])
+            jobs._JOBS[job.id] = job
+            jobs._ACTIVE[NET_JOB_SLUG] = job.id
+        job.lines.append(f"cluster network apply: {' → '.join(order)} ({plan.get('topology')})\n")
+
+        def progress(step: dict) -> None:
+            for line in _net_step_lines(step):
+                job.lines.append(line + "\n")
+
+        def work() -> None:
+            try:
+                result = apply_plan(plan, passwords, nodes=nodes, runner=run, progress=progress, **options)
+            except Exception as exc:  # noqa: BLE001 — งานเบื้องหลังต้องจบด้วยผล ไม่ใช่หายไปเฉย ๆ
+                job.lines.append(f"[hub] apply: failed — {str(exc)[:300]}\n")
+                result = {"ok": False, "applied": False, "steps": [], "nodes": {}, "pings": [], "pairing": [],
+                          "speed": [], "registry": {}, "error": str(exc)[:300]}
+            with _net_lock:
+                _net_results[job.id] = result
+            job.lines.append("done — cluster IPs saved to the registry\n" if result.get("ok")
+                             else ("addresses are up but ping/pairing did not all pass\n" if result.get("applied")
+                                   else "apply failed — see the lines above\n"))
+            for name in order:
+                state.STORE.force(name)
+            job.exit_code = 0 if result.get("ok") else 1
+
+        if body.get("wait"):
+            work()
+            return {"job": job.payload(), "result": _net_results.get(job.id)}
+        threading.Thread(target=work, daemon=True).start()
+        return {"job": job.payload()}
+
+    @app.get("/api/cluster/apply/{job_id}", dependencies=guarded)
+    def cluster_apply_status(job_id: str) -> dict:
+        """ผลเต็มของงาน apply — {"id", "running", "job": payload, "result": null|{...apply_plan...}}"""
+        from lmds.web import jobs
+
+        job = jobs.get(job_id)
+        if job is None or job.slug != NET_JOB_SLUG:
+            raise HTTPException(status_code=404, detail="ไม่รู้จักงานนี้")
+        with _net_lock:
+            result = _net_results.get(job_id)
+        return {"id": job_id, "running": job.running, "job": job.payload(), "result": result}
+
+    @app.post("/api/cluster/remove-net", dependencies=guarded)
+    def cluster_remove_net(body: dict) -> dict:
+        """ถอนไฟล์ netplan ของ LMDS บนเครื่องนั้น (ย้ายไป /root/netplan-disabled) — body: {"node", "password"}
+        → {"node", "ok", "removed", "absent", "detail", "steps"}"""
+        from lmds.nodes import find, run
+        from lmds.nodes.netplan import DISABLED_DIR, remove_net
+
+        name = str(body.get("node") or "").strip()
+        password = str(body.get("password") or "")
+        node = find(name) if name else None
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        if not password:
+            raise HTTPException(status_code=400, detail="ต้องใส่รหัส sudo ของเครื่องนั้น")
+        result = remove_net(node, password, runner=run)
+        state.STORE.force(name)
+        failed = next((s for s in result["steps"] if not s["ok"]), None)
+        detail = (f"{failed['step']}: {failed['detail'] or 'failed'}" if failed
+                  else "no LMDS netplan file was present — registry cleared" if result.get("absent")
+                  else f"netplan file moved to {DISABLED_DIR} on {name}, ports released, registry cleared")
+        return {"node": name, "detail": detail, **result}
+
     @app.patch("/api/cluster/self", dependencies=guarded)
     def cluster_self_patch(body: dict) -> dict:
         """เปิด/ปิดการเอา hub เองเข้ากลุ่ม stacked — node อื่นใช้ PATCH /api/nodes/{name}"""

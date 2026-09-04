@@ -81,15 +81,36 @@ _derive_cluster_defaults() {
   # คลัสเตอร์ที่มากกว่า 2 เครื่อง: ใส่ IP ของ worker ทุกตัวคั่นด้วยช่องว่าง เรียงตาม node-rank
   # (rank 1, 2, 3 …) · ค่าเริ่มต้นคือ worker เดียว = พฤติกรรมเดิมทุกประการ
   WORKER_IPS="$WORKER_IPS_EXPLICIT"
+  # cluster.env v2 (หลายสาย): ไม่ได้ตั้ง WORKER_IPS เอง → เรียง HEAD_TO_WORKER_IP_1..N-1 = IP ของ worker
+  # แต่ละ rank **ตามสายที่ head มองเห็น** (ring 3 เครื่อง: worker สองตัวอยู่คนละวง คนละ interface ของ head)
+  if [[ -z "$WORKER_IPS" && -n "${HEAD_TO_WORKER_IP_1:-}" ]]; then
+    local _r=1 _v
+    while _v="HEAD_TO_WORKER_IP_${_r}"; [[ -n "${!_v:-}" ]]; do
+      WORKER_IPS="${WORKER_IPS:+$WORKER_IPS }${!_v}"; _r=$(( _r + 1 ))
+    done
+  fi
   WORKER_IPS="${WORKER_IPS:-{% if node_count > 2 %}{% for i in range(2, node_count + 1) %}10.100.152.{{ i }}{{ " " if not loop.last }}{% endfor %}{% else %}$WORKER_IP{% endif %}}"
   # fabric/transport IP สำหรับ NCCL — ถ้าใช้ QSFP แยก interface ให้ override สองตัวนี้
   TRANSPORT_IP_MASTER="$TRANSPORT_IP_MASTER_EXPLICIT"
-  TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-$MASTER_IP}"
+  TRANSPORT_IP_MASTER="${TRANSPORT_IP_MASTER:-${WORKER_HEAD_IP_1:-$MASTER_IP}}"
   TRANSPORT_IP_WORKER="$TRANSPORT_IP_WORKER_EXPLICIT"
-  TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-$WORKER_IP}"
+  TRANSPORT_IP_WORKER="${TRANSPORT_IP_WORKER:-${HEAD_TO_WORKER_IP_1:-$WORKER_IP}}"
 }
 _derive_cluster_defaults
 MASTER_PORT="${MASTER_PORT:-25000}"
+
+# ── หลายสายต่อเครื่อง (cluster.env schema v2 — ring 3 เครื่อง / switch 2–4 เครื่อง) ──
+# hub เขียน LINKS_<rank> · NCCL_SOCKET_IFNAMES_<rank> · NCCL_IB_HCAS_<rank> · HEAD_TO_WORKER_IP_<rank> ·
+# WORKER_HEAD_IP_<rank> มาให้ (รูปแบบอยู่ในหัว fleet/cluster_env.py) · ไม่มีคีย์พวกนี้ = ทำงานแบบเดิมทุกประการ
+# (สายเดียว IP เดียวต่อเครื่อง) — ห้ามให้ bundle 2 เครื่องที่รันอยู่เปลี่ยนพฤติกรรมเพราะโค้ดชุดนี้
+CLUSTER_TOPOLOGY="${CLUSTER_TOPOLOGY:-}"
+# ring: แต่ละคู่คุยกันคนละสาย — NCCL ต้องเลือก NIC ต่อคู่ได้ (hub ตั้ง 1 ให้ใน cluster.env ของ ring)
+NCCL_CROSS_NIC="${NCCL_CROSS_NIC:-}"
+# sysfs ของ RoCE HCA / สถานะ link — เปลี่ยนได้เพื่อทดสอบ (เครื่องจริงไม่ต้องแตะ)
+IB_SYSFS_ROOT="${IB_SYSFS_ROOT:-/sys/class/infiniband}"
+NET_SYSFS_ROOT="${NET_SYSFS_ROOT:-/sys/class/net}"
+# --dry-run: ประกอบ worker.sh + docker run ของทุก rank แล้วพิมพ์ ไม่แตะ docker/ssh/GPU
+DRY_RUN="${DRY_RUN:-}"
 
 # ── NCCL / RoCE (ต้องตั้งชื่อ interface จริงบนเครื่อง; ว่าง = fallback TCP ช้าลง) ──
 # หา interface: ip -br link | grep -Ei '200|roce|mlx' ; ibdev2netdev 2>/dev/null
@@ -269,7 +290,104 @@ _worker_transport_ip() {
       if (( i == rank )); then printf '%s' "$ip"; return 0; fi
     done
   fi
+  # v2: IP ที่ head ใช้ถึง worker rank นี้คือสายตรงระหว่างสองเครื่อง = สายที่ NCCL ต้องใช้ด้วย
+  if [[ -z "$TRANSPORT_IPS_WORKER" && -n "$(_rank_var HEAD_TO_WORKER_IP "$rank")" ]]; then
+    _rank_var HEAD_TO_WORKER_IP "$rank"; return 0
+  fi
   if (( rank == 1 )); then printf '%s' "$TRANSPORT_IP_WORKER"; else printf '%s' "$wip"; fi
+}
+
+# ── ตัวช่วยของ cluster.env v2 (หลายสาย) — ทุกตัวคืนค่าว่างเมื่อไม่มีคีย์ v2 ──
+_rank_var() { local _n="$1_$2"; printf '%s' "${!_n:-}"; }      # _rank_var HEAD_TO_WORKER_IP 2
+_multilink() { [[ -n "${LINKS_0:-}" || -n "${HEAD_TO_WORKER_IP_1:-}" ]]; }
+_node_ifnames() { _rank_var NCCL_SOCKET_IFNAMES "$1"; }
+_node_hcas() { _rank_var NCCL_IB_HCAS "$1"; }
+# IP ของ head ที่ worker rank นี้ต่อกลับ (--master-addr ของมัน) — ring: คนละ IP ต่อ worker
+_worker_head_ip() { local v; v="$(_rank_var WORKER_HEAD_IP "$1")"; printf '%s' "${v:-$TRANSPORT_IP_MASTER}"; }
+
+# IPv4 อยู่วงเดียวกันไหม — $1 = ip/prefix (ไม่มี prefix = /24)  $2 = ip · ใช้เลือกสายสำรองตอน rsync
+_ip2int() {
+  local a b c d
+  IFS=. read -r a b c d <<< "$1"
+  [[ "$a$b$c$d" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+  echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+_same_subnet() {
+  local ip="${1%%/*}" prefix="${1#*/}" mask
+  [[ "$prefix" == "$1" || -z "$prefix" ]] && prefix=24
+  [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+  mask=$(( prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+  (( ($(_ip2int "$ip") & mask) == ($(_ip2int "$2") & mask) ))
+}
+
+# IP ที่ head ควรใช้ rsync/ssh ไป worker rank นี้ — สายตรงที่ hub บันทึก (HEAD_TO_WORKER_IP) ก่อน ตามด้วย
+# IP อื่นของ worker ที่อยู่วงเดียวกับสายใดสายหนึ่งของ head เรียงจากสายที่เร็วที่สุด · เอาเส้นแรกที่ ssh ถึง
+# (ring: มีสายตรงเส้นเดียว · switch: เส้นเดียว · แต่เครื่องที่ต่อสองเส้นถึง switch เดียวกันจะมีสองทาง)
+_sync_ip_for_rank() {
+  local rank="$1" wip="$2"
+  _multilink || { printf '%s' "$wip"; return 0; }
+  local first cand link iface ipp prank pip hlink hiface hipp x speed
+  first="$(_rank_var HEAD_TO_WORKER_IP "$rank")"; first="${first:-$wip}"
+  local -a extra=()
+  for link in $(_rank_var LINKS "$rank"); do
+    IFS=: read -r iface ipp prank pip <<< "$link"
+    [[ -n "$ipp" && "${ipp%%/*}" != "$first" ]] || continue
+    for hlink in $(_rank_var LINKS 0); do
+      IFS=: read -r hiface hipp x x <<< "$hlink"
+      [[ -n "$hipp" ]] && _same_subnet "$hipp" "${ipp%%/*}" || continue
+      speed="$(cat "${NET_SYSFS_ROOT}/${hiface}/speed" 2>/dev/null || echo 0)"
+      [[ "$speed" =~ ^[0-9]+$ ]] || speed=0
+      extra+=("${speed}:${ipp%%/*}")
+    done
+  done
+  local -a order=("$first")
+  if (( ${#extra[@]} > 0 )); then
+    while IFS= read -r cand; do order+=("${cand#*:}"); done < <(printf '%s\n' "${extra[@]}" | sort -t: -k1,1nr)
+  fi
+  for cand in "${order[@]}"; do
+    if ssh_at "$cand" true >/dev/null 2>&1; then printf '%s' "$cand"; return 0; fi
+  done
+  printf '%s' "$first"
+}
+
+# สคริปต์ตรวจสายทีละเส้น — รันได้ทั้งในเครื่อง (bash -c) และผ่าน ssh บน worker · พิมพ์บรรทัดละสาย:
+# iface ip/prefix → rank peer  link=up/down speed=… ip=yes/no hca=… ping=ok/FAIL (ping ออกทางสายนั้นจริง ๆ -I)
+_links_probe_script() {
+  printf 'LINKS=%q; ' "$1"
+  # sysfs root อ่านจาก env ของเครื่องที่รัน (head ส่งของตัวเองตอนเรียก bash -c · worker ใช้ค่าปกติของมัน)
+  cat <<'PROBE'
+IB="${IB_SYSFS_ROOT:-/sys/class/infiniband}"; NET="${NET_SYSFS_ROOT:-/sys/class/net}"
+for link in $LINKS; do
+  IFS=: read -r iface ipp prank pip <<< "$link"
+  state="$(cat "$NET/$iface/operstate" 2>/dev/null || echo missing)"
+  speed="$(cat "$NET/$iface/speed" 2>/dev/null || echo '?')"
+  hca=""; for d in "$IB"/*; do [ -e "$d/device/net/$iface" ] && { hca="$(basename "$d")"; break; }; done
+  have="no"; grep -q " ${ipp%%/*}/" <<< "$(ip -o -4 addr show dev "$iface" 2>/dev/null)" && have="yes"
+  ping="-"
+  if [ -n "$pip" ] && [ "$pip" != "-" ]; then
+    if ! command -v ping >/dev/null 2>&1; then ping="n/a"
+    elif ping -c 1 -W 1 -I "$iface" "$pip" >/dev/null 2>&1; then ping="ok"
+    else ping="FAIL"; fi
+  fi
+  printf '    %-16s %-18s -> rank %-2s %-15s link=%s speed=%s ip=%s hca=%s ping=%s\n' \
+    "$iface" "$ipp" "$prank" "${pip:--}" "$state" "$speed" "$have" "${hca:--}" "$ping"
+done
+PROBE
+}
+
+# ตารางสายของทุก rank + ping คู่ปลายสายทางสายนั้น — v2 เท่านั้น (ไฟล์เก่าไม่มีอะไรให้พิมพ์)
+_print_links() {
+  _multilink || return 0
+  echo "Topology   : ${CLUSTER_TOPOLOGY:-multi-link}${NCCL_CROSS_NIC:+ (NCCL_CROSS_NIC=${NCCL_CROSS_NIC})}"
+  echo "  rank 0 (head, local) ifnames=${NCCL_SOCKET_IFNAME:-$(_node_ifnames 0)} hca=${NCCL_IB_HCA:-$(_node_hcas 0)}"
+  IB_SYSFS_ROOT="$IB_SYSFS_ROOT" NET_SYSFS_ROOT="$NET_SYSFS_ROOT" \
+    bash -c "$(_links_probe_script "$(_rank_var LINKS 0)")" 2>/dev/null || true
+  local wip r=0
+  for wip in $WORKER_IPS; do
+    r=$(( r + 1 ))
+    echo "  rank ${r} (${wip}) ifnames=$(_node_ifnames "$r") hca=${NCCL_IB_HCA_EXPLICIT:-$(_node_hcas "$r")} head-ip=$(_worker_head_ip "$r")"
+    ssh_at "$wip" "$(_links_probe_script "$(_rank_var LINKS "$r")")" 2>/dev/null || echo "    (SSH ไป ${wip} ล้มเหลว)"
+  done
 }
 
 # KB → ข้อความอ่านง่าย (GB เมื่อถึง ไม่งั้น MB) — ตัวเลข "0 GB" บอกอะไรไม่ได้
@@ -361,6 +479,7 @@ parse_options() {
       --client-input=*)  CLIENT_INPUT="${1#*=}"; shift ;;
       --client-output)   CLIENT_OUTPUT="$2"; shift 2 ;;
       --client-output=*) CLIENT_OUTPUT="${1#*=}"; shift ;;
+      --dry-run)         DRY_RUN=1; shift ;;
       *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
@@ -817,8 +936,13 @@ sync_worker() {
   cache_name="$(basename "$model_cache")"
   worker_hf="${WORKER_HF_HOME}"
   have_bytes="$(du -sb "$model_cache" 2>/dev/null | cut -f1 || echo 0)"
-  local wip
+  local wip rank=0 sip
   for wip in $WORKER_IPS; do
+    rank=$(( rank + 1 ))
+    # v2: ลากไฟล์ทางสายที่เร็วที่สุดที่ถึง worker rank นี้ได้ (ปกติคือสายตรงเดียวกับที่ NCCL ใช้)
+    sip="$(_sync_ip_for_rank "$rank" "$wip")"
+    [[ "$sip" == "$wip" ]] || log "worker rank ${rank}: rsync ทาง ${sip} (สายที่เร็วที่สุดที่ถึง)"
+    wip="$sip"
     # rsync ต้องมีทั้งสองฝั่ง — ฝั่ง worker ที่ไม่มีจบด้วย "bash: rsync: command not found" exit 127
     # ที่ไม่บอกว่าเป็นเครื่องไหน
     ssh_at "$wip" "command -v rsync >/dev/null" ||
@@ -956,9 +1080,25 @@ except Exception as e:
     print("vllm       : unavailable", repr(e))
 print("python     :", platform.python_version())
 PYEOF
+  # v2: สายทุกเส้นของทุก rank ต้องขึ้นและ ping ถึงคู่ปลายสาย — สายเดียวหลุดใน ring = NCCL ค้างเงียบตอน init
+  if _multilink; then
+    _resolve_ifname >/dev/null 2>&1 || true
+    _resolve_hca >/dev/null 2>&1 || true
+    local links_out
+    links_out="$(_print_links 2>&1)"
+    printf '%s\n' "$links_out"
+    if grep -qE 'ping=FAIL|link=(down|missing)|ip=no|SSH .* ล้มเหลว' <<< "$links_out"; then
+      die "สายบางเส้นไม่พร้อม (ดูบรรทัด ping=FAIL / link=down / ip=no ด้านบน)
+  ring 3 เครื่อง: ทุกเครื่องต้องมี route ไปยัง IP อีกฝั่งของคู่ผ่านสายตรง (ดู docs/RUNBOOK-MULTI-NODE.md §8)
+  สายที่ negotiate ต่ำหรือหลุด: ip -br link · ethtool <iface> · เสียบสาย/ตั้ง IP แล้ว: $0 doctor"
+    fi
+    log "links: ทุกสายขึ้นและ ping ถึงคู่ปลายสาย"
+  fi
 }
 
 # ─────────────────────── serve-args builder ───────────────────────
+# $1 (ไม่บังคับ) = --master-addr ของ rank นี้ · ring: worker แต่ละตัวเห็น head คนละ IP (สายตรงของตัวเอง)
+# TCPStore ของ rank 0 ฟังทุก interface อยู่แล้ว — ที่ต้องต่างกันคือฝั่งที่ต่อเข้าไป
 build_common_args() {
   COMMON_ARGS=(
     serve "$MODEL_ID"
@@ -967,7 +1107,7 @@ build_common_args() {
     --tensor-parallel-size "$TENSOR_PARALLEL_SIZE"
     --distributed-executor-backend mp
     --nnodes "$NNODES"
-    --master-addr "$TRANSPORT_IP_MASTER"
+    --master-addr "${1:-$TRANSPORT_IP_MASTER}"
     --master-port "$MASTER_PORT"
     --max-model-len "$MAX_MODEL_LEN"
     --max-num-seqs "$MAX_NUM_SEQS"
@@ -1017,18 +1157,25 @@ detect_worker_interface() {
 
 # RoCE HCA ที่คู่กับ NIC หาได้จาก sysfs — ไม่ตั้งแล้ว NCCL ตกไปใช้ TCP
 # สาย 200G จะทำงานได้เท่าอีเทอร์เน็ตธรรมดา ซึ่งเป็นเคสที่ไล่ยากมากเพราะ "ก็รันได้"
+# รับ comma list ได้ (v2: head มีสองสาย) → คืน comma list ในลำดับเดียวกัน · สายที่หา HCA ไม่เจอถูกข้าม
 detect_hca_for_interface() {
-  local want="$1" dev
+  local want="$1" ifn dev out=""
   [[ -n "$want" ]] || return 0
-  for dev in /sys/class/infiniband/*; do
-    [[ -e "$dev/device/net/$want" ]] || continue
-    basename "$dev"
-    return 0
+  for ifn in ${want//,/ }; do
+    for dev in "$IB_SYSFS_ROOT"/*; do
+      [[ -e "$dev/device/net/$ifn" ]] || continue
+      out="${out:+$out,}$(basename "$dev")"
+      break
+    done
   done
+  printf '%s' "$out"
   return 0
 }
 
 _resolve_hca() {
+  [[ -n "$NCCL_IB_HCA" ]] && return 0
+  # v2: ทะเบียนรู้ HCA ของ head อยู่แล้ว (ทุกสาย) — ไม่รู้ค่อยเดินจาก sysfs ทีละ interface
+  NCCL_IB_HCA="$(_node_hcas 0)"
   [[ -n "$NCCL_IB_HCA" ]] && return 0
   NCCL_IB_HCA="$(detect_hca_for_interface "$NCCL_SOCKET_IFNAME")"
   [[ -n "$NCCL_IB_HCA" ]] && log "พบ RoCE HCA ของ ${NCCL_SOCKET_IFNAME}: ${NCCL_IB_HCA}"
@@ -1037,6 +1184,9 @@ _resolve_hca() {
 
 _resolve_ifname() {
   # ค่าที่ตั้งมาเองชนะเสมอ ไม่มีค่อยหาให้จาก IP
+  [[ -n "$NCCL_SOCKET_IFNAME" ]] && return 0
+  # v2: head ต้องประกาศ **ทุกสาย** (ring: worker สองตัวอยู่คนละสาย) — detect จาก IP เดียวได้แค่สายแรก
+  NCCL_SOCKET_IFNAME="$(_node_ifnames 0)"
   [[ -n "$NCCL_SOCKET_IFNAME" ]] && return 0
   NCCL_SOCKET_IFNAME="$(detect_interface "$TRANSPORT_IP_MASTER")"
   [[ -n "$NCCL_SOCKET_IFNAME" ]] &&
@@ -1055,6 +1205,8 @@ _nccl_env_pairs() {
   local hca="${2-$NCCL_IB_HCA}"
   echo "NCCL_IGNORE_CPU_AFFINITY=1"
   echo "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX}"
+  # ring: คู่ A-B วิ่งสายหนึ่ง คู่ A-C อีกสาย — ไม่เปิดตัวนี้ NCCL บังคับ NIC เดียวทั้ง communicator
+  if [[ -n "${NCCL_CROSS_NIC:-}" ]]; then echo "NCCL_CROSS_NIC=${NCCL_CROSS_NIC}"; fi
   if [[ -n "$ifname" ]]; then
     echo "NCCL_SOCKET_IFNAME=${ifname}"
     echo "GLOO_SOCKET_IFNAME=${ifname}"
@@ -1084,6 +1236,14 @@ check_running_on_master() {
   [[ -n "$ifname" ]] || die \
     "เครื่องนี้ไม่มี IP ${TRANSPORT_IP_MASTER} (head) — สคริปต์นี้ต้องรันบนเครื่อง head เท่านั้น
     ถ้าสลับ head/worker ให้แก้ MASTER_IP/WORKER_IP หรือ cluster.env"
+  # v2: head ต้องถือ IP ของทุกสายที่ hub บันทึก — สายที่หายไปหนึ่งเส้น = worker rank นั้นต่อ head ไม่ถึง
+  local link ip
+  for link in $(_rank_var LINKS 0); do
+    ip="${link#*:}"; ip="${ip%%/*}"
+    [[ -z "$ip" || -n "$(detect_interface "$ip")" ]] || die \
+      "เครื่องนี้ไม่มี IP ${ip} บนสาย ${link%%:*} ตาม cluster.env (LINKS_0) — สายหลุด/ยังไม่ตั้ง IP หรือทะเบียนเก่า
+    ดู: ip -br addr · แก้ทะเบียนแล้วเขียนใหม่: lmds node cluster --write ${SLUG} --head <เครื่อง head>"
+  done
 }
 
 prompt_cluster_config() {
@@ -1248,47 +1408,63 @@ print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformer
 }
 
 start() {
-  ensure_image "${VLLM_IMAGE}"
-  _require_non_root
-  need docker; need curl
-  check_running_on_master
-  _check_worker_ssh
+  if [[ -z "$DRY_RUN" ]]; then
+    ensure_image "${VLLM_IMAGE}"
+    _require_non_root
+    need docker; need curl
+    check_running_on_master
+    # WORKER_IPS = IP ที่ head ใช้ถึง worker แต่ละ rank (v2: HEAD_TO_WORKER_IP_<rank> คนละสายกันได้)
+    _check_worker_ssh
+  fi
   _resolve_ifname
   _resolve_hca
   local WORKER_IFNAME="$NCCL_SOCKET_IFNAME"
-  local detected_worker; detected_worker="$(detect_worker_interface)"
+  # ข้อมูลเพื่อ log เท่านั้น (worker แต่ละตัวถูกถามจริงในลูปข้างล่าง) — dry-run/v2 ไม่ต้อง ssh เพิ่ม
+  local detected_worker=""
+  if [[ -z "$DRY_RUN" ]] && ! _multilink; then detected_worker="$(detect_worker_interface)"; fi
   if [[ -n "$detected_worker" ]]; then
     WORKER_IFNAME="$detected_worker"
     [[ "$WORKER_IFNAME" == "$NCCL_SOCKET_IFNAME" ]] ||
       log "worker ใช้ interface คนละชื่อกับ head: ${WORKER_IFNAME}"
   fi
-  local image_id; image_id="$(_assert_runtime_images)"
+  local image_id
+  if [[ -n "$DRY_RUN" ]]; then
+    # ไม่แตะ docker เลย — ใช้ id ที่ prepare-runtime ล็อกไว้ ไม่มีก็ค่าแทน (มีผลแค่ชื่อโฟลเดอร์ cache ที่พิมพ์)
+    image_id="$(cat "$IMAGE_LOCK_FILE" 2>/dev/null || true)"; image_id="${image_id:-sha256:dry-run}"
+  else
+    image_id="$(_assert_runtime_images)"
+  fi
   local cache_key="${image_id#sha256:}"; cache_key="${cache_key:0:16}"
   local head_fi="${FLASHINFER_CACHE}/${cache_key}"
   local worker_fi="${WORKER_FLASHINFER_CACHE}/${cache_key}"
-
-  if _head_port_in_use; then
-    die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน (ดู: ss -tlnp | grep ${API_PORT})"
-  fi
-
-  # ลบ container ค้าง
-  docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
-  for wip in $WORKER_IPS; do
-    ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
-  done
-
-  verify_files
-  check_architecture
-  _ensure_local_owned_dir "$FLASHINFER_CACHE"
-  _ensure_local_owned_dir "$head_fi"
-  _ensure_local_owned_dir "$VLLM_CACHE"
   local worker_hf="${WORKER_HF_HOME}" wip
-  for wip in $WORKER_IPS; do
-    ssh_at "$wip" "mkdir -p '${worker_hf}' '${WORKER_VLLM_CACHE}'" ||
-      die "เตรียม dir บน ${wip} ไม่ได้"
-  done
-  _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
-  _ensure_worker_owned_dir "$worker_fi"
+
+  if [[ -z "$DRY_RUN" ]]; then
+    if _head_port_in_use; then
+      die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน (ดู: ss -tlnp | grep ${API_PORT})"
+    fi
+
+    # ลบ container ค้าง
+    docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
+    for wip in $WORKER_IPS; do
+      ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
+    done
+
+    verify_files
+    check_architecture
+    _ensure_local_owned_dir "$FLASHINFER_CACHE"
+    _ensure_local_owned_dir "$head_fi"
+    _ensure_local_owned_dir "$VLLM_CACHE"
+    for wip in $WORKER_IPS; do
+      ssh_at "$wip" "mkdir -p '${worker_hf}' '${WORKER_VLLM_CACHE}'" ||
+        die "เตรียม dir บน ${wip} ไม่ได้"
+    done
+    _ensure_worker_owned_dir "$WORKER_FLASHINFER_CACHE"
+    _ensure_worker_owned_dir "$worker_fi"
+  else
+    echo "== DRY RUN: ${CLUSTER_TOPOLOGY:-single-link} · NNODES=${NNODES} TP=${TENSOR_PARALLEL_SIZE} · head ${TRANSPORT_IP_MASTER} · worker(s) ${WORKER_IPS} =="
+    echo "== head NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-<auto>} NCCL_IB_HCA=${NCCL_IB_HCA:-<auto>}${NCCL_CROSS_NIC:+ NCCL_CROSS_NIC=$NCCL_CROSS_NIC} =="
+  fi
 
   build_common_args
   local quoted_common; quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
@@ -1303,25 +1479,44 @@ start() {
 
   # ── Step 1: worker ทุกตัว (rank 1..N-1, headless) ก่อน ──
   # container ชื่อเดียวกันได้เพราะอยู่คนละเครื่อง · rank เรียงตามลำดับใน WORKER_IPS
-  local rank=0 worker_script wifname whca wtip
+  local rank=0 worker_script wifname whca wtip wmaster detected _ifn _h
   for wip in $WORKER_IPS; do
     rank=$(( rank + 1 ))
     # interface/IP ที่ worker ใช้คุย NCCL คือฝั่ง transport (สาย 200G) ไม่ใช่ IP ที่ head ssh ไปหา
+    # v2: = HEAD_TO_WORKER_IP_<rank> (สายตรง head↔worker ตัวนี้) · --master-addr = WORKER_HEAD_IP_<rank>
     wtip="$(_worker_transport_ip "$rank" "$wip")"
-    wifname="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wtip}' \
-      '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true)"
-    [[ -n "$wifname" ]] || die "worker ${wip} ไม่มี IP ${wtip} บน interface ไหนเลย (ip -br addr บนเครื่องนั้น)
+    wmaster="$(_worker_head_ip "$rank")"
+    # v2: ทะเบียนบอกทุก interface ของ worker (ring: สองสาย ไปคนละเครื่อง) — detect จาก IP เดียวได้แค่สายแรก
+    wifname="$(_node_ifnames "$rank")"
+    detected=""
+    if [[ -z "$DRY_RUN" ]]; then
+      detected="$(ssh_at "$wip" "ip -o -4 addr show 2>/dev/null | awk -v want='${wtip}' \
+        '\$4 ~ (\"^\" want \"/\") {print \$2; exit}'" 2>/dev/null || true)"
+    fi
+    if [[ -z "$wifname" ]]; then
+      wifname="$detected"
+    elif [[ -n "$detected" && ",${wifname}," != *",${detected},"* ]]; then
+      log "worker ${wip}: IP ${wtip} อยู่บน ${detected} ซึ่งไม่อยู่ในรายการสายของ cluster.env (${wifname}) — ทะเบียนอาจเก่า"
+    fi
+    [[ -n "$wifname" || -n "$DRY_RUN" ]] || die "worker ${wip} ไม่มี IP ${wtip} บน interface ไหนเลย (ip -br addr บนเครื่องนั้น)
   IP ที่ worker ใช้คุย NCCL ต้องอยู่บนเครื่อง worker จริง — ตั้ง TRANSPORT_IP_WORKER (worker ตัวแรก) หรือ
   TRANSPORT_IPS_WORKER=\"<ip rank1> <ip rank2> …\" ให้ตรงกับสายที่ต่อถึง ${TRANSPORT_IP_MASTER} ของ head · ดู: $0 network-info"
-    # HCA ของ worker หาบนเครื่อง worker เอง (sysfs เดียวกับ detect_hca_for_interface ของ head)
-    # ค่าที่ผู้ใช้ตั้ง NCCL_IB_HCA มาเองใช้ทั้งคลัสเตอร์ · หาไม่เจอ = worker ตัวนั้นใช้ TCP ไม่ยืมชื่อของ head
+    # HCA ของ worker หาบนเครื่อง worker เอง (sysfs เดียวกับ detect_hca_for_interface ของ head) ทีละ interface
+    # ค่าที่ผู้ใช้ตั้ง NCCL_IB_HCA มาเองใช้ทั้งคลัสเตอร์ · ทะเบียน (NCCL_IB_HCAS_<rank>) รองลงมา ·
+    # หาไม่เจอ = worker ตัวนั้นใช้ TCP ไม่ยืมชื่อของ head
     whca="$NCCL_IB_HCA_EXPLICIT"
-    if [[ -z "$whca" && -n "$wifname" ]]; then
-      whca="$(ssh_at "$wip" "for d in /sys/class/infiniband/*; do [ -e \"\$d/device/net/${wifname}\" ] && basename \"\$d\"; done" 2>/dev/null || true)"
-      whca="${whca%%$'\n'*}"
+    [[ -n "$whca" ]] || whca="$(_node_hcas "$rank")"
+    if [[ -z "$whca" && -n "$wifname" && -z "$DRY_RUN" ]]; then
+      for _ifn in ${wifname//,/ }; do
+        _h="$(ssh_at "$wip" "for d in /sys/class/infiniband/*; do [ -e \"\$d/device/net/${_ifn}\" ] && basename \"\$d\"; done" 2>/dev/null || true)"
+        _h="${_h%%$'\n'*}"
+        [[ -n "$_h" ]] && whca="${whca:+$whca,}$_h"
+      done
     fi
     [[ -z "$whca" || "$whca" == "$NCCL_IB_HCA" ]] || log "worker ${wip} ใช้ HCA คนละตัวกับ head: ${whca}"
-    log "Starting worker rank ${rank} (headless) on ${wip} [${wtip} · ${wifname:-auto}${whca:+ / ${whca}}] …"
+    build_common_args "$wmaster"
+    quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
+    log "Starting worker rank ${rank} (headless) on ${wip} [${wtip} → head ${wmaster} · ${wifname:-auto}${whca:+ / ${whca}}] …"
     # env ทุกตัวผ่าน %q — ค่าที่มีช่องว่าง/อักขระพิเศษ (เช่น JSON ใน VLLM_* หรือ path) เคยถูก
     # แตกเป็นหลาย token ตอน export ในสคริปต์ของ worker ทั้งที่ head ได้ค่าถูกผ่าน docker -e
     worker_script="$(cat <<WSCRIPT
@@ -1351,8 +1546,13 @@ $(for pair in ${ENGINE_ENV}; do printf 'export %q\n' "$pair"; done)
 exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port 18000 --headless
 WSCRIPT
 )"
-    ssh_at "$wip" "mkdir -p /tmp/lmds-${SLUG} && cat > /tmp/lmds-${SLUG}/worker.sh" <<< "$worker_script"
-    ssh_at "$wip" "chmod +x /tmp/lmds-${SLUG}/worker.sh"
+    if [[ -n "$DRY_RUN" ]]; then
+      echo "== worker rank ${rank} @ ${wip} — /tmp/lmds-${SLUG}/worker.sh =="
+      printf '%s\n' "$worker_script"
+    else
+      ssh_at "$wip" "mkdir -p /tmp/lmds-${SLUG} && cat > /tmp/lmds-${SLUG}/worker.sh" <<< "$worker_script"
+      ssh_at "$wip" "chmod +x /tmp/lmds-${SLUG}/worker.sh"
+    fi
     local -a wrun=(
       docker run -d --name "${WORKER_CONTAINER}"
       --gpus all --network host --ipc host
@@ -1364,8 +1564,29 @@ WSCRIPT
     local wpair
     for wpair in ${ENGINE_ENV}; do wrun+=(-e "$wpair"); done
     wrun+=(--entrypoint bash "${VLLM_IMAGE}" "/tmp/lmds-${SLUG}/worker.sh")
+    if [[ -n "$DRY_RUN" ]]; then
+      echo "== worker rank ${rank} @ ${wip} — ssh ${SSH_USER}@${wip}: =="
+      printf '%q ' "${wrun[@]}"; echo
+      continue
+    fi
     ssh_at "$wip" "$(printf '%q ' "${wrun[@]}")" || die "start worker container บน ${wip} ไม่สำเร็จ"
   done
+  # head ใช้ COMMON_ARGS ของตัวเอง (--master-addr = TRANSPORT_IP_MASTER) — ลูปข้างบนเพิ่งประกอบของ worker
+  build_common_args
+  quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
+
+  if [[ -n "$DRY_RUN" ]]; then
+    local -a hdry=(docker run -d --name "$MASTER_CONTAINER" --gpus all --network host --ipc host
+      -e "VLLM_HOST_IP=${TRANSPORT_IP_MASTER}")
+    while IFS= read -r line; do [[ "$line" == WARN:* ]] || hdry+=(-e "$line"); done < <(_nccl_env_pairs 2>/dev/null)
+    for pair in "${EXTRA_DOCKER_ENV[@]}"; do hdry+=(-e "$pair"); done
+    for pair in ${ENGINE_ENV}; do hdry+=(-e "$pair"); done
+    hdry+=(--entrypoint bash "$VLLM_IMAGE" -lc "exec vllm${quoted_common} --node-rank 0 --host ${API_HOST} --port ${API_PORT}")
+    echo "== head rank 0 (local) =="
+    printf '%q ' "${hdry[@]}"; echo
+    echo "== DRY RUN จบ — ไม่ได้แตะ docker/ssh =="
+    return 0
+  fi
 
   log "รอ worker init ${WORKER_INIT_WAIT}s …"
   sleep "$WORKER_INIT_WAIT"
@@ -1449,10 +1670,21 @@ _explain_worker_crash() {
 # (hub และผู้ใช้ตรวจสอบ stacked ได้เหมือน single ที่มี serve-args มาก่อน)
 serve_args() {
   build_common_args
-  echo "# head (rank 0):"
+  echo "# head (rank 0)${LINKS_0:+ — VLLM_HOST_IP=${TRANSPORT_IP_MASTER} NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-$(_node_ifnames 0)} NCCL_IB_HCA=${NCCL_IB_HCA:-$(_node_hcas 0)}${NCCL_CROSS_NIC:+ NCCL_CROSS_NIC=$NCCL_CROSS_NIC}}:"
   printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 0 --host "$API_HOST" --port "$API_PORT"
-  echo "# worker rank 1..$(worker_count) (headless, ต่างกันแค่ --node-rank N):"
-  printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 1 --host 127.0.0.1 --port 18000 --headless
+  if _multilink; then
+    # v2: worker แต่ละ rank ได้ env และ --master-addr ของตัวเอง (ring: คนละสาย คนละ IP ของ head)
+    local r=0 wip
+    for wip in $WORKER_IPS; do
+      r=$(( r + 1 ))
+      build_common_args "$(_worker_head_ip "$r")"
+      echo "# worker rank ${r} @ ${wip} — VLLM_HOST_IP=$(_worker_transport_ip "$r" "$wip") NCCL_SOCKET_IFNAME=$(_node_ifnames "$r") NCCL_IB_HCA=${NCCL_IB_HCA_EXPLICIT:-$(_node_hcas "$r")}${NCCL_CROSS_NIC:+ NCCL_CROSS_NIC=$NCCL_CROSS_NIC}:"
+      printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank "$r" --host 127.0.0.1 --port 18000 --headless
+    done
+  else
+    echo "# worker rank 1..$(worker_count) (headless, ต่างกันแค่ --node-rank N):"
+    printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 1 --host 127.0.0.1 --port 18000 --headless
+  fi
   if [[ -n "$ENGINE_ENV" || ${#EXTRA_DOCKER_ENV[@]} -gt 0 ]]; then
     echo "# engine env (ทั้ง head และ worker ทุกตัว):"
     local pair
@@ -1512,6 +1744,12 @@ status() {
     echo "-- worker ${wip}"
     ssh_at "$wip" "docker ps -a --filter 'name=^${WORKER_CONTAINER}$' --format 'table {{.Names}}\t{{.Status}}'" 2>/dev/null || echo "(SSH ล้มเหลว)"
   done
+  if _multilink; then
+    echo "--- Links ---"
+    _resolve_ifname >/dev/null 2>&1 || true
+    _resolve_hca >/dev/null 2>&1 || true
+    _print_links
+  fi
   echo "--- API ---"
   if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
     echo "API: healthy"
@@ -1576,6 +1814,7 @@ network_info() {
   fi
   echo "NCCL if    : ${NCCL_SOCKET_IFNAME:-<ยังไม่ตั้ง — แนะนำให้ตั้ง>}"
   echo "NCCL HCA   : ${NCCL_IB_HCA:-<ยังไม่ตั้ง — จะ fallback TCP>}"
+  _print_links
   echo "Master port: ${MASTER_PORT}"
   echo "Bind       : ${API_HOST}:${API_PORT}"
   echo "Endpoint   : http://${adv}:${API_PORT}/v1"
@@ -2080,6 +2319,64 @@ print("stress: PASS — ทุกสายได้คำตอบ")
 PYEOF
 }
 
+# ─────────────────────────── remove (ฝั่ง worker) ───────────────────────────
+# ลบ stacked แล้วของบน worker ทุกตัวยังอยู่: weight ที่ sync-worker คัดลอกไป (75–173 GB) · container
+# lmds-<slug>-worker · /tmp/lmds-<slug> · FlashInfer cache ของ image ที่ล็อก — ผู้ใช้ 2026-09-05:
+# "ลบโมเดล stacked แล้วลบที่ worker ด้วยไหม" · `lmds remove <slug>` บน head ทำส่วนนี้ให้เอง (fleet/manager)
+# คำสั่งนี้มีไว้ให้ controller ตัวเดียวก็เก็บกวาดได้ · ไม่มี -y = พิมพ์แผน+ขนาด (du -sb ผ่าน ssh) ไม่ลบ
+_worker_removal_paths() {
+  local keep="${1:-}" slug key=""
+  slug="$(_model_slug)"
+  if [[ -z "$keep" ]]; then
+    printf '%s\n' "${WORKER_HF_HOME}/hub/models--${slug}" "${WORKER_HF_HOME}/models--${slug}" \
+      "${WORKER_HF_HOME}/hub/.locks/models--${slug}"
+  fi
+  printf '%s\n' "/tmp/lmds-${SLUG}"
+  # cache JIT อยู่ใต้ <cache>/<16 ตัวแรกของ image id ที่ล็อก> — image เดียวกันใช้ร่วมกับ bundle อื่นได้
+  # ลบเฉพาะเมื่อไม่มี bundle อื่นบน head ล็อก image เดียวกัน
+  if [[ -f "$IMAGE_LOCK_FILE" ]]; then
+    key="$(cat "$IMAGE_LOCK_FILE")"
+    local other shared=0
+    for other in "${HF_HOME}"/.lmds-image-id-*; do
+      [[ -f "$other" && "$other" != "$IMAGE_LOCK_FILE" && "$(cat "$other")" == "$key" ]] && shared=1
+    done
+    key="${key#sha256:}"; key="${key:0:16}"
+    (( shared )) || printf '%s\n' "${WORKER_FLASHINFER_CACHE}/${key}"
+  fi
+  return 0
+}
+
+remove_workers() {
+  local yes="" keep="" arg wip path
+  for arg in "$@"; do
+    case "$arg" in -y|--yes) yes=1 ;; --keep-weights) keep=1 ;; esac
+  done
+  local -a paths=()
+  while IFS= read -r path; do [[ -n "$path" ]] && paths+=("$path"); done < <(_worker_removal_paths "$keep")
+  local quoted; quoted="$(printf '%q ' "${paths[@]}")"
+  [[ -n "$yes" ]] || echo "== แผนลบบน worker (${WORKER_IPS}) — ยังไม่ลบ · ลบจริง: $0 remove -y${keep:+ --keep-weights} · ฝั่ง head: lmds remove ${SLUG} =="
+  for wip in $WORKER_IPS; do
+    echo "== worker ${wip} =="
+    if ! ssh_at "$wip" true >/dev/null 2>&1; then
+      echo "  ยังเหลือบน ${wip}: ${paths[*]} — ติดต่อไม่ได้ · ลบเอง: ssh ${SSH_USER}@${wip} 'docker rm -f ${WORKER_CONTAINER}; sudo rm -rf ${paths[*]}'"
+      continue
+    fi
+    if [[ -z "$yes" ]]; then
+      ssh_at "$wip" "docker inspect '${WORKER_CONTAINER}' >/dev/null 2>&1 && echo '  container ${WORKER_CONTAINER}'
+for p in ${quoted}; do [ -e \"\$p\" ] && printf '  %s\t%s\n' \"\$(du -sb \"\$p\" 2>/dev/null | cut -f1)\" \"\$p\"; done; true" || echo "  (อ่านขนาดไม่ได้)"
+    else
+      # rm ธรรมดาก่อน · ไฟล์ของ root (container เขียนไว้) → root ในคอนเทนเนอร์ลบให้ · จบด้วย test -e เสมอ
+      ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 && echo '  ลบ container ${WORKER_CONTAINER}' || true
+for p in ${quoted}; do
+  [ -e \"\$p\" ] || continue
+  rm -rf -- \"\$p\" 2>/dev/null
+  if [ -e \"\$p\" ]; then img=\"\$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)\"; [ -n \"\$img\" ] && docker run --rm -v \"\$(dirname \"\$p\"):/x\" \"\$img\" rm -rf -- \"/x/\$(basename \"\$p\")\" >/dev/null 2>&1 && echo \"  ลบผ่าน docker (ไฟล์เป็นของ root): \$p\"; fi
+  if [ -e \"\$p\" ]; then echo \"  ยังเหลือบน ${wip}: \$p — ลบเอง: ssh ${SSH_USER}@${wip} sudo rm -rf \$p\"; else echo \"  ลบ \$p\"; fi
+done" || echo "  ยังเหลือบน ${wip}: ${paths[*]} — ssh ล้มกลางทาง · ลบเอง: ssh ${SSH_USER}@${wip} 'docker rm -f ${WORKER_CONTAINER}; sudo rm -rf ${paths[*]}'"
+    fi
+  done
+}
+
 usage() {
   cat <<EOF
 ${SLUG} — vLLM stacked (multi-node) controller  (model: ${MODEL_ID})
@@ -2114,6 +2411,8 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
   props            รายการโมเดลจาก /v1/models
   clear-fi-cache   หยุดแล้วล้าง FlashInfer JIT cache ทั้งสอง node
                    ใช้เมื่อ start พังหลังเปลี่ยน image (cache เก่าคนละ signature)
+  remove [-y] [--keep-weights]  ของที่เหลือบน worker ทุกตัว (weight ที่ sync ไป · container · cache)
+                   ไม่มี -y = แสดงแผนพร้อมขนาด · -y = ลบจริง · ฝั่ง head ใช้ lmds remove ${SLUG}
   test-text        ทดสอบ chat completion
 {% endraw %}{% if plan.multimodal.modalities %}  test-vision      ส่งภาพ PNG สีแดงล้วนที่สร้างเอง แล้วเช็คว่าโมเดลเห็นจริง
 {% endif %}{% raw %}  test-reasoning   ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
@@ -2134,6 +2433,7 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --interface NAME      Pick the advertised IP from this interface instead of auto-detect
   --client-input N|auto Input token budget written into client-config
   --client-output N     Output token budget written into client-config
+  --dry-run             (start) print worker.sh + docker run of every rank, touch nothing
 
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
@@ -2163,6 +2463,9 @@ ENVIRONMENT VARIABLES
   HTTPS_PROXY / HF_ENDPOINT  Forwarded into the download container when set (proxy / mirror)
   TRANSPORT_IP_WORKER   IP the first worker uses for NCCL (fabric) [default: WORKER_IP]
   TRANSPORT_IPS_WORKER  Same for every worker, rank order, space-separated (3+ nodes)
+  cluster.env v2 (multi-link: 3-node ring / switch) — written by the hub, per rank:
+    LINKS_<r> NCCL_SOCKET_IFNAMES_<r> NCCL_IB_HCAS_<r> HEAD_TO_WORKER_IP_<r> WORKER_HEAD_IP_<r>
+    CLUSTER_TOPOLOGY=direct-2|ring-3|switch-N · NCCL_CROSS_NIC=1 (ring) · absent = single-link behaviour
   SHARD_COUNT           Expected shard count (0 = do not enforce) [default: ${SHARD_COUNT}]
   STARTUP_TIMEOUT       Seconds to wait for /health on start      [default: ${STARTUP_TIMEOUT}]
 
@@ -2217,7 +2520,9 @@ info() {
 # ทุกคำสั่งที่จะ ssh ไป worker: มี tty ถามยืนยัน IP (เหมือน start เดิม) · ไม่มี tty และยังเป็นค่า
 # ตัวอย่าง = หยุดพร้อมบอกทาง — stop/status/logs ปล่อยผ่าน (hub เรียกบ่อย และล้มไม่เสียหาย)
 case "${1:-}" in
-  prepare-runtime|sync-worker|verify-worker|start|restart|clear-fi-cache|doctor) _require_cluster_config "$1" ;;
+  prepare-runtime|sync-worker|verify-worker|start|restart|clear-fi-cache|doctor|remove)
+    # --dry-run ไม่แตะเครื่องไหน — ประกอบคำสั่งจากค่าตัวอย่างก็มีประโยชน์ (ตรวจ argv/env ก่อนมีคลัสเตอร์จริง)
+    [[ -n "$DRY_RUN" && "$1" == start ]] || _require_cluster_config "$1" ;;
 esac
 
 case "${1:-help}" in
@@ -2236,6 +2541,7 @@ case "${1:-help}" in
   logs)            logs "${2:-head}" "${3:-200}" ;;
   client-config)   client_config ;;
   clear-fi-cache)  clear_fi_cache ;;
+  remove)          remove_workers "${@:2}" ;;
   props)           props ;;
   info|banner) info ;;
   network-info)    network_info ;;

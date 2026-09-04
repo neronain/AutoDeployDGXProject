@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **เวอร์ชันเอกสาร** | 1.2 |
-| **วันที่** | 21 กรกฎาคม 2026 (ปรับสถานะ FR ตามโค้ดจริง 2 สิงหาคม 2026) |
+| **วันที่** | 21 กรกฎาคม 2026 (ปรับสถานะ FR ตามโค้ดจริง 4 กันยายน 2026 — 0.6.0) |
 | **สถานะ** | อนุมัติทิศทางแล้ว — เริ่มเฟส 1 (CLI-first) |
 | **Repository** | https://github.com/neronain/AutoDeployDGXProject |
 | **แหล่งข้อมูลอ้างอิง** | `dgx-spark-model-deployer-team-pack-v3.0.0` (skill pack), [neronain/dgx-spark-all-controllers](https://github.com/neronain/dgx-spark-all-controllers), [neronain/Auto-Create-Script-for-DGX-Spark-loading-model](https://github.com/neronain/Auto-Create-Script-for-DGX-Spark-loading-model) |
@@ -81,18 +81,21 @@
 |---|---|---|
 | FR-1b.1 | เครื่องหนึ่ง (hub) คุมเครื่องอื่น (node) ผ่าน SSH โดย **node ไม่ต้องรัน daemon** — hub เรียก `lmds agent info` บนเครื่องนั้นเพื่อขอสถานะเป็น JSON | P0 |
 | FR-1b.2 | เพิ่มเครื่องด้วย ip/user/รหัสผ่าน **ครั้งเดียว** → ติดตั้ง SSH key ของ LMDS แล้วทิ้งรหัสผ่าน · **ทะเบียนต้องไม่มีฟิลด์รหัสผ่าน** | P0 |
-| FR-1b.3 | ติดตั้ง/อัปเดต LMDS บน node จาก hub (`lmds node install`) — node ต้องมี `lmds` อยู่บนเครื่องเพราะ "agent" คือตัวคำสั่งเอง | P0 |
+| FR-1b.3 | ติดตั้ง/อัปเดต LMDS บน node จาก hub (`lmds node install`) — node ต้องมี `lmds` อยู่บนเครื่องเพราะ "agent" คือตัวคำสั่งเอง · ✅ 0.6.0: hub **ส่งโค้ดของตัวเองไป** (git bundle ผ่าน scp) node ไม่ต้องเข้า GitHub/ไม่ต้องมี deploy key | P0 |
 | FR-1b.4 | แสดงทรัพยากรสดทุกเครื่องจากที่เดียว: CPU, RAM/unified, VRAM, ดิสก์, ความเร็วสาย, **จำนวนโมเดลที่รัน** (llama.cpp รันหลายตัวพร้อมกันได้) | P0 |
 | FR-1b.5 | **node ล่มต้องไม่ทำให้ hub หรือหน้าเว็บพัง** — แถวนั้นรายงานว่าติดต่อไม่ได้แล้วจบ | P0 |
 | FR-1b.6 | ตรวจ fabric (ConnectX/RDMA/ความเร็วลิงก์) จาก `/sys` แล้วจับกลุ่มเครื่องที่ stacked ด้วยกันได้ — ต้องตรงทั้ง arch/profile/รุ่น GPU/จำนวน GPU และมีสาย ≥ 25G | P0 |
 | FR-1b.7 | **cluster IP ต้องให้คนยืนยัน ระบบเสนอได้แต่ห้ามตั้งเอง** — เดาผิดแล้ว stacked จะค้างตอน NCCL init โดยไม่บอกสาเหตุ · ต้องเสนอจากวงที่ทุกเครื่องมีขาร่วมกัน และปฏิเสธ link-local | P0 |
-| FR-1b.8 | เขียนค่าคลัสเตอร์ลง bundle (`cluster.env`) ได้ รวมถึง bundle ที่อยู่บนเครื่องอื่น | P1 |
+| FR-1b.8 | เขียนค่าคลัสเตอร์ลง bundle (`cluster.env`) ได้ รวมถึง bundle ที่อยู่บนเครื่องอื่น — ✅ `lmds cluster write` / `POST /api/cluster/write` ตัดกลุ่มตาม `NNODES` ที่ bundle ถูก render มา | P1 |
 | FR-1b.9 | คำสั่งที่สั่งข้ามเครื่องผ่านหน้าเว็บต้องจำกัดด้วย allowlist ฝั่ง server | P0 |
 | FR-1b.10 | **การอ่านสถานะของเครื่องหนึ่งต้องไม่ถ่วงของเครื่องอื่น** — probe ทุก node ทำขนานกัน และค่าของ hub เองต้องเดินตามจังหวะของมันเองเสมอ · เรียงคิว SSH ทีละเครื่องทำให้กราฟตามหลังของจริงหลายวินาที (เจอจริง 2026-08-28 ที่ 14 เครื่อง) | P0 |
 | FR-1b.11 | **ทำสำเนาโมเดลข้ามเครื่องได้โดยไม่โหลดจากต้นทางเดิมใหม่** — ไฟล์วิ่งตรงระหว่างสองเครื่องบนสายเร็วสุดที่ทั้งคู่มี ไม่ผ่าน hub · ตรวจ SHA-256 ที่ปลายทาง · กุญแจที่ใช้ต้องเป็นของชั่วคราวต่อครั้งและถูกถอนออกเสมอ (hub ห้ามส่ง key ของตัวเองให้ node) | P0 |
 | FR-1b.12 | **stacked จับกลุ่มได้เฉพาะเครื่องในไซต์เดียวกัน** — NCCL ต้องวิ่งบนสายในแร็ค การจับข้ามไซต์ทำให้คู่ที่พร้อมจริงถูกคู่อื่นแย่งที่ไป | P0 |
 | FR-1b.13 | **หนึ่งไซต์มีได้หลายคลัสเตอร์** — ระบบแบ่งเองตาม subnet ได้เฉพาะตอนอยู่คนละวง · ต้องตั้งชื่อคลัสเตอร์เองได้เมื่อเครื่องอยู่วงเดียวกันแต่อยากแยกกลุ่ม | P1 |
 | FR-1b.14 | **ทุกอย่างข้างบนต้องกดได้จากหน้าเว็บ** — ฟีเจอร์ที่ตั้งได้แต่ใน CLI เท่ากับไม่มีสำหรับทีมที่ทำงานผ่านคอนโซล | P0 |
+| FR-1b.15 | **head ต้อง ssh เข้า worker ได้ด้วยกุญแจของ head เอง** (controller stacked รันบน head ไม่ใช่ hub) — กุญแจเกิดบน head ไม่ผ่าน hub · ✅ 0.6.0 `lmds cluster pair` / ปุ่ม Pair SSH | P0 |
+| FR-1b.16 | **บอกได้ทีละข้อว่าทำไมคู่นี้ยัง stacked ไม่ได้** พร้อมคำสั่งแก้ อ่านอย่างเดียว — ทะเบียน · ต่อถึง · GPU · ไซต์ · ฮาร์ดแวร์ · cluster IP · วงเดียวกัน · สายขึ้น/ความเร็ว · ssh head→worker · ดิสก์ · bundle/cluster.env บน head · ✅ 0.6.0 `lmds cluster doctor` / `GET /api/cluster/doctor` | P0 |
+| FR-1b.17 | wizard ตั้งค่าเครือข่ายคลัสเตอร์ (ตั้ง IP บนสายเร็ว/ตรวจสาย/เขียนค่าจากหน้าเว็บ) — ✅ **ทำแล้ว** (2026-09-05: `lmds cluster inspect/plan/apply/remove-net` + wizard 5 ขั้นบนหน้าเว็บ) | P1 |
 
 ### FR-1c ผู้ช่วยที่ลงไปดูเครื่องได้ (เพิ่ม 2026-08-27)
 
@@ -118,7 +121,7 @@
 |---|---|---|
 | FR-2.1 | ตรวจเครื่องเป้าหมายอัตโนมัติ: arch (ARM64/x86_64), GPU (nvidia-smi: รุ่น, VRAM, compute capability), RAM, disk ว่าง, Docker + NVIDIA container toolkit — ✅ | P0 |
 | FR-2.2 | จำแนก hardware profile: `dgx-spark-single` (unified 128GB, SM121), `dgx-spark-stacked`, `rtx-single`, `rtx-multi-gpu`, `remote` (ป้อนสเปกมือ/ผ่าน SSH probe) | P0 |
-| FR-2.3 | โหมด remote: สร้าง bundle ให้เครื่องอื่นโดยระบุสเปกเอง หรือ probe ผ่าน SSH | P1 |
+| FR-2.3 | โหมด remote: สร้าง bundle ให้เครื่องอื่นโดยระบุสเปกเอง หรือ probe ผ่าน SSH — ✅ `--target <preset>` + fleet (`lmds node`) · 0.6.0: เลือกเครื่องในฟลีตแล้วไม่เลือก preset = เดา preset จาก GPU ที่ refresher เห็นของเครื่องนั้น | P1 |
 
 ### FR-3 Fit Analyzer (คำนวณล้วน — ไม่ใช้ LLM)
 | ID | ข้อกำหนด | Priority |
@@ -126,7 +129,7 @@
 | FR-3.1 | คำนวณ memory จาก: ขนาด weight จริง (จาก index/manifest) + KV cache ตาม context/concurrency + runtime overhead + CUDA buffers | P0 |
 | FR-3.2 | แยกโมเดล unified memory (Spark) กับ VRAM-bound (RTX) — สูตรต่างกัน | P0 |
 | FR-3.3 | เสนอ context เริ่มต้นที่ปลอดภัย + client token budget (input = context − max output − overhead ตามมาตรฐาน v3.0.0) | P0 |
-| FR-3.4 | ถ้าไม่พอ: เสนอทางเลือกเรียงลำดับ (ลด context → quant ต่ำกว่า → multi-GPU/stacked → ปฏิเสธพร้อมเหตุผล) | P0 |
+| FR-3.4 | ถ้าไม่พอ: เสนอทางเลือกเรียงลำดับ (ลด context → quant ต่ำกว่า → multi-GPU/stacked → ปฏิเสธพร้อมเหตุผล) — ✅ · 0.6.0: stacked หัก NCCL buffer 3 GB/เครื่อง และรายงาน `per_node` · KV เหลือ < 2 GB = ไม่ fit (ไม่ใช่ fits-reduced-context) | P0 |
 
 ### FR-4 LLM Orchestrator ("สมอง")
 | ID | ข้อกำหนด | Priority |
@@ -140,7 +143,8 @@
 ### FR-5 Script Generator
 | ID | ข้อกำหนด | Priority |
 |---|---|---|
-| FR-5.1 | Render ผ่าน template engine (Jinja2) จาก template ที่สืบทอด v3.0.0: `single-vllm` ✅, `stacked-vllm` ✅ (M8, 2026-07-24), `single-llamacpp` ✅ + เพิ่มใหม่ `single-rtx-vllm`, `single-rtx-llamacpp`, `ollama-controller`, `docker-compose` | P0 |
+| FR-5.1 | Render ผ่าน template engine (Jinja2) จาก template ที่สืบทอด v3.0.0: `single-vllm` ✅, `stacked-vllm` ✅ (M8, 2026-07-24), `single-llamacpp` ✅, `single-sglang` ✅ (0.5) + เพิ่มใหม่ `single-rtx-vllm`, `single-rtx-llamacpp`, `ollama-controller`, `docker-compose` (❌ ยังไม่ทำ — RTX ใช้ template เดียวกับ Spark ผ่าน target preset) | P0 |
+| FR-5.7 | **โมเดล embedding** — ตรวจจับจาก repo (`pipeline_tag`/tags/ชื่อ) วางแผนเป็น `task: embed` (llama.cpp `--embedding --pooling` · vLLM `--runner pooling --convert embed`) มี `test-embed` ยิง `/v1/embeddings` จริง · บังคับด้วย `lmds deploy --task embed\|generate` · stacked/SGLang ปฏิเสธ — ✅ 0.6.0 | P1 |
 | FR-5.2 | ทุก controller ต้องมีครบตาม controller contract: config block บนสุด, คำสั่งขั้นต่ำ (`download/verify-files/start/stop/restart/status/logs/client-config/network-info`), flags `--context/--port/--bind/--advertise-ip/--interface/--client-input/--client-output` + env equivalents | P0 |
 | FR-5.3 | บังคับกฎ portability v3.0.0: ห้าม numeric underscore literal, แยก bind/advertise/cluster address, pipefail-safe checks, pinned revision + runtime image digest | P0 |
 | FR-5.4 | Bundle output ตาม delivery contract: `<slug>/` มี controller(.sh), `README.md`, `MODEL_PROFILE.yaml`, `SPECIAL_FILES.md` (เมื่อจำเป็น), `PACKAGE_SHA256SUMS`, + ZIP | P0 |
@@ -152,7 +156,7 @@
 |---|---|---|
 | FR-6.1 | Static: `bash -n`, shellcheck (ถ้ามี), audit rules จาก `audit-controllers.py` (underscore, pipefail, metadata), schema validation ของ MODEL_PROFILE.yaml | P0 |
 | FR-6.2 | ถ้า static ไม่ผ่าน → วนกลับให้ generator แก้ (สูงสุด N รอบ) — ผู้ใช้ไม่มีวันได้ bundle ที่ไม่ผ่าน static | P0 |
-| FR-6.3 | Runtime smoke test (optional, เมื่อรันบนเครื่องเป้าหมายจริง): GPU check ใน container, download, verify-files, start, `/health`, test-text, stop | P1 |
+| FR-6.3 | Runtime smoke test (optional, เมื่อรันบนเครื่องเป้าหมายจริง): GPU check ใน container, download, verify-files, start, `/health`, test-text, stop — ✅ `lmds smoke <slug> [--on เครื่อง]` (2026-08-06) · controller มี `test-tools`/`test-reasoning`/`test-vision`/`test-embed`/`bench`/`stress` (0.6.0: ครบบน stacked ด้วย) | P1 |
 | FR-6.4 | รายงานสถานะชัดเจน: `static-validated` vs `hardware-validated` — ห้ามอ้าง hardware-tested ถ้าไม่ได้รันจริง | P0 |
 
 ### FR-7 Secret Management
@@ -160,7 +164,7 @@
 |---|---|---|
 | FR-7.1 | เก็บ LLM API key + HF token ใน OS keyring (ถ้ามี) หรือ `~/.config/lmds/credentials` สิทธิ์ `0600`; รับผ่าน env var ได้ (`LMDS_OPENAI_API_KEY`, `HF_TOKEN` ฯลฯ) | P0 |
 | FR-7.2 | ห้าม secret ปรากฏใน bundle, log, README, MODEL_PROFILE โดยเด็ดขาด — มี redaction filter ที่ output ทุกทาง + ทดสอบอัตโนมัติ | P0 |
-| FR-7.3 | Controller ที่ generate อ้าง token ผ่าน env (`HF_TOKEN`) เท่านั้น ไม่ฝังค่า | P0 |
+| FR-7.3 | Controller ที่ generate อ้าง token ผ่าน env (`HF_TOKEN`) เท่านั้น ไม่ฝังค่า — ✅ · 0.6.0: HF token ไม่ขึ้น argv ของ curl/aria2c (stdin/ไฟล์ 600) และ API key ไม่ขึ้น argv (llama.cpp `--api-key-file` 0600 · vLLM/stacked env) | P0 |
 
 ### FR-8 Repair Workflow
 | ID | ข้อกำหนด | Priority |

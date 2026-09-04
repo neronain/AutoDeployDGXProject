@@ -419,21 +419,91 @@ def local_addresses() -> list[dict]:
     return out
 
 
-def detect_fabric() -> dict:
+# ชื่อ interface ของ ConnectX-7 บน DGX Spark เหมือนกันทุกเครื่อง: พอร์ต QSFP หนึ่งช่องคือ
+# PCIe Gen5 x4 สองเส้น = สอง interface (f0/f1) · พอร์ต 1 (ข้าง RJ45) อยู่ PCI domain 0000
+# (`enp1s0f0np0`/`enp1s0f1np1`) · พอร์ต 2 อยู่ domain 0002 (`enP2p1s0f0np0`/`enP2p1s0f1np1`)
+_SPARK_IFACE_RE = re.compile(r"^en(?P<domain>P\d+)?p(?P<bus>\d+)s(?P<slot>\d+)f(?P<fn>\d)(?:np\d)?$")
+NVIDIA_SYNC_NETPLAN = "99-nvidia-sync-cluster.yaml"
+LMDS_NETPLAN = "99-lmds-cluster.yaml"
+
+
+def _pci_domain_and_function(iface: Path) -> tuple[int | None, int | None]:
+    """(PCI domain, PCI function) ของการ์ด — จาก symlink device (`0002:01:00.1` → (2, 1))"""
+    try:
+        address = (iface / "device").resolve().name
+    except OSError:
+        return None, None
+    match = re.match(r"^([0-9a-f]{4}):[0-9a-f]{2}:[0-9a-f]{2}\.(\d)$", address, re.I)
+    if not match:
+        return None, None
+    return int(match.group(1), 16), int(match.group(2))
+
+
+def spark_port_of(name: str, domain: int | None = None) -> int | None:
+    """พอร์ต QSFP (1 หรือ 2) ของ interface ชื่อนี้ — None เมื่อไม่ใช่รูปแบบของ Spark
+
+    domain มาก่อนชื่อ (ของจริงจาก /sys) · ไม่มี /sys (node รุ่นเก่าส่งแต่ชื่อมา) เดาจากชื่อ:
+    `enp…` = domain 0 = พอร์ต 1 · `enP2…` = domain 2 = พอร์ต 2
+    """
+    if domain is not None:
+        return {0: 1, 2: 2}.get(domain)
+    match = _SPARK_IFACE_RE.match(name or "")
+    if not match:
+        return None
+    return 2 if match.group("domain") else 1
+
+
+def spark_function_of(name: str) -> int | None:
+    match = _SPARK_IFACE_RE.match(name or "")
+    return int(match.group("fn")) if match else None
+
+
+def _netplan_mentions(netplan_dir: Path) -> tuple[list[str], dict[str, list[str]], list[str]]:
+    """(ไฟล์ทั้งหมดใน /etc/netplan, iface → ไฟล์ที่เอ่ยถึง, ไฟล์ที่อ่านไม่ได้)
+
+    ไฟล์ netplan บน Spark เป็น 0600 ของ root (NVIDIA Sync ก็เขียนแบบนั้น) — อ่านไม่ได้แปลว่า
+    "ไม่รู้" ไม่ใช่ "ไม่ได้ถูกจัดการ" · ผู้เรียกจึงได้ทั้งรายชื่อไฟล์ (ls อ่านได้เสมอ) และรายการที่อ่านไม่ออก
+    """
+    if not netplan_dir.is_dir():
+        return [], {}, []
+    files = sorted(p.name for p in netplan_dir.glob("*.yaml"))
+    mentions: dict[str, list[str]] = {}
+    unreadable: list[str] = []
+    for name in files:
+        try:
+            text = (netplan_dir / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            unreadable.append(name)
+            continue
+        # interface ใน netplan อยู่ใต้ ethernets: เป็น key ย่อหน้า — จับแค่ "<ชื่อ>:" ต้นบรรทัดพอ
+        for found in re.findall(r"^\s+([A-Za-z0-9_.-]+):\s*$", text, re.M):
+            mentions.setdefault(found, []).append(name)
+    return files, mentions, unreadable
+
+
+def detect_fabric(sys_net: str | Path = "/sys/class/net", sys_ib: str | Path = "/sys/class/infiniband",
+                  netplan_dir: str | Path = "/etc/netplan", addresses: dict[str, str] | None = None) -> dict:
     """การ์ดเครือข่ายความเร็วสูง + RDMA ของเครื่องนี้
 
     อ่านจาก /sys เท่านั้น (ไม่ต้อง root ไม่ต้องมี ethtool/ibstat) — บนเครื่องที่ไม่ใช่ Linux
     หรืออ่านไม่ได้จะได้ tier="unknown" ไม่ใช่การเดา
+
+    ตั้งแต่ 0.6.0 รายงานต่อ interface เพิ่ม: พอร์ต QSFP · function (f0/f1) · carrier (มีสายเสียบ
+    และลิงก์ขึ้น) · RDMA device · ถูก netplan จัดการอยู่ไหม — และสรุปเป็นรายพอร์ต (`qsfp_ports`)
+    เพื่อให้ hub วางแผนต่อสาย/ตั้ง IP ให้ Spark ที่ยังไม่ได้ตั้งค่าได้ · คีย์เดิมยังอยู่ครบ
+    (pass path มาได้เพื่อเทสกับ /sys ปลอม)
     """
-    net = Path("/sys/class/net")
+    net = Path(sys_net)
     if not net.is_dir():
         return {"links": [], "rdma_devices": [], "best_gbps": None, "tier": "unknown",
-                "cluster_capable": False, "summary": "ตรวจไม่ได้บนเครื่องนี้"}
+                "cluster_capable": False, "summary": "ตรวจไม่ได้บนเครื่องนี้",
+                "qsfp_ports": [], "netplan_files": [], "nvidia_sync_netplan": False}
 
-    rdma_devices = sorted(p.name for p in Path("/sys/class/infiniband").glob("*")) \
-        if Path("/sys/class/infiniband").is_dir() else []
+    ib_root = Path(sys_ib)
+    rdma_devices = sorted(p.name for p in ib_root.glob("*")) if ib_root.is_dir() else []
+    netplan_files, netplan_mentions, netplan_unreadable = _netplan_mentions(Path(netplan_dir))
 
-    addresses = _iface_addresses()
+    addresses = _iface_addresses() if addresses is None else addresses
     links = []
     for iface in sorted(net.iterdir()):
         name = iface.name
@@ -454,8 +524,20 @@ def detect_fabric() -> dict:
         gbps = None
         if raw_speed.lstrip("-").isdigit() and int(raw_speed) > 0:
             gbps = int(raw_speed) // 1000 or None
+        # carrier = "1" คือมีสายเสียบและอีกฝั่งขึ้น (LOWER_UP ของ `ip link`) · อ่านไม่ได้ (EINVAL ตอน
+        # interface ถูก down) = ไม่รู้ ไม่ใช่ "ไม่มีสาย"
+        raw_carrier = _sysfs(str(iface / "carrier"))
+        carrier = True if raw_carrier == "1" else False if raw_carrier == "0" else None
+        domain, function = _pci_domain_and_function(iface)
+        connectx = vendor == _MELLANOX_VENDOR or driver.startswith("mlx")
+        rdma_device = ""
+        try:
+            rdma_device = sorted(p.name for p in (iface / "device" / "infiniband").iterdir())[0]
+        except (OSError, IndexError):
+            pass
         cidr = addresses.get(name, "")
         address, _, prefix = cidr.partition("/")
+        managed_by = netplan_mentions.get(name, [])
         links.append({
             "iface": name,
             "ip": address,
@@ -466,8 +548,15 @@ def detect_fabric() -> dict:
             "speed_gbps": gbps,
             "driver": driver,
             "state": state,
-            "connectx": vendor == _MELLANOX_VENDOR or driver.startswith("mlx"),
+            "connectx": connectx,
             "rdma": driver in _RDMA_DRIVERS and bool(rdma_devices),
+            "carrier": carrier,
+            "qsfp_port": spark_port_of(name, domain) if connectx else None,
+            "function": function if function is not None else spark_function_of(name),
+            "rdma_device": rdma_device,
+            # True/False เมื่ออ่านไฟล์ netplan ได้ · None = มีไฟล์ที่อ่านไม่ได้ (root 0600) จึงตอบไม่ได้
+            "netplan_managed": (True if managed_by else (None if netplan_unreadable else False)),
+            "netplan_files": managed_by,
         })
 
     up = [l for l in links if l["state"] == "up" and l["speed_gbps"]]
@@ -500,7 +589,53 @@ def detect_fabric() -> dict:
         "tier": tier,
         "cluster_capable": tier in {"rdma", "fast"},
         "summary": summary,
+        # มุมมองรายพอร์ต QSFP — สิ่งที่คนเสียบสายมองเห็น (interface สองตัวต่อพอร์ตคือรายละเอียดของ PCIe)
+        "qsfp_ports": group_qsfp_ports(links),
+        "netplan_files": netplan_files,
+        "netplan_unreadable": netplan_unreadable,
+        # NVIDIA Sync เขียนไฟล์ชื่อนี้ — มีอยู่แปลว่าเครื่องเคยถูกตั้งคลัสเตอร์ด้วยเครื่องมือของ NVIDIA
+        "nvidia_sync_netplan": NVIDIA_SYNC_NETPLAN in netplan_files,
     }
+
+
+def group_qsfp_ports(links: list[dict]) -> list[dict]:
+    """จัด interface ของ ConnectX เป็นรายพอร์ต QSFP — ใช้ได้กับ payload จาก node รุ่นเก่าด้วย
+
+    (รุ่นเก่าไม่มี `qsfp_port`/`carrier` → เดาพอร์ตจากชื่อ และถือว่า state=up + มี speed = มีสาย)
+    """
+    by_port: dict[int, list[dict]] = {}
+    for link in links:
+        if not link.get("connectx"):
+            continue
+        port = link.get("qsfp_port") or spark_port_of(link.get("iface") or "")
+        if port is None:
+            continue
+        by_port.setdefault(port, []).append(link)
+    out = []
+    for port, members in sorted(by_port.items()):
+        members = sorted(members, key=lambda l: (l.get("function") if l.get("function") is not None
+                                                 else spark_function_of(l.get("iface") or "") or 0))
+        carriers = [l.get("carrier") for l in members]
+        if any(c is not None for c in carriers):
+            carrier = any(c is True for c in carriers)
+        else:
+            carrier = any((l.get("state") == "up") and bool(l.get("speed_gbps")) for l in members)
+        configured = [l for l in members if l.get("ip") and not str(l["ip"]).startswith("169.254.")]
+        speed = max((l.get("speed_gbps") or 0 for l in members), default=0) or None
+        out.append({
+            "port": port,
+            "ifaces": [l["iface"] for l in members],
+            "carrier": carrier,
+            "speed_gbps": speed,
+            # interface ที่ถือ IP จริงอยู่บนพอร์ตนี้ (ว่าง = ยังไม่ได้ตั้ง)
+            "configured": configured[0]["iface"] if configured else "",
+            "ip": configured[0]["ip"] if configured else "",
+            "prefix": configured[0].get("prefix") if configured else None,
+            "rdma_devices": [l.get("rdma_device") for l in members if l.get("rdma_device")],
+            "netplan_managed": any(l.get("netplan_managed") is True for l in members) or (
+                None if any(l.get("netplan_managed") is None for l in members) else False),
+        })
+    return out
 
 
 def detect_docker() -> tuple[bool, bool]:

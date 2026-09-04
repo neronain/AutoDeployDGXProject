@@ -60,6 +60,21 @@ _TEXT = {
     "cluster-env-match": ("cluster.env on {head} points at {found} but the registry says {expected}",
                           "cluster.env บน {head} ชี้ไป {found} แต่ทะเบียนบอก {expected}"),
     "ok": ("{what}", "{what}"),
+    # ── สายและพอร์ต ConnectX (lmds cluster inspect/plan) ──
+    "spark-ports": ("{names} reports no ConnectX QSFP ports — not a DGX Spark, or its LMDS is too old to report them",
+                    "{names} ไม่รายงานพอร์ต QSFP ของ ConnectX — ไม่ใช่ DGX Spark หรือ LMDS บนเครื่องเก่าเกินไป"),
+    "cabling": ("{names}: no cable detected — both QSFP ports show NO-CARRIER",
+                "{names}: ไม่พบสาย — พอร์ต QSFP ทั้งสองช่องขึ้น NO-CARRIER"),
+    "topology": ("cabling does not match a supported layout: {reason}",
+                 "การเสียบสายไม่ตรงผังที่รองรับ: {reason}"),
+    "port-function": ("{names} port {port} has addresses on both functions ({ifaces}) — only one should carry the cluster IP",
+                      "{names} พอร์ต {port} มี IP ทั้งสอง function ({ifaces}) — ควรมีตัวเดียวที่ถือ cluster IP"),
+    "port-speed": ("{names} port {port} negotiated {speed}G (expected ≥{expected}G) — force the switch port to 200G",
+                   "{names} พอร์ต {port} ได้ {speed}G (ควร ≥{expected}G) — ตั้ง port ที่ switch เป็น 200G ตายตัว"),
+    "netplan-managed": ("{names} still has {file} — `lmds cluster apply` moves it to {disabled} before writing its own file",
+                        "{names} ยังมี {file} — `lmds cluster apply` จะย้ายไป {disabled} ก่อนเขียนไฟล์ของตัวเอง"),
+    "link-ping": ("{node} cannot ping {peer} ({peer_ip}) over {iface}",
+                  "{node} ping {peer} ({peer_ip}) ทาง {iface} ไม่ถึง"),
 }
 
 # ประโยคตอน "ผ่าน" — ต้องมีคนละชุด ไม่งั้น ✓ ตามด้วยประโยคของอาการล้ม อ่านแล้วขัดกันเอง
@@ -82,6 +97,14 @@ _PASS = {
     "cluster-env": ("bundle '{slug}' on {head} has a cluster.env", "bundle '{slug}' บน {head} มี cluster.env"),
     "cluster-env-match": ("cluster.env on {head} matches the registry ({found})",
                           "cluster.env บน {head} ตรงกับทะเบียน ({found})"),
+    "spark-ports": ("{names} has both ConnectX QSFP ports", "{names} มีพอร์ต QSFP ของ ConnectX ครบสองช่อง"),
+    "cabling": ("{names}: cable on port {ports}", "{names}: มีสายที่พอร์ต {ports}"),
+    "topology": ("cabling matches {topology}", "การเสียบสายตรงผัง {topology}"),
+    "port-function": ("{names} port {port} uses one function ({ifaces})", "{names} พอร์ต {port} ใช้ function เดียว ({ifaces})"),
+    "port-speed": ("{names} port {port} negotiated {speed}G", "{names} พอร์ต {port} ได้ {speed}G"),
+    "netplan-managed": ("{names}: no foreign netplan file claims the cluster ports",
+                        "{names}: ไม่มีไฟล์ netplan ของคนอื่นถือพอร์ตคลัสเตอร์"),
+    "link-ping": ("{node} pings {peer} ({peer_ip}) over {iface}", "{node} ping {peer} ({peer_ip}) ทาง {iface} ถึง"),
 }
 
 _FIX = {
@@ -92,6 +115,10 @@ _FIX = {
     "cluster-env-match": "lmds cluster write {slug} --head {head} --worker {worker}",
     "opted-out": "lmds node set {name} --stack",
     "same-site": "lmds node set <name> --site <same site>",
+    "cabling": "plug a QSFP cable into {name} and check the link LED, then: lmds cluster inspect …",
+    "topology": "re-cable to one of: 2 direct · 3 ring (both ports) · 2–4 via switch (one cable each)",
+    "port-speed": "set the switch port to 200G fixed (no auto-negotiation)",
+    "netplan-managed": "lmds cluster apply {names}   (moves the NVIDIA Sync file aside automatically)",
 }
 
 
@@ -253,6 +280,84 @@ def _result(head: str, worker: str, findings: list[dict]) -> dict:
     return {
         "head": head,
         "worker": worker,
+        "ok": not any(f["level"] == "fail" for f in findings),
+        "findings": findings,
+    }
+
+
+# ── หมอของ "สาย" — ก่อนที่จะมี cluster IP ให้ตรวจ (lmds cluster inspect / plan) ─────────
+def diagnose_network(order: list[str], *, nodes: dict[str, Node], hosts: dict[str, dict | None],
+                     errors: dict[str, str] | None = None, runner=None, topology: str = "",
+                     plan: dict | None = None) -> dict:
+    """ตรวจสาย/พอร์ต/function/netplan ของกลุ่ม 2–4 เครื่อง — คืน {"ok", "findings", "names", "topology"}
+
+    ต่างจาก diagnose_pair ตรงที่ทำงานได้ตั้งแต่ยังไม่มี cluster IP: คำถามคือ "เสียบสายถูกไหม" ไม่ใช่
+    "IP ตรงกันไหม" · `plan` (จาก netplan.build_plan) ทำให้ ping ต่อลิงก์ได้ผ่าน `runner`
+    """
+    from .cluster import SPARK_LINK_GBPS
+    from .netplan import DISABLED_DIR, NVIDIA_SYNC_FILE, cabled_ports, infer_topology, ports_of
+
+    errors = errors or {}
+    order = [n for n in order if n]
+    findings: list[dict] = []
+
+    missing = [n for n in order if n not in nodes]
+    findings.append(_finding("registered", not missing, missing or order))
+    if missing:
+        return _net_result(order, findings, "unknown")
+    down = [n for n in order if not hosts.get(n)]
+    findings.append(_finding("reachable", not down, down or order,
+                             error="; ".join(errors.get(n, "no data yet") for n in down)))
+    if down:
+        return _net_result(order, findings, "unknown")
+
+    no_ports = [n for n in order if len(ports_of(hosts[n])) < 2]
+    findings.append(_finding("spark-ports", not no_ports, no_ports or order))
+    if no_ports:
+        return _net_result(order, findings, "unknown")
+
+    cabled = {n: cabled_ports(hosts[n]) for n in order}
+    for name in order:
+        findings.append(_finding("cabling", bool(cabled[name]), [name], name=name,
+                                 ports=" + ".join(str(p) for p in cabled[name]) or "-"))
+    inferred = infer_topology(cabled, order, topology)
+    findings.append(_finding("topology", inferred["topology"] != "unknown", order,
+                             topology=inferred["topology"], reason=inferred.get("reason", "")))
+
+    for name in order:
+        fabric = hosts[name].get("fabric") or {}
+        links = fabric.get("links") or []
+        for port in ports_of(hosts[name]):
+            if not port.get("carrier"):
+                continue
+            with_ip = [l["iface"] for l in links if l.get("iface") in (port.get("ifaces") or [])
+                       and l.get("ip") and not str(l["ip"]).startswith("169.254.")]
+            findings.append(_finding("port-function", len(with_ip) <= 1, [name], level="warn",
+                                     port=port["port"], ifaces=", ".join(with_ip) or port.get("configured") or "-"))
+            speed = port.get("speed_gbps") or 0
+            if 0 < speed < SPARK_LINK_GBPS:
+                findings.append(_finding("port-speed", False, [name], level="warn", port=port["port"],
+                                         speed=speed, expected=SPARK_LINK_GBPS))
+        if fabric.get("nvidia_sync_netplan"):
+            findings.append(_finding("netplan-managed", False, [name], level="warn", file=NVIDIA_SYNC_FILE,
+                                     disabled=DISABLED_DIR))
+        else:
+            findings.append(_finding("netplan-managed", True, [name]))
+
+    if runner is not None and plan and plan.get("ok"):
+        for name in order:
+            for link in (plan["nodes"].get(name) or {}).get("links") or []:
+                pinged = runner(nodes[name], f"ping -c1 -W2 -I {shlex.quote(link['iface'])} "
+                                            f"{shlex.quote(link['peer_ip'])} >/dev/null 2>&1", timeout=20)
+                findings.append(_finding("link-ping", pinged.ok, [name], level="warn", node=name,
+                                         peer=link["peer_node"], peer_ip=link["peer_ip"], iface=link["iface"]))
+    return _net_result(order, findings, inferred["topology"])
+
+
+def _net_result(names: list[str], findings: list[dict], topology: str) -> dict:
+    return {
+        "names": names,
+        "topology": topology,
         "ok": not any(f["level"] == "fail" for f in findings),
         "findings": findings,
     }

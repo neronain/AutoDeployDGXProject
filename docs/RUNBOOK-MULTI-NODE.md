@@ -260,6 +260,53 @@ NCCL_SOCKET_IFNAME=... NCCL_IB_HCA=... lmds node ctl spark-head <slug> restart
 ```
 
 
+## Cluster network setup — ต่อสาย ConnectX แล้วให้ hub ตั้ง IP ให้ (0.6.0)
+
+เทียบเท่า "Cluster Assistant" ของ NVIDIA Sync แต่สั่งจาก hub ผ่าน SSH · ใช้เมื่อ Spark มาใหม่ยังไม่มี
+cluster IP (พอร์ต ConnectX ขึ้น `169.254.x.x`) หรือย้ายเครื่องมาต่อกลุ่มใหม่ · ทำจากหน้าเว็บ
+(ปุ่ม **Set up cluster network** ที่หัว Other machines / หัวกลุ่ม) หรือ CLI ตามนี้
+
+**สิ่งที่ต้องรู้เกี่ยวกับพอร์ตของ Spark** — QSFP 2 ช่อง/เครื่อง (200G) · **หนึ่งช่องคือสอง interface**
+(PCIe x4 สองเส้น): พอร์ต 1 (ข้าง RJ45) = `enp1s0f0np0` + `enp1s0f1np1` · พอร์ต 2 = `enP2p1s0f0np0` +
+`enP2p1s0f1np1` · ชื่อเหมือนกันทุกเครื่อง · LMDS ตั้ง IP บน **f1** ของช่องที่มีสาย (ตามฟลีตเดิม) อีกตัวปล่อยว่าง
+
+**ผังที่รองรับ** (สายละเส้นต่อลิงก์ ห้ามปนตรงกับ switch):
+
+| เครื่อง | วิธีต่อ | ลิงก์ | วง |
+|---|---|---|---|
+| 2 | ตรง 1 สาย (ช่องไหนก็ได้) · หรือ 2 สาย (ช่อง 1↔1, 2↔2) | 1–2 | `10.100.152.0/24` (+ `.153`) ปลาย .1/.2 |
+| 3 | วงแหวน ใช้ทั้งสองช่องทุกเครื่อง: A.p1→B.p2, B.p1→C.p2, C.p1→A.p2 | 3 | `.152` `.153` `.154` ลิงก์ละวง |
+| 2–4 | ผ่าน switch สายละเครื่อง (4 เครื่อง = ทางเดียว) · ตั้ง port ที่ switch เป็น **200G ตายตัว** | 1 | วงเดียว เครื่องที่ i = .i |
+
+```bash
+lmds cluster inspect spark-head spark-worker          # พอร์ตไหนมีสาย (carrier) · IP ปัจจุบัน · ผังที่เดาได้ · หมอสาย
+lmds cluster plan    spark-head spark-worker [--subnet 10.100.152.0/24] [--topology direct|ring|switch] [--json]
+lmds cluster apply   spark-head spark-worker          # ถามรหัส sudo ทีละเครื่อง (ไม่เก็บ ไม่โผล่ใน argv)
+lmds cluster doctor  spark-head spark-worker          # ตรวจคู่แบบเดิมหลังตั้งเสร็จ
+lmds cluster remove-net spark-worker                  # ถอน: ย้ายไฟล์ไป /root/netplan-disabled แล้วล้าง cluster_ip
+```
+
+ลำดับเครื่องที่พิมพ์ = ลำดับสาย (ตัวแรกเป็น head · วงแหวนเรียงตามสาย A→B→C)
+
+**apply ทำอะไรบนแต่ละเครื่อง** — ตรวจรหัส sudo ของ *ทุก* เครื่องก่อนแตะเครื่องแรก → เขียน
+`/etc/netplan/99-lmds-cluster.yaml` (`renderer: networkd` · `dhcp4: no` · `addresses` · `optional: true` ·
+ไม่มี route/gateway · เฉพาะ interface ของคลัสเตอร์ สายบริหาร/Wi-Fi ไม่ถูกแตะ) → ไฟล์อื่นใน `/etc/netplan`
+ที่อ้าง interface เดียวกัน (เช่น `99-nvidia-sync-cluster.yaml` ของ NVIDIA Sync ซึ่งชื่อเรียงหลังของเราและจะชนะ)
+ถูกย้ายไป `/root/netplan-disabled/` ประทับเวลา → `netplan generate` + `netplan apply` → ยืนยันว่า `ip -br addr`
+เห็น IP และ `LOWER_UP` (ลองซ้ำ ~18 วิ เพราะลิงก์กระพริบหลัง apply) → **ล้ม = ถอยกลับ**ไฟล์เดิมของเครื่องนั้นทันที
+และไม่แตะเครื่องถัดไป → ping ทุกลิงก์จากทั้งสองปลาย → `lmds cluster pair` (กุญแจ head→worker บน IP ใหม่) →
+iperf3 5 วิ ถ้ามีทั้งสองฝั่ง (เตือนเมื่อ <90 Gbit/s — เพดาน PCIe x4 คือ ~100 ไม่ใช่ 200) → ทะเบียน:
+`cluster_ip`/`cluster_iface` = เส้นที่ head↔worker ใช้ + `cluster_links` ทุกลิงก์
+
+**รันซ้ำได้** — IP เดิมที่เข้ากันอยู่แล้ว (เช่นคู่ที่ NVIDIA Sync ตั้งไว้) ถูกเก็บไว้ แผนขึ้นว่า "(เดิม)" · ไฟล์ของเรา
+ถูกสำรองก่อนเขียนทับทุกครั้ง
+
+**ข้อจำกัด** — carrier บอกได้แค่ว่า "ช่องนี้มีสาย" ไม่บอกว่าปลายอีกข้างคือใคร: วงแหวนและคู่ที่เสียบสองสาย
+เป็น *สมมติฐาน* ตามผัง NVIDIA ซึ่ง ping ตอน apply เป็นคนยืนยัน (ping ไม่ถึง = เสียบไขว้ สลับสายหรือเรียง
+ลำดับเครื่องใหม่) · วงแหวนทำให้ head/worker บางคู่อยู่คนละวง — `lmds cluster doctor` ข้อ same-subnet จะเตือน
+ส่วน NCCL หลายลิงก์อ่านจาก `cluster_links` · ไฟล์ netplan บนเครื่องเป็น 0600 ของ root: `inspect` เห็นแค่ชื่อไฟล์
+(รู้ว่ามีของ NVIDIA Sync ไหม) ไม่เห็นเนื้อหา · ถอนใช้ `netplan apply` ไม่ใช่ `netplan try` (ต้องมี tty)
+
 ## ลิงก์ขึ้นแล้ว แต่ขึ้นที่เท่าไร
 
 `/sys/class/net/<iface>/speed` รายงานความเร็วที่ **negotiate ได้** ไม่ใช่ความสามารถของการ์ด
@@ -279,3 +326,65 @@ cat /sys/class/net/enp1s0f1np1/speed    # 200000 = 200G · 50000 = ต้อง�
 เพดานจำนวนเครื่อง: ต่อสายตรงถึงกันได้สูงสุด **3 เครื่อง** เกินกว่านั้นต้องผ่าน switch ซึ่งรองรับถึง
 **4 เครื่อง** — ที่มา [DGX Spark clustering](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
 สรุปเทียบกับของเราอยู่ที่ [NVIDIA-CLUSTER-SOURCES.md](NVIDIA-CLUSTER-SOURCES.md)
+
+## 8 · 3 เครื่องวงแหวน / 4 เครื่องผ่าน switch — หลายสายต่อเครื่อง (cluster.env v2)
+
+DGX Spark มี QSFP **สองช่อง** (ช่อง 1 = `enp1s0f0np0`/`enp1s0f1np1` · ช่อง 2 = `enP2p1s0f0np0`/`enP2p1s0f1np1` ·
+RoCE `rocep1s0f0`/`roceP2p1s0f0`) — ช่องละหนึ่ง function ถือสาย · 2 เครื่องต่อตรง = สายเดียว วงเดียว (ที่รันจริงมาตลอด)
+· **3 เครื่องต่อตรงเป็นวงแหวน** A.ช่อง1→B.ช่อง2 · B.ช่อง1→C.ช่อง2 · C.ช่อง1→A.ช่อง2 = ทุกเครื่องมี **2 สาย 2 วง** และ head
+ถึง worker แต่ละตัวด้วย**คนละ interface/IP** · **4 เครื่องผ่าน switch** = ทุกเครื่องสายเดียว วงเดียว · ~100 Gb/s ต่อสายคือปกติ
+(เพดาน PCIe x4) · การต่อสาย/ตั้ง IP ทำผ่าน wizard ข้างบน (§Cluster network setup) ซึ่งบันทึกทุกสายลงทะเบียนเป็น `cluster_links`
+
+**สิ่งที่ schema เดิมบอกไม่ได้**: `MASTER_IP`/`WORKER_IPS`/`NCCL_SOCKET_IFNAME` ตัวเดียว → NCCL ของ head ได้สายเดียว
+หาทางไป worker ที่อยู่อีกสายไม่เจอ (ค้างที่ init เงียบ ๆ) · `cluster.env` **v2** จึงเพิ่มคีย์ต่อ rank โดยยังเขียนคีย์เดิมครบ —
+bundle 2 เครื่องแบบเดิมได้ไฟล์เดิม**ทุกตัวอักษร** · controller ที่ไม่เห็นคีย์ v2 ทำงานแบบเดิมทุกประการ
+
+```bash
+CLUSTER_ENV_SCHEMA=2
+CLUSTER_TOPOLOGY=ring-3                     # direct-2 | ring-3 | switch-N
+CLUSTER_NODES="spark-a spark-b spark-c"     # rank 0 = head
+LINKS_0="enp1s0f0np0:10.100.152.1/24:1:10.100.152.2 enP2p1s0f0np0:10.100.154.2/24:2:10.100.154.1"
+NCCL_SOCKET_IFNAMES_0=enp1s0f0np0,enP2p1s0f0np0     # comma list — head ประกาศทุกสาย
+NCCL_IB_HCAS_0=rocep1s0f0,roceP2p1s0f0              # ว่างได้ → controller เดิน sysfs หาเอง ทีละ interface
+LINKS_1="enP2p1s0f0np0:10.100.152.2/24:0:10.100.152.1 enp1s0f0np0:10.100.153.1/24:2:10.100.153.2"
+HEAD_TO_WORKER_IP_1=10.100.152.2   # IP ของ worker rank 1 ที่ head ใช้ถึง (ssh · rsync · VLLM_HOST_IP ของ worker)
+WORKER_HEAD_IP_1=10.100.152.1      # IP ของ head ที่ worker rank 1 ต่อกลับ (--master-addr ของ worker ตัวนั้น)
+HEAD_TO_WORKER_IP_2=10.100.154.1   # rank 2 อยู่อีกสาย อีกวง — ไม่ใช่ 152.x
+WORKER_HEAD_IP_2=10.100.154.2
+NCCL_CROSS_NIC=1                   # ring เท่านั้น: คู่ A-B วิ่งสายหนึ่ง คู่ A-C อีกสาย NCCL ต้องเลือก NIC ต่อคู่ได้
+```
+
+รูปแบบ `LINKS_<rank>` = `iface:ip/prefix:peer_rank:peer_ip` คั่นช่องว่าง · สายเข้า switch เขียน `peer_rank *` และ `peer_ip -`
+
+**controller ทำอะไรต่างจากเดิมเมื่อเห็นคีย์ v2**
+
+- head: `NCCL_SOCKET_IFNAME`/`GLOO_SOCKET_IFNAME`/`NCCL_IB_HCA` เป็น comma list ของ**ทุกสาย** · `NCCL_CROSS_NIC=1` ตามไฟล์ ·
+  `check_running_on_master` ตรวจว่า head ถือ IP ของทุกสายใน `LINKS_0` (สายหลุดหนึ่งเส้น = worker rank นั้นถึง head ไม่ได้)
+- worker rank N (`worker.sh` แต่ละตัวต่างกัน): `VLLM_HOST_IP=HEAD_TO_WORKER_IP_N` · `--master-addr WORKER_HEAD_IP_N` ·
+  `NCCL_SOCKET_IFNAME=NCCL_SOCKET_IFNAMES_N` · HCA ถามที่ worker เองทีละ interface (`/sys/class/infiniband`) แล้ว comma-join
+  (TCPStore ของ rank 0 ฟังทุก interface — ที่ต้องต่างกันคือฝั่งที่ต่อเข้าไป)
+- ssh/rsync/`_check_worker_ssh` ไป worker ทาง `HEAD_TO_WORKER_IP_<rank>` (`WORKER_IPS` ถูก derive จากคีย์นี้ถ้าไม่ได้ตั้งเอง) ·
+  `sync-worker` เลือกสายที่เร็วที่สุดที่ถึง worker นั้นได้ (มีหลายทางเฉพาะกรณีต่อสองเส้นเข้า switch เดียวกัน)
+- `network-info` / `status` / `doctor` พิมพ์ตารางสายของทุก rank: `link=up speed=200000 ip=yes hca=rocep1s0f0 ping=ok` โดย
+  **ping คู่ปลายสายออกทางสายนั้น** (`ping -I <iface>`) ทั้งจาก head และจาก worker ผ่าน ssh · `doctor` ล้มเมื่อมี `ping=FAIL` /
+  `link=down` / `ip=no`
+- `serve-args` และ `start --dry-run` แสดง argv + env ของ**ทุก rank** แยกกัน (`--tensor-parallel-size 3` · worker 2 ตัวคนละ
+  `VLLM_HOST_IP`/`--master-addr`) โดยไม่แตะ docker/ssh — ใช้ตรวจก่อนสั่งจริง หรือประกอบจากค่าตัวอย่างก่อนมีคลัสเตอร์ก็ได้
+
+```bash
+lmds node run spark-a "deploy <model> --target dgx-spark-stacked-3 --no-llm --yes"   # TP=3 · NNODES=3
+lmds node cluster --write <slug> --on spark-a          # เขียน cluster.env v2 จาก cluster_links ในทะเบียน
+lmds node ctl spark-a <slug> start --dry-run           # ดู worker.sh ของ rank 1/2 และ docker run ของ head
+lmds node ctl spark-a <slug> doctor                    # ทุกสายขึ้น + ping ถึงคู่ปลายสาย ก่อนปล่อย worker
+```
+
+**route ที่วงแหวนต้องมี** — torch/NCCL bootstrap ให้ทุก rank ต่อไปที่ *ที่อยู่เดียว* ของ rank 0 (สายที่ rank 0 ประกาศเป็นตัวแรก)
+· worker ที่อยู่อีกวงถึงที่อยู่นั้นไม่ได้ถ้าไม่มี route — เพิ่ม `/32` ไปยัง IP อีกฝั่งของแต่ละคู่ผ่านสายตรง (Linux ตอบ ARP/รับ
+packet ของ IP ตัวเองบนทุก interface อยู่แล้ว ไม่ต้องเปิด forwarding) เช่นบน C: `ip route add 10.100.152.1/32 via 10.100.154.2`
+(IP ของ A บนสาย A-B ผ่านสาย C-A) และ `ip route add 10.100.152.2/32 via 10.100.153.2` — ทำครบทั้ง 3 เครื่อง (เครื่องละ 2 route)
+แล้ว `doctor` ต้อง `ping=ok` ทุกสาย · wizard ยังไม่เขียน route ให้ (netplan `routes:` ทำได้ — ยังไม่ได้รันจริง)
+
+**ยังไม่ได้พิสูจน์บนเครื่องจริง** — ฟลีตมี Spark คู่เดียว (2 เครื่อง สายเดียว) · ทุกอย่างในหัวข้อนี้ผ่านเทสกับ ssh/ip/ping/sysfs
+ปลอมต่อเครื่อง (`tests/test_multilink_cluster.py`) แต่ยังไม่มี NCCL จริงวิ่งข้าม 3 เครื่อง · ถ้า ring ค้างที่ NCCL init ทั้งที่ doctor ผ่าน:
+ลอง `NCCL_IB_DISABLE=1` (socket transport ใช้ route ของ kernel ตรง ๆ) แล้วค่อยไล่ GID/HCA · TP=3 ต้องหาร attention head ลงตัว
+(ดู §7) — 3 เครื่องกับโมเดล 64/128 head ใช้ pipeline แทน

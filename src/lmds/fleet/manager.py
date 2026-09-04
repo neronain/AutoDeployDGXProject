@@ -9,6 +9,7 @@ from __future__ import annotations
 import getpass
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -1130,10 +1131,154 @@ class RemovalItem:
     path: Path
     size_bytes: int
     is_weights: bool = False
+    # ของบน worker ของ stacked — ลบผ่าน ssh จาก head · ว่าง = เครื่องนี้
+    node: str = ""
+    ssh_user: str = ""
+    # path = โฟลเดอร์/ไฟล์ · container = ชื่อ container (path เก็บชื่อ)
+    kind: str = "path"
+    # ssh ไป worker ไม่ผ่านตอนวางแผน — ขนาดไม่รู้ และตอนลบต้องรายงานว่ายังเหลือ ไม่ใช่ข้ามเงียบ
+    reachable: bool = True
+
+
+def _bundle_env_value(bundle_dir: Path, key: str) -> str:
+    """ค่าใน bundle.env — รับทั้ง KEY=value และ KEY="${KEY:-value}" ที่ lmds set เขียน"""
+    path = bundle_dir / "bundle.env"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(f"{key}="):
+            continue
+        value = line[len(key) + 1:].strip().strip("\"'")
+        match = re.fullmatch(r"\$\{" + re.escape(key) + r":-(.*)\}", value)
+        return (match.group(1) if match else value).strip("\"'")
+    return ""
+
+
+def stacked_workers(info: ServerInfo) -> dict | None:
+    """worker ของ bundle stacked นี้ + path ที่ sync-worker/start เขียนไว้บนแต่ละเครื่อง · None = ไม่ใช่ stacked
+
+    ลบ stacked แล้วเหลือ weight 75–173 GB บน worker ทุกตัว (rsync ไปตอน sync-worker) container
+    `lmds-<slug>-worker` และ cache ของ bundle — ผู้ใช้ 2026-09-05: "ลบโมเดล stacked แล้วมันลบที่ worker
+    ด้วยไหม" · เดิมไม่ · ที่นี่อ่าน cluster.env ข้าง controller (คีย์ v2 ก่อน ไฟล์เก่าตาม) และ default
+    ของ controller (WORKER_HF_HOME = HF_HOME ของ head · flashinfer/vllm cache ใต้ ~/.cache) — path ถูก
+    expand บน head แล้วส่งไป worker ตรง ๆ เหมือนที่ controller ทำ
+    """
+    if not getattr(info, "controller_exists", False):
+        return None
+    controller = Path(info.controller)
+    profile = bundle_profile(info.controller) or {}
+    if not (controller.name.endswith("-stacked.sh") or profile.get("topology") == "stacked"):
+        return None
+    from lmds.fleet.cluster_env import parse_cluster_env, worker_targets
+
+    bundle_dir = controller.parent
+    values = parse_cluster_env(bundle_dir / "cluster.env")
+    workers = worker_targets(values)
+    if not workers:
+        return {"workers": [], "bundle_dir": bundle_dir, "missing_cluster_env": True}
+    home = Path.home()
+    hf_home = (values.get("HF_HOME") or _bundle_env_value(bundle_dir, "HF_HOME")
+               or os.environ.get("HF_HOME") or str(home / ".cache" / "huggingface"))
+    worker_hf = (values.get("WORKER_HF_HOME") or _bundle_env_value(bundle_dir, "WORKER_HF_HOME") or hf_home)
+    worker_fi = (values.get("WORKER_FLASHINFER_CACHE") or _bundle_env_value(bundle_dir, "WORKER_FLASHINFER_CACHE")
+                 or values.get("FLASHINFER_CACHE") or _bundle_env_value(bundle_dir, "FLASHINFER_CACHE")
+                 or str(home / ".cache" / "flashinfer"))
+    model_id = ((profile.get("model") or {}).get("id") or info.model_id or "")
+    cache_name = f"models--{model_id.replace('/', '--')}" if "/" in model_id else ""
+    user = getpass.getuser()
+    # FlashInfer JIT cache ของ bundle นี้อยู่ใต้ <cache>/<16 ตัวแรกของ image id ที่ prepare-runtime ล็อก>
+    # — image เดียวกันใช้ร่วมกับ stacked ตัวอื่นได้ จึงลบเฉพาะเมื่อไม่มี bundle อื่นล็อก image เดียวกัน
+    fi_key = ""
+    lock = Path(hf_home) / f".lmds-image-id-{info.slug}"
+    try:
+        image_id = lock.read_text(encoding="utf-8").strip()
+    except OSError:
+        image_id = ""
+    if image_id:
+        shared = [other for other in Path(hf_home).glob(".lmds-image-id-*")
+                  if other != lock and other.read_text(encoding="utf-8", errors="replace").strip() == image_id]
+        if not shared:
+            fi_key = image_id.removeprefix("sha256:")[:16]
+    for worker in workers:
+        worker["ssh_user"] = worker["ssh_user"] or user
+        paths: list[tuple[str, str, bool]] = []      # (label, path, is_weights)
+        if cache_name:
+            paths.append(("weight ของโมเดล", f"{worker_hf}/hub/{cache_name}", True))
+            paths.append(("weight ของโมเดล (เลย์เอาต์เก่า)", f"{worker_hf}/{cache_name}", True))
+            paths.append(("lock ของ HF cache", f"{worker_hf}/hub/.locks/{cache_name}", True))
+        paths.append(("สคริปต์ worker", f"/tmp/lmds-{info.slug}", False))
+        if fi_key:
+            paths.append(("FlashInfer cache ของ bundle", f"{worker_fi}/{fi_key}", False))
+        worker["paths"] = paths
+        worker["container"] = f"lmds-{info.slug}-worker"
+    return {"workers": workers, "bundle_dir": bundle_dir, "image_lock": lock if lock.is_file() else None,
+            "missing_cluster_env": False}
+
+
+def _ssh_argv(user: str, ip: str, script: str) -> list[str]:
+    # key ของ head ไป worker ถูกตั้งไว้แล้ว (nodes/cluster_ssh.py เขียน stanza ใน ~/.ssh/config ของ head)
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"{user}@{ip}", script]
+
+
+def _remote_sizes(worker: dict) -> dict[str, int] | None:
+    """ขนาดของทุก path บน worker ด้วย ssh เดียว · None = ติดต่อไม่ได้ · path ที่ไม่มี = ไม่อยู่ใน dict"""
+    # ตอบเป็น "<ลำดับ>\t<ไบต์>" ไม่ใช่ path — path ไม่ต้องเดินทางกลับมาให้เพี้ยน (quote/space/ชื่อไทย)
+    lines = ["set -u"]
+    for idx, (_label, path, _w) in enumerate(worker["paths"]):
+        q = shlex.quote(path)
+        lines.append(f"if [ -e {q} ]; then printf '{idx}\\t%s\\n' \"$(du -sb {q} 2>/dev/null | cut -f1)\"; fi")
+    lines.append(f"docker inspect {shlex.quote(worker['container'])} >/dev/null 2>&1 && printf 'container\\t0\\n' || true")
+    proc = _bounded(_ssh_argv(worker["ssh_user"], worker["ip"], "\n".join(lines)),
+                    capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        return None
+    sizes: dict[str, int] = {}
+    for line in (proc.stdout or "").splitlines():
+        key, _, size = line.partition("\t")
+        if key == "container":
+            sizes["@container"] = 0
+        elif key.isdigit() and int(key) < len(worker["paths"]):
+            try:
+                sizes[worker["paths"][int(key)][1]] = int(size or 0)
+            except ValueError:
+                sizes[worker["paths"][int(key)][1]] = 0
+    return sizes
+
+
+def worker_removal_items(info: ServerInfo, include_weights: bool = True) -> list[RemovalItem]:
+    """รายการบน worker ทุกตัว (ขนาดถามผ่าน ssh) — ต่อท้ายแผนของ head"""
+    cluster = stacked_workers(info)
+    if not cluster or not cluster["workers"]:
+        return []
+    items: list[RemovalItem] = []
+    for worker in cluster["workers"]:
+        ip, user = worker["ip"], worker["ssh_user"]
+        sizes = _remote_sizes(worker)
+        reachable = sizes is not None
+        sizes = sizes or {}
+        if reachable and "@container" in sizes:
+            items.append(RemovalItem(f"container บน worker {ip}", Path(worker["container"]), 0,
+                                     node=ip, ssh_user=user, kind="container"))
+        elif not reachable:
+            items.append(RemovalItem(f"container บน worker {ip} (ติดต่อไม่ได้ — ไม่รู้ว่ามีไหม)",
+                                     Path(worker["container"]), 0, node=ip, ssh_user=user,
+                                     kind="container", reachable=False))
+        for label, path, is_weights in worker["paths"]:
+            if is_weights and not include_weights:
+                continue
+            if reachable and path not in sizes:
+                continue
+            suffix = "" if reachable else " (ติดต่อไม่ได้ — ขนาดไม่รู้)"
+            items.append(RemovalItem(f"{label} บน worker {ip}{suffix}", Path(path), sizes.get(path, 0),
+                                     is_weights=is_weights, node=ip, ssh_user=user, reachable=reachable))
+    return items
 
 
 def removal_plan(info: ServerInfo, include_weights: bool = True) -> list[RemovalItem]:
-    """รายการไฟล์ทั้งหมดที่เกี่ยวกับโมเดลนี้ — ให้ผู้ใช้ดูก่อนยืนยันลบ"""
+    """รายการไฟล์ทั้งหมดที่เกี่ยวกับโมเดลนี้ — ให้ผู้ใช้ดูก่อนยืนยันลบ (stacked: รวมของบน worker ทุกตัว)"""
     items: list[RemovalItem] = []
 
     if info.controller_exists:
@@ -1155,14 +1300,94 @@ def removal_plan(info: ServerInfo, include_weights: bool = True) -> list[Removal
         weights = weights_path(info)
         if weights is not None:
             items.append(RemovalItem("weight ของโมเดล", weights, _dir_size_bytes(weights), is_weights=True))
+    cluster = stacked_workers(info)
+    if cluster:
+        lock = cluster.get("image_lock")
+        if lock is not None:
+            items.append(RemovalItem("image lock ของ bundle", lock, lock.stat().st_size))
+        items += worker_removal_items(info, include_weights=include_weights)
     return items
 
 
+def _remove_on_worker(worker_items: list[RemovalItem]) -> list[str]:
+    """ลบของบน worker หนึ่งเครื่องด้วย ssh เดียว: container → rm -rf → ของ root ผ่าน docker → ตรวจ test -e
+
+    ทุก path รายงานผลของตัวเอง — REMOVED / LEFT (พร้อมขนาดที่เหลือ) · ssh ไม่ผ่านทั้งก้อน = "ยังเหลือบน"
+    พร้อมคำสั่งที่รันเองได้ ไม่ใช่ข้ามเงียบ ๆ (ของ 100 GB บนเครื่องที่ผู้ใช้มองไม่เห็นจาก hub)
+    """
+    first = worker_items[0]
+    ip, user = first.node, first.ssh_user
+    containers = [i for i in worker_items if i.kind == "container"]
+    paths = [i for i in worker_items if i.kind != "container"]
+    manual = [f"docker rm -f {shlex.quote(str(c.path))}" for c in containers]
+    manual += [f"sudo rm -rf {shlex.quote(str(i.path))}" for i in paths]
+    unreachable = [f"ยังเหลือบน {ip}: " + " ".join(str(i.path) for i in worker_items)
+                   + f" — ลบเอง: ssh {user}@{ip} {shlex.quote('; '.join(manual))}"]
+    if not first.reachable:
+        return unreachable
+    # ผลตอบเป็น "<สถานะ>\t<ลำดับ>[\t<ไบต์ที่เหลือ>]" — ลำดับอ้างถึงรายการที่ส่งไป path ไม่ต้องเดินทางกลับ
+    ordered = containers + paths
+    lines = ["set -u"]
+    for idx, c in enumerate(containers):
+        q = shlex.quote(str(c.path))
+        lines.append(f"docker rm -f {q} >/dev/null 2>&1 && echo \"REMOVED\t{idx}\" || echo \"GONE\t{idx}\"")
+    for offset, item in enumerate(paths):
+        idx = len(containers) + offset
+        q = shlex.quote(str(item.path))
+        parent = shlex.quote(str(Path(str(item.path)).parent))
+        name = shlex.quote(Path(str(item.path)).name)
+        lines += [
+            f"if [ -e {q} ]; then",
+            f"  rm -rf -- {q} 2>/dev/null",
+            # ไฟล์ของ root (container เขียนไว้) — root ในคอนเทนเนอร์ลบให้ เหมือน _docker_rm ฝั่ง head
+            f"  if [ -e {q} ]; then",
+            "    img=\"$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | grep -E 'alpine|busybox|ubuntu|debian' | head -1)\"",
+            "    [ -n \"$img\" ] || img=\"$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)\"",
+            f"    [ -n \"$img\" ] && docker run --rm -v {parent}:/x \"$img\" rm -rf -- /x/{name} >/dev/null 2>&1 && echo \"DOCKER\t{idx}\"",
+            "  fi",
+            "fi",
+            f"if [ -e {q} ]; then echo \"LEFT\t{idx}\t$(du -sb {q} 2>/dev/null | cut -f1)\"; else echo \"REMOVED\t{idx}\"; fi",
+        ]
+    proc = _bounded(_ssh_argv(user, ip, "\n".join(lines)), capture_output=True, text=True, timeout=1800)
+    if proc.returncode == 255 or proc.returncode == 124:
+        return unreachable
+    done: list[str] = []
+    seen: set[str] = set()
+    for line in (proc.stdout or "").splitlines():
+        status, _, rest = line.partition("\t")
+        idx, _, size = rest.partition("\t")
+        if not idx.isdigit() or int(idx) >= len(ordered):
+            continue
+        item = ordered[int(idx)]
+        target = str(item.path)
+        label = item.label
+        if status == "REMOVED":
+            done.append(f"ลบ {label}: {ip}:{target}")
+        elif status == "GONE":
+            done.append(f"ไม่มีอยู่แล้ว {label}: {ip}:{target}")
+        elif status == "DOCKER":
+            done.append(f"ลบผ่าน docker บน {ip} (ไฟล์เป็นของ root): {target}")
+            continue        # บรรทัด REMOVED/LEFT ของรายการเดียวกันตามมา
+        elif status == "LEFT":
+            try:
+                human = _human(int(size or 0))
+            except ValueError:
+                human = "?"
+            done.append(f"เหลือ {label} ที่ลบไม่ได้ ({human}) บน {ip}: {target} — ลบเอง: ssh {user}@{ip} sudo rm -rf {shlex.quote(target)}")
+        seen.add(target)
+    missing = [str(i.path) for i in worker_items if str(i.path) not in seen]
+    if missing:
+        done.append(f"ยังเหลือบน {ip}: " + " ".join(missing)
+                    + f" (ssh จบด้วย exit {proc.returncode}) — ลบเอง: ssh {user}@{ip} {shlex.quote('; '.join(manual))}")
+    return done
+
+
 def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
-    """หยุด → ยกเลิก autostart → ลบไฟล์ทั้งหมด — คืนรายการสิ่งที่ทำจริง
+    """หยุด → ยกเลิก autostart → ลบไฟล์บน head → ลบของบน worker ทุกตัว (stacked) — คืนรายการสิ่งที่ทำจริง
 
     ลำดับสำคัญ: ต้องหยุด/ยกเลิก autostart ก่อนลบ ไม่งั้นเหลือ container ค้าง
-    หรือ systemd unit ที่ชี้ไปไฟล์ที่ไม่มีแล้ว
+    หรือ systemd unit ที่ชี้ไปไฟล์ที่ไม่มีแล้ว · worker ทีหลัง head — ต้องอ่าน cluster.env จาก bundle
+    ก่อน bundle หาย และ controller `stop` (หยุด container ทุก node) ยังต้องมีสคริปต์ให้เรียก
     """
     import shutil as _shutil
 
@@ -1179,7 +1404,17 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
         except FleetError as exc:
             done.append(f"ยกเลิก autostart ไม่สำเร็จ: {exc}")
 
-    for item in removal_plan(info, include_weights=include_weights):
+    # แผนครั้งเดียวหลัง stop และก่อนลบ bundle — cluster.env ข้าง controller คือที่เดียวที่บอกว่า worker คือใคร
+    # (worker ถูกถามขนาดผ่าน ssh ในนี้ · ถามซ้ำหลังลบ head ไม่ได้แล้ว)
+    stacked = stacked_workers(info)
+    if stacked and stacked.get("missing_cluster_env"):
+        done.append(f"bundle stacked แต่ไม่มี cluster.env — ไม่รู้ว่า worker คือเครื่องไหน · "
+                    f"ของบน worker (weight/container lmds-{info.slug}-worker) ต้องลบเอง")
+    items = removal_plan(info, include_weights=include_weights)
+    remote_items = [item for item in items if getattr(item, "node", "")]
+    for item in items:
+        if getattr(item, "node", ""):
+            continue        # ของบน worker — ลบผ่าน ssh ด้านล่างหลัง head เสร็จ
         try:
             if item.path.is_dir():
                 _shutil.rmtree(item.path)
@@ -1203,6 +1438,12 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
             done.append(f"เหลือ {item.label} ที่ลบไม่ได้ ({_human(remaining)}): {item.path}")
         else:
             done.append(f"ลบ {item.label}: {item.path}")
+    # worker ทีละเครื่อง (ssh เดียวต่อเครื่อง) — เครื่องที่ติดต่อไม่ได้รายงานพร้อมคำสั่ง ไม่ข้ามเงียบ
+    by_node: dict[str, list[RemovalItem]] = {}
+    for item in remote_items:
+        by_node.setdefault(item.node, []).append(item)
+    for node_items in by_node.values():
+        done += _remove_on_worker(node_items)
     return done
 
 
@@ -1244,8 +1485,9 @@ def _docker_rm(path: Path) -> bool:
 
 
 def removal_failed(lines: list[str]) -> list[str]:
-    """บรรทัดที่บอกว่าลบไม่สำเร็จ — ผู้เรียกใช้ตัดสินใจว่าจะรายงานว่าสำเร็จไหม"""
-    return [line for line in lines if "ลบไม่ได้" in line or "ไม่สำเร็จ" in line]
+    """บรรทัดที่บอกว่าลบไม่สำเร็จ — ผู้เรียกใช้ตัดสินใจว่าจะรายงานว่าสำเร็จไหม (รวมของที่ยังเหลือบน worker)"""
+    return [line for line in lines
+            if "ลบไม่ได้" in line or "ไม่สำเร็จ" in line or "ยังเหลือบน" in line or "ต้องลบเอง" in line]
 
 
 def _dir_size(path: Path) -> int:

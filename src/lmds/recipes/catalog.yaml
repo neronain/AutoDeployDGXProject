@@ -166,17 +166,31 @@ recipes:
     validated_on: DGX Spark (GB10) 128 GB เครื่องเดียว · parser เติม 13 ส.ค. 2569
 
   - match: nvidia/NVIDIA-Nemotron-3-Super
-    label: Nemotron-3-Super (120B)
+    label: Nemotron-3-Super (120B-A12B)
     engine: vllm
-    image: vllm/vllm-openai:v0.20.0
+    # nemotron_h (hybrid Mamba MoE) — README ของ NVIDIA ให้ --trust-remote-code + --mamba-ssm-cache-dtype float16
+    # image: vllm-openai nightly 4 ก.ย. 2569 (0.28.1rc1) pin digest — ตัวเดียวกับ Qwen3.8 stacked ที่พิสูจน์แล้ว
+    image: vllm/vllm-openai@sha256:f5df5cc3302b5f404848c4eca88d7bf7ed5226e151c056da22816d7734644d67
     image_for: [unified]   # build/ทดสอบบน DGX Spark
     serving:
       kv_cache_dtype: fp8
+    extra_flags:
+      - --trust-remote-code
+      - --mamba-ssm-cache-dtype float16
     env:
-      # ค่าพวกนี้ต้องตั้งตอนรัน ไม่ใช่ flag ของ vLLM — ไม่ตั้งแล้ว MoE FP4 เลือก backend ผิด
+      # NVFP4 บน SM121 ต้อง Marlin · ค่าที่เหลือตาม Nemotron-120B-DGXSpark
       VLLM_NVFP4_GEMM_BACKEND: marlin
       VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
       VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
       VLLM_USE_FLASHINFER_MOE_FP4: "0"
-    source: https://github.com/neronain/Nemotron-120B-DGXSpark
-    validated_on: DGX Spark (GB10) เครื่องเดียว
+    tool_calling:
+      enabled: true
+      parser: qwen3_coder   # รูป <tool_call><function=…> ตาม chat template ของ Nemotron 3
+    reasoning:
+      enabled: true
+      parser: nemotron_v3
+    notes:
+      - repo มีไฟล์ remote code (configuration_nemotron_h.py) — สูตรนี้อนุมัติ --trust-remote-code ให้แล้ว
+      - NVFP4 75 GB ลงเครื่องเดียวได้ · stacked 2 เครื่องได้ KV เพิ่มสำหรับ context ยาว/คนเยอะ
+    source: https://github.com/neronain/Nemotron-120B-DGXSpark · README ของ nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+    validated_on: DGX Spark (GB10) เครื่องเดียว · และ 2x DGX Spark stacked TP=2 (vLLM 0.28.1rc1) test-text/reasoning/tool call ผ่าน 5 ก.ย. 2569

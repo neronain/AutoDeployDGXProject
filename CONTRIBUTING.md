@@ -36,13 +36,45 @@ pytest
 ## รันเทส
 
 ```bash
-pytest                      # ทั้งหมด
+pytest                      # ทั้งหมด (~1,720 เทส · 110+ ไฟล์)
 pytest tests/test_brain.py  # เฉพาะไฟล์
 pytest -k stacked           # เฉพาะที่ชื่อตรง
+pytest -v -rA -k embed      # อยากเห็นชื่อเทส/ผลทีละข้อ — pyproject ตั้ง addopts = "-q" ไว้ ผลปกติจึงเงียบ
 ```
 
 CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บน Python 3.10/3.11/3.12,
 `bash -n` + shellcheck สคริปต์ในรีโป, และ secret scan
+
+### เทสที่ต้องมี `node` — หน้าเว็บรัน JS จริง
+
+`tests/test_console_shell.py` (และ `test_page_javascript_parses`) บูตสคริปต์จริงของ `index.html` ใน **Node.js** ด้วย DOM
+ย่อส่วน (`tests/console_shell_dom.js`) แล้วถามว่าการ์ดไหน "มองเห็น" จริง — grep สตริงในไฟล์จับบั๊กแบบ "กด site แล้วหน้าว่าง"
+ไม่ได้ · ไม่มี `node` บนเครื่อง = **ข้ามพร้อมเหตุผล** ไม่ใช่ผ่านเงียบ ๆ (นับเป็น skipped ใน CI) · เทสหา node จาก PATH →
+`~/.nvm/versions/node/*/bin` → `~/.volta/bin` → `/opt/homebrew/bin` → `/usr/local/bin` · ติดตั้งใน VM/เครื่อง dev ด้วย
+`sudo apt install nodejs` หรือ nvm ก็พอ (ไม่ต้องมี npm package ใด — ไม่มี dependency)
+
+### ไฟล์ทดสอบขนาดใหญ่ถูกลบทันทีที่เทสจบ
+
+เทสโหลดขนาน (`tests/test_parallel_fetch.py` · `test_audit_cli_controllers.py`) สร้างไฟล์ ≥256 MB ใต้ `tmp_path` —
+เคยค้างใน `/tmp` ของ VM ข้าม 3 รอบ pytest จนดิสก์เหลือ 66 MB แล้วเทสอื่นล้มแบบอ่านไม่รู้เรื่อง · fixture autouse ใน
+`tests/conftest.py` ลบไฟล์ >64 MB ใต้ `tmp_path` ทันทีหลังแต่ละเทส · เทสใหม่ที่ต้องการไฟล์ใหญ่ให้สร้างใต้ `tmp_path` เท่านั้น
+
+### เทส review / audit — "เทสที่ล้มก่อนแก้"
+
+รอบตรวจทั้งระบบเก็บเป็นไฟล์ตามชุดที่ตรวจ ไม่ใช่ตามโมดูล:
+
+| ไฟล์ | ตรวจอะไร |
+|---|---|
+| `tests/test_review_backend.py` · `test_review_web.py` · `test_review_templates.py` | review 0.6.0 ชุด fleet/nodes/brain/fit · ชั้นเว็บ · controller templates (render แล้วรันใต้ bash จริง) |
+| `tests/test_audit_backend.py` · `test_audit_cli_controllers.py` | audit รอบสอง: web/fleet/nodes · CLI + controller ทั้งสี่ template แบบลูกค้ารัน |
+| `tests/test_audit_stacked_plan.py` · `test_audit_stacked_orchestration.py` · `test_audit_stacked_controller.py` | stacked ฝั่ง planner · hub↔head↔worker (SSH ปลอม) · controller ทั้ง lifecycle (docker/ssh/rsync ปลอมบันทึก argv ต่อ node) |
+
+กติกา: **ทุกข้อในรายงาน review/audit ต้องมีเทสที่ล้มก่อนแก้** แล้วผ่านหลังแก้ — ข้อที่ "ยืนยันว่าถูกอยู่แล้ว" ก็มีเทสคุมไว้
+(ระบุในหัวข้อ CHANGELOG ว่าเทสไหน) · เทสพวกนี้รัน**ของจริง**เท่าที่ทำได้: controller ที่ render จริงใต้ `bash`, สคริปต์ติดตั้ง
+กับ `git` จริง (`test_install_ship.py`), เซิร์ฟเวอร์ HTTP ปลอมสำหรับ `test-*`/`bench` (`test_stacked_test_commands.py`) ·
+บั๊กที่ผ่าน gate แบบ static ทั้งหมดแล้วไปตายตอนรันคือแบบที่เจ็บที่สุด — อะไรที่ผู้ใช้จะรัน ต้องมีเทสที่รันมันจริงอย่างน้อยหนึ่งเส้นทาง
+· เรื่อง auth/secret ต้องพิสูจน์กับ binary จริงก่อน (เคส `LLAMA_ARG_API_KEY` ที่ llama-server ไม่มี — เทสที่เชื่อ env ผ่านทั้งที่
+เซิร์ฟเวอร์รันแบบไม่มี auth)
 
 ### เทสรันใน sandbox — `~` ไม่ใช่ home จริง
 
@@ -82,13 +114,19 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
 
 ### แก้ template ของ controller
 
-`src/lmds/generator/templates/*.j2` — หลังแก้ต้องผ่าน quality gates ทั้ง 8 ด่านโดยอัตโนมัติ
-(เทสใน `tests/test_generator.py` เรียก `run_gates` ให้อยู่แล้ว) · ข้อควรระวังที่ gate จับ:
+`src/lmds/generator/templates/*.j2` (single-vllm · single-llamacpp · single-sglang · stacked-vllm) — หลังแก้ต้องผ่าน
+quality gates ทั้ง 12 ด่านโดยอัตโนมัติ (เทสใน `tests/test_generator.py` เรียก `run_gates` ให้อยู่แล้ว) · ข้อควรระวังที่ gate จับ:
 
 - ห้าม numeric underscore literal ใน arithmetic (`(( 65_536 ))`)
 - ห้าม pipefail-unsafe (`... | grep -q`)
 - ต้องมี flag/env ครบตาม controller contract v3.0.0
 - แยก bind / advertise / cluster address ออกจากกัน
+- ห้ามมี template tag เหลือในไฟล์ผลลัพธ์ (heredoc ใน `{% raw %}` เคยพิมพ์ `{{ slug }}` ดิบ)
+
+และกติกาที่เทสคุมนอก gate: **ทุกคำสั่งในบล็อก COMMANDS ของ `usage()` ต้องถูก dispatch จริง** (และกลับกัน) ในทั้ง 6 รูปแบบ
+controller (`tests/test_stacked_test_commands.py` ฯลฯ) · secret ห้ามขึ้น argv (API key → `--api-key-file`/env · HF token → stdin)
+· `explain_crash`/pipeline ใต้ `set -e` ต้องปิดท้าย `|| true` · แก้ template แล้วอัปเดตตาราง "คำสั่งไหนมีบน engine ไหน" ใน
+[docs/USAGE.md §2](docs/USAGE.md)
 
 ### เพิ่ม quality gate
 
@@ -124,6 +162,11 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
   [docs/USAGE.md](docs/USAGE.md), [docs/CLI_SPEC.md](docs/CLI_SPEC.md), [CHANGELOG.md](CHANGELOG.md)
   · แก้ข้อกำหนด/ขอบเขต → [docs/PRD.md](docs/PRD.md) · แตะเรื่องสิทธิ์หรือการอนุมัติ →
   [SECURITY.md](SECURITY.md) · ปิดงานที่อยู่ในแผน → [docs/ROADMAP.md](docs/ROADMAP.md)
+  · แตะ install.sh / node install → [docs/INSTALL.md](docs/INSTALL.md) + [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
+  · เพิ่มการตรวจก่อน deploy/start → [docs/PREFLIGHT.md](docs/PREFLIGHT.md) · `bench`/`stress`/คะแนน → [docs/BENCH.md](docs/BENCH.md)
+- badge จำนวนเทสใน README ทั้งสองไฟล์ = `pytest --collect-only -q tests/ | tail -1` · เวอร์ชันจาก `src/lmds/__init__.py`
+- **ฟีเจอร์ใหม่ต้องมีทางกดบนหน้าเว็บด้วย** (PRD FR-1b.14) — ทำแค่ CLI/API เท่ากับไม่มีสำหรับทีมที่ทำงานผ่านคอนโซล ·
+  ข้อความบนหน้าเว็บเป็นอังกฤษ comment ในโค้ดและ CLI เป็นไทย
 
 ## โครงสร้างโค้ด
 

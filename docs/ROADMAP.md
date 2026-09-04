@@ -44,6 +44,20 @@
 | llama.cpp | ✅ native build | ✅ docker (+ multimodal) |
 | vLLM | ✅ docker | ✅ docker |
 
+## ✅ 0.6.0 (2026-09-04) — รอบตรวจทั้งระบบ
+
+| ส่งมอบ | สถานะ |
+|---|---|
+| คอนโซล 0.6 — app shell เมนูซ้าย/รายละเอียดตรงกลาง, router แบบ hash, Overview + Needs attention, หน้าเครื่อง/ไซต์/โมเดลทั้งฟลีต, เมนูอังกฤษ, ฟอนต์ในแพ็กเกจ, ฟอร์มตั้งค่าย่อ + Advanced พับ, กล่อง Update hub→node | ✅ (`tests/test_console_shell.py` รัน JS จริงใน node) |
+| review/audit ทั้งระบบ — backend · web · CLI/controller · stacked (plan · controller · orchestration) ทุกข้อมีเทสที่ล้มก่อนแก้ | ✅ `tests/test_review_*.py` · `tests/test_audit_*.py` |
+| **โหมด embedding** — `task: embed` จาก repo, `lmds deploy --task`, llama.cpp `--embedding --pooling` / vLLM `--runner pooling`, `test-embed` | ✅ รันจริง `VesNFF/Qwen3-VL-Embedding-8B-GGUF` (spark03) |
+| **stacked แข็งขึ้น** — `lmds cluster pair/doctor/write/show`, กุญแจ head→worker บนhead, cluster.env ตาม NNODES ของ bundle, ตรวจสถาปัตยกรรม + image ทุก node ก่อนปล่อย worker, `verify-worker` ตรวจจริง, transport IP ของ worker, env/flags/image ถึง worker, fit ต่อเครื่อง + NCCL buffer, 422 สำหรับคู่ที่เป็นไปไม่ได้, `test-tools`/`test-reasoning`/`test-vision`/`bench`/`stress`/`parsers` บน stacked, systemd timeout ตาม STARTUP_TIMEOUT, การ์ด head/worker | ✅ รันจริง Qwen3.8-Flash-Next-NVFP4 173 GB (TP=2, tool calls) · Nemotron-3-Super-120B บน 2× Spark |
+| ติดตั้ง/อัปเดต — `install.sh -y`, venv.old คืนเมื่อ pip ล้ม, `PIP_RETRIES`/`PIP_TIMEOUT`, hub ส่งโค้ดเป็น git bundle (node ไม่ต้องเข้า GitHub), `git clone -b main`, โฟลเดอร์ไม่ใช่ git/แยกสาย, เทียบ commit แบบ prefix | ✅ อัปเดตฟลีต 14/15 เครื่องผ่านทางนี้ |
+| ดาวน์โหลด — `fetch_parallel` 8 ส่วน (`FETCH_PARTS`) สู้ Xet ของ HF (0.3 → ~50 MB/s), ตรวจดิสก์ 2 เท่า, กัน download ซ้อน, `lmds deploy --gguf` | ✅ |
+| ความปลอดภัย — API key ไม่อยู่บน argv (`--api-key-file` / env), HF token ทาง stdin, ตรวจ slug ทุก route, อักขระเชลล์ใน bundle.env, ลบไฟล์ root ผ่าน docker ใต้รั้ว, token ไม่โผล่ในผลงานสด | ✅ |
+| **wizard ตั้งค่าเครือข่ายคลัสเตอร์** (ตั้ง IP บนสายเร็ว / ตรวจสาย / เขียนค่าจากหน้าเว็บ) | ✅ **เสร็จแล้ว** (2026-09-05) — ปุ่ม **Set up cluster network** บนหน้าเว็บ 5 ขั้น (Devices → Cabling → Plan → Apply → Verify) · CLI `lmds cluster inspect\|plan\|apply\|remove-net` |
+| stacked เกิน 2 เครื่อง (`dgx-spark-stacked-4`) รันจริง | ⏳ โครงสร้าง/เทสพร้อม ยังไม่มีเครื่องที่สาม |
+
 ### นอกขอบเขตเฟส 1 (ตัดออกชัดเจน)
 
 - Web UI, repair แบบวิเคราะห์ log, NGC/GitHub source, Anthropic adapter (โครง interface เตรียมไว้), SSH remote probe
@@ -55,7 +69,7 @@
 
 เรียงตามที่แนะนำ:
 
-1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · งานต่อยอด: 4 เครื่อง + ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
+1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · ✅ **0.6.0 (4 ก.ย. 2569)** audit ทั้ง lifecycle + `lmds cluster pair/doctor/write` + ชุดทดสอบบน stacked → Qwen3.8-Flash-Next-NVFP4 173 GB และ Nemotron-3-Super-120B รันจริง · งานต่อยอด: 4 เครื่องบนเครื่องจริง, **wizard ตั้งค่าเครือข่ายคลัสเตอร์ (กำลังทำ)**, ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
 2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
    verify-files, 2026-08-02) · ~~ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้~~
    → ✅ **ทำแล้ว (2026-08-27)** ผู้ช่วยในหน้าเว็บเปิด log ของ controller บนเครื่องนั้นเอง (พร้อม
@@ -76,8 +90,10 @@
    · cluster IP ย้ายไปอยู่ในการ์ดของเครื่องนั้น + รั้วสีจับคู่ที่ stacked ได้
    · ~~แท็บ tests+manage สำหรับโมเดลบนเครื่องอื่น~~ **ทำแล้ว (2026-08-06)** — คุมได้เท่ากับ
    โมเดลในเครื่อง (env ชุดเดียวกัน) · ~~ส่ง bundle ไปเครื่องอื่น~~ **ทำแล้ว** `lmds node push`
-   · งานต่อยอด: **job progress / log สด**, command palette (⌘K), deploy wizard เลือกเครื่อง
-   ปลายทางได้ตั้งแต่ต้น (ตอนนี้ต้อง deploy แล้วค่อย push)
+   · ~~job progress / log สด~~ **ทำแล้ว** (แผงงาน + SSE + ยกเลิกได้) · ~~deploy wizard เลือกเครื่อง
+   ปลายทางได้ตั้งแต่ต้น~~ **ทำแล้ว (0.5.2/0.6.0)** — ช่อง Run on + ปุ่ม "Deploy ลงกลุ่มนี้" + เสนอพอร์ตว่างของเครื่องนั้น
+   · **0.6.0**: app shell เมนูซ้าย/router/Overview/Needs attention · เมนูอังกฤษ · ฟอร์มตั้งค่าย่อ + Advanced พับ
+   · งานต่อยอด: command palette (⌘K)
 5. ~~**Runtime smoke test อัตโนมัติ**~~ — ✅ **ทำแล้ว (2026-08-06)** `lmds smoke <slug> [--on เครื่อง]`
    download → verify-files → start → test-text → stop · หยุด server เสมอแม้ล้มกลางทาง
    · **เหตุผลที่ต้องมี**: บั๊กที่เจ็บที่สุดทุกตัวของรอบ 0.2.0 ผ่าน gate แบบ static ทั้งหมด
@@ -87,7 +103,9 @@
    ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ)
 7. Anthropic provider, i18n ไทยเต็มรูป, ~~SSH remote probe~~ → ✅ **ทำแล้ว (2026-08-05)** เป็น
    `lmds node` (ทะเบียนเครื่อง + `lmds agent info` ผ่าน SSH) พร้อมตรวจ ConnectX/200G และจับคู่ stacked
-   · งานต่อยอด: push bundle ไปติดตั้งบน node ให้อัตโนมัติ, ยืนยัน fabric detection กับ ConnectX จริง
+   · ~~push bundle ไปติดตั้งบน node ให้อัตโนมัติ~~ **ทำแล้ว** (`lmds node push` + wizard) · ~~ยืนยัน fabric detection
+   กับ ConnectX จริง~~ **ทำแล้ว (5 ส.ค. 2569)** · **0.6.0**: hub ส่งโค้ดไปติดตั้ง node เอง (ไม่ต้องมี deploy key) ·
+   `lmds cluster doctor/pair` · งานต่อยอด: Anthropic provider, i18n ไทยเต็มรูปของหน้าเว็บ (ตอนนี้หน้าเว็บอังกฤษ CLI ไทย)
 
 ## เฟส 3 — ข้อเสนอระยะยาว
 

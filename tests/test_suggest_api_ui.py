@@ -79,4 +79,4 @@ def test_page_has_the_button_the_env_field_and_the_handler():
     assert 'data-nact="suggest-settings"' in page, "ยังไม่มีปุ่มเติมให้ตามโมเดล"
     assert 'class="n-engine-env"' in page and 'engine_env: num(".n-engine-env")' in page, "engine env ยังตั้งจากหน้าเว็บไม่ได้"
     handler = page[page.index('nact === "suggest-settings"'):][:1500]
-    assert "/settings/suggest" in handler and ".n-tool-parser" in handler and "บันทึกค่า" in handler
+    assert "/settings/suggest" in handler and ".n-tool-parser" in handler and "press Save" in handler   # ป้ายอังกฤษตั้งแต่ 0.6.0

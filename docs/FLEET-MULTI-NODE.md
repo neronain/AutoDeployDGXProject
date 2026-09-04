@@ -87,26 +87,39 @@ hub **ไม่ได้ส่ง agent ไปรัน** บนเครื่�
 ก็ยังคุยกันได้ · ข้อแลกเปลี่ยน: **ต้องติดตั้งบนทุกเครื่องก่อน** ซึ่ง hub ทำให้ได้ด้วยคำสั่งเดียว:
 
 ```bash
-lmds node install <ชื่อเครื่อง>      # hub ส่งโค้ดของตัวเองไป (git bundle ผ่าน scp) แล้วรัน install.sh บนเครื่องนั้น
+lmds node install <ชื่อเครื่อง>      # hub ส่งโค้ดของตัวเองไป (git bundle ~2 MB ผ่าน scp) แล้วรัน install.sh บนเครื่องนั้น
                                      # — เครื่องนั้นไม่ต้องเข้า GitHub · hub ที่ไม่ได้ติดตั้งจาก checkout ถอยไป clone เอง
+lmds node install --all              # อัปเดตทุกเครื่อง (แคช bundle ต่อ commit — pack ครั้งเดียว)
 lmds node add <ip> --user <u> --install   # เพิ่ม + ติดตั้งในคำสั่งเดียว
+lmds node setup <ชื่อ> --with-prereq  # ขั้นที่ใช้ sudo (Docker / toolkit / กลุ่ม docker / linger) — ถามรหัสตอนนี้ ใช้ครั้งเดียว
 ```
 
+สิ่งที่ `node install` ทำบนเครื่องปลายทาง (สคริปต์รันกับ git จริงในเทส `tests/test_install_ship.py`):
+
+- ยังไม่มี checkout → `git clone -b main <bundle>` (bundle มีแต่ ref `main` ไม่มี HEAD — clone เฉย ๆ ได้โฟลเดอร์เปล่า)
+  แล้วชี้ origin กลับ GitHub เผื่อวันหน้าเครื่องนั้นมี key เอง
+- มี checkout → `git fetch <bundle> main` แล้ว ff · **แก้ไว้/แยกสาย** → เก็บที่ branch `local-<เวลา>` + stash แล้วตามโค้ดของ hub
+  (node เป็นของ hub ไม่ใช่ที่พัฒนาโค้ด) · **โฟลเดอร์ที่ไม่ใช่ git** (ติดตั้งแบบ copy) → ย้ายไป `.bak-<เวลา>` ก่อน clone
+- รัน `install.sh` (`LMDS_SKIP_PREREQ=1`) — pip ล้ม = venv เดิมถูกคืน ไม่ทิ้ง node ไว้แบบไม่มี `lmds`
+- สรุปว่า "ตรง hub" / "ยังไม่ตรง hub (hub: …)" โดยเทียบ commit แบบ prefix (git ย่อ 7 หรือ 8 ตัวต่างกันตามจำนวน object)
+
 `node install` **ข้ามขั้น Docker/NVIDIA toolkit** เป็นค่าเริ่มต้น เพราะขั้นนั้นต้องใช้ `sudo`
-ซึ่งไม่มีคนกรอกรหัสผ่านให้ผ่าน SSH — เครื่องที่ยังไม่มี Docker ต้องไปรัน `./install.sh` บนเครื่องนั้นเอง
-(หรือใส่ `--with-prereq` ถ้าเครื่องนั้น sudo ผ่านโดยไม่ถามรหัสผ่าน)
+ซึ่งไม่มีคนกรอกรหัสผ่านให้ผ่าน SSH — ใช้ `lmds node setup <ชื่อ> --with-prereq` (รหัสผ่านส่งทาง stdin ของ ssh ไม่เขียนดิสก์
+ไม่อยู่ใน argv) หรือ *Add machine* บนหน้าเว็บที่ทำครบในครั้งเดียว (หรือ `--with-prereq` ของ `node install` ถ้าเครื่องนั้น sudo
+ผ่านโดยไม่ถามรหัสผ่าน)
 
 ### สรุปสิ่งที่ต้องมีบนเครื่องปลายทาง
 
 | ต้องมี | ใครจัดการได้ |
 |---|---|
 | sshd เปิดอยู่ + user ที่ login ได้ | ผู้ดูแลเครื่องนั้น |
-| user อยู่ในกลุ่ม **`docker`** (ไม่ต้องเป็น root) | ผู้ดูแลเครื่องนั้น |
-| Docker + NVIDIA Container Toolkit + git | `./install.sh` บนเครื่องนั้น (ต้องใช้ sudo) |
+| user อยู่ในกลุ่ม **`docker`** (ไม่ต้องเป็น root) | `lmds node setup` / Add machine (ต้องรหัส sudo ครั้งเดียว) |
+| `git` + `python3` (clone bundle ที่ hub ส่งมา · `python3-venv` ขาดก็ลงให้/ถอยไป `--without-pip`) | ปกติมีอยู่แล้วบน Ubuntu/DGX OS |
+| Docker + NVIDIA Container Toolkit | `lmds node setup --with-prereq` จาก hub · หรือ `./install.sh` บนเครื่องนั้น |
 | **LMDS (`lmds` ใน PATH)** | **hub ทำให้ได้: `lmds node install`** |
 
-> **ไม่ต้องใช้ root** — LMDS ไม่เคยต้องการสิทธิ์ root ในการรันโมเดล ที่ต้องใช้ `sudo` มีอย่างเดียวคือ
-> `lmds enable` (สร้าง systemd unit) ซึ่งสั่งบนเครื่องนั้นเอง ให้ user ที่อยู่กลุ่ม docker พอเสมอ
+> **ไม่ต้องใช้ root** — LMDS ไม่เคยต้องการสิทธิ์ root ในการรันโมเดล · `lmds enable` เป็น systemd *user* service
+> (ไม่ต้อง sudo · ต้องมี linger ซึ่ง `node setup` ตั้งให้) · sudo ใช้เฉพาะขั้นติดตั้ง Docker/toolkit และ `enable --system`
 
 ### CLI
 
@@ -168,8 +181,12 @@ lmds node run spark2 doctor my-model   # รันคำสั่ง lmds อะ
 | **IP ของเครื่อง** | `ip -o -4 addr` (สำรอง: `ifconfig`) | IP ที่ **เครื่องนั้น** ถืออยู่จริง — คนละอย่างกับที่อยู่ที่ hub ใช้ SSH ซึ่งเป็นชื่อได้ · ดู [NETWORK.md](NETWORK.md#เครื่องนั้นอยู่-ip-ไหน) |
 | **Models running** | `lmds agent info` | เป็น **จำนวน** ไม่ใช่ใช่/ไม่ใช่ — llama.cpp รันหลายโมเดลพร้อมกันได้ (คนละพอร์ต) |
 
-ปุ่มต่อโมเดลบน node จำกัดไว้ที่ `start / stop / restart / repair / doctor` เท่านั้น (allowlist ฝั่ง server
-ไม่ใช่แค่ซ่อนปุ่ม) — หน้าเว็บสั่งข้ามเครื่องได้ จึงต้องแคบไว้ก่อน
+ปุ่มต่อโมเดลบน node จำกัดด้วย allowlist ฝั่ง server (ไม่ใช่แค่ซ่อนปุ่ม) — คำสั่งของ `lmds`: `start stop restart repair
+doctor logs enable disable remove set` (`remove` ต้องผ่าน `--dry-run` ก่อนแล้วส่ง confirm = slug) และคำสั่งของ controller
+ที่อ่าน/ทดสอบเท่านั้น: `test-*` `parsers` `bench` `stress` `client-config` `network-info` `status` `props` `verify-files`
+`prepare-runtime` `sync-worker` `verify-worker` `clear-fi-cache` `logs-worker` — หน้าเว็บสั่งข้ามเครื่องได้ จึงต้องแคบไว้ก่อน ·
+slug จาก URL ถูกตรวจรูปแบบที่ปากทางทุก route (400) ก่อนไปถึง shell ของเครื่องอื่น · งานที่ ssh ค้างยกเลิกได้ (ปุ่ม Cancel /
+`POST /api/jobs/{id}/cancel`)
 
 ### ถามผู้ช่วยแทนการไล่กดเอง
 
@@ -324,22 +341,75 @@ world size 3 (TP=2 + pipeline (TP=3 หาร head ไม่ลง)) · 200G RDM
 ### เขียนค่าลง bundle
 
 ```bash
-lmds node cluster --write my-70b-model
+lmds cluster write my-70b-model --head spark-head [--worker spark2 --worker spark3] [--on spark-head]
+lmds node cluster --write my-70b-model --head spark-head      # ทางเดิม ยังใช้ได้
 ```
 
-สร้าง `cluster.env` ใน bundle:
+สร้าง `cluster.env` ใน bundle (บนเครื่องที่ bundle อยู่จริง — ปกติคือ head):
 
 ```bash
 MASTER_IP=10.10.0.1
 WORKER_IP=10.10.0.2
+WORKER_IPS="10.10.0.2"          # worker ทุกตัวเรียงตาม rank (3–4 เครื่องมีหลายค่า)
 SSH_USER=ops
 TRANSPORT_IP_MASTER=10.10.0.1
 TRANSPORT_IP_WORKER=10.10.0.2
+NNODES=2
+TENSOR_PARALLEL_SIZE=2
 NCCL_SOCKET_IFNAME=enp1s0f0np0
 ```
 
 controller ของ stacked จะ **source ไฟล์นี้ก่อน default ทั้งหมด** แล้วข้ามการถาม IP ตอน `start`
-(env ที่ตั้งมาจากภายนอกยังชนะไฟล์นี้เสมอ) — ถ้าไม่มีไฟล์ ก็กลับไปถามแบบเดิม ไม่มีอะไรพัง
+(env ที่ตั้งมาจากภายนอกยังชนะไฟล์นี้เสมอ) — ไม่มีไฟล์: มี tty ถามแบบเดิม · ไม่มี tty (hub สั่ง) หยุดพร้อมบอกคำสั่งข้างบน
+ไม่ ssh ไปเครื่องตัวอย่างเงียบ ๆ
+
+**`write` อ่าน `NNODES` จาก controller ใน bundle ก่อน** (`nodes/stacked.py`) แล้วตัดกลุ่มให้เหลือ head + worker ตามจำนวนนั้น —
+กลุ่ม 4 เครื่องกับ bundle ที่ render มาสำหรับ 2 เครื่องเคยได้ `NNODES=4/TP=4` ทับแผน (ไฟล์ถูก source ก่อน default จึงชนะ)
+และ bundle 4 เครื่องที่เลือก worker ตัวเดียวเคยได้ TP=2 ที่โมเดลไม่ fit · ไม่พอ/เกิน = ปฏิเสธพร้อมบอกว่าต้อง target ไหน
+(`--nnodes` ระบุเองได้เมื่อ bundle ไม่อยู่บนเครื่องนี้)
+
+### กุญแจ head → worker — `lmds cluster pair`
+
+`lmds node setup` / *Add machine* ติดตั้งแต่กุญแจของ **hub** ลงทุกเครื่อง แต่ controller stacked รันบน **head** แล้ว
+`ssh ${SSH_USER}@${WORKER_IP}` ด้วยกุญแจของ head เอง → `sync-worker`/`start` ตายด้วย `Permission denied (publickey)`
+ทุกครั้งที่ไม่ได้ตั้งมือ (เจอจริงทุกคลัสเตอร์ก่อน 0.6.0)
+
+```bash
+lmds cluster pair spark-head spark-worker [spark-3 …]
+```
+
+- กุญแจ **เกิดบน head** (ไม่ผ่าน hub) · public key ลง `authorized_keys` ของ worker · เขียน stanza ใน `~/.ssh/config` ของ head
+  (`IdentityFile` + `StrictHostKeyChecking accept-new` — BatchMode ตอบคำถาม host key ครั้งแรกไม่ได้) ทำซ้ำได้ ไม่แตะบรรทัดของผู้ใช้
+- ยืนยันด้วย `ssh -o BatchMode=yes` เปล่า ๆ แบบเดียวกับที่ controller ใช้
+- หน้าเว็บ: ปุ่ม **Pair SSH** บนหัวกลุ่ม · wizard ทำให้เองหลังเขียน cluster.env ตอน push · `lmds node push <head> <slug> --download --start`
+  กับ bundle stacked ก็ทำครบ: cluster.env → pair → `sync-worker && verify-worker` → start
+
+### ทำไมคู่นี้ยังไม่พร้อม — `lmds cluster doctor`
+
+```bash
+lmds cluster doctor spark-head spark-worker [--slug my-70b-model]
+```
+
+อ่านอย่างเดียว ไม่แตะอะไรบนเครื่อง · ตรวจทีละข้อพร้อมคำสั่งแก้ (รหัสเดียวกันทั้ง CLI ไทย / เว็บอังกฤษ):
+
+| ข้อ | ตรวจอะไร |
+|---|---|
+| `registered` `reachable` `gpu` `opted-out` | อยู่ในทะเบียน · hub ต่อถึง · มี GPU · ไม่ได้ `--no-stack` |
+| `same-site` `hardware` | ไซต์เดียวกัน · GPU รุ่น/จำนวนตรงกันทุก rank |
+| `cluster-ip` `same-subnet` `iface-up` `link-speed` | unset/mismatch/slow/link-local (+ IP ที่เสนอ) · วงเดียวกัน · สายขึ้น · negotiate ต่ำกว่าที่ควร (เตือน) |
+| `ssh-head-to-worker` `fabric-ping` | **ssh จาก head ไป worker จริง** · ping บนสายคลัสเตอร์เมื่อ ssh ล้ม (ICMP อาจถูกบล็อก) |
+| `disk` | < 150 GB ว่าง = เตือน (weight ลงทุกเครื่อง) |
+| `bundle-on-head` `cluster-env` `cluster-env-match` | (มี `--slug`) bundle อยู่บน head ไหม · มี cluster.env ไหม · ค่าในไฟล์ตรงทะเบียนไหม |
+
+หน้าเว็บ: ปุ่ม **Doctor** บนหัวกลุ่ม (`GET /api/cluster/doctor`) · hub ที่ไม่มี GPU (VM ควบคุม) ขึ้นเป็น *control plane — not a
+stacked candidate* ไม่ใช่ "not ready · 10G too slow" พร้อมปุ่มที่ไม่มีความหมาย
+
+### โมเดล stacked บนการ์ด
+
+bundle อยู่ที่ head เท่านั้น การ์ด worker จึงเคยว่างทั้งที่เครื่องถูกใช้อยู่ · ตอนนี้ `lmds agent info` อ่าน `cluster.env`
+ข้าง controller แล้ว hub เทียบ IP กับ cluster_ip ในทะเบียน: การ์ด head ได้ป้าย **stacked head · worker <ชื่อ>** · การ์ด worker
+ได้แถว **stacked worker of <head>** พอร์ตเดียวกัน ไม่มีปุ่ม (ทั้งทาง SSE และ `/api/nodes/<n>/inventory`) · ปุ่ม `logs-worker`
+บนการ์ด head = log ของ container บน worker · ยกเลิก start ของ stacked จะเตือนว่า container บน worker อาจยังรันอยู่
 
 `NCCL_SOCKET_IFNAME` สำคัญกว่าที่คิด: ถ้าไม่ระบุ NCCL จะเลือก interface เอง และมักเลือกเส้นบริหารจัดการ
 ที่ช้ากว่า — งานยังรันได้ แต่ช้าลงแบบหาสาเหตุยาก
@@ -443,27 +513,42 @@ hub ลอง**ที่อยู่หลักก่อนเสมอ** ต�
 
 ## 7. ข้อจำกัดที่รู้ตัว (ยังไม่ทำ)
 
-- hub ยังไม่เก็บ cluster IP **ของตัวเอง** ในทะเบียน (ตัวเองไม่ได้อยู่ในทะเบียน) — ใช้ค่าที่ตรวจพบ
-  ตอนเขียน `cluster.env` ถ้าเครื่อง hub มีหลายเส้นเร็วเท่ากันแล้วเลือกผิด ให้แก้ `cluster.env` เอง
-- `lmds deploy` ยังไม่ push bundle ไปติดตั้งบน node ให้อัตโนมัติ — node ต้องมี LMDS อยู่ก่อน
-- กลุ่ม stacked เกิน 2 เครื่องจับกลุ่มและแสดงผลได้ แต่ `--write` ต้องระบุ `--worker` เอง
-  (template ปัจจุบันเป็น head+worker คู่เดียว)
+- hub ยังไม่เก็บ cluster IP **ของตัวเอง** ในทะเบียน (ตัวเองไม่ได้อยู่ในทะเบียน — `PATCH /api/cluster/self` ตั้งได้แค่ว่าจะเอา hub
+  เข้ากลุ่มไหม) — ใช้ค่าที่ตรวจพบตอนเขียน `cluster.env` ถ้าเครื่อง hub มีหลายเส้นเร็วเท่ากันแล้วเลือกผิด ให้แก้ `cluster.env` เอง
+- `lmds deploy` จาก CLI ยังไม่ push bundle ไปติดตั้งบน node ให้อัตโนมัติ (ใช้ `lmds node push` ต่อ) — wizard บนหน้าเว็บ push ให้แล้ว
+- กลุ่ม stacked **เกิน 2 เครื่อง** จับกลุ่ม/เขียน `cluster.env` (`WORKER_IPS` · `TRANSPORT_IPS_WORKER`) และ controller วน worker
+  ทุกตัวได้ แต่**ยังไม่เคยรันจริงเกิน 2 เครื่อง** — `dgx-spark-stacked-4` เป็น `tested=False`
+- ~~wizard ตั้งค่าเครือข่ายคลัสเตอร์~~ — **ทำแล้ว (2026-09-05)**: ปุ่ม **Set up cluster network** ที่หัว Other machines / หัวกลุ่ม cluster
+  (Devices → Cabling check → Plan → Apply → Verify) เขียน netplan ให้ทุกเครื่อง ตรวจสาย/ping/pair SSH แล้วจดลงทะเบียน ·
+  CLI `lmds cluster inspect|plan|apply|remove-net` · ดู RUNBOOK §Cluster network setup และ NETWORK.md
 - fabric detection **ยืนยันกับ DGX Spark จริงแล้ว (5 ส.ค. 2569)** — เจอ ConnectX 200G RDMA 4 เส้น
-  (`rocep1s0f0/f1`, `roceP2p1s0f0/f1`) ถูกต้อง · ที่ยังเหลือคือทดสอบ **จับคู่ 2 เครื่องจริง**
+  (`rocep1s0f0/f1`, `roceP2p1s0f0/f1`) ถูกต้อง · จับคู่ 2 เครื่องจริงผ่านแล้ว (Llama 3.3 70B 2026-08-05 ·
+  Qwen3.8-Flash-Next-NVFP4 173 GB และ Nemotron-3-Super-120B 2026-09-04 บน spark-head ⇄ spark-worker)
 
 ---
 
 ## 8. อ้างอิงคำสั่งทั้งหมด
 
 ```text
-lmds agent info                       # JSON สถานะเครื่องนี้ (hub เรียกผ่าน SSH — ปกติไม่ต้องพิมพ์เอง)
+lmds agent info | bench               # JSON สถานะ/คะแนนเครื่องนี้ (hub เรียกผ่าน SSH — ปกติไม่ต้องพิมพ์เอง)
 
-lmds node add <host> --user <u>       # + --name --port --note --cluster-ip --cluster-iface
+lmds node add <host> --user <u>       # + --name --port --note --cluster-ip --cluster-iface --install
 lmds node list [--check]
-lmds node set <name> [--cluster-ip IP] [--cluster-iface NAME] [--note TEXT] [--alt-host IP]
+lmds node set <name> [--cluster-ip IP] [--cluster-iface NAME] [--note TEXT] [--site S] [--cluster-name C]
+                     [--alt-host IP,IP] [--stack|--no-stack]
 lmds node remove <name> [-y]
+lmds node install [<name>|--all] [--with-prereq]    # hub ส่งโค้ดไปเอง
+lmds node setup   [<name>|--all] [--with-prereq]    # ขั้น sudo — ถามรหัสตอนนี้ ใช้ครั้งเดียว
 lmds node run <name> <คำสั่ง lmds...>
-lmds node cluster [--write SLUG] [--worker NAME]
+lmds node ctl <name> <slug> <คำสั่ง controller...>
+lmds node push <name> <slug> [--download] [--start]
+lmds node clone <slug> --from <node> --to <node> [--start] [--dry-run] [--no-verify] [-y]
+lmds node cluster [--write SLUG --head NAME] [--worker NAME] [--on NODE] [--self-stack|--no-self-stack]
+
+lmds cluster show [--self-stack|--no-self-stack]                    # = node cluster
+lmds cluster write <slug> --head NAME [--worker NAME…] [--on NODE] [--nnodes N]
+lmds cluster pair <head> <worker…>                                  # กุญแจ head→worker (เกิดบน head)
+lmds cluster doctor <head> <worker> [--slug SLUG]                   # อ่านอย่างเดียว
 
 lmds ps --all                         # โมเดลของทุกเครื่องในตารางเดียว
 ```
@@ -471,20 +556,34 @@ lmds ps --all                         # โมเดลของทุกเค�
 REST (หน้าเว็บใช้ชุดนี้ — token เดียวกับหน้าเว็บ):
 
 ```text
-GET    /api/nodes
-POST   /api/nodes                     {host, user, name?, port?, password?}
-PATCH  /api/nodes/{name}              {cluster_ip?, cluster_iface?, note?}
+GET    /api/nodes                     · GET /api/fleet/summary · PUT /api/nodes/order
+POST   /api/nodes                     {host, user, name?, port?, password?}   (port ไม่ใช่เลข/นอกช่วง = 400)
+PATCH  /api/nodes/{name}              {cluster_ip?, cluster_iface?, note?, site?, cluster_name?, alt_hosts?, stack?}
 DELETE /api/nodes/{name}
-GET    /api/nodes/{name}/inventory
-POST   /api/nodes/{name}/models/{slug}/{command}   # allowlist: start stop restart repair doctor
+POST   /api/nodes/{name}/install      · POST /api/nodes/{name}/setup · POST /api/nodes/{name}/fix-permissions
+GET    /api/nodes/{name}/inventory[?refresh=true]   (refresh เขียนแคชด้วย)
+POST   /api/nodes/{name}/models/{slug}/{command}    # allowlist: start stop restart repair doctor logs enable disable remove set
+POST   /api/nodes/{name}/models/{slug}/ctl/{command}  # test-* parsers bench stress client-config network-info status props
+                                                      # verify-files prepare-runtime sync-worker verify-worker clear-fi-cache logs-worker
+POST   /api/nodes/{name}/models/{slug}/bench · GET /api/nodes/{name}/bench/{slug} · POST …/bench/{slug}/remove
+GET    /api/nodes/{name}/models/{slug}/clone/targets · POST …/clone
+GET    /api/nodes/{name}/models/{slug}/memory · GET …/settings/suggest
+POST   /api/models/{slug}/push/{name}   # แพ็กจากโฟลเดอร์ทุกครั้งก่อนส่ง (ไม่ใช่ zip ตอน generate)
 GET    /api/cluster                   # ตารางสายเชื่อม + กลุ่มที่ stacked ได้
+POST   /api/cluster/write             {slug, head, workers?, on?}
+POST   /api/cluster/pair              {head, workers}
+GET    /api/cluster/doctor?head=&worker=&slug=
+PATCH  /api/cluster/self              {stack}   # hub เองเข้ากลุ่ม stacked ไหม (= --self-stack)
+GET    /api/scan?all_nodes=true       # ถามทุกเครื่องพร้อมกัน (8 worker · 60 วิ/เครื่อง)
+GET    /api/jobs/{id} · POST /api/jobs/{id}/cancel
 ```
 
 ## ตรวจว่าทุกเครื่องรันโค้ดชุดเดียวกันจริง
 
 ```bash
-lmds node install --all             # อัปเดตทุกเครื่องในทะเบียน (ดึงจาก GitHub)
-lmds node run <ชื่อ> version        # → lmds 0.3.6  (6c7b266)
+lmds node install --all             # อัปเดตทุกเครื่องในทะเบียน (hub ส่งโค้ดที่ตัวเองรันอยู่ไป — ไม่แตะ GitHub)
+lmds node run <ชื่อ> version        # → lmds 0.6.0  (a4ec6bb)
+lmds node list                      # ป้าย ≠ hub เฉพาะเครื่องที่ commit ต่างจริง (เทียบ prefix — 7 กับ 8 ตัวไม่นับว่าต่าง)
 ```
 
 **ดูที่ commit ไม่ใช่เลข version** — `__version__` ไม่ขยับทุกคอมมิต (0.3.0 อยู่มาหลายสิบ
@@ -493,7 +592,10 @@ lmds node run <ชื่อ> version        # → lmds 0.3.6  (6c7b266)
 `host.lmds_commit` ให้ hub เทียบทั้งฟลีตจากที่เดียว
 
 > git checkout (hub) ถาม git · เครื่องที่ติดตั้งปกติใช้ commit ที่ `install.sh` ประทับไว้
-> ใน `_build.py` — **editable install มี stamp ค้างตั้งแต่ติดตั้งครั้งแรก** จึงต้องถาม git ก่อนเสมอ
+> ใน `_build.py` (`--short=7` คงที่) — **editable install มี stamp ค้างตั้งแต่ติดตั้งครั้งแรก** จึงต้องถาม git ก่อนเสมอ
+> · หน้าเว็บ: ป้ายบนการ์ด · Needs attention · ป้าย "hub ต้อง restart" เทียบ commit แบบ prefix (`sameCommit`) · CLI ใช้
+> `_same_commit` กติกาเดียวกัน · **ปุ่ม Update** ที่แถบบน = pull บน hub → install → restart (รอลายเซ็น process เปลี่ยน) →
+> อัปเดต node ทุกตัวด้วยโค้ดจาก hub ("ดึงมาแล้วเป็นของเดิม" บน hub ไม่ใช่ความล้มเหลว — node อาจยังตามหลังอยู่)
 
 อยากมั่นใจถึงระดับไบต์ (เช่นสงสัยว่าไฟล์ถูกแก้มือ) เทียบ sha256 ของแพ็กเกจได้:
 

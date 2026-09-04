@@ -23,7 +23,13 @@ LMDS **ไม่มี telemetry** ไม่มีการเก็บสถิ
 - ถ้าสิทธิ์ไฟล์ credentials หลวมกว่า 0600 ระบบจะเตือนตอน `config show`
 - keyring เป็น optional extra — เครื่อง server ที่ไม่มี desktop session จะ fallback ไปไฟล์ 0600 เอง
 
-**HF token ไม่ถูกฝังใน bundle** — controller อ่านจาก env `HF_TOKEN` ตอน `download` เท่านั้น
+**HF token ไม่ถูกฝังใน bundle** — controller อ่านจาก env `HF_TOKEN` ตอน `download` เท่านั้น และ**ไม่ส่งต่อบน argv**
+(`ps` อ่าน argv ได้ทั้งเครื่อง): llama.cpp ส่ง header ให้ curl ทาง stdin (`-K -`) / aria2c ผ่านไฟล์ conf ชั่วคราว mode 600
+ที่ลบทันทีที่จบ · vLLM/SGLang/stacked ส่งเข้าคอนเทนเนอร์ download ด้วยชื่อ (`-e HF_TOKEN` ไม่มีค่า) เช่นเดียวกับ
+`HTTPS_PROXY`/`HF_ENDPOINT` (proxy URL มักมีรหัสผ่าน) · token ที่ hub **ยืมให้ node** ระหว่าง `node ctl download` ส่งทาง
+stdin และถูกกรองออกจากผลงานสดตั้งแต่ตอนรับแต่ละบรรทัด (`_pump`) ก่อนถึงเบราว์เซอร์ — ไม่ใช่กรองหลังท่อปิด
+
+**API key ของ endpoint ไม่เคยอยู่บน argv** — ดูหัวข้อ *ความปลอดภัยของ endpoint ที่ deploy ออกไป*
 
 ## Audit log
 
@@ -37,7 +43,10 @@ LMDS **ไม่มี telemetry** ไม่มีการเก็บสถิ
 2. **ไฟล์ runtime ภายนอก** (`runtime_assets`) — เป็นโค้ดที่จะถูก mount เข้า container และรันจริง
    รับเฉพาะ HTTPS จาก huggingface.co / hf.co / raw.githubusercontent.com / github.com / gitlab.com,
    ชื่อไฟล์ต้องเป็น basename ล้วน, และ**ต้องอนุมัติรายตัวเสมอ**แม้ LLM จะเสนอมาเอง
-3. **ลบไฟล์** — `lmds remove` แสดงรายการ + ขนาดทั้งหมดก่อน แล้วถามยืนยัน (default = ไม่ลบ)
+3. **ลบไฟล์** — `lmds remove` แสดงรายการ + ขนาดทั้งหมดก่อน แล้วถามยืนยัน (default = ไม่ลบ) · หน้าเว็บต้องผ่านสองขั้น
+   (`--dry-run` ก่อน แล้วส่ง confirm ที่ตรงกับ slug เป๊ะ) · ไฟล์ที่ container เขียนเป็น root ถูกลบผ่าน
+   `docker run --rm -v <parent>:/x <image> rm -rf /x/<ชื่อ>` **ใต้รั้ว**: เฉพาะ path ใต้ `$HOME` หรือ `HF_HOME` เท่านั้น ·
+   ใช้ image ที่มีอยู่ในเครื่อง (เล็กสุดก่อน) ไม่ pull ใหม่ · ไม่ทำถ้าไม่อยู่ในกลุ่ม docker
 4. **งานที่ผู้ช่วยเสนอให้แก้เครื่อง** — restart, เปลี่ยน context/port/bind/gpu-util, ล้างแคช
    FlashInfer ฯลฯ · ผู้ช่วยเสนอได้ ลงมือเองไม่ได้ ผู้ใช้เลือกจากเมนู **แก้เลย / ทีละขั้น /
    ยังไม่ทำ** ทุกครั้ง โดยเห็นคำสั่งเต็มและผลกระทบก่อนกด
@@ -57,8 +66,18 @@ controller จะพิมพ์คำเตือนหลัง `start` ทุ
 API_KEY=$(openssl rand -hex 24) ./xxx-single.sh restart   # หรือบังคับ Bearer token
 ```
 
-ข้อจำกัดที่ควรรู้: `API_KEY` ถูกส่งเข้า container ผ่าน env → ผู้ที่ใช้ `docker` บนเครื่องเดียวกัน
-อ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก แต่ไม่ควรใช้ key เดียวกับระบบอื่น)
+`API_KEY` **ไม่เก็บใน bundle** (`lmds set` ปฏิเสธ — โฟลเดอร์ถูก zip แจกต่อได้) และ**ไม่เคยอยู่บน argv**:
+
+| engine | key ไปถึงยังไง | ใครอ่านได้บนเครื่องเดียวกัน |
+|---|---|---|
+| llama.cpp | controller เขียนไฟล์ 0600 ใน `RUN_DIR` แล้วส่ง `--api-key-file` (docker: mount แบบ ro) — **ไม่ใช่** env `LLAMA_ARG_API_KEY` ซึ่ง llama-server จริงไม่มี ตั้งแล้วรันแบบไม่มี auth เงียบ ๆ (พิสูจน์กับ b10799: `--api-key-file` ให้ 401/401/200) | เจ้าของไฟล์ / root |
+| vLLM เดี่ยว · stacked | export แล้ว `docker run -e VLLM_API_KEY` (ไม่มีค่าบน argv) · stacked เฉพาะ head | ผู้ที่ใช้ `docker` (`docker inspect`) |
+| SGLang | ยังต้องส่ง `--api-key <ค่า>` บน argv (engine ไม่มี env คู่) — **ข้อจำกัดที่รู้ตัว** | ทุกคนบนเครื่องผ่าน `ps` |
+
+`serve-args` / `DRY_RUN=1 start` ไม่พิมพ์ key · หน้าเว็บส่ง API key เป็น env ของ controller และเก็บไว้ใน localStorage ของ
+เบราว์เซอร์ ไม่ขึ้นไปอยู่บน hub · ข้อจำกัดที่ควรรู้: env ใน container อ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก
+แต่ไม่ควรใช้ key เดียวกับระบบอื่น) · **การเปลี่ยนเรื่อง auth ต้องรันกับ binary จริงก่อนเสมอ** — env ที่ engine ไม่รู้จัก
+ไม่ error แต่เปิดประตูทิ้งไว้
 
 ## Prompt injection
 
@@ -75,13 +94,32 @@ repo เดินทางเข้าไปใน prompt ของผู้ช�
 ผลจาก probe ถูก redact ก่อนส่งออกไปหา LLM provider (ทางเดียวกับ audit log) เพราะ log จริง
 มี API key และ endpoint ภายในปนมาได้
 
+## ค่าที่ผู้ใช้กรอกไปถึง shell ของเครื่องอื่น — ด่านที่กันไว้
+
+หน้าเว็บสั่งข้ามเครื่องผ่าน SSH ทุกค่าที่กรอกจึงจบเป็นคำสั่ง shell บนเครื่องปลายทาง (review 0.6.0 พบทางที่รันคำสั่งได้จริง
+สองทาง ปิดแล้วพร้อมเทส `tests/test_review_backend.py` / `test_review_web.py`):
+
+| ค่า | กติกา |
+|---|---|
+| slug ใน URL / ชื่อไฟล์ | ตรวจรูปแบบที่ปากทาง**ทุก route** ที่ไปถึง node หรือชื่อไฟล์ (400) · ทุก `echo` ใช้ตัวที่ `shlex.quote` แล้ว · `lmds adopt --slug ../../x` ถูกปฏิเสธ และชื่อที่เดาจาก container ถูกบีบเข้ารูป slug |
+| `bundle.env` (`lmds set` / ฟอร์ม settings) | ไฟล์นี้ถูก `source` ทุกครั้งที่ start/autostart · `served_name` / `image` ห้ามมี `" ' \` $ \ { }` · engine env ต้องเป็น `KEY=VALUE` และห้าม `{}` (ปิด `${…}`) · port/context/slots/gpu_util/bind ตรวจช่วง — เดิม `x$(id)y` ในช่องกรอกถูกรันจริง |
+| option ของ start/restart (`port` `context` `slots` `bind` `api_key` `gpu_util` `image` …) | ผ่าน `jobs.clean_options()` ชุดเดียวกันทั้งโมเดลในเครื่องและบนเครื่องอื่น (400 เมื่อผิด) · image ผ่าน allowlist ก่อนถึง `docker run` · ค่าจากผู้ใช้ไม่ถูกตั้งลง `os.environ` ของทั้ง process แบบไม่ล็อกอีก |
+| คำสั่งข้ามเครื่อง | allowlist ฝั่ง server: `start stop restart repair doctor logs enable disable remove set` + คำสั่ง controller ที่อ่าน/ทดสอบ (`test-*` `bench` `stress` `parsers` `status` `props` `client-config` `network-info` `verify-files` `prepare-runtime` `sync-worker` `verify-worker` `clear-fi-cache` `logs-worker`) — ปุ่มที่ไม่มีใน allowlist กดไม่ได้แม้จะแก้ HTML |
+| ทะเบียนเครื่อง `nodes.yaml` | 0600 · เขียนใต้ RLock + `flock` (`~/.config/lmds/.nodes.lock`) — refresher กับ PATCH ของผู้ใช้ไม่เขียนทับกัน · cluster IP 169.254.x ถูกปฏิเสธ |
+
+หน้าเว็บ**ไม่โหลดอะไรจากเน็ต** — ฟอนต์ Geist อยู่ในแพ็กเกจ hub เสิร์ฟที่ `GET /fonts/<ชื่อ>` (รับเฉพาะชื่อในรายการ ไม่รับ path ·
+ไม่ต้องใช้ token เพราะหน้า login ก็ใช้) · token ของหน้าเว็บไม่อยู่ใน URL ที่พิมพ์ออกมา และถ้าเปิดด้วย `?token=` จะถูกย้ายเข้า
+ที่เก็บของเบราว์เซอร์แล้วลบออกจากแถบที่อยู่ทันที · ผิดติดกัน >5 ครั้งต่อ IP หน่วงแบบทวีคูณ
+
 ## ตรวจ bundle ที่รับมาจากคนอื่น
 
 ```bash
 lmds validate <โฟลเดอร์>
 ```
 
-รัน quality gates ทั้ง 8 ด่านรวม secret scan และตรวจ `PACKAGE_SHA256SUMS` ว่าไม่มีใครแก้ไฟล์
+รัน quality gates ทั้ง 12 ด่าน (bash syntax · ไม่มี template tag เหลือ · numeric underscore · pipefail · line continuation ·
+controller contract · stacked contract · multimodal assets · profile schema · serving consistent · **secret scan** ·
+checksums) และตรวจ `PACKAGE_SHA256SUMS` ว่าไม่มีใครแก้ไฟล์
 
 ## แจ้งช่องโหว่
 

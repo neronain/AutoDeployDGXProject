@@ -181,13 +181,17 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
     # จำนวนเครื่องมาจาก target preset ไม่ใช่ค่าคงที่ — dgx-spark-stacked-4 = 4 เครื่อง
     # preset ที่ไม่รู้จัก (target กำหนดเอง) ถอยไปที่ 2 ซึ่งเป็นรูปแบบ stacked ที่ทดสอบแล้ว
     spec = PRESETS.get(fit.target_name)
-    node_count = (spec.node_count if spec else 2) if is_stacked else 1
+    # target ชื่อ dgx-spark-stacked-N ที่ไม่มีใน PRESETS (เช่น ring 3 เครื่องที่สร้าง TargetSpec เอง) ยังต้องได้
+    # N เครื่อง/TP=N — ไม่ใช่ถอยไป 2 เงียบ ๆ แล้ว cluster.env ของ 3 เครื่องถูก nodes/stacked.py ปฏิเสธ
+    named = re.fullmatch(r"dgx-spark-stacked-(\d+)", fit.target_name or "")
+    fallback_nodes = int(named.group(1)) if named else 2
+    node_count = (spec.node_count if spec else fallback_nodes) if is_stacked else 1
     tensor_parallel = 1
     if plan.topology.value == "multi-gpu":
         tensor_parallel = 2  # ค่าตั้งต้น dual-GPU — override ได้ผ่าน env ใน controller
     elif is_stacked:
         # 1 GPU ต่อเครื่องบน DGX Spark → TP = จำนวนเครื่อง
-        tensor_parallel = (spec.gpu_count if spec else 2)
+        tensor_parallel = (spec.gpu_count if spec else fallback_nodes)
 
     weights_gb = fit.weights_gb or (report.weight_bytes or 0) / 1024**3
     disk_gb = int(weights_gb * 1.2 + 20)  # โมเดล + image + เผื่อ

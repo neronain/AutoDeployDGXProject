@@ -87,6 +87,10 @@ class Node:
     # NCCL ต้องยิงผ่านการ์ดเร็ว (ConnectX/200G) ไม่ใช่สายบริหารจัดการ
     cluster_ip: str = ""
     cluster_iface: str = ""
+    # ทุกลิงก์ ConnectX ที่ `lmds cluster apply` ตั้งให้เครื่องนี้ — วง 3 เครื่อง (ring) หรือคู่ที่เสียบ
+    # สองสายมีมากกว่าหนึ่งเส้น แต่ cluster_ip ถือได้ค่าเดียว (เส้นที่ head↔worker ใช้) · แต่ละรายการ:
+    # {iface, ip, prefix, peer_node, peer_ip, link_id, qsfp_port} · generator/NCCL อ่านตรงนี้ตอนทำ multi-link
+    cluster_links: list[dict] = field(default_factory=list)
     # ที่อยู่สำรองของ "เครื่องเดียวกัน" — เช่น Tailscale/VPN ที่ใช้ตอนออกนอกออฟฟิศ
     # ต่างจากการเปลี่ยน host (= คนละเครื่อง) ตรงที่นี่คือทางเข้าอีกทางของเครื่องเดิม
     alt_hosts: list[str] = field(default_factory=list)

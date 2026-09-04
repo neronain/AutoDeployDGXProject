@@ -2,6 +2,25 @@
 
 ## 0.6.0 — 2026-09-04
 
+**สรุป 0.6.0** — รอบตรวจทั้งระบบในวันเดียว: (1) **คอนโซล 0.6** — app shell เมนูซ้าย/รายละเอียดตรงกลาง
+router แบบ hash หน้าภาพรวมพร้อม "Needs attention" หน้าเครื่อง/ไซต์/โมเดลทั้งฟลีต เมนูเป็นอังกฤษทั้งหมด
+ฟอนต์ Geist อยู่ในแพ็กเกจ ฟอร์มตั้งค่าเหลือช่องหลักและพับ Advanced (ค่าขั้นสูงส่งเฉพาะตอนเปิด ไม่จำข้ามครั้ง)
+กล่อง Update ทำ hub → node ครบ · (2) **review/audit ทั้งระบบ** — backend · web · CLI/controller · stacked
+(plan · controller · orchestration) ทุกข้อมีเทสที่ล้มก่อนแก้ใน `tests/test_review_*.py` / `tests/test_audit_*.py` ·
+(3) **โหมด embedding** — `task: embed` ตรวจจับจาก repo, `lmds deploy --task`, `test-embed` ·
+(4) **stacked แข็งขึ้น** — `lmds cluster pair|doctor|write|show`, กุญแจ head→worker เกิดบน head, cluster.env
+ตัดตามจำนวนเครื่องของ bundle, ตรวจสถาปัตยกรรมก่อนปล่อย worker, image ครบทุก node, `verify-worker` ตรวจจริง,
+transport IP ของ worker, env/flags/image ถึง worker, fit ต่อเครื่อง + NCCL buffer, 422 สำหรับคู่ที่เป็นไปไม่ได้,
+ชุด `test-tools`/`test-reasoning`/`test-vision`/`bench`/`stress`/`parsers` บน stacked และ vLLM เดี่ยว ·
+(5) **ติดตั้ง/อัปเดต** — `./install.sh -y`, ย้าย venv เดิมไป `venv.old` แล้วคืนถ้า pip ล้ม, `PIP_RETRIES`/`PIP_TIMEOUT`,
+hub ส่งโค้ดไป node เป็น git bundle (node ไม่ต้องเข้า GitHub), `git clone -b main`, โฟลเดอร์ที่ไม่ใช่ git/checkout
+ที่แยกสาย, เทียบ commit แบบ prefix · (6) **ดาวน์โหลด** — `fetch_parallel` 8 ส่วน (`FETCH_PARTS`) สู้ Xet ของ HF,
+ตรวจดิสก์ 2 เท่า, กัน download ซ้อน, `lmds deploy --gguf` · (7) **ความปลอดภัย** — API key ไม่อยู่บน argv
+(`--api-key-file` สำหรับ llama.cpp · env สำหรับ vLLM/stacked), HF token ทาง stdin, ตรวจ slug ทุก route,
+กันอักขระเชลล์ใน bundle.env, ลบไฟล์ที่ root เป็นเจ้าของผ่าน docker ภายใต้รั้ว · (8) **เบ็ดเตล็ด** — `start`
+build llama.cpp ให้เอง, image ตรึง digest ไม่ถูกลดรุ่น, รวมสูตร sync ทีละคีย์, เสนอพอร์ตว่างจากเครื่องปลายทาง,
+restart hub ไม่ต้อง SIGKILL, refresher เขียน `last_seen`, systemd timeout ตาม STARTUP_TIMEOUT
+
 **คอนโซลจัดหน้าใหม่: เมนูซ้าย รายละเอียดตรงกลาง — ไซต์และเครื่องเป็นต้นไม้ในแถบซ้าย**
 
 หน้าเดิมวางทุกอย่างเรียงลงมาในคอลัมน์เดียว (ภาพรวม → เครื่องนี้ → ทุกเครื่องกางหมด → คะแนน → weights → สูตร)
@@ -304,8 +323,8 @@ verify-files ยังเป็นด่านสุดท้าย (`tests/test
 
 - **[สูง] install.sh ทำให้ node ไม่มี lmds เมื่อ pip ล้ม** — เดิม `venv --clear` ทับของเดิมทันทีแล้วค่อย pip install
   → PyPI จากไซต์ Neronain ตอบช้า 10 วิ/คำขอ build wheel ล้ม → spark-head เหลือแต่ checkout ไม่มี `lmds` (เจอตอน
-  ไล่อัปเดตฟลีต 2026-09-04) · ตอนนี้ติดตั้งลง `venv.new` ก่อน สำเร็จค่อยสลับ (`venv.old` ลบหลังสลับ) ล้ม = ของเดิม
-  ยังใช้ได้และบอกชัด · `PIP_RETRIES=8 PIP_TIMEOUT=60` เป็นค่าเริ่มต้น
+  ไล่อัปเดตฟลีต 2026-09-04) · ตอนนี้ย้าย venv เดิมไป `venv.old` แล้วติดตั้งใหม่ที่ path จริง (สร้างที่ `venv.new` แล้ว mv ไม่ได้ —
+  shebang ฝัง path) pip ล้ม = ย้าย `venv.old` กลับ ของเดิมยังใช้ได้และบอกชัด · `PIP_RETRIES=8 PIP_TIMEOUT=60` เป็นค่าเริ่มต้น
 
 **Audit stacked (vLLM TP ข้าม 2–4 Spark) ฝั่ง hub: web / nodes / cli** — ลูกค้า: "download ไม่ผ่าน · analyze ไม่ผ่าน ·
 runtime ไม่ผ่าน · multi-node ไม่เคยติด" · ไล่จากหน้าเว็บ/CLI ถึง controller บน head แล้วพบว่าข้อต่อระหว่าง hub กับ
@@ -453,6 +472,83 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   ออกจาก `vllm.entrypoints.openai.tool_parsers`) แล้วถ้าอ่านจาก module ไม่ได้เลยก็ grep choices จาก `vllm serve --help` แทนการตอบว่า
   "อ่านไม่ได้" · เทส `tests/test_stacked_test_commands.py` รัน controller จริงกับเซิร์ฟเวอร์ HTTP ปลอม และยืนยันว่า usage กับ dispatch
   table ตรงกันทั้งสอง template (usage ของ single เคยลืม `info`)
+- **Wizard ตั้งค่าเครือข่าย cluster บนหน้าเว็บ** (เทียบเท่า Cluster Assistant ของ NVIDIA Sync — ต่อสาย ConnectX-7 QSFP ของ DGX Spark
+  จากคอนโซล ไม่ต้องไปพิมพ์ netplan เอง) · ปุ่ม "Set up cluster network" ที่หัวหน้า Other machines และที่หัวกลุ่ม cluster (สมาชิกถูกเลือกไว้ให้) ·
+  5 ขั้น: **Devices** (เลือก Spark 2–4 เครื่อง — เครื่องที่ต่อไม่ติด/ไม่มี GPU/ไม่ใช่ GB10 ถูกปิดพร้อมบอกเหตุผล) → **Cabling check**
+  (กล่อง QSFP port 1/2 ต่อเครื่อง: มีสาย/ความเร็ว/IP/netplan-managed · topology ที่ตรวจพบ + กติกา NVIDIA: 2 เครื่อง = 1 สาย · 3 = วงแหวน
+  ใช้ทั้งสอง port · 4 = สวิตช์ ตั้ง port เป็น 200G เอง · ปุ่ม Re-check · สายขาดที่เครื่อง/port ไหน = ไปต่อไม่ได้และบอกชื่อ) → **Plan**
+  (base subnet แก้ได้ + Re-plan · ตารางลิงก์ node/iface/IP สองฝั่ง · netplan YAML ต่อเครื่องกดกาง/พับ · warnings) → **Apply**
+  (รหัส sudo ต่อเครื่องหรือรหัสเดียวทุกเครื่อง · ส่งไปกับ body ครั้งเดียว ล้างช่องทันที ไม่ลง localStorage — กติกาเดียวกับฟอร์ม setup ·
+  ตามงานที่ `GET /api/cluster/apply/{id}` แล้วแปลง steps เป็นติ๊กต่อเครื่อง sudo → write netplan → verify addresses → ping → pair SSH → registry
+  · ล้ม = rollback และค้างที่ขั้นนี้ · applied แต่ ping/SSH ไม่ผ่าน = ไปขั้น Verify ให้เห็นว่าอะไรล้ม) →
+  **Verify** (ตาราง ping · ความเร็วลิงก์ — 50G ขึ้นเตือนให้ไปดู port สวิตช์ · ผล pair SSH · สรุป cluster doctor + ปุ่ม Run doctor again ·
+  "Done — cluster IPs saved to the registry") · ปุ่ม **Ports** บนแถบ cluster ของการ์ดเปิดแผงดู QSFP ของเครื่องนั้นสด ๆ · **Remove cluster
+  network** ต่อเครื่อง ต้อง confirm แล้วขอรหัส sudo ในฟอร์ม · API ที่ใช้: `POST /api/cluster/inspect|plan|apply|remove-net` +
+  `GET /api/cluster/apply/{id}` + `GET /api/cluster/doctor` (แผง Ports อ่าน `fabric.qsfp_ports` จาก inventory เพราะ inspect ต้องการ ≥2 เครื่อง)
+  · ตัวอ่าน payload รับทั้งรูปจริงของ backend (`ports[]` / `nodes{}` / `links[].ends`) และรูปตามสัญญาแรก (`fabric.ports` / `per_node` / `a,b`)
+  · เทส `tests/test_cluster_wizard_ui.py` รัน JS จริงกับ fetch ปลอมรูปเดียวกับ inspect_nodes/build_plan/apply_plan/remove_net
+  (gating สายขาด + กติกา ring 3 เครื่อง · ตารางแผนจาก payload + plan ok:false · YAML toggle · รหัสผ่านเฉพาะเครื่องที่เลือกและไม่ค้างใน
+  DOM/localStorage · ติ๊กต่อเครื่องจาก steps · บรรทัดผ่าน/ล้ม/เตือนในขั้นตรวจ · apply ล้ม = rollback ค้างที่ Apply · confirm ก่อนถอดเครือข่าย ·
+  หัวกลุ่มเปิด wizard พร้อมสมาชิก · สัญญารูปแรกยังอ่านได้)
+- **หน้าเว็บเป็นอังกฤษทั้งหน้า** — ลูกค้าส่งภาพหัวกลุ่ม cluster ที่ปนสองภาษา ("Deploy ลงกลุ่มนี้" · "เปิด wizard โดยตั้ง target…" ·
+  "เทียบเท่าคำสั่ง:") · กวาดทั้งไฟล์: ข้อความที่ผู้ใช้เห็น 207 จุด (หัวกลุ่ม/แถบ cluster · ฟอร์ม setup/แก้สิทธิ์/ไซต์ · ปุ่มวัดคะแนน ·
+  wizard deploy · ฟอร์ม provider · command palette · ผู้ช่วย/แชต · ป้ายรุ่น/ชิปใน rail · หน้า login · alert/confirm ทุกตัว) แปลเป็นอังกฤษ —
+  comment ยังไทย · ข้อความจาก backend (detail/error) ไม่แตะ · regex ที่จับ error ไทยจาก node รุ่นเก่า (`ยังไม่ได้ติดตั้ง LMDS|เก่าเกินไป`) คงไว้
+  · เทสที่ปักสตริงไทยของหน้า (`test_web` setup form + wizard push note · `test_suggest_api_ui` ปุ่ม Save) ตามไปเป็นอังกฤษ
+
+- **Backend ของ wizard ตั้งค่าเครือข่าย cluster** (เทียบเท่า Cluster Assistant + cluster network inspection ของ NVIDIA Sync แต่สั่ง
+  จาก hub ผ่าน SSH) — เดิม LMDS แค่*จด* `cluster_ip` ลงทะเบียน ไม่เคยตั้ง interface ให้ใคร ลูกค้าที่ได้ Spark ใหม่จึงต้องไปเขียน netplan
+  เองทีละเครื่อง · `tests/test_cluster_network_setup.py` (SSH/sudo/netplan ปลอมทั้งหมด · อ่านอย่างเดียวกับคู่จริงแล้วเห็นทั้งสองพอร์ต
+  มีสาย 152.x/153.x และไฟล์ `99-nvidia-sync-cluster.yaml` ของ NVIDIA Sync อยู่ทั้งสองเครื่อง)
+  - `detect_fabric` รายงานต่อ interface: `qsfp_port` (1/2 จาก PCI domain 0000/0002) · `function` (f0/f1) · `carrier` (LOWER_UP จาก
+    /sys — สายเสียบและอีกฝั่งขึ้น) · `rdma_device` · `netplan_managed` (อ่านไฟล์ netplan ได้ = True/False · 0600 ของ root = None ไม่เดา) ·
+    สรุปรายพอร์ต `qsfp_ports` (interface สองตัวต่อช่อง · ช่องไหนมีสาย · ตัวไหนถือ IP) · `netplan_files`/`nvidia_sync_netplan` · คีย์เดิมครบ
+    (`group_qsfp_ports` จัดพอร์ตให้ node รุ่นเก่าที่ส่งแต่ชื่อได้ด้วย) · ถึง hub ทาง `lmds agent info` → `host.fabric` ตามเดิม
+  - `nodes/netplan.py`: เดาผังจาก carrier (`direct-2` สาย 1–2 เส้น · `ring-3` ทั้งสองช่องทุกเครื่องเรียง A.p1→B.p2 · `switch-N` สายละเครื่อง ·
+    ไม่ตรง = `unknown` พร้อมเหตุผลว่าสายขาดที่เครื่อง/ช่องไหนหรือปนกัน · `--topology` บังคับได้เมื่อตีความได้สองทาง) → เลือก interface
+    ต่อช่อง (ตัวที่มี IP อยู่แล้วชนะ ไม่งั้น f1 ตามฟลีต) → แจก IP แบบ deterministic (direct/ring ลิงก์ละ /24 จาก `10.100.152.0/24` ปลาย
+    .1/.2 · switch วงเดียว .1…N · IP เดิมที่เข้ากันเก็บไว้ · สายบริหารไม่แตะ) → YAML `/etc/netplan/99-lmds-cluster.yaml` (networkd ·
+    dhcp4 no · optional · ไม่มี route) → `apply_plan`: ตรวจรหัส sudo *ทุกเครื่อง*ก่อนแตะเครื่องแรก → stage ทาง stdin → `sudo -S` (รหัส
+    ทาง stdin เท่านั้น กรองออกจาก log) สำรองไฟล์เดิม + ย้ายไฟล์อื่นที่อ้าง interface เดียวกัน (NVIDIA Sync ชื่อเรียงหลังจะชนะเงียบ ๆ)
+    ไป `/root/netplan-disabled/<ไฟล์>.<stamp>` → generate/apply → ยืนยัน IP + LOWER_UP ลองซ้ำ 6 รอบ → ล้ม = rollback ทันทีและหยุด →
+    ping ทุกลิงก์ทั้งสองปลาย (ไม่ถึง = เสียบไขว้) → `cluster_ssh.pair_workers` บน IP ใหม่ → iperf3 5 วิ ถ้ามี (เตือน <90 เพดาน PCIe x4) →
+    ทะเบียน `cluster_ip`/`cluster_iface` + ฟิลด์ใหม่ `cluster_links` (ทุกลิงก์ — วงแหวนมีสองวงต่อเครื่อง) · `remove_net` ย้ายไฟล์แบบ NVIDIA
+  - `nodes/doctor.py::diagnose_network` — พอร์ต ConnectX ครบไหม · ช่องไหนมีสาย · ผังตรงไหม · function ซ้อน · negotiate ต่ำ · ไฟล์
+    NVIDIA Sync ค้าง · ping ต่อลิงก์ (สองภาษาเหมือนหมอคู่)
+  - API: `POST /api/cluster/inspect|plan|apply|remove-net` + `GET /api/cluster/apply/{id}` · apply เป็น job ตามได้ทาง `GET /api/jobs/{id}`
+    (output `[เครื่อง] write netplan / netplan apply / verify addresses / ping X (ip) / pair SSH / registry: ok|failed` · exit 0 = ครบ) ·
+    CLI `lmds cluster inspect|plan [--json]|apply [--yes]|remove-net` (getpass ต่อเครื่อง) · เอกสาร RUNBOOK §Cluster network setup +
+    NETWORK.md ตารางพอร์ต/IP
+
+- **หลายสายต่อเครื่อง — 3 เครื่องวงแหวน / 4 เครื่อง switch (cluster.env schema v2)** — controller stacked กับ `cluster.env` เคยรู้จัก IP
+  เดียว/interface เดียวต่อเครื่อง · วงแหวน 3 Spark (A.ช่อง1→B.ช่อง2 · B.ช่อง1→C.ช่อง2 · C.ช่อง1→A.ช่อง2) ทำให้ head ถึง worker แต่ละตัว
+  คนละสาย คนละวง → NCCL ได้ interface เดียวแล้วหาทางไป rank ที่อยู่อีกสายไม่เจอ · `fleet/cluster_env.py` render จาก topology
+  (`topology_from_members` อ่าน `cluster_links` ของทะเบียน · `render_cluster_env` — คีย์เดิมครบ + `CLUSTER_TOPOLOGY=direct-2|ring-3|switch-N`
+  · `LINKS_<rank>="iface:ip/prefix:peer_rank:peer_ip …"` · `NCCL_SOCKET_IFNAMES_<rank>` · `NCCL_IB_HCAS_<rank>` · `HEAD_TO_WORKER_IP_<rank>` ·
+  `WORKER_HEAD_IP_<rank>` · `NCCL_CROSS_NIC=1` เฉพาะ ring · direct-2 จากทะเบียนเก่า = ไฟล์ 0.6.0 ทุกตัวอักษร) · controller: head ประกาศ
+  ทุกสาย/HCA เป็น comma list · worker แต่ละ rank ได้ `worker.sh` ของตัวเอง (`VLLM_HOST_IP`=IP ที่ head ถึง · `--master-addr`=IP ของ head
+  บนสายของตัว · ifnames จากไฟล์ · HCA เดิน sysfs ทีละ interface) · `check_running_on_master` ตรวจทุก IP ใน `LINKS_0` · `network-info`/
+  `status`/`doctor` ตารางสายทุก rank + `ping -I <iface>` คู่ปลายสาย (doctor ล้มเมื่อสายตาย) · `sync-worker` ทางสายที่เร็วสุดที่ถึง ·
+  `serve-args` + ใหม่ `start --dry-run` แสดง argv/env ทุก rank ไม่แตะ docker/ssh · renderer รับ target `dgx-spark-stacked-N` ที่ไม่มี preset
+  (TP=N) · ไม่มีคีย์ v2 = พฤติกรรมเดิม (เทสเดิมทุกตัวเขียว) · RUNBOOK §8 (route /32 ที่วงแหวนต้องมี) · `tests/test_multilink_cluster.py`
+  รัน controller จริงกับ ssh/ip/ping/sysfs ปลอมต่อเครื่อง · **ยังไม่ได้รัน NCCL จริงข้าม 3 เครื่อง** (ฟลีตมีคู่เดียว)
+- **`lmds remove` ของ stacked เก็บกวาด worker ด้วย** — ผู้ใช้: "ลบโมเดล stacked แล้วลบที่ worker ไหม" · เดิมไม่: weight ที่ `sync-worker`
+  คัดลอกไปทุก worker (75–173 GB) · container `lmds-<slug>-worker` · `/tmp/lmds-<slug>` · FlashInfer cache ของ image ที่ล็อก เหลือทั้งหมด
+  โดยไม่มีใครบอก · `removal_plan` ตรวจ bundle stacked (`*-stacked.sh`/topology) อ่าน `cluster.env` ข้าง controller (คีย์ v2 ก่อน ·
+  `WORKER_IPS`/`SSH_USER`/`WORKER_HF_HOME`) แล้วถามขนาดทุกรายการต่อ worker ด้วย ssh เดียว (`du -sb`) → รายการ "… บน worker <ip>"
+  โผล่ทั้ง `lmds remove --dry-run` และกล่องยืนยันบนหน้าเว็บ · `remove_server`: หยุด → autostart → head → worker ทีละเครื่อง (ssh เดียว:
+  `docker rm -f` → `rm -rf` → ของ root ผ่าน `docker run --rm -v … rm -rf` → `test -e` ยืนยัน) รายงานต่อรายการ · เครื่องที่ติดต่อไม่ได้ =
+  "ยังเหลือบน <ip>: <paths> — ลบเอง: ssh …" และนับเป็นล้ม ไม่ข้ามเงียบ · `--keep-weights` เก็บ weight+lock บน worker ด้วย · FlashInfer
+  cache ลบเฉพาะเมื่อไม่มี bundle อื่นล็อก image เดียวกัน (vLLM cache ใช้ร่วมกันทั้งเครื่อง ไม่แตะ) · controller ใหม่ `remove [-y]
+  [--keep-weights]` พิมพ์แผน/ลบฝั่ง worker ได้เองโดยไม่ต้องมี lmds · `tests/test_stacked_remove.py` (ssh/docker ปลอม · 2 และ 4 เครื่อง ·
+  ลำดับ · ติดต่อไม่ได้ · ไฟล์ของ root · keep-weights · CLI dry-run)
+- **สูตร `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` อัปเดตจากของจริง** — ผู้ใช้ขอ "ลองตัวนี้แบบ full feature … แบบ stack" ·
+  สูตรเก่า pin `vllm/vllm-openai:v0.20.0` ซึ่งไม่รู้จัก `nemotron_h` (hybrid Mamba MoE) · ตอนนี้ pin digest nightly
+  `f5df5cc3…` (vLLM 0.28.1rc1 ตัวเดียวกับ Qwen3.8-Flash-Next stacked) + `extra_flags: --trust-remote-code
+  --mamba-ssm-cache-dtype float16` ตาม README ของ NVIDIA · tool parser `qwen3_coder` (chat template เขียน `<tool_call><function=…>`
+  แบบ Qwen) · reasoning parser `nemotron_v3` · `parsers` บน image นี้ยืนยันว่ามีทั้งสองชื่อ · รันจริง stacked TP=2 บน
+  spark-head+spark-worker (10.2.1.195:8006): test-text / test-reasoning / test-tools / bench (decode 11.3 tok/s) / stress
+  (รวม 37.8 tok/s) ผ่านทั้งหมด · เครื่องเดียวก็ยังลง (75 GB) แต่ stacked ได้ KV เพิ่มสำหรับ context ยาว/หลายคน
 
 ## 0.5.2 — 2026-09-04
 

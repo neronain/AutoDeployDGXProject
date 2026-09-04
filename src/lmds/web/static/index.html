@@ -816,6 +816,47 @@ body { padding: 0; }
   #shell { grid-template-columns: 1fr; }
   #rail { position: static; height: auto; max-height: 40vh; }
 }
+/* ── Cluster network setup wizard ────────────────────────────────────
+   กล่องกลางจอแบบเดียวกับ #upbox · ตาราง/การ์ด/แท็กชุดเดิม · สีผ่าน-เตือน-ล้มตามความหมาย
+   ต้องอ่านได้บนจอกว้าง 1280px: กล่อง ≤1100px ตารางเลื่อนแนวนอนได้เองถ้าล้น */
+#cnw {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(3px);
+}
+#cnw[hidden] { display: none; }
+#cnw .cnw-box { width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; }
+.cnw-steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+.cnw-step {
+  font-size: calc(12px * var(--fs)); padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line2); color: var(--fg3); background: var(--sunken);
+}
+.cnw-step.on { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); font-weight: 600; }
+.cnw-step.done { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+.cnw-foot { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--line); }
+.cnw-h { font-weight: 600; margin: 14px 0 6px; font-size: calc(13px * var(--fs)); display: flex; align-items: center; }
+.cnw-node { border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; margin: 6px 0; background: var(--sunken); }
+.cnw-node .cnw-yaml { margin-top: 6px; border: 1px solid var(--line); border-radius: var(--r-sm); max-height: 260px; }
+.cnw-table { border-collapse: collapse; width: 100%; font-size: calc(13px * var(--fs)); }
+.cnw-table th { text-align: left; color: var(--fg2); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.cnw-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cnw-table tr.off td { opacity: .55; }
+.cnw-table tr.off td:last-child { opacity: 1; }
+#cnw .pass { color: var(--ok); }
+#cnw .warn { color: var(--warn); }
+#cnw .fail { color: var(--bad); }
+.qsfp-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.qsfp {
+  flex: 1; min-width: 260px; border: 1px solid var(--line2); border-radius: var(--r);
+  padding: 8px 10px; background: var(--card); font-size: calc(12.5px * var(--fs)); line-height: 1.5;
+}
+.qsfp.on { border-color: var(--ok); }
+.qsfp.off { border-style: dashed; }
+.qsfp-h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 2px; }
+.cnw-prog { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 8px; font-size: calc(12.5px * var(--fs)); }
+.cnw-prog-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.cnw-prog-row b { font-weight: 500; min-width: 110px; }
+.cnw-tick { white-space: nowrap; }
+#cnw-log { max-height: 220px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 </style>
 <script>
 // ตัดสินธีมก่อนวาดหน้า ไม่งั้นจะเห็นหน้าขาววาบก่อนแล้วค่อยเปลี่ยนเป็นมืด
@@ -833,7 +874,7 @@ body { padding: 0; }
     if (button) {
       button.innerHTML = `<svg class="ic" aria-hidden="true"><use href="#i-${glyph}"/></svg>`;
       button.setAttribute("aria-label",
-        {light: "ธีมสว่าง", dark: "ธีมมืด", auto: "ตามเครื่อง"}[window.themeMode]);
+        {light: "Light theme", dark: "Dark theme", auto: "Follow the system"}[window.themeMode]);
     }
   };
   window.applyTheme();
@@ -854,7 +895,7 @@ body { padding: 0; }
     if (!button) return;
     button.innerHTML = `<svg class="ic" aria-hidden="true"><use href="#i-text"/></svg>`
       + `<span class="lvl">${window.fontStep.label}</span>`;
-    button.title = `ขนาดตัวอักษร: ${window.fontStep.label} — กดเพื่อเปลี่ยน`;
+    button.title = `Font size: ${window.fontStep.label} — click to change`;
   };
   window.applyFontSize();
 
@@ -967,6 +1008,8 @@ body { padding: 0; }
     <pre id="up-log" hidden></pre>
   </div>
 </div>
+<!-- Cluster network setup wizard (ConnectX-7 QSFP wiring for DGX Spark) — filled by cnwRender() -->
+<div id="cnw" hidden></div>
 
 <div id="shell">
 <aside id="rail">
@@ -1026,6 +1069,7 @@ body { padding: 0; }
       <span class="sec-title" id="nodes-title">Other machines</span>
       <span class="sec-act">
         <button id="cluster-check" title="Check which machines can pair for stacked serving"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Check cluster</button>
+        <button id="cluster-net-setup" title="Wire the ConnectX-7 QSFP ports of 2–4 DGX Sparks: cabling check, IP plan, netplan, SSH pairing"><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg>Set up cluster network</button>
         <button id="node-new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>Add machine</button>
       </span>
     </div>
@@ -1126,12 +1170,12 @@ async function withButton(button, busyLabel, call) {
     const r = await call();
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
-      alert(typeof d.detail === "string" ? d.detail : `ทำคำสั่งไม่สำเร็จ (HTTP ${r.status})`);
+      alert(typeof d.detail === "string" ? d.detail : `The command failed (HTTP ${r.status})`);
       return null;
     }
     return d;
   } catch (err) {
-    alert(`ติดต่อ LMDS ไม่ได้ — ${String(err && err.message || err)}`);
+    alert(`Could not reach LMDS — ${String(err && err.message || err)}`);
     return null;
   } finally {
     if (button) { button.disabled = false; button.textContent = label; }
@@ -1171,10 +1215,10 @@ window.addEventListener("unhandledrejection", event => {
   if (consoleRestarting && isNetworkError(reason)) { event.preventDefault(); return; }
   if (isNetworkError(reason)) {
     event.preventDefault();
-    showError("ต่อเซิร์ฟเวอร์ไม่ได้ชั่วคราว — หน้านี้จะลองใหม่เอง", "warn");
+    showError("Lost the server for a moment — this page retries on its own", "warn");
     return;
   }
-  alert(`คำสั่งไม่สำเร็จ — ${String((reason && reason.message) || reason || "ไม่ทราบสาเหตุ")}`);
+  alert(`The command failed — ${String((reason && reason.message) || reason || "unknown reason")}`);
 });
 const gb = v => v == null ? "—" : Math.round(v) + " GB";
 const open = new Set();
@@ -1239,7 +1283,7 @@ function renderHost(h, models) {
   // เพราะไม่มีอะไรบอกว่าเครื่องนี้ไม่ได้มีไว้รันโมเดล
   const role = h.role || {};
   cards.push(role.control_plane
-    ? statCard("Role", "control plane", `${esc(role.evidence || "")} · สร้าง bundle แล้ว push ไปเครื่องอื่น`,
+    ? statCard("Role", "control plane", `${esc(role.evidence || "")} · builds bundles and pushes them to other machines`,
         "var(--warn)")
     : statCard("Role", "serving",
         (role.engines || []).length ? `engine: ${esc((role.engines || []).join(", "))}` : "", "var(--ok)"));
@@ -1265,8 +1309,8 @@ function servedLine(m) {
   const renamed = m.default_served_name && m.default_served_name !== m.served_name;
   return `<div class="muted" style="margin-top:2px">
     <span class="dim">model ID:</span> <code>${esc(m.served_name)}</code>
-    ${renamed ? `<span class="dim" title="ชื่อที่ bundle ตั้งมาตอน generate — เก็บไว้กันลืมว่าเดิมคืออะไร">
-      &nbsp;↳ เดิม: <code>${esc(m.default_served_name)}</code></span>` : ""}
+    ${renamed ? `<span class="dim" title="Name the bundle was generated with — kept so the original is not forgotten">
+      &nbsp;↳ was: <code>${esc(m.default_served_name)}</code></span>` : ""}
   </div>`;
 }
 
@@ -1278,16 +1322,16 @@ function modelTags(m) {
     out.push(`<span class="tag" data-stacked-role="head" title="Tensor-parallel across machines — this card is the head; the worker runs what the head tells it">stacked head · worker ${esc((m.stacked_peers || []).join(", ") || "?")}</span>`);
   else if (m.topology === "stacked") out.push(`<span class="tag">stacked</span>`);
   if (m.projector || (m.features || "").includes("image"))
-    out.push(`<span class="tag feat" title="รับภาพได้ (mmproj)">${ico("i-eye")}vision</span>`);
+    out.push(`<span class="tag feat" title="Accepts images (mmproj)">${ico("i-eye")}vision</span>`);
   if (m.moe && m.moe.experts) {
     const a = m.moe.experts_active;
-    out.push(`<span class="tag spec" title="MoE — โหลดทั้งก้อนแต่คิดแค่ ${a || "?"} expert ต่อ token`
-      + ` ความเร็วจึงมาจาก active ไม่ใช่ขนาดรวม">${ico("i-chip")}MoE ${m.moe.experts}e`
+    out.push(`<span class="tag spec" title="MoE — loads the whole model but only ${a || "?"} experts think per token`
+      + `, so speed follows the active size, not the total">${ico("i-chip")}MoE ${m.moe.experts}e`
       + (a ? `/${a}a` : "") + `</span>`);
   }
   if (m.speculative)
-    out.push(`<span class="tag spec" title="MTP draft head — เร็วขึ้นโดย output เท่าเดิม`
-      + ` (target verify ทุก token ที่ draft เสนอ)">${ico("i-gauge")}MTP</span>`);
+    out.push(`<span class="tag spec" title="MTP draft head — faster with identical output`
+      + ` (the target verifies every token the draft proposes)">${ico("i-gauge")}MTP</span>`);
   return out;
 }
 
@@ -1333,14 +1377,14 @@ function actionsMarkup(m) {
 // รีสตาร์ตบริการหน้าเว็บเอง · โค้ดที่ pull มาใหม่มีผลก็ต่อเมื่อ process โหลดใหม่ ซึ่งเดิม
 // ต้อง ssh เข้าไปพิมพ์คำสั่งเอง — คนที่ใช้ผ่านหน้าเว็บล้วน ๆ จึงไม่มีทางรู้ว่าของที่อัปไปทำงานหรือยัง
 async function restartConsole() {
-  if (!confirm("รีสตาร์ตบริการหน้าเว็บ?\n\nหน้านี้จะหลุดสักครู่แล้วต่อกลับเอง\nโมเดลที่รันอยู่ไม่ถูกแตะต้อง")) return;
+  if (!confirm("Restart the web service?\n\nThis page drops for a moment and reconnects on its own.\nRunning models are not touched")) return;
   const btn = document.getElementById("restart-web");
   consoleRestarting = true;
   try {
     const res = await api("/api/restart", {method: "POST"});
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "restart ไม่สำเร็จ");
-    if (btn) { btn.disabled = true; btn.textContent = "กำลังรีสตาร์ต…"; }
+    if (!res.ok) throw new Error(data.detail || "restart failed");
+    if (btn) { btn.disabled = true; btn.textContent = "Restarting…"; }
     // รอจน *ลายเซ็น process* เปลี่ยน (boot) ไม่ใช่แค่ ping ติด — ping 1 วิหลังสั่งยังโดน process
     // เดิมที่ยังไม่ตายตอบกลับมา แล้ว reload ไปเจอโค้ดเก่าโดยคิดว่า restart เสร็จแล้ว
     const back = await waitForHub(hubBuild.boot);
@@ -1355,21 +1399,21 @@ async function restartConsole() {
 }
 
 async function adoptModel(slug) {
-  if (!confirm(`รับ "${slug}" เข้าระบบ?\n\n`
-      + "LMDS จะอ่านคำสั่งที่มันรันอยู่จริงแล้วเขียนเป็น controller\n"
-      + "ตัวที่รันอยู่ตอนนี้ไม่ถูกแตะต้อง")) return;
+  if (!confirm(`Adopt "${slug}"?\n\n`
+      + "LMDS reads the command it is actually running and writes a controller from it.\n"
+      + "The running instance is not touched")) return;
   try {
     const res = await api(`/api/models/${encodeURIComponent(slug)}/adopt`, {method: "POST"});
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "รับเข้าระบบไม่สำเร็จ");
-    let note = `รับ ${slug} เข้าระบบแล้ว (${data.kind === "native" ? "process" : "container"} · ${data.source})`;
+    if (!res.ok) throw new Error(data.detail || "adopt failed");
+    let note = `Adopted ${slug} (${data.kind === "native" ? "process" : "container"} · ${data.source})`;
     if (data.weights) note += `\nweight: ${data.weights}`;
     // unit ที่ Restart=always จะแย่ง port กลับทุกครั้งที่ LMDS stop — ไม่บอกตรงนี้คือ
     // ปล่อยให้ผู้ใช้ไปเจออาการ "start แล้วตัวที่ตอบไม่ใช่ของเรา" เอง
     if (data.owning_unit) {
-      note += `\n\n⚠ process นี้เป็นของ ${data.owning_unit}`
-            + `\nถ้ายัง enable อยู่ มันจะแย่ง port กลับทุกครั้งที่ LMDS stop`
-            + `\n\nให้ LMDS คุมแทน: sudo systemctl disable --now ${data.owning_unit}`;
+      note += `\n\n⚠ this process belongs to ${data.owning_unit}`
+            + `\nWhile that unit stays enabled it takes the port back every time LMDS stops`
+            + `\n\nLet LMDS own it instead: sudo systemctl disable --now ${data.owning_unit}`;
     }
     alert(note);
     await load();
@@ -1447,15 +1491,15 @@ function manageMarkup(m) {
       <label>API key</label>
       <input type="password" class="o-key" value="${esc(o.api_key || "")}" placeholder="empty = no authentication">
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}${btn("clearopts", "Clear")}
-      <span class="dim">Save เขียนลง bundle.env — มีผลกับ start ทุกทาง รวม autostart ตอน reboot
-        · API key เก็บในเบราว์เซอร์นี้เท่านั้น</span>
+      <span class="dim">Save writes bundle.env — applies to every start, including autostart after a reboot
+        · the API key is kept in this browser only</span>
     </div>
 
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-edit"/></svg><span class="sec-title">Edit the launch script</span></div>
     <div class="field" style="flex-direction:column;align-items:stretch;gap:6px">
-      <span class="dim">บอกเป็นภาษาคนว่าอยากให้รันต่างจากเดิมยังไง — ผู้ช่วยจะอ่าน controller
-        ตัวจริงแล้วเสนอวิธีแก้ ถ้าทำได้ด้วย option ที่มีอยู่แล้วมันจะบอกคำสั่งแทนการแก้ไฟล์
-        · <b>ไม่มีอะไรถูกเขียนจนกว่าคุณจะกด Apply</b></span>
+      <span class="dim">Say in plain words how you want it to run differently — the assistant reads the real
+        controller and proposes a fix; when an existing option covers it, it gives you the command instead of editing the file
+        · <b>Nothing is written until you press Apply</b></span>
       <div class="field">
         <input class="o-ask" placeholder="e.g. use less VRAM at start / add env HF_HUB_OFFLINE=1"
                style="flex:1;min-width:220px">
@@ -1482,16 +1526,16 @@ ${m.running ? benchMarkup(m) : ''}
     <div class="field">
       <select class="o-node" style="flex:none;min-width:190px"><option value="">Loading machines…</option></select>
       ${btn("push", "Send bundle there")}
-      <span class="dim">ส่ง bundle ตัวนี้ (แผนที่คุณอนุมัติไปแล้ว) ไปติดตั้งบนเครื่องนั้น
-        แล้วสั่ง download / start จากการ์ดของเครื่องนั้นได้เลย</span>
+      <span class="dim">Send this bundle (the plan you already approved) to that machine,
+        then run download / start from its card</span>
     </div>
     <div id="push-${esc(m.slug)}"></div>
 
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-wrench"/></svg><span class="sec-title">Repair / remove</span></div>
     <div class="field">
       ${HOST_ROLE.control_plane
-        ? `<span class="dim">repair ที่นี่ไม่มีประโยชน์ — ${esc(HOST_ROLE.evidence || "")}
-             · ส่ง bundle ไปเครื่องที่รันได้ แล้วสั่ง repair จากการ์ดของเครื่องนั้น</span>`
+        ? `<span class="dim">Repair is pointless here — ${esc(HOST_ROLE.evidence || "")}
+             · send the bundle to a machine that can run it and repair from that card</span>`
         : btn("job:repair", "repair")}
       ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
     </div>
@@ -1572,11 +1616,11 @@ function benchRow(entry) {
         ${esc(entry.engine || "")} ${esc(String(env.engine_build || "").slice(0, 18))}
         <br><button data-bench-detail="${esc(entry.slug || "")}"
                 data-node="${esc(entry.machine_name || "")}"
-                title="ดูรายละเอียดทุกงาน — เอาไปใช้นำเสนอได้"
+                title="Every task in detail — presentable as-is"
                 style="margin-top:4px">Details</button>
         <button data-bench-del="${esc(entry.slug || "")}"
                 data-node="${esc(entry.machine_name || "")}"
-                title="ลบผลวัดของโมเดลนี้ทิ้ง — ไฟล์อยู่ที่เครื่องที่วัด"
+                title="Delete this model's scores — the files live on the machine that measured them"
                 style="margin-top:4px">Delete</button></div>
     </div>
     <div class="bstats">
@@ -1603,12 +1647,12 @@ document.addEventListener("click", async (e) => {
   if (!btn) return;
   const slug = btn.dataset.benchDel;
   const node = btn.dataset.node;
-  const where = node ? `บน ${node}` : "บนเครื่องนี้";
-  if (!confirm(`ลบผลวัดทั้งหมดของ ${slug} ${where}?\n\nตัวโมเดลไม่ถูกแตะต้อง ลบเฉพาะผลที่วัดไว้`)) return;
+  const where = node ? `on ${node}` : "on this machine";
+  if (!confirm(`Delete all scores of ${slug} ${where}?\n\nThe model itself is not touched — only the measurements`)) return;
   const url = node
     ? `/api/nodes/${encodeURIComponent(node)}/bench/${encodeURIComponent(slug)}/remove`
     : `/api/bench/${encodeURIComponent(slug)}`;
-  const d = await withButton(btn, "ลบ…", () =>
+  const d = await withButton(btn, "Deleting…", () =>
     api(url, node ? { method: "POST", headers: { "content-type": "application/json" },
                       body: JSON.stringify({ keep_last: 0 }) }
               : { method: "DELETE" }));
@@ -1742,12 +1786,12 @@ async function showBenchDetail(slug, node) {
                    : `/api/bench/${encodeURIComponent(slug)}`;
   const r = await api(url);
   if (!r || !r.ok) {
-    const detail = r ? ((await r.json().catch(() => ({}))).detail || r.status) : "ต่อไม่ได้";
-    box.innerHTML = `<div class="pad"><div class="warn-line">อ่านรายละเอียดไม่ได้ — ${esc(String(detail))}</div></div>`;
+    const detail = r ? ((await r.json().catch(() => ({}))).detail || r.status) : "unreachable";
+    box.innerHTML = `<div class="pad"><div class="warn-line">Could not read the details — ${esc(String(detail))}</div></div>`;
     return;
   }
   const d = await r.json();
-  if (!d.run) { box.innerHTML = `<div class="pad"><div class="empty">ยังไม่มีผลวัดของ ${esc(slug)}</div></div>`; return; }
+  if (!d.run) { box.innerHTML = `<div class="pad"><div class="empty">No scores for ${esc(slug)} yet</div></div>`; return; }
   box.innerHTML = `<div class="pad row between" style="padding-bottom:0">
       <b style="font-weight:500">Detail scores · ${esc(slug)}</b>
       <span class="grow"></span>
@@ -1774,38 +1818,38 @@ async function loadBench() {
   // ผลวัดอยู่บนเครื่องที่รันโมเดล ไม่ใช่บน hub — ถ้าถามแค่เครื่องนี้ คอนโซลของ hub
   // จะขึ้นว่างเปล่าตลอด ทั้งที่เพิ่งวัดไปเมื่อกี้บน node
   const r = await api("/api/bench/fleet");
-  if (!r || !r.ok) { box.innerHTML = `<div class="empty">อ่านผลไม่ได้</div>`; return; }
+  if (!r || !r.ok) { box.innerHTML = `<div class="empty">Could not read the results</div>`; return; }
   const d = await r.json();
   const runs = (d.runs || []).slice().sort(
     (a, b) => ((b.speed || {}).decode_tps_avg || 0) - ((a.speed || {}).decode_tps_avg || 0));
   const missed = (d.unreachable || []).length
-    ? `<div class="warn-line" style="margin-top:8px">ถามไม่ได้ ${
+    ? `<div class="warn-line" style="margin-top:8px">Could not ask ${
         (d.unreachable || []).map(u => esc(u.node)).join(", ")} —
        <span class="dim">${esc((d.unreachable[0] || {}).error || "")}</span></div>`
     : "";
   if (!runs.length) {
-    box.innerHTML = `<div class="pad"><div class="empty">ยังไม่เคยวัดอะไรเลย —
-      <span class="dim">กด ⋯ ที่โมเดลซึ่งรันอยู่ (เครื่องนี้หรือเครื่องอื่นก็ได้) แล้วกด "วัดคะแนน"</span>
+    box.innerHTML = `<div class="pad"><div class="empty">Nothing measured yet —
+      <span class="dim">press ⋯ on a running model (this machine or any other) and choose "Score"</span>
       </div>${missed}</div>`;
     return;
   }
   box.innerHTML = `<div class="pad">
-    <div class="dim" style="margin-bottom:10px">ทุกเครื่องในฟลีต เรียงตาม decode tok/s ·
-      แต่ละแถวกำกับ engine build / quant / context ไว้ เพราะ tok/s โดด ๆ เทียบกันไม่ได้</div>
+    <div class="dim" style="margin-bottom:10px">Every machine in the fleet, sorted by decode tok/s ·
+      each row is labelled with engine build / quant / context because a bare tok/s cannot be compared</div>
     ${runs.map(benchRow).join("")}${missed}</div>`;
 }
 
 function benchMarkup(m) {
   return `
-    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-gauge"/></svg><span class="sec-title">วัดคะแนน</span></div>
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-gauge"/></svg><span class="sec-title">Score</span></div>
     <div class="field">
       <button data-act="bench:full" data-slug="${esc(m.slug)}"
-              title="6 งาน ไล่ context 512 → 8K + ความสามารถ 7 ข้อ (หลายนาที)">วัดเต็มชุด</button>
+              title="6 runs across context 512 → 8K + 7 capability checks (several minutes)">Full run</button>
       <button data-act="bench:quick" data-slug="${esc(m.slug)}"
-              title="2 งาน — ดูคร่าว ๆ ไม่ใช่ตัวเลขที่เอาไปเทียบ">วัดเร็ว</button>
+              title="2 runs — a rough look, not a number to compare">Quick run</button>
       <button data-act="bench:caps" data-slug="${esc(m.slug)}"
-              title="ข้ามความเร็ว ตรวจเฉพาะว่าทำอะไรได้บ้าง">ความสามารถอย่างเดียว</button>
-      <span class="dim">วัดจากเซิร์ฟเวอร์ที่รันอยู่จริง — ผลถูกเก็บไว้เทียบกับรอบหน้าได้</span>
+              title="Skip speed, only check what it can do">Capabilities only</button>
+      <span class="dim">Measured against the live server — results are kept to compare with the next run</span>
     </div>`;
 }
 
@@ -1919,8 +1963,8 @@ function syncStackedFields() {
   const hint = document.getElementById("w-machine-hint");
   if (on && hint) {
     hint.textContent = draft.machine
-      ? `head = ${draft.machine}${draft.worker ? " · worker = " + draft.worker : " · ยังไม่ได้เลือก worker"}`
-      : "เลือกเครื่อง head ที่ช่อง Run on ด้วย — bundle จะถูกส่งไปไว้ที่เครื่องนั้น";
+      ? `head = ${draft.machine}${draft.worker ? " · worker = " + draft.worker : " · no worker chosen yet"}`
+      : "Pick the head machine in Run on too — the bundle is sent to that machine";
   }
 }
 
@@ -1941,7 +1985,7 @@ function wizForm(msg = "", extra = "") {
       <select id="w-target"><option value="">Auto-detect</option></select>
       <label id="w-worker-label" hidden>Worker</label>
       <select id="w-worker" style="flex:none;min-width:160px" hidden>
-        <option value="">เลือกเครื่อง worker</option>
+        <option value="">Choose the worker machine</option>
       </select>
       <label>Engine</label>
       <select id="w-engine" style="flex:none;min-width:130px">
@@ -1953,26 +1997,26 @@ function wizForm(msg = "", extra = "") {
     </div>
     <!-- llama.cpp ไม่อยู่ในรายการโดยตั้งใจ: มันอ่านได้เฉพาะ GGUF และ GGUF ก็บังคับใช้มัน
          อยู่แล้ว การใส่ตัวเลือกที่เลือกแล้วไม่มีผลคือชวนให้เข้าใจผิดว่ามีทางเลือก -->
-    <div class="dim">Auto = ตามชนิดไฟล์ (GGUF → llama.cpp, safetensors → vLLM) ·
-      <b style="font-weight:600">llama.cpp ไม่มีให้เลือกเพราะเลือกไม่ได้</b> — มันอ่านได้เฉพาะ
-      <code>.gguf</code> และถ้า repo เป็น GGUF ระบบก็ใช้มันให้อยู่แล้วไม่ว่าจะเลือกอะไร ·
-      repo ที่มีแต่ safetensors จึงใช้ llama.cpp ไม่ได้เลย ต้องหา repo ที่แปลงเป็น GGUF แล้ว ·
-      SGLang จำเป็นสำหรับ NVFP4 บางตระกูลที่ calibrate ด้วย w1/w3 scale</div>
+    <div class="dim">Auto = by file type (GGUF → llama.cpp, safetensors → vLLM) ·
+      <b style="font-weight:600">llama.cpp is not listed because it is not a choice</b> — it only reads
+      <code>.gguf</code>, and a GGUF repo already uses it whatever you pick ·
+      a safetensors-only repo cannot use llama.cpp at all — find a repo converted to GGUF ·
+      SGLang is required for some NVFP4 families calibrated with w1/w3 scales</div>
     <!-- ป้ายเดิมคือ "Skip the LLM (rule-based plan)" ซึ่งถูกอ่านว่าเป็นการเลือก llama.cpp
          (ผู้ใช้จริงรายงานมาเอง) · คำว่า LLM อยู่ติดกับช่อง Engine ยิ่งชวนให้เข้าใจว่าเป็น
          เรื่องเดียวกัน · ทั้งที่ช่องนี้พูดถึง "ใครวางแผน" ไม่ใช่ "อะไรเสิร์ฟโมเดล" -->
     <label><input type="checkbox" id="w-nollm" style="min-width:auto;flex:none">
       Plan without an LLM — use proven recipes instead</label>
-    <div class="dim">เกี่ยวกับ<b style="font-weight:600">ผู้วางแผน</b> ไม่ใช่ตัวที่เสิร์ฟโมเดล ·
-      รันไทม์เลือกที่ช่อง Engine ด้านบน</div>
+    <div class="dim">About the <b style="font-weight:600">planner</b>, not what serves the model ·
+      the runtime is chosen in the Engine box above</div>
     <div class="field" style="width:100%">
       <label>HF token</label>
       <input id="w-hf" type="password" autocomplete="off" value="${esc(draft.hf_token || "")}"
              placeholder="Optional — only for gated or private repos" style="min-width:240px">
       <label style="flex:none"><input type="checkbox" id="w-hf-save" style="min-width:auto;flex:none"
         ${draft.hf_save ? "checked" : ""}> Keep on this hub</label>
-      <span class="dim">ไม่ติ๊ก = ใช้เฉพาะรอบนี้ ไม่ถูกเก็บที่ไหน · ติ๊ก = เก็บใน keyring/ไฟล์
-        สิทธิ์ 0600 ของ hub แล้วใช้กับรุ่น gated ครั้งต่อ ๆ ไปเอง</span>
+      <span class="dim">Unticked = used for this run only, stored nowhere · ticked = kept in the hub's keyring
+        (or a 0600 file) and reused for gated models from now on</span>
     </div>
     <div id="w-recipes"></div>
     ${msg ? `<div class="warn-line">${esc(msg)}</div>` : ""}
@@ -2022,8 +2066,8 @@ function wizForm(msg = "", extra = "") {
       syncStackedFields();
       if (hint) {
         hint.textContent = suggested
-          ? `ตั้ง target เป็น ${suggested} ให้ตามฮาร์ดแวร์ของ ${sel.value} · bundle จะถูกส่งไปเครื่องนั้นให้อัตโนมัติ`
-          : `ยังไม่รู้จักฮาร์ดแวร์ของ ${sel.value} — เลือก target เองให้ตรงกับเครื่องนั้น`;
+          ? `Target set to ${suggested} from the hardware of ${sel.value} · the bundle is pushed to that machine automatically`
+          : `The hardware of ${sel.value} is not known yet — pick a target that matches that machine`;
       }
     };
     sel.onchange();
@@ -2038,13 +2082,13 @@ function renderRecipePicker() {
   if (!box) return;
   const noLlm = !(providerState && providerState.configured && providerState.has_key);
   if (!recipeList.length) {
-    box.innerHTML = `<div class="dim" style="margin-top:6px">กำลังอ่านสูตรที่รันผ่านแล้ว…</div>`;
+    box.innerHTML = `<div class="dim" style="margin-top:6px">Reading proven recipes…</div>`;
     fetchRecipes().then(renderRecipePicker).catch(() => { box.innerHTML = ""; });
     return;
   }
   box.innerHTML = `<details style="margin-top:8px"${noLlm ? " open" : ""}>
     <summary style="cursor:pointer" class="dim">Proven recipes (${recipeList.length})${
-      noLlm ? " — ยังไม่ได้ตั้ง LLM ใช้ทางนี้ได้เลย" : ""}</summary>
+      noLlm ? " — no LLM configured, this path works without one" : ""}</summary>
     <div class="npills" style="margin-top:8px">${recipeList.map((r, i) =>
       `<button class="npill" data-recipe="${i}" title="${esc(r.match)}${
         r.validated_on ? " · " + esc(r.validated_on) : ""}">${esc(r.label || r.match)}</button>`).join("")}</div>
@@ -2064,7 +2108,7 @@ function pickRecipe(index) {
   if (hint) {
     hint.innerHTML = `<b style="font-weight:500">${esc(r.label || r.match)}</b> — ${esc(r.engine || "?")}${
       r.image ? " · image " + esc(r.image) : ""}${r.topology ? " · " + esc(r.topology) : ""}
-      <br>ทดสอบบน ${esc(r.validated_on || "—")}${r.controller ? " · จาก " + esc(r.controller) : ""}`;
+      <br>validated on ${esc(r.validated_on || "—")}${r.controller ? " · from " + esc(r.controller) : ""}`;
   }
 }
 
@@ -2090,13 +2134,13 @@ async function writeClusterEnv(slug, head, worker) {
   const d = await r.json();
   return r.ok
     ? { ok: true, text: `cluster.env: head ${d.head_ip} · worker ${(d.worker_ips || []).join(" ")}`
-        + ` · ${d.nnodes} เครื่อง (TP=${d.nnodes})${d.iface ? " · NCCL " + d.iface : ""}` }
-    : { ok: false, text: d.detail || "เขียน cluster.env ไม่สำเร็จ" };
+        + ` · ${d.nnodes} machines (TP=${d.nnodes})${d.iface ? " · NCCL " + d.iface : ""}` }
+    : { ok: false, text: d.detail || "could not write cluster.env" };
 }
 
 async function pushAfterBuild(built, machine, stacked = false) {
   const slug = built.slug || (built.bundle || "").split("/").pop();
-  wizBusy(`สร้าง ${slug} เสร็จแล้ว — กำลังส่งไป ${machine}…`);
+  wizBusy(`Built ${slug} — sending to ${machine}…`);
   const r = await api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(machine)}`,
                       { method: "POST" });
   const d = await r.json();
@@ -2129,9 +2173,9 @@ async function pushAfterBuild(built, machine, stacked = false) {
     refreshNodes();
   } else {
     wiz.innerHTML = `<div class="pad">
-      <div class="warn-line" style="color:var(--bad)">ส่งไป ${esc(machine)} ไม่สำเร็จ: ${esc(d.detail || "")}</div>
-      <div class="dim">bundle ยังอยู่บนเครื่องนี้ครบ — ลองส่งใหม่ได้จาก manage ของโมเดล
-        หรือ <code>lmds node push ${esc(machine)} ${esc(slug)}</code></div>
+      <div class="warn-line" style="color:var(--bad)">Push to ${esc(machine)} failed: ${esc(d.detail || "")}</div>
+      <div class="dim">The bundle is still complete on this machine — push again from the model's manage menu
+        or <code>lmds node push ${esc(machine)} ${esc(slug)}</code></div>
       <div class="field" style="margin-top:10px"><button id="w-close">Close</button></div>
     </div>`;
     refresh();
@@ -2166,10 +2210,10 @@ function capsView(caps) {
   const caveats = order.filter(n => caps[n] && caps[n].caveat)
     .map(n => `<div class="dim" style="margin:3px 0">· <b style="font-weight:500">${
       esc(CAP_LABELS[n])}</b> — ${esc(caps[n].caveat)}</div>`).join("");
-  return `<div class="sec" style="margin:14px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-list"/></svg><span class="sec-title">ความสามารถ (อ่านจากไฟล์ ยังไม่ได้รัน)</span></div>
+  return `<div class="sec" style="margin:14px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-list"/></svg><span class="sec-title">Capabilities (read from the files, not yet run)</span></div>
     <div class="kv">${rows}</div>
     ${caveats ? `<details style="margin-top:6px"><summary class="dim" style="cursor:pointer">
-      สิ่งที่ต้องยืนยันตอนรัน</summary>${caveats}</details>` : ""}`;
+      To be confirmed at run time</summary>${caveats}</details>` : ""}`;
 }
 
 // The context you pick is a trade, not a single right answer: the largest value
@@ -2332,9 +2376,9 @@ function planView(d) {
     <div id="w-mem">${memoryView(f, p.context, f.kv_at_context_gb)}</div>
     ${fitNotesView(f.notes)}
     ${capsView(p.capabilities)}
-    ${p.recipe ? `<div class="ok-line">ใช้สูตรที่รันผ่านจริง: <b style="font-weight:500">${
-      esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · ทดสอบบน " + esc(p.recipe.validated_on) : ""}${
-      p.recipe.controller ? " · จาก " + esc(p.recipe.controller) : ""}</div>` : ""}
+    ${p.recipe ? `<div class="ok-line">Using a proven recipe: <b style="font-weight:500">${
+      esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · validated on " + esc(p.recipe.validated_on) : ""}${
+      p.recipe.controller ? " · from " + esc(p.recipe.controller) : ""}</div>` : ""}
     ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
     <div class="field" style="margin-top:12px">
       <label>context</label>
@@ -2601,8 +2645,8 @@ document.addEventListener("click", async e => {
     const d = await withButton(e.target, "", () =>
       api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(target)}`, { method: "POST" }));
     if (!d) { box.innerHTML = ""; return; }
-    box.innerHTML = `<div class="warn-line" style="color:var(--ok)">ติดตั้งแล้วที่ ${esc(target)}:${esc(d.path || "")}
-          (${d.size_mb} MB) — เลื่อนลงไปที่การ์ดของเครื่องนั้นเพื่อสั่ง download / start</div>`;
+    box.innerHTML = `<div class="warn-line" style="color:var(--ok)">Installed at ${esc(target)}:${esc(d.path || "")}
+          (${d.size_mb} MB) — go to that machine's card to run download / start</div>`;
     refreshNodes();
     return;
   }
@@ -2655,10 +2699,10 @@ document.addEventListener("click", async e => {
         body: JSON.stringify(body),
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { alert(`บันทึกไม่สำเร็จ\n\n${d.detail || ""}`); btn.textContent = label; return; }
+      if (!r.ok) { alert(`Save failed\n\n${d.detail || ""}`); btn.textContent = label; return; }
       btn.textContent = clearing ? "Cleared" : "Saved";
     } catch (e) {
-      alert(`บันทึกไม่สำเร็จ\n\n${e}`);
+      alert(`Save failed\n\n${e}`);
       btn.textContent = label;
       return;
     } finally {
@@ -2720,7 +2764,7 @@ document.addEventListener("click", async e => {
     // ลบไม่สำเร็จแล้วยังลบแถวทิ้ง = หน้าเว็บบอกว่าสำเร็จทั้งที่โมเดลยังอยู่ · ผู้ใช้เพิ่ง
     // เจอจริง: กดลบแล้วรายการหายหมด กด refresh แล้วกลับมาเหมือนเดิม เพราะไม่เคยถูกลบ
     if (!r.ok) {
-      let why = "ลบไม่สำเร็จ";
+      let why = "remove failed";
       try { why = (await r.json()).detail || why; } catch { /* เซิร์ฟเวอร์ไม่ได้ตอบ JSON */ }
       alert(why);
       btn.disabled = false; btn.textContent = "Confirm removal";
@@ -2733,7 +2777,7 @@ document.addEventListener("click", async e => {
     try { result = await r.json(); } catch { /* ไม่ตอบ JSON ก็ถือว่าไม่มีรายละเอียด */ }
     const failed = result.failed || [];
     if (failed.length) {
-      alert("ลบได้ไม่ครบ — ของที่เหลือยังอยู่:\n\n" + failed.join("\n"));
+      alert("Not everything was removed — still present:\n\n" + failed.join("\n"));
       btn.disabled = false; btn.textContent = "Confirm removal";
       await refresh();            // วาดตามสภาพจริง ไม่ใช่ตามที่หวัง
       return;
@@ -2762,7 +2806,7 @@ document.addEventListener("click", async e => {
       body: JSON.stringify(body),
     });
     const d = await r.json();
-    if (!r.ok) { showError(d.detail || "เริ่มวัดไม่ได้"); btn.disabled = false; return; }
+    if (!r.ok) { showError(d.detail || "Could not start the benchmark"); btn.disabled = false; return; }
     // วัดเต็มชุดกินเวลาหลายนาที — ตามผลแบบสตรีม แล้วรีเฟรชตารางคะแนนตอนจบ
     await followJob(slug, d.job.id);
     loadBench();
@@ -3115,10 +3159,10 @@ function addressRow(host) {
     : (host.ip ? [{ iface: "", ip: host.ip, prefix: null, primary: true, link_local: false }] : []);
   if (!list.length) return "";
   const why = a => (a.iface ? a.iface + " · " : "") + a.ip + (a.prefix != null ? "/" + a.prefix : "")
-    + (a.link_local ? " · link-local (169.254.x.x) — เส้นนี้ยังไม่ได้ตั้งค่า IP จริง"
-       : a.primary ? " · เส้นที่ออกเน็ต (default route)" : "");
+    + (a.link_local ? " · link-local (169.254.x.x) — no real IP configured on this link"
+       : a.primary ? " · default route" : "");
   return `<div class="npills" style="margin-top:10px;align-items:center">
-    <span class="dim" style="flex:none">IP ของเครื่องนี้</span>
+    <span class="dim" style="flex:none">IPs of this machine</span>
     ${list.map(a => `<span class="npill${a.link_local ? " dim" : ""}" title="${esc(why(a))}">${
         a.primary ? `<b>${esc(a.ip)}</b>` : esc(a.ip)}${
         a.iface ? ` <span class="ifn">${esc(a.iface)}</span>` : ""}</span>`).join("")}
@@ -3644,33 +3688,33 @@ document.addEventListener("click", async e => {
     // ใช้ฟอร์มในหน้า ไม่ใช่ prompt() ของเบราว์เซอร์ — prompt() แสดงรหัสผ่านเป็นตัวอักษรล้วน
     // ปิดไม่ได้ และคนที่ยืนอยู่ข้างหลังอ่านได้หมด
     const perms = nact === "fix-perms";
-    showNodeOutput(node, `${perms ? "แก้สิทธิ์ไฟล์" : "setup"} · ${node}`, "");
+    showNodeOutput(node, `${perms ? "fix permissions" : "setup"} · ${node}`, "");
     const row = nodeRows.get(node);
     if (!row) return;
-    const user = (lastNodeRegistry.get(node) || {}).user || "user บนเครื่องนั้น";
+    const user = (lastNodeRegistry.get(node) || {}).user || "the user on that machine";
     row.body.innerHTML = `<div class="pad">
-      <div class="name">${perms ? `คืนสิทธิ์แคชโมเดลบน ${esc(node)}`
-                                 : `ตั้งค่าที่ต้องใช้สิทธิ์ root บน ${esc(node)}`}</div>
+      <div class="name">${perms ? `Give the model cache back to the user on ${esc(node)}`
+                                 : `Root-level setup on ${esc(node)}`}</div>
       <div class="dim" style="margin:6px 0 12px">${perms
-        ? `จะทำ: <code>chown -R ${esc(user)} ~/.cache/huggingface ~/.cache/flashinfer</code>
-           — ใช้เมื่อ container เคยรันเป็น root แล้วทิ้งไฟล์ของ root ไว้ในแคช
-           จนคัดลอกไป worker ไม่ได้ (rsync exit 23)`
-        : `จะทำ: ให้ service ขึ้นตั้งแต่บูต (<code>loginctl enable-linger</code>)`}</div>
+        ? `Will run: <code>chown -R ${esc(user)} ~/.cache/huggingface ~/.cache/flashinfer</code>
+           — for when a container ran as root and left root-owned files in the cache,
+           so copying to a worker fails (rsync exit 23)`
+        : `Will do: start the service at boot (<code>loginctl enable-linger</code>)`}</div>
       <div class="field">
         <label>user</label>
         <span class="mono">${esc(user)}</span>
-        <span class="dim">— user เดียวกับที่ใช้ต่อ SSH อยู่แล้ว ไม่ต้องกรอก</span>
+        <span class="dim">— the same user SSH already uses, nothing to type</span>
       </div>
       <div class="field">
         <label>sudo password</label>
         <input id="setup-pw" type="password" autocomplete="current-password"
                placeholder="used once, never stored" style="min-width:240px">
         <button data-nact="setup-go" data-node="${esc(node)}"
-                data-perms="${perms ? "1" : ""}">${perms ? "แก้สิทธิ์" : "ตั้งค่า"}</button>
-        <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
+                data-perms="${perms ? "1" : ""}">${perms ? "Fix permissions" : "Set up"}</button>
+        <button data-nact="close-output" data-node="${esc(node)}">Cancel</button>
       </div>
-      <div class="dim">รหัสผ่านถูกส่งทาง stdin ของ ssh — ไม่เขียนลงดิสก์ ไม่อยู่ในคำสั่ง
-        และไม่ถูกเก็บในทะเบียน · ต้องกรอกใหม่ทุกครั้งที่ต้องใช้</div>
+      <div class="dim">The password goes over ssh's stdin — never written to disk, never on a command line,
+        never stored in the registry · you type it again each time it is needed</div>
       <div id="setup-out-${esc(node)}" style="margin-top:10px"></div>
     </div>`;
     row.body.querySelector("#setup-pw")?.focus();
@@ -3682,10 +3726,10 @@ document.addEventListener("click", async e => {
     const input = row && row.body.querySelector("#setup-pw");
     const out = row && row.body.querySelector(`#setup-out-${CSS.escape(node)}`);
     const password = input && input.value;
-    if (!password) { if (out) out.innerHTML = `<div class="warn-line">ใส่รหัสผ่านก่อน</div>`; return; }
+    if (!password) { if (out) out.innerHTML = `<div class="warn-line">Enter the password first</div>`; return; }
     // ฟอร์มเดียวใช้ได้สองงาน — ตั้งค่าเครื่อง กับคืนสิทธิ์แคชโมเดล (ทั้งคู่ต้องรหัส sudo)
     const endpoint = btn.dataset.perms ? "fix-permissions" : "setup";
-    const d = await withButton(btn, "กำลังทำ…", () =>
+    const d = await withButton(btn, "Working…", () =>
       api(`/api/nodes/${encodeURIComponent(node)}/${endpoint}`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ password }),
@@ -3695,14 +3739,14 @@ document.addEventListener("click", async e => {
     if (out) out.innerHTML = (d.steps || []).map(s =>
       `<div class="warn-line" style="color:${s.ok ? (s.skipped ? "var(--fg2)" : "var(--ok)") : "var(--bad)"}">
         ${s.ok ? (s.skipped ? "•" : "✓") : "✕"} ${esc(s.step)}${
-          s.skipped ? " — เรียบร้อยอยู่แล้ว ไม่ได้แตะอะไร" : ""}${
+          s.skipped ? " — already in place, nothing touched" : ""}${
           s.detail ? " — " + esc(s.detail) : ""}</div>`).join("")
-      + (d.ok ? `<div class="dim" style="margin-top:6px">เสร็จแล้ว</div>` : "");
+      + (d.ok ? `<div class="dim" style="margin-top:6px">Done</div>` : "");
     return;
   }
 
   if (nact === "install") {
-    const d = await withButton(btn, "กำลังติดตั้ง…", () =>
+    const d = await withButton(btn, "Installing…", () =>
       api(`/api/nodes/${encodeURIComponent(node)}/install`, { method: "POST" }));
     if (!d) return;
     followNodeJob(node, "_install", d.job.id);
@@ -3715,26 +3759,26 @@ document.addEventListener("click", async e => {
     // ไม่งั้น "customer-a" กับ "Customer A" กลายเป็นคนละกลุ่มเพราะพิมพ์ต่างนิดเดียว
     const existing = [...new Set([...lastNodeRegistry.values()]
       .map(n => (n.site || "").trim()).filter(Boolean))].sort();
-    showNodeOutput(node, `ไซต์ · ${node}`, "");
+    showNodeOutput(node, `Site · ${node}`, "");
     const row = nodeRows.get(node);
     if (!row) return;
     row.body.innerHTML = `<div class="pad">
-      <div class="name">จัดกลุ่ม ${esc(node)} ตามไซต์</div>
-      <div class="dim" style="margin:6px 0 12px">ป้ายที่ตั้งเครื่อง (ชื่อไซต์/ลูกค้า) — ใช้จัดกลุ่ม
-        และกรองบนหน้าจอเท่านั้น <b>ไม่กระทบ cluster</b> · เว้นว่าง = เอาป้ายออก</div>
-      ${existing.length ? `<div class="dim" style="margin-bottom:8px">ไซต์ที่มีอยู่ (กดเพื่อใช้ชื่อเดิม ไม่ต้องพิมพ์):
+      <div class="name">Group ${esc(node)} by site</div>
+      <div class="dim" style="margin:6px 0 12px">A label for where the machine lives (site / customer) — only groups
+        and filters the screen, <b>no effect on clusters</b> · empty = remove the label</div>
+      ${existing.length ? `<div class="dim" style="margin-bottom:8px">Existing sites (click to reuse the name instead of typing):
         ${existing.map(s => `<button type="button" class="site-pick" data-site="${esc(s)}"
           style="margin:2px 4px 2px 0">${esc(s)}</button>`).join("")}</div>` : ""}
       <div class="field">
-        <label>ไซต์</label>
-        <input id="site-inp" type="text" value="${esc(cur)}" placeholder="เช่น customer-a · HQ"
+        <label>site</label>
+        <input id="site-inp" type="text" value="${esc(cur)}" placeholder="e.g. customer-a · HQ"
                list="site-options" style="min-width:220px" autocomplete="off">
         <datalist id="site-options">${existing.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
-        <button data-nact="site-go" data-node="${esc(node)}">บันทึก</button>
-        <button data-nact="close-output" data-node="${esc(node)}">ยกเลิก</button>
+        <button data-nact="site-go" data-node="${esc(node)}">Save</button>
+        <button data-nact="close-output" data-node="${esc(node)}">Cancel</button>
       </div>
       <div id="site-out" style="margin-top:10px" class="dim">${existing.length
-        ? "" : "ยังไม่มีไซต์อื่น — พิมพ์ชื่อแรกได้เลย เครื่องถัดไปจะเลือกจากลิสต์นี้"}</div>
+        ? "" : "No other site yet — type the first name; the next machine picks from this list"}</div>
     </div>`;
     // กดชิปไซต์ที่มีอยู่ = เติมชื่อเดิมลงช่อง (ชื่อตรงกันเป๊ะ ไม่มี typo)
     for (const chip of row.body.querySelectorAll(".site-pick")) {
@@ -3762,7 +3806,7 @@ document.addEventListener("click", async e => {
       if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).detail) || r.status);
       pinnedOutput.delete(node);
       refreshNodes();       // badge/กลุ่มอัปเดตทันที
-    } catch (e) { if (out) out.textContent = "บันทึกไม่สำเร็จ: " + e.message; }
+    } catch (e) { if (out) out.textContent = "Save failed: " + e.message; }
     return;
   }
   if (nact === "close-output") { clearNodeOutput(node); return; }
@@ -3777,7 +3821,7 @@ document.addEventListener("click", async e => {
   if (nact === "suggest-settings") {
     // คนที่ไม่รู้ชื่อ parser ไม่ควรต้องเดา — ระบบรู้อยู่แล้ว (recipe / กฎตระกูล) แค่ไม่เคยไหลมาถึงช่อง
     // เติมให้ดูก่อน ผู้ใช้ตรวจแล้วค่อยกด บันทึกค่า เอง (ผู้ใช้ 2026-09-04)
-    const d = await withButton(btn, "กำลังดู…", () =>
+    const d = await withButton(btn, "Looking…", () =>
       api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/settings/suggest`));
     if (!d) return;
     const card = btn.closest(".submenu") || btn.parentElement.parentElement;   // กล่อง settings ของโมเดลนี้ (ตัวเดียวกับ readNodeOpts)
@@ -3789,7 +3833,7 @@ document.addEventListener("click", async e => {
     if (note) {
       const lines = Object.entries(v).map(([k, val]) => `${k} = ${val}  ← ${d.sources[k] || ""}`);
       note.innerHTML = (lines.length
-        ? `เติมให้แล้ว (ยังไม่บันทึก):<br>${lines.map(esc).join("<br>")}<br><b>ตรวจแล้วกด บันทึกค่า</b> · หลัง start กด test-tools เพื่อพิสูจน์`
+        ? `Filled in (not saved yet):<br>${lines.map(esc).join("<br>")}<br><b>Check, then press Save</b> · after start, run test-tools to prove it`
         : "") + (d.notes || []).map(n => `<br>${esc(n)}`).join("");
     }
     return;
@@ -3814,7 +3858,7 @@ document.addEventListener("click", async e => {
 
   if (nact.startsWith("nbench:")) {
     const quick = nact.slice(7) === "quick";
-    const d = await withButton(btn, "วัด…", () =>
+    const d = await withButton(btn, "Measuring…", () =>
       api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/bench`,
           { method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify(quick ? { quick: true } : {}) }));
@@ -3858,7 +3902,7 @@ document.addEventListener("click", async e => {
     // remove ครั้งแรกคือ --dry-run: server ยังไม่ลบอะไร แค่บอกว่าจะลบอะไรบ้าง
     // ผู้ใช้ต้องเห็นรายการ+ขนาดจริงก่อน แล้วกดยืนยันอีกครั้งถึงจะลบ
     if (command === "remove" && !btn.dataset.confirm) {
-      showNodeOutput(node, `จะลบ · ${slug}`, d.output, `
+      showNodeOutput(node, `Will remove · ${slug}`, d.output, `
         <button class="danger" data-nact="model:remove" data-node="${esc(node)}"
                 data-slug="${esc(slug)}" data-confirm="1">Delete permanently</button>`);
       return;
@@ -4007,6 +4051,8 @@ function clusterStrip(m, group, index) {
         <button data-cact="save-clname" data-node="${esc(m.name)}">Save</button>` : ""}
       <span class="grow"></span>
       ${partners.length ? `<span class="dim">⇄ ${esc(partners.join(", "))}</span>` : ""}
+      ${editable ? `<button data-cact="inspect-net" data-node="${esc(m.name)}"
+        title="Look at this machine's two ConnectX-7 QSFP ports live — cable, speed, IP, netplan">Ports</button>` : ""}
       ${m.reachable ? `<button data-cact="toggle-stack" data-node="${esc(m.name)}"
         data-self="${m.self ? "1" : ""}" data-stack="${m.stack === false ? "" : "1"}"
         title="Groups are proposed from matching hardware — turn this off if the machine is not meant for stacked serving"
@@ -4061,18 +4107,20 @@ function groupHeader(g, index) {
               title="Why this pair is (not) ready — every check with the command that fixes it; read-only">Doctor</button>
       <button data-cact="pair-ssh" data-head="${esc(g.members[0].name)}" data-worker="${esc(g.members[1].name)}"
               title="Let the head ssh into the worker without a password — the stacked controller needs this for sync-worker/start">Pair SSH</button>
+      <button data-cact="net-wizard" data-nodes="${esc((g.members || []).map(m => m.name).join(","))}"
+              title="Set up the QSFP cluster network between these machines (cabling check → IP plan → netplan → SSH pairing)">Set up cluster network</button>
       <span class="dim">head → worker: ${esc(g.members[0].name)} → ${esc(g.members[1].name)}</span>
     </div>
     <div class="gdoctor" hidden></div>` : ""}
     ${g.ready ? `<div class="gsub">
       <button class="deploy-stack" data-head="${esc(g.members[0].name)}"
               data-worker="${esc((g.members[1] || {}).name || "")}"
-              data-nodes="${g.members.length}">Deploy ลงกลุ่มนี้</button>
+              data-nodes="${g.members.length}">Deploy to this group</button>
       <span class="dim">head <b style="font-weight:500">${esc(g.members[0].name)}</b>${
         g.members[1] ? ` · worker <b style="font-weight:500">${esc(g.members[1].name)}</b>` : ""} ·
-        เปิด wizard โดยตั้ง target เป็น <code>dgx-spark-stacked</code> ให้แล้ว
-        และเขียน <code>cluster.env</code> (IP/SSH user/NCCL iface) ให้เองตอนจบ</span>
-      <div class="dim" style="margin-top:4px">เทียบเท่าคำสั่ง:
+        opens the wizard with the target preset to <code>dgx-spark-stacked</code>
+        and writes <code>cluster.env</code> (IP / SSH user / NCCL iface) itself at the end</span>
+      <div class="dim" style="margin-top:4px">Equivalent commands:
         <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> +
         <code>lmds node push ${esc(g.members[0].name)} &lt;slug&gt; --download --start</code>
         (writes cluster.env, pairs ssh, syncs the worker)</div>
@@ -4339,7 +4387,7 @@ document.addEventListener("click", async e => {
     }
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      alert(d.detail || "ตั้งชื่อคลัสเตอร์ไม่สำเร็จ");
+      alert(d.detail || "Could not save the cluster name");
       return;
     }
     loadCluster();
@@ -4368,6 +4416,662 @@ document.addEventListener("click", async e => {
   loadCluster();
 });
 
+// ── Cluster network setup wizard ─────────────────────────────────────────
+// เทียบเท่า Cluster Assistant ของ NVIDIA Sync แต่ทำจากคอนโซล: เลือก Spark 2–4 เครื่อง →
+// ตรวจสาย QSFP → วางแผน IP/netplan → ใส่รหัส sudo แล้ว apply เป็นงานเบื้องหลัง → ตรวจผล
+//
+// กติกาสายของ NVIDIA ที่หน้านี้ยึด: 2 เครื่อง = สายเดียว · 3 เครื่อง = วงแหวน ใช้ทั้งสอง port ·
+// 4 เครื่อง = ผ่านสวิตช์ (ตั้ง port สวิตช์เป็น 200G เอง — auto-neg มักได้ 50G)
+//
+// API (src/lmds/web/api.py + nodes/netplan.py):
+//   POST /api/cluster/inspect {nodes}            → {nodes:{name:{reachable,error,spark,ports:[{port,ifaces,carrier,
+//                                                   speed_gbps,configured,ip,prefix,rdma_devices,netplan_managed}],
+//                                                   nvidia_sync}}, topology:{topology,reason,links,order}, findings, ok}
+//   POST /api/cluster/plan {nodes,base_subnet}   → {ok,topology,reason,order,base_subnet,warnings,
+//                                                   links:[{id,subnet,ends:[{node,port,iface,ip,prefix,changed}]}],
+//                                                   nodes:{name:{links:[…],netplan,cluster_ip,cluster_iface,changed}},registry}
+//   POST /api/cluster/apply {plan,passwords}     → {id,running,steps,result} · GET /api/cluster/apply/{id} จน running=false
+//                                                   steps:[{node,step,ok,detail,level}] · result:{ok,applied,pings,pairing,speed,registry}
+//   POST /api/cluster/remove-net {node,password} → {node,ok,removed,absent,steps}
+//   GET  /api/cluster/doctor?head=&worker=       → {ok,findings:[{level,text,fix}]}
+// ตัวอ่าน payload ด้านล่างรับรูปตามสัญญาเดิม (fabric.ports / per_node / links a,b) ด้วย
+//
+// รหัสผ่าน: เก็บในหน่วยความจำของหน้าเฉพาะตอนกด Apply ส่งไปกับ body ครั้งเดียว แล้วล้างช่อง —
+// กติกาเดียวกับฟอร์ม setup ของ node · ห้ามลง localStorage ห้ามขึ้น URL
+const CNW_DEFAULT_SUBNET = "10.100.152.0/24";
+const CNW_STEPS = ["devices", "cabling", "plan", "apply", "verify"];
+const CNW_STEP_LABEL = { devices: "Devices", cabling: "Cabling check", plan: "Plan", apply: "Apply", verify: "Verify" };
+// ติ๊กต่อเครื่อง — จับคู่จากข้อความ step ที่ apply_plan ส่งมา (ลำดับ = ลำดับที่ทำจริง)
+const CNW_JOB_STEPS = [
+  ["sudo", "sudo", /sudo password/i],
+  ["netplan", "write netplan", /stage netplan|write .*netplan/i],
+  ["addresses", "verify addresses", /verify address/i],
+  ["ping", "ping peers", /^ping\b/i],
+  ["ssh", "pair SSH", /cluster key|authorize|ssh config|without a password|\bssh\b|\bpair/i],
+  ["registry", "registry", /registry/i],
+];
+const CNW_TOPOLOGY_TEXT = {
+  "direct-2": "2 machines — one QSFP cable straight between them, no switch (either port on each side).",
+  "ring-3": "3 machines — a ring: both QSFP ports on every machine are in use, each cable joins two neighbours.",
+  "switch": "4 machines — through a switch, one cable per machine. Set the switch ports to 200G by hand: auto-negotiation often settles at 50G.",
+  "unknown": "No supported topology detected yet — check the cables below.",
+};
+const cnwBox = document.getElementById("cnw");
+let cnw = null;   // สถานะ wizard ปัจจุบัน (null = ปิดอยู่) — อยู่ในหน่วยความจำของหน้าเท่านั้น
+
+async function cnwPost(path, body) {
+  try {
+    const r = await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data,
+             error: r.ok ? "" : (typeof data.detail === "string" ? data.detail : `HTTP ${r.status}`) };
+  } catch (err) {
+    return { ok: false, status: 0, data: {}, error: `Could not reach LMDS — ${String(err && err.message || err)}` };
+  }
+}
+
+// ── ตัวอ่าน payload ───────────────────────────────────────────────────────
+// พอร์ต QSFP หนึ่งพอร์ตในรูปเดียวกัน ไม่ว่ามาจาก inspect (ports[]), inventory (fabric.qsfp_ports)
+// หรือรูปตามสัญญาเดิม (fabric.ports[].interfaces[])
+function cnwNormPort(p) {
+  const ifaces = Array.isArray(p.interfaces)
+    ? (p.interfaces || []).map(i => ({ iface: i.iface, fn: i.function || "", ip: i.ip || "", prefix: i.prefix, rdma: i.rdma_device || "" }))
+    : (p.ifaces || []).map((name, k) => ({ iface: name, fn: `f${k}`, ip: p.configured === name || (!p.configured && k === 0 && p.ip) ? (p.ip || "") : "",
+                                            prefix: p.prefix, rdma: (p.rdma_devices || [])[k] || "" }));
+  const cabled = p.carrier !== undefined ? !!p.carrier : ifaces.some((i, k) => (p.interfaces || [])[k]?.carrier);
+  const speed = p.speed_gbps || Math.max(0, ...(p.interfaces || []).map(i => i.speed_gbps || 0));
+  const managed = p.netplan_managed !== undefined ? p.netplan_managed : (p.interfaces || []).some(i => i.netplan_managed);
+  return { port: Number(p.port ?? p.qsfp_port), cabled, speed: speed || 0, ifaces, managed };
+}
+// สองพอร์ตของเครื่องนี้ (เติมพอร์ตที่ไม่มีข้อมูลเป็น "ว่าง" เพื่อให้แผนภาพครบสองช่องเสมอ)
+function cnwPortsOf(node) {
+  const raw = (node && (node.ports || (node.fabric || {}).ports || (node.fabric || {}).qsfp_ports)) || [];
+  const norm = raw.map(cnwNormPort);
+  return [1, 2].map(n => norm.find(p => p.port === n) || { port: n, cabled: false, speed: 0, ifaces: [], managed: false });
+}
+function cnwPorts(name) { return cnwPortsOf(((cnw.inspect || {}).nodes || {})[name]); }
+function cnwTopology() {
+  const t = (cnw.inspect || {}).topology || {};
+  return { kind: t.kind || t.topology || "unknown", reason: t.reason || "" };
+}
+// แผนในรูปเดียว: ลิงก์ (ปลาย a/b) + ต่อเครื่อง (links, yaml, cluster_ip)
+function cnwPlanView(p) {
+  if (!p) return null;
+  const links = (p.links || []).map(l => l.ends
+    ? { id: l.id, subnet: l.subnet || "", ends: l.ends }
+    : { id: l.link_id, subnet: "", ends: [l.a, l.b] });
+  const src = p.nodes || p.per_node || {};
+  const nodes = {};
+  for (const name of Object.keys(src)) {
+    const d = src[name];
+    nodes[name] = { links: d.links || d.iface_ips || [], yaml: d.netplan ?? d.netplan_yaml ?? "",
+                    cluster_ip: d.cluster_ip || "", cluster_iface: d.cluster_iface || "", changed: d.changed,
+                    changes: d.changes || [] };
+  }
+  return { ok: p.ok !== false && Object.keys(nodes).length > 0, kind: typeof p.topology === "string" ? p.topology : (p.topology || {}).kind || "",
+           reason: p.reason || "", links, nodes, warnings: p.warnings || [], order: p.order || Object.keys(nodes) };
+}
+
+// ผู้สมัคร = ทุกเครื่องในทะเบียน · เหตุผลที่เลือกไม่ได้ต้องบอกตรง ๆ ไม่ใช่แค่จางไป
+function cnwCandidates() {
+  const machines = new Map(((clusterData && clusterData.machines) || []).map(m => [m.name, m]));
+  return [...lastNodeRegistry.keys()].map(name => {
+    const m = machines.get(name) || {};
+    const inv = lastNodeData.get(name) || {};
+    const host = inv.host || {};
+    const gpus = host.gpus || [];
+    const gpuName = gpus.map(g => g.name).filter(Boolean).join(", ");
+    const spark = gpus.some(g => /gb10/i.test(g.name || "")) || host.memory_model === "unified";
+    const reachable = m.reachable !== undefined ? !!m.reachable : inv.reachable !== false;
+    let why = "";
+    if (!reachable) why = "unreachable — the hub cannot ssh into it right now";
+    else if (m.has_gpu === false || (host.gpus && !gpus.length)) why = "no GPU — a control-plane machine cannot join a cluster";
+    else if (gpus.length && !spark) why = `not a DGX Spark (${gpuName}) — the wizard only wires ConnectX-7 ports on GB10 machines`;
+    const fab = m.fabric || host.fabric || {};
+    return { name, why, gpu: gpuName || (spark ? "NVIDIA GB10" : ""), reachable,
+             link: fab.best_gbps ? `${fab.best_gbps}G${fab.tier === "rdma" ? " RDMA" : ""}` : "",
+             cluster_ip: m.cluster_ip || (lastNodeRegistry.get(name) || {}).cluster_ip || "",
+             site: (lastNodeRegistry.get(name) || {}).site || "" };
+  });
+}
+
+function openClusterNetWizard(preselect = []) {
+  const eligible = new Set(cnwCandidates().filter(c => !c.why).map(c => c.name));
+  cnw = { mode: "wizard", step: "devices", selected: new Set(preselect.filter(n => eligible.has(n))),
+          inspect: null, inspectError: "", plan: null, planError: "", subnet: CNW_DEFAULT_SUBNET,
+          yamlOpen: new Set(), samePw: true, job: null, jobSteps: {}, steps: [], result: null, applyError: "",
+          doctor: [], busy: "", removing: null, removeResult: {} };
+  cnwRender();
+}
+
+// แผงดู port ของเครื่องเดียว — เปิดจากแถบ cluster บนการ์ด · อ่านจาก inventory ของเครื่องนั้น
+// (inspect ต้องการ ≥2 เครื่อง) · Re-check = ดึง inventory สด (refresh=true) ผ่าน loadNode
+async function openNetInspect(name) {
+  cnw = { mode: "inspect", node: name, inspect: null, inspectError: "", busy: "", removing: null, removeResult: {} };
+  cnwInspectFromInventory(name);
+  cnwRender();
+}
+function cnwInspectFromInventory(name) {
+  const inv = lastNodeData.get(name) || {};
+  const fabric = (inv.host || {}).fabric || {};
+  const raw = fabric.qsfp_ports || cnwGroupLinks(fabric.links || []);
+  cnw.inspect = { nodes: { [name]: inv.reachable === false
+    ? { reachable: false, error: inv.error || "unreachable" }
+    : { reachable: true, ports: raw, nvidia_sync: !!fabric.nvidia_sync_netplan } } };
+  cnw.inspectError = !inv.host && inv.reachable !== false ? `no inventory for ${name} yet — press Re-check` : "";
+}
+// node รุ่นเก่าไม่ส่ง qsfp_ports — จัดกลุ่ม links ของ ConnectX เป็นรายพอร์ตเอง (เหมือน group_qsfp_ports ฝั่ง hub)
+function cnwGroupLinks(links) {
+  const by = new Map();
+  for (const l of links) {
+    if (!l.connectx) continue;
+    const m = (l.iface || "").match(/^enp(\d+)s0f(\d)/);
+    const port = l.qsfp_port || (m ? (m[1] === "1" ? 1 : 2) : null);
+    if (!port) continue;
+    (by.get(port) || by.set(port, []).get(port)).push(l);
+  }
+  return [...by].sort((a, b) => a[0] - b[0]).map(([port, ls]) => {
+    const conf = ls.find(l => l.ip && !String(l.ip).startsWith("169.254."));
+    return { port, ifaces: ls.map(l => l.iface), carrier: ls.some(l => l.carrier === true || (l.carrier == null && l.state === "up" && l.speed_gbps)),
+             speed_gbps: Math.max(0, ...ls.map(l => l.speed_gbps || 0)) || null, configured: conf ? conf.iface : "",
+             ip: conf ? conf.ip : "", prefix: conf ? conf.prefix : null, rdma_devices: ls.map(l => l.rdma_device).filter(Boolean),
+             netplan_managed: ls.some(l => l.netplan_managed === true) };
+  });
+}
+
+async function cnwInspect(names) {
+  cnw.busy = `Inspecting ${names.join(", ")}… (reads the hub's latest inventory of each machine)`;
+  cnwRender();
+  const r = await cnwPost("/api/cluster/inspect", { nodes: names });
+  if (!cnw) return;
+  cnw.busy = "";
+  cnw.inspect = r.ok ? r.data : null;
+  cnw.inspectError = r.ok ? "" : r.error;
+}
+
+// ── กติกาสาย ─────────────────────────────────────────────────────────────
+const cnwRequiredPorts = n => n === 3 ? 2 : 1;
+
+// สายที่ยังขาด — บอกเครื่อง/port ตรง ๆ · ว่าง = ไปต่อได้
+function cnwMissingCables() {
+  if (!cnw.inspect) return [{ text: "not inspected yet" }];
+  const names = [...cnw.selected];
+  const need = cnwRequiredPorts(names.length);
+  const missing = [];
+  for (const name of names) {
+    const node = (cnw.inspect.nodes || {})[name];
+    if (!node || node.reachable === false) {
+      missing.push({ node: name, text: `${name}: could not inspect (${(node && node.error) || "unreachable"})` });
+      continue;
+    }
+    if (node.spark === false) { missing.push({ node: name, text: `${name}: not a DGX Spark — no ConnectX-7 QSFP ports to wire` }); continue; }
+    const ports = cnwPorts(name);
+    if (ports.filter(p => p.cabled).length >= need) continue;
+    const off = ports.filter(p => !p.cabled).map(p => `port ${p.port}`);
+    missing.push({ node: name, text: need === 2
+      ? `${name}: no cable detected on ${off.join(" and ")} — a 3-machine ring needs both ports`
+      : `${name}: no cable detected on port 1 or port 2` });
+  }
+  return missing;
+}
+
+function cnwTopologyText() {
+  const kind = cnwTopology().kind;
+  return CNW_TOPOLOGY_TEXT[kind] || (kind.startsWith("switch") ? CNW_TOPOLOGY_TEXT.switch : CNW_TOPOLOGY_TEXT.unknown);
+}
+
+// ── markup ───────────────────────────────────────────────────────────────
+function cnwPortsMarkup(name) {
+  const node = ((cnw.inspect || {}).nodes || {})[name];
+  if (!node) return `<div class="dim">no data for ${esc(name)}</div>`;
+  if (node.reachable === false) return `<div class="warn-line">${esc(name)}: ${esc(node.error || "unreachable")}</div>`;
+  return `<div class="qsfp-row">${cnwPortsOf(node).map(p => `<div class="qsfp ${p.cabled ? "on" : "off"}" data-port="${p.port}">
+      <div class="qsfp-h">QSFP port ${p.port}
+        <span class="tag ${p.cabled ? "ok" : "bad"}">${p.cabled ? `cable · ${p.speed || "?"}G` : "no cable"}</span></div>
+      ${p.ifaces.length ? (p.ifaces || []).map(i => `<div class="mono">${esc(i.iface)} <span class="dim">${esc(i.fn)}</span>
+          ${i.ip ? `<span>${esc(i.ip)}${i.prefix ? "/" + esc(i.prefix) : ""}</span>` : `<span class="dim">no IP</span>`}
+          ${i.rdma ? `<span class="dim">${esc(i.rdma)}</span>` : ""}</div>`).join("")
+        : `<div class="dim">no interface reported</div>`}
+      <div class="dim">${p.managed ? "netplan-managed" : "not managed by netplan"}</div>
+    </div>`).join("")}</div>
+    ${node.nvidia_sync ? `<div class="dim" style="margin-top:4px">NVIDIA Sync's netplan file is on this machine — apply moves it aside so only the LMDS file claims these ports</div>` : ""}`;
+}
+
+function cnwStepDevices() {
+  const rows = cnwCandidates();
+  const n = cnw.selected.size;
+  return `<div class="dim" style="margin-bottom:8px">Pick 2–4 DGX Sparks. Only reachable GB10 (unified-memory) machines can be wired —
+      the wizard writes netplan for their ConnectX-7 QSFP ports, so anything else stays greyed out with the reason.</div>
+    ${rows.length ? `<table class="cnw-table"><thead><tr><th></th><th>machine</th><th>GPU</th><th>fabric</th><th>cluster IP</th><th>site</th><th>why not</th></tr></thead>
+    <tbody>${rows.map(c => `<tr class="${c.why ? "off" : ""}">
+      <td><input type="checkbox" class="cnw-pick" data-node="${esc(c.name)}" ${cnw.selected.has(c.name) ? "checked" : ""} ${c.why ? "disabled" : ""}></td>
+      <td><b>${esc(c.name)}</b></td><td>${esc(c.gpu || "—")}</td><td class="mono">${esc(c.link || "—")}</td>
+      <td class="mono">${esc(c.cluster_ip || "—")}</td><td>${esc(c.site || "—")}</td>
+      <td class="dim">${esc(c.why)}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty">No machines registered — add the Sparks first (Add machine)</div>`}
+    <div class="dim" style="margin-top:8px">${n} selected${n && (n < 2 || n > 4) ? ` — need 2 to 4` : ""} · order matters: the first machine becomes the head</div>`;
+}
+
+function cnwFindingLine(f) {
+  const cls = f.level === "pass" ? "pass" : f.level === "warn" ? "warn" : "fail";
+  return `<div class="${cls} dim">${f.level === "pass" ? "✓" : f.level === "warn" ? "!" : "✕"} ${esc(f.text || f.kind)}${f.fix ? ` <code>${esc(f.fix)}</code>` : ""}</div>`;
+}
+
+function cnwStepCabling() {
+  if (cnw.busy) return `<div class="empty">${esc(cnw.busy)}</div>`;
+  if (cnw.inspectError) return `<div class="warn-line">Inspect failed — ${esc(cnw.inspectError)}</div>
+    <button data-cnw="recheck">Re-check</button>`;
+  const missing = cnwMissingCables();
+  const topo = cnwTopology();
+  const n = cnw.selected.size;
+  const findings = ((cnw.inspect || {}).findings || []).filter(f => f.level !== "pass");
+  return `<div class="field" style="margin:0 0 8px">
+      <span>Detected topology: <b>${esc(topo.kind)}</b></span>
+      <span class="dim">${esc(topo.reason)}</span>
+      <span class="grow"></span><button data-cnw="recheck">Re-check</button></div>
+    <div class="dim" style="margin-bottom:10px">${esc(cnwTopologyText())}
+      <br>Rules: 2 machines → 1 cable · 3 machines → ring over both ports · 4 machines → switch (ports fixed at 200G).
+      Selected: ${n} → needs ${cnwRequiredPorts(n)} cabled port${cnwRequiredPorts(n) > 1 ? "s" : ""} per machine.</div>
+    ${[...cnw.selected].map(name => `<div class="cnw-node"><div class="name" style="margin-bottom:4px">${esc(name)}</div>${cnwPortsMarkup(name)}</div>`).join("")}
+    ${findings.length ? `<div class="cnw-h">Network doctor</div>${findings.map(cnwFindingLine).join("")}` : ""}
+    ${missing.length
+      ? `<div class="warn-line cnw-missing">Cannot continue — ${missing.map(m => esc(m.text)).join(" · ")}</div>`
+      : `<div class="ok-line">All required cables detected — continue to the plan</div>`}`;
+}
+
+function cnwStepPlan() {
+  if (cnw.busy) return `<div class="empty">${esc(cnw.busy)}</div>`;
+  const v = cnwPlanView(cnw.plan);
+  const head = `<div class="field" style="margin:0 0 10px">
+      <label>base subnet</label>
+      <input id="cnw-subnet" class="mono" value="${esc(cnw.subnet)}" style="flex:none;width:180px" title="Link subnets are carved from this block">
+      <button data-cnw="replan">Re-plan</button>
+      <span class="dim">Each cable gets its own small subnet carved from this block; the registry cluster IP is the address toward the head</span></div>`;
+  if (cnw.planError) return head + `<div class="warn-line">Plan failed — ${esc(cnw.planError)}</div>`;
+  if (!v) return head + `<div class="empty">No plan yet</div>`;
+  if (!v.ok) return head + `<div class="warn-line cnw-missing">Plan not applicable — ${esc(v.reason || "the cabling does not match a supported topology")}</div>`;
+  const names = v.order.filter(n => v.nodes[n]);
+  return head
+    + `<div class="dim" style="margin-bottom:6px">Topology <b>${esc(v.kind)}</b> · ${v.links.length} link${v.links.length === 1 ? "" : "s"}</div>
+    <table class="cnw-table cnw-links"><thead><tr><th>link</th><th>subnet</th><th>A</th><th>iface</th><th>IP</th><th>B</th><th>iface</th><th>IP</th></tr></thead>
+    <tbody>${(v.links || []).map(l => `<tr><td class="mono">${esc(l.id)}</td><td class="mono">${esc(l.subnet || "—")}</td>
+      ${l.ends.slice(0, 2).map(e => `<td><b>${esc(e.node)}</b>${e.port ? ` <span class="dim">port ${esc(e.port)}</span>` : ""}</td><td class="mono">${esc(e.iface)}</td><td class="mono">${esc(e.ip)}/${esc(e.prefix)}${e.changed === false ? ` <span class="dim">(already set)</span>` : ""}</td>`).join("")}</tr>`).join("")}</tbody></table>
+    ${names.map(name => { const d = v.nodes[name]; const open = cnw.yamlOpen.has(name); return `<div class="cnw-node">
+      <div class="field" style="margin:0"><b>${esc(name)}</b> ${name === names[0] ? `<span class="tag">head</span>` : ""}
+        <span class="dim">cluster IP</span> <span class="mono">${esc(d.cluster_ip || "—")}</span>${d.cluster_iface ? ` <span class="dim">on ${esc(d.cluster_iface)}</span>` : ""}
+        ${d.changed === false ? `<span class="dim">— nothing to change</span>` : ""}
+        <span class="grow"></span>
+        <button data-cnw="yaml" data-node="${esc(name)}">${open ? "Hide netplan YAML" : "Show netplan YAML"}</button></div>
+      ${(d.links || []).map(i => `<div class="dim mono">${esc(i.iface)}${i.qsfp_port ? ` (port ${esc(i.qsfp_port)})` : ""} → ${esc(i.ip)}/${esc(i.prefix)} · peer ${esc(i.peer_node)} ${esc(i.peer_ip || "")}</div>`).join("")}
+      ${(d.changes || []).map(c => `<div class="dim">• ${esc(c)}</div>`).join("")}
+      <pre class="cnw-yaml" data-node="${esc(name)}" ${open ? "" : "hidden"}>${esc(d.yaml)}</pre></div>`; }).join("")}
+    ${(v.warnings || []).map(w => `<div class="warn-line">${esc(typeof w === "string" ? w : (w.text || JSON.stringify(w)))}</div>`).join("")}`;
+}
+
+function cnwPasswordFields() {
+  const names = [...cnw.selected];
+  return `<div class="field" style="margin:0 0 6px">
+      <label><input type="checkbox" id="cnw-samepw" ${cnw.samePw ? "checked" : ""}> use one sudo password for all machines</label></div>
+    ${cnw.samePw
+      ? `<div class="field"><label>sudo password</label>
+          <input type="password" class="cnw-pw" data-node="*" autocomplete="off" placeholder="used once for ${esc(names.join(", "))}, never stored" style="min-width:260px"></div>`
+      : names.map(n => `<div class="field"><label>${esc(n)}</label>
+          <input type="password" class="cnw-pw" data-node="${esc(n)}" autocomplete="off" placeholder="sudo password on ${esc(n)} — used once, never stored" style="min-width:260px"></div>`).join("")}
+    <div class="dim">Passwords travel once in the apply request and are cleared from this page right after — nothing is stored in the browser or the registry. Every password is checked first, so a wrong one on the second machine cannot leave the first half-configured.</div>`;
+}
+
+function cnwProgressMarkup() {
+  const names = [...cnw.selected];
+  return `<div class="cnw-prog">${names.map(n => `<div class="cnw-prog-row" data-node="${esc(n)}"><b>${esc(n)}</b>
+      ${CNW_JOB_STEPS.map(([k, label]) => { const st = (cnw.jobSteps[n] || {})[k] || "wait";
+        const mark = { run: "⏳", ok: "✓", bad: "✗", warn: "!", wait: "·" }[st];
+        const colour = st === "bad" ? "var(--bad)" : st === "ok" ? "var(--ok)" : st === "warn" ? "var(--warn)" : "var(--fg2)";
+        return `<span class="cnw-tick" data-step="${k}" data-state="${st}" style="color:${colour}">${mark} ${esc(label)}</span>`; }).join("")}
+    </div>`).join("")}</div>`;
+}
+
+function cnwStepLine(s) {
+  const mark = s.ok ? (s.level === "warn" ? "!" : "✓") : "✕";
+  return `${mark} ${s.node ? `[${s.node}] ` : ""}${s.step}${s.detail ? ` — ${s.detail}` : ""}`;
+}
+
+function cnwStepApply() {
+  if (!cnw.job) {
+    return `<div class="dim" style="margin-bottom:8px">The hub will, on each machine: check the sudo password → write netplan → apply → verify addresses → ping peers → pair SSH (head → workers) → save cluster IPs to the registry. A failure rolls that machine back to its previous netplan.</div>
+      ${cnwPasswordFields()}
+      ${cnw.applyError ? `<div class="warn-line">${esc(cnw.applyError)}</div>` : ""}
+      <div class="field" style="margin-top:8px"><button data-cnw="apply">Apply network plan</button></div>`;
+  }
+  const res = cnw.result;
+  const status = !res ? "running…" : res.ok ? "finished" : res.applied ? "applied, but a check failed" : "failed — rolled back";
+  return `<div class="dim" style="margin-bottom:6px">Job ${esc(cnw.job)} — ${status}</div>
+    <div id="cnw-prog-wrap">${cnwProgressMarkup()}</div>
+    <pre id="cnw-log">${esc(cnw.steps.length ? (cnw.steps || []).map(cnwStepLine).join("\n") : "Started…")}</pre>
+    ${res && !res.applied ? `<div class="warn-line">Apply failed — machines that were touched were rolled back. Fix the cause and go back to the plan.</div>` : ""}
+    ${res && res.applied && !res.ok ? `<div class="warn-line">netplan is in place but a ping or SSH-pairing step failed — continue to Verify to see which</div>` : ""}`;
+}
+
+// ping ต่อลิงก์จาก result.pings — ตาราง from × to
+function cnwPingMatrix() {
+  const names = [...cnw.selected];
+  const pings = ((cnw.result || {}).pings || []);
+  if (!pings.length) return `<div class="dim">No ping results in the job output</div>`;
+  const cell = (a, b) => pings.filter(p => p.node === a && p.peer_node === b);
+  return `<table class="cnw-table cnw-ping"><thead><tr><th>from \\ to</th>${names.map(n => `<th>${esc(n)}</th>`).join("")}</tr></thead>
+    <tbody>${names.map(a => `<tr><td><b>${esc(a)}</b></td>${names.map(b => {
+      if (a === b) return `<td class="dim">—</td>`;
+      const rs = cell(a, b);
+      if (!rs.length) return `<td class="dim">?</td>`;
+      const ok = rs.every(r => r.ok);
+      return `<td class="${ok ? "pass" : "fail"}">${rs.map(r => `${r.ok ? "✓" : "✕"} ${esc(r.peer_ip || "")}`).join(" · ")}</td>`;
+    }).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function cnwStepVerify() {
+  if (cnw.busy) return `<div class="empty">${esc(cnw.busy)}</div>`;
+  const names = [...cnw.selected];
+  const res = cnw.result || {};
+  const v = cnwPlanView(cnw.plan) || { nodes: {} };
+  const ipOf = n => ((res.registry || {})[n] || {}).cluster_ip || (v.nodes[n] || {}).cluster_ip || "?";
+  const saved = names.filter(n => (res.registry || {})[n]);
+  const pairing = res.pairing || [];
+  const speed = res.speed || [];
+  return `<div class="${saved.length === names.length ? "ok-line" : "warn-line"}">${saved.length === names.length
+      ? `Done — cluster IPs saved to the registry: ${esc(names.map(n => `${n} ${ipOf(n)}`).join(" · "))}`
+      : `Registry updated for ${saved.length} of ${names.length} machines — ${esc(names.map(n => `${n} ${ipOf(n)}`).join(" · "))}`}</div>
+    <div class="cnw-h">Ping matrix</div>${cnwPingMatrix()}
+    <div class="cnw-h">Link speeds</div>
+    ${cnw.inspectError ? `<div class="warn-line">${esc(cnw.inspectError)}</div>` : ""}
+    <table class="cnw-table"><thead><tr><th>machine</th><th>port 1</th><th>port 2</th></tr></thead><tbody>
+    ${names.map(n => `<tr><td><b>${esc(n)}</b></td>${cnwPorts(n).map(p => {
+      const ip = p.ifaces.filter(i => i.ip).map(i => `${i.ip}${i.prefix ? "/" + i.prefix : ""}`).join(" ");
+      return `<td class="${p.cabled ? (p.speed >= 200 ? "pass" : "warn") : "dim"}">${p.cabled ? `${p.speed}G${p.speed && p.speed < 200 ? " (expected 200G — check the switch port)" : ""}` : "no cable"} <span class="mono">${esc(ip)}</span></td>`; }).join("")}</tr>`).join("")}
+    </tbody></table>
+    ${speed.length ? speed.map(s => `<div class="${s.gbps == null ? "dim" : s.gbps < 90 ? "warn" : "pass"}">${s.gbps == null ? "·" : s.gbps < 90 ? "!" : "✓"} iperf3 ${esc(s.from)} → ${esc(s.to)}: ${s.gbps == null ? esc(s.skipped || "no result") : `${esc(s.gbps)} Gbit/s${s.gbps < 90 ? " — below the ~100 Gbit/s PCIe ceiling; check the switch port speed" : ""}`}</div>`).join("") : ""}
+    <div class="cnw-h">SSH pairing</div>
+    ${pairing.length ? pairing.map(s => `<div class="${s.ok ? "pass" : "fail"}">${s.ok ? "✓" : "✕"} ${esc(s.step)}${s.detail && !s.ok ? ` — ${esc(s.detail)}` : ""}</div>`).join("")
+      : `<div class="dim">· no pairing result in the job output</div>`}
+    <div class="cnw-h">Cluster doctor <button data-cnw="doctor" style="margin-left:8px">Run doctor again</button></div>
+    ${cnw.doctor.length ? (cnw.doctor || []).map(d => `<div class="cnw-node"><div class="${d.ok ? "pass" : "fail"}">${d.ok ? "✓" : "✕"} ${esc(d.head)} ⇄ ${esc(d.worker)} — ${d.ok ? "ready for stacked" : esc(d.error || "not ready")}</div>
+      ${(d.findings || []).map(cnwFindingLine).join("")}</div>`).join("")
+      : `<div class="dim">Doctor has not run yet</div>`}
+    <div class="cnw-h">Undo</div>
+    ${names.map(n => cnwRemoveMarkup(n)).join("")}`;
+}
+
+// ปุ่มถอดเครือข่าย cluster ต่อเครื่อง — confirm ก่อน แล้วค่อยขอรหัส sudo ในฟอร์ม (ไม่ใช่ prompt())
+function cnwRemoveMarkup(n) {
+  const res = cnw.removeResult[n];
+  return `<div class="field cnw-rm" data-node="${esc(n)}" style="margin:0 0 4px">
+      <button data-cnw="remove-net" data-node="${esc(n)}" class="danger">Remove cluster network on ${esc(n)}</button>
+      ${cnw.removing === n ? `<input type="password" class="cnw-rm-pw" data-node="${esc(n)}" autocomplete="off" placeholder="sudo password on ${esc(n)} — used once" style="min-width:220px">
+        <button data-cnw="remove-go" data-node="${esc(n)}" class="danger">Remove</button>
+        <button data-cnw="remove-cancel">Cancel</button>` : ""}
+      ${res ? `<span class="${res.ok ? "pass" : "fail"}">${res.ok ? "✓" : "✕"} ${esc(res.text)}</span>` : ""}
+    </div>${res && res.steps ? (res.steps || []).map(s => `<div class="dim" style="margin-left:8px">${esc(cnwStepLine(s))}</div>`).join("") : ""}`;
+}
+
+function cnwInspectMarkup() {
+  return `<div class="field" style="margin:0 0 8px"><b>${esc(cnw.node)}</b> — ConnectX-7 QSFP ports
+      <span class="dim">${cnw.busy ? "" : "from the hub's latest inventory of this machine"}</span>
+      <span class="grow"></span><button data-cnw="inspect-recheck">Re-check</button></div>
+    ${cnw.busy ? `<div class="empty">${esc(cnw.busy)}</div>`
+      : cnw.inspectError ? `<div class="warn-line">${esc(cnw.inspectError)}</div>` : cnwPortsMarkup(cnw.node)}
+    <div class="cnw-h">Undo</div>${cnwRemoveMarkup(cnw.node)}`;
+}
+
+function cnwCanNext() {
+  const n = cnw.selected.size;
+  if (cnw.step === "devices") return n >= 2 && n <= 4;
+  if (cnw.step === "cabling") return !cnw.busy && !!cnw.inspect && !cnwMissingCables().length;
+  if (cnw.step === "plan") { const v = cnwPlanView(cnw.plan); return !cnw.busy && !!v && v.ok; }
+  if (cnw.step === "apply") return !!cnw.result && !!cnw.result.applied;
+  return false;
+}
+
+function cnwRender() {
+  if (!cnw) { cnwBox.hidden = true; cnwBox.innerHTML = ""; return; }
+  cnwBox.hidden = false;
+  if (cnw.mode === "inspect") {
+    cnwBox.innerHTML = `<div class="card cnw-box"><div class="pad">
+      <div class="field" style="margin:0 0 10px"><b class="grow">Cluster network ports</b><button data-cnw="close">Close</button></div>
+      <div id="cnw-body">${cnwInspectMarkup()}</div></div></div>`;
+    return;
+  }
+  const idx = CNW_STEPS.indexOf(cnw.step);
+  const body = { devices: cnwStepDevices, cabling: cnwStepCabling, plan: cnwStepPlan, apply: cnwStepApply, verify: cnwStepVerify }[cnw.step]();
+  const last = cnw.step === "verify";
+  const running = cnw.step === "apply" && cnw.job && !cnw.result;
+  cnwBox.innerHTML = `<div class="card cnw-box"><div class="pad">
+      <div class="field" style="margin:0 0 8px"><b class="grow">Set up cluster network</b>
+        <span class="dim">${cnw.selected.size ? esc([...cnw.selected].join(" ⇄ ")) : ""}</span>
+        <button data-cnw="close" ${running ? "disabled" : ""}>Close</button></div>
+      <div class="cnw-steps">${CNW_STEPS.map((s, i) => `<span class="cnw-step ${i === idx ? "on" : i < idx ? "done" : ""}" data-step="${s}">${i + 1}. ${CNW_STEP_LABEL[s]}</span>`).join("")}</div>
+      <div id="cnw-body" data-step="${cnw.step}">${body}</div>
+      <div class="field cnw-foot">
+        ${idx > 0 && !running && !last ? `<button data-cnw="back">Back</button>` : ""}
+        <span class="grow"></span>
+        ${last ? `<button data-cnw="close">Done</button>`
+          : `<button data-cnw="next" ${cnwCanNext() ? "" : "disabled"}>${cnw.step === "apply" ? "Verify" : "Next"}</button>`}
+      </div></div></div>`;
+}
+
+// ── flow ─────────────────────────────────────────────────────────────────
+async function cnwEnter(step) {
+  cnw.step = step;
+  if (step === "cabling") await cnwInspect([...cnw.selected]);
+  if (step === "plan") await cnwPlan();
+  if (step === "apply") { cnw.job = null; cnw.result = null; cnw.jobSteps = {}; cnw.steps = []; cnw.applyError = ""; }
+  if (step === "verify") await cnwVerify();
+  if (cnw) cnwRender();
+}
+
+async function cnwPlan() {
+  cnw.busy = "Planning addresses…";
+  cnwRender();
+  const kind = cnwTopology().kind;
+  const r = await cnwPost("/api/cluster/plan", { nodes: [...cnw.selected], base_subnet: cnw.subnet,
+                                                 ...(kind && kind !== "unknown" ? { topology: kind } : {}) });
+  if (!cnw) return;
+  cnw.busy = "";
+  cnw.plan = r.ok ? r.data : null;
+  cnw.planError = r.ok ? "" : r.error;
+}
+
+// step ที่ apply_plan รายงาน → ติ๊กต่อเครื่อง (ล้มแล้วไม่ถูกทับด้วยผ่านของ step ถัดไปในหมวดเดียวกัน)
+function cnwTrackSteps(steps) {
+  const names = [...cnw.selected];
+  cnw.steps = steps;
+  cnw.jobSteps = {};
+  for (const s of steps) {
+    const key = (CNW_JOB_STEPS.find(([, , re]) => re.test(s.step || "")) || [])[0];
+    if (/rollback/i.test(s.step || "")) { const t = cnw.jobSteps[s.node] || (cnw.jobSteps[s.node] = {}); t.rollback = s.ok ? "ok" : "bad"; continue; }
+    if (!key) continue;
+    // step ของการจับคู่ ssh พูดถึงทั้ง head และ worker — ให้ติ๊กทุกเครื่องที่ถูกเอ่ยชื่อ
+    const targets = key === "ssh" ? names.filter(n => s.node === n || (s.step || "").includes(n)) : [s.node];
+    for (const n of targets.filter(Boolean)) {
+      const t = cnw.jobSteps[n] || (cnw.jobSteps[n] = {});
+      const st = !s.ok ? "bad" : s.level === "warn" ? "warn" : "ok";
+      if (t[key] !== "bad") t[key] = st;
+    }
+  }
+}
+
+async function cnwApply(btn) {
+  const names = [...cnw.selected];
+  const inputs = [...cnwBox.querySelectorAll("input.cnw-pw")];
+  const passwords = {};
+  if (cnw.samePw) {
+    const all = (inputs.find(i => i.dataset.node === "*") || {}).value || "";
+    for (const n of names) passwords[n] = all;
+  } else {
+    for (const n of names) passwords[n] = (inputs.find(i => i.dataset.node === n) || {}).value || "";
+  }
+  const empty = names.filter(n => !passwords[n]);
+  if (empty.length) { cnw.applyError = `Enter the sudo password for ${empty.join(", ")}`; cnwRender(); return; }
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Starting…";
+  let r;
+  try { r = await cnwPost("/api/cluster/apply", { plan: cnw.plan, passwords }); }
+  finally {
+    btn.disabled = false; btn.textContent = label;
+    for (const i of inputs) i.value = "";               // ไม่ทิ้งรหัสผ่านค้างไว้ใน DOM
+    for (const n of names) passwords[n] = "";
+  }
+  if (!cnw) return;
+  const id = r.ok ? (r.data.id || (r.data.job || {}).id) : "";
+  if (!id) { cnw.applyError = r.error || "apply did not return a job id"; cnwRender(); return; }
+  cnw.job = id; cnw.result = null; cnw.jobSteps = {}; cnw.steps = [];
+  for (const n of names) cnw.jobSteps[n] = { sudo: "run" };
+  // wait:true ตอบจบในคำขอเดียว — ไม่ต้องตาม
+  if (r.data.running === false && r.data.result) { cnwTrackSteps(r.data.steps || []); cnw.result = r.data.result; }
+  else await cnwFollowApply(id);
+  if (!cnw || cnw.job !== id) return;
+  if (cnw.result && cnw.result.applied) { await cnwEnter("verify"); return; }
+  cnwRender();
+}
+
+// ตามงาน apply จนจบ — วาดติ๊ก/บันทึกใหม่ทุกรอบโดยไม่วาดทั้งกล่อง (ผู้ใช้อาจกำลังเลื่อนดู log)
+async function cnwFollowApply(id) {
+  cnwRender();
+  for (;;) {
+    let d;
+    try {
+      const r = await api(`/api/cluster/apply/${encodeURIComponent(id)}`);
+      if (!r.ok) { cnw.applyError = `Lost track of job ${id} (HTTP ${r.status})`; cnw.result = { ok: false, applied: false }; return; }
+      d = await r.json();
+    } catch (err) { cnw.applyError = `Could not reach LMDS — ${String(err && err.message || err)}`; cnw.result = { ok: false, applied: false }; return; }
+    if (!cnw || cnw.job !== id) return;
+    cnwTrackSteps(d.steps || []);
+    const wrap = document.getElementById("cnw-prog-wrap");
+    if (wrap) wrap.innerHTML = cnwProgressMarkup();
+    const log = document.getElementById("cnw-log");
+    if (log) { log.textContent = cnw.steps.length ? (cnw.steps || []).map(cnwStepLine).join("\n") : "Started…"; log.scrollTop = log.scrollHeight; }
+    if (!d.running) {
+      cnw.result = d.result || { ok: false, applied: false };
+      // งานที่จบแล้ว: steps ของ result ครบกว่า (progress อาจตกหล่นถ้าเปิดหน้าทีหลัง) — แต่ห้ามทับด้วยลิสต์ว่าง
+      const all = (d.result && d.result.steps && d.result.steps.length) ? d.result.steps : (d.steps || []);
+      cnwTrackSteps(all);
+      if (log) log.textContent = cnw.steps.length ? (cnw.steps || []).map(cnwStepLine).join("\n") : "Started…";
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1200));
+  }
+}
+
+async function cnwVerify() {
+  const names = [...cnw.selected];
+  cnw.busy = "Verifying links and running doctor…";
+  cnwRender();
+  await cnwInspect(names);
+  if (!cnw) return;
+  cnw.busy = "Verifying links and running doctor…";
+  await cnwDoctor();
+  if (!cnw) return;
+  cnw.busy = "";
+  loadCluster(true).catch(() => {});   // การ์ดต้องเห็น cluster IP ใหม่โดยไม่ต้องกดตรวจเอง
+}
+
+async function cnwDoctor() {
+  const names = [...cnw.selected];
+  const head = names[0];
+  cnw.doctor = [];
+  for (const worker of names.slice(1)) {
+    try {
+      const r = await api(`/api/cluster/doctor?head=${encodeURIComponent(head)}&worker=${encodeURIComponent(worker)}`);
+      const d = await r.json().catch(() => ({}));
+      cnw.doctor.push({ head, worker, ok: r.ok && !!d.ok, findings: d.findings || [],
+                        error: r.ok ? "" : (typeof d.detail === "string" ? d.detail : `HTTP ${r.status}`) });
+    } catch (err) {
+      cnw.doctor.push({ head, worker, ok: false, findings: [], error: `Could not reach LMDS — ${String(err && err.message || err)}` });
+    }
+  }
+}
+
+async function cnwRemoveNet(node, btn) {
+  const input = cnwBox.querySelector(`input.cnw-rm-pw[data-node="${CSS.escape(node)}"]`);
+  const password = input ? input.value : "";
+  if (!password) { cnw.removeResult[node] = { ok: false, text: "enter the sudo password first" }; cnwRender(); return; }
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Removing…";
+  let r;
+  try { r = await cnwPost("/api/cluster/remove-net", { node, password }); }
+  finally { btn.disabled = false; btn.textContent = label; if (input) input.value = ""; }
+  if (!cnw) return;
+  cnw.removing = null;
+  const d = r.data || {};
+  const failed = (d.steps || []).find(s => !s.ok);
+  cnw.removeResult[node] = r.ok && d.ok !== false
+    ? { ok: true, steps: d.steps, text: d.removed ? `cluster network removed from ${node} — the netplan file is kept under /root/netplan-disabled`
+                                     : d.absent ? `nothing to remove — ${node} had no LMDS netplan file` : (d.detail || `done on ${node}`) }
+    : { ok: false, steps: d.steps, text: r.error || (failed ? `${failed.step}${failed.detail ? " — " + failed.detail : ""}` : d.detail || "remove failed") };
+  cnwRender();
+  loadCluster(true).catch(() => {});
+}
+
+cnwBox.addEventListener("change", e => {
+  if (!cnw) return;
+  const pick = e.target.closest("input.cnw-pick");
+  if (pick) { pick.checked ? cnw.selected.add(pick.dataset.node) : cnw.selected.delete(pick.dataset.node); cnwRender(); return; }
+  if (e.target.id === "cnw-samepw") { cnw.samePw = !!e.target.checked; cnwRender(); return; }
+  if (e.target.id === "cnw-subnet") cnw.subnet = e.target.value.trim();
+});
+
+cnwBox.addEventListener("click", async e => {
+  if (!cnw) return;
+  const btn = e.target.closest("button[data-cnw]");
+  if (!btn) return;
+  const act = btn.dataset.cnw;
+  if (act === "close") { cnw = null; cnwRender(); return; }
+  if (act === "next") {
+    if (!cnwCanNext()) return;
+    await cnwEnter(CNW_STEPS[CNW_STEPS.indexOf(cnw.step) + 1]);
+    return;
+  }
+  if (act === "back") { cnw.step = CNW_STEPS[Math.max(0, CNW_STEPS.indexOf(cnw.step) - 1)]; cnwRender(); return; }
+  if (act === "recheck") { await cnwInspect([...cnw.selected]); if (cnw) cnwRender(); return; }
+  if (act === "inspect-recheck") {
+    cnw.busy = `Contacting ${cnw.node}…`; cnwRender();
+    try { await loadNode(cnw.node); } catch { /* การ์ดบอกเองว่าต่อไม่ติด */ }
+    if (!cnw || cnw.mode !== "inspect") return;
+    cnw.busy = ""; cnwInspectFromInventory(cnw.node); cnwRender(); return;
+  }
+  if (act === "replan") {
+    const input = document.getElementById("cnw-subnet");
+    if (input) cnw.subnet = input.value.trim() || CNW_DEFAULT_SUBNET;
+    await cnwPlan(); if (cnw) cnwRender(); return;
+  }
+  if (act === "yaml") {
+    const name = btn.dataset.node;
+    cnw.yamlOpen.has(name) ? cnw.yamlOpen.delete(name) : cnw.yamlOpen.add(name);
+    const pre = cnwBox.querySelector(`pre.cnw-yaml[data-node="${CSS.escape(name)}"]`);
+    if (pre) pre.hidden = !cnw.yamlOpen.has(name);
+    btn.textContent = cnw.yamlOpen.has(name) ? "Hide netplan YAML" : "Show netplan YAML";
+    return;
+  }
+  if (act === "apply") { await cnwApply(btn); return; }
+  if (act === "doctor") {
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = "Checking…";
+    try { await cnwDoctor(); } finally { btn.disabled = false; btn.textContent = label; }
+    if (cnw) cnwRender(); return;
+  }
+  if (act === "remove-net") {
+    const node = btn.dataset.node;
+    if (!confirm(`Remove the cluster network from ${node}?\n\nThe netplan file the wizard wrote is moved aside and the QSFP ports lose their IPs.\nStacked models on that machine stop working until the network is set up again.`)) return;
+    cnw.removing = node; delete cnw.removeResult[node]; cnwRender(); return;
+  }
+  if (act === "remove-go") { await cnwRemoveNet(btn.dataset.node, btn); return; }
+  if (act === "remove-cancel") { cnw.removing = null; cnwRender(); return; }
+});
+
+document.addEventListener("click", e => {
+  if (e.target.closest("#cluster-net-setup")) { openClusterNetWizard(); return; }
+  const wz = e.target.closest('button[data-cact="net-wizard"]');
+  if (wz) { openClusterNetWizard((wz.dataset.nodes || "").split(",").filter(Boolean)); return; }
+  const insp = e.target.closest('button[data-cact="inspect-net"]');
+  if (insp) openNetInspect(insp.dataset.node);
+});
 
 // ── weights already on disk / proven recipes ─────────────────────────────
 // ทั้งสองส่วนเป็น read-only — ปุ่มที่เปลี่ยนสถานะเครื่องอยู่ที่อื่นทั้งหมด
@@ -4412,9 +5116,9 @@ async function loadRecipes() {
   const { recipes, source, default_repo } = await fetchRecipes();
   // ที่มาของสูตร: ต้องเห็นว่าชุดนี้ดึงมาจากรีโปไหน commit ไหน ไม่งั้นไม่มีทางรู้ว่าอันไหนเก่า
   const origin = source && source.repo
-    ? `${recipes.length} สูตร · ${source.count} ตัวมาจาก ${esc(source.repo)} @ ${esc(source.commit || "?")}
-       ${source.synced_at ? "· ดึงเมื่อ " + esc(source.synced_at) : ""}`
-    : `${recipes.length} สูตรที่มากับ LMDS · ยังไม่เคยดึงจากรีโป controller ของทีม
+    ? `${recipes.length} recipes · ${source.count} from ${esc(source.repo)} @ ${esc(source.commit || "?")}
+       ${source.synced_at ? "· synced " + esc(source.synced_at) : ""}`
+    : `${recipes.length} recipes bundled with LMDS · never synced from the team's controller repo
        <span class="dim">(${esc(default_repo || "")})</span>`;
   box.innerHTML = `<div class="pad">
     <div class="row between" style="margin-bottom:10px">
@@ -4440,12 +5144,12 @@ async function loadRecipes() {
 }
 
 async function syncRecipes(button) {
-  const d = await withButton(button, "กำลังดึง…", () =>
+  const d = await withButton(button, "Syncing…", () =>
     api("/api/recipes/sync", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
   if (!d) return;
   // ข้ามอะไรไปบ้างต้องบอก ไม่งั้น controller ตัวใหม่ที่ยังอ่านไม่ได้จะหายเงียบ
-  const skipped = (d.skipped || []).length ? `\n\nข้าม ${d.skipped.length} ไฟล์:\n· ${d.skipped.join("\n· ")}` : "";
-  alert(`ดึงมาแล้ว ${d.count} สูตร จาก ${d.repo} @ ${d.commit}${skipped}`);
+  const skipped = (d.skipped || []).length ? `\n\nSkipped ${d.skipped.length} files:\n· ${d.skipped.join("\n· ")}` : "";
+  alert(`Synced ${d.count} recipes from ${d.repo} @ ${d.commit}${skipped}`);
   loadRecipes();
 }
 
@@ -4465,7 +5169,7 @@ async function refresh() {
     // token ถูกเพิกถอน/เปลี่ยนระหว่างเปิดหน้าค้างไว้ — กลับไปหน้า login แทนที่จะโชว์หน้าเปล่า
     if (h.status === 401 || h.status === 429) {
       const d = await h.json().catch(() => ({}));
-      loginScreen(d.detail || "token ใช้ไม่ได้แล้ว");
+      loginScreen(d.detail || "The token no longer works");
       return;
     }
     const models = (await m.json()).models;
@@ -4501,9 +5205,9 @@ api("/api/version?check_repo=true").then(r => r.json()).then(d => {
   // สาเหตุที่ทำให้เลข commit ข้างบนนี้เชื่อไม่ได้ และทำให้ทั้งฟลีตดูเหมือนไม่ตรงกัน
   el.innerHTML = `v${esc(hubBuild.version)}${hubBuild.commit ? " · " + esc(hubBuild.commit) : ""}`
     + (hubNeedsRestart()
-        ? ` <span class="tag warn" title="ติดตั้ง ${esc(hubBuild.installed)} ไว้แล้ว แต่ตัวที่รันอยู่ยังเป็น ${esc(hubBuild.commit)}
-            — รีสตาร์ตก่อน: systemctl --user restart lmds-web">รอรีสตาร์ต</span>`
-        : behind ? ` <span class="tag warn" title="บน GitHub อยู่ที่ ${esc(hubBuild.upstream)}">มีอัปเดต</span>` : "");
+        ? ` <span class="tag warn" title="${esc(hubBuild.installed)} is installed but ${esc(hubBuild.commit)} is still running
+            — restart first: systemctl --user restart lmds-web">restart pending</span>`
+        : behind ? ` <span class="tag warn" title="GitHub is at ${esc(hubBuild.upstream)}">update available</span>` : "");
   // ปุ่มอัปเดตขึ้นเสมอเมื่อ hub ติดตั้งจาก git checkout — ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง"
   // เพราะ upstream อ่านไม่ได้ (ไม่มีเน็ต/ถามไม่ทัน) ก็ยังต้องกดอัปเดตได้อยู่ดี
   const btn = document.getElementById("update");
@@ -4814,7 +5518,7 @@ function summaryMarkup(host, sum) {
        ${chipIcon(icon)}<b>${pct}%</b>${extra ? `<span class="dim">${esc(extra)}</span>` : ""}</span>`;
   // จำนวนโมเดลที่รันมาก่อนตัวเลขทรัพยากร — เป็นคำถามแรกที่คนถามกับเครื่องที่ย่ออยู่
   const run = sum && sum.running != null
-    ? `<span class="chip ${sum.running ? "run" : "idle"}" title="โมเดลที่รันอยู่ / ที่ deploy ไว้">
+    ? `<span class="chip ${sum.running ? "run" : "idle"}" title="models running / deployed">
          ${chipIcon("i-server")}<b>${sum.running}</b><span class="dim">/${sum.total ?? "?"}</span></span>`
     : "";
   // ดิสก์นับเป็น "เหลือเท่าไร" เหมือนเกจข้างใน — คำถามจริงตอนจะโหลดโมเดล 150 GB คือเหลือพอไหม
@@ -4822,16 +5526,16 @@ function summaryMarkup(host, sum) {
   const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
   const diskPct = free != null && diskTotal ? Math.round(free / diskTotal * 100) : null;
   const diskChip = diskPct == null ? "" :
-    `<span class="chip" title="ดิสก์ที่เหลือ" style="--c:${diskPct <= 5 ? "var(--bad)" : diskPct <= 15 ? "var(--warn)" : "var(--fg3)"}">
-       ${chipIcon("i-disk")}<b>${diskPct}%</b><span class="dim"> ${gb(free)} เหลือ</span></span>`;
+    `<span class="chip" title="free disk" style="--c:${diskPct <= 5 ? "var(--bad)" : diskPct <= 15 ? "var(--warn)" : "var(--fg3)"}">
+       ${chipIcon("i-disk")}<b>${diskPct}%</b><span class="dim"> ${gb(free)} free</span></span>`;
   // อุณหภูมิ GPU — ตัวที่บอกว่าเครื่องกำลังลำบากก่อนที่ throughput จะตก
   const temp = gpu ? gpu.temperature_c : null;
   const tempChip = temp == null ? "" :
-    `<span class="chip" title="อุณหภูมิ GPU" style="--c:${temp >= 85 ? "var(--bad)" : temp >= 75 ? "var(--warn)" : "var(--fg3)"}">
+    `<span class="chip" title="GPU temperature" style="--c:${temp >= 85 ? "var(--bad)" : temp >= 75 ? "var(--warn)" : "var(--fg3)"}">
        ${chipIcon("i-temp")}<b>${Math.round(temp)}°</b></span>`;
   return run
     + chip("i-pulse", "CPU", cpu == null ? null : Math.min(cpu, 100))
-    + chip("i-chip", unified ? "หน่วยความจำรวม (unified)" : "RAM", mem,
+    + chip("i-chip", unified ? "unified memory" : "RAM", mem,
            used != null ? ` ${Math.round(used)}/${gb(total)}` : "")
     + chip("i-chip", "VRAM", vram)
     + chip("i-spark", "GPU load", busy)
@@ -4845,10 +5549,10 @@ function summaryMarkup(host, sum) {
 function cacheChip(cache) {
   if (!cache || !cache.exists || cache.owner_ok !== false) return "";
   const why = cache.writable === false
-    ? "แคชโมเดลเป็นของ root และ user เขียนไม่ได้ — โหลดโมเดลใหม่ไม่ลง"
-    : "มีไฟล์ของ root ปนอยู่ในแคชโมเดล — remove/sync-worker จะล้ม";
-  return `<span class="chip" style="--c:var(--bad)" title="${esc(why)} · กดปุ่ม “แก้สิทธิ์”">
-            สิทธิ์แคช <b>ต้องแก้</b></span>`;
+    ? "The model cache is owned by root and the user cannot write to it — new models will not download"
+    : "root-owned files are mixed into the model cache — remove/sync-worker will fail";
+  return `<span class="chip" style="--c:var(--bad)" title="${esc(why)} · press “Fix permissions”">
+            cache permissions <b>need fixing</b></span>`;
 }
 
 // IP ที่ "เครื่องนั้น" รายงานว่าตัวเองถืออยู่ — ไม่ใช่ที่อยู่ที่ hub ใช้ SSH เข้าไป
@@ -4861,11 +5565,11 @@ function ipLabel(host) {
 
 function ipTitle(host) {
   const list = (host && host.ips) || [];
-  const head = "IP ที่เครื่องนี้รายงานว่าตัวเองถืออยู่ — คนละอย่างกับที่อยู่ที่ hub ใช้ SSH เข้าไป";
+  const head = "IPs this machine reports holding — not the same thing as the address the hub uses for SSH";
   if (!list.length) return head;
   return head + "\n" + list.map(a =>
     `${a.ip}${a.prefix != null ? "/" + a.prefix : ""}${a.iface ? "  " + a.iface : ""}`
-    + (a.link_local ? "  · link-local ยังไม่ได้ตั้งค่า" : a.primary ? "  · ออกเน็ตทางนี้" : "")
+    + (a.link_local ? "  · link-local, not configured" : a.primary ? "  · default route" : "")
   ).join("\n");
 }
 
@@ -4979,7 +5683,7 @@ function loginScreen(message = "") {
                placeholder="paste the token lmds web printed">
         <div id="tok-err" class="warn-line" style="color:var(--bad);min-height:18px">${esc(message)}</div>
         <button id="tok-go" style="width:100%">Sign in</button>
-        <p class="dim" style="margin-top:14px">ลืม token? รันบนเครื่องนั้น: <code>lmds web --status</code></p>
+        <p class="dim" style="margin-top:14px">Forgot the token? Run on that machine: <code>lmds web --status</code></p>
       </div>
     </div>`;
   const input = document.getElementById("tok");
@@ -4992,7 +5696,7 @@ function loginScreen(message = "") {
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       // 429 = ผิดหลายครั้งเกินไป · ข้อความจาก server บอกว่าต้องรอนานแค่ไหน
-      err.textContent = d.detail || "token ไม่ถูกต้อง";
+      err.textContent = d.detail || "Wrong token";
       input.select();
       return;
     }
@@ -5291,7 +5995,7 @@ async function boot() {
     const ok = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": token } });
     if (!ok.ok) {
       const d = await ok.json().catch(() => ({}));
-      loginScreen(d.detail || "token ที่จำไว้ใช้ไม่ได้แล้ว");
+      loginScreen(d.detail || "The saved token no longer works");
       return;
     }
     document.getElementById("signout").hidden = false;
@@ -5324,17 +6028,17 @@ async function loadProvider() {
     ? `<b>${esc(p.name)}</b> · ${esc(p.model)}${p.has_key ? "" : " · no key"}`
     : "No LLM set · rule-based");
   btn.title = p.configured
-    ? `${p.name} · ${p.model}${p.base_url ? " · " + p.base_url : ""}${p.has_key ? " · key " + p.key_hint : " · ยังไม่ได้ใส่ key"}`
-    : "ยังไม่ได้ตั้ง LLM — deploy จะใช้ rule-based + recipes";
+    ? `${p.name} · ${p.model}${p.base_url ? " · " + p.base_url : ""}${p.has_key ? " · key " + p.key_hint : " · no key set"}`
+    : "No LLM configured — deploy uses rule-based planning + recipes";
 }
 
 function providerForm(message = "") {
   const p = providerState || { choices: ["openai"], defaults: {} };
   wiz.hidden = false;
   wiz.innerHTML = `<div class="pad">
-    <div class="name">LLM ที่ใช้ช่วยวางแผน deploy</div>
-    <div class="dim" style="margin-bottom:10px">ไม่ตั้งก็ deploy ได้ — ระบบจะใช้ rule-based
-      + สูตรที่ผ่านการรันจริง (recipes) แทน</div>
+    <div class="name">LLM that helps plan deployments</div>
+    <div class="dim" style="margin-bottom:10px">Optional — without one, deploy uses rule-based planning
+      + proven recipes instead</div>
     <div class="field">
       <label>provider</label>
       <select id="p-name" style="flex:none">
@@ -5344,7 +6048,7 @@ function providerForm(message = "") {
       <input id="p-model" value="${esc(p.model || "")}" placeholder="empty = the provider default"
              list="p-models">
       <datalist id="p-models"></datalist>
-      <button id="p-list" title="ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง">List models</button>
+      <button id="p-list" title="Ask the provider which models this key can use">List models</button>
     </div>
     <div class="field" id="p-models-box" hidden></div>
     <div class="field">
@@ -5353,19 +6057,19 @@ function providerForm(message = "") {
     </div>
     <div class="field">
       <label>API key</label>
-      <input id="p-key" type="password" placeholder="${p.has_key ? "มีอยู่แล้ว " + esc(p.key_hint) + " — ปล่อยว่าง = ใช้ตัวเดิม" : "ยังไม่ได้ใส่"}">
+      <input id="p-key" type="password" placeholder="${p.has_key ? "set: " + esc(p.key_hint) + " — leave empty to keep it" : "not set"}">
       <button id="p-save">Save</button>
       <button id="p-close">Close</button>
     </div>
     ${message ? `<div class="warn-line">${esc(message)}</div>` : ""}
-    <div class="dim">key ถูกเก็บใน keyring ของเครื่องนี้ (ไม่มี keyring = ไฟล์สิทธิ์ 0600)
-      และไม่เคยถูกส่งกลับมาที่หน้าเว็บ — ช่องนี้จึงว่างเสมอแม้ตั้งไว้แล้ว</div>
+    <div class="dim">The key is kept in this machine's keyring (no keyring = a 0600 file)
+      and is never sent back to the page — so this box is always empty even when set</div>
   </div>`;
   const defaults = p.defaults || {};
   document.getElementById("p-list").onclick = () => listProviderModels();
   document.getElementById("p-name").onchange = e => {
     const model = document.getElementById("p-model");
-    if (model && !model.value.trim()) model.placeholder = defaults[e.target.value] || "ต้องระบุเอง";
+    if (model && !model.value.trim()) model.placeholder = defaults[e.target.value] || "type one";
   };
 }
 
@@ -5377,7 +6081,7 @@ async function listProviderModels() {
   const btn = document.getElementById("p-list");
   if (!box) return;
   box.hidden = false;
-  box.innerHTML = `<span class="muted">กำลังถาม ${esc(val("p-name"))}…</span>`;
+  box.innerHTML = `<span class="muted">Asking ${esc(val("p-name"))}…</span>`;
   // ถาม provider ข้ามอินเทอร์เน็ต — ล่ม/ช้าได้ ปุ่มต้องไม่ค้างและต้องบอกว่าเกิดอะไรขึ้น
   let d = null;
   try {
@@ -5386,26 +6090,26 @@ async function listProviderModels() {
       body: JSON.stringify({ name: val("p-name"), base_url: val("p-url"), api_key: val("p-key") }),
     });
     d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "ขอรายชื่อไม่สำเร็จ");
+    if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Could not list models");
   } catch (err) {
     box.innerHTML = `<span class="warn-line" style="color:var(--bad)">${esc(String(err.message || err))}</span>
-      <span class="dim">พิมพ์ชื่อโมเดลเองได้ตามปกติ</span>`;
+      <span class="dim">You can still type a model name</span>`;
     return;
   } finally {
     if (btn) btn.disabled = false;
   }
   const models = d.models || [];
   if (!models.length) {
-    box.innerHTML = `<span class="dim">provider นี้ไม่มีรายชื่อให้ดึง — พิมพ์ชื่อโมเดลเอง</span>`;
+    box.innerHTML = `<span class="dim">This provider has no model list — type the model name</span>`;
     return;
   }
   // เติมทั้ง datalist (พิมพ์แล้วเลือก) และปุ่มลัดของตัวที่น่าจะใช้ — คลิกเดียวจบ
   const list = document.getElementById("p-models");
   if (list) list.innerHTML = models.map(m => `<option value="${esc(m)}">`).join("");
-  box.innerHTML = `<span class="dim">${models.length} โมเดลที่ key นี้ใช้ได้ — คลิกเพื่อเลือก:</span>
+  box.innerHTML = `<span class="dim">${models.length} models this key can use — click to pick:</span>
     <div class="field" style="width:100%;gap:6px">${models.slice(0, 40).map(m =>
       `<button data-pick-model="${esc(m)}" style="font-size:calc(12px * var(--fs))">${esc(m)}</button>`).join("")}</div>
-    ${models.length > 40 ? `<span class="dim">…และอีก ${models.length - 40} ตัว (พิมพ์ในช่อง model เพื่อค้น)</span>` : ""}`;
+    ${models.length > 40 ? `<span class="dim">…and ${models.length - 40} more (type in the model box to search)</span>` : ""}`;
 }
 
 // ── command palette (⌘K / Ctrl-K) ───────────────────────────────────────
@@ -5417,7 +6121,7 @@ function palCommands() {
   const items = [];
   for (const [slug, m] of models_by_slug) {
     items.push({ label: slug, hint: `${m.engine || ""}${m.running ? " · running" : ""}`,
-                 where: "เครื่องนี้", run: () => jumpToLocal(slug) });
+                 where: "this machine", run: () => jumpToLocal(slug) });
   }
   for (const [name, data] of lastNodeData) {
     for (const m of (data.models || [])) {
@@ -5425,16 +6129,16 @@ function palCommands() {
                    where: name, run: () => jumpToNode(name, m.slug) });
     }
   }
-  items.push({ label: "Deploy model", hint: "สร้าง bundle ใหม่", where: "หน้าเว็บ",
+  items.push({ label: "Deploy model", hint: "build a new bundle", where: "page",
                run: () => document.getElementById("new").click() });
-  items.push({ label: "Check cluster", hint: "เครื่องไหน stacked ด้วยกันได้", where: "หน้าเว็บ",
+  items.push({ label: "Check cluster", hint: "which machines can stack together", where: "page",
                run: () => document.getElementById("cluster-check").click() });
-  items.push({ label: "Add machine", hint: "เพิ่มเครื่องเข้าทะเบียน", where: "หน้าเว็บ",
+  items.push({ label: "Add machine", hint: "register a machine", where: "page",
                run: () => document.getElementById("node-new").click() });
-  items.push({ label: "Scan weights", hint: "weight ที่มีอยู่แล้วบนดิสก์", where: "หน้าเว็บ",
+  items.push({ label: "Scan weights", hint: "weights already on disk", where: "page",
                run: () => document.getElementById("scan-run")?.click() });
-  items.push({ label: "LLM provider", hint: "เปลี่ยน provider / model / base URL / key",
-               where: "หน้าเว็บ", run: () => providerForm() });
+  items.push({ label: "LLM provider", hint: "change provider / model / base URL / key",
+               where: "page", run: () => providerForm() });
   return items;
 }
 
@@ -5470,7 +6174,7 @@ function palRender(query) {
         aria-selected="${n === palIndex}"><b style="font-weight:500">${esc(i.label)}</b>
         <span class="dim">${esc(i.hint || "")}</span>
         <span class="where">${esc(i.where || "")}</span></div>`).join("")
-    : `<div class="pal-empty">ไม่พบ "${esc(query)}"</div>`;
+    : `<div class="pal-empty">No match for "${esc(query)}"</div>`;
   list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
 }
 
@@ -5484,7 +6188,7 @@ function palOpen() {
   back.innerHTML = `<div class="pal" role="dialog" aria-label="Command palette">
       <input id="pal-q" placeholder="Search models, machines or commands…" autocomplete="off">
       <div class="pal-list" id="pal-list" role="listbox"></div>
-      <div class="pal-foot"><span>↑↓ เลือก</span><span>Enter ไป</span><span>Esc ปิด</span></div>
+      <div class="pal-foot"><span>↑↓ select</span><span>Enter go</span><span>Esc close</span></div>
     </div>`;
   document.body.appendChild(back);
   back.onclick = e => { if (e.target === back) palClose(); };
@@ -5547,7 +6251,7 @@ document.addEventListener("click", async e => {
     e.target.disabled = false;
   }
   const d = await r.json();
-  if (!r.ok) { providerForm(typeof d.detail === "string" ? d.detail : "บันทึกไม่สำเร็จ"); return; }
+  if (!r.ok) { providerForm(typeof d.detail === "string" ? d.detail : "Save failed"); return; }
   providerState = d;
   loadProvider();
   wiz.hidden = true;
@@ -5588,7 +6292,7 @@ function renderDiff(text) {
 
 async function proposeScriptEdit(slug, node, box, question) {
   box.hidden = false;
-  box.innerHTML = `<span class="dim">กำลังอ่าน controller แล้วให้ผู้ช่วยดู…</span>`;
+  box.innerHTML = `<span class="dim">Reading the controller and handing it to the assistant…</span>`;
   let plan;
   try {
     const response = await api(`/api/models/${encodeURIComponent(slug)}/script/propose`, {
@@ -5607,12 +6311,12 @@ async function proposeScriptEdit(slug, node, box, question) {
     // ทางที่ดีกว่าเสมอ: bundle ไม่ต่างจากที่ LMDS สร้าง และไม่หายตอน generate ใหม่
     box.innerHTML = `<p class="why">${esc(plan.explanation)}</p>
       <pre>${esc(plan.command)}</pre>
-      <span class="dim">ทำได้ด้วย option ที่มีอยู่แล้ว — ไม่ต้องแก้ไฟล์
-        · สั่งได้จากปุ่มด้านบน หรือรันคำสั่งนี้บนเครื่องนั้น</span>`;
+      <span class="dim">Possible with an existing option — no file edit needed
+        · use the button above, or run this command on that machine</span>`;
     return;
   }
   if (plan.kind !== "edit") {
-    box.innerHTML = `<div class="warn-note">${esc(plan.explanation || "ทำให้ไม่ได้")}</div>`;
+    box.innerHTML = `<div class="warn-note">${esc(plan.explanation || "Cannot be done")}</div>`;
     return;
   }
 
@@ -5621,11 +6325,11 @@ async function proposeScriptEdit(slug, node, box, question) {
     <div class="field">
       <button class="script-apply">Apply</button>
       <button class="script-cancel">Cancel</button>
-      <span class="dim">สำรองไฟล์เดิมไว้ให้อัตโนมัติ และตรวจ bash -n ก่อนเขียน</span>
+      <span class="dim">The original file is backed up automatically and checked with bash -n before writing</span>
     </div>`;
   box.querySelector(".script-cancel").onclick = () => { box.hidden = true; box.innerHTML = ""; };
   box.querySelector(".script-apply").onclick = async () => {
-    box.innerHTML = `<span class="dim">กำลังเขียน…</span>`;
+    box.innerHTML = `<span class="dim">Writing…</span>`;
     try {
       const response = await api(`/api/models/${encodeURIComponent(slug)}/script/apply`, {
         method: "POST",
@@ -5634,9 +6338,9 @@ async function proposeScriptEdit(slug, node, box, question) {
       });
       const done = await response.json();
       if (!response.ok) throw new Error(done.detail || `HTTP ${response.status}`);
-      box.innerHTML = `<p class="why">เขียนแล้ว: <code>${esc(done.path)}</code></p>
-        <span class="dim">ไฟล์เดิมอยู่ที่ <code>${esc(done.backup)}</code>
-          · ต้อง restart โมเดลถึงจะมีผล</span>`;
+      box.innerHTML = `<p class="why">Written: <code>${esc(done.path)}</code></p>
+        <span class="dim">The previous file is at <code>${esc(done.backup)}</code>
+          · restart the model for it to take effect</span>`;
     } catch (err) {
       box.innerHTML = `<div class="warn-note">${esc(err.message || err)}</div>`;
     }
@@ -5716,7 +6420,7 @@ function chatCheckedHtml(checked) {
       p.target && p.target !== "this" ? " @ " + esc(p.target) : ""}</span>`);
   for (const q of checked.docs || []) bits.push(`<span>📖 ${esc(q)}</span>`);
   if (checked.note) bits.push(`<span>${esc(checked.note)}</span>`);
-  return bits.length ? `<div class="chat-checked">ดูมาแล้ว: ${bits.join("")}</div>` : "";
+  return bits.length ? `<div class="chat-checked">Checked: ${bits.join("")}</div>` : "";
 }
 
 // การ์ดงานที่เสนอ — คำสั่งจริงอยู่ตรงนี้ให้อ่านก่อนกด ไม่ใช่คำอธิบายว่าจะทำอะไร
@@ -5725,32 +6429,32 @@ function chatPlanHtml(plan) {
   const steps = (plan.steps || []).map(s => {
     const mark = s.done ? ((s.result && s.result.ok) ? "✓" : "✗") : "○";
     const out = s.result
-      ? `<pre>${esc(((s.result.output || s.result.error || "").slice(-1500)) || "(ไม่มีผลลัพธ์)")}</pre>`
+      ? `<pre>${esc(((s.result.output || s.result.error || "").slice(-1500)) || "(no output)")}</pre>`
       : "";
     return `<li><b>${mark} ${esc(s.title)}</b>${
       s.target && s.target !== "this" ? ` <span class="impact">@ ${esc(s.target)}</span>` : ""}
       <pre>${esc(s.command)}</pre>
-      <div class="impact">ผลกระทบ: ${esc(s.impact || "-")}</div>${out}</li>`;
+      <div class="impact">Impact: ${esc(s.impact || "-")}</div>${out}</li>`;
   }).join("");
 
   const id = esc(plan.ticket);
   let menu;
   if (plan.expired) {
-    menu = '<div class="menu-why">ข้อเสนอนี้หมดอายุแล้ว — ถามใหม่ถ้ายังต้องการ</div>';
+    menu = '<div class="menu-why">This proposal has expired — ask again if you still want it</div>';
   } else if (!plan.mode) {
     menu = `<div class="menu">${(plan.menu || []).map(m =>
       `<button class="${m.mode === "apply" ? "go" : ""}" title="${esc(m.detail)}"
         onclick="chatPlanChoose('${id}','${esc(m.mode)}',this)">${esc(m.label)}</button>`).join("")}</div>`;
   } else if (plan.mode === "hold") {
-    menu = '<div class="menu-why">ยังไม่ได้แตะเครื่อง — คำสั่งข้างบนเอาไปรันเองได้</div>';
+    menu = '<div class="menu-why">Nothing touched yet — you can run the command above yourself</div>';
   } else if (!plan.finished) {
     menu = `<div class="menu"><button class="go"
-      onclick="chatPlanAdvance('${id}',this)">ทำขั้นถัดไป</button></div>`;
+      onclick="chatPlanAdvance('${id}',this)">Do the next step</button></div>`;
   } else {
-    menu = '<div class="menu-why">ทำครบทุกขั้นแล้ว</div>';
+    menu = '<div class="menu-why">All steps done</div>';
   }
 
-  return `<div class="chat-plan"><b>งานที่เสนอ${plan.why ? ": " + esc(plan.why) : ""}</b>`
+  return `<div class="chat-plan"><b>Proposed task${plan.why ? ": " + esc(plan.why) : ""}</b>`
     + `<ol>${steps}</ol>${menu}</div>`;
 }
 
@@ -5770,7 +6474,7 @@ async function chatPlanChoose(ticketId, mode, button) {
 }
 
 async function chatPlanAdvance(ticketId, button) {
-  const data = await withButton(button, "กำลังทำ…", () => api(
+  const data = await withButton(button, "Working…", () => api(
     `/api/assistant/ticket/${encodeURIComponent(ticketId)}/advance`, { method: "POST" }));
   if (!data) return;
   const message = chatFindPlan(ticketId);
@@ -5797,7 +6501,7 @@ function chatApplyEvent(payload, reply, waiting) {
   if (payload.error) { reply.bad = true; reply.content += payload.error; }
   else if (payload.delta) reply.content += payload.delta;
   else if (payload.status) return payload.status;
-  else if (payload.evidence) { reply.checked = payload.evidence; return "กำลังเรียบเรียง…"; }
+  else if (payload.evidence) { reply.checked = payload.evidence; return "Composing…"; }
   else if (payload.ticket) {
     // เก็บไว้วาดตอนจบพร้อมคำอธิบาย — โผล่ก่อนคำตอบแปลว่ามีปุ่ม "แก้เลย" ให้กด
     // ตั้งแต่ยังไม่มีใครบอกว่ามันจะทำอะไร
@@ -5817,11 +6521,11 @@ async function chatSend(question) {
   chatDraw();
 
   const bubble = document.querySelector("#chat-log .chat-msg:last-child");
-  bubble.innerHTML = '<span class="dim">กำลังคิด…</span>';
+  bubble.innerHTML = '<span class="dim">Thinking…</span>';
   const reply = chatHistory[chatHistory.length - 1];
   // ข้อความระหว่างรอ เปลี่ยนตามขั้นที่หลังบ้านกำลังทำ — การตรวจเครื่องจริงใช้เวลา
   // หลายวินาที กล่องที่ค้างคำว่า "กำลังคิด…" ตลอดทำให้ดูเหมือนแฮงก์
-  let waiting = "กำลังคิด…";
+  let waiting = "Thinking…";
 
   send.disabled = true;
   try {
@@ -5861,7 +6565,7 @@ async function chatSend(question) {
         document.getElementById("chat-log").scrollTop = 1e9;
       }
     }
-    if (!reply.content.trim()) { reply.bad = true; reply.content = "ไม่มีคำตอบกลับมา"; }
+    if (!reply.content.trim()) { reply.bad = true; reply.content = "No answer came back"; }
     // ตอบมาเป็นบล็อกเรียก tool ล้วน ๆ — ตัดออกแล้วไม่เหลืออะไรให้อ่าน · บอกไปตรง ๆ
     // ว่าเกิดอะไรขึ้น ดีกว่าปล่อยกล่องว่างให้เดาเอาเองว่าพังตรงไหน
     //
@@ -5869,11 +6573,11 @@ async function chatSend(question) {
     // คือตัวที่ไม่ทำตาม system prompt ซึ่งแก้ได้ด้วยการเปลี่ยนโมเดล ไม่ใช่เปลี่ยนคำถาม
     else if (!chatStripToolCalls(chatStripThinking(reply.content))) {
       reply.bad = true;
-      reply.content = "โมเดลตอบกลับมาเป็นบล็อกเรียก tool ล้วน ๆ — ผู้ช่วยตัวนี้ตรวจเครื่องให้"
-        + "เรียบร้อยแล้วก่อนส่งให้มันตอบ มันจึงไม่ต้องเรียกเครื่องมือเอง"
-        + (reply.checked ? " (ผลตรวจอยู่ในบรรทัดด้านบน)" : "")
-        + " — ลองถามใหม่อีกครั้ง หรือเปลี่ยนไปใช้โมเดลที่ทำตาม system prompt ได้ดีกว่านี้"
-        + "ที่หน้า Provider";
+      reply.content = "The model replied with nothing but a tool-call block — this assistant already inspected the machines"
+        + " before handing over, so it has no tools to call"
+        + (reply.checked ? " (the checks are in the line above)" : "")
+        + " — ask again, or switch to a model that follows the system prompt better"
+        + " on the Provider page";
     }
   } catch (err) {
     reply.bad = true;
@@ -5944,12 +6648,12 @@ boot().then(chatBoot).catch(chatBoot);
     <button type="submit" id="chat-send">Send</button>
   </form>
   <p class="chat-foot dim">
-    ตอบจากสถานะจริงของ fleet นี้ ผ่าน LLM ที่คุณตั้งไว้เอง — ประวัติอยู่ในแท็บนี้เท่านั้น
+    Answers from the real state of this fleet, through the LLM you configured — the history lives in this tab only
   </p>
 </div>
   <footer id="lmds-credit">
     <span class="cred-name">Local Model Deploy Studio</span>
-    <span class="dim">สร้างโดย <a href="https://www.facebook.com/neronain.minidev"
+    <span class="dim">Built by <a href="https://www.facebook.com/neronain.minidev"
       target="_blank" rel="noopener">neronain</a></span>
     <span class="grow"></span>
     <span class="dim" id="cred-lic"></span>

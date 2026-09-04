@@ -85,6 +85,19 @@ NCCL เลือกพอร์ตเองตอนรัน จึงเป�
 ที่ไม่มีไฟร์วอลล์กั้น** เป็นทางเดียวที่ใช้ได้จริง · ถ้ามี ConnectX/200G ให้ระบุอินเทอร์เฟซ
 ด้วย `lmds node set <ชื่อ> --cluster-iface` ไม่งั้น NCCL อาจไปเลือกสายช้า
 
+### สาย ConnectX ของ DGX Spark (วงคลัสเตอร์ — แยกจากสายบริหาร)
+
+| พอร์ต QSFP | interface (เหมือนกันทุกเครื่อง) | RoCE | LMDS ตั้ง IP ที่ |
+|---|---|---|---|
+| 1 (ข้าง RJ45) | `enp1s0f0np0` · `enp1s0f1np1` | `rocep1s0f0` · `rocep1s0f1` | `enp1s0f1np1` |
+| 2 | `enP2p1s0f0np0` · `enP2p1s0f1np1` | `roceP2p1s0f0` · `roceP2p1s0f1` | `enP2p1s0f1np1` |
+
+หนึ่งช่อง = สอง interface (PCIe Gen5 x4 สองเส้น) ใช้ตัวเดียวต่อช่อง · `lmds cluster apply` แจกวงละลิงก์
+เริ่มที่ `10.100.152.0/24` (ลิงก์ถัดไป `.153` `.154`) ปลาย `.1`/`.2` — ผ่าน switch ใช้วงเดียว เครื่องที่ i = `.i` ·
+ตัวที่ยังไม่ได้ตั้งจะถือ `169.254.x.x` (link-local) ซึ่งข้ามเครื่องไม่ถึง · วงนี้ **ไม่มี gateway** และไม่ควรมี
+อะไรวิ่งออกนอกจาก NCCL/ssh ระหว่างสมาชิก · ไฟล์: `/etc/netplan/99-lmds-cluster.yaml` (ถอนแล้วไปอยู่ที่
+`/root/netplan-disabled/`) · ขั้นตอนเต็มใน [RUNBOOK-MULTI-NODE.md](RUNBOOK-MULTI-NODE.md#cluster-network-setup--ต่อสาย-connectx-แล้วให้-hub-ตั้ง-ip-ให้-060)
+
 ---
 
 ## ถ้าใช้ port forward

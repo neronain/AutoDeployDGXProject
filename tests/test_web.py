@@ -1568,7 +1568,7 @@ def test_wizard_can_target_another_machine_from_the_start():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert 'id="w-machine"' in page, "wizard ต้องเลือกเครื่องปลายทางได้ตั้งแต่ต้น"
     assert "pushAfterBuild" in page, "เลือกเครื่องไว้แล้วต้องส่งให้เลย ไม่ใช่ให้ไปหาปุ่ม push เอง"
-    assert "bundle ยังอยู่บนเครื่องนี้ครบ" in page, "ส่งไม่ผ่านต้องบอกว่าของยังอยู่ ไม่ใช่หายไป"
+    assert "The bundle is still complete on this machine" in page, "ส่งไม่ผ่านต้องบอกว่าของยังอยู่ ไม่ใช่หายไป"
 
 
 def test_command_palette_reaches_every_model_and_every_page_action():
@@ -1981,7 +1981,7 @@ def test_setup_form_says_which_user_it_will_use():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert "lastNodeRegistry" in page
     setup = page.split('if (nact === "setup" || nact === "fix-perms")')[1].split('if (nact === "setup-go")')[0]
-    assert "user เดียวกับที่ใช้ต่อ SSH" in setup
+    assert "the same user SSH already uses" in setup      # UI เป็นอังกฤษตั้งแต่ 0.6.0
 
 
 def test_served_name_reaches_the_controller(registered, monkeypatch):
@@ -2167,7 +2167,8 @@ def _rendered_actions(html: str) -> set:
     """ทุก action ที่มีปุ่มวาดออกมาจริง — ทั้งที่เขียนตรง ๆ และที่ผ่านตัวช่วย"""
     import re
 
-    actions = set(re.findall(r'data-(?:n)?act="([a-z0-9:_-]+)"', html))
+    # data-cnw = ปุ่มของ wizard ตั้งค่าเครือข่าย cluster (handler เดียวกันอ่าน dataset.cnw)
+    actions = set(re.findall(r'data-(?:(?:n)?act|cnw)="([a-z0-9:_-]+)"', html))
     for fn, prefix in (("ctl", "ctl:"), ("job", "job:"), ("btn", "")):
         for name in re.findall(fn + r'\("([a-z0-9:_-]+)"', html):
             actions.add(prefix + name)

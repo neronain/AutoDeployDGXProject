@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import json
 import os
 import pathlib
 import sys
@@ -39,7 +40,8 @@ app.add_typer(config_app, name="config")
 node_app = typer.Typer(help="คุมเครื่องอื่นจากเครื่องนี้ (fleet หลายเครื่อง)", no_args_is_help=True)
 app.add_typer(node_app, name="node")
 # stacked (หลายเครื่อง = โมเดลเดียว) มีคำสั่งของตัวเอง — เดิมซ่อนอยู่ใต้ `node cluster` คำสั่งเดียว
-cluster_app = typer.Typer(help="คลัสเตอร์ stacked: ดูคู่ · เขียน cluster.env · กุญแจ head→worker · หมอ",
+cluster_app = typer.Typer(help="คลัสเตอร์ stacked: ดูคู่ · เขียน cluster.env · กุญแจ head→worker · หมอ · "
+                               "ตั้งสาย ConnectX (inspect/plan/apply/remove-net)",
                           no_args_is_help=True)
 app.add_typer(cluster_app, name="cluster")
 
@@ -1183,6 +1185,186 @@ def cluster_doctor_cmd(
     else:
         console.print("[red]ยังไม่พร้อม — แก้ตามข้อที่ ✕ ก่อน[/red]")
         raise typer.Exit(code=1)
+
+
+# ── lmds cluster inspect / plan / apply / remove-net — ตั้งค่าสาย ConnectX จาก hub ─────────
+def _print_net_findings(findings: list[dict]) -> None:
+    from lmds.nodes.doctor import describe
+
+    for finding in findings:
+        mark = {"pass": "[green]✓[/green]", "warn": "[yellow]![/yellow]"}.get(finding["level"], "[red]✕[/red]")
+        console.print(f"  {mark} {describe(finding, 'th')}")
+        if finding.get("fix"):
+            console.print(f"      [dim]แก้: {finding['fix']}[/dim]")
+
+
+def _print_ports(inspection: dict) -> None:
+    table = Table(title="พอร์ต QSFP (ConnectX-7)")
+    for column in ("เครื่อง", "พอร์ต", "สาย", "ความเร็ว", "interface", "IP ปัจจุบัน", "RDMA"):
+        table.add_column(column)
+    for name, info in inspection["nodes"].items():
+        if not info["reachable"]:
+            table.add_row(name, "—", f"[red]ต่อไม่ได้: {info['error']}[/red]", "", "", "", "")
+            continue
+        if not info["ports"]:
+            table.add_row(name, "—", "[red]ไม่พบพอร์ต ConnectX[/red]", "", "", "", "")
+        for port in info["ports"]:
+            table.add_row(
+                name, str(port["port"]),
+                "[green]มี[/green]" if port.get("carrier") else "[dim]ไม่มี (NO-CARRIER)[/dim]",
+                f"{port['speed_gbps']}G" if port.get("speed_gbps") else "—",
+                port.get("configured") or " / ".join(port.get("ifaces") or []),
+                f"{port['ip']}/{port['prefix']}" if port.get("ip") else "[dim]ยังไม่ตั้ง[/dim]",
+                ", ".join(port.get("rdma_devices") or []) or "—",
+            )
+        if info.get("nvidia_sync"):
+            table.add_row("", "", "[yellow]มีไฟล์ของ NVIDIA Sync[/yellow]", "", "", "", "")
+    console.print(table)
+
+
+def _print_plan(plan: dict) -> None:
+    if not plan.get("ok"):
+        err_console.print(f"[red]วางแผนไม่ได้ — {plan.get('reason')}[/red]")
+        return
+    console.print(f"[bold]ผัง: {plan['topology']}[/bold] · วงเริ่มที่ {plan['base_subnet']} · "
+                  f"ลำดับ {' → '.join(plan['order'])}")
+    table = Table(title="ลิงก์")
+    for column in ("ลิงก์", "วง", "ปลาย A", "ปลาย B"):
+        table.add_column(column)
+    for link in plan["links"]:
+        ends = [f"{e['node']} p{e['port']} {e['iface']} {e['ip']}/{e['prefix']}"
+                + ("" if e["changed"] else " (เดิม)") for e in link["ends"]]
+        table.add_row(str(link["id"]), link["subnet"], ends[0], " · ".join(ends[1:]))
+    console.print(table)
+    for name, entry in plan["nodes"].items():
+        console.print(f"[bold]{name}[/bold] → cluster_ip {entry['cluster_ip']} บน {entry['cluster_iface']}"
+                      + ("" if entry["changed"] else " [dim](ไม่เปลี่ยน)[/dim]"))
+    for warning in plan.get("warnings") or []:
+        console.print(f"  [yellow]![/yellow] {warning}")
+
+
+@cluster_app.command("inspect")
+def cluster_inspect_cmd(
+    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–4 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head)"),
+    topology: Optional[str] = typer.Option(None, "--topology", help="บังคับผัง: direct | ring | switch"),
+) -> None:
+    """ดูว่าพอร์ต QSFP ไหนมีสาย ตั้ง IP อะไรอยู่ และเสียบเป็นผังไหน — อ่านอย่างเดียว"""
+    from lmds.nodes.doctor import diagnose_network
+    from lmds.nodes.netplan import inspect_nodes
+
+    _require_nodes(*nodes)
+    reg, hosts, errors, _ = _live_cluster_groups(set(nodes))
+    inspection = inspect_nodes(list(nodes), hosts, errors, topology or "")
+    _print_ports(inspection)
+    report = diagnose_network(list(nodes), nodes=reg, hosts=hosts, errors=errors, topology=topology or "")
+    _print_net_findings(report["findings"])
+    inferred = inspection["topology"]
+    if inferred["topology"] == "unknown":
+        err_console.print(f"[red]ผัง: ไม่รู้จัก — {inferred['reason']}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]ผัง: {inferred['topology']}[/green] · ต่อไป: lmds cluster plan {' '.join(nodes)}")
+
+
+@cluster_app.command("plan")
+def cluster_plan_cmd(
+    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–4 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head)"),
+    subnet: str = typer.Option("10.100.152.0/24", "--subnet", help="วงแรก — ลิงก์ถัดไปได้วงถัดไป (.153, .154)"),
+    topology: Optional[str] = typer.Option(None, "--topology", help="บังคับผัง: direct | ring | switch"),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์แผนเป็น JSON (ส่งต่อให้ apply/หน้าเว็บได้)"),
+) -> None:
+    """คำนวณ IP + netplan ต่อเครื่องจากสายที่เสียบอยู่ — ยังไม่แตะเครื่อง"""
+    from lmds.nodes.netplan import NetplanError, build_plan
+
+    _require_nodes(*nodes)
+    reg, hosts, _errors, _ = _live_cluster_groups(set(nodes))
+    try:
+        plan = build_plan(list(nodes), hosts, base_subnet=subnet, topology=topology or "", nodes=reg)
+    except NetplanError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    if as_json:
+        console.print_json(json.dumps(plan, ensure_ascii=False))
+    else:
+        _print_plan(plan)
+        for name, entry in plan.get("nodes", {}).items():
+            console.print(f"[dim]── {name}: {'/etc/netplan/99-lmds-cluster.yaml'} ──[/dim]")
+            console.print(entry["netplan"].rstrip(), highlight=False, markup=False)
+    if not plan.get("ok"):
+        raise typer.Exit(code=1)
+
+
+@cluster_app.command("apply")
+def cluster_apply_cmd(
+    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–4 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head)"),
+    subnet: str = typer.Option("10.100.152.0/24", "--subnet", help="วงแรก — ลิงก์ถัดไปได้วงถัดไป"),
+    topology: Optional[str] = typer.Option(None, "--topology", help="บังคับผัง: direct | ring | switch"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ถามยืนยันแผน (ยังถามรหัส sudo)"),
+    pair: bool = typer.Option(True, "--pair/--no-pair", help="ตั้งกุญแจ head→worker หลัง IP ขึ้น"),
+    speed_test: bool = typer.Option(True, "--speed-test/--no-speed-test", help="วัดด้วย iperf3 ถ้ามีทั้งสองฝั่ง"),
+) -> None:
+    """เขียน /etc/netplan/99-lmds-cluster.yaml บนทุกเครื่องตามแผน แล้วยืนยันด้วย ping + กุญแจ head→worker
+
+    ถามรหัส sudo ทีละเครื่อง (ไม่เก็บ ไม่โผล่ใน argv) · ล้มระหว่างทาง = ถอยกลับไปไฟล์เดิมของเครื่องนั้น
+    """
+    import getpass
+
+    from lmds.nodes import run
+    from lmds.nodes.netplan import NetplanError, apply_plan, build_plan
+
+    _require_nodes(*nodes)
+    reg, hosts, _errors, _ = _live_cluster_groups(set(nodes))
+    try:
+        plan = build_plan(list(nodes), hosts, base_subnet=subnet, topology=topology or "", nodes=reg)
+    except NetplanError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    _print_plan(plan)
+    if not plan.get("ok"):
+        raise typer.Exit(code=1)
+    if not yes and not typer.confirm("เขียน netplan ตามแผนนี้ลงทุกเครื่อง?", default=False):
+        raise typer.Exit(code=1)
+    passwords = {}
+    for name in plan["order"]:
+        passwords[name] = getpass.getpass(f"รหัส sudo ของ {name} ({reg[name].user}): ")
+
+    def show(step: dict) -> None:
+        mark = {"pass": "[green]✓[/green]", "warn": "[yellow]![/yellow]"}.get(step["level"], "[red]✕[/red]")
+        console.print(f"  {mark} [{step['node'] or 'hub'}] {step['step']}"
+                      + (f" — {step['detail']}" if step.get("detail") else ""))
+
+    result = apply_plan(plan, passwords, nodes=reg, runner=run, progress=show, pair=pair, speed_test=speed_test)
+    passwords.clear()
+    if result["ok"]:
+        console.print("[green]คลัสเตอร์พร้อม — IP ขึ้นครบ ping ถึงกัน กุญแจ head→worker ใช้ได้[/green]")
+        console.print(f"[dim]ต่อไป: lmds cluster doctor {plan['order'][0]} {plan['order'][1]}[/dim]")
+    elif result["applied"]:
+        err_console.print("[yellow]IP ขึ้นครบแล้ว แต่ ping/กุญแจยังไม่ผ่านทุกข้อ — ดูบรรทัด ✕ ข้างบน[/yellow]")
+        raise typer.Exit(code=1)
+    else:
+        err_console.print("[red]ตั้งค่าไม่สำเร็จ — เครื่องที่ล้มถูกถอยกลับไปไฟล์เดิมแล้ว (ถ้าถอยได้)[/red]")
+        raise typer.Exit(code=1)
+
+
+@cluster_app.command("remove-net")
+def cluster_remove_net_cmd(
+    node: str = typer.Argument(..., autocompletion=_complete_node),
+) -> None:
+    """ถอนไฟล์ netplan ของ LMDS บนเครื่องนั้น (ย้ายไป /root/netplan-disabled แบบ NVIDIA) และล้าง cluster_ip ในทะเบียน"""
+    import getpass
+
+    from lmds.nodes import run
+    from lmds.nodes.netplan import remove_net
+
+    (target,) = _require_nodes(node)
+    password = getpass.getpass(f"รหัส sudo ของ {node} ({target.user}): ")
+    result = remove_net(target, password, runner=run)
+    password = ""
+    for step in result["steps"]:
+        mark = "[green]✓[/green]" if step["ok"] else "[red]✕[/red]"
+        console.print(f"  {mark} {step['step']}" + (f" — {step['detail']}" if step.get("detail") else ""))
+    if not result["ok"]:
+        raise typer.Exit(code=1)
+    console.print("[green]ถอนแล้ว[/green]" if result.get("removed") else "[dim]ไม่มีไฟล์ของ LMDS อยู่แล้ว[/dim]")
 
 
 @node_app.command("clone")
@@ -2584,7 +2766,7 @@ def smoke(
 ) -> None:
     """พิสูจน์ว่า bundle นี้รันได้จริง: download → verify → start → test-text → stop
 
-    gate ทั้ง 10 ด่านตรวจได้แค่ว่า *สคริปต์ถูกต้อง* — ไม่ได้บอกว่ารันแล้วได้คำตอบจริง
+    gate ทั้ง 12 ด่านตรวจได้แค่ว่า *สคริปต์ถูกต้อง* — ไม่ได้บอกว่ารันแล้วได้คำตอบจริง
     ทุกบั๊กใหญ่ที่เจอในรอบนี้ (image ที่ tag ไม่มีอยู่, head container ไม่เคยขึ้น,
     ชุดทดสอบไปโดนโมเดลอื่น) ผ่าน gate หมดแล้วไปตายตอนรัน
 

@@ -35,20 +35,31 @@ lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-
 
 | คำสั่ง | ทำอะไร |
 |---|---|
-| `lmds inspect <โมเดล>` | วิเคราะห์ + เช็ก fit อย่างเดียว — ไม่สร้างไฟล์ ไม่เสีย token |
+| `lmds inspect <โมเดล>` | วิเคราะห์ + เช็ก fit อย่างเดียว — ไม่สร้างไฟล์ ไม่เสีย token (`--context N` ถามว่าค่านี้ได้กี่คนพร้อมกัน) |
 | `lmds plan <โมเดล>` | ดู Deployment Plan (แผน) — ไม่สร้างไฟล์ |
-| `lmds deploy <โมเดล>` | flow เต็ม: วิเคราะห์ → วางแผน → **ยืนยัน** → สร้าง bundle + ZIP |
-| `lmds generate <โมเดล>` | เหมือน deploy แต่**ข้ามขั้นยืนยัน** |
+| `lmds deploy <โมเดล>` | flow เต็ม: วิเคราะห์ → วางแผน → **ยืนยัน** → สร้าง bundle + ZIP (`--gguf` เลือก quant ไม่ต้องมี tty · `--task embed` · `--engine sglang`) |
+| `lmds generate <โมเดล>` | เหมือน deploy แต่**ข้ามขั้นยืนยัน** (ไม่ต่อรอง flag) |
+| `lmds validate <โฟลเดอร์>` | ตรวจ bundle ย้อนหลัง — exit 0 ผ่าน / 2 ไม่ผ่าน |
+| `lmds smoke <ชื่อ>` | พิสูจน์ว่า bundle รันได้จริง: download → verify → start → test-text → stop (ดู §5.5) |
+| `lmds rebuild <ชื่อ>` | สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน ไม่เรียก LLM ซ้ำ (ดู §5.6) |
+| `lmds adopt [container]` | รับโมเดลที่รันอยู่ก่อน LMDS เข้าระบบ (`--port` / `--pid` สำหรับ process ตรง ๆ) (ดู §4.7) |
 | `lmds ps` / `list` | ดูว่ามีอะไรอยู่บ้าง + สถานะจริง (ดู §4) |
 | `lmds start` / `stop` / `restart` / `logs` | สั่งงานโมเดลตามชื่อ (ดู §4) |
-| `lmds enable` / `disable` | autostart หลัง reboot (ดู §4) |
+| `lmds enable` / `disable` | autostart หลัง reboot — user service ไม่ต้อง sudo (ดู §4) |
+| `lmds set <ชื่อ> …` | บันทึกค่า start ไว้กับ bundle (port/context/parser/image/env/extra-args) — ทุกทางที่เรียก controller ได้ค่าเดียวกัน (ดู §4.2d) |
 | `lmds repair <ชื่อ>` | โหลดไฟล์ที่ขาด/เสียกลับมา แล้วตรวจซ้ำ (ดู §4.3) |
-| `lmds remove <ชื่อ>` | ลบโมเดลออกจากเครื่องทั้งหมด (ดู §4.3) |
+| `lmds remove <ชื่อ>` | ลบโมเดลออกจากเครื่องทั้งหมด (`--dry-run` ดูก่อน) (ดู §4.3) |
 | `lmds doctor <ชื่อ>` | ตรวจว่าทำไม download/start ไม่ผ่าน + คำสั่งแก้ (ดู §4.4) |
-| `lmds web` | หน้าเว็บคุมทุกอย่าง — UI ภาษาอังกฤษ (ดู §5) |
-| `lmds validate <โฟลเดอร์>` | ตรวจ bundle ย้อนหลัง |
+| `lmds scan` / `prune` | weight ที่มีอยู่แล้วบนเครื่อง · ล้างทะเบียนค้าง (ดู §4.6 / §4.5.2) |
+| `lmds recipes` | สูตรที่รันผ่านจริง — `--sync` ดึงจากคลัง · `--publish` ส่งขึ้นคลัง (ดู §4.5.1) |
+| `lmds bench run/list/show/remove` | ให้คะแนนโมเดลที่รันอยู่ — ความเร็ว + ความสามารถ 7 ข้อ (ดู [BENCH.md](BENCH.md)) |
+| `lmds node …` | คุมเครื่องอื่นจากเครื่องนี้ — add/list/remove/install/setup/set/run/ctl/push/clone/cluster (ดู §4.5) |
+| `lmds cluster show/write/pair/doctor` | คลัสเตอร์ stacked: ดูคู่ · เขียน cluster.env · กุญแจ head→worker · หมอ (ดู §4.5) |
+| `lmds web` | หน้าเว็บคุมทุกอย่าง — UI ภาษาอังกฤษ · `--enable` = ขึ้นเองหลังรีบูต (ดู §5) |
 | `lmds hardware` | ตรวจเครื่อง + จำแนก target profile |
 | `lmds config ...` | ตั้ง provider / key / HF token |
+| `lmds agent info/bench` | JSON ที่ hub เรียกผ่าน SSH — ปกติไม่ต้องพิมพ์เอง |
+| `lmds version` | เวอร์ชัน + commit ที่รันอยู่จริง + มาตรฐาน template |
 
 **ช่อง `<โมเดล>` ใส่ได้ 3 แบบ:**
 
@@ -137,12 +148,34 @@ cd bundles/qwen3-0-6b-gguf
 | `logs [N]` | log ล่าสุด N บรรทัด (default 300) |
 | `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget (bundle embedding: `max_input_tokens` = context ต่อ slot ทั้งก้อน · มี `pooling` · ไม่มี `max_output_tokens`) |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
-| `test-text` | ทดสอบ chat completion หนึ่งครั้ง |
-| `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง |
-| `parsers` | ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง |
-| `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม |
-| `test-reasoning` | ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง — ใช้ได้ทุก bundle เช่นกัน |
+| `test-text` | ทดสอบ chat completion หนึ่งครั้ง (bundle embedding: บอกให้ไปใช้ `test-embed` แทน) |
+| `test-embed` | *(เฉพาะ bundle embedding)* ยิง `/v1/embeddings` 3 ประโยค — คู่ไทย↔อังกฤษความหมายเดียวกันต้องได้ cosine สูงกว่าประโยคที่ไม่เกี่ยว (ดู §4.9) |
+| `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง (vLLM/stacked: projector ฝังใน weight) |
+| `parsers` | *(vLLM · SGLang · stacked)* ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง — อ่าน registry `vllm.tool_parsers` (0.28 ย้ายที่) แล้วถอยไป grep `vllm serve --help` |
+| `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle chat ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม |
+| `test-reasoning` | *(vLLM · SGLang · stacked)* ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง (37×43=1591) |
+| `bench [RUNS] [TOKENS]` | *(vLLM เดี่ยว · stacked)* วัด ttft / tok/s ผ่าน API จริง — ค่าตั้งต้น 3 รอบ × 256 tokens พิมพ์ต่อรอบและ median (ดู [BENCH.md](BENCH.md)) |
+| `stress [REQUESTS] [CONC]` | *(vLLM เดี่ยว · stacked)* ยิงพร้อมกันหลายสาย — ค่าตั้งต้น 16 คำขอ × 4 สาย พิมพ์ ok/total · latency p50/p95/max |
+| `serve-args` | พิมพ์ argv จริงที่จะส่งให้ engine โดยไม่ start (llama.cpp / vLLM `DRY_RUN=1 start` / stacked: head+worker + engine env) — key ไม่ถูกพิมพ์ |
+| `info` / `props` | สรุปโมเดล/พอร์ต/สถานะ · รายการโมเดลจาก `/v1/models` (vLLM/stacked) |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
+| `clear-fi-cache` | *(vLLM/stacked)* หยุดแล้วล้าง FlashInfer JIT cache — ใช้เมื่อ start พังหลังเปลี่ยน image |
+| `runtime-info` · `sync-worker` · `verify-worker` · `doctor` · `logs [head\|worker] [N]` | *(stacked เท่านั้น)* ดู §3.3b |
+| `remove-plan` | *(bundle ที่มาจาก `lmds adopt`)* บอกว่า `lmds remove` จะลบ weight ที่ไหน |
+
+**คำสั่งไหนมีบน engine ไหน** (usage กับ dispatch table ของทุก template ถูกเทสว่าตรงกัน):
+
+| | llama.cpp | vLLM เดี่ยว | SGLang | stacked (vLLM) |
+|---|---|---|---|---|
+| `download` `verify-files` `start` `stop` `restart` `status` `logs` `client-config` `network-info` `wait-health` | ✅ | ✅ | ✅ | ✅ (ไม่มี `wait-health`) |
+| `prepare-runtime` | ✅ build จาก source (native) | เฉพาะ bundle ที่มี `runtime_assets` | เฉพาะ bundle ที่มี `runtime_assets` | ✅ pull + lock image ทุก node |
+| `test-text` `test-tools` | ✅ (chat) | ✅ | ✅ | ✅ |
+| `test-embed` | ✅ (embed) | ✅ (embed) | ❌ (embed บน SGLang ถูกปฏิเสธ) | ❌ |
+| `test-vision` | ✅ ถ้ามี mmproj | ✅ ถ้าแผน multimodal | ❌ | ✅ ถ้าแผน multimodal |
+| `test-reasoning` `parsers` | ❌ | ✅ | ✅ | ✅ |
+| `bench` `stress` | ❌ (ใช้ `lmds bench`) | ✅ | ❌ | ✅ |
+| `serve-args` | ✅ | `DRY_RUN=1 start` | `DRY_RUN=1 start` | ✅ |
+| `info` | ✅ | ✅ | ❌ | ✅ (+ `props` `clear-fi-cache` `runtime-info` `doctor` `sync-worker` `verify-worker`) |
 
 > **คำอธิบายเต็มของทุก option + วิธีตั้ง API token อยู่ใน help ของ controller เอง** (ภาษาอังกฤษ):
 > `./xxx-single.sh` เปล่า ๆ หรือ `./xxx-single.sh help` — มีค่า default จริงของ bundle นั้นกำกับทุกบรรทัด
@@ -163,8 +196,15 @@ cd bundles/qwen3-0-6b-gguf
 ./xxx-single.sh start --advertise-ip 10.0.0.5      # IP ที่ประกาศให้ client (ไม่ใช่ bind)
 ./xxx-single.sh start --interface eth1             # เลือก interface ที่ใช้ประกาศ IP
 ./xxx-single.sh client-config --client-output 4096 # ปรับ token budget
-./xxx-single.sh restart --tool-parser qwen3_coder  # เปิด tool calling (ดูหัวข้อถัดไป)
+./xxx-single.sh restart --tool-parser qwen3_coder  # เปิด tool calling (ดูหัวข้อถัดไป) — vLLM/SGLang/stacked
+./xxx-single.sh restart --extra-args "--flag=value" # แฟล็กเพิ่มของ engine ต่อท้ายตรง ๆ (JSON เขียนติดกันไม่มีช่องว่าง)
+./xxx-single.sh restart --name my-model            # ชื่อที่ client ใส่ในฟิลด์ model (llama.cpp — ชื่อเดิมยังโชว์คู่กัน)
+./xxx-single.sh restart --image-min-tokens 1024    # llama.cpp vision: token ขั้นต่ำต่อภาพ (auto = ใช้ค่าจาก projector)
+./xxx-single.sh restart --no-mmproj / --no-mtp     # ปิด vision / speculative decoding (โผล่เฉพาะ bundle ที่มีไฟล์)
 ```
+
+ค่าที่อยากให้ติดถาวร (รวม autostart และปุ่ม test-* บนหน้าเว็บ) ใช้ `lmds set <slug> …` แทน (ดู §4.2d) —
+flag บรรทัดคำสั่งมีผลครั้งนั้นครั้งเดียว
 
 ### ถามผู้ช่วยให้ไปดูเครื่องให้ (กล่องแชทมุมขวาล่าง)
 
@@ -419,23 +459,42 @@ FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่
 | env | ค่า default | ใช้ทำอะไร |
 |---|---|---|
 | `API_PORT` / `API_HOST` | `8000` / `0.0.0.0` | port และ bind address |
-| `API_KEY` | *(ว่าง)* | บังคับ Bearer token — **ควรตั้งเสมอถ้าเปิดออก network** |
-| `MAX_MODEL_LEN` | ตามแผน | context (เท่ากับ `--context`) |
-| `HF_HOME` | `~/.cache/huggingface` | ที่เก็บ weight ของ **vLLM** — ย้ายลงดิสก์ใหญ่ได้ |
+| `API_KEY` | *(ว่าง)* | บังคับ Bearer token — **ควรตั้งเสมอถ้าเปิดออก network** · ไม่เก็บใน bundle ต้องส่งทุกครั้งที่ start (ดูกล่องด้านล่างว่าแต่ละ engine รับยังไง) |
+| `MAX_MODEL_LEN` / `CTX_SIZE` | ตามแผน | context (เท่ากับ `--context`) — vLLM/SGLang ใช้ชื่อแรก llama.cpp ใช้ชื่อหลัง |
+| `HF_HOME` | `~/.cache/huggingface` | ที่เก็บ weight ของ **vLLM** — ย้ายลงดิสก์ใหญ่ได้ (stacked: `WORKER_HF_HOME` สำหรับฝั่ง worker) |
 | `MODEL_DIR` | `~/models/<slug>` | ที่เก็บไฟล์ **GGUF** ของ llama.cpp |
 | `RUNTIME_MODE` | ตามเครื่อง | `docker` หรือ `native` (llama.cpp เท่านั้น) |
-| `HF_TOKEN` | *(ว่าง)* | ใช้ตอน `download` repo gated |
-| `HEALTH_TIMEOUT` | ตามขนาดโมเดล | วินาทีที่รอ `/health` ตอน start |
-| `TOOL_CALL_PARSER` | *(ว่าง = ปิด)* | parser ของ vLLM สำหรับ tool calling (เท่ากับ `--tool-parser`) |
+| `LLAMA_CPP_UPDATE` | *(ว่าง)* | `=1` กับ `prepare-runtime` = ข้าม `runtime.lock` ไป build llama.cpp รุ่นล่าสุด |
+| `HF_TOKEN` | *(ว่าง)* | ใช้ตอน `download` repo gated — ส่งเข้า curl ทาง stdin (`-K -`) / aria2c ทางไฟล์ conf 600 ไม่ขึ้น argv |
+| `FETCH_PARTS` | `8` | llama.cpp: จำนวนส่วนที่โหลดขนานสำหรับไฟล์ ≥256 MB (`1` = ปิด) · ต้องมีดิสก์ว่าง ~2 เท่าของไฟล์ ไม่พอถอยไปสตรีมเดี่ยวเอง |
+| `FETCH_MAX_ATTEMPTS` | `20` | llama.cpp: จำนวนรอบ resume เมื่อ CDN ตัดสตรีมกลางคัน |
+| `HTTPS_PROXY` / `HF_ENDPOINT` | *(ว่าง)* | proxy / mirror — ส่งเข้าคอนเทนเนอร์ download ด้วยชื่อ ไม่ขึ้น argv |
+| `HEALTH_TIMEOUT` / `STARTUP_TIMEOUT` | ตามขนาดโมเดล | วินาทีที่รอ `/health` ตอน start (single / stacked) — systemd unit ตั้ง `TimeoutStartSec` ตามค่านี้ +300 |
+| `TOOL_CALL_PARSER` / `REASONING_PARSER` | *(ว่าง = ปิด)* | parser ของ vLLM/SGLang (เท่ากับ `--tool-parser` / `--reasoning-parser`) |
+| `EXTRA_SERVE_ARGS` / `ENGINE_ENV` | *(ว่าง)* | แฟล็กเพิ่ม (เท่ากับ `--extra-args`) · env ของ engine เอง (`lmds set --engine-env`) — stacked ส่งถึง worker ด้วย |
 | `GPU_MEMORY_UTILIZATION` | ตามแผน | สัดส่วน VRAM ที่ vLLM จองได้ (ลดถ้าแชร์ GPU กับงานอื่น) |
-| `MAX_NUM_SEQS` | ตามแผน | จำนวน request พร้อมกันสูงสุด |
+| `MAX_NUM_SEQS` / `PARALLEL_SEQS` | ตามแผน | จำนวน request พร้อมกันสูงสุด (vLLM / llama.cpp slot) |
+| `POOLING` / `EMBED_UBATCH` | ตามตระกูล | bundle embedding บน llama.cpp: วิธี pool (`last`/`cls`/`mean`) และ ubatch (ดู §4.9) |
+| `IMAGE_MIN_TOKENS` | ตาม projector | llama.cpp vision (เท่ากับ `--image-min-tokens`) |
+| `DRY_RUN` | *(ว่าง)* | `=1 … start` (vLLM/SGLang): พิมพ์ image + argv ที่จะรันจริง ไม่แตะ docker/GPU |
 | `CONTAINER_NAME` | `lmds-<slug>` | ชื่อ container |
-| `RUN_DIR` | `~/.lmds/run/<slug>` | ทะเบียน + log ที่ `lmds ps`/`lmds logs` อ่าน |
+| `RUN_DIR` | `~/.lmds/run/<slug>` | ทะเบียน + log ที่ `lmds ps`/`lmds logs` อ่าน (และไฟล์ API key ของ llama.cpp) |
 
 ```bash
 API_PORT=8001 API_KEY=secret123 ./xxx-single.sh start
 HF_HOME=/data/hf-cache ./xxx-single.sh download     # ต้องใส่ตอน start ด้วยเสมอ
+FETCH_PARTS=16 ./xxx-single.sh download             # เน็ตที่ต่อสายเดียวช้าแต่หลายสายพร้อมกันเร็ว (Xet ของ HF)
 ```
+
+> **`API_KEY` ไปถึง engine ยังไง — ไม่มีทางไหนอยู่บน argv** (`ps` อ่าน argv ได้ทั้งเครื่อง):
+>
+> | engine | กลไก |
+> |---|---|
+> | llama.cpp | controller เขียน key ลงไฟล์ 0600 ใน `RUN_DIR` แล้วส่ง `--api-key-file` (docker: mount แบบ ro) — **ไม่ใช่** env `LLAMA_ARG_API_KEY` ซึ่ง build จริงไม่มี ตั้งแล้วเซิร์ฟเวอร์รันแบบไม่มี auth เงียบ ๆ |
+> | vLLM เดี่ยว / stacked | export แล้ว `docker run -e VLLM_API_KEY` (ไม่มีค่าบน argv) — head เท่านั้นที่เสิร์ฟ API |
+> | SGLang | ยังต้องส่ง `--api-key <ค่า>` (engine ไม่มี env คู่) — ข้อจำกัดที่รู้ตัว |
+>
+> `serve-args` / `DRY_RUN=1` ไม่พิมพ์ key · ตั้งแล้วตรวจให้ครบสามแบบ: ไม่ใส่ key → 401 · key ผิด → 401 · key ถูก → 200
 
 ---
 
@@ -566,27 +625,58 @@ lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
 # → ได้ bundle: <slug>-stacked.sh (ไม่ใช่ -single.sh)
 ```
 
-controller ที่ได้มีคำสั่งครบวงจร multi-node — รันจาก **master node ในฐานะ user ปกติ (ห้าม sudo)**:
+controller ที่ได้มีคำสั่งครบวงจร multi-node — รันจาก **head (master) ในฐานะ user ปกติ (ห้าม sudo)**:
 
 ```bash
+# บน hub — ก่อนแตะ controller:
+lmds cluster doctor spark-head spark-worker --slug <slug>   # ทำไมคู่นี้ยังไม่พร้อม — ทีละข้อพร้อมคำสั่งแก้ (อ่านอย่างเดียว)
+lmds cluster pair spark-head spark-worker                   # ให้ head ssh เข้า worker ได้ — กุญแจเกิดบน head ไม่ผ่าน hub
+lmds cluster write <slug> --head spark-head                 # เขียน cluster.env ลง bundle บน head (ตัดกลุ่มตาม NNODES ของ bundle)
+lmds node push spark-head <slug> --download --start         # หรือทั้งหมดในคำสั่งเดียว: push → cluster.env → pair → sync/verify → start
+
+# บน head:
 cd bundles/<slug>
-# แก้ CONFIG ต้นไฟล์ก่อน: MASTER_IP, WORKER_IP, SSH_USER, NCCL_SOCKET_IFNAME, NCCL_IB_HCA
-#   — ข้ามได้ถ้า deploy จากหน้าเว็บ (เขียน cluster.env ให้แล้ว) หรือสั่งเอง:
-#   lmds node cluster --write <slug> --on <เครื่อง head>
-./<slug>-stacked.sh prepare-runtime   # pull + lock image ให้ image-ID ตรงกันทั้งสอง node
-./<slug>-stacked.sh download          # ดาวน์โหลดโมเดลลง master
+./<slug>-stacked.sh prepare-runtime   # pull + lock image ให้ image-ID ตรงกันทุก node (บอกชื่อเครื่องที่ pull ล้มพร้อมสาเหตุ)
+./<slug>-stacked.sh download          # ดาวน์โหลดโมเดลลง head (ตรวจดิสก์ก่อน · เขียนลง $HF_HOME/hub/)
 ./<slug>-stacked.sh verify-files      # ตรวจ shard + config
-./<slug>-stacked.sh sync-worker       # rsync โมเดล → worker
-./<slug>-stacked.sh verify-worker     # ตรวจ shard บน worker
-./<slug>-stacked.sh start             # เปิด worker (rank 1) ก่อน แล้ว head (rank 0) + รอ /health
-./<slug>-stacked.sh status
+./<slug>-stacked.sh sync-worker       # rsync โมเดล → worker (verify ฝั่ง head ก่อน · แปล exit code ของ rsync ให้)
+./<slug>-stacked.sh verify-worker     # ตรวจ**ขนาดทุก shard** บน worker เทียบ Hub (rsync --partial ทิ้งไฟล์ครึ่งเดียวชื่อเดิมไว้ได้)
+./<slug>-stacked.sh start             # ตรวจสถาปัตยกรรม + image ทุก node → เปิด worker (rank 1) ก่อน แล้ว head (rank 0) + รอ /health
+./<slug>-stacked.sh status            # เทียบ id จาก /v1/models กับ served name — ไม่ตอบ "healthy" ให้โมเดลอื่นที่ยึดพอร์ต
+./<slug>-stacked.sh logs worker 200   # log ฝั่ง worker (หน้าเว็บ: ปุ่ม logs-worker)
+./<slug>-stacked.sh test-tools        # ชุด test-tools / test-reasoning / test-vision / parsers / bench / stress คุยกับ head ที่ 127.0.0.1 — ไม่ต้องมี cluster.env
 ```
 
-> **สถานะ**: bundle stacked ที่ LMDS สร้างยังเป็น `static-validated` — ยังไม่เคยรันจริงบนคลัสเตอร์
-> (template port มาจาก reference ที่ hardware-validated แล้ว แต่ตัวที่ generate เองยังไม่ได้พิสูจน์)
-> · `runtime_assets` (parser plugin) ยังไม่รองรับในโหมด stacked
+- **ทุกคำสั่งที่แตะ worker ต้องรู้คลัสเตอร์ก่อน** — มี tty จะถาม IP · ไม่มี (hub สั่ง) = หยุดพร้อมบอก `lmds cluster write …`
+  หรือ env `MASTER_IP`/`WORKER_IP`/`SSH_USER` · `status`/`network-info` ติดป้าย "ยังไม่ตั้งค่า" · IP ที่ตอบ prompt ถูกใช้
+  คำนวณ `TRANSPORT_IP_*`/`WORKER_IPS` ใหม่จริง (คลัสเตอร์ >2 เครื่องถามรายการ worker ทั้งหมด)
+- **ssh head→worker ถูกทดสอบก่อนงานยาว** (`ssh -o BatchMode=yes`) แล้วบอกทีละขั้นว่าขาดอะไร — key ที่ hub ใช้เข้า head
+  **ไม่ใช่** key ของ head จึงต้อง `lmds cluster pair` (หรือ `ssh-keygen` + `ssh-copy-id` บน head เอง)
+- **ก่อนปล่อย worker** controller ถาม image ตัวเดียวกับที่จะ start ว่ารู้จัก `model_type` ใน `config.json` ไหม — ไม่รู้จัก
+  = หยุดพร้อมคำสั่ง `lmds set <slug> --image <ใหม่กว่า>` แทนที่จะทำครบทุกขั้น 2.5 ชม. แล้วตายตอนอ่าน config ·
+  ตรวจ image บน**ทุก** worker ด้วย (เครื่องท้ายไม่มี image เคยผ่านด่านไปตายตอน `docker run`)
+- ระหว่างรอ head health แวะดู worker ทุก 60 วิ — worker ตายแล้วพิมพ์ log 100 บรรทัด หยุด head แล้วบอก IP
+- env ของสูตร/`lmds set --engine-env`, image digest, `--tool-parser`, `--extra-args`/bundle.args ถึง **ทั้ง head และ worker** ·
+  worker คุย NCCL ด้วย transport IP (`TRANSPORT_IP_WORKER` · 3–4 เครื่อง: `TRANSPORT_IPS_WORKER`) ไม่ใช่ management IP
+- autostart: `render_unit` ตั้ง `TimeoutStartSec` ≥ `STARTUP_TIMEOUT` ของ bundle (+300) — โมเดล 150–220 GB โหลดเกิน 1800 วิ
+  ไม่โดน systemd ฆ่ากลางทางอีก
+- `lmds clone` กับ head ของ stacked ไม่ลาก `cluster.env` ของคู่เก่าไปคู่ใหม่ — เขียนใหม่ด้วย `lmds cluster write`
 
-ข้อกำหนด: 2× DGX Spark + fabric ระหว่าง node (แนะนำ 200 Gb/s RoCE) + passwordless SSH (master→worker) · `lmds ps`/`lmds stop`/`lmds logs` เห็น/สั่งงานตัวนี้ได้เหมือน deploy เดี่ยว (stop จะหยุดทั้งสอง node ให้) · stacked รองรับเฉพาะ vLLM (GGUF ยังไม่มี reference ที่ทดสอบแล้ว)
+> **สถานะ**: bundle stacked ที่ generate จาก LMDS **รันจริงแล้ว** บน 2× DGX Spark — Llama 3.3 70B (2026-08-05),
+> `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4` 173 GB (vLLM 0.28 nightly, TP=2, tool calling ผ่าน) และ
+> `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` (`--trust-remote-code --mamba-ssm-cache-dtype float16` ·
+> parser `qwen3_coder`/`nemotron_v3`) (2026-09-04) · เกิน 2 เครื่องยังไม่เคยรันจริง · `runtime_assets` (parser plugin)
+> ยังไม่รองรับในโหมด stacked
+
+**stacked ให้อะไร** — หน่วยความจำรวม (weights/N ต่อเครื่อง) · KV pool ใหญ่ขึ้น · รับคนพร้อมกันได้มากขึ้น — **ไม่ใช่ tok/s
+ต่อคน** โมเดลที่ลงเครื่องเดียวได้รันเครื่องเดียวเร็วกว่าเสมอ · fit ของ stacked หัก NCCL buffer 3 GB/เครื่องและรายงาน
+`per_node` (capacity · OS · engine · comm buffer · budget · weights/N · KV/N) · vLLM ที่เหลือ KV < 2 GB = start ไม่ขึ้น
+ระบบตอบ "ไม่ fit" ไม่ใช่ "fits ที่ context 4096"
+
+ข้อกำหนด: 2× DGX Spark (preset `dgx-spark-stacked` · 4 เครื่อง `dgx-spark-stacked-4`) + fabric ระหว่าง node (แนะนำ 200 Gb/s
+RoCE) + ssh head→worker แบบไม่ถามรหัส (`lmds cluster pair`) · `lmds ps`/`lmds stop`/`lmds logs` เห็น/สั่งงานตัวนี้ได้เหมือน
+deploy เดี่ยว (stop จะหยุดทุก node ให้ · การ์ด worker บนหน้าเว็บขึ้นแถว "stacked worker of <head>") · stacked รองรับเฉพาะ vLLM
++ safetensors — GGUF / SGLang / embedding กับ target stacked ถูกปฏิเสธตั้งแต่ analyze (422) พร้อมทางออก
 
 ### 3.4 Target presets ที่มีให้เลือก
 
@@ -608,9 +698,11 @@ cd bundles/<slug>
 | `rtx-5070-ti` | 16GB | | `rtx-4080-super` / `rtx-4080` | 16GB |
 | `rtx-5070` | 12GB | | `rtx-4070-ti` | 12GB |
 | `rtx-5060-ti` | 16GB | | `rtx-4060-ti` | 16GB |
-| | | | `rtx-3090-ti` / `rtx-3090` | 24GB |
+| `dgx-spark-stacked-4` | unified 128GB × 4 (TP=4) | | `rtx-3090-ti` / `rtx-3090` | 24GB |
 | | | | `rtx-3080-ti` / `rtx-3080` | 12GB / 10GB |
 | | | | `rtx-3060` | 12GB |
+
+รวม 22 preset (7 ตัว tested) — รายชื่อจริงอยู่ที่ `src/lmds/fit/targets.py` และกด TAB หลัง `--target` ได้
 
 | preset | เครื่อง |
 |---|---|
@@ -659,8 +751,8 @@ cd bundles/<slug>
 **ไม่รู้ชื่อ tool/reasoning parser ต้องใส่อะไร (0.5.2+)** — ไม่ต้องรู้:
 - bundle ที่สร้างใหม่ของ Qwen3/3.5/3.6, Qwen3-Coder, Gemma 4 ได้ parser ที่ถูกตั้งแต่ plan (มีคำเตือน
   "เปิด tool calling ให้แล้ว" บอกไว้) · ตระกูลที่ระบบไม่รู้จะไม่เดา
-- bundle ที่มีอยู่แล้ว: ฟอร์ม settings ของโมเดล → กด **เติมให้ตามโมเดล** → ระบบเติม parser / image /
-  engine env จากสูตรที่รันผ่านจริงหรือกฎตระกูล พร้อมบอกที่มาทีละค่า → ตรวจแล้วกด **บันทึกค่า**
+- bundle ที่มีอยู่แล้ว: ฟอร์ม settings ของโมเดล → หมวด Advanced → กด **Fill from model (parsers)** → ระบบเติม parser / image /
+  engine env จากสูตรที่รันผ่านจริงหรือกฎตระกูล พร้อมบอกที่มาทีละค่า → ตรวจแล้วกด **Save**
   · ทาง CLI: `lmds set <slug> --auto` · ใส่ผิดไม่พังเงียบ: ชื่อที่ vLLM ไม่รู้จัก start ไม่ขึ้นและบอกชื่อที่ถูก ·
   พิสูจน์หลัง start ด้วยปุ่ม **test-tools** (ต้องได้ finish_reason = tool_calls)
 
@@ -784,6 +876,31 @@ vLLM ตรวจว่ามี flashinfer CUTLASS fused-MoE ไหม *ด้�
 > bundle ที่สร้างไว้ก่อนหน้านี้ยังใช้ controller เดิม — สั่ง `lmds rebuild <slug>` ก่อน
 > ถึงจะรับค่านี้ได้
 
+### 4.2d `lmds set` — ค่าที่บันทึกไว้กับ bundle
+
+flag ตอน `lmds start --port …` มีผลครั้งเดียว · systemd ตอน autostart และปุ่ม `test-*` บนหน้าเว็บเรียก controller
+เปล่า ๆ จึงตกไปใช้ค่าเริ่มต้นของ bundle — `lmds set` เขียน `bundle.env` (และ `bundle.args` สำหรับ `--extra-args`)
+ไว้ข้าง controller ซึ่งอ่านก่อนตั้ง default ทุกตัว · env จากภายนอกและ flag บรรทัดคำสั่งยังชนะไฟล์นี้เสมอ
+
+| flag | เขียนอะไร | ใช้กับ |
+|---|---|---|
+| `--port` `--context` `--slots` `--bind` | `API_PORT` `MAX_MODEL_LEN`/`CTX_SIZE` `MAX_NUM_SEQS`/`PARALLEL_SEQS` `API_HOST` | ทุก engine |
+| `--gpu-util` | `GPU_MEMORY_UTILIZATION` (0–1) | vLLM / SGLang |
+| `--model-id` | ชื่อที่ API เสิร์ฟออกไป | ทุก engine |
+| `--image` | image ที่ใช้แทนของ bundle (ตรึง digest ได้) — stacked ส่งถึง worker | vLLM / SGLang / stacked |
+| `--engine-env "A=1 B=2"` | env ของ engine เอง — docker แตกเป็น `-e` · llama.cpp export ตรง · stacked ถึง worker | ทุก engine |
+| `--tool-parser` `--reasoning-parser` | `TOOL_CALL_PARSER` `REASONING_PARSER` | vLLM / SGLang / stacked |
+| `--image-min-tokens N\|auto` | `IMAGE_MIN_TOKENS` — Qwen-VL ~1024 · Gemma-4 ต้อง `auto` (เพดานแค่ 280) | llama.cpp vision |
+| `--extra-args '…'` | `bundle.args` — แฟล็กเพิ่มต่อท้าย argv (JSON เขียนติดกัน · ใช้รูป `--flag=value` ได้) | ทุก engine |
+| `--auto` | เติม parser / image / env จากสูตรที่รันผ่านจริง > กฎตระกูล · flag ที่ระบุเองชนะ | — |
+| `--clear` | ลบค่าที่บันทึกไว้ทั้งหมด (หน้าเว็บ: ปุ่ม **Reset to bundle**) | — |
+
+ค่าถูกตรวจก่อนเขียน: `port` 1–65535 · `context`/`slots` จำนวนเต็มบวก · `gpu_util` 0–1 · `bind` เฉพาะ `0.0.0.0`/`127.0.0.1` ·
+`served_name`/`image` ห้ามมี `" ' \` $ \ { }` และ engine env ห้ามมี `{}` — เพราะไฟล์นี้ถูก `source` ทุกครั้งที่ start
+(เคยรันคำสั่งจากช่องกรอกบนหน้าเว็บได้) · **ไม่เก็บ API key** — โฟลเดอร์ bundle ถูก zip แจกต่อได้ ส่ง `API_KEY=` ตอน start แทน
+· ค่าพวกนี้ (image · parser · env · extra-args) ถูกพับลง header ตอน `lmds recipes --publish` ส่วน port/context/slots/bind
+ไม่พับโดยเจตนา
+
 ### 4.3 ซ่อม / ลบโมเดล
 
 ```bash
@@ -800,13 +917,17 @@ lmds remove <ชื่อ> --keep-weights     # ลบ bundle แต่เก็
 lmds remove <ชื่อ> -y                 # ไม่ถามยืนยัน (สำหรับ script)
 ```
 
-`remove` จะ **แสดงรายการไฟล์ + ขนาดให้ดูก่อนเสมอ** แล้วค่อยถามยืนยัน (default = ไม่ลบ)
+`remove` จะ **แสดงรายการไฟล์ + ขนาดให้ดูก่อนเสมอ** แล้วค่อยถามยืนยัน (default = ไม่ลบ · `--dry-run` = ดูแล้วจบ)
 สิ่งที่ทำตามลำดับ: หยุดเซิร์ฟเวอร์ → ยกเลิก autostart → ลบ bundle + ZIP + ทะเบียน/log +
 runtime files + weight ของโมเดล
 
 - **`--keep-weights` คุ้มมากกับโมเดลใหญ่** — ลบ bundle ทิ้งแล้ว deploy ใหม่ได้โดยไม่ต้องโหลดซ้ำหลายสิบ GB
-- weight หาจาก `MODEL_PROFILE.yaml` (vLLM → HF cache, llama.cpp → `MODEL_DIR`) —
-  ถ้าหาไม่เจอระบบจะ**ไม่เดา** (ไม่ลบอะไรที่ไม่แน่ใจ) ต้องลบเองถ้าต้องการ
+- weight หาจาก `MODEL_PROFILE.yaml` (vLLM → HF cache, llama.cpp → `~/models/<slug>` เสมอ ไม่อ่าน `MODEL_DIR` จาก environ
+  ของ hub ซึ่งเป็นของ bundle ที่กำลัง start อยู่) — ถ้าหาไม่เจอระบบจะ**ไม่เดา** (ไม่ลบอะไรที่ไม่แน่ใจ) ต้องลบเองถ้าต้องการ ·
+  bundle ที่มาจาก `lmds adopt` จด path ของ weight ไว้ใน `MODEL_PROFILE["weights"]` และมีคำสั่ง `remove-plan`
+- **ไฟล์ที่ container เขียนเป็น root** (weight ใน HF cache ของ vLLM) — `rm` ล้มด้วย EACCES แล้วผู้สั่งผ่านหน้าเว็บ/ssh ไม่มี tty
+  กรอกรหัส sudo → ให้ root *ในคอนเทนเนอร์* ลบแทน (`docker run --rm -v <parent>:/x <image ที่มีในเครื่อง> rm -rf /x/<ชื่อ>`) ·
+  รั้ว: เฉพาะใต้ home / `HF_HOME` เท่านั้น · ใช้ image ที่มีอยู่แล้ว (เล็กสุดก่อน) ไม่ pull ใหม่ · ทำเฉพาะเมื่ออยู่ในกลุ่ม docker
 
 ### 4.4 Tab completion (กด TAB เติมให้)
 
@@ -882,15 +1003,33 @@ lmds node add 192.168.10.21 --user ops --install   # เพิ่ม + ติด
 lmds node install spark2                           # ติดตั้ง/อัปเดตทีหลังก็ได้
 ```
 
-`node install` จะ clone (หรือ `git pull`) จาก GitHub แล้วรัน `install.sh` บนเครื่องนั้นให้
-· **ข้ามขั้น Docker/NVIDIA toolkit** เพราะต้องใช้ `sudo` ซึ่งไม่มีคนกรอกรหัสผ่านผ่าน SSH
+`node install` **ส่งโค้ดของ hub ไปให้เครื่องนั้น** (git bundle ~2 MB ผ่าน scp แล้ว `git clone -b main`/`pull` จากไฟล์นั้น ·
+origin ชี้กลับ GitHub เผื่อวันหน้า) แล้วรัน `install.sh` บนเครื่องนั้น — **เครื่องปลายทางไม่ต้องเข้าถึง GitHub และไม่ต้องมี deploy key**
+· แคช bundle ต่อ commit (15 เครื่องกดพร้อมกัน pack ครั้งเดียว) · hub ที่ไม่ได้ติดตั้งจาก checkout จะถอยไป clone จาก GitHub ตามเดิม
+· โฟลเดอร์เดิมบน node ที่ไม่ใช่ git (ติดตั้งแบบ copy) ถูกย้ายไป `.bak-<เวลา>` · checkout ที่แก้ไว้/แยกสายถูกเก็บที่ branch
+`local-<เวลา>` + stash แล้วตามโค้ดของ hub — **node เป็นของ hub ไม่ใช่ที่พัฒนาโค้ด** · สรุปท้ายบอก "ตรง hub" / "ยังไม่ตรง hub"
+โดยเทียบ commit แบบ prefix (git ย่อ 7 หรือ 8 ตัวต่างกันตามเครื่อง)
+· **ข้ามขั้น Docker/NVIDIA toolkit** เพราะต้องใช้ `sudo` ซึ่งไม่มีคนกรอกรหัสผ่านผ่าน SSH — ใช้ `lmds node setup <ชื่อ> --with-prereq`
+(ถามรหัสตอนนี้ ใช้ครั้งเดียว ส่งทาง stdin) หรือ *Add machine* บนหน้าเว็บที่ทำให้ครบในครั้งเดียว
 
 ### เตรียมเครื่องปลายทาง
 
 1. sshd เปิดอยู่
 2. user ที่จะใช้ **อยู่ในกลุ่ม `docker`** — **ไม่ต้องเป็น root**
-3. Docker + NVIDIA Container Toolkit + git — ถ้ายังไม่มี ต้องรัน `./install.sh` บนเครื่องนั้นเอง (ขั้น sudo)
-4. LMDS — ไม่ต้องทำเอง ใช้ `lmds node install` จาก hub ได้
+3. `git` + `python3` (hub ส่ง git bundle ไปให้ clone · `python3-venv` ขาดก็ลงให้/ถอยไป `--without-pip` เอง)
+4. Docker + NVIDIA Container Toolkit — `lmds node setup <ชื่อ> --with-prereq` จาก hub (ถามรหัส sudo ครั้งเดียว) หรือ `./install.sh` บนเครื่องนั้น
+5. LMDS — ไม่ต้องทำเอง ใช้ `lmds node install` จาก hub ได้
+
+### อัปเดตทั้งฟลีต
+
+```bash
+lmds node install --all        # hub ส่งโค้ดที่ตัวเองรันอยู่ไปทุกเครื่อง (~1.5 นาที/เครื่อง ไม่แตะ GitHub)
+lmds node list                 # ป้าย ≠ hub เฉพาะเครื่องที่ commit ต่างจริง
+```
+
+บนหน้าเว็บ: ปุ่ม **Update** ที่แถบบน = `git pull --ff-only` บน hub → `install.sh` → restart service (รอให้ลายเซ็น process
+เปลี่ยน ไม่ใช่ ping แล้ว reload) → อัปเดตทุก node ด้วยโค้ดจาก hub · ป้าย "มีอัปเดต" อ่านจาก checkout ที่ `install.sh` ประทับไว้
+(ไม่ใช่ตำแหน่งโมดูลใน site-packages) · hub ที่ไม่ได้รันใต้ systemd ตอบ 409 ให้ `lmds web --restart` เอง
 
 ### เพิ่มเครื่อง (กรอกรหัสผ่านครั้งเดียว)
 
@@ -924,9 +1063,11 @@ lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต
 
 | | ใช้กับ |
 |---|---|
-| `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` |
-| `node ctl` | `prepare-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `network-info` `client-config` `bench` `clear-fi-cache` |
-| `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start`) |
+| `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` `remove --dry-run` `set` `version` |
+| `node ctl` | `prepare-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` |
+| `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start` `--dry-run`) |
+| `node push` | ส่ง bundle จากเครื่องนี้ไปติดตั้ง (`--download` `--start` · stacked: เขียน cluster.env + pair + sync/verify ให้ก่อน start) |
+| `cluster …` | `show` (= `node cluster`) · `write <slug> --head` · `pair <head> <worker…>` · `doctor <head> <worker> [--slug]` |
 
 ขั้นตอนของ stacked (`sync-worker`, `verify-worker`) มีเฉพาะใน controller — ต้องใช้ `node ctl`
 · ลำดับเต็มดูที่ [RUNBOOK-MULTI-NODE.md](RUNBOOK-MULTI-NODE.md)
@@ -956,21 +1097,30 @@ VRAM · Disk free และการ์ด GPU (compute/power/temp/fan + clocks 
 | `context` | 256–10,000,000 tokens | เกินที่หน่วยความจำรับไหว vLLM จะไม่ขึ้น |
 | `gpu-util` | 0.3–0.98 | ขึ้นเฉพาะ engine vLLM · ช่วงเดียวกับที่ controller ตรวจเอง |
 
-ค่าถูกจำไว้ต่อ (เครื่อง/โมเดล) **ในเบราว์เซอร์** ไม่ได้เขียนทับ bundle บนเครื่องปลายทาง —
+ค่าช่องหลักถูกจำไว้ต่อ (เครื่อง/โมเดล) **ในเบราว์เซอร์** ไม่ได้เขียนทับ bundle บนเครื่องปลายทาง —
 ค่าที่ใช้ทดลอง (เลี่ยง port ชนกัน, ลด context ชั่วคราว) ไม่ควรกลายเป็นค่าถาวรของเครื่องนั้น
 · **server ตรวจค่าเองทุกครั้ง** เพราะค่าพวกนี้ถูกต่อเป็นคำสั่งที่รันบนเครื่องอื่นผ่าน SSH
 จะฝากการตรวจไว้กับ JS ในเบราว์เซอร์ไม่ได้ · ส่ง option ไปกับคำสั่งที่ไม่รับมัน (เช่น `doctor`)
 จะได้ 400 ไม่ใช่เงียบ ๆ ทิ้งจนผู้ใช้เข้าใจว่าตั้งค่าแล้ว
+
+**หมวด Advanced (0.6)** — parsers · engine env · extra args · image · model ID พับอยู่ใต้ช่องหลัก และ**ส่งไปกับคำสั่ง
+เฉพาะตอนที่หมวดนั้นเปิดอยู่** (= ผู้ใช้ตั้งใจแก้) ไม่จำข้ามครั้ง — เคสจริง 2026-09-04: ค่าขั้นสูงที่จำไว้จากรอบก่อนติดไปกับ
+start รอบถัดไปโดยไม่มีใครเห็น · ค่าที่ตั้งใจให้ติดถาวรกด **Save** (เขียน `bundle.env` = `lmds set`) · **Reset to bundle**
+ลบค่าที่บันทึกไว้กลับไปใช้ของ bundle (= `lmds set --clear`) · ปุ่ม **Fill from model (parsers)** = `lmds set --auto`
 
 **เมนูของโมเดลบนเครื่องอื่นทำได้เท่ากับโมเดลในเครื่องนี้** — เป็น controller ตัวเดียวกันและ
 รับ env ชุดเดียวกัน จึงไม่มีเหตุผลให้ต่างกัน:
 
 | กลุ่ม | มีอะไร |
 |---|---|
-| **ตั้งค่าตอน start** | `port` · `context` · `slots` · `bind` · `API key` · `gpu-util` (เฉพาะ vLLM) |
-| **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` |
-| **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` |
-| **จัดการ** | `restart` · `doctor` · `logs` · `repair` · `verify-files` · `enable`/`disable` · `remove` |
+| **ตั้งค่าตอน start** | `port` · `context` · `slots` · `bind` · `API key` · `gpu-util` (เฉพาะ vLLM) · Advanced: `tool parser` · `reasoning parser` · `engine env` · `extra args` · `image` |
+| **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
+| **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` · `logs-worker` · ปุ่ม **Pair SSH** / **Doctor** ที่หัวกลุ่ม |
+| **จัดการ** | `restart` · `doctor` · `logs` · `repair` · `verify-files` · `enable`/`disable` · `remove` · **Cancel** งานที่ค้าง |
+
+ปุ่ม download บนการ์ด head ของโมเดล stacked ต่อ `sync-worker && verify-worker` ให้เป็นงานเดียว · งานที่ ssh ค้างยกเลิกได้
+(`POST /api/jobs/{id}/cancel`) แล้วล็อก (เครื่อง, โมเดล) หลุด · คำสั่งสั้น (`stop` ฯลฯ) หมดเวลาที่ 120 วิ ไม่ยึด thread ของเว็บ
+ครึ่งชั่วโมง
 
 ค่าที่ตั้งถูกส่งเป็น **env ของ controller** (`API_PORT`, `CTX_SIZE`, `PARALLEL_SEQS`, `API_KEY`…)
 ตัวเดียวกับที่โมเดลในเครื่องใช้ · ตรวจค่าที่ฝั่ง server ด้วยโค้ดชุดเดียวกันทั้งสองทาง
@@ -988,9 +1138,9 @@ VRAM · Disk free และการ์ด GPU (compute/power/temp/fan + clocks 
 ไม่มีปุ่ม autostart เลย เพราะกดแล้วล้มแน่ ๆ · ป้าย `autostart` ขึ้นเฉพาะตอนสถานะเป็น `enabled` จริง
 (ไม่ใช่ `absent`/`disabled` ซึ่งเคยถูกนับเป็น "เปิดอยู่" ทั้งหมด)
 
-**`enable` ต้อง sudo บนเครื่องปลายทาง** — hub เรียกผ่าน SSH ซึ่งไม่มี tty ให้กรอกรหัสผ่าน
-ถ้าเครื่องนั้นไม่ได้ตั้ง sudo แบบไม่ถามรหัส คำสั่งจะล้มและ**พิมพ์คำสั่งที่ต้องรันเองบนเครื่องนั้น**
-ให้ในหน้าเว็บ — ไม่ใช่รายงานว่าสำเร็จ
+**`enable` จากหน้าเว็บไม่ต้อง sudo** — ค่าเริ่มต้นเป็น systemd *user* service (`~/.config/systemd/user/`) เพราะ hub
+เรียกผ่าน SSH ซึ่งไม่มี tty ให้กรอกรหัสผ่าน · ต้องมี linger (`loginctl enable-linger` — *Add machine* / `node setup` ตั้งให้)
+ไม่งั้นขึ้นตอน login ไม่ใช่ตอนบูต · `--system` (sudo) ใช้ได้เฉพาะจาก CLI บนเครื่องนั้น
 
 **`remove` ทำได้จากหน้าเว็บ แต่ต้องผ่านสองขั้น** — กดครั้งแรกคือ `--dry-run`: เห็นรายการไฟล์
 ที่จะถูกลบพร้อมขนาดจริง (bundle, ทะเบียน, weight) แล้วถึงมีปุ่ม **ยืนยันลบถาวร** · ฝั่ง server
@@ -1016,15 +1166,22 @@ lmds node cluster
 ```bash
 lmds node set spark2 --cluster-ip 10.10.0.2     # ตั้งค่า
 lmds node set spark2                            # ดูค่าปัจจุบัน + ค่าที่ตรวจพบ
-lmds node cluster --write my-70b-model          # เขียน cluster.env ลง bundle
+lmds cluster show                               # = lmds node cluster
+lmds cluster doctor spark-head spark2 --slug my-70b-model   # ทีละข้อ: ทะเบียน · ต่อถึง · GPU · ไซต์ · ฮาร์ดแวร์ · cluster IP · วง · สาย · ssh head→worker · ดิสก์ · cluster.env
+lmds cluster pair spark-head spark2             # กุญแจ head→worker (เกิดบน head · เขียน ~/.ssh/config ของ head · ยืนยันด้วย ssh เปล่า ๆ)
+lmds cluster write my-70b-model --head spark-head [--worker spark2 …] [--on spark-head]   # เขียน cluster.env ลง bundle
 ```
 
-`cluster.env` มี `MASTER_IP` / `WORKER_IP` / `SSH_USER` / `TRANSPORT_IP_*` / `NCCL_SOCKET_IFNAME` —
-stacked controller จะ source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วไม่ถาม IP ตอน `start` อีก
-(ตั้ง env จากภายนอกยังชนะไฟล์นี้เสมอ · ไม่มีไฟล์ = ถามแบบเดิม)
+`cluster.env` มี `MASTER_IP` / `WORKER_IP` / `WORKER_IPS` / `SSH_USER` / `TRANSPORT_IP_*` / `NNODES` / `TENSOR_PARALLEL_SIZE` /
+`NCCL_SOCKET_IFNAME` — stacked controller จะ source ไฟล์นี้**ก่อน default ทั้งหมด** แล้วไม่ถาม IP ตอน `start` อีก
+(ตั้ง env จากภายนอกยังชนะไฟล์นี้เสมอ · ไม่มีไฟล์ + ไม่มี tty = หยุดพร้อมบอกคำสั่งข้างบน) · `cluster write` อ่าน `NNODES`
+จาก controller ใน bundle แล้วตัดกลุ่มให้เหลือ head + worker ตามจำนวนนั้น (`--worker` เรียง rank ได้) — กลุ่ม 4 เครื่องกับ
+bundle 2 เครื่องไม่ได้ `NNODES=4` ทับแผนอีก · ไม่พอ/เกิน = ปฏิเสธพร้อมบอกว่าต้อง target ไหน
 
 > ถ้าไม่ตั้ง `NCCL_SOCKET_IFNAME` ไว้ NCCL จะเลือก interface เอง และมักได้เส้นบริหารจัดการที่ช้ากว่า —
-> ยังรันได้แต่ช้าลงแบบหาสาเหตุยาก
+> ยังรันได้แต่ช้าลงแบบหาสาเหตุยาก · **key ที่ hub ใช้เข้า head ไม่ใช่ key ของ head** — `node setup` ติดตั้งกุญแจของ hub
+> ลงทุกเครื่อง แต่ controller stacked รันบน head แล้ว ssh ไป worker ด้วยกุญแจของ head เอง จึงต้อง `lmds cluster pair`
+> (หน้าเว็บทำให้เองหลังเขียน cluster.env ตอน push จาก wizard)
 
 รายละเอียดทั้งหมด: [FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md)
 
@@ -1262,7 +1419,7 @@ lmds recipes --sync                              # ดึงจากรีโ�
 lmds recipes --sync --repo <git url> --ref main  # รีโปอื่น/branch อื่น
 ```
 
-**ในหน้าเว็บ**: *Proven recipes* → ปุ่ม **ดึงจาก GitHub** · แถวบนบอกว่าชุดนี้มาจากรีโปไหน
+**ในหน้าเว็บ**: *Library → Recipes* → ปุ่ม **Sync from GitHub** · แถวบนบอกว่าชุดนี้มาจากรีโปไหน
 commit ไหน ดึงเมื่อไหร่
 
 | เรื่อง | พฤติกรรม |
@@ -1428,8 +1585,12 @@ POOLING=mean EMBED_UBATCH=4096 ./<slug>-single.sh restart # llama.cpp: เปล
 | client | `client-config` → `"task": "embed"`, `"endpoint": "/v1/embeddings"`, `max_input_tokens` = context ต่อ slot ทั้งก้อน (ไม่มี output token จึงไม่มี `max_output_tokens`), `pooling` · เรียก `POST /v1/embeddings` ด้วย `model` = served name | `"task": "embed"` · budget แบบเดียวกับ chat (vLLM ไม่แบ่ง slot) |
 
 > **`test-embed` ขึ้น WARN** = คู่ประโยคความหมายเดียวกัน (ไทย↔อังกฤษ) ได้คะแนนไม่สูงกว่าประโยคที่ไม่เกี่ยวกัน
-> มักเป็น pooling ผิดตระกูล — ลอง `POOLING=mean` หรือ `cls` แล้ว restart · stacked ไม่รองรับ (โมเดล embed ≤ 8B
-> ลงเครื่องเดียวเสมอ) · แนะนำโมเดลไทย: Qwen3-Embedding-0.6B/4B (ทั่วไป) · bge-m3 (hybrid + reranker คู่กัน)
+> มักเป็น pooling ผิดตระกูล — ลอง `POOLING=mean` หรือ `cls` แล้ว restart (vector ที่ pooling ผิดดูปกติทุกอย่างยกเว้นข้อนี้)
+> · stacked และ SGLang ไม่รองรับ — ทั้ง analyze บนหน้าเว็บ (422) และ renderer ปฏิเสธ (SGLang ที่ขอมาถอยเป็น vLLM) เพราะโมเดล
+> embed ≤ 8B ลงเครื่องเดียวเสมอ · แผนจาก LLM ตั้ง task เองไม่ได้ (harden บังคับจาก repo) · หน้าเว็บ/CLI ติดป้าย
+> "embedding (last)" จาก `MODEL_PROFILE` · `lmds bench` วัดเฉพาะโมเดล chat — โมเดล embed ใช้ `test-embed`
+> · แนะนำโมเดลไทย: Qwen3-Embedding-0.6B/4B (ทั่วไป) · bge-m3 (hybrid + reranker คู่กัน) · รันจริงแล้ว:
+> `VesNFF/Qwen3-VL-Embedding-8B-GGUF` f16 บน dgx-spark03 (2026-09-04)
 
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
@@ -1447,6 +1608,20 @@ lmds web --restart -b             # เปิดใหม่ (ลิงก์เ
 lmds web --stop                   # หยุดตัวที่รันเบื้องหลัง
 lmds web -b --new-token           # เปลี่ยน token (ลิงก์เดิมใช้ไม่ได้ทันที)
 ```
+
+### หน้าตา 0.6 — เมนูซ้าย รายละเอียดตรงกลาง
+
+| ที่ | มีอะไร |
+|---|---|
+| **แถบซ้าย** | Overview · This machine (hub) · All machines · ต้นไม้ **ไซต์ → เครื่อง** (จุดสถานะ + แถบ % หน่วยความจำ) · Library: Models (ทุก bundle ทุกเครื่อง คลิกแถว → หน้าเครื่อง + เปิดแผงของโมเดลนั้น) · Scores · Recipes · Weights · Settings |
+| **แถบบน** | breadcrumb · ค้นเครื่อง/โมเดล (Enter = กระโดดไป) · **Deploy model** · **Update** · ขนาดตัวอักษร/ธีม · Sign out |
+| **Overview** | KPI ฟลีต · แถบหน่วยความจำ GPU ต่อเครื่องเรียงจากแน่นสุด (คลิกชื่อ → หน้าเครื่อง) · โดนัท llama.cpp/vLLM ที่รันอยู่ · **Needs attention** จากข้อมูลจริง: เครื่องต่อไม่ได้ · เกิน 90% · พอร์ตซ้อนบนเครื่องเดียว · commit ไม่ตรง hub · ตารางไซต์ |
+| **หน้าเครื่อง** | การ์ดเดิมของเครื่องนั้นกางเต็ม (เกจ · GPU · โมเดล · แผง settings + บรรทัดคำนวณแรม) — ปุ่มทุกปุ่มเหมือนเดิม · เครื่อง/ไซต์ที่ไม่มีแล้ว (bookmark เก่า) บอกตรง ๆ พร้อมลิงก์กลับ |
+| **route** | `#/overview` `#/node/<ชื่อ>` `#/site/<ไซต์>` `#/models` … — ลิงก์ตรง · back/forward · reload อยู่หน้าเดิม · route ชนะการยุบไซต์ (กดเครื่องใน rail แล้วหน้าไม่ว่าง) |
+
+ทุกอย่างคำนวณจากแคชเดียวกับการ์ด ไม่ยิง SSH เพิ่ม · SSE หลุดแล้วถอยไป poll แคช `/api/nodes/<n>/inventory` ทุก 5 วิ ·
+เมนู/ข้อความบนหน้าเว็บเป็นอังกฤษทั้งหมด (comment ในโค้ดยังไทย) · ฟอนต์ Geist / Geist Mono อยู่ในแพ็กเกจ hub เสิร์ฟเองที่
+`GET /fonts/<ชื่อ>` (รับเฉพาะชื่อในรายการ · ไม่ต้องใช้ token) ตกไปฟอนต์ระบบสำหรับภาษาไทย — ยังไม่โหลดอะไรจากเน็ต
 
 ### บนการ์ดโมเดลในคอนโซล
 
@@ -1619,21 +1794,28 @@ lmds web -b --new-token                                  # เปลี่ยน
 
 | แถวโมเดล | รายละเอียด |
 |---|---|
-| **download** | โหลด weight แล้ว **รัน `verify-files` ต่อให้อัตโนมัติ** พร้อม log สด — ปุ่มเปลี่ยนเป็น `start` เองเมื่อครบ |
-| **start / stop / restart** | ใช้ตัวเลือกที่ตั้งไว้ในแท็บ manage |
-| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` |
-| **manage** | port / context / slots / bind / API key · autostart · คำสั่ง stacked · repair · remove |
+| **download** | โหลด weight แล้ว **รัน `verify-files` ต่อให้อัตโนมัติ** พร้อม log สด — ปุ่มเปลี่ยนเป็น `start` เองเมื่อครบ (stacked: ต่อ `sync-worker && verify-worker` ด้วย) |
+| **start / stop / restart** | ใช้ตัวเลือกที่ตั้งไว้ในแท็บ manage (Advanced ส่งเฉพาะตอนเปิด) |
+| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
+| **manage** | port / context / slots / bind / API key / gpu-util · Advanced (parsers · engine env · extra args · image) · Save / Reset to bundle · autostart · คำสั่ง stacked (+ `logs-worker`) · repair · remove · Copy to another machine · Send to a serving machine |
 | **doctor** | ผลเดียวกับ `lmds doctor` พร้อมคำสั่งแก้ |
 | **logs** | log ล่าสุด 300 บรรทัด |
 
-**เครื่องอื่นในทะเบียน** (หัวข้อ *Other machines*) — แต่ละเครื่องมีการ์ดของตัวเอง กด **−/+** ย่อ-ขยายได้
-· ในการ์ดมีเกจทรัพยากร, การ์ด GPU, แถบ cluster (ดู §4.5) และรายชื่อโมเดลพร้อมปุ่ม **⋯** ต่อโมเดล
+**เครื่องอื่นในทะเบียน** — หน้า *All machines* จัดกลุ่มตามไซต์ (หัวไซต์ยุบ/กางได้ · ลากการ์ดจัดลำดับ) หรือกดชื่อเครื่องใน
+rail เพื่อเปิดหน้าเครื่องนั้นเต็มจอ · ในการ์ดมีเกจทรัพยากร, การ์ด GPU, แถบ cluster (ดู §4.5) และรายชื่อโมเดลพร้อมปุ่ม **⋯**
+ต่อโมเดล · เครื่องที่ต่อไม่ได้ขึ้นเป็นแถบเหนือการ์ด ไม่ล้างการ์ดทิ้ง · โมเดล stacked ขึ้นทั้งการ์ด head ("stacked head · worker
+<ชื่อ>") และการ์ด worker ("stacked worker of <head>" — ไม่มีปุ่ม)
 
 > **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง
 > bundle ที่สร้างก่อนมีคำสั่งใหม่ (เช่น `test-vision`) จะไม่มีปุ่มนั้น พร้อมบอกว่าต้อง deploy ใหม่
 
-ปุ่ม **+ Deploy model** ทำ wizard ครบ flow: วางลิงก์ → เลือก target → วิเคราะห์ → เลือกไฟล์ GGUF /
-ใส่ HF token ถ้าจำเป็น → ดูแผน + ปรับ context / อนุมัติ flag → สร้าง bundle ผ่าน quality gates → ZIP
+ปุ่ม **+ Deploy model** ทำ wizard ครบ flow: วางลิงก์ → เลือกเครื่องปลายทาง (**Run on**) / กลุ่ม stacked / target preset →
+วิเคราะห์ → เลือกไฟล์ GGUF / ใส่ HF token ถ้าจำเป็น → ดูแผน + ปรับ context / อนุมัติ flag → สร้าง bundle ผ่าน quality gates → ZIP
+→ push ไปเครื่องนั้น · เลือกเครื่องในฟลีตแต่ไม่เลือก preset = เดา preset จาก GPU ที่ refresher เห็นของเครื่องนั้น (ไม่ใช่ฮาร์ดแวร์ของ hub)
+· **พอร์ต**: analyze เลือกพอร์ตว่างตัวแรกจาก inventory ของเครื่องปลายทาง (ทุก bundle + container นอกระบบ · stacked ดูทั้ง head
+และ worker) เขียนลง `bundle.env` — bundle ใหม่ไม่ได้ 8000 ซ้ำกับตัวเดิมอีก แก้เองได้ในช่อง port · คู่ stacked ที่เป็นไปไม่ได้
+(ไม่มี worker · worker = head · ไม่มี cluster IP · คนละไซต์ · GGUF/SGLang/embedding) ถูกปฏิเสธก่อนแตะ Hugging Face
+(422 `{kind:"cluster"}`) · repo gated บอกวิธีใส่ token ตรง ๆ · analyze repo ที่ไฟล์อยู่บน Xet รอ byte แรกได้ถึง 120 วิ
 
 ### หน้าตาและการอ่านค่า
 
@@ -1669,12 +1851,14 @@ lmds web -b --new-token                                  # เปลี่ยน
 
 ### ยังต้องใช้ CLI สำหรับ
 
-`lmds config` (ตั้ง provider / API key) · `lmds hardware` · และ `enable`/`disable` autostart ในเครื่อง
-ที่ `sudo` ต้องกรอกรหัส (หน้าเว็บไม่มี tty — จะบอกคำสั่งให้ไปรันเอง)
+`lmds config set-key` (API key ของ provider — หน้า Settings ตั้ง provider/base URL ได้ · HF token ใส่ได้ในกล่อง deploy) ·
+`lmds enable --system` (system service ต้อง sudo — ค่าเริ่มต้น user service กดจากหน้าเว็บได้) · `lmds adopt --port/--pid`
+(process ที่ไม่ได้อยู่ใน container — หน้าเว็บรับได้เฉพาะ container) · `lmds recipes --publish` · `lmds cluster write --nnodes`
+· `lmds web --enable/--new-token`
 
 ## 5.5 พิสูจน์ว่ามันรันได้จริง — `lmds smoke`
 
-quality gates ทั้ง 10 ด่านตรวจได้แค่ว่า **สคริปต์ถูกต้อง** ไม่ได้บอกว่ารันแล้วได้คำตอบจริง
+quality gates ทั้ง 12 ด่านตรวจได้แค่ว่า **สคริปต์ถูกต้อง** ไม่ได้บอกว่ารันแล้วได้คำตอบจริง
 
 ```bash
 lmds smoke <ชื่อ>                    # บนเครื่องนี้
@@ -1782,6 +1966,18 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | `start` บนเครื่อง ARM64 ใหม่ขึ้น `ยังไม่มี llama-server … build ให้ก่อน` แล้วเงียบนาน | กำลัง build llama.cpp ให้เอง (~10–30 นาที ครั้งแรกครั้งเดียว) | ปกติ — ไม่ต้องรัน `prepare-runtime` เองแล้ว · ถ้าจบด้วย `sudo apt-get … install -y git cmake` = ขาด build deps และ sudo ต้องใส่รหัส → รันคำสั่งนั้นเองแล้ว start ใหม่ |
 | `download` ขึ้น `กำลังรันอยู่แล้ว (อีก process ถือ …/.download.lock)` | สั่ง download ซ้อนกัน (hub + CLI, หรือตัวเก่าที่ session หลุดแต่ curl ยังโหลดอยู่) | รอให้ตัวเดิมจบ (`ps -ef \| grep curl`) แล้วสั่งซ้ำ — มันจะต่อไฟล์ให้ครบเอง ไม่โหลดใหม่ |
 | `download` ขึ้น `ดิสก์ … เหลือ X MB แต่ไฟล์ต้องการ Y MB` / `ถอยไปสตรีมเดี่ยว` | ดิสก์ไม่พอ · โหลดขนาน (`FETCH_PARTS`) ต้องมีที่ว่าง ~2 เท่าของไฟล์ชั่วคราว | ล้างที่ว่าง หรือ `MODEL_DIR=/data/models ./xxx-single.sh download` (ตั้ง `MODEL_DIR` เดียวกันตอน start) · ที่ว่างพอไฟล์เดียวแต่ไม่ถึง 2 เท่า = โหลดสตรีมเดี่ยวช้ากว่าแต่ได้ไฟล์ |
+| `download` GGUF ได้ 0.3–1.4 MB/s ทั้งที่เน็ตเร็ว (ETA เป็นสิบชั่วโมง) | HF ย้ายไฟล์ใหญ่ไป **Xet bridge** — สตรีมเดี่ยวช้ามาก แต่ยิง range หลายส่วนพร้อมกันได้ ~50 MB/s | bundle ที่สร้างตั้งแต่ 0.6.0 โหลดขนาน 8 ส่วนเอง (`FETCH_PARTS=8` · ไฟล์ ≥256 MB) — bundle เก่า `lmds rebuild <ชื่อ>` · ปรับ `FETCH_PARTS=16` ได้ · ต้องมีดิสก์ว่าง ~2 เท่าของไฟล์ชั่วคราว (ส่วนย่อยใน `.parts/` + ไฟล์รวม) ไม่พอถอยไปสตรีมเดี่ยวเอง · ไม่มี aria2c ก็ได้ (ใช้ curl `-r`) |
+| SHA-256 ไม่ตรงหลังโหลดขนานแล้ว resume | ส่วนย่อยถูก append ซ้ำ (curl retry เอง หรือสอง download ซ้อนกัน) | ลบ `<ไฟล์>.parts/` แล้ว `download` ใหม่ · ตั้งแต่ 0.6.0 ล็อก `.download.lock` กันสั่งซ้อน และให้ลูปนอก resume แทน curl |
+| analyze บนหน้าเว็บขึ้น "ต่อ Hugging Face ไม่ได้" ทั้งที่เปิดเว็บ HF ได้ | byte แรกจาก Xet มาช้า 20–60 วิ เกิน read timeout เดิม (30 วิ) | แก้แล้ว 0.6.0 (read 120 วิ / connect 30 วิ) — ยังเจอ = อัปเดต hub · ข้อความจริงถึงเบราว์เซอร์เป็น 422 `{kind:"hub"}` |
+| stacked `sync-worker`/`start` ตาย `Permission denied (publickey)` | head ไม่มีกุญแจไป worker (`node setup` ลงแต่กุญแจของ hub) | `lmds cluster pair <head> <worker>` แล้วสั่งใหม่ · ดูทีละข้อ: `lmds cluster doctor <head> <worker>` |
+| stacked `start` ขึ้น `image นี้ไม่รู้จักสถาปัตยกรรม 'xxx'` ก่อนปล่อย worker | โมเดลใหม่กว่า transformers ใน image | `lmds set <ชื่อ> --image <image ใหม่กว่า>` → `prepare-runtime` → `start` (ตรวจก่อนได้ด้วยคำสั่ง `docker run … CONFIG_MAPPING_NAMES` ที่ error พิมพ์ให้) |
+| `prepare-runtime` (stacked) บอกว่า pull ล้มที่เครื่อง X | node นั้นไม่ถึง registry / ghcr rate-limit / nvcr ต้อง NGC key / ไม่มีเน็ต | ทำตามที่ข้อความบอกต่อ registry นั้น (`docker login` · NGC key · proxy ของ docker daemon · `docker save \| ssh docker load`) แล้วสั่งซ้ำ (idempotent) |
+| ปุ่ม Update: hub ผ่านแต่ node "ไม่ผ่าน" | node ไม่มี checkout (clone จาก bundle ได้โฟลเดอร์เปล่า) / โฟลเดอร์ไม่ใช่ git / checkout แยกสาย | แก้แล้ว 0.6.0 (`git clone -b main` · โฟลเดอร์เดิม → `.bak-<เวลา>` · แยกสาย → branch `local-<เวลา>`) — อัปเดต hub ก่อนแล้วกดใหม่ · ป้าย "ยังไม่ตรง hub" ทั้งที่อัปเดตแล้ว = hash ย่อ 7 กับ 8 ตัว (แก้แล้ว เทียบ prefix) |
+| `install.sh` ล้มที่ pip (PyPI ช้า) แล้วเครื่องไม่มี `lmds` | รุ่นเก่า: `venv --clear` ทับก่อนแล้ว pip ค่อยล้ม | ตั้งแต่ 0.6.0 venv เดิมถูกย้ายไป `venv.old` แล้วคืนให้เมื่อล้ม — รุ่นเดิมยังใช้ได้ · ลองใหม่ `PIP_TIMEOUT=120 ./install.sh` (ค่าเริ่มต้น `PIP_RETRIES=8 PIP_TIMEOUT=60`) |
+| `lmds remove` / ปุ่ม Remove ขึ้น "ต้องใช้ sudo rm -rf" | weight ที่ container เขียนเป็น root | ตั้งแต่ 0.6.0 ลบผ่าน docker ให้เอง (root ในคอนเทนเนอร์ · เฉพาะใต้ home/HF cache · ไม่ pull image) — ยังขึ้น = ผู้ใช้ไม่อยู่กลุ่ม docker หรือ path อยู่นอกรั้ว ลบเองตามคำสั่งที่พิมพ์ให้ |
+| หน้าภาพรวมขึ้น "port shared" ทันทีหลัง deploy | bundle ใหม่ได้ 8000 ซ้ำกับตัวเดิม (รุ่นก่อน 0.6.0) | ตั้ง port ใหม่ในฟอร์ม settings แล้ว Save · bundle ที่สร้างตั้งแต่ 0.6.0 ได้พอร์ตว่างของเครื่องนั้นตั้งแต่ analyze |
+| ตั้ง `API_KEY` กับ llama.cpp แล้วยิงไม่ใส่ key ก็ได้ 200 | bundle รุ่น 0.6.0 ช่วงสั้น ๆ ใช้ env `LLAMA_ARG_API_KEY` ซึ่ง llama-server ไม่มี | `lmds rebuild <ชื่อ>` — controller ปัจจุบันใช้ `--api-key-file` (พิสูจน์ 401/401/200 กับ b10799) |
+| ssh ขาดกลาง job บนหน้าเว็บ (exit 255) | สายหลุด แต่คำสั่งปลายทางมักรันต่อ | ดู `lmds node run <n> logs <ชื่อ>` ก่อนสั่งซ้ำ — ไม่งั้นชน "กำลังรัน" หรือ download ซ้อน |
 | ลิงก์ `ollama.com/...` ใช้ไม่ได้ | ยังรองรับเฉพาะ Hugging Face | ใช้ลิงก์ HF ของ GGUF ตัวเดียวกันแทน (roadmap เฟส 2) |
 | `verify-files` แจ้ง shard หาย / ขนาดไม่ตรง | download ไม่ครบ หรือไฟล์ใน cache ถูกลบ | `lmds repair <ชื่อ>` (โหลดเฉพาะส่วนที่ขาด) |
 | `lmds list` ขึ้น ⚠ (ไฟล์ controller หาย) | โฟลเดอร์ bundle ถูกลบ/ย้าย | `lmds deploy` ลิงก์เดิมเพื่อสร้าง bundle ใหม่ — weight เดิมใช้ต่อได้ · หรือ `lmds remove <ชื่อ>` ถ้าไม่ใช้แล้ว |
@@ -1871,7 +2067,7 @@ bash หยุดที่ `}` ตัวแรก JSON จึงถูกตั�
 - วิธีตั้ง API token ของ endpoint อย่างละเอียด (พร้อมตัวอย่าง curl) อยู่ในหัวข้อ **API TOKEN** ของ `./xxx-single.sh help`
 - API key / HF token ใส่ผ่าน `lmds config set-key` หรือ env เท่านั้น — **ห้าม**เขียนลงไฟล์/สคริปต์เอง
 - เซิร์ฟเวอร์ที่เปิดใน network ที่มีคนอื่นใช้ร่วม ให้ตั้ง `API_KEY=xxx ./xxx-single.sh start` เสมอ
-- `API_KEY` ถูกส่งเข้า container ผ่าน env — ผู้ที่ใช้ `docker` บนเครื่องเดียวกันอ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก แต่ไม่ควรใช้ key เดียวกับระบบอื่น)
+- `API_KEY` ไม่เคยอยู่บน argv (ดูกล่องใน §2) — vLLM/stacked รับผ่าน env ผู้ที่ใช้ `docker` บนเครื่องเดียวกันจึงอ่านได้ด้วย `docker inspect` · llama.cpp อ่านจากไฟล์ 0600 ใน `RUN_DIR` (docker: mount ro) · SGLang ยังต้องส่ง `--api-key` บน argv (ไม่ใช่ช่องโหว่ต่อคนนอก แต่ไม่ควรใช้ key เดียวกับระบบอื่น)
 - **ข้อมูลที่ออกจากเครื่อง**: ตอนวางแผน ระบบส่ง metadata ของโมเดล (model card, `config.json`, รายชื่อไฟล์) ไปยัง LLM provider ที่ตั้งไว้ — ไม่ส่ง weight, ไม่ส่ง key, ไม่ส่งข้อมูลผู้ใช้ · องค์กรที่ห้ามข้อมูลออก ให้ใช้ `--no-llm` หรือตั้ง provider เป็น Local AI ([INSTALL §3.2.1](INSTALL.md))
 - สำเนา prompt/คำตอบของทุกครั้งที่เรียก LLM ถูกเก็บไว้ที่ `~/.config/lmds/sessions/` (redact secret แล้ว) — ลบได้ถ้าไม่ต้องการเก็บประวัติ
 - flag `--trust-remote-code` อนุมัติเฉพาะหลัง review ไฟล์ Python ใน repo แล้วเท่านั้น (รายชื่ออยู่ใน SPECIAL_FILES.md)
