@@ -361,6 +361,14 @@ class FakeFleet:
                 return 0, "restored 99-nvidia-sync-cluster.yaml\nLMDS_NETPLAN_ROLLED_BACK\n", ""
             if "LMDS_NETPLAN_REMOVED" in command:
                 return 0, f"moved to {DISABLED_DIR}/99-lmds-cluster.yaml.x\nLMDS_NETPLAN_REMOVED\n", ""
+            if "LMDS_UFW" in command:
+                # ufw เปิดอยู่เฉพาะเครื่องใน self.ufw_active (เคสจริง head ของ cynbangkok)
+                if name in getattr(self, "ufw_active", ()):
+                    import re as _re
+
+                    ifaces = _re.findall(r"for i in (.*?); do", command)[0].replace("'", "").split()
+                    return 0, "".join(f"LMDS_UFW_ALLOWED {i}\n" for i in ifaces) + "LMDS_UFW_ACTIVE\n", ""
+                return 0, "LMDS_UFW_INACTIVE\n", ""
             return 1, "", f"unexpected sudo command: {command}"
         if command.startswith("f=$(mktemp /tmp/lmds-netplan."):
             self.staged[name] = stdin
@@ -769,3 +777,40 @@ def test_api_remove_net(web, monkeypatch):
     assert got.json()["ok"] and got.json()["removed"] and got.json()["node"] == "a"
     assert got.json()["detail"] == f"netplan file moved to {DISABLED_DIR} on a, ports released, registry cleared"
     assert find("a").cluster_ip == "" and "pw" not in got.text.replace("password", "")
+
+
+def test_apply_opens_ufw_for_the_cluster_interfaces_when_the_firewall_is_active(fresh_pair):
+    """เคสจริง 2026-09-05 ลูกค้า cynbangkok: IP สายเร็วครบ ping ถึง แต่ worker ต่อ head:25000 ไม่ได้ เพราะ ufw บน head
+    → apply ปล่อย `ufw allow in on <iface>` ให้เอง (เฉพาะเครื่องที่ ufw active · เครื่องอื่นบอกว่าไม่ต้องทำ)"""
+    fleet = FakeFleet({"a": "pw-a", "b": "pw-b"}); fleet.ufw_active = {"a"}
+    result = apply_plan(fresh_pair, {"a": "pw-a", "b": "pw-b"}, nodes={"a": find("a"), "b": find("b")},
+                        runner=fleet, sleep=lambda s: None)
+    assert result["ok"], result["steps"]
+    fw = {s["node"]: s for s in result["steps"] if s["step"] == "firewall: allow cluster interfaces"}
+    assert fw["a"]["ok"] and "allowed in on enp1s0f1np1" in fw["a"]["detail"]
+    assert fw["b"]["ok"] and "not active" in fw["b"]["detail"]
+    ufw_cmd = next(c for n, c, _ in fleet.calls if n == "a" and "LMDS_UFW" in c)
+    assert "ufw allow in on" in ufw_cmd and ufw_cmd.startswith("sudo -S -p ''"), "ผ่าน sudo -S เท่านั้น"
+
+
+def test_network_doctor_flags_an_active_ufw_that_blocks_the_cluster_interface():
+    from lmds.nodes.doctor import describe, diagnose_network
+
+    register("h", "10.2.1.7"); register("w", "10.2.1.8")
+    hosts = {"h": spark("10.2.1.7"), "w": spark("10.2.1.8")}
+    answers = {"h": "Status: active\n\nTo   Action   From\n22/tcp   ALLOW   Anywhere\n",
+               "w": "LMDS_UFW_OFF\n"}
+    runner = lambda node, cmd, timeout=20, stdin_text="": SimpleNamespace(ok=True, exit_code=0, stdout=answers[node.name], stderr="")
+    report = diagnose_network(["h", "w"], nodes={"h": find("h"), "w": find("w")}, hosts=hosts, runner=runner)
+    fw = {f["names"][0]: f for f in report["findings"] if f["kind"] == "firewall"}
+    assert fw["h"]["ok"] is False and fw["h"]["level"] == "warn"
+    assert "ufw is active" in describe(fw["h"]) and "sudo ufw allow in on enp1s0f1np1" in fw["h"]["fix"]
+    assert fw["w"]["ok"] and "no active firewall" in describe(fw["w"])
+    # ufw ปล่อย interface แล้ว = ผ่าน · ufw.conf บอก enabled แต่อ่าน rule ไม่ได้ = เตือนให้ดูเอง
+    answers["h"] = "Status: active\n\nAnywhere on enp1s0f1np1   ALLOW IN   Anywhere\n"
+    assert next(f for f in diagnose_network(["h", "w"], nodes={"h": find("h"), "w": find("w")}, hosts=hosts, runner=runner)["findings"]
+                if f["kind"] == "firewall" and f["names"] == ["h"])["ok"]
+    answers["h"] = "LMDS_UFW_ENABLED_UNREADABLE\n"
+    unreadable = next(f for f in diagnose_network(["h", "w"], nodes={"h": find("h"), "w": find("w")}, hosts=hosts, runner=runner)["findings"]
+                      if f["kind"] == "firewall" and f["names"] == ["h"])
+    assert unreadable["level"] == "warn" and "not readable" in unreadable["data"]["state"]

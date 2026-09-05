@@ -298,6 +298,8 @@ lmds cluster remove-net spark-worker                  # ถอน: ย้าย�
 iperf3 5 วิ ถ้ามีทั้งสองฝั่ง (เตือนเมื่อ <90 Gbit/s — เพดาน PCIe x4 คือ ~100 ไม่ใช่ 200) → ทะเบียน:
 `cluster_ip`/`cluster_iface` = เส้นที่ head↔worker ใช้ + `cluster_links` ทุกลิงก์
 
+**ไฟร์วอลล์** — ตั้งแต่ 0.6.1 apply ตรวจ `ufw status` ทุกเครื่อง ถ้าเปิดอยู่จะ `ufw allow in on <iface สายคลัสเตอร์>` ให้เอง (เคสจริง: ping ถึงแต่ worker ต่อ head:25000 ไม่ได้ → stacked start ตาย `client socket has timed out`) · `lmds cluster inspect` และขั้น Cabling check ของ wizard ขึ้นเตือนเมื่อ ufw เปิดแต่ยังไม่ปล่อย interface
+
 **รันซ้ำได้** — IP เดิมที่เข้ากันอยู่แล้ว (เช่นคู่ที่ NVIDIA Sync ตั้งไว้) ถูกเก็บไว้ แผนขึ้นว่า "(เดิม)" · ไฟล์ของเรา
 ถูกสำรองก่อนเขียนทับทุกครั้ง
 

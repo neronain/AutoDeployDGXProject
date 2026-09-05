@@ -75,6 +75,9 @@ _TEXT = {
                         "{names} ยังมี {file} — `lmds cluster apply` จะย้ายไป {disabled} ก่อนเขียนไฟล์ของตัวเอง"),
     "link-ping": ("{node} cannot ping {peer} ({peer_ip}) over {iface}",
                   "{node} ping {peer} ({peer_ip}) ทาง {iface} ไม่ถึง"),
+    "firewall": ("{names}: ufw is active and does not allow traffic in on {iface} — the worker cannot reach "
+                 "the head's master port even though ping works",
+                 "{names}: ufw เปิดอยู่และไม่ได้ปล่อยทางเข้า {iface} — worker ต่อพอร์ต master ของ head ไม่ได้ทั้งที่ ping ถึง"),
 }
 
 # ประโยคตอน "ผ่าน" — ต้องมีคนละชุด ไม่งั้น ✓ ตามด้วยประโยคของอาการล้ม อ่านแล้วขัดกันเอง
@@ -105,6 +108,7 @@ _PASS = {
     "netplan-managed": ("{names}: no foreign netplan file claims the cluster ports",
                         "{names}: ไม่มีไฟล์ netplan ของคนอื่นถือพอร์ตคลัสเตอร์"),
     "link-ping": ("{node} pings {peer} ({peer_ip}) over {iface}", "{node} ping {peer} ({peer_ip}) ทาง {iface} ถึง"),
+    "firewall": ("{names}: {state}", "{names}: {state}"),
 }
 
 _FIX = {
@@ -119,6 +123,7 @@ _FIX = {
     "topology": "re-cable to one of: 2 direct · 3 ring (both ports) · 2–4 via switch (one cable each)",
     "port-speed": "set the switch port to 200G fixed (no auto-negotiation)",
     "netplan-managed": "lmds cluster apply {names}   (moves the NVIDIA Sync file aside automatically)",
+    "firewall": "sudo ufw allow in on {iface}   (on {node}; lmds cluster apply does this for you)",
 }
 
 
@@ -351,7 +356,37 @@ def diagnose_network(order: list[str], *, nodes: dict[str, Node], hosts: dict[st
                                             f"{shlex.quote(link['peer_ip'])} >/dev/null 2>&1", timeout=20)
                 findings.append(_finding("link-ping", pinged.ok, [name], level="warn", node=name,
                                          peer=link["peer_node"], peer_ip=link["peer_ip"], iface=link["iface"]))
+    # ไฟร์วอลล์หลัง ping: ping ถึงแต่ TCP ไม่ถึงคืออาการของมัน (เคสจริง 2026-09-05)
+    if runner is not None:
+        for name in order:
+            findings.append(_firewall_finding(name, nodes[name], hosts[name], runner))
     return _net_result(order, findings, inferred["topology"])
+
+
+def _firewall_finding(name: str, node: Node, host: dict, runner) -> dict:
+    """ufw บนเครื่องนี้กันสายคลัสเตอร์ไหม — เคสจริง 2026-09-05 (cynbangkok): ping ถึงแต่ worker ต่อ head:25000 ไม่ได้
+
+    `ufw status` ต้อง root: ลอง `sudo -n` (NOPASSWD) ก่อน · ไม่ได้ก็อ่าน /etc/ufw/ufw.conf (644) ว่า ENABLED=yes
+    → เตือนว่าต้องปล่อยเอง เพราะดู rule ไม่ได้ · ไม่มี ufw/ปิดอยู่ = ผ่าน"""
+    from .netplan import ports_of
+
+    ifaces = [i for p in ports_of(host) if p.get("carrier") for i in [p.get("configured") or (p.get("ifaces") or [""])[-1]] if i]
+    probe = runner(node, "if sudo -n ufw status 2>/dev/null; then :; elif grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; "
+                         "then echo LMDS_UFW_ENABLED_UNREADABLE; else echo LMDS_UFW_OFF; fi", timeout=20)
+    out = probe.stdout or ""
+    if not probe.ok and not out:
+        return _finding("firewall", True, [name], state="firewall not checked (unreachable)")
+    if "LMDS_UFW_OFF" in out or "Status: inactive" in out:
+        return _finding("firewall", True, [name], state="no active firewall (ufw off)")
+    if "LMDS_UFW_ENABLED_UNREADABLE" in out:
+        return _finding("firewall", False, [name], level="warn", node=name, iface=" / ".join(ifaces) or "<cluster iface>",
+                        state="ufw enabled (rules not readable without sudo)")
+    if "Status: active" in out:
+        missing = [i for i in ifaces if f" on {i}" not in out and f"on {i}" not in out]
+        if missing:
+            return _finding("firewall", False, [name], level="warn", node=name, iface=" / ".join(missing))
+        return _finding("firewall", True, [name], state=f"ufw active, cluster interfaces allowed ({', '.join(ifaces) or '-'})")
+    return _finding("firewall", True, [name], state="no active firewall")
 
 
 def _net_result(names: list[str], findings: list[dict], topology: str) -> dict:

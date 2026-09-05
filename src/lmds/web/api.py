@@ -2123,7 +2123,9 @@ def create_app(token: str = "") -> FastAPI:
         result = inspect_nodes(order, hosts, errors, topology)
         # sudo ต้องใส่รหัสไหม — ถามเครื่องจริงพร้อมกัน (เคสจริง msi-5 มี NOPASSWD · wizard ไม่ควรบังคับกรอก)
         _fill_sudo_needed(result["nodes"], nodes)
-        report = diagnose_network(order, nodes=nodes, hosts=hosts, errors=errors, topology=topology)
+        from lmds.nodes import run as _run_node
+
+        report = diagnose_network(order, nodes=nodes, hosts=hosts, errors=errors, topology=topology, runner=_run_node)
         for finding in report["findings"]:
             finding["text"] = describe(finding, "en")
         return {**result, "findings": report["findings"], "ok": report["ok"]}

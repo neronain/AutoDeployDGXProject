@@ -457,6 +457,22 @@ def sudo_wrap(script: str) -> str:
     return f"sudo -S -p '' bash -c {_q(script)}"
 
 
+def firewall_script(ifaces: list[str]) -> str:
+    """ufw เปิดอยู่ = ปล่อยทุกอย่างที่เข้ามาทาง interface สายคลัสเตอร์ (idempotent) · ไม่เปิด/ไม่มี = ไม่แตะ
+
+    เคสจริง 2026-09-05 ลูกค้า cynbangkok: ตั้ง IP สายเร็วครบ ping ถึง แต่ stacked start ตาย
+    "client socket has timed out … (10.100.184.2, 25000)" — ufw บน head กัน TCPStore/NCCL ของ worker ·
+    แก้ด้วย `ufw allow in on enp1s0f1np1` ครั้งเดียว · rule ต่อ interface ปลอดภัยกว่าเปิดพอร์ต เพราะสาย
+    QSFP เป็น point-to-point ระหว่างเครื่องในคลัสเตอร์เท่านั้น"""
+    quoted = " ".join(_q(i) for i in ifaces)
+    return (
+        "if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then "
+        f"for i in {quoted}; do ufw allow in on \"$i\" >/dev/null 2>&1 && echo \"LMDS_UFW_ALLOWED $i\" "
+        "|| echo \"LMDS_UFW_FAILED $i\"; done; echo LMDS_UFW_ACTIVE; "
+        "else echo LMDS_UFW_INACTIVE; fi"
+    )
+
+
 def verify_script(assignments: list[dict]) -> str:
     """พิมพ์ addr + link ของทุก interface ที่ตั้ง — ผู้เรียกดูว่า CIDR ขึ้นและ LOWER_UP อยู่"""
     parts = []
@@ -578,6 +594,21 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
         step(name, "verify addresses + carrier", True,
              ", ".join(f"{a['iface']} {a['ip']}/{a['prefix']} LOWER_UP" for a in assignments))
         outcome["ok"] = True
+        # ไฟร์วอลล์: ufw ที่เปิดอยู่จะกัน TCPStore/NCCL ของ worker ทั้งที่ ping ถึง — ปล่อยทาง interface สายคลัสเตอร์
+        fw = run(node, sudo_wrap(firewall_script([a["iface"] for a in assignments])), timeout=60,
+                 stdin_text=passwords[name] + "\n")
+        fw_out = fw.stdout or ""
+        if "LMDS_UFW_INACTIVE" in fw_out:
+            step(name, "firewall: allow cluster interfaces", True, "ufw not active — nothing to do")
+        elif "LMDS_UFW_ACTIVE" in fw_out:
+            allowed = [l.split()[-1] for l in fw_out.splitlines() if l.startswith("LMDS_UFW_ALLOWED")]
+            failed = [l.split()[-1] for l in fw_out.splitlines() if l.startswith("LMDS_UFW_FAILED")]
+            step(name, "firewall: allow cluster interfaces", not failed,
+                 f"ufw active — allowed in on {', '.join(allowed)}" if not failed
+                 else f"ufw allow failed for {', '.join(failed)} — run: sudo ufw allow in on <iface>", level="warn")
+        else:
+            step(name, "firewall: allow cluster interfaces", True, "could not query ufw — check manually if stacked start hangs",
+                 level="warn")
     report["applied"] = True
 
     # 3. ping ทุกลิงก์จากทุกปลาย — บอกได้ว่าสายเสียบตรงผังไหม (ring/สองสายเป็นสมมติฐานจนถึงตรงนี้)

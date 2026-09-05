@@ -5,6 +5,13 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **cluster apply เปิด ufw ให้สายคลัสเตอร์เอง + doctor/inspect เตือนเมื่อไฟร์วอลล์กัน** — เคสจริง 2026-09-05 ลูกค้า
+  (cynbangkok): IP สายเร็วครบ ping ถึง แต่ worker log `DistNetworkError: The client socket has timed out … (10.100.184.2, 25000)`
+  = ufw บน head กัน TCPStore ของ worker · `sudo ufw allow in on enp1s0f1np1` แล้วขึ้นใน 7 นาที · ตอนนี้ `apply_plan` มีขั้น
+  "firewall: allow cluster interfaces" (ufw active = `ufw allow in on <iface>` ต่อ interface · ไม่ active = บอกว่าไม่ต้องทำ) ·
+  `diagnose_network` (runner) เพิ่ม finding `firewall`: `sudo -n ufw status` อ่านได้ → เช็ค rule ต่อ interface · อ่านไม่ได้แต่
+  `/etc/ufw/ufw.conf` บอก ENABLED=yes → เตือนให้ดูเอง · `/api/cluster/inspect` ส่ง runner แล้ว ขั้น Cabling check ของ wizard
+  จึงเห็น · explain_crash จับ "socket has timed out" ฝั่ง worker · RUNBOOK/USAGE §8
 - **pip WARNING "~/.cache/pip … not owned or is not writable" ตอนอัปเดต node** — เคสจริง 2026-09-05 spark-head: `~/.cache`
   ทั้งโฟลเดอร์เป็นของ root ตั้งแต่ sudo ครั้งเก่า (ก.ค.) pip จึงสร้าง `~/.cache/pip` ไม่ได้ แคช wheel ปิด ติดตั้งช้าและขึ้น
   WARNING ทุกรอบ (ติดตั้งสำเร็จอยู่ดี) · ฟอร์ม **Fix permissions** บนการ์ดเครื่องคืน `~/.cache` (ตัวโฟลเดอร์) และ

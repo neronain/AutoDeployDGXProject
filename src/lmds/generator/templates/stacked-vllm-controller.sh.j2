@@ -932,7 +932,7 @@ explain_crash() {
       echo "  lmds set ${SLUG} --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_MARLIN_USE_ATOMIC_ADD=1\"" >&2 ;;
     *"only supports fp8 kv-cache"*|*"ds_mla"*)
       echo "  สถาปัตยกรรมนี้ (DeepSeek MLA) บังคับ kv-cache fp8 — KV_CACHE_DTYPE=fp8 $0 restart  (ถาวร: bundle.env KV_CACHE_DTYPE=fp8)" >&2 ;;
-    *"waiting for clients"*)
+    *"waiting for clients"*|*"socket has timed out"*)
       # เคสจริง 2026-09-05 ลูกค้า cynbangkok: "Timed out after 601 seconds waiting for clients. 1/2 clients joined"
       # = head เปิด TCPStore ที่ MASTER_PORT แล้วรอ worker แต่ worker ไม่เคยต่อเข้ามา (1 ใน 2 คือ head เอง)
       echo "  worker ไม่เคยต่อเข้า head ที่ ${TRANSPORT_IP_MASTER:-<head-ip>}:${MASTER_PORT:-25000} ภายใน 10 นาที — เช็คตามลำดับ:" >&2
