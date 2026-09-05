@@ -612,17 +612,35 @@ check_architecture() {
   [[ -n "$snapshot" && -f "$config" ]] || return 0
 
   model_type="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('model_type',''))" "$config" 2>/dev/null || true)"
+  local arch; arch="$(python3 -c "import json,sys; a=json.load(open(sys.argv[1])).get('architectures') or ['']; print(a[0])" "$config" 2>/dev/null || true)"
   [[ -n "$model_type" ]] || return 0
 
   verdict="$(docker run --rm --entrypoint python3 "$VLLM_IMAGE" -c "
 import sys
+mt, arch = sys.argv[1], sys.argv[2]
+known_vllm, vv = False, ''
 try:
-    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-    import transformers
+    import vllm; vv = vllm.__version__
+    from vllm.model_executor.models.registry import ModelRegistry
+    known_vllm = bool(arch) and arch in ModelRegistry.get_supported_archs()
 except Exception:
+    pass
+known_tf, tv = None, ''
+try:
+    import transformers; tv = transformers.__version__
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m
+    known_tf = mt in m
+except Exception:
+    pass
+if known_vllm:
+    print('KNOWN vllm ' + vv + ' (transformers ' + tv + ')')
+elif known_tf:
+    print('KNOWN transformers ' + tv)
+elif known_tf is None and not vv:
     sys.exit(0)
-print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformers.__version__)
-" "$model_type" 2>/dev/null | tail -1 || true)"
+else:
+    print('UNKNOWN vllm ' + vv + ' transformers ' + tv)
+" "$model_type" "$arch" 2>/dev/null | tail -1 || true)"
 
   case "$verdict" in
     UNKNOWN*)
@@ -635,7 +653,7 @@ print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformer
       exit 1
       ;;
     KNOWN*)
-      echo "architecture: ${model_type} — รองรับ (transformers ${verdict#KNOWN })"
+      echo "architecture: ${model_type} — รองรับ (${verdict#KNOWN })"
       ;;
   esac
 }

@@ -1527,25 +1527,43 @@ check_architecture() {
   config="${snapshot}/config.json"
   [[ -n "$snapshot" && -f "$config" ]] || return 0
   model_type="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('model_type',''))" "$config" 2>/dev/null || true)"
+  local arch; arch="$(python3 -c "import json,sys; a=json.load(open(sys.argv[1])).get('architectures') or ['']; print(a[0])" "$config" 2>/dev/null || true)"
   [[ -n "$model_type" ]] || return 0
   verdict="$(docker run --rm --entrypoint python3 "$VLLM_IMAGE" -c "
 import sys
+mt, arch = sys.argv[1], sys.argv[2]
+known_vllm, vv = False, ''
 try:
-    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-    import transformers
+    import vllm; vv = vllm.__version__
+    from vllm.model_executor.models.registry import ModelRegistry
+    known_vllm = bool(arch) and arch in ModelRegistry.get_supported_archs()
 except Exception:
+    pass
+known_tf, tv = None, ''
+try:
+    import transformers; tv = transformers.__version__
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m
+    known_tf = mt in m
+except Exception:
+    pass
+if known_vllm:
+    print('KNOWN vllm ' + vv + ' (transformers ' + tv + ')')
+elif known_tf:
+    print('KNOWN transformers ' + tv)
+elif known_tf is None and not vv:
     sys.exit(0)
-print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformers.__version__)
-" "$model_type" 2>/dev/null | tail -1 || true)"
+else:
+    print('UNKNOWN vllm ' + vv + ' transformers ' + tv)
+" "$model_type" "$arch" 2>/dev/null | tail -1 || true)"
   case "$verdict" in
     UNKNOWN*)
-      echo "ERROR: image นี้ไม่รู้จักสถาปัตยกรรม '${model_type}' (transformers ${verdict#UNKNOWN }) — ยังไม่ปล่อย worker" >&2
+      echo "ERROR: image นี้ไม่รู้จักสถาปัตยกรรม '${model_type}' (${verdict#UNKNOWN }) — ยังไม่ปล่อย worker" >&2
       echo "  โมเดลใหม่กว่ารันไทม์ — ต้องใช้ image ที่ใหม่กว่า (เช่น vllm/vllm-openai:nightly) ทั้ง head และ worker:" >&2
       echo "    lmds set ${SLUG} --image <image>   แล้ว   $0 prepare-runtime   แล้ว   $0 start" >&2
       echo "  เช็คก่อนได้ว่าตัวไหนรู้จัก:  docker run --rm --entrypoint python3 <image> -c \\" >&2
       echo "    \"from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m; print('${model_type}' in m)\"" >&2
       exit 1 ;;
-    KNOWN*) echo "architecture: ${model_type} — รองรับ (transformers ${verdict#KNOWN })" ;;
+    KNOWN*) echo "architecture: ${model_type} — รองรับ (${verdict#KNOWN })" ;;
   esac
 }
 

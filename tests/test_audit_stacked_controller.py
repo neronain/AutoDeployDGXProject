@@ -106,6 +106,8 @@ case "$1" in
     fi
     exit 0 ;;
   run)
+    # check_architecture: ถาม registry ของ vLLM + transformers → ตอบตาม FAKE_ARCH_VERDICT (ว่าง = เงียบเหมือน image ที่ไม่มี python)
+    if [[ "$*" == *"ModelRegistry"* ]]; then [[ -n "${FAKE_ARCH_VERDICT:-}" ]] && echo "$FAKE_ARCH_VERDICT"; exit 0; fi
     # verify-worker: python3 - อ่านสคริปต์จาก stdin · map /cache → โฟลเดอร์ที่ -v ชี้
     # docker จริงส่ง stdin ให้คอนเทนเนอร์เฉพาะเมื่อมี -i — ไม่มีก็ได้สคริปต์ว่าง (python3 จบ 0 เงียบ ๆ)
     if [[ "$*" == *"--entrypoint python3"* && "${@: -1}" == "-" ]]; then
@@ -709,3 +711,26 @@ def test_start_names_a_stuck_rendezvous_before_the_health_timeout(tmp_path):
     (tmp_path / "calls.log").unlink()
     slow = _run(bundle, ["start"], tmp_path, env=env, timeout=120)
     assert slow.returncode != 0 and "head ยังไม่เริ่มโหลด weight" not in slow.stderr
+
+
+def test_architecture_check_trusts_vllm_registry_when_transformers_is_too_old(tmp_path):
+    """เคสจริง 2026-09-05 spark-head: image `vllm/vllm-openai:glm53-flash-arm64-cu130` ของ Red Hat (vLLM สาขาพิเศษ · transformers
+    5.15.1) รู้จัก Glm5NextForConditionalGeneration ใน registry ของ vLLM เอง แต่ CONFIG_MAPPING_NAMES ของ transformers ไม่มี
+    glm5_next → check_architecture เดิมหยุด "โมเดลใหม่กว่ารันไทม์" ทั้งที่ image นี้คือตัวเดียวที่รันโมเดลได้ · ตอนนี้ถาม
+    ModelRegistry ของ vLLM ก่อน (ชื่อ architecture) แล้วค่อย transformers (model_type) · ไม่รู้จักทั้งคู่ = หยุดพร้อมบอกทั้งสองรุ่น"""
+    import json
+
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    snap = _seed_head_cache(tmp_path / "home")
+    (snap / "config.json").write_text(json.dumps({"model_type": "glm5_next", "architectures": ["Glm5NextForConditionalGeneration"]}), encoding="utf-8")
+    env = {"TRANSPORT_IP_MASTER": "10.200.0.1", "TRANSPORT_IP_WORKER": "10.200.0.2", "STARTUP_TIMEOUT": "2", "WORKER_CHECK_INTERVAL": "0"}
+    known = _run(bundle, ["start"], tmp_path, env={**env, "FAKE_ARCH_VERDICT": "KNOWN vllm 0.1.dev20051+g487ecf187 (transformers 5.15.1)"}, timeout=120)
+    assert "architecture: glm5_next — รองรับ (vllm 0.1.dev20051" in known.stdout, known.stdout + known.stderr
+    assert "docker[head] run -d" in _calls(tmp_path), "ต้องเดินต่อไปถึงการเปิด container"
+    assert "glm5_next Glm5NextForConditionalGeneration" in _calls(tmp_path), "ต้องส่งทั้ง model_type และชื่อ architecture ให้ probe"
+    (tmp_path / "calls.log").unlink()
+    unknown = _run(bundle, ["start"], tmp_path, env={**env, "FAKE_ARCH_VERDICT": "UNKNOWN vllm 0.28.0 transformers 5.14.0"}, timeout=120)
+    assert unknown.returncode != 0 and "ไม่รู้จักสถาปัตยกรรม 'glm5_next' (vllm 0.28.0 transformers 5.14.0)" in unknown.stderr, unknown.stderr
+    assert "lmds set " + bundle.directory.name + " --image" in unknown.stderr
+    assert "docker[head] run -d" not in _calls(tmp_path)

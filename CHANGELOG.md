@@ -5,6 +5,11 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **check_architecture ถาม registry ของ vLLM เองก่อน ไม่ใช่แค่ transformers** — เคสจริง 2026-09-05: image เฉพาะของ Red Hat
+  `vllm/vllm-openai:glm53-flash-arm64-cu130` (ตัวเดียวที่มี kernel ของ GLM-5.3-Flash) มี transformers 5.15.1 ซึ่ง CONFIG_MAPPING_NAMES
+  ไม่มี glm5_next แต่ vLLM รู้จัก Glm5NextForConditionalGeneration ใน ModelRegistry ของตัวเอง → controller หยุด "โมเดลใหม่กว่ารันไทม์"
+  ทั้งที่ควรปล่อย · ตอนนี้ส่งทั้ง model_type และ architectures[0] เข้าไป ถาม `ModelRegistry.get_supported_archs()` ก่อน แล้วค่อย
+  transformers · ข้อความบอกรุ่นทั้งสอง · ทั้ง stacked และ vLLM เดี่ยว · `test_architecture_check_trusts_vllm_registry_when_transformers_is_too_old`
 - **GLM-5.3-Flash (glm5_next) เตือนตั้งแต่วางแผนว่ายังรันไม่ผ่าน** — ทดสอบจริง 2026-09-05 บน spark-head+worker: orcarouter
   190 GB โหลด/sync/verify ผ่านหมด แต่ vLLM ตายตอน warm-up `pe_dim must be 64 for fp8_ds_mla` ทั้ง nightly dev388 และ dev437
   (KV layout ของ DeepSeek V3.2 ถูกเลือกให้โมเดล DSA ทุกตัว kernel รับเฉพาะ rope dim 64) · checkpoint อื่น (coolbho3k ที่ผู้ทำ
