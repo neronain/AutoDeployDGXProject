@@ -1955,6 +1955,13 @@ def test_fix_permissions_only_touches_the_model_cache(registered, monkeypatch):
     assert "sudo -S -p ''" in chown          # รหัสผ่านไปทาง stdin ไม่ใช่ใน argv
     assert "/" not in chown.split("chown -R ops:ops")[1].split("~")[0]   # ไม่มีพาธนอก home
     assert payload["steps"][0]["ok"] is True
+    # ขั้นที่สอง (2026-09-05 spark-head): ~/.cache ของ root ทำให้ pip ขึ้น WARNING — คืนตัวโฟลเดอร์ + ~/.cache/pip
+    assert "~/.cache/pip" in payload["steps"][1]["step"] and payload["steps"][1]["ok"] is True
+    from lmds.nodes.ssh import ownership_steps
+
+    cache_cmd = ownership_steps("ops")[1][0]
+    assert "chown ops:ops ~/.cache " in cache_cmd and "chown -R ops:ops ~/.cache/pip" in cache_cmd
+    assert "chown -R ops:ops ~/.cache " not in cache_cmd, "ห้าม -R ทั้ง ~/.cache (ข้างในมีของโปรแกรมอื่น)"
     # รหัสผ่านต้องไม่โผล่ในคำสั่งใด ๆ ที่ถูกส่งไปเครื่องปลายทาง
     assert not any("s3cret" in c for c in ran)
 

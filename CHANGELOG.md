@@ -5,6 +5,10 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **pip WARNING "~/.cache/pip … not owned or is not writable" ตอนอัปเดต node** — เคสจริง 2026-09-05 spark-head: `~/.cache`
+  ทั้งโฟลเดอร์เป็นของ root ตั้งแต่ sudo ครั้งเก่า (ก.ค.) pip จึงสร้าง `~/.cache/pip` ไม่ได้ แคช wheel ปิด ติดตั้งช้าและขึ้น
+  WARNING ทุกรอบ (ติดตั้งสำเร็จอยู่ดี) · ฟอร์ม **Fix permissions** บนการ์ดเครื่องคืน `~/.cache` (ตัวโฟลเดอร์) และ
+  `~/.cache/pip` ให้ผู้ใช้ด้วย · ขั้น prereq ใต้ sudo ตอน Set up คืน `.cache/pip`/`.cache` หลังติดตั้งเหมือน `.local/share/lmds`
 - **stacked start บอกทันทีเมื่อ head ค้างก่อนโหลด weight** — เคสจริง 2026-09-05 ลูกค้า (cynbangkok · Nemotron-3-Super
   stacked บน 10.100.184.x): รอ /health 8 นาที หน่วยความจำ head 7/122 GB (ยังไม่แตะ weight) แล้วอีก 20 นาทีล้มโดยไม่มี
   อะไรบอกว่าค้างที่การจับมือข้าม node · ตอนนี้ `_rendezvous_stuck_hint` หลัง `STUCK_HINT_AFTER` (240 วิ): log head ไม่มี

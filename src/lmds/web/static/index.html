@@ -3757,7 +3757,7 @@ document.addEventListener("click", async e => {
       <div class="name">${perms ? `Give the model cache back to the user on ${esc(node)}`
                                  : `Root-level setup on ${esc(node)}`}</div>
       <div class="dim" style="margin:6px 0 12px">${perms
-        ? `Will run: <code>chown -R ${esc(user)} ~/.cache/huggingface ~/.cache/flashinfer</code>
+        ? `Will run: <code>chown -R ${esc(user)} ~/.cache/huggingface ~/.cache/flashinfer</code> and give <code>~/.cache</code> / <code>~/.cache/pip</code> back too (root-owned ~/.cache makes pip print a cache WARNING on every update)
            — for when a container ran as root and left root-owned files in the cache,
            so copying to a worker fails (rsync exit 23)`
         : `Will do: start the service at boot (<code>loginctl enable-linger</code>)`}</div>

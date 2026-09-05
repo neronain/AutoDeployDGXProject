@@ -400,10 +400,21 @@ def ownership_steps(user: str) -> list[tuple[str, str, str]]:
         "! find ~/.cache/huggingface ~/.cache/flashinfer -maxdepth 6 "
         f"! -user {quoted} -print -quit 2>/dev/null | grep -q ."
     )
+    # ~/.cache เองเป็นของ root (จาก sudo ครั้งเก่า) → pip สร้าง ~/.cache/pip ไม่ได้ ขึ้น WARNING ทุกครั้งที่ hub
+    # อัปเดต node และแคช wheel ปิดไป (เคสจริง 2026-09-05 spark-head: drwxr-xr-x root root ~/.cache ตั้งแต่ ก.ค.)
+    # → คืนเฉพาะตัวโฟลเดอร์ (ไม่ -R เพราะข้างในมีของโปรแกรมอื่น) + ~/.cache/pip ทั้งก้อนถ้ามี
+    verify_cache = (
+        f"[ -O ~/.cache ] && {{ [ ! -e ~/.cache/pip ] || ! find ~/.cache/pip ! -user {quoted} -print -quit 2>/dev/null | grep -q .; }}"
+    )
     return [(
         f"sudo -S -p '' chown -R {quoted}:{quoted} ~/.cache/huggingface ~/.cache/flashinfer",
         "คืนสิทธิ์แคชโมเดล (~/.cache/huggingface, ~/.cache/flashinfer) ให้เป็นของผู้ใช้",
         verify,
+    ), (
+        f"sudo -S -p '' sh -c 'chown {quoted}:{quoted} ~/.cache 2>/dev/null; "
+        f"[ -e ~/.cache/pip ] && chown -R {quoted}:{quoted} ~/.cache/pip; true'",
+        "คืนสิทธิ์ ~/.cache และ ~/.cache/pip ให้ pip ใช้แคชได้ (ไม่ขึ้น WARNING ตอนอัปเดต)",
+        verify_cache,
     )]
 
 
@@ -428,7 +439,7 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False,
             "sudo -S -p '' env HOME=\"$HOME\" LMDS_ASSUME_YES=1 bash -c "
             "'cd \"$HOME/AutoDeployDGXProject\" && ./install.sh; rc=$?; "
             "chown -R \"$SUDO_USER\": \"$HOME/.local/share/lmds\" \"$HOME/.local/bin\" "
-            "\"$HOME/.config/lmds\" 2>/dev/null; exit $rc'",
+            "\"$HOME/.config/lmds\" \"$HOME/.cache/pip\" 2>/dev/null; chown \"$SUDO_USER\": \"$HOME/.cache\" 2>/dev/null; exit $rc'",
             "ติดตั้ง Docker / NVIDIA container toolkit",
             "docker info >/dev/null 2>&1",
         ))
