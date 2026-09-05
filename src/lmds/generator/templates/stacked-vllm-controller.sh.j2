@@ -932,6 +932,15 @@ explain_crash() {
       echo "  lmds set ${SLUG} --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_MARLIN_USE_ATOMIC_ADD=1\"" >&2 ;;
     *"only supports fp8 kv-cache"*|*"ds_mla"*)
       echo "  สถาปัตยกรรมนี้ (DeepSeek MLA) บังคับ kv-cache fp8 — KV_CACHE_DTYPE=fp8 $0 restart  (ถาวร: bundle.env KV_CACHE_DTYPE=fp8)" >&2 ;;
+    *"waiting for clients"*)
+      # เคสจริง 2026-09-05 ลูกค้า cynbangkok: "Timed out after 601 seconds waiting for clients. 1/2 clients joined"
+      # = head เปิด TCPStore ที่ MASTER_PORT แล้วรอ worker แต่ worker ไม่เคยต่อเข้ามา (1 ใน 2 คือ head เอง)
+      echo "  worker ไม่เคยต่อเข้า head ที่ ${TRANSPORT_IP_MASTER:-<head-ip>}:${MASTER_PORT:-25000} ภายใน 10 นาที — เช็คตามลำดับ:" >&2
+      echo "    1) worker ยังรันอยู่และพยายามต่อไหม: $0 logs worker 100   (บรรทัด 'connect'/'refused'/'timed out' บอกได้)" >&2
+      echo "    2) จาก worker ต่อพอร์ตนี้ถึงไหม: ssh ${SSH_USER:-<user>}@${WORKER_IP:-<worker>} 'nc -zv -w3 ${TRANSPORT_IP_MASTER:-<head-ip>} ${MASTER_PORT:-25000}'" >&2
+      echo "       ไม่ถึง = ไฟร์วอลล์บน head (sudo ufw status → sudo ufw allow in on <iface สายเร็ว>) หรือ IP/สายผิด ($0 network-info)" >&2
+      echo "    3) --master-addr ของ worker ต้องเป็น IP ของ head *บนสายเร็ว* ตัวเดียวกับที่ head bind: $0 serve-args" >&2
+      echo "    4) ระบบตรวจสายให้: lmds cluster doctor <head> <worker>" >&2 ;;
     *NCCL*|*nccl*|*"Socket Timeout"*|*"process group"*|*"No route to host"*|*"Connection refused"*|*"Connection reset"*)
       echo "  NCCL/torch.distributed ระหว่าง node ล้ม — เช็คตามลำดับ:" >&2
       echo "    1) worker ยังอยู่ไหม: $0 logs worker 100   (worker ที่ตายทำให้ head ค้าง/ล้มตรงนี้)" >&2
@@ -1699,6 +1708,7 @@ WSCRIPT
   log "รอ /health (สูงสุด ${STARTUP_TIMEOUT}s — โหลดโมเดลใหญ่ + warm-up ข้าม node ใช้เวลานาน)…"
   local deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
   local next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
+  local started_at=$(( $(date +%s) )) stuck_hinted=0
   while (( $(date +%s) < deadline )); do
     if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
       log "Server พร้อม"
@@ -1724,10 +1734,57 @@ WSCRIPT
         fi
       done
       next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
+      # ค้างก่อนโหลด weight = จับมือข้าม node ไม่ติด — บอกตั้งแต่ตอนนี้ ไม่ใช่รอครบ STARTUP_TIMEOUT
+      if (( stuck_hinted == 0 && $(date +%s) - started_at >= STUCK_HINT_AFTER )); then
+        _rendezvous_stuck_hint && stuck_hinted=1
+      fi
     fi
     sleep 10
   done
+  CONTAINER_NAME="$MASTER_CONTAINER" explain_crash || true
+  (( stuck_hinted )) || _rendezvous_stuck_hint || true
   die "ไม่ health ภายใน ${STARTUP_TIMEOUT}s — container ยังรันอยู่ ดู: $0 logs head 200"
+}
+
+# head รอ /health นานแต่ยังไม่ขึ้นบรรทัดโหลด weight เลย = vLLM ค้างที่ torch.distributed/NCCL rendezvous
+# (เคสจริง 2026-09-05 ลูกค้า cynbangkok: 8 นาที หน่วยความจำ head 7/122 GB · 20 นาทีต่อมาล้ม) — สาเหตุ
+# แทบทั้งหมดอยู่ที่สายเร็ว/ไฟร์วอลล์ ไม่ใช่โมเดล: ตรวจของจริงให้ตรงนี้ (ping สองทาง · พอร์ต master เปิดไหม)
+# แล้วพิมพ์ท้าย log ของทั้งสองฝั่ง · คืน 0 = ค้างจริง (ผู้เรียกจำว่าเตือนแล้ว) · 1 = โหลดอยู่ ไม่ต้องเตือน
+STUCK_HINT_AFTER="${STUCK_HINT_AFTER:-240}"
+_rendezvous_stuck_hint() {
+  local head_log worker_log wip
+  head_log="$(docker logs --tail 300 "$MASTER_CONTAINER" 2>&1 || true)"
+  if grep -qiE 'Loading (weights|safetensors)|Loaded model|Model loading took|GPU KV cache size|Capturing|Warming up|init engine' <<<"$head_log"; then
+    return 1
+  fi
+  echo "" >&2
+  echo "⚠️  head ยังไม่เริ่มโหลด weight หลังรอ $(( ($(date +%s) - started_at) / 60 )) นาที — น่าจะค้างที่การจับมือข้าม node (torch.distributed/NCCL)" >&2
+  echo "   head log ท้ายสุด:" >&2
+  printf '%s\n' "$head_log" | grep -v '^$' | tail -n 4 | sed 's/^/     /' >&2
+  for wip in $WORKER_IPS; do
+    worker_log="$(ssh_at "$wip" "docker logs --tail 300 '${WORKER_CONTAINER}' 2>&1" 2>/dev/null || true)"
+    echo "   worker ${wip} log ท้ายสุด:" >&2
+    printf '%s\n' "$worker_log" | grep -v '^$' | tail -n 4 | sed 's/^/     /' >&2
+  done
+  # ของจริงที่ตรวจได้ตอนนี้: สายเร็วถึงกันสองทางไหม และ head เปิดพอร์ต master หรือยัง
+  local r=0 wtip
+  for wip in $WORKER_IPS; do
+    r=$(( r + 1 )); wtip="$(_worker_transport_ip "$r" "$wip" 2>/dev/null || echo "$wip")"
+    if ping -c 1 -W 2 "$wtip" >/dev/null 2>&1; then echo "   ✓ head → worker ${wtip} ping ถึง" >&2
+    else echo "   ✕ head → worker ${wtip} ping ไม่ถึง — สายเร็ว/IP ผิด (ดู $0 network-info · lmds cluster doctor)" >&2; fi
+    if ssh_at "$wip" "ping -c 1 -W 2 '$(_worker_head_ip "$r")' >/dev/null 2>&1"; then echo "   ✓ worker ${wip} → head $(_worker_head_ip "$r") ping ถึง" >&2
+    else echo "   ✕ worker ${wip} → head $(_worker_head_ip "$r") ping ไม่ถึง" >&2; fi
+  done
+  if command -v ss >/dev/null 2>&1; then
+    local listening; listening="$(ss -ltn 2>/dev/null || true)"
+    if [[ "$listening" == *":${MASTER_PORT} "* ]]; then echo "   ✓ head เปิดพอร์ต master ${MASTER_PORT} อยู่" >&2
+    else echo "   ✕ head ยังไม่เปิดพอร์ต master ${MASTER_PORT} — vLLM บน head ยังไม่ถึงขั้น init distributed (ดู $0 logs head 100)" >&2; fi
+  fi
+  echo "   เช็คตามลำดับ: 1) ไฟร์วอลล์บนทั้งสองเครื่อง (sudo ufw status · ต้องปล่อย ${MASTER_PORT} และช่วง ephemeral บนสายเร็ว)" >&2
+  echo "                 2) NCCL_SOCKET_IFNAME/IB_HCA ตรงสายที่มี IP จริง: $0 network-info" >&2
+  echo "                 3) แยกว่าเป็น RoCE ไหม: NCCL_IB_DISABLE=1 $0 restart  (ขึ้นได้แต่ช้า = GID/HCA)" >&2
+  echo "                 4) ดูรายละเอียด NCCL: lmds set ${SLUG} --engine-env NCCL_DEBUG=INFO แล้ว restart" >&2
+  return 0
 }
 
 # worker ตายแล้วได้แต่ log ดิบ — ให้ตัวจำแนกเดียวกับ head อ่านให้ (ดึง log ผ่าน ssh มาใส่ CRASH_LOG_TEXT)

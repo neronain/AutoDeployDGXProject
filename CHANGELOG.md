@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1 — 2026-09-05
+
+**สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
+ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
+
+- **stacked start บอกทันทีเมื่อ head ค้างก่อนโหลด weight** — เคสจริง 2026-09-05 ลูกค้า (cynbangkok · Nemotron-3-Super
+  stacked บน 10.100.184.x): รอ /health 8 นาที หน่วยความจำ head 7/122 GB (ยังไม่แตะ weight) แล้วอีก 20 นาทีล้มโดยไม่มี
+  อะไรบอกว่าค้างที่การจับมือข้าม node · ตอนนี้ `_rendezvous_stuck_hint` หลัง `STUCK_HINT_AFTER` (240 วิ): log head ไม่มี
+  บรรทัดโหลด weight → พิมพ์ท้าย log ของ head และ worker ทุกตัว · ping สองทางบน IP สายเร็ว · head เปิด MASTER_PORT หรือยัง
+  (`ss -ltn`) · ลำดับที่ต้องเช็ค (ufw/iptables · NCCL_SOCKET_IFNAME · NCCL_IB_DISABLE=1 · NCCL_DEBUG=INFO) — เตือนครั้งเดียว
+  และเมื่อครบ STARTUP_TIMEOUT ก็ผ่าน `explain_crash` + hint เดิมก่อน die · โหลด weight อยู่จริง = เงียบ ·
+  `explain_crash` รู้จัก `DistStoreError: … waiting for clients. 1/2 clients joined` (worker ไม่เคยต่อเข้า head:MASTER_PORT)
+  → บอกให้ `nc -zv` จาก worker, ดู ufw บน head, เทียบ --master-addr กับ serve-args ·
+  `tests/test_audit_stacked_controller.py`
+
 ## 0.6.0 — 2026-09-04
 
 **สรุป 0.6.0** — รอบตรวจทั้งระบบในวันเดียว: (1) **คอนโซล 0.6** — app shell เมนูซ้าย/รายละเอียดตรงกลาง
@@ -594,7 +609,6 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   เปลี่ยน topology ของโมเดลเดิม = controller เก่าย้ายเป็น `.replaced-<stamp>` เหลือตัวเดียว · `discover` ที่เจอสองตัว
   (bundle เก่า) เลือกตาม `topology` ใน profile · stacked controller บอก MODEL_ID ของตัวเองเมื่อหา snapshot ไม่เจอ ·
   `tests/test_slug_collision.py` · USAGE §8
-
 ## 0.5.2 — 2026-09-04
 
 **หน้าเว็บหักหน่วยความจำที่เครื่องปลายทางใช้อยู่แล้ว ก่อนบอกว่าโมเดล fit — และวาดให้เห็นว่า budget มาจากอะไร**

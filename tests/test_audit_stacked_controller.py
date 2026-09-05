@@ -522,6 +522,7 @@ def _explain_crash_fn(text: str) -> str:
     ("AssertionError: DeepseekV4 fp8_ds_mla layout only supports fp8 kv-cache, got auto", "KV_CACHE_DTYPE=fp8"),
     ("RuntimeError: NCCL error in: ../csrc/…, unhandled system error", "network-info"),
     ("torch.distributed.DistStoreError: Socket Timeout", "MASTER_PORT"),
+    ("torch.distributed.DistStoreError: Timed out after 601 seconds waiting for clients. 1/2 clients joined.", "nc -zv"),
     ("RuntimeError: ptxas fatal: cvt with .e2m1x2 not supported on .target sm_121", "VLLM_NVFP4_GEMM_BACKEND=marlin"),
 ])
 def test_explain_crash_knows_the_stacked_and_deepseek_failure_modes(tmp_path, log, hint):
@@ -675,3 +676,35 @@ def test_pull_warns_when_the_docker_disk_is_nearly_full_and_when_the_registry_is
     assert done.returncode == 0, done.stderr
     assert "เหลือ 5 GB" in done.stderr and "docker system prune" in done.stderr
     assert "ไปไม่ถึง https://ghcr.io/v2/" in done.stderr and "Could not resolve host" in done.stderr
+
+
+# ═════════════════════ head ค้างก่อนโหลด weight = จับมือข้าม node ไม่ติด ═════════════════════
+def test_start_names_a_stuck_rendezvous_before_the_health_timeout(tmp_path):
+    """เคสจริง 2026-09-05 ลูกค้า (cynbangkok): head รอ /health 8 นาที หน่วยความจำ 7/122 GB (ยังไม่โหลด weight)
+    แล้วอีก 20 นาทีล้มโดยไม่มีอะไรบอกว่าค้างที่ไหน · ตอนนี้หลัง STUCK_HINT_AFTER ถ้า log head ยังไม่มีบรรทัดโหลด weight
+    → พิมพ์ท้าย log ทั้งสองฝั่ง ping สองทางบนสายเร็ว พอร์ต master และลำดับที่ต้องเช็ค · โหลดอยู่จริง = เงียบ"""
+    bundle = _bundle(tmp_path)
+    _seed_head_cache(tmp_path / "home")
+    logs_dir = tmp_path / "logs"; logs_dir.mkdir()
+    (logs_dir / "head.log").write_text("INFO vllm boot\nINFO Waiting for 1 more node(s) at tcp://10.200.0.1:25000\n", encoding="utf-8")
+    (logs_dir / f"{WORKER}.log").write_text("INFO worker boot\nINFO connecting to master 10.200.0.1:25000 …\n", encoding="utf-8")
+    _bin(tmp_path, curl="exit 7\n",                                             # /health ไม่เคยผ่าน
+         ping='echo "ping $*" >> "$FAKE_LOG"; [[ "$*" == *10.200.0.2* ]] && exit 1; exit 0\n',   # head → worker ไม่ถึง
+         ss='echo "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*"\n')                      # master port ยังไม่เปิด
+    env = {"TRANSPORT_IP_MASTER": "10.200.0.1", "TRANSPORT_IP_WORKER": "10.200.0.2", "FAKE_LOGS_DIR": str(logs_dir),
+           "STARTUP_TIMEOUT": "2", "STUCK_HINT_AFTER": "0", "WORKER_CHECK_INTERVAL": "0"}
+    done = _run(bundle, ["start"], tmp_path, env=env, timeout=120)
+    assert done.returncode != 0
+    err = done.stderr
+    assert "head ยังไม่เริ่มโหลด weight" in err and "จับมือข้าม node" in err, err
+    assert "Waiting for 1 more node(s)" in err and "connecting to master" in err, "ต้องเห็นท้าย log ของทั้ง head และ worker"
+    assert "✕ head → worker 10.200.0.2 ping ไม่ถึง" in err and f"✓ worker {WORKER} → head 10.200.0.1 ping ถึง" in err, err
+    assert "ยังไม่เปิดพอร์ต master 25000" in err and "ufw status" in err and "NCCL_DEBUG=INFO" in err
+    assert err.count("head ยังไม่เริ่มโหลด weight") == 1, "เตือนครั้งเดียว ไม่ซ้ำทุกรอบ"
+    assert "ไม่ health ภายใน 2s" in err
+
+    # โหลด weight อยู่จริง (ช้าเพราะโมเดลใหญ่) = ไม่ใช่ค้าง ห้ามเตือน
+    (logs_dir / "head.log").write_text("INFO Loading safetensors checkpoint shards:  40% 7/17\n", encoding="utf-8")
+    (tmp_path / "calls.log").unlink()
+    slow = _run(bundle, ["start"], tmp_path, env=env, timeout=120)
+    assert slow.returncode != 0 and "head ยังไม่เริ่มโหลด weight" not in slow.stderr
