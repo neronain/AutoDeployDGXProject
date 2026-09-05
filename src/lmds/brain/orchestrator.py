@@ -109,9 +109,9 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     # โมเดลที่รู้อยู่แล้วว่า image ทุกตัวยังรันไม่ผ่าน (เคสจริง GLM-5.3-Flash 2026-09-05) — เตือนตั้งแต่วางแผน
     from lmds.brain.rulebased import known_broken
 
-    broken = known_broken(report)
-    if broken and not any(broken in w for w in plan.warnings):
-        plan.warnings.insert(0, f"⚠️ ยังรันไม่ผ่านบน runtime ที่มี: {broken}")
+    broken = known_broken(report, plan.runtime.image_ref)
+    if broken and not any(isinstance(w, str) and broken in w for w in plan.warnings):
+        plan.warnings.insert(0, f"⚠️ ยังรันไม่ผ่านบน runtime ที่เลือก: {broken}")
 
     # GGUF อ่านได้เฉพาะ llama.cpp · ส่วน safetensors เสิร์ฟได้ทั้ง vLLM และ SGLang
     # จึงบังคับเฉพาะฝั่ง GGUF · เดิมบังคับเป็น vLLM เสมอ ทำให้ผู้ใช้เลือก SGLang ไม่ได้เลย
@@ -263,6 +263,13 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
 
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
+    # คำเตือน "ยังรันไม่ผ่าน" ประเมินกับ image สุดท้าย (สูตร/fallback อาจเปลี่ยน image ระหว่าง harden)
+    from lmds.brain.rulebased import known_broken as _kb
+
+    plan.warnings = [w for w in plan.warnings if not (isinstance(w, str) and w.startswith("⚠️ ยังรันไม่ผ่านบน runtime"))]
+    final_broken = _kb(report, plan.runtime.image_ref)
+    if final_broken:
+        plan.warnings.insert(0, f"⚠️ ยังรันไม่ผ่านบน runtime ที่เลือก: {final_broken}")
     return plan
 
 

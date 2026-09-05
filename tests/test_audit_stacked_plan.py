@@ -500,7 +500,7 @@ def test_new_architectures_get_the_pinned_nightly_image_not_the_old_nvfp4_one(mo
     monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: False)
     monkeypatch.delenv(registry.SKIP_ENV, raising=False)
     glm = qwen_coder_report()
-    glm.repo_id = "orcarouter/GLM-5.3-Flash-Uncensored-NVFP4"
+    glm.repo_id = "someone/GLM-5.3-Flash-Reupload-NVFP4"     # ไม่มีสูตร → กติกา nightly ของสถาปัตยกรรม
     glm.model_type = "glm5_next"
     glm.architecture = "Glm5NextForConditionalGeneration"
     fit = _stacked_fit(glm)
@@ -526,5 +526,47 @@ def test_known_broken_architectures_are_flagged_at_plan_time():
     assert "pe_dim" in known_broken(glm)
     fit = _stacked_fit(glm)
     plan = harden_plan(rule_based_plan(glm, fit), glm, fit)
-    assert plan.warnings and plan.warnings[0].startswith("⚠️ ยังรันไม่ผ่าน") and "GLM-5.3-Flash" in plan.warnings[0]
+    # coolbho3k อยู่ในสูตร → image ชุมชน → ไม่เตือน · repo ที่ไม่มีสูตร (image stock) → เตือน
+    assert not any(isinstance(w, str) and w.startswith("⚠️ ยังรันไม่ผ่าน") for w in plan.warnings), plan.warnings
+    assert plan.runtime.image_ref.startswith("ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c")
+    other = qwen_coder_report(); other.repo_id = "someone/GLM-5.3-Flash-Reupload-NVFP4"; other.model_type = "glm5_next"
+    other.architecture = "Glm5NextForConditionalGeneration"
+    fit2 = _stacked_fit(other)
+    warned = harden_plan(rule_based_plan(other, fit2), other, fit2)
+    first = next(w for w in warned.warnings if isinstance(w, str))
+    assert first.startswith("⚠️ ยังรันไม่ผ่านบน runtime ที่เลือก") and "sm121-v8" in first
     assert known_broken(qwen_coder_report()) == ""
+
+
+def test_glm53_flash_recipe_pins_the_community_image_flags_and_context_cap():
+    """รันผ่านจริง 2026-09-06 บน spark-head+worker: image ชุมชน sm121-v8 + kv fp8_e4m3 + marlin + block 2304 + eager +
+    ctx 262144 (524288 ชน persistent_topk) + parser glm47/glm45 · สูตรต้องส่งครบ ทั้ง orcarouter/RedHat/coolbho3k"""
+    from lmds.recipes import find_recipe
+
+    for repo in ("orcarouter/GLM-5.3-Flash-Uncensored-NVFP4", "RedHatAI/GLM-5.3-Flash-NVFP4", "coolbho3k/GLM-5.3-Flash-NVFP4-Optimized"):
+        r = qwen_coder_report(); r.repo_id = repo; r.model_type = "glm5_next"; r.architecture = "Glm5NextForConditionalGeneration"
+        r.context_length = 1048576
+        assert find_recipe(repo) is not None, repo
+        fit = _stacked_fit(r)
+        plan = harden_plan(rule_based_plan(r, fit), r, fit)
+        assert plan.runtime.image_ref.startswith("ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c"), repo
+        assert plan.serving.context <= 262144 and plan.serving.kv_cache_dtype == "fp8_e4m3" and plan.serving.max_num_seqs == 6
+        flags = " ".join(plan.serving.extra_flags)
+        for f in ("--moe-backend marlin", "--block-size 2304", "--enforce-eager"):
+            assert f in flags, (repo, flags)
+        assert plan.tool_calling.parser == "glm47" and plan.reasoning.parser == "glm45"
+        assert plan.serving.extra_env.get("VLLM_ENGINE_READY_TIMEOUT_S") == "3600"
+        assert plan.serving.extra_env.get("FLASHINFER_CUDA_ARCH_LIST") == "12.1a"
+
+
+def test_recipe_serving_keys_outside_the_serving_model_become_flags():
+    """serving key ที่ Serving ไม่มีฟิลด์ (moe_backend/block_size/enforce_eager/trust_remote_code) ต้องกลายเป็นแฟล็กถึง engine —
+    สูตร GLM-5.3 พึ่งกลไกนี้ทั้ง 4 ตัว (regression กันคนแก้ apply_recipe แล้วหายเงียบ)"""
+    from lmds.recipes import find_recipe
+
+    ds = find_recipe("nvidia/DeepSeek-V4-Flash-NVFP4")
+    assert ds is not None and ds.serving.get("moe_backend") == "marlin"
+    r = qwen_coder_report(); r.repo_id = "nvidia/DeepSeek-V4-Flash-NVFP4"
+    fit = _stacked_fit(r)
+    plan = rule_based_plan(r, fit)
+    assert "--moe-backend marlin" in " ".join(plan.serving.extra_flags), plan.serving.extra_flags

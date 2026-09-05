@@ -77,6 +77,114 @@ recipes:
     source: LMDS stacked deploy บน spark-head+spark-worker
     validated_on: 2x DGX Spark (GB10) · vLLM 0.28.1rc1 nightly · TP=2 · download 134 นาที · test-text ผ่าน 5 ก.ย. 2569
 
+  - match: orcarouter/GLM-5.3-Flash-Uncensored-NVFP4
+    label: GLM-5.3-Flash NVFP4 · 2× DGX Spark (orcarouter uncensored · validated)
+    engine: vllm
+    # สถาปัตยกรรม glm5_next (MLA แบบ NoPE + DSA sparse indexer + KDA) — vLLM stock/nightly และ image glm53-flash ของ Red Hat
+    # ตายตอน warm-up บน SM121 ("pe_dim must be 64 for fp8_ds_mla": backend sparse-MLA ตัวเดียวของ SM120/121 บังคับ KV layout
+    # ของ DeepSeek) · image นี้ = build ของชุมชน DGX Spark (coolbho3k/tonyd2wild) ที่เพิ่ม FP8 NoPE MLA cache 528 byte สำหรับ GB10
+    # · pin digest ของ tag sm121-v8 · รันผ่านจริง 2026-09-06 บน spark-head+spark-worker
+    image: ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c742fc54f436dec5108b440f58f021bc6600052bf0e8fe5840357e78f
+    image_for: [unified]
+    serving:
+      context: 262144            # เพดานของ image นี้บน GB10: 524288 ชน persistent_topk oversubscribe (48 SM)
+      max_num_seqs: 6
+      gpu_memory_utilization: 0.85
+      kv_cache_dtype: fp8_e4m3   # ผ่าน FA2 smem patch ใน image · fp8 = KV 913K tokens ที่ ctx 262K
+      moe_backend: marlin        # NVFP4 MoE บน SM121
+      block_size: 2304           # DeepGEMM arch-12 pool page — image ปรับเป็น 4608 เองเมื่อ KV fp8
+      enforce_eager: true
+      trust_remote_code: true
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TORCH_CUDA_ARCH_LIST: 12.1a
+      FLASHINFER_CUDA_ARCH_LIST: 12.1a
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    tool_calling:
+      enabled: true
+      parser: glm47
+    reasoning:
+      enabled: true
+      parser: glm45      # ปิด thinking แล้ว reasoning รั่วเข้า content — เปิด thinking เป็นค่าตั้งต้น
+    notes:
+      - ~190 GB NVFP4 → ต้อง stacked 2 เครื่องบน DGX Spark (~92 GiB/rank) · ห้ามใช้ image อื่น ห้ามตั้ง context เกิน 262144
+      - phase-2 ที่ชุมชนใช้ (ยังไม่ทดสอบใน LMDS): --speculative-config '{"method":"mtp","num_speculative_tokens":4}' --kv-cache-memory 4445787956 (ต้อง pin KV ไม่งั้น OOM) · image sm121-v11-dflash2
+    source: https://github.com/coolbho3k/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark (feature/exl3-ab-current) · launch-glm53-vllm-tp2.sh
+    validated_on: 2x DGX Spark (GB10, CUDA 13, arm64) · TP=2 · 2026-09-06 · test-text/test-tools/test-reasoning ผ่าน · bench TTFT 0.29 s decode 9 tok/s · stress 8×4 = 30.7 tok/s รวม
+
+  - match: RedHatAI/GLM-5.3-Flash-NVFP4
+    label: GLM-5.3-Flash NVFP4 · 2× DGX Spark (Red Hat)
+    engine: vllm
+    # สถาปัตยกรรม glm5_next (MLA แบบ NoPE + DSA sparse indexer + KDA) — vLLM stock/nightly และ image glm53-flash ของ Red Hat
+    # ตายตอน warm-up บน SM121 ("pe_dim must be 64 for fp8_ds_mla": backend sparse-MLA ตัวเดียวของ SM120/121 บังคับ KV layout
+    # ของ DeepSeek) · image นี้ = build ของชุมชน DGX Spark (coolbho3k/tonyd2wild) ที่เพิ่ม FP8 NoPE MLA cache 528 byte สำหรับ GB10
+    # · pin digest ของ tag sm121-v8 · รันผ่านจริง 2026-09-06 บน spark-head+spark-worker
+    image: ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c742fc54f436dec5108b440f58f021bc6600052bf0e8fe5840357e78f
+    image_for: [unified]
+    serving:
+      context: 262144            # เพดานของ image นี้บน GB10: 524288 ชน persistent_topk oversubscribe (48 SM)
+      max_num_seqs: 6
+      gpu_memory_utilization: 0.85
+      kv_cache_dtype: fp8_e4m3   # ผ่าน FA2 smem patch ใน image · fp8 = KV 913K tokens ที่ ctx 262K
+      moe_backend: marlin        # NVFP4 MoE บน SM121
+      block_size: 2304           # DeepGEMM arch-12 pool page — image ปรับเป็น 4608 เองเมื่อ KV fp8
+      enforce_eager: true
+      trust_remote_code: true
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TORCH_CUDA_ARCH_LIST: 12.1a
+      FLASHINFER_CUDA_ARCH_LIST: 12.1a
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    tool_calling:
+      enabled: true
+      parser: glm47
+    reasoning:
+      enabled: true
+      parser: glm45      # ปิด thinking แล้ว reasoning รั่วเข้า content — เปิด thinking เป็นค่าตั้งต้น
+    notes:
+      - ~190 GB NVFP4 → ต้อง stacked 2 เครื่องบน DGX Spark (~92 GiB/rank) · ห้ามใช้ image อื่น ห้ามตั้ง context เกิน 262144
+      - phase-2 ที่ชุมชนใช้ (ยังไม่ทดสอบใน LMDS): --speculative-config '{"method":"mtp","num_speculative_tokens":4}' --kv-cache-memory 4445787956 (ต้อง pin KV ไม่งั้น OOM) · image sm121-v11-dflash2
+    source: https://github.com/coolbho3k/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark (feature/exl3-ab-current) · launch-glm53-vllm-tp2.sh
+    validated_on: สถาปัตยกรรม/quant เดียวกับ orcarouter ที่รันผ่าน 2026-09-06 · ตัวนี้ยังไม่ได้รันเอง
+
+  - match: coolbho3k/GLM-5.3-Flash-NVFP4-Optimized
+    label: GLM-5.3-Flash NVFP4 · 2× DGX Spark (coolbho3k optimized scales)
+    engine: vllm
+    # สถาปัตยกรรม glm5_next (MLA แบบ NoPE + DSA sparse indexer + KDA) — vLLM stock/nightly และ image glm53-flash ของ Red Hat
+    # ตายตอน warm-up บน SM121 ("pe_dim must be 64 for fp8_ds_mla": backend sparse-MLA ตัวเดียวของ SM120/121 บังคับ KV layout
+    # ของ DeepSeek) · image นี้ = build ของชุมชน DGX Spark (coolbho3k/tonyd2wild) ที่เพิ่ม FP8 NoPE MLA cache 528 byte สำหรับ GB10
+    # · pin digest ของ tag sm121-v8 · รันผ่านจริง 2026-09-06 บน spark-head+spark-worker
+    image: ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c742fc54f436dec5108b440f58f021bc6600052bf0e8fe5840357e78f
+    image_for: [unified]
+    serving:
+      context: 262144            # เพดานของ image นี้บน GB10: 524288 ชน persistent_topk oversubscribe (48 SM)
+      max_num_seqs: 6
+      gpu_memory_utilization: 0.85
+      kv_cache_dtype: fp8_e4m3   # ผ่าน FA2 smem patch ใน image · fp8 = KV 913K tokens ที่ ctx 262K
+      moe_backend: marlin        # NVFP4 MoE บน SM121
+      block_size: 2304           # DeepGEMM arch-12 pool page — image ปรับเป็น 4608 เองเมื่อ KV fp8
+      enforce_eager: true
+      trust_remote_code: true
+    env:
+      VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TORCH_CUDA_ARCH_LIST: 12.1a
+      FLASHINFER_CUDA_ARCH_LIST: 12.1a
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    tool_calling:
+      enabled: true
+      parser: glm47
+    reasoning:
+      enabled: true
+      parser: glm45      # ปิด thinking แล้ว reasoning รั่วเข้า content — เปิด thinking เป็นค่าตั้งต้น
+    notes:
+      - ~190 GB NVFP4 → ต้อง stacked 2 เครื่องบน DGX Spark (~92 GiB/rank) · ห้ามใช้ image อื่น ห้ามตั้ง context เกิน 262144
+      - phase-2 ที่ชุมชนใช้ (ยังไม่ทดสอบใน LMDS): --speculative-config '{"method":"mtp","num_speculative_tokens":4}' --kv-cache-memory 4445787956 (ต้อง pin KV ไม่งั้น OOM) · image sm121-v11-dflash2
+    source: https://github.com/coolbho3k/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark (feature/exl3-ab-current) · launch-glm53-vllm-tp2.sh
+    validated_on: สถาปัตยกรรม/quant เดียวกับ orcarouter ที่รันผ่าน 2026-09-06 · ตัวนี้ยังไม่ได้รันเอง
+
   - match: meta-llama/Llama-3.3-70B-Instruct
     label: Llama-3.3-70B-Instruct
     engine: vllm

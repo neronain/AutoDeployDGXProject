@@ -956,7 +956,7 @@ explain_crash() {
       # เคสจริง 2026-09-05 spark-head: GLM-5.3-Flash (glm5_next · DSA/MLA) บน nightly 4 ก.ย. — vLLM เลือก KV layout
       # fp8_ds_mla ของ DeepSeek V3.2 ให้โมเดล DSA ทุกตัว แต่ kernel รับเฉพาะ rope dim 64 → ไม่ใช่เรื่อง KV dtype ที่ผู้ใช้ตั้งได้
       echo "  kernel MLA ของ image นี้ยังไม่รองรับสถาปัตยกรรมของโมเดลนี้ (rope dim ไม่ใช่ 64) — ต้องใช้ vLLM ใหม่กว่า:" >&2
-      echo "  lmds set ${SLUG} --image vllm/vllm-openai:nightly   แล้ว   $0 prepare-runtime   แล้ว   $0 start   (ถ้ายังไม่ผ่าน = รอ vLLM รุ่นถัดไป)" >&2 ;;
+      echo "  GLM-5.3-Flash บน DGX Spark ใช้ image ชุมชน: lmds set ${SLUG} --image ghcr.io/tonyd2wild/vllm-glm53-flash:sm121-v8 --context 262144 (สูตรใน catalog ทำให้เองเมื่อ deploy ใหม่) แล้ว $0 prepare-runtime แล้ว $0 start" >&2 ;;
     *"only supports fp8 kv-cache"*|*"ds_mla"*)
       echo "  สถาปัตยกรรมนี้ (DeepSeek MLA) บังคับ kv-cache fp8 — KV_CACHE_DTYPE=fp8 $0 restart  (ถาวร: bundle.env KV_CACHE_DTYPE=fp8)" >&2 ;;
     *"waiting for clients"*|*"socket has timed out"*)

@@ -5,6 +5,15 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **GLM-5.3-Flash NVFP4 รันได้แล้วบน 2× DGX Spark — สูตรในระบบ** — ทีมตรวจสอบ/monitor 2026-09-06: vLLM stock/nightly และ
+  image `glm53-flash` ของ Red Hat ตายตอน warm-up `pe_dim must be 64 for fp8_ds_mla` เพราะบน SM121 มี sparse-MLA backend ตัวเดียว
+  (`FLASHINFER_MLA_SPARSE_SM120`) ที่บังคับ KV layout ของ DeepSeek แต่ GLM ใช้ MLA แบบ NoPE · image ชุมชน
+  `ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c…` (sm121-v8, patch FP8 NoPE MLA cache สำหรับ GB10) + kv fp8_e4m3 + marlin +
+  block 2304 + eager + ctx 262144 (524288 ชน `persistent_topk oversubscribe` 48 SM) + parser glm47/glm45 → /health ผ่าน,
+  test-text/tools/reasoning ผ่าน, KV 913K tokens, decode 9 tok/s, stress 8 คน 30.7 tok/s · สูตรครอบ orcarouter/RedHatAI/coolbho3k ·
+  `known_broken` ยกเว้นเมื่อแผนใช้ image นี้ (ประเมินหลัง harden เลือก image สุดท้าย) · explain_crash ชี้ image ชุมชน ·
+  regression test ว่า serving key นอกฟิลด์ (moe_backend/block_size/enforce_eager/trust_remote_code) กลายเป็นแฟล็กถึง engine ·
+  เทส `test_audit_stacked_plan.py`
 - **check_architecture ถาม registry ของ vLLM เองก่อน ไม่ใช่แค่ transformers** — เคสจริง 2026-09-05: image เฉพาะของ Red Hat
   `vllm/vllm-openai:glm53-flash-arm64-cu130` (ตัวเดียวที่มี kernel ของ GLM-5.3-Flash) มี transformers 5.15.1 ซึ่ง CONFIG_MAPPING_NAMES
   ไม่มี glm5_next แต่ vLLM รู้จัก Glm5NextForConditionalGeneration ใน ModelRegistry ของตัวเอง → controller หยุด "โมเดลใหม่กว่ารันไทม์"

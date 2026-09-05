@@ -98,6 +98,7 @@ _BY_ENGINE = {
 # ทั้งหมดไว้เท่ากับกันโมเดลเหล่านั้นออกจากระบบ · มีเทสบังคับว่า image ในแคตตาล็อกต้องอยู่ในรายการนี้
 VETTED_COMMUNITY_IMAGES = {
     "ghcr.io/anemll/dspark-vllm-gx10",   # DeepSeek V4 บน DGX Spark
+    "ghcr.io/tonyd2wild/vllm-glm53-flash",   # GLM-5.3-Flash บน DGX Spark (patch FP8 NoPE MLA cache ของชุมชน · sm121-v8) — รันผ่าน 2026-09-06
     "avarok/dgx-vllm-nvfp4-kernel",      # NVFP4 kernel สำหรับ GB10
     "lmsysorg/sglang",                   # SGLang ทางการ
 }

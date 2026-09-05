@@ -71,21 +71,28 @@ ARCHS_NEEDING_NIGHTLY: frozenset[str] = frozenset({
 
 # สถาปัตยกรรมที่ image ทุกตัวที่เรามี *รู้จัก* แต่ยังรันไม่ผ่านจริง — บอกตั้งแต่วางแผน ไม่ปล่อยให้ลูกค้าโหลด 190 GB
 # แล้วไปตายตอน warm-up · ถอดออกเมื่อมี image ที่รันผ่าน (บันทึกวัน/ข้อความจริงไว้ให้เทียบ)
+# image ที่พิสูจน์แล้วว่ารันสถาปัตยกรรมนั้นได้ (ถ้าแผนใช้ตัวนี้ = ไม่ต้องเตือน) — ดู catalog.yaml
+ARCHS_KNOWN_BROKEN_EXCEPT: dict[str, tuple[str, ...]] = {
+    "glm5_next": ("ghcr.io/tonyd2wild/vllm-glm53-flash",),
+}
 ARCHS_KNOWN_BROKEN: dict[str, str] = {
     # GLM-5.3-Flash (orcarouter/coolbho3k/REAP): vLLM nightly dev388 และ dev437 (5 ก.ย. 2569) เลือก KV layout fp8_ds_mla
     # ของ DeepSeek V3.2 ให้โมเดล DSA ทุกตัว แต่ kernel รับเฉพาะ rope dim 64 → "pe_dim must be 64 for fp8_ds_mla" ตอน warm-up
     # ทั้ง stacked 2×Spark · ผู้ทำ checkpoint ก็ต้อง patch vLLM เอง (coolbho3k) — รอ vLLM รุ่นถัดไป
-    "glm5_next": "GLM-5.3-Flash (glm5_next): vLLM มาตรฐานถึง nightly 5 ก.ย. 2569 ตายตอน warm-up "
-                 "'pe_dim must be 64 for fp8_ds_mla' (ทดสอบจริงบน 2×DGX Spark) — รอ vLLM รุ่นถัดไป หรือใช้ build ที่ patch เอง",
+    "glm5_next": "GLM-5.3-Flash (glm5_next): image vLLM มาตรฐาน/nightly/Red Hat ตายตอน warm-up 'pe_dim must be 64 for fp8_ds_mla' "
+                 "บน DGX Spark — รันผ่านเฉพาะ image ชุมชน ghcr.io/tonyd2wild/vllm-glm53-flash (sm121-v8) ที่สูตรใน catalog ใช้ "
+                 "และ context ≤ 262144 (ทดสอบจริง 2026-09-06)",
 }
 
 
-def known_broken(report: ModelReport) -> str:
-    """ข้อความเตือนถ้าโมเดลอยู่ในกลุ่มที่รู้ว่ายังรันไม่ผ่าน (ว่าง = ไม่มี)"""
+def known_broken(report: ModelReport, image_ref: str = "") -> str:
+    """ข้อความเตือนถ้าโมเดลอยู่ในกลุ่มที่รู้ว่ายังรันไม่ผ่านกับ image นี้ (ว่าง = ไม่มี/ใช้ image ที่พิสูจน์แล้ว)"""
     model_type = (report.model_type or "").lower()
     arch = (report.architecture or "").lower().replace("_", "")
     for key, why in ARCHS_KNOWN_BROKEN.items():
         if model_type == key or key.replace("_", "") in arch:
+            if any(image_ref.startswith(ok) for ok in ARCHS_KNOWN_BROKEN_EXCEPT.get(key, ())):
+                return ""
             return why
     return ""
 
