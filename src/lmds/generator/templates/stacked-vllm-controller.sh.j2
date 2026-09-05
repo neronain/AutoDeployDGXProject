@@ -951,7 +951,8 @@ warn_open_endpoint() {
 
 verify_files() {
   local snap; snap="$(_snapshot_path "$HF_HOME")"
-  [[ -d "$snap" ]] || die "ยังไม่ได้ download (ไม่พบ $snap) — รัน: $0 download"
+  [[ -d "$snap" ]] || die "ยังไม่ได้ download (ไม่พบ $snap) — รัน: $0 download
+  (controller นี้เป็นของ ${MODEL_ID} @ ${MODEL_REVISION:0:12} — ถ้าเพิ่ง download ผ่านสคริปต์อื่นในโฟลเดอร์เดียวกัน อาจเป็นโมเดลชื่อเดียวกันคนละ repo)"
   [[ -f "${snap}/config.json" ]] || die "ไฟล์จำเป็นหายไป: config.json"
   local broken
   broken="$(find -L "$snap" -type l 2>/dev/null || true)"

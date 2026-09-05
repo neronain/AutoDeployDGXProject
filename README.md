@@ -8,7 +8,7 @@
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
 [![version](https://img.shields.io/badge/version-0.6.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1731-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-1733-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)

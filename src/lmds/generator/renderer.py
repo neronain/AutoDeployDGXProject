@@ -85,10 +85,43 @@ def _quote_flag(flag: str) -> str:
     return f"{shlex.quote(head)} {shlex.quote(rest)}"
 
 
-def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
+def bundle_model_id(directory: Path) -> str:
+    """model.id ใน MODEL_PROFILE.yaml ของโฟลเดอร์ bundle (ว่าง = ไม่มี/อ่านไม่ได้)"""
+    try:
+        import yaml
+
+        profile = yaml.safe_load((directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")) or {}
+        return str(((profile.get("model") or {}).get("id")) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def resolve_slug(output_root: Path, model_id: str) -> tuple[str, str]:
+    """slug ของ bundle นี้ + คำเตือน (ว่าง = ไม่มี)
+
+    slug ตัดชื่อเจ้าของ repo ทิ้ง (`nvidia/X` = `ucbye/X` = `x`) — เคสจริง 2026-09-05 ลูกค้า (cynbangkok) deploy
+    `ucbye/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` แล้วตามด้วย `nvidia/NVIDIA-Nemotron-…` แบบ stacked → ลงโฟลเดอร์
+    เดียวกัน มี controller สองตัวคนละ repo: download/verify วิ่งตัวหนึ่ง (ucbye ครบ) start วิ่งอีกตัว (nvidia ไม่มีไฟล์)
+    → ถ้าโฟลเดอร์นั้นเป็นของโมเดลคนละ repo อยู่แล้ว ต่อท้ายด้วยชื่อเจ้าของ (`x-ucbye`) แทนที่จะทับ"""
     from lmds.brain.rulebased import slugify
 
-    slug = slugify(plan.model_id)
+    base = slugify(model_id)
+    existing = bundle_model_id(output_root / base)
+    if not existing or existing.lower() == model_id.lower():
+        return base, ""
+    owner = slugify(model_id.split("/")[0]) if "/" in model_id else "alt"
+    candidate = f"{base}-{owner}"
+    other = bundle_model_id(output_root / candidate)
+    if other and other.lower() != model_id.lower():
+        raise ValueError(f"โฟลเดอร์ {base} เป็นของ {existing} และ {candidate} เป็นของ {other} — ลบตัวที่ไม่ใช้ก่อน (lmds remove)")
+    return candidate, (f"slug {base} เป็นของ {existing} อยู่แล้ว — bundle ของ {model_id} จึงใช้ slug {candidate} "
+                       f"(ชื่อโมเดลซ้ำกันคนละเจ้าของ · ลบตัวเก่าด้วย lmds remove {base} ถ้าไม่ใช้แล้ว)")
+
+
+def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: str | None = None) -> dict:
+    from lmds.brain.rulebased import slugify
+
+    slug = slug or slugify(plan.model_id)
     is_gguf = plan.runtime.engine is Engine.LLAMACPP
 
     gguf_size = None
@@ -396,8 +429,10 @@ def render_bundle(
         )
 
     env = _environment()
-    context = _context(plan, report, fit)
-    slug = context["slug"]
+    slug, slug_note = resolve_slug(Path(output_root), plan.model_id)
+    if slug_note and slug_note not in plan.warnings:
+        plan.warnings.append(slug_note)
+    context = _context(plan, report, fit, slug=slug)
 
     directory = output_root / slug
     directory.mkdir(parents=True, exist_ok=True)
@@ -424,6 +459,13 @@ def render_bundle(
     else:
         template_name = "single-vllm-controller.sh.j2"
     controller_path = directory / context["controller_name"]
+    # โมเดลเดียว topology เดียว: เปลี่ยน single ↔ stacked แล้ว controller เก่าต้องไม่ค้างให้ discover หยิบผิด
+    # (fleet เลือก *-single.sh ก่อน *-stacked.sh — เคสจริง 2026-09-05 download ไปตัวหนึ่ง start ไปอีกตัว)
+    import time as _time
+
+    for stale in sorted(directory.glob("*-single.sh")) + sorted(directory.glob("*-stacked.sh")):
+        if stale.name != controller_path.name:
+            stale.rename(stale.with_name(f"{stale.name}.replaced-{_time.strftime('%Y%m%d-%H%M%S')}"))
     controller_path.write_text(env.get_template(template_name).render(context), encoding="utf-8")
     controller_path.chmod(0o755)
 

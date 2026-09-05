@@ -787,6 +787,21 @@ def bundle_profile(controller: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _pick_controller(directory: Path, profile_path: Path) -> Path | None:
+    """controller ของโฟลเดอร์นี้ — ตาม topology ใน MODEL_PROFILE.yaml เมื่อมีทั้ง *-single.sh และ *-stacked.sh"""
+    singles = sorted(directory.glob("*-single.sh"))
+    stacked = sorted(directory.glob("*-stacked.sh"))
+    if singles and stacked:
+        try:
+            import yaml
+
+            topology = str((yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}).get("topology") or "")
+        except Exception:  # noqa: BLE001
+            topology = ""
+        return stacked[0] if topology == "stacked" else singles[0]
+    return next(iter(singles + stacked), None)
+
+
 def profile_context(profile: dict | None) -> int | None:
     """context (max_model_len) จาก profile"""
     ctx = ((profile or {}).get("serving") or {}).get("context")
@@ -982,8 +997,8 @@ def _scan_bundles(known_slugs: set[str]) -> list[ServerInfo]:
                 slug = directory.name
                 if slug in known_slugs:
                     continue
-                controller = next(iter(sorted(directory.glob("*-single.sh")) +
-                                       sorted(directory.glob("*-stacked.sh"))), None)
+                # ถ้ามีทั้งสองแบบ (bundle เก่าก่อน 0.6.0 ที่ render ทับ) เลือกตามที่ MODEL_PROFILE บอก ไม่ใช่ single ก่อนเสมอ
+                controller = _pick_controller(directory, profile_path)
                 if controller is None:
                     continue
                 known_slugs.add(slug)

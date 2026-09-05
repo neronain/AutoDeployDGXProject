@@ -586,6 +586,14 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   ถ้า lmds-web เป็น unit ที่ enable ไว้ `systemd-run --on-active=5 systemctl restart user@<uid>` ให้กลุ่มมีผลกับ service
   ที่รันอยู่ — คอนโซลหาย ~10 วิ) · Needs attention ขึ้นรายการ "hub: Docker not usable" · install.sh: ไม่มี tty แต่ sudo
   ไม่ถามรหัส = เพิ่มกลุ่มให้เลย และบอกเรื่องรีสตาร์ต session · INSTALL §1.3 / USAGE §8 · เทส `test_review_backend.py`
+- **โมเดลชื่อเดียวกันคนละเจ้าของไม่ทับโฟลเดอร์กันแล้ว** — เคสจริง 2026-09-05 ลูกค้า (cynbangkok): deploy
+  `ucbye/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` แล้วตามด้วย `nvidia/NVIDIA-Nemotron-…` แบบ stacked → slug ตัดชื่อเจ้าของ
+  ทิ้ง ได้โฟลเดอร์เดียวกัน มี `*-single.sh` (ucbye) + `*-stacked.sh` (nvidia) · fleet หยิบ single ก่อน → download/verify
+  ผ่านที่ ucbye แต่ start หา snapshot ของ nvidia ไม่เจอ ("verify-files: OK … ERROR: ยังไม่ได้ download") · ตอนนี้
+  `resolve_slug` ดู model.id ใน MODEL_PROFILE.yaml ของโฟลเดอร์เป้าหมาย — คนละ repo = ต่อท้าย `-<owner>` พร้อมเตือน ·
+  เปลี่ยน topology ของโมเดลเดิม = controller เก่าย้ายเป็น `.replaced-<stamp>` เหลือตัวเดียว · `discover` ที่เจอสองตัว
+  (bundle เก่า) เลือกตาม `topology` ใน profile · stacked controller บอก MODEL_ID ของตัวเองเมื่อหา snapshot ไม่เจอ ·
+  `tests/test_slug_collision.py` · USAGE §8
 
 ## 0.5.2 — 2026-09-04
 
