@@ -291,6 +291,9 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> dict:
         "n_gpu_layers": n_gpu_layers,
         "client_input": _client_input(plan),
         "context_env": "MAX_MODEL_LEN" if not is_gguf else "CTX_SIZE",
+        # เพดาน context ของโมเดล (max_position_embeddings) — controller ปฏิเสธค่าที่เกินตั้งแต่ validate
+        # ไม่ปล่อยให้ vLLM ตายตอน ModelConfig (เคสจริง 2026-09-05 msi-4/msi-5: Llama-3.3-70B ตั้ง 262144 > 131072)
+        "native_context": int(report.context_length or 0),
         "disk_gb": disk_gb,
         "health_timeout": health_timeout,
         "validation_status": "static-validated",

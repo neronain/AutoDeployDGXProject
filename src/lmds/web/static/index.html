@@ -1467,7 +1467,9 @@ function manageMarkup(m) {
       <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
     <div class="field">
       <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
-      <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px">
+      <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px"
+        ${m.native_context ? `max="${m.native_context}" title="Model maximum ${Number(m.native_context).toLocaleString()} tokens (max_position_embeddings) — above that vLLM refuses to start"` : ""}>
+      ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}</span>` : ""}
       <label>slots</label><input type="number" class="o-slots" value="${o.slots || m.max_num_seqs || 4}" style="flex:none;width:90px"
         title="Concurrent requests. llama.cpp splits the context evenly across slots.">
       <label>bind</label>
@@ -3293,7 +3295,10 @@ function nodeModelsMarkup(name, data) {
             <label style="flex:none">context</label>
             <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
                    placeholder="${esc(m.context_configured ?? m.context ?? "")}" style="flex:none;width:130px"
-                   title="Tokens per request (input + output) — check the memory line below to see if it fits">
+                   ${m.native_context ? `max="${esc(m.native_context)}"` : ""}
+                   title="Tokens per request (input + output) — check the memory line below to see if it fits${
+                     m.native_context ? `. Model maximum ${Number(m.native_context).toLocaleString()} (max_position_embeddings) — above that vLLM refuses to start` : ""}">
+            ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}</span>` : ""}
             <label style="flex:none">slots</label>
             <input type="number" class="n-slots" value="${esc(o.slots ?? "")}"
                    placeholder="${esc(m.max_num_seqs ?? 4)}" style="flex:none;width:80px"

@@ -161,6 +161,36 @@ def read(bundle_dir: Path) -> dict[str, str]:
     return out
 
 
+def native_context(bundle_dir: Path) -> int:
+    """เพดาน context ของโมเดลจาก MODEL_PROFILE.yaml ข้าง controller (0 = ไม่รู้)"""
+    import yaml
+
+    try:
+        profile = yaml.safe_load((bundle_dir / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")) or {}
+        value = ((profile.get("model") or {}).get("native_context"))
+        return int(value) if isinstance(value, int) and value > 0 else 0
+    except (OSError, ValueError, AttributeError, yaml.YAMLError):
+        return 0
+
+
+def _check_context_cap(bundle_dir: Path, values: dict[str, object], cleaned: dict[str, str]) -> None:
+    """context ที่ตั้งต้องไม่เกิน max_position_embeddings ของโมเดล — ไม่งั้น vLLM ปฏิเสธตอน start
+    (เคสจริง 2026-09-05 msi-4/msi-5: Llama-3.3-70B ตั้ง 262144 > 131072 → worker ตายก่อน head จะเริ่ม)
+    ยกเว้นเมื่อผู้ใช้ตั้งใจ: engine_env มี VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (ที่บันทึกไว้แล้วหรือส่งมาพร้อมกัน)"""
+    if "context" not in cleaned:
+        return
+    cap = native_context(bundle_dir)
+    if not cap or int(cleaned["context"]) <= cap:
+        return
+    env = " ".join([str(values.get("engine_env") or ""), read(bundle_dir).get("engine_env", "")])
+    if "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1" in env.split():
+        return
+    raise SettingsError(
+        f"context {int(cleaned['context']):,} เกินเพดานของโมเดลนี้ ({cap:,} tokens = max_position_embeddings) — "
+        f"vLLM จะไม่ยอม start · ตั้งได้สูงสุด {cap:,} · ถ้าต้องการเกินจริง ๆ ใส่ engine env "
+        f"VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 ใน Advanced ก่อน (ตำแหน่งที่เกินอาจให้ผลเป็น nan)")
+
+
 def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
     """บันทึกค่าลง bundle.env — ค่าที่เป็นค่าว่างคือ "เอาออก ใช้ default ของ bundle"
 
@@ -178,6 +208,7 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
         if raw is None or str(raw).strip() == "":
             continue
         cleaned[field] = _clean(field, raw)  # image_min_tokens=auto → "" โดยตั้งใจ (ดู FIELDS)
+    _check_context_cap(bundle_dir, values, cleaned)
 
     args_file = bundle_dir / ARGS_FILENAME
     extra = cleaned.pop("extra_args", None)

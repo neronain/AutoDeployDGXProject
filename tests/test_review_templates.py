@@ -526,3 +526,43 @@ def test_stacked_start_checks_the_architecture_before_launching_workers(tmp_path
     start = text.index("start() {")
     assert text.index("  check_architecture\n", start) < text.index("Starting worker rank", start)
     assert "lmds set acme-big-moe --image <image>" in text or "lmds set " in text
+
+
+# ── เพดาน context ในตัว controller ────────────────────────────────────────────
+
+def _validate_numbers_script(text: str, **env) -> str:
+    fn = extract_fn(text, "validate_numbers")
+    head = "\n".join(f'{k}="{v}"' for k, v in env.items())
+    return f"die() {{ echo \"DIE: $*\" >&2; exit 9; }}\n{head}\n{fn}\nvalidate_numbers && echo VALID"
+
+
+def test_vllm_controllers_refuse_a_context_above_the_model_maximum_before_touching_docker(tmp_path):
+    """เคสจริง 2026-09-05 msi-4/msi-5: Llama-3.3-70B --context 262144 > 131072 → vLLM ตายตอน ModelConfig
+    บน worker ก่อน head จะเริ่ม ข้อความยาวและอ่านยาก · ตอนนี้ validate_numbers ปฏิเสธก่อน พร้อมบอกเพดาน
+    · ENGINE_ENV มี VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 = ผู้ใช้ตั้งใจ ปล่อยผ่าน"""
+    single = _bundle(tmp_path / "s", _safetensors_report(context_length=131072), engine=Engine.VLLM)
+    stacked = _stacked_bundle(tmp_path / "k")
+    for bundle in (single, stacked):
+        text = next(bundle.directory.glob("*-single.sh"), None) or next(bundle.directory.glob("*-stacked.sh"))
+        text = text.read_text(encoding="utf-8")
+        assert 'NATIVE_CONTEXT="131072"' in text
+        base = dict(API_PORT=8000, GPU_MEMORY_UTILIZATION="0.9", NATIVE_CONTEXT=131072, ENGINE_ENV="")
+        for extra in ("MAX_NUM_SEQS", "TENSOR_PARALLEL", "NNODES", "CLIENT_OUTPUT", "STARTUP_TIMEOUT"):
+            base[extra] = 4 if extra != "STARTUP_TIMEOUT" else 600
+        too_big = run_bash(_validate_numbers_script(text, MAX_MODEL_LEN=262144, **base))
+        assert too_big.returncode == 9 and "131072" in too_big.stderr and "VLLM_ALLOW_LONG_MAX_MODEL_LEN" in too_big.stderr, too_big.stderr
+        ok = run_bash(_validate_numbers_script(text, MAX_MODEL_LEN=131072, **base))
+        assert "VALID" in ok.stdout, ok.stderr
+        forced = run_bash(_validate_numbers_script(text, MAX_MODEL_LEN=262144, **{**base, "ENGINE_ENV": "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"}))
+        assert "VALID" in forced.stdout, forced.stderr
+        unknown = run_bash(_validate_numbers_script(text, MAX_MODEL_LEN=262144, **{**base, "NATIVE_CONTEXT": 0}))
+        assert "VALID" in unknown.stdout, "ไม่รู้เพดาน (bundle เก่า) = ไม่กีดขวาง"
+
+
+def test_llamacpp_controller_only_warns_above_the_trained_context(tmp_path):
+    bundle = _bundle(tmp_path, _gguf_report(context_length=131072))
+    text = next(bundle.directory.glob("*-single.sh")).read_text(encoding="utf-8")
+    assert 'NATIVE_CONTEXT="131072"' in text
+    env = dict(API_PORT=8000, NATIVE_CONTEXT=131072, CLIENT_OUTPUT=4096, PARALLEL_SEQS=1)
+    warned = run_bash(_validate_numbers_script(text, CTX_SIZE=262144, **env))
+    assert "VALID" in warned.stdout and "WARN" in warned.stderr and "131072" in warned.stderr

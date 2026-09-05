@@ -156,6 +156,8 @@ ADVERTISE_INTERFACE="${ADVERTISE_INTERFACE:-}"
 ROUTE_PROBE_IP="${ROUTE_PROBE_IP:-1.1.1.1}"
 
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-{{ plan.serving.context }}}"
+# เพดาน context ของโมเดล (0 = ไม่รู้) — validate_numbers ใช้กันค่าที่ vLLM จะปฏิเสธอยู่ดี
+NATIVE_CONTEXT="{{ native_context }}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-{{ plan.serving.gpu_memory_utilization }}}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-{{ plan.serving.max_num_seqs }}}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-8192}"
@@ -449,6 +451,13 @@ validate_numbers() {
     die "invalid API_PORT: $API_PORT"
   [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( MAX_MODEL_LEN > 0 )) ||
     die "invalid context: $MAX_MODEL_LEN"
+  # เพดานของโมเดล (max_position_embeddings จาก config.json) — vLLM ปฏิเสธ max-model-len ที่เกินอยู่แล้ว
+  # แต่ตายช้าตอนสร้าง ModelConfig (stacked = worker ตายก่อน head จะเริ่ม) และข้อความอ่านยาก
+  # · ปล่อยผ่านได้เฉพาะเมื่อผู้ใช้ตั้งใจ: ENGINE_ENV มี VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (RoPE เกินเพดาน = nan)
+  if (( NATIVE_CONTEXT > 0 && MAX_MODEL_LEN > NATIVE_CONTEXT )) &&
+     [[ " ${ENGINE_ENV:-} " != *" VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 "* ]]; then
+    die "context ${MAX_MODEL_LEN} เกินเพดานของโมเดลนี้ (${NATIVE_CONTEXT} = max_position_embeddings) — ใช้ --context ${NATIVE_CONTEXT} หรือต่ำกว่า · ต้องการเกินจริง ๆ ให้ตั้ง engine env VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (ผลลัพธ์อาจเป็น nan เมื่อเกิน)"
+  fi
   # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
   # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
   awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 > 0.3 && v+0 <= 0.98)}' ||

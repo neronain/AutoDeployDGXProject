@@ -135,6 +135,8 @@ ROUTE_PROBE_IP="${ROUTE_PROBE_IP:-1.1.1.1}"
 
 N_GPU_LAYERS="${N_GPU_LAYERS:-{{ n_gpu_layers }}}"
 PARALLEL_SEQS="${PARALLEL_SEQS:-{{ plan.serving.max_num_seqs }}}"
+# เพดาน context ที่โมเดลเทรนมา (0 = ไม่รู้) — validate_numbers เตือนเมื่อตั้งเกิน
+NATIVE_CONTEXT="{{ native_context }}"
 {% if is_embed %}
 # embedding: วิธี pool token → vector (Qwen = last · BERT/XLM-R = cls · อื่น mean) และ ubatch ที่ต้อง ≥
 # จำนวน token ของอินพุตทั้งก้อน — โมเดล non-causal encode ทั้งประโยคใน batch เดียว ค่าเดิม 512 ทำให้
@@ -178,6 +180,10 @@ validate_numbers() {
     die "invalid API_PORT: $API_PORT"
   [[ "$CTX_SIZE" =~ ^[0-9]+$ ]] && (( CTX_SIZE > 0 )) ||
     die "invalid context: $CTX_SIZE"
+  # llama.cpp ยอมให้เกิน n_ctx_train (ยืด RoPE ให้) แต่คุณภาพตกเงียบ ๆ — เตือนพอ ไม่ปฏิเสธ
+  if (( NATIVE_CONTEXT > 0 && CTX_SIZE > NATIVE_CONTEXT )); then
+    echo "WARN: context ${CTX_SIZE} เกินที่โมเดลเทรนมา (${NATIVE_CONTEXT}) — llama.cpp ยืด RoPE ให้ แต่คำตอบช่วงท้ายอาจเพี้ยน" >&2
+  fi
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
     die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
 }

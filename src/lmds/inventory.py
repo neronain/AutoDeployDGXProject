@@ -518,6 +518,8 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         # หน้าเว็บโชว์ค่าเก่าต่อไป ดูเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ทำงานถูกต้อง
         "context": running_context(server) or profile_context(profile),
         "context_configured": profile_context(profile),
+        # เพดานของโมเดล — ช่อง context บนหน้าเว็บใส่ max/hint ให้ ไม่ปล่อยให้ตั้งเกินแล้วไปตายตอน start
+        "native_context": ((profile or {}).get("model") or {}).get("native_context") or None,
         "features": feature_summary(profile),
         # การ์ดในเว็บโชว์ slug ซึ่งไม่เคยเปลี่ยน — ตั้งชื่อใหม่แล้วหน้าจอเลยดูเหมือนไม่มีอะไรเกิดขึ้น
         "served_name": server.model or ((profile or {}).get("model") or {}).get("served_name"),

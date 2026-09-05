@@ -132,3 +132,33 @@ def test_image_min_tokens_auto_is_written_as_an_empty_value_not_removed(tmp_path
     assert 'IMAGE_MIN_TOKENS="${IMAGE_MIN_TOKENS:-1024}"' in (bundle_dir / FILENAME).read_text(encoding="utf-8")
     with pytest.raises(SettingsError):
         write(bundle_dir, {"image_min_tokens": "lots"})
+
+
+# ── เพดาน context ของโมเดล ─────────────────────────────────────────────────────
+
+def test_context_above_the_model_maximum_is_refused_with_the_cap_in_the_message(tmp_path):
+    """เคสจริง 2026-09-05 msi-4/msi-5 (stacked ทดสอบ "เพิ่ม ct"): Llama-3.3-70B ตั้ง 262144 ทั้งที่
+    max_position_embeddings=131072 → vLLM ปฏิเสธตอนสร้าง ModelConfig · worker ตายก่อน head จะเริ่ม
+    ระบบต้องบอกตั้งแต่ตอนบันทึกค่า ไม่ใช่ปล่อยให้ไปพังตอน start"""
+    (tmp_path / "MODEL_PROFILE.yaml").write_text("model:\n  native_context: 131072\n", encoding="utf-8")
+    with pytest.raises(SettingsError) as exc:
+        write(tmp_path, {"context": 262144})
+    assert "131,072" in str(exc.value) and "VLLM_ALLOW_LONG_MAX_MODEL_LEN" in str(exc.value)
+    assert not (tmp_path / FILENAME).exists(), "ค่าที่ใช้ไม่ได้ต้องไม่ถูกเขียนลงไฟล์"
+    assert write(tmp_path, {"context": 131072}) == {"context": "131072"}      # เท่าเพดาน = ได้
+    # ตั้งใจเกินจริง ๆ: engine env ที่ส่งมาพร้อมกัน หรือที่บันทึกไว้แล้ว
+    saved = write(tmp_path, {"context": 262144, "engine_env": "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"})
+    assert saved["context"] == "262144"
+    assert write(tmp_path, {"context": 200000})["context"] == "200000", "engine_env ที่บันทึกไว้แล้วก็นับ"
+    # ไม่มี MODEL_PROFILE.yaml (bundle เก่า/ไม่รู้เพดาน) = ไม่กีดขวาง
+    other = tmp_path / "other"; other.mkdir()
+    assert write(other, {"context": 262144})["context"] == "262144"
+
+
+def test_real_bundle_profile_carries_the_native_context_used_by_the_cap(tmp_path):
+    bundle_dir = _bundle(tmp_path)
+    from lmds.fleet.bundle_settings import native_context
+
+    assert native_context(bundle_dir) == 262144
+    with pytest.raises(SettingsError):
+        write(bundle_dir, {"context": 262145})

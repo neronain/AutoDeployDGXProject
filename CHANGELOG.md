@@ -560,6 +560,15 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   **Deploy to one machine** (tooltip อธิบายว่าเครื่องเดียว และชี้ไปปุ่ม stacked) · ปุ่มหัวกลุ่ม cluster "Deploy to this
   group" → **Deploy stacked to this group** พร้อมคำอธิบายว่า stacked = โมเดลเดียวแบ่งลง head + worker (TP=N) ได้ KV/
   context/คนพร้อมกันมากกว่า และถ้าจะลงเครื่องเดียวให้ใช้ปุ่มบน · command palette มีทั้งสองรายการ · USAGE §5 ตาม
+- **ตั้ง context เกินเพดานโมเดลไม่ได้แล้ว (บอกตั้งแต่ตอนกรอก ไม่ใช่ตายตอน start)** — เคสจริง 2026-09-05
+  หลังตั้งเครือข่าย msi-4/msi-5 ด้วย wizard สำเร็จ ลูกค้าเทส stacked `llama-3-3-70b-instruct` แล้ว "เพิ่ม ct" เป็น
+  262144 → vLLM ปฏิเสธที่ ModelConfig (`max_position_embeddings=131072`) worker ตายก่อน head จะเริ่ม ข้อความยาว
+  อ่านยาก · ตอนนี้กัน 3 ชั้น: (1) ช่อง context บนการ์ด/ฟอร์มมี `max` และป้าย "max 131,072" จาก
+  `native_context` ที่ inventory ส่งมา (2) `bundle_settings.write` (หน้าเว็บ hub · `lmds set` บน node · CLI) ปฏิเสธ
+  ค่าที่เกิน `model.native_context` ใน MODEL_PROFILE.yaml พร้อมบอกเพดาน (3) controller vLLM เดี่ยว/stacked มี
+  `NATIVE_CONTEXT` และ `validate_numbers` ปฏิเสธก่อนแตะ docker/ssh · llama.cpp เตือนอย่างเดียว (ยืด RoPE ได้แต่
+  คุณภาพตก) · ตั้งใจเกินจริง ๆ = ใส่ engine env `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` ใน Advanced แล้วทุกชั้นปล่อย ·
+  bundle เก่าที่ไม่มี `NATIVE_CONTEXT` ยังกันได้ที่ชั้น 2 · เทส `test_bundle_settings.py` + `test_review_templates.py`
 
 ## 0.5.2 — 2026-09-04
 
