@@ -1614,7 +1614,7 @@ lmds web -b --new-token           # เปลี่ยน token (ลิงก์
 | ที่ | มีอะไร |
 |---|---|
 | **แถบซ้าย** | Overview · This machine (hub) · All machines · ต้นไม้ **ไซต์ → เครื่อง** (จุดสถานะ + แถบ % หน่วยความจำ) · Library: Models (ทุก bundle ทุกเครื่อง คลิกแถว → หน้าเครื่อง + เปิดแผงของโมเดลนั้น) · Scores · Recipes · Weights · Settings |
-| **แถบบน** | breadcrumb · ค้นเครื่อง/โมเดล (Enter = กระโดดไป) · **Deploy model** · **Update** · ขนาดตัวอักษร/ธีม · Sign out |
+| **แถบบน** | breadcrumb · ค้นเครื่อง/โมเดล (Enter = กระโดดไป) · **Deploy to one machine** · **Update** · ขนาดตัวอักษร/ธีม · Sign out |
 | **Overview** | KPI ฟลีต · แถบหน่วยความจำ GPU ต่อเครื่องเรียงจากแน่นสุด (คลิกชื่อ → หน้าเครื่อง) · โดนัท llama.cpp/vLLM ที่รันอยู่ · **Needs attention** จากข้อมูลจริง: เครื่องต่อไม่ได้ · เกิน 90% · พอร์ตซ้อนบนเครื่องเดียว · commit ไม่ตรง hub · ตารางไซต์ |
 | **หน้าเครื่อง** | การ์ดเดิมของเครื่องนั้นกางเต็ม (เกจ · GPU · โมเดล · แผง settings + บรรทัดคำนวณแรม) — ปุ่มทุกปุ่มเหมือนเดิม · เครื่อง/ไซต์ที่ไม่มีแล้ว (bookmark เก่า) บอกตรง ๆ พร้อมลิงก์กลับ |
 | **route** | `#/overview` `#/node/<ชื่อ>` `#/site/<ไซต์>` `#/models` … — ลิงก์ตรง · back/forward · reload อยู่หน้าเดิม · route ชนะการยุบไซต์ (กดเครื่องใน rail แล้วหน้าไม่ว่าง) |
@@ -1809,7 +1809,11 @@ rail เพื่อเปิดหน้าเครื่องนั้นเ
 > **ปุ่มขึ้นตามที่ controller ตัวนั้นรองรับจริง** — อ่านจาก dispatch table ของสคริปต์เอง
 > bundle ที่สร้างก่อนมีคำสั่งใหม่ (เช่น `test-vision`) จะไม่มีปุ่มนั้น พร้อมบอกว่าต้อง deploy ใหม่
 
-ปุ่ม **+ Deploy model** ทำ wizard ครบ flow: วางลิงก์ → เลือกเครื่องปลายทาง (**Run on**) / กลุ่ม stacked / target preset →
+ปุ่มบนขวา **Deploy to one machine** = deploy ลง*เครื่องเดียว* · ส่วน **Deploy stacked to this group** ที่หัวกลุ่ม cluster
+(หน้า All machines / site) = deploy แบบ *stacked* คือโมเดลเดียวแบ่งลง head + worker (TP=2) ได้ KV cache/context/จำนวนคนพร้อมกันมากกว่า
+เครื่องเดียว — ปุ่มหลังเปิด wizard ตัวเดียวกันโดยตั้ง target เป็น `dgx-spark-stacked` และเลือก head/worker ให้แล้ว
+
+ปุ่ม **Deploy to one machine** ทำ wizard ครบ flow: วางลิงก์ → เลือกเครื่องปลายทาง (**Run on**) / กลุ่ม stacked / target preset →
 วิเคราะห์ → เลือกไฟล์ GGUF / ใส่ HF token ถ้าจำเป็น → ดูแผน + ปรับ context / อนุมัติ flag → สร้าง bundle ผ่าน quality gates → ZIP
 → push ไปเครื่องนั้น · เลือกเครื่องในฟลีตแต่ไม่เลือก preset = เดา preset จาก GPU ที่ refresher เห็นของเครื่องนั้น (ไม่ใช่ฮาร์ดแวร์ของ hub)
 · **พอร์ต**: analyze เลือกพอร์ตว่างตัวแรกจาก inventory ของเครื่องปลายทาง (ทุก bundle + container นอกระบบ · stacked ดูทั้ง head

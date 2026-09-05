@@ -535,18 +535,12 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
     if missing:
         step("", "registry", False, f"{', '.join(missing)} not in the registry")
         return report
-    no_pw = [n for n in order if not passwords.get(n)]
-    if no_pw:
-        step("", "sudo password", False, f"missing sudo password for {', '.join(no_pw)}")
-        return report
+    passwords = {n: (passwords.get(n) or "") for n in order}
 
-    # 1. รหัส sudo ทุกเครื่องก่อน — `sudo -S -v` ไม่ทำอะไรนอกจากตรวจรหัส
+    # 1. sudo ทุกเครื่องก่อน — `sudo -S -v` ไม่ทำอะไรนอกจากตรวจรหัส · ไม่ส่งรหัสมา = เครื่องนั้นต้องมี
+    #    NOPASSWD (เคสจริง msi-5 2026-09-05) ตรวจด้วย `sudo -n` ไม่มี = ล้มตั้งแต่ตรงนี้ ยังไม่แตะอะไร
     for name in order:
-        checked = run(nodes[name], "sudo -S -p '' -v && echo LMDS_SUDO_OK", timeout=30,
-                      stdin_text=passwords[name] + "\n")
-        ok = checked.ok and "LMDS_SUDO_OK" in (checked.stdout or "")
-        step(name, "sudo password accepted", ok,
-             "" if ok else ("unreachable" if _unreachable(checked) else (checked.stderr or checked.stdout or "rejected")))
+        ok = _sudo_ok(run, nodes[name], passwords[name], step)
         if not ok:
             return report
 
@@ -654,6 +648,35 @@ def _verify_with_retries(node: Node, assignments: list[dict], run, sleep) -> lis
     return problems
 
 
+def _sudo_ok(run, node: Node, password: str, step) -> bool:
+    """ตรวจว่า sudo บนเครื่องนี้ใช้ได้ — มีรหัส = `sudo -S -v` · ไม่มีรหัส = ต้อง NOPASSWD (`sudo -n`)
+
+    ชื่อ step มีคำว่า "sudo password" เสมอ — wizard บนหน้าเว็บจับติ๊กช่องแรกด้วย regex นี้"""
+    if password:
+        checked = run(node, "sudo -S -p '' -v && echo LMDS_SUDO_OK", timeout=30, stdin_text=password + "\n")
+        ok = checked.ok and "LMDS_SUDO_OK" in (checked.stdout or "")
+        step(node.name, "sudo password accepted", ok,
+             "" if ok else ("unreachable" if _unreachable(checked) else (checked.stderr or checked.stdout or "rejected")))
+        return ok
+    checked = run(node, "sudo -n true && echo LMDS_SUDO_OK", timeout=30)
+    ok = checked.ok and "LMDS_SUDO_OK" in (checked.stdout or "")
+    step(node.name, "sudo password not needed (passwordless sudo)" if ok else "sudo password", ok,
+         "" if ok else ("unreachable" if _unreachable(checked)
+                        else f"missing sudo password for {node.name} — sudo asks for one there"))
+    return ok
+
+
+def sudo_needs_password(node: Node, runner=None) -> bool | None:
+    """True = ต้องใส่รหัส · False = NOPASSWD · None = ต่อไม่ติด — หน้าเว็บใช้ตัดสินว่าจะโชว์ช่องรหัสไหม"""
+    from . import ssh
+
+    run = runner or ssh.run
+    checked = run(node, "sudo -n true && echo LMDS_SUDO_OK", timeout=15)
+    if checked.ok and "LMDS_SUDO_OK" in (checked.stdout or ""):
+        return False
+    return None if _unreachable(checked) else True
+
+
 def _rollback(name: str, node: Node, password: str, stamp: str, run, step, outcome: dict) -> None:
     rolled = run(node, sudo_wrap(rollback_script(stamp)), timeout=180, stdin_text=password + "\n")
     ok = rolled.ok and "LMDS_NETPLAN_ROLLED_BACK" in (rolled.stdout or "")
@@ -712,13 +735,14 @@ def remove_net(node: Node, password: str, *, runner=None, update_registry=None, 
         from .registry import update as update_registry
     stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
     steps: list[dict] = []
-    checked = run(node, "sudo -S -p '' -v && echo LMDS_SUDO_OK", timeout=30, stdin_text=password + "\n")
-    ok = checked.ok and "LMDS_SUDO_OK" in (checked.stdout or "")
-    steps.append({"node": node.name, "step": "sudo password accepted", "ok": ok,
-                  "detail": "" if ok else _scrub(checked.stderr or checked.stdout or "rejected", [password]),
-                  "level": "pass" if ok else "fail"})
-    if not ok:
-        return {"ok": False, "removed": False, "steps": steps}
+    password = password or ""
+
+    def step(name: str, what: str, ok: bool, detail: str = "", level: str = "") -> None:
+        steps.append({"node": name, "step": what, "ok": ok, "detail": _scrub(detail, [password] if password else []),
+                      "level": level or ("pass" if ok else "fail")})
+
+    if not _sudo_ok(run, node, password, step):
+        return {"ok": False, "removed": False, "absent": False, "steps": steps}
     removed = run(node, sudo_wrap(remove_script(stamp)), timeout=180, stdin_text=password + "\n")
     out = removed.stdout or ""
     ok = removed.ok and "LMDS_NETPLAN_REMOVED" in out

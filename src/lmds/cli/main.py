@@ -1325,7 +1325,8 @@ def cluster_apply_cmd(
         raise typer.Exit(code=1)
     passwords = {}
     for name in plan["order"]:
-        passwords[name] = getpass.getpass(f"รหัส sudo ของ {name} ({reg[name].user}): ")
+        passwords[name] = getpass.getpass(
+            f"รหัส sudo ของ {name} ({reg[name].user}) — เว้นว่างถ้าเครื่องนั้น sudo ไม่ถามรหัส: ")
 
     def show(step: dict) -> None:
         mark = {"pass": "[green]✓[/green]", "warn": "[yellow]![/yellow]"}.get(step["level"], "[red]✕[/red]")
@@ -1356,7 +1357,7 @@ def cluster_remove_net_cmd(
     from lmds.nodes.netplan import remove_net
 
     (target,) = _require_nodes(node)
-    password = getpass.getpass(f"รหัส sudo ของ {node} ({target.user}): ")
+    password = getpass.getpass(f"รหัส sudo ของ {node} ({target.user}) — เว้นว่างถ้าเครื่องนั้น sudo ไม่ถามรหัส: ")
     result = remove_net(target, password, runner=run)
     password = ""
     for step in result["steps"]:

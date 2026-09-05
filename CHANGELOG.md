@@ -549,6 +549,17 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   แบบ Qwen) · reasoning parser `nemotron_v3` · `parsers` บน image นี้ยืนยันว่ามีทั้งสองชื่อ · รันจริง stacked TP=2 บน
   spark-head+spark-worker (10.2.1.195:8006): test-text / test-reasoning / test-tools / bench (decode 11.3 tok/s) / stress
   (รวม 37.8 tok/s) ผ่านทั้งหมด · เครื่องเดียวก็ยังลง (75 GB) แต่ stacked ได้ KV เพิ่มสำหรับ context ยาว/หลายคน
+- **wizard เครือข่าย cluster ไม่บังคับกรอกรหัสของเครื่องที่ sudo ไม่ถามรหัส** — เคสจริง 2026-09-05 msi-4/msi-5:
+  msi-5 ตั้ง NOPASSWD ไว้ แต่ wizard/`POST /api/cluster/apply` ตอบ 400 "ต้องใส่รหัส sudo" ทุกเครื่อง · ตอนนี้
+  `inspect` ถาม `sudo -n true` ทุกเครื่องพร้อมกันแล้วส่ง `sudo_needed` จริง (เดิม hardcode true) · หน้าเว็บซ่อนช่องรหัส
+  ของเครื่องนั้นและบอก "passwordless sudo — no password needed" · `apply_plan`/`remove_net` ไม่ได้รหัส = ตรวจ
+  `sudo -n` (ผ่าน = step "sudo password not needed (passwordless sudo)" · ไม่ผ่าน = ล้มก่อนแตะอะไรพร้อมบอกว่าเครื่องไหน) ·
+  CLI `lmds cluster apply|remove-net` เว้นว่างตอนถามรหัสได้ · เทส backend/API/UI (`test_cluster_network_setup.py` ·
+  `test_cluster_wizard_ui.py`)
+- **ปุ่ม deploy สองแบบชื่อชัดขึ้น** — ผู้ใช้ถาม "บนคือ single ล่างคือ stack ใช่ไหม" · ปุ่มบนขวา "Deploy model" →
+  **Deploy to one machine** (tooltip อธิบายว่าเครื่องเดียว และชี้ไปปุ่ม stacked) · ปุ่มหัวกลุ่ม cluster "Deploy to this
+  group" → **Deploy stacked to this group** พร้อมคำอธิบายว่า stacked = โมเดลเดียวแบ่งลง head + worker (TP=N) ได้ KV/
+  context/คนพร้อมกันมากกว่า และถ้าจะลงเครื่องเดียวให้ใช้ปุ่มบน · command palette มีทั้งสองรายการ · USAGE §5 ตาม
 
 ## 0.5.2 — 2026-09-04
 

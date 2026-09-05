@@ -281,7 +281,7 @@ cluster IP (พอร์ต ConnectX ขึ้น `169.254.x.x`) หรือย
 ```bash
 lmds cluster inspect spark-head spark-worker          # พอร์ตไหนมีสาย (carrier) · IP ปัจจุบัน · ผังที่เดาได้ · หมอสาย
 lmds cluster plan    spark-head spark-worker [--subnet 10.100.152.0/24] [--topology direct|ring|switch] [--json]
-lmds cluster apply   spark-head spark-worker          # ถามรหัส sudo ทีละเครื่อง (ไม่เก็บ ไม่โผล่ใน argv)
+lmds cluster apply   spark-head spark-worker          # ถามรหัส sudo ทีละเครื่อง (เว้นว่างได้ถ้าเครื่องนั้น NOPASSWD) (ไม่เก็บ ไม่โผล่ใน argv)
 lmds cluster doctor  spark-head spark-worker          # ตรวจคู่แบบเดิมหลังตั้งเสร็จ
 lmds cluster remove-net spark-worker                  # ถอน: ย้ายไฟล์ไป /root/netplan-disabled แล้วล้าง cluster_ip
 ```

@@ -1953,6 +1953,19 @@ def create_app(token: str = "") -> FastAPI:
         errors = {name: entry.get("error") or "" for name, entry in snap.items()}
         return nodes, hosts, errors
 
+    def _fill_sudo_needed(summary: dict, nodes: dict) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from lmds.nodes import run
+        from lmds.nodes.netplan import sudo_needs_password
+
+        names = [n for n, v in summary.items() if v.get("reachable") and n in nodes]
+        if not names:
+            return
+        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
+            for name, needed in zip(names, pool.map(lambda n: sudo_needs_password(nodes[n], runner=run), names)):
+                summary[name]["sudo_needed"] = True if needed is None else needed
+
     def _pair_names(body: dict) -> tuple[str, list[str]]:
         head = (body.get("head") or "").strip()
         workers = [str(w).strip() for w in (body.get("workers") or []) if str(w).strip()]
@@ -2049,6 +2062,8 @@ def create_app(token: str = "") -> FastAPI:
         nodes, hosts, errors = _cluster_hosts()
         topology = str(body.get("topology") or "")
         result = inspect_nodes(order, hosts, errors, topology)
+        # sudo ต้องใส่รหัสไหม — ถามเครื่องจริงพร้อมกัน (เคสจริง msi-5 มี NOPASSWD · wizard ไม่ควรบังคับกรอก)
+        _fill_sudo_needed(result["nodes"], nodes)
         report = diagnose_network(order, nodes=nodes, hosts=hosts, errors=errors, topology=topology)
         for finding in report["findings"]:
             finding["text"] = describe(finding, "en")
@@ -2117,9 +2132,7 @@ def create_app(token: str = "") -> FastAPI:
         if not isinstance(plan, dict) or not plan.get("nodes"):
             raise HTTPException(status_code=400, detail="ต้องส่ง plan จาก /api/cluster/plan")
         order = [str(n) for n in plan.get("order") or []]
-        missing = [n for n in order if not passwords.get(n)]
-        if missing:
-            raise HTTPException(status_code=400, detail=f"ต้องใส่รหัส sudo ของ {', '.join(missing)}")
+        # ไม่มีรหัสของเครื่องไหน = apply_plan ตรวจ `sudo -n` ให้ (NOPASSWD ผ่าน · ไม่งั้นล้มก่อนแตะอะไร)
         nodes = {n: find(n) for n in order}
         if any(v is None for v in nodes.values()):
             raise HTTPException(status_code=404, detail="มีเครื่องในแผนที่ไม่อยู่ในทะเบียนแล้ว")
@@ -2185,8 +2198,7 @@ def create_app(token: str = "") -> FastAPI:
         node = find(name) if name else None
         if node is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
-        if not password:
-            raise HTTPException(status_code=400, detail="ต้องใส่รหัส sudo ของเครื่องนั้น")
+        # ไม่มีรหัส = remove_net ตรวจ `sudo -n` (NOPASSWD) ให้เอง
         result = remove_net(node, password, runner=run)
         state.STORE.force(name)
         failed = next((s for s in result["steps"] if not s["ok"]), None)

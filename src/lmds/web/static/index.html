@@ -1030,7 +1030,7 @@ body { padding: 0; }
     <button id="textsize" class="icobtn size" title="Text size">…</button>
     <button id="theme" class="theme" title="Theme: light / dark / system">…</button>
     <button id="signout" hidden title="Forget the token in this browser"><svg class="ic" aria-hidden="true"><use href="#i-exit"/></svg>Sign out</button>
-    <button id="new"><svg class="ic" aria-hidden="true"><use href="#i-deploy"/></svg>Deploy model</button>
+    <button id="new" title="Single-machine deploy: pick the model and one machine; the wizard chooses the engine and settings for that machine. To split one model across two Sparks, use “Deploy stacked to this group” on a cluster group below."><svg class="ic" aria-hidden="true"><use href="#i-deploy"/></svg>Deploy to one machine</button>
   </div>
 </header>
 
@@ -4115,11 +4115,14 @@ function groupHeader(g, index) {
     ${g.ready ? `<div class="gsub">
       <button class="deploy-stack" data-head="${esc(g.members[0].name)}"
               data-worker="${esc((g.members[1] || {}).name || "")}"
-              data-nodes="${g.members.length}">Deploy to this group</button>
-      <span class="dim">head <b style="font-weight:500">${esc(g.members[0].name)}</b>${
-        g.members[1] ? ` · worker <b style="font-weight:500">${esc(g.members[1].name)}</b>` : ""} ·
-        opens the wizard with the target preset to <code>dgx-spark-stacked</code>
-        and writes <code>cluster.env</code> (IP / SSH user / NCCL iface) itself at the end</span>
+              data-nodes="${g.members.length}"
+              title="Stacked deploy: one model split across both machines (tensor parallel) — more KV cache, longer context and more concurrent users than one machine can hold">Deploy stacked to this group</button>
+      <span class="dim"><b style="font-weight:500">Stacked</b> = one model split across head <b style="font-weight:500">${esc(g.members[0].name)}</b>${
+        g.members[1] ? ` + worker <b style="font-weight:500">${esc(g.members[1].name)}</b>` : ""} (TP=${g.members.length}) —
+        more KV cache, longer context and more concurrent users than a single machine.
+        Opens the deploy wizard with target <code>dgx-spark-stacked</code> preset and writes <code>cluster.env</code>
+        (IP / SSH user / NCCL iface) itself at the end. For a model on <i>one</i> machine use
+        <b style="font-weight:500">Deploy to one machine</b> at the top right.</span>
       <div class="dim" style="margin-top:4px">Equivalent commands:
         <code>lmds deploy &lt;model&gt; --target dgx-spark-stacked</code> +
         <code>lmds node push ${esc(g.members[0].name)} &lt;slug&gt; --download --start</code>
@@ -4708,14 +4711,24 @@ function cnwStepPlan() {
     ${(v.warnings || []).map(w => `<div class="warn-line">${esc(typeof w === "string" ? w : (w.text || JSON.stringify(w)))}</div>`).join("")}`;
 }
 
+// เครื่องที่ inspect บอกว่า sudo ไม่ถามรหัส (NOPASSWD — เคสจริง msi-5) ไม่ต้องมีช่องรหัส · ไม่รู้ = ถือว่าต้องใส่
+function cnwNeedsPassword(name) {
+  const info = ((cnw.inspect || {}).nodes || {})[name] || {};
+  return info.sudo_needed !== false;
+}
+
 function cnwPasswordFields() {
   const names = [...cnw.selected];
-  return `<div class="field" style="margin:0 0 6px">
-      <label><input type="checkbox" id="cnw-samepw" ${cnw.samePw ? "checked" : ""}> use one sudo password for all machines</label></div>
-    ${cnw.samePw
+  const need = names.filter(cnwNeedsPassword), free = names.filter(n => !cnwNeedsPassword(n));
+  const freeNote = free.length
+    ? `<div class="dim" style="margin:0 0 6px">${esc(free.join(", "))}: passwordless sudo — no password needed</div>` : "";
+  if (!need.length) return freeNote;
+  return `${freeNote}${need.length > 1 ? `<div class="field" style="margin:0 0 6px">
+      <label><input type="checkbox" id="cnw-samepw" ${cnw.samePw ? "checked" : ""}> use one sudo password for all machines</label></div>` : ""}
+    ${cnw.samePw && need.length > 1
       ? `<div class="field"><label>sudo password</label>
-          <input type="password" class="cnw-pw" data-node="*" autocomplete="off" placeholder="used once for ${esc(names.join(", "))}, never stored" style="min-width:260px"></div>`
-      : names.map(n => `<div class="field"><label>${esc(n)}</label>
+          <input type="password" class="cnw-pw" data-node="*" autocomplete="off" placeholder="used once for ${esc(need.join(", "))}, never stored" style="min-width:260px"></div>`
+      : need.map(n => `<div class="field"><label>${esc(n)}</label>
           <input type="password" class="cnw-pw" data-node="${esc(n)}" autocomplete="off" placeholder="sudo password on ${esc(n)} — used once, never stored" style="min-width:260px"></div>`).join("")}
     <div class="dim">Passwords travel once in the apply request and are cleared from this page right after — nothing is stored in the browser or the registry. Every password is checked first, so a wrong one on the second machine cannot leave the first half-configured.</div>`;
 }
@@ -4804,7 +4817,7 @@ function cnwRemoveMarkup(n) {
   const res = cnw.removeResult[n];
   return `<div class="field cnw-rm" data-node="${esc(n)}" style="margin:0 0 4px">
       <button data-cnw="remove-net" data-node="${esc(n)}" class="danger">Remove cluster network on ${esc(n)}</button>
-      ${cnw.removing === n ? `<input type="password" class="cnw-rm-pw" data-node="${esc(n)}" autocomplete="off" placeholder="sudo password on ${esc(n)} — used once" style="min-width:220px">
+      ${cnw.removing === n ? `<input type="password" class="cnw-rm-pw" data-node="${esc(n)}" autocomplete="off" placeholder="${cnwNeedsPassword(n) ? `sudo password on ${esc(n)} — used once` : "passwordless sudo — leave blank"}" style="min-width:220px">
         <button data-cnw="remove-go" data-node="${esc(n)}" class="danger">Remove</button>
         <button data-cnw="remove-cancel">Cancel</button>` : ""}
       ${res ? `<span class="${res.ok ? "pass" : "fail"}">${res.ok ? "✓" : "✕"} ${esc(res.text)}</span>` : ""}
@@ -4898,12 +4911,12 @@ function cnwTrackSteps(steps) {
 }
 
 async function cnwApply(btn) {
-  const names = [...cnw.selected];
+  const names = [...cnw.selected].filter(cnwNeedsPassword);   // เครื่อง NOPASSWD ไม่ส่งรหัส — backend ตรวจ sudo -n เอง
   const inputs = [...cnwBox.querySelectorAll("input.cnw-pw")];
   const passwords = {};
-  if (cnw.samePw) {
-    const all = (inputs.find(i => i.dataset.node === "*") || {}).value || "";
-    for (const n of names) passwords[n] = all;
+  const shared = inputs.find(i => i.dataset.node === "*");
+  if (cnw.samePw && shared) {
+    for (const n of names) passwords[n] = shared.value || "";
   } else {
     for (const n of names) passwords[n] = (inputs.find(i => i.dataset.node === n) || {}).value || "";
   }
@@ -4991,7 +5004,7 @@ async function cnwDoctor() {
 async function cnwRemoveNet(node, btn) {
   const input = cnwBox.querySelector(`input.cnw-rm-pw[data-node="${CSS.escape(node)}"]`);
   const password = input ? input.value : "";
-  if (!password) { cnw.removeResult[node] = { ok: false, text: "enter the sudo password first" }; cnwRender(); return; }
+  if (!password && cnwNeedsPassword(node)) { cnw.removeResult[node] = { ok: false, text: "enter the sudo password first" }; cnwRender(); return; }
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Removing…";
   let r;
@@ -6129,8 +6142,10 @@ function palCommands() {
                    where: name, run: () => jumpToNode(name, m.slug) });
     }
   }
-  items.push({ label: "Deploy model", hint: "build a new bundle", where: "page",
+  items.push({ label: "Deploy to one machine", hint: "single-machine deploy wizard", where: "page",
                run: () => document.getElementById("new").click() });
+  items.push({ label: "Deploy stacked to a cluster group", hint: "one model across two Sparks — from a cluster group header", where: "page",
+               run: () => { const b = document.querySelector("button.deploy-stack"); if (b) b.click(); else alert("No cluster group is ready for stacked yet — run Check cluster first"); } });
   items.push({ label: "Check cluster", hint: "which machines can stack together", where: "page",
                run: () => document.getElementById("cluster-check").click() });
   items.push({ label: "Add machine", hint: "register a machine", where: "page",

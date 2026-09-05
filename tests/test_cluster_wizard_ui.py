@@ -41,6 +41,7 @@ const inspect = (url, opts) => {
   const names = JSON.parse(opts.body).nodes;
   const nodes = {};
   for (const n of names) nodes[n] = { reachable: true, error: "", hostname: n, spark: true, ports: [1, 2].map(p => port(n, p)),
+                                      sudo_needed: !(H.sudoFree && H.sudoFree.includes(n)),   // H.sudoFree = เครื่อง NOPASSWD
                                       netplan_files: [], nvidia_sync: false };
   const kind = names.length === 2 ? "direct-2" : names.length === 3 ? "ring-3" : "switch-4";
   return { nodes, topology: { topology: kind, links: [], reason: "", order: names },
@@ -269,6 +270,38 @@ def test_apply_sends_passwords_once_for_selected_nodes_only_and_never_stores_the
     assert v["doctor"][0].startswith("✓ spark-01 ⇄ spark-02 — ready for stacked")
     assert out["refreshed"], "จบแล้วต้องรีเฟรชการ์ดให้เห็น cluster IP ใหม่"
     assert out["errors"] == [] and out["alerts"] == []
+
+
+def test_passwordless_sudo_machines_need_no_password_field(tmp_path):
+    """เคสจริง msi-4/msi-5 (2026-09-05): msi-5 มี NOPASSWD · inspect ส่ง sudo_needed:false → ไม่มีช่องรหัสของเครื่องนั้น
+    ไม่มีติ๊ก "one password" (เหลือเครื่องเดียวที่ต้องกรอก) · apply ส่งรหัสเฉพาะเครื่องที่ต้องใช้ · ทั้งคู่ NOPASSWD =
+    ไม่มีช่องเลย กด Apply ได้ทันที · ขั้น Verify/ติ๊กเดินเหมือนเดิมเพราะ step ยังมีคำว่า sudo password"""
+    (out,) = run_scenario(tmp_path, FLEET, HELPERS + """
+        H.sudoFree = ["spark-02"];
+        await open(); await pick("spark-01"); await pick("spark-02"); await next(); await next(); await next();
+        const fields = body().querySelectorAll("input.cnw-pw").map(i => i.dataset.node);
+        const same = !!document.getElementById("cnw-samepw");
+        const note = text(body().querySelectorAll(".dim").find(el => text(el).includes("passwordless")));
+        document.querySelector('#cnw button[data-cnw="apply"]').click(); await H.tick(4);
+        const blocked = { warned: text(body().querySelector(".warn-line")), posted: H.calls.some(c => c.url === "/api/cluster/apply") };
+        body().querySelector('input.cnw-pw[data-node="spark-01"]').value = "hunter2";
+        document.querySelector('#cnw button[data-cnw="apply"]').click(); await H.tick(12);
+        const posted = H.applyBody.passwords;
+        await H.sleep(1500); await H.tick(16);
+        const after = body().dataset.step;
+        console.log(JSON.stringify({ fields, same, note, blocked, posted, after, errors: H.errors, alerts: H.alerts }));""")
+    assert out["fields"] == ["spark-01"] and out["same"] is False
+    assert out["note"] == "spark-02: passwordless sudo — no password needed"
+    assert "spark-01" in out["blocked"]["warned"] and out["blocked"]["posted"] is False
+    assert out["posted"] == {"spark-01": "hunter2"}, "เครื่อง NOPASSWD ต้องไม่มีรหัส (แม้ว่าง) ติดไปใน body"
+    assert out["after"] == "verify" and out["errors"] == [] and out["alerts"] == []
+    (both,) = run_scenario(tmp_path, FLEET, HELPERS + """
+        H.sudoFree = ["spark-01", "spark-02"];
+        await open(); await pick("spark-01"); await pick("spark-02"); await next(); await next(); await next();
+        const fields = body().querySelectorAll("input.cnw-pw").length;
+        document.querySelector('#cnw button[data-cnw="apply"]').click(); await H.tick(12);
+        console.log(JSON.stringify({ fields, posted: H.applyBody && H.applyBody.passwords, step: body().dataset.step, errors: H.errors }));""")
+    assert both["fields"] == 0 and both["posted"] == {} and both["step"] == "apply" and both["errors"] == []
 
 
 def test_verify_step_renders_pass_and_fail_lines(tmp_path):

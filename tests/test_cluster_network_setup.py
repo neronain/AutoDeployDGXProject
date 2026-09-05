@@ -345,6 +345,11 @@ class FakeFleet:
         return [c for n, c, _ in self.calls if n == name]
 
     def answer(self, name, command, stdin):
+        if command.startswith("sudo -n true"):
+            # NOPASSWD = เครื่องที่ fixture ให้รหัสเป็นสตริงว่าง (เคสจริง msi-5 2026-09-05)
+            if self.passwords.get(name) == "":
+                return 0, "LMDS_SUDO_OK\n", ""
+            return 1, "", "sudo: a password is required"
         if command.startswith("sudo -S"):
             if stdin != self.passwords[name] + "\n":
                 return 1, "", "Sorry, try again."
@@ -475,8 +480,48 @@ def test_apply_stops_before_touching_anything_when_a_sudo_password_is_wrong(fres
     assert [s["ok"] for s in result["steps"]] == [True, False]
     assert result["steps"][1]["node"] == "b" and "Sorry" in result["steps"][1]["detail"]
     assert not any("netplan" in c for _, c, _ in fleet.calls), "ห้ามเขียนอะไรถ้ารหัสเครื่องใดเครื่องหนึ่งผิด"
-    missing = apply_plan(fresh_pair, {"a": "x"}, nodes={"a": find("a"), "b": find("b")}, runner=fleet)
+    # ไม่ส่งรหัสของ b และ b ไม่ใช่ NOPASSWD = ล้มที่ b ก่อนแตะอะไร (a ผ่านแล้ว)
+    fleet = FakeFleet({"a": "right", "b": "right"})
+    missing = apply_plan(fresh_pair, {"a": "right"}, nodes={"a": find("a"), "b": find("b")}, runner=fleet)
     assert missing["steps"][-1]["step"] == "sudo password" and "b" in missing["steps"][-1]["detail"]
+    assert missing["steps"][-1]["node"] == "b" and "missing sudo password" in missing["steps"][-1]["detail"]
+    assert not any("netplan" in c for _, c, _ in fleet.calls)
+
+
+def test_apply_accepts_a_blank_password_when_sudo_asks_for_none(fresh_pair):
+    """เคสจริง msi-4/msi-5 (2026-09-05): msi-5 มี NOPASSWD — wizard ไม่ควรบังคับกรอกรหัสของเครื่องนั้น
+    ไม่ส่งรหัส = ตรวจ `sudo -n true` แทน `sudo -S -v` · ผ่านแล้วขั้นที่เหลือเดินเหมือนเดิม
+    (sudo -S กับ stdin ว่างบนเครื่อง NOPASSWD ไม่ถามอะไร) · เครื่องที่ต้องมีรหัสแต่ไม่ส่ง = ล้มก่อนแตะอะไร"""
+    fleet = FakeFleet({"a": "s3cret-A", "b": ""})
+    result = apply_plan(fresh_pair, {"a": "s3cret-A"}, nodes={"a": find("a"), "b": find("b")},
+                        runner=fleet, sleep=lambda s: None)
+    assert result["ok"] and result["applied"], result["steps"]
+    first = [s for s in result["steps"] if "sudo password" in s["step"]]
+    assert [(s["node"], s["step"], s["ok"]) for s in first] == [
+        ("a", "sudo password accepted", True), ("b", "sudo password not needed (passwordless sudo)", True)]
+    assert any(c.startswith("sudo -n true") for c in fleet.on("b")) and not any(c.endswith("-v && echo LMDS_SUDO_OK") for c in fleet.on("b"))
+    assert any("netplan generate && netplan apply" in c for c in fleet.on("b")), "เครื่อง NOPASSWD ต้องถูกเขียน netplan เหมือนเครื่องอื่น"
+    # ทั้งคู่ NOPASSWD = ไม่ต้องส่งรหัสเลย
+    fleet = FakeFleet({"a": "", "b": ""})
+    result = apply_plan(fresh_pair, {}, nodes={"a": find("a"), "b": find("b")}, runner=fleet, sleep=lambda s: None)
+    assert result["ok"] and result["applied"]
+
+
+def test_sudo_needs_password_probe_and_remove_net_with_a_blank_password():
+    register("p", "10.2.1.9")
+    from lmds.nodes import update
+    from lmds.nodes.netplan import sudo_needs_password
+
+    assert sudo_needs_password(find("p"), runner=FakeFleet({"p": ""})) is False
+    assert sudo_needs_password(find("p"), runner=FakeFleet({"p": "pw"})) is True
+    down = lambda node, command, timeout=60, stdin_text="": SimpleNamespace(ok=False, exit_code=255, stdout="", stderr="ssh: connect to host 10.2.1.9 port 22: No route to host")
+    assert sudo_needs_password(find("p"), runner=down) is None
+    update("p", cluster_ip="10.100.152.9", cluster_iface="enp1s0f1np1")
+    result = remove_net(find("p"), "", runner=FakeFleet({"p": ""}))
+    assert result["ok"] and result["removed"] and result["steps"][0]["step"] == "sudo password not needed (passwordless sudo)"
+    assert find("p").cluster_ip == ""
+    denied = remove_net(find("p"), "", runner=FakeFleet({"p": "pw"}))
+    assert not denied["ok"] and denied["steps"][0]["step"] == "sudo password" and "missing sudo password" in denied["steps"][0]["detail"]
 
 
 def test_apply_reports_ping_failure_as_crossed_cabling_but_keeps_the_addresses(fresh_pair):
@@ -610,12 +655,17 @@ def web():
     return TestClient(create_app())
 
 
-def test_api_inspect_and_plan_shapes(web):
+def test_api_inspect_and_plan_shapes(web, monkeypatch):
+    import lmds.nodes
+
+    monkeypatch.setattr(lmds.nodes, "run", FakeFleet({"a": "", "b": "pw-b"}))   # a = NOPASSWD · b ถามรหัส
     got = web.post("/api/cluster/inspect", json={"nodes": ["a", "b"]})
     assert got.status_code == 200, got.text
     body = got.json()
     assert set(body) == {"nodes", "topology", "findings", "ok"}
     assert body["topology"]["kind"] == "direct-2" and body["nodes"]["b"]["nvidia_sync"] is True
+    assert body["nodes"]["a"]["sudo_needed"] is False and body["nodes"]["b"]["sudo_needed"] is True, \
+        "inspect ต้องบอกหน้าเว็บว่าเครื่องไหนไม่ต้องกรอกรหัส sudo"
     assert body["nodes"]["a"]["fabric"]["ports"][0]["interfaces"][1]["carrier"] is True and body["findings"][0]["text"]
     assert all("text" in f for f in body["findings"])
 
@@ -642,8 +692,13 @@ def test_api_apply_runs_as_a_job_and_never_echoes_the_password(web, monkeypatch)
     monkeypatch.setattr("lmds.nodes.netplan.VERIFY_PAUSE_S", 0.0)
     plan = web.post("/api/cluster/plan", json={"nodes": ["a", "b"]}).json()
 
-    missing = web.post("/api/cluster/apply", json={"plan": plan, "passwords": {"a": "pw-a"}})
-    assert missing.status_code == 400 and "b" in missing.json()["detail"]
+    # ไม่ส่งรหัสของ b (และ b ไม่ใช่ NOPASSWD) = งานรันแล้วล้มที่ขั้น sudo ของ b โดยยังไม่เขียนอะไร — ไม่ใช่ 400
+    missing = web.post("/api/cluster/apply", json={"plan": plan, "passwords": {"a": "pw-a"}, "wait": True})
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["result"]["ok"] is False
+    assert any(s["node"] == "b" and "missing sudo password" in s["detail"] for s in missing.json()["result"]["steps"])
+    assert not any("netplan" in c for n, c, _ in fleet.calls if n == "a"), "เครื่อง a ต้องไม่ถูกเขียนเมื่อ b ไม่มีรหัส"
+    fleet.calls.clear()
     assert web.post("/api/cluster/apply", json={"plan": {}, "passwords": passwords}).status_code == 400
 
     done = web.post("/api/cluster/apply", json={"plan": plan, "passwords": passwords, "wait": True,
@@ -707,7 +762,8 @@ def test_api_remove_net(web, monkeypatch):
 
     update("a", cluster_ip="10.100.152.1", cluster_iface="enp1s0f1np1")
     assert web.post("/api/cluster/remove-net", json={"node": "zzz", "password": "x"}).status_code == 404
-    assert web.post("/api/cluster/remove-net", json={"node": "a"}).status_code == 400
+    blank = web.post("/api/cluster/remove-net", json={"node": "a"})    # ไม่มีรหัส + เครื่องถามรหัส = ล้มอย่างบอกเหตุ ไม่ใช่ 400
+    assert blank.status_code == 200 and blank.json()["ok"] is False and "missing sudo password" in blank.json()["detail"]
     got = web.post("/api/cluster/remove-net", json={"node": "a", "password": "pw"})
     assert got.status_code == 200, got.text
     assert got.json()["ok"] and got.json()["removed"] and got.json()["node"] == "a"
