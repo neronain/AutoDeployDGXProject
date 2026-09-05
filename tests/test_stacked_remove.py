@@ -248,7 +248,8 @@ def test_root_owned_files_on_a_worker_fall_back_to_docker_and_are_verified(tmp_p
     assert any(l.startswith("ลบผ่าน docker บน 10.1.1.2") and CACHE in l for l in lines), lines
     assert not (blobs.parent).exists()
     run = next(c for c in _calls(tmp_path) if c.startswith("docker[10.1.1.2] run"))
-    assert "alpine:3.20" in run and run.endswith(f"rm -rf -- /x/{CACHE}")
+    # audit รอบ 2: image vLLM มี entrypoint เป็น vllm ไม่ใช่ shell — ต้อง --entrypoint rm ไม่งั้น rm -rf กลายเป็น argument ของ vllm
+    assert "alpine:3.20" in run and "--entrypoint rm" in run and run.endswith(f"-rf -- /x/{CACHE}")
 
 
 def test_a_stacked_bundle_without_cluster_env_says_so_instead_of_pretending(tmp_path, monkeypatch):

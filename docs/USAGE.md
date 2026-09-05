@@ -617,6 +617,13 @@ lmds node clone <slug> --from msi-1 --to msi-2 --dry-run  # ดูก่อน�
 > ไม่ต้องไปแก้ CONFIG ต้นไฟล์เอง
 >
 > ก่อนหน้านี้หน้า Cluster ได้แค่พิมพ์คำสั่งให้ไปก็อป จึงเหมือน "deploy stacked ไม่มีในหน้าเว็บ"
+>
+> **4 เครื่อง** (target `dgx-spark-stacked-4`): ช่อง Worker เลือกได้ตัวเดียว = rank 1 · อีกสองตัว hub เติมจากกลุ่มตามลำดับ
+> ตอนเขียน `cluster.env` แล้ว pair ssh ให้ครบทุกตัว (รายชื่อขึ้นในผลลัพธ์หลัง push) · กลุ่มที่ทะเบียนค้าง IP เก่า
+> (`stale-ip`) หรือ IP อยู่บนสาย 1G (`slow-link`) ขึ้น "not ready" พร้อมเหตุผล — ไม่ปล่อยให้ push แล้วไปค้างที่ NCCL ·
+> ปุ่ม **download** บนการ์ด head ต่อ `sync-worker` + `verify-worker` ให้เสมอเมื่อ bundle บนเครื่องนั้นเป็น stacked
+> (ตัดสินจาก MODEL_PROFILE บน node ไม่ใช่แคชของ hub) · bundle ที่มีทั้ง `-single.sh` และ `-stacked.sh` (deploy single
+> แล้ว stacked ทับก่อน 0.6.1) ปุ่ม sync/verify/logs-worker เลือกตัวที่ MODEL_PROFILE บอก
 
 โมเดลที่ใหญ่เกิน unified memory ของ Spark เครื่องเดียว (เช่น DeepSeek-V4-Flash ~168GB) ให้ใช้ target `dgx-spark-stacked` — lmds จะสร้าง controller แบบ **multi-node** (worker-first startup, TP ข้าม node, mp backend) แทนแบบเดี่ยวอัตโนมัติ
 

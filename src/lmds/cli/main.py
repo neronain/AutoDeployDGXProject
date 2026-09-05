@@ -994,11 +994,16 @@ def node_cluster(
                 )
         for blocker in group["blockers"]:
             names = ", ".join(blocker["names"])
+            # รหัสที่ยังไม่รู้จักต้องพิมพ์ออกมาเป็นรหัส ไม่ใช่ KeyError ทั้งคำสั่ง — `no-shared-fabric` ของกลุ่มที่ตั้งชื่อเอง
+            # เคยทำให้ `lmds cluster show` ตายทั้งตาราง
             text = {
                 "missing-ip": "ยังไม่ได้ตั้ง cluster IP: ",
                 "duplicate-ip": "cluster IP ซ้ำกันระหว่างเครื่อง: ",
                 "split-fabric": "cluster IP อยู่คนละวง ต่อกันไม่ติด: ",
-            }[blocker["kind"]] + names
+                "no-shared-fabric": "ตั้งชื่อคลัสเตอร์ไว้แต่เครื่องไม่มีวงร่วมกันเลย (no-shared-fabric): ",
+                "stale-ip": "cluster IP ในทะเบียนไม่มี interface ไหนถืออยู่แล้ว (ทะเบียนค้าง — ตั้งใหม่ตามที่เสนอ): ",
+                "slow-link": "cluster IP อยู่บนสายที่ช้ากว่า 25G — ย้ายไป IP บนสาย ConnectX: ",
+            }.get(blocker["kind"], f"{blocker['kind']}: ") + names
             console.print(f"    [yellow]· {text}[/yellow]")
         for member in group["members"]:
             if member["state"] == "unset" and member["suggested_ip"]:
@@ -1116,7 +1121,8 @@ def cluster_show(
 def cluster_write_cmd(
     slug: str = typer.Argument(..., help="ชื่อ bundle", autocompletion=_complete_slug),
     head: str = typer.Option(..., "--head", help="เครื่องที่จะเป็น head", autocompletion=_complete_node),
-    worker: list[str] = typer.Option([], "--worker", help="worker เรียงตาม rank (ซ้ำได้หลายตัว · ว่าง = ตามกลุ่ม)"),
+    worker: list[str] = typer.Option([], "--worker", help="worker เรียงตาม rank (ซ้ำได้หลายตัว · ว่าง = ตามกลุ่ม · "
+                                                          "ระบุไม่ครบ = เติมที่เหลือจากกลุ่มตามลำดับ)"),
     on: Optional[str] = typer.Option(None, "--on", metavar="NODE",
                                      help="เขียนลง bundle บนเครื่องนั้น (ว่าง = head)"),
     nnodes: Optional[int] = typer.Option(None, "--nnodes", help="จำนวนเครื่อง (ว่าง = อ่านจาก bundle บนเครื่องนี้)"),

@@ -69,6 +69,27 @@ ARCHS_NEEDING_NIGHTLY: frozenset[str] = frozenset({
 })
 
 
+# สถาปัตยกรรมที่ image ทุกตัวที่เรามี *รู้จัก* แต่ยังรันไม่ผ่านจริง — บอกตั้งแต่วางแผน ไม่ปล่อยให้ลูกค้าโหลด 190 GB
+# แล้วไปตายตอน warm-up · ถอดออกเมื่อมี image ที่รันผ่าน (บันทึกวัน/ข้อความจริงไว้ให้เทียบ)
+ARCHS_KNOWN_BROKEN: dict[str, str] = {
+    # GLM-5.3-Flash (orcarouter/coolbho3k/REAP): vLLM nightly dev388 และ dev437 (5 ก.ย. 2569) เลือก KV layout fp8_ds_mla
+    # ของ DeepSeek V3.2 ให้โมเดล DSA ทุกตัว แต่ kernel รับเฉพาะ rope dim 64 → "pe_dim must be 64 for fp8_ds_mla" ตอน warm-up
+    # ทั้ง stacked 2×Spark · ผู้ทำ checkpoint ก็ต้อง patch vLLM เอง (coolbho3k) — รอ vLLM รุ่นถัดไป
+    "glm5_next": "GLM-5.3-Flash (glm5_next): vLLM มาตรฐานถึง nightly 5 ก.ย. 2569 ตายตอน warm-up "
+                 "'pe_dim must be 64 for fp8_ds_mla' (ทดสอบจริงบน 2×DGX Spark) — รอ vLLM รุ่นถัดไป หรือใช้ build ที่ patch เอง",
+}
+
+
+def known_broken(report: ModelReport) -> str:
+    """ข้อความเตือนถ้าโมเดลอยู่ในกลุ่มที่รู้ว่ายังรันไม่ผ่าน (ว่าง = ไม่มี)"""
+    model_type = (report.model_type or "").lower()
+    arch = (report.architecture or "").lower().replace("_", "")
+    for key, why in ARCHS_KNOWN_BROKEN.items():
+        if model_type == key or key.replace("_", "") in arch:
+            return why
+    return ""
+
+
 def needs_nightly(report: ModelReport) -> bool:
     """model_type/architecture ของโมเดลอยู่ในกลุ่มที่ image NVFP4 ตัวเดิมไม่รู้จัก"""
     model_type = (report.model_type or "").lower()
@@ -85,14 +106,14 @@ SPARK_NVFP4_ENV: dict[str, str] = {
 
 
 def is_nvfp4(report: ModelReport) -> bool:
-    """checkpoint NVFP4 — ดูทั้งชื่อ repo และ quantization ที่อ่านจาก config
+    """checkpoint NVFP4 — ดูทั้งชื่อ repo (รวมชื่อแบบ NVIDIA `…-FP4`) และ quantization ที่อ่านจาก config
 
-    DeepSeek-V4-Flash-NVFP4 รายงาน quantization="fp8" (hf_quant_config ของ ModelOpt บอก kv/attn เป็น fp8)
-    ทั้งที่ weight เป็น NVFP4 — ชื่อ repo จึงเป็นหลักฐานที่ต้องดูด้วย
+    ความรู้อยู่ที่ families.looks_nvfp4 ที่เดียว — fleet.suggest (เติม bundle เก่า) กับ planner ต้องเห็นตรงกัน ·
+    เดิมจับแค่ "nvfp4" → nvidia/Llama-3.3-70B-Instruct-FP4 (quantization="modelopt") ได้ nvcr ไม่มี FP4 kernel
     """
-    key = (report.repo_id or "").lower()
-    quant = (report.quantization or "").lower()
-    return "nvfp4" in key or "nvfp4" in quant
+    from .families import looks_nvfp4
+
+    return looks_nvfp4(report.repo_id or "", report.quantization or "")
 
 
 def default_image(engine: Engine, memory_model, nvfp4: bool = False, nightly: bool = False) -> str:
@@ -264,6 +285,10 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
         return plan
 
     if recipe.image and recipe.image_applies_to(memory_model):
+        if plan.runtime.image_ref != recipe.image:
+            # pin ที่ติดมากับ image เดิม (LLM ตั้ง/แผนเก่า) เป็นของคนละ repo — ปล่อยไว้ template จะเขียน
+            # `<repo ของสูตร>@<digest ของ image เก่า>` → pull "manifest unknown" ทุกครั้ง
+            plan.runtime.image_pin = None
         plan.runtime.image_ref = recipe.image
     elif recipe.image:
         # image ที่ทดสอบมาเป็นของอีกสถาปัตยกรรม — บอกไว้ ดีกว่าใช้เงียบ ๆ แล้วพังตอน start
@@ -438,7 +463,10 @@ def apply_nvfp4_defaults(plan: DeploymentPlan, report: ModelReport, memory_model
     unified = getattr(memory_model, "value", memory_model) == "unified"
     if not (unified and plan.runtime.engine is Engine.VLLM and is_nvfp4(report)):
         return
-    if recipe is not None and recipe.image:
+    # เว้นเฉพาะเมื่อ image ของสูตร *ถูกใช้จริง* ในแผน — สูตรที่ image ผูกกับ RTX (image_for) · สูตรของ engine อื่น ·
+    # หรือ image ที่ harden ถอยทิ้งเพราะ registry ไม่อยู่ใน allowlist → แผนใช้ image NVFP4 ตัวกลางซึ่งต้องมี env นี้
+    # (เดิมดูแค่ "สูตรมี image" แล้วข้าม → image ที่ถอยมาไม่มี env marlin → JIT cutlass FP4 ตายตอน start)
+    if recipe is not None and recipe.image and recipe.image == plan.runtime.image_ref:
         return
     missing = {k: v for k, v in SPARK_NVFP4_ENV.items() if k not in plan.serving.extra_env}
     if not missing:

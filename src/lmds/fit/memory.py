@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from lmds.inspector.report import KvDims
 
-from .analyzer import CONTEXT_STEPS, GIB, FitReport
+from .analyzer import CONTEXT_STEPS, GIB, FitReport, kv_replication
 
 # KV cache เก็บด้วย dtype อะไรก็ได้ ไม่จำเป็นต้องเท่ากับ dtype ของ weight
 # fp8 ลดครึ่งหนึ่งตรง ๆ และเป็นสวิตช์ตอนรัน ไม่ต้อง quantize checkpoint ใหม่
@@ -82,7 +82,9 @@ def plan(fit: FitReport, dims: KvDims, context: int, kv_dtype: str = "bf16") -> 
     budget = kv_budget_gb(fit)
     if budget is None or context <= 0:
         return None
-    per_token = bytes_per_token(dims, kv_dtype)
+    # stacked ที่ kv_heads < TP: ทุกเครื่องถือสำเนา KV เต็ม — งบรวมของคลัสเตอร์ต้องจ่ายหลายชุด
+    # (ดู analyzer.kv_replication) ไม่งั้นตารางบอกว่า "รับได้ 2 คน" ทั้งที่ได้คนเดียว
+    per_token = bytes_per_token(dims, kv_dtype) * kv_replication(dims, fit.node_count)
     kv_gb = context * per_token / GIB
     # ที่ว่าง 0 = หารไม่ได้ · ถือว่าไม่มีใครใช้ได้เลย ไม่ใช่ infinity
     concurrency = (budget / kv_gb) if kv_gb > 0 else 0.0
@@ -115,7 +117,7 @@ def max_context(fit: FitReport, dims: KvDims, concurrency: float = 1.0,
     budget = kv_budget_gb(fit)
     if budget is None or concurrency <= 0:
         return 0
-    per_token = bytes_per_token(dims, kv_dtype)
+    per_token = bytes_per_token(dims, kv_dtype) * kv_replication(dims, fit.node_count)
     return int(budget * GIB / (per_token * concurrency))
 
 

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -63,6 +64,30 @@ NVFP4_SM121_ENGINE_ENV = (
 )
 
 
+# NVIDIA ตั้งชื่อ checkpoint NVFP4 ทางการว่า `…-FP4` (nvidia/Llama-3.3-70B-Instruct-FP4 · nvidia/DeepSeek-R1-FP4)
+# ไม่ใช่ `…-NVFP4` และ config.json ของ ModelOpt บอกแค่ `quant_method: modelopt` (quant_algo อยู่ใน
+# hf_quant_config.json) — จับเป็น token ของชื่อ (คั่นด้วย - _ .) ไม่จับกลางคำ · MXFP4 (gpt-oss) ไม่ใช่ NVFP4
+# kernel คนละชุด อย่าเหมารวม
+_FP4_TOKEN_RE = re.compile(r"(?:^|[-_.])(?:nv)?fp4(?:[-_.]|$)", re.IGNORECASE)
+
+
+def looks_nvfp4(repo_id: str, quantization: str | None = "") -> bool:
+    """checkpoint NVFP4 — ดูทั้งชื่อ repo (`nvfp4` / token `fp4`) และ quantization ที่อ่านจาก config
+
+    DeepSeek-V4-Flash-NVFP4 รายงาน quantization="fp8" (hf_quant_config ของ ModelOpt บอก kv/attn เป็น fp8)
+    ทั้งที่ weight เป็น NVFP4 — ชื่อ repo จึงเป็นหลักฐานที่ต้องดูด้วย
+    """
+    name = (repo_id or "").split("/")[-1]
+    quant = (quantization or "").lower()
+    if "mxfp4" in quant and "nvfp4" not in quant and "nvfp4" not in name.lower():
+        return False
+    if "nvfp4" in name.lower() or "nvfp4" in quant:
+        return True
+    if quant in ("fp4", "nvfp4") or quant.startswith("nvfp4"):
+        return True
+    return _FP4_TOKEN_RE.search(name) is not None
+
+
 @dataclass(frozen=True)
 class RuntimeHint:
     image: str | None = None
@@ -78,10 +103,9 @@ def nvfp4_on_sm121(model_id: str, quantization: str = "", engine: str = "vllm",
     ไม่ครบ = ล้มตั้งแต่ start ไม่ใช่แค่ช้า (msi-6 2026-08-20: ptxas ปฏิเสธ cvt .e2m1x2 ตอน JIT
     cutlass_fused_moe แล้ว engine core ตายก่อน health)
     """
-    key = f"{model_id} {quantization}".lower()
     if engine != "vllm" or memory_model != "unified":
         return RuntimeHint()
-    if "nvfp4" not in key and "fp4" not in (quantization or "").lower():
+    if not looks_nvfp4(model_id, quantization):
         return RuntimeHint()
     return RuntimeHint(
         image=NVFP4_SM121_IMAGE,

@@ -1358,7 +1358,7 @@ def _remove_on_worker(worker_items: list[RemovalItem]) -> list[str]:
             f"  if [ -e {q} ]; then",
             "    img=\"$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | grep -E 'alpine|busybox|ubuntu|debian' | head -1)\"",
             "    [ -n \"$img\" ] || img=\"$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)\"",
-            f"    [ -n \"$img\" ] && docker run --rm -v {parent}:/x \"$img\" rm -rf -- /x/{name} >/dev/null 2>&1 && echo \"DOCKER\t{idx}\"",
+            f"    [ -n \"$img\" ] && docker run --rm --entrypoint rm -v {parent}:/x \"$img\" -rf -- /x/{name} >/dev/null 2>&1 && echo \"DOCKER\t{idx}\"",
             "  fi",
             "fi",
             f"if [ -e {q} ]; then echo \"LEFT\t{idx}\t$(du -sb {q} 2>/dev/null | cut -f1)\"; else echo \"REMOVED\t{idx}\"; fi",

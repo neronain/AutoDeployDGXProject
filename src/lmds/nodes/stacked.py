@@ -69,8 +69,11 @@ def select_members(groups, head_name: str, workers: list[str] | tuple[str, ...] 
                    nnodes: int | None = None) -> dict:
     """สำเนากลุ่มที่มีสมาชิกแค่ head + worker ที่จะใช้จริง เรียงตาม node-rank
 
-    `workers` ว่าง = เอา worker ตามลำดับในกลุ่มจนครบ `nnodes - 1` · ระบุมา = ต้องครบพอดี
-    `nnodes` None = ทั้งกลุ่ม (พฤติกรรมเดิม)
+    `workers` ว่าง = เอา worker ตามลำดับในกลุ่มจนครบ `nnodes - 1` · ระบุมา = ตัวที่ระบุได้ rank ก่อน
+    (ตามลำดับที่ระบุ) แล้ว **เติมที่เหลือจากกลุ่ม** จนครบ — wizard เลือก worker ได้ตัวเดียว แต่ target
+    stacked-4 ต้องการสาม · เดิม "ระบุมา = ต้องครบพอดี" ทำให้ deploy stacked-4 จากหน้าเว็บจบด้วย 400
+    ทุกครั้ง ("built for 4 machines … 1 worker was chosen") ทั้งที่ analyze สัญญาว่าจะเติมให้ ·
+    ระบุมาเกินจำนวนที่ bundle ต้องการยังปฏิเสธ · `nnodes` None = ทั้งกลุ่ม (พฤติกรรมเดิม)
     """
     group = _ready_group_with(groups, head_name)
     members = list(group.get("members") or [])
@@ -93,12 +96,17 @@ def select_members(groups, head_name: str, workers: list[str] | tuple[str, ...] 
     want = None if nnodes is None else max(0, int(nnodes) - 1)
     if not chosen:
         chosen = others if want is None else others[:want]
+    elif want is not None and len(chosen) < want:
+        # ระบุมาไม่ครบ = เติมจากกลุ่มตาม rank (ข้ามตัวที่เลือกไปแล้ว) — ห้ามเงียบ: ผู้เรียกเห็นรายชื่อจริง
+        # ในผลลัพธ์ (members) และ cluster.env ที่เขียนออกไป
+        chosen += [m for m in others if m not in chosen][:want - len(chosen)]
     if want is not None and len(chosen) != want:
-        have = len(chosen) if workers else len(others)
+        too_many = len(chosen) > want
+        have = len(chosen) if (workers and too_many) else len(others)
         raise StackedError(
             f"this bundle was built for {nnodes} machines (head + {want} worker"
             f"{'s' if want != 1 else ''}) but {have} worker{'s' if have != 1 else ''} "
-            f"{'were' if have != 1 else 'was'} {'chosen' if workers else 'available'} in the group of "
+            f"{'were' if have != 1 else 'was'} {'chosen' if too_many else 'available'} in the group of "
             f"'{head_name}' — re-run analyse with the matching target "
             f"(dgx-spark-stacked = 2, dgx-spark-stacked-4 = 4) or pick the right workers"
         )

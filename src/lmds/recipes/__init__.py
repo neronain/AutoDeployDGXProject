@@ -224,5 +224,16 @@ def find_recipe(repo_id: str) -> Recipe | None:
     wanted = (repo_id or "").lower()
     if not wanted:
         return None
-    matches = [r for r in load_catalog() if wanted.startswith(r.match.lower())]
+    matches = [r for r in load_catalog() if _prefix_matches(wanted, r.match.lower())]
     return max(matches, key=lambda r: len(r.match)) if matches else None
+
+
+# ขอบของชื่อที่ prefix ต้องหยุด — `zai-org/GLM-4.7-Flash` ครอบ `…-Flash-NVFP4`/`…-Flash_v2` แต่ไม่ครอบ
+# `…-Flashlight` ซึ่งเป็นคนละโมเดล (startswith ล้วนครอบแล้วยัด image/env/parser ของโมเดลอื่นให้เงียบ ๆ)
+_NAME_BOUNDARY = "-_./"
+
+
+def _prefix_matches(wanted: str, match: str) -> bool:
+    if not match or not wanted.startswith(match):
+        return False
+    return len(wanted) == len(match) or wanted[len(match)] in _NAME_BOUNDARY

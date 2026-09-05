@@ -98,6 +98,8 @@ _derive_cluster_defaults() {
 }
 _derive_cluster_defaults
 MASTER_PORT="${MASTER_PORT:-25000}"
+# พอร์ตภายในของ vLLM headless บน worker (ไม่เสิร์ฟ API ออกไป — แค่ต้องว่างบนเครื่องนั้น เพราะ --network host)
+WORKER_API_PORT="${WORKER_API_PORT:-18000}"
 
 # ── หลายสายต่อเครื่อง (cluster.env schema v2 — ring 3 เครื่อง / switch 2–4 เครื่อง) ──
 # hub เขียน LINKS_<rank> · NCCL_SOCKET_IFNAMES_<rank> · NCCL_IB_HCAS_<rank> · HEAD_TO_WORKER_IP_<rank> ·
@@ -218,10 +220,10 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # (เจอจริง: test-text ของ gemma-4-31b ได้คำตอบจาก Qwen3-Coder-30B ที่รันอยู่ก่อน)
 assert_our_server() {
   local seen
-  seen="$(curl -fsS -m 10 "http://127.0.0.1:${API_PORT}/v1/models" \
+  seen="$(curl -fsS -m 10 "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} 2>/dev/null \
     | { command -v python3 >/dev/null 2>&1 && python3 -c '
-import json, sys
+import json, os, sys
 try:
     data = json.load(sys.stdin)["data"]
 except Exception:
@@ -534,6 +536,12 @@ parse_options() {
       --context)         MAX_MODEL_LEN="$2"; shift 2 ;;
       --extra-args)     EXTRA_SERVE_ARGS="$2"; shift 2 ;;
       --extra-args=*)   EXTRA_SERVE_ARGS="${1#*=}"; shift ;;
+      # test-tools แนะให้ `restart --tool-parser <ชื่อ>` (ข้อความเดียวกับ single) — เดิม stacked ไม่รู้จัก flag นี้
+      # จึงตกไป REMAINING_ARGS แล้วถูกเมินเงียบ ๆ restart ด้วย parser เดิม
+      --tool-parser)        TOOL_CALL_PARSER="$2"; shift 2 ;;
+      --tool-parser=*)      TOOL_CALL_PARSER="${1#*=}"; shift ;;
+      --reasoning-parser)   REASONING_PARSER="$2"; shift 2 ;;
+      --reasoning-parser=*) REASONING_PARSER="${1#*=}"; shift ;;
       --context=*)       MAX_MODEL_LEN="${1#*=}"; shift ;;
       --gpu-util)       GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
       --gpu-util=*)   GPU_MEMORY_UTILIZATION="${1#*=}"; shift ;;
@@ -554,6 +562,19 @@ parse_options() {
     esac
   done
   validate_numbers
+  LOCAL_API_HOST="$(_local_api_host)"
+  export LOCAL_API_HOST      # ชุดทดสอบ python อ่านจาก env
+}
+
+# ที่อยู่ที่ controller ใช้คุยกับ head ของตัวเอง (health · status · test-* · bench · stress)
+# bind 0.0.0.0/127.0.0.1/localhost → 127.0.0.1 · bind IP เฉพาะ (เช่น --bind 10.2.1.195 ผูกแค่สาย management) → IP นั้น
+# เดิมทุกจุดยิง 127.0.0.1 ตายตัว → vLLM ที่ผูก IP เฉพาะไม่ฟัง loopback · start รอ /health จนครบ STARTUP_TIMEOUT
+# (ชั่วโมงกว่า) แล้วรายงานว่าไม่ health ทั้งที่เซิร์ฟเวอร์ขึ้นแล้ว
+_local_api_host() {
+  case "${API_HOST:-}" in
+    ""|0.0.0.0|127.0.0.1|localhost|::|\[::\]) printf '127.0.0.1' ;;
+    *) printf '%s' "$API_HOST" ;;
+  esac
 }
 
 # ─────────────────── snapshot path resolution ───────────────────
@@ -755,14 +776,8 @@ _explain_download_failure() {
 
 download() {
   need docker
-  # ยืนยันว่ามี image ก่อนแตะเรื่องน้ำหนักโมเดล
-  #
-  # เคสจริงที่ลูกค้าเจอ 2026-09-01: image เป็น `nvcr.io/nvidia/vllm:latest` ซึ่งไม่มีอยู่จริง
-  # แล้ว `docker run` ล้มด้วย "manifest unknown" · ของเดิมจับ exit code ที่ไม่เป็นศูนย์แล้ว
-  # สรุปเองว่าเป็นปัญหา Xet → ลองใหม่โดยปิด Xet → ล้มอีก → พิมพ์ว่า
-  # "download ล้มเหลวแม้ปิด Xet แล้ว" ซึ่งพาคนไปดูผิดที่ทั้งหมด
-  ensure_image "${VLLM_IMAGE}"
 {% endraw %}{% if report.gated %}  # gated repo: ไม่มี token = ดาวน์โหลดล้มด้วย 401 ที่อ่านยาก — ตรวจตั้งแต่ต้นดีกว่า
+  # และต้องมา **ก่อน** ensure_image: เดิมดึง image 20-30 GB ให้เสร็จก่อนแล้วค่อยบอกว่าไม่มี token
   if [[ -z "${HF_TOKEN:-}" ]]; then
     die "${MODEL_ID} เป็น gated repo — ต้องมี HF_TOKEN ก่อน download
   1) ขอสิทธิ์ที่ https://huggingface.co/${MODEL_ID} (ต้องขึ้น ACCEPTED)
@@ -770,7 +785,14 @@ download() {
   3) export HF_TOKEN=hf_xxx   แล้วรันใหม่: $0 download
 หมายเหตุ: token ไม่ได้ถูกเก็บไว้ในสคริปต์นี้โดยเจตนา (กัน secret หลุดไปกับ bundle)"
   fi
-{% endif %}{% raw %}  mkdir -p "$HF_HOME"
+{% endif %}{% raw %}  # ยืนยันว่ามี image ก่อนแตะเรื่องน้ำหนักโมเดล
+  #
+  # เคสจริงที่ลูกค้าเจอ 2026-09-01: image เป็น `nvcr.io/nvidia/vllm:latest` ซึ่งไม่มีอยู่จริง
+  # แล้ว `docker run` ล้มด้วย "manifest unknown" · ของเดิมจับ exit code ที่ไม่เป็นศูนย์แล้ว
+  # สรุปเองว่าเป็นปัญหา Xet → ลองใหม่โดยปิด Xet → ล้มอีก → พิมพ์ว่า
+  # "download ล้มเหลวแม้ปิด Xet แล้ว" ซึ่งพาคนไปดูผิดที่ทั้งหมด
+  ensure_image "${VLLM_IMAGE}"
+  mkdir -p "$HF_HOME"
   _check_download_disk
   log "Downloading ${MODEL_ID} @ ${MODEL_REVISION} (resume-safe) …"
   # PYTHONUNBUFFERED / -u: ในคอนเทนเนอร์ไม่มี tty แถบ progress ของ huggingface_hub
@@ -930,6 +952,11 @@ explain_crash() {
     *e2m1*|*ptxas*|*"cutlass"*"sm_121"*)
       echo "  FP4 kernel นี้ใช้บน sm_121 (GB10) ไม่ได้ — ต้องบังคับ Marlin ทั้ง head และ worker:" >&2
       echo "  lmds set ${SLUG} --engine-env \"VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_MARLIN_USE_ATOMIC_ADD=1\"" >&2 ;;
+    *"pe_dim must be"*|*"must be 64 for fp8_ds_mla"*)
+      # เคสจริง 2026-09-05 spark-head: GLM-5.3-Flash (glm5_next · DSA/MLA) บน nightly 4 ก.ย. — vLLM เลือก KV layout
+      # fp8_ds_mla ของ DeepSeek V3.2 ให้โมเดล DSA ทุกตัว แต่ kernel รับเฉพาะ rope dim 64 → ไม่ใช่เรื่อง KV dtype ที่ผู้ใช้ตั้งได้
+      echo "  kernel MLA ของ image นี้ยังไม่รองรับสถาปัตยกรรมของโมเดลนี้ (rope dim ไม่ใช่ 64) — ต้องใช้ vLLM ใหม่กว่า:" >&2
+      echo "  lmds set ${SLUG} --image vllm/vllm-openai:nightly   แล้ว   $0 prepare-runtime   แล้ว   $0 start   (ถ้ายังไม่ผ่าน = รอ vLLM รุ่นถัดไป)" >&2 ;;
     *"only supports fp8 kv-cache"*|*"ds_mla"*)
       echo "  สถาปัตยกรรมนี้ (DeepSeek MLA) บังคับ kv-cache fp8 — KV_CACHE_DTYPE=fp8 $0 restart  (ถาวร: bundle.env KV_CACHE_DTYPE=fp8)" >&2 ;;
     *"waiting for clients"*|*"socket has timed out"*)
@@ -1144,7 +1171,9 @@ doctor() {
   local image_id; image_id="$(_assert_runtime_images)"
   echo "Image: ${VLLM_IMAGE}"
   echo "ID   : ${image_id}"
-  docker run --rm --gpus all --entrypoint python3 "$VLLM_IMAGE" - <<'PYEOF'
+  # `-i` จำเป็น: ไม่มีก็ไม่ต่อ stdin เข้าคอนเทนเนอร์ python3 ได้สคริปต์ว่างแล้วจบ 0 เงียบ ๆ — doctor บนเครื่องจริง
+  # เคยพิมพ์แค่ Image/ID โดยไม่มี torch/vllm/GPU สักบรรทัด (บั๊กเดียวกับ verify-worker ที่แก้ไป 0.6.0)
+  docker run --rm -i --gpus all --entrypoint python3 "$VLLM_IMAGE" - <<'PYEOF'
 import platform
 try:
     import torch
@@ -1422,7 +1451,8 @@ clear_fi_cache() {
   log "ล้างครบทั้งสอง node แล้ว"
 }
 
-props() { curl -fsS "http://127.0.0.1:${API_PORT}/v1/models" | python3 -m json.tool; }
+# ส่ง key เหมือน status — เดิมไม่ส่ง เปิด API_KEY แล้ว props ได้ 401 → curl -f ล้ม → pipefail → exit 1 เงียบ
+props() { curl -fsS ${API_KEY:+-H "Authorization: Bearer $API_KEY"} "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" | python3 -m json.tool; }
 
 ensure_image() {
   # ดึง image ให้เห็นความคืบหน้า *ก่อน* จะเอาไปใช้ที่อื่น
@@ -1454,6 +1484,37 @@ _head_port_in_use() {
     listening="$(netstat -tln 2>/dev/null || true)"
   fi
   grep -Eq "[:.]${API_PORT}([[:space:]]|$)" <<< "$listening"
+}
+_listening_sockets() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null || true
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null || true
+  fi
+}
+_port_listening() { grep -Eq "[:.]${2}([[:space:]]|$)" <<< "$1"; }
+
+# --network host ทำให้พอร์ตของ bundle นี้ชนกับของ bundle อื่นได้สามจุด: API_PORT บน head · MASTER_PORT (TCPStore ของ
+# torch.distributed) บน head · WORKER_API_PORT (พอร์ตภายในของ vLLM headless) บน worker ทุกตัว — เดิมเช็คแค่ API_PORT
+# สอง stacked bundle บน head คู่เดียวกันตั้ง --port คนละพอร์ตได้ แต่ MASTER_PORT/18000 เป็นค่าคงที่ ตัวที่สองจึงผ่านด่าน
+# แล้วไปตายที่ "address already in use" หลังปล่อย worker ไปแล้ว ด้วยข้อความที่ไม่บอกว่าชนกับใคร
+_assert_ports_free() {
+  local listening wip
+  if _head_port_in_use; then
+    die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน (ดู: ss -tlnp | grep ${API_PORT}) หรือรันตัวนี้คนละพอร์ต: $0 start --port 8001"
+  fi
+  listening="$(_listening_sockets)"
+  if _port_listening "$listening" "$MASTER_PORT"; then
+    die "MASTER_PORT ${MASTER_PORT} ถูกใช้อยู่บน head — stacked bundle อื่นรันอยู่? (ดู: ss -tlnp | grep ${MASTER_PORT} · docker ps)
+  หยุดตัวนั้นก่อน หรือใช้พอร์ตอื่นสำหรับ bundle นี้: MASTER_PORT=25001 $0 start   (ถาวร: เขียน MASTER_PORT=25001 ลง bundle.env)"
+  fi
+  for wip in $WORKER_IPS; do
+    listening="$(ssh_at "$wip" "ss -tln 2>/dev/null || netstat -tln 2>/dev/null || true" 2>/dev/null || true)"
+    if _port_listening "$listening" "$WORKER_API_PORT"; then
+      die "พอร์ต ${WORKER_API_PORT} บน worker ${wip} ถูกใช้อยู่ (vLLM headless ของ bundle อื่นยังรันอยู่?) — ดู: ssh ${SSH_USER}@${wip} 'ss -tlnp | grep ${WORKER_API_PORT}; docker ps'
+  หยุดตัวนั้นก่อน หรือใช้พอร์ตอื่น: WORKER_API_PORT=18001 $0 start   (ถาวร: bundle.env)"
+    fi
+  done
 }
 
 # image รู้จักสถาปัตยกรรมของโมเดลไหม — ถามก่อนปล่อย worker/HCA/NCCL ทั้งคลัสเตอร์
@@ -1490,9 +1551,9 @@ print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformer
 
 start() {
   if [[ -z "$DRY_RUN" ]]; then
-    ensure_image "${VLLM_IMAGE}"
     _require_non_root
     need docker; need curl
+    ensure_image "${VLLM_IMAGE}"
     check_running_on_master
     # WORKER_IPS = IP ที่ head ใช้ถึง worker แต่ละ rank (v2: HEAD_TO_WORKER_IP_<rank> คนละสายกันได้)
     _check_worker_ssh
@@ -1521,9 +1582,11 @@ start() {
   local worker_hf="${WORKER_HF_HOME}" wip
 
   if [[ -z "$DRY_RUN" ]]; then
-    if _head_port_in_use; then
-      die "port ${API_PORT} ถูกใช้อยู่บน head — stop ตัวที่ชนก่อน (ดู: ss -tlnp | grep ${API_PORT})"
+    # start ซ้ำขณะรันอยู่ ≠ พอร์ตชน — เดิมบอก "stop ตัวที่ชนก่อน" ทั้งที่ตัวที่ชนคือ head ของ bundle นี้เอง
+    if [[ -n "$(docker ps -q --filter "name=^${MASTER_CONTAINER}$" 2>/dev/null || true)" ]]; then
+      die "bundle นี้รันอยู่แล้ว (container ${MASTER_CONTAINER}) — ดูสถานะ: $0 status · เริ่มใหม่ทั้งคู่: $0 restart"
     fi
+    _assert_ports_free
 
     # ลบ container ค้าง
     docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
@@ -1624,15 +1687,17 @@ export TRANSFORMERS_OFFLINE=1
 $(_nccl_env_pairs "$wifname" "$whca" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
 $(for pair in "${EXTRA_DOCKER_ENV[@]}"; do printf 'export %q\n' "$pair"; done)
 $(for pair in ${ENGINE_ENV}; do printf 'export %q\n' "$pair"; done)
-exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port 18000 --headless
+exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port ${WORKER_API_PORT} --headless
 WSCRIPT
 )"
     if [[ -n "$DRY_RUN" ]]; then
       echo "== worker rank ${rank} @ ${wip} — /tmp/lmds-${SLUG}/worker.sh =="
       printf '%s\n' "$worker_script"
     else
-      ssh_at "$wip" "mkdir -p /tmp/lmds-${SLUG} && cat > /tmp/lmds-${SLUG}/worker.sh" <<< "$worker_script"
-      ssh_at "$wip" "chmod +x /tmp/lmds-${SLUG}/worker.sh"
+      # เขียนไม่ได้ (โฟลเดอร์ถูกไฟล์/user อื่นยึด) เดิม set -e ทิ้งสคริปต์ด้วยข้อความดิบของ bash ฝั่ง worker ไม่มีชื่อเครื่อง
+      ssh_at "$wip" "mkdir -p /tmp/lmds-${SLUG} && cat > /tmp/lmds-${SLUG}/worker.sh && chmod +x /tmp/lmds-${SLUG}/worker.sh" <<< "$worker_script" ||
+        die "เขียน /tmp/lmds-${SLUG}/worker.sh บน worker ${wip} ไม่ได้ (ข้อความด้านบน) — โฟลเดอร์ถูกยึดโดยไฟล์หรือ user อื่น?
+  ล้างแล้วสั่งใหม่: ssh ${SSH_USER}@${wip} 'sudo rm -rf /tmp/lmds-${SLUG}'   แล้ว   $0 start"
     fi
     local -a wrun=(
       docker run -d --name "${WORKER_CONTAINER}"
@@ -1671,8 +1736,13 @@ WSCRIPT
 
   log "รอ worker init ${WORKER_INIT_WAIT}s …"
   sleep "$WORKER_INIT_WAIT"
+  local wstate wrc wout
   for wip in $WORKER_IPS; do
-    if [[ "$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
+    wrc=0; wout="$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" 2>/dev/null)" || wrc=$?
+        wstate="$(_worker_state "$wrc" "$wout")"
+    if (( wstate == 2 )); then
+      _warn_worker_unreachable "$wip"
+    elif (( wstate != 0 )); then
       ssh_at "$wip" "docker logs --tail 200 '${WORKER_CONTAINER}' 2>&1" || true
       _explain_worker_crash "$wip"
       die "worker container บน ${wip} หยุดก่อน head จะเริ่ม — ดู log ด้านบน (เพิ่มเติม: $0 logs worker 500)"
@@ -1701,7 +1771,13 @@ WSCRIPT
   hrun+=(--entrypoint bash "$VLLM_IMAGE"
     -lc "exec vllm${quoted_common} --node-rank 0 --host $(printf '%q' "$API_HOST") --port $(printf '%q' "$API_PORT")")
   # array ขึ้นต้นด้วย docker อยู่แล้ว — เรียกซ้ำจะได้ `docker docker run -d …`
-  "${hrun[@]}"
+  # head ไม่ขึ้น (GPU runtime หาย · daemon สะอึก) = worker ที่เปิดไปแล้วต้องถูกหยุด ไม่ใช่ทิ้งให้ค้างรอ head ที่ไม่มีวันมา
+  # ยึด GPU ไว้จน start รอบหน้า — เดิม set -e ออกเงียบด้วยข้อความของ docker เปล่า ๆ
+  if ! "${hrun[@]}"; then
+    _stop_workers
+    die "docker run ของ head ไม่ขึ้น (ข้อความของ docker ด้านบน) — หยุด worker ที่เปิดไปแล้วให้แล้ว
+  เช็คบน head: docker info · docker run --rm --gpus all '${VLLM_IMAGE}' nvidia-smi   (GPU runtime) · df -h /var/lib/docker"
+  fi
 
   write_meta
   # ── Step 3: health poll ──
@@ -1710,7 +1786,7 @@ WSCRIPT
   local next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
   local started_at=$(( $(date +%s) )) stuck_hinted=0
   while (( $(date +%s) < deadline )); do
-    if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+    if curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
       log "Server พร้อม"
       echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
       warn_open_endpoint
@@ -1726,7 +1802,12 @@ WSCRIPT
     # (ชั่วโมงกว่าสำหรับโมเดลใหญ่) โดยไม่มีอะไรบอกว่าเครื่องไหนตาย
     if (( $(date +%s) >= next_worker_check )); then
       for wip in $WORKER_IPS; do
-        if [[ "$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" || true)" != "true" ]]; then
+        wrc=0; wout="$(ssh_at "$wip" "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}' 2>/dev/null" 2>/dev/null)" || wrc=$?
+        wstate="$(_worker_state "$wrc" "$wout")"
+        if (( wstate == 2 )); then
+          # ssh สะดุด ≠ worker ตาย — ห้ามฆ่า head ที่โหลด weight มาเป็นชั่วโมงเพราะสาย management กะพริบครั้งเดียว
+          _warn_worker_unreachable "$wip"
+        elif (( wstate != 0 )); then
           ssh_at "$wip" "docker logs --tail 100 '${WORKER_CONTAINER}' 2>&1" || true
           _explain_worker_crash "$wip"
           docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
@@ -1787,6 +1868,18 @@ _rendezvous_stuck_hint() {
   return 0
 }
 
+# สถานะ container ของ worker ผ่าน ssh — 0 = รัน · 1 = ไม่รัน/ไม่มี · 2 = ssh ไปไม่ถึง (ssh คืน 255) = **ไม่รู้**
+# ห้ามตีความ 2 ว่าตาย: สาย management สะดุดครั้งเดียวระหว่างรอ head โหลด weight ชั่วโมงกว่า เดิมอ่านค่าว่างเป็น
+# "worker ตาย" แล้ว docker rm -f head ทิ้ง ทั้งที่ทั้งสองฝั่งโหลดอยู่ดี ๆ · ssh คืน 255 เฉพาะเมื่อตัวมันเองล้ม
+# (ต่อไม่ได้/timeout/key) ส่วนคำสั่งปลายทางที่ล้ม (container หาย) คืนค่าอื่น
+# $1 = exit code ของ ssh_at · $2 = สิ่งที่ docker inspect พิมพ์ → พิมพ์ 0/1/2
+_worker_state() {
+  if (( $1 == 255 )); then echo 2; elif [[ "$2" == "true" ]]; then echo 0; else echo 1; fi
+}
+_warn_worker_unreachable() {
+  echo "WARN: ssh ไป worker ${1} ไม่ผ่านชั่วคราว — ยังไม่ตีความว่า worker ตาย (container อาจโหลดอยู่ดี ๆ) จะลองใหม่รอบถัดไป · ถ้าเป็นต่อเนื่อง: ssh ${SSH_USER}@${1} docker ps" >&2
+}
+
 # worker ตายแล้วได้แต่ log ดิบ — ให้ตัวจำแนกเดียวกับ head อ่านให้ (ดึง log ผ่าน ssh มาใส่ CRASH_LOG_TEXT)
 _explain_worker_crash() {
   local wip="$1" text
@@ -1808,11 +1901,11 @@ serve_args() {
       r=$(( r + 1 ))
       build_common_args "$(_worker_head_ip "$r")"
       echo "# worker rank ${r} @ ${wip} — VLLM_HOST_IP=$(_worker_transport_ip "$r" "$wip") NCCL_SOCKET_IFNAME=$(_node_ifnames "$r") NCCL_IB_HCA=${NCCL_IB_HCA_EXPLICIT:-$(_node_hcas "$r")}${NCCL_CROSS_NIC:+ NCCL_CROSS_NIC=$NCCL_CROSS_NIC}:"
-      printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank "$r" --host 127.0.0.1 --port 18000 --headless
+      printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank "$r" --host 127.0.0.1 --port ${WORKER_API_PORT} --headless
     done
   else
     echo "# worker rank 1..$(worker_count) (headless, ต่างกันแค่ --node-rank N):"
-    printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 1 --host 127.0.0.1 --port 18000 --headless
+    printf '%s\n' vllm "${COMMON_ARGS[@]}" --node-rank 1 --host 127.0.0.1 --port ${WORKER_API_PORT} --headless
   fi
   if [[ -n "$ENGINE_ENV" || ${#EXTRA_DOCKER_ENV[@]} -gt 0 ]]; then
     echo "# engine env (ทั้ง head และ worker ทุกตัว):"
@@ -1841,20 +1934,31 @@ EOF
 }
 
 # ─────────────────────────── stop ───────────────────────────
-stop() {
-  log "Stopping head …"
-  docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
-  # worker มีได้มากกว่าหนึ่ง (dgx-spark-stacked-4) — ข้อความต้องพูดถึงทุกตัว ไม่ใช่แค่ WORKER_IP ตัวแรก
-  log "Stopping worker(s) on ${WORKER_IPS} …"
+_stop_workers() {
   local wip
   for wip in $WORKER_IPS; do
     ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
   done
   # mp backend ทิ้ง shared memory ไว้ — ไม่เก็บกวาด start รอบหน้าจะชนของเก่า
-  sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true
   for wip in $WORKER_IPS; do
     ssh_at "$wip" "sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true" || true
   done
+}
+
+stop() {
+  log "Stopping head …"
+  docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
+  sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true
+  # ยังไม่ตั้งค่าคลัสเตอร์ = IP ที่ถืออยู่เป็นตัวอย่าง 10.100.152.x — เดิม ssh ไปหาอยู่ดี (ค้าง ConnectTimeout 10 วิ × 2
+  # ต่อ worker และถ้ามีเครื่องนั้นอยู่จริงก็ไปสั่ง docker rm บนเครื่องคนอื่น) · start ไม่เคยผ่านโดยไม่ตั้งค่า จึงไม่มี
+  # container ของ bundle นี้บนเครื่องตัวอย่างให้หยุดอยู่แล้ว
+  if _cluster_config_is_placeholder; then
+    log "ยังไม่ตั้งค่าคลัสเตอร์ (ไม่มี ${CLUSTER_ENV}) — ข้าม worker ตัวอย่าง ${WORKER_IPS}"
+  else
+    # worker มีได้มากกว่าหนึ่ง (dgx-spark-stacked-4) — ข้อความต้องพูดถึงทุกตัว ไม่ใช่แค่ WORKER_IP ตัวแรก
+    log "Stopping worker(s) on ${WORKER_IPS} …"
+    _stop_workers
+  fi
   echo "stopped ${MASTER_CONTAINER} + ${WORKER_CONTAINER}"
 }
 
@@ -1869,10 +1973,14 @@ status() {
   docker ps -a --filter "name=^${MASTER_CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
   echo "--- Worker(s) (${WORKER_IPS}) ---"
   local wip
-  for wip in $WORKER_IPS; do
-    echo "-- worker ${wip}"
-    ssh_at "$wip" "docker ps -a --filter 'name=^${WORKER_CONTAINER}$' --format 'table {{.Names}}\t{{.Status}}'" 2>/dev/null || echo "(SSH ล้มเหลว)"
-  done
+  if _cluster_config_is_placeholder; then
+    echo "(ยังไม่ตั้งค่าคลัสเตอร์ — ไม่ถาม worker ตัวอย่าง)"
+  else
+    for wip in $WORKER_IPS; do
+      echo "-- worker ${wip}"
+      ssh_at "$wip" "docker ps -a --filter 'name=^${WORKER_CONTAINER}$' --format 'table {{.Names}}\t{{.Status}}'" 2>/dev/null || echo "(SSH ล้มเหลว)"
+    done
+  fi
   if _multilink; then
     echo "--- Links ---"
     _resolve_ifname >/dev/null 2>&1 || true
@@ -1880,17 +1988,17 @@ status() {
     _print_links
   fi
   echo "--- API ---"
-  if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  if curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
     echo "API: healthy"
     local models seen
     models="$(curl -fsS ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
-      "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null || true)"
+      "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" 2>/dev/null || true)"
     printf '%s\n' "$models"
     # พอร์ตเดียวกันอาจเป็นของโมเดลอื่นที่รันอยู่ก่อน (เคสจริง spark-head 2026-09-04: status ของ bundle
     # stacked บอก healthy ทั้งที่ container ของมันไม่มีสักตัว — 8000 เป็นของ qwen3-coder-next แบบ single)
     # "healthy" เฉย ๆ จึงหลอกให้คิดว่า stacked ขึ้นแล้ว
     seen="$(printf '%s' "$models" | { command -v python3 >/dev/null 2>&1 && python3 -c '
-import json, sys
+import json, os, sys
 try:
     data = json.load(sys.stdin)["data"]
 except Exception:
@@ -1902,7 +2010,7 @@ print((data[0].get("id") or "").strip() if data else "")
       echo "  หยุดตัวนั้นก่อน หรือรันตัวนี้คนละพอร์ต: $0 start --port 8001  (ถาวร: lmds set ${SLUG} --port 8001)"
     fi
   else
-    echo "API: not responding (http://127.0.0.1:${API_PORT})"
+    echo "API: not responding (http://${LOCAL_API_HOST}:${API_PORT})"
   fi
 }
 
@@ -1917,7 +2025,8 @@ logs() {
   fi
   case "$target" in
     head|master) docker logs --tail "$n" "$MASTER_CONTAINER" 2>&1 ;;
-    worker)      for wip in $WORKER_IPS; do
+    worker)      _cluster_config_is_placeholder && die "ยังไม่ตั้งค่าคลัสเตอร์ — ไม่รู้ว่า worker อยู่ที่ไหน (IP ที่ถืออยู่เป็นตัวอย่าง) → lmds node cluster --write ${SLUG} --head <เครื่อง head>"
+                 for wip in $WORKER_IPS; do
                    echo "===== worker ${wip} ====="
                    ssh_at "$wip" "docker logs --tail '$n' '${WORKER_CONTAINER}' 2>&1" || true
                  done ;;
@@ -1979,7 +2088,7 @@ test_text() {
   # 512 ไม่ใช่ 64: โมเดลสาย reasoning ใช้ budget ไปกับ <think> ก่อน ถ้าให้น้อยจะได้
   # finish_reason "length" โดยยังไม่ทันตอบ ซึ่งดูเหมือนโมเดลพัง
   local response
-  response="$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/chat/completions" \
+  response="$(curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/v1/chat/completions" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
     -H "Content-Type: application/json" \
     -d "{
@@ -1993,7 +2102,7 @@ test_text() {
 
   if command -v python3 >/dev/null 2>&1; then
     printf "%s" "$response" | python3 -c '
-import json, re, sys
+import json, os, re, sys
 try:
     msg = json.load(sys.stdin)["choices"][0]["message"]
 except (ValueError, KeyError, IndexError):
@@ -2019,9 +2128,10 @@ test_reasoning() {
   assert_our_server
   need curl
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
-import json, sys, urllib.request
+import json, os, sys, urllib.request
 
 port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 headers = {"Content-Type": "application/json"}
 if key:
     headers["Authorization"] = "Bearer " + key
@@ -2030,7 +2140,7 @@ payload = json.dumps({
     "messages": [{"role": "user", "content": "What is 37 multiplied by 43? Show your work."}],
     "max_tokens": 512,
 }).encode()
-req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers)
+req = urllib.request.Request(f"http://{host}:{port}/v1/chat/completions", data=payload, headers=headers)
 msg = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]["message"]
 # vLLM ใช้มาแล้วสองชื่อ: `reasoning_content` ในรุ่นเก่า และ `reasoning` ในรุ่นใหม่
 # ดูแค่ชื่อเดียวจะรายงานว่า parser ไม่ทำงานทั้งที่ทำงานอยู่ แล้วส่งคนไปแก้ของที่ถูกแล้ว
@@ -2143,9 +2253,10 @@ test_tools() {
   assert_our_server
   need curl
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${1:-both}" "$0" "${API_KEY:-}" <<'PYEOF'
-import json, re, sys, urllib.request
+import json, os, re, sys, urllib.request
 
 port, model, mode, prog, key = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 headers = {"Content-Type": "application/json"}
 if key:
     headers["Authorization"] = "Bearer " + key
@@ -2177,7 +2288,7 @@ def ask(choice_mode):
         "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
         "tools": TOOLS, "tool_choice": choice_mode, "max_tokens": 512,
     }).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers)
+    req = urllib.request.Request(f"http://{host}:{port}/v1/chat/completions", data=payload, headers=headers)
     msg = json.load(urllib.request.urlopen(req, timeout=180))["choices"][0]["message"]
     return msg.get("tool_calls") or [], (msg.get("content") or "")
 
@@ -2247,9 +2358,10 @@ test_vision() {
   need curl
   command -v python3 >/dev/null 2>&1 || die "ต้องมี python3 เพื่อสร้างภาพทดสอบ"
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
-import base64, json, struct, sys, urllib.error, urllib.request, zlib
+import base64, json, os, struct, sys, urllib.error, urllib.request, zlib
 
 port, model, api_key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 
 def png(width, height, rgb):
     raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
@@ -2273,7 +2385,7 @@ if api_key:
 
 try:
     with urllib.request.urlopen(urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers),
+            f"http://{host}:{port}/v1/chat/completions", data=payload, headers=headers),
             timeout=300) as response:
         body = json.load(response)
 except urllib.error.HTTPError as exc:
@@ -2304,9 +2416,10 @@ bench() {
   assert_our_server
   need curl
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" "${1:-3}" "${2:-256}" <<'PYEOF'
-import json, statistics, sys, time, urllib.error, urllib.request
+import json, os, statistics, sys, time, urllib.error, urllib.request
 
 port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 runs, max_tokens = int(sys.argv[4]), int(sys.argv[5])
 headers = {"Content-Type": "application/json"}
 if key:
@@ -2321,7 +2434,7 @@ def one_run():
         "messages": [{"role": "user", "content": prompt}],
         "stream": True, "stream_options": {"include_usage": True},
     }).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers)
+    req = urllib.request.Request(f"http://{host}:{port}/v1/chat/completions", data=payload, headers=headers)
     started = time.monotonic()
     first = None
     chunks = 0
@@ -2384,9 +2497,10 @@ stress() {
   assert_our_server
   need curl
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" "${1:-16}" "${2:-4}" <<'PYEOF'
-import json, statistics, sys, threading, time, urllib.error, urllib.request
+import json, os, statistics, sys, threading, time, urllib.error, urllib.request
 
 port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 total, workers = int(sys.argv[4]), max(1, int(sys.argv[5]))
 headers = {"Content-Type": "application/json"}
 if key:
@@ -2408,7 +2522,7 @@ def worker():
             if not queue:
                 return
             queue.pop()
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers)
+        req = urllib.request.Request(f"http://{host}:{port}/v1/chat/completions", data=payload, headers=headers)
         started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=600) as resp:
@@ -2499,7 +2613,7 @@ for p in ${quoted}; do [ -e \"\$p\" ] && printf '  %s\t%s\n' \"\$(du -sb \"\$p\"
 for p in ${quoted}; do
   [ -e \"\$p\" ] || continue
   rm -rf -- \"\$p\" 2>/dev/null
-  if [ -e \"\$p\" ]; then img=\"\$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)\"; [ -n \"\$img\" ] && docker run --rm -v \"\$(dirname \"\$p\"):/x\" \"\$img\" rm -rf -- \"/x/\$(basename \"\$p\")\" >/dev/null 2>&1 && echo \"  ลบผ่าน docker (ไฟล์เป็นของ root): \$p\"; fi
+  if [ -e \"\$p\" ]; then img=''; docker image inspect '${VLLM_IMAGE}' >/dev/null 2>&1 && img='${VLLM_IMAGE}'; [ -n \"\$img\" ] || img=\"\$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)\"; [ -n \"\$img\" ] && docker run --rm --entrypoint rm -v \"\$(dirname \"\$p\"):/x\" \"\$img\" -rf -- \"/x/\$(basename \"\$p\")\" >/dev/null 2>&1 && echo \"  ลบผ่าน docker (ไฟล์เป็นของ root): \$p\"; fi
   if [ -e \"\$p\" ]; then echo \"  ยังเหลือบน ${wip}: \$p — ลบเอง: ssh ${SSH_USER}@${wip} sudo rm -rf \$p\"; else echo \"  ลบ \$p\"; fi
 done" || echo "  ยังเหลือบน ${wip}: ${paths[*]} — ssh ล้มกลางทาง · ลบเอง: ssh ${SSH_USER}@${wip} 'docker rm -f ${WORKER_CONTAINER}; sudo rm -rf ${paths[*]}'"
     fi
@@ -2550,12 +2664,14 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
   parsers          สิ่งที่ engine รู้จัก: ชื่อ --tool-parser และ --reasoning-parser ที่ใส่ได้จริง
   bench [RUNS] [TOKENS]       วัด ttft / tok/s ผ่าน API จริง (ค่าตั้งต้น 3 รอบ × 256 tokens)
   stress [REQUESTS] [CONC]    ยิงพร้อมกันหลายสาย ดู p50/p95 และจำนวนที่ล้ม (ค่าตั้งต้น 16 × 4)
-  (ชุด test-*/bench/stress คุยกับ head ที่ 127.0.0.1:${API_PORT} เท่านั้น — ไม่ต้องมี cluster.env)
+  (ชุด test-*/bench/stress คุยกับ head ที่ ${LOCAL_API_HOST}:${API_PORT} เท่านั้น (ตาม --bind) — ไม่ต้องมี cluster.env)
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --port N              Port the head node serves on             [default: ${API_PORT}]
   --context N           Max context length in tokens             [default: ${MAX_MODEL_LEN}]
   --extra-args "..."    Extra engine flags appended verbatim (space-separated; write JSON without spaces) [default: ${EXTRA_SERVE_ARGS}]
+  --tool-parser NAME    Tool-call parser on every node (see: $0 parsers)   [default: ${TOOL_CALL_PARSER:-off}]
+  --reasoning-parser NAME  Reasoning parser on every node                 [default: ${REASONING_PARSER:-off}]
   --bind ADDR           Address the head node listens on         [default: ${API_HOST}]
                         0.0.0.0 = whole network · 127.0.0.1 = this machine only
   --advertise-ip ADDR   IP printed for clients (does NOT change the bind address)
@@ -2608,6 +2724,13 @@ EXAMPLES
 EOF
 }
 
+# คำสั่งที่ไม่รู้จัก (พิมพ์ผิด · verb ของ controller อื่นเช่น repair) ต้องล้ม — เดิมพิมพ์ usage แล้วคืน 0
+# hub อ่าน exit code แล้วรายงาน job ว่าสำเร็จทั้งที่ไม่ได้ทำอะไร · help/ไม่ใส่คำสั่ง ยังคืน 0 ตามเดิม
+_reject_unknown_verb() {
+  case "${1:-}" in ""|help|--help|-h) return 0 ;; esac
+  die "ไม่รู้จักคำสั่ง '$1' — ดูรายการคำสั่งด้านบน ($0 help)"
+}
+
 parse_options "$@"
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 
@@ -2634,7 +2757,7 @@ info() {
   ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
   url="http://${ip}:${API_PORT}/v1"
   state="stopped"
-  if curl -fsS -m 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  if curl -fsS -m 2 "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
     state="RUNNING"
   fi
   printf '  Model     : %s\n'            "${MODEL_LABEL}"
@@ -2681,6 +2804,6 @@ case "${1:-help}" in
   parsers)         list_parsers ;;
   bench)           bench "${2:-3}" "${3:-256}" ;;
   stress)          stress "${2:-16}" "${3:-4}" ;;
-  *)               usage ;;
+  *)               usage; _reject_unknown_verb "${1:-}" ;;
 esac
 {% endraw %}

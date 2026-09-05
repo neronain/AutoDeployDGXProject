@@ -95,6 +95,14 @@ def _clean(name: str, value: object) -> str:
     if name == "extra_args":
         # ข้อความอิสระที่ controller จะแตกเป็น argv ด้วยช่องว่าง — JSON ต้องเขียนแบบไม่มีช่องว่าง
         # กันเฉพาะสิ่งที่ทำให้เชลล์รันของอื่นได้ ส่วน quote/วงเล็บปีกกาต้องผ่านเพราะ JSON ใช้
+        # flag ที่ controller เป็นเจ้าของ (TP/nnodes/node-rank/master-*) — ใส่ซ้ำแล้ว vLLM ให้ตัวหลังชนะ = TP=1 บน 2 เครื่อง
+        # (harden กันฝั่ง LLM ตั้งแต่ 0.6.0 แต่ `lmds set --extra-args` หลุด — audit รอบ 2)
+        owned = ("--tensor-parallel-size", "-tp", "--nnodes", "--node-rank", "--master-addr", "--master-port",
+                 "--headless", "--data-parallel-size", "--pipeline-parallel-size")
+        for tok in text.split():
+            key = tok.split("=", 1)[0]
+            if key in owned:
+                raise SettingsError(f"extra_args มี {key} ซึ่ง controller ตั้งให้เองตาม topology — ใส่ซ้ำไม่ได้ (ใช้ --target/plan แทน)")
         if any(ch in text for ch in "\n\r\x00`$"):
             raise SettingsError("extra_args มีอักขระที่เชลล์ตีความ (` $ หรือขึ้นบรรทัดใหม่) — ใส่ไม่ได้")
         return " ".join(text.split())

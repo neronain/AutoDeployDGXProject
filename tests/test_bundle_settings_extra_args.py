@@ -62,3 +62,17 @@ def test_parser_names_are_identifiers_only():
     from lmds.fleet.bundle_settings import _clean
     with pytest.raises(SettingsError):
         _clean("tool_parser", "qwen3_xml; rm -rf /")
+
+
+def test_extra_args_refuse_flags_the_controller_owns(tmp_path):
+    """audit stacked รอบ 2: `lmds set --extra-args "--tensor-parallel-size 1"` ลง bundle.args ได้ทั้งดุ้น → vLLM ให้ตัวหลังชนะ
+    TP=1 บน 2 เครื่อง (harden กันฝั่ง LLM ตั้งแต่ 0.6.0 แต่ทาง set หลุด)"""
+    import pytest
+
+    from lmds.fleet.bundle_settings import SettingsError, write
+
+    for bad in ("--tensor-parallel-size 1", "--nnodes=1", "--master-addr 10.0.0.1 --port 1", "-tp 2"):
+        with pytest.raises(SettingsError) as exc:
+            write(tmp_path, {"extra_args": bad})
+        assert "controller ตั้งให้เอง" in str(exc.value), bad
+    assert write(tmp_path, {"extra_args": "--max-num-batched-tokens 4096"})["extra_args"] == "--max-num-batched-tokens 4096"

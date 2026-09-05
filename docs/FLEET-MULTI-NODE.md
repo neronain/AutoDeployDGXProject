@@ -313,6 +313,12 @@ lmds node set spark2                                # ดูค่าปัจ�
 > DGX Spark มีพอร์ต ConnectX หลายเส้น เส้นที่ยังไม่ได้ตั้งค่าจะได้ 169.254.x.x มาเอง —
 > ระบบจึงไม่เสนอ link-local ให้เด็ดขาด (ตัดสินจากตัว IP เอง ไม่พึ่งเวอร์ชันของ node)
 
+`mismatch` และ `slow` **ทำให้กลุ่มไม่พร้อม** (blocker `stale-ip` / `slow-link` — 0.6.1 audit รอบ 2) ไม่ใช่แค่ป้ายเตือน
+บนสมาชิก: ทะเบียนที่ค้าง IP เก่า (เปลี่ยน IP หลัง `cluster apply` / แก้มือ) เคยปล่อยให้ push เขียน `cluster.env`
+ด้วย IP ที่ไม่มีใครถือ แล้ว start ค้างที่ NCCL init · ตอนนี้หัวรั้วบอกว่าเครื่องไหนค้าง พร้อม IP ที่การ์ดถืออยู่จริง
+ให้กด save · blocker ที่ `lmds cluster show` / หน้าเว็บ เรียบเรียงให้: `missing-ip` · `duplicate-ip` · `split-fabric` ·
+`no-shared-fabric` (ตั้งชื่อคลัสเตอร์แต่ไม่มีวงร่วม) · `stale-ip` · `slow-link`
+
 ### ขยายเป็น 3–4 เครื่อง
 
 ชั้นทะเบียนและการจับกลุ่มรองรับกี่เครื่องก็ได้อยู่แล้ว · controller วน worker ทุกตัวจาก `WORKER_IPS`
@@ -333,7 +339,11 @@ lmds node set spark2                                # ดูค่าปัจ�
 world size 3 (TP=2 + pipeline (TP=3 หาร head ไม่ลง)) · 200G RDMA
 ```
 
-`--write` เขียน `WORKER_IPS` ครบทุกตัวพร้อม `NNODES` และ `TENSOR_PARALLEL_SIZE` ให้ตรงจำนวนเครื่อง
+`--write` เขียน `WORKER_IPS` ครบทุกตัวพร้อม `NNODES` และ `TENSOR_PARALLEL_SIZE` ให้ตรงจำนวนเครื่อง ·
+หน้าเว็บ (target `dgx-spark-stacked-4`) เลือก worker ได้ตัวเดียว = ตัวนั้นเป็น rank 1 แล้ว hub **เติมที่เหลือจากกลุ่ม
+ตามลำดับ** ตอนเขียน `cluster.env` และ pair ssh ให้ครบทุกตัว (`lmds cluster write --worker` ระบุไม่ครบก็เติมแบบเดียวกัน ·
+ระบุเกินจำนวนที่ bundle ต้องการยังปฏิเสธ) · worker ทุกตัวต้อง login ด้วย user เดียวกัน — controller มี `SSH_USER`
+ค่าเดียว ทะเบียนที่ user ต่างกันถูกปฏิเสธตั้งแต่เขียนไฟล์
 
 > สถานะ: โครงสร้างและคำสั่งพร้อมและมีเทสครอบแล้ว แต่ **ยังไม่ได้รันจริงเกิน 2 เครื่อง**
 > (ยังไม่มีเครื่องที่สาม) — `dgx-spark-stacked-4` จึงตั้ง `tested=False` และคิด budget แบบ conservative
@@ -398,8 +408,9 @@ lmds cluster doctor spark-head spark-worker [--slug my-70b-model]
 | `same-site` `hardware` | ไซต์เดียวกัน · GPU รุ่น/จำนวนตรงกันทุก rank |
 | `cluster-ip` `same-subnet` `iface-up` `link-speed` | unset/mismatch/slow/link-local (+ IP ที่เสนอ) · วงเดียวกัน · สายขึ้น · negotiate ต่ำกว่าที่ควร (เตือน) |
 | `ssh-head-to-worker` `fabric-ping` | **ssh จาก head ไป worker จริง** · ping บนสายคลัสเตอร์เมื่อ ssh ล้ม (ICMP อาจถูกบล็อก) |
+| `ssh-user` | (เตือน) head กับ worker login คนละ user — controller rsync ไป path `HF_HOME` ของ head บน worker ซึ่ง user นั้นอาจไม่มี · ตั้ง `WORKER_HF_HOME` ใน cluster.env |
 | `disk` | < 150 GB ว่าง = เตือน (weight ลงทุกเครื่อง) |
-| `bundle-on-head` `cluster-env` `cluster-env-match` | (มี `--slug`) bundle อยู่บน head ไหม · มี cluster.env ไหม · ค่าในไฟล์ตรงทะเบียนไหม |
+| `bundle-on-head` `cluster-env` `cluster-env-match` | (มี `--slug`) bundle อยู่บน head ไหม · มี cluster.env ไหม · ค่าในไฟล์ (MASTER_IP / WORKER_IPS / SSH_USER) ตรงทะเบียนไหม |
 
 หน้าเว็บ: ปุ่ม **Doctor** บนหัวกลุ่ม (`GET /api/cluster/doctor`) · hub ที่ไม่มี GPU (VM ควบคุม) ขึ้นเป็น *control plane — not a
 stacked candidate* ไม่ใช่ "not ready · 10G too slow" พร้อมปุ่มที่ไม่มีความหมาย

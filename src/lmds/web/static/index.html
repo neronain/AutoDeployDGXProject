@@ -1574,7 +1574,7 @@ function manageMarkup(m) {
       <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>`}
     </div>
 
-    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked (2 nodes)</span></div>
+    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked${m.cluster && m.cluster.nnodes ? ` (${m.cluster.nnodes} nodes)` : ""}</span></div>
     <div class="field">
       ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
@@ -2190,10 +2190,12 @@ async function writeClusterEnv(slug, head, worker) {
     body: JSON.stringify({ slug, head, worker, on: head }),
   });
   const d = await r.json();
+  // workers = รายชื่อจริงที่ลง cluster.env (target 4 เครื่อง: hub เติมที่เหลือจากกลุ่ม) — pair ต้องใช้ชุดนี้
   return r.ok
-    ? { ok: true, text: `cluster.env: head ${d.head_ip} · worker ${(d.worker_ips || []).join(" ")}`
-        + ` · ${d.nnodes} machines (TP=${d.nnodes})${d.iface ? " · NCCL " + d.iface : ""}` }
-    : { ok: false, text: d.detail || "could not write cluster.env" };
+    ? { ok: true, workers: d.workers || (worker ? [worker] : []),
+        text: `cluster.env: head ${d.head_ip} · worker ${(d.worker_ips || []).join(" ")}`
+        + ` (${(d.workers || []).join(", ")}) · ${d.nnodes} machines (TP=${d.nnodes})${d.iface ? " · NCCL " + d.iface : ""}` }
+    : { ok: false, workers: [], text: d.detail || "could not write cluster.env" };
 }
 
 async function pushAfterBuild(built, machine, stacked = false) {
@@ -2208,10 +2210,11 @@ async function pushAfterBuild(built, machine, stacked = false) {
       wizBusy(`Installed on ${machine} — writing cluster.env…`);
       cluster = await writeClusterEnv(slug, machine, draft.worker || "");
       // กุญแจ head → worker: controller ssh ไป worker ด้วยกุญแจของ head เอง ซึ่งไม่มีใครเคยติดตั้งให้
-      // (node setup ติดตั้งแต่กุญแจของ hub) — sync-worker/start จึงตายด้วย Permission denied
-      if (cluster.ok && draft.worker) {
-        wizBusy(`cluster.env written — pairing ssh ${machine} → ${draft.worker}…`);
-        paired = await pairClusterSsh(machine, draft.worker);
+      // (node setup ติดตั้งแต่กุญแจของ hub) — sync-worker/start จึงตายด้วย Permission denied ·
+      // จับคู่กับ worker ทุกตัวที่ cluster.env บอก ไม่ใช่แค่ตัวที่เลือกในช่อง (stacked-4 มีอีกสองตัวที่ hub เติมให้)
+      if (cluster.ok && cluster.workers.length) {
+        wizBusy(`cluster.env written — pairing ssh ${machine} → ${cluster.workers.join(", ")}…`);
+        paired = await pairClusterSsh(machine, cluster.workers);
       }
     }
     wiz.innerHTML = `<div class="pad">
@@ -4129,6 +4132,9 @@ function groupHeader(g, index) {
     "missing-ip": "cluster IP not set on: ",
     "duplicate-ip": "the same cluster IP on more than one machine: ",
     "split-fabric": "cluster IPs on different subnets, cannot talk: ",
+    "no-shared-fabric": "named cluster, but the machines share no subnet: ",
+    "stale-ip": "the registry's cluster IP is no longer on any interface (stale — set it again, the suggested IP is what the card holds now): ",
+    "slow-link": "cluster IP sits on a link slower than 25G — move it to the ConnectX address: ",
   }[b.kind] || (b.kind + ": ")) + b.names.join(", "))}</div>`).join("");
   // เตือน ≠ บล็อก · กลุ่มยังพร้อมและ world size ยังเต็ม แค่สายวิ่งช้ากว่าที่การ์ดทำได้
   const warnings = (g.warnings || []).map(w => `<div class="warn-line">${esc(
@@ -4378,16 +4384,19 @@ async function runPairDoctor(btn) {
       f.fix ? ` <code>${esc(f.fix)}</code>` : ""}</div>`).join("")}`;
 }
 
+// `worker` = ชื่อเดียวหรือรายชื่อ (rank order) — API รับ workers เป็นลิสต์อยู่แล้ว
 async function pairClusterSsh(head, worker) {
+  const workers = Array.isArray(worker) ? worker : [worker];
   const r = await api("/api/cluster/pair", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ head, worker }),
+    body: JSON.stringify({ head, workers }),
   });
   const d = await r.json().catch(() => ({}));
   const steps = (d.steps || []).map(s => `${s.ok ? "✓" : "✕"} ${s.step}${s.ok || !s.detail ? "" : " — " + s.detail}`);
+  const who = workers.join(", ");
   return r.ok && d.ok
-    ? { ok: true, text: `ssh ${head} → ${worker}: paired`, steps }
-    : { ok: false, text: (typeof d.detail === "string" ? d.detail : "") || `ssh ${head} → ${worker}: not paired`, steps };
+    ? { ok: true, text: `ssh ${head} → ${who}: paired`, steps }
+    : { ok: false, text: (typeof d.detail === "string" ? d.detail : "") || `ssh ${head} → ${who}: not paired`, steps };
 }
 
 document.addEventListener("click", async e => {
@@ -4510,6 +4519,8 @@ const CNW_JOB_STEPS = [
   ["sudo", "sudo", /sudo password/i],
   ["netplan", "write netplan", /stage netplan|write .*netplan/i],
   ["addresses", "verify addresses", /verify address/i],
+  // ufw (0.6.1) — ไม่มีหมวดของตัวเอง = ขั้นนี้ไม่ขึ้นเป็นติ๊กเลย ทั้งที่มันคือสาเหตุของ "ping ถึงแต่ worker ต่อไม่ได้"
+  ["firewall", "firewall", /^firewall/i],
   ["ping", "ping peers", /^ping\b/i],
   ["ssh", "pair SSH", /cluster key|authorize|ssh config|without a password|\bssh\b|\bpair/i],
   ["registry", "registry", /registry/i],

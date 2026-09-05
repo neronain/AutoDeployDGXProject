@@ -163,6 +163,25 @@ def _largest_step(limit: float) -> int | None:
     return fitting[-1] if fitting else None
 
 
+def kv_replication(dims, nodes: int) -> int:
+    """KV cache ถูกทำสำเนากี่ชุดทั่วคลัสเตอร์เมื่อ tensor parallel = nodes
+
+    vLLM แบ่ง KV ตาม kv_heads: หัวหาร TP ลงตัว = แต่ละ rank ถือส่วนของตัวเอง (KV รวม = 1 ชุด)
+    แต่ถ้า kv_heads < TP (MLA ของ DeepSeek/Kimi = 1 หัว · Qwen3-Coder-Next = 2 หัว บน 4 เครื่อง)
+    หัวเดียวแบ่งไม่ได้ → **ทุก rank ถือสำเนาเต็ม** (`num_kv_heads = max(1, kv_heads // tp)`)
+    = KV ทั้งคลัสเตอร์โตเป็น TP/kv_heads เท่า และ *ต่อเครื่อง* ต้องมีที่ให้ KV เต็ม context
+
+    เดิมคิดว่า KV ทั้งคลัสเตอร์หาร N ได้เสมอ → DeepSeek-V4 บน 2×Spark ถูกเสนอ 524,288 ทั้งที่แต่ละเครื่อง
+    มีที่ให้แค่ 262,144 → vLLM ตาย "No available memory for the cache blocks" ตอน profiling (audit 2026-09-05)
+    """
+    nodes = max(1, int(nodes or 1))
+    heads = int(getattr(dims, "kv_heads", 0) or 0)
+    if nodes <= 1 or heads <= 0 or heads >= nodes:
+        return 1
+    # แต่ละ rank ถือ max(1, heads // nodes) หัว → รวมทั้งคลัสเตอร์ = nodes × หัวต่อ rank ÷ หัวจริง
+    return max(1, (nodes * max(1, heads // nodes)) // heads)
+
+
 def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
             reserved_gb: float = 0.0) -> FitReport:
     """`reserved_gb` = หน่วยความจำที่โมเดลอื่นบนเครื่องเป้าหมายถืออยู่แล้ว
@@ -212,13 +231,17 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
 
     if kv_budget_gb <= 0:
         return _handle_no_headroom(report, target, fit, weights_gb, budget)
-    if engine == "vllm" and kv_budget_gb < VLLM_MIN_KV_GB:
+    # stacked: profiling run + cache blocks ต้องมีที่ *ทุกเครื่อง* — ยอดรวม 3 GB บน 2 เครื่อง = เครื่องละ 1.5
+    # ซึ่งไม่พอ ทั้งที่ยอดรวมผ่านเกณฑ์ (audit 2026-09-05)
+    per_node_kv_gb = kv_budget_gb / nodes
+    if engine == "vllm" and per_node_kv_gb < VLLM_MIN_KV_GB:
         # weight ชิด budget จนเหลือ KV ไม่ถึงที่ profiling run ของ vLLM ต้องใช้ — vLLM ตายตอน start ด้วย
         # "No available memory for the cache blocks" ไม่ใช่ "ได้ context 4096" · เคสจริง audit 2026-09-04:
         # Qwen3-235B FP8 (220.2 GiB) บน 2×Spark เหลือ 0.8 GB แล้วรายงานว่า fits-reduced-context
+        where = f" (เครื่องละ {per_node_kv_gb:.1f} GB บน {nodes} เครื่อง — ต้องพอต่อเครื่อง)" if nodes > 1 else ""
         return _handle_no_headroom(
             report, target, fit, weights_gb, budget,
-            reason=(f"weight {weights_gb:.1f} GB เหลือที่ให้ KV แค่ {kv_budget_gb:.1f} GB "
+            reason=(f"weight {weights_gb:.1f} GB เหลือที่ให้ KV แค่ {kv_budget_gb:.1f} GB{where} "
                     f"(vLLM ต้องการอย่างน้อย ~{VLLM_MIN_KV_GB:.0f} GB สำหรับ profiling run + cache blocks)"),
         )
 
@@ -237,13 +260,26 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
         _client_budget(fit)
         return fit
 
-    per_token = dims.bytes_per_token_fp16
+    # ค่าต่อ token คิดทั้งคลัสเตอร์: kv_heads < TP → ทุก rank ถือสำเนาเต็ม (ดู kv_replication)
+    # → หน้าเว็บ/profile ที่หารด้วยจำนวนเครื่องจะได้ค่าต่อเครื่องที่ถูก (= สำเนาเต็มต่อเครื่อง)
+    replication = kv_replication(dims, nodes)
+    per_token = dims.bytes_per_token_fp16 * replication
     fit.kv_bytes_per_token = per_token
+    if replication > 1:
+        fit.notes.append(
+            f"KV cache ถูกทำสำเนา {replication} ชุด: โมเดลมี kv_heads={dims.kv_heads} แบ่งให้ {nodes} เครื่อง "
+            f"(TP={nodes}) ไม่ลงตัว vLLM จึงให้ทุกเครื่องถือ KV เต็ม context — context สูงสุดคิดจากงบ "
+            f"ต่อเครื่อง ({fit.per_node_kv_budget_gb} GB) ไม่ใช่ยอดรวม"
+        )
     max_context_raw = (kv_budget_gb * GIB) / (per_token * concurrency)
     native = report.context_length
 
     limit = min(max_context_raw, native) if native else max_context_raw
     safe = _largest_step(limit)
+    if safe is None and native and native < MIN_PRACTICAL_CONTEXT and max_context_raw >= native:
+        # โมเดลที่ native สั้นกว่าขั้นล่างสุดของบันได (embedding เล็ก ๆ อย่าง MiniLM 512) — หน่วยความจำพอ
+        # เต็ม native อยู่แล้ว ไม่ใช่ "ไม่พอ" · เดิมหาขั้น ≤ 512 ไม่เจอแล้วตอบ needs-smaller-quant
+        safe = native
     if safe is None:
         return _handle_no_headroom(
             report, target, fit, weights_gb, budget,

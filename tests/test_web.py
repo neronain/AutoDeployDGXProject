@@ -760,7 +760,9 @@ def test_cluster_view_groups_matching_machines(registered, monkeypatch):
     hub.update(registered["host"], hostname="spark1")
     monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
 
-    data = TestClient(create_app()).get("/api/cluster").json()
+    # refresh=true เหมือนเทสข้างบน: ทางปกติอ่านแคชของ refresher ซึ่ง refresher ของ app ตัวก่อนหน้าในชุดเทส
+    # อาจเขียนทับตอนไหนก็ได้ → กลุ่มหายแบบสุ่มเฉพาะตอนรันทั้งชุด (2026-09-05)
+    data = TestClient(create_app()).get("/api/cluster?refresh=true").json()
     (group,) = data["groups"]
     assert sorted(m["name"] for m in group["members"]) == ["spark1", "spark2"]
     assert group["world_size"] == 2

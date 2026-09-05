@@ -387,8 +387,12 @@ def test_cluster_write_from_the_web_follows_the_bundle_node_count(tmp_path, monk
     assert r.json()["worker_ips"] == ["10.100.152.2", "10.100.152.3", "10.100.152.4"]
     assert 'WORKER_IPS="10.100.152.2 10.100.152.3 10.100.152.4"' in written["n1"]
 
+    # audit รอบ 2 (2026-09-05): worker ตัวเดียวสำหรับ bundle 4 เครื่อง = ตัวนั้นเป็น rank 1 แล้วเติมที่เหลือจากกลุ่ม
+    # (wizard เลือกได้ตัวเดียว) — เดิม 400 "built for 4 machines" ทำให้ stacked-4 จากหน้าเว็บไปต่อไม่ได้เลย
     r = api.post("/api/cluster/write", json={"slug": "four", "head": "n1", "worker": "n2", "on": "n1"})
-    assert r.status_code == 400 and "built for 4 machines" in r.json()["detail"]
+    assert r.status_code == 200 and r.json()["workers"] == ["n2", "n3", "n4"], r.text
+    r = api.post("/api/cluster/write", json={"slug": "two", "head": "n1", "workers": ["n2", "n3"], "on": "n1"})
+    assert r.status_code == 400 and "built for 2 machines" in r.json()["detail"]
     r = api.post("/api/cluster/write", json={"slug": "four", "head": "n1", "workers": ["n4", "n3", "n2"], "on": "n1"})
     assert r.json()["worker_ips"] == ["10.100.152.4", "10.100.152.3", "10.100.152.2"]
 

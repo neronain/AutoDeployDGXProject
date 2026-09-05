@@ -428,9 +428,11 @@ def _check_stacked_pair(target: str, machine: str, worker: str, node_count: int)
             "(NCCL วิ่งบนสายในแร็ค ไม่ใช่ WAN) · เลือก worker ในไซต์เดียวกัน",
         )
     if node_count > 2:
+        # ที่เหลือ /api/cluster/write เติมให้จากกลุ่มตาม rank (nodes/stacked.select_members) — เดิมโน้ตบอกให้ไป
+        # แก้ WORKER_IPS ใน cluster.env เอง ซึ่งตรงข้ามกับสิ่งที่ hub ทำให้แล้ว
         notes.append(
-            f"target {target} ใช้ {node_count} เครื่อง แต่หน้าเว็บเลือก worker ได้ตัวเดียว — เครื่องที่เหลือต้องระบุ "
-            "ใน cluster.env (WORKER_IPS) บน head ก่อน start"
+            f"target {target} ใช้ {node_count} เครื่อง — {worker} เป็น worker rank 1 · อีก {node_count - 2} เครื่อง "
+            f"ระบบเติมจากกลุ่มของ {machine} ตามลำดับให้ตอนเขียน cluster.env (ดูรายชื่อในผลลัพธ์หลัง push)"
         )
     return notes
 

@@ -48,6 +48,12 @@ _TEXT = {
                    "สายของ {names} ได้แค่ {speed}G (ควร ≥{expected}G) — ใช้ได้แต่ช้า ตรวจ port speed ที่ switch"),
     "ssh-head-to-worker": ("{head} cannot ssh to {user}@{ip} without a password: {error}",
                            "{head} ssh ไป {user}@{ip} แบบไม่ถามรหัสไม่ได้: {error}"),
+    "ssh-user": ("{head} logs in as {head_user} but {worker} as {worker_user} — the controller syncs the weights to "
+                 "the head's HF_HOME path on the worker (/home/{head_user}/.cache/huggingface), which {worker_user} "
+                 "may not have; set WORKER_HF_HOME in cluster.env if the paths differ",
+                 "{head} login เป็น {head_user} แต่ {worker} เป็น {worker_user} — controller จะ rsync weight ไปที่ "
+                 "path HF_HOME ของ head บน worker (/home/{head_user}/.cache/huggingface) ซึ่ง {worker_user} อาจไม่มี · "
+                 "ตั้ง WORKER_HF_HOME ใน cluster.env ถ้า path ต่างกัน"),
     "fabric-ping": ("{head} cannot ping {ip} over the cluster link (ICMP may be blocked — verify with ssh)",
                     "{head} ping {ip} บนสายคลัสเตอร์ไม่ถึง (อาจแค่บล็อก ICMP — ยืนยันด้วย ssh)"),
     "disk": ("{names} has only {free} GB free — stacked weights land on every machine",
@@ -94,6 +100,7 @@ _PASS = {
     "link-speed": ("link speed on {names} is as expected", "สายของ {names} ได้ความเร็วตามที่ควร"),
     "ssh-head-to-worker": ("{head} reaches {user}@{ip} over ssh without a password",
                            "{head} ssh ไป {user}@{ip} ได้โดยไม่ถามรหัส"),
+    "ssh-user": ("same login user on both ({head_user})", "login user เดียวกันทั้งคู่ ({head_user})"),
     "fabric-ping": ("{head} pings {ip} over the cluster link", "{head} ping {ip} บนสายคลัสเตอร์ถึง"),
     "disk": ("enough disk on {names}", "ดิสก์ของ {names} พอ"),
     "bundle-on-head": ("bundle '{slug}' is on {head}", "มี bundle '{slug}' บน {head}"),
@@ -115,6 +122,7 @@ _FIX = {
     "cluster-ip": "lmds node set {name} --cluster-ip {suggested}",
     "same-subnet": "lmds node set <name> --cluster-ip <ip on the shared subnet>",
     "ssh-head-to-worker": "lmds cluster pair {head} {worker}   (or the Pair SSH button)",
+    "ssh-user": "echo WORKER_HF_HOME=/home/{worker_user}/.cache/huggingface >> ~/bundles/<slug>/cluster.env   (on {head})",
     "cluster-env": "lmds cluster write {slug} --head {head} --worker {worker}",
     "cluster-env-match": "lmds cluster write {slug} --head {head} --worker {worker}",
     "opted-out": "lmds node set {name} --stack",
@@ -200,6 +208,11 @@ def diagnose_pair(head_name: str, worker_name: str, *, nodes: dict[str, Node],
     sites = {head.site or "(no site)", worker.site or "(no site)"}
     findings.append(_finding("same-site", len(sites) == 1, pair, sites=" vs ".join(sorted(sites))))
 
+    # user ต่างกันไม่ได้ทำให้ ssh ล้ม (pair จัดการให้) แต่ path ของ cache บน worker จะผิด — controller ใช้
+    # WORKER_HF_HOME = HF_HOME ของ head (/home/<user ของ head>/.cache/huggingface) เว้นแต่ตั้งเอง · เตือน ไม่บล็อก
+    findings.append(_finding("ssh-user", head.user == worker.user, pair, level="warn",
+                             head=head_name, worker=worker_name, head_user=head.user, worker_user=worker.user))
+
     signatures = [machine_signature(head_host), machine_signature(worker_host)]
     findings.append(_finding("hardware", signatures[0] == signatures[1], pair,
                              signatures=" vs ".join(f"{n}: {s[2]} ×{s[3]} {s[0]}"
@@ -271,10 +284,15 @@ def diagnose_pair(head_name: str, worker_name: str, *, nodes: dict[str, Node],
             else:
                 env = dict(line.split("=", 1) for line in text.splitlines()
                            if "=" in line and not line.startswith("#"))
-                found = f"MASTER_IP={env.get('MASTER_IP', '?')} WORKER_IPS={env.get('WORKER_IPS', '?').strip(chr(34))}"
-                expected = f"MASTER_IP={head.cluster_ip} WORKER_IPS={worker_ip}"
+                # SSH_USER ในไฟล์คือชื่อที่ controller จะ ssh ไป worker จริง — ทะเบียนเปลี่ยน user แล้วไฟล์เก่า
+                # ยังบอกชื่อเดิม = Permission denied ที่ sync-worker ทั้งที่ pair ผ่าน (ไม่มีคีย์ = ไฟล์รุ่นเก่า ปล่อยผ่าน)
+                file_user = env.get("SSH_USER", "").strip('"')
+                found = (f"MASTER_IP={env.get('MASTER_IP', '?')} WORKER_IPS={env.get('WORKER_IPS', '?').strip(chr(34))}"
+                         + (f" SSH_USER={file_user}" if file_user else ""))
+                expected = f"MASTER_IP={head.cluster_ip} WORKER_IPS={worker_ip} SSH_USER={worker.user}"
                 matches = (env.get("MASTER_IP") == head.cluster_ip
-                           and worker_ip in env.get("WORKER_IPS", "").strip('"').split())
+                           and worker_ip in env.get("WORKER_IPS", "").strip('"').split()
+                           and (not file_user or file_user == worker.user))
                 findings.append(_finding("cluster-env-match", matches, [head_name], slug=slug,
                                          head=head_name, worker=worker_name, found=found,
                                          expected=expected))

@@ -242,17 +242,21 @@ def _inspect_safetensors(
                 break
         quant = config.get("quantization_config")
         if isinstance(quant, dict):
-            report.quantization = str(quant.get("quant_method") or quant.get("quant_algo") or "quantized")
+            report.quantization = _quantization_label(quant)
         report.kv_dims = _kv_dims_from_config(config)
         report.hybrid_attention = config_is_hybrid(config)
         report.moe_experts, report.moe_experts_active = _moe_from_config(config)
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
 
+    # ModelOpt เก็บ quant_algo (NVFP4/FP8) ไว้ใน hf_quant_config.json ส่วน config.json มักบอกแค่ "modelopt"
+    # ซึ่งไม่บอกว่าเป็น FP4 หรือ FP8 → planner เลือก image ผิด (nvidia/Llama-3.3-70B-Instruct-FP4 ได้ nvcr
+    # ที่ไม่มี FP4 kernel) · อ่านมาเติมเมื่อค่าจาก config ยังไม่บอกชนิด
     hf_quant = _fetch_json(client, source.repo_id, revision, "hf_quant_config.json")
-    if hf_quant is not None and not report.quantization:
+    if hf_quant is not None and (report.quantization or "").lower() in ("", "modelopt", "quantized"):
         quant_cfg = hf_quant.get("quantization") or {}
-        report.quantization = str(quant_cfg.get("quant_algo") or "modelopt")
+        algo = quant_cfg.get("quant_algo")
+        report.quantization = str(algo).lower() if algo else (report.quantization or "modelopt")
 
     tokenizer_config = _fetch_json(client, source.repo_id, revision, "tokenizer_config.json")
     template_text = ""
@@ -279,6 +283,22 @@ def _inspect_safetensors(
         moe_experts=report.moe_experts,
         moe_experts_active=report.moe_experts_active,
     ).to_dict()
+
+
+def _quantization_label(quant: dict) -> str:
+    """ชนิด quantization จาก `quantization_config` — เอาตัวที่บอก *ชนิด* ก่อนตัวที่บอก *เครื่องมือ*
+
+    `quant_method` คือเครื่องมือ (modelopt · compressed-tensors) ไม่ใช่ชนิด · ชนิดอยู่ที่ `quant_algo`
+    (ModelOpt: NVFP4/FP8) หรือ `format` (llm-compressor: nvfp4-pack-quantized) · เดิมเอา quant_method ก่อน
+    → checkpoint NVFP4 ของ NVIDIA/RedHat รายงานว่า "modelopt"/"compressed-tensors" แล้ว planner ไม่รู้ว่าเป็น FP4
+    """
+    algo = quant.get("quant_algo")
+    if algo:
+        return str(algo).lower()
+    fmt = str(quant.get("format") or "").lower()
+    if "fp4" in fmt:
+        return fmt
+    return str(quant.get("quant_method") or "quantized")
 
 
 def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -> list[GgufVariant]:

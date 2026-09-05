@@ -258,8 +258,8 @@ def test_apply_sends_passwords_once_for_selected_nodes_only_and_never_stores_the
     assert "hunter2" not in out["stored"] and out["html"] is False, "รหัสผ่านต้องไม่ค้างทั้งใน DOM และ localStorage"
     r = out["running"]
     assert r["step"] == "apply" and "job-77" in r["job"] and r["inputsLeft"] == 0 and r["closeDisabled"]
-    assert r["s1"] == ["sudo=ok", "netplan=ok", "addresses=ok", "ping=wait", "ssh=wait", "registry=wait"]
-    assert r["s2"] == ["sudo=ok", "netplan=wait", "addresses=wait", "ping=wait", "ssh=wait", "registry=wait"]
+    assert r["s1"] == ["sudo=ok", "netplan=ok", "addresses=ok", "firewall=wait", "ping=wait", "ssh=wait", "registry=wait"]
+    assert r["s2"] == ["sudo=ok", "netplan=wait", "addresses=wait", "firewall=wait", "ping=wait", "ssh=wait", "registry=wait"]
     assert r["log"][0] == "✓ [spark-01] sudo password accepted" and r["log"][-1].startswith("✓ [spark-01] verify addresses + carrier — enp1s0f1np1 10.100.152.1/30")
     v = out["verify"]
     assert v["step"] == "verify"

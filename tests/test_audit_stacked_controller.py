@@ -523,6 +523,7 @@ def _explain_crash_fn(text: str) -> str:
     ("RuntimeError: NCCL error in: ../csrc/…, unhandled system error", "network-info"),
     ("torch.distributed.DistStoreError: Socket Timeout", "MASTER_PORT"),
     ("torch.distributed.DistStoreError: Timed out after 601 seconds waiting for clients. 1/2 clients joined.", "nc -zv"),
+    ("RuntimeError: concat_and_cache_mla, /workspace/csrc/libtorch_stable/cache_kernels.cu:928, pe_dim must be 64 for fp8_ds_mla", "vllm/vllm-openai:nightly"),
     ("RuntimeError: ptxas fatal: cvt with .e2m1x2 not supported on .target sm_121", "VLLM_NVFP4_GEMM_BACKEND=marlin"),
 ])
 def test_explain_crash_knows_the_stacked_and_deepseek_failure_modes(tmp_path, log, hint):

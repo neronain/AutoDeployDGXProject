@@ -108,7 +108,9 @@ def test_stacked_controller_has_multinode_machinery(tmp_path):
     for marker in MULTINODE_MARKERS:
         assert marker in text, f"ขาด marker multi-node: {marker}"
     # worker-first: worker ทุกตัว (rank 1..N-1, headless) ต้องขึ้นก่อน head (rank 0)
-    assert "--node-rank ${rank} --host 127.0.0.1 --port 18000 --headless" in text
+    # audit รอบ 2: พอร์ตภายในของ worker เป็นตัวแปร (WORKER_API_PORT · 18000) เพื่อให้ stacked สองชุดบน head เดียวกันไม่ชน
+    assert "--node-rank ${rank} --host 127.0.0.1 --port ${WORKER_API_PORT} --headless" in text
+    assert 'WORKER_API_PORT="${WORKER_API_PORT:-18000}"' in text
     assert "--node-rank 0" in text
     assert text.index("--node-rank ${rank}") < text.index("--node-rank 0")
 

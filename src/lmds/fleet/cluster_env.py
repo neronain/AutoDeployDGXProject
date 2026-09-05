@@ -79,6 +79,19 @@ def build_cluster_env(groups, head_name: str, worker_name: str | None = None):
 
     head = next(m for m in group["members"] if m["name"] == head_name)
     node = find_node(chosen["name"])
+    # controller มี SSH_USER ค่าเดียวใช้กับ worker ทุก rank — worker ที่ login คนละชื่อกันจึงเป็นไปไม่ได้
+    # เดิมหยิบ user ของ worker ตัวแรกเงียบ ๆ แล้ว rank 2 ตายด้วย Permission denied ตอน sync-worker
+    users = {}
+    for member in workers:
+        found = find_node(member["name"])
+        if found is not None and found.user:
+            users.setdefault(found.user, []).append(member["name"])
+    if len(users) > 1:
+        listed = " · ".join(f"{user}: {', '.join(names)}" for user, names in users.items())
+        raise ClusterEnvError(
+            f"worker ในกลุ่มนี้ login คนละ user ({listed}) — controller ใช้ SSH_USER ค่าเดียวกับ worker ทุกตัว · "
+            f"เพิ่มเครื่องใหม่ด้วย user เดียวกัน (lmds node add … --user) หรือเลือก worker ที่ user ตรงกัน"
+        )
     topology = topology_from_members([head, *workers])
     body = render_cluster_env(topology, ssh_user=(node.user if node else ""))
     head_node = topology["nodes"][0]

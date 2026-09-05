@@ -1018,6 +1018,14 @@ def create_app(token: str = "") -> FastAPI:
         except DeployError as exc:
             raise _deploy_error(exc) from exc
 
+    # เลือก controller ในโฟลเดอร์ bundle (รันใน cwd ของ bundle) — profile บอก stacked = ตัว -stacked.sh ก่อน ·
+    # ไม่งั้น/ไม่มี = ตัวแรกที่เจอ · `.replaced-*` ของ renderer ไม่ตรง glob จึงไม่ถูกหยิบ
+    _CTL_PICK = (
+        "ctl=\"\"; if grep -qsE '^topology: *stacked' MODEL_PROFILE.yaml; then "
+        "ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\"; fi; "
+        "[ -n \"$ctl\" ] || ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\";"
+    )
+
     @app.post("/api/nodes/{name}/models/{slug}/ctl/{command}", dependencies=guarded)
     def node_controller_command(name: str, slug: str, command: str) -> dict:
         """สั่ง *คำสั่งของ controller* บนเครื่องอื่น — ชุดทดสอบ/ข้อมูล ที่ `lmds` ไม่ได้ห่อไว้
@@ -1056,7 +1064,11 @@ def create_app(token: str = "") -> FastAPI:
             # ข้อความ echo ก็ต้องใช้ตัวที่ quote แล้ว — slug ดิบใน single quote คือช่องที่ review เจอ
             f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle '{quoted}' บน '{shlex.quote(name)} >&2; exit 1; }}; "
             f"cd \"$dir\" || exit 1; "
-            f"ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
+            # bundle ที่มีทั้ง -single.sh กับ -stacked.sh (deploy single แล้ว deploy stacked ทับก่อน renderer จะ
+            # ย้ายตัวเก่าเป็น .replaced-*) — เคสจริง spark-head 2026-09-05 · `ls | head -1` ได้ single เสมอ แล้ว
+            # sync-worker/verify-worker/logs-worker จากหน้าเว็บตายด้วย "unknown command" ของ controller เดี่ยว ·
+            # เลือกตาม topology ใน MODEL_PROFILE.yaml เหมือน fleet._pick_controller
+            f"{_CTL_PICK} "
             f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
             f"\"$ctl\" {argv.get(command) or shlex.quote(command)}"
         )
@@ -1983,8 +1995,10 @@ def create_app(token: str = "") -> FastAPI:
             # bundle 2 เครื่องเคยได้ NNODES=4 ทับแผน) และไม่ใช่ตามจำนวน worker ที่ส่งมา
             nnodes = body.get("nnodes") or _local_bundle_node_count(slug)
             trimmed = select_members(groups, head, workers=workers, nnodes=nnodes)
-            result = write_cluster_env(slug, [trimmed], head, None,
-                                       (body.get("on") or "").strip() or None)
+            # bundle ที่รันจริงอยู่บน head เสมอ — ไม่ส่ง `on` = head · ส่ง "" = สำเนาบน hub (ไม่มีวันถูกรัน แต่ขอได้)
+            on = body.get("on")
+            on_node = head if on is None else (str(on).strip() or None)
+            result = write_cluster_env(slug, [trimmed], head, None, on_node)
         except (ClusterEnvError, StackedError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"target": result.target, "head_ip": result.head_ip,
@@ -2089,6 +2103,7 @@ def create_app(token: str = "") -> FastAPI:
     # GET /api/jobs/{id} เหมือนงานอื่น — แต่ไม่ใช่ "หนึ่ง ssh หนึ่งงาน" ของ jobs.start_remote จึงสร้าง Job เองแล้ว
     # ป้อน output เป็นบรรทัด `[เครื่อง] ขั้น: ok|failed — รายละเอียด` ที่ wizard แปลงเป็นติ๊กต่อเครื่อง
     _net_results: dict[str, dict] = {}
+    _net_steps: dict[str, list[dict]] = {}
     _net_lock = threading.Lock()
     NET_JOB_SLUG = "cluster-network"
 
@@ -2170,6 +2185,9 @@ def create_app(token: str = "") -> FastAPI:
             return [f"[{node}] {what}: {detail or state}"]
         if what.startswith("sudo password"):
             return [f"[{node}] sudo: {state}{tail}"]
+        # ufw (0.6.1) — เคยตกไปสาขา pair SSH ข้างล่างแล้วขึ้นว่า "pair SSH — firewall: … : paired" ซึ่งอ่านผิดเรื่อง
+        if what.startswith("firewall"):
+            return [f"[{node}] firewall: {state}{tail}"]
         # ขั้นของ cluster_ssh.pair_workers (กุญแจ/authorized_keys/config/ทดสอบ)
         return [f"[{node}] pair SSH — {what}: {'paired' if ok else 'failed'}{tail}"]
 
@@ -2208,8 +2226,15 @@ def create_app(token: str = "") -> FastAPI:
             jobs._JOBS[job.id] = job
             jobs._ACTIVE[NET_JOB_SLUG] = job.id
         job.lines.append(f"cluster network apply: {' → '.join(order)} ({plan.get('topology')})\n")
+        # step แบบโครงสร้างสะสมไว้ให้ wizard อ่านระหว่างงานเดิน — wizard วาดติ๊กต่อเครื่องจาก `steps` ของ
+        # GET /api/cluster/apply/{id} ไม่ใช่จากบรรทัด log · เดิม route นั้นให้แค่ result ตอนจบ → ติ๊กเป็น "·" และ
+        # log "Started…" ตลอดหลายนาทีที่ netplan/ping/pair กำลังทำงาน
+        with _net_lock:
+            _net_steps[job.id] = []
 
         def progress(step: dict) -> None:
+            with _net_lock:
+                _net_steps[job.id].append(dict(step))
             for line in _net_step_lines(step):
                 job.lines.append(line + "\n")
 
@@ -2237,7 +2262,8 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.get("/api/cluster/apply/{job_id}", dependencies=guarded)
     def cluster_apply_status(job_id: str) -> dict:
-        """ผลเต็มของงาน apply — {"id", "running", "job": payload, "result": null|{...apply_plan...}}"""
+        """ผลเต็มของงาน apply — {"id", "running", "steps": [step ที่ทำแล้ว…], "job": payload,
+        "result": null|{...apply_plan...}} · `steps` มาตั้งแต่งานยังเดิน (wizard วาดติ๊กจากตรงนี้)"""
         from lmds.web import jobs
 
         job = jobs.get(job_id)
@@ -2245,7 +2271,8 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail="ไม่รู้จักงานนี้")
         with _net_lock:
             result = _net_results.get(job_id)
-        return {"id": job_id, "running": job.running, "job": job.payload(), "result": result}
+            steps = list(_net_steps.get(job_id) or [])
+        return {"id": job_id, "running": job.running, "steps": steps, "job": job.payload(), "result": result}
 
     @app.post("/api/cluster/remove-net", dependencies=guarded)
     def cluster_remove_net(body: dict) -> dict:
@@ -2496,14 +2523,19 @@ def create_app(token: str = "") -> FastAPI:
         # stacked: download ที่ head อย่างเดียวไม่พอ — weight ต้องไปถึง worker ก่อน start ไม่งั้น
         # head รอ NCCL แล้ว worker ตายด้วย "snapshot missing" · ต่อ sync-worker + verify-worker
         # ให้เลย (ขั้นถัดไปรันเมื่อขั้นก่อนสำเร็จเท่านั้น) — ผู้ใช้หน้าเว็บไม่มีทางรู้ว่าต้องกดสามปุ่มตามลำดับ
-        if command == "repair" and _is_stacked_model(name, slug):
+        if command == "repair":
+            # ตัดสินบน node จาก MODEL_PROFILE ไม่ใช่จากแคชของ hub — หลัง push แคชเพิ่งถูก force ยังไม่ทันสำรวจ
+            # (การ์ดยังไม่มี bundle นี้) → เดิมได้ `lmds repair` เปล่า ๆ แล้ว start ตายที่ worker "snapshot missing" ·
+            # bundle เดี่ยวไม่เข้าเงื่อนไข = ไม่แตะ worker · แคชใช้แค่ตั้งชื่องานให้ตรง
             quoted = shlex.quote(slug)
-            controller = (
-                f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\" && "
-                f"cd \"$dir\" && ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\""
+            remote = (
+                f"{remote} && dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\" && "
+                f"cd \"$dir\" && if grep -qsE '^topology: *stacked' MODEL_PROFILE.yaml && "
+                f"ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\" && [ -n \"$ctl\" ]; then "
+                f"\"$ctl\" sync-worker && \"$ctl\" verify-worker; fi"
             )
-            remote = f"{remote} && {controller} && \"$ctl\" sync-worker && \"$ctl\" verify-worker"
-            label = "download + sync-worker + verify-worker"
+            if _is_stacked_model(name, slug):
+                label = "download + sync-worker + verify-worker"
 
         from . import jobs
 

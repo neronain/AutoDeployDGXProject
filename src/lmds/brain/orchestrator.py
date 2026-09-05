@@ -19,8 +19,8 @@ from lmds.inspector.report import ArtifactType, ModelReport
 from lmds.recipes import find_recipe
 from lmds.secrets import redact
 
-from .allowlists import is_known_image, split_flags
-from .plan_schema import DeploymentPlan, Engine, PlanError
+from .allowlists import image_repo, is_known_image, split_flags
+from .plan_schema import DeploymentPlan, Engine, PlanError, Topology
 from .prompts import build_system_prompt, build_user_prompt
 from .providers import LlmProvider
 from .rulebased import apply_recipe, rule_based_plan
@@ -106,6 +106,12 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     if plan.model_id != report.repo_id:
         plan.warnings.append(f"แก้ model_id จาก {plan.model_id!r} เป็น {report.repo_id}")
         plan.model_id = report.repo_id
+    # โมเดลที่รู้อยู่แล้วว่า image ทุกตัวยังรันไม่ผ่าน (เคสจริง GLM-5.3-Flash 2026-09-05) — เตือนตั้งแต่วางแผน
+    from lmds.brain.rulebased import known_broken
+
+    broken = known_broken(report)
+    if broken and not any(broken in w for w in plan.warnings):
+        plan.warnings.insert(0, f"⚠️ ยังรันไม่ผ่านบน runtime ที่มี: {broken}")
 
     # GGUF อ่านได้เฉพาะ llama.cpp · ส่วน safetensors เสิร์ฟได้ทั้ง vLLM และ SGLang
     # จึงบังคับเฉพาะฝั่ง GGUF · เดิมบังคับเป็น vLLM เสมอ ทำให้ผู้ใช้เลือก SGLang ไม่ได้เลย
@@ -164,6 +170,11 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
                 )
                 plan.runtime.image_ref = fallback
                 plan.runtime.image_pin = None
+    # image ที่ "อยู่ใน allowlist และ tag มีจริง" แต่เรารู้อยู่แล้วว่ารันโมเดลนี้บนเครื่องนี้ไม่ได้ — LLM เสนอ
+    # nvcr 26.05 ให้ NVFP4 บน GB10 (ไม่มี FP4 kernel ของ sm_121 · env marlin อย่างเดียวไม่พอ) หรือเสนอ image
+    # NVFP4 ตัวเดิม (vLLM 0.28.0) ให้สถาปัตยกรรมที่ต้อง nightly → ผ่านทุกด่านแล้วตายตอน start · สูตรที่รันผ่านจริง
+    # ยังชนะ (ลูกค้าพิสูจน์แล้วว่า image นั้นรันของเขาได้)
+    _replace_kernel_less_image(plan, report, fit, fallback, from_recipe)
     # env ของ NVFP4 บน GB10 — ทางของ LLM ไม่ผ่าน rule_based_plan จึงต้องเติมตรงนี้ด้วย
     apply_nvfp4_defaults(plan, report, fit.memory_model, recipe)
 
@@ -172,10 +183,7 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     #
     # ถามไม่ได้ (registry ต้องล็อกอิน / ไม่มีเน็ต) ก็ปล่อยว่าง แล้วใช้ tag ตามเดิม —
     # การห้าม deploy เพราะถาม registry ไม่ได้ แพงกว่าประโยชน์ที่ได้
-    if plan.runtime.image_pin is None:
-        from .registry import resolve_digest
-
-        plan.runtime.image_pin = resolve_digest(plan.runtime.image_ref)
+    _harden_image_pin(plan)
 
     # llama.cpp: --ctx-size คือ pool ที่แบ่งให้ทุก slot ส่วน fit คิดต่อ 1 sequence ที่ concurrency
     # ที่ขอ → เพดานของแผนคือ recommended × concurrency ไม่ใช่ recommended เฉย ๆ (ไม่งั้น
@@ -188,6 +196,16 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
             f"ลด context จาก {plan.serving.context:,} เหลือ {ceiling:,} ตาม fit analysis"
         )
         plan.serving.context = ceiling
+    # เพดานของตัวโมเดลเอง (max_position_embeddings) — fit ไม่มี ceiling ให้เมื่อไม่รู้ขนาด weight แต่ native
+    # อยู่ในรายงานตั้งแต่แรก · vLLM/SGLang ตาย/controller ปฏิเสธที่ค่าเกินนี้ · llama.cpp ยกเว้น: --ctx-size
+    # เป็น pool ของทุก slot รวมกัน เกิน native ได้โดยชอบ (เช่น 4 slot × 32k)
+    native = int(report.context_length or 0)
+    if native and plan.runtime.engine is not Engine.LLAMACPP and plan.serving.context > native:
+        plan.warnings.append(
+            f"ลด context จาก {plan.serving.context:,} เหลือ {native:,} — เพดาน native ของโมเดล "
+            "(max_position_embeddings) ตั้งเกินแล้ว engine ปฏิเสธตอน start"
+        )
+        plan.serving.context = native
 
     # ต้องมา *หลัง* clamp — max_output_tokens ถูกจัดให้พอดี slot จาก context ที่ใช้จริง
     # เดิมจัดก่อนแล้วค่อยลด context → output ที่แผนสัญญาอาจโตกว่า slot (รีวิว 2026-09-04)
@@ -229,6 +247,12 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     _harden_moe(plan, report)
     # งานของโมเดลเป็นข้อเท็จจริงจาก repo — LLM ที่วางแผนตั้งเองไม่ได้ · embedding ไม่มี parser ให้ตั้ง
     plan.task = "embed" if getattr(report, "task", "generate") == "embed" else "generate"
+    if plan.task == "embed" and plan.topology is not Topology.SINGLE:
+        # rule-based ปฏิเสธคู่นี้อยู่แล้ว แต่แผนจาก LLM มาถึงตรงนี้ได้ → template stacked ไม่มีโหมด pooling
+        # จะ render เป็น chat server ให้โมเดล embedding เงียบ ๆ (audit 2026-09-05)
+        raise PlanError(
+            "โมเดล embedding รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single) · "
+            f"target {fit.target_name!r} เป็น {plan.topology.value}")
     if plan.task == "embed":
         plan.tool_calling.enabled = False
         plan.tool_calling.parser = None
@@ -240,6 +264,64 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     plan.artifact_type = report.artifact_type
     plan.selected_gguf = plan.selected_gguf or report.selected_gguf
     return plan
+
+
+def _replace_kernel_less_image(plan: DeploymentPlan, report: ModelReport, fit: FitReport,
+                               fallback: str, from_recipe: bool) -> None:
+    """image ที่ผ่าน allowlist แต่รู้อยู่แล้วว่าไม่มี kernel/รันไทม์ให้โมเดลนี้บน DGX Spark → เปลี่ยนเป็นตัวที่พิสูจน์แล้ว
+
+    - NVFP4 บน GB10 + nvcr.io/nvidia/vllm: ptxas ปฏิเสธ `cvt .e2m1x2 not supported on sm_121` ตอน JIT
+      (msi-6 2026-08-20 · stacked ของลูกค้า 2026-09-04) — env marlin อย่างเดียวไม่พอกับ image นั้น
+    - สถาปัตยกรรมใน ARCHS_NEEDING_NIGHTLY + image NVFP4 ตัวเดิม/nvcr: transformers ใน image ไม่รู้จัก
+      → check_architecture หยุดก่อน start (spark-head 2026-09-05 GLM-5.3-Flash)
+    สูตรที่รันผ่านจริงชนะเสมอ — ลูกค้าที่พิสูจน์ว่า image นั้นรันของเขาได้ ไม่ถูกเปลี่ยน
+    """
+    from .rulebased import SPARK_NVFP4_VLLM_IMAGE, SPARK_VLLM_NIGHTLY_IMAGE, is_nvfp4, needs_nightly
+
+    unified = getattr(fit.memory_model, "value", fit.memory_model) == "unified"
+    if from_recipe or not unified or plan.runtime.engine is not Engine.VLLM:
+        return
+    current = plan.runtime.image_ref
+    repo = image_repo(current)
+    ngc = repo == "nvcr.io/nvidia/vllm"
+    reason = ""
+    if needs_nightly(report) and (ngc or current == SPARK_NVFP4_VLLM_IMAGE) and fallback == SPARK_VLLM_NIGHTLY_IMAGE:
+        reason = (f"สถาปัตยกรรม {report.model_type or report.architecture} ใหม่กว่า transformers ใน {current} "
+                  "(check_architecture จะหยุดก่อน start)")
+    elif is_nvfp4(report) and ngc and fallback in (SPARK_NVFP4_VLLM_IMAGE, SPARK_VLLM_NIGHTLY_IMAGE):
+        reason = (f"{current} ไม่มี FP4 kernel ของ sm_121 — NVFP4 บน GB10 ตายตอน start "
+                  "(`cvt .e2m1x2 not supported on sm_121`) แม้ตั้ง env marlin แล้ว")
+    if not reason:
+        return
+    plan.warnings.append(f"เปลี่ยน image จาก {current} เป็น {fallback}: {reason} · ยืนยันตัวเดิมได้ด้วย lmds set --image")
+    plan.runtime.image_ref = fallback
+    plan.runtime.image_pin = None
+
+
+def _harden_image_pin(plan: DeploymentPlan) -> None:
+    """digest ที่ตรึงต้องมาจาก registry (หรือจากชื่อ image เอง) ไม่ใช่จาก LLM
+
+    LLM ใส่ `image_pin: sha256:…` ที่มโนมาได้ — เดิม harden เห็นว่ามี pin แล้วไม่ resolve ซ้ำ → template เขียน
+    `repo@sha256:มโน` → docker pull "manifest unknown" ทุกครั้ง · pin ที่ยืนยันกับ registry ได้ (ตรงกับที่ tag ชี้)
+    คงไว้เงียบ ๆ · ยืนยันไม่ได้ (offline/ไม่ตรง) → ทิ้งแล้วใช้ค่าที่ registry ตอบ (หรือ tag ตามเดิมถ้าถามไม่ได้)
+    """
+    from .registry import resolve_digest, split_ref
+
+    _, _, ref_tag = split_ref(plan.runtime.image_ref)
+    if ref_tag.startswith("sha256:"):
+        # digest อยู่ในชื่อแล้ว — คือคำตอบ ไม่ว่า pin จะว่างหรือถูกใส่มาเป็นอะไร
+        if plan.runtime.image_pin and plan.runtime.image_pin != ref_tag:
+            plan.warnings.append(
+                f"ทิ้ง image_pin {plan.runtime.image_pin} ที่ไม่ตรงกับ digest ในชื่อ image ({ref_tag})")
+        plan.runtime.image_pin = ref_tag
+        return
+    resolved = resolve_digest(plan.runtime.image_ref)
+    if plan.runtime.image_pin and plan.runtime.image_pin != resolved:
+        plan.warnings.append(
+            f"ทิ้ง image_pin {plan.runtime.image_pin} ที่แผนใส่มาเอง — ยืนยันกับ registry ไม่ได้ว่า "
+            f"{plan.runtime.image_ref} ชี้ไปที่ digest นั้น · ใช้ "
+            + (f"digest ที่ registry ตอบ ({resolved})" if resolved else "tag ตามเดิม"))
+    plan.runtime.image_pin = resolved
 
 
 # flag ที่ controller ตั้งเองจาก target (TP = จำนวน GPU/เครื่อง · nnodes/node-rank/backend ของ stacked)

@@ -432,6 +432,14 @@ def render_bundle(
     slug, slug_note = resolve_slug(Path(output_root), plan.model_id)
     if slug_note and slug_note not in plan.warnings:
         plan.warnings.append(slug_note)
+    if slug_note and plan.served_model_name == slugify(plan.model_id):
+        # โฟลเดอร์เลี่ยงชื่อชนแล้ว แต่ชื่อที่ API เสิร์ฟยังเป็นค่าตั้งต้น (= slug เดิม) → สอง bundle คนละ repo
+        # เสิร์ฟชื่อเดียวกัน gateway ที่รวมโมเดลทั้งฟลีตด้วยชื่อ route มั่ว · ให้ตามโฟลเดอร์ (ตั้งเองได้ --model-id)
+        plan.warnings.append(
+            f"ชื่อที่เสิร์ฟ (served_model_name) เปลี่ยนเป็น {slug} ตามโฟลเดอร์ — ไม่ให้ซ้ำกับ bundle ของ repo อื่น"
+            f"ที่ชื่อโมเดลเดียวกัน · ต้องการชื่อเดิม: lmds set {slug} --model-id {plan.served_model_name}"
+        )
+        plan.served_model_name = slug
     context = _context(plan, report, fit, slug=slug)
 
     directory = output_root / slug

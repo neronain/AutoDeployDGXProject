@@ -366,6 +366,17 @@ def _group_payload(site: str, cluster_name: str, signature: tuple, members: list
     missing = [d["name"] for d in detail if d["state"] == "unset"]
     if missing:
         blockers.append({"kind": "missing-ip", "names": missing})
+    # ทะเบียนค้าง: cluster IP ที่ไม่มี interface ไหนบนเครื่องนั้นถืออยู่ (เปลี่ยน IP หลัง apply / แก้มือ / พิมพ์ผิด)
+    # เดิมเป็นแค่ state=mismatch บนสมาชิกแล้วกลุ่มยัง "พร้อม" → cluster.env ได้ IP ที่ไม่มีใครถือ → start
+    # ค้างที่ NCCL init · doctor เห็นอยู่แล้วแต่ push/wizard ไม่เคยถาม doctor — ต้องหยุดตั้งแต่จับกลุ่ม
+    # (สมาชิกทุกตัวมี fabric link จริงถึงเข้ากลุ่มได้ — IP ที่ไม่อยู่ในนั้นจึงเก่าจริง ไม่ใช่การ์ดที่ตรวจไม่เจอ)
+    stale = [d["name"] for d in detail if d["state"] in {"mismatch", "link-local"}]
+    if stale:
+        blockers.append({"kind": "stale-ip", "names": stale})
+    # IP อยู่บนสายที่ช้ากว่า MIN_STACK_GBPS (เช่นสายบริหาร 1G) — NCCL วิ่งบนนั้นช้ากว่ารันเครื่องเดียว
+    slow = [d["name"] for d in detail if d["state"] == "slow"]
+    if slow:
+        blockers.append({"kind": "slow-link", "names": slow})
     if len(set(addresses)) != len(addresses):
         blockers.append({"kind": "duplicate-ip", "names": [d["name"] for d in detail]})
     # ตั้งครบแล้วแต่คนละวง = ต่อกันไม่ติด ทั้งที่แต่ละเครื่องดูถูกหมด

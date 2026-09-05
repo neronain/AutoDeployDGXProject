@@ -512,3 +512,19 @@ def test_new_architectures_get_the_pinned_nightly_image_not_the_old_nvfp4_one(mo
     old = qwen_coder_report()
     old.repo_id = "someone/Plain-Qwen3-MoE-NVFP4"
     assert rule_based_plan(old, _stacked_fit(old)).runtime.image_ref == SPARK_NVFP4_VLLM_IMAGE
+
+
+def test_known_broken_architectures_are_flagged_at_plan_time():
+    """เคสจริง 2026-09-05: GLM-5.3-Flash (glm5_next) โหลด 190 GB sync ไป worker แล้วตายตอน warm-up
+    'pe_dim must be 64 for fp8_ds_mla' ทั้งสอง nightly — ระบบต้องบอกตั้งแต่วางแผนว่ายังรันไม่ผ่าน ไม่ปล่อยให้ลูกค้าเสียเวลา"""
+    from lmds.brain.rulebased import known_broken
+
+    glm = qwen_coder_report()
+    glm.repo_id = "coolbho3k/GLM-5.3-Flash-NVFP4-Optimized"
+    glm.model_type = "glm5_next"
+    glm.architecture = "Glm5NextForConditionalGeneration"
+    assert "pe_dim" in known_broken(glm)
+    fit = _stacked_fit(glm)
+    plan = harden_plan(rule_based_plan(glm, fit), glm, fit)
+    assert plan.warnings and plan.warnings[0].startswith("⚠️ ยังรันไม่ผ่าน") and "GLM-5.3-Flash" in plan.warnings[0]
+    assert known_broken(qwen_coder_report()) == ""

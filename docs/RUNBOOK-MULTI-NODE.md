@@ -119,10 +119,12 @@ lmds node run spark-head "deploy meta-llama/Llama-3.3-70B-Instruct \
 ## 2 · ใส่ค่าคลัสเตอร์ลง bundle
 
 ```bash
-lmds node cluster --write llama-3-3-70b-instruct --on spark-head
+lmds cluster write llama-3-3-70b-instruct --head spark-head        # ตัดกลุ่มตาม NNODES ของ bundle · เขียนบน head
+lmds node cluster --write llama-3-3-70b-instruct --on spark-head    # ทางเดิม ยังใช้ได้
 ```
 
-เขียน `cluster.env` ลงใน bundle:
+เขียน `cluster.env` ลงใน bundle (`--worker` ระบุ rank เอง · ระบุไม่ครบ = เติมที่เหลือจากกลุ่ม · หน้าเว็บทำขั้นนี้ให้
+หลัง push อยู่แล้ว):
 
 ```bash
 MASTER_IP=10.100.152.1        WORKER_IP=10.100.152.2
@@ -229,6 +231,9 @@ NCCL_SOCKET_IFNAME=... NCCL_IB_HCA=... lmds node ctl spark-head <slug> restart
 |---|---|---|
 | `This host does not own MASTER_IP` | รันสคริปต์ head ผิดเครื่อง | สลับ `MASTER_IP`/`WORKER_IP` หรือแก้ `cluster.env` |
 | ค้างที่ NCCL init | cluster IP อยู่คนละวง | `lmds node cluster` จะขึ้น blocker `split-fabric` |
+| ค้างที่ NCCL init ทั้งที่วงเดียวกัน | ทะเบียนค้าง IP เก่า (เปลี่ยน IP หลัง apply/แก้มือ) → `cluster.env` ชี้ IP ที่ไม่มีใครถือ | กลุ่มขึ้น blocker `stale-ip` พร้อม IP ที่การ์ดถือจริง → `lmds node set <n> --cluster-ip <ip>` แล้ว `lmds cluster write` ใหม่ |
+| ping ถึงแต่ worker `socket has timed out … :25000` | ufw บน head กัน TCPStore | `lmds cluster apply` เปิดให้เอง (ขั้น *firewall* ใน wizard) · มือ: `sudo ufw allow in on <iface>` |
+| `Permission denied` ที่ sync-worker ทั้งที่ pair ผ่าน | `SSH_USER` ใน cluster.env เป็นชื่อเก่า / worker rank 2 login คนละ user | `lmds cluster doctor --slug` ข้อ `cluster-env-match` · `lmds cluster write` ใหม่ (ทะเบียน user ต่างกันถูกปฏิเสธพร้อมเหตุผล) |
 | `worker container หยุดก่อน head จะเริ่ม` | image คนละตัว / cache สิทธิ์ไม่ถูก | `node ctl <n> <slug> prepare-runtime` ซ้ำ |
 | OOM ตอน warm-up | `--gpu-util` สูงไป | ลดทีละ 0.05 (ดูข้อ 4) |
 | `LocalEntryNotFoundError` ทั้งที่ไฟล์ครบ | HF cache คนละ layout | `lmds node run <n> scan` บอกว่าอยู่แบบไหน · controller ตั้ง `HF_HUB_CACHE` ให้เอง |

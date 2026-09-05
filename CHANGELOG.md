@@ -5,6 +5,16 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **GLM-5.3-Flash (glm5_next) เตือนตั้งแต่วางแผนว่ายังรันไม่ผ่าน** — ทดสอบจริง 2026-09-05 บน spark-head+worker: orcarouter
+  190 GB โหลด/sync/verify ผ่านหมด แต่ vLLM ตายตอน warm-up `pe_dim must be 64 for fp8_ds_mla` ทั้ง nightly dev388 และ dev437
+  (KV layout ของ DeepSeek V3.2 ถูกเลือกให้โมเดล DSA ทุกตัว kernel รับเฉพาะ rope dim 64) · checkpoint อื่น (coolbho3k ที่ผู้ทำ
+  patch vLLM เอง · REAP50 · pruned 62 GB) สถาปัตยกรรมเดียวกัน · `ARCHS_KNOWN_BROKEN` + `known_broken()` → harden ใส่คำเตือน
+  บรรทัดแรกของแผน (หน้าเว็บ/CLI เห็นก่อนกด deploy) · ถอดออกเมื่อมี image ที่รันผ่าน
+- **GLM-5.3-Flash (glm5_next) บน spark-head+worker: ตายตอน warm-up `pe_dim must be 64 for fp8_ds_mla`** — vLLM nightly 4 ก.ย.
+  เลือก KV layout ของ DeepSeek V3.2 ให้โมเดล DSA ทุกตัว แต่ kernel รับเฉพาะ rope dim 64 · explain_crash เดิมจับคำว่า ds_mla แล้ว
+  แนะให้ตั้ง KV fp8 (ผิดเคส) → ตอนนี้จับ `pe_dim must be` ก่อน บอกว่า image ยังไม่รองรับ MLA ของโมเดลนี้ ต้องใช้ vLLM ใหม่กว่า ·
+  ลูกค้าเจอเพิ่ม: `lmds set --extra-args` ยอมรับ flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` ฯลฯ) → ปฏิเสธแล้ว ·
+  `fleet/manager.py` ลบไฟล์ของ root บน worker ผ่าน `docker run` ต้อง `--entrypoint rm` (image vLLM entrypoint ไม่ใช่ shell)
 - **สถาปัตยกรรมใหม่ (glm5_next / qwen4_exp / nemotron_h) ได้ image nightly ตั้งแต่วางแผน** — เคสจริง 2026-09-05
   spark-head: `orcarouter/GLM-5.3-Flash-Uncensored-NVFP4` (glm5_next) ได้ image NVFP4 ตัวเดิม (vLLM 0.28.0) → check_architecture
   หยุด "โมเดลใหม่กว่ารันไทม์" ทั้งที่ nightly `f5df5cc…` (transformers 5.16.1) รู้จักและรันผ่านแล้วกับ Qwen3.8/Nemotron ·
@@ -30,6 +40,160 @@
   `explain_crash` รู้จัก `DistStoreError: … waiting for clients. 1/2 clients joined` (worker ไม่เคยต่อเข้า head:MASTER_PORT)
   → บอกให้ `nc -zv` จาก worker, ดู ufw บน head, เทียบ --master-addr กับ serve-args ·
   `tests/test_audit_stacked_controller.py`
+
+**Audit stacked รอบ 2 — ตัววางแผน / fit / recipes / inspector** (2026-09-05 · ทุกข้อมีเทสที่ล้มก่อนแก้)
+
+- **[สูง] fit คิดว่า KV ของ stacked หารจำนวนเครื่องได้เสมอ — โมเดล MLA/GQA เล็กถูกเสนอ context เกินจริง 2 เท่า** — DeepSeek-V4 (kv_heads=1) บน 2×Spark ถูกเสนอ 524,288 แต่ vLLM แบ่ง KV ตาม kv_heads: หัวเดียวแบ่ง 2 rank ไม่ได้ → **ทุกเครื่องถือสำเนาเต็ม** (`num_kv_heads = max(1, kv_heads // tp)`) → ที่ 524,288 ต้องมี 44 GB/เครื่อง แต่งบต่อเครื่องมี 32 GB → "No available memory for the cache blocks" ตอน profiling · Qwen3-Coder-Next (kv_heads=2) บน stacked-4 โดนเหมือนกัน · ตอนนี้ `kv_replication(dims, nodes)` ใน analyzer คูณค่าต่อ token ทั้งคลัสเตอร์ (`kv_bytes_per_token` ที่หน้าเว็บ/profile หารด้วยจำนวนเครื่องจึงได้ค่าต่อเครื่องที่ถูก) + โน้ตบอกว่าเป็นสำเนา · `fit/memory.py` (ladder/advise/max_context ของหน้า settings) คิดสำเนาด้วย — เดิมบอก "รับได้ 2 คน" ทั้งที่ได้คนเดียว · GQA ที่หารลงตัว (kv_heads ≥ N) ค่าเดิมทุกประการ · `test_kv_cache_of_an_mla_model_is_replicated_on_every_tp_rank_not_split`
+- **fit เทียบ KV ขั้นต่ำของ vLLM (2 GB) จากยอดรวมคลัสเตอร์ ไม่ใช่ต่อเครื่อง** — งบ KV รวม 3 GB บน 2 เครื่อง = เครื่องละ 1.5 GB ซึ่ง profiling run ไม่พอ แต่ยอดรวมผ่านเกณฑ์ → รายงาน fits-reduced-context แล้ว start ไม่ขึ้น · ตอนนี้เทียบ `kv_budget/nodes` พร้อมบอกตัวเลขต่อเครื่อง · `test_stacked_min_kv_headroom_for_vllm_is_checked_per_node`
+- **โมเดลที่ native context สั้นกว่าขั้นล่างสุดของบันได (4,096) ถูกตอบ needs-smaller-quant** — embedding เล็ก (MiniLM native 512, 90 MB) บนเครื่อง 128 GB: หา step ≤ 512 ไม่เจอ → "KV เหลือพอแค่ ~13,213,942 tokens (ต่ำกว่า 4,096)" · ตอนนี้ native < 4,096 และหน่วยความจำพอเต็ม native = fits ที่ native · `test_a_model_whose_native_context_is_below_the_ladder_still_fits`
+- **[สูง] env marlin ของ NVFP4 หายเมื่อสูตรมี image แต่ image นั้น *ไม่ได้ถูกใช้*** — สูตร sync จาก controller ที่ลูกค้า `lmds set --image registry.local:5000/vllm:custom` → registry ไม่อยู่ใน allowlist harden ถอยไป image NVFP4 ตัวกลาง แต่ `apply_nvfp4_defaults` เห็น "สูตรมี image" ก็ข้าม env → JIT cutlass FP4 ตายตอน start · สูตรที่ image ผูกกับ RTX (`image_for: [discrete]`) และสูตรของ engine อื่นก็โดน · ตอนนี้เว้นเฉพาะเมื่อ `recipe.image == plan.runtime.image_ref` · `test_nvfp4_env_is_applied_when_the_recipe_image_is_not_the_one_in_the_plan`
+- **[สูง] harden ปล่อย image ที่ "อยู่ใน allowlist/tag มีจริง" แต่รู้อยู่แล้วว่าไม่มี kernel ให้โมเดลนี้** — LLM เสนอ `nvcr.io/nvidia/vllm:26.05-py3` ให้ NVFP4 บน Spark (ptxas `cvt .e2m1x2` — env marlin อย่างเดียวไม่พอกับ image นั้น) หรือเสนอ image NVFP4 ตัวเดิม 61fc… ให้ glm5_next/qwen4_exp/nemotron_h (check_architecture หยุดก่อน start) → ผ่านทุกด่าน · ตอนนี้ `_replace_kernel_less_image` เปลี่ยนเป็น image ที่พิสูจน์แล้ว (NVFP4 → 61fc… · nightly arch → f5df5cc…) พร้อมเหตุผล · bf16/fp8 บน nvcr คงเดิม · สูตรที่รันผ่านจริงชนะเสมอ · `test_harden_replaces_a_known_but_kernel_less_image_for_nvfp4_on_a_spark`
+- **image_pin ที่ LLM ใส่มาเองถูกเชื่อทั้งดุ้น** — `image_pin: sha256:มโน` → harden เห็นว่ามี pin แล้วไม่ resolve → template เขียน `vllm/vllm-openai@sha256:มโน` → pull "manifest unknown" ทุกครั้ง · และ `apply_recipe` เปลี่ยน image_ref ทับของ LLM แต่ pin ของ image เก่าติดมา (repo ใหม่ + digest เก่า) · ตอนนี้ `_harden_image_pin`: digest ในชื่อ image = คำตอบ · pin ที่ตรงกับที่ registry ตอบ = คงไว้เงียบ ๆ · ยืนยันไม่ได้ = ทิ้งแล้วใช้ค่าของ registry/tag · apply_recipe ล้าง pin เมื่อเปลี่ยน image · `test_an_image_pin_from_the_llm_or_a_stale_plan_is_not_trusted`
+- **context เกิน native เมื่อ fit ไม่มีเพดานให้** — Hub ไม่รายงานขนาดไฟล์ → `recommended_context=None` → harden ไม่ clamp → LLM ตั้ง 262,144 ให้ Llama-3.3-70B (native 131,072) → controller ปฏิเสธตอน validate/vLLM ตายที่ ModelConfig ทั้งที่ native อยู่ในรายงาน · ตอนนี้ vLLM/SGLang clamp ที่ native เสมอ (llama.cpp ยกเว้น: --ctx-size เป็น pool ของทุก slot เกิน native ได้) · `test_context_never_exceeds_native_even_when_fit_has_no_ceiling`
+- **embedding + stacked หลุดมาทาง LLM** — rule-based ปฏิเสธคู่นี้ตั้งแต่ 0.6.0 แต่แผนจาก LLM harden แค่ตั้ง task=embed + topology=stacked → render ด้วย template stacked ที่ไม่มีโหมด pooling = chat server ให้โมเดล embedding เงียบ ๆ · ตอนนี้ harden ยก PlanError ข้อความเดียวกับ rule-based (web แปลงเป็น 422 อยู่แล้ว) · `test_embedding_plus_stacked_is_refused_on_the_llm_path_too`
+- **`find_recipe` เทียบ prefix โดยไม่หยุดที่ขอบชื่อ** — `match: zai-org/GLM-4.7-Flash` ตั้งใจครอบ `…-Flash-NVFP4` แต่ครอบ `…-Flashlight`/`…-FlashX` ที่เป็นคนละโมเดลด้วย → ได้ image/env/parser ของโมเดลอื่นเงียบ ๆ · ตอนนี้ prefix ต้องจบที่ `- _ . /` หรือท้ายชื่อ · `test_recipe_prefix_matches_only_at_a_name_boundary`
+- **[สูง] NVFP4 ที่ตั้งชื่อแบบ NVIDIA (`…-FP4`) หรือ config บอกแค่ `quant_method: modelopt` ไม่ถูกนับเป็น NVFP4** — `nvidia/Llama-3.3-70B-Instruct-FP4` / `nvidia/DeepSeek-R1-FP4`: config.json ของ ModelOpt บอก `quant_method: modelopt` (quant_algo อยู่ใน hf_quant_config.json ซึ่งเดิมอ่านเฉพาะเมื่อ config ไม่มี quantization เลย) และ llm-compressor บอก `compressed-tensors` + `format: nvfp4-pack-quantized` → inspector รายงาน "modelopt"/"compressed-tensors" · `is_nvfp4` จับแค่คำว่า nvfp4 → บน Spark ได้ nvcr ไม่มี FP4 kernel + ไม่มี env marlin → ptxas ตายตอน start · ตอนนี้ inspector เอา `quant_algo` > `format` ที่บอก fp4 > `quant_method` และเติมจาก hf_quant_config เมื่อค่ายังเป็นแค่ "modelopt" · `families.looks_nvfp4` (ที่เดียว ใช้ทั้ง planner และ fleet.suggest) จับ token `fp4`/`nvfp4` ในชื่อ + quantization · MXFP4 (gpt-oss) ไม่นับ (kernel คนละชุด) · `test_nvidia_fp4_naming_and_modelopt_config_are_recognised_as_nvfp4`
+- **served_model_name ยังชนกันข้ามเจ้าของ แม้โฟลเดอร์แยกแล้ว (0.6.1)** — `ucbye/X` (single) + `nvidia/X` (stacked) ได้ slug `x` / `x-nvidia` แต่ทั้งคู่เสิร์ฟชื่อ `x` → gateway (LiteGate/bifrost) ที่รวมโมเดลทั้งฟลีตด้วยชื่อเห็นสองตัวชื่อเดียวกัน route มั่ว · ตัดสินใจ: ชื่อที่เสิร์ฟ *ค่าตั้งต้น* ของ bundle ที่ต้องเลี่ยงชื่อโฟลเดอร์ ให้ตามโฟลเดอร์ (`x-nvidia`) พร้อมคำเตือน + วิธีคืนชื่อเดิม (`lmds set <slug> --model-id x`) · bundle แรก/ชื่อที่ผู้ใช้ตั้งเองไม่แตะ · `test_a_second_owner_of_the_same_model_name_gets_its_own_served_name`
+
+
+**Audit stacked รอบ 2 — controller stacked** (2026-09-05 · ทุกข้อมีเทสที่ล้มก่อนแก้)
+
+- **`doctor` ของ stacked ไม่เคยรันสคริปต์ตรวจ torch/vllm/GPU ในคอนเทนเนอร์** — บนเครื่องจริงพิมพ์แค่ Image/ID แล้วจบ 0
+  ทั้งที่ควรมี torch/cuda/gpu/vllm ตามมา · heredoc ถูกส่งให้ `docker run … --entrypoint python3 IMAGE -` โดยไม่มี `-i`
+  docker จึงไม่ต่อ stdin ให้คอนเทนเนอร์ python3 ได้สคริปต์ว่างแล้วออก 0 เงียบ ๆ (บั๊กเดียวกับ verify-worker ที่แก้ใน 0.6.0
+  แต่ doctor ตกหล่น) · เติม `-i` · `test_doctor_actually_runs_its_probe_inside_the_image`
+- **`restart --tool-parser <ชื่อ>` บน stacked ไม่ทำอะไร** — test-tools แนะข้อความเดียวกับ single ("ลองใหม่: restart
+  --tool-parser <ชื่อข้างบน>") แต่ parse_options ของ stacked ไม่รู้จัก `--tool-parser`/`--reasoning-parser` → flag ตกไป
+  REMAINING_ARGS แล้วถูกเมิน restart ด้วย parser เดิม ผู้ใช้วนอยู่ที่เดิม · เพิ่มทั้งสอง flag (รูป `=` ด้วย) + บรรทัดใน usage ·
+  `test_tool_and_reasoning_parser_flags_work_like_on_the_single_controller`
+- **คำสั่งที่ไม่รู้จักคืน exit 0** — `<ctl> repair` / พิมพ์ผิด → พิมพ์ usage แล้วจบ 0 · hub อ่าน exit code แล้วรายงาน job
+  ว่าสำเร็จทั้งที่ไม่ได้ทำอะไร · `_reject_unknown_verb`: usage แล้ว die "ไม่รู้จักคำสั่ง" (help/--help/-h/ไม่ใส่ ยังคืน 0) ·
+  `test_an_unknown_verb_fails_instead_of_printing_usage_with_exit_0`
+- **start ซ้ำขณะโมเดลรันอยู่ → "port 8000 ถูกใช้อยู่ — stop ตัวที่ชนก่อน"** ทั้งที่ตัวที่ชนคือ head ของ bundle นี้เอง ผู้ใช้
+  ไปไล่หาตัวที่ชนไม่เจอ · ตรวจ `docker ps --filter name=^<head>$` ก่อนด่านพอร์ต → "bundle นี้รันอยู่แล้ว — status / restart" ·
+  `test_start_on_a_running_bundle_says_restart_not_port_conflict`
+- **สอง stacked bundle บน head คู่เดียวกัน: MASTER_PORT 25000 และพอร์ต 18000 ของ worker ชนกันโดยไม่มีใครเช็ค** — `--network
+  host` ทำให้ตั้ง `--port` คนละพอร์ตได้แต่ MASTER_PORT (TCPStore) และพอร์ตภายในของ vLLM headless เป็นค่าคงที่ · ตัวที่สอง
+  ผ่านด่านพอร์ต API แล้วไปตาย "address already in use" หลังปล่อย worker ไปแล้ว · `_assert_ports_free` เช็คสามจุด: API_PORT
+  บน head · MASTER_PORT บน head · `WORKER_API_PORT` (ใหม่ · ค่าเดิม 18000 · แก้ได้ทาง env/bundle.env) บน worker ทุกตัวผ่าน
+  ssh `ss -tln` · ข้อความบอกว่าชนกับใครและเปลี่ยนพอร์ตอย่างไร · `test_start_refuses_when_the_master_port_or_the_worker_port_is_taken`
+- **ssh สะดุดครั้งเดียวระหว่างรอ health = ฆ่า head ที่โหลดมาชั่วโมง** — ระหว่างรอ /health controller ถาม worker ทุก
+  WORKER_CHECK_INTERVAL ผ่าน ssh · ssh ที่ timeout/ต่อไม่ติดชั่วคราว (สาย management กะพริบ · sshd ยุ่ง) คืนค่าว่างซึ่งถูกอ่านว่า
+  "worker ตาย" → `docker rm -f head` ทิ้งทั้งที่ทั้งสองฝั่งโหลด weight อยู่ดี ๆ · ตอนนี้แยก exit 255 ของ ssh (ตัว ssh เองล้ม)
+  ออกจาก "container ไม่รัน": 255 = ไม่รู้สถานะ → WARN แล้วลองรอบถัดไป ไม่แตะ head · ใช้ทั้งด่านหลัง WORKER_INIT_WAIT และ
+  ในลูป health · `test_a_flaky_management_ssh_during_health_wait_does_not_kill_the_head`
+- **เขียน worker.sh บน worker ไม่ได้ → ออกเงียบด้วยข้อความดิบของ bash ฝั่งโน้น** — `/tmp/lmds-<slug>` ถูกไฟล์/user อื่นยึด
+  `mkdir -p && cat >` ล้ม แล้ว set -e ทิ้งสคริปต์โดยไม่มีชื่อเครื่องไม่มีทางแก้ · รวม chmod เข้าไปในคำสั่งเดียวและ die บอก worker,
+  path และคำสั่งล้าง (`sudo rm -rf /tmp/lmds-<slug>`) ก่อน container ตัวไหนจะถูกเปิด ·
+  `test_a_worker_script_that_cannot_be_written_is_explained_before_any_container_starts`
+- **`docker run` ของ head ล้ม → worker headless ทุกตัวถูกทิ้งให้ค้างรอ head ที่ไม่มีวันมา** (nvidia runtime หาย · daemon
+  สะอึก) · เดิม set -e ออกด้วยข้อความของ docker เปล่า ๆ worker ยึด GPU ไว้จน start รอบหน้า · ตอนนี้ `_stop_workers` แล้ว die
+  บอกวิธีเช็ค GPU runtime (`docker run --rm --gpus all <image> nvidia-smi`) · `stop` ใช้ helper เดียวกัน ·
+  `test_a_head_that_fails_to_launch_stops_the_workers_it_already_started`
+- **`props` ไม่ส่ง API key** — เปิด API_KEY แล้ว `/v1/models` ตอบ 401 → curl -f ล้ม → pipefail → exit 1 เงียบ ทั้งที่
+  status/test-* ส่ง key · `test_props_sends_the_api_key_like_status_does`
+- **repo gated: download ดึง image 20-30 GB ให้เสร็จก่อนค่อยบอกว่าไม่มี HF_TOKEN** — ย้ายด่าน token ขึ้นก่อน ensure_image ·
+  `test_download_checks_the_gated_token_before_pulling_a_30gb_image`
+- **`remove -y` ลบไฟล์ของ root บน worker ไม่เคยสำเร็จ** — ทางสำรอง `docker run <image แรกที่เจอ> rm -rf …` ใช้ entrypoint
+  ของ image ซึ่งบน worker มีแต่ image vLLM (entrypoint = `vllm serve`/python) → `rm -rf` กลายเป็น argument ของ vllm → ล้ม →
+  "ยังเหลือบน worker … ลบเอง" ทุกครั้ง · ตอนนี้ `--entrypoint rm` และใช้ `VLLM_IMAGE` ของ bundle ก่อน (มีบน worker แน่จาก
+  prepare-runtime) ถอยไป image อื่นเมื่อไม่มี · `test_remove_deletes_root_owned_leftovers_with_a_real_rm_entrypoint`
+  · **หมายเหตุถึง lead**: ฝั่ง head ใน `fleet/manager.py` (~บรรทัด 1361 · ขั้นลบบน worker ของ `lmds remove`) ใช้ท่าเดียวกัน
+  โดยเลือก alpine/busybox/ubuntu/debian ก่อน — เครื่องที่มีแต่ image vLLM จะล้มแบบเดียวกัน ควรใส่ `--entrypoint rm` ด้วย
+- **stop/status/logs ยัง ssh ไป 10.100.152.2 (เครื่องตัวอย่าง) เมื่อยังไม่มี cluster.env** — ด่านของ dispatcher ปล่อยสามคำสั่งนี้
+  ผ่าน (hub เรียกบ่อย) แต่ข้างในยังวน ssh ไป worker ตัวอย่าง: ค้าง ConnectTimeout 10 วิ × 2 ต่อ worker และถ้ามีเครื่อง
+  10.100.152.2 อยู่จริงในไซต์ก็ไปสั่ง `docker rm -f` บนเครื่องคนอื่น · start ไม่มีทางผ่านโดยไม่ตั้งค่า จึงไม่มี container ของ bundle นี้
+  ให้หยุดที่นั่นอยู่แล้ว · stop ข้าม worker พร้อมบอก · status พิมพ์ "(ยังไม่ตั้งค่าคลัสเตอร์)" แทนการถาม · `logs worker` die
+  พร้อม `lmds node cluster --write` · `test_stop_status_and_logs_do_not_ssh_to_the_example_worker`
+- **`--bind <IP เฉพาะ>` แล้ว start ไม่เคย health** — ทุกจุด (รอ /health · status · info · props · test-text · ชุด python
+  test-tools/test-reasoning/test-vision/bench/stress) ยิง 127.0.0.1 ตายตัว · vLLM ที่ผูก `--host 10.2.1.195` (เฉพาะสาย
+  management) ไม่ฟัง loopback → รอจนครบ STARTUP_TIMEOUT (ชั่วโมงกว่า) แล้วรายงาน "ไม่ health" ทั้งที่เซิร์ฟเวอร์ขึ้นแล้ว ·
+  `LOCAL_API_HOST` คำนวณหลัง parse_options (0.0.0.0/127.0.0.1/localhost → 127.0.0.1 · IP เฉพาะ → IP นั้น) export ให้สคริปต์
+  python อ่านจาก env · usage บอกว่าชุดทดสอบคุยตาม `--bind` · `test_a_specific_bind_address_is_used_for_health_status_and_the_test_suite`
+- เล็กน้อยที่แก้ไปพร้อมกัน (ไม่มีเทสแยก): `start` ตรวจ `_require_non_root` ก่อน `ensure_image` (เดิม sudo start ดึง image
+  20 GB เสร็จก่อนค่อยปฏิเสธ)
+
+
+- `rsync --append-verify` กับ shard ที่เปลี่ยนบน Hub: blob ใน HF cache ตั้งชื่อตาม sha256 ของเนื้อหา → shard ใหม่ = ไฟล์ใหม่
+  ไม่มีทางถูก append ต่อของเก่า · `.incomplete` ถูก exclude · snapshot เป็น symlink ที่ rsync `-a` คัดลอกเป็น symlink
+- `set -Eeuo pipefail`: ไม่พบ `local x=$(cmd)` ที่กลืน exit code (ทุกที่แยก `local` กับ assignment) · `(( ))` เปล่าที่คืน 1
+  เมื่อค่าเป็น 0 มีเฉพาะใน `_same_subnet` ซึ่งเป็น return value โดยตั้งใจ · ตัวแปรจาก cluster.env v2 ทุกตัวอ้างผ่าน `${X:-}`
+- Go template (`{{.State.Running}}` ฯลฯ) ทุกตัวอยู่ใน `{% raw %}` · `WORKER_API_PORT` ที่เพิ่มอยู่นอก raw แต่ไม่มี `{{`
+- `bundle.env`/`bundle.args`/flag: ลำดับ flag > env > ไฟล์ ยังถูกต้องหลังเพิ่ม `--tool-parser` (parse_options ทับหลัง source)
+
+
+- `src/lmds/fleet/manager.py` ~1361: ขั้นลบไฟล์ของ root บน worker ของ `lmds remove` ใช้ `docker run "$img" rm -rf` โดยไม่ใส่
+  `--entrypoint rm` — เครื่องที่มีแต่ image vLLM ล้มเงียบเหมือนที่ controller เคยเป็น
+- `single-vllm-controller.sh.j2`: `*) usage ;;` คืน 0 กับคำสั่งที่ไม่รู้จักเหมือนกัน (ไม่ใช่ helper ที่ต้องเหมือนกัน จึงไม่แตะ) ·
+  และ `wait_health`/status ยิง 127.0.0.1 ตายตัวเหมือน stacked ก่อนแก้ — ถ้าจะให้ `--bind <IP>` ใช้ได้กับ single ต้องทำแบบ
+  `LOCAL_API_HOST` เดียวกัน
+- rsync ไป worker: path ปลายทางที่มีช่องว่าง (`WORKER_HF_HOME="/data/my hf"`) จะถูก shell ฝั่ง worker แตกคำ — ต้องใช้
+  `--protect-args`/`-s` ถ้าจะรองรับ (DGX ไม่มีเคสจริง จึงไม่แตะ)
+
+
+**Audit stacked รอบ 2 — hub orchestration + คอนโซล** (2026-09-05 · ทุกข้อมีเทสที่ล้มก่อนแก้)
+
+- **wizard ตั้งค่าเครือข่ายมองไม่เห็นความคืบหน้าระหว่าง apply + ขั้น firewall (0.6.1) ไม่มีติ๊ก** — ลูกค้ากด Apply แล้ว
+  ติ๊กต่อเครื่องเป็น "·" กับ log "Started…" อยู่หลายนาทีทั้งที่ hub กำลังเขียน netplan/ping/pair · wizard อ่าน `steps` จาก
+  `GET /api/cluster/apply/{id}` แต่ route นั้นส่งแค่ `{id, running, job, result}` (result มาตอนจบ) → เทสหน้าเว็บผ่านเพราะ
+  fetch ปลอมส่ง `steps` ให้ · ตอนนี้ hub สะสม step แบบโครงสร้างจาก progress ของ `apply_plan` แล้วส่ง `steps` ตั้งแต่งานเดิน ·
+  ขั้น "firewall: allow cluster interfaces" เคยตกสาขา else ของ `_net_step_lines` → log ขึ้น `[a] pair SSH — firewall: … : paired`
+  (อ่านผิดเรื่อง) → `[a] firewall: ok — ufw active — allowed in on enp1s0f1np1` และ `CNW_JOB_STEPS` มีหมวด firewall ของตัวเอง
+  (ติ๊กระหว่าง verify addresses กับ ping) · เทส `test_apply_status_streams_structured_steps_and_names_the_firewall_step` +
+  `test_wizard_ticks_the_firewall_step_live_while_apply_runs`
+- **deploy stacked-4 จากหน้าเว็บจบด้วย 400 ทุกครั้ง** — wizard เลือก worker ได้ตัวเดียว · analyze บอกว่า "ที่เหลือเติมตอนเขียน
+  cluster.env" แต่ `select_members` ถือว่า worker ที่ระบุต้องครบพอดี → `built for 4 machines … 1 worker was chosen` แล้วโน้ตของ
+  analyze ยังบอกให้ไปแก้ `WORKER_IPS` เอง · ตอนนี้ worker ที่ระบุได้ rank ก่อน (ตามลำดับที่ระบุ) แล้วเติมที่เหลือจากกลุ่มตาม rank
+  (`lmds cluster write --worker` ระบุไม่ครบก็เติม · ระบุเกินยังปฏิเสธ) · `/api/cluster/write` คืน `workers` แล้ว wizard pair ssh
+  กับ **ทุกตัว** ที่ลง cluster.env ไม่ใช่แค่ตัวที่เลือกในช่อง (`pairClusterSsh` รับลิสต์ · body `workers`) · โน้ต analyze บอกว่า
+  ระบบเติมให้ · เทส `test_a_wizard_that_picks_one_worker_for_a_four_node_bundle_gets_the_rest_from_the_group` +
+  `test_the_wizard_pairs_every_worker_that_cluster_env_names` + `test_analyze_note_for_a_four_node_target_says_the_wizard_fills_the_rest`
+- **ทะเบียนค้าง IP เก่าไม่หยุด push — cluster.env ชี้ IP ที่ไม่มีใครถือ แล้ว start ค้างที่ NCCL init** — `check_cluster_ip` ตอบ
+  `mismatch` (interface ไม่มี IP นั้นแล้ว: เปลี่ยน IP หลัง apply/แก้มือ/พิมพ์ผิด) แต่กลุ่มยัง `ready` เพราะ blocker มีแค่
+  missing/duplicate/split · doctor เห็นแต่ push/wizard ไม่เคยถาม doctor · ตอนนี้ `cluster_groups` ใส่ blocker `stale-ip`
+  (mismatch/link-local) และ `slow-link` (IP บนสาย <25G) → กลุ่ม not ready หัวรั้วบอกเครื่องพร้อม IP ที่การ์ดถือจริง ·
+  `select_members`/`/api/cluster/write`/`node push` ปฏิเสธด้วย `stale-ip: <ชื่อ>` · เทส `test_a_stale_cluster_ip_blocks_the_group_and_the_cluster_env_write`
+- **`lmds cluster show` ตายด้วย KeyError กับกลุ่มที่ตั้งชื่อเองแต่ไม่มีวงร่วม** — CLI เรียบเรียง blocker ด้วย `dict[kind]` ตรง ๆ
+  รู้จักแค่ 3 รหัส · `no-shared-fabric` (มีมาตั้งแต่ 0.5) ทำให้คำสั่งล้มทั้งตาราง (และ `stale-ip` ใหม่ก็จะล้มเหมือนกัน) · `.get`
+  พร้อมข้อความไทยของทุกรหัส · หน้าเว็บมีประโยคของ `no-shared-fabric`/`stale-ip`/`slow-link` ด้วย · เทส
+  `test_cli_cluster_show_survives_blocker_kinds_it_did_not_map`
+- **ปุ่ม sync-worker / verify-worker / logs-worker จากหน้าเว็บสั่ง controller เดี่ยว** — เคสจริง spark-head
+  (`nvidia-nemotron-3-super-120b-a12b-nvfp4`): deploy single ก่อนแล้ว deploy stacked ทับก่อน renderer จะรู้จัก `.replaced-*` →
+  โฟลเดอร์มีทั้ง `-single.sh` กับ `-stacked.sh` · hub เลือกด้วย `ls ./*-single.sh ./*-stacked.sh | head -1` = single เสมอ →
+  "unknown command" · ตอนนี้เลือกตาม `topology:` ใน MODEL_PROFILE.yaml (เหมือน `fleet._pick_controller`) · `.replaced-*` ไม่ถูกหยิบ ·
+  เทสรันสคริปต์ที่ hub ส่งจริงใต้ bash ทั้งสามกรณี `test_controller_buttons_pick_the_controller_the_profile_names`
+- **download บนการ์ด head หลัง push ไม่ต่อ sync-worker เมื่อแคชยังไม่เห็น bundle** — hub ต่อ `sync-worker && verify-worker`
+  ให้เฉพาะเมื่อแคชของ refresher บอกว่า bundle stacked · หลัง push แคชเพิ่งถูก `force` ยังไม่ทันสำรวจ (การ์ดยังไม่มี bundle นี้)
+  → ได้ `lmds repair` เปล่า ๆ แล้ว start ตายที่ worker "snapshot missing" · ตอนนี้ตัดสินบน node จาก MODEL_PROFILE
+  (`if grep topology: stacked … then sync-worker && verify-worker`) — bundle เดี่ยวไม่แตะ worker · แคชใช้แค่ตั้งชื่องาน ·
+  เทสรันคำสั่งจริงใต้ bash กับ `lmds` ปลอม `test_download_on_a_stacked_head_syncs_the_worker_even_when_the_cache_has_not_seen_the_bundle`
+- **`/api/cluster/write` ไม่ส่ง `on` = เขียน cluster.env ลงสำเนา bundle บน hub ที่ไม่มีวันถูกรัน** — สคริปต์/ผู้ช่วยที่เรียก API
+  ตรงได้ไฟล์ผิดเครื่อง · ไม่ระบุ = head (bundle ที่รันจริงอยู่ที่นั่นเสมอ) · ส่ง `""` = hub ตามเดิม · เทส
+  `test_cluster_write_defaults_to_the_head_when_on_is_omitted`
+- **worker ที่ login คนละ user ได้ SSH_USER ของตัวแรกเงียบ ๆ / head กับ worker คนละ user ไม่มีใครเตือน** — controller มี
+  `SSH_USER` ค่าเดียว · `build_cluster_env` หยิบ user ของ worker แรก → rank 2 ตายด้วย Permission denied ที่ sync-worker ·
+  ตอนนี้ `ClusterEnvError` บอกทั้งสอง user · doctor เพิ่ม `ssh-user` (เตือน): head login เป็น A worker เป็น B → controller
+  rsync ไป `/home/A/.cache/huggingface` บน worker (WORKER_HF_HOME default = HF_HOME ของ head) ซึ่ง B อาจไม่มี พร้อมคำสั่งตั้ง
+  `WORKER_HF_HOME` · `cluster-env-match` เทียบ `SSH_USER` ในไฟล์กับทะเบียนด้วย (ไฟล์เก่าที่ไม่มีคีย์ปล่อยผ่าน) · เทส
+  `test_cluster_env_refuses_workers_that_log_in_as_different_users` + `test_doctor_warns_when_head_and_worker_log_in_as_different_users`
+- **stanza ssh ของ head ครอบแค่ cluster_ip — ring 3 เครื่อง ssh ไป worker rank 2 ทาง IP อีกสายไม่หยิบกุญแจ** — cluster.env v2
+  ให้ head ถึง rank 2 ด้วย `HEAD_TO_WORKER_IP_2` (คนละสาย/คนละ IP กับ cluster_ip ในทะเบียน) แต่ `Host` ใน ~/.ssh/config มีแค่
+  cluster_ip + host บริหาร → Permission denied ทั้งที่ pair รายงานผ่าน · ตอนนี้ครอบ IP ของทุกสายใน `cluster_links` · เทส
+  `test_ssh_config_stanza_covers_every_link_ip_of_the_worker`
+- การ์ดโมเดลบน hub: หัวข้อ "Stacked (2 nodes)" เขียนตายตัว → ใช้ `cluster.nnodes` ของ bundle · เทส
+  `test_the_local_model_card_says_how_many_nodes_the_stacked_bundle_spans`
+- เอกสาร: USAGE §3.3b (4 เครื่องจากหน้าเว็บ · stale-ip/slow-link · download ต่อ sync เสมอ · bundle สอง controller) ·
+  FLEET §5 (blocker ใหม่ · เติม worker · user เดียวกัน · doctor `ssh-user` · cluster-env-match เทียบ SSH_USER) ·
+  RUNBOOK §2 (`lmds cluster write`) และ §6 (stale-ip · ufw · SSH_USER เก่า)
+
+- `src/lmds/web/state.py::decorate_stacked` เทียบ `worker_ips` ของ head กับ `cluster_ip` ในทะเบียนเท่านั้น — ring 3 เครื่อง
+  (cluster.env v2) worker rank 2 ถูกอ้างด้วย IP อีกสาย (`HEAD_TO_WORKER_IP_2` ≠ cluster_ip) → เงา "stacked worker of head"
+  ไม่ขึ้นบนการ์ดเครื่องนั้น และป้ายบน head โชว์ IP ดิบแทนชื่อ · ควรทำ map จาก `cluster_links[].ip` ทุกสายด้วย
+- `src/lmds/inventory.py::read_cluster_env` (node side) อ่านแค่ `WORKER_IPS` — พอเพราะ v2 ยังเขียน WORKER_IPS เหมือนกัน
+  แต่ถ้าวันหน้าเลิกเขียนคีย์เก่าจะพัง (แค่บันทึกไว้)
+- controller template: `WORKER_HF_HOME` default = `$HF_HOME` ของ head — ถ้า SSH_USER ≠ user ของ head path บน worker ผิด
+  (doctor เตือนแล้ว) · ถ้าจะให้ controller derive จาก `~$SSH_USER` บน worker เอง ต้องแก้ใน `stacked-vllm-controller.sh.j2`
+
 
 ## 0.6.0 — 2026-09-04
 

@@ -54,8 +54,13 @@ def config_stanza(worker: Node, worker_ip: str) -> str:
 
     `StrictHostKeyChecking accept-new` จำเป็น: controller ใช้ BatchMode=yes ซึ่งไม่ยอมตอบ
     คำถาม host key ครั้งแรก → "Host key verification failed" ทั้งที่กุญแจถูกทุกอย่าง
+
+    ครอบ IP ของ **ทุกสาย** ที่ทะเบียนรู้ (`cluster_links`) ด้วย — ring 3 เครื่อง head ถึง worker rank 2
+    ด้วย IP อีกสาย (HEAD_TO_WORKER_IP_2 ใน cluster.env v2) ไม่ใช่ cluster_ip · stanza ที่ครอบแค่ cluster_ip
+    ทำให้ ssh ไป IP สายนั้นไม่หยิบกุญแจ → Permission denied ทั้งที่ pair รายงานว่าผ่าน
     """
-    hosts = [h for h in [worker_ip, *worker.all_hosts] if h]
+    link_ips = [str(link.get("ip") or "") for link in (worker.cluster_links or []) if isinstance(link, dict)]
+    hosts = [h for h in [worker_ip, worker.cluster_ip, *link_ips, *worker.all_hosts] if h]
     seen: list[str] = []
     for host in hosts:
         if host not in seen:
