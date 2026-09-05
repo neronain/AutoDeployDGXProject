@@ -569,6 +569,15 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   `NATIVE_CONTEXT` และ `validate_numbers` ปฏิเสธก่อนแตะ docker/ssh · llama.cpp เตือนอย่างเดียว (ยืด RoPE ได้แต่
   คุณภาพตก) · ตั้งใจเกินจริง ๆ = ใส่ engine env `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` ใน Advanced แล้วทุกชั้นปล่อย ·
   bundle เก่าที่ไม่มี `NATIVE_CONTEXT` ยังกันได้ที่ชั้น 2 · เทส `test_bundle_settings.py` + `test_review_templates.py`
+- **docker pull ของ controller vLLM บอกสาเหตุจริงและลองซ้ำเมื่อสายหลุด** — เคสจริง 2026-09-05 ลูกค้า (cynbangkok)
+  deploy DeepSeek-V4-Flash stacked แล้วเจอ "ดึง image ghcr.io/anemll/dspark-vllm-gx10@sha256:a839… ไม่สำเร็จ" ทั้งที่
+  digest ยังอยู่บน ghcr.io (ตรวจแล้ว 200 · tag 0.1.1 ชี้ตัวเดียวกัน · 9.8 GB 44 layers) — บรรทัดเหตุผลจริงของ docker อยู่
+  *เหนือ* คำแนะนำของเราแล้วเลื่อนหาย ผู้ใช้เห็นแต่ท้าย · ตอนนี้ `_docker_pull` (เดี่ยว + stacked · worker ได้ helper
+  เดียวกันผ่าน ssh): ตรวจดิสก์ของ docker (<20 GB เตือน) และทางไป registry (`curl https://<registry>/v2/` ไม่ถึง =
+  บอกว่า DNS/ไฟร์วอลล์/proxy ไม่ใช่ image หาย) → pull ซ้ำได้ 3 รอบ (`DOCKER_PULL_ATTEMPTS`/`DOCKER_PULL_RETRY_WAIT` ·
+  layer ที่ครบแล้วไม่โหลดซ้ำ · rate limit/ไม่มีสิทธิ์/tag หาย/ดิสก์เต็ม = ไม่ซ้ำ) → ล้มจริงพิมพ์ "docker บอกว่า: …"
+  3 บรรทัดท้าย + "→ สาเหตุ: …" ที่แปลจากข้อความนั้น · `tests/test_audit_stacked_controller.py` (หลุด 2 ครั้งแล้วผ่าน ·
+  หลุดทุกรอบ · no such host · manifest unknown · ดิสก์ใกล้เต็ม + registry ไม่ถึง)
 
 ## 0.5.2 — 2026-09-04
 

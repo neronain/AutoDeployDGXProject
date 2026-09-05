@@ -244,6 +244,67 @@ _container_hub_cache() {
   fi
 }
 
+# docker pull ที่บอกสาเหตุได้จริง — เคสจริง 2026-09-05 (ลูกค้า cynbangkok · DeepSeek-V4-Flash stacked):
+# "ดึง image … ไม่สำเร็จ" ทั้งที่ digest ยังอยู่บน ghcr.io · docker พิมพ์เหตุผลจริงไว้ *เหนือ* คำแนะนำของเรา
+# แล้วเลื่อนหายไป ผู้ใช้เห็นแต่ท้าย · ตอนนี้: (1) ตรวจดิสก์ของ docker และทางไป registry ก่อน (2) pull ซ้ำได้
+# 3 รอบ — layer ที่ครบแล้ว docker ไม่โหลดซ้ำ สายหลุดกลางทาง (unexpected EOF / connection reset) จึงมักผ่านรอบสอง
+# (3) เก็บบรรทัดท้ายของ docker ไว้พิมพ์คู่กับสาเหตุที่จับได้จากข้อความนั้น
+DOCKER_PULL_ATTEMPTS="${DOCKER_PULL_ATTEMPTS:-3}"
+DOCKER_PULL_RETRY_WAIT="${DOCKER_PULL_RETRY_WAIT:-10}"
+_registry_of() { local first="${1%%/*}"; if [[ "$first" == *.* || "$first" == *:* || "$first" == localhost ]]; then printf '%s' "$first"; else printf 'registry-1.docker.io'; fi; }
+_docker_pull() {
+  local image="$1" where="${2:-}" attempt rc=0 errlog registry code free_kb root
+  errlog="$(mktemp /tmp/lmds-pull.XXXXXX)"
+  # ดิสก์: image 10-30 GB ต้องมีที่ให้ layer ที่บีบอัด + ที่แตกแล้ว
+  root="$(docker info -f '{{ '{{' }}.DockerRootDir{{ '}}' }}' 2>/dev/null || true)"
+  root="${root:-/var/lib/docker}"
+  free_kb="$(df -Pk "$root" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"
+  free_kb="${free_kb:-0}"
+  if [[ "$free_kb" =~ ^[0-9]+$ ]] && (( free_kb > 0 && free_kb < 20 * 1024 * 1024 )); then
+    echo "  WARN: ดิสก์ของ docker (${root}) เหลือ $(( free_kb / 1024 / 1024 )) GB — image นี้ต้องการราว 20 GB ระหว่างแตก layer (docker system prune -a ช่วยได้)" >&2
+  fi
+  # ทางไป registry: 200/401 = ถึง (401 คือถามสิทธิ์ตามปกติ) · 000 = DNS/ไฟร์วอลล์/proxy
+  registry="$(_registry_of "$image")"
+  code="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "https://${registry}/v2/" 2>>"$errlog" || true)"
+  if [[ "$code" == "000" ]]; then
+    echo "  เครื่อง${where:+ $where} ไปไม่ถึง https://${registry}/v2/ — $(tail -n 1 "$errlog" | sed 's/^curl: ([0-9]*) //')" >&2
+    echo "  (ไม่ใช่ปัญหาของ image: ตรวจ DNS/ทางออกเน็ต/proxy ของ docker บนเครื่องนี้ก่อน · หรือใช้ทาง docker save | docker load ด้านล่าง)" >&2
+  fi
+  for (( attempt = 1; attempt <= DOCKER_PULL_ATTEMPTS; attempt++ )); do
+    rc=0
+    docker pull "$image" 2> >(tee "$errlog" >&2) || rc=$?
+    wait 2>/dev/null || true
+    (( rc == 0 )) && { rm -f "$errlog"; return 0; }
+    # หมดสิทธิ์/ไม่มี image/ดิสก์เต็ม = ลองซ้ำก็เท่าเดิม
+    if grep -qiE 'toomanyrequests|unauthorized|denied|manifest unknown|not found|no space left' "$errlog"; then break; fi
+    if (( attempt < DOCKER_PULL_ATTEMPTS )); then
+      echo "  pull รอบ ${attempt}/${DOCKER_PULL_ATTEMPTS} ล้ม ($(tail -n 1 "$errlog" | cut -c1-120)) — ลองใหม่ใน ${DOCKER_PULL_RETRY_WAIT} วิ (layer ที่ครบแล้วไม่โหลดซ้ำ)" >&2
+      sleep "$DOCKER_PULL_RETRY_WAIT"
+    fi
+  done
+  echo "  docker บอกว่า: $(grep -v '^$' "$errlog" | tail -n 3 | tr '\n' ' ' | cut -c1-400)" >&2
+  _pull_diagnosis "$errlog" "$where"
+  rm -f "$errlog"
+  return "$rc"
+}
+# แปลข้อความของ docker เป็นสาเหตุเดียวที่ควรแก้ก่อน
+_pull_diagnosis() {
+  local errlog="$1" where="$2"
+  if grep -qiE 'no such host|server misbehaving|i/o timeout|TLS handshake timeout|network is unreachable|connection refused|proxyconnect' "$errlog"; then
+    echo "  → สาเหตุ: เครื่อง${where:+ $where} ออกเน็ตไปหา registry ไม่ได้ (DNS/ไฟร์วอลล์/proxy) — ไม่ใช่ image หาย" >&2
+  elif grep -qiE 'toomanyrequests|rate limit' "$errlog"; then
+    echo "  → สาเหตุ: registry จำกัดจำนวน pull — docker login แล้วสั่งซ้ำ" >&2
+  elif grep -qiE 'unauthorized|denied' "$errlog"; then
+    echo "  → สาเหตุ: ไม่มีสิทธิ์ดึง image นี้ — docker login ด้วยบัญชีที่เข้าถึงได้" >&2
+  elif grep -qiE 'manifest unknown|not found' "$errlog"; then
+    echo "  → สาเหตุ: tag/digest นี้ไม่มีบน registry แล้ว — lmds set ${SLUG:-<slug>} --image <repo:tag> ที่ยังมี" >&2
+  elif grep -qiE 'no space left' "$errlog"; then
+    echo "  → สาเหตุ: ดิสก์เต็ม — docker system prune -a หรือย้าย data-root" >&2
+  elif grep -qiE 'unexpected EOF|connection reset|read: connection|EOF' "$errlog"; then
+    echo "  → สาเหตุ: สายหลุดระหว่างโหลด (ลองซ้ำ ${DOCKER_PULL_ATTEMPTS} รอบแล้ว) — เน็ตไม่นิ่ง ลองใหม่ตอนเน็ตว่าง หรือดึงจากเครื่องอื่นแล้ว docker save | docker load" >&2
+  fi
+}
+
 ensure_image() {
   # ดึง image ให้เห็นความคืบหน้า *ก่อน* จะเอาไปใช้ที่อื่น
   #
@@ -254,7 +315,7 @@ ensure_image() {
   local image="$1"
   docker image inspect "$image" >/dev/null 2>&1 && return 0
   echo "ดึง image ${image} (ยังไม่มีในเครื่อง — ขนาดหลาย GB ใช้เวลาสักครู่)…"
-  docker pull "$image" || die "ดึง image ${image} ไม่สำเร็จ"
+  _docker_pull "$image" || die "ดึง image ${image} ไม่สำเร็จ — ดูสาเหตุด้านบน แล้วสั่งซ้ำ"
 }
 
 check_gpu() {

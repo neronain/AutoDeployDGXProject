@@ -604,3 +604,74 @@ def test_usage_and_readme_point_at_cluster_env_and_the_head_key(tmp_path):
     readme = (bundle.directory / "README.md").read_text(encoding="utf-8")
     assert "lmds node cluster --write" in readme and "ssh-copy-id" in readme
     assert "แก้ค่าใน CONFIG" not in readme
+
+
+# ═════════════════════ docker pull บอกสาเหตุจริง + ลองซ้ำเมื่อสายหลุด ═════════════════════
+_FLAKY_DOCKER = """
+node="${FAKE_NODE:-head}"
+echo "docker[${node}] $*" >> "$FAKE_LOG"
+case "$1" in
+  pull)
+    n=$(( $(cat "${FAKE_PULL_COUNT_FILE}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${FAKE_PULL_COUNT_FILE}"
+    if (( n <= ${FAKE_PULL_FLAKES:-2} )); then echo "unexpected EOF" >&2; exit 1; fi
+    if [[ -n "${FAKE_PULL_FINAL_ERROR:-}" ]]; then echo "${FAKE_PULL_FINAL_ERROR}" >&2; exit 1; fi
+    exit 0 ;;
+  info) echo "/var/lib/docker"; exit 0 ;;
+  inspect) echo "sha256:aaaa1111"; exit 0 ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def test_prepare_runtime_retries_a_dropped_pull_and_names_the_real_cause(tmp_path):
+    """เคสจริง 2026-09-05 (ลูกค้า cynbangkok · DeepSeek-V4-Flash stacked): "ดึง image … ไม่สำเร็จ" ทั้งที่ digest
+    ยังอยู่บน ghcr.io — เหตุผลจริงของ docker อยู่เหนือคำแนะนำแล้วเลื่อนหาย · ตอนนี้ pull ซ้ำได้ 3 รอบ (สายหลุด
+    = unexpected EOF มักผ่านรอบสอง) และเมื่อล้มจริงพิมพ์บรรทัดของ docker + สาเหตุที่แปลแล้ว
+    (ออกเน็ตไม่ได้ / rate limit / ไม่มีสิทธิ์ / tag หาย / ดิสก์เต็ม) · worker ใช้ helper เดียวกันผ่าน ssh"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, docker=_FLAKY_DOCKER)
+    count = tmp_path / "pulls"
+    image = "ghcr.io/anemll/dspark-vllm-gx10@sha256:a839484"
+    base = {"WORKER_IPS": WORKER, "VLLM_IMAGE": image, "FAKE_PULL_COUNT_FILE": str(count),
+            "DOCKER_PULL_RETRY_WAIT": "0"}
+
+    # หลุด 2 ครั้งแล้วผ่าน (head) · worker ก็ผ่านรอบแรก (นับต่อจาก head เพราะไฟล์นับเดียวกัน)
+    ok = _run(bundle, ["prepare-runtime"], tmp_path, env=base)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert ok.stderr.count("ลองใหม่ใน 0 วิ") == 2 and "unexpected EOF" in ok.stderr
+    assert _calls(tmp_path).count(f"docker[head] pull {image}") == 3
+    assert f"docker[{WORKER}] pull {image}" in _calls(tmp_path)
+
+    # หลุดทุกรอบ = ล้มพร้อมสาเหตุ "สายหลุด" ไม่ใช่แค่ "ไม่สำเร็จ"
+    count.unlink()
+    dead = _run(bundle, ["prepare-runtime"], tmp_path, env={**base, "FAKE_PULL_FLAKES": "99"})
+    assert dead.returncode != 0
+    assert "docker บอกว่า: unexpected EOF" in dead.stderr and "สายหลุดระหว่างโหลด" in dead.stderr, dead.stderr
+    assert _calls(tmp_path).count(f"docker[head] pull {image}") >= 3
+
+    # ออกเน็ตไม่ได้: docker พิมพ์ no such host → บอกว่าเป็น DNS/เน็ต ไม่ใช่ image หาย · ไม่ลองซ้ำเกินจำเป็น
+    count.unlink(); (tmp_path / "calls.log").unlink()
+    offline = _run(bundle, ["prepare-runtime"], tmp_path,
+                   env={**base, "FAKE_PULL_FLAKES": "0",
+                        "FAKE_PULL_FINAL_ERROR": "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host"})
+    assert offline.returncode != 0
+    assert "ออกเน็ตไปหา registry ไม่ได้" in offline.stderr and "ไม่ใช่ image หาย" in offline.stderr, offline.stderr
+
+    # tag หาย = ไม่ลองซ้ำ (ซ้ำก็เท่าเดิม) + ชี้ไป lmds set --image
+    count.unlink(); (tmp_path / "calls.log").unlink()
+    gone = _run(bundle, ["prepare-runtime"], tmp_path,
+                env={**base, "FAKE_PULL_FLAKES": "0", "FAKE_PULL_FINAL_ERROR": "manifest unknown"})
+    assert gone.returncode != 0 and "ไม่มีบน registry แล้ว" in gone.stderr
+    assert _calls(tmp_path).count(f"docker[head] pull {image}") == 1
+
+
+def test_pull_warns_when_the_docker_disk_is_nearly_full_and_when_the_registry_is_unreachable(tmp_path):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, docker=_FLAKY_DOCKER, curl="echo 000; echo 'curl: (6) Could not resolve host: ghcr.io' >&2; exit 6\n")
+    image = "ghcr.io/anemll/dspark-vllm-gx10@sha256:a839484"
+    done = _run(bundle, ["prepare-runtime"], tmp_path,
+                env={"WORKER_IPS": WORKER, "VLLM_IMAGE": image, "FAKE_PULL_COUNT_FILE": str(tmp_path / "pulls"),
+                     "FAKE_PULL_FLAKES": "0", "DOCKER_PULL_RETRY_WAIT": "0", "FAKE_DF_KB": str(5 * 1024 * 1024)})
+    assert done.returncode == 0, done.stderr
+    assert "เหลือ 5 GB" in done.stderr and "docker system prune" in done.stderr
+    assert "ไปไม่ถึง https://ghcr.io/v2/" in done.stderr and "Could not resolve host" in done.stderr
