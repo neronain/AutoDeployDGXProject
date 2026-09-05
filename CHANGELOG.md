@@ -5,6 +5,11 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **สถาปัตยกรรมใหม่ (glm5_next / qwen4_exp / nemotron_h) ได้ image nightly ตั้งแต่วางแผน** — เคสจริง 2026-09-05
+  spark-head: `orcarouter/GLM-5.3-Flash-Uncensored-NVFP4` (glm5_next) ได้ image NVFP4 ตัวเดิม (vLLM 0.28.0) → check_architecture
+  หยุด "โมเดลใหม่กว่ารันไทม์" ทั้งที่ nightly `f5df5cc…` (transformers 5.16.1) รู้จักและรันผ่านแล้วกับ Qwen3.8/Nemotron ·
+  `ARCHS_NEEDING_NIGHTLY` + `needs_nightly()` → `default_image(nightly=True)` ทั้ง rule-based และ harden fallback ·
+  ข้อความของ check_architecture เคยพิมพ์ `{{ slug }}` ดิบ (อยู่ในบล็อก raw) → `${SLUG}`
 - **cluster apply เปิด ufw ให้สายคลัสเตอร์เอง + doctor/inspect เตือนเมื่อไฟร์วอลล์กัน** — เคสจริง 2026-09-05 ลูกค้า
   (cynbangkok): IP สายเร็วครบ ping ถึง แต่ worker log `DistNetworkError: The client socket has timed out … (10.100.184.2, 25000)`
   = ufw บน head กัน TCPStore ของ worker · `sudo ufw allow in on enp1s0f1np1` แล้วขึ้นใน 7 นาที · ตอนนี้ `apply_plan` มีขั้น

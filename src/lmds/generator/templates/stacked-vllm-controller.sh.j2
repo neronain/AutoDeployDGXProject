@@ -1480,7 +1480,7 @@ print('KNOWN' if sys.argv[1] in CONFIG_MAPPING_NAMES else 'UNKNOWN', transformer
     UNKNOWN*)
       echo "ERROR: image นี้ไม่รู้จักสถาปัตยกรรม '${model_type}' (transformers ${verdict#UNKNOWN }) — ยังไม่ปล่อย worker" >&2
       echo "  โมเดลใหม่กว่ารันไทม์ — ต้องใช้ image ที่ใหม่กว่า (เช่น vllm/vllm-openai:nightly) ทั้ง head และ worker:" >&2
-      echo "    lmds set {{ slug }} --image <image>   แล้ว   $0 prepare-runtime   แล้ว   $0 start" >&2
+      echo "    lmds set ${SLUG} --image <image>   แล้ว   $0 prepare-runtime   แล้ว   $0 start" >&2
       echo "  เช็คก่อนได้ว่าตัวไหนรู้จัก:  docker run --rm --entrypoint python3 <image> -c \\" >&2
       echo "    \"from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES as m; print('${model_type}' in m)\"" >&2
       exit 1 ;;

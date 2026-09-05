@@ -488,3 +488,27 @@ def test_the_web_route_returns_a_4xx_for_every_stacked_refusal(stacked_pair):
     # ชั้น route (api.py) ตรวจคู่เครื่องจากกลุ่ม cluster ก่อน (kind "cluster") · ชั้น deploy.analyze ตรวจ
     # โมเดล/engine/ทะเบียน (kind "input") — ทางไหนก็ต้องเป็น 4xx พร้อมข้อความ ไม่ใช่ 500 หรือ 200 เงียบ ๆ
     assert detail["kind"] in ("input", "cluster") and detail["message"], detail
+
+
+def test_new_architectures_get_the_pinned_nightly_image_not_the_old_nvfp4_one(monkeypatch):
+    """เคสจริง 2026-09-05 spark-head: orcarouter/GLM-5.3-Flash-Uncensored-NVFP4 (glm5_next) ได้ image 61fc… (vLLM 0.28.0)
+    → check_architecture หยุด "โมเดลใหม่กว่ารันไทม์" ทั้งที่ nightly f5df5cc… (transformers 5.16.1) รู้จักและรันผ่านแล้ว
+    กับ qwen4_exp/nemotron_h · ตัววางแผนต้องเลือก nightly ตั้งแต่แรกสำหรับสถาปัตยกรรมกลุ่มนี้ (และ harden ไม่ถอยกลับ)"""
+    from lmds.brain import registry
+    from lmds.brain.rulebased import SPARK_NVFP4_VLLM_IMAGE, SPARK_VLLM_NIGHTLY_IMAGE
+
+    monkeypatch.setattr(registry, "tag_exists", lambda ref, client=None: False)
+    monkeypatch.delenv(registry.SKIP_ENV, raising=False)
+    glm = qwen_coder_report()
+    glm.repo_id = "orcarouter/GLM-5.3-Flash-Uncensored-NVFP4"
+    glm.model_type = "glm5_next"
+    glm.architecture = "Glm5NextForConditionalGeneration"
+    fit = _stacked_fit(glm)
+    plan = rule_based_plan(glm, fit)
+    assert plan.runtime.image_ref == SPARK_VLLM_NIGHTLY_IMAGE
+    plan.runtime.image_ref = "vllm/vllm-openai:v0.6.3.ss"
+    assert harden_plan(plan, glm, fit).runtime.image_ref == SPARK_VLLM_NIGHTLY_IMAGE
+    # โมเดล NVFP4 สถาปัตยกรรมเดิม (ไม่มีสูตร) ยังได้ image NVFP4 ตัวที่พิสูจน์แล้ว
+    old = qwen_coder_report()
+    old.repo_id = "someone/Plain-Qwen3-MoE-NVFP4"
+    assert rule_based_plan(old, _stacked_fit(old)).runtime.image_ref == SPARK_NVFP4_VLLM_IMAGE

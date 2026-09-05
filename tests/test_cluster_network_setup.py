@@ -734,7 +734,9 @@ def test_api_apply_runs_as_a_job_and_never_echoes_the_password(web, monkeypatch)
 
     # แบบเบื้องหลัง: ตอบ job ทันที แล้ว poll จนจบ
     started = web.post("/api/cluster/apply", json={"plan": plan, "passwords": passwords, "speed_test": False})
-    assert started.status_code == 200 and started.json()["job"]["running"] is True
+    # งานเบื้องหลังกับ fleet ปลอมอาจจบก่อนคำตอบกลับมาถึง — ยอมรับทั้ง "กำลังรัน" และ "จบแล้ว" · ที่ห้ามคือ
+    # assertion ตกตรงนี้แล้วทิ้ง thread ไว้เขียนทะเบียน a/b ทับเทสถัดไป (เคยทำ test_web cluster view ล้มแบบสุ่ม)
+    assert started.status_code == 200 and started.json()["job"]["running"] in (True, False)
     import time
 
     for _ in range(200):

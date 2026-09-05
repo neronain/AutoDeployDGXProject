@@ -127,7 +127,9 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
 
     # fallback ต้องตรงกับโมเดลด้วย ไม่ใช่แค่เครื่อง: NVFP4 บน GB10 ถอยไป nvcr 26.05 = ตายตอน start
     # (ไม่มี FP4 kernel ของ sm_121) — เคสจริง 2026-09-04 ที่ stacked ของลูกค้าไม่เคยขึ้น
-    fallback = default_image(plan.runtime.engine, fit.memory_model, nvfp4=is_nvfp4(report))
+    from lmds.brain.rulebased import needs_nightly
+
+    fallback = default_image(plan.runtime.engine, fit.memory_model, nvfp4=is_nvfp4(report), nightly=needs_nightly(report))
     recipe = find_recipe(report.repo_id)
     # image ของสูตร = หลักฐานว่ารันผ่านจริงบนเครื่อง (อาจเป็น build ในเครื่อง / digest ที่ registry
     # สาธารณะไม่ตอบ) · registry ตอบ "ไม่มี" จึงไม่ใช่เหตุผลที่จะลดรุ่นเงียบ ๆ — คงไว้แล้วเตือน

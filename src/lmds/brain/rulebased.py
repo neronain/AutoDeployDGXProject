@@ -57,6 +57,25 @@ SPARK_NVFP4_VLLM_IMAGE = (
 )
 # env คู่กัน: บังคับ Marlin สำหรับ GEMM/MoE FP4 และปิด flashinfer cutlass MoE ที่ JIT ทันทีตอน import
 # (ก่อน vLLM จะดู env ตัวอื่น) — ตั้งผ่าน --engine-env · สูตรที่รันผ่านจริงทับได้เสมอ
+# สถาปัตยกรรมที่ใหม่กว่า transformers ใน image ข้างบน (0.28.0) — ต้องใช้ nightly ที่ pin digest ไว้
+# (vLLM 0.28.1rc1 · transformers 5.16.1 · arm64 · 4 ก.ย. 2569) ซึ่งรันผ่านจริงแล้วกับ Qwen3.8-Flash-Next (qwen4_exp) และ
+# Nemotron-3-Super (nemotron_h) แบบ stacked บน spark-head+worker · เคสจริง 2026-09-05: GLM-5.3-Flash NVFP4 (glm5_next)
+# ได้ image 61fc… ไปแล้ว check_architecture หยุดตั้งแต่ก่อน start "โมเดลใหม่กว่ารันไทม์" ทั้งที่เรารู้อยู่แล้วว่าต้อง nightly
+SPARK_VLLM_NIGHTLY_IMAGE = (
+    "vllm/vllm-openai@sha256:f5df5cc3302b5f404848c4eca88d7bf7ed5226e151c056da22816d7734644d67"
+)
+ARCHS_NEEDING_NIGHTLY: frozenset[str] = frozenset({
+    "qwen4_exp", "qwen4", "nemotron_h", "glm5_next", "glm5_next_text", "glm5_next_vision", "glm_moe_dsa",
+})
+
+
+def needs_nightly(report: ModelReport) -> bool:
+    """model_type/architecture ของโมเดลอยู่ในกลุ่มที่ image NVFP4 ตัวเดิมไม่รู้จัก"""
+    model_type = (report.model_type or "").lower()
+    arch = (report.architecture or "").lower()
+    return model_type in ARCHS_NEEDING_NIGHTLY or any(a.replace("_", "") in arch.replace("_", "") for a in ARCHS_NEEDING_NIGHTLY)
+
+
 SPARK_NVFP4_ENV: dict[str, str] = {
     "VLLM_NVFP4_GEMM_BACKEND": "marlin",
     "VLLM_TEST_FORCE_FP8_MARLIN": "1",
@@ -76,9 +95,12 @@ def is_nvfp4(report: ModelReport) -> bool:
     return "nvfp4" in key or "nvfp4" in quant
 
 
-def default_image(engine: Engine, memory_model, nvfp4: bool = False) -> str:
+def default_image(engine: Engine, memory_model, nvfp4: bool = False, nightly: bool = False) -> str:
     """image ตั้งต้นตามเครื่องเป้าหมาย — unified memory = DGX Spark · nvfp4 = ต้องมี FP4 kernel ของ sm_121"""
     unified = getattr(memory_model, "value", memory_model) == "unified"
+    # สถาปัตยกรรมใหม่กว่า image เดิม → nightly (มี FP4 kernel ของ sm_121 เหมือนกัน · env marlin ใช้ชุดเดิม)
+    if unified and engine is Engine.VLLM and nightly:
+        return SPARK_VLLM_NIGHTLY_IMAGE
     if unified and engine is Engine.VLLM and nvfp4:
         return SPARK_NVFP4_VLLM_IMAGE
     if unified and engine is Engine.VLLM:
@@ -334,7 +356,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         facts=build_facts(report),
         runtime=RuntimeChoice(
             engine=engine,
-            image_ref=default_image(engine, fit.memory_model, nvfp4=is_nvfp4(report)),
+            image_ref=default_image(engine, fit.memory_model, nvfp4=is_nvfp4(report), nightly=needs_nightly(report)),
             rationale="rule-based: เลือกตาม decision matrix (GGUF→llama.cpp, safetensors→vLLM)"
             " + image ตามเครื่องเป้าหมาย (unified memory → NGC build ของ DGX Spark)",
         ),
