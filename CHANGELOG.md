@@ -578,6 +578,14 @@ Qwen3-235B FP8) และคำสั่งอ่านอย่างเดี�
   layer ที่ครบแล้วไม่โหลดซ้ำ · rate limit/ไม่มีสิทธิ์/tag หาย/ดิสก์เต็ม = ไม่ซ้ำ) → ล้มจริงพิมพ์ "docker บอกว่า: …"
   3 บรรทัดท้าย + "→ สาเหตุ: …" ที่แปลจากข้อความนั้น · `tests/test_audit_stacked_controller.py` (หลุด 2 ครั้งแล้วผ่าน ·
   หลุดทุกรอบ · no such host · manifest unknown · ดิสก์ใกล้เต็ม + registry ไม่ถึง)
+- **user ของ hub ไม่อยู่ในกลุ่ม docker — บอกสาเหตุและแก้จากหน้าเว็บได้** — เคสจริง 2026-09-05 ลูกค้า (cynbangkok)
+  ติดตั้งผ่านปุ่ม Update แล้วเจอ "มี Docker แต่ user ปัจจุบันเรียกไม่ได้" การ์ด Docker + GPU บอกแค่ "not ready" และเครื่อง
+  อื่นมีฟอร์ม Set up (รหัส sudo ผ่าน ssh) แต่ hub เองไม่มีทางแก้ · `profiler.docker_access` แยกสาเหตุ (ไม่ได้ติดตั้ง /
+  ไม่อยู่ในกลุ่ม / อยู่ในกลุ่มแต่ session เก่า / daemon ไม่รัน) + คำสั่งแก้ → host payload `docker_access` → การ์ดโชว์เหตุผล
+  และปุ่ม **Fix docker access** (ฟอร์มรหัส sudo → `POST /api/hub/fix-docker`: `usermod -aG docker` ทาง `sudo -S` stdin แล้ว
+  ถ้า lmds-web เป็น unit ที่ enable ไว้ `systemd-run --on-active=5 systemctl restart user@<uid>` ให้กลุ่มมีผลกับ service
+  ที่รันอยู่ — คอนโซลหาย ~10 วิ) · Needs attention ขึ้นรายการ "hub: Docker not usable" · install.sh: ไม่มี tty แต่ sudo
+  ไม่ถามรหัส = เพิ่มกลุ่มให้เลย และบอกเรื่องรีสตาร์ต session · INSTALL §1.3 / USAGE §8 · เทส `test_review_backend.py`
 
 ## 0.5.2 — 2026-09-04
 

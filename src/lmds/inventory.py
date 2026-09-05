@@ -418,6 +418,19 @@ def _role_payload(capability) -> dict:
     }
 
 
+def _docker_access(usable: bool) -> dict:
+    from lmds.hardware.profiler import docker_access
+
+    if usable:
+        import getpass
+
+        return {"installed": True, "usable": True, "in_group": True, "user": getpass.getuser(), "reason": "", "fix": ""}
+    try:
+        return docker_access()
+    except Exception as exc:  # noqa: BLE001 — ฟิลด์ประกอบ ไม่ควรล้ม host payload ทั้งก้อน
+        return {"installed": False, "usable": False, "in_group": False, "user": "", "reason": str(exc)[:200], "fix": ""}
+
+
 def host_payload() -> dict:
     import lmds
     from lmds.fit.targets import from_hardware_report
@@ -448,6 +461,8 @@ def host_payload() -> dict:
         "disk_total_gb": report.disk_total_gb,
         "docker": report.docker,
         "toolkit": report.nvidia_container_toolkit,
+        # ทำไม docker ใช้ไม่ได้ + คำสั่งแก้ — การ์ด "Docker + GPU" บนหน้าเว็บโชว์และมีปุ่มแก้ให้
+        "docker_access": _docker_access(report.docker),
         # เครื่องนี้รันโมเดลเองได้ไหม หรือมีหน้าที่แค่สร้าง bundle แล้ว push ต่อ
         # คอนโซลเอาไปตัดสินใจว่าจะโชว์ปุ่ม Download/Start หรือชวนให้ push แทน
         "role": _role_payload(serving.detect()),

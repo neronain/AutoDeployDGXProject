@@ -280,3 +280,77 @@ def test_weights_path_prefers_the_location_adopt_recorded(tmp_path, monkeypatch)
     # path นอก home ต้องไม่ถูกเชื่อ
     monkeypatch.setattr(manager, "bundle_profile", lambda c: {"weights": {"path": "/etc"}, "runtime": {"engine": "llamacpp"}})
     assert manager.weights_path(info) is None
+
+
+# ── docker ใช้ไม่ได้เพราะอะไร + ปุ่มแก้บน hub (2026-09-05 ลูกค้า cynbangkok) ─────────────────────────
+
+def test_docker_access_tells_the_group_problem_apart_from_a_missing_daemon(tmp_path, monkeypatch):
+    """ติดตั้งผ่านปุ่ม Update แล้ว "มี Docker แต่ user ปัจจุบันเรียกไม่ได้" — การ์ดบนเว็บเดิมบอกแค่ not ready
+    docker_access ต้องแยก: ไม่ได้ติดตั้ง / ไม่อยู่ในกลุ่ม / อยู่ในกลุ่มแต่ session เก่า / daemon ไม่รัน — พร้อมคำสั่งแก้"""
+    from lmds.hardware import profiler
+
+    bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    fake.write_text('#!/bin/bash\necho "${FAKE_DOCKER_ERR}" >&2; exit "${FAKE_DOCKER_RC:-1}"\n', encoding="utf-8"); fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    monkeypatch.setenv("FAKE_DOCKER_ERR", "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock")
+    monkeypatch.setattr(profiler.os, "getgroups", lambda: [])
+    import grp as _grp
+
+    class G:  # noqa: D401 — โครง struct_group ปลอม
+        gr_mem, gr_gid = [], 999
+    monkeypatch.setattr(_grp, "getgrnam", lambda name: G)
+    denied = profiler.docker_access("cynbangkok")
+    assert denied["installed"] and not denied["usable"] and not denied["in_group"]
+    assert "not in the docker group" in denied["reason"] and "usermod -aG docker cynbangkok" in denied["fix"]
+    assert "systemctl restart user@" in denied["fix"], "กลุ่มใหม่ไม่มีผลกับ session ที่รันอยู่ — ต้องบอกให้รีสตาร์ต"
+
+    G.gr_mem = ["cynbangkok"]
+    stale = profiler.docker_access("cynbangkok")
+    assert stale["in_group"] and "re-login" in stale["reason"]
+
+    monkeypatch.setenv("FAKE_DOCKER_ERR", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
+    down = profiler.docker_access("cynbangkok")
+    assert "daemon is not running" in down["reason"] and "enable --now docker" in down["fix"]
+
+    monkeypatch.setenv("FAKE_DOCKER_RC", "0"); monkeypatch.setenv("FAKE_DOCKER_ERR", "")
+    assert profiler.docker_access("cynbangkok")["usable"] is True
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert profiler.docker_access("x")["installed"] is False
+
+
+def test_hub_fix_docker_route_adds_the_group_and_schedules_a_session_restart(monkeypatch):
+    """POST /api/hub/fix-docker: usermod ผ่าน sudo -S (รหัสทาง stdin เท่านั้น) · ยังใช้ไม่ได้ทันทีเพราะ session เก่า
+    → ถ้า lmds-web เป็น unit ที่ enable ไว้ ให้ systemd-run หน่วง 5 วิ restart user@<uid> · รหัสไม่โผล่ใน argv/response"""
+    import subprocess as sp
+
+    from fastapi.testclient import TestClient
+
+    from lmds.web.api import create_app
+    import lmds.web.api as api_mod
+
+    calls: list[tuple[list[str], str]] = []
+    cur = {"installed": True, "usable": False, "in_group": False, "user": "cyn", "reason": "cyn is not in the docker group", "fix": ""}
+
+    def fake_run(args, **kw):
+        calls.append((list(args), kw.get("input") or ""))
+        if args[:3] == ["systemctl", "--user", "is-enabled"]:
+            return sp.CompletedProcess(args, 0, stdout="enabled\n", stderr="")
+        if "usermod" in args:   # เพิ่มกลุ่มแล้ว แต่ session นี้ยังไม่เห็นผล
+            cur.update(in_group=True, reason="cyn is in the docker group but this session started before that — re-login needed")
+        return sp.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("lmds.hardware.profiler.docker_access", lambda user=None: dict(cur))
+    monkeypatch.setattr("getpass.getuser", lambda: "cyn")
+    client = TestClient(create_app())
+    assert client.post("/api/hub/fix-docker", json={}).status_code == 400
+    got = client.post("/api/hub/fix-docker", json={"password": "s3cret"})
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["ok"] and body["restart_scheduled"] and [s["step"] for s in body["steps"]][0].startswith("add cyn to the docker group")
+    usermod = next(c for c in calls if "usermod" in c[0])
+    assert usermod[0][:4] == ["sudo", "-S", "-p", ""] and usermod[1] == "s3cret\n" and "s3cret" not in " ".join(usermod[0])
+    restart = next(c for c in calls if "systemd-run" in c[0])
+    assert "--on-active=5" in restart[0] and any(a.startswith("user@") for a in restart[0])
+    assert "s3cret" not in got.text

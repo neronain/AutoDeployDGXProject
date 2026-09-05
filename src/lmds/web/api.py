@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import secrets
 import shlex
@@ -1521,6 +1522,64 @@ def create_app(token: str = "") -> FastAPI:
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "job": job.payload()}
+
+    @app.post("/api/hub/fix-docker", dependencies=guarded)
+    def hub_fix_docker(body: dict) -> dict:
+        """ให้ user ของ hub เรียก docker ได้ — usermod -aG docker แล้วรีสตาร์ต session ของ user ให้กลุ่มมีผล
+
+        เคสจริง 2026-09-05 (ลูกค้า cynbangkok): hub เป็นเครื่อง GPU เครื่องเดียว ติดตั้งผ่านปุ่ม Update แล้ว
+        "มี Docker แต่ user ปัจจุบันเรียกไม่ได้" — เครื่องอื่นมีฟอร์ม Set up (รหัส sudo ผ่าน ssh) แต่ hub เองไม่มี
+        body: {"password"} → {"ok", "steps", "restart_scheduled", "note"}
+        · รหัสไปทาง stdin ของ sudo -S เท่านั้น · ไม่เขียนลงดิสก์ · ไม่ขึ้น argv
+        · กลุ่มใหม่ไม่มีผลกับ process ที่รันอยู่ (รวม lmds-web) → ถ้า lmds-web เป็น unit ที่ enable ไว้ จะสั่ง
+          systemd-run หน่วง 5 วิ ให้ restart user@<uid> (คอนโซลหายไปครู่เดียวแล้วกลับมาพร้อมสิทธิ์ใหม่)
+          ไม่งั้นบอกให้ logout/login เอง
+        """
+        import getpass
+        import subprocess
+
+        from lmds.hardware.profiler import docker_access
+
+        password = str((body or {}).get("password") or "")
+        user = getpass.getuser()
+        steps: list[dict] = []
+
+        def sudo(args: list[str], what: str) -> bool:
+            done = subprocess.run(["sudo", "-S", "-p", "", *args], input=password + "\n",
+                                  capture_output=True, text=True, timeout=120)
+            steps.append({"step": what, "ok": done.returncode == 0,
+                          "detail": "" if done.returncode == 0 else (done.stderr or done.stdout).strip()[-300:]})
+            return done.returncode == 0
+
+        before = docker_access(user)
+        if before["usable"]:
+            return {"ok": True, "steps": [{"step": "docker already usable", "ok": True, "skipped": True}],
+                    "restart_scheduled": False, "note": "nothing to do"}
+        if not before["installed"]:
+            raise HTTPException(status_code=400, detail="Docker is not installed on the hub — install it first: curl -fsSL https://get.docker.com | sudo sh")
+        if not password:
+            raise HTTPException(status_code=400, detail="sudo password required")
+        if not before["in_group"]:
+            if not sudo(["usermod", "-aG", "docker", user], f"add {user} to the docker group"):
+                return {"ok": False, "steps": steps, "restart_scheduled": False, "note": ""}
+        else:
+            steps.append({"step": f"{user} already in the docker group", "ok": True, "skipped": True})
+        after = docker_access(user)
+        if after["usable"]:
+            return {"ok": True, "steps": steps, "restart_scheduled": False, "note": "docker is usable now"}
+        # กลุ่มมีผลกับ session ใหม่เท่านั้น — รีสตาร์ต user manager ให้ (คอนโซลจะดับ ~10 วิ)
+        enabled = subprocess.run(["systemctl", "--user", "is-enabled", "lmds-web"], capture_output=True, text=True).stdout.strip()
+        uid = os.getuid()
+        if enabled == "enabled":
+            ok = sudo(["systemd-run", "--on-active=5", "--unit=lmds-relogin", "--collect",
+                       "systemctl", "restart", f"user@{uid}.service"],
+                      "restart this user's session in 5 s so the new group takes effect")
+            return {"ok": ok, "steps": steps, "restart_scheduled": ok,
+                    "note": "the console goes away for ~10 s while the session restarts — reload the page after"}
+        steps.append({"step": "lmds-web is not an enabled service — log out and back in (or reboot) to pick up the group",
+                      "ok": True, "skipped": True})
+        return {"ok": True, "steps": steps, "restart_scheduled": False,
+                "note": f"log out and back in, or: sudo systemctl restart user@{uid}"}
 
     @app.post("/api/nodes/{name}/setup", dependencies=guarded)
     def node_setup(name: str, body: dict) -> dict:

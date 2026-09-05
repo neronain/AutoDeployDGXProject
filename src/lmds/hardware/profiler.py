@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import platform
 import re
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -654,6 +655,47 @@ def detect_docker() -> tuple[bool, bool]:
     toolkit_binary = shutil.which("nvidia-ctk") or shutil.which("nvidia-container-cli")
     cdi_spec = any(Path(p).is_file() for p in ("/etc/cdi/nvidia.yaml", "/var/run/cdi/nvidia.yaml"))
     return True, bool(toolkit_binary or cdi_spec)
+
+
+def docker_access(user: str | None = None) -> dict:
+    """docker ใช้ได้ไหมสำหรับ user นี้ และถ้าไม่ได้ เพราะอะไร — หน้าเว็บ/ตัวติดตั้งใช้บอกวิธีแก้ให้ตรงจุด
+
+    เคสจริง 2026-09-05 (ลูกค้า cynbangkok): ติดตั้งผ่านปุ่ม Update แล้วเจอ "มี Docker แต่ user ปัจจุบันเรียกไม่ได้"
+    การ์ดบนหน้าเว็บบอกแค่ "not ready" ไม่บอกว่าเพราะไม่อยู่ในกลุ่ม docker และไม่มีปุ่มแก้
+    → {"installed", "usable", "in_group", "user", "reason", "fix"}"""
+    import getpass
+    import grp
+
+    user = user or getpass.getuser()
+    installed = shutil.which("docker") is not None
+    out = {"installed": installed, "usable": False, "in_group": False, "user": user, "reason": "", "fix": ""}
+    if not installed:
+        out["reason"] = "Docker is not installed"
+        out["fix"] = "curl -fsSL https://get.docker.com | sudo sh"
+        return out
+    try:
+        out["in_group"] = user in grp.getgrnam("docker").gr_mem or grp.getgrnam("docker").gr_gid in os.getgroups()
+    except KeyError:
+        out["in_group"] = False
+    done = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=20)
+    if done.returncode == 0:
+        out["usable"] = True
+        return out
+    err = (done.stderr or done.stdout or "").strip()
+    low = err.lower()
+    if "cannot connect" in low or "is the docker daemon running" in low:
+        out["reason"] = "the Docker daemon is not running"
+        out["fix"] = "sudo systemctl enable --now docker"
+    elif "permission denied" in low or "docker.sock" in low:
+        if out["in_group"]:
+            out["reason"] = f"{user} is in the docker group but this session started before that — re-login needed"
+            out["fix"] = f"sudo systemctl restart user@$(id -u {user})   # or log out and back in"
+        else:
+            out["reason"] = f"{user} is not in the docker group"
+            out["fix"] = f"sudo usermod -aG docker {user} && sudo systemctl restart user@$(id -u {user})"
+    else:
+        out["reason"] = err[-200:] or "docker info failed"
+    return out
 
 
 def nvidia_runtime_registered() -> bool:

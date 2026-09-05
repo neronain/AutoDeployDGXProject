@@ -243,7 +243,7 @@ install_docker() {
 add_docker_group() {
   sudo_run usermod -aG docker "$USER"
   need_newgrp=1
-  echo "   เพิ่ม ${USER} เข้ากลุ่ม docker แล้ว (กลุ่มมีผลกับ shell ใหม่)"
+  echo "   เพิ่ม ${USER} เข้ากลุ่ม docker แล้ว (กลุ่มมีผลกับ shell ใหม่ · service ที่รันอยู่ เช่น lmds-web ต้อง: sudo systemctl restart user@\$(id -u))"
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -276,11 +276,17 @@ if command -v docker >/dev/null 2>&1 && ! run_docker info >/dev/null 2>&1; then
       echo "⚠️  อยู่ในกลุ่ม docker แล้ว แต่ยังไม่มีผลกับ shell นี้"
       need_newgrp=1
     else
+      # ไม่มี tty (ปุ่ม Update บนเว็บ / ssh จาก hub) แต่ sudo ไม่ถามรหัส → เพิ่มกลุ่มให้เลย ไม่ต้องรอคนพิมพ์
+      if [ "$can_install" != "1" ] && [ "${LMDS_SKIP_PREREQ:-0}" != "1" ] && sudo -n true >/dev/null 2>&1; then
+        can_install=1
+      fi
       echo "⚠️  มี Docker แต่ user ปัจจุบันเรียกไม่ได้ (ยังไม่อยู่ในกลุ่ม docker)"
       if [ "$can_install" = "1" ] && ask_yes "   เพิ่ม ${USER} เข้ากลุ่ม docker ให้เลยไหม?"; then
         add_docker_group
       else
         echo "    ทำเอง: sudo usermod -aG docker \$USER แล้ว logout/login (หรือ newgrp docker)"
+        echo "    หรือกดแก้จากหน้าเว็บ: การ์ด Docker + GPU → Fix docker access (ใส่รหัส sudo ครั้งเดียว)"
+        echo "    lmds-web ที่รันอยู่แล้วต้องรีสตาร์ต session ด้วย: sudo systemctl restart user@\$(id -u)  (หรือ reboot)"
         missing_prereq=1
       fi
     fi

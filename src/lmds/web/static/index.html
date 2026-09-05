@@ -1250,6 +1250,56 @@ function renderFleetSummary(s) {
 // บทบาทของเครื่องที่คอนโซลนี้นั่งอยู่ — control plane สร้าง bundle แล้ว push ต่อ
 // ไม่ได้รันโมเดลเอง · ปุ่ม Download/Start บนเครื่องแบบนั้นดูดไฟล์สิบ ๆ GB มาเปล่า ๆ
 let HOST_ROLE = { control_plane: false, engines: [], evidence: "" };
+let LAST_HOST = null;   // host payload ล่าสุด — การ์ด Docker และ Needs attention ใช้ร่วมกัน
+
+// แก้สิทธิ์ docker ของ hub เอง: ฟอร์มรหัส sudo ใต้แถวการ์ด → POST /api/hub/fix-docker
+// (เครื่องอื่นมีฟอร์ม Set up ผ่าน ssh อยู่แล้ว · hub ไม่มีทางแก้จากหน้าเว็บมาก่อน)
+function hubDockerFixForm() {
+  const da = (LAST_HOST || {}).docker_access || {};
+  let box = document.getElementById("hub-docker-fix-box");
+  if (!box) {
+    box = document.createElement("div"); box.id = "hub-docker-fix-box"; box.className = "pad";
+    const stats = document.getElementById("stats");
+    stats.parentNode.insertBefore(box, stats.nextSibling);
+  }
+  box.hidden = false;
+  box.innerHTML = `<div class="name">Let ${esc(da.user || "this user")} use Docker on the hub</div>
+    <div class="dim" style="margin:6px 0 12px">Will run: <code>sudo usermod -aG docker ${esc(da.user || "$USER")}</code>
+      then restart this user's session so the new group applies (the console disappears for ~10 s — reload the page after).
+      ${da.reason ? `Why: ${esc(da.reason)}.` : ""}</div>
+    <div class="field">
+      <label>sudo password</label>
+      <input id="hub-docker-pw" type="password" autocomplete="current-password" placeholder="used once, never stored" style="min-width:240px">
+      <button id="hub-docker-go">Fix docker access</button>
+      <button id="hub-docker-cancel">Cancel</button>
+    </div>
+    <div class="dim">The password goes to sudo's stdin only — never written to disk, never on a command line</div>
+    <div id="hub-docker-out"></div>`;
+  document.getElementById("hub-docker-pw").focus();
+}
+
+async function hubDockerFixGo(btn) {
+  const input = document.getElementById("hub-docker-pw"), out = document.getElementById("hub-docker-out");
+  const password = input && input.value;
+  if (!password) { out.innerHTML = `<div class="warn-line">Enter the password first</div>`; return; }
+  const d = await withButton(btn, "Working…", () =>
+    api("/api/hub/fix-docker", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) }));
+  if (input) input.value = "";          // ไม่ทิ้งรหัสผ่านค้างไว้ใน DOM
+  if (!d) return;
+  out.innerHTML = (d.steps || []).map(s =>
+    `<div class="warn-line" style="color:${s.ok ? (s.skipped ? "var(--fg2)" : "var(--ok)") : "var(--bad)"}">
+      ${s.ok ? (s.skipped ? "•" : "✓") : "✕"} ${esc(s.step)}${s.detail ? " — " + esc(s.detail) : ""}</div>`).join("")
+    + (d.note ? `<div class="dim" style="margin-top:6px">${esc(d.note)}</div>` : "")
+    + (d.restart_scheduled ? `<div class="ok-line">Session restart scheduled — reload this page in about 15 seconds</div>` : "");
+}
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("#hub-docker-fix, #hub-docker-go, #hub-docker-cancel");
+  if (!t) return;
+  if (t.id === "hub-docker-fix") hubDockerFixForm();
+  else if (t.id === "hub-docker-go") hubDockerFixGo(t);
+  else { const box = document.getElementById("hub-docker-fix-box"); if (box) { box.hidden = true; box.innerHTML = ""; } }
+});
 
 function renderHost(h, models) {
   HOST_ROLE = h.role || HOST_ROLE;
@@ -1276,8 +1326,14 @@ function renderHost(h, models) {
   }
 
   const ready = h.docker && h.toolkit;
+  const da = h.docker_access || {};
+  LAST_HOST = h;
+  // "not ready" อย่างเดียวบอกอะไรไม่ได้ — เคสจริง 2026-09-05: user ไม่อยู่ในกลุ่ม docker แต่หน้าเว็บไม่บอกและไม่มีปุ่มแก้
+  const dockerSub = ready ? `${esc(h.profile)} · ${esc(h.arch)}`
+    : !h.docker && da.reason ? esc(da.reason) + (da.installed && !da.usable && da.user ? ` · <button id="hub-docker-fix" class="mini">Fix docker access</button>` : "")
+    : h.docker ? "GPU not reachable from containers — install the NVIDIA Container Toolkit" : `${esc(h.profile)} · ${esc(h.arch)}`;
   cards.push(statCard("Docker + GPU", ready ? "ready" : h.docker ? "no GPU access" : "not ready",
-    `${esc(h.profile)} · ${esc(h.arch)}`, ready ? "var(--ok)" : "var(--bad)"));
+    dockerSub, ready ? "var(--ok)" : "var(--bad)"));
 
   // บทบาทของเครื่อง — เดิมคนเห็นแค่ "GPU not found" แล้วก็ยังกด Download อยู่ดี
   // เพราะไม่มีอะไรบอกว่าเครื่องนี้ไม่ได้มีไว้รันโมเดล
@@ -5897,6 +5953,9 @@ function routeRender() {
 // ── ภาพรวม: KPI · แถบหน่วยความจำต่อเครื่อง · engine · ต้องดู · ตารางไซต์ ──
 function ovAlerts() {
   const out = [];
+  const da = (LAST_HOST || {}).docker_access || {};
+  if (LAST_HOST && !LAST_HOST.docker && da.installed && !da.usable)
+    out.push({ lv: "bad", t: `hub: Docker not usable by ${da.user || "this user"}`, s: `${da.reason || ""} — models cannot start here until fixed (Docker + GPU card → Fix docker access)`, href: "#/hub" });
   for (const name of lastNodeRegistry.keys()) {
     const reg = lastNodeRegistry.get(name) || {}, d = lastNodeData.get(name);
     if (d && !d.reachable) { out.push({ lv: "bad", t: `${name} unreachable`, s: String(d.error || "").slice(0, 90), href: `#/node/${encodeURIComponent(name)}` }); continue; }

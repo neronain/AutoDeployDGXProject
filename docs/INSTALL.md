@@ -65,6 +65,8 @@ sudo usermod -aG docker $USER     # ให้ user ปัจจุบันใ�
 ```
 
 **สำคัญ**: หลัง `usermod` ต้อง **logout/login ใหม่** (หรือ `newgrp docker`) จึงจะมีผล
+· service ที่รันอยู่แล้ว (เช่น `lmds-web`) ยังถือกลุ่มเก่า — `sudo systemctl restart user@$(id -u)` หรือ reboot
+· ตั้งแต่ 0.6.0 แก้จากหน้าเว็บได้: การ์ด **Docker + GPU** บน Overview → **Fix docker access** (ใส่รหัส sudo ครั้งเดียว ระบบ usermod และรีสตาร์ต session ให้)
 
 ### 1.4 ติดตั้ง NVIDIA Container Toolkit (ให้ Docker เห็น GPU)
 
