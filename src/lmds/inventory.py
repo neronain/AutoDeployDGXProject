@@ -11,10 +11,11 @@ import re
 from pathlib import Path
 
 # คำสั่งที่ controller รู้จัก — ใช้กรองผลจาก dispatch table ไม่ให้ help/-h หลุดมาเป็นปุ่ม
+# (`doctor` ไม่อยู่ในนี้: เป็นคำสั่งของ lmds ไม่ใช่ของ controller — dispatch ของ template ไม่มี · audit 2026-09-06 §6.9)
 KNOWN_COMMANDS = {
     "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "status",
     "logs", "client-config", "network-info", "test-text", "test-vision", "test-reasoning",
-    "test-tools", "bench", "stress", "props", "info", "wait-health", "doctor",
+    "test-tools", "bench", "stress", "props", "info", "wait-health",
     "sync-worker", "verify-worker", "clear-fi-cache", "repair", "check-runtime",
 }
 _COMMAND_RE = re.compile(r"(?m)^\s{2}([a-z][a-z-]*)\)")
@@ -431,9 +432,213 @@ def _docker_access(usable: bool) -> dict:
         return {"installed": False, "usable": False, "in_group": False, "user": "", "reason": str(exc)[:200], "fix": ""}
 
 
+def source_dirty() -> list[str]:
+    """ไฟล์แก้ค้างใน checkout ที่โค้ดนี้ติดตั้งมา — ว่างเมื่อไม่ใช่ checkout
+
+    hub ที่ dirty ติดตั้งโค้ดที่ยังไม่ commit ให้ตัวเอง (`pip install "$REPO_DIR"`) แต่ `git bundle` ส่งเฉพาะ commit
+    ไป node → stamp เท่ากันทั้งที่โค้ดต่างกัน (audit 2026-09-06: hub dirty=8 · ทุก node dirty=0) · ส่งไปกับ agent info
+    ทั้งสองฝั่ง จะได้เห็นว่าใครมีของค้าง
+    """
+    try:
+        from lmds.web.selfupdate import dirty_files, source_root
+
+        root = source_root()
+        return dirty_files(root) if root is not None else []
+    except Exception:  # noqa: BLE001 — ฟิลด์ประกอบ
+        return []
+
+
+_VERSION_LINE = re.compile(r"version:\s*(\d+)\s*\(([0-9a-fA-F]+)\)")
+_RUNTIME_CACHE: dict[str, tuple[tuple, dict]] = {}
+
+
+def _git(directory: Path, *args: str, timeout: int = 5) -> str:
+    import subprocess
+
+    try:
+        done = subprocess.run(["git", "-C", str(directory), *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _git_ok(directory: Path, *args: str) -> bool | None:
+    """True/False ตาม exit code · None = git ไม่มี/ถามไม่ได้"""
+    import subprocess
+
+    try:
+        done = subprocess.run(["git", "-C", str(directory), *args], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # merge-base --is-ancestor: 0 = ใช่ · 1 = ไม่ใช่ · 128 = commit ไม่รู้จัก/ไม่ใช่ repo
+    if done.returncode == 0:
+        return True
+    return False if done.returncode == 1 else None
+
+
+def llamacpp_runtime_info(directory: Path | str, used_by: list[str] | None = None) -> dict:
+    """build llama.cpp ในโฟลเดอร์นี้คือรุ่นไหน + lock ตรงกับ build ไหม — ถูกพอจะถามทุก 15 วิ
+
+    อ่าน stamp `build/lmds-build.json` (prepare-runtime เขียน) · `llama-server --version` (ไม่โหลดโมเดล ~50 ms) ·
+    `git log -1` ของ commit นั้น · แคชตาม mtime ของ binary/lock/stamp — ไม่ `git fetch` ไม่ `docker run`
+    lock_state: ok = lock คือ build · stale = lock เก่ากว่า build (prepare-runtime แบบเดิมจะ downgrade — แก้แล้ว 0.6.1) ·
+    ahead = lock ใหม่กว่า build (มีคน rollback build) · missing = ไม่มี lock · unknown = ถาม git ไม่ได้
+    """
+    import json
+    import subprocess
+
+    directory = Path(directory)
+    server = directory / "build" / "bin" / "llama-server"
+    lock_path = directory / "build" / "runtime.lock"
+    stamp_path = directory / "build" / "lmds-build.json"
+
+    def mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    key = (mtime(server), mtime(lock_path), mtime(stamp_path))
+    cached = _RUNTIME_CACHE.get(str(directory))
+    if cached and cached[0] == key:
+        return {**cached[1], "used_by": list(used_by or [])}
+
+    out: dict = {"dir": str(directory), "present": server.is_file(), "build": "", "commit": "", "date": "",
+                 "lock": "", "lock_state": "unknown", "stamp": None, "used_by": list(used_by or [])}
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+        if isinstance(stamp, dict):
+            out["stamp"] = stamp
+            out["commit"] = str(stamp.get("commit") or "")
+            out["build"] = str(stamp.get("build") or "")
+            out["date"] = str(stamp.get("date") or "")
+    except (OSError, ValueError):
+        pass
+    if server.is_file():
+        try:
+            done = subprocess.run([str(server), "--version"], capture_output=True, text=True, timeout=10)
+            found = _VERSION_LINE.search((done.stdout or "") + (done.stderr or ""))
+        except (OSError, subprocess.TimeoutExpired):
+            found = None
+        if found:
+            out["build"] = out["build"] or found.group(1)
+            # commit ที่ binary บอกเชื่อได้กว่า stamp (stamp เขียนตาม build · rebuild นอก controller ไม่แตะ stamp)
+            if out["commit"] and not out["commit"].startswith(found.group(2)) and not found.group(2).startswith(out["commit"]):
+                out["commit"] = found.group(2)
+                out["date"] = ""
+            out["commit"] = out["commit"] or found.group(2)
+    if not out["commit"] and (directory / ".git").is_dir():
+        out["commit"] = _git(directory, "rev-parse", "--short=9", "HEAD")
+    if out["commit"] and not out["date"] and (directory / ".git").is_dir():
+        out["date"] = _git(directory, "log", "-1", "--format=%cs", out["commit"])
+    try:
+        out["lock"] = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        out["lock"] = ""
+    if not out["present"]:
+        out["lock_state"] = "missing" if not out["lock"] else "unknown"
+    elif not out["lock"]:
+        out["lock_state"] = "missing"
+    elif out["commit"] and (out["lock"].startswith(out["commit"]) or out["commit"].startswith(out["lock"])):
+        out["lock_state"] = "ok"
+    elif out["commit"] and (directory / ".git").is_dir():
+        older = _git_ok(directory, "merge-base", "--is-ancestor", out["lock"], out["commit"])
+        if older:
+            out["lock_state"] = "stale"
+        elif older is False and _git_ok(directory, "merge-base", "--is-ancestor", out["commit"], out["lock"]):
+            out["lock_state"] = "ahead"
+        else:
+            out["lock_state"] = "unknown"
+    _RUNTIME_CACHE[str(directory)] = (key, {k: v for k, v in out.items() if k != "used_by"})
+    return out
+
+
+_IMAGE_CACHE: dict[str, tuple[float, dict]] = {}
+_IMAGE_TTL = 60.0
+
+
+def docker_image_info(ref: str, used_by: list[str] | None = None) -> dict:
+    """image ที่ bundle อ้าง มีในเครื่องไหม digest อะไร — `docker image inspect` เท่านั้น (ไม่ pull ไม่ run)"""
+    import shutil
+    import subprocess
+    import time
+
+    cached = _IMAGE_CACHE.get(ref)
+    if cached and time.time() - cached[0] < _IMAGE_TTL:
+        return {**cached[1], "used_by": list(used_by or [])}
+    out = {"ref": ref, "present": False, "id": "", "digest": "", "created": "", "used_by": list(used_by or [])}
+    if shutil.which("docker"):
+        try:
+            done = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}|{{join .RepoDigests \",\"}}|{{.Created}}", ref],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            done = None
+        if done is not None and done.returncode == 0 and done.stdout.strip():
+            image_id, _, rest = done.stdout.strip().partition("|")
+            digests, _, created = rest.partition("|")
+            out.update({"present": True, "id": image_id.replace("sha256:", "")[:12],
+                        "digest": next((d.split("@", 1)[1] for d in digests.split(",") if "@" in d), ""),
+                        "created": created[:19]})
+    _IMAGE_CACHE[ref] = (time.time(), {k: v for k, v in out.items() if k != "used_by"})
+    return out
+
+
+def runtime_summary(profile, server=None) -> dict | None:
+    """รันไทม์ที่ bundle นี้ผูกไว้ — อ่านจาก profile ไม่ต้องเปิดไฟล์ทีละใบที่ hub"""
+    if not profile:
+        return None
+    runtime = profile.get("runtime") or {}
+    engine = runtime.get("engine") or ""
+    if not engine:
+        return None
+    out = {"engine": engine, "mode": "", "image": runtime.get("image") or "", "image_pin": runtime.get("image_pin") or "",
+           "llamacpp_dir": ""}
+    if engine == "llamacpp":
+        from lmds.doctor.checks import llamacpp_mode, llamacpp_root
+
+        out["mode"] = llamacpp_mode(profile, server)
+        if out["mode"] == "native":
+            out["llamacpp_dir"] = str(llamacpp_root(profile))
+    else:
+        out["mode"] = "docker"
+    return out
+
+
+def host_runtimes(models: list[dict]) -> dict:
+    """build llama.cpp / image ที่ bundle บนเครื่องนี้อ้างถึง — เฉพาะที่มี bundle ใช้ ไม่สแกนทั้งเครื่อง"""
+    dirs: dict[str, list[str]] = {}
+    images: dict[str, list[str]] = {}
+    for m in models:
+        runtime = m.get("runtime") or {}
+        if runtime.get("llamacpp_dir"):
+            dirs.setdefault(runtime["llamacpp_dir"], []).append(m["slug"])
+        elif runtime.get("mode") == "docker" and runtime.get("image"):
+            image = runtime["image"]
+            if runtime.get("image_pin"):
+                from lmds.brain.allowlists import image_repo
+
+                image = f"{image_repo(image)}@{runtime['image_pin']}"
+            images.setdefault(image, []).append(m["slug"])
+    return {
+        "llamacpp": [llamacpp_runtime_info(d, slugs) for d, slugs in sorted(dirs.items())],
+        "images": [docker_image_info(ref, slugs) for ref, slugs in sorted(images.items())],
+    }
+
+
+def with_runtimes(host: dict, models: list[dict]) -> dict:
+    """เติม host.runtimes / host.images จาก bundle ที่สำรวจแล้ว — แยกจาก host_payload() เพื่อให้ผู้เรียกที่มี models อยู่แล้ว
+    (snapshot / refresher) ไม่ต้อง discover ซ้ำ และผู้ที่ไม่มี (`/api/host` ครั้งแรก) ยังได้ payload ครบ"""
+    runtimes = host_runtimes(models or [])
+    host["runtimes"] = {"llamacpp": runtimes["llamacpp"]}
+    host["images"] = runtimes["images"]
+    return host
+
+
 def host_payload() -> dict:
     import lmds
     from lmds.fit.targets import from_hardware_report
+    from lmds.generator.renderer import template_hash
     from lmds.hardware import probe, serving
     from lmds.hardware.profiler import detect_cpu, detect_fabric, host_summary
 
@@ -448,6 +653,15 @@ def host_payload() -> dict:
         "foreign": foreign_workloads(),
         # commit ของโค้ดที่เครื่องนี้รันอยู่ — hub เอาไปเทียบว่า node ไหนตามหลังแล้วต้องอัปเดต
         "lmds_commit": source_commit(),
+        # ของบนดิสก์ (ต่างจากที่รันอยู่ = ติดตั้งแล้วยังไม่รีสตาร์ต) · ไฟล์แก้ค้างใน checkout · ลายเซ็น template
+        # ของแพ็กเกจนี้ — สามค่าที่ "ตรง hub" ต้องดูนอกจาก commit (audit 2026-09-06)
+        "lmds_installed_commit": installed_commit(),
+        "source_dirty": source_dirty(),
+        "template_hash": template_hash(),
+        # build llama.cpp / image ที่ bundle บนเครื่องนี้อ้าง (เฉพาะที่ถูกอ้าง) — hub เทียบข้ามเครื่องได้โดยไม่ SSH
+        # (เติมจริงด้วย with_runtimes(host, models) เมื่อรู้รายการ bundle แล้ว)
+        "runtimes": {"llamacpp": []},
+        "images": [],
         "hostname": summary.hostname,
         "ip": summary.ip,
         # ที่อยู่ทุกเส้น ไม่ใช่แค่เส้นที่ออกเน็ต — hub รู้จักเครื่องนี้จากที่อยู่ SSH ซึ่งอาจ
@@ -519,6 +733,7 @@ def runtime_arch_status(server, profile) -> dict | None:
 
 
 def model_payload(server, active_job: dict | None = None) -> dict:
+    from lmds.fleet.consistency import controller_header, controller_state
     from lmds.fleet import (
         autostart_status,
         bundle_profile,
@@ -580,6 +795,14 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         # llama.cpp: build/image บนเครื่องรู้จัก arch ของโมเดลไหม (supported=false = ป้าย "runtime older than model"
         # + ปุ่ม update runtime) · None = ไม่ใช่ llama.cpp หรือยังบอกไม่ได้
         "runtime_arch": runtime_arch_status(server, profile),
+        # ใครสร้าง controller นี้ (generated_by / SCRIPT_VERSION / template_hash) และเก่ากว่าแพ็กเกจบนเครื่องไหม —
+        # hub ใช้ตัดสินมิติ "controller" ของ "ตรง hub" · runtime = build/image ที่ผูกไว้ (ไม่ต้องเปิดไฟล์ทีละใบ)
+        "generated_by": (profile or {}).get("generated_by"),
+        "template_hash": (profile or {}).get("template_hash"),
+        "script_version": controller_header(server.controller)["script_version"] if server.controller_exists else "",
+        "controller": controller_state(profile, server.controller if server.controller_exists else None)
+        if profile else None,
+        "runtime": runtime_summary(profile, server),
         "job": active_job,
     }
 
@@ -590,13 +813,20 @@ def snapshot() -> dict:
 
     models = [model_payload(s) for s in discover()]
     return {
-        "host": host_payload(),
+        "host": with_runtimes(host_payload(), models),
         "models": models,
         # llama.cpp รันหลายโมเดลพร้อมกันได้ (คนละ port) — สรุปให้ hub ไม่ต้องนับเอง
-        "summary": {
-            "total": len(models),
-            "running": sum(1 for m in models if m["running"]),
-            "healthy": sum(1 for m in models if m["healthy"]),
-            "not_downloaded": sum(1 for m in models if not m["downloaded"]),
-        },
+        "summary": summary_of(models),
+    }
+
+
+def summary_of(models: list[dict]) -> dict:
+    return {
+        "total": len(models),
+        "running": sum(1 for m in models if m["running"]),
+        "healthy": sum(1 for m in models if m["healthy"]),
+        "not_downloaded": sum(1 for m in models if not m["downloaded"]),
+        # controller เก่ากว่า lmds / runtime เก่ากว่าโมเดล — ตัวเลขที่ "ตรง hub" ต้องเป็น 0 ทั้งคู่
+        "controllers_stale": sum(1 for m in models if ((m.get("controller") or {}).get("state")) == "stale"),
+        "runtime_stale": sum(1 for m in models if ((m.get("runtime_arch") or {}).get("supported")) is False),
     }

@@ -261,3 +261,51 @@ def test_poll_fallback_refreshes_the_other_machines_too(tmp_path):
         "ต้องอ่านจากแคช (ไม่มี refresh=true) ไม่งั้น hub จะ SSH ทุกเครื่องทุก 5 วิ"
     assert out["cleared"], "SSE กลับมาแล้วต้องเลิก poll"
 
+
+
+# ── ปุ่ม Update: "matches the hub" ต้องมาจาก probe ซ้ำ + 3 มิติ ไม่ใช่ exit 0 ของ install (audit 2026-09-06 §3.4) ──
+UPDATE_FLEET = r"""const fx = { nodes: [{ name: "spark-01", site: "TKC", models: [] }] };
+H.fx = fx;
+H.booted = false; H.rebuilt = 0; H.stale = STALE;
+const axis = (state, detail, items) => ({ state, detail, items: items || [] });
+const verdict = () => H.stale
+  ? { name: "spark-01", consistent: false, level: "bad", code: axis("ok", "0.6.1 (abc1234) · ตรง hub"),
+      controllers: axis("ok", "2 ใบ · ตรง template ของ hub"),
+      runtimes: axis("stale", "llama.cpp build 10495 · runtime ค้าง 1", ["qwen3-8b"]) }
+  : { name: "spark-01", consistent: true, level: "ok", code: axis("ok", "0.6.1 (abc1234) · ตรง hub"),
+      controllers: axis("ok", "2 ใบ · ตรง template ของ hub"), runtimes: axis("ok", "qwen3-8b: arch qwen35 ✓") };
+H.routes = [
+  ["/api/update", () => { H.booted = true; return { job: { id: "hub-job" } }; }],
+  ["/api/version", () => ({ version: "0.6.1", commit: "abc1234", boot: H.booted ? "boot-2" : "boot-1" })],
+  [/^\/api\/jobs\//, () => ({ running: false, exit_code: 0, output: "done" })],
+  ["/api/nodes/spark-01/install", () => ({ job: { id: "node-job" } })],
+  ["/api/nodes/spark-01/models/qwen3-8b/ctl/update-runtime", () => { H.rebuilt++; if (REBUILD_FIXES) H.stale = false; return { job: { id: "rt-job" } }; }],
+  ["/api/fleet/consistency", () => ({ hub: { dirty: [] }, nodes: [verdict()], summary: { line: H.stale ? "ตรง hub 0" : "ตรง hub 1" } })],
+  ...H.defaultRoutes(fx),
+];
+"""
+
+
+@pytest.mark.parametrize("stale, fixes", [(False, True), (True, True), (True, False)])
+def test_web_update_reports_from_probe_not_exit_code(tmp_path, stale, fixes):
+    prelude = f"const STALE = {str(stale).lower()}; const REBUILD_FIXES = {str(fixes).lower()};\n" + UPDATE_FLEET
+    (out,) = run_scenario(tmp_path, prelude, r"""
+        await updateEverything();
+        const rows = [...upSteps.querySelectorAll("[data-k]")].map(r => [r.dataset.k, r.textContent.replace(/\s+/g, " ").trim()]);
+        const urls = H.calls.map(c => c.url);
+        console.log(JSON.stringify({ rows, rebuilt: H.rebuilt,
+          reprobes: urls.filter(u => u.includes("/api/nodes/spark-01/inventory?refresh=true")).length,
+          consistency: urls.filter(u => u === "/api/fleet/consistency").length,
+          note: document.getElementById("up-note").textContent }));""")
+    node = dict(out["rows"])["n:spark-01"]
+    assert out["reprobes"] >= 1 and out["consistency"] >= 1, "ต้อง probe ซ้ำหลัง install แล้วอ่านคำตัดสิน 3 มิติ"
+    if not stale:
+        assert "matches the hub (code ✓ · controllers ✓ · runtime ✓)" in node and out["rebuilt"] == 0
+    elif fixes:
+        # runtime ค้าง → Update สั่ง update-runtime ให้เอง (build 10–15 นาที มองเห็นเป็นขั้น) → probe ซ้ำ → ตรง hub
+        assert out["rebuilt"] == 1 and out["reprobes"] >= 2
+        assert "matches the hub (code ✓ · controllers ✓ · runtime ✓)" in node
+    else:
+        assert out["rebuilt"] == 1
+        assert "matches the hub" not in node and "does not match the hub yet" in node and "runtime stale (qwen3-8b)" in node
+    assert "ตรง hub" in out["note"]

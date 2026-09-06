@@ -44,3 +44,109 @@ def test_a_controller_without_download_is_treated_as_self_managed(tmp_path):
     payload = inventory.model_payload(_server(controller))
     assert payload["self_managed_weights"] is True
     assert payload["downloaded"] is True     # ปุ่มที่ควรได้คือ start ไม่ใช่ download
+
+
+def test_agent_info_reports_runtimes_and_images(tmp_path, monkeypatch, request):
+    """host.runtimes.llamacpp[] จาก llama-server --version + git (ไม่ fetch) · host.images[] เฉพาะ image ที่ bundle อ้าง
+    · ห้าม docker run · models[] บอก generated_by/template_hash/controller.state/runtime ที่ผูก"""
+    import subprocess
+
+    import yaml
+
+    from lmds.fleet import find
+    from lmds.generator.renderer import template_hash
+
+    # build llama.cpp ปลอม: llama-server ตอบ version · lock เก่ากว่า build (stale) · git ปลอมตอบ merge-base
+    llama = tmp_path / "src" / "llama.cpp"
+    (llama / ".git").mkdir(parents=True)
+    (llama / "build" / "bin").mkdir(parents=True)
+    server = llama / "build" / "bin" / "llama-server"
+    server.write_text("#!/bin/bash\necho 'version: 10495 (3dc7285b4)'\n", encoding="utf-8")
+    server.chmod(0o755)
+    (llama / "build" / "bin" / "libllama.so").write_bytes(b"\x00llama\x00qwen35\x00")
+    (llama / "build" / "runtime.lock").write_text("ece963f41\n", encoding="utf-8")
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    calls = tmp_path / "calls.log"
+    (shims / "git").write_text(
+        "#!/bin/bash\n"
+        f'echo "git $*" >> {calls}\n'
+        'case "$*" in *fetch*) exit 9 ;; *"log -1"*) echo 2026-08-18 ;; *merge-base*) exit 0 ;; esac\nexit 0\n',
+        encoding="utf-8")
+    (shims / "git").chmod(0o755)
+    docker_calls = []
+    real_run = subprocess.run
+
+    def fake_run(args, **kw):
+        if list(args)[:1] == ["docker"]:
+            docker_calls.append(list(args))
+            assert args[1] != "run", "agent info ห้าม docker run"
+            return subprocess.CompletedProcess(
+                args, 0, "sha256:abcdef0123456789|vllm/vllm-openai@sha256:61fc8a8aaaaa|2026-09-01T10:00:00Z\n", "")
+        return real_run(args, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("PATH", f"{shims}:/usr/bin:/bin")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    # serving.detect() แคชทั้ง process — ผลที่ตรวจใต้ which ปลอมต้องไม่ไปหลอกเทส doctor ที่รันทีหลัง
+    from lmds.hardware import serving
+
+    serving.reset_cache()
+    request.addfinalizer(serving.reset_cache)
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("MODEL_DIR", str(tmp_path / "models" / "none"))
+    monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
+    monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+
+    def register(slug, profile, mode):
+        d = tmp_path / "bundles" / slug
+        d.mkdir(parents=True)
+        ctl = d / f"{slug}-single.sh"
+        ctl.write_text('#!/usr/bin/env bash\nSCRIPT_VERSION="${SCRIPT_VERSION:-0.5.1}"\ncase $1 in\n  download) : ;;\n  start) : ;;\nesac\n',
+                       encoding="utf-8")
+        (d / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(profile), encoding="utf-8")
+        run_dir = tmp_path / "run" / slug
+        run_dir.mkdir(parents=True)
+        (run_dir / "server.meta").write_text(
+            f"slug={slug}\nmodel={slug}\nmodel_id=o/{slug}\nengine={profile['runtime']['engine']}\nmode={mode}\n"
+            f"port=8000\ncontainer=lmds-{slug}\npid_file=\ncontroller={ctl}\nstarted_at=\n", encoding="utf-8")
+
+    register("qwen3-8-27b-gguf", {
+        "generated_by": "lmds 0.5.1",
+        "model": {"id": "o/Qwen-GGUF", "selected_gguf": "q.gguf", "gguf_architecture": "qwen35"},
+        "runtime": {"engine": "llamacpp", "image": "ghcr.io/ggml-org/llama.cpp:server-cuda", "native_build": True},
+        "target": {"memory_model": "unified", "llamacpp_dir": str(llama)}, "topology": "single"}, "native")
+    register("glm-vllm", {
+        "generated_by": "lmds 0.6.0", "template_hash": "0ld", "model": {"id": "o/GLM"},
+        "runtime": {"engine": "vllm", "image": "vllm/vllm-openai:latest", "image_pin": "sha256:61fc8a8aaaaa"},
+        "topology": "single"}, "docker")
+
+    models = [inventory.model_payload(find("qwen3-8-27b-gguf")), inventory.model_payload(find("glm-vllm"))]
+    gguf, vllm = models
+    assert gguf["generated_by"] == "lmds 0.5.1" and gguf["script_version"] == "0.5.1" and gguf["template_hash"] is None
+    assert gguf["controller"]["state"] == "stale" and "0.5.1" in gguf["controller"]["reason"]
+    assert gguf["runtime"] == {"engine": "llamacpp", "mode": "native", "image": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+                               "image_pin": "", "llamacpp_dir": str(llama)}
+    assert gguf["runtime_arch"]["supported"] is True
+    assert vllm["controller"]["state"] == "stale" and vllm["runtime"]["mode"] == "docker"
+    assert vllm["runtime"]["image_pin"] == "sha256:61fc8a8aaaaa"
+
+    host = inventory.with_runtimes(inventory.host_payload(), models)
+    assert host["template_hash"] == template_hash() and host["lmds_installed_commit"] == inventory.installed_commit()
+    assert isinstance(host["source_dirty"], list)
+    (build,) = host["runtimes"]["llamacpp"]
+    assert build["dir"] == str(llama) and build["present"] and build["build"] == "10495" and build["commit"] == "3dc7285b4"
+    assert build["date"] == "2026-08-18" and build["lock"] == "ece963f41" and build["lock_state"] == "stale"
+    assert build["used_by"] == ["qwen3-8-27b-gguf"]
+    assert "fetch" not in calls.read_text(encoding="utf-8")
+    (image,) = host["images"]
+    assert image["ref"] == "vllm/vllm-openai@sha256:61fc8a8aaaaa" and image["present"]
+    assert image["digest"] == "sha256:61fc8a8aaaaa" and image["used_by"] == ["glm-vllm"]
+    assert image["created"].startswith("2026-09-01")
+    assert any(c[:3] == ["docker", "image", "inspect"] for c in docker_calls)
+    assert not any(c[:2] == ["docker", "run"] for c in docker_calls)
+    summary = inventory.summary_of(models)
+    assert summary["controllers_stale"] == 2 and summary["runtime_stale"] == 0
+    # ไม่มี doctor ในรายการคำสั่งของ controller (มันเป็นคำสั่งของ lmds ไม่ใช่ของ template)
+    assert "doctor" not in inventory.KNOWN_COMMANDS

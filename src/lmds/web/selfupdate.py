@@ -73,6 +73,9 @@ echo "── ติดตั้ง ──"
 LMDS_ASSUME_YES=1 LMDS_SKIP_PREREQ=1 ./install.sh
 echo ""
 "$HOME/.local/bin/lmds" version | head -1
+echo ""
+echo "── regenerate controller ของ bundle บน hub ที่เก่ากว่า template ใหม่ (ออฟไลน์) ──"
+"$HOME/.local/bin/lmds" bundles refresh --all --if-older || echo "regenerate controller ไม่สำเร็จ (exit $?) — ดูด้วย: lmds bundles refresh --all"
 {restart}
 """
 

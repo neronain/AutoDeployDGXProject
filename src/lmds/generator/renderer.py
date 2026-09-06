@@ -41,6 +41,33 @@ def llamacpp_arch_since(architecture: str | None) -> dict[str, str] | None:
     return dict(LLAMACPP_ARCH_SINCE[architecture]) if architecture in LLAMACPP_ARCH_SINCE else None
 
 
+_TEMPLATE_HASH: dict[str, str] = {}
+
+
+def template_hash(templates_dir: Path | None = None) -> str:
+    """ลายเซ็นของชุด template ที่แพ็กเกจนี้ถือ — sha256 ของชื่อ+เนื้อหา `templates/*.j2` เรียงตามชื่อ (12 ตัวแรก)
+
+    ทำไมไม่ใช้เลข version: `generated_by: lmds 0.6.0` กับ 0.6.1 ที่ template ไม่ได้แก้เลยคือ controller ตัวเดียวกัน
+    ส่วน 0.6.1 สองรอบที่แก้ template ระหว่างทาง (ยังไม่ bump) คือคนละตัว · renderer ฝังค่านี้ลง MODEL_PROFILE.yaml
+    (`template_hash`) และหัว controller (`TEMPLATE_HASH=`) — hub/doctor เทียบกับของแพ็กเกจตัวเองแล้วรู้ทันทีว่า
+    bundle ไหน "เก่ากว่า lmds" จริง (audit 2026-09-06: 46/47 bundle บน node เป็น 0.3.0–0.6.0)
+    """
+    import hashlib
+
+    directory = Path(templates_dir) if templates_dir else TEMPLATES_DIR
+    key = str(directory)
+    if key in _TEMPLATE_HASH and templates_dir is None:
+        return _TEMPLATE_HASH[key]
+    digest = hashlib.sha256()
+    for path in sorted(directory.glob("*.j2")):
+        digest.update(path.name.encode("utf-8") + b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    value = digest.hexdigest()[:12]
+    _TEMPLATE_HASH[key] = value
+    return value
+
+
 @dataclass
 class Bundle:
     directory: Path
@@ -279,6 +306,8 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
         "slug": slug,
         "lmds_version": lmds.__version__,
         "controller_version": version_match.group(0) if version_match else "0.0.0",
+        # ลายเซ็น template — หัว controller ฝังไว้ให้ hub เทียบว่า bundle นี้ render จากชุดเดียวกับที่ hub ถือไหม
+        "template_hash": template_hash(),
         "model_label": plan.model_id,
         "runtime_label": f"{engine_name} ({'native build' if native_build else 'Docker'})",
         "model_features": ", ".join(features) or "text",
@@ -354,6 +383,8 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
     profile = {
         "profile_version": 1,
         "generated_by": f"lmds {lmds.__version__}",
+        # ชุด template ที่ render bundle นี้ — เทียบกับ template_hash() ของแพ็กเกจแล้วรู้ว่า controller เก่าจริงไหม
+        "template_hash": template_hash(),
         "generator": plan.generator,
         "model": {
             "id": plan.model_id,

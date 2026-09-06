@@ -19,6 +19,9 @@ fi
 
 
 SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
+# ลายเซ็นของชุด template ที่ render ไฟล์นี้ (sha256 ของ generator/templates/*.j2) — hub เทียบกับของตัวเอง
+# เพื่อรู้ว่า controller นี้ "เก่ากว่า lmds" จริง ไม่ใช่แค่เลข version ต่างกัน (0.6.0 ↔ 0.6.1 ที่ template ไม่เปลี่ยน = ไม่ stale)
+TEMPLATE_HASH="{{ template_hash }}"
 MODEL_LABEL="${MODEL_LABEL:-{{ model_label }}}"
 RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
 MODEL_FEATURES="${MODEL_FEATURES:-{{ model_features }}}"

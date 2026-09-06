@@ -25,6 +25,9 @@ if [[ -f "$BUNDLE_ENV" ]]; then
 fi
 
 SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
+# ลายเซ็นของชุด template ที่ render ไฟล์นี้ (sha256 ของ generator/templates/*.j2) — hub เทียบกับของตัวเอง
+# เพื่อรู้ว่า controller นี้ "เก่ากว่า lmds" จริง ไม่ใช่แค่เลข version ต่างกัน (0.6.0 ↔ 0.6.1 ที่ template ไม่เปลี่ยน = ไม่ stale)
+TEMPLATE_HASH="{{ template_hash }}"
 MODEL_LABEL="${MODEL_LABEL:-{{ model_label }}}"
 RUNTIME_LABEL="${RUNTIME_LABEL:-{{ runtime_label }}}"
 MODEL_FEATURES="${MODEL_FEATURES:-{{ model_features }}}"
@@ -808,6 +811,65 @@ install_build_dependencies() {
     echo "คำเตือน: ไม่พบ nvcc (CUDA Toolkit) — ถ้า build ล้มเหลว ติดตั้ง CUDA Toolkit ก่อน (DGX OS มีมาให้แล้ว)"
 }
 
+# commit ของ build ที่มีอยู่จริง — จาก stamp ข้าง build ก่อน (เขียนตอน prepare-runtime สำเร็จ) ไม่งั้นจาก
+# `llama-server --version` ("version: 10495 (3dc7285b4)") สุดท้ายค่อยถาม git HEAD · ว่าง = ยังไม่มี build
+runtime_commit() {
+  local stamp="${LLAMA_CPP_DIR}/build/lmds-build.json" ver="" commit=""
+  if [[ -f "$stamp" ]]; then
+    commit="$(sed -n 's/.*"commit": *"\([0-9a-f]*\)".*/\1/p' "$stamp" | head -1)"
+    [[ -n "$commit" ]] && { printf '%s' "$commit"; return 0; }
+  fi
+  if [[ -x "$LLAMA_SERVER" ]]; then
+    ver="$("$LLAMA_SERVER" --version 2>&1 | head -1 || true)"
+    commit="${ver##*(}"; commit="${commit%%)*}"
+    [[ -n "$commit" && "$commit" != "$ver" ]] && { printf '%s' "$commit"; return 0; }
+  fi
+  [[ -d "${LLAMA_CPP_DIR}/.git" ]] && git -C "$LLAMA_CPP_DIR" rev-parse HEAD 2>/dev/null || true
+}
+
+# หมายเลข build จาก `llama-server --version` ("version: 10495 (…)" → 10495) — ว่างเมื่อยังไม่มี build
+runtime_build_number() {
+  local ver=""
+  [[ -x "$LLAMA_SERVER" ]] || return 0
+  ver="$("$LLAMA_SERVER" --version 2>&1 | head -1 || true)"
+  ver="${ver#version: }"; ver="${ver%% *}"
+  [[ "$ver" =~ ^[0-9]+$ ]] && printf '%s' "$ver" || true
+}
+
+# stamp ข้าง build — หลักฐานว่า build นี้คือ commit ไหน ใครสั่ง เมื่อไร (ไม่ต้องเดาจาก mtime/reflog อีก)
+# สคริปต์ rebuild นอก controller ก็ควรเขียนไฟล์เดียวกัน · รูปแบบ JSON บรรทัดเดียว อ่านด้วย sed ได้
+write_build_stamp() {
+  local commit="$1" date=""
+  [[ -d "${LLAMA_CPP_DIR}/.git" ]] && date="$(git -C "$LLAMA_CPP_DIR" log -1 --format=%cs "$commit" 2>/dev/null || true)"
+  mkdir -p "${LLAMA_CPP_DIR}/build"
+  printf '{"commit": "%s", "build": "%s", "date": "%s", "cuda_arch": "%s", "built_by": "%s", "at": "%s"}\n' \
+    "$commit" "$(runtime_build_number)" "$date" "$CUDA_ARCHITECTURES" "{{ slug }}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${LLAMA_CPP_DIR}/build/lmds-build.json"
+}
+
+# bundle อื่นบนเครื่องที่ใช้ build กลางเดียวกัน (จาก server.meta ที่ start เขียน runtime_dir= ไว้)
+bundles_sharing_build() {
+  local meta slug
+  for meta in "$(dirname "$RUN_DIR")"/*/server.meta; do
+    [[ -f "$meta" ]] || continue
+    grep -qxF "runtime_dir=${LLAMA_CPP_DIR}" "$meta" 2>/dev/null || continue
+    slug="$(sed -n 's/^slug=//p' "$meta" | head -1)"
+    [[ -n "$slug" && "$slug" != "{{ slug }}" ]] && printf '%s ' "$slug"
+  done
+  return 0
+}
+
+# build ทับ build/ ขณะที่ llama-server จากโฟลเดอร์นี้กำลังรัน: process ที่รันอยู่ถือ .so เก่าไว้ (mmap) จึงรันต่อได้
+# แต่ restart ครั้งถัดไปจะได้รุ่นใหม่ — บอกให้รู้ก่อน พร้อมชื่อ bundle ที่จะได้รับผล ไม่ใช่ให้ไปเจอเองทีหลัง
+warn_running_servers() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -f "$LLAMA_SERVER" >/dev/null 2>&1 || return 0
+  local others
+  others="$(bundles_sharing_build)"
+  echo "คำเตือน: มี llama-server จาก ${LLAMA_CPP_DIR} กำลังรันอยู่ — ตัวที่รันอยู่ยังใช้ build เดิมจนกว่าจะ restart" >&2
+  echo "  bundle ที่ใช้ build กลางนี้ร่วมกันและจะได้รุ่นใหม่ตอน restart: ${others:-(ไม่พบใน server.meta)}" >&2
+}
+
 prepare_runtime() {
   # build llama.cpp จาก source — จำเป็นบน DGX Spark (ARM64/SM121 ไม่มี image ทางการ)
   install_build_dependencies
@@ -819,33 +881,58 @@ prepare_runtime() {
     git clone "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
   fi
 
-  local commit="" locked="" why="" arch="" verdict=0
-  # lock ทำให้ build ซ้ำได้ commit เดิม — แต่ต้องมีทางอัปเดตด้วย: test-tools/start แนะให้รัน prepare-runtime
-  # เมื่อ llama.cpp เก่ากว่าโมเดล ซึ่งเดิมวนกลับมา build commit ที่ lock ไว้เป๊ะ ไม่มีวันใหม่ขึ้น
-  # LLAMA_CPP_UPDATE=1 = ข้าม lock ไปดึง LLAMA_CPP_REF ล่าสุด แล้วเขียน lock ใหม่หลัง build ผ่าน
-  # และตั้งแต่ 2026-09-06: build ที่ lock ไว้ไม่รู้จัก arch ของโมเดลนี้ = อัปเดตให้เองโดยไม่ต้องสั่ง
-  # (lock อยู่ข้าง build ที่ทุก bundle ใช้ร่วมกัน — commit ใหม่จึงเป็นสิ่งที่ bundle อื่นบนเครื่องเห็นด้วย
-  # ซึ่งถูกต้อง เพราะ master รุ่นใหม่รองรับ arch เก่าทั้งหมด · lock รุ่นเก่าใต้ RUN_DIR อ่านต่อได้ตอนย้าย)
+  local commit="" locked="" why="" arch="" verdict=0 current="" action=""
+  # lock = commit ที่ *พิสูจน์แล้ว* ว่าเสิร์ฟโมเดลนี้ได้ (proven-good floor) ไม่ใช่ commit ที่ต้อง build เป๊ะ
+  #
+  # build เป็นของเครื่อง (ทุก bundle ใช้ ~/src/llama.cpp ร่วมกัน) ส่วน lock เคยเป็นของ bundle — msi-3/msi-4/
+  # dgx-veerasiam 2026-09-06: lock จาก 15–16 ส.ค. แต่ build จริงคือ 18 ส.ค. (rebuild นอก controller) →
+  # "ใช้ commit ที่ lock ไว้" แบบเดิม = checkout ของเก่ามา build ทับ = downgrade ให้ทุก bundle บนเครื่อง
+  # กติกาใหม่: build ที่มีอยู่ใหม่กว่าหรือเท่ากับ lock (lock เป็น ancestor ของมัน) = ใช้ build นั้นเลย แล้วเลื่อน
+  # lock ตาม · build เก่ากว่า lock = เคสเดียวที่ checkout lock มา build · ไม่มีวันถอยหลัง
+  # LLAMA_CPP_UPDATE=1 = ดึง LLAMA_CPP_REF ล่าสุด · build ไม่รู้จัก arch ของโมเดลนี้ = อัปเดตให้เอง
   if [[ -f "$RUNTIME_LOCK" ]]; then
     locked="$(cat "$RUNTIME_LOCK")"
   elif [[ -n "${LEGACY_RUNTIME_LOCK:-}" && -f "$LEGACY_RUNTIME_LOCK" ]]; then
     locked="$(cat "$LEGACY_RUNTIME_LOCK")"
-    echo "ย้าย lock จาก ${LEGACY_RUNTIME_LOCK} ไปไว้ข้าง build (${RUNTIME_LOCK})"
+    echo "ย้าย lock จาก ${LEGACY_RUNTIME_LOCK} ไปไว้ข้าง build (${RUNTIME_LOCK}) — ใช้เป็นขั้นต่ำ ไม่ย้อน build ที่ใหม่กว่า"
   fi
+  current="$(runtime_commit)"
   if [[ -n "${LLAMA_CPP_UPDATE:-}" ]]; then
     why="LLAMA_CPP_UPDATE=1"
-  elif [[ -z "$locked" ]]; then
-    why="ยังไม่มี lock"
-  elif [[ -x "$LLAMA_SERVER" ]]; then
+  elif [[ -x "$LLAMA_SERVER" && -n "$current" ]]; then
     arch="$(gguf_architecture)"
     if [[ -n "$arch" ]]; then
       runtime_knows_arch "$arch" || verdict=$?
       if (( verdict == 1 )); then
-        why="build ที่ lock ไว้ (${locked}) ไม่รู้จักสถาปัตยกรรม '${arch}' ของโมเดลนี้ — upstream เพิ่มทีหลัง"
+        why="build ที่มี (${current:0:9}) ไม่รู้จักสถาปัตยกรรม '${arch}' ของโมเดลนี้ — upstream เพิ่มทีหลัง"
       fi
     fi
+    if [[ -z "$why" ]]; then
+      if [[ -z "$locked" ]] || [[ "$current" == "$locked"* ]] || [[ "$locked" == "$current"* ]] \
+         || git -C "$LLAMA_CPP_DIR" merge-base --is-ancestor "$locked" "$current" 2>/dev/null; then
+        action="reuse"; commit="$current"
+      else
+        action="build"; commit="$locked"
+      fi
+    fi
+  elif [[ -z "$locked" ]]; then
+    why="ยังไม่มี build และไม่มี lock"
+  else
+    action="build"; commit="$locked"
   fi
-  if [[ -n "$why" ]]; then
+  [[ -n "$why" ]] && action="upgrade"
+  echo "build กลาง=${current:-ไม่มี} · lock=${locked:-ไม่มี} · action=${action}"
+
+  if [[ "$action" == "reuse" ]]; then
+    # build ที่มีใหม่กว่าหรือเท่ากับ lock — ไม่ build ซ้ำ ไม่ downgrade · lock เลื่อนขึ้นมาที่ build จริง
+    mkdir -p "$(dirname "$RUNTIME_LOCK")"
+    printf '%s\n' "$commit" > "$RUNTIME_LOCK"
+    [[ -f "${LLAMA_CPP_DIR}/build/lmds-build.json" ]] || write_build_stamp "$commit"
+    echo "ใช้ build ที่มีอยู่ (${commit:0:9}) — ใหม่กว่าหรือเท่ากับ lock · ไม่ build ซ้ำ (อัปเดตเป็น ${LLAMA_CPP_REF} ล่าสุด: LLAMA_CPP_UPDATE=1 $0 prepare-runtime)"
+    "$LLAMA_SERVER" --version 2>&1 || true
+    return 0
+  fi
+  if [[ "$action" == "upgrade" ]]; then
     echo "อัปเดต llama.cpp เป็น ${LLAMA_CPP_REF} ล่าสุด (${why})"
     git -C "$LLAMA_CPP_DIR" fetch --all --quiet
     git -C "$LLAMA_CPP_DIR" checkout --quiet "$LLAMA_CPP_REF"
@@ -854,9 +941,9 @@ prepare_runtime() {
     fi
     commit="$(git -C "$LLAMA_CPP_DIR" rev-parse HEAD)"
   else
-    commit="$locked"
-    echo "ใช้ commit ที่ lock ไว้: ${commit} (อัปเดตเป็น ${LLAMA_CPP_REF} ล่าสุด: LLAMA_CPP_UPDATE=1 $0 prepare-runtime)"
+    echo "build ที่มี (${current:-ไม่มี}) เก่ากว่า lock — build commit ที่พิสูจน์แล้ว: ${commit}"
   fi
+  warn_running_servers
   git -C "$LLAMA_CPP_DIR" checkout --quiet "$commit"
 
   echo "build (CUDA arch: ${CUDA_ARCHITECTURES}) — ใช้เวลาหลายนาที..."
@@ -870,7 +957,8 @@ prepare_runtime() {
   [[ -x "$LLAMA_SERVER" ]] || die "build ไม่สำเร็จ — ไม่พบ ${LLAMA_SERVER}"
   mkdir -p "$(dirname "$RUNTIME_LOCK")"
   printf '%s\n' "$commit" > "$RUNTIME_LOCK"
-  echo "runtime พร้อม (pinned: ${commit} · lock: ${RUNTIME_LOCK})"
+  write_build_stamp "$commit"
+  echo "runtime พร้อม (pinned: ${commit} · lock: ${RUNTIME_LOCK} · stamp: ${LLAMA_CPP_DIR}/build/lmds-build.json)"
   "$LLAMA_SERVER" --version 2>&1 || true
 
   # build ใหม่แล้วยังไม่รู้จัก = ต้นน้ำเองยังไม่มี (หรือ LLAMA_CPP_REF ชี้รุ่นเก่า) — บอกตรงนี้
@@ -967,7 +1055,23 @@ container=${CONTAINER_NAME}
 pid_file=${PID_FILE}
 controller=${script_path}
 started_at=$(date +%Y-%m-%dT%H:%M:%S)
+runtime_dir=$([[ "$RUNTIME_MODE" == "native" ]] && printf '%s' "$LLAMA_CPP_DIR")
 EOF
+}
+
+# หลัง health ผ่าน (native): จด build ที่เสิร์ฟจริงลง server.meta และเลื่อน lock มาที่ commit นั้น
+# — lock จึงไม่ stale แม้มีคน build นอก controller (msi-3/msi-4 2026-09-06) และ post-mortem ไม่ต้องเดาจาก mtime
+record_runtime() {
+  [[ "$RUNTIME_MODE" == "native" ]] || return 0
+  local commit build
+  commit="$(runtime_commit)"; build="$(runtime_build_number)"
+  [[ -n "$commit" ]] || return 0
+  if [[ -f "${RUN_DIR}/server.meta" ]]; then
+    sed -i.bak '/^runtime_commit=/d;/^runtime_build=/d' "${RUN_DIR}/server.meta" 2>/dev/null && rm -f "${RUN_DIR}/server.meta.bak"
+    printf 'runtime_commit=%s\nruntime_build=%s\n' "$commit" "$build" >> "${RUN_DIR}/server.meta"
+  fi
+  mkdir -p "$(dirname "$RUNTIME_LOCK")" 2>/dev/null || return 0
+  printf '%s\n' "$commit" > "$RUNTIME_LOCK" 2>/dev/null || true
 }
 
 ensure_image() {
@@ -1072,6 +1176,7 @@ start() {
 
   write_meta
   wait_health
+  record_runtime
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
   warn_open_endpoint
   network_info
@@ -1542,8 +1647,10 @@ USAGE
 COMMANDS
   prepare-runtime   Build llama.cpp from source ('native' mode — DGX Spark / ARM64 has no official
                     image). 'start' runs this by itself when llama-server is missing; call it directly
-                    to rebuild (LLAMA_CPP_UPDATE=1). Rebuilds on its own when the locked build does not
-                    know this model's architecture. Installs build deps via apt (sudo only if missing).
+                    to rebuild (LLAMA_CPP_UPDATE=1). Never downgrades: a shared build that is newer than
+                    (or equal to) the lock is reused and the lock moves up to it; only an older build is
+                    rebuilt at the locked commit. Rebuilds on its own when the build does not know this
+                    model's architecture. Installs build deps via apt (sudo only if missing).
   check-runtime     Show the llama.cpp build/image in use and whether it knows this model's architecture
                     (exit 1 = runtime older than the model — the message names the fix)
   download          Download every model part (resumable, revision pinned)

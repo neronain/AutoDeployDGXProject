@@ -806,6 +806,7 @@ body { padding: 0; }
 .ov-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .ov-table tr:last-child td { border-bottom: 0; }
 .ov-table tr.orow { cursor: pointer; } .ov-table tr.orow:hover td { background: var(--sunken); }
+.ov-table td.fc-bad, .ov-table tr.fc-bad td:first-child { color: var(--bad); } .ov-table td.fc-warn, .ov-table tr.fc-warn td:first-child { color: var(--warn); }
 .ov-table td.r, .ov-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
 .ov-pill { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12px * var(--fs)); font-weight: 600; }
 .ov-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--fg3); }
@@ -1392,12 +1393,19 @@ function modelTags(m) {
   // บน build 18 ส.ค.) · บอกตั้งแต่การ์ด ไม่ใช่รอให้กด start แล้วได้ "failed (exit 1)"
   if (runtimeStale(m))
     out.push(`<span class="tag bad" title="${esc(m.runtime_arch.runtime)} does not know '${esc(m.runtime_arch.arch)}' — start would die with “unknown model architecture”. Fix: ${esc(m.runtime_arch.fix)}">runtime older than model</span>`);
+  if (controllerStale(m))
+    out.push(`<span class="tag warn" title="This controller was rendered by release ${esc(m.controller.generated_by || "?")} — ${esc(m.controller.reason || "older than the hub's template")} · press regenerate (offline, seconds; bundle.env is kept)">controller ${esc(m.controller.generated_by || "?")} → regenerate</span>`);
   return out;
 }
 
 // ป้าย/ปุ่ม "runtime older than model" ขึ้นเมื่อ inventory ตอบ supported=false เท่านั้น — null คือ "บอกไม่ได้" ไม่ใช่เสีย
 function runtimeStale(m) {
   return !!(m && m.runtime_arch && m.runtime_arch.supported === false);
+}
+// controller ของ bundle เก่ากว่า template ของ lmds บนเครื่องนั้น (inventory เทียบ template_hash ให้) — Update ไม่เคยแตะ bundle
+// จึงมีของ 0.3.0–0.6.0 ค้าง 46/47 ใบทั้งฟลีต (audit 2026-09-06) · adopted/unknown ไม่นับ
+function controllerStale(m) {
+  return !!(m && m.controller && (m.controller.state === "stale" || m.controller.state === "ahead"));
 }
 function runtimeFixLabel(m) {
   return m.runtime_arch && m.runtime_arch.mode === "docker" ? "newer image needed" : "update runtime";
@@ -1615,6 +1623,7 @@ ${m.running ? benchMarkup(m) : ''}
       ${!HOST_ROLE.control_plane && runtimeStale(m) && m.runtime_arch.mode !== "docker"
         ? btn("job:update-runtime", "update runtime (rebuild llama.cpp)", "border-color:var(--bad)") : ""}
       ${job("check-runtime")}
+      ${controllerStale(m) ? btn("regenerate", "regenerate controller", "border-color:var(--warn)") : ""}
       ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
     </div>
     <div id="rm-${esc(m.slug)}"></div>
@@ -2894,6 +2903,19 @@ document.addEventListener("click", async e => {
     return;
   }
 
+  if (act === "regenerate") {
+    // render controller ใหม่จาก MODEL_PROFILE.yaml (ออฟไลน์) — ไม่ใช่ rebuild ที่ต้องถึง HF
+    btn.disabled = true;
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/regenerate`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { showError(d.detail || "Could not regenerate the controller"); btn.disabled = false; return; }
+    showError(d.line || "regenerated", d.ok ? "ok" : "warn");
+    refresh();
+    return;
+  }
+
   if (act.startsWith("job:")) {
     const command = act.slice(4);
     btn.disabled = true;
@@ -3546,6 +3568,8 @@ function nodeModelsMarkup(name, data) {
               ? `<button data-nact="ctl:update-runtime" data-node="${esc(name)}" data-slug="${esc(m.slug)}" style="border-color:var(--bad)"
                          title="Rebuild llama.cpp from the latest master (LLAMA_CPP_UPDATE=1 prepare-runtime) — several minutes; other bundles on this machine keep working">update runtime</button>` : ""}
             ${ctl("check-runtime", "Which llama.cpp build/image this bundle uses and whether it knows the model's architecture")}
+            ${controllerStale(m) ? `<button data-nact="regenerate" data-node="${esc(name)}" data-slug="${esc(m.slug)}" style="border-color:var(--warn)"
+                         title="Re-render the controller from MODEL_PROFILE.yaml with the current template (lmds bundles refresh — offline, seconds) · bundle.env/bundle.args kept · a running instance keeps the old script until restart">regenerate controller</button>` : ""}
             ${runtimeStale(m) ? `<div class="warn-line" style="color:var(--bad);width:100%">
               ${esc(m.runtime_arch.runtime)} does not know architecture <b>${esc(m.runtime_arch.arch)}</b> — start would die with
               “unknown model architecture” · ${m.runtime_arch.mode === "docker" ? "set a newer llama.cpp image above and start again" : "press update runtime"}</div>` : ""}
@@ -3598,11 +3622,29 @@ function paintNodeVersion(row, d, name) {
   row.version.innerHTML = `${esc(version)}${commit ? ` <span class="dim">${esc(commit)}</span>` : ""}`
     + (stale ? ` <span class="tag warn" title="This machine runs ${esc(commit)} while the hub is at ${esc(hubBuild.commit)}
         — different builds; which is newer needs git · model status is computed by this machine's code, not the hub's">differs from hub</span>` : "")
+    // อีกสองมิติของ "ตรง hub" ระดับเครื่อง: controller ที่เก่ากว่า template ของ hub · build llama.cpp กลาง (แดงเมื่อไม่รู้จัก arch ของ bundle ใด)
+    + versionChips(d)
     // ปุ่มขึ้นเสมอ ไม่ใช่เฉพาะตอนที่ "รู้ว่าตามหลัง" — commit เทียบไม่ได้ (hub ไม่ใช่ git checkout
     // หรือ node ยังตอบ commit ไม่ได้) ก็ยังต้องกดอัปเดตเครื่องนั้นได้อยู่ดี
     + ` <button data-nact="install" data-node="${esc(name || "")}" style="font-size:calc(12px * var(--fs))"
           class="${stale ? "warn" : ""}"
           title="Pull the latest code from GitHub and install it on this machine (running models are not touched)">update</button>`;
+}
+
+function versionChips(d) {
+  const models = (d.models || []).filter(m => m.stacked_role !== "worker");
+  const stale = models.filter(controllerStale);
+  const rt = models.filter(runtimeStale);
+  const builds = ((d.host || {}).runtimes || {}).llamacpp || [];
+  let out = "";
+  if (stale.length)
+    out += ` <span class="tag warn" title="${esc(stale.map(m => `${m.slug} (${(m.controller || {}).generated_by || "?"})`).join(", "))} — rendered by an older release than the hub's template · regenerate from each card (offline) or press Update">controllers ${stale.length} stale</span>`;
+  for (const b of builds) {
+    if (!b.present) continue;
+    const affected = rt.filter(m => ((m.runtime || {}).llamacpp_dir || "") === b.dir).map(m => m.slug);
+    out += ` <span class="tag ${affected.length ? "bad" : ""}" title="${esc(b.dir)} · commit ${esc(b.commit || "?")}${b.lock_state && b.lock_state !== "ok" ? ` · lock ${esc(b.lock_state)}` : ""}${affected.length ? ` — does not know the architecture of ${esc(affected.join(", "))} (update runtime on that card)` : ""}">llama.cpp ${esc(b.build || "?")}${b.date ? ` · ${esc(b.date.slice(5))}` : ""}</span>`;
+  }
+  return out;
 }
 
 async function loadNode(name) {
@@ -3957,6 +3999,15 @@ document.addEventListener("click", async e => {
     // วัดเต็มชุดกินเวลาหลายนาที — สตรีมผล แล้วรีเฟรชตารางคะแนนตอนจบ
     await followNodeJob(node, slug, d.job.id);
     loadBench();
+    return;
+  }
+
+  if (nact === "regenerate") {
+    const d = await withButton(btn, "regenerating…", () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/regenerate`, { method: "POST" }));
+    if (!d) return;
+    showNodeOutput(node, `regenerate · ${slug}`, d.output);
+    if (d.exit_code === 0) loadNode(node);
     return;
   }
 
@@ -5290,6 +5341,7 @@ async function refresh() {
     // Isolated + non-blocking: the fleet strip reads cached data, and a hiccup
     // here must never take down the main render.
     api("/api/fleet/summary").then(r => r.json()).then(renderFleetSummary).catch(() => {});
+    loadFleetConsistency();
   } catch {
     document.getElementById("fleet").innerHTML = `<div class="empty">Cannot reach LMDS — is the server still running?</div>`;
   }
@@ -5452,7 +5504,8 @@ async function updateEverything() {
     upStep("n:" + name, name, "run", "Installing…");
     let jr;
     try {
-      jr = await api(`/api/nodes/${encodeURIComponent(name)}/install`, { method: "POST" });
+      jr = await api(`/api/nodes/${encodeURIComponent(name)}/install`,
+                     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
     } catch { upStep("n:" + name, name, "bad", "Cannot reach the hub"); continue; }
     if (!jr.ok) {
       const d = await jr.json().catch(() => ({}));
@@ -5461,13 +5514,59 @@ async function updateEverything() {
     }
     const nodeJob = (await jr.json()).job;
     const nodeCode = await followInto(nodeJob.id, upLog);
-    upStep("n:" + name, name, nodeCode === 0 ? "ok" : "bad",
-           nodeCode === 0 ? "matches the hub" : `exit ${nodeCode}`);
+    if (nodeCode !== 0) { upStep("n:" + name, name, "bad", `install exit ${nodeCode}`); continue; }
+    // exit 0 ของ install บอกแค่ว่า install.sh ผ่าน — "ตรง hub" ต้องมาจาก probe ซ้ำแล้วดูครบ 3 มิติ
+    // (audit 2026-09-06 §3.4: เดิมพิมพ์ "matches the hub" จาก exit 0 ทั้งที่ controller/llama.cpp ยังเก่า)
+    upStep("n:" + name, name, "run", "Installed — checking code · controllers · runtime…");
+    let v = await nodeVerdict(name);
+    if (v && v.runtimes.state === "stale" && (v.runtimes.items || []).length) {
+      for (const slug of v.runtimes.items) {
+        upStep("n:" + name, name, "run", `Rebuilding llama.cpp for ${slug} (LLAMA_CPP_UPDATE=1 prepare-runtime) — usually 10–15 min…`);
+        let rj = null;
+        try {
+          const r = await api(`/api/nodes/${encodeURIComponent(name)}/models/${encodeURIComponent(slug)}/ctl/update-runtime`, { method: "POST" });
+          rj = r.ok ? await r.json() : null;
+        } catch { rj = null; }
+        if (rj && rj.job) {
+          const c = await followInto(rj.job.id, upLog);
+          if (c !== 0) upLog.textContent += `\n${name}/${slug}: update-runtime exit ${c}`;
+        }
+      }
+      v = await nodeVerdict(name);
+    }
+    upStep("n:" + name, name, !v ? "bad" : v.consistent ? "ok" : (v.level === "warn" ? "wait" : "bad"), verdictText(v));
   }
+  await loadFleetConsistency();
+  const line = ((lastFleetConsistency || {}).summary || {}).line || "";
   document.getElementById("up-note").textContent =
-    "Done — you can close this window · for machines still marked failed, see the log below";
+    "Done — you can close this window · for machines still marked failed, see the log below" + (line ? ` · ${line}` : "");
   nodeRows.clear();
   refreshNodes();
+}
+
+// probe เครื่องนั้นซ้ำ (ไม่อ่านแคช) แล้วเอาคำตัดสิน 3 มิติจาก /api/fleet/consistency — null = probe ไม่ได้
+async function nodeVerdict(name) {
+  try {
+    const r = await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.reachable === false) return null;
+  } catch { return null; }
+  await loadFleetConsistency();
+  return ((lastFleetConsistency || {}).nodes || []).find(n => n.name === name) || null;
+}
+
+function verdictText(v) {
+  if (!v) return "installed, but the machine could not be probed afterwards — not confirmed";
+  const mark = a => (a.state === "ok" || a.state === "n/a") ? "✓" : a.state === "unknown" ? "?" : "✗";
+  const marks = `code ${mark(v.code)} · controllers ${mark(v.controllers)} · runtime ${mark(v.runtimes)}`;
+  if (v.consistent) return `matches the hub (${marks})`;
+  const bad = [];
+  for (const [k, a] of [["code", v.code], ["controllers", v.controllers], ["runtime", v.runtimes]]) {
+    if (a.state === "ok" || a.state === "n/a") continue;
+    bad.push(a.state === "unknown" ? `${k} could not be checked (${a.detail})`
+      : `${k} ${a.state}${(a.items || []).length ? ` (${a.items.join(", ")})` : ` — ${a.detail}`}`);
+  }
+  return `does not match the hub yet — ${bad.join(" · ")} (${marks})`;
 }
 
 document.getElementById("update").addEventListener("click", updateEverything);
@@ -5523,7 +5622,7 @@ function fixButtonFor(node, output) {
   const slug = (m[1].split("/").pop() || "").replace(/-single\.sh$/, "");
   if (!slug) return "";
   const why = {
-    "prepare-runtime": "This machine has never installed this engine's runtime — a one-time step",
+    "prepare-runtime": "Prepare this engine's runtime — reuses a newer shared llama.cpp build if one exists (never downgrades), otherwise builds it",
     "download": "The weights are not complete on this machine yet",
     "verify-files": "Check that the downloaded files are complete and intact",
     "stop": "The running instance must be stopped first",
@@ -5831,6 +5930,14 @@ function signOut() {
 // ผู้ใช้ 2026-09-04: "เมนูอยู่ซ้าย กดรายการแล้วรายละเอียดออกตรงกลาง site/node อยู่ซ้าย"
 let route = { kind: "overview" };
 let lastFleetSummary = null;
+// "ตรง hub" 3 มิติต่อเครื่องจาก /api/fleet/consistency — การ์ด Fleet consistency บนหน้าภาพรวมและปุ่ม Update ใช้ร่วมกัน
+let lastFleetConsistency = null;
+async function loadFleetConsistency() {
+  try {
+    const r = await api("/api/fleet/consistency");
+    if (r.ok) lastFleetConsistency = await r.json();
+  } catch { /* hub รุ่นเก่า/ต่อไม่ได้ — การ์ดโชว์ "loading…" ต่อไป */ }
+}
 let lastLocalModels = [];
 let ovPaintedAt = 0;
 const RAIL_OPEN_KEY = "lmds:rail:open";
@@ -6006,14 +6113,22 @@ function ovAlerts() {
       if (ms.length > 1 && ms.some(m => m.running) && ms.some(m => !m.running))
         out.push({ lv: "warn", t: `${name}: port ${port} shared`, s: ms.map(m => m.slug).join(" · ") + " — the stopped one cannot start until its port changes", href: `#/node/${encodeURIComponent(name)}` });
     }
+    // code ไม่ตรง hub = warn ไม่ใช่ info: สถานะทุกอย่างของโมเดลบนเครื่องนั้นคำนวณด้วยโค้ดของมันเอง (audit 2026-09-06 §5.5)
     if (hubBuild.commit && reg.lmds_commit && !sameCommit(reg.lmds_commit, hubBuild.commit))
-      out.push({ lv: "info", t: `${name} runs LMDS ${reg.lmds_version || "?"} (${reg.lmds_commit})`, s: `hub is at ${hubBuild.version} · ${hubBuild.commit} — update when convenient`, href: `#/node/${encodeURIComponent(name)}` });
+      out.push({ lv: "warn", t: `${name} runs LMDS ${reg.lmds_version || "?"} (${reg.lmds_commit})`, s: `hub is at ${hubBuild.version} · ${hubBuild.commit} — press Update (or update on its card)`, href: `#/node/${encodeURIComponent(name)}` });
+    // controller ของ bundle เก่ากว่า template ของ hub — Update ไม่เคยแตะ bundle มาก่อน
+    const staleCtl = models.filter(controllerStale);
+    if (staleCtl.length)
+      out.push({ lv: "warn", t: `${name}: ${staleCtl.length} controller${staleCtl.length > 1 ? "s" : ""} older than the hub's template`, s: staleCtl.map(m => `${m.slug} (${(m.controller || {}).generated_by || "?"})`).join(" · ") + " — regenerate on its card (offline) or press Update", href: `#/node/${encodeURIComponent(name)}` });
     // llama.cpp บนเครื่องเก่ากว่าโมเดล — รู้ก่อนกด start (spark-worker 2026-09-06: qwen4exp บน build 18 ส.ค.)
     for (const m of models) if (runtimeStale(m))
       out.push({ lv: "bad", t: `${name}: ${m.slug} — runtime older than model`, s: `${m.runtime_arch.runtime} does not know '${m.runtime_arch.arch}' — start would fail · ${runtimeFixLabel(m)} on its card`, href: `#/node/${encodeURIComponent(name)}` });
   }
   for (const m of (lastLocalModels || [])) if (runtimeStale(m))
     out.push({ lv: "bad", t: `hub: ${m.slug} — runtime older than model`, s: `${m.runtime_arch.runtime} does not know '${m.runtime_arch.arch}' — start would fail · ${runtimeFixLabel(m)} on its card`, href: "#/hub" });
+  const localStale = (lastLocalModels || []).filter(controllerStale);
+  if (localStale.length)
+    out.push({ lv: "warn", t: `hub: ${localStale.length} controller${localStale.length > 1 ? "s" : ""} older than the current template`, s: localStale.map(m => m.slug).join(" · ") + " — regenerate on its card (offline); pushing an old bundle sends the old controller", href: "#/hub" });
   return out;
 }
 
@@ -6067,9 +6182,81 @@ function renderOverview(force = false) {
         </div></div>
       </div>
     </div>
+    ${fleetConsistencyCard()}
     <div class="card ov-panel" style="margin-top:14px"><div class="ov-hd"><h3>Sites</h3><div class="r">Click a row to see its machines</div></div>
       <div style="overflow-x:auto"><table class="ov-table"><tr><th>Site</th><th class="r">Machines</th><th class="r">Online</th><th class="r">Running</th><th class="r">GPU used / total (GB)</th><th></th></tr>${siteRows}</table></div></div>`;
   el.querySelectorAll("tr.orow[data-href]").forEach(tr => tr.onclick = () => { location.hash = tr.dataset.href; });
+  bindFleetConsistencyButtons(el);
+}
+
+// ── การ์ด Fleet consistency: เครื่อง | code | controllers | runtime — แถวแดงคลิกไปการ์ด · ปุ่มแก้ทั้งฟลีต ──
+// "ตรง hub" = ok ครบสามมิติ (audit 2026-09-06 §5.1) · เหลือง = ตรวจไม่ได้ · ข้อมูลจากแคชของ hub ไม่ SSH
+function fleetConsistencyCard() {
+  const FC = lastFleetConsistency;
+  const S = (FC || {}).summary || {};
+  const ok = a => a.state === "ok" || a.state === "n/a";
+  const cell = a => `<td class="${ok(a) ? "" : a.state === "unknown" ? "fc-warn" : "fc-bad"}" title="${esc(a.detail)}">${ok(a) ? "✓" : a.state === "unknown" ? "?" : "✗"} <span class="dim">${esc((a.detail || "").slice(0, 56))}</span></td>`;
+  const rows = ((FC || {}).nodes || []).map(n =>
+    `<tr class="orow ${n.level === "bad" ? "fc-bad" : n.level === "warn" ? "fc-warn" : ""}" data-href="#/node/${encodeURIComponent(n.name)}"><td><b>${esc(n.name)}</b>${n.source === "registry" ? ` <span class="dim" title="from the registry's last probe — open the card to refresh">(last probe)</span>` : ""}</td>${cell(n.code)}${cell(n.controllers)}${cell(n.runtimes)}</tr>`).join("");
+  const hubV = FC && FC.hub && FC.hub.verdict;
+  const hubRow = hubV ? `<tr class="orow ${hubV.level === "bad" ? "fc-bad" : hubV.level === "warn" ? "fc-warn" : ""}" data-href="#/hub"><td><b>hub</b></td><td title="hub is the reference">— </td>${cell(hubV.controllers)}${cell(hubV.runtimes)}</tr>` : "";
+  const dirty = FC && FC.hub && (FC.hub.dirty || []).length;
+  return `<div class="card ov-panel" style="margin-top:14px" id="ov-fc"><div class="ov-hd"><h3>Fleet consistency</h3>
+      <div class="r">${FC ? `${S.consistent || 0} / ${S.total || 0} machines match the hub · code · controllers · runtime` : "loading…"}</div></div>
+    <div class="ov-bd">
+      ${dirty ? `<div class="warn-line" style="color:var(--bad)">The hub has ${dirty} uncommitted file(s) in its checkout — an Update would ship the last commit, not the code the hub runs. Commit first.</div>` : ""}
+      <div style="overflow-x:auto"><table class="ov-table"><tr><th>Machine</th><th>code</th><th>controllers</th><th>runtime</th></tr>${hubRow}${rows || `<tr><td colspan="4" class="empty">No machine data yet</td></tr>`}</table></div>
+      <div class="field" style="margin-top:8px">
+        <button id="ov-regen" ${S.controllers_stale ? "" : "disabled"} title="Run lmds bundles refresh on every machine with a stale controller — offline, seconds each, bundle.env kept; running models keep the old script until restart">Regenerate stale controllers (${S.controllers_stale || 0})</button>
+        <button id="ov-runtimes" ${S.runtime_stale ? "" : "disabled"} title="Rebuild llama.cpp (LLAMA_CPP_UPDATE=1 prepare-runtime) on every machine whose build does not know a model's architecture — 10–15 min per machine, progress on each card">Update runtimes (${S.runtime_stale || 0})</button>
+        <span class="dim">${esc(S.line || "")}</span>
+      </div>
+    </div></div>`;
+}
+
+function bindFleetConsistencyButtons(el) {
+  const FC = lastFleetConsistency;
+  if (!FC) return;
+  const regen = el.querySelector("#ov-regen");
+  if (regen) regen.onclick = async () => {
+    regen.disabled = true; regen.textContent = "Regenerating…";
+    try {
+      const hubItems = ((FC.hub || {}).verdict || {}).controllers?.items || [];
+      for (const slug of hubItems)
+        await api(`/api/models/${encodeURIComponent(slug)}/regenerate`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => null);
+      for (const n of FC.nodes || []) {
+        if (n.controllers.state !== "stale" && n.controllers.state !== "ahead") continue;
+        const items = n.controllers.items || [];
+        if (!items.length) { await api(`/api/nodes/${encodeURIComponent(n.name)}/inventory?refresh=true`).catch(() => null); continue; }
+        for (const slug of items)
+          await api(`/api/nodes/${encodeURIComponent(n.name)}/models/${encodeURIComponent(slug)}/regenerate`, { method: "POST" }).catch(() => null);
+        await api(`/api/nodes/${encodeURIComponent(n.name)}/inventory?refresh=true`).catch(() => null);
+      }
+      await loadFleetConsistency();
+    } finally {
+      regen.disabled = false;
+      renderOverview(true);
+    }
+  };
+  const rt = el.querySelector("#ov-runtimes");
+  if (rt) rt.onclick = async () => {
+    rt.disabled = true; rt.textContent = "Starting rebuilds…";
+    try {
+      for (const n of FC.nodes || []) {
+        if (n.runtimes.state !== "stale") continue;
+        for (const slug of n.runtimes.items || []) {
+          try {
+            const r = await api(`/api/nodes/${encodeURIComponent(n.name)}/models/${encodeURIComponent(slug)}/ctl/update-runtime`, { method: "POST" });
+            const d = r.ok ? await r.json() : null;
+            if (d && d.job) followNodeJob(n.name, slug, d.job.id);
+          } catch { /* เครื่องนั้นต่อไม่ได้ — การ์ดของมันบอกเอง */ }
+        }
+      }
+    } finally {
+      rt.disabled = false;
+      rt.textContent = "Rebuilds started — see each machine's card";
+    }
+  };
 }
 
 // ── โมเดลทั้งฟลีต ──

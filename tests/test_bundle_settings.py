@@ -162,3 +162,26 @@ def test_real_bundle_profile_carries_the_native_context_used_by_the_cap(tmp_path
     assert native_context(bundle_dir) == 262144
     with pytest.raises(SettingsError):
         write(bundle_dir, {"context": 262145})
+
+
+def test_image_is_refused_for_a_native_llamacpp_bundle(tmp_path):
+    """audit 2026-09-06 §6.1: native ไม่อ่าน LLAMACPP_IMAGE — `lmds set --image` เคยเขียนสำเร็จเงียบ ๆ แล้วไม่มีผลอะไร"""
+    import pytest
+    import yaml
+
+    from lmds.fleet.bundle_settings import SettingsError, read, write
+
+    bundle_dir = tmp_path / "native-bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(
+        {"runtime": {"engine": "llamacpp", "image": "ghcr.io/ggml-org/llama.cpp:server-cuda", "native_build": True},
+         "target": {"memory_model": "unified"}}), encoding="utf-8")
+    with pytest.raises(SettingsError) as caught:
+        write(bundle_dir, {"image": "ghcr.io/ggml-org/llama.cpp:newer"})
+    assert "native" in str(caught.value) and "update runtime" in str(caught.value)
+    assert read(bundle_dir) == {}
+    # docker mode ยังตั้งได้ตามเดิม
+    (bundle_dir / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(
+        {"runtime": {"engine": "llamacpp", "image": "ghcr.io/ggml-org/llama.cpp:server-cuda", "native_build": False},
+         "target": {"memory_model": "discrete"}}), encoding="utf-8")
+    assert write(bundle_dir, {"image": "ghcr.io/ggml-org/llama.cpp:newer"})["image"] == "ghcr.io/ggml-org/llama.cpp:newer"

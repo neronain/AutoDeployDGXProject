@@ -304,3 +304,33 @@ def test_an_image_that_is_merely_not_pulled_stays_a_warning(tmp_path, monkeypatc
 
     finding = next(f for f in diagnose(slug).findings if f.name == "runtime-image")
     assert finding.status is Status.WARN
+
+
+def test_doctor_flags_controller_older_than_lmds(tmp_path, monkeypatch):
+    """controller ที่ render โดย lmds รุ่นเก่า (template_hash ต่าง/ไม่มี) = WARN `controller-stale` พร้อม fix
+    `lmds bundles refresh` · adopted ไม่นับ · ตรง template = OK"""
+    from lmds.generator.renderer import template_hash
+
+    slug = _setup(tmp_path, monkeypatch)
+    bundle = tmp_path / "bundles" / slug
+    profile = yaml.safe_load((bundle / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+    # ไม่มี generated_by เลย = ตรวจไม่ได้ → แนะ rebuild (ออนไลน์) ไม่ใช่ refresh ที่จะล้มเพราะขาดคีย์
+    unknown = next(f for f in diagnose(slug).findings if f.name == "controller-stale")
+    assert unknown.status is Status.WARN and f"lmds rebuild {slug}" in unknown.fix
+    profile["generated_by"] = "lmds 0.5.1"
+    (bundle / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(profile), encoding="utf-8")
+    finding = next(f for f in diagnose(slug).findings if f.name == "controller-stale")
+    assert finding.status is Status.WARN, finding
+    assert "0.5.1" in finding.detail
+    assert f"lmds bundles refresh {slug}" in finding.fix and "git pull" not in finding.fix
+
+    profile["generated_by"] = "lmds 0.6.1"
+    profile["template_hash"] = template_hash()
+    (bundle / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(profile), encoding="utf-8")
+    assert next(f for f in diagnose(slug).findings if f.name == "controller-stale").status is Status.OK
+
+    profile["generated_by"] = "lmds adopt"
+    profile["adopted"] = True
+    (bundle / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(profile), encoding="utf-8")
+    adopted = next(f for f in diagnose(slug).findings if f.name == "controller-stale")
+    assert adopted.status is Status.OK and "adopted" in adopted.detail

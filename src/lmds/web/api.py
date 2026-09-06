@@ -1525,7 +1525,7 @@ def create_app(token: str = "") -> FastAPI:
         พร้อมคำสั่งให้ไป ssh ทำเอง ทั้งที่ hub ต่อ SSH ได้อยู่แล้วและ CLI ก็มี
         `lmds node install` มาตลอด
         """
-        from lmds.nodes import find, prepare_install
+        from lmds.nodes import HubDirtyError, find, prepare_install
 
         from . import jobs
 
@@ -1534,12 +1534,68 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
         # prerequisite (docker/toolkit) ต้องใช้ sudo ซึ่งไม่มี tty ให้กรอกรหัส — ค่าเริ่มต้นจึงข้าม
         # hub ส่งโค้ดของตัวเองไปให้ก่อน (scp ~2 MB) — เครื่องนั้นไม่ต้องมีสิทธิ์เข้า GitHub
-        script = prepare_install(node, with_prereq=bool((body or {}).get("with_prereq")))
+        # hub ที่มีไฟล์แก้ค้าง = 409 (node จะได้ commit ไม่ใช่โค้ดที่ hub รัน) เว้นแต่ force:true (audit 2026-09-06 C3)
         try:
-            job = jobs.start_remote(name, "_install", "install", script)
+            script = prepare_install(node, with_prereq=bool((body or {}).get("with_prereq")),
+                                     force=bool((body or {}).get("force")))
+        except HubDirtyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        def refresh_after(job) -> list[str]:
+            # การ์ดต้องไม่โชว์ commit/controller เก่าอีก 15 วิหลังงานจบ — ปุ่ม Update อ่านผล probe ซ้ำจากตรงนี้
+            state.STORE.force(name)
+            return []
+
+        try:
+            job = jobs.start_remote(name, "_install", "install", script, on_done=refresh_after)
         except jobs.JobError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "job": job.payload()}
+
+    @app.get("/api/fleet/consistency", dependencies=guarded)
+    def fleet_consistency() -> dict:
+        """"ตรง hub" 3 มิติต่อเครื่อง (code · controllers · runtimes) — จากแคช agent info + ทะเบียน ไม่ SSH
+
+        โครงเดียวกับ `lmds fleet check --json` (ฟังก์ชันเดียวกัน) · เครื่องที่แคชยังไม่มีข้อมูลใช้ตัวนับจากทะเบียน
+        (`source: registry`) ซึ่งบอกได้ว่าค้างกี่ใบแต่ไม่รู้ชื่อ
+        """
+        from lmds.fleet.consistency import fleet_report
+        from lmds.nodes import load
+
+        snap = state.STORE.snapshot()
+        return fleet_report(snap.get("nodes") or {}, _ordered_nodes(), (snap.get("host") or {}).get("data"))
+
+    @app.post("/api/models/{slug}/regenerate", dependencies=guarded)
+    def regenerate_local(slug: str, body: dict | None = None) -> dict:
+        """regenerate controller ของ bundle บนเครื่องนี้จาก MODEL_PROFILE.yaml — ออฟไลน์ (ไม่ใช่ lmds rebuild)"""
+        from lmds.fleet.refresh import format_result, refresh_bundles
+
+        _check_slug(slug)
+        results = refresh_bundles([slug], if_older=bool((body or {}).get("if_older")))
+        state.STORE.invalidate_local()
+        result = results[0]
+        if result.action == "missing":
+            raise HTTPException(status_code=404, detail=result.detail or f"ไม่รู้จัก {slug}")
+        return {"slug": slug, **result.payload(), "line": format_result(result), "ok": result.ok}
+
+    @app.post("/api/nodes/{name}/models/{slug}/regenerate", dependencies=guarded)
+    def regenerate_on_node(name: str, slug: str, body: dict | None = None) -> dict:
+        """`lmds bundles refresh <slug>` บนเครื่องนั้น — ปุ่ม regenerate บนการ์ด (ทำงานออฟไลน์ ไม่กี่วินาที)"""
+        from lmds.nodes import NodeError, find, run
+
+        _check_slug(slug)
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        flags = " --if-older" if (body or {}).get("if_older") else ""
+        remote = f"lmds bundles refresh {shlex.quote(slug)}{flags}"
+        try:
+            result = run(node, remote, timeout=300)
+            state.STORE.force(name)
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"node": name, "slug": slug, "command": "regenerate",
+                "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
 
     @app.post("/api/hub/fix-docker", dependencies=guarded)
     def hub_fix_docker(body: dict) -> dict:

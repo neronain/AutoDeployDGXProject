@@ -287,22 +287,26 @@ def _prepare_runtime_harness(tmp_path, bundle) -> tuple[str, Path, Path]:
         # prepare_runtime ถาม arch ของโมเดลก่อนเชื่อ lock (2026-09-06) — ไม่มีไฟล์โมเดล = ไม่ฟันธง ใช้ lock ตามเดิม
         f'RUNTIME_MODE=native\nLLAMACPP_IMAGE=x\nMODEL_DIR="{tmp_path}/models"\nMODEL_FILE=missing.gguf\n'
         + extract_fn(text, "gguf_architecture") + extract_fn(text, "runtime_knows_arch")
-        + extract_fn(text, "runtime_build_info")
+        + extract_fn(text, "runtime_build_info") + extract_fn(text, "runtime_commit")
+        + extract_fn(text, "runtime_build_number") + extract_fn(text, "write_build_stamp")
+        + extract_fn(text, "bundles_sharing_build") + extract_fn(text, "warn_running_servers")
         + extract_fn(text, "prepare_runtime") + "\nprepare_runtime\n"
     )
     return script, log, run_dir / "runtime.lock"
 
 
 def test_prepare_runtime_honours_the_lock_by_default(tmp_path):
+    """lock = ขั้นต่ำที่พิสูจน์แล้ว (0.6.1) — build ที่มี (HEAD=newcommit) ใหม่กว่า lock จึงใช้ที่มี ไม่ fetch ไม่ build ซ้ำ
+    · lock เลื่อนมาที่ build จริง · ไม่มีวัน checkout ของเก่ามา build ทับ"""
     bundle = _bundle(tmp_path, _gguf_report())
     script, log, lock = _prepare_runtime_harness(tmp_path, bundle)
     out = run_bash(script)
     assert out.returncode == 0, out.stderr
     calls = log.read_text(encoding="utf-8")
-    assert "fetch" not in calls
-    assert "checkout --quiet lockedcommit" in calls
-    assert lock.read_text().strip() == "lockedcommit"
-    assert "LLAMA_CPP_UPDATE=1" in out.stdout      # บอกทางอัปเดตไว้ตรงบรรทัดที่ใช้ lock
+    assert "fetch" not in calls and "checkout" not in calls and "cmake" not in calls
+    assert "merge-base --is-ancestor lockedcommit newcommit" in calls
+    assert lock.read_text().strip() == "newcommit"
+    assert "action=reuse" in out.stdout and "LLAMA_CPP_UPDATE=1" in out.stdout      # บอกทางอัปเดตไว้ตรงบรรทัดที่ใช้ build เดิม
 
 
 def test_prepare_runtime_updates_when_asked(tmp_path):
@@ -570,3 +574,38 @@ def test_llamacpp_controller_only_warns_above_the_trained_context(tmp_path):
     env = dict(API_PORT=8000, NATIVE_CONTEXT=131072, CLIENT_OUTPUT=4096, PARALLEL_SEQS=1)
     warned = run_bash(_validate_numbers_script(text, CTX_SIZE=262144, **env))
     assert "VALID" in warned.stdout and "WARN" in warned.stderr and "131072" in warned.stderr
+
+
+# ───────────────────────── TEMPLATE_HASH: bundle เก่านับว่า stale เมื่อ template เปลี่ยน แม้เลข version เท่ากัน ─────────────────────────
+def test_template_hash_changes_when_template_changes(tmp_path):
+    import shutil
+
+    import yaml
+
+    from lmds.fleet.consistency import controller_state
+    from lmds.generator.renderer import template_hash
+
+    current = template_hash()
+    assert len(current) == 12 and current == template_hash()
+    bundle = _bundle(tmp_path, _gguf_report())
+    text = bundle.controller.read_text(encoding="utf-8")
+    assert f'TEMPLATE_HASH="{current}"' in text, "หัว controller ต้องมีลายเซ็น template"
+    profile = yaml.safe_load((bundle.directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+    assert profile["template_hash"] == current
+    assert controller_state(profile, bundle.controller)["state"] == "ok"
+
+    copy = tmp_path / "templates"
+    shutil.copytree(TEMPLATES, copy)
+    assert template_hash(copy) == current
+    with open(copy / "single-llamacpp-controller.sh.j2", "ab") as handle:
+        handle.write(b"#")                       # แก้ 1 ไบต์
+    changed = template_hash(copy)
+    assert changed != current
+    version = profile["generated_by"].split()[-1]
+    # bundle ที่ render ด้วยชุดเดิม เทียบกับแพ็กเกจที่ template เปลี่ยน = stale แม้ version เท่ากัน
+    state = controller_state(profile, bundle.controller, package_version=version, package_hash=changed)
+    assert state["state"] == "stale" and current in state["reason"]
+    # ไม่มี template_hash (bundle ก่อน 0.6.1) = stale แม้ generated_by เท่ากับแพ็กเกจ · adopt = n/a
+    old = {k: v for k, v in profile.items() if k != "template_hash"}
+    assert controller_state(old, None, package_version=version, package_hash=current)["state"] == "stale"
+    assert controller_state({**old, "generated_by": "lmds adopt"}, None)["state"] == "adopted"

@@ -682,6 +682,31 @@ def _check_controller(server: ServerInfo) -> list[Finding]:
                     f"deploy ใหม่ หรือ lmds remove {server.slug} เพื่อล้างทะเบียนทิ้ง")]
 
 
+def _check_controller_age(profile: dict, server: ServerInfo) -> list[Finding]:
+    """controller เก่ากว่า template ของ lmds บนเครื่องนี้ไหม — bundle ที่ Update ไม่เคยแตะ (audit 2026-09-06)
+
+    เทียบ template_hash ที่ renderer ฝังไว้ ไม่ใช่เลข version · ไม่มี hash (render ก่อน 0.6.1) = เก่าแน่ ·
+    adopted = ไม่มี template ให้ regenerate (ไม่ใช่ปัญหา) · แก้ด้วย `lmds bundles refresh <slug>` (ออฟไลน์)
+    """
+    from lmds.fleet.consistency import controller_state
+
+    state = controller_state(profile, server.controller if server.controller_exists else None)
+    if state["state"] == "ok":
+        return [Finding("controller-stale", Status.OK, f"controller ตรง template ของ lmds (lmds {state['generated_by']})")]
+    if state["state"] == "adopted":
+        return [Finding("controller-stale", Status.OK, "adopted — ไม่มี template ให้ regenerate")]
+    if state["state"] in ("stale", "ahead"):
+        return [Finding(
+            "controller-stale", Status.WARN,
+            f"controller {'เก่ากว่า' if state['state'] == 'stale' else 'ใหม่กว่า'} lmds บนเครื่องนี้ — {state['reason']} "
+            f"· ไม่มีคำสั่ง/ตัวกันพลาดที่เพิ่มมาทีหลัง (เช่น check-runtime, explain_crash)",
+            f"lmds bundles refresh {server.slug}   (ออฟไลน์ · เก็บของเดิมเป็น .replaced-* · bundle.env คงเดิม"
+            f"{' · ตัวที่รันอยู่ใช้ controller ใหม่เมื่อ restart' if server.running else ''})",
+        )]
+    return [Finding("controller-stale", Status.WARN, f"ตรวจไม่ได้ว่า controller เก่าไหม — {state['reason']}",
+                    f"lmds rebuild {server.slug}")]
+
+
 def _check_role() -> list[Finding]:
     """เครื่องนี้มีไว้รันโมเดล หรือมีไว้สร้าง bundle แล้วส่งต่อ
 
@@ -748,6 +773,7 @@ def diagnose(slug: str) -> Diagnosis:
             "ไฟล์อยู่ข้าง controller ใน bundle เดียวกัน",
         ))
     else:
+        result.findings.extend(_check_controller_age(profile, server))
         result.findings.extend(_check_hf_token(profile))
         result.findings.extend(_check_weights(profile, slug))
         result.findings.extend(_check_permissions(profile, slug))

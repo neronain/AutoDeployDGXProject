@@ -48,6 +48,15 @@ app.add_typer(cluster_app, name="cluster")
 agent_app = typer.Typer(help="ให้ hub เรียกผ่าน SSH — ปกติผู้ใช้ไม่ต้องเรียกเอง", no_args_is_help=True)
 app.add_typer(agent_app, name="agent")
 
+# bundle บนเครื่องนี้ — regenerate controller ที่เก่ากว่า template ของ lmds แบบออฟไลน์ (Update path เรียกให้เอง)
+bundles_app = typer.Typer(help="จัดการ bundle บนเครื่องนี้: regenerate controller เก่าให้ตรง template ปัจจุบัน (ออฟไลน์)",
+                          no_args_is_help=True)
+app.add_typer(bundles_app, name="bundles")
+# ฟลีต "ตรง hub" 3 มิติ (code · controllers · runtimes) จากสิ่งที่ hub ถืออยู่ — ไม่ SSH
+fleet_app = typer.Typer(help="ภาพรวมทั้งฟลีต: ทุกเครื่องตรง hub ครบ 3 มิติ (code · controller · runtime) ไหม",
+                        no_args_is_help=True)
+app.add_typer(fleet_app, name="fleet")
+
 console = Console()
 err_console = Console(stderr=True)
 
@@ -310,7 +319,7 @@ def node_list(
         if version and hub_commit and node_commit and not _same_commit(node_commit, hub_commit):
             version += " [yellow]≠ hub[/yellow]"
         return (node.name, f"{node.target}:{node.port}", local_ip or "—",
-                version or "—", status, node.note)
+                version or "—", _bundles_cell(node), node.llamacpp_build or "—", status, node.note)
 
     # จัดกลุ่มตาม site — เครื่องเยอะจากหลายไซต์จะได้ไม่กองรวมเป็นลิสต์ยาวจนหาไม่เจอ
     # เรียงให้ site ที่ยังไม่จัดกลุ่ม ("—") อยู่ท้ายสุด ที่เหลือเรียงตามชื่อไซต์
@@ -324,7 +333,7 @@ def node_list(
     for site in ordered:
         title = f"ไซต์: {site}" if site else ("เครื่องในทะเบียน" if not multi else "— ยังไม่จัดไซต์ —")
         table = Table(title=title)
-        for col in ("ชื่อ", "ปลายทาง", "IP ของเครื่อง", "lmds",
+        for col in ("ชื่อ", "ปลายทาง", "IP ของเครื่อง", "lmds", "bundles", "llama.cpp",
                     "สถานะ" if check else "เห็นล่าสุด", "โน้ต"):
             table.add_column(col)
         for node in groups[site]:
@@ -334,7 +343,22 @@ def node_list(
     console.print("[dim]จัดกลุ่มตามไซต์: lmds node set <ชื่อ> --site <ไซต์>"
                   + ("" if check else " · เช็กสถานะจริง: lmds node list --check")
                   + (f" · hub อยู่ที่ {hub_commit} — ≠ hub = อัปเดตด้วย lmds node install <ชื่อ>" if hub_commit else "")
+                  + " · bundles/llama.cpp = controller ที่เก่ากว่า template ของ hub และ build ที่ไม่รู้จัก arch ของโมเดล"
+                  " (จาก probe ล่าสุด) · ทั้งฟลีต: lmds fleet check"
                   + "[/dim]")
+
+
+def _bundles_cell(node) -> str:
+    """คอลัมน์ bundles ของ `lmds node list` — จากตัวนับที่ทะเบียนจำไว้ (ไม่ SSH)"""
+    stale, rt = node.controllers_stale, node.runtime_stale
+    if stale is None and rt is None:
+        return "—"
+    parts = []
+    if stale:
+        parts.append(f"[yellow]controller ค้าง {stale}[/yellow]")
+    if rt:
+        parts.append(f"[red]runtime ค้าง {rt}[/red]")
+    return " · ".join(parts) if parts else "[green]ตรง hub[/green]"
 
 
 @node_app.command("remove")
@@ -644,13 +668,24 @@ def node_install(
         False, "--with-prereq",
         help="ให้ติดตั้ง Docker/NVIDIA toolkit ด้วย (ต้องรัน sudo ได้โดยไม่ถามรหัสผ่าน)",
     ),
+    runtimes: bool = typer.Option(
+        True, "--runtimes/--no-runtimes",
+        help="หลังอัปเดตโค้ด: build llama.cpp ใหม่ให้ bundle ที่รันไทม์เก่ากว่าโมเดล (10–15 นาที/เครื่อง · --no-runtimes = ข้าม)",
+    ),
+    force: bool = typer.Option(False, "--force", help="ส่งแม้ hub มีไฟล์แก้ค้างใน checkout (node จะได้ commit ไม่ใช่โค้ดที่ hub รัน)"),
 ) -> None:
-    """ติดตั้งหรืออัปเดต LMDS บนเครื่องนั้นผ่าน SSH
+    """ติดตั้งหรืออัปเดต LMDS บนเครื่องนั้นผ่าน SSH — แล้วตรวจว่า "ตรง hub" ครบ 3 มิติ
 
     ทุกเครื่องที่ hub คุมต้องมี `lmds` อยู่บนเครื่อง — hub ไม่ได้ส่ง agent ไปรันเอง แต่เรียก
     `lmds agent info` ผ่าน SSH คำสั่งนี้จึงเป็นวิธีทำให้เครื่องปลายทางพร้อมโดยไม่ต้อง ssh เข้าไปเอง
+
+    "ตรง hub" (audit 2026-09-06) = code ตรง commit · controller ทุกใบตรง template ของ hub (สคริปต์บน node
+    regenerate ให้เองแบบออฟไลน์) · runtime llama.cpp รู้จัก arch ของทุกโมเดล (build ใหม่ให้เมื่อไม่รู้จัก)
+    — พิมพ์ "ตรง hub" เฉพาะเมื่อผ่านครบ · exit 1 เมื่อมีเครื่องไม่ตรงหรือติดตั้งไม่สำเร็จ
     """
+    from lmds.fleet.consistency import fleet_summary_line, hub_facts, node_verdict, verdict_lines
     from lmds.nodes import (
+        HubDirtyError,
         NodeError,
         find,
         install_lmds,
@@ -662,11 +697,34 @@ def node_install(
 
     # อัปเดตทีละเครื่องด้วยมือแปลว่ามีวันลืมเครื่องหนึ่ง แล้วมันค้างเวอร์ชันเก่าอยู่เงียบ ๆ
     # จนกว่าจะมีคนสังเกตเห็น (เจอจริง: msi-6 ค้างที่ 0.1.0 อยู่หลายรอบ)
-    # หลังติดตั้ง สรุปให้ชัดว่าเครื่องนั้น *ตรงกับ hub แล้วหรือยัง* — เดิมพิมพ์แค่ "รัน lmds 0.6.0 (0ad1a59e)"
-    # ซึ่งคนอ่านต้องไปเทียบ hash เอง และเทียบเป๊ะ ๆ จะผิดเมื่อ hash ย่อยาวไม่เท่ากัน (ดู _same_commit)
-    from lmds.inventory import source_commit
+    hub = hub_facts()
+    if force and hub["dirty"]:
+        console.print(f"[yellow]hub มีไฟล์แก้ค้าง {len(hub['dirty'])} ไฟล์ — ส่ง commit {hub['commit']} ไปตามที่สั่ง (--force)[/yellow]")
 
-    hub_commit = source_commit()
+    # ส่ง force เฉพาะเมื่อสั่ง — install_lmds รับ force ตั้งแต่ 0.6.1 · ตัวแทนเก่า (เทส/ปลั๊กอิน) ที่รับแค่ with_prereq ยังใช้ได้
+    extra = {"force": True} if force else {}
+
+    def settle(target) -> "object":
+        """probe หลังติดตั้ง → build runtime ที่ค้าง (ถ้าเปิด) → probe ซ้ำ → พิมพ์ 3 มิติ · คืน Verdict"""
+        info = probe(target)
+        fields = status_from_probe(info)
+        update(target.name, last_seen=_now(), last_error="", **fields)
+        console.print(f"[green]พร้อมแล้ว[/green] — {target.name} รัน lmds "
+                      f"{_version_label(fields.get('lmds_version', ''), fields.get('lmds_commit', '')) or '?'}")
+        verdict = node_verdict(info, hub)
+        if runtimes and verdict.runtimes.state == "stale" and verdict.runtimes.items:
+            for slug in verdict.runtimes.items:
+                console.print(f"  runtime     build llama.cpp ใหม่ให้ {slug} (LLAMA_CPP_UPDATE=1 prepare-runtime · ปกติ 10–15 นาที)…")
+                code, output = _update_runtime_on_node(target, slug)
+                tail = " · ".join(l for l in output.strip().splitlines()[-2:] if l.strip())
+                console.print(f"              {'[green]เสร็จ[/green]' if code == 0 else f'[red]ไม่สำเร็จ (exit {code})[/red]'} {tail[:200]}")
+            info = probe(target)
+            update(target.name, last_seen=_now(), last_error="", **status_from_probe(info))
+            verdict = node_verdict(info, hub)
+        for line in verdict_lines(verdict):
+            colour = "green" if line.startswith("  สรุป") and verdict.consistent else ("yellow" if line.startswith("  สรุป") else None)
+            console.print(f"[{colour}]{line}[/{colour}]" if colour else line, highlight=False)
+        return verdict
 
     if all_nodes:
         nodes = load()
@@ -674,26 +732,27 @@ def node_install(
             console.print("ยังไม่มีเครื่องในทะเบียน")
             return
         failed = []
+        verdicts = {}
         for index, target in enumerate(nodes, 1):
             console.print(f"\n[bold]{index}/{len(nodes)}[/bold] {target.name}")
-            result = install_lmds(target, with_prereq=with_prereq)
+            try:
+                result = install_lmds(target, with_prereq=with_prereq, **extra)
+            except HubDirtyError as exc:
+                err_console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
             if not result.ok:
                 failed.append(target.name)
                 err_console.print(f"[red]ไม่สำเร็จ[/red] {(result.stderr or '').strip()[-200:]}")
                 continue
             try:
-                fields = status_from_probe(probe(target))
-                version = _version_label(fields.get("lmds_version", ""), fields.get("lmds_commit", ""))
-                update(target.name, last_seen=_now(), last_error="", **fields)
-                console.print(f"[green]พร้อมแล้ว[/green] — lmds {version}"
-                              + _hub_commit_note(fields.get("lmds_commit", ""), hub_commit))
+                verdicts[target.name] = settle(target)
             except NodeError as exc:
                 failed.append(target.name)
                 err_console.print(f"[red]ติดตั้งแล้วแต่อ่านสถานะไม่ได้: {exc}[/red]")
-        if failed:
-            err_console.print(f"\n[red]ไม่สำเร็จ {len(failed)} เครื่อง:[/red] {', '.join(failed)}")
+        console.print("\n" + fleet_summary_line(verdicts) + (f" · ติดตั้งไม่สำเร็จ {len(failed)} ({', '.join(failed)})" if failed else ""))
+        if failed or any(not v.consistent for v in verdicts.values()):
             raise typer.Exit(code=1)
-        console.print(f"\n[green]อัปเดตครบ {len(nodes)} เครื่อง[/green]")
+        console.print(f"[green]ทุกเครื่องตรง hub ครบ 3 มิติ[/green]")
         return
 
     if not name:
@@ -704,12 +763,16 @@ def node_install(
         err_console.print(f"[red]ไม่รู้จักเครื่อง '{name}'[/red] — ดู: lmds node list")
         raise typer.Exit(code=1)
 
-    console.print(f"ติดตั้ง/อัปเดต LMDS บน {node.target} — hub ส่งโค้ดไปให้ (หรือดึงจาก GitHub ถ้า hub ไม่มี checkout) แล้วรัน install.sh บนเครื่องนั้น")
+    console.print(f"ติดตั้ง/อัปเดต LMDS บน {node.target} — hub ส่งโค้ดไปให้ (หรือดึงจาก GitHub ถ้า hub ไม่มี checkout) แล้วรัน install.sh + regenerate controller เก่าบนเครื่องนั้น")
     if not with_prereq:
         console.print("[dim]ข้ามขั้น Docker/NVIDIA toolkit (ต้องใช้ sudo ซึ่งไม่มีคนกรอกรหัสผ่าน) "
                       "— ใส่ --with-prereq ถ้า sudo ผ่านโดยไม่ถาม[/dim]")
 
-    result = install_lmds(node, with_prereq=with_prereq)
+    try:
+        result = install_lmds(node, with_prereq=with_prereq, **extra)
+    except HubDirtyError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
     tail = (result.stdout or "").strip().splitlines()[-6:]
     for line in tail:
         console.print(f"[dim]{line}[/dim]")
@@ -725,15 +788,25 @@ def node_install(
         raise typer.Exit(code=1)
 
     try:
-        info = probe(node)
+        verdict = settle(node)
     except NodeError as exc:
         err_console.print(f"[red]ติดตั้งแล้วแต่ยังอ่านสถานะไม่ได้: {exc}[/red]")
         raise typer.Exit(code=1)
-    fields = status_from_probe(info)
-    version = _version_label(fields.get("lmds_version", ""), fields.get("lmds_commit", ""))
-    update(name, last_seen=_now(), last_error="", **fields)
-    console.print(f"[green]พร้อมแล้ว[/green] — {node.name} รัน lmds {version}"
-                  + _hub_commit_note(fields.get("lmds_commit", ""), hub_commit))
+    if not verdict.consistent:
+        raise typer.Exit(code=1)
+
+
+def _update_runtime_on_node(node, slug: str) -> tuple[int, str]:
+    """`LLAMA_CPP_UPDATE=1 <controller> prepare-runtime` บนเครื่องนั้น — สคริปต์เดียวกับปุ่ม update runtime ของหน้าเว็บ"""
+    from lmds.nodes import NodeError, ctl_script, run as run_remote
+
+    try:
+        result = run_remote(node, ctl_script(slug, node.name, "prepare-runtime", env_prefix="LLAMA_CPP_UPDATE=1 "),
+                            timeout=5400)
+    except NodeError as exc:
+        return 1, str(exc)
+    return result.exit_code, (result.stdout or "") + (result.stderr or "")
+
 
 @node_app.command("set")
 def node_set(
@@ -3892,6 +3965,91 @@ def repair(
     else:
         err_console.print(f"[red]ยังไม่ผ่าน — ดูข้อความด้านบน (exit {code})[/red]")
     raise typer.Exit(code=code)
+
+
+@bundles_app.command("refresh")
+def bundles_refresh(
+    slugs: Optional[list[str]] = typer.Argument(None, help="bundle ที่จะ regenerate (ว่างคู่กับ --all = ทุกใบบนเครื่องนี้)",
+                                                autocompletion=_complete_slug),
+    all_bundles: bool = typer.Option(False, "--all", help="ทุก bundle บนเครื่องนี้"),
+    if_older: bool = typer.Option(False, "--if-older", help="ข้ามใบที่ตรง template ของ lmds อยู่แล้ว (regenerate เฉพาะที่เก่ากว่า)"),
+    json_out: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON"),
+) -> None:
+    """regenerate controller จากแผนที่เก็บใน MODEL_PROFILE.yaml — ออฟไลน์ ไม่ถาม Hugging Face ไม่เรียก LLM
+
+    ต่างจาก `lmds rebuild` ที่ inspect ใหม่ทุกครั้ง (ต้องมีเน็ต/token) · เก็บ controller เดิมเป็น `.replaced-<เวลา>` ·
+    bundle.env / bundle.args / cluster.env ไม่แตะ · bundle จาก `lmds adopt` ข้าม · profile รุ่นเก่าที่ขาดคีย์ =
+    รายงาน "ต้อง lmds rebuild ออนไลน์" ไม่ล้มทั้งงาน · `lmds node install` และปุ่ม Update เรียกให้เองบนทุกเครื่อง
+    · exit 0 เสมอเมื่อทำงานได้ (ไม่มี bundle ก็ 0) · exit 1 เฉพาะเมื่อ regenerate ใบไหนล้มจริง (error)
+    """
+    from lmds.fleet.refresh import format_result, refresh_bundles
+
+    if not slugs and not all_bundles:
+        err_console.print("[red]ระบุชื่อ bundle หรือใช้ --all[/red]")
+        raise typer.Exit(code=1)
+    results = refresh_bundles(list(slugs) if slugs and not all_bundles else None, if_older=if_older)
+    if json_out:
+        print(json.dumps([r.payload() for r in results], ensure_ascii=False))
+    else:
+        if not results:
+            console.print("[dim]ไม่มี bundle บนเครื่องนี้ — ไม่มีอะไรต้อง regenerate[/dim]")
+        for r in results:
+            colour = {"refreshed": "green", "current": "dim", "adopted": "dim", "needs-online": "yellow",
+                      "error": "red", "missing": "red"}.get(r.action, "")
+            line = format_result(r)
+            console.print(f"[{colour}]{line}[/{colour}]" if colour else line, highlight=False)
+        done = sum(1 for r in results if r.action == "refreshed")
+        online = sum(1 for r in results if r.action == "needs-online")
+        if results:
+            console.print(f"[dim]regenerate {done} · ตรงอยู่แล้ว {sum(1 for r in results if r.action == 'current')} · "
+                          f"adopted {sum(1 for r in results if r.action == 'adopted')} · ต้อง rebuild ออนไลน์ {online}"
+                          + (" — lmds rebuild <slug> ทีละใบบนเครื่องที่มีเน็ต" if online else "") + "[/dim]")
+    if any(r.action in ("error", "missing") for r in results):
+        raise typer.Exit(code=1)
+
+
+@fleet_app.command("check")
+def fleet_check(
+    json_out: bool = typer.Option(False, "--json", help="พิมพ์รายงานเป็น JSON (โครงเดียวกับ GET /api/fleet/consistency)"),
+) -> None:
+    """ทุกเครื่องตรง hub ครบ 3 มิติไหม — จากทะเบียน + bundle ของ hub เอง ไม่ SSH (ข้อมูลจาก probe ล่าสุด)
+
+    exit 1 เมื่อมีเครื่องไม่ตรง (แดง) · เหลือง = ตรวจไม่ได้ (probe เครื่องนั้นก่อน: lmds node list --check)
+    """
+    from lmds.fleet import discover
+    from lmds.fleet.consistency import fleet_report
+    from lmds.inventory import host_payload, model_payload, with_runtimes
+    from lmds.nodes import load
+
+    models = [model_payload(s) for s in discover()]
+    local = {"host": with_runtimes(host_payload(), models), "models": models}
+    report = fleet_report({}, load(), local)
+    if json_out:
+        print(json.dumps(report, ensure_ascii=False))
+    else:
+        hub = report["hub"]
+        console.print(f"hub: lmds {hub['version']} ({hub['commit'] or '?'}) · template {hub['template_hash']}"
+                      + (f" · [yellow]ไฟล์แก้ค้าง {len(hub['dirty'])}[/yellow]" if hub.get("dirty") else ""))
+        if hub.get("verdict"):
+            v = hub["verdict"]
+            console.print(f"  bundle บน hub: controllers {v['controllers']['detail']}")
+        table = Table(title="Fleet consistency — code · controllers · runtime")
+        for col in ("เครื่อง", "code", "controllers", "runtime", "สรุป"):
+            table.add_column(col)
+        mark = {"ok": "[green]✓[/green]", "n/a": "[green]✓[/green]", "unknown": "[yellow]?[/yellow]"}
+        for n in report["nodes"]:
+            cells = []
+            for axis in ("code", "controllers", "runtimes"):
+                a = n[axis]
+                cells.append(f"{mark.get(a['state'], '[red]✗[/red]')} {a['detail'][:70]}")
+            verdict = "[green]ตรง hub[/green]" if n["consistent"] else ("[yellow]ตรวจไม่ได้[/yellow]" if n["level"] == "warn" else "[red]ยังไม่ตรง[/red]")
+            table.add_row(n["name"], *cells, verdict + (f" [dim]({n['source']})[/dim]" if n["source"] == "registry" else ""))
+        console.print(table)
+        console.print(report["summary"]["line"])
+        console.print("[dim]แก้: controller ค้าง → lmds node run <เครื่อง> bundles refresh --all · runtime ค้าง → ปุ่ม update runtime / "
+                      "lmds node ctl <เครื่อง> <slug> prepare-runtime (LLAMA_CPP_UPDATE=1) · หรือ lmds node install --all ทำให้ทั้งหมด[/dim]")
+    if any(n["level"] == "bad" for n in report["nodes"]):
+        raise typer.Exit(code=1)
 
 
 # ── คะแนนโมเดล ────────────────────────────────────────────────────────────────

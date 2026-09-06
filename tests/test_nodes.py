@@ -543,13 +543,18 @@ def test_node_install_all_updates_every_machine(tmp_path, monkeypatch, isolated_
         add(Node(name=name, host=f"10.0.0.{index}", user="u"))
     done = []
     monkeypatch.setattr("lmds.nodes.install_lmds",
-                        lambda node, with_prereq=False: done.append(node.name)
+                        lambda node, with_prereq=False, force=False: done.append(node.name)
                         or SimpleNamespace(ok=True, stdout="", stderr=""))
-    monkeypatch.setattr("lmds.nodes.probe", lambda node: {"host": {"lmds_version": "0.2.0"}})
+    # ตั้งแต่ 0.6.1 exit 0 = ทุกเครื่อง "ตรง hub" ครบ 3 มิติ — node ต้องรายงาน commit ที่ตรงกับ hub (ไม่มี bundle = อีกสองมิติ n/a)
+    monkeypatch.setattr("lmds.fleet.consistency.hub_facts",
+                        lambda: {"version": "0.6.1", "commit": "abc1234", "template_hash": "h", "dirty": []})
+    monkeypatch.setattr("lmds.nodes.probe",
+                        lambda node: {"host": {"lmds_version": "0.6.1", "lmds_commit": "abc1234"}, "models": []})
 
     result = CliRunner().invoke(app, ["node", "install", "--all"])
     assert result.exit_code == 0, result.output
     assert done == ["a", "b", "c"], "ต้องครบทุกเครื่อง ไม่ใช่หยุดที่ตัวแรก"
+    assert result.output.count("ตรง hub ✓") == 3
 
 
 def test_node_install_all_reports_which_ones_failed(tmp_path, monkeypatch, isolated_config):
@@ -565,7 +570,7 @@ def test_node_install_all_reports_which_ones_failed(tmp_path, monkeypatch, isola
     for index, name in enumerate(("good", "bad"), 1):
         add(Node(name=name, host=f"10.0.0.{index}", user="u"))
     monkeypatch.setattr("lmds.nodes.install_lmds",
-                        lambda node, with_prereq=False: SimpleNamespace(
+                        lambda node, with_prereq=False, force=False: SimpleNamespace(
                             ok=node.name != "bad", stdout="", stderr="ต่อไม่ได้"))
     monkeypatch.setattr("lmds.nodes.probe", lambda node: {"host": {"lmds_version": "0.2.0"}})
 

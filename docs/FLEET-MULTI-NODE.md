@@ -548,7 +548,11 @@ lmds node list [--check]
 lmds node set <name> [--cluster-ip IP] [--cluster-iface NAME] [--note TEXT] [--site S] [--cluster-name C]
                      [--alt-host IP,IP] [--stack|--no-stack]
 lmds node remove <name> [-y]
-lmds node install [<name>|--all] [--with-prereq]    # hub ส่งโค้ดไปเอง
+lmds node install [<name>|--all] [--with-prereq] [--no-runtimes] [--force]
+                                      # hub ส่งโค้ดไปเอง → regenerate controller เก่า → build llama.cpp ที่ค้าง → พิมพ์ 3 มิติ
+                                      # --force = ส่งแม้ hub มีไฟล์แก้ค้าง · exit 1 เมื่อมีเครื่องไม่ตรง hub
+lmds fleet check [--json]             # ทั้งฟลีต code · controllers · runtime จากทะเบียน+แคช (ไม่ SSH)
+lmds bundles refresh [--all] [--if-older] [<slug>…] [--json]   # regenerate controller ออฟไลน์บนเครื่องนี้
 lmds node setup   [<name>|--all] [--with-prereq]    # ขั้น sudo — ถามรหัสตอนนี้ ใช้ครั้งเดียว
 lmds node run <name> <คำสั่ง lmds...>
 lmds node ctl <name> <slug> <คำสั่ง controller...>
@@ -568,10 +572,12 @@ REST (หน้าเว็บใช้ชุดนี้ — token เดีย
 
 ```text
 GET    /api/nodes                     · GET /api/fleet/summary · PUT /api/nodes/order
+GET    /api/fleet/consistency         # "ตรง hub" 3 มิติต่อเครื่อง (= lmds fleet check --json)
+POST   /api/models/{slug}/regenerate  · POST /api/nodes/{name}/models/{slug}/regenerate   # lmds bundles refresh <slug>
 POST   /api/nodes                     {host, user, name?, port?, password?}   (port ไม่ใช่เลข/นอกช่วง = 400)
 PATCH  /api/nodes/{name}              {cluster_ip?, cluster_iface?, note?, site?, cluster_name?, alt_hosts?, stack?}
 DELETE /api/nodes/{name}
-POST   /api/nodes/{name}/install      · POST /api/nodes/{name}/setup · POST /api/nodes/{name}/fix-permissions
+POST   /api/nodes/{name}/install {force?}   # 409 เมื่อ hub มีไฟล์แก้ค้าง · POST /api/nodes/{name}/setup · POST /api/nodes/{name}/fix-permissions
 GET    /api/nodes/{name}/inventory[?refresh=true]   (refresh เขียนแคชด้วย)
 POST   /api/nodes/{name}/models/{slug}/{command}    # allowlist: start stop restart repair doctor logs enable disable remove set
 POST   /api/nodes/{name}/models/{slug}/ctl/{command}  # test-* parsers bench stress client-config network-info status props
@@ -631,35 +637,87 @@ find "$SITE" \( -name '*.py' -o -name '*.j2' \) | LC_ALL=C sort | xargs sha256su
   `user@host:port`) แต่ถ้าไม่ตรงจะสับสนตอนไล่ปัญหา · เทียบได้ด้วย
   `lmds node run <ชื่อ> agent info` แล้วดู `host` ที่มันตอบกลับมา
 
-## bundle เก่าไม่ได้อัปเดตตามโค้ด
+## "ตรง hub" หมายถึงอะไร — 3 มิติ (ตั้งแต่ 0.6.1)
 
-`lmds node install` เปลี่ยนแค่ตัวโปรแกรม — **bundle ที่สร้างไว้แล้วยังเป็นไฟล์เดิม**
-controller เก่าจึงไม่มีคำสั่ง/ตัวกันพลาดที่เพิ่มมาทีหลัง และ `MODEL_PROFILE.yaml` เก่า
-ไม่มีคีย์ใหม่ (เช่น `features.moe`) คอนโซลจึงไม่มีข้อมูลจะแสดง
+เดิม "ตรง hub" = commit ของ lmds เท่ากัน · 2026-09-06 ทั้งฟลีตขึ้น "ตรง hub" แล้ว start ตายด้วย
+`unknown model architecture: 'qwen4exp'` เพราะ **bundle** ยังเป็น controller 0.5.1 และ **build llama.cpp**
+บนเครื่องมาจาก 18 ส.ค. — Update ไม่เคยแตะสองอย่างนั้น · ตอนนี้ต้องผ่านครบสามมิติถึงจะพิมพ์ "ตรง hub":
+
+| มิติ | ผ่านเมื่อ | ตรวจจาก |
+|---|---|---|
+| **code** | commit ของ node = hub (prefix ≥7) · ติดตั้งแล้วรันของที่ติดตั้ง · **hub ไม่มีไฟล์แก้ค้าง** | `host.lmds_commit`, `host.lmds_installed_commit`, `git status` ของ hub |
+| **controllers** | ทุก bundle มี `template_hash` ตรงกับของ hub (ลายเซ็น `generator/templates/*.j2` ที่ renderer ฝังใน `MODEL_PROFILE.yaml` + หัว controller) — ไม่ใช่เลข version · ไม่มี hash = เก่าแน่ · `lmds adopt` = n/a | `models[].controller.state` |
+| **runtime** | ทุก bundle llama.cpp: build/image ที่ผูกไว้รู้จัก arch ของโมเดล (`runtime_arch.supported == true`) · `null` = "ตรวจไม่ได้" ไม่ใช่ผ่าน | `models[].runtime_arch`, `host.runtimes.llamacpp[]` |
 
 ```bash
-lmds rebuild <slug>     # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน ไม่เรียก LLM ซ้ำ
+lmds node install --all         # ต่อเครื่อง: code / controllers / runtime / สรุป · "ตรง hub ✓" เฉพาะเมื่อ ok ครบ · exit 1 ถ้ามีเครื่องไม่ตรง
+lmds fleet check [--json]       # ทั้งฟลีตจากทะเบียน+แคช ไม่ SSH (= GET /api/fleet/consistency) · exit 1 เมื่อมีแดง
+lmds node list                  # คอลัมน์ bundles (controller ค้าง n / runtime ค้าง n) และ llama.cpp (build · วันที่) จาก probe ล่าสุด
 ```
 
-ปลอดภัยกับตัวที่รันอยู่ — เขียนแค่ไฟล์ bundle ตัวที่รันยังใช้ controller เดิมจนกว่าจะ restart
+ตัวอย่างที่ `node install --all` พิมพ์:
+
+```
+3/15 msi-4
+  code        0.6.1 (dcefd91) · ตรง hub
+  controllers 2 ใบ · เก่ากว่า lmds 2 ใบ: muse-glimmer-30b-gguf (0.5.1), qwen3-8-27b-gguf (0.5.1)
+  runtime     llama.cpp ~/src/llama.cpp build 10495 (3dc7285b4, 2026-08-18) · runtime ค้าง 1 — qwen3-8-flash: … ไม่รู้จัก qwen4exp
+              build llama.cpp ใหม่ให้ qwen3-8-flash (LLAMA_CPP_UPDATE=1 prepare-runtime · ปกติ 10–15 นาที)…
+  สรุป        ตรง hub ✓ (code ✓ · controller ✓ · runtime ✓)
+อัปเดตครบ 15 เครื่อง · ตรง hub 11 · code ไม่ตรง 0 · controller ค้าง 0 · runtime ค้าง 4 (msi-3, …) · ตรวจไม่ได้ 0
+```
+
+- **hub ที่มีไฟล์แก้ค้าง** ส่งไม่ได้ (`HubDirtyError` / เว็บ 409): install.sh ติดตั้ง working tree ให้ hub แต่ git bundle ส่งเฉพาะ
+  commit → stamp เท่ากันทั้งที่โค้ดต่างกัน · commit ก่อน หรือยืนยัน `--force` (เว็บ `force:true`)
+- หน้าเว็บ: ปุ่ม **Update** ตัดสินจาก probe ซ้ำ (`/api/nodes/{n}/inventory?refresh=true` → `/api/fleet/consistency`) ไม่ใช่ exit 0 ·
+  การ์ด **Fleet consistency** บนหน้าภาพรวม (แถวแดงคลิกไปการ์ด · ปุ่ม *Regenerate stale controllers (n)* / *Update runtimes (n)*) ·
+  chip ระดับเครื่อง `controllers N stale` · `llama.cpp 10495 · 08-18` (แดงเมื่อไม่รู้จัก arch ของ bundle ใด)
+
+## bundle เก่า — Update regenerate ให้เอง (ออฟไลน์)
+
+`install.sh` เปลี่ยนแค่ตัวโปรแกรม · ตั้งแต่ 0.6.1 สคริปต์ที่ `node install`/ปุ่ม Update รันบน node (และ self-update ของ hub)
+ต่อด้วย **`lmds bundles refresh --all --if-older`** — render controller ใหม่จากแผนที่เก็บใน `MODEL_PROFILE.yaml` + ตารางไฟล์
+จากหัว controller เดิม โดย**ไม่ต้องถึง Hugging Face** (ต่างจาก `lmds rebuild` ที่ inspect ซ้ำทุกครั้ง)
+
+```bash
+lmds bundles refresh --all --if-older   # เฉพาะใบที่ template_hash ไม่ตรง lmds บนเครื่องนี้
+lmds bundles refresh <slug>             # บังคับใบเดียว · เว็บ: ปุ่ม "regenerate controller" บนการ์ด
+lmds rebuild <slug>                     # ออนไลน์ — ใช้เมื่อ refresh บอกว่า "ต้อง lmds rebuild ออนไลน์" (profile ≤0.4.0 ขาดคีย์)
+```
+
+- controller เดิมเก็บเป็น `<name>.replaced-<เวลา>` ทุกครั้ง · `bundle.env` / `bundle.args` / `cluster.env` **ไม่แตะ** (เป็นค่าต่อเครื่อง)
+- ผ่าน quality gates ก่อนถึงจะยอม ไม่งั้นคืนของเดิม · bundle จาก `lmds adopt` ข้าม (ไม่มี template) · profile เก่าเติม
+  `model.gguf_architecture` ให้ (hub ติดป้าย "runtime older than model" ได้ก่อน download)
+- ปลอดภัยกับตัวที่รันอยู่ — เขียนแค่ไฟล์ bundle ตัวที่รันยังใช้ controller เดิมจนกว่าจะ restart (รายงานบอกไว้)
+- `lmds doctor <slug>` มีข้อ `controller-stale` (WARN) พร้อมคำสั่งแก้
 
 ## อัปเดต llama.cpp บน node (native build)
 
 DGX Spark ไม่มี docker image ทางการ (ARM64/SM121) — `prepare-runtime` จึง **clone แล้ว
-build llama.cpp จาก source** ไว้ที่ `~/src/llama.cpp` · `lmds node install` อัปเดตแค่ตัว
-lmds เอง **ไม่แตะ llama.cpp** ตัวนี้จึงค้างเวอร์ชันได้เป็นเดือนโดยไม่มีอะไรฟ้อง
+build llama.cpp จาก source** ไว้ที่ `~/src/llama.cpp` ซึ่ง **ทุก bundle บนเครื่องใช้ร่วมกัน**
 
-```bash
-cd ~/src/llama.cpp
-git status -sb          # "## HEAD (no branch)" = detached ต้อง checkout ก่อน
-git checkout master && git pull --ff-only
-cmake --build build --config Release -j "$(nproc)"
-```
+ตั้งแต่ 0.6.1 Update ดูแลให้: หลัง install ถ้า bundle ไหน `runtime_arch.supported == false` (build ไม่รู้จัก arch ของโมเดล)
+`node install` รัน `LLAMA_CPP_UPDATE=1 prepare-runtime` ให้เครื่องนั้น (10–15 นาที · `--no-runtimes` ข้าม) แล้ว probe ซ้ำ ·
+ปุ่ม Update บนเว็บทำเหมือนกันเป็นขั้นที่มองเห็น · สั่งเองได้: ปุ่ม **update runtime** บนการ์ด · `lmds repair <slug>` ·
+`lmds node ctl <เครื่อง> <slug> prepare-runtime` (ใส่ `LLAMA_CPP_UPDATE=1` ผ่าน env ถ้าอยากบังคับ)
 
-> **ทำไมต้อง checkout ก่อน** — `prepare-runtime` ตรึงเวอร์ชันด้วย `git checkout <ref>`
-> ซึ่งทิ้ง repo ไว้ใน **detached HEAD** · `git pull` ที่นั่นตอบ `git pull <remote> <branch>`
-> แล้วจบเงียบ ๆ · เจอจริง 3 ใน 4 เครื่อง: สั่ง pull+build ไปแล้ว build สำเร็จ commit ไม่ขยับ
-> เลยสักตัว ถ้าไม่ได้เทียบ commit ก่อน-หลังจะเข้าใจว่าอัปเดตแล้ว
+**`prepare-runtime` ไม่มีวันถอยหลัง** (audit 2026-09-06: msi-3/msi-4/dgx-veerasiam มี lock 15–16 ส.ค. แต่ build จริง 18 ส.ค.
+จาก rebuild นอก controller — "ใช้ commit ที่ lock ไว้" แบบเดิมคือ downgrade ทุก bundle บนเครื่อง):
+
+- lock (`$LLAMA_CPP_DIR/build/runtime.lock`) = **ขั้นต่ำที่พิสูจน์แล้ว** ไม่ใช่ commit ที่ต้อง build เป๊ะ · build ที่มีใหม่กว่าหรือเท่ากับ lock
+  (`git merge-base --is-ancestor <lock> <build>`) = ใช้ที่มี ไม่ build ซ้ำ lock เลื่อนตาม · build เก่ากว่า lock = เคสเดียวที่ checkout lock
+  มา build · ไม่มี lock แต่มี build = ใช้ที่มี · lock เก่าใต้ `~/.lmds/run/<slug>/` ย้ายมาเป็นขั้นต่ำโดยไม่ downgrade
+- พิมพ์ทุกครั้ง `build กลาง=X · lock=Y · action=reuse|upgrade|build` · เขียน stamp `build/lmds-build.json`
+  {commit, build, date, cuda_arch, built_by, at} · เตือนก่อน build ทับขณะมี llama-server จากโฟลเดอร์นี้รันอยู่ พร้อมชื่อ bundle ที่ใช้ร่วม
+- หลัง health ผ่าน `server.meta` ได้ `runtime_commit=` / `runtime_build=` / `runtime_dir=` และ lock รีเฟรชเป็น commit ที่เสิร์ฟจริง
+  → lock ไม่ stale แม้มีคน build นอก controller · `lmds agent info` ส่ง `host.runtimes.llamacpp[]` (build/commit/date/lock_state) ให้ hub
+- ปุ่ม "Run prepare-runtime" ของ hub จึงปลอดภัย: build ใหม่กว่า lock = ไม่ทำอะไรนอกจากเลื่อน lock
+
+ถ้าจะทำมือจริง ๆ ให้ผ่าน controller (`LLAMA_CPP_UPDATE=1 ./<slug>-single.sh prepare-runtime`) จะได้ lock/stamp ตาม ·
+`git pull && cmake --build` เองข้าม lock/stamp (ต้นเหตุของ lock stale รอบ 18 ส.ค.)
+
+> ถ้ายังทำมือ: `prepare-runtime` ตรึงเวอร์ชันด้วย `git checkout <ref>` ซึ่งทิ้ง repo ไว้ใน **detached HEAD** · `git pull` ที่นั่นตอบ
+> `git pull <remote> <branch>` แล้วจบเงียบ ๆ — ต้อง `git checkout master && git pull --ff-only` ก่อน build
 
 **`lmds doctor <slug>` เตือนให้เมื่อ llama.cpp เก่าเกินไป** — เช่น ไม่มี commit
 `cd0fa6051` ซึ่งแก้ tool schema ที่มี `maxLength`/`maxItems` เกิน 2000 (Claude Code

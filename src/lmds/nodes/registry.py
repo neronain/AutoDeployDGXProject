@@ -13,6 +13,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import MISSING, asdict, dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -71,6 +72,12 @@ class Node:
     # มองเห็น ไม่ใช่ที่อยู่บนวงของเครื่องนั้น · เก็บไว้เพื่อให้รายชื่อเครื่องบอก IP ได้
     # ทันทีโดยไม่ต้อง SSH ใหม่ และยังบอกได้ตอนเครื่องดับ (ค่าล่าสุดที่เคยเห็น)
     local_ip: str = ""
+    # "ตรง hub" อีกสองมิติที่ทะเบียนจำจาก probe ล่าสุด (audit 2026-09-06): controller ที่เก่ากว่า template ของ lmds
+    # กี่ใบ · bundle llama.cpp ที่ build ไม่รู้จัก arch ของโมเดลกี่ใบ · build llama.cpp กลางของเครื่อง ("10495 · 2026-08-18")
+    # None = ยังไม่เคย probe ด้วย lmds ที่รายงานฟิลด์นี้ (ไม่ใช่ 0) — `lmds node list`/`lmds fleet check` โชว์ได้โดยไม่ SSH
+    controllers_stale: Optional[int] = None
+    runtime_stale: Optional[int] = None
+    llamacpp_build: str = ""
     # ป้ายจัดกลุ่มตามที่ตั้งเครื่อง (เช่น ชื่อไซต์/ลูกค้า) — ใช้ "แสดงผลและกรอง" อย่างเดียว
     # ตั้งแต่ 2026-08-31 ฟิลด์นี้ **เป็นตัวบังคับ** ตอนจับกลุ่ม stacked ด้วย ไม่ใช่แค่ป้าย
     # แสดงผลอย่างเดิม — stacked ข้ามไซต์ทำไม่ได้จริง (NCCL วิ่งบนสายในแร็ค ไม่ใช่ผ่าน WAN)
@@ -257,14 +264,27 @@ def status_from_probe(info: dict) -> dict:
     ใครเป็นคนอัปเดต
     """
     host = info.get("host") or {}
-    fields = {
+    fields: dict = {
         "lmds_version": host.get("lmds_version") or "",
         "lmds_commit": host.get("lmds_commit") or "",
         "local_ip": host.get("ip") or "",
     }
+    # ตัวนับของอีกสองมิติ — เก็บเฉพาะเมื่อ node รายงานฟิลด์ที่ใช้นับจริง (0 มีความหมาย ต้องไม่ถูกตัดทิ้ง)
+    models = info.get("models")
+    if isinstance(models, list) and any(isinstance(m, dict) and "controller" in m for m in models):
+        fields["controllers_stale"] = sum(
+            1 for m in models if isinstance(m, dict) and ((m.get("controller") or {}).get("state")) == "stale")
+    if isinstance(models, list) and any(isinstance(m, dict) and "runtime_arch" in m for m in models):
+        fields["runtime_stale"] = sum(
+            1 for m in models if isinstance(m, dict) and ((m.get("runtime_arch") or {}).get("supported")) is False)
+    builds = (host.get("runtimes") or {}).get("llamacpp") if isinstance(host.get("runtimes"), dict) else None
+    if isinstance(builds, list):
+        fields["llamacpp_build"] = " / ".join(
+            f"{b.get('build') or '?'} · {b.get('date') or (b.get('commit') or '')[:9]}"
+            for b in builds if isinstance(b, dict) and b.get("present"))
     # คีย์ที่ปลายทางไม่ได้ส่งมาแปลว่า "ไม่รู้" ไม่ใช่ "ไม่มี" — เขียนทับด้วยค่าว่างคือทิ้งของ
-    # ที่เคยรู้จริงไปเพราะ node รุ่นเก่ารุ่นเดียวที่ยังไม่ส่งฟิลด์นั้น
-    return {key: value for key, value in fields.items() if value}
+    # ที่เคยรู้จริงไปเพราะ node รุ่นเก่ารุ่นเดียวที่ยังไม่ส่งฟิลด์นั้น (ตัวนับ 0 ไม่ใช่ค่าว่าง)
+    return {key: value for key, value in fields.items() if value not in ("", None)}
 
 
 def in_saved_order(nodes: list[Node], order: list[str]) -> list[Node]:

@@ -5,6 +5,52 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **Update path: "ตรง hub" ต้องผ่าน 3 มิติ (code · controller · runtime) · regenerate controller เก่าแบบออฟไลน์ใน Update ·
+  prepare-runtime ไม่ downgrade build กลาง** — audit Update path 2026-09-06: spark-worker รายงาน "พร้อมแล้ว — ตรง hub" ครบ 14 เครื่อง
+  แล้ว start ตายด้วย `unknown model architecture: 'qwen4exp'` เพราะ "ตรง hub" เทียบแค่ commit ของ lmds · install.sh ไม่แตะ
+  `~/bundles` (46/47 ใบบน node เป็น controller 0.3.0–0.6.0) ไม่แตะ `~/src/llama.cpp` (6 commit ต่างกันใน 9 เครื่อง) · หน้าเว็บพิมพ์
+  "matches the hub" จาก exit 0 ของ install · hub dirty=8 ส่ง commit ไปแต่ตัวเองรัน working tree · lock ของ msi-3/msi-4/dgx-veerasiam
+  เก่ากว่า build จริง → "Run prepare-runtime" = downgrade ทุก bundle บนเครื่อง · แก้:
+  (1) **นิยามเดียว** `fleet/consistency.py`: CODE = commit ตรง + ติดตั้งแล้วรันของที่ติดตั้ง + hub ไม่มีไฟล์แก้ค้าง · CONTROLLER = ทุก
+  bundle มี `template_hash` (sha256 ของ `generator/templates/*.j2` ที่ renderer ฝังใน MODEL_PROFILE.yaml และ `TEMPLATE_HASH=` หัว controller)
+  ตรงกับของ hub — ไม่ใช่เลข version (0.6.0 ↔ 0.6.1 ที่ template ไม่เปลี่ยน = ตัวเดียวกัน · ไม่มี hash = เก่าแน่ · adopt = n/a) · RUNTIME = ทุก
+  bundle llama.cpp `runtime_arch.supported == true` (null = "ตรวจไม่ได้" ไม่ใช่ผ่าน) · `lmds node install [--all]` พิมพ์ 4 บรรทัดต่อเครื่อง
+  (code / controllers / runtime / สรุป) พิมพ์ "ตรง hub ✓" เฉพาะเมื่อ ok ครบ · สรุปท้าย `อัปเดตครบ N · ตรง hub n · controller ค้าง n (…) ·
+  runtime ค้าง n (…) · ตรวจไม่ได้ n` · exit 1 เมื่อมีเครื่องไม่ตรง · ปุ่ม **Update** บนเว็บตัดสินจาก probe ซ้ำ (`inventory?refresh=true`
+  + `/api/fleet/consistency`) ไม่ใช่ exit 0 และ job install `on_done` → `STORE.force(name)` (การ์ดไม่โชว์ของเก่าอีก 15 วิ)
+  (2) **agent info ส่งหลักฐานทั้ง 3 มิติ**: `host.lmds_installed_commit` · `host.source_dirty` · `host.template_hash` ·
+  `host.runtimes.llamacpp[]` = {dir, build, commit, date, lock, lock_state ok|missing|stale|ahead, used_by, stamp} ต่อ LLAMA_CPP_DIR ที่
+  bundle อ้าง (`llama-server --version` + `git log -1` — ไม่ fetch ไม่ docker run · แคชตาม mtime) · `host.images[]` = {ref, digest, created}
+  เฉพาะ image ที่ bundle อ้าง (`docker image inspect`) · `models[].generated_by/script_version/template_hash/controller{state,reason}/
+  runtime{engine,mode,image,image_pin,llamacpp_dir}` · summary `controllers_stale`/`runtime_stale` · ทะเบียน `status_from_probe` เก็บ
+  `controllers_stale`, `runtime_stale`, `llamacpp_build` (0 ไม่ถูกตัดทิ้ง · node เก่าไม่ส่ง = ไม่เขียนทับ) → `lmds node list` มีคอลัมน์
+  bundles/llama.cpp โดยไม่ SSH
+  (3) **hub dirty guard**: `prepare_install`/`POST /api/nodes/{n}/install` ปฏิเสธ (HubDirtyError / 409) เมื่อ hub มีไฟล์แก้ค้าง พร้อม
+  รายชื่อไฟล์ — `--force` / `force:true` ยืนยัน · เทสรันบน checkout ที่แก้ค้างได้ (conftest ปิด dirty ให้ เทสที่ตั้งใจเปิดเอง)
+  (4) **`lmds bundles refresh [--all] [--if-older] [<slug>]`** regenerate controller จากแผนใน MODEL_PROFILE.yaml + ตารางไฟล์จากหัว
+  controller เดิม (MODEL_FILES/EXPECTED_SIZES/SHAS · SHARD_FILES/SIZES · ASSET_*) **ออฟไลน์** ไม่ถึง HF ไม่เรียก LLM (ต่างจาก `lmds rebuild`)
+  · เก็บของเดิมเป็น `<name>.replaced-<stamp>` ทุกครั้ง · bundle.env/bundle.args/cluster.env คงเดิม · ผ่าน quality gates ไม่งั้นคืนของเดิม ·
+  `generated_by: lmds adopt` ข้าม · profile ≤0.4.0 ขาดคีย์ = "controller-stale (ต้อง lmds rebuild ออนไลน์)" ไม่ล้มทั้งงาน · เติม
+  `gguf_architecture` ให้ profile เก่าจาก `architecture` (hub ติดป้าย runtime older ได้ก่อน download) · สคริปต์ install บน node
+  (`_INSTALL_FROM_BUNDLE_SCRIPT`) และ self-update ของ hub เรียก `bundles refresh --all --if-older` ต่อจาก install.sh (lmds เก่าไม่มีคำสั่ง
+  = บอกแล้วไปต่อ) · เว็บ: ปุ่ม **regenerate controller** ต่อการ์ด (`POST /api/models/{s}/regenerate`, `POST /api/nodes/{n}/models/{s}/regenerate`)
+  + chip `controller 0.5.1 → regenerate`
+  (5) **runtime ใน Update**: หลัง install ถ้า bundle ไหน `runtime_arch.supported == false` `node install` รัน `LLAMA_CPP_UPDATE=1 prepare-runtime`
+  ให้ (บอกว่า 10–15 นาที · `--no-runtimes` ข้าม) แล้ว probe ซ้ำ · ปุ่ม Update ทำเหมือนกันเป็นขั้นที่มองเห็น
+  (6) **prepare-runtime ไม่มีวันถอยหลัง** (audit runtime §4.4): lock = ขั้นต่ำที่พิสูจน์แล้ว ไม่ใช่ commit ที่ต้อง build เป๊ะ · build ที่มี
+  ใหม่กว่าหรือเท่ากับ lock (`git merge-base --is-ancestor <lock> <build>`) = ใช้ที่มี ไม่ build ซ้ำ lock เลื่อนตาม · build เก่ากว่า lock = เคสเดียวที่
+  checkout lock มา build · ไม่มี lock แต่มี build = ใช้ที่มี (msi-5) · lock เก่าใต้ RUN_DIR ย้ายมาเป็นขั้นต่ำโดยไม่ downgrade · พิมพ์
+  `build กลาง=X · lock=Y · action=reuse|upgrade|build` · stamp `$LLAMA_CPP_DIR/build/lmds-build.json` {commit, build, date, cuda_arch,
+  built_by, at} · เตือนก่อน build ทับขณะ llama-server จากโฟลเดอร์นี้รันอยู่ พร้อมชื่อ bundle ที่ใช้ร่วม · หลัง health ผ่าน `server.meta` ได้
+  `runtime_commit=`/`runtime_build=`/`runtime_dir=` และ lock รีเฟรชเป็น commit ที่เสิร์ฟจริง · ปุ่ม "Run prepare-runtime" ของ hub จึงปลอดภัย
+  (7) **ฟลีต**: `lmds fleet check [--json]` + `GET /api/fleet/consistency` (ฟังก์ชันเดียวกัน · แคช/ทะเบียน · ไม่ SSH · exit 1 เมื่อมีแดง) ·
+  การ์ด **Fleet consistency** บนหน้าภาพรวม (เครื่อง | code | controllers | runtime · แถวแดงคลิกไปการ์ด · ปุ่ม "Regenerate stale
+  controllers (n)" / "Update runtimes (n)") · chip ระดับเครื่อง `controllers N stale` / `llama.cpp 10495 · 08-18` (แดงเมื่อไม่รู้จัก arch) ·
+  Needs attention: "≠ hub" เป็น warn (เดิม info) + `controller stale` · doctor finding `controller-stale` WARN fix `lmds bundles refresh <slug>`
+  (8) เก็บกวาด: `lmds set --image` บน bundle llama.cpp native ปฏิเสธพร้อมทางที่ใช้ได้จริง (เดิม no-op เงียบ) · `inventory.KNOWN_COMMANDS`
+  ไม่มี `doctor` (ไม่ใช่คำสั่งของ controller) · เทส `test_fleet_consistency.py`, `test_bundles_refresh.py`, `test_node_version_label.py`,
+  `test_install_ship.py`, `test_inventory.py`, `test_doctor.py`, `test_review_templates.py`, `test_console_shell.py` (ปุ่ม Update ใน DOM จริง),
+  `test_llamacpp_runtime_arch.py` (never-downgrade / build-when-older / stamp / migrate lock / server.meta)
 - **llama.cpp เก่ากว่าโมเดล — ตรวจก่อน start · อธิบาย crash · prepare-runtime อัปเดตเอง · hub ติดป้าย+ปุ่มแก้** — เคสจริง 2026-09-06
   spark-worker: `qwen3-8-flash-next-uncensored-gguf` (arch `qwen4exp` — upstream เพิ่ม 27 ส.ค. 6c84c7d5d #27742) บน build llama.cpp
   10495 ของ 18 ส.ค. ในโฟลเดอร์กลาง `~/src/llama.cpp` → hub เห็นแค่ `failed (exit 1)` + "หยุดก่อน health ผ่าน" ส่วน

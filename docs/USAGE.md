@@ -1029,16 +1029,27 @@ origin ชี้กลับ GitHub เผื่อวันหน้า) แล
 4. Docker + NVIDIA Container Toolkit — `lmds node setup <ชื่อ> --with-prereq` จาก hub (ถามรหัส sudo ครั้งเดียว) หรือ `./install.sh` บนเครื่องนั้น
 5. LMDS — ไม่ต้องทำเอง ใช้ `lmds node install` จาก hub ได้
 
-### อัปเดตทั้งฟลีต
+### อัปเดตทั้งฟลีต — "ตรง hub" ต้องผ่าน 3 มิติ
 
 ```bash
-lmds node install --all        # hub ส่งโค้ดที่ตัวเองรันอยู่ไปทุกเครื่อง (~1.5 นาที/เครื่อง ไม่แตะ GitHub)
-lmds node list                 # ป้าย ≠ hub เฉพาะเครื่องที่ commit ต่างจริง
+lmds node install --all        # hub ส่งโค้ดที่ตัวเองรันอยู่ไปทุกเครื่อง → install.sh → regenerate controller เก่า → build llama.cpp ที่ค้าง
+lmds fleet check               # ทั้งฟลีต code · controllers · runtime จากทะเบียน+แคช (ไม่ SSH) · exit 1 เมื่อมีแดง
+lmds node list                 # ป้าย ≠ hub + คอลัมน์ bundles (controller/runtime ค้าง) และ llama.cpp (build · วันที่)
 ```
 
-บนหน้าเว็บ: ปุ่ม **Update** ที่แถบบน = `git pull --ff-only` บน hub → `install.sh` → restart service (รอให้ลายเซ็น process
-เปลี่ยน ไม่ใช่ ping แล้ว reload) → อัปเดตทุก node ด้วยโค้ดจาก hub · ป้าย "มีอัปเดต" อ่านจาก checkout ที่ `install.sh` ประทับไว้
-(ไม่ใช่ตำแหน่งโมดูลใน site-packages) · hub ที่ไม่ได้รันใต้ systemd ตอบ 409 ให้ `lmds web --restart` เอง
+ตั้งแต่ 0.6.1 "ตรง hub" พิมพ์ได้ต่อเมื่อครบสามมิติ (เคสจริง 2026-09-06: ทั้งฟลีต "ตรง hub" แล้ว start ตายเพราะ controller 0.5.1 +
+build llama.cpp 18 ส.ค.): **code** = commit ตรง + hub ไม่มีไฟล์แก้ค้าง · **controllers** = ทุก bundle มี `template_hash` ตรง hub
+(regenerate ให้เองออฟไลน์ด้วย `lmds bundles refresh --all --if-older` ท้าย install) · **runtime** = build llama.cpp รู้จัก arch ของทุกโมเดล
+(ไม่รู้จัก = `node install` build ใหม่ให้ 10–15 นาที · `--no-runtimes` ข้าม) · ต่อเครื่องพิมพ์ 4 บรรทัด code/controllers/runtime/สรุป ·
+สรุปท้าย `อัปเดตครบ N · ตรง hub n · controller ค้าง n (…) · runtime ค้าง n (…) · ตรวจไม่ได้ n` · exit 1 เมื่อมีเครื่องไม่ตรง ·
+hub ที่มีไฟล์แก้ค้างส่งไม่ได้ (node จะได้ commit ไม่ใช่โค้ดที่ hub รัน) — commit ก่อน หรือ `--force` · รายละเอียด
+[FLEET-MULTI-NODE.md](FLEET-MULTI-NODE.md#ตรง-hub-หมายถึงอะไร--3-มิติ-ตั้งแต่-061)
+
+บนหน้าเว็บ: ปุ่ม **Update** ที่แถบบน = `git pull --ff-only` บน hub → `install.sh` → regenerate bundle ของ hub → restart service
+(รอให้ลายเซ็น process เปลี่ยน ไม่ใช่ ping แล้ว reload) → อัปเดตทุก node ด้วยโค้ดจาก hub → **probe ซ้ำ** แล้วโชว์ 3 มิติ (ไม่ใช่ "matches the
+hub" จาก exit 0) → build llama.cpp ที่ค้างเป็นขั้นที่มองเห็น · การ์ด **Fleet consistency** บนหน้าภาพรวม + ปุ่ม *Regenerate stale
+controllers (n)* / *Update runtimes (n)* · ป้าย "มีอัปเดต" อ่านจาก checkout ที่ `install.sh` ประทับไว้ (ไม่ใช่ตำแหน่งโมดูลใน site-packages)
+· hub ที่ไม่ได้รันใต้ systemd ตอบ 409 ให้ `lmds web --restart` เอง
 
 ### เพิ่มเครื่อง (กรอกรหัสผ่านครั้งเดียว)
 
@@ -1072,7 +1083,7 @@ lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต
 
 | | ใช้กับ |
 |---|---|
-| `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` `remove --dry-run` `set` `version` |
+| `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` `remove --dry-run` `set` `version` `bundles refresh --all` |
 | `node ctl` | `prepare-runtime` `check-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` |
 | `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start` `--dry-run`) |
 | `node push` | ส่ง bundle จากเครื่องนี้ไปติดตั้ง (`--download` `--start` · stacked: เขียน cluster.env + pair + sync/verify ให้ก่อน start) |
@@ -1889,14 +1900,20 @@ lmds smoke <ชื่อ> --keep             # ไม่ต้อง stop ตอ
 > ตอนรันจริง: image ที่ tag ไม่มีอยู่จริง · head container ที่ไม่เคย start · ชุดทดสอบที่ไป
 > ให้คะแนนเซิร์ฟเวอร์ของโมเดลอื่น
 
-## 5.6 bundle เก่าใช้ไม่ได้ — `lmds rebuild`
+## 5.6 bundle เก่าใช้ไม่ได้ — `lmds bundles refresh` / `lmds rebuild`
 
-ใช้เมื่อ bundle เสียเพราะสิ่งที่อยู่**นอกเหนือค่าที่ตั้ง** เช่น image ที่ tag ถูกถอนไปแล้ว
-หรือ template รุ่นใหม่มีตัวกันพลาดที่ของเก่าไม่มี
+controller ที่ render โดย lmds รุ่นก่อนไม่มีคำสั่ง/ตัวกันพลาดที่เพิ่มมาทีหลัง (`check-runtime`, `explain_crash`, …) · ตั้งแต่ 0.6.1 มีสองทาง:
 
 ```bash
-lmds rebuild <ชื่อ>
+lmds bundles refresh --all --if-older   # ออฟไลน์ — render ใหม่จากแผนใน MODEL_PROFILE.yaml + ตารางไฟล์จาก controller เดิม (วินาทีเดียว)
+lmds bundles refresh <ชื่อ>              # บังคับใบเดียว · ของเดิมเก็บเป็น .replaced-<เวลา> · bundle.env/bundle.args/cluster.env คงเดิม
+lmds rebuild <ชื่อ>                      # ออนไลน์ — inspect ซ้ำจาก Hugging Face · ใช้เมื่อ refresh บอก "ต้อง lmds rebuild ออนไลน์"
 ```
+
+`node install`/ปุ่ม Update เรียก `bundles refresh --all --if-older` ให้เองบนทุกเครื่อง · หน้าเว็บมีปุ่ม **regenerate controller**
+ต่อการ์ด (chip `controller 0.5.1 → regenerate`) · `lmds doctor` มีข้อ `controller-stale` · bundle จาก `lmds adopt` ไม่มี template = ข้าม
+
+`lmds rebuild` ใช้เมื่อ bundle เสียเพราะสิ่งที่อยู่**นอกเหนือค่าที่ตั้ง** เช่น image ที่ tag ถูกถอนไปแล้ว หรือ profile รุ่น ≤0.4.0 ที่ขาดคีย์
 
 เอาค่าที่เคยตัดสินใจไว้กลับมา (context, flags, target, GGUF ที่เลือก) จาก `MODEL_PROFILE.yaml`
 ส่วนที่ระบบเป็นเจ้าของคำนวณใหม่ตามตรรกะปัจจุบัน (image, ตัวกันพลาดในสคริปต์)
@@ -1986,6 +2003,10 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | stacked `sync-worker`/`start` ตาย `Permission denied (publickey)` | head ไม่มีกุญแจไป worker (`node setup` ลงแต่กุญแจของ hub) | `lmds cluster pair <head> <worker>` แล้วสั่งใหม่ · ดูทีละข้อ: `lmds cluster doctor <head> <worker>` |
 | stacked `start` ขึ้น `image นี้ไม่รู้จักสถาปัตยกรรม 'xxx'` ก่อนปล่อย worker | โมเดลใหม่กว่า transformers ใน image | `lmds set <ชื่อ> --image <image ใหม่กว่า>` → `prepare-runtime` → `start` (ตรวจก่อนได้ด้วยคำสั่ง `docker run … CONFIG_MAPPING_NAMES` ที่ error พิมพ์ให้) |
 | `prepare-runtime` (stacked) บอกว่า pull ล้มที่เครื่อง X | node นั้นไม่ถึง registry / ghcr rate-limit / nvcr ต้อง NGC key / ไม่มีเน็ต | ทำตามที่ข้อความบอกต่อ registry นั้น (`docker login` · NGC key · proxy ของ docker daemon · `docker save \| ssh docker load`) แล้วสั่งซ้ำ (idempotent) |
+| `lmds node install` / ปุ่ม Update ขึ้น `ยังไม่ตรง hub — controller ค้าง n` หรือ `runtime ค้าง n` ทั้งที่ commit ตรง | ตั้งแต่ 0.6.1 "ตรง hub" ดู 3 มิติ: code · controller (template_hash ของ bundle ≠ hub) · runtime (build llama.cpp ไม่รู้จัก arch ของโมเดล) — เดิมเทียบแค่ commit แล้วขึ้นเขียวทั้งที่ start จะตาย (2026-09-06) | controller: `node install` regenerate ให้เองแล้ว — ยังค้าง = ใบนั้น "ต้อง lmds rebuild ออนไลน์" (profile ≤0.4.0) หรือดู `lmds node run <เครื่อง> bundles refresh --all` · runtime: `node install` build ให้เอง (เว้น `--no-runtimes`) หรือปุ่ม update runtime · ทั้งฟลีต: `lmds fleet check` · ป้าย "ตรวจไม่ได้" = probe เครื่องนั้นก่อน (`lmds node list --check`) |
+| `lmds node install` ขึ้น `hub มีไฟล์แก้ค้าง … node จะได้ commit ไม่ใช่โค้ดที่ hub รันอยู่` (เว็บ 409) | checkout ของ hub มีของแก้ค้าง — install.sh ติดตั้ง working tree ให้ hub แต่ git bundle ส่งเฉพาะ commit → stamp เท่ากันทั้งที่โค้ดต่างกัน | `git add -A && git commit` บน hub แล้วสั่งใหม่ · จงใจส่ง commit เดิม: `--force` (เว็บ `{"force": true}`) |
+| กด "Run prepare-runtime"/`prepare-runtime` แล้วขึ้น `action=reuse` ไม่ build อะไร | build กลางของเครื่องใหม่กว่าหรือเท่ากับ lock อยู่แล้ว — ตั้งแต่ 0.6.1 lock เป็นขั้นต่ำ ไม่ใช่ commit ที่ต้อง build เป๊ะ (เดิม checkout lock เก่ามา build ทับ = downgrade ทุก bundle บนเครื่อง) | ต้องการรุ่นใหม่กว่าที่มี: ปุ่ม **update runtime** / `LLAMA_CPP_UPDATE=1 ./xxx-single.sh prepare-runtime` · ดูว่ามีอะไร: `./xxx-single.sh check-runtime` หรือ `cat ~/src/llama.cpp/build/lmds-build.json` |
+| `lmds set --image` บน bundle GGUF ขึ้น `native build … ตั้ง --image ไม่ได้` | bundle llama.cpp บน DGX Spark รัน build ในเครื่อง ไม่ใช้ docker image — เดิมรับค่าไว้เงียบ ๆ แล้วไม่มีผลอะไร | อัปเดตรันไทม์ด้วยปุ่ม update runtime / `lmds repair <slug>` / `LLAMA_CPP_UPDATE=1 … prepare-runtime` |
 | ปุ่ม Update: hub ผ่านแต่ node "ไม่ผ่าน" | node ไม่มี checkout (clone จาก bundle ได้โฟลเดอร์เปล่า) / โฟลเดอร์ไม่ใช่ git / checkout แยกสาย | แก้แล้ว 0.6.0 (`git clone -b main` · โฟลเดอร์เดิม → `.bak-<เวลา>` · แยกสาย → branch `local-<เวลา>`) — อัปเดต hub ก่อนแล้วกดใหม่ · ป้าย "ยังไม่ตรง hub" ทั้งที่อัปเดตแล้ว = hash ย่อ 7 กับ 8 ตัว (แก้แล้ว เทียบ prefix) |
 | `install.sh` ล้มที่ pip (PyPI ช้า) แล้วเครื่องไม่มี `lmds` | รุ่นเก่า: `venv --clear` ทับก่อนแล้ว pip ค่อยล้ม | ตั้งแต่ 0.6.0 venv เดิมถูกย้ายไป `venv.old` แล้วคืนให้เมื่อล้ม — รุ่นเดิมยังใช้ได้ · ลองใหม่ `PIP_TIMEOUT=120 ./install.sh` (ค่าเริ่มต้น `PIP_RETRIES=8 PIP_TIMEOUT=60`) |
 | `lmds remove` / ปุ่ม Remove ขึ้น "ต้องใช้ sudo rm -rf" | weight ที่ container เขียนเป็น root | ตั้งแต่ 0.6.0 ลบผ่าน docker ให้เอง (root ในคอนเทนเนอร์ · เฉพาะใต้ home/HF cache · ไม่ pull image) — ยังขึ้น = ผู้ใช้ไม่อยู่กลุ่ม docker หรือ path อยู่นอกรั้ว ลบเองตามคำสั่งที่พิมพ์ให้ |

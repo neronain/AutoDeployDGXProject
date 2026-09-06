@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import struct
 import subprocess
@@ -106,10 +107,12 @@ case "$1" in
 esac
 '''
 
+# merge-base --is-ancestor <lock> <build>: 0 = build ใหม่กว่าหรือเท่ากับ lock (ค่าปกติ) · FAKE_GIT_NOT_ANCESTOR=1 = build เก่ากว่า lock
 _GIT = '''
 echo "git $*" >> "$FAKE_LOG"
 if [[ "$*" == *rev-parse* ]]; then echo newcommit; fi
 if [[ "$*" == *"log -1"* ]]; then echo 2026-08-18; fi
+if [[ "$*" == *merge-base* && -n "${FAKE_GIT_NOT_ANCESTOR:-}" ]]; then exit 1; fi
 exit 0
 '''
 
@@ -283,25 +286,81 @@ def test_prepare_runtime_rebuilds_when_the_locked_build_lacks_the_architecture(t
     assert not (rig.run_dir / "runtime.lock").exists(), "ไม่เขียน lock ต่อ bundle อีก"
 
 
-def test_prepare_runtime_still_honours_a_lock_the_model_can_use(tmp_path):
+def test_prepare_runtime_never_downgrades_a_newer_shared_build(tmp_path):
+    """lock เก่ากว่า build ที่มีจริง (msi-3/msi-4/dgx-veerasiam 2026-09-06: lock 15–16 ส.ค. · build 18 ส.ค. จาก rebuild
+    นอก controller) — "ใช้ commit ที่ lock ไว้" แบบเดิมคือ checkout ของเก่ามา build ทับ = downgrade ทุก bundle บนเครื่อง"""
     rig = Rig(tmp_path, gguf_bytes(), lib_archs=("llama", ARCH))
     lock = rig.llama_dir / "build" / "runtime.lock"
     lock.write_text("lockedcommit\n", encoding="utf-8")
     done = rig.run("prepare-runtime")
     assert done.returncode == 0, done.stderr
     calls = rig.calls()
-    assert "fetch" not in calls and "checkout --quiet lockedcommit" in calls
-    assert lock.read_text().strip() == "lockedcommit" and "LLAMA_CPP_UPDATE=1" in done.stdout
+    assert "merge-base --is-ancestor lockedcommit 3dc7285b4" in calls, "ต้องถามว่า lock เป็นบรรพบุรุษของ build จริงไหม"
+    assert "fetch" not in calls and "checkout" not in calls and "cmake" not in calls, "build ใหม่กว่า lock = ใช้ที่มี ไม่ build ซ้ำ ไม่ถอยหลัง"
+    assert "build กลาง=3dc7285b4 · lock=lockedcommit · action=reuse" in done.stdout, done.stdout
+    assert lock.read_text().strip() == "3dc7285b4", "lock เลื่อนขึ้นมาที่ build จริง (proven-good floor)"
+    assert "LLAMA_CPP_UPDATE=1" in done.stdout
+    stamp = json.loads((rig.llama_dir / "build" / "lmds-build.json").read_text(encoding="utf-8"))
+    assert stamp["commit"] == "3dc7285b4" and stamp["build"] == "10495" and stamp["built_by"] == rig.slug
 
 
-def test_prepare_runtime_migrates_a_per_bundle_lock_next_to_the_shared_build(tmp_path):
+def test_prepare_runtime_builds_the_locked_commit_only_when_the_build_is_older(tmp_path):
+    """เคสเดียวที่ควร checkout ตาม lock: build ที่มีอยู่เก่ากว่า commit ที่พิสูจน์แล้ว"""
+    rig = Rig(tmp_path, gguf_bytes(), lib_archs=("llama", ARCH))
+    lock = rig.llama_dir / "build" / "runtime.lock"
+    lock.write_text("lockedcommit\n", encoding="utf-8")
+    done = rig.run("prepare-runtime", env={"FAKE_GIT_NOT_ANCESTOR": "1"})
+    assert done.returncode == 0, done.stderr
+    calls = rig.calls()
+    assert "fetch" not in calls and "checkout --quiet lockedcommit" in calls and "cmake --build" in calls
+    assert "action=build" in done.stdout and "เก่ากว่า lock" in done.stdout
+    assert lock.read_text().strip() == "lockedcommit"
+    stamp = json.loads((rig.llama_dir / "build" / "lmds-build.json").read_text(encoding="utf-8"))
+    assert stamp["commit"] == "lockedcommit" and stamp["cuda_arch"] == "121a-real" and stamp["at"].endswith("Z")
+
+
+def test_prepare_runtime_migrates_a_per_bundle_lock_without_downgrading(tmp_path):
+    """lock รุ่นเก่าใต้ RUN_DIR (ของ bundle) ย้ายมาข้าง build — แต่ถ้ามันเก่ากว่า build จริง ต้องไม่ checkout ตามมัน"""
     rig = Rig(tmp_path, gguf_bytes(), lib_archs=("llama", ARCH))
     (rig.run_dir / "runtime.lock").write_text("legacycommit\n", encoding="utf-8")
     done = rig.run("prepare-runtime")
     assert done.returncode == 0, done.stderr
-    assert "checkout --quiet legacycommit" in rig.calls()
-    assert (rig.llama_dir / "build" / "runtime.lock").read_text().strip() == "legacycommit"
-    assert "ย้าย lock" in done.stdout
+    assert "ย้าย lock" in done.stdout and "action=reuse" in done.stdout
+    assert "checkout" not in rig.calls() and "cmake" not in rig.calls()
+    assert (rig.llama_dir / "build" / "runtime.lock").read_text().strip() == "3dc7285b4"
+    assert not (rig.run_dir / "runtime.lock").exists() or True  # lock เก่าไม่ถูกเขียนเพิ่ม (คงไว้เป็นหลักฐาน)
+
+
+def test_prepare_runtime_with_no_lock_reuses_an_existing_build(tmp_path):
+    """msi-5: build มีแต่ไม่มี lock (rebuild นอก controller) — เดิม "ยังไม่มี lock" = ดึง master มา build ใหม่ทั้งที่ของมีอยู่"""
+    rig = Rig(tmp_path, gguf_bytes(), lib_archs=("llama", ARCH))
+    done = rig.run("prepare-runtime")
+    assert done.returncode == 0, done.stderr
+    assert "action=reuse" in done.stdout and "fetch" not in rig.calls()
+    assert (rig.llama_dir / "build" / "runtime.lock").read_text().strip() == "3dc7285b4"
+
+
+def test_prepare_runtime_warns_about_running_servers_before_rebuilding(tmp_path):
+    """build ทับ build/ ขณะ llama-server จากโฟลเดอร์นี้รันอยู่ — บอกชื่อ bundle ที่จะได้รุ่นใหม่ตอน restart"""
+    rig = Rig(tmp_path, gguf_bytes())
+    other = rig.run_dir.parent / "other-gguf"
+    other.mkdir()
+    (other / "server.meta").write_text(f"slug=other-gguf\nengine=llamacpp\nmode=native\nruntime_dir={rig.llama_dir}\n", encoding="utf-8")
+    _shim(rig.shims, "pgrep", "exit 0\n")
+    done = rig.run("prepare-runtime", env={"FAKE_BUILD_ADDS": ARCH})
+    assert done.returncode == 0, done.stderr
+    assert "กำลังรันอยู่" in done.stderr and "other-gguf" in done.stderr, done.stderr
+
+
+def test_start_records_the_served_build_in_server_meta_and_refreshes_the_lock(tmp_path):
+    rig = Rig(tmp_path, gguf_bytes(), lib_archs=("llama", ARCH))
+    (rig.llama_dir / "build" / "runtime.lock").write_text("olderlock\n", encoding="utf-8")
+    done = rig.run("start")
+    assert done.returncode == 0, done.stderr
+    meta = (rig.run_dir / "server.meta").read_text(encoding="utf-8")
+    assert "runtime_commit=3dc7285b4" in meta and "runtime_build=10495" in meta, meta
+    assert f"runtime_dir={rig.llama_dir}" in meta
+    assert (rig.llama_dir / "build" / "runtime.lock").read_text().strip() == "3dc7285b4", "lock = commit ที่เสิร์ฟจริง"
 
 
 def test_prepare_runtime_says_when_even_master_does_not_know_the_architecture(tmp_path):

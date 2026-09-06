@@ -66,6 +66,22 @@ def fresh_web_state():
 
 
 @pytest.fixture(autouse=True)
+def hub_checkout_is_clean(monkeypatch):
+    """checkout ของนักพัฒนาแก้ค้างเป็นปกติ — ต้องไม่ทำให้ทุกเทสของ Update path เห็นว่า "hub dirty"
+
+    (prepare_install ปฏิเสธ hub ที่มีไฟล์แก้ค้าง · "ตรง hub" มิติ code นับ dirty เป็นไม่ตรง — 0.6.1)
+    เทสที่ตั้งใจทดสอบพฤติกรรมนั้น patch `lmds.web.selfupdate.dirty_files` กลับเองได้
+    """
+    try:
+        import lmds.web.selfupdate as selfupdate
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(selfupdate, "dirty_files", lambda root: [])
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_registry_lookups(monkeypatch):
     """เทสต้องไม่ยิงเน็ตจริง — การตรวจ image tag ทำให้ชุดเทสช้าจาก 12 วิเป็น 90 วิ
     และผลจะเปลี่ยนไปตามว่าตอนนั้นต่อเน็ตได้ไหม ซึ่งไม่ใช่สิ่งที่เทสควรวัด

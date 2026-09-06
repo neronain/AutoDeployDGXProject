@@ -199,6 +199,30 @@ def _check_context_cap(bundle_dir: Path, values: dict[str, object], cleaned: dic
         f"VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 ใน Advanced ก่อน (ตำแหน่งที่เกินอาจให้ผลเป็น nan)")
 
 
+def _check_image_applies(bundle_dir: Path) -> None:
+    """`--image` กับ bundle llama.cpp แบบ native build = no-op เงียบ (audit 2026-09-06 §6.1)
+
+    controller native ไม่อ่าน LLAMACPP_IMAGE เลย — เขียนลงไฟล์สำเร็จ ผู้ใช้เข้าใจว่าเปลี่ยนรันไทม์แล้ว ทั้งที่ build
+    กลางของเครื่องยังเป็นตัวเดิม · บอกทางที่ใช้ได้จริง (update-runtime) แทนที่จะรับค่าไว้เฉย ๆ
+    """
+    import yaml
+
+    try:
+        profile = yaml.safe_load((Path(bundle_dir) / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return
+    if not isinstance(profile, dict) or (profile.get("runtime") or {}).get("engine") != "llamacpp":
+        return
+    from lmds.doctor.checks import llamacpp_mode
+
+    if llamacpp_mode(profile) == "native":
+        raise SettingsError(
+            "bundle นี้เป็น llama.cpp แบบ native build (DGX Spark) — ไม่ได้ใช้ docker image จึงตั้ง --image ไม่ได้\n"
+            "อัปเดตรันไทม์ด้วย: ปุ่ม update runtime บนการ์ด · lmds repair <slug> · "
+            "LLAMA_CPP_UPDATE=1 <controller> prepare-runtime"
+        )
+
+
 def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
     """บันทึกค่าลง bundle.env — ค่าที่เป็นค่าว่างคือ "เอาออก ใช้ default ของ bundle"
 
@@ -217,6 +241,8 @@ def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
             continue
         cleaned[field] = _clean(field, raw)  # image_min_tokens=auto → "" โดยตั้งใจ (ดู FIELDS)
     _check_context_cap(bundle_dir, values, cleaned)
+    if "image" in cleaned:
+        _check_image_applies(bundle_dir)
 
     args_file = bundle_dir / ARGS_FILENAME
     extra = cleaned.pop("extra_args", None)

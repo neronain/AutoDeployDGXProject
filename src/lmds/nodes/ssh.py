@@ -371,9 +371,29 @@ fi
 rm -f {bundle}
 LMDS_ASSUME_YES=1 {skip}./install.sh
 "$HOME/.local/bin/lmds" version
+echo "── regenerate controller ที่เก่ากว่า template ของ lmds (ออฟไลน์ · bundle.env/bundle.args คงเดิม) ──"
+"$HOME/.local/bin/lmds" bundles refresh --all --if-older || echo "regenerate controller ไม่สำเร็จ (exit $?) — ดูด้วย: lmds bundles refresh --all"
 """
 
 REMOTE_BUNDLE = "/tmp/lmds-src.bundle"
+
+
+def ctl_script(slug: str, node_name: str, argv: str, env_prefix: str = "") -> str:
+    """สคริปต์เรียก controller ของ bundle บนเครื่องนั้น — หา bundle เอง เลือก controller ตาม topology
+
+    ใช้ร่วมกันโดย CLI (`node install` build runtime ให้) และหน้าเว็บ (`/ctl/{command}`) · slug ต้องผ่าน _SLUG_OK/quote แล้ว
+    """
+    quoted = shlex.quote(slug)
+    return (
+        f"dir=\"$(ls -d ~/bundles/{quoted} ~/*/bundles/{quoted} 2>/dev/null | head -1)\"; "
+        f"[ -n \"$dir\" ] || {{ echo 'ไม่พบ bundle '{quoted}' บน '{shlex.quote(node_name)} >&2; exit 1; }}; "
+        f"cd \"$dir\" || exit 1; "
+        "ctl=\"\"; if grep -qsE '^topology: *stacked' MODEL_PROFILE.yaml; then "
+        "ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\"; fi; "
+        "[ -n \"$ctl\" ] || ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
+        f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
+        f"{env_prefix}\"$ctl\" {argv}"
+    )
 
 
 # ขั้นที่ต้องใช้สิทธิ์ root บนเครื่องปลายทาง — ทำครั้งเดียวต่อเครื่อง
@@ -521,11 +541,40 @@ def ship_source(node: Node) -> str:
     return REMOTE_BUNDLE if pushed.ok else ""
 
 
-def prepare_install(node: Node, with_prereq: bool = False) -> str:
+class HubDirtyError(NodeError):
+    """hub มีไฟล์แก้ค้างใน checkout — โค้ดที่จะส่งไป node คือ commit ไม่ใช่โค้ดที่ hub รันอยู่"""
+
+    def __init__(self, root: Path, files: list[str]) -> None:
+        self.root, self.files = root, files
+        shown = "\n".join(f"  · {name}" for name in files[:10]) + ("\n  …" if len(files) > 10 else "")
+        super().__init__(
+            f"hub มีไฟล์แก้ค้างใน {root} ({len(files)} ไฟล์) — node จะได้ *commit* ไป ไม่ใช่โค้ดที่ hub รันอยู่ "
+            f"(install.sh ติดตั้ง working tree ให้ hub แต่ git bundle ส่งเฉพาะ commit) → stamp เท่ากันทั้งที่โค้ดต่างกัน\n"
+            f"{shown}\n"
+            f"commit ก่อน (git add + commit) แล้วสั่งใหม่ · หรือยืนยันว่าจงใจ: --force (CLI) / force:true (เว็บ)"
+        )
+
+
+def hub_dirty_files() -> tuple[Path | None, list[str]]:
+    """(checkout ของ hub, ไฟล์แก้ค้าง) — (None, []) เมื่อ hub ไม่ได้ติดตั้งจาก git"""
+    from lmds.web.selfupdate import dirty_files, source_root
+
+    root = source_root()
+    if root is None:
+        return None, []
+    return root, dirty_files(root)
+
+
+def prepare_install(node: Node, with_prereq: bool = False, force: bool = False) -> str:
     """สคริปต์ติดตั้งสำหรับเครื่องนี้ — ส่งโค้ดจาก hub ไปก่อนถ้าทำได้ แล้วค่อยคืนสคริปต์
 
     จุดเดียวที่ทั้ง CLI (`lmds node install`) และหน้าเว็บ (ปุ่ม install/update) เรียก
+    · hub ที่มีไฟล์แก้ค้าง = ปฏิเสธ (HubDirtyError) เว้นแต่ `force` — audit 2026-09-06 §5.2 C3: hub dirty=8 ขณะที่ทุก node
+    dirty=0 แล้ว "ตรง hub" ทั้งฟลีตทั้งที่ hub รันโค้ด (a)–(d) ที่ node ไม่มี
     """
+    root, dirty = hub_dirty_files()
+    if dirty and not force:
+        raise HubDirtyError(root, dirty)
     return install_script(with_prereq, bundle=ship_source(node))
 
 
@@ -549,13 +598,13 @@ def explain_install_failure(output: str, node: Node) -> str:
     return ""
 
 
-def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False) -> Result:
+def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False, force: bool = False) -> Result:
     """ติดตั้งหรืออัปเดต LMDS บน node ผ่าน SSH
 
     ค่าเริ่มต้นข้ามขั้นตอน prerequisite (docker/toolkit) เพราะขั้นนั้นต้องใช้ sudo ซึ่งไม่มี tty
     ให้กรอกรหัสผ่าน — เครื่องที่ยังไม่มี Docker ต้องไปรัน install.sh เองบนเครื่องนั้น
     """
-    return run(node, prepare_install(node, with_prereq), timeout=timeout)
+    return run(node, prepare_install(node, with_prereq, force=force), timeout=timeout)
 
 
 def check_login(host: str, user: str, port: int = 22) -> bool:

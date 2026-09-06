@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from lmds.nodes import Node, ssh
 
 
@@ -180,3 +182,48 @@ def test_install_builds_a_new_venv_and_swaps_only_on_success():
     assert 'python3 -m venv --clear "${INSTALL_DIR}/venv"' not in text
     import subprocess
     assert subprocess.run(["bash", "-n", str(Path(__file__).resolve().parents[1] / "install.sh")]).returncode == 0
+
+
+# ── Update path 2026-09-06: hub dirty guard · regenerate controller บน node ──
+
+def test_prepare_install_refuses_or_warns_when_hub_dirty(tmp_path, monkeypatch):
+    """hub dirty=8 ขณะที่ทุก node dirty=0 → stamp เท่ากัน (dcefd91) ทั้งที่โค้ดต่างกัน — ต้องปฏิเสธ เว้นแต่ force"""
+    from lmds.nodes import HubDirtyError
+    from lmds.web import selfupdate
+
+    root = _git_repo(tmp_path)
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: root)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(ssh, "push_file", lambda *a, **k: SimpleNamespace(ok=True))
+    node = Node(name="n", host="h", user="u")
+    assert "git fetch -q" in ssh.prepare_install(node)          # สะอาด = ส่งได้
+
+    (root / "install.sh").write_text("#!/bin/bash\necho edited\n", encoding="utf-8")
+    monkeypatch.setattr(selfupdate, "dirty_files", _real_dirty_files)   # conftest ปิดไว้ — เปิดของจริงเฉพาะเทสนี้
+    with pytest.raises(HubDirtyError) as caught:
+        ssh.prepare_install(node)
+    text = str(caught.value)
+    assert "install.sh" in text and "commit" in text and "--force" in text
+    assert "git fetch -q" in ssh.prepare_install(node, force=True), "force = ยืนยันว่าจงใจ"
+
+
+def _real_dirty_files(root):
+    done = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True)
+    return [line[3:] for line in done.stdout.splitlines() if line.strip()]
+
+
+def test_install_script_refreshes_stale_bundles(tmp_path):
+    """หลัง install.sh ผ่าน สคริปต์บน node ต่อด้วย `lmds bundles refresh --all --if-older` และไม่ล้มเมื่อไม่มี bundle/คำสั่ง"""
+    script = ssh.install_script(bundle="/tmp/lmds-src.bundle")
+    assert "bundles refresh --all --if-older" in script
+    assert script.index("./install.sh") < script.index("bundles refresh"), "regenerate ต้องมาหลัง install.sh"
+    # รันจริง: lmds stub บันทึก argv — และถ้า stub ล้ม (lmds รุ่นเก่าไม่มีคำสั่ง) install ยัง exit 0
+    src = _source(tmp_path)
+    home = _node_home(tmp_path)
+    calls = home / "lmds-calls.log"
+    (home / ".local" / "bin" / "lmds").write_text(
+        f"#!/bin/bash\necho \"lmds $*\" >> {calls}\n[ \"$1\" = bundles ] && exit 2\necho lmds-stub\n", encoding="utf-8")
+    done = _run_node_script(home, _bundle_of(src, tmp_path, "r.bundle"))
+    assert done.returncode == 0, done.stderr
+    assert "lmds bundles refresh --all --if-older" in calls.read_text(encoding="utf-8")
+    assert "regenerate controller ไม่สำเร็จ" in done.stdout, "รุ่นเก่าไม่มีคำสั่ง = บอกแล้วไปต่อ ไม่ล้ม install"

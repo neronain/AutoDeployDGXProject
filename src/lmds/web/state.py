@@ -265,7 +265,7 @@ STORE = Store()
 
 
 def _refresh_local() -> None:
-    from lmds.inventory import host_payload, model_payload
+    from lmds.inventory import host_payload, model_payload, with_runtimes
     from lmds.fleet import discover
     from lmds.web import jobs
 
@@ -274,7 +274,7 @@ def _refresh_local() -> None:
     epoch = STORE.local_epoch
     try:
         models = [model_payload(s, _job_payload(jobs, s.slug)) for s in discover()]
-        STORE.set_local({"host": host_payload(), "models": models}, epoch=epoch)
+        STORE.set_local({"host": with_runtimes(host_payload(), models), "models": models}, epoch=epoch)
     except Exception as exc:  # noqa: BLE001 — refresher ต้องไม่ตายเพราะเคสเดียว
         STORE.set_local(None, str(exc)[:300], epoch=epoch)
 
