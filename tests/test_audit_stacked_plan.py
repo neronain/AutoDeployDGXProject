@@ -539,7 +539,7 @@ def test_known_broken_architectures_are_flagged_at_plan_time():
 
 
 def test_glm53_flash_recipe_pins_the_community_image_flags_and_context_cap():
-    """รันผ่านจริง 2026-09-06 บน spark-head+worker: image ชุมชน sm121-v8 + kv fp8_e4m3 + marlin + block 2304 + eager +
+    """รันผ่านจริง 2026-09-06 บน spark-head+worker: image ชุมชน sm121-v8 + kv fp8_e4m3 + marlin + block 2304 + pin KV 3.5 GiB (ไม่ eager) +
     ctx 262144 (524288 ชน persistent_topk) + parser glm47/glm45 · สูตรต้องส่งครบ ทั้ง orcarouter/RedHat/coolbho3k"""
     from lmds.recipes import find_recipe
 
@@ -552,8 +552,9 @@ def test_glm53_flash_recipe_pins_the_community_image_flags_and_context_cap():
         assert plan.runtime.image_ref.startswith("ghcr.io/tonyd2wild/vllm-glm53-flash@sha256:d77d375c"), repo
         assert plan.serving.context <= 262144 and plan.serving.kv_cache_dtype == "fp8_e4m3" and plan.serving.max_num_seqs == 6
         flags = " ".join(plan.serving.extra_flags)
-        for f in ("--moe-backend marlin", "--block-size 2304", "--enforce-eager"):
+        for f in ("--moe-backend marlin", "--block-size 2304", "--kv-cache-memory 3758096384"):
             assert f in flags, (repo, flags)
+        assert "--enforce-eager" not in flags, "รอบสอง 2026-09-06: CUDA graph ได้ 10.3 tok/s (eager 9.0) และ pin KV แทน gpu-util กัน swap"
         assert plan.tool_calling.parser == "glm47" and plan.reasoning.parser == "glm45"
         assert plan.serving.extra_env.get("VLLM_ENGINE_READY_TIMEOUT_S") == "3600"
         assert plan.serving.extra_env.get("FLASHINFER_CUDA_ARCH_LIST") == "12.1a"

@@ -761,3 +761,22 @@ def test_site_does_not_touch_cluster_fields():
     node = update("spark1", site="customer-a")
     assert node.cluster_ip == "10.10.0.1"     # ค่า cluster เดิมอยู่ครบ
     assert node.stack is True
+
+
+def test_run_survives_output_cut_mid_utf8_character(monkeypatch, tmp_path):
+    """เคสจริง 2026-09-06 spark-head: `docker logs … | cut -c1-300` ตัดกลางอักขระไทย → ssh ส่งไบต์ UTF-8 ไม่ครบ →
+    subprocess (text=True, errors=strict) โยน UnicodeDecodeError ทั้งที่คำสั่งสำเร็จ · ต้องได้ผลกลับมาพร้อม U+FFFD แทน"""
+    import subprocess
+    from lmds.nodes import ssh
+
+    raw = "สำเร็จ ".encode() + b"\xe0\xb8" + b" tail"        # "ส" ที่ถูกตัดเหลือ 2 ใน 3 ไบต์
+
+    def fake_run(args, **kw):
+        assert kw.get("text") is True
+        out = raw.decode(kw.get("encoding") or "utf-8", kw.get("errors") or "strict")
+        return subprocess.CompletedProcess(args, 0, out, "")
+
+    monkeypatch.setattr(ssh, "key_path", lambda: str(tmp_path / "k"))
+    monkeypatch.setattr(ssh.subprocess, "run", fake_run)
+    result = ssh.run(make(), "true")
+    assert result.exit_code == 0 and result.stdout.startswith("สำเร็จ ") and "\ufffd" in result.stdout

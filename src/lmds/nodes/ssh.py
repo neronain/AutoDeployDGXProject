@@ -109,7 +109,9 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str
     args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(port), target, wrapped]
     try:
         proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout,
+            # errors=replace: output ของเครื่องปลายทางที่ถูก cut/tail ตัดกลางอักขระไทย (UTF-8 หลายไบต์)
+            # เคยทำให้ run() ระเบิด UnicodeDecodeError ทั้งที่คำสั่งสำเร็จ (2026-09-06 spark-head)
+            args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
             # ไม่มี stdin_text = DEVNULL ไม่งั้น ssh ไปกิน stdin ของคนเรียกแล้วค้าง
             **({"input": stdin_text} if stdin_text else {"stdin": subprocess.DEVNULL}),
         )
@@ -180,8 +182,8 @@ def push_file(node: Node, local: str, remote: str, timeout: int = 1800) -> Resul
         args = ["scp", *_SSH_BASE, "-i", key_path(), "-P", str(node.port),
                 str(source), f"{node.user}@{host}:{remote}"]
         try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
-                                  stdin=subprocess.DEVNULL)
+            proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=timeout, stdin=subprocess.DEVNULL)
         except FileNotFoundError as exc:
             raise NodeError("ไม่พบคำสั่ง scp — ติดตั้ง openssh-client ก่อน") from exc
         except subprocess.TimeoutExpired:

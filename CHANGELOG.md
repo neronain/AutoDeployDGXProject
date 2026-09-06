@@ -5,6 +5,13 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **GLM-5.3-Flash รอบสอง: pin KV กัน swap + CUDA graph · MTP ใช้กับ checkpoint uncensored ไม่ได้** — 2026-09-06 spark-head+worker:
+  สูตรแรก (gpu-util 0.85 + eager) ทำให้เครื่องใช้ RAM 115/121 GiB และ swap 4 GB (unified memory: vLLM คิดว่ามี 103 GiB ให้ใช้)
+  · จะเปิด MTP ตามชุมชนแต่ checkpoint orcarouter (และ coolbho3k) **ไม่มีเลเยอร์ MTP** (layers 0–44 ทั้งที่ config บอก
+  num_nextn_predict_layers 1) มีเฉพาะ RedHatAI → เลิก · แทนด้วย `--kv-cache-memory 3758096384` (pin KV 3.5 GiB = 469K tokens,
+  context ไม่มีผลกับ RAM อีก) และตัด `--enforce-eager` (CUDA graph +0.5 GiB) → decode 10.3 tok/s (เดิม 9.0) stress 8 คน 27.4 tok/s ·
+  `--kv-cache-memory` เข้า allowlist vLLM · สูตรทั้ง 3 ตัวอัปเดต · `nodes.run` decode ด้วย errors=replace (output ที่ `cut`
+  ตัดกลางอักขระไทยเคยทำให้ระเบิด UnicodeDecodeError) · เทส `test_audit_stacked_plan.py`, `test_nodes.py`
 - **GLM-5.3-Flash NVFP4 รันได้แล้วบน 2× DGX Spark — สูตรในระบบ** — ทีมตรวจสอบ/monitor 2026-09-06: vLLM stock/nightly และ
   image `glm53-flash` ของ Red Hat ตายตอน warm-up `pe_dim must be 64 for fp8_ds_mla` เพราะบน SM121 มี sparse-MLA backend ตัวเดียว
   (`FLASHINFER_MLA_SPARSE_SM120`) ที่บังคับ KV layout ของ DeepSeek แต่ GLM ใช้ MLA แบบ NoPE · image ชุมชน

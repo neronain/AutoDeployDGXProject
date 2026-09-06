@@ -16,6 +16,8 @@ VLLM_FLAGS = {
     "--enable-prefix-caching",
     "--enable-chunked-prefill",
     "--enforce-eager",
+    # pin ขนาด KV เป็นไบต์แทน gpu-memory-utilization — สูตร GLM-5.3 บน DGX Spark ใช้กัน swap (unified memory)
+    "--kv-cache-memory",
     "--max-num-seqs",
     "--max-num-batched-tokens",
     "--tensor-parallel-size",
