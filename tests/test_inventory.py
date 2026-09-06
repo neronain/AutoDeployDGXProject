@@ -150,3 +150,25 @@ def test_agent_info_reports_runtimes_and_images(tmp_path, monkeypatch, request):
     assert summary["controllers_stale"] == 2 and summary["runtime_stale"] == 0
     # ไม่มี doctor ในรายการคำสั่งของ controller (มันเป็นคำสั่งของ lmds ไม่ใช่ของ template)
     assert "doctor" not in inventory.KNOWN_COMMANDS
+
+
+def test_llama_server_version_line_parses_both_formats(tmp_path):
+    """เคสจริง 2026-09-06 ทั้งฟลีตขึ้น "build ?" — llama-server รุ่นใหม่พิมพ์
+    `version: 0.1.2-dev (build 10495, commit 3dc7285b4)` แต่ regex จับได้แต่แบบเก่า `version: 10495 (3dc7285b4)`"""
+    from lmds import inventory
+
+    for text, build, commit in (
+        ("version: 10495 (3dc7285b4)", "10495", "3dc7285b4"),
+        ("version: 0.1.2-dev (build 10495, commit 3dc7285b4)\nbuilt with GNU 13.3.0 for Linux aarch64", "10495", "3dc7285b4"),
+        ("version: 0.4.0-dev (build 10826, commit 73a43d1f6)", "10826", "73a43d1f6"),
+    ):
+        found = inventory._VERSION_LINE.search(text)
+        assert found and found.group(1) == build and found.group(2) == commit, text
+
+    llama = tmp_path / "src" / "llama.cpp"
+    (llama / "build" / "bin").mkdir(parents=True)
+    server = llama / "build" / "bin" / "llama-server"
+    server.write_text("#!/bin/bash\necho 'version: 0.4.0-dev (build 10826, commit 73a43d1f6)'\necho 'built with GNU 13.3.0 for Linux aarch64'\n", encoding="utf-8")
+    server.chmod(0o755)
+    info = inventory.llamacpp_runtime_info(llama)
+    assert info["build"] == "10826" and info["commit"] == "73a43d1f6", info

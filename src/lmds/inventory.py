@@ -448,7 +448,9 @@ def source_dirty() -> list[str]:
         return []
 
 
-_VERSION_LINE = re.compile(r"version:\s*(\d+)\s*\(([0-9a-fA-F]+)\)")
+# llama-server --version มี 2 รูปแบบ: เก่า `version: 10495 (3dc7285b4)` · ใหม่ (b10xxx+)
+# `version: 0.1.2-dev (build 10495, commit 3dc7285b4)` — เคสจริง 2026-09-06 ทั้งฟลีตขึ้น "build ?" เพราะจับได้แต่แบบเก่า
+_VERSION_LINE = re.compile(r"version:\s*(?:\S+\s*\(build\s*)?(\d+)[,\s]+(?:commit\s*)?\(?([0-9a-fA-F]{7,})\)")
 _RUNTIME_CACHE: dict[str, tuple[tuple, dict]] = {}
 
 

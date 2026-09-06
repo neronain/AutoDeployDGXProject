@@ -5,6 +5,9 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **inventory อ่านเลข build ของ llama-server รุ่นใหม่ได้** — rollout 3 มิติรอบแรก 2026-09-06 ทุกเครื่องขึ้น
+  `llama.cpp build ?` เพราะ regex จับได้แต่แบบเก่า `version: 10495 (3dc7285b4)` ขณะที่ b10xxx+ พิมพ์
+  `version: 0.1.2-dev (build 10495, commit 3dc7285b4)` · เทส `test_inventory.py`
 - **Update path: "ตรง hub" ต้องผ่าน 3 มิติ (code · controller · runtime) · regenerate controller เก่าแบบออฟไลน์ใน Update ·
   prepare-runtime ไม่ downgrade build กลาง** — audit Update path 2026-09-06: spark-worker รายงาน "พร้อมแล้ว — ตรง hub" ครบ 14 เครื่อง
   แล้ว start ตายด้วย `unknown model architecture: 'qwen4exp'` เพราะ "ตรง hub" เทียบแค่ commit ของ lmds · install.sh ไม่แตะ
