@@ -25,6 +25,21 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 # ไฟล์เล็กที่ vLLM controller ต้อง verify ว่ามีจริงใน snapshot
 BASE_REQUIRED_FILES = ["config.json"]
 
+# arch ของ GGUF → commit/วันที่ที่ upstream llama.cpp เริ่มรู้จัก (เท่าที่เคยชนจริง — ไม่ใช่ตารางครบ)
+#
+# มีไว้ให้ MODEL_PROFILE.yaml บอกได้โดยไม่ต้องรันอะไรว่า build บนเครื่องต้องใหม่กว่าวันไหน · ตัวตัดสินจริง
+# ยังเป็นการอ่านสตริง arch จาก libllama ของ build (controller check_architecture / doctor) เพราะตารางนี้
+# ตามหลังเสมอ · เพิ่มแถวเมื่อเจอเคสใหม่ พร้อมอ้าง PR ของ upstream
+LLAMACPP_ARCH_SINCE: dict[str, dict[str, str]] = {
+    # 2026-09-06 spark-worker: qwen3-8-flash-next-uncensored-gguf บน build 10495 (18 ส.ค.) — PR #27742
+    "qwen4exp": {"commit": "6c84c7d5d", "date": "2026-08-27", "ref": "ggml-org/llama.cpp#27742"},
+}
+
+
+def llamacpp_arch_since(architecture: str | None) -> dict[str, str] | None:
+    """รุ่น llama.cpp ต่ำสุดที่รู้จัก arch นี้ตามตารางข้างบน — None = ไม่มีจด (ไม่ได้แปลว่าเก่า)"""
+    return dict(LLAMACPP_ARCH_SINCE[architecture]) if architecture in LLAMACPP_ARCH_SINCE else None
+
 
 @dataclass
 class Bundle:
@@ -351,6 +366,9 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "gated": report.gated,
             "license": report.license,
             "architecture": report.architecture,
+            # general.architecture ของ GGUF — doctor/hub เทียบกับ build llama.cpp บนเครื่องได้ *ก่อน* download
+            # (เคสจริง 2026-09-06 spark-worker: qwen4exp บน build 18 ส.ค. รู้ตอน start ตายเท่านั้น)
+            "gguf_architecture": report.gguf_architecture,
             "params_total": report.params_total,
             "weight_bytes": report.weight_bytes,
             "native_context": report.context_length,
@@ -362,6 +380,10 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "engine": plan.runtime.engine.value,
             "image": plan.runtime.image_ref,
             "image_pin": plan.runtime.image_pin,
+            # llama.cpp build จาก source (DGX Spark) หรือ image — register_bundle/doctor ใช้บอก mode ก่อน start ครั้งแรก
+            "native_build": plan.runtime.engine is Engine.LLAMACPP and fit.memory_model.value == "unified",
+            # รุ่น llama.cpp ต่ำสุดที่รู้จัก arch นี้ (เท่าที่มีจด) — ให้คนเทียบกับ `llama-server --version` ได้โดยไม่ต้องรัน
+            "min_llamacpp": llamacpp_arch_since(report.gguf_architecture),
         },
         "topology": plan.topology.value,
         "target": {

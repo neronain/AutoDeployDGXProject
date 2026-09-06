@@ -3882,13 +3882,13 @@ def repair(
         if blocked:
             err_console.print(f"[red]{blocked}[/red]")
             raise typer.Exit(code=1)
-        console.print(f"ซ่อม {slug}: download (resume) → verify-files")
+        console.print(f"ซ่อม {slug}: download (resume) → verify-files → (llama.cpp เก่ากว่าโมเดล: build ใหม่)")
         code = repair_server(server, force=force)
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     if code == 0:
-        console.print(f"[green]{slug} ไฟล์ครบและถูกต้องแล้ว[/green]")
+        console.print(f"[green]{slug} ไฟล์ครบและถูกต้อง · รันไทม์รู้จักโมเดลแล้ว[/green]")
     else:
         err_console.print(f"[red]ยังไม่ผ่าน — ดูข้อความด้านบน (exit {code})[/red]")
     raise typer.Exit(code=code)

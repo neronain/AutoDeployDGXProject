@@ -284,6 +284,10 @@ def _prepare_runtime_harness(tmp_path, bundle) -> tuple[str, Path, Path]:
         f'cmake() {{ printf "cmake %s\\n" "$*" >> "{log}"; }}\n'
         f'LLAMA_CPP_DIR="{llama_dir}"\nLLAMA_SERVER="{server}"\nRUN_DIR="{run_dir}"\n'
         f'RUNTIME_LOCK="{run_dir}/runtime.lock"\nLLAMA_CPP_REPO=x\nLLAMA_CPP_REF=master\nCUDA_ARCHITECTURES=121a-real\n'
+        # prepare_runtime ถาม arch ของโมเดลก่อนเชื่อ lock (2026-09-06) — ไม่มีไฟล์โมเดล = ไม่ฟันธง ใช้ lock ตามเดิม
+        f'RUNTIME_MODE=native\nLLAMACPP_IMAGE=x\nMODEL_DIR="{tmp_path}/models"\nMODEL_FILE=missing.gguf\n'
+        + extract_fn(text, "gguf_architecture") + extract_fn(text, "runtime_knows_arch")
+        + extract_fn(text, "runtime_build_info")
         + extract_fn(text, "prepare_runtime") + "\nprepare_runtime\n"
     )
     return script, log, run_dir / "runtime.lock"

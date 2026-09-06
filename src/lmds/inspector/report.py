@@ -93,6 +93,9 @@ class ModelReport(BaseModel):
 
     # จาก config.json / GGUF metadata
     architecture: Optional[str] = None
+    # general.architecture ของไฟล์ GGUF ที่เลือก (qwen3moe, qwen4exp, muse-glimmer …) — คนละชื่อกับ
+    # architectures[0] ของ config.json · controller/doctor ใช้เทียบกับตาราง arch ใน build llama.cpp
+    gguf_architecture: Optional[str] = None
     model_type: Optional[str] = None
     context_length: Optional[int] = None
     quantization: Optional[str] = None

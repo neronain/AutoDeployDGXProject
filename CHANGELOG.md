@@ -5,6 +5,25 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **llama.cpp เก่ากว่าโมเดล — ตรวจก่อน start · อธิบาย crash · prepare-runtime อัปเดตเอง · hub ติดป้าย+ปุ่มแก้** — เคสจริง 2026-09-06
+  spark-worker: `qwen3-8-flash-next-uncensored-gguf` (arch `qwen4exp` — upstream เพิ่ม 27 ส.ค. 6c84c7d5d #27742) บน build llama.cpp
+  10495 ของ 18 ส.ค. ในโฟลเดอร์กลาง `~/src/llama.cpp` → hub เห็นแค่ `failed (exit 1)` + "หยุดก่อน health ผ่าน" ส่วน
+  `unknown model architecture: 'qwen4exp'` อยู่ใน server.log · ไม่มีชั้นไหนถามว่า build รู้จัก arch ของไฟล์ไหม และ `runtime.lock`
+  เป็นของ bundle ใครของมันทั้งที่ build ใช้ร่วมกัน (node นี้ไม่มี lock เลย) · แก้: controller llama.cpp มี `check_architecture`
+  (อ่าน `general.architecture` จากหัว GGUF ด้วย python3 stdlib แล้ว grep -F ตาราง arch ใน libllama/llama-server ของ build ·
+  docker mode ถาม image ที่ pin) — `start` ทั้งสองโหมดหยุดพร้อมบอก arch · รุ่น build (`llama-server --version` + วันที่ commit) ·
+  คำสั่งแก้ (`LLAMA_CPP_UPDATE=1 <ctl> prepare-runtime` / `lmds set --image`) · `LMDS_SKIP_ARCH_CHECK=1` ข้ามได้ · verb ใหม่
+  `check-runtime` · `explain_crash` แบบเดียวกับ vLLM: ดึงบรรทัดจริงจาก server.log (เฉพาะรอบนี้ — ไม่หยิบซากรอบก่อน) พร้อม hint
+  สำหรับ unknown architecture / OOM / tensor ไม่ตรง · `prepare-runtime` อ่าน lock จาก `$LLAMA_CPP_DIR/build/runtime.lock`
+  (ข้าง build ที่ทุก bundle เห็น · ย้ายจาก lock เก่าใต้ RUN_DIR ให้) และ **build ใหม่เองเมื่อ build ที่ lock ไว้ไม่รู้จัก arch**
+  · build แล้วยังไม่รู้จัก = บอกว่า upstream ยังไม่มี ไม่แนะให้วนซ้ำ · `MODEL_PROFILE.yaml` จด `model.gguf_architecture`,
+  `runtime.native_build`, `runtime.min_llamacpp` (ตาราง arch→commit เท่าที่เคยชน) · doctor `architecture` ใช้ตัวตรวจร่วม
+  (`llamacpp_arch_support`: native สแกน lib · docker ถาม image แล้วจดผลไว้) และแนะคำสั่งของ controller แทน `git pull` ตรง ๆ
+  ที่ข้าม lock · `lmds agent info` ส่ง `runtime_arch` ต่อโมเดล (รู้ได้ตั้งแต่ก่อน download จาก profile) → หน้าเว็บติดป้าย
+  **runtime older than model** บนการ์ด + เตือนที่ Needs attention + ปุ่ม **update runtime** (`/api/nodes/{n}/models/{s}/ctl/update-runtime`
+  และ `/api/models/{s}/run/update-runtime` = prepare-runtime ที่ตั้ง `LLAMA_CPP_UPDATE=1`) · `lmds repair` ต่อด้วย prepare-runtime
+  ใหม่เมื่อ build เก่ากว่าโมเดล · เทส `test_llamacpp_runtime_arch.py` (controller ใต้ bash กับ llama-server/docker/git/cmake
+  ปลอม · doctor · inventory · routes · profile)
 - **GLM-5.3-Flash รอบสอง: pin KV กัน swap + CUDA graph · MTP ใช้กับ checkpoint uncensored ไม่ได้** — 2026-09-06 spark-head+worker:
   สูตรแรก (gpu-util 0.85 + eager) ทำให้เครื่องใช้ RAM 115/121 GiB และ swap 4 GB (unified memory: vLLM คิดว่ามี 103 GiB ให้ใช้)
   · จะเปิด MTP ตามชุมชนแต่ checkpoint orcarouter (และ coolbho3k) **ไม่มีเลเยอร์ MTP** (layers 0–44 ทั้งที่ config บอก

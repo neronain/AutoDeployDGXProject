@@ -26,6 +26,9 @@ ALLOWED = {
     # ทดสอบว่าโมเดลตอบจริง — CLI มีมาตลอด เว็บเพิ่งได้
     "test-text", "test-vision", "test-reasoning", "test-tools", "bench", "stress",
     "props", "info", "network-info", "client-config", "status", "wait-health", "doctor",
+    # llama.cpp: build/image รู้จัก arch ของโมเดลไหม · update-runtime = prepare-runtime ที่ข้าม lock
+    # (LLAMA_CPP_UPDATE=1) — ปุ่มแก้ของป้าย "runtime older than model" (spark-worker 2026-09-06)
+    "check-runtime", "update-runtime",
 }
 
 # download อย่างเดียวไม่พอที่จะบอกว่า "ไฟล์มาครบ" — CLI ให้รัน verify-files ต่อเสมอ
@@ -33,6 +36,12 @@ ALLOWED = {
 CHAINS = {
     "download": ["download", "verify-files"],
     "repair": ["download", "verify-files"],  # repair = โหลดที่ขาด (resume) แล้วตรวจซ้ำ
+    "update-runtime": ["prepare-runtime"],
+}
+
+# env ที่คำสั่งของหน้าเว็บบางตัวต้องตั้งให้ controller — ชื่อปุ่มพูดกับผู้ใช้ ส่วน env พูดกับสคริปต์
+COMMAND_ENV = {
+    "update-runtime": {"LLAMA_CPP_UPDATE": "1"},
 }
 _TAIL_LINES = 400
 
@@ -364,7 +373,7 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
             raise JobError(blocked)
 
     steps = CHAINS.get(command, [command])
-    extra_env = controller_env(options)
+    extra_env = {**controller_env(options), **COMMAND_ENV.get(command, {})}
 
     with _LOCK:
         current = _JOBS.get(_ACTIVE.get(slug, ""))

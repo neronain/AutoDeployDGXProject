@@ -154,6 +154,7 @@ cd bundles/qwen3-0-6b-gguf
 | `parsers` | *(vLLM · SGLang · stacked)* ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง — อ่าน registry `vllm.tool_parsers` (0.28 ย้ายที่) แล้วถอยไป grep `vllm serve --help` |
 | `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle chat ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม |
 | `test-reasoning` | *(vLLM · SGLang · stacked)* ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง (37×43=1591) |
+| `check-runtime` | *(llama.cpp)* บอกว่า build/image ที่ใช้คือรุ่นไหน (`llama-server --version` + วันที่ commit · lock) และรู้จัก `general.architecture` ของไฟล์ GGUF ไหม — exit 1 พร้อมคำสั่งแก้เมื่อรันไทม์เก่ากว่าโมเดล (`start` ตรวจข้อเดียวกันนี้ก่อนปล่อยเซิร์ฟเวอร์เสมอ) |
 | `bench [RUNS] [TOKENS]` | *(vLLM เดี่ยว · stacked)* วัด ttft / tok/s ผ่าน API จริง — ค่าตั้งต้น 3 รอบ × 256 tokens พิมพ์ต่อรอบและ median (ดู [BENCH.md](BENCH.md)) |
 | `stress [REQUESTS] [CONC]` | *(vLLM เดี่ยว · stacked)* ยิงพร้อมกันหลายสาย — ค่าตั้งต้น 16 คำขอ × 4 สาย พิมพ์ ok/total · latency p50/p95/max |
 | `serve-args` | พิมพ์ argv จริงที่จะส่งให้ engine โดยไม่ start (llama.cpp / vLLM `DRY_RUN=1 start` / stacked: head+worker + engine env) — key ไม่ถูกพิมพ์ |
@@ -464,7 +465,8 @@ FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่
 | `HF_HOME` | `~/.cache/huggingface` | ที่เก็บ weight ของ **vLLM** — ย้ายลงดิสก์ใหญ่ได้ (stacked: `WORKER_HF_HOME` สำหรับฝั่ง worker) |
 | `MODEL_DIR` | `~/models/<slug>` | ที่เก็บไฟล์ **GGUF** ของ llama.cpp |
 | `RUNTIME_MODE` | ตามเครื่อง | `docker` หรือ `native` (llama.cpp เท่านั้น) |
-| `LLAMA_CPP_UPDATE` | *(ว่าง)* | `=1` กับ `prepare-runtime` = ข้าม `runtime.lock` ไป build llama.cpp รุ่นล่าสุด |
+| `LLAMA_CPP_UPDATE` | *(ว่าง)* | `=1` กับ `prepare-runtime` = ข้าม lock ไป build llama.cpp รุ่นล่าสุด · lock อยู่ข้าง build ที่ทุก bundle ใช้ร่วมกัน (`$LLAMA_CPP_DIR/build/runtime.lock`) · ไม่ต้องตั้งเมื่อ build ที่ lock ไว้ไม่รู้จัก arch ของโมเดล — `prepare-runtime` อัปเดตให้เอง |
+| `LMDS_SKIP_ARCH_CHECK` | *(ว่าง)* | `=1` ให้ `start` ปล่อยเซิร์ฟเวอร์ขึ้นแม้รันไทม์ไม่มีชื่อ arch ของโมเดล (llama.cpp) — ใช้เมื่อรู้ว่าทำอะไรอยู่เท่านั้น |
 | `HF_TOKEN` | *(ว่าง)* | ใช้ตอน `download` repo gated — ส่งเข้า curl ทาง stdin (`-K -`) / aria2c ทางไฟล์ conf 600 ไม่ขึ้น argv |
 | `FETCH_PARTS` | `8` | llama.cpp: จำนวนส่วนที่โหลดขนานสำหรับไฟล์ ≥256 MB (`1` = ปิด) · ต้องมีดิสก์ว่าง ~2 เท่าของไฟล์ ไม่พอถอยไปสตรีมเดี่ยวเอง |
 | `FETCH_MAX_ATTEMPTS` | `20` | llama.cpp: จำนวนรอบ resume เมื่อ CDN ตัดสตรีมกลางคัน |
@@ -1071,7 +1073,7 @@ lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต
 | | ใช้กับ |
 |---|---|
 | `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` `remove --dry-run` `set` `version` |
-| `node ctl` | `prepare-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` |
+| `node ctl` | `prepare-runtime` `check-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` |
 | `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start` `--dry-run`) |
 | `node push` | ส่ง bundle จากเครื่องนี้ไปติดตั้ง (`--download` `--start` · stacked: เขียน cluster.env + pair + sync/verify ให้ก่อน start) |
 | `cluster …` | `show` (= `node cluster`) · `write <slug> --head` · `pair <head> <worker…>` · `doctor <head> <worker> [--slug]` |
@@ -1123,7 +1125,7 @@ start รอบถัดไปโดยไม่มีใครเห็น · �
 | **ตั้งค่าตอน start** | `port` · `context` · `slots` · `bind` · `API key` · `gpu-util` (เฉพาะ vLLM) · Advanced: `tool parser` · `reasoning parser` · `engine env` · `extra args` · `image` |
 | **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
 | **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` · `logs-worker` · ปุ่ม **Pair SSH** / **Doctor** ที่หัวกลุ่ม |
-| **จัดการ** | `restart` · `doctor` · `logs` · `repair` · `verify-files` · `enable`/`disable` · `remove` · **Cancel** งานที่ค้าง |
+| **จัดการ** | `restart` · `doctor` · `logs` · `repair` · `verify-files` · `check-runtime` · **update runtime** (ขึ้นเมื่อการ์ดติดป้าย *runtime older than model* — llama.cpp บนเครื่องไม่รู้จัก arch ของโมเดล · = `LLAMA_CPP_UPDATE=1 prepare-runtime`) · `enable`/`disable` · `remove` · **Cancel** งานที่ค้าง |
 
 ปุ่ม download บนการ์ด head ของโมเดล stacked ต่อ `sync-worker && verify-worker` ให้เป็นงานเดียว · งานที่ ssh ค้างยกเลิกได้
 (`POST /api/jobs/{id}/cancel`) แล้วล็อก (เครื่อง, โมเดล) หลุด · คำสั่งสั้น (`stop` ฯลฯ) หมดเวลาที่ 120 วิ ไม่ยึด thread ของเว็บ
@@ -1974,6 +1976,7 @@ unzip qwen3-32b.zip && cd qwen3-32b
 | `start` ครั้งแรกค้างนานผิดปกติ ยังไม่ขึ้น log อะไร | Docker กำลัง pull image (~10–20 GB) | ปกติ — ดูความคืบหน้าด้วย `docker pull vllm/vllm-openai:latest` แยกอีก terminal · ดึงล่วงหน้าได้ตาม [INSTALL §1.7](INSTALL.md) |
 | `docker pull` ล้ม / `TLS handshake timeout` | เครื่องอยู่หลัง proxy หรือโดน rate limit | ตั้ง proxy ให้ **docker daemon** ด้วย ไม่ใช่แค่ shell ([INSTALL §1.7](INSTALL.md)) |
 | `prepare-runtime` build ล้มบน DGX Spark | ขาด CUDA Toolkit หรือ CUDA arch ไม่ตรง | ดูบรรทัดเตือน `ไม่พบ nvcc` · override ได้: `CUDA_ARCHITECTURES=121 ./xxx-single.sh prepare-runtime` |
+| GGUF `start` ขึ้น `รันไทม์ไม่รู้จักสถาปัตยกรรม 'xxx'` (หรือรอบก่อนตาย exit 1 แล้ว log มี `unknown model architecture: 'xxx'`) · การ์ดบนหน้าเว็บติดป้าย **runtime older than model** | build llama.cpp ในโฟลเดอร์กลางของเครื่อง (`~/src/llama.cpp` ใช้ร่วมกันทุก bundle) เก่ากว่าวันที่ upstream เพิ่ม arch นั้น — เคสจริง 2026-09-06 spark-worker: `qwen4exp` (เพิ่ม 27 ส.ค. · 6c84c7d5d) บน build 10495 ของ 18 ส.ค. · bundle ใหม่ได้ build เก่าไปเงียบ ๆ เพราะ lock เดิมเป็นของ bundle ใครของมัน | ปุ่ม **update runtime** บนการ์ด / `lmds repair <slug>` / `LLAMA_CPP_UPDATE=1 ./xxx-single.sh prepare-runtime` (build ใหม่จาก master · หลายนาที · bundle อื่นบนเครื่องยังใช้ได้ เพราะรุ่นใหม่รองรับ arch เก่าทั้งหมด) · docker mode: `lmds set <slug> --image <image llama.cpp ใหม่กว่า>` · ดูก่อนได้: `./xxx-single.sh check-runtime` · ข้อความ error บอกรุ่น build + วันที่ commit ให้เทียบเอง · ถ้า master ก็ยังไม่รู้จัก = upstream ยังไม่รองรับ (ดู PR ของ arch นั้น) |
 | `start` บนเครื่อง ARM64 ใหม่ขึ้น `ยังไม่มี llama-server … build ให้ก่อน` แล้วเงียบนาน | กำลัง build llama.cpp ให้เอง (~10–30 นาที ครั้งแรกครั้งเดียว) | ปกติ — ไม่ต้องรัน `prepare-runtime` เองแล้ว · ถ้าจบด้วย `sudo apt-get … install -y git cmake` = ขาด build deps และ sudo ต้องใส่รหัส → รันคำสั่งนั้นเองแล้ว start ใหม่ |
 | `download` ขึ้น `กำลังรันอยู่แล้ว (อีก process ถือ …/.download.lock)` | สั่ง download ซ้อนกัน (hub + CLI, หรือตัวเก่าที่ session หลุดแต่ curl ยังโหลดอยู่) | รอให้ตัวเดิมจบ (`ps -ef \| grep curl`) แล้วสั่งซ้ำ — มันจะต่อไฟล์ให้ครบเอง ไม่โหลดใหม่ |
 | `download` ขึ้น `ดิสก์ … เหลือ X MB แต่ไฟล์ต้องการ Y MB` / `ถอยไปสตรีมเดี่ยว` | ดิสก์ไม่พอ · โหลดขนาน (`FETCH_PARTS`) ต้องมีที่ว่าง ~2 เท่าของไฟล์ชั่วคราว | ล้างที่ว่าง หรือ `MODEL_DIR=/data/models ./xxx-single.sh download` (ตั้ง `MODEL_DIR` เดียวกันตอน start) · ที่ว่างพอไฟล์เดียวแต่ไม่ถึง 2 เท่า = โหลดสตรีมเดี่ยวช้ากว่าแต่ได้ไฟล์ |

@@ -208,7 +208,9 @@ def test_start_builds_llama_cpp_itself_when_the_binary_is_missing(tmp_path):
     assert "build ให้ก่อน" in done.stdout and "prepare-runtime" in done.stdout
     log = (tmp_path / "fake.log").read_text(encoding="utf-8")
     assert "cmake --build" in log, "ต้อง build จริง ไม่ใช่แค่พิมพ์คำแนะนำ"
-    assert (tmp_path / "run" / "runtime.lock").read_text().strip() == "deadbeef"
+    # lock อยู่ข้าง build ที่ทุก bundle บนเครื่องใช้ร่วมกัน ไม่ใช่ใต้ RUN_DIR ของ bundle (2026-09-06)
+    assert (tmp_path / "llama.cpp" / "build" / "runtime.lock").read_text().strip() == "deadbeef"
+    assert not (tmp_path / "run" / "runtime.lock").exists()
     assert (tmp_path / "run" / "server.pid").is_file() and "started: 10.0.0.9" in done.stdout
 
     # ── API key ไปทางไฟล์ 0600 + --api-key-file ไม่ใช่ argv และ *ไม่ใช่* env LLAMA_ARG_API_KEY

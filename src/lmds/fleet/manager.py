@@ -860,14 +860,31 @@ def _guard_serving(info: "ServerInfo", action: str, force: bool = False) -> None
         raise FleetError(message)
 
 
-def _run_controller(info: ServerInfo, command: str, extra: list[str] | None = None) -> int:
+def _run_controller(info: ServerInfo, command: str, extra: list[str] | None = None,
+                    env: dict[str, str] | None = None) -> int:
     if not info.controller_exists:
         raise FleetError(
             f"ไม่พบ controller ของ {info.slug} ({info.controller or 'ไม่ระบุ'}) — "
             "bundle อาจถูกย้าย/ลบ (ใช้ lmds stop จะ fallback หยุดตรง ๆ ให้)"
         )
-    proc = subprocess.run([info.controller, command, *(extra or [])])
+    proc = subprocess.run([info.controller, command, *(extra or [])],
+                          env={**os.environ, **env} if env else None)
     return proc.returncode
+
+
+def runtime_needs_update(info: ServerInfo) -> dict | None:
+    """llama.cpp บนเครื่องเก่ากว่าโมเดลของ bundle นี้ไหม — dict ของ doctor (arch/runtime/fix) เมื่อใช่ ไม่งั้น None
+
+    ใช้ตัดสินใจว่า repair ต้อง prepare-runtime ใหม่ด้วย — เดิม repair ดูแต่ไฟล์ (download + verify) แล้วบอกว่า
+    "ไฟล์ครบและถูกต้องแล้ว" ทั้งที่ start จะตายทันทีด้วย unknown model architecture (spark-worker 2026-09-06)
+    """
+    from lmds.doctor.checks import llamacpp_arch_support
+
+    profile = bundle_profile(info.controller) or {}
+    support = llamacpp_arch_support(profile, info.slug, info, probe_docker=False)
+    if support and support["supported"] is False and support["mode"] == "native":
+        return support
+    return None
 
 
 # เพดานเวลาของคำสั่งที่ "ต้องจบเอง" — docker/systemctl ที่ถูกเรียกจากหน้าเว็บ
@@ -1558,4 +1575,14 @@ def repair_server(info: ServerInfo, force: bool = False) -> int:
     code = _run_controller(info, "download")
     if code != 0:
         return code
-    return _run_controller(info, "verify-files")
+    code = _run_controller(info, "verify-files")
+    if code != 0:
+        return code
+    # ไฟล์ครบไม่พอ — build llama.cpp บนเครื่องต้องรู้จัก arch ของไฟล์นั้นด้วย ไม่งั้น start ตายทันที
+    # (ตรวจหลัง download เพราะ arch อ่านจากหัวไฟล์ · docker mode แก้ด้วย lmds set --image ไม่ใช่ build ใหม่)
+    stale = runtime_needs_update(info)
+    if stale is None:
+        return 0
+    print(f"{stale['runtime']} ไม่รู้จักสถาปัตยกรรม '{stale['arch']}' — build llama.cpp ใหม่ให้ "
+          f"(LLAMA_CPP_UPDATE=1 prepare-runtime · ใช้เวลาหลายนาที)")
+    return _run_controller(info, "prepare-runtime", env={"LLAMA_CPP_UPDATE": "1"})

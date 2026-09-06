@@ -580,6 +580,7 @@ def _inspect_gguf(
         report.warnings.append(f"อ่าน GGUF header ไม่สำเร็จ: {exc}")
         return
     report.architecture = report.architecture or gguf.architecture
+    report.gguf_architecture = gguf.architecture
     report.context_length = report.context_length or gguf.context_length
     report.kv_dims = report.kv_dims or _kv_dims_from_gguf(gguf)
     if isinstance(gguf.metadata, dict) and report.architecture:

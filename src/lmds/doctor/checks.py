@@ -174,8 +174,132 @@ def _gguf_architecture(path: Path) -> str:
         return ""
 
 
-def _check_architecture_llamacpp(profile: dict, slug: str) -> list[Finding]:
-    """llama.cpp build ตัวที่โมเดลนี้ผูกไว้ รู้จักสถาปัตยกรรมของมันไหม
+def llamacpp_root(profile: dict) -> Path:
+    """โฟลเดอร์ build llama.cpp ที่ bundle นี้ใช้ — ค่าที่ pin ไว้ใน profile ไม่งั้นโฟลเดอร์กลางของเครื่อง"""
+    pinned = (profile.get("target") or {}).get("llamacpp_dir")
+    return Path(pinned) if pinned else Path.home() / "src" / "llama.cpp"
+
+
+def llamacpp_mode(profile: dict, server: ServerInfo | None = None) -> str:
+    """native (build จาก source — DGX Spark) หรือ docker (image ทางการ — RTX x86_64)
+
+    server.meta ของ bundle ที่ยังไม่เคย start ถูกเขียนโดย register_bundle ซึ่งเดาเป็น docker เมื่อ profile
+    ไม่บอก — profile รุ่นเก่าไม่มี runtime.native_build จึงต้องดู target.memory_model (unified = native)
+    """
+    runtime = profile.get("runtime") or {}
+    if runtime.get("native_build") is not None:
+        return "native" if runtime.get("native_build") else "docker"
+    if (profile.get("target") or {}).get("memory_model") == "unified":
+        return "native"
+    if server is not None and server.mode in ("native", "docker"):
+        return server.mode
+    return "docker"
+
+
+def _runtime_libs(root: Path) -> list[Path]:
+    """ไฟล์ที่มีตาราง LLM_ARCH_NAMES — libllama.so (build แบบ shared) หรือตัว llama-server เอง (static)
+
+    สแกน llama-server เฉพาะเมื่อไม่มี libllama: build static ตัวไบนารีใหญ่เป็นร้อย MB และตรงนี้ถูกเรียก
+    ทุกครั้งที่ hub ถาม `agent info`
+    """
+    libs = sorted(root.glob("build/bin/libllama.so*")) + sorted(root.glob("build/src/libllama.so*"))
+    if libs:
+        return libs
+    server = root / "build" / "bin" / "llama-server"
+    return [server] if server.is_file() else []
+
+
+def _arch_cache_path(slug: str) -> Path:
+    from lmds.fleet.manager import run_root
+
+    return run_root() / slug / "runtime-arch.json"
+
+
+def _docker_knows_arch(image: str, architecture: str, slug: str, probe: bool) -> bool | None:
+    """image llama.cpp ที่ pin ไว้รู้จัก arch นี้ไหม — None = ตอบไม่ได้
+
+    `docker run` แพงเกินกว่าจะทำทุกครั้งที่ hub poll (`lmds agent info` ทุกสิบวิ) — doctor เป็นคนถาม
+    แล้วจดผลไว้ที่ run/<slug>/runtime-arch.json · inventory อ่านแค่ที่จดไว้ (probe=False)
+    """
+    import json
+
+    cache = _arch_cache_path(slug)
+    try:
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        if saved.get("image") == image and saved.get("arch") == architecture:
+            return saved.get("supported")
+    except (OSError, ValueError):
+        pass
+    if not probe or shutil.which("docker") is None:
+        return None
+    if _run(["docker", "image", "inspect", image])[0] != 0:
+        return None  # ยังไม่ได้ pull — _check_image บอกไปแล้ว ไม่ดึงหลาย GB มาเพื่อถาม
+    # สคริปต์เดียวกับ runtime_knows_arch ของ controller — image ที่วางไฟล์ไว้ที่อื่นตอบ none (ถามไม่ได้) ไม่ใช่ 0
+    code, out = _run(["docker", "run", "--rm", "--entrypoint", "sh", image, "-c",
+                      'files="$(ls /app/libllama.so* /app/llama-server /app/*.so 2>/dev/null)"; '
+                      '[ -n "$files" ] || { echo none; exit 0; }; cat $files | grep -acF -- "$1"',
+                      "sh", architecture], timeout=120)
+    last = (out.strip().splitlines() or [""])[-1].strip()
+    if not last.isdigit():
+        return None
+    supported = int(last) > 0
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"image": image, "arch": architecture, "supported": supported}),
+                         encoding="utf-8")
+    except OSError:
+        pass
+    return supported
+
+
+def llamacpp_arch_support(profile: dict, slug: str, server: ServerInfo | None = None,
+                          probe_docker: bool = False) -> dict | None:
+    """รันไทม์ llama.cpp ของ bundle นี้รู้จักสถาปัตยกรรมของโมเดลไหม — ใช้ร่วมกันโดย doctor / inventory / repair
+
+    คืน None เมื่อไม่ใช่ bundle llama.cpp หรือไม่รู้ arch เลย · ไม่งั้น
+    {"arch", "mode", "supported": True/False/None, "runtime", "fix"} — supported=None คือ "ตอบไม่ได้" ไม่ใช่เสีย
+
+    arch มาจากหัวไฟล์ GGUF ในเครื่องเมื่อโหลดแล้ว ไม่งั้นจากที่ renderer จดไว้ใน MODEL_PROFILE.yaml
+    (model.gguf_architecture) — จึงบอกได้ *ก่อน* download ว่า build บนเครื่องนี้เก่ากว่าโมเดล
+    """
+    if (profile.get("runtime") or {}).get("engine") != "llamacpp":
+        return None
+    directory, wanted = _weight_paths(profile, slug)
+    gguf = next((directory / name for name in wanted if name.endswith(".gguf")), None)
+    architecture = _gguf_architecture(gguf) if gguf is not None and gguf.is_file() else ""
+    architecture = architecture or str((profile.get("model") or {}).get("gguf_architecture") or "")
+    if not architecture:
+        return None
+
+    mode = llamacpp_mode(profile, server)
+    controller = (server.controller if server is not None else "") or f"./{slug}-single.sh"
+    if mode == "native":
+        root = llamacpp_root(profile)
+        libs = _runtime_libs(root)
+        supported = any(_lib_knows(lib, architecture) for lib in libs) if libs else None
+        return {
+            "arch": architecture, "mode": mode, "supported": supported,
+            "runtime": f"llama.cpp {root}" + ("" if libs else " (ยังไม่ได้ build)"),
+            "fix": f"LLAMA_CPP_UPDATE=1 {controller} prepare-runtime  (หรือ lmds repair {slug})",
+        }
+    from lmds.brain.allowlists import image_repo
+
+    image = (profile.get("runtime") or {}).get("image") or ""
+    pin = (profile.get("runtime") or {}).get("image_pin") or ""
+    if not image:
+        return None
+    # ตรึงที่ digest เหมือน controller (LLAMACPP_IMAGE) · image_repo ไม่ตัด registry ที่มีพอร์ตขาด
+    pinned = f"{image_repo(image)}@{pin}" if pin else image
+    return {
+        "arch": architecture, "mode": mode,
+        "supported": _docker_knows_arch(pinned, architecture, slug, probe_docker),
+        "runtime": f"image {pinned}",
+        "fix": f"lmds set {slug} --image <image llama.cpp ใหม่กว่า>  แล้ว lmds start {slug}",
+    }
+
+
+def _check_architecture_llamacpp(profile: dict, slug: str, server: ServerInfo | None = None) -> list[Finding]:
+    """llama.cpp build/image ตัวที่โมเดลนี้ผูกไว้ รู้จักสถาปัตยกรรมของมันไหม
 
     เคสจริง 2026-08-13: Muse-Glimmer-30B ใช้ architecture `muse-glimmer` ซึ่ง
     llama.cpp บน spark-head (23 ก.ค., ตามหลัง upstream 296 commit) ยังไม่รู้จัก
@@ -184,32 +308,28 @@ def _check_architecture_llamacpp(profile: dict, slug: str) -> list[Finding]:
     เช็คเดิมข้ามทาง native ทั้งหมด (`if server.mode == "native": return []`)
     ทั้งที่ llama.cpp บน DGX Spark รัน native เป็นปกติ — เช็คที่มีอยู่จึงไม่เคย
     ทำงานกับ engine ที่ต้องการมันที่สุด
-    """
-    directory, wanted = _weight_paths(profile, slug)
-    gguf = next((directory / name for name in wanted if name.endswith(".gguf")), None)
-    if gguf is None or not gguf.is_file():
-        return []  # ยังไม่ได้โหลด — _check_weights บอกไปแล้ว
-    architecture = _gguf_architecture(gguf)
-    if not architecture:
-        return []
 
-    pinned = (profile.get("target") or {}).get("llamacpp_dir")
-    root = Path(pinned) if pinned else Path.home() / "src" / "llama.cpp"
-    libs = sorted(root.glob("build/bin/libllama.so*")) + sorted(root.glob("build/src/libllama.so*"))
-    if not libs:
+    2026-09-06 spark-worker (qwen4exp บน build 18 ส.ค.): คำแนะนำเดิม `git pull && cmake --build` ข้าม lock
+    ของ controller — build ผ่านแล้ว prepare-runtime รอบถัดไปก็ย้อนกลับ · บอกทางที่ controller รู้จักแทน
+    """
+    support = llamacpp_arch_support(profile, slug, server, probe_docker=True)
+    if support is None:
+        return []
+    architecture, runtime = support["arch"], support["runtime"]
+    if support["supported"] is None:
         return [Finding(
             "architecture", Status.WARN,
-            f"ไม่พบ libllama.so ใต้ {root} — ตรวจสถาปัตยกรรมไม่ได้",
+            f"ตรวจไม่ได้ว่า {runtime} รู้จักสถาปัตยกรรม '{architecture}' ไหม"
+            + (" — ยังไม่ได้ build llama.cpp (start จะ build ให้เอง)" if support["mode"] == "native" else " — ยังไม่ได้ pull image"),
         )]
-
-    known = any(_lib_knows(lib, architecture) for lib in libs)
-    if known:
-        return [Finding("architecture", Status.OK, f"{architecture} (llama.cpp {root.name})")]
+    if support["supported"]:
+        return [Finding("architecture", Status.OK, f"{architecture} ({runtime})")]
     return [Finding(
         "architecture", Status.FAIL,
-        f"llama.cpp ที่ {root} ไม่รู้จักสถาปัตยกรรม '{architecture}' — "
-        f"โมเดลใหม่กว่ารันไทม์ ต้อง build llama.cpp ใหม่ให้รองรับก่อน: "
-        f"cd {root} && git pull && cmake --build build -j",
+        f"{runtime} ไม่รู้จักสถาปัตยกรรม '{architecture}' — รันไทม์เก่ากว่าโมเดล "
+        f"(upstream llama.cpp เพิ่ม arch นี้ทีหลัง) · start จะตายตอนโหลดด้วย "
+        f"\"unknown model architecture: '{architecture}'\"",
+        support["fix"],
     )]
 
 
@@ -279,7 +399,7 @@ def _check_llamacpp_grammar(profile: dict, slug: str) -> list[Finding]:
 def _check_architecture(profile: dict, server: ServerInfo, slug: str) -> list[Finding]:
     """รันไทม์ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม"""
     if (profile.get("runtime") or {}).get("engine") == "llamacpp":
-        return _check_architecture_llamacpp(profile, slug)
+        return _check_architecture_llamacpp(profile, slug, server)
     image = (profile.get("runtime") or {}).get("image") or ""
     model_type = _model_type(profile, slug)
     if server.mode == "native" or not image or not model_type or shutil.which("docker") is None:

@@ -15,7 +15,7 @@ KNOWN_COMMANDS = {
     "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "status",
     "logs", "client-config", "network-info", "test-text", "test-vision", "test-reasoning",
     "test-tools", "bench", "stress", "props", "info", "wait-health", "doctor",
-    "sync-worker", "verify-worker", "clear-fi-cache", "repair",
+    "sync-worker", "verify-worker", "clear-fi-cache", "repair", "check-runtime",
 }
 _COMMAND_RE = re.compile(r"(?m)^\s{2}([a-z][a-z-]*)\)")
 
@@ -500,6 +500,24 @@ def host_payload() -> dict:
     }
 
 
+def runtime_arch_status(server, profile) -> dict | None:
+    """รันไทม์ llama.cpp บนเครื่องนี้รู้จัก arch ของโมเดลไหม — ให้ hub ติดป้าย "runtime เก่ากว่าโมเดล" ก่อนใครกด start
+
+    เคสจริง 2026-09-06 spark-worker: bundle qwen4exp วางบนเครื่องที่ build llama.cpp ไว้ตั้งแต่ 18 ส.ค. —
+    ทุกอย่างเขียว (ไฟล์ครบ port ว่าง) จน start ตาย exit 1 · อ่านหัว GGUF + สแกน libllama (ไม่กี่ MB) ถูกพอ
+    ที่จะทำทุกครั้งที่ hub ถาม · docker mode ไม่ยิง `docker run` ตรงนี้ — อ่านผลที่ doctor จดไว้เท่านั้น
+    """
+    from lmds.doctor.checks import llamacpp_arch_support
+
+    try:
+        support = llamacpp_arch_support(profile or {}, server.slug, server, probe_docker=False)
+    except Exception:  # noqa: BLE001 — ฟิลด์ประกอบ ไม่ควรล้ม payload ของโมเดลทั้งก้อน
+        return None
+    if support is None:
+        return None
+    return {k: support[k] for k in ("arch", "mode", "supported", "runtime", "fix")}
+
+
 def model_payload(server, active_job: dict | None = None) -> dict:
     from lmds.fleet import (
         autostart_status,
@@ -559,6 +577,9 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         "downloaded": True if self_managed else weights_present(server, profile),
         # หน้าเว็บต้องแยกได้ว่า "โหลดครบแล้ว" กับ "weight ไม่ได้อยู่ในมือ LMDS" คนละเรื่อง
         "self_managed_weights": self_managed,
+        # llama.cpp: build/image บนเครื่องรู้จัก arch ของโมเดลไหม (supported=false = ป้าย "runtime older than model"
+        # + ปุ่ม update runtime) · None = ไม่ใช่ llama.cpp หรือยังบอกไม่ได้
+        "runtime_arch": runtime_arch_status(server, profile),
         "job": active_job,
     }
 

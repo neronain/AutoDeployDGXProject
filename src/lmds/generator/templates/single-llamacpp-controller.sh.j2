@@ -69,7 +69,14 @@ _write_api_key_file() {
 }
 PID_FILE="${RUN_DIR}/server.pid"
 LOG_FILE="${RUN_DIR}/server.log"
-RUNTIME_LOCK="${RUN_DIR}/runtime.lock"
+# lock ของ build llama.cpp อยู่ *ข้าง build* ไม่ใช่ใต้ RUN_DIR ของ bundle
+#
+# build ถูกใช้ร่วมกันทุก bundle บนเครื่อง (LLAMA_CPP_DIR เดียวกัน) แต่ lock เดิมเป็นของ bundle ใครของมัน
+# — bundle A ที่ lock commit เก่าไว้จะ build ทับ commit ใหม่ที่ bundle B เพิ่งอัปเดตเพื่อให้โมเดลของมันโหลดได้
+# และ bundle ที่ไม่เคย prepare-runtime เองก็ไม่มี lock ทั้งที่ใช้ build นั้นอยู่ (spark-worker 2026-09-06:
+# build จาก 18 ส.ค. ไม่มี lock สักไฟล์) · lock รุ่นเก่าใต้ RUN_DIR ยังถูกอ่านตอนย้าย แต่ไม่เขียนเพิ่ม
+RUNTIME_LOCK="${RUNTIME_LOCK:-${LLAMA_CPP_DIR}/build/runtime.lock}"
+LEGACY_RUNTIME_LOCK="${LEGACY_RUNTIME_LOCK:-${RUN_DIR}/runtime.lock}"
 
 # ไฟล์โมเดล (split GGUF จะมีหลาย part — ต้องครบทุกไฟล์)
 MODEL_FILES=(
@@ -617,6 +624,142 @@ verify_files() {
   echo "verify-files: OK ({{ '${#MODEL_FILES[@]}' }} ไฟล์ใน ${MODEL_DIR})"
 }
 
+# ── สถาปัตยกรรมของโมเดล vs รันไทม์ ──────────────────────────────────────────
+#
+# เคสจริง 2026-09-06 spark-worker: qwen3-8-flash-next (arch `qwen4exp`) บน build llama.cpp 10495 ของ 18 ส.ค.
+# upstream เพิ่ม qwen4exp 27 ส.ค. (6c84c7d5d, #27742) · start ตายด้วย exit 1 หน้าเว็บบอกแค่ "หยุดก่อน health ผ่าน"
+# ส่วน "unknown model architecture: 'qwen4exp'" อยู่ใน server.log ที่ต้อง ssh ไปอ่านเอง · build อยู่ในโฟลเดอร์ที่ทุก
+# bundle บนเครื่องใช้ร่วมกัน bundle ใหม่จึงได้ build เก่าไปเงียบ ๆ โดยไม่มีอะไรตรวจเลยว่าเข้ากันไหม
+#
+# general.architecture จากหัวไฟล์ GGUF — python3 stdlib ล้วน อ่านแค่ metadata ไม่แตะ tensor (ไม่กี่ MB)
+# ว่าง = ไม่มีไฟล์ / ไม่มี python3 / อ่านไม่ออก → ผู้เรียกปล่อยผ่าน ไม่ฟันธง
+gguf_architecture() {
+  local path="${MODEL_DIR:-}/${MODEL_FILE:-}"
+  [[ -f "$path" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$path" <<'PYEOF' 2>/dev/null || true
+import struct, sys
+SCALAR = {0: 1, 1: 1, 7: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 10: 8, 11: 8, 12: 8}
+with open(sys.argv[1], "rb") as f:
+    def read(n):
+        data = f.read(n)
+        if len(data) < n:
+            raise EOFError
+        return data
+    def u32():
+        return struct.unpack("<I", read(4))[0]
+    def u64():
+        return struct.unpack("<Q", read(8))[0]
+    def skip_value(t):
+        if t == 8:
+            f.seek(u64(), 1)
+        elif t == 9:
+            et, n = u32(), u64()
+            if et == 8:
+                for _ in range(n):
+                    f.seek(u64(), 1)
+            elif et in SCALAR:
+                f.seek(SCALAR[et] * n, 1)
+            else:
+                raise ValueError(et)
+        elif t in SCALAR:
+            f.seek(SCALAR[t], 1)
+        else:
+            raise ValueError(t)
+    if read(4) != b"GGUF":
+        sys.exit(0)
+    u32(); u64()
+    for _ in range(u64()):
+        key = read(u64())
+        t = u32()
+        if key == b"general.architecture" and t == 8:
+            print(read(u64()).decode("utf-8", "replace"))
+            break
+        skip_value(t)
+PYEOF
+}
+
+# รันไทม์ที่ bundle นี้จะใช้รู้จัก arch นี้ไหม — คืน 0 รู้จัก · 1 ไม่รู้จัก · 2 ถามไม่ได้ (ไม่ฟันธง)
+#
+# llama.cpp เก็บชื่อ arch เป็นสตริงตรง ๆ ในตาราง LLM_ARCH_NAMES ของ libllama — build ไหนไม่มีสตริงนั้น
+# โหลดไม่ได้แน่นอน · grep -F อ่านไบนารีตรง ๆ ไม่ท่อผ่าน strings (SIGPIPE ใต้ pipefail — ดู curl_retry_all)
+# docker: ถาม image ตัวที่จะรัน ไม่ใช่ build ในเครื่อง — image ถูก pin ที่ digest จึงเก่าได้เท่า ๆ กัน
+runtime_knows_arch() {
+  local arch="$1" lib found=0 count=""
+  if [[ "$RUNTIME_MODE" == "native" ]]; then
+    for lib in "${LLAMA_CPP_DIR}"/build/bin/libllama.so* "${LLAMA_CPP_DIR}"/build/src/libllama.so* "$LLAMA_SERVER"; do
+      [[ -f "$lib" ]] || continue
+      found=1
+      if grep -aqF -- "$arch" "$lib"; then return 0; fi
+    done
+    (( found )) || return 2
+    return 1
+  fi
+  command -v docker >/dev/null 2>&1 || return 2
+  # image ที่วางไฟล์ไว้ที่อื่น (ไม่ใช่ /app) ต้องตอบ "none" = ถามไม่ได้ — ไม่ใช่ 0 = ไม่รู้จัก แล้วบล็อกผิด ๆ
+  count="$(docker run --rm --entrypoint sh "$LLAMACPP_IMAGE" -c \
+    'files="$(ls /app/libllama.so* /app/llama-server /app/*.so 2>/dev/null)"; [ -n "$files" ] || { echo none; exit 0; }; cat $files | grep -acF -- "$1"' \
+    sh "$arch" 2>/dev/null | tail -1 || true)"
+  [[ "$count" =~ ^[0-9]+$ ]] || return 2
+  (( count > 0 )) && return 0
+  return 1
+}
+
+# build/image ที่ใช้อยู่คือรุ่นไหน — ใส่ในข้อความ error ให้คนเทียบกับวันที่ upstream เพิ่ม arch ได้
+runtime_build_info() {
+  if [[ "$RUNTIME_MODE" == "native" ]]; then
+    local ver="" commit="" date=""
+    [[ -x "$LLAMA_SERVER" ]] && ver="$("$LLAMA_SERVER" --version 2>&1 | head -1 || true)"
+    # "version: 10495 (3dc7285b4)" → commit ในวงเล็บ → วันที่ของ commit จาก git ถ้ามี checkout
+    commit="${ver##*(}"; commit="${commit%%)*}"
+    if [[ -n "$commit" && "$commit" != "$ver" && -d "${LLAMA_CPP_DIR}/.git" ]]; then
+      date="$(git -C "$LLAMA_CPP_DIR" log -1 --format=%cs "$commit" 2>/dev/null || true)"
+    fi
+    printf '%s%s' "${ver:-llama-server ยังไม่ได้ build (${LLAMA_SERVER})}" "${date:+ · commit เมื่อ ${date}}"
+  else
+    printf 'image %s' "$LLAMACPP_IMAGE"
+  fi
+}
+
+# รันไทม์รู้จักสถาปัตยกรรมของไฟล์นี้ไหม — ถามก่อน ไม่ใช่รอให้ตายตอนโหลด (คู่กับ check_architecture ของ vLLM)
+# ไม่แน่ใจ = ปล่อยผ่าน (ไม่มี python3/ไม่มีไฟล์/ถาม image ไม่ได้) · LMDS_SKIP_ARCH_CHECK=1 ข้ามได้เมื่อรู้ว่าทำอะไรอยู่
+check_architecture() {
+  if [[ -n "${LMDS_SKIP_ARCH_CHECK:-}" ]]; then
+    echo "ข้ามการตรวจสถาปัตยกรรม (LMDS_SKIP_ARCH_CHECK=1)"
+    return 0
+  fi
+  local arch verdict=0
+  arch="$(gguf_architecture)"
+  [[ -n "$arch" ]] || return 0
+  runtime_knows_arch "$arch" || verdict=$?
+  case "$verdict" in
+    0) echo "architecture: ${arch} — รองรับ ($(runtime_build_info))" ;;
+    1)
+      echo "ERROR: รันไทม์ไม่รู้จักสถาปัตยกรรม '${arch}' ของ ${MODEL_FILE}" >&2
+      echo "  รันไทม์ที่ใช้: $(runtime_build_info)" >&2
+      echo "  โมเดลใหม่กว่ารันไทม์ — upstream llama.cpp เพิ่ม arch นี้หลังรุ่นที่เครื่องนี้มี · start ไปก็ตายตอนโหลดด้วย" >&2
+      echo "  \"llama_model_load: error loading model: unknown model architecture: '${arch}'\"" >&2
+      if [[ "$RUNTIME_MODE" == "native" ]]; then
+        echo "  แก้ — build ใหม่จาก ${LLAMA_CPP_REF} ล่าสุด (หลายนาที · bundle อื่นบนเครื่องยังใช้ได้ รุ่นใหม่รองรับ arch เก่าทั้งหมด):" >&2
+        echo "    LLAMA_CPP_UPDATE=1 $0 prepare-runtime" >&2
+        echo "    หรือ  lmds repair {{ slug }}   /  ปุ่ม \"update runtime\" บนการ์ดโมเดลในหน้าเว็บ" >&2
+      else
+        echo "  แก้ — ใช้ image llama.cpp รุ่นใหม่กว่า:  lmds set {{ slug }} --image <image ใหม่กว่า>   แล้ว  $0 start" >&2
+        echo "    ลองครั้งเดียว: LLAMACPP_IMAGE=<image> $0 start" >&2
+      fi
+      echo "  ข้ามการตรวจ (ไม่แนะนำ): LMDS_SKIP_ARCH_CHECK=1 $0 start" >&2
+      exit 1 ;;
+    *) echo "ตรวจสถาปัตยกรรม ${arch} ไม่ได้ (ถามรันไทม์ไม่ได้) — ปล่อยให้ llama-server ตัดสินเอง" ;;
+  esac
+}
+
+check_runtime() {
+  echo "runtime:   $(runtime_build_info)"
+  echo "lock:      ${RUNTIME_LOCK}$([[ -f "$RUNTIME_LOCK" ]] && echo " ($(cat "$RUNTIME_LOCK"))" || echo " (ยังไม่มี)")"
+  echo "model:     ${MODEL_FILE} (arch: $(gguf_architecture || true))"
+  check_architecture
+}
+
 find_cuda_toolkit() {
   # DGX OS ลง CUDA ไว้ที่ /usr/local/cuda แต่ไม่ได้ใส่ใน PATH ของ shell ที่ไม่ใช่ login
   # (เช่นที่ hub เรียกผ่าน SSH) `command -v nvcc` จึงไม่เจอทั้งที่ toolkit อยู่ครบ
@@ -676,20 +819,43 @@ prepare_runtime() {
     git clone "$LLAMA_CPP_REPO" "$LLAMA_CPP_DIR"
   fi
 
-  local commit
-  # lock ทำให้ build ซ้ำได้ commit เดิม — แต่ต้องมีทางอัปเดตด้วย: test-tools แนะให้รัน prepare-runtime
+  local commit="" locked="" why="" arch="" verdict=0
+  # lock ทำให้ build ซ้ำได้ commit เดิม — แต่ต้องมีทางอัปเดตด้วย: test-tools/start แนะให้รัน prepare-runtime
   # เมื่อ llama.cpp เก่ากว่าโมเดล ซึ่งเดิมวนกลับมา build commit ที่ lock ไว้เป๊ะ ไม่มีวันใหม่ขึ้น
   # LLAMA_CPP_UPDATE=1 = ข้าม lock ไปดึง LLAMA_CPP_REF ล่าสุด แล้วเขียน lock ใหม่หลัง build ผ่าน
-  if [[ -f "$RUNTIME_LOCK" && -z "${LLAMA_CPP_UPDATE:-}" ]]; then
-    commit="$(cat "$RUNTIME_LOCK")"
-    echo "ใช้ commit ที่ lock ไว้: ${commit} (อัปเดตเป็น ${LLAMA_CPP_REF} ล่าสุด: LLAMA_CPP_UPDATE=1 $0 prepare-runtime)"
-  else
+  # และตั้งแต่ 2026-09-06: build ที่ lock ไว้ไม่รู้จัก arch ของโมเดลนี้ = อัปเดตให้เองโดยไม่ต้องสั่ง
+  # (lock อยู่ข้าง build ที่ทุก bundle ใช้ร่วมกัน — commit ใหม่จึงเป็นสิ่งที่ bundle อื่นบนเครื่องเห็นด้วย
+  # ซึ่งถูกต้อง เพราะ master รุ่นใหม่รองรับ arch เก่าทั้งหมด · lock รุ่นเก่าใต้ RUN_DIR อ่านต่อได้ตอนย้าย)
+  if [[ -f "$RUNTIME_LOCK" ]]; then
+    locked="$(cat "$RUNTIME_LOCK")"
+  elif [[ -n "${LEGACY_RUNTIME_LOCK:-}" && -f "$LEGACY_RUNTIME_LOCK" ]]; then
+    locked="$(cat "$LEGACY_RUNTIME_LOCK")"
+    echo "ย้าย lock จาก ${LEGACY_RUNTIME_LOCK} ไปไว้ข้าง build (${RUNTIME_LOCK})"
+  fi
+  if [[ -n "${LLAMA_CPP_UPDATE:-}" ]]; then
+    why="LLAMA_CPP_UPDATE=1"
+  elif [[ -z "$locked" ]]; then
+    why="ยังไม่มี lock"
+  elif [[ -x "$LLAMA_SERVER" ]]; then
+    arch="$(gguf_architecture)"
+    if [[ -n "$arch" ]]; then
+      runtime_knows_arch "$arch" || verdict=$?
+      if (( verdict == 1 )); then
+        why="build ที่ lock ไว้ (${locked}) ไม่รู้จักสถาปัตยกรรม '${arch}' ของโมเดลนี้ — upstream เพิ่มทีหลัง"
+      fi
+    fi
+  fi
+  if [[ -n "$why" ]]; then
+    echo "อัปเดต llama.cpp เป็น ${LLAMA_CPP_REF} ล่าสุด (${why})"
     git -C "$LLAMA_CPP_DIR" fetch --all --quiet
     git -C "$LLAMA_CPP_DIR" checkout --quiet "$LLAMA_CPP_REF"
     if [[ "$LLAMA_CPP_REF" == "master" ]]; then
       git -C "$LLAMA_CPP_DIR" pull --quiet
     fi
     commit="$(git -C "$LLAMA_CPP_DIR" rev-parse HEAD)"
+  else
+    commit="$locked"
+    echo "ใช้ commit ที่ lock ไว้: ${commit} (อัปเดตเป็น ${LLAMA_CPP_REF} ล่าสุด: LLAMA_CPP_UPDATE=1 $0 prepare-runtime)"
   fi
   git -C "$LLAMA_CPP_DIR" checkout --quiet "$commit"
 
@@ -702,9 +868,22 @@ prepare_runtime() {
   cmake --build "${LLAMA_CPP_DIR}/build" --config Release --target llama-server -j "$(nproc)"
 
   [[ -x "$LLAMA_SERVER" ]] || die "build ไม่สำเร็จ — ไม่พบ ${LLAMA_SERVER}"
+  mkdir -p "$(dirname "$RUNTIME_LOCK")"
   printf '%s\n' "$commit" > "$RUNTIME_LOCK"
-  echo "runtime พร้อม (pinned: ${commit})"
+  echo "runtime พร้อม (pinned: ${commit} · lock: ${RUNTIME_LOCK})"
   "$LLAMA_SERVER" --version 2>&1 || true
+
+  # build ใหม่แล้วยังไม่รู้จัก = ต้นน้ำเองยังไม่มี (หรือ LLAMA_CPP_REF ชี้รุ่นเก่า) — บอกตรงนี้
+  # ดีกว่าให้ start ไปตายอีกรอบพร้อมคำแนะนำให้ prepare-runtime ซ้ำซึ่งวนกลับมาที่เดิม
+  arch="${arch:-$(gguf_architecture)}"
+  if [[ -n "$arch" ]]; then
+    verdict=0; runtime_knows_arch "$arch" || verdict=$?
+    if (( verdict == 1 )); then
+      die "build ${commit} ของ ${LLAMA_CPP_REF} ก็ยังไม่รู้จักสถาปัตยกรรม '${arch}' — upstream llama.cpp ยังไม่รองรับ
+หรือ LLAMA_CPP_REF (${LLAMA_CPP_REF}) ชี้ไปรุ่นเก่า · ดู: https://github.com/ggml-org/llama.cpp/pulls?q=${arch}
+ถ้ามี fork ที่รองรับ: LLAMA_CPP_REPO=<url> LLAMA_CPP_UPDATE=1 $0 prepare-runtime"
+    fi
+  fi
 }
 
 check_gpu() {
@@ -848,6 +1027,8 @@ start() {
     if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
       die "เซิร์ฟเวอร์รันอยู่แล้ว (PID $(cat "$PID_FILE")) — รัน: $0 stop ก่อน"
     fi
+    # build รู้จัก arch ของไฟล์นี้ไหม — ถามก่อน ไม่ใช่รอให้ llama-server ตายเงียบ ๆ แล้วเห็นแค่ "exit 1"
+    check_architecture
     check_gpu >/dev/null
     MODEL_MOUNT_DIR="$MODEL_DIR"
     server_args
@@ -855,11 +1036,16 @@ start() {
     # ทดสอบกับ build จริง b10799 บน dgx-spark03 (2026-09-04) env ตัวนั้นไม่มี → เซิร์ฟเวอร์รันแบบไม่มี auth
     # เงียบ ๆ (ไม่ใส่ key ก็ได้ 200) · มีแต่ --api-key-file / LLAMA_ARG_API_KEY_FILE ซึ่งพิสูจน์แล้ว 401/200 ถูก
     if [[ -n "$API_KEY" ]]; then _write_api_key_file; SERVER_ARGS+=(--api-key-file "$API_KEY_FILE"); fi
+    # server.log ถูก append ทุกรอบ — จำว่ารอบนี้เริ่มที่บรรทัดไหน explain_crash จะได้ไม่หยิบ error ของรอบก่อนมาบอก
+    LOG_START_LINE=0
+    if [[ -f "$LOG_FILE" ]]; then LOG_START_LINE="$(wc -l < "$LOG_FILE" | tr -d ' ')"; fi
     nohup "$LLAMA_SERVER" "${SERVER_ARGS[@]}" >> "$LOG_FILE" 2>&1 &
     echo "$!" > "$PID_FILE"
   else
     need docker
     ensure_image "${LLAMACPP_IMAGE}"
+    # image ที่ pin ไว้รู้จัก arch ของไฟล์นี้ไหม — digest เก่าได้เท่า build native (แก้: lmds set --image)
+    check_architecture
     # ซากจากรอบก่อนไม่ใช่ของที่กำลังทำงาน — เก็บกวาดเองแล้วไปต่อ (ดูเหตุผลใน vllm controller)
     local running_now
     running_now="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
@@ -909,11 +1095,46 @@ server_alive() {
   fi
 }
 
+# เซิร์ฟเวอร์ตายก่อน health — ดึงสาเหตุจริงจาก log มาบอก ไม่ใช่แค่ "ดู logs" (คู่กับ explain_crash ของ vLLM)
+#
+# เคสจริง 2026-09-06 spark-worker: hub เห็นแค่ "start … failed (exit 1)" กับบรรทัด "หยุดก่อน health ผ่าน"
+# ส่วน "unknown model architecture: 'qwen4exp'" อยู่ใน ~/.lmds/run/<slug>/server.log ที่ต้อง ssh ไปอ่านเอง
+# server.log ถูก append ทุก start — ดูเฉพาะบรรทัดหลัง LOG_START_LINE ของรอบนี้ (0 = ทั้งไฟล์ เช่นตอน wait-health)
+# `|| true` ท้าย pipeline จำเป็น: grep ที่ไม่เจอคืน 1 → ใต้ set -e + pipefail สคริปต์ตายก่อนถึง die ของผู้เรียก
+explain_crash() {
+  local errs="unknown model architecture|error loading model|failed to load model|failed to allocate|cudaMalloc failed|out of memory|Cannot allocate memory|CUDA error|check_tensor_dims|tensor '[^']*' not found|wrong shape|wrong number of tensors|error: "
+  local cause=""
+  if [[ "$RUNTIME_MODE" == "native" ]]; then
+    [[ -f "$LOG_FILE" ]] || return 0
+    cause="$(tail -n "+$(( ${LOG_START_LINE:-0} + 1 ))" "$LOG_FILE" | grep -aE "$errs" | head -1 | cut -c1-300 || true)"
+  else
+    cause="$(docker logs --tail 500 "$CONTAINER_NAME" 2>&1 | grep -aE "$errs" | head -1 | cut -c1-300 || true)"
+  fi
+  [[ -n "$cause" ]] || return 0
+  echo "สาเหตุจาก log: ${cause}" >&2
+  case "$cause" in
+    *"unknown model architecture"*)
+      local arch="${cause##*unknown model architecture: }"
+      arch="${arch//\'/}"; arch="${arch%% *}"
+      echo "  รันไทม์เก่ากว่าโมเดล — ไม่รู้จัก arch '${arch}' (รันไทม์: $(runtime_build_info))" >&2
+      if [[ "$RUNTIME_MODE" == "native" ]]; then
+        echo "  แก้: LLAMA_CPP_UPDATE=1 $0 prepare-runtime   (หรือ lmds repair {{ slug }} / ปุ่ม \"update runtime\" ในหน้าเว็บ)" >&2
+      else
+        echo "  แก้: lmds set {{ slug }} --image <image llama.cpp ใหม่กว่า>  แล้ว  $0 start" >&2
+      fi ;;
+    *"out of memory"*|*"failed to allocate"*|*"cudaMalloc failed"*|*"Cannot allocate memory"*)
+      echo "  หน่วยความจำไม่พอสำหรับ context ${CTX_SIZE} × ${PARALLEL_SEQS} slots — ลด context หรือหยุดโมเดลอื่นบนเครื่อง" >&2
+      echo "  แก้ถาวร: lmds set {{ slug }} --context <น้อยลง>   ลองทันที: $0 restart --context 32768   (หรือ N_GPU_LAYERS=<น้อยลง>)" >&2 ;;
+    *check_tensor_dims*|*"not found"*|*"wrong shape"*|*"wrong number of tensors"*)
+      echo "  ไฟล์โมเดล/draft ไม่เข้ากันหรือไม่ครบ — ตรวจ: $0 verify-files{% if mtp_basename or mtp_embedded %} · ถ้าเปิด MTP อยู่ลอง $0 restart --no-mtp{% endif %}" >&2 ;;
+  esac
+}
+
 wait_health() {
   local waited=0
   echo "รอ /health (สูงสุด ${HEALTH_TIMEOUT}s — โมเดลใหญ่โหลดหลายนาที)..."
   until curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; do
-    server_alive || die "เซิร์ฟเวอร์หยุดก่อน health ผ่าน — ดู: $0 logs"
+    server_alive || { explain_crash; die "เซิร์ฟเวอร์หยุดก่อน health ผ่าน — ดู: $0 logs"; }
     if (( waited >= HEALTH_TIMEOUT )); then
       echo "ยังไม่ health ภายใน ${HEALTH_TIMEOUT}s — เซิร์ฟเวอร์ยังโหลดต่ออยู่ ไม่ได้ถูกหยุด" >&2
       echo "รอต่อ:      $0 wait-health" >&2
@@ -1321,10 +1542,13 @@ USAGE
 COMMANDS
   prepare-runtime   Build llama.cpp from source ('native' mode — DGX Spark / ARM64 has no official
                     image). 'start' runs this by itself when llama-server is missing; call it directly
-                    to rebuild (LLAMA_CPP_UPDATE=1). Installs build deps via apt (sudo only if missing).
+                    to rebuild (LLAMA_CPP_UPDATE=1). Rebuilds on its own when the locked build does not
+                    know this model's architecture. Installs build deps via apt (sudo only if missing).
+  check-runtime     Show the llama.cpp build/image in use and whether it knows this model's architecture
+                    (exit 1 = runtime older than the model — the message names the fix)
   download          Download every model part (resumable, revision pinned)
   verify-files      Verify all files: exact size + SHA-256 + GGUF magic
-  start             Verify GPU + files (build llama.cpp first if needed), start llama-server, wait for /health
+  start             Verify GPU + files + architecture support (build llama.cpp first if needed), start llama-server, wait for /health
   stop              Stop the server
   restart           stop + start (use this to apply new options)
   status            Process/container state + API health
@@ -1405,7 +1629,9 @@ ENVIRONMENT VARIABLES
   HEALTH_TIMEOUT      Seconds to wait for /health on start        [default: ${HEALTH_TIMEOUT}]
   LLAMA_CPP_DIR       llama.cpp source/build dir (native mode)    [default: ${LLAMA_CPP_DIR}]
   CUDA_ARCHITECTURES  CUDA arch used by prepare-runtime           [default: ${CUDA_ARCHITECTURES}]
-  LLAMA_CPP_UPDATE    Set to 1 so prepare-runtime ignores runtime.lock and rebuilds at LLAMA_CPP_REF
+  LLAMA_CPP_UPDATE    Set to 1 so prepare-runtime ignores the lock and rebuilds at LLAMA_CPP_REF
+                      (lock lives next to the shared build: ${RUNTIME_LOCK})
+  LMDS_SKIP_ARCH_CHECK  Set to 1 to start even when the runtime does not list the model's architecture
   RUN_DIR             Runtime state read by 'lmds ps'             [default: ${RUN_DIR}]
 
 EXAMPLES
@@ -1462,6 +1688,7 @@ info() {
 
 case "${1:-help}" in
   prepare-runtime) prepare_runtime ;;
+  check-runtime) check_runtime ;;
   download)     download ;;
   verify-files) verify_files ;;
   start)        start ;;

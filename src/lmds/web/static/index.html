@@ -1388,7 +1388,19 @@ function modelTags(m) {
   if (m.speculative)
     out.push(`<span class="tag spec" title="MTP draft head — faster with identical output`
       + ` (the target verifies every token the draft proposes)">${ico("i-gauge")}MTP</span>`);
+  // llama.cpp build/image บนเครื่องไม่รู้จัก arch ของโมเดล — start ตายแน่ (spark-worker 2026-09-06: qwen4exp
+  // บน build 18 ส.ค.) · บอกตั้งแต่การ์ด ไม่ใช่รอให้กด start แล้วได้ "failed (exit 1)"
+  if (runtimeStale(m))
+    out.push(`<span class="tag bad" title="${esc(m.runtime_arch.runtime)} does not know '${esc(m.runtime_arch.arch)}' — start would die with “unknown model architecture”. Fix: ${esc(m.runtime_arch.fix)}">runtime older than model</span>`);
   return out;
+}
+
+// ป้าย/ปุ่ม "runtime older than model" ขึ้นเมื่อ inventory ตอบ supported=false เท่านั้น — null คือ "บอกไม่ได้" ไม่ใช่เสีย
+function runtimeStale(m) {
+  return !!(m && m.runtime_arch && m.runtime_arch.supported === false);
+}
+function runtimeFixLabel(m) {
+  return m.runtime_arch && m.runtime_arch.mode === "docker" ? "newer image needed" : "update runtime";
 }
 
 function rowMarkup(m) {
@@ -1590,11 +1602,19 @@ ${m.running ? benchMarkup(m) : ''}
     <div id="push-${esc(m.slug)}"></div>
 
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-wrench"/></svg><span class="sec-title">Repair / remove</span></div>
+    ${runtimeStale(m) ? `<div class="warn-line" style="color:var(--bad)">
+      ${esc(m.runtime_arch.runtime)} does not know architecture <b>${esc(m.runtime_arch.arch)}</b> — start would die with
+      “unknown model architecture”. ${m.runtime_arch.mode === "docker"
+        ? `Set a newer llama.cpp image above (image field) and start again.`
+        : `Update runtime rebuilds llama.cpp from the latest master (several minutes; other bundles on this machine keep working).`}</div>` : ""}
     <div class="field">
       ${HOST_ROLE.control_plane
         ? `<span class="dim">Repair is pointless here — ${esc(HOST_ROLE.evidence || "")}
              · send the bundle to a machine that can run it and repair from that card</span>`
         : btn("job:repair", "repair")}
+      ${!HOST_ROLE.control_plane && runtimeStale(m) && m.runtime_arch.mode !== "docker"
+        ? btn("job:update-runtime", "update runtime (rebuild llama.cpp)", "border-color:var(--bad)") : ""}
+      ${job("check-runtime")}
       ${btn("removeask", "Remove from machine", "border-color:var(--bad);color:var(--bad)")}
     </div>
     <div id="rm-${esc(m.slug)}"></div>
@@ -3522,6 +3542,13 @@ function nodeModelsMarkup(name, data) {
             ${m.self_managed_weights ? "" :
               nbtn("repair", "repair", m.downloaded ? "Re-check the files + fetch what is missing" : "Download the weights (resumable)")}
             ${m.self_managed_weights ? "" : ctl("verify-files", "Verify the checksums of the downloaded files")}
+            ${runtimeStale(m) && m.runtime_arch.mode !== "docker"
+              ? `<button data-nact="ctl:update-runtime" data-node="${esc(name)}" data-slug="${esc(m.slug)}" style="border-color:var(--bad)"
+                         title="Rebuild llama.cpp from the latest master (LLAMA_CPP_UPDATE=1 prepare-runtime) — several minutes; other bundles on this machine keep working">update runtime</button>` : ""}
+            ${ctl("check-runtime", "Which llama.cpp build/image this bundle uses and whether it knows the model's architecture")}
+            ${runtimeStale(m) ? `<div class="warn-line" style="color:var(--bad);width:100%">
+              ${esc(m.runtime_arch.runtime)} does not know architecture <b>${esc(m.runtime_arch.arch)}</b> — start would die with
+              “unknown model architecture” · ${m.runtime_arch.mode === "docker" ? "set a newer llama.cpp image above and start again" : "press update runtime"}</div>` : ""}
             ${auto === "n/a" ? `<span class="dim">No systemd on this machine — autostart cannot be set</span>`
               : autoOn ? nbtn("disable", "disable autostart", "Stop starting on its own after a reboot")
                        : nbtn("enable", "enable autostart", "Start on its own after a reboot (needs sudo on that machine)")}
@@ -5981,7 +6008,12 @@ function ovAlerts() {
     }
     if (hubBuild.commit && reg.lmds_commit && !sameCommit(reg.lmds_commit, hubBuild.commit))
       out.push({ lv: "info", t: `${name} runs LMDS ${reg.lmds_version || "?"} (${reg.lmds_commit})`, s: `hub is at ${hubBuild.version} · ${hubBuild.commit} — update when convenient`, href: `#/node/${encodeURIComponent(name)}` });
+    // llama.cpp บนเครื่องเก่ากว่าโมเดล — รู้ก่อนกด start (spark-worker 2026-09-06: qwen4exp บน build 18 ส.ค.)
+    for (const m of models) if (runtimeStale(m))
+      out.push({ lv: "bad", t: `${name}: ${m.slug} — runtime older than model`, s: `${m.runtime_arch.runtime} does not know '${m.runtime_arch.arch}' — start would fail · ${runtimeFixLabel(m)} on its card`, href: `#/node/${encodeURIComponent(name)}` });
   }
+  for (const m of (lastLocalModels || [])) if (runtimeStale(m))
+    out.push({ lv: "bad", t: `hub: ${m.slug} — runtime older than model`, s: `${m.runtime_arch.runtime} does not know '${m.runtime_arch.arch}' — start would fail · ${runtimeFixLabel(m)} on its card`, href: "#/hub" });
   return out;
 }
 

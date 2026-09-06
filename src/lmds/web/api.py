@@ -1044,13 +1044,19 @@ def create_app(token: str = "") -> FastAPI:
             "verify-files", "prepare-runtime", "sync-worker", "verify-worker", "clear-fi-cache",
             # log ของ worker อยู่อีกเครื่อง — ปุ่ม logs ธรรมดาเห็นแต่ head · controller มี `logs worker`
             "logs-worker",
+            # llama.cpp: build/image รู้จัก arch ของโมเดลไหม · update-runtime = prepare-runtime ที่ข้าม lock
+            # (LLAMA_CPP_UPDATE=1) — ปุ่มแก้ของป้าย "runtime older than model" (spark-worker 2026-09-06:
+            # build 18 ส.ค. ไม่รู้จัก qwen4exp · เดิมต้อง ssh ไปพิมพ์เอง)
+            "check-runtime", "update-runtime",
         }
         # ชื่อปุ่ม → argv จริงของ controller (คำสั่งที่มี argument ผ่านทางเดียวไม่ได้)
-        argv = {"logs-worker": "logs worker 200"}
+        argv = {"logs-worker": "logs worker 200", "update-runtime": "prepare-runtime"}
+        # env ที่ต้องนำหน้า controller — ชื่อปุ่มพูดกับผู้ใช้ ส่วน env พูดกับสคริปต์
+        env_prefix = {"update-runtime": "LLAMA_CPP_UPDATE=1 "}
         # คำสั่งที่กินเวลาเป็นสิบนาทีขึ้นไป — sync-worker คัดลอก weight ทั้งก้อนข้ามเครื่อง,
         # prepare-runtime สร้าง/ดึง image, stress ยิงโหลดยาว · รอใน HTTP request เดียวแปลว่า
         # ผู้ใช้เห็นปุ่มค้างเงียบ ๆ แล้วสายมักถูกตัดกลางทางก่อนงานจบด้วย (เจอจริงกับ sync-worker)
-        long_running = {"prepare-runtime", "sync-worker", "verify-worker", "verify-files",
+        long_running = {"prepare-runtime", "update-runtime", "sync-worker", "verify-worker", "verify-files",
                         "clear-fi-cache", "bench", "stress"}
         if command not in allowed:
             raise HTTPException(status_code=400, detail=f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
@@ -1070,7 +1076,7 @@ def create_app(token: str = "") -> FastAPI:
             # เลือกตาม topology ใน MODEL_PROFILE.yaml เหมือน fleet._pick_controller
             f"{_CTL_PICK} "
             f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
-            f"\"$ctl\" {argv.get(command) or shlex.quote(command)}"
+            f"{env_prefix.get(command, '')}\"$ctl\" {argv.get(command) or shlex.quote(command)}"
         )
         if command in long_running:
             try:
