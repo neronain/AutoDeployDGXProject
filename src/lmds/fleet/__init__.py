@@ -14,7 +14,7 @@ from .manager import (
     logs_server,
     logs_text,
     profile_context,
-    running_context,
+    running_context, running_slots,
     register_bundle,
     removal_plan,
     removal_failed,

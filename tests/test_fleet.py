@@ -1065,3 +1065,18 @@ def test_parse_docker_ps_ignores_download_helper_containers():
     output = "lmds-dl-1852566-9701\tnvcr.io/nvidia/vllm:26.08-py3\t\nlmds-qwen3-6-35b-a3b-nvfp4\tnvcr.io/nvidia/vllm:26.08-py3\t0.0.0.0:8000->8000/tcp\n"
     found = _parse_docker_ps(output, set())
     assert [s.slug for s in found] == ["qwen3-6-35b-a3b-nvfp4"], [s.slug for s in found]
+
+
+def test_running_slots_and_context_are_read_from_the_live_argv(monkeypatch):
+    """เคสจริง 2026-09-07 dgx-veerasiam: gemma-4-12b ตั้ง --ctx-size 131071 --parallel 2 → llama.cpp ให้ 65,536 ต่อ request
+    (n_ctx_slot) แต่การ์ดโชว์ 131,071 → inventory ต้องรู้จำนวน slot ที่รันอยู่จริงเพื่อคิดต่อ request"""
+    from lmds.fleet import manager
+
+    words = ["llama-server", "-m", "x.gguf", "--ctx-size", "131071", "--parallel", "2", "--port", "8020"]
+    monkeypatch.setattr(manager, "_running_words", lambda info: words)
+    assert manager.running_context(object()) == 131071
+    assert manager.running_slots(object()) == 2
+    monkeypatch.setattr(manager, "_running_words", lambda info: ["vllm", "serve", "--max-model-len", "262144", "--max-num-seqs", "3"])
+    assert manager.running_context(object()) == 262144 and manager.running_slots(object()) == 3
+    monkeypatch.setattr(manager, "_running_words", lambda info: [])
+    assert manager.running_slots(object()) is None

@@ -791,7 +791,7 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
         bundle_profile,
         feature_summary,
         profile_context,
-        running_context,
+        running_context, running_slots,
     )
 
     profile = bundle_profile(server.controller)
@@ -802,6 +802,12 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
     self_managed = self_managed_weights(profile) or (
         bool(commands) and "download" not in commands
     )
+    ctx_now = running_context(server) or profile_context(profile)
+    slots = running_slots(server) or ((profile or {}).get("serving") or {}).get("max_num_seqs") or None
+    if (server.engine or "") == "llamacpp" and ctx_now and slots and int(slots) > 1:
+        context_per_request = int(ctx_now) // int(slots)
+    else:
+        context_per_request = ctx_now
     return {
         "slug": server.slug,
         "model_id": server.model_id or server.model,
@@ -818,6 +824,10 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
         # หน้าเว็บโชว์ค่าเก่าต่อไป ดูเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ทำงานถูกต้อง
         "context": running_context(server) or profile_context(profile),
         "context_configured": profile_context(profile),
+        # llama.cpp แบ่ง --ctx-size ให้ทุก slot เท่ากัน → คำขอเดียวได้ context ÷ slots (vLLM: max-model-len เป็นต่อคำขออยู่แล้ว)
+        # เคสจริง 2026-09-07 dgx-veerasiam: ตั้ง 131,071 slots 2 แล้ว Score บอก ctx max 65,536 — ผู้ใช้เข้าใจว่าค่าไม่ติด
+        "slots": slots,
+        "context_per_request": context_per_request,
         # เพดานของโมเดล — ช่อง context บนหน้าเว็บใส่ max/hint ให้ ไม่ปล่อยให้ตั้งเกินแล้วไปตายตอน start
         "native_context": ((profile or {}).get("model") or {}).get("native_context") or None,
         "features": feature_summary(profile),

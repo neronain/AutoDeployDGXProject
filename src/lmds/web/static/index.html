@@ -3670,7 +3670,9 @@ function nodeModelsMarkup(name, data) {
         <div class="field">
           <span class="dot ${state}"></span>
           <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
-            <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+            <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}${
+              m.context_per_request && m.context && m.context_per_request < m.context
+                ? ` <span class="tag" title="llama.cpp splits --ctx-size ${m.context.toLocaleString()} evenly across ${m.slots} slots — each request gets ${m.context_per_request.toLocaleString()} tokens. Want the full amount per request? set context = per-request × slots, or slots 1">${m.context_per_request.toLocaleString()}/request</span>` : ""}</span>
             ${m.running && m.context_configured && m.context !== m.context_configured
               ? `<span class="tag" title="The bundle value is ${m.context_configured.toLocaleString()} — the running instance uses what you set at start">custom</span>` : ""}
             ${modelTags(m).join(" ")}

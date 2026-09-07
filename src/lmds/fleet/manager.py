@@ -542,8 +542,33 @@ def running_context(info: "ServerInfo") -> int | None:
     ต่อไปเรื่อย ๆ — ดูแล้วเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ทำงานถูกต้อง
     ค่าที่แสดงต้องเป็นค่าที่ใช้จริง ไม่ใช่ค่าที่ตั้งใจไว้
     """
+    words = _running_words(info)
+    for flag in _CONTEXT_FLAGS:
+        if flag in words:
+            index = words.index(flag)
+            if index + 1 < len(words) and words[index + 1].isdigit():
+                return int(words[index + 1])
+    return None
+
+
+_SLOT_FLAGS = ("--parallel", "-np", "--max-num-seqs")
+
+
+def running_slots(info: "ServerInfo") -> int | None:
+    """จำนวน slot ที่ server รันอยู่จริง (`--parallel`/`-np` ของ llama.cpp · `--max-num-seqs` ของ vLLM) — None ถ้าอ่านไม่ได้"""
+    words = _running_words(info)
+    for flag in _SLOT_FLAGS:
+        if flag in words:
+            index = words.index(flag)
+            if index + 1 < len(words) and words[index + 1].isdigit():
+                return int(words[index + 1])
+    return None
+
+
+def _running_words(info: "ServerInfo") -> list[str]:
+    """argv ของ process ที่รันอยู่ (docker: Args ของ container · native: /proc/<pid>/cmdline) — [] ถ้าไม่รัน/อ่านไม่ได้"""
     if not info.running:
-        return None
+        return []
     words: list[str] = []
     if info.mode == "docker" and info.container:
         try:
@@ -566,12 +591,7 @@ def running_context(info: "ServerInfo") -> int | None:
                     "utf-8", "replace").split("\0")
             except OSError:
                 words = []
-    for flag in _CONTEXT_FLAGS:
-        if flag in words:
-            index = words.index(flag)
-            if index + 1 < len(words) and words[index + 1].isdigit():
-                return int(words[index + 1])
-    return None
+    return words
 
 
 def _in_container(pid: int) -> bool:

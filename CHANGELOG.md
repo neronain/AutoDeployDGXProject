@@ -5,6 +5,10 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **llama.cpp: การ์ดบอก context "ต่อ request"** — 2026-09-07 dgx-veerasiam: ตั้ง context 131,071 slots 2 แล้ว Score บอก
+  ctx max 65,536 เพราะ llama.cpp แบ่ง `--ctx-size` ให้ทุก slot เท่ากัน (`n_ctx_slot`) · inventory ส่ง `slots` +
+  `context_per_request` (อ่านจาก argv ที่รันอยู่: `--parallel`/`--max-num-seqs`) · การ์ดขึ้นป้าย `65,536/request` พร้อมวิธีแก้
+  (context = ต่อ request × slots หรือ slots 1) · เทส `test_inventory.py`, `test_fleet.py`
 - **Fit — ตั้ง slots/context/KV ให้พอดี ไม่ต้องคำนวณเองอีก (CLI · เว็บ · pin ตั้งต้นตอน deploy)** — เจ้าของ 2026-09-07:
   "ค่าที่ทำให้รัน 2 model บน vllm ผ่าน … ct = 262144 แต่ slot, gpu util จะตั้งค่าอย่างไรให้พอดี" · สูตรเดียวที่ `fit/sizing.py`:
   RAM = weights (ที่โหลดจริง) + overhead 3 + KV pin · pin = slots × KV เต็ม context × 1.2 → `--kv-cache-memory` · ใช้ได้ = total − 12 OS ·

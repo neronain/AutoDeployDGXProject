@@ -172,3 +172,27 @@ def test_llama_server_version_line_parses_both_formats(tmp_path):
     server.chmod(0o755)
     info = inventory.llamacpp_runtime_info(llama)
     assert info["build"] == "10826" and info["commit"] == "73a43d1f6", info
+
+
+def test_llamacpp_context_per_request_is_context_divided_by_slots(tmp_path, monkeypatch):
+    """เคสจริง 2026-09-07 dgx-veerasiam: gemma-4-12b ตั้ง context 131,072 slots 2 → llama.cpp ให้ 65,536 ต่อ request แต่การ์ด
+    โชว์ 131,072 · vLLM ไม่แบ่ง (max-model-len เป็นต่อคำขอ)"""
+    from lmds import inventory
+
+    controller = tmp_path / "demo-single.sh"
+    controller.write_text("#!/bin/bash\ncase \"$1\" in download) ;; start) ;; esac\n", encoding="utf-8")
+    server = _server(controller)
+    server.engine = "llamacpp"
+    server.running = True
+    import lmds.fleet as fleet
+
+    monkeypatch.setattr(fleet, "running_context", lambda s: 131072)
+    monkeypatch.setattr(fleet, "running_slots", lambda s: 2)
+    payload = inventory.model_payload(server)
+    assert payload["context"] == 131072 and payload["slots"] == 2 and payload["context_per_request"] == 65536
+
+    server.engine = "vllm"
+    monkeypatch.setattr(fleet, "running_context", lambda s: 262144)
+    monkeypatch.setattr(fleet, "running_slots", lambda s: 3)
+    payload = inventory.model_payload(server)
+    assert payload["context_per_request"] == 262144 and payload["slots"] == 3
