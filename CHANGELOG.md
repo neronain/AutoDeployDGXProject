@@ -5,6 +5,29 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **ค่าตั้งต้น KV pin ตอน deploy ลด gpu-util ให้เท่าที่ใช้จริงด้วย** — dgx-spark04 2026-09-08: Qwen3-Embedding-8B ได้ pin 22 GiB
+  แต่ gpu-util ยัง 0.85 → start ล้ม "Free memory 66/121 GiB is less than desired 103 GiB" ขณะ Qwen3.6 รันอยู่ ทั้งที่ต้องการ
+  39 GB · `apply_default_pin` ตั้ง gpu_memory_utilization = need/total + 2% (เหมือน `set --fit`) · เทส `test_kv_sizing.py`
+- **ผู้ช่วยเป็น operator ของฟลีต ไม่ใช่แค่กล่องถามตอบ** — เจ้าของ 2026-09-07: "ช่วยเพิ่มความสามารถของ AI assistant ในระบบหน่อย …
+  ไม่แน่ใจว่าจะมีแค่ไว้ถามตอบเอง" · แคตตาล็อก (`assistant/catalog.py`) ขยายเป็น 21 probe / 25 action ที่ครอบงานประจำทั้งสาย:
+  probe ใหม่ `fleet_consistency` (ตรง hub 3 มิติ — คำนวณบน hub จากแคช, unknown = "ตรวจไม่ได้" ไม่ใช่ผ่าน) · `fit_preview` (lmds fit) ·
+  `last_failure` (บรรทัด error จริงจาก server.log/docker logs แบบ explain_crash) · `runtime_info` · `bench_results` · `model_recommend`
+  (จัดอันดับโมเดลที่ *มี weight แล้ว* ตามโจทย์ coding/ไทย/vision/tools/uncensored/long-context จาก inventory + recipes บอกว่าอยู่เครื่องไหน
+  เหลือที่เท่าไร — `assistant/insight.py`) · `usage` · `weights_on_disk` · action ใหม่ `set_fit` `set_slots` `set_served_name` `stop_to_fit`
+  `update_runtime` `regenerate_controller` `bundles_refresh` `node_install` (hub เท่านั้น) `enable/disable_autostart` `remove_model`
+  (risk high · ค่าตั้งต้น `--keep-weights`) `run_test` (test-text/tools/vision/reasoning/score) `model_download` `push_bundle` `deploy_plan` และ
+  `deploy_model` ที่ policy ขยายเป็น แผน → push → download → start → test-text → test-tools ในตั๋วเดียว (slug ตาม `rulebased.slugify`) ·
+  ทุก action ใช้ CLI/controller ตัวเดียวกับปุ่มบนหน้าเว็บ ผ่านตั๋วอนุมัติเดิม · ตั๋วมี `default_mode` (ลบถาวร → ยังไม่ทำ · หลายขั้น → ทีละขั้น)
+  และ `destructive` ที่ "แก้เลย" ต้อง `confirm:true` · ขั้นที่ล้มได้ `result.explain` จาก `last_failure` แปะมาให้ · router รับ context
+  {node, slug} ของการ์ดที่ผู้ใช้เปิดอยู่ (`POST /api/assistant/chat` body `context`, ตรวจกับทะเบียน/รูป slug ก่อน) และ prompt เรียงงานหลายขั้น ·
+  `GET /api/assistant` คืน `capabilities` (ชิปตัวอย่าง 5 กลุ่ม) + `brain.from_fleet` · SSE เพิ่ม `suggest` ("ทำอะไรได้ต่อ" กฎล้วนจาก probe ที่ใช้) ·
+  **สมองจากฟลีต**: `POST /api/assistant/brain {node, slug}` + ปุ่ม **🧠 Use as assistant brain** บนการ์ด vLLM/llama.cpp/SGLang ที่รันอยู่
+  (local + node) ตั้ง `openai-compat` ชี้ IP:port ของ bundle ด้วย served name ผ่าน `Settings.set_provider` เดิม (`assistant/brain.py`) ·
+  `lmds config set-provider openai-compat --from-model <slug> [--node]` · หัวกล่องแชทบอก `🧠 spark-head · nemotron` · หน้าเว็บ: การ์ด
+  "What the assistant can do" + ปุ่ม ? · แถบ Quick asks ตามการ์ดที่แตะ · ชิปทุกตัวเติมช่องพิมพ์ไม่ส่งเอง · ปุ่มตั๋วผูก data-* แทน onclick ·
+  playbook เพิ่ม §4b (unified memory, KV pin แทน gpu-util, context ÷ slots, ตรง hub 3 มิติ, runtime ต้องรู้ arch, guard dirty-hub/sudo/keyring)
+  + §4c อ้าง probe ทุกตัวเลข ห้ามประดิษฐ์ · งบ prompt 32K · เทส `test_assistant_operator.py`, `test_assistant_api.py`, `test_assistant_dom.py`
+  · docs/USAGE.md §2 ผู้ช่วย
 - **Fit นับ RAM ฝั่ง host ของ llama.cpp native ด้วย** — dgx-veerasiam 2026-09-07: gemma-4-12b ถือ GPU 17.7 GB + VmRSS 11.2 GB
   (mmap weight ค้างใน unified memory) แต่ inventory นับแค่ GPU → Fit เห็นว่ายังเหลือที่ทั้งที่ `free` บอก used 119/124 GB
   และเริ่ม swap · `memory_by_slug` รวม VmRSS ของ process · เทส `test_inventory.py`

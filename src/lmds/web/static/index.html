@@ -681,6 +681,18 @@ pre {
 .chat-plan .menu button.go { background: var(--accent-bg); border-color: var(--accent); }
 .chat-plan .menu button:disabled { opacity: .55; cursor: default; }
 .chat-plan .menu-why { color: var(--dim); margin-top: 6px; }
+.chat-plan .menu button.pick { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-plan .explain { margin-top: 6px; padding: 6px 8px; border-left: 3px solid var(--bad); background: var(--bad-bg); white-space: pre-wrap; font-size: calc(12px * var(--fs)); }
+.chat-caps { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; font-size: calc(12px * var(--fs)); }
+.chat-caps > b { display: block; margin-bottom: 6px; }
+.chat-caps .grp { margin: 6px 0 2px; color: var(--dim); font-weight: 600; }
+.chat-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chat-chip { border: 1px solid var(--line); background: var(--sunken); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: calc(12px * var(--fs)); color: var(--fg); text-align: left; }
+.chat-chip:hover { border-color: var(--accent); background: var(--accent-bg); }
+.chat-next { display: flex; flex-wrap: wrap; gap: 5px; align-self: flex-start; max-width: 100%; }
+.chat-next .lbl { color: var(--dim); font-size: calc(11px * var(--fs)); width: 100%; }
+.chat-quick { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 12px 0; }
+.chat-quick .lbl { color: var(--dim); font-size: calc(11px * var(--fs)); width: 100%; }
 .chat-form { display: flex; gap: 6px; padding: 10px 12px 8px; border-top: 1px solid var(--line); align-items: flex-end; }
 .chat-form textarea {
   flex: 1; resize: none; height: 52px; padding: 8px 10px; font: inherit; font-size: calc(13px * var(--fs));
@@ -1569,7 +1581,12 @@ function manageMarkup(m) {
   const job = command =>
     has(m, command) ? `<button data-act="job:${command}" data-slug="${esc(m.slug)}">${command}</button>` : "";
 
+  const chatEngine = ["vllm", "llamacpp", "sglang"].includes(m.engine) && !String(m.features || "").includes("embedding");
   return `<div class="pad" style="border-top:1px solid var(--line)">
+    ${m.running && chatEngine ? `<div class="field" style="margin-bottom:8px">
+      <button data-act="brain" data-slug="${esc(m.slug)}"
+              title="Point the assistant (and deploy planning) at this model — openai-compat, nothing leaves the machine">🧠 Use as assistant brain</button>
+      <span class="dim">no API key needed — sets provider openai-compat → this endpoint</span></div>` : ""}
     <div class="dim" style="margin-bottom:8px">Applied on start — same as
       <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
     <div class="field">
@@ -2916,6 +2933,7 @@ document.addEventListener("click", async e => {
   const model = models_by_slug.get(slug) || { slug };
 
   if (act === "adopt") { await adoptModel(slug); return; }
+  if (act === "brain") { await chatSetBrain("", slug, btn); return; }
   if (act === "tests") { togglePanel(slug, "tests", () => testsMarkup(model)); return; }
   if (act === "opts") {
     if (togglePanel(slug, "opts", () => manageMarkup(model))) hydrateLocalFit(slug);
@@ -3864,6 +3882,9 @@ function nodeModelsMarkup(name, data) {
 
           <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-sliders"/></svg><span class="sec-title">Manage</span></div>
           <div class="field" style="width:100%">
+            ${m.running && ["vllm", "llamacpp", "sglang"].includes(m.engine) && !String(m.features || "").includes("embedding")
+              ? `<button data-nact="brain" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                         title="Point the assistant (and deploy planning) at this model — openai-compat via ${esc(name)}'s IP, no API key">🧠 Use as assistant brain</button>` : ""}
             ${m.running ? nbtn("restart", "restart", "Stop and start again with the values above") : ""}
             ${nbtn("doctor", "doctor", "Find out why it still will not start")}
             ${nbtn("logs", "logs", "Last 300 log lines")}
@@ -4326,6 +4347,8 @@ document.addEventListener("click", async e => {
     loadBench();
     return;
   }
+
+  if (nact === "brain") { await chatSetBrain(node, slug, btn); return; }
 
   if (nact === "regenerate") {
     const d = await withButton(btn, "regenerating…", () =>
@@ -7010,6 +7033,104 @@ const CHAT_KEY = "lmds_chat";
 let chatHistory = [];
 try { chatHistory = JSON.parse(sessionStorage.getItem(CHAT_KEY) || "[]"); } catch { /* โหมดส่วนตัว */ }
 
+// การ์ดที่ผู้ใช้เปิดอยู่ — "ตัวนี้" ในคำถามหมายถึงอะไร · เก็บจากปุ่มล่าสุดที่กดบนการ์ด (data-slug/data-node)
+// และจาก route (#node/<name>) · ส่งไปกับทุกคำถามเป็น context {node, slug} ให้ผู้ช่วยรู้ว่ากำลังมองอะไร
+let chatFocus = { node: "", slug: "" };
+let chatCaps = null;          // จาก GET /api/assistant — เมนู "ทำอะไรได้บ้าง"
+let chatCapsOpen = false;
+let chatBrain = null;
+
+function chatContext() {
+  const node = route && route.kind === "node" ? route.name : chatFocus.node;
+  return { node: node || "", slug: chatFocus.slug || "" };
+}
+
+function chatTrackFocus(e) {
+  const el = e.target && e.target.closest ? e.target.closest("[data-slug]") : null;
+  if (!el || !el.dataset.slug) return;
+  chatFocus = { node: el.dataset.node || "", slug: el.dataset.slug };
+  chatQuickDraw();
+}
+
+// เติมชื่อจริงลงตัวอย่าง — ไม่มีการ์ดเปิดอยู่ก็ยังอ่านรู้เรื่อง ("<slug>") แทนที่จะเป็นช่องว่าง
+function chatFillExample(text, ctx) {
+  return text.replace(/\{slug\}/g, ctx.slug || "<slug>").replace(/\{node\}/g, ctx.node || "<เครื่อง>");
+}
+
+function chatChip(text) {
+  return `<button type="button" class="chat-chip" data-chat-fill="${esc(text)}">${esc(text)}</button>`;
+}
+
+function chatCapsHtml() {
+  if (!chatCaps || !(chatCaps.groups || []).length) return "";
+  const ctx = chatContext();
+  const groups = (chatCaps.groups || []).map(g =>
+    `<div class="grp">${esc(g.group)}</div><div class="chat-chips">${
+      (g.examples || []).map(x => chatChip(chatFillExample(x, ctx))).join("")}</div>`).join("");
+  return `<div class="chat-caps" id="chat-caps-card"><b>What the assistant can do — ${chatCaps.probes} checks · ${chatCaps.actions} actions, every change goes through ${esc((chatCaps.modes || []).join(" / "))}</b>
+    <span class="dim">Click an example to fill it in, then edit and send</span>${groups}</div>`;
+}
+
+// แถบคำถามลัดของการ์ดที่เปิดอยู่ — เปลี่ยนตามโมเดล/เครื่องที่ผู้ใช้เพิ่งแตะ
+function chatQuickPrompts(ctx) {
+  const out = [];
+  if (ctx.slug) {
+    out.push(`ทำไม ${ctx.slug} start ไม่ขึ้น`, `Fit ${ctx.slug} ให้พอดี`, `${ctx.slug} เป็นยังไงบ้าง`, `เทส test-tools กับ ${ctx.slug}`);
+  }
+  if (ctx.node) {
+    out.push(`${ctx.node} ตรง hub ครบ 3 มิติไหม`, `${ctx.node} เหลือ RAM/ดิสก์เท่าไร`);
+  }
+  return out.slice(0, 6);
+}
+
+function chatQuickDraw() {
+  const bar = document.getElementById("chat-quick");
+  if (!bar) return;
+  const ctx = chatContext();
+  const prompts = chatQuickPrompts(ctx);
+  bar.hidden = !prompts.length;
+  bar.innerHTML = prompts.length
+    ? `<span class="lbl">Quick asks for ${esc(ctx.slug || ctx.node)}${ctx.slug && ctx.node ? " @ " + esc(ctx.node) : ""}:</span>` + prompts.map(chatChip).join("")
+    : "";
+}
+
+function chatFill(text) {
+  const box = document.getElementById("chat-text");
+  if (!box) return;
+  box.value = text;
+  box.focus();
+}
+
+function chatBrainLabel(brain) {
+  if (!brain) return "";
+  const fleet = brain.from_fleet;
+  if (fleet && fleet.slug) return `🧠 ${fleet.node && fleet.node !== "this" ? fleet.node + " · " : "this machine · "}${fleet.slug}`;
+  return `${brain.provider} · ${brain.model}`;
+}
+
+async function chatRefreshStatus() {
+  try {
+    const r = await api("/api/assistant");
+    if (!r.ok) return null;
+    const status = await r.json();
+    chatBrain = status.brain || null;
+    chatCaps = status.capabilities || chatCaps;
+    const el = document.getElementById("chat-brain");
+    if (el) { el.textContent = chatBrainLabel(chatBrain); el.title = chatBrain && chatBrain.base_url ? chatBrain.base_url : el.title; }
+    return status;
+  } catch { return null; }
+}
+
+// ปุ่ม "Use as assistant brain" บนการ์ด — ตั้ง provider เป็น openai-compat ชี้ไป endpoint ของ bundle นั้น
+async function chatSetBrain(node, slug, button) {
+  const d = await withButton(button, "setting…", () => api("/api/assistant/brain", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node: node || "", slug }),
+  }));
+  if (!d) return;
+  await chatBoot();   // โผล่ + ผูกปุ่มถ้ายังไม่เคย · มีอยู่แล้วก็แค่อัปเดตหัวกล่อง
+  showError(`Assistant brain is now ${slug}${node ? " @ " + node : ""} (${d.brain.base_url})`, "ok");
+}
+
 function chatStripThinking(text) {
   // โมเดลสายคิดจะเล่ากระบวนการก่อนตอบ แม้จะสั่งไม่ให้เล่า · ทางแก้จริงอยู่ที่
   // ฝั่ง server (vLLM ต้องมี --reasoning-parser คำตอบถึงจะแยก reasoning_content
@@ -7086,6 +7207,7 @@ function chatPlanHtml(plan) {
     const mark = s.done ? ((s.result && s.result.ok) ? "✓" : "✗") : "○";
     const out = s.result
       ? `<pre>${esc(((s.result.output || s.result.error || "").slice(-1500)) || "(no output)")}</pre>`
+        + (s.result.explain ? `<div class="explain">Why it failed (from the model's log): ${esc(s.result.explain)}</div>` : "")
       : "";
     return `<li><b>${mark} ${esc(s.title)}</b>${
       s.target && s.target !== "this" ? ` <span class="impact">@ ${esc(s.target)}</span>` : ""}
@@ -7098,14 +7220,16 @@ function chatPlanHtml(plan) {
   if (plan.expired) {
     menu = '<div class="menu-why">This proposal has expired — ask again if you still want it</div>';
   } else if (!plan.mode) {
+    // ปุ่มที่ policy แนะนำ (default_mode) ถูกเน้น: ลบถาวร → "ยังไม่ทำ" · หลายขั้น → "ทีละขั้น" · งานเดียว → "แก้เลย"
+    const pick = plan.default_mode || "apply";
     menu = `<div class="menu">${(plan.menu || []).map(m =>
-      `<button class="${m.mode === "apply" ? "go" : ""}" title="${esc(m.detail)}"
-        onclick="chatPlanChoose('${id}','${esc(m.mode)}',this)">${esc(m.label)}</button>`).join("")}</div>`;
+      `<button class="${m.mode === "apply" && !plan.destructive ? "go " : ""}${m.mode === pick ? "pick" : ""}" title="${esc(m.detail)}"
+        data-chat-choose="${esc(m.mode)}" data-ticket="${id}">${esc(m.label)}</button>`).join("")}${
+      plan.destructive ? '<span class="menu-why" style="width:100%">This removes things permanently — "ยังไม่ทำ" is the default; "แก้เลย" asks once more</span>' : ""}</div>`;
   } else if (plan.mode === "hold") {
     menu = '<div class="menu-why">Nothing touched yet — you can run the command above yourself</div>';
   } else if (!plan.finished) {
-    menu = `<div class="menu"><button class="go"
-      onclick="chatPlanAdvance('${id}',this)">Do the next step</button></div>`;
+    menu = `<div class="menu"><button class="go" data-chat-advance="${id}">Do the next step</button></div>`;
   } else {
     menu = '<div class="menu-why">All steps done</div>';
   }
@@ -7119,9 +7243,15 @@ function chatFindPlan(ticketId) {
 }
 
 async function chatPlanChoose(ticketId, mode, button) {
+  const plan = (chatFindPlan(ticketId) || {}).plan;
+  let confirmDestructive = false;
+  if (mode === "apply" && plan && plan.destructive) {
+    if (!confirm("This proposal deletes things permanently. Run every step now?")) return;
+    confirmDestructive = true;
+  }
   const data = await withButton(button, "…", () => api(
     `/api/assistant/ticket/${encodeURIComponent(ticketId)}/choose`,
-    { method: "POST", body: JSON.stringify({ mode }) }));
+    { method: "POST", body: JSON.stringify({ mode, confirm: confirmDestructive }) }));
   if (!data) return;
   const message = chatFindPlan(ticketId);
   if (message) message.plan = data;
@@ -7139,14 +7269,24 @@ async function chatPlanAdvance(ticketId, button) {
   chatSave();
 }
 
+function chatNextHtml(next) {
+  if (!next || !next.length) return "";
+  return `<div class="chat-next"><span class="lbl">What the assistant can do next:</span>${next.map(chatChip).join("")}</div>`;
+}
+
 function chatDraw() {
   const log = document.getElementById("chat-log");
-  log.innerHTML = chatHistory.map(m =>
+  const last = chatHistory.length - 1;
+  log.innerHTML = ((!chatHistory.length || chatCapsOpen) ? chatCapsHtml() : "")
+    + chatHistory.map((m, i) =>
     (m.role === "user" ? "" : chatCheckedHtml(m.checked))
     + `<div class="chat-msg ${m.role === "user" ? "user" : m.bad ? "bot bad" : "bot"}">${
       m.role === "user" ? esc(m.content) : chatRender(m.content)}</div>`
-    + (m.role === "user" ? "" : chatPlanHtml(m.plan))).join("");
+    + (m.role === "user" ? "" : chatPlanHtml(m.plan))
+    // ชิป "ทำอะไรได้ต่อ" เฉพาะคำตอบล่าสุด — ของเก่าอ้างสภาพเครื่องที่ผ่านไปแล้ว
+    + (m.role === "user" || i !== last ? "" : chatNextHtml(m.next))).join("");
   log.scrollTop = log.scrollHeight;
+  chatQuickDraw();
 }
 
 // หนึ่ง event จากสตรีม → อัปเดตข้อความที่กำลังตอบ · คืนข้อความ "กำลังรอ" อันใหม่
@@ -7158,6 +7298,7 @@ function chatApplyEvent(payload, reply, waiting) {
   else if (payload.delta) reply.content += payload.delta;
   else if (payload.status) return payload.status;
   else if (payload.evidence) { reply.checked = payload.evidence; return "Composing…"; }
+  else if (payload.suggest) reply.next = payload.suggest;
   else if (payload.ticket) {
     // เก็บไว้วาดตอนจบพร้อมคำอธิบาย — โผล่ก่อนคำตอบแปลว่ามีปุ่ม "แก้เลย" ให้กด
     // ตั้งแต่ยังไม่มีใครบอกว่ามันจะทำอะไร
@@ -7190,6 +7331,7 @@ async function chatSend(question) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         messages: chatHistory.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
+        context: chatContext(),
       }),
     });
     if (!response.ok) {
@@ -7245,9 +7387,14 @@ async function chatSend(question) {
   }
 }
 
+let chatWired = false;
+
 async function chatBoot() {
   // ถามก่อนวาด: ไม่มี provider = ไม่มีอะไรให้คุย · LMDS ยังทำงานได้เต็มที่ในโหมด
   // rule-based กล่องแชทที่ตอบว่า "ยังไม่ได้ตั้ง provider" ทุกครั้งแย่กว่าไม่มีกล่อง
+  //
+  // เรียกซ้ำได้: ปุ่ม 🧠 บนการ์ดตั้งสมองได้ทั้งที่ยังไม่มี provider — กล่องต้องโผล่และ *กดได้* ทันที
+  // ไม่ใช่โผล่มาแต่ปุ่มเงียบเพราะ handler ยังไม่เคยถูกผูก (ผูกครั้งเดียวด้วย chatWired)
   let status;
   try {
     const response = await api("/api/assistant");
@@ -7258,9 +7405,13 @@ async function chatBoot() {
 
   const fab = document.getElementById("chat-open");
   const panel = document.getElementById("chat-panel");
-  fab.hidden = false;
-  document.getElementById("chat-brain").textContent =
-    status.brain ? `${status.brain.provider} · ${status.brain.model}` : "";
+  fab.hidden = !panel.hidden;   // กล่องเปิดอยู่ = ไม่ต้องโชว์ปุ่มลอยซ้อน
+  chatBrain = status.brain || null;
+  chatCaps = status.capabilities || null;
+  document.getElementById("chat-brain").textContent = chatBrainLabel(chatBrain);
+  if (chatBrain && chatBrain.base_url) document.getElementById("chat-brain").title = chatBrain.base_url;
+  if (chatWired) return;
+  chatWired = true;
 
   const open = (shown) => { panel.hidden = !shown; fab.hidden = shown; if (shown) document.getElementById("chat-text").focus(); };
   fab.onclick = () => { open(true); chatDraw(); };
@@ -7270,6 +7421,19 @@ async function chatBoot() {
     chatSave();
     chatDraw();
   };
+  document.getElementById("chat-caps").onclick = () => { chatCapsOpen = !chatCapsOpen; chatDraw(); };
+  // ชิปทุกตัว (ตัวอย่าง · คำถามลัด · ทำอะไรได้ต่อ) = เติมลงช่องพิมพ์ ไม่ส่งเอง — ผู้ใช้แก้ชื่อ/ตัวเลขก่อนได้
+  // ปุ่มของการ์ดงาน (แก้เลย/ทีละขั้น/ยังไม่ทำ/ขั้นถัดไป) ผูกด้วย data-* ไม่ใช่ onclick ในสตริง — id ตั๋วไม่ต้องไปอยู่ใน JS ที่ประกอบจาก HTML
+  panel.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-chat-fill]");
+    if (chip) { chatFill(chip.dataset.chatFill); return; }
+    const choose = e.target.closest("button[data-chat-choose]");
+    if (choose) { chatPlanChoose(choose.dataset.ticket, choose.dataset.chatChoose, choose); return; }
+    const advance = e.target.closest("button[data-chat-advance]");
+    if (advance) chatPlanAdvance(advance.dataset.chatAdvance, advance);
+  });
+  document.addEventListener("click", chatTrackFocus, true);
+  window.addEventListener("hashchange", chatQuickDraw);
 
   const text = document.getElementById("chat-text");
   document.getElementById("chat-form").onsubmit = (event) => {
@@ -7294,17 +7458,19 @@ boot().then(chatBoot).catch(chatBoot);
 <div id="chat-panel" class="chat-panel" hidden>
   <div class="chat-head">
     <b class="chat-title"><svg class="ai-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2.5l1.55 4.7a3 3 0 0 0 1.9 1.9l4.7 1.55-4.7 1.55a3 3 0 0 0-1.9 1.9L11 18.8l-1.55-4.7a3 3 0 0 0-1.9-1.9L2.85 10.65l4.7-1.55a3 3 0 0 0 1.9-1.9L11 2.5z"/><path d="M18.4 14.2l.62 1.88a1.2 1.2 0 0 0 .76.76l1.88.62-1.88.62a1.2 1.2 0 0 0-.76.76l-.62 1.88-.62-1.88a1.2 1.2 0 0 0-.76-.76l-1.88-.62 1.88-.62a1.2 1.2 0 0 0 .76-.76z"/></svg>Assistant</b>
-    <span id="chat-brain" class="dim"></span>
+    <span id="chat-brain" class="dim" title="The LLM answering here — the same provider that plans deploys"></span>
+    <button id="chat-caps" class="chat-icon" title="What can the assistant do?" aria-label="What can the assistant do?">?</button>
     <button id="chat-clear" class="chat-icon" title="Clear this conversation" aria-label="Clear this conversation">&#8635;</button>
     <button id="chat-close" class="chat-icon" title="Close" aria-label="Close">&#10005;</button>
   </div>
   <div id="chat-log" class="chat-log"></div>
+  <div id="chat-quick" class="chat-quick" hidden></div>
   <form id="chat-form" class="chat-form">
     <textarea id="chat-text" rows="2" placeholder="Ask about the machines and models here…"></textarea>
     <button type="submit" id="chat-send">Send</button>
   </form>
   <p class="chat-foot dim">
-    Answers from the real state of this fleet, through the LLM you configured — the history lives in this tab only
+    Answers from the real state of this fleet and can carry out fleet work with your approval — nothing runs until you pick from the menu · the history lives in this tab only
   </p>
 </div>
   <footer id="lmds-credit">

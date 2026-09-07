@@ -779,11 +779,42 @@ def create_app(token: str = "") -> FastAPI:
         LMDS ทำงานได้เต็มที่ในโหมด rule-based การไม่มี provider จึงไม่ใช่ error
         แค่แปลว่าไม่มีอะไรให้คุย — ซ่อนกล่องไปดีกว่าโชว์กล่องที่ตอบไม่ได้
         """
+        from lmds.assistant import brain as fleet_brain
         from lmds.web import assistant
 
         ok, reason = assistant.available()
         brain = assistant.gather_state().get("brain") if ok else None
-        return {"available": ok, "reason": reason, "brain": brain}
+        if brain:
+            # สมองเป็นโมเดลในฟลีตหรือเปล่า — หัวกล่องแชทจะได้บอกว่า "spark-head · nemotron" ไม่ใช่แค่ openai-compat
+            try:
+                from lmds.config import Settings
+
+                brain["from_fleet"] = fleet_brain.owner(Settings.load().provider)
+            except Exception:
+                brain["from_fleet"] = None
+        return {"available": ok, "reason": reason, "brain": brain,
+                "capabilities": assistant.capabilities()}
+
+    @app.post("/api/assistant/brain", dependencies=guarded)
+    def assistant_brain(body: dict) -> dict:
+        """ใช้โมเดลที่รันอยู่ในฟลีตเป็นสมองของผู้ช่วย — ปุ่มบนการ์ด vLLM/llama.cpp
+
+        ตั้งผ่าน `Settings.set_provider` ตัวเดียวกับหน้า Provider (openai-compat ไม่ต้องใช้ key) ·
+        ตรวจจากแคชว่า slug นั้นรันอยู่จริงและเสิร์ฟ chat ได้ ไม่รับ base URL ที่พิมพ์มาเอง
+        """
+        from lmds.assistant import brain as fleet_brain
+
+        node = str(body.get("node") or "").strip()
+        slug = _check_slug(str(body.get("slug") or "").strip())
+        try:
+            chosen = fleet_brain.from_cache(node, slug)
+            provider = fleet_brain.apply(chosen)
+        except fleet_brain.BrainError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "brain": {"provider": provider.name.value, "model": provider.model,
+                                      "base_url": provider.base_url, "from_fleet": chosen.payload()}}
 
     @app.post("/api/assistant/chat", dependencies=guarded)
     def assistant_chat(body: dict) -> StreamingResponse:
@@ -821,6 +852,11 @@ def create_app(token: str = "") -> FastAPI:
         question = next(
             (m["content"] for m in reversed(history) if m["role"] == "user"), ""
         )
+        # การ์ดที่ผู้ใช้เปิดอยู่ — "ตัวนี้" ในคำถามหมายถึงอะไร · ชื่อที่ไม่มีจริงถูกทิ้ง ไม่ปฏิเสธคำถาม
+        try:
+            context = assistant.clean_context(body.get("context"))
+        except Exception:
+            context = {}
 
         def send(payload: dict) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -830,9 +866,10 @@ def create_app(token: str = "") -> FastAPI:
             # เห็นว่ากำลังทำอะไรอยู่ระหว่างรอ SSH ตอบ แทนที่จะเห็นกล่องค้างเงียบ ๆ
             yield send({"status": "กำลังดูสถานะเครื่องจริง…"})
             try:
-                evidence = assistant.investigate(question)
+                evidence = assistant.investigate(question, context=context)
             except Exception as exc:  # การตรวจล้ม ≠ ตอบไม่ได้ — ตอบจากสถานะแคชต่อไป
-                evidence = {"note": f"ตรวจเครื่องไม่สำเร็จ: {exc}", "probes": [], "docs": []}
+                evidence = {"note": f"ตรวจเครื่องไม่สำเร็จ: {exc}", "probes": [], "docs": [],
+                            "context": context}
             # ส่งให้หน้าเว็บวาดว่าไปดูอะไรมา และวาดเมนูอนุมัติถ้ามีงานที่เสนอ
             yield send({"evidence": {
                 "probes": [
@@ -844,8 +881,13 @@ def create_app(token: str = "") -> FastAPI:
             }})
             if evidence.get("ticket"):
                 yield send({"ticket": evidence["ticket"]})
+            # "สิ่งที่ผู้ช่วยทำได้ต่อ" — ชิปใต้คำตอบ กฎล้วนจากสิ่งที่เพิ่งดูมา
+            try:
+                yield send({"suggest": assistant.followups(evidence, context)})
+            except Exception:
+                pass
 
-            system, messages = assistant.build_messages(history, evidence)
+            system, messages = assistant.build_messages(history, evidence, context)
             try:
                 for piece in provider.stream_chat(system, messages):
                     yield send({"delta": piece})
@@ -880,7 +922,8 @@ def create_app(token: str = "") -> FastAPI:
 
         mode = str(body.get("mode") or "").strip()
         try:
-            ticket = policy.choose(ticket_id, mode)
+            # งานลบถาวรต้องส่ง confirm:true มากับ "แก้เลย" — หน้าเว็บถามซ้ำก่อน
+            ticket = policy.choose(ticket_id, mode, confirm=bool(body.get("confirm")))
         except policy.PolicyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if mode == policy.HOLD:

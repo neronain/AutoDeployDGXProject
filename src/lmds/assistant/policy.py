@@ -24,7 +24,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .runner import Outcome, preview_action, run_action
+from .runner import Outcome, expand_action, preview_action, run_action, run_probe
 
 APPLY = "apply"
 STEP = "step"
@@ -34,7 +34,7 @@ MODES = (APPLY, STEP, HOLD)
 # นานพอให้คนอ่านคำสั่งจบแล้วตัดสินใจ แต่ไม่นานจนตั๋วที่ลืมไว้เมื่อเช้ายังใช้ได้ตอนเย็น
 TICKET_TTL_SECONDS = 30 * 60
 MAX_TICKETS = 40
-MAX_STEPS = 6
+MAX_STEPS = 8
 
 
 class PolicyError(Exception):
@@ -77,6 +77,18 @@ class Ticket:
     def finished(self) -> bool:
         return all(step.done for step in self.steps)
 
+    @property
+    def destructive(self) -> bool:
+        """มีขั้นที่ลบของถาวร (risk high) — ค่าตั้งต้นของเมนูคือ "ยังไม่ทำ" และ "แก้เลย" ต้องยืนยันซ้ำ"""
+        return any(step.risk == "high" for step in self.steps)
+
+    @property
+    def default_mode(self) -> str:
+        """ปุ่มที่หน้าเว็บเน้นให้ — ลบถาวร → HOLD · หลายขั้น → STEP (ดูผลก่อนไปต่อ) · งานเดียว → APPLY"""
+        if self.destructive:
+            return HOLD
+        return STEP if len(self.steps) > 1 else APPLY
+
     def next_index(self) -> int:
         for index, step in enumerate(self.steps):
             if not step.done:
@@ -90,6 +102,8 @@ class Ticket:
             "mode": self.mode,
             "expired": self.expired,
             "finished": self.finished,
+            "destructive": self.destructive,
+            "default_mode": self.default_mode,
             "next_index": self.next_index(),
             "steps": [step.payload() for step in self.steps],
             # เมนูที่หน้าเว็บเอาไปวาดปุ่ม — ข้อความอยู่ที่เดียวกับกติกา ไม่ใช่ไปเขียนซ้ำใน JS
@@ -128,6 +142,11 @@ def propose(steps: list[dict], why: str = "") -> Ticket:
     """
     if not steps:
         raise PolicyError("ไม่มีขั้นตอนให้อนุมัติ")
+    # งานประกอบ (deploy_model) ขยายเป็นขั้นจริงก่อนนับ — ผู้ใช้ต้องเห็นทุกคำสั่ง ไม่ใช่ชื่อรวม
+    expanded: list[dict] = []
+    for raw in steps:
+        expanded.extend(expand_action(raw.get("action", ""), raw.get("target", ""), raw.get("params") or {}))
+    steps = expanded
     if len(steps) > MAX_STEPS:
         raise PolicyError(f"เสนอมาเกิน {MAX_STEPS} ขั้น — ซอยงานให้เล็กลงก่อน")
 
@@ -159,16 +178,42 @@ def get(ticket_id: str) -> Ticket:
     return ticket
 
 
-def choose(ticket_id: str, mode: str) -> Ticket:
-    """ผู้ใช้เลือกจากเมนู — เลือกได้ครั้งเดียวต่อตั๋ว"""
+def choose(ticket_id: str, mode: str, confirm: bool = False) -> Ticket:
+    """ผู้ใช้เลือกจากเมนู — เลือกได้ครั้งเดียวต่อตั๋ว
+
+    งานลบถาวร (destructive) รับ "แก้เลย" ต่อเมื่อยืนยันซ้ำ (`confirm`) — หน้าเว็บถามอีกชั้นก่อนส่ง ·
+    "ทีละขั้น" ไม่ต้อง เพราะแต่ละขั้นต้องกดอยู่แล้ว
+    """
     if mode not in MODES:
         raise PolicyError(f"โหมด '{mode}' ไม่มีอยู่จริง")
     ticket = get(ticket_id)
+    if mode == APPLY and ticket.destructive and not confirm:
+        raise PolicyError("งานนี้ลบของถาวร — ต้องยืนยันซ้ำก่อน 'แก้เลย' หรือเลือก 'ทีละขั้น'")
     with _LOCK:
         if ticket.mode and ticket.mode != mode:
             raise PolicyError(f"ตั๋วนี้เลือกไปแล้วว่า '{ticket.mode}'")
         ticket.mode = mode
     return ticket
+
+
+def explain_failure(step: PlanStep) -> str:
+    """ขั้นที่ล้มมี slug → ไปดึงสาเหตุจริงจาก log ของโมเดลนั้น (probe last_failure) มาแปะไว้กับผล
+
+    ผู้ใช้ไม่ควรต้องถามผู้ช่วยอีกรอบว่า "แล้วทำไมล้ม" — คำตอบอยู่ใน server.log/docker logs อยู่แล้ว
+    · ล้มเองก็แค่ไม่มีคำอธิบาย ไม่ทำให้ตั๋วพัง
+    """
+    from .catalog import ACTIONS
+
+    slug = (step.params or {}).get("slug")
+    spec = ACTIONS.get(step.action)
+    # งานของ hub (push/deploy_plan/node_install) ไม่มี log ของโมเดลบน hub ให้อ่าน · เทสที่ล้มคือผลของมันเอง
+    if not slug or spec is None or spec.hub_only or step.action == "run_test":
+        return ""
+    try:
+        outcome = run_probe("last_failure", step.target, {"slug": slug})
+    except Exception:
+        return ""
+    return (outcome.output or "")[-1500:] if outcome.ok else ""
 
 
 def advance(ticket_id: str) -> tuple[Ticket, list[Outcome]]:
@@ -195,6 +240,8 @@ def advance(ticket_id: str) -> tuple[Ticket, list[Outcome]]:
             step.done = True
         outcome = run_action(step.action, step.target, step.params)
         step.result = outcome.payload()
+        if not outcome.ok:
+            step.result["explain"] = explain_failure(step)
         outcomes.append(outcome)
         if ticket.mode == STEP:
             break

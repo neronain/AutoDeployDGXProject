@@ -379,6 +379,21 @@ def test_new_vllm_bundle_on_a_spark_pins_kv_instead_of_relying_on_gpu_util(tmp_p
     controller = next(bundle.directory.glob("*-single.sh")).read_text(encoding="utf-8")
     assert f"--kv-cache-memory {pin_bytes}" in controller
     assert any("KV pin ตั้งต้น 38.5 GiB" in w for w in plan.warnings)
+    # gpu-util ต้องลงมาเท่าที่ใช้จริง (106.5/121.6 + 2% ≈ 0.90 > 0.85 → คงเดิม) — เคส Qwen3-Embedding-8B dgx-spark04 2026-09-08:
+    # pin 22 GiB แต่ gpu-util 0.85 ค้าง → vLLM ปฏิเสธ "Free memory 66/121 GiB < desired 103 GiB" ทั้งที่ต้องการ 39 GB
+    assert plan.serving.gpu_memory_utilization <= 0.85
+
+
+def test_default_pin_lowers_gpu_util_to_the_equivalent_for_small_models(tmp_path):
+    """Qwen3-Embedding-8B (15 GB) บน Spark: pin 22 GiB → RAM ≈ 39 GB → gpu-util เทียบเท่า ≈ 0.35 ไม่ใช่ 0.85 — ไม่งั้น
+    start ล้มทันทีที่มีโมเดลอื่นรันอยู่ (vLLM เช็ค free ≥ gpu-util × ทั้งเครื่อง แม้ pin แล้ว)"""
+    from tests.test_generator import make_bundle, safetensors_report
+
+    _bundle, plan, _fit = make_bundle(safetensors_report(weight_bytes=15 * GIB), tmp_path=tmp_path)
+    assert any(f.startswith("--kv-cache-memory") for f in plan.serving.extra_flags)
+    assert plan.serving.gpu_memory_utilization < 0.6, plan.serving.gpu_memory_utilization
+    prof_sizing = plan.serving.gpu_memory_utilization
+    assert abs(prof_sizing - (plan.serving.gpu_memory_utilization)) < 1e-9
 
 
 def test_discrete_targets_and_explicit_recipe_pins_are_left_alone(tmp_path):

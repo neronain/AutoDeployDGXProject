@@ -8,7 +8,8 @@
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
 [![version](https://img.shields.io/badge/version-0.6.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1890-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-1930-17703f)](tests/)
+[![assistant](https://img.shields.io/badge/assistant-operator%20%C2%B7%2021%20probes%20%C2%B7%2025%20actions-6f42c1)](docs/USAGE.md#ถามผู้ช่วยให้ไปดูเครื่องให้-กล่องแชทมุมขวาล่าง)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -223,6 +224,11 @@ restart → อัปเดตทุก node ด้วยโค้ดจาก h
 **LLM สั่งงานเองไม่ได้** — มันเลือกได้แค่ชื่อรายการจากแคตตาล็อกที่กำหนดไว้ (`lmds/assistant/
 catalog.py`) คำสั่งจริงประกอบด้วยโค้ด และตั๋วอนุมัติออกโดยเซิร์ฟเวอร์ ทางเดียวที่คำสั่งจะ
 ทำงานคือมีคนกดปุ่ม · ดู [SECURITY.md](SECURITY.md)
+
+ตั้งแต่ 0.6.1 มันเป็น **operator** ของฟลีต: ตรวจว่าเครื่องไหน "ตรง hub" ครบ 3 มิติ · อธิบายสาเหตุที่ start ล้มจาก log จริง ·
+คำนวณ Fit · อัปเดตเครื่อง · build รันไทม์ใหม่ · deploy โมเดลใหม่จนเทสผ่านในตั๋วเดียว (แผน → ส่ง → โหลด → start → เทส ทีละขั้น) ·
+แนะนำว่างานแบบนี้ควรใช้โมเดลไหนที่*มี weight อยู่แล้ว* — กดปุ่ม **?** ในกล่องแชทดูตัวอย่างทั้งหมด · ไม่มี API key ก็ใช้
+**โมเดลในฟลีตเป็นสมอง**ได้จากปุ่ม 🧠 บนการ์ด
 
 ---
 

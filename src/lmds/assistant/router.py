@@ -24,7 +24,7 @@ from .catalog import ACTIONS, PROBES, ParamError, action_menu, clean_params, pro
 
 MAX_PROBES = 4
 MAX_DOC_QUERIES = 2
-MAX_ACTION_STEPS = 4
+MAX_ACTION_STEPS = 6
 
 SYSTEM_PROMPT = """คุณคือขั้น "เลือกเครื่องมือ" ของผู้ช่วย LMDS ระบบดูแลเครื่องที่รันโมเดลภาษา
 
@@ -47,10 +47,16 @@ SYSTEM_PROMPT = """คุณคือขั้น "เลือกเครื�
   ถ้าไม่รู้ว่า slug อะไร ให้ใช้ probe `bundles` ก่อน อย่าเดาชื่อ
 - `docs` ใส่คำค้นสั้น ๆ (คำเดียวหรือวลีสั้น) เมื่อผู้ใช้ถามวิธีทำ หรือเมื่อควรอ้างเอกสารจริง
   มากสุด %(max_docs)d คำค้น · ไม่ต้องใช้ก็ส่ง []
-- `action` ใส่เมื่อ **ผู้ใช้ขอให้แก้** หรือเมื่อสาเหตุชัดจนเสนอวิธีแก้ได้ · ไม่ใช่ทุกคำถาม
+- `action` ใส่เมื่อ **ผู้ใช้ขอให้แก้/ทำ** หรือเมื่อสาเหตุชัดจนเสนอวิธีแก้ได้ · ไม่ใช่ทุกคำถาม
   ต้องมี action ถ้ายังไม่รู้สาเหตุ ให้เลือก probe ก่อนแล้วส่ง action เป็น null
   งานพวกนี้จะไม่ถูกรันทันที ผู้ใช้ต้องกดอนุมัติจากเมนูก่อนเสมอ
-- เลือกขั้นตอนให้น้อยที่สุดที่แก้ปัญหาได้ มากสุด %(max_steps)d ขั้น
+- เลือกขั้นตอนให้น้อยที่สุดที่แก้ปัญหาได้ มากสุด %(max_steps)d ขั้น · งานหลายขั้นเรียงตามลำดับที่ต้องทำจริง
+  (เช่น "ย้ายโมเดลไปเครื่อง A แล้ว Fit แล้ว start แล้วเทส" = push_bundle → set_fit → model_start → run_test)
+- `deploy_model` เป็นงานประกอบ ระบบจะขยายเป็น แผน → ส่ง → โหลด → start → เทส ให้เอง ใช้ตัวเดียวพอ ·
+  `node_install`/`push_bundle`/`deploy_plan` สั่งจาก hub เสมอ (target ถูกบังคับเป็น this) · `remove_model` ลบถาวร
+  ใส่ต่อเมื่อผู้ใช้ขอชัดเจนเท่านั้น
+- ถ้าผู้ใช้กำลังดูการ์ดโมเดล/เครื่องอยู่ (บอกไว้ในข้อความ) และคำถามไม่ระบุชื่อ ให้ถือว่าหมายถึงตัวนั้น
+- probe ที่ไม่ผูกกับเครื่อง (`fleet_consistency`, `model_recommend`) ใช้ target "this"
 
 รายการ probe ที่มี:
 %(probes)s
@@ -173,7 +179,9 @@ def _format_menu(rows: list[dict]) -> str:
     lines = []
     for row in rows:
         params = ", ".join(
-            f"{p['name']}{'' if p['required'] else '?'}" for p in row["params"]
+            f"{p['name']}{'' if p['required'] else '?'}"
+            + (f"={'|'.join(p['choices'])}" if p.get("choices") else "")
+            for p in row["params"]
         )
         suffix = f" (พารามิเตอร์: {params})" if params else ""
         risk = f" [ความเสี่ยง {row['risk']}]" if row.get("risk") else ""
@@ -193,8 +201,22 @@ def build_prompt(targets: list[str], slugs: list[str]) -> str:
     }
 
 
+def context_line(context: dict | None) -> str:
+    """บรรทัดบอกว่าผู้ใช้เปิดการ์ดไหนอยู่ — ใส่นำหน้าคำถามให้ทั้ง router และผู้ช่วย"""
+    if not context:
+        return ""
+    node = str(context.get("node") or "").strip()
+    slug = str(context.get("slug") or "").strip()
+    bits = []
+    if node:
+        bits.append(f"เครื่อง {node}")
+    if slug:
+        bits.append(f"โมเดล {slug}")
+    return ("ผู้ใช้กำลังดูการ์ด: " + " · ".join(bits)) if bits else ""
+
+
 def choose(question: str, targets: list[str], slugs: list[str],
-           provider=None) -> Investigation:
+           provider=None, context: dict | None = None) -> Investigation:
     """ถาม LLM ว่าจะไปดูอะไร — ล้มเมื่อไหร่ก็คืนของว่าง ไม่โยน exception ออกไป"""
     if provider is None:
         try:
@@ -208,8 +230,10 @@ def choose(question: str, targets: list[str], slugs: list[str],
     if provider is None:
         return Investigation(note="ยังไม่ได้ตั้ง LLM provider")
 
+    hint = context_line(context)
+    user = (hint + "\n\n" if hint else "") + question[:2000]
     try:
-        raw = provider.complete_json(build_prompt(targets, slugs), question[:2000])
+        raw = provider.complete_json(build_prompt(targets, slugs), user)
     except Exception as exc:
         return Investigation(note=f"เลือกเครื่องมือไม่สำเร็จ: {str(exc)[:200]}")
 

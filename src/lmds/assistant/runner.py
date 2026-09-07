@@ -16,7 +16,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 
-from .catalog import ACTIONS, PROBES, Action, ParamError, Probe
+from .catalog import ACTIONS, PROBES, Action, ParamError, Probe, clean_params
 
 # ต่อผลหนึ่งชิ้น — มากกว่านี้ context ของคำตอบจะถูกเบียดจนหมด
 MAX_OUTPUT_CHARS = 4000
@@ -126,6 +126,15 @@ def run_probe(name: str, target: str = LOCAL, params: dict | None = None) -> Out
     except ParamError as exc:
         return Outcome(name=name, title=probe.title, target=target,
                        error=str(exc), exit_code=255)
+    if probe.compute is not None:
+        # คำนวณบน hub จากแคช/ทะเบียน — ไม่มี shell ไม่มี SSH · ผลผ่าน redact/trim เหมือน probe อื่น
+        outcome = Outcome(name=probe.name, title=probe.title, target=target or LOCAL, params=clean)
+        try:
+            outcome.output = _clean_output(probe.compute(clean, target or LOCAL), "")
+        except Exception as exc:  # แคชพัง/ทะเบียนเสีย = รายงาน ไม่ใช่ล้มทั้งแชท
+            outcome.error = f"คำนวณไม่สำเร็จ: {str(exc)[:300]}"
+            outcome.exit_code = 1
+        return outcome
     return _execute(probe.name, probe.title, target, command, clean, probe.timeout)
 
 
@@ -141,13 +150,28 @@ def preview_action(name: str, target: str = LOCAL, params: dict | None = None) -
     return {
         "name": action.name,
         "title": action.title,
-        "target": target or LOCAL,
+        # งานที่สั่งได้จาก hub เท่านั้น (node install / push) — LLM เลือกเครื่องปลายทางมาก็บังคับกลับเป็น this
+        "target": LOCAL if action.hub_only else (target or LOCAL),
         "params": clean,
         "risk": action.risk,
         "impact": action.impact,
         "steps": list(action.steps),
         "command": command,
     }
+
+
+def expand_action(name: str, target: str = LOCAL, params: dict | None = None) -> list[dict]:
+    """งานประกอบ (deploy_model) → รายการขั้นย่อย · งานธรรมดา → ตัวมันเองหนึ่งขั้น
+
+    ขยาย *ก่อน* ออกตั๋ว เพื่อให้ตั๋วมีแต่ action จริง ๆ ที่แต่ละขั้นมีคำสั่งของตัวเองให้อ่าน
+    """
+    action: Action | None = ACTIONS.get(name)
+    if action is None:
+        raise RunError(f"ไม่มีคำสั่ง '{name}' ในแคตตาล็อก")
+    clean = clean_params(action.params, params or {})
+    if action.expand is None:
+        return [{"action": name, "target": target or LOCAL, "params": clean}]
+    return action.expand(clean, target or LOCAL)
 
 
 def run_action(name: str, target: str = LOCAL, params: dict | None = None) -> Outcome:

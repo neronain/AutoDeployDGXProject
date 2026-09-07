@@ -246,9 +246,32 @@ flag บรรทัดคำสั่งมีผลครั้งนั้น
 > · ขั้นที่ล้มจะหยุดขั้นที่เหลือทันที เพราะขั้นถัดไปตั้งอยู่บนสมมติฐานว่าขั้นก่อนหน้าสำเร็จ
 > · ตั๋วหมดอายุใน 30 นาที กดค้างไว้ข้ามวันแล้วมากดทีหลังไม่ได้
 
-งานที่เสนอได้มีเท่าที่อยู่ในแคตตาล็อก (`src/lmds/assistant/catalog.py`): start/stop/restart,
-เปลี่ยน context, พอร์ต, bind address, gpu-memory-utilization, ล้างแคช FlashInfer,
-เตรียมรันไทม์ · **LLM เขียนคำสั่งเองไม่ได้** มันเลือกได้แค่ชื่อรายการกับค่าที่ผ่านการตรวจ
+งานที่เสนอได้มีเท่าที่อยู่ในแคตตาล็อก (`src/lmds/assistant/catalog.py`) · **LLM เขียนคำสั่งเองไม่ได้**
+มันเลือกได้แค่ชื่อรายการกับค่าที่ผ่านการตรวจ · ตั้งแต่ 0.6.1 แคตตาล็อกครอบงานประจำของฟลีตทั้งสาย:
+
+| กลุ่ม | probe (อ่านอย่างเดียว รันทันที) | action (ผ่านเมนูอนุมัติ) |
+|---|---|---|
+| ตรวจ | `fleet_consistency` ตรง hub 3 มิติทุกเครื่อง · `last_failure` สาเหตุที่ start ล้มจาก server.log/docker logs · `runtime_info` build/image/arch · `usage` คำขอ 24 ชม. · `weights_on_disk` | — |
+| แก้ | `doctor`, `model_logs` (เดิม) | `node_install` (Update เครื่องเดียว/ทุกเครื่อง) · `bundles_refresh` · `regenerate_controller` · `update_runtime` (build llama.cpp ใหม่) · `model_restart/stop/start` · `clear_fi_cache` |
+| ตั้งค่า | `fit_preview` ตาราง Fit (lmds fit) · `model_config` | `set_fit` (slots/context/KV pin) · `set_slots` · `set_context` · `set_port` · `set_bind` · `set_gpu_util` · `set_served_name` · `enable_autostart` / `disable_autostart` · `stop_to_fit` |
+| deploy | `bundles` | `deploy_model` = แผน → `push_bundle` → `model_download` → `model_start` → `run_test` test-text/test-tools ในตั๋วเดียว · `remove_model` (ค่าตั้งต้น `--keep-weights`) |
+| แนะนำโมเดล | `model_recommend` จัดอันดับโมเดลที่ *มี weight แล้ว* ตามโจทย์ (coding / ไทย / vision / tools / uncensored / long-context) พร้อมบอกว่าอยู่เครื่องไหน · `bench_results` Score ล่าสุด | `run_test` (test-text/tools/vision/reasoning/score) |
+
+กติกาเพิ่มเติมของตั๋ว: **หลายขั้นในตั๋วเดียว** ("ย้าย Nemotron ไป spark-head แล้ว Fit แล้ว start แล้วเทส") — ปุ่มที่เน้นให้คือ
+"ทีละขั้น" ผลของแต่ละขั้นขึ้นก่อนไปขั้นถัดไป · ขั้นที่ล้มหยุดทั้งแผนและมีกล่อง **"Why it failed"** ดึงบรรทัด error จริงจาก log
+ของโมเดลนั้นมาให้ (แบบเดียวกับ `explain_crash` ของ controller) · งานลบถาวร (`remove_model`) ตั้งต้นที่ "ยังไม่ทำ" และ
+"แก้เลย" ถามยืนยันอีกครั้ง · `node_install`/`push_bundle`/`deploy_plan` รันบน hub เสมอ ต่อให้ผู้ช่วยเลือกเครื่องปลายทาง
+
+**หน้าเว็บบอกเองว่าทำอะไรได้** — กล่องว่าง (หรือกดปุ่ม **?** ที่หัวกล่อง) จะมีการ์ด "What the assistant can do" เป็นชิปตัวอย่างแยกกลุ่ม
+ตรวจ · แก้ · ตั้งค่า · deploy · แนะนำโมเดล กดแล้วเติมลงช่องพิมพ์ (ไม่ส่งเอง แก้ชื่อ/ตัวเลขก่อนได้) · แถบ **Quick asks** เหนือช่องพิมพ์
+เปลี่ยนตามการ์ดที่เพิ่งแตะ และคำถามทุกข้อส่ง `context: {node, slug}` ของการ์ดนั้นไปด้วย — พิมพ์ว่า "ตัวนี้ทำไมไม่ขึ้น" ผู้ช่วยรู้ว่า
+ตัวไหน · ใต้คำตอบล่าสุดมีชิป **"What the assistant can do next"** ที่คิดจากสิ่งที่เพิ่งดูมา
+
+**ใช้โมเดลในฟลีตเป็นสมองของผู้ช่วย** — ไม่มี API key ก็ได้: การ์ด vLLM/llama.cpp/SGLang ที่รันอยู่ (ทั้งเครื่องนี้และ node)
+มีปุ่ม **🧠 Use as assistant brain** ในเมนู Manage/⋯ → ตั้ง provider เป็น `openai-compat` ชี้ไป `http://<IP ของเครื่องนั้น>:<port>/v1`
+ด้วยชื่อที่โมเดลเสิร์ฟ (ทางเดียวกับหน้า Provider — ได้ทั้งผู้ช่วยและการวางแผน deploy) · หัวกล่องแชทบอกว่าสมองคือใคร
+(`🧠 spark-head · nemotron`) · CLI: `lmds config set-provider openai-compat --from-model <slug> [--node <เครื่อง>]` · โมเดล embedding
+และตัวที่ยังไม่ได้รันใช้ไม่ได้ (ไม่มีปุ่ม / 409)
 
 อยากแก้สิ่งที่ไม่มีในรายการ (เช่น flag เฉพาะของ vLLM รุ่นนั้น) ใช้ทางถัดไปแทน:
 

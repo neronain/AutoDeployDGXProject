@@ -4506,9 +4506,31 @@ def set_provider(
     name: ProviderName = typer.Argument(..., help="openai | gemini | minimax | anthropic | openai-compat"),
     model: str = typer.Option("", "--model", help="ชื่อโมเดล (ว่าง = ใช้ default ของ provider)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="จำเป็นสำหรับ openai-compat"),
+    from_model: Optional[str] = typer.Option(
+        None, "--from-model", autocompletion=_complete_slug,
+        help="(openai-compat) ใช้โมเดลที่รันอยู่ในฟลีตเป็นสมอง: slug ของ bundle — หา base URL/ชื่อให้เอง (คู่กับ --node สำหรับเครื่องอื่น)"),
+    node: Optional[str] = typer.Option(None, "--node", autocompletion=_complete_node,
+                                       help="(กับ --from-model) เครื่องที่ bundle นั้นรันอยู่ · ว่าง = เครื่องนี้"),
 ) -> None:
-    """เลือก LLM provider ที่ใช้เป็นสมองของระบบ"""
+    """เลือก LLM provider ที่ใช้เป็นสมองของระบบ
+
+    ไม่มี API key ก็ได้: `lmds config set-provider openai-compat --from-model <slug> [--node <เครื่อง>]`
+    ชี้สมองไปที่โมเดล vLLM/llama.cpp ที่รันอยู่แล้ว (ปุ่ม "Use as assistant brain" บนการ์ดทำสิ่งเดียวกัน)
+    """
     settings = Settings.load()
+    if from_model:
+        from lmds.assistant import brain as fleet_brain
+
+        if name is not ProviderName.OPENAI_COMPAT:
+            err_console.print("[red]--from-model ใช้ได้กับ openai-compat เท่านั้น[/red]")
+            raise typer.Exit(code=1)
+        try:
+            chosen = fleet_brain.from_live(node or "this", from_model)
+        except fleet_brain.BrainError as exc:
+            err_console.print(f"[red]ผิดพลาด:[/red] {exc}")
+            raise typer.Exit(code=1)
+        model, base_url = model or chosen.model, chosen.base_url
+        console.print(f"สมองจากฟลีต: [bold]{chosen.slug}[/bold] @ {chosen.node} → {chosen.base_url} (model {chosen.model})")
     try:
         provider = settings.set_provider(name, model=model, base_url=base_url)
     except ValueError as exc:
@@ -4518,7 +4540,7 @@ def set_provider(
     console.print(f"ตั้งค่า provider: [bold]{provider.name.value}[/bold] (model: {provider.model})")
     if provider.base_url:
         console.print(f"base URL: {provider.base_url}")
-    if get_secret(provider.name.value) is None:
+    if get_secret(provider.name.value) is None and provider.name is not ProviderName.OPENAI_COMPAT:
         console.print(f"[yellow]ยังไม่มี API key — รัน: lmds config set-key {provider.name.value}[/yellow]")
 
 

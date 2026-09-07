@@ -451,6 +451,13 @@ def apply_default_pin(plan, fit) -> dict | None:
             return None
         sized["context_reduced_from"] = before
     plan.serving.extra_flags = list(plan.serving.extra_flags) + [f"--kv-cache-memory {sized['kv_pin_bytes']}"]
+    # gpu-util ต้องลงมาเท่าที่ใช้จริงด้วย — vLLM เช็คตอน start ว่า free ≥ gpu-util × ทั้งเครื่อง แม้ pin KV แล้ว · เคสจริง
+    # 2026-09-08 dgx-spark04: Qwen3-Embedding-8B pin 22 GiB แต่ gpu-util ยัง 0.85 → "Free memory 66/121 GiB is less than
+    # desired 103 GiB" ทั้งที่ต้องการแค่ 39 GB (set --fit ทำถูกอยู่แล้ว ค่าตั้งต้นตอน deploy ลืม)
+    equivalent = sized.get("gpu_util_equivalent")
+    if equivalent and 0 < float(equivalent) < float(plan.serving.gpu_memory_utilization or 0.85):
+        sized["gpu_util_before"] = plan.serving.gpu_memory_utilization
+        plan.serving.gpu_memory_utilization = float(equivalent)
     return sized
 
 
