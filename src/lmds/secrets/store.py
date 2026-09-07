@@ -31,12 +31,43 @@ SECRET_ENV_VARS: dict[str, list[str]] = {
 
 
 def _keyring():
+    # LMDS_NO_KEYRING=1 = ไม่แตะ OS keyring เลย — install.sh ใช้ตอน Update ทั้งฟลีต เพราะ keyring บนเครื่องที่มี
+    # desktop (GNOME) คุยผ่าน D-Bus Secret Service ซึ่งค้างได้ไม่มีกำหนดเมื่อ session ไม่ได้ unlock
+    if os.environ.get("LMDS_NO_KEYRING"):
+        return None
     try:
         import keyring  # type: ignore
 
         return keyring
     except Exception:
         return None
+
+
+def _keyring_timeout() -> float:
+    try:
+        return float(os.environ.get("LMDS_KEYRING_TIMEOUT") or 5)
+    except ValueError:
+        return 5.0
+
+
+def _kr_get(kr, name: str) -> Optional[str]:
+    """อ่านจาก keyring แบบมีเวลาจำกัด — เคสจริง 2026-09-07 spark-head: `lmds config show` ที่ install.sh เรียก
+    ค้าง 10 นาทีใน ep_poll (D-Bus) จน `lmds node install --all` ทั้งฟลีตหยุดรอ · เกินเวลา = ถือว่าไม่มีค่า
+    (thread ที่ค้างเป็น daemon จึงไม่ขวางตอนโปรแกรมจบ)"""
+    import threading
+
+    box: dict[str, Optional[str]] = {}
+
+    def run() -> None:
+        try:
+            box["value"] = kr.get_password(KEYRING_SERVICE, name)
+        except Exception:
+            box["value"] = None
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(_keyring_timeout())
+    return None if worker.is_alive() else box.get("value")
 
 
 def _read_credentials_file() -> dict[str, str]:
@@ -108,12 +139,9 @@ def get_secret(name: str) -> Optional[str]:
 
     kr = _keyring()
     if kr is not None:
-        try:
-            value = kr.get_password(KEYRING_SERVICE, name)
-            if value:
-                return value
-        except Exception:
-            pass
+        value = _kr_get(kr, name)
+        if value:
+            return value
 
     stored = _read_credentials_file().get(name)
     if stored:
@@ -160,12 +188,8 @@ def secret_source(name: str) -> Optional[str]:
         if os.environ.get(env_name):
             return "env"
     kr = _keyring()
-    if kr is not None:
-        try:
-            if kr.get_password(KEYRING_SERVICE, name):
-                return "keyring"
-        except Exception:
-            pass
+    if kr is not None and _kr_get(kr, name):
+        return "keyring"
     if name in _read_credentials_file():
         return "file"
     if name == "hf" and _hf_cli_token():

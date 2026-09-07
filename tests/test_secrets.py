@@ -76,3 +76,38 @@ def test_mask_preview():
     preview = mask_preview("sk-test1234567890abcdef")
     assert preview.startswith("sk-") and preview.endswith("cdef") and "…" in preview
     assert "1234567890" not in preview
+
+
+def test_keyring_read_cannot_hang_get_secret(monkeypatch, tmp_path):
+    """เคสจริง 2026-09-07 spark-head: keyring (D-Bus Secret Service) ค้าง → `lmds config show` ใน install.sh ค้าง 10 นาที
+    → Update ทั้งฟลีตหยุด · อ่าน keyring ต้องมีเวลาจำกัด และ LMDS_NO_KEYRING=1 ต้องไม่แตะ keyring เลย"""
+    import sys
+    import threading
+    import time
+    import types
+
+    from lmds.secrets import store
+
+    calls: list[str] = []
+
+    class HangingKeyring:
+        @staticmethod
+        def get_password(service, name):
+            calls.append(name)
+            time.sleep(5)
+            return "late-secret"
+
+    monkeypatch.setitem(sys.modules, "keyring", HangingKeyring)
+    monkeypatch.setattr(store, "_read_credentials_file", lambda: {"hf": "file-token"})
+    monkeypatch.setenv("LMDS_KEYRING_TIMEOUT", "0.2")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("LMDS_NO_KEYRING", raising=False)
+    t0 = time.monotonic()
+    assert store.get_secret("hf") == "file-token"          # keyring ช้าเกิน → ข้ามไปแหล่งถัดไป
+    assert store.secret_source("hf") == "file"
+    assert time.monotonic() - t0 < 2, "ต้องไม่รอ keyring จนครบ 5 วิ"
+    assert calls, "ต้องได้ลอง keyring ก่อน"
+
+    calls.clear()
+    monkeypatch.setenv("LMDS_NO_KEYRING", "1")
+    assert store.get_secret("hf") == "file-token" and not calls, "LMDS_NO_KEYRING=1 ต้องไม่เรียก keyring"

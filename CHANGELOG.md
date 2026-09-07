@@ -5,6 +5,10 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **Update ทั้งฟลีตหยุดรอ keyring ของเครื่องเดียว** — 2026-09-07 spark-head: `lmds config show` ที่ install.sh เรียกค้าง
+  10 นาทีใน D-Bus Secret Service (desktop keyring) → `lmds node install --all` ค้างที่เครื่องแรก · อ่าน keyring มีเวลาจำกัด
+  (`LMDS_KEYRING_TIMEOUT` ค่าตั้งต้น 5 วิ) · `LMDS_NO_KEYRING=1` ข้าม keyring · install.sh เรียก config show ด้วย
+  ตัวเลือกนี้ + `timeout 30` · เทส `test_secrets.py`
 - **log แบบเกือบ realtime (Follow) ทั้งเว็บและ CLI — เห็น error ตอนมันเกิด ไม่ต้องกด logs ซ้ำ ๆ** — เจ้าของ 2026-09-07:
   "ส่วนของ log ทำให้เป็นการแสดง detail แบบเกือบ realtime ได้ไหม user จะได้ดูว่า error อะไรด้วย แทนการกด 1 ครั้งแสดง 1 รอบ" ·
   (1) controller ทั้ง 4 แบบรับ `logs [N] [-f|--follow|follow]` (stacked: `logs worker -f` ตาม worker ทุกตัวผ่าน ssh พร้อมกัน ·

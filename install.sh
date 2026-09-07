@@ -364,8 +364,11 @@ fi
 # ── ส่วนที่ 4: ตั้งค่า LLM provider (ครั้งเดียวต่อเครื่อง) ────────────────────
 # ผู้ใช้มักลืมขั้นนี้แล้วไปเจอ "ยังไม่ได้ตั้งค่า provider" ตอน deploy — ถามเลยตรงนี้
 setup_provider() {
-  if LMDS_NO_BANNER=1 "$LMDS" config show 2>/dev/null | grep -q "^│ provider .*[a-z]" &&
-     ! LMDS_NO_BANNER=1 "$LMDS" config show 2>/dev/null | grep -q "ยังไม่ได้ตั้งค่า"; then
+  # LMDS_NO_KEYRING + timeout: ขั้นนี้ห้ามรอ keyring/D-Bus ของ desktop — เคสจริง 2026-09-07 spark-head ค้าง 10 นาที
+  # แล้วทำให้ `lmds node install --all` ทั้งฟลีตหยุดรอ (ดู secrets/store.py _kr_get)
+  local shown
+  shown="$(LMDS_NO_BANNER=1 LMDS_NO_KEYRING=1 timeout 30 "$LMDS" config show 2>/dev/null || true)"
+  if grep -q "^│ provider .*[a-z]" <<<"$shown" && ! grep -q "ยังไม่ได้ตั้งค่า" <<<"$shown"; then
     echo "✅ ตั้ง LLM provider ไว้แล้ว (ดู: lmds config show)"
     return 0
   fi
