@@ -265,7 +265,7 @@ STORE = Store()
 
 
 def _refresh_local() -> None:
-    from lmds.inventory import host_payload, model_payload, with_runtimes
+    from lmds.inventory import host_payload, memory_by_slug, model_payload, with_runtimes
     from lmds.fleet import discover
     from lmds.web import jobs
 
@@ -273,7 +273,9 @@ def _refresh_local() -> None:
     # ลบ/หยุดคั่นกลางได้ · ถ้าเกิดขึ้นจริง เลขจะไม่ตรงตอนเขียน แล้ว set_local จะทิ้งผลนี้ให้
     epoch = STORE.local_epoch
     try:
-        models = [model_payload(s, _job_payload(jobs, s.slug)) for s in discover()]
+        servers = discover()
+        held = memory_by_slug(servers)   # nvidia-smi ครั้งเดียวต่อรอบ — Fit ต้องรู้ว่าใครถืออะไร
+        models = [model_payload(s, _job_payload(jobs, s.slug), held.get(s.slug)) for s in servers]
         STORE.set_local({"host": with_runtimes(host_payload(), models), "models": models}, epoch=epoch)
     except Exception as exc:  # noqa: BLE001 — refresher ต้องไม่ตายเพราะเคสเดียว
         STORE.set_local(None, str(exc)[:300], epoch=epoch)

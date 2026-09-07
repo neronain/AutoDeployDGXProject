@@ -700,13 +700,13 @@ def build_plan(
     vLLM และ SGLang การเดาจึงเป็นแค่ค่าตั้งต้น ไม่ใช่คำตัดสิน
     """
     if provider is None:
-        plan = harden_plan(rule_based_plan(report, fit, engine), report, fit)
+        plan = _finish(harden_plan(rule_based_plan(report, fit, engine), report, fit), fit)
         _log_session(report, fit, [], plan)
         return plan
 
     # ผู้ใช้ระบุ engine มา = ไม่ต้องให้ LLM เลือกให้ · เดินทาง rule-based ที่แน่นอนกว่า
     if engine is not None:
-        plan = harden_plan(rule_based_plan(report, fit, engine), report, fit)
+        plan = _finish(harden_plan(rule_based_plan(report, fit, engine), report, fit), fit)
         _log_session(report, fit, [], plan)
         return plan
 
@@ -731,7 +731,7 @@ def build_plan(
         recipe = find_recipe(report.repo_id)
         if recipe is not None:
             plan = apply_recipe(plan, recipe, fit.memory_model.value)
-        plan = harden_plan(plan, report, fit)
+        plan = _finish(harden_plan(plan, report, fit), fit)
         attempts.append({"raw": redact(raw)[:8000], "error": ""})
         _log_session(report, fit, attempts, plan)
         return plan
@@ -741,6 +741,29 @@ def build_plan(
         f"LLM ({provider.name}) ให้ plan ที่ไม่ผ่าน schema ครบ {max_attempts} ครั้ง — "
         "ลองใหม่, เปลี่ยน provider, หรือใช้ --no-llm"
     )
+
+
+def _finish(plan: DeploymentPlan, fit: FitReport) -> DeploymentPlan:
+    """ขั้นสุดท้ายของทุกทาง (rule-based / LLM): pin KV ตั้งต้นบนเครื่อง unified
+
+    เจ้าของ 2026-09-07: gpu-util 0.85 บน DGX Spark = 109 GB ต่อโมเดลไม่ว่าจะเล็กแค่ไหน จึงรันตัวที่สองไม่ได้ ·
+    สูตรใน fit/sizing.py คิด --kv-cache-memory จาก max_num_seqs × KV เต็ม context × 1.2 แทน · สูตร (recipe) ที่ตั้ง
+    pin ไว้เองไม่ถูกแตะ · ประเมินไม่ได้ (ไม่รู้ KV/weights · stacked · RTX) = ใช้ gpu-util เหมือนเดิม
+    """
+    from lmds.fit.sizing import apply_default_pin
+
+    sized = apply_default_pin(plan, fit)
+    if sized is not None:
+        full = sized.get("full_context_requests")
+        plan.warnings.append(
+            f"KV pin ตั้งต้น {sized['kv_pin_gb']} GiB (--kv-cache-memory) แทน gpu-util: RAM ≈ {sized['ram_needed_gb']} GB "
+            f"= weights {sized['weights_gb']} + overhead {sized['overhead_gb']} + KV · รับ {full} คำขอเต็ม context "
+            f"{sized['context']:,} พร้อมกัน{' (pin ถูกจำกัดตามที่เหลือ)' if sized.get('capped') else ''}"
+            + (f" · ลด context จาก {sized['context_reduced_from']:,} เพราะ KV ที่เหลือถือคำขอเต็ม context เดิมไม่ได้"
+               if sized.get("context_reduced_from") else "")
+            + " · ปรับทีหลัง: lmds set <slug> --fit --slots N"
+        )
+    return plan
 
 
 def _log_session(

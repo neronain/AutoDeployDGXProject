@@ -1895,6 +1895,11 @@ def set_defaults(
     auto: bool = typer.Option(
         False, "--auto",
         help="ให้ระบบเติม parser / image / env ตามโมเดล (สูตรที่รันผ่านจริง > กฎตระกูล) · flag ที่ระบุเองชนะ"),
+    fit: bool = typer.Option(
+        False, "--fit",
+        help="ตั้ง slots/context ให้พอดีกับเครื่องนี้ตามสูตร (vLLM: เขียน --kv-cache-memory + gpu-util เทียบเท่า) · "
+             "ใส่ --slots/--context มาด้วยได้ ไม่ใส่ = ค่าที่ตั้งอยู่ / native · ดูก่อนไม่เขียน: lmds fit <slug>"),
+    as_json: bool = typer.Option(False, "--json", help="(กับ --fit) พิมพ์ตารางเป็น JSON — hub ใช้ผ่าน SSH"),
     clear: bool = typer.Option(False, "--clear", help="ลบค่าที่บันทึกไว้ทั้งหมด"),
 ) -> None:
     """บันทึกค่า start ไว้กับ bundle — ทุกทางที่เรียก controller จะได้ค่าเดียวกัน
@@ -1907,6 +1912,10 @@ def set_defaults(
     ทุกตัว env จากภายนอกและ flag บรรทัดคำสั่งยังชนะไฟล์นี้เสมอ
 
     ไม่เก็บ API key — โฟลเดอร์ bundle ถูก zip แจกต่อได้ ส่ง `API_KEY=` ตอน start แทน
+
+    `--fit`: ให้ระบบคิดให้ว่า slots/context เท่านี้ต้องใช้ RAM เท่าไรบนเครื่องนี้ (รวมโมเดลอื่นที่รันอยู่)
+    แล้วเขียน slots · context · gpu-util เทียบเท่า · `--kv-cache-memory` ลง bundle — ไม่พอ = ไม่เขียน บอกว่าต้องลด
+    slots เหลือเท่าไรหรือหยุดตัวไหน (ดู docs/USAGE.md "ตั้ง slots/context/KV ให้พอดี (Fit)")
     """
     from pathlib import Path as _Path
 
@@ -1940,6 +1949,33 @@ def set_defaults(
         "image_min_tokens": image_min_tokens,
     }
     given = {k: v for k, v in incoming.items() if v is not None}
+    fit_plan = None
+    if fit:
+        # สูตรเดียวกับปุ่ม Fit บนหน้าเว็บและ pin ตั้งต้นตอน deploy — ดู fit/sizing.py
+        from lmds.fit.sizing import settings_for
+        from lmds.fleet.sizing import FitError, preview, refusal
+
+        try:
+            fit_plan = preview(server, slots=slots, context=context)
+        except FitError as exc:
+            if as_json:
+                print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+            else:
+                err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        why = refusal(fit_plan)
+        if not as_json:
+            _print_fit_table(fit_plan)
+        if why:
+            if as_json:
+                print(json.dumps({"plan": fit_plan, "error": why}, ensure_ascii=False))
+            else:
+                err_console.print(f"[red]ไม่เขียนค่าให้ — {why}[/red]")
+                err_console.print("[dim]ดูตารางข้างบนแล้วสั่งใหม่ด้วย --slots/--context ที่พอ หรือหยุดโมเดลที่ระบุก่อน[/dim]")
+            raise typer.Exit(code=1)
+        # แฟล็กที่ผู้ใช้ส่งมาเองในคำสั่งเดียวกันต้องไม่หาย — pin เขียนทับเฉพาะ --kv-cache-memory
+        base_extra = extra_args if extra_args is not None else read(bundle_dir).get("extra_args", "")
+        given.update(settings_for(fit_plan, base_extra))
     if auto:
         # ความรู้มีอยู่แล้ว (recipes / arch_notes) แต่ผู้ใช้ต้องอ่านคำเตือนแล้วพิมพ์ชื่อเอง
         # ซึ่งคนไม่รู้ก็ไม่กล้าพิมพ์ (2026-09-04) — เติมให้ พร้อมบอกที่มาทีละค่า
@@ -1982,9 +2018,93 @@ def set_defaults(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
 
+    if as_json and fit_plan is not None:
+        print(json.dumps({"plan": fit_plan, "saved": saved}, ensure_ascii=False))
+        return
     console.print(f"บันทึกไว้กับ [bold]{slug}[/bold] แล้ว: " +
                   " · ".join(f"{k}={v}" for k, v in saved.items()))
     console.print("[dim]มีผลกับ start ทุกทาง รวมถึง autostart ตอน reboot และคำสั่ง test-*[/dim]")
+    if fit_plan is not None and server.running:
+        console.print(f"[dim]ตัวที่รันอยู่ยังใช้ค่าเดิม — ให้มีผล: lmds restart {slug}[/dim]")
+
+
+def _print_fit_table(plan: dict) -> None:
+    """ตาราง Fit — weights / overhead / KV ต่อคำขอ / pin / โมเดลอื่น / เหลือ / ค่าที่จะเขียน"""
+    src = {"measured": "วัดจาก log", "profile": "จาก profile", None: "?"}
+    table = Table(title=f"Fit · {plan.get('slug') or ''} · {plan.get('engine')} · context {plan.get('context') or 0:,} · slots {plan.get('slots')}",
+                  box=None, show_header=False)
+    table.add_column("รายการ", style="dim")
+    table.add_column("GB", justify="right")
+    table.add_column("ที่มา", style="dim")
+    gb = lambda x: "?" if x is None else f"{x:.1f}"  # noqa: E731
+    table.add_row("weights", gb(plan.get("weights_gb")), src.get(plan.get("weights_source"), "?"))
+    table.add_row("overhead (activation/CUDA graph)", gb(plan.get("overhead_gb")), "")
+    kv_req = plan.get("kv_per_request_gb")
+    table.add_row(f"KV ต่อคำขอเต็ม context ({plan.get('kv_dtype')})",
+                  "?" if kv_req is None else f"{kv_req:.2f}", src.get(plan.get("kv_source"), "?"))
+    if plan.get("pin_supported"):
+        table.add_row(f"KV pin = slots {plan.get('slots')} × {kv_req or 0:.2f} × 1.2",
+                      gb(plan.get("kv_pin_gb")), f"--kv-cache-memory {plan.get('kv_pin_bytes') or '?'}")
+    else:
+        table.add_row(f"KV pool (ctx ทั้งก้อน ÷ {plan.get('slots')} slot = {plan.get('per_slot_context') or 0:,} ต่อ slot)",
+                      gb(plan.get("kv_gb")), "")
+    table.add_row("[bold]RAM ที่โมเดลนี้ต้องใช้[/bold]", f"[bold]{gb(plan.get('ram_needed_gb'))}[/bold]", "")
+    table.add_row("", "", "")
+    table.add_row("เครื่องมี", gb(plan.get("total_gb")), f"หัก OS {gb(plan.get('os_reserve_gb'))} → ใช้ได้ {gb(plan.get('usable_gb'))}")
+    for other in plan.get("others") or []:
+        table.add_row(f"  โมเดลอื่นที่รันอยู่: {other.get('slug')}", gb(other.get("gb")), "")
+    if plan.get("running"):
+        table.add_row("  (ตัวนี้เองถืออยู่ตอนนี้ — ไม่นับ)", gb(plan.get("own_gb_now")), "")
+    after = plan.get("ram_after_gb")
+    table.add_row("[bold]เหลือหลังวางทุกอย่าง[/bold]",
+                  f"[bold]{gb(after)}[/bold]" if after is None or after >= 0 else f"[red]{after:.1f}[/red]", "")
+    console.print(table)
+    icon = {"fits": "✅", "tight": "🟡", "no-fit": "❌", "unknown": "❓"}.get(plan.get("verdict"), "❓")
+    console.print(f"{icon} {plan.get('reason')}")
+    if plan.get("gpu_util_equivalent") and plan.get("pin_supported"):
+        console.print(f"[dim]gpu-util เทียบเท่า {plan['gpu_util_equivalent']:.2f} — vLLM เช็คตอน start ว่า free ≥ gpu-util × ทั้งเครื่อง "
+                      f"แม้ pin KV แล้ว จึงตั้งให้พอดีกับที่ใช้จริง ไม่ใช่ 0.85[/dim]")
+    for note in plan.get("notes") or []:
+        console.print(f"[dim]{note}[/dim]")
+    if plan.get("settings"):
+        console.print("จะเขียน: " + " · ".join(f"{k}={v}" for k, v in plan["settings"].items()))
+
+
+@app.command("fit")
+def fit_cmd(
+    slug: str = typer.Argument(..., help="ชื่อ bundle", autocompletion=_complete_slug),
+    slots: Optional[int] = typer.Option(None, "--slots", help="จำนวน request พร้อมกันที่ต้องการ (ไม่ใส่ = ค่าที่ตั้งอยู่)"),
+    context: Optional[int] = typer.Option(None, "--context", help="context ต่อคำขอ (ไม่ใส่ = ค่าที่ตั้งอยู่ / native)"),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์เป็น JSON"),
+) -> None:
+    """ดูว่า slots/context เท่านี้ต้องใช้ RAM เท่าไรบนเครื่องนี้ และควรปักหมุด KV เท่าไร — ไม่เขียนอะไร
+
+    เหมือน `lmds set <slug> --fit` แบบ dry run · โมเดลที่รันอยู่ใช้ตัวเลขจริงจาก log ของ vLLM
+    ("Model loading took" / "GPU KV cache size") ตัวเลขจึงแก้ตัวเองได้เมื่อสูตรจาก config คลาด
+    · เครื่องอื่น: lmds node run <node> fit <slug>
+    """
+    from lmds.fleet import find
+    from lmds.fleet.sizing import FitError, preview
+
+    server = find(slug)
+    if server is None or not server.controller:
+        err_console.print(f"[red]ไม่รู้จัก '{slug}'[/red] — ดู: lmds ps")
+        raise typer.Exit(code=1)
+    try:
+        plan = preview(server, slots=slots, context=context)
+    except FitError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        else:
+            err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if as_json:
+        print(json.dumps(plan, ensure_ascii=False))
+        return
+    _print_fit_table(plan)
+    if plan.get("fits"):
+        console.print(f"[dim]เขียนลง bundle: lmds set {slug} --fit"
+                      + (f" --slots {slots}" if slots else "") + (f" --context {context}" if context else "") + "[/dim]")
 
 
 @app.command()

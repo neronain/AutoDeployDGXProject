@@ -902,6 +902,7 @@ flag ตอน `lmds start --port …` มีผลครั้งเดีย�
 | `--image-min-tokens N\|auto` | `IMAGE_MIN_TOKENS` — Qwen-VL ~1024 · Gemma-4 ต้อง `auto` (เพดานแค่ 280) | llama.cpp vision |
 | `--extra-args '…'` | `bundle.args` — แฟล็กเพิ่มต่อท้าย argv (JSON เขียนติดกัน · ใช้รูป `--flag=value` ได้) | ทุก engine |
 | `--auto` | เติม parser / image / env จากสูตรที่รันผ่านจริง > กฎตระกูล · flag ที่ระบุเองชนะ | — |
+| `--fit [--slots N] [--context C]` | คิดให้ว่าค่านี้ต้องใช้ RAM เท่าไรบน *เครื่องนี้* แล้วเขียน slots · context · gpu-util เทียบเท่า · `--kv-cache-memory` — ไม่พอ = ไม่เขียน (ดู 4.2e) | vLLM (llama.cpp: slots/context) |
 | `--clear` | ลบค่าที่บันทึกไว้ทั้งหมด (หน้าเว็บ: ปุ่ม **Reset to bundle**) | — |
 
 ค่าถูกตรวจก่อนเขียน: `port` 1–65535 · `context`/`slots` จำนวนเต็มบวก · `gpu_util` 0–1 · `bind` เฉพาะ `0.0.0.0`/`127.0.0.1` ·
@@ -909,6 +910,63 @@ flag ตอน `lmds start --port …` มีผลครั้งเดีย�
 (เคยรันคำสั่งจากช่องกรอกบนหน้าเว็บได้) · **ไม่เก็บ API key** — โฟลเดอร์ bundle ถูก zip แจกต่อได้ ส่ง `API_KEY=` ตอน start แทน
 · ค่าพวกนี้ (image · parser · env · extra-args) ถูกพับลง header ตอน `lmds recipes --publish` ส่วน port/context/slots/bind
 ไม่พับโดยเจตนา
+
+### 4.2e ตั้ง slots/context/KV ให้พอดี (Fit)
+
+> เจ้าของ 2026-09-07: "ผมอยากทราบค่าที่ทำให้รัน 2 model บน vllm ผ่าน … ถ้าอนาคตรันแบบนี้อีก หรือกับ node อื่นหรือลูกค้า
+> จะทราบได้อย่างไรว่าควรใช้ค่าไหน เช่น ct = 262144 แต่ slot, gpu util จะตั้งค่าอย่างไรให้พอดี"
+
+**ทำไม gpu-util ใช้ไม่ได้บน DGX Spark:** เครื่อง unified memory มีหน่วยความจำก้อนเดียว (128 GB ขาย · `free -g` เห็น 121 GiB)
+ที่ OS · desktop · ทุกโมเดลใช้ร่วมกัน · vLLM คิด `--gpu-memory-utilization` จาก *ทั้งก้อน* → 0.85 = 109 GB ต่อโมเดล
+ไม่ว่าโมเดลจะเล็กแค่ไหน จึงไม่มีทางรันตัวที่สอง · ทางออกคือเลิกคุมด้วยสัดส่วน แล้ว**ปักหมุด KV เป็นตัวเลข** ด้วย
+`--kv-cache-memory <bytes>` (vLLM ข้าม profiling แล้วจองเท่านั้นพอดี · context ไม่ทำให้ RAM เพิ่มอีก)
+
+**สูตร** (อยู่ที่ `src/lmds/fit/sizing.py` ที่เดียว — CLI · หน้าเว็บ · pin ตั้งต้นตอน deploy ใช้ตัวเดียวกัน):
+
+```
+RAM ของโมเดล vLLM  = weights (ตามที่โหลดจริง) + overhead ~3 GB (activation/CUDA graph) + KV pin
+KV pin (bytes)      = slots × KV ของ 1 คำขอเต็ม context × 1.2           → --kv-cache-memory
+เหลือให้ OS/desktop ≥ 12 GB → ใช้ได้ ≈ total − 12 (121 → 109)
+ใส่ตัวที่สองได้ก็ต่อเมื่อ  Σ RAM ของทุกโมเดล ≤ ที่ใช้ได้
+context = native ของโมเดล (pin แล้วไม่แพงขึ้น) · slots = คนที่ใช้พร้อมกันจริง (คนเดียว: 2–4)
+llama.cpp: weights + KV(ctx ทั้ง pool) + 1.5 — จอง KV ล่วงหน้าทั้งก้อน แบ่งให้ทุก slot เท่ากัน (Fit ตั้ง --context/--slots)
+```
+
+`gpu-util` ยังถูกเขียนด้วยแต่เป็นค่า *เทียบเท่า* (RAM ที่ต้องใช้ ÷ ทั้งเครื่อง + 2%) — vLLM (V1) เช็คตอน start ว่า
+`free ≥ gpu-util × ทั้งเครื่อง` แม้ pin แล้ว · ปล่อย 0.85 ไว้บนเครื่องที่มีโมเดลอื่นอยู่ = "Free memory on device … is less than
+desired GPU memory utilization" ทั้งที่ RAM พอ · หน้าเว็บจึงปิดช่อง gpu-util ("ไม่ใช้ (pin KV แล้ว)") เมื่อ pin อยู่
+
+**ตัวเลขจริงที่เอาไปทดสอบ** (ดู `tests/test_kv_sizing.py`): โมเดลที่รันอยู่ Fit อ่านค่าจริงจาก log ของ vLLM
+(`Model loading took X GiB` · `GPU KV cache size: N tokens`) จึงแก้ตัวเองได้เมื่อสูตรจาก config คลาด — hybrid Mamba
+(Nemotron) config บอก 8 KiB/token แต่ log จริง 6 GiB ÷ 1,179,648 tokens = 5.3 KiB (รวม state ของ mamba) · NVFP4 120B โหลดจริง
+69.6 GiB ไม่ใช่ 74.8 บนดิสก์
+
+```bash
+lmds fit nemotron --slots 2                # dry run: ตาราง + ใส่ได้ไหม + ค่าที่จะเขียน
+lmds set nemotron --fit --slots 2          # เขียน slots/context/gpu-util/--kv-cache-memory ลง bundle · ไม่พอ = ไม่เขียน บอกว่าลด slots เหลือเท่าไร/หยุดตัวไหน
+lmds restart nemotron                      # ค่ามีผลตอน start ครั้งหน้า
+lmds node run spark-head set nemotron --fit --slots 2   # เครื่องอื่น — สูตรรันบนเครื่องนั้น (log/nvidia-smi ของเครื่องนั้น)
+```
+
+หน้าเว็บ: การ์ดโมเดล (ในเครื่องและของ node) → **Manage / ⋯** แสดงตารางเดียวกัน + แถบซ้อนของทั้งเครื่อง
+(OS · โมเดลอื่นที่รันอยู่ · ตัวนี้ = weights/overhead/KV · ว่าง) คิดใหม่เมื่อแก้ context/slots · ปุ่ม **Fit** เขียนลง bundle
+แล้วถามว่าจะ restart เลยไหม · โมเดลที่รันอยู่ **ไม่**ถูกนับเป็น "ไม่ว่าง" ของตัวเอง (0.6.0 เคยขึ้น "Cannot start now"
+ให้ตัวที่รันอยู่แล้ว)
+
+**ตัวอย่างจริง — Nemotron + Gemma-4 บน spark-head (121 GiB):**
+
+| | weights | overhead | KV | RAM |
+|---|---|---|---|---|
+| Nemotron-3-Super-120B NVFP4 (vLLM · KV fp8 · slots 2 · ctx 262,144) | 69.6 (log) | 3.0 | pin 3.5 GiB (= 2 × 1.33 × 1.2) | **76.1** |
+| Gemma-4 26B-A4B Q4_K_M (llama.cpp · ctx 65,536 · 2 slots) | 15.6 | 1.5 | 2.5 | **19.6** (วัดจริง 19.5) |
+| รวม | | | | 95.7 ≤ 109 ใช้ได้ → เหลือ 13.4 ✅ |
+
+ถ้าขอ slots 40 ให้ Nemotron: pin 64 GiB → RAM 136.6 → ขาด 47 GB → `lmds set --fit` ปฏิเสธ: "ลด slots เหลือ 10 หรือหยุด gemma4 (19.5 GB)"
+
+**ตอน deploy:** bundle vLLM ใหม่ที่ target เป็น unified (dgx-spark-single) ได้ `--kv-cache-memory` ตั้งต้นตามสูตรนี้แทนที่จะพึ่ง
+gpu-util 0.85 (ใหญ่กว่าที่เหลือ → pin เท่าที่เหลือ · pin ถือคำขอเต็ม context ไม่ได้ → ลด context ให้เท่าที่ถือได้ ไม่งั้น vLLM
+ปฏิเสธตอน start) · ตัวเลขบันทึกใน `MODEL_PROFILE.yaml` → `memory.sizing` · สูตรที่ตั้ง pin ไว้เอง (GLM-5.3-Flash) ไม่ถูกแตะ ·
+RTX / stacked ยังใช้ gpu-util เหมือนเดิม
 
 ### 4.3 ซ่อม / ลบโมเดล
 

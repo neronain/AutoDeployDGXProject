@@ -465,6 +465,24 @@ pre {
   font-size: calc(12.5px * var(--fs)); color: var(--ok); padding: 5px 10px; margin: 4px 0;
   background: var(--ok-bg); border-radius: var(--r-sm);
 }
+/* ── Fit: ตาราง slots/context/KV + แถบซ้อนของทั้งเครื่อง (OS · โมเดลอื่น · ตัวนี้ · ว่าง) ── */
+.fit-table { display: grid; grid-template-columns: max-content max-content 1fr; gap: 3px 14px; align-items: baseline;
+  font-size: calc(12.5px * var(--fs)); margin: 6px 0; }
+.fit-table .k { color: var(--fg2); }
+.fit-table .v { font-family: var(--mono); text-align: right; }
+.fit-table .s { color: var(--fg2); font-size: calc(11.5px * var(--fs)); }
+.fit-table .sum { border-top: 1px solid var(--line); padding-top: 3px; font-weight: 600; }
+.fit-stack { display: flex; width: 100%; height: 18px; border-radius: var(--r-sm); overflow: hidden; margin: 6px 0 4px;
+  background: var(--bg); border: 1px solid var(--line); }
+.fit-seg { display: block; height: 100%; font-style: normal; font-size: calc(10.5px * var(--fs)); line-height: 18px;
+  white-space: nowrap; overflow: hidden; text-align: center; color: #fff; min-width: 0; }
+.fit-seg.os { background: #6b7280; }
+.fit-seg.other { background: #a855f7; }
+.fit-seg.weights { background: #2563eb; }
+.fit-seg.overhead { background: #60a5fa; }
+.fit-seg.kv { background: #0ea5e9; }
+.fit-seg.free { background: transparent; color: var(--fg2); }
+.fit-seg.over { background: var(--bad); }
 .empty { padding: 44px 20px; text-align: center; color: var(--fg2); font-size: calc(13.5px * var(--fs)); }
 
 /* ── GPU telemetry ─────────────────────────────────────────────────── */
@@ -1584,6 +1602,15 @@ function manageMarkup(m) {
       ${btn("genkey", "Generate")}${btn("saveopts", "Save")}${btn("clearopts", "Clear")}
       <span class="dim">Save writes bundle.env — applies to every start, including autostart after a reboot
         · the API key is kept in this browser only</span>
+    </div>
+
+    <!-- Fit: slots/context/KV ให้พอดีกับเครื่องนี้ (เจ้าของ 2026-09-07) — ตารางจาก hub, ปุ่มเขียน = lmds set --fit -->
+    <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-sliders"/></svg><span class="sec-title">Memory fit</span></div>
+    <div class="fit-out dim" style="line-height:1.55">Calculating memory…</div>
+    <div class="field">
+      ${btn("fit", "Fit")}
+      <span class="dim">Writes slots + context from the fields above${m.engine === "vllm" ? " plus <code>--kv-cache-memory</code> (slots × KV per full-context request × 1.2) and a matching gpu-util" : ""}
+        into the bundle — checked against the whole machine (OS reserve + other running models); does not fit = nothing is written</span>
     </div>
 
     <div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-edit"/></svg><span class="sec-title">Edit the launch script</span></div>
@@ -2891,7 +2918,7 @@ document.addEventListener("click", async e => {
   if (act === "adopt") { await adoptModel(slug); return; }
   if (act === "tests") { togglePanel(slug, "tests", () => testsMarkup(model)); return; }
   if (act === "opts") {
-    togglePanel(slug, "opts", () => manageMarkup(model));
+    if (togglePanel(slug, "opts", () => manageMarkup(model))) hydrateLocalFit(slug);
     // เครื่องปลายทางมาจากทะเบียนจริง ไม่ใช่ให้พิมพ์ชื่อเอง — พิมพ์ผิดแล้วรู้ตอนกดส่ง
     const sel = document.querySelector(`#panel-${CSS.escape(slug)} .o-node`);
     if (sel) api("/api/nodes").then(r => r.json()).then(d => {
@@ -2930,6 +2957,17 @@ document.addEventListener("click", async e => {
     if (!question) { if (input) input.focus(); return; }
     // โมเดลในเครื่องนี้ไม่มี node — ตัว endpoint แยกทางเองจากค่าว่าง
     await proposeScriptEdit(slug, "", panel.querySelector(".script-out"), question);
+    return;
+  }
+
+  if (act === "fit") {
+    // เขียน slots/context (+ pin/gpu-util สำหรับ vLLM) ลง bundle = lmds set --fit · ไม่พอ = ไม่เขียน บอกว่าต้องลดอะไร
+    const panel = document.getElementById("panel-" + slug);
+    const out = panel && panel.querySelector(".fit-out");
+    if (!out) return;
+    const val = sel => { const el = panel.querySelector(sel); return el && el.value !== "" ? +el.value : null; };
+    await applyFit(btn, `/api/models/${encodeURIComponent(slug)}/fit`, val(".o-slots"), val(".o-ctx"), out, slug,
+                   () => document.querySelector(`button[data-act="restart"][data-slug="${CSS.escape(slug)}"]`));
     return;
   }
 
@@ -3226,78 +3264,153 @@ function stripAdv(o) { for (const k of ADV_OPTS) delete o[k]; return o; }
 function nodeOpts(key) {
   try { return stripAdv(JSON.parse(localStorage.getItem("lmds:node:" + key) || "{}")); } catch { return {}; }
 }
-// ── ต้องใช้แรมเท่าไรตามค่าที่กรอก — คำนวณสดในเบราว์เซอร์ทุกครั้งที่พิมพ์ ──
-// hub ส่งข้อเท็จจริง (weights, KV/token, ความจุ, ว่างตอนนี้, overhead) มาครั้งเดียวตอนเปิดแผง
-// ส่วนเลขคณิตอยู่ตรงนี้ จะได้ขยับตาม context/slots/gpu-util โดยไม่ยิง request
+// ── Fit: slots/context/KV ให้พอดี — สูตรอยู่ที่ hub (fit/sizing.py) หน้าเว็บแค่ถามแล้ววาด ──
+// เจ้าของ 2026-09-07: "ct = 262144 แต่ slot, gpu util จะตั้งค่าอย่างไรให้พอดี" · บรรทัดเดิมคิดจาก gpu-util × ทั้งเครื่อง
+// ไม่รู้จัก --kv-cache-memory และนับหน่วยความจำของโมเดลที่รันอยู่เป็น "ไม่ว่าง" จนเตือนว่า start ไม่ได้ให้ตัวมันเอง
+// ตอนนี้ hub คืนตาราง (weights · overhead · KV ต่อคำขอ · pin · โมเดลอื่น · เหลือ) + แถบซ้อนของทั้งเครื่อง
+// ตัวเลขของโมเดลที่รันอยู่มาจาก log จริงของ vLLM · ปุ่ม Fit เขียนลง bundle เหมือน `lmds set --fit`
+const gb1 = x => x == null ? "?" : (Math.round(x * 10) / 10).toFixed(1);
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+function fitStackHtml(p) {
+  if (!p.total_gb || !(p.stack || []).length) return "";
+  const segs = (p.stack || []).map(s => {
+    const pct = Math.max(0, (s.gb || 0) / p.total_gb * 100);
+    const label = s.kind === "other" ? s.label : ({ os: "OS", weights: "weights", overhead: "ovh", kv: "KV", free: "free", over: "OVER" }[s.kind] || s.label);
+    return `<i class="fit-seg ${esc(s.kind)}" style="width:${pct.toFixed(2)}%" title="${esc(s.label)} ${gb1(s.gb)} GB">${pct > 8 ? esc(label) + " " + gb1(s.gb) : ""}</i>`;
+  }).join("");
+  return `<div class="fit-stack" title="Whole machine ${gb1(p.total_gb)} GB — OS reserve · other models · this model (weights / overhead / KV) · free">${segs}</div>`;
+}
+
+// รหัส verdict → ประโยคอังกฤษ (CLI พูดไทยจากรหัสเดียวกัน) — เลขคณิตอยู่ที่ hub ห้ามคิดซ้ำตรงนี้
+function fitVerdictHtml(p) {
+  const others = p.others_running_gb > 0.05 ? ` and ${gb1(p.others_running_gb)} GB held by other models` : "";
+  if (p.verdict === "fits") return `<span class="ok-line">✅ Fits — ${gb1(p.ram_after_gb)} GB left after the ${gb1(p.os_reserve_gb)} GB OS reserve${others}</span>`;
+  if (p.verdict === "tight") return `<span class="warn-line">🟡 Fits but tight — only ${gb1(p.ram_after_gb)} GB left after the OS reserve${others} · a busy desktop or page cache can push it into swap</span>`;
+  if (p.verdict === "no-fit") {
+    const short = gb1(-(p.ram_after_gb || 0));
+    const stop = p.stop_suggestion ? `stop <b>${esc(p.stop_suggestion)}</b> (${gb1((p.others || [])[0] && p.others[0].gb)} GB) first` : "";
+    let fix;
+    if (p.suggested_slots_max >= 1) fix = `lower slots to <b>${p.suggested_slots_max}</b> (KV per request ${gb1(p.kv_per_request_gb)} GB × 1.2)${stop ? " · or " + stop : ""}`;
+    else if (p.suggested_context_max >= 4096) fix = `lower context to ≤ <b>${p.suggested_context_max.toLocaleString()}</b>${stop ? " · or " + stop : ""}`;
+    else fix = stop ? `even 1 slot needs more — ${stop}` : "this model is too big for this machine";
+    return `<span class="warn-line">❌ Does not fit — short by <b>${short} GB</b> · ${fix}</span>`;
+  }
+  return `<span class="dim">❓ Cannot calculate yet — ${esc(p.reason || "")}</span>`;
+}
+
+function fitTableHtml(p) {
+  const src = { measured: "measured from the vLLM log", profile: "from MODEL_PROFILE" };
+  const row = (k, v, s = "", cls = "") => `<span class="k ${cls}">${k}</span><span class="v ${cls}">${v}</span><span class="s">${s}</span>`;
+  const ctx = (p.context || 0).toLocaleString();
+  const rows = [
+    row("weights", gb1(p.weights_gb), src[p.weights_source] || "unknown"),
+    row("overhead (activations / CUDA graphs)", gb1(p.overhead_gb), ""),
+    row(`KV per full-context request (${ctx} · ${esc(p.kv_dtype || "bf16")})`,
+        p.kv_per_request_gb == null ? "?" : p.kv_per_request_gb.toFixed(2), src[p.kv_source] || "unknown"),
+    p.pin_supported
+      ? row(`KV pin = ${p.slots} slots × ${(p.kv_per_request_gb || 0).toFixed(2)} × 1.2`, gb1(p.kv_pin_gb),
+            p.kv_pin_bytes ? `<code>--kv-cache-memory ${p.kv_pin_bytes}</code>` : "")
+      : row(`KV pool (context ${ctx} shared by ${p.slots} slots → ${(p.per_slot_context || 0).toLocaleString()} each)`, gb1(p.kv_gb), ""),
+    row("RAM this model needs", gb1(p.ram_needed_gb), "", "sum"),
+    row("machine", gb1(p.total_gb), `− ${gb1(p.os_reserve_gb)} GB OS reserve = <b>${gb1(p.usable_gb)}</b> usable`),
+    ...(p.others || []).map(o => row(`other model running: ${esc(o.slug)}`, gb1(o.gb), "")),
+    p.running ? row("this model holds now (not counted — it is being replaced)", gb1(p.own_gb_now), "") : "",
+    row("left after everything", p.ram_after_gb == null ? "?" : (p.ram_after_gb < 0 ? `<span style="color:var(--bad)">${gb1(p.ram_after_gb)}</span>` : gb1(p.ram_after_gb)), "", "sum"),
+  ].filter(Boolean).join("");
+  const util = p.pin_supported && p.gpu_util_equivalent
+    ? `<div class="dim">gpu-util is not used for KV once the pin is set — Fit writes <b>${p.gpu_util_equivalent.toFixed(2)}</b> only so vLLM's start-up check (free ≥ gpu-util × whole machine) passes on a machine that already runs something else</div>` : "";
+  const notes = (p.notes || []).length ? `<div class="dim">${esc(p.notes.join(" · "))}</div>` : "";
+  return `<div class="fit-table">${rows}</div>${fitStackHtml(p)}${fitVerdictHtml(p)}${util}${notes}`;
+}
+
+// ตารางที่เพิ่งถาม (ค่าเดิม) จำไว้ 60 วิ — node ต้องยิง SSH ไปรัน `lmds fit` ทุกครั้ง การ refresh การ์ดซ้ำ ๆ ไม่ควรเป็นภาระของเครื่องนั้น
+const fitCache = new Map();
+async function requestFit(url, slots, context, apply) {
+  const key = `${url}|${slots || ""}|${context || ""}`;
+  const hit = !apply && fitCache.get(key);
+  if (hit && Date.now() - hit.t < 60000) return hit.d;
+  const r = await api(url, { method: "POST", headers: { "content-type": "application/json" },
+                             body: JSON.stringify({ slots: slots || null, context: context || null, apply: !!apply }) });
+  const d = { ok: r.ok, status: r.status, ...(await r.json().catch(() => ({}))) };
+  if (apply) { for (const k of [...fitCache.keys()]) if (k.startsWith(url + "|")) fitCache.delete(k); }
+  else if (d.ok) fitCache.set(key, { t: Date.now(), d });
+  return d;
+}
+
+// pin แล้ว gpu-util ไม่ได้คุม KV — ปิดช่องพร้อมบอกว่าทำไม (ค่าที่เห็นคือค่าที่ Fit เขียนให้ผ่านด่าน start ของ vLLM)
+function reflectPin(box, gpuSel, p) {
+  const el = box.querySelector(gpuSel);
+  if (!el) return;
+  const pinned = p && p.pin_supported && p.current_pin_bytes;
+  el.disabled = !!pinned;
+  if (pinned) {
+    el.placeholder = "not used (KV pinned)";
+    el.title = "ไม่ใช้ (pin KV แล้ว) — KV size comes from --kv-cache-memory; Fit sets gpu-util only to pass vLLM's start-up check";
+  }
+}
+
 async function hydrateMemoryLine(node, slug) {
   const row = nodeRows.get(node);
   const box = row && row.body.querySelector(`.submenu[data-for="${CSS.escape(slug)}"]`);
   const line = box && box.querySelector(".n-mem");
   if (!line) return;
-  let f;
-  try {
-    const r = await api(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/memory`);
-    f = await r.json();
-    if (!r.ok) { line.textContent = "Could not calculate memory: " + (f.detail || r.status); return; }
-  } catch (e) { line.textContent = "Could not calculate memory: " + e; return; }
-  const paint = () => paintMemoryLine(box, f);
-  box.querySelectorAll(".n-ctx, .n-slots, .n-gpu").forEach(el => el.addEventListener("input", paint));
-  paint();
+  const val = sel => { const el = box.querySelector(sel); return el && el.value !== "" ? +el.value : null; };
+  const paint = async () => {
+    line.innerHTML = `<span class="dim">Calculating memory…</span>`;
+    const d = await requestFit(`/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/fit`,
+                               val(".n-slots"), val(".n-ctx"), false).catch(e => ({ ok: false, detail: String(e) }));
+    if (!line.isConnected) return;
+    if (!d.ok && !d.plan) { line.innerHTML = `<span class="dim">Could not calculate memory: ${esc(d.detail || d.status)}</span>`; return; }
+    line.innerHTML = fitTableHtml(d.plan);
+    reflectPin(box, ".n-gpu", d.plan);
+  };
+  const later = debounce(paint, 700);
+  box.querySelectorAll(".n-ctx, .n-slots").forEach(el => el.addEventListener("input", later));
+  await paint();
 }
 
-function paintMemoryLine(box, f) {
-  const line = box.querySelector(".n-mem");
-  if (!line) return;
-  const val = sel => { const el = box.querySelector(sel); return el && el.value !== "" ? +el.value : null; };
-  const gb = x => (Math.round(x * 10) / 10).toFixed(1);
-  const cap = f.capacity_gb || 0, free = f.free_gb_now;
-  const d = f.defaults || {};
-  const ctx = val(".n-ctx") || d.context || f.native_context || 0;
-  const slots = val(".n-slots") || d.max_num_seqs || 1;
-  const util = val(".n-gpu") || d.gpu_util || 0.85;
-  if (!cap || f.weights_gb == null) {
-    line.innerHTML = `<span class="dim">Not enough data to calculate — ${esc((f.notes || []).join(" · "))}</span>`;
-    return;
-  }
-  const perSeq = f.kv_bytes_per_token ? f.kv_bytes_per_token * ctx / 1073741824 : null;
-  const parts = [];
-  if (f.engine === "vllm") {
-    const pool = util * cap;
-    const kvLeft = pool - f.weights_gb - f.overhead_gb;
-    const fullSeqs = perSeq ? Math.max(0, Math.floor(kvLeft / perSeq)) : null;
-    parts.push(`gpu-util ${util} × ${cap} GB = <b>${gb(pool)} GB</b> reserved by vLLM → weights ${gb(f.weights_gb)} + overhead ${gb(f.overhead_gb)} → <b>${gb(kvLeft)} GB</b> left for KV`);
-    if (perSeq) parts.push(`KV at context ${ctx.toLocaleString()} = ${gb(perSeq)} GB per request → <b>${fullSeqs}</b> full-context requests at once (slots set to ${slots})`);
-    let verdict;
-    // ขั้นต่ำที่โมเดลนี้ต้องมีเพื่อ start ที่ context นี้ (weights + overhead + KV 1 คำขอ)
-    const needMin = f.weights_gb + f.overhead_gb + (perSeq || 0);
-    if (free != null && pool > free) {
-      const fitUtil = (free - 2) / cap;              // จองได้มากสุดเท่านี้ในสภาพเครื่องตอนนี้ (เผื่อ 2 GB)
-      verdict = fitUtil * cap < needMin
-        ? `<span class="warn-line">❌ Cannot start now — ${gb(free)} GB free but this model needs at least <b>${gb(needMin)} GB</b> (weights + overhead + KV for 1 request) · lowering gpu-util will not help, <b>stop another model first</b></span>`
-        : `<span class="warn-line">❌ Cannot start now — it would reserve ${gb(pool)} GB but only ${gb(free)} GB is free · set gpu-util ≤ <b>${fitUtil.toFixed(2)}</b> (KV ${gb(fitUtil * cap - f.weights_gb - f.overhead_gb)} GB) or stop another model first</span>`;
-    } else if (perSeq && kvLeft < perSeq) {
-      const minUtil = Math.min(0.98, needMin / cap + 0.02);
-      const maxCtx = Math.floor(Math.max(0, kvLeft) * 1073741824 / f.kv_bytes_per_token / 1024) * 1024;
-      verdict = `<span class="warn-line">❌ vLLM will not start — ${kvLeft <= 0
-        ? `weights + overhead alone (${gb(f.weights_gb + f.overhead_gb)} GB) already exceed the ${gb(pool)} GB reserved`
-        : `${gb(kvLeft)} GB left for KV is less than 1 request at this context (${gb(perSeq)} GB)`} · set gpu-util ≥ <b>${minUtil.toFixed(2)}</b>${
-        maxCtx >= 4096 ? ` or lower context to ≤ <b>${maxCtx.toLocaleString()}</b>` : ""}</span>`;
-    } else if (perSeq && fullSeqs < slots) {
-      verdict = `<span class="warn-line">⚠️ KV fits ${fullSeqs} full-context requests but slots is ${slots} — real requests are usually shorter than the context so this rarely collides, but if all are full at once the extra ones wait</span>`;
-    } else {
-      verdict = `<span class="ok-line">✅ Fits${free != null ? ` · ${gb(free)} GB free` : ""}</span>`;
+// กด Fit — เขียน slots/context (+ pin/gpu-util สำหรับ vLLM) ลง bundle แล้วเสนอ restart ถ้ารันอยู่
+async function applyFit(btn, url, slots, context, out, slug, restartBtn) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "fitting…";
+  try {
+    const d = await requestFit(url, slots, context, true);
+    if (d.plan) out.innerHTML = fitTableHtml(d.plan);
+    if (!d.ok) {
+      out.insertAdjacentHTML("beforeend", `<div class="warn-line">Not written — ${esc(d.detail || d.status)}</div>`);
+      return;
     }
-    parts.push(verdict);
-  } else {
-    // llama.cpp จอง KV ทั้งก้อนล่วงหน้าตาม --ctx-size (แบ่งให้ทุก slot) ไม่ยืดตามโหลดแบบ vLLM
-    const total = f.weights_gb + (perSeq || 0) + f.overhead_gb;
-    parts.push(`weights ${gb(f.weights_gb)} + KV(${ctx.toLocaleString()}) ${perSeq ? gb(perSeq) : "?"} + overhead ${gb(f.overhead_gb)} = <b>${gb(total)} GB</b> reserved at start · ${slots} slots → context per slot ${Math.floor(ctx / Math.max(1, slots)).toLocaleString()}`);
-    if (free != null && total > free) parts.push(`<span class="warn-line">❌ Needs ${gb(total)} GB but only ${gb(free)} GB is free — lower the context or stop another model first</span>`);
-    else parts.push(`<span class="ok-line">✅ Fits${free != null ? ` · ${gb(free)} GB free` : ""}</span>`);
+    const saved = Object.entries(d.saved || {}).map(([k, v]) => `${k}=${v}`).join(" · ");
+    out.insertAdjacentHTML("beforeend", `<div class="ok-line">Saved to the bundle: ${esc(saved)} — applies to every start, autostart included</div>`);
+    if (d.restart_needed && confirm(`Settings saved. Restart ${slug} now so they take effect?`)) {
+      const b = restartBtn();
+      if (b) b.click();
+    }
+  } catch (e) {
+    out.insertAdjacentHTML("beforeend", `<div class="warn-line">Fit failed — ${esc(e)}</div>`);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
   }
-  if (ctx && ctx % 4096 !== 0) parts.push(`<span class="dim">context ${ctx.toLocaleString()} is not a standard step (e.g. 131,072) — some engines round it down silently</span>`);
-  if ((f.notes || []).length) parts.push(`<span class="dim">${esc(f.notes.join(" · "))}</span>`);
-  line.innerHTML = parts.join("<br>");
+}
+
+// โมเดลในเครื่องนี้ — แผง Manage มีช่อง .o-ctx/.o-slots อยู่แล้ว ตารางอยู่ใต้มัน
+async function hydrateLocalFit(slug) {
+  const panel = document.getElementById("panel-" + slug);
+  const out = panel && panel.querySelector(".fit-out");
+  if (!out) return;
+  const val = sel => { const el = panel.querySelector(sel); return el && el.value !== "" ? +el.value : null; };
+  const paint = async () => {
+    out.innerHTML = `<span class="dim">Calculating memory…</span>`;
+    const d = await requestFit(`/api/models/${encodeURIComponent(slug)}/fit`, val(".o-slots"), val(".o-ctx"), false)
+      .catch(e => ({ ok: false, detail: String(e) }));
+    if (!out.isConnected) return;
+    if (!d.ok && !d.plan) { out.innerHTML = `<span class="dim">Could not calculate memory: ${esc(d.detail || d.status)}</span>`; return; }
+    out.innerHTML = fitTableHtml(d.plan);
+  };
+  const later = debounce(paint, 700);
+  panel.querySelectorAll(".o-ctx, .o-slots").forEach(el => el.addEventListener("input", later));
+  await paint();
 }
 
 function readNodeOpts(node, slug) {
@@ -3596,8 +3709,14 @@ function nodeModelsMarkup(name, data) {
                    placeholder="0.85" style="flex:none;width:90px"
                    title="Share of the whole GPU memory vLLM reserves at start (0.1–0.98) — lower it on a machine already running something else">` : ""}
           </div>
-          <!-- ต้องใช้แรมเท่าไรตามค่าที่กรอก — เห็นก่อนกด start ไม่ใช่รู้ตอนพัง (ผู้ใช้ 2026-09-04) -->
-          <div class="n-mem dim" style="width:100%;line-height:1.55;margin:-4px 0 10px">Calculating memory…</div>
+          <!-- ต้องใช้แรมเท่าไรตามค่าที่กรอก — เห็นก่อนกด start ไม่ใช่รู้ตอนพัง (ผู้ใช้ 2026-09-04) · ตาราง Fit + แถบทั้งเครื่อง
+               มาจาก hub (fit/sizing.py) · ปุ่ม Fit เขียน slots/context/pin ลง bundle บนเครื่องนั้น = lmds set --fit (เจ้าของ 2026-09-07) -->
+          <div class="n-mem dim" style="width:100%;line-height:1.55;margin:-4px 0 6px">Calculating memory…</div>
+          <div class="field" style="width:100%;margin-top:0">
+            <button data-nact="fit" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="Write slots + context (vLLM: also --kv-cache-memory and a matching gpu-util) into the bundle on that machine so every start fits — same as lmds set --fit">Fit</button>
+            <span class="dim">Sizes the KV pin from slots × KV per full-context request × 1.2 and checks it against the whole machine (OS reserve + other running models) — does not fit = nothing is written, it says what to lower or stop</span>
+          </div>
           <div class="field" style="width:100%">
             <label>bind</label>
             <select class="n-bind" style="flex:none">
@@ -3984,6 +4103,19 @@ document.addEventListener("click", async e => {
     const row = nodeRows.get(node);
     if (row) row.body.innerHTML = nodeModelsMarkup(node, lastNodeData.get(node) || {});
     if (openModelMenus.has(key)) { fillCloneTargets(node, slug); hydrateMemoryLine(node, slug); }
+    return;
+  }
+  if (nact === "fit") {
+    // เขียน slots/context/pin ลง bundle บนเครื่องนั้น (SSH → lmds set --fit --json) แล้วเสนอ restart
+    const row = nodeRows.get(node);
+    const box = row && row.body.querySelector(`.submenu[data-for="${CSS.escape(slug)}"]`);
+    const out = box && box.querySelector(".n-mem");
+    if (!out) return;
+    const val = sel => { const el = box.querySelector(sel); return el && el.value !== "" ? +el.value : null; };
+    await applyFit(btn, `/api/nodes/${encodeURIComponent(node)}/models/${encodeURIComponent(slug)}/fit`,
+                   val(".n-slots"), val(".n-ctx"), out, slug,
+                   () => box.querySelector(`button[data-nact="model:restart"][data-slug="${CSS.escape(slug)}"]`)
+                         || row.body.querySelector(`button[data-nact="model:restart"][data-slug="${CSS.escape(slug)}"]`));
     return;
   }
   if (nact === "clone") {

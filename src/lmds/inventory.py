@@ -151,6 +151,52 @@ def foreign_workloads() -> list[dict]:
     return found
 
 
+def memory_by_slug(servers) -> dict[str, float]:
+    """GB ที่ bundle แต่ละตัวที่รันอยู่ถือบน GPU — จับคู่ compute-apps กับ container/pid ของ bundle
+
+    ทำไมต้องมี: Fit (fit/sizing.py) ต้องแยก "ที่ตัวเองถืออยู่" ออกจาก "ที่โมเดลอื่นถือ" — เดิมหน้าเว็บมีแค่ยอดรวม
+    จึงขึ้น "Cannot start now" ให้โมเดลที่รันอยู่แล้ว (นับหน่วยความจำของตัวมันเองเป็น "ไม่ว่าง") · วัดจริง 2026-09-07
+    spark-head: VLLM::EngineCore 80,364 MiB (Nemotron) + llama-server 19,921 MiB (Gemma-4) แยกกันได้จาก cgroup/pid
+    · คืนเฉพาะที่จับคู่ได้ — ตัวที่ไม่ได้อยู่ในนี้ผู้เรียกคิดจากยอดรวมแทน
+    """
+    from lmds.hardware.profiler import compute_apps
+
+    try:
+        apps = compute_apps()
+    except Exception:  # noqa: BLE001 — nvidia-smi พัง = ไม่รู้ ไม่ใช่ล้ม
+        return {}
+    running = [s for s in servers if getattr(s, "running", False)]
+    if not apps or not running:
+        return {}
+    by_container = {s.container: s.slug for s in running if s.container}
+    by_pid: dict[int, str] = {}
+    for s in running:
+        pid = int(getattr(s, "pid", 0) or 0)
+        if not pid and getattr(s, "pid_file", ""):
+            try:
+                pid = int(Path(s.pid_file).read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                pid = 0
+        if pid:
+            by_pid[pid] = s.slug
+    names = _container_names_by_id() if by_container else {}
+    out: dict[str, float] = {}
+    for pid, _name, mib in apps:
+        slug = None
+        owner = _container_of_pid(pid, names) if names else ""
+        if owner and owner in by_container:
+            slug = by_container[owner]
+        else:
+            cur, depth = pid, 8
+            while cur > 1 and depth > 0 and slug is None:
+                slug = by_pid.get(cur)
+                cur = _parent_of(cur)
+                depth -= 1
+        if slug:
+            out[slug] = round(out.get(slug, 0.0) + mib / 1024.0, 1)
+    return out
+
+
 def _managed_pids() -> set[int]:
     """pid ของเซิร์ฟเวอร์ native ที่ bundle ของเรา start ไว้ (server.pid ใต้ run root)"""
     from lmds.fleet.manager import run_root
@@ -199,15 +245,18 @@ def _has_managed_ancestor(pid: int, managed_pids: set[int], depth: int = 8) -> b
     return False
 
 
-def _container_of_pid(pid: int) -> str:
-    """ชื่อ container ที่ process นี้อยู่ข้างใน — ว่างเมื่อรันบน host ตรง ๆ"""
+def _container_of_pid(pid: int, names: dict[str, str] | None = None) -> str:
+    """ชื่อ container ที่ process นี้อยู่ข้างใน — ว่างเมื่อรันบน host ตรง ๆ
+
+    `names` = ผลของ _container_names_by_id() ที่ผู้เรียกอ่านไว้แล้ว — ไม่ส่งมา = ยิง docker ps ต่อ pid
+    """
     try:
         cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
     for token in cgroup.replace("/", " ").replace("-", " ").replace(".scope", " ").split():
         if len(token) == 64 and all(c in "0123456789abcdef" for c in token):
-            return _container_names_by_id().get(token, "")
+            return (names if names is not None else _container_names_by_id()).get(token, "")
     return ""
 
 
@@ -734,7 +783,8 @@ def runtime_arch_status(server, profile) -> dict | None:
     return {k: support[k] for k in ("arch", "mode", "supported", "runtime", "fix")}
 
 
-def model_payload(server, active_job: dict | None = None) -> dict:
+def model_payload(server, active_job: dict | None = None, memory_gb: float | None = None) -> dict:
+    """`memory_gb` = ที่ตัวนี้ถือบน GPU ตอนนี้ (จาก memory_by_slug) — None = ไม่ได้รัน/จับคู่ไม่ได้"""
     from lmds.fleet.consistency import controller_header, controller_state
     from lmds.fleet import (
         autostart_status,
@@ -789,6 +839,8 @@ def model_payload(server, active_job: dict | None = None) -> dict:
         # stacked: head ตัวนี้จับคู่กับ worker ไหน (จาก cluster.env) — hub เอาไปวาดการ์ดของ worker
         "cluster": read_cluster_env(server.controller) if (profile or {}).get("topology") == "stacked" else None,
         "max_num_seqs": ((profile or {}).get("serving") or {}).get("max_num_seqs"),
+        # ที่ตัวนี้ถือบน GPU ตอนนี้ (GB) — Fit หักออกจาก "ใช้อยู่แล้ว" ไม่ให้โมเดลที่รันอยู่ถูกนับเป็นคนอื่น
+        "memory_gb": memory_gb,
         "commands": commands,
         "started_at": server.started_at,
         "downloaded": True if self_managed else weights_present(server, profile),
@@ -813,7 +865,9 @@ def snapshot() -> dict:
     """ภาพรวมทั้งเครื่อง — สิ่งที่ `lmds agent info` พิมพ์ออกมาให้ hub อ่าน"""
     from lmds.fleet import discover
 
-    models = [model_payload(s) for s in discover()]
+    servers = discover()
+    held = memory_by_slug(servers)
+    models = [model_payload(s, memory_gb=held.get(s.slug)) for s in servers]
     return {
         "host": with_runtimes(host_payload(), models),
         "models": models,

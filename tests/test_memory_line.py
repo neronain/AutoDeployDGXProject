@@ -113,13 +113,16 @@ def test_new_bundles_write_kv_bytes_into_the_profile(tmp_path):
 
 
 def test_page_has_the_live_line_and_recomputes_on_input():
+    """0.6.1 (เจ้าของ 2026-09-07): บรรทัดนี้ไม่คิดจาก gpu-util ในเบราว์เซอร์แล้ว — ถาม hub (POST …/fit) ได้ตาราง Fit + แถบทั้งเครื่อง
+    และคิดใหม่เมื่อแก้ context/slots · "Cannot start now" แบบเดิมถูกถอด เพราะเคยนับหน่วยความจำของโมเดลที่รันอยู่เป็นไม่ว่าง
+    (พฤติกรรมจริงอยู่ใน tests/test_fit_dom.py)"""
     page = INDEX.read_text(encoding="utf-8")
     assert 'class="n-mem dim"' in page, "ยังไม่มีบรรทัดคำนวณใต้ฟอร์ม"
-    assert "function paintMemoryLine(" in page and "/memory" in page
+    assert "function fitTableHtml(" in page and "function fitStackHtml(" in page
     hydrate = page[page.index("async function hydrateMemoryLine("):][:1500]
-    assert '".n-ctx, .n-slots, .n-gpu"' in hydrate and 'addEventListener("input"' in hydrate
-    # ข้อความสำคัญสองแบบที่ผู้ใช้ถามถึงต้องมี: จองเกินที่ว่าง และ KV ไม่พอ 1 คำขอ
-    assert "Cannot start now" in page and "vLLM will not start" in page   # UI เป็นอังกฤษตั้งแต่ 0.6.0
+    assert '".n-ctx, .n-slots"' in hydrate and 'addEventListener("input"' in hydrate and "/fit`" in hydrate
+    assert "Cannot start now" not in page and "function paintMemoryLine(" not in page
+    assert 'data-nact="fit"' in page and 'btn("fit", "Fit")' in page
     # แถว port/context/slots/gpu-util ต้องไม่ห่อบรรทัดจน gpu-util ตกไปอยู่แถวล่าง
     row = page[page.index('class="n-port"') - 200:page.index('class="n-port"')]
     assert "flex-wrap:nowrap" in row

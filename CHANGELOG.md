@@ -5,6 +5,19 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **Fit — ตั้ง slots/context/KV ให้พอดี ไม่ต้องคำนวณเองอีก (CLI · เว็บ · pin ตั้งต้นตอน deploy)** — เจ้าของ 2026-09-07:
+  "ค่าที่ทำให้รัน 2 model บน vllm ผ่าน … ct = 262144 แต่ slot, gpu util จะตั้งค่าอย่างไรให้พอดี" · สูตรเดียวที่ `fit/sizing.py`:
+  RAM = weights (ที่โหลดจริง) + overhead 3 + KV pin · pin = slots × KV เต็ม context × 1.2 → `--kv-cache-memory` · ใช้ได้ = total − 12 OS ·
+  ใส่ได้เมื่อ Σ ทุกโมเดล ≤ ใช้ได้ · โมเดลที่รันอยู่อ่านค่าจริงจาก log ของ vLLM (`Model loading took` / `GPU KV cache size`) จึง
+  แก้ตัวเองได้ (Nemotron hybrid: config 8 KiB/token · จริง 5.3) · `lmds fit <slug>` (dry run) · `lmds set <slug> --fit [--slots N]
+  [--context C]` เขียน slots/context/gpu-util เทียบเท่า/pin (แทน `--kv-cache-memory` เดิม) · ไม่พอ = ไม่เขียน บอกว่าลด slots เหลือ
+  เท่าไรหรือหยุดตัวไหน · `lmds node run <node> set <slug> --fit` · เว็บ: การ์ด vLLM/llama.cpp (ในเครื่อง + node) แสดงตาราง +
+  แถบซ้อนทั้งเครื่อง (OS · โมเดลอื่น · ตัวนี้ · ว่าง) แทนบรรทัด gpu-util เดิม + ปุ่ม **Fit** (`POST /api/models/{slug}/fit`,
+  `/api/nodes/{name}/models/{slug}/fit` — node สั่ง `lmds fit --json` บนเครื่องนั้น) เสนอ restart · ช่อง gpu-util ปิดเมื่อ pin แล้ว ·
+  "Cannot start now" ไม่ขึ้นให้โมเดลที่รันอยู่แล้ว (เคยนับหน่วยความจำของตัวมันเองเป็นไม่ว่าง — inventory รายงาน `memory_gb`
+  ต่อโมเดลจาก compute-apps) · deploy บน unified: bundle vLLM ใหม่ได้ pin ตั้งต้นตามสูตรแทน gpu-util 0.85 (cap ตามที่เหลือ ·
+  ถือคำขอเต็ม context ไม่ได้ → ลด context) บันทึก `MODEL_PROFILE.yaml → memory.sizing` · recipe ที่ตั้ง pin เอง (GLM) ไม่แตะ ·
+  เทส `test_kv_sizing.py` (ตัวเลขจริงจาก spark-head/spark-worker), `test_fit_dom.py`, `test_memory_line.py` · docs/USAGE.md 4.2e
 - **regenerate controller ระหว่าง Update ไม่ทำสคริปต์ที่กำลังรันพัง + container โหลด weight ไม่ถูกนับเป็น bundle** —
   2026-09-07 dgx-veerasiam: `bundles refresh` เขียนทับ controller ที่ `download` กำลังรัน → bash อ่านไฟล์ใหม่ต่อจาก
   offset เดิม "syntax error near unexpected token" rc=2 · renderer เขียน temp แล้ว rename (inode ใหม่) · `lmds-dl-*`

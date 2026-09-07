@@ -378,6 +378,15 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
     }
 
 
+def _sizing_record(plan: DeploymentPlan, fit: FitReport) -> dict | None:
+    try:
+        from lmds.fit.sizing import sizing_for_plan, sizing_record
+
+        return sizing_record(sizing_for_plan(fit, plan))
+    except Exception:  # noqa: BLE001 — ฟิลด์ประกอบ ห้ามทำให้ render ทั้ง bundle ล้ม
+        return None
+
+
 def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> str:
     """MODEL_PROFILE.yaml — source of truth ภายใน bundle (ตาม template v3.0.0)"""
     profile = {
@@ -436,6 +445,9 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "extra_flags": plan.serving.extra_flags,
             "extra_env": plan.serving.extra_env,
         },
+        # ตัวเลขที่ตัดสิน KV pin ตั้งต้น (unified/vLLM) — คนอ่านทีหลังรู้ว่า --kv-cache-memory มาจากอะไร
+        # และ `lmds fit` เทียบกับค่าวัดจริงได้ · None = ไม่ได้ pin (RTX / stacked / ไม่รู้ KV) ใช้ gpu-util
+        "memory": {"sizing": _sizing_record(plan, fit)},
         "features": {
             "tool_calling": plan.tool_calling.model_dump(mode="json"),
             "reasoning": plan.reasoning.model_dump(mode="json"),

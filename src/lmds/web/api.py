@@ -543,6 +543,37 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "slug": slug, **memory_facts(profile, data.get("host") or {}, entry)}
 
+    def _fit_response(fn, *args):
+        """ตาราง Fit หรือ 409 พร้อมตาราง (ถ้าคำนวณได้) — หน้าเว็บโชว์ว่าทำไมถึงไม่พอ ไม่ใช่แค่ข้อความ"""
+        from .fit import FitUnavailable
+
+        try:
+            return fn(*args)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FitUnavailable as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc), "plan": exc.plan})
+
+    @app.post("/api/models/{slug}/fit", dependencies=guarded)
+    def model_fit(slug: str, body: dict | None = None):
+        """ตั้ง slots/context/KV pin ให้พอดี — {slots, context, apply} · apply=false ดูก่อน · true เขียนเหมือน `lmds set --fit`
+
+        เจ้าของ 2026-09-07: "slot, gpu util จะตั้งค่าอย่างไรให้พอดี" — สูตรอยู่ที่ fit/sizing.py ที่เดียว หน้าเว็บแค่โชว์
+        """
+        from .fit import local_fit
+
+        return _fit_response(local_fit, slug, body)
+
+    @app.post("/api/nodes/{name}/models/{slug}/fit", dependencies=guarded)
+    def node_model_fit(name: str, slug: str, body: dict | None = None):
+        """เหมือน model_fit แต่สั่ง `lmds fit/set --fit --json` บนเครื่องนั้นผ่าน SSH — ได้ log/nvidia-smi จริงของเครื่องนั้น"""
+        from .fit import node_fit
+
+        _check_slug(slug)
+        return _fit_response(node_fit, name, slug, body)
+
     @app.get("/api/nodes/{name}/models/{slug}/settings/suggest", dependencies=guarded)
     def node_settings_suggest(name: str, slug: str) -> dict:
         """เหมือน settings_suggest แต่สำหรับ bundle บนเครื่องอื่น — อ่านจากแคช inventory ไม่ยิง SSH"""
