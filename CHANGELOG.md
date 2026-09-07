@@ -5,6 +5,9 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **Fit นับ RAM ฝั่ง host ของ llama.cpp native ด้วย** — dgx-veerasiam 2026-09-07: gemma-4-12b ถือ GPU 17.7 GB + VmRSS 11.2 GB
+  (mmap weight ค้างใน unified memory) แต่ inventory นับแค่ GPU → Fit เห็นว่ายังเหลือที่ทั้งที่ `free` บอก used 119/124 GB
+  และเริ่ม swap · `memory_by_slug` รวม VmRSS ของ process · เทส `test_inventory.py`
 - **llama.cpp: การ์ดบอก context "ต่อ request"** — 2026-09-07 dgx-veerasiam: ตั้ง context 131,071 slots 2 แล้ว Score บอก
   ctx max 65,536 เพราะ llama.cpp แบ่ง `--ctx-size` ให้ทุก slot เท่ากัน (`n_ctx_slot`) · inventory ส่ง `slots` +
   `context_per_request` (อ่านจาก argv ที่รันอยู่: `--parallel`/`--max-num-seqs`) · การ์ดขึ้นป้าย `65,536/request` พร้อมวิธีแก้

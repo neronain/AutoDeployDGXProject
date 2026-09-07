@@ -776,7 +776,8 @@ def test_node_opted_out_of_stacking_is_not_grouped(registered, monkeypatch):
     hub.update(registered["host"], hostname="spark1")
     monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
     client = TestClient(create_app())
-    assert client.get("/api/cluster").json()["groups"], "ก่อนปิดต้องยังจับกลุ่มได้"
+    # ?refresh=true: แคชของ cluster view ข้ามเทสทำให้ order-flaky ใน full suite (เหมือน test_cluster_view_groups_matching_machines)
+    assert client.get("/api/cluster?refresh=true").json()["groups"], "ก่อนปิดต้องยังจับกลุ่มได้"
 
     assert client.patch("/api/nodes/spark2", json={"stack": False}).json()["stack"] is False
     data = client.get("/api/cluster").json()

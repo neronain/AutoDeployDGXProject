@@ -193,8 +193,22 @@ def memory_by_slug(servers) -> dict[str, float]:
                 cur = _parent_of(cur)
                 depth -= 1
         if slug:
-            out[slug] = round(out.get(slug, 0.0) + mib / 1024.0, 1)
+            # unified memory (DGX Spark): ที่ process ถือฝั่ง host (VmRSS) ก็กิน RAM ก้อนเดียวกับ GPU — llama.cpp native
+            # mmap weight ค้างใน RSS ~เท่า weight (dgx-veerasiam 2026-09-07: gemma-4-12b GPU 17.7 GB + RSS 11.2 GB = 28.9 GB
+            # ขณะ free -m บอก used 119 GB) · ไม่นับ = Fit คิดว่าเหลือที่ทั้งที่เครื่องเริ่ม swap แล้ว
+            out[slug] = round(out.get(slug, 0.0) + mib / 1024.0 + _rss_gb(pid), 1)
     return out
+
+
+def _rss_gb(pid: int) -> float:
+    """VmRSS ของ pid (GB) — 0 ถ้าอ่านไม่ได้"""
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / (1024.0 * 1024.0)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
 
 
 def _managed_pids() -> set[int]:

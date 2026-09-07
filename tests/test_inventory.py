@@ -196,3 +196,20 @@ def test_llamacpp_context_per_request_is_context_divided_by_slots(tmp_path, monk
     monkeypatch.setattr(fleet, "running_slots", lambda s: 3)
     payload = inventory.model_payload(server)
     assert payload["context_per_request"] == 262144 and payload["slots"] == 3
+
+
+def test_memory_by_slug_counts_host_rss_of_native_servers(tmp_path, monkeypatch):
+    """dgx-veerasiam 2026-09-07: gemma-4-12b (llama.cpp native) ถือ GPU 17.7 GB + VmRSS 11.2 GB (mmap weight ค้าง) ขณะ
+    `free` บอก used 119 GB — นับแค่ GPU แล้ว Fit คิดว่าเหลือที่ทั้งที่เครื่องเริ่ม swap · unified memory ต้องรวม RSS"""
+    from lmds import inventory
+    from lmds.hardware import profiler
+
+    controller = tmp_path / "demo-single.sh"
+    controller.write_text("#!/bin/bash\n", encoding="utf-8")
+    server = _server(controller)
+    server.running = True
+    server.mode = "native"
+    server.pid = 4242
+    monkeypatch.setattr(profiler, "compute_apps", lambda: [(4242, "llama-server", 17705)])
+    monkeypatch.setattr(inventory, "_rss_gb", lambda pid: 11.2 if pid == 4242 else 0.0)
+    assert inventory.memory_by_slug([server]) == {"demo": round(17705 / 1024 + 11.2, 1)}
