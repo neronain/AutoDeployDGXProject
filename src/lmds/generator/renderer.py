@@ -453,6 +453,18 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
     return yaml.safe_dump(profile, allow_unicode=True, sort_keys=False)
 
 
+
+def _atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
+    """เขียนไฟล์แบบ atomic: temp ในโฟลเดอร์เดียวกัน → os.replace · โปรแกรมที่เปิดไฟล์เดิมค้างอยู่ (bash กำลังรันสคริปต์)
+    ยังเห็นเนื้อหาเดิมครบ ไม่ใช่ครึ่งเก่าครึ่งใหม่"""
+    import os
+
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    if mode is not None:
+        tmp.chmod(mode)
+    os.replace(tmp, path)
+
 def render_bundle(
     plan: DeploymentPlan,
     report: ModelReport,
@@ -527,8 +539,10 @@ def render_bundle(
     for stale in sorted(directory.glob("*-single.sh")) + sorted(directory.glob("*-stacked.sh")):
         if stale.name != controller_path.name:
             stale.rename(stale.with_name(f"{stale.name}.replaced-{_time.strftime('%Y%m%d-%H%M%S')}"))
-    controller_path.write_text(env.get_template(template_name).render(context), encoding="utf-8")
-    controller_path.chmod(0o755)
+    # เขียนลงไฟล์ชั่วคราวแล้ว rename ทับ (inode ใหม่) — เคสจริง 2026-09-07 dgx-veerasiam: `bundles refresh` ตอน Update
+    # เขียนทับ controller ที่ `download` กำลังรันอยู่ → bash อ่านไฟล์ใหม่ต่อจาก offset เดิม → "syntax error near
+    # unexpected token" rc=2 กลางทาง · rename ทับทำให้ process เก่าอ่าน inode เดิมต่อจนจบ
+    _atomic_write_text(controller_path, env.get_template(template_name).render(context), mode=0o755)
 
     files = [controller_path]
 

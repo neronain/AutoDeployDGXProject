@@ -1553,3 +1553,22 @@ def test_every_docker_controller_template_explains_crashes():
         text = (root / name).read_text(encoding="utf-8")
         assert text.count("explain_crash() {") == 1, name
         assert call in text, name
+
+
+def test_controller_is_replaced_atomically_so_a_running_script_keeps_reading_the_old_file(tmp_path):
+    """เคสจริง 2026-09-07 dgx-veerasiam: `bundles refresh` เขียนทับ controller ที่ `download` กำลังรัน → bash อ่านไฟล์ใหม่
+    ต่อจาก offset เดิม → "syntax error near unexpected token" กลางทาง · ต้องเขียนเป็น inode ใหม่ (temp + rename)"""
+    import os
+
+    from lmds.generator.renderer import _atomic_write_text
+
+    path = tmp_path / "ctl.sh"
+    path.write_text("#!/bin/bash\necho old\n", encoding="utf-8")
+    old_ino = path.stat().st_ino
+    with path.open("rb") as running:               # process ที่เปิดไฟล์เดิมค้างอยู่
+        _atomic_write_text(path, "#!/bin/bash\necho new\n", mode=0o755)
+        assert running.read() == b"#!/bin/bash\necho old\n"
+    assert path.stat().st_ino != old_ino
+    assert path.read_text(encoding="utf-8").endswith("echo new\n")
+    assert os.access(path, os.X_OK)
+    assert not list(tmp_path.glob(".ctl.sh.tmp-*")), "ไฟล์ชั่วคราวต้องไม่เหลือ"

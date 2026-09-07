@@ -5,6 +5,10 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **regenerate controller ระหว่าง Update ไม่ทำสคริปต์ที่กำลังรันพัง + container โหลด weight ไม่ถูกนับเป็น bundle** —
+  2026-09-07 dgx-veerasiam: `bundles refresh` เขียนทับ controller ที่ `download` กำลังรัน → bash อ่านไฟล์ใหม่ต่อจาก
+  offset เดิม "syntax error near unexpected token" rc=2 · renderer เขียน temp แล้ว rename (inode ใหม่) · `lmds-dl-*`
+  ถูกข้ามใน discover (เคยโผล่เป็น bundle "dl-…" แล้ว fleet consistency บอกตรวจไม่ได้) · เทส `test_generator.py`, `test_fleet.py`
 - **Update ทั้งฟลีตหยุดรอ keyring ของเครื่องเดียว** — 2026-09-07 spark-head: `lmds config show` ที่ install.sh เรียกค้าง
   10 นาทีใน D-Bus Secret Service (desktop keyring) → `lmds node install --all` ค้างที่เครื่องแรก · อ่าน keyring มีเวลาจำกัด
   (`LMDS_KEYRING_TIMEOUT` ค่าตั้งต้น 5 วิ) · `LMDS_NO_KEYRING=1` ข้าม keyring · install.sh เรียก config show ด้วย

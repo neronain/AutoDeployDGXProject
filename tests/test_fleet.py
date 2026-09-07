@@ -1055,3 +1055,13 @@ def test_repair_explains_itself_on_a_self_managed_bundle(tmp_path, monkeypatch):
         manager.repair_server(info)
     assert "lmds start adopted" in str(caught.value)
     assert ran == []
+
+
+def test_parse_docker_ps_ignores_download_helper_containers():
+    """เคสจริง 2026-09-07 dgx-veerasiam: container โหลด weight `lmds-dl-<pid>-<rand>` โผล่เป็น bundle "dl-…" แล้ว
+    fleet consistency บอก controller ตรวจไม่ได้ระหว่างโหลด — ต้องไม่นับเป็น server"""
+    from lmds.fleet.manager import _parse_docker_ps
+
+    output = "lmds-dl-1852566-9701\tnvcr.io/nvidia/vllm:26.08-py3\t\nlmds-qwen3-6-35b-a3b-nvfp4\tnvcr.io/nvidia/vllm:26.08-py3\t0.0.0.0:8000->8000/tcp\n"
+    found = _parse_docker_ps(output, set())
+    assert [s.slug for s in found] == ["qwen3-6-35b-a3b-nvfp4"], [s.slug for s in found]

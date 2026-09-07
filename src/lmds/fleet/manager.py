@@ -671,6 +671,10 @@ def _parse_docker_ps(output: str, known_containers: set[str]) -> list[ServerInfo
         ports = parts[2] if len(parts) > 2 else ""
         if name in known_containers:
             continue
+        # container ช่วยโหลด weight (`lmds-dl-<pid>-<rand>`) ไม่ใช่ model server — เคสจริง 2026-09-07 dgx-veerasiam:
+        # โผล่เป็น bundle "dl-1852566-9701" แล้ว fleet consistency บอก "controller ตรวจไม่ได้" ระหว่างโหลด
+        if name.startswith("lmds-dl-"):
+            continue
         is_lmds = name.startswith("lmds-")
         engine = _engine_from_image(image)
         if not is_lmds and not engine:
