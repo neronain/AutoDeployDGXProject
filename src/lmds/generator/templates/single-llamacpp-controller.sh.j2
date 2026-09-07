@@ -1043,6 +1043,22 @@ server_args() {
   fi
 
   SERVER_ARGS+=(--jinja)
+  # /metrics (Prometheus) — build ปัจจุบันไม่พิมพ์บรรทัดคำขอลง server.log จึงนับการใช้งานไม่ได้ (audit 2026-09-08) ·
+  # inventory อ่าน llamacpp:prompt_tokens_total ฯลฯ จากตรงนี้ · เปิดเฉพาะเมื่อ build รู้จัก flag (native ถาม --help ·
+  # docker: image server-* ทุกรุ่นตั้งแต่ 2024 รู้จัก) · LLAMA_METRICS=0 ปิดได้
+  if [[ "${LLAMA_METRICS:-1}" != "0" ]] && llama_supports_metrics; then
+    SERVER_ARGS+=(--metrics)
+  fi
+}
+
+# build/image รู้จัก --metrics ไหม — native ถาม --help ของ binary (ไม่โหลดโมเดล ~50 ms) · docker ถือว่ารู้จัก
+llama_supports_metrics() {
+  if [[ "$RUNTIME_MODE" != "native" ]]; then return 0; fi
+  [[ -x "$LLAMA_SERVER" ]] || return 1
+  case "$("$LLAMA_SERVER" --help 2>&1 || true)" in
+    *--metrics*) return 0 ;;
+  esac
+  return 1
 }
 
 write_meta() {
@@ -1419,7 +1435,7 @@ EOF
 EOF
 }
 
-{% if mmproj_basename %}
+{% if mmproj_basename and not is_pooling %}
 # ทดสอบว่า vision ใช้ได้จริง ไม่ใช่แค่ไฟล์ mmproj มาครบ — สร้าง PNG สีแดงล้วนแล้วถามโมเดลว่าเห็นสีอะไร
 # ใช้ python3 stdlib ล้วน ไม่ต้องมีรูปในเครื่องและไม่ต้องต่อเน็ต
 test_vision() {
@@ -1656,24 +1672,45 @@ LEAKS = [
     r'"name"\s*:\s*"get_weather"', r"^\s*\[?\s*get_weather\s*\(",
 ]
 
+# งบ token: โมเดลสาย thinking (Qwen3.6, GLM, gemma-4) คิด 150–500+ tokens *ก่อน* จะเรียก tool — 512 หมดกลางทาง
+# ได้ finish_reason=length โดยไม่มี tool_calls ซึ่งไม่ใช่ template ผิด (audit 2026-09-08: Qwen3.6 ผ่าน 3/3 ที่
+# temperature 0 + 2048) · llama.cpp ไม่มี reasoning parser ให้ดูว่าเปิดคิดไว้ไหม จึงเริ่มที่งบใหญ่เลย
+# · temperature 0 ให้ผลซ้ำได้ ไม่แกว่งรอบต่อรอบ
+BUDGET_THINK = 2048
 
-def ask(choice_mode):
-    # 2048 ไม่ใช่ 512: โมเดลสาย reasoning ใช้ budget ไปกับการคิดก่อนถึงจะเรียก tool
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
-        "tools": TOOLS, "tool_choice": choice_mode, "max_tokens": 2048,
-    }).encode()
+
+def ask(choice_mode, budget, no_think=False):
+    body = {"model": model,
+            "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
+            "tools": TOOLS, "tool_choice": choice_mode, "max_tokens": budget, "temperature": 0}
+    if no_think:
+        # ปิด chain-of-thought ผ่าน chat template (Qwen3/GLM รู้จัก enable_thinking) — template ที่ไม่รู้จักเมินเฉย ๆ
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
-                                 data=payload, headers=headers)
+                                 data=json.dumps(body).encode(), headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=300) as response:
             choice = json.load(response)["choices"][0]
     except urllib.error.HTTPError as exc:
-        return None, f"HTTP {exc.code}: {exc.read().decode()[:200]}", "error", ""
-    msg = choice["message"]
-    return (msg.get("tool_calls") or [], msg.get("content") or "",
-            choice.get("finish_reason") or "", msg.get("reasoning_content") or "")
+        return {"error": f"HTTP {exc.code}: {exc.read().decode()[:200]}", "budget": budget, "no_think": no_think}
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        return {"error": str(exc)[:200], "budget": budget, "no_think": no_think}
+    msg = choice.get("message") or {}
+    return {"calls": msg.get("tool_calls") or [], "content": msg.get("content") or "",
+            "finish": choice.get("finish_reason") or "",
+            "reasoning": msg.get("reasoning_content") or msg.get("reasoning") or "",
+            "budget": budget, "no_think": no_think}
+
+
+def probe(choice_mode):
+    """ยิงจนได้ข้อสรุป: งบใหญ่ก่อน → ยังหมดงบ = ปิด thinking หนึ่งครั้ง แล้วค่อยตัดสิน"""
+    r = ask(choice_mode, BUDGET_THINK)
+    if not r.get("error") and not r["calls"] and r["finish"] == "length":
+        again = ask(choice_mode, BUDGET_THINK, no_think=True)
+        if not again.get("error"):
+            again["retried_without_thinking"] = True
+            r = again
+    return r
 
 
 def one_line(calls):
@@ -1681,25 +1718,35 @@ def one_line(calls):
     return f"{fn['name']}({fn['arguments'][:80]})"
 
 
+def head(text, n=200):
+    return (text or "").strip()[:n].replace("\n", " ")
+
+
 modes = ["auto", "required"] if mode == "both" else [mode]
 seen = {}
 for m in modes:
-    calls, text, finish, reasoning = ask(m)
-    seen[m] = (calls, text, finish, reasoning)
-    if calls is None:
-        print(f"  {m:9s} → engine ปฏิเสธ ({text})")
-    else:
-        print(f"  {m:9s} → {one_line(calls) if calls else 'ไม่มี tool_calls'}")
+    r = probe(m)
+    seen[m] = r
+    if r.get("error"):
+        print(f"  {m:9s} → engine ปฏิเสธ ({r['error']})")
+        continue
+    note = f"max_tokens {r['budget']}" + (" · thinking ปิด" if r.get("no_think") else "")
+    print(f"  {m:9s} → {one_line(r['calls']) if r['calls'] else 'ไม่มี tool_calls'}   [{note} · finish_reason={r['finish'] or '?'}]")
 
 print()
-auto_calls, auto_text, auto_finish, auto_reasoning = seen.get("auto", (None, "", "", ""))
-req_calls = seen.get("required", (None, "", "", ""))[0]
+auto = seen.get("auto")
+req = seen.get("required")
+auto_calls = None if auto is None or auto.get("error") else auto["calls"]
+req_calls = None if req is None or req.get("error") else req["calls"]
 
 if auto_calls:
     print("PASS: โมเดลเรียก tool ได้เองในโหมด auto — ใช้กับ agent ได้จริง")
+    if auto.get("retried_without_thinking"):
+        print("  ⚠ ผ่านเฉพาะตอนปิด thinking (chat_template_kwargs enable_thinking:false) — เปิด thinking แล้วคิดจนหมดงบ")
+        print("    agent ที่ปล่อยให้คิด ต้องตั้ง max_tokens ให้พอ (≥ 2048) ไม่งั้นได้ข้อความเปล่าแทน tool call")
     sys.exit(0)
 
-if "auto" not in modes:                        # ผู้ใช้ขอ required อย่างเดียว
+if auto is None:                             # ผู้ใช้ขอ required อย่างเดียว
     if req_calls:
         print("PASS(required): ผ่านเฉพาะโหมดบังคับ")
         print(f"  ยังไม่ได้พิสูจน์ว่า agent ใช้ได้ · รัน: {prog} test-tools auto")
@@ -1707,15 +1754,22 @@ if "auto" not in modes:                        # ผู้ใช้ขอ requir
     print("FAIL(required): ไม่มี tool_calls แม้จะบังคับ — template ไม่รองรับ tools หรือโมเดลเรียกไม่เป็น")
     sys.exit(1)
 
-# auto ไม่ผ่าน = agent ใช้ไม่ได้ ไม่ว่า required จะผ่านหรือไม่
+# auto ไม่ผ่าน = agent ใช้ไม่ได้ ไม่ว่า required จะผ่านหรือไม่ — แต่ *ทำไม* ต้องบอกให้ถูก:
+# หมดงบก่อนเรียก tool กับ template แปลไม่ออก แก้คนละทาง
 print("FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่นจะเห็นเป็นข้อความเปล่า")
+if auto.get("error"):
+    print(f"  engine ปฏิเสธคำขอ: {auto['error']}")
+    sys.exit(1)
+auto_text, auto_think = auto["content"], auto["reasoning"]
+out_of_budget = auto["finish"] == "length"
 if caps and not caps.get("supports_tools"):
     print("  /props บอกว่า chat template ที่โหลดอยู่ **ไม่รองรับ tools** เลย")
     print("  controller นี้ส่ง --jinja อยู่แล้ว แปลว่า template ในไฟล์ GGUF เองไม่มีส่วน tools")
     print(f"  ทางแก้: หา template ที่รองรับแล้วส่ง --chat-template-file · ดูของเดิม: curl :{port}/props")
-elif auto_finish == "length" and auto_reasoning and not auto_text.strip():
-    print("  โมเดลใช้ 2048 tokens ไปกับการคิดจนหมดก่อนจะเรียก tool — ยังสรุปไม่ได้")
-    print("  ลองใหม่อีกครั้ง หรือถามผ่าน API ตรง ๆ โดยเพิ่ม max_tokens")
+elif out_of_budget:
+    print(f"  หมดงบก่อนเรียก tool: finish_reason=length · max_tokens {auto['budget']} · reasoning {len(auto_think)} ตัวอักษร"
+          + (" · ลองปิด thinking แล้วก็ยังไม่ทัน" if auto.get("retried_without_thinking") else ""))
+    print("  ไม่ใช่ template แปลไม่ออก — โมเดลคิดยาวจนไม่ถึง tool call · agent ต้องส่ง max_tokens ≥ 2048 หรือปิด thinking")
 elif any(re.search(pattern, auto_text, re.M) for pattern in LEAKS):
     print("  โมเดลเรียก tool แล้ว แต่ call หลุดออกมาเป็นข้อความ = template แปลรูปแบบของมันไม่ออก")
     print(f"  มักเป็น llama.cpp รุ่นเก่ากว่าโมเดล — อัปเดตด้วย: LLAMA_CPP_UPDATE=1 {prog} prepare-runtime")
@@ -1723,9 +1777,11 @@ elif any(re.search(pattern, auto_text, re.M) for pattern in LEAKS):
 elif req_calls:
     print("  โหมด required ผ่าน เพราะ grammar บังคับรูปแบบให้เอง")
     print("  แปลว่าโมเดลเรียก tool เป็น แต่ในโหมดปกติมันเลือกจะไม่เรียก — ดูที่โมเดลเขียนด้านล่าง")
+print(f"  finish_reason : {auto['finish'] or '?'}")
+if auto_think.strip():
+    print(f"  reasoning     : {head(auto_think)}")
 if auto_text.strip():
-    print("  สิ่งที่โมเดลเขียนออกมาจริง:")
-    print("    " + auto_text.strip()[:200].replace("\n", " "))
+    print(f"  content       : {head(auto_text)}")
 print(f"  ดู caps ของ template: curl -s http://127.0.0.1:{port}/props | python3 -m json.tool | grep -A12 chat_template_caps")
 sys.exit(1)
 PYEOF
@@ -1763,7 +1819,7 @@ COMMANDS
 {% else %}  test-text         Send one chat completion request to verify the model answers
   test-tools [both|auto|required]  Prove tool calling works through the chat template (auto = what agents send)
 {% endif %}  serve-args        Print the exact llama-server arguments this bundle would start with (no start)
-{% if mmproj_basename %}  test-vision       Send a generated red image and check the model actually sees it
+{% if mmproj_basename and not is_pooling %}  test-vision       Send a generated red image and check the model actually sees it
 {% endif %}
 
 OPTIONS  (can be placed after any command; equals form also works: --port=8001)
@@ -1903,16 +1959,16 @@ case "${1:-help}" in
   info|banner) info ;;
   network-info) network_info ;;
 {% if is_embed %}  test-embed)   test_embed ;;
-  test-text|test-tools|test-rerank) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+  test-text|test-tools|test-vision|test-reasoning|test-rerank) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
 {% elif is_rerank %}  test-rerank)  test_rerank ;;
-  test-text|test-tools|test-embed) echo "โมเดลนี้เป็น reranker — ไม่มี chat/embeddings ให้ทดสอบ · ใช้: $0 test-rerank" >&2; exit 2 ;;
+  test-text|test-tools|test-vision|test-reasoning|test-embed) echo "โมเดลนี้เป็น reranker — ไม่มี chat/embeddings ให้ทดสอบ · ใช้: $0 test-rerank" >&2; exit 2 ;;
 {% else %}  test-text)    test_text ;;
   test-tools)   test_tools "${2:-both}" ;;
 {% endif %}  serve-args)
     # server_args อ้าง MODEL_MOUNT_DIR ซึ่ง start() เป็นคนตั้งตามโหมด — ตั้งให้เหมือนกันตรงนี้
     if [[ "$RUNTIME_MODE" == "native" ]]; then MODEL_MOUNT_DIR="$MODEL_DIR"; else MODEL_MOUNT_DIR="/models"; fi
     server_args; printf '%s\n' "${SERVER_ARGS[@]}" ;;
-{% if mmproj_basename %}  test-vision)  test_vision ;;
+{% if mmproj_basename and not is_pooling %}  test-vision)  test_vision ;;
 {% endif %}
   wait-health)  wait_health ;;
   *)            usage ;;

@@ -211,6 +211,35 @@ def model_recommend(params: dict[str, str], target: str) -> str:
     return "\n".join(lines)
 
 
+def usage(params: dict[str, str], target: str) -> str:
+    """คำขอ 24 ชม. ต่อโมเดลทุกเครื่อง — จาก `usage` ที่ inventory ของแต่ละเครื่องนับให้ (llama.cpp /metrics · vLLM docker log ·
+    ถอยไป launch_slot_) · โมเดลที่ไม่ได้รันไม่มีตัวนับ · unknown = "ตรวจไม่ได้" ไม่ใช่ 0 (audit 2026-09-08: server.log ของ
+    llama.cpp build ปัจจุบันไม่มีบรรทัด POST ให้ grep แล้ว — probe เดิมจึงตอบ 0 ให้ทุกตัว)"""
+    rows = _fleet_models()
+    if target and target != "this":
+        rows = [r for r in rows if r.get("node") == target] or rows
+    if not rows:
+        return "ยังไม่มีโมเดลในแคช inventory — รอ refresh รอบถัดไปหรือถาม overview"
+    lines: list[str] = []
+    for r in sorted(rows, key=lambda x: (x.get("node") or "", x.get("slug") or "")):
+        where = f"{r.get('node')}/{r.get('slug')}"
+        if not r.get("running"):
+            lines.append(f"- {where}: ไม่ได้รัน (ไม่มีตัวนับ)")
+            continue
+        u = r.get("usage") or {}
+        n = u.get("requests_24h")
+        src = {"metrics": "/metrics", "docker-log": "docker log", "server-log": "server.log ตั้งแต่ start"}.get(u.get("source") or "", "")
+        if n is None:
+            lines.append(f"- {where}: ตรวจไม่ได้ — {u.get('note') or 'inventory ของเครื่องนี้ยังไม่รายงาน usage (อัปเดต lmds)'}")
+            continue
+        tokens = ""
+        if u.get("prompt_tokens_24h") is not None or u.get("generated_tokens_24h") is not None:
+            tokens = f" · tokens in {u.get('prompt_tokens_24h') or 0:,} / out {u.get('generated_tokens_24h') or 0:,}"
+        lines.append(f"- {where}: {n:,} คำขอ (24 ชม. · {src}){tokens}" + (f" — {u['note']}" if u.get("note") else ""))
+    lines.append("0 = ไม่มีใครเรียกในช่วงนั้น · โมเดลที่ไม่ได้รันไม่มีตัวนับ · llama.cpp ที่ start ก่อนมี --metrics นับได้ตั้งแต่ start รอบนี้เท่านั้น")
+    return "\n".join(lines)
+
+
 def fleet_consistency(params: dict[str, str], target: str) -> str:
     """'ตรง hub' 3 มิติต่อเครื่อง จากแคชเดียวกับการ์ด Fleet consistency — unknown รายงานเป็น 'ตรวจไม่ได้' ไม่ใช่ผ่าน"""
     from lmds.fleet.consistency import fleet_report

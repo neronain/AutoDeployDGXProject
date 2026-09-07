@@ -58,7 +58,7 @@ lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-
 | `lmds web` | หน้าเว็บคุมทุกอย่าง — UI ภาษาอังกฤษ · `--enable` = ขึ้นเองหลังรีบูต (ดู §5) |
 | `lmds hardware` | ตรวจเครื่อง + จำแนก target profile |
 | `lmds config ...` | ตั้ง provider / key / HF token |
-| `lmds agent info/bench` | JSON ที่ hub เรียกผ่าน SSH — ปกติไม่ต้องพิมพ์เอง |
+| `lmds agent info/bench` | JSON ที่ hub เรียกผ่าน SSH — ปกติไม่ต้องพิมพ์เอง · ต่อโมเดลมี `pending_restart` (ตั้งค่าแล้วยังไม่ restart) และ `usage` (คำขอ/tokens 24 ชม. — llama.cpp อ่าน `/metrics` ที่ controller เปิดด้วย `--metrics` ให้เอง (`LLAMA_METRICS=0` ปิด) เก็บตัวอย่างใน `~/.lmds/run/<slug>/usage.samples` แล้วคิดส่วนต่าง 24 ชม. · vLLM/SGLang นับ `POST /v1/*` จาก `docker logs --since 24h` · ไม่มี `/metrics` = นับ `launch_slot_` ใน server.log ตั้งแต่ start) |
 | `lmds version` | เวอร์ชัน + commit ที่รันอยู่จริง + มาตรฐาน template |
 
 **ช่อง `<โมเดล>` ใส่ได้ 3 แบบ:**
@@ -151,10 +151,10 @@ cd bundles/qwen3-0-6b-gguf
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง (bundle embedding/rerank: บอกให้ไปใช้ `test-embed`/`test-rerank` แทน) |
 | `test-embed` | *(เฉพาะ bundle embedding)* ยิง `/v1/embeddings` 3 ประโยค — คู่ไทย↔อังกฤษความหมายเดียวกันต้องได้ cosine สูงกว่าประโยคที่ไม่เกี่ยว (ดู §4.9) |
 | `test-rerank` | *(เฉพาะ bundle reranker)* ยิง `/v1/rerank` query 1 + เอกสาร 3 ชิ้น (ไทย/อังกฤษ) — ชิ้นที่เกี่ยวข้องต้องได้อันดับหนึ่ง · พิมพ์คะแนนทุกชิ้น · exit 2 = เรียงผิด (ดู §4.10) |
-| `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง (vLLM/stacked: projector ฝังใน weight) |
+| `test-vision` | *(เฉพาะโมเดล multimodal **แบบ chat**)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง (vLLM/stacked: projector ฝังใน weight — plan ตั้ง modalities ให้เองจาก `vision_config` ใน config.json ตั้งแต่ 0.6.1) · bundle embedding/rerank ไม่มีคำสั่งนี้แม้มี mmproj (llama-server ไม่เอาภาพเข้า `/v1/embeddings`) — ได้ `test-embed`/`test-rerank` อย่างเดียว |
 | `parsers` | *(vLLM · SGLang · stacked)* ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง — อ่าน registry `vllm.tool_parsers` (0.28 ย้ายที่) แล้วถอยไป grep `vllm serve --help` |
-| `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle chat ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม |
-| `test-reasoning` | *(vLLM · SGLang · stacked)* ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง (37×43=1591) |
+| `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle chat ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม · ยิงที่ `temperature 0` (ผลซ้ำได้) งบ 512 → **2048 เมื่อโมเดลคิด** (ตั้ง `--reasoning-parser` ไว้ = เริ่ม 2048 · llama.cpp เริ่ม 2048 เสมอ) → ยัง `finish_reason=length` ก็ลองปิด thinking (`chat_template_kwargs enable_thinking:false`) อีกครั้งก่อนตัดสิน · FAIL แยก **"หมดงบก่อนเรียก tool"** (ไม่ใช่ parser ผิด — agent ต้องส่ง max_tokens ≥ 2048 หรือปิด thinking) ออกจาก **"parser/template แปลไม่ออก"** และพิมพ์ `finish_reason` + หัว `reasoning`/`content` ให้ดูเอง |
+| `test-reasoning` | *(vLLM · SGLang · stacked)* ตรวจว่า `--reasoning-parser` แยก chain-of-thought ออกจากคำตอบได้จริง (37×43=1591) — **1591 ต้องอยู่ในคำตอบสุดท้าย** (content) ไม่นับที่อยู่ใน reasoning · งบ 1024 → 4096 เมื่อโมเดลคิด/ตั้ง parser ไว้ · `temperature 0` · คำตอบว่าง = `WARN: คำตอบว่าง — reasoning กินงบ` (exit 2) ไม่ใช่ PASS |
 | `check-runtime` | *(llama.cpp)* บอกว่า build/image ที่ใช้คือรุ่นไหน (`llama-server --version` + วันที่ commit · lock) และรู้จัก `general.architecture` ของไฟล์ GGUF ไหม — exit 1 พร้อมคำสั่งแก้เมื่อรันไทม์เก่ากว่าโมเดล (`start` ตรวจข้อเดียวกันนี้ก่อนปล่อยเซิร์ฟเวอร์เสมอ) |
 | `bench [RUNS] [TOKENS]` | *(vLLM เดี่ยว · stacked)* วัด ttft / tok/s ผ่าน API จริง — ค่าตั้งต้น 3 รอบ × 256 tokens พิมพ์ต่อรอบและ median (ดู [BENCH.md](BENCH.md)) |
 | `stress [REQUESTS] [CONC]` | *(vLLM เดี่ยว · stacked)* ยิงพร้อมกันหลายสาย — ค่าตั้งต้น 16 คำขอ × 4 สาย พิมพ์ ok/total · latency p50/p95/max |
@@ -1789,13 +1789,17 @@ lmds web -b --new-token           # เปลี่ยน token (ลิงก์
 
 ### บนการ์ดโมเดลในคอนโซล
 
-**ป้ายบอกความสามารถ** — อ่านจาก `MODEL_PROFILE.yaml` ของ bundle ไม่ใช่การเดา:
+**ป้ายบอกความสามารถ** — อ่านจาก `MODEL_PROFILE.yaml` ของ bundle *ประกอบกับหลักฐานบนเครื่องนั้น* (`config.json` ในแคช HF:
+`vision_config`/`image_token_id`/`mm_*` · argv ที่รันอยู่: `--limit-mm-per-prompt`, `--speculative-config` · `bundle.args`) ไม่ใช่การเดา —
+โมเดล multimodal บน vLLM ที่ adopt มาหรือ deploy ก่อน 0.6.1 จึงได้ป้าย `vision` ถูกต้องโดยไม่ต้อง deploy ใหม่:
 
 | ป้าย | หมายถึง |
 |---|---|
 | 👁 `vision` | มีไฟล์ mmproj — รับภาพได้ |
 | ⬚ `MoE 128e/8a` | 128 expert เปิด 8 ต่อ token · hover เพื่อดูว่าทำไมสองค่านี้ต่างกัน |
-| ◔ `MTP` | มี draft head — เร็วขึ้นโดย output เท่าเดิม |
+| ◔ `MTP` | มี draft head — เร็วขึ้นโดย output เท่าเดิม · นับจาก argv ที่รันอยู่/`bundle.args` ด้วย (`--speculative-config` / `--spec-type`) ไม่ใช่แค่ไฟล์ใน repo |
+| `mmproj unused` | *(llama.cpp task embed)* ไฟล์ mmproj มา แต่ llama-server ทิ้งภาพบน `/v1/embeddings` (vector เท่ากันมี/ไม่มีภาพ) — embedding นี้เป็นข้อความล้วน จึงไม่ติดป้าย vision · hover ดูเหตุผล |
+| ⟳ `restart to apply` | **ตั้งค่าแล้วยังไม่ restart** — `bundle.env`/`bundle.args` (จาก `lmds set`/ปุ่ม Save) ต่างจาก argv ที่ process ใช้อยู่ (ชื่อที่เสิร์ฟ · context · slots · port · parser · gpu-util · extra args) · hover ดูว่าค่าไหน saved/running · หายเมื่อ restart · `lmds ps` ขึ้น `⟳ restart to apply (…)` และ `lmds node list` คอลัมน์ bundles ขึ้น `รอ restart N` · ป้าย `custom` คือกรณีกลับกัน (start ด้วย flag ที่ไม่ได้บันทึก) |
 
 **`model ID`** คือชื่อที่ client ใส่ในฟิลด์ `model` — **ไม่เท่ากับ slug** ที่เป็นหัวการ์ด
 เปลี่ยนได้ในเมนู ⋯ แล้วชื่อเดิมจะติดอยู่ข้าง ๆ (`↳ เดิม: …`) กันลืมว่าเดิมคืออะไร ·

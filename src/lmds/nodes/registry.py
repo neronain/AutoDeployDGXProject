@@ -77,6 +77,8 @@ class Node:
     # None = ยังไม่เคย probe ด้วย lmds ที่รายงานฟิลด์นี้ (ไม่ใช่ 0) — `lmds node list`/`lmds fleet check` โชว์ได้โดยไม่ SSH
     controllers_stale: Optional[int] = None
     runtime_stale: Optional[int] = None
+    # bundle ที่ตั้งค่า (lmds set/หน้าเว็บ) แล้วยังไม่ restart — argv ที่รันอยู่ต่างจาก bundle.env (audit 2026-09-08 msi-6)
+    restart_pending: Optional[int] = None
     llamacpp_build: str = ""
     # ป้ายจัดกลุ่มตามที่ตั้งเครื่อง (เช่น ชื่อไซต์/ลูกค้า) — ใช้ "แสดงผลและกรอง" อย่างเดียว
     # ตั้งแต่ 2026-08-31 ฟิลด์นี้ **เป็นตัวบังคับ** ตอนจับกลุ่ม stacked ด้วย ไม่ใช่แค่ป้าย
@@ -277,6 +279,9 @@ def status_from_probe(info: dict) -> dict:
     if isinstance(models, list) and any(isinstance(m, dict) and "runtime_arch" in m for m in models):
         fields["runtime_stale"] = sum(
             1 for m in models if isinstance(m, dict) and ((m.get("runtime_arch") or {}).get("supported")) is False)
+    if isinstance(models, list) and any(isinstance(m, dict) and "pending_restart" in m for m in models):
+        fields["restart_pending"] = sum(
+            1 for m in models if isinstance(m, dict) and ((m.get("pending_restart") or {}).get("pending")))
     builds = (host.get("runtimes") or {}).get("llamacpp") if isinstance(host.get("runtimes"), dict) else None
     if isinstance(builds, list):
         fields["llamacpp_build"] = " / ".join(

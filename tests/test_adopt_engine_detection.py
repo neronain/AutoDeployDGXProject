@@ -94,7 +94,8 @@ def test_capabilities_are_read_from_the_real_config_not_guessed(tmp_path):
                 binds=[f"{tmp_path / 'hf'}:/cache"])
     f = _features_from_model(a)
     assert f["moe"] == {"experts": 64, "experts_active": 8}
-    assert f["multimodal"] == {"projector": True}
+    # modalities ต้องมาด้วย — feature_summary/การ์ดอ่านคีย์นี้ ไม่ใช่ projector (gemma-4-31B-it adopt ขึ้น text ล้วน · audit 2026-09-08)
+    assert f["multimodal"] == {"projector": True, "modalities": ["image", "text"]}
 
 
 def test_a_model_path_we_cannot_reach_is_left_empty(tmp_path):

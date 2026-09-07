@@ -350,14 +350,16 @@ def node_list(
 
 def _bundles_cell(node) -> str:
     """คอลัมน์ bundles ของ `lmds node list` — จากตัวนับที่ทะเบียนจำไว้ (ไม่ SSH)"""
-    stale, rt = node.controllers_stale, node.runtime_stale
-    if stale is None and rt is None:
+    stale, rt, pend = node.controllers_stale, node.runtime_stale, node.restart_pending
+    if stale is None and rt is None and pend is None:
         return "—"
     parts = []
     if stale:
         parts.append(f"[yellow]controller ค้าง {stale}[/yellow]")
     if rt:
         parts.append(f"[red]runtime ค้าง {rt}[/red]")
+    if pend:
+        parts.append(f"[yellow]รอ restart {pend}[/yellow]")
     return " · ".join(parts) if parts else "[green]ตรง hub[/green]"
 
 
@@ -2024,8 +2026,24 @@ def set_defaults(
     console.print(f"บันทึกไว้กับ [bold]{slug}[/bold] แล้ว: " +
                   " · ".join(f"{k}={v}" for k, v in saved.items()))
     console.print("[dim]มีผลกับ start ทุกทาง รวมถึง autostart ตอน reboot และคำสั่ง test-*[/dim]")
-    if fit_plan is not None and server.running:
-        console.print(f"[dim]ตัวที่รันอยู่ยังใช้ค่าเดิม — ให้มีผล: lmds restart {slug}[/dim]")
+    if server.running:
+        # msi-6 2026-09-08: `lmds set --model-id` แล้ว API ยังตอบชื่อเก่า ผู้ใช้เข้าใจว่าไม่ติด — ค่าที่บันทึกมีผลรอบ start ถัดไป
+        # เท่านั้น บอกให้ชัดว่าตัวที่รันอยู่ยังใช้ของเดิม (การ์ดบนหน้าเว็บ/`lmds ps` ติดป้าย restart to apply จนกว่าจะ restart)
+        from lmds.inventory import pending_restart
+
+        drift = pending_restart(server, saved=saved)
+        running_name = server.model or ""
+        renamed = "served_name" in given and running_name and running_name != str(given["served_name"])
+        if renamed:
+            console.print(f"[yellow]ตัวที่รันอยู่ยังเสิร์ฟชื่อเดิม `{running_name}` — client เรียก `{given['served_name']}` "
+                          f"ได้หลัง restart เท่านั้น[/yellow]")
+        changed = [c["field"] for c in (drift or {}).get("changes") or []]
+        if renamed and "served_name" not in changed:
+            changed.append("served_name")
+        if changed:
+            console.print(f"[yellow]ตัวที่รันอยู่ยังใช้ค่าเดิม ({', '.join(changed)}) — ให้มีผล: lmds restart {slug}[/yellow]")
+        elif fit_plan is not None or drift is None:
+            console.print(f"[dim]ตัวที่รันอยู่ยังใช้ค่าเดิม — ให้มีผล: lmds restart {slug}[/dim]")
 
 
 def _print_fit_table(plan: dict) -> None:
@@ -3409,12 +3427,19 @@ def ps(
     table.add_column("engine")
     table.add_column("port")
     table.add_column("สถานะ")
+    from lmds.inventory import pending_restart
+
     for server in servers:
         status = _status_label(server)
         if server.external:
             status += " [cyan]⚙ ไม่ได้มาจาก lmds[/cyan]"
         elif not server.registered:
             status += " [yellow]⚠ ไม่ลงทะเบียน[/yellow]"
+        # ตั้งค่าแล้วยังไม่ restart (bundle.env ≠ argv ที่รันอยู่) — msi-6 2026-09-08 เปลี่ยนชื่อแล้วไม่รู้ว่าต้อง restart
+        drift = pending_restart(server) if server.running else None
+        if drift and drift.get("pending"):
+            fields = ", ".join(c["field"] for c in drift["changes"])
+            status += f" [yellow]⟳ restart to apply ({fields})[/yellow]"
         table.add_row(server.slug, server.model or server.model_id, f"{server.engine} ({server.mode})",
                       str(server.port or "-"), status)
     console.print(table)

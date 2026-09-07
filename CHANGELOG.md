@@ -5,6 +5,33 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **audit 10 เครื่องลูกค้า 2026-09-08 — 8 บั๊กที่ทำให้ test/ป้าย/ตัวนับโกหก** —
+  (1) `test-tools` ล้มบ้างผ่านบ้างบนโมเดลสาย thinking (Qwen3.6 คิด 150–500+ tokens ก่อนเรียก tool · งบ 512 หมดกลางทางแล้วขึ้น
+  "parser แปลไม่ออก" ทั้งที่ parser ถูก): ทั้ง 4 template ยิงที่ `temperature 0` · งบ 512 → 2048 เมื่อเห็นว่าโมเดลคิด (ตั้ง `--reasoning-parser`
+  ไว้ = เริ่ม 2048 · llama.cpp เริ่ม 2048) · ยัง `finish_reason=length` = ลองปิด thinking (`chat_template_kwargs enable_thinking:false`)
+  หนึ่งครั้งก่อนตัดสิน · FAIL พิมพ์ `finish_reason` + หัว `reasoning`/`content` และแยก "หมดงบก่อนเรียก tool" ออกจาก "parser/template แปลไม่ออก" ·
+  (2) `test-reasoning` เคย PASS "answer 0 ตัวอักษร" เพราะหา 1591 ใน reasoning — ตอนนี้ 1591 ต้องอยู่ในคำตอบสุดท้าย · งบ 1024 → 4096 ·
+  คำตอบว่าง = `WARN: คำตอบว่าง — reasoning กินงบ` exit 2 · (3) bundle embedding บน llama.cpp ที่มี mmproj (qwen3-vl-embedding-8b-gguf)
+  เคยได้ `test-vision` (chat ไปหา embedding = FAIL ขยะ) — verb เลือกตาม task: embed → `test-embed` เท่านั้น · test-text/test-vision/test-tools
+  ชี้ทาง · (4) ป้ายบนการ์ดผิดกับ vLLM: `image` เดาจาก `config.json` ในแคช HF (`vision_config`/`image_token_id`/`mm_*`) + argv
+  `--limit-mm-per-prompt` + `multimodal.projector` ที่ adopt เขียน (gemma-4-31B-it adopt · Qwen3.6-35B-A3B-NVFP4 เคยขึ้น text/MoE) · plan
+  ตั้ง modalities ให้ safetensors จาก capabilities (bundle ใหม่ได้ `test-vision`) · adopt เขียน modalities · `MTP` นับจาก argv/`bundle.args`
+  (`--speculative-config`/`--spec-type`) · llama.cpp task embed ไม่อ้าง `image` (llama-server ทิ้งภาพบน `/v1/embeddings` — วัดแล้ว vector
+  เท่ากัน) → ป้าย `mmproj unused` + tooltip (`feature_note`) · (5) `lmds set --context` เกิน native (1048676 > 1048576) ผ่านเงียบเมื่อ
+  profile ไม่มี `native_context` — ถอยไปอ่าน `NATIVE_CONTEXT` ที่หัว controller · llama.cpp ได้ข้อความ RoPE ของตัวเอง (ไม่พูดถึง
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN) · `--slots` ≤ 0 ปฏิเสธ · (6) **ตั้งค่าแล้วยังไม่ restart**: inventory เทียบ `bundle.env`/`bundle.args` กับ argv
+  ที่รันอยู่ (ชื่อที่เสิร์ฟ · context · slots · port · bind · gpu-util · parser · extra args) → `pending_restart` · การ์ดติดป้าย ⟳ `restart to apply`
+  (hover เห็น saved/running) · `lmds ps` ขึ้น `⟳ restart to apply (…)` · `lmds node list` คอลัมน์ bundles `รอ restart N` (ทะเบียนจำ `restart_pending`)
+  · summary `restart_pending` · `PUT /settings` คืน `restart_needed`/`running_served_name` · (7) llama.cpp build ปัจจุบันไม่พิมพ์บรรทัด POST ลง
+  server.log → controller ส่ง `--metrics` เมื่อ build รู้จัก (`LLAMA_METRICS=0` ปิด) · inventory `usage` อ่าน `/metrics`
+  (`llamacpp:prompt_tokens_total`/`tokens_predicted_total` + `launch_slot_` เป็นตัวนับคำขอ) เก็บตัวอย่างใน `usage.samples` คิดส่วนต่าง 24 ชม.
+  (ตัวนับถอยหลัง = restart ตัดชุดเก่า) · vLLM/SGLang = `docker logs --since 24h` · ไม่มี `/metrics` = นับ `launch_slot_` ตั้งแต่ start · แคช 5 นาที ·
+  ผู้ช่วย `usage` probe คำนวณบน hub จากแคช (unknown = "ตรวจไม่ได้" ไม่ใช่ 0) · (8) `lmds set --model-id` บอกว่าตัวที่รันอยู่ยังเสิร์ฟชื่อเดิม
+  จน restart (msi-6) · เทส: `test_review_templates.py` (เซิร์ฟเวอร์ปลอม: tool_calls · คิดจนหมดงบ · หมดงบตลอด · call หลุดเป็นข้อความ ·
+  reasoning ว่าง/ผิด/`<think>` ปน · llama.cpp `/v1/embeddings` · `--metrics` ใน serve-args) · `test_inventory.py` (vision จาก config/argv/adopt ·
+  VL-embedding · MTP จาก argv · drift · usage 24 ชม./docker) · `test_bundle_settings.py` (RoPE · header fallback · slots · CLI set/ps/registry) ·
+  `test_restart_pending_dom.py` (ป้ายบนการ์ด node + local) · `test_assistant_operator.py` (usage insight) · docs/USAGE.md
+
 - **โมเดล reranker เป็น task ของตัวเอง (`rerank`) — ไม่ใช่ embedding อีกต่อไป** — เจ้าของ 2026-09-08: `lmds plan Qwen/Qwen3-Reranker-4B`
   ออกมาเป็น `task: embed` (เสิร์ฟ /v1/embeddings) ทั้งที่ reranker ต้องเสิร์ฟ score/rerank · inspector จับ reranker ก่อน embedding
   (pipeline_tag `text-ranking` · ชื่อ/tag rerank·cross-encoder · `*ForSequenceClassification` label เดียวใน config.json · GGUF `pooling_type` rank —

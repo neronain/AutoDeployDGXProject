@@ -798,13 +798,371 @@ def runtime_arch_status(server, profile) -> dict | None:
     return {k: support[k] for k in ("arch", "mode", "supported", "runtime", "fix")}
 
 
+# ─────────────────────────── features ที่เป็นจริง (ไม่ใช่แค่ที่ plan จดไว้) ───────────────────────────
+# audit 2026-09-08 (10 เครื่อง): gemma-4-31B-it (adopt) และ nvidia/Qwen3.6-35B-A3B-NVFP4 บน vLLM ขึ้นแค่ text/MoE
+# ทั้งที่ตอบภาพได้ · `speculative` false ทั้งที่ argv มี --speculative-config mtp · llama.cpp VL-embedding ขึ้น image
+# ทั้งที่ llama-server ทิ้งภาพบน /v1/embeddings (vector เท่ากันมี/ไม่มีภาพ)
+_VISION_KEYS = ("vision_config", "image_token_id", "image_token_index", "vision_start_token_id",
+                "mm_tokens_per_image", "boi_token_index", "image_size", "vision_tower")
+
+
+def vision_from_config(config: dict | None) -> bool:
+    """config.json บอกว่ามี vision tower ไหม — `*ForConditionalGeneration` อย่างเดียวไม่พอ (Gemma-3n text-only ก็ใช้ชื่อนี้)
+    ต้องมี vision_config / image_token_id / mm_* ประกอบ · text_config ซ้อนไม่เกี่ยว: คีย์ vision อยู่ชั้นนอกเสมอ"""
+    if not isinstance(config, dict) or not config:
+        return False
+    if any(config.get(key) not in (None, "", {}, []) for key in _VISION_KEYS):
+        return True
+    if any(str(key).startswith("mm_") and config.get(key) not in (None, "", {}, []) for key in config):
+        return True
+    return False
+
+
+def hf_config(profile, server=None) -> dict:
+    """config.json ของ weight ที่ bundle นี้ใช้ — จากแคช HF (vLLM/SGLang) หรือ path ที่ adopt จดไว้ · {} เมื่อไม่มี"""
+    import json
+
+    from lmds.doctor.checks import _weight_paths
+
+    candidates: list[Path] = []
+    model = (profile or {}).get("model") or {}
+    weights = (profile or {}).get("weights") or {}
+    if weights.get("path"):
+        candidates.append(Path(str(weights["path"])))
+    if (profile or {}).get("adopted") and str(model.get("id") or "").startswith("/"):
+        candidates.append(Path(str(model["id"])))
+    try:
+        directory, _wanted = _weight_paths(profile or {}, getattr(server, "slug", "") or "")
+        candidates.append(directory)
+    except Exception:  # noqa: BLE001 — profile แปลก ๆ ไม่ควรล้ม payload
+        pass
+    for base in candidates:
+        for path in (base / "config.json", base):
+            if path.name == "config.json" and path.is_file():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    return data if isinstance(data, dict) else {}
+                except (OSError, ValueError):
+                    return {}
+    return {}
+
+
+def _bundle_args_tokens(server) -> list[str]:
+    """แฟล็กเพิ่มที่บันทึกไว้ (bundle.args) — controller ส่งต่อให้ engine ทุก start"""
+    if not getattr(server, "controller", ""):
+        return []
+    try:
+        return (Path(server.controller).parent / "bundle.args").read_text(encoding="utf-8").split()
+    except OSError:
+        return []
+
+
+def _argv_words(server) -> list[str]:
+    from lmds.fleet.manager import _running_words
+
+    try:
+        return _running_words(server) if getattr(server, "running", False) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def speculative_active(profile, server, argv: list[str] | None = None) -> bool:
+    """MTP/speculative เปิดจริงไหม — profile (ไฟล์ draft/ฝังใน GGUF) · argv ที่รันอยู่ · bundle.args · extra_flags ของ plan
+    (dgx-spark04 2026-09-08: Qwen3.6 vLLM รัน --speculative-config mtp แต่การ์ดบอกว่าไม่มี)"""
+    spec = ((profile or {}).get("features") or {}).get("speculative") or {}
+    if spec.get("draft_files") or spec.get("embedded") or spec.get("embedded_mtp"):
+        return True
+    words = list(argv if argv is not None else _argv_words(server)) + _bundle_args_tokens(server)
+    for flag in ((profile or {}).get("serving") or {}).get("extra_flags") or []:
+        words.extend(str(flag).split())
+    for word in words:
+        if word.startswith(("--speculative-config", "--speculative-model", "--spec-draft-model", "--spec-type",
+                            "--speculative-algorithm", "--speculative-draft-model", "-md")):
+            return True
+    return False
+
+
+def effective_features(profile, server, argv: list[str] | None = None, config: dict | None = None) -> tuple[str, str]:
+    """(สรุป features ที่เป็นจริง, หมายเหตุ) — เริ่มจาก feature_summary(profile) แล้วเติม/ตัดตามหลักฐานที่เครื่องนี้มี
+
+    * image เพิ่มให้ vLLM/SGLang เมื่อ config.json มี vision tower, profile จด multimodal.projector (adopt), หรือ argv มี
+      --limit-mm-per-prompt — plan รุ่นก่อนไม่เคยจด modalities ให้ safetensors จึงขึ้น text ล้วน
+    * image ตัดออกจาก llama.cpp task embed: llama-server รับ --mmproj แต่ /v1/embeddings ไม่เอาภาพเข้า pooling
+      (วัดจริง 2026-09-08: vector เท่ากันทุกมิติ มี/ไม่มีภาพ) — ป้าย vision บนการ์ดจะโกหก client ที่หวัง multimodal embedding
+    * MTP เพิ่มเมื่อ speculative_active()
+    """
+    from lmds.fleet.manager import feature_summary
+
+    summary = feature_summary(profile)
+    labels = [x.strip() for x in summary.split(",")] if summary and summary != "text" else []
+    note = ""
+    feats = (profile or {}).get("features") or {}
+    engine = str(((profile or {}).get("runtime") or {}).get("engine") or getattr(server, "engine", "") or "")
+    task = str(((profile or {}).get("model") or {}).get("task") or "")
+    words = list(argv if argv is not None else _argv_words(server))
+    if "image" not in labels and engine in ("vllm", "sglang"):
+        multimodal = feats.get("multimodal") or {}
+        cfg = config if config is not None else hf_config(profile, server)
+        if vision_from_config(cfg) or multimodal.get("projector") is True \
+                or any(str(w).startswith("--limit-mm-per-prompt") for w in words):
+            labels.insert(len([x for x in labels if x in ("tools", "reasoning")]), "image")
+    if "image" in labels and engine == "llamacpp" and task == "embed":
+        labels = [x for x in labels if x != "image"]
+        note = ("mmproj มาพร้อมไฟล์ แต่ llama-server ไม่เอาภาพเข้า /v1/embeddings (vector เท่ากันมี/ไม่มีภาพ) — "
+                "embedding นี้เป็นข้อความล้วน จนกว่ารันไทม์จะรองรับ multimodal embeddings")
+    if "MTP" not in labels and speculative_active(profile, server, words):
+        labels.append("MTP")
+    return (", ".join(labels) if labels else "text"), note
+
+
+# ─────────────────────────── ตั้งค่าแล้วยังไม่ restart ───────────────────────────
+# `lmds set`/หน้าเว็บเขียน bundle.env แล้วบอกว่า "บันทึกแล้ว" — ตัวที่รันอยู่ยังใช้ค่าเดิมจน restart (msi-6 2026-09-08:
+# เปลี่ยน --model-id แล้ว API ยังตอบชื่อเก่า ผู้ใช้คิดว่าไม่ติด) · เทียบสิ่งที่บันทึกกับ argv ของ process จริง
+# ป้าย `custom` บนการ์ดคือกรณีกลับกัน (start ด้วย flag ที่ไม่ได้บันทึก) — สองป้ายนี้ไม่ทับกัน
+_DRIFT_FLAGS: dict[str, tuple[str, ...]] = {
+    "port": ("--port", "-p"),
+    "context": ("--ctx-size", "-c", "--max-model-len", "--context-length"),
+    "slots": ("--parallel", "-np", "--max-num-seqs", "--max-running-requests"),
+    "served_name": ("--alias", "--served-model-name"),
+    "bind": ("--host",),
+    "gpu_util": ("--gpu-memory-utilization", "--mem-fraction-static"),
+    "tool_parser": ("--tool-call-parser", "--tool-parser"),
+    "reasoning_parser": ("--reasoning-parser",),
+}
+
+
+def _argv_value(words: list[str], flags: tuple[str, ...]) -> str | None:
+    """ค่าของ flag ตัวสุดท้ายที่ปรากฏ (engine ให้ตัวหลังชนะ) — None = ไม่มี flag นั้นบน argv"""
+    found = None
+    for index, word in enumerate(words):
+        for flag in flags:
+            if word == flag and index + 1 < len(words):
+                found = words[index + 1]
+            elif word.startswith(flag + "="):
+                found = word.split("=", 1)[1]
+    return found
+
+
+def _same_value(field: str, saved: str, running: str) -> bool:
+    if field in ("context", "slots", "port"):
+        try:
+            return int(saved) == int(running)
+        except ValueError:
+            return saved == running
+    if field == "gpu_util":
+        try:
+            return abs(float(saved) - float(running)) < 1e-6
+        except ValueError:
+            return saved == running
+    return saved == running
+
+
+def pending_restart(server, argv: list[str] | None = None, saved: dict[str, str] | None = None) -> dict | None:
+    """ค่าที่บันทึกกับ bundle ต่างจากที่ process ใช้อยู่ไหม — None = ไม่ได้รัน/อ่าน argv ไม่ได้/ไม่มีค่าที่บันทึก
+    คืน {"pending": bool, "changes": [{"field", "saved", "running"}]} · เทียบเฉพาะ flag ที่ argv มีจริง (controller เก่า
+    ที่ไม่ส่ง --parallel ไม่ถูกนับว่าค้าง) · extra_args: ทุก token ใน bundle.args ต้องอยู่บน argv"""
+    if not getattr(server, "running", False) or not getattr(server, "controller", ""):
+        return None
+    if saved is None:
+        from lmds.fleet.bundle_settings import read
+
+        try:
+            saved = read(Path(server.controller).parent)
+        except Exception:  # noqa: BLE001
+            saved = {}
+    if not saved:
+        return None
+    words = [str(w) for w in (argv if argv is not None else _argv_words(server)) if w]
+    if not words:
+        return None
+    changes: list[dict] = []
+    for field, flags in _DRIFT_FLAGS.items():
+        if field not in saved:
+            continue
+        running = _argv_value(words, flags)
+        if running is None:
+            continue
+        if not _same_value(field, str(saved[field]), running):
+            changes.append({"field": field, "saved": str(saved[field]), "running": running})
+    extra = str(saved.get("extra_args") or "").split()
+    missing = [tok for tok in extra if tok not in words]
+    if missing:
+        changes.append({"field": "extra_args", "saved": " ".join(missing), "running": "(ไม่อยู่บน argv)"})
+    return {"pending": bool(changes), "changes": changes}
+
+
+# ─────────────────────────── การใช้งาน (คำขอ 24 ชม.) ───────────────────────────
+# ผู้ช่วย (`usage` probe) และรายงานฟลีตต้องรู้ว่าโมเดลไหนมีคนใช้จริงก่อนเสนอหยุด/ลบ · llama.cpp build ปัจจุบันไม่พิมพ์
+# บรรทัด POST ลง server.log แล้ว (audit 2026-09-08: 0 POST · 653 launch_slot_) — นับจาก /metrics (ต้อง --metrics) เก็บตัวอย่าง
+# ไว้ข้าง run dir แล้วคิดส่วนต่างในหน้าต่าง 24 ชม. · ไม่มี /metrics = นับ launch_slot_ (ตั้งแต่ start รอบนี้) · vLLM = docker log
+_USAGE_TTL = 300.0
+_USAGE_CACHE: dict[str, tuple[float, dict]] = {}
+_SAMPLE_KEEP = 48 * 3600     # เก็บเกิน 24 ชม. เพื่อให้มีตัวอย่าง "เมื่อ 24 ชม. ก่อน" เป็นฐานเสมอ (≤ 12 แถว/ชม. — ไฟล์เล็ก)
+# ชื่อตัวนับที่ llama.cpp/vLLM ใช้ — เลือกตัวที่มีจริงตามลำดับ (llama.cpp ไม่มีตัวนับคำขอตรง ๆ จึงใช้ tokens เป็นหลักฐาน)
+_REQUEST_COUNTERS = ("llamacpp:requests_total", "llamacpp:n_requests_total", "vllm:request_success_total")
+_PROMPT_COUNTERS = ("llamacpp:prompt_tokens_total", "vllm:prompt_tokens_total")
+_GENERATED_COUNTERS = ("llamacpp:tokens_predicted_total", "vllm:generation_tokens_total")
+
+
+def parse_metrics(text: str) -> dict[str, float]:
+    """Prometheus text → {ชื่อ: ค่ารวม} (label ต่างกันรวมกัน) — บรรทัดที่ไม่ใช่ตัวเลขข้าม"""
+    out: dict[str, float] = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[0].split("{", 1)[0]
+        try:
+            out[name] = out.get(name, 0.0) + float(parts[1])
+        except ValueError:
+            continue
+    return out
+
+
+def _fetch_metrics(port: int, timeout: float = 3.0) -> dict[str, float] | None:
+    """None = ไม่มี endpoint (501/ต่อไม่ได้) — ต่างจาก {} ที่คือตอบแต่ไม่มีตัวนับ"""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 — 501 ของ llama-server ที่ไม่ได้ --metrics / ปิดพอร์ต / timeout
+        return None
+    if body.lstrip().startswith("{"):
+        return None            # llama-server ตอบ JSON error เมื่อไม่ได้เปิด --metrics
+    return parse_metrics(body)
+
+
+def _first(metrics: dict[str, float], names: tuple[str, ...]) -> float | None:
+    for name in names:
+        if name in metrics:
+            return metrics[name]
+    return None
+
+
+def _count_lines(path: Path, needles: tuple[str, ...]) -> int:
+    try:
+        with path.open("rb") as handle:
+            keys = [n.encode() for n in needles]
+            return sum(1 for line in handle if any(k in line for k in keys))
+    except OSError:
+        return 0
+
+
+def _samples_path(server) -> Path | None:
+    run_dir = getattr(server, "run_dir", None)
+    if not run_dir or str(run_dir) in ("", "."):
+        return None
+    return Path(run_dir) / "usage.samples"
+
+
+def _record_sample(path: Path | None, now: float, counters: dict) -> list[dict]:
+    """เก็บตัวอย่าง (timestamp + ตัวนับ) แล้วคืนทั้งชุดที่ยังอยู่ในหน้าต่าง — ตัวนับที่ลดลง = server restart ตัดชุดเก่าทิ้ง"""
+    import json
+
+    rows: list[dict] = []
+    if path is not None:
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and now - float(row.get("t", 0)) <= _SAMPLE_KEEP:
+                    rows.append(row)
+        except OSError:
+            rows = []
+    if rows:
+        last = rows[-1]
+        if any(counters.get(k) is not None and last.get(k) is not None and counters[k] < last[k]
+               for k in ("requests", "prompt_tokens", "generated_tokens")):
+            rows = []                                # ตัวนับถอยหลัง = process ใหม่ ประวัติเดิมไม่ต่อกัน
+    rows.append({"t": now, **counters})
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        except OSError:
+            pass
+    return rows
+
+
+def _window_delta(rows: list[dict], key: str, now: float, hours: float = 24.0) -> int | None:
+    """ส่วนต่างของตัวนับเทียบกับ "เมื่อ 24 ชม. ก่อน": ฐาน = ตัวอย่างใหม่สุดที่อายุ ≥ 24 ชม. · ไม่มี = ตัวอย่างแรกในหน้าต่าง ·
+    มีแค่ตัวเดียว = นับตั้งแต่ start (ตัวนับสะสมจาก 0 ตอน process เริ่ม)"""
+    if not rows or rows[-1].get(key) is None:
+        return None
+    usable = [r for r in rows if r.get(key) is not None]
+    older = [r for r in usable if now - float(r.get("t", 0)) >= hours * 3600]
+    inside = [r for r in usable if now - float(r.get("t", 0)) < hours * 3600]
+    base = older[-1] if older else (inside[0] if inside else None)
+    if base is None or base is rows[-1]:
+        return int(rows[-1][key])                     # ยังไม่มีอดีตให้เทียบ — ตัวนับสะสมตั้งแต่ start ก็คือ "ตั้งแต่รอบนี้"
+    return int(rows[-1][key] - base[key])
+
+
+def _docker_requests_24h(container: str) -> int | None:
+    import subprocess
+
+    try:
+        done = subprocess.run(["docker", "logs", "--since", "24h", container], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    pattern = re.compile(r"POST /v1/(chat/)?(completions|embeddings|responses|rerank|score)")
+    return sum(1 for line in (done.stdout + done.stderr).splitlines() if pattern.search(line))
+
+
+def request_usage(server, now: float | None = None) -> dict | None:
+    """{"requests_24h", "prompt_tokens_24h", "generated_tokens_24h", "source", "note"} — None = ไม่ได้รัน · แคช 5 นาที
+    source: metrics (llama.cpp /metrics + launch_slot_) · docker-log (vLLM/SGLang) · server-log (นับ launch_slot_ ตั้งแต่ start)"""
+    import time
+
+    if not getattr(server, "running", False):
+        return None
+    now = time.time() if now is None else now
+    key = f"{server.slug}:{getattr(server, 'port', 0)}:{getattr(server, 'container', '')}"
+    cached = _USAGE_CACHE.get(key)
+    if cached and now - cached[0] < _USAGE_TTL:
+        return dict(cached[1])
+    out: dict = {"requests_24h": None, "prompt_tokens_24h": None, "generated_tokens_24h": None, "source": "", "note": ""}
+    mode = getattr(server, "mode", "")
+    if mode == "docker" and getattr(server, "container", ""):
+        count = _docker_requests_24h(server.container)
+        out.update({"requests_24h": count, "source": "docker-log",
+                    "note": "" if count is not None else "อ่าน docker logs ไม่ได้"})
+    else:
+        log = Path(getattr(server, "run_dir", "") or ".") / "server.log"
+        launched = _count_lines(log, ("launch_slot_",)) if log.is_file() else None
+        metrics = _fetch_metrics(int(getattr(server, "port", 0) or 0)) if getattr(server, "port", 0) else None
+        if metrics is not None:
+            counters = {"requests": _first(metrics, _REQUEST_COUNTERS) if _first(metrics, _REQUEST_COUNTERS) is not None else launched,
+                        "prompt_tokens": _first(metrics, _PROMPT_COUNTERS),
+                        "generated_tokens": _first(metrics, _GENERATED_COUNTERS)}
+            rows = _record_sample(_samples_path(server), now, counters)
+            out.update({"requests_24h": _window_delta(rows, "requests", now),
+                        "prompt_tokens_24h": _window_delta(rows, "prompt_tokens", now),
+                        "generated_tokens_24h": _window_delta(rows, "generated_tokens", now),
+                        "source": "metrics",
+                        "note": "" if len(rows) > 1 else "ตัวอย่างแรก — นับตั้งแต่ start รอบนี้ หน้าต่าง 24 ชม. เริ่มเดินจากตอนนี้"})
+        else:
+            out.update({"requests_24h": launched, "source": "server-log",
+                        "note": "ไม่มี /metrics (start ก่อนมี --metrics หรือ LLAMA_METRICS=0) — นับ launch_slot_ ตั้งแต่ start รอบนี้"
+                                if launched is not None else "ไม่มี server.log ให้นับ"})
+    _USAGE_CACHE[key] = (now, dict(out))
+    return out
+
+
 def model_payload(server, active_job: dict | None = None, memory_gb: float | None = None) -> dict:
     """`memory_gb` = ที่ตัวนี้ถือบน GPU ตอนนี้ (จาก memory_by_slug) — None = ไม่ได้รัน/จับคู่ไม่ได้"""
     from lmds.fleet.consistency import controller_header, controller_state
     from lmds.fleet import (
         autostart_status,
         bundle_profile,
-        feature_summary,
         profile_context,
         running_context, running_slots,
     )
@@ -819,6 +1177,9 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
     )
     ctx_now = running_context(server) or profile_context(profile)
     slots = running_slots(server) or ((profile or {}).get("serving") or {}).get("max_num_seqs") or None
+    argv = _argv_words(server)
+    features, feature_note = effective_features(profile, server, argv)
+    drift = pending_restart(server, argv)
     if (server.engine or "") == "llamacpp" and ctx_now and slots and int(slots) > 1:
         context_per_request = int(ctx_now) // int(slots)
     else:
@@ -845,21 +1206,27 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
         "context_per_request": context_per_request,
         # เพดานของโมเดล — ช่อง context บนหน้าเว็บใส่ max/hint ให้ ไม่ปล่อยให้ตั้งเกินแล้วไปตายตอน start
         "native_context": ((profile or {}).get("model") or {}).get("native_context") or None,
-        "features": feature_summary(profile),
+        # ที่เป็นจริงบนเครื่องนี้ (config.json/argv/bundle.args ประกอบ) ไม่ใช่แค่ที่ plan จด — ดู effective_features()
+        "features": features,
+        # เหตุที่ป้ายหายทั้งที่ไฟล์มี (llama.cpp embed + mmproj) — การ์ดโชว์เป็น tooltip
+        "feature_note": feature_note or None,
         # การ์ดในเว็บโชว์ slug ซึ่งไม่เคยเปลี่ยน — ตั้งชื่อใหม่แล้วหน้าจอเลยดูเหมือนไม่มีอะไรเกิดขึ้น
         "served_name": server.model or ((profile or {}).get("model") or {}).get("served_name"),
         "default_served_name": server.default_model
         or ((profile or {}).get("model") or {}).get("served_name"),
         # ส่งเป็นตัวเลข ไม่ใช่สตริงรวม — หน้าเว็บจะได้จัดรูปเองได้ ไม่ต้องแกะข้อความ
         "moe": ((profile or {}).get("features") or {}).get("moe") or None,
-        "speculative": bool(
-            (((profile or {}).get("features") or {}).get("speculative") or {}).get("draft_files")
-            or (((profile or {}).get("features") or {}).get("speculative") or {}).get("embedded")
-        ),
+        # จาก profile *หรือ* argv/bundle.args ที่มี --speculative-config/--spec-type — plan ไม่ใช่คนเดียวที่เปิด MTP ได้
+        "speculative": speculative_active(profile, server, argv),
+        # mmproj มีไฟล์ แต่ถ้า features ตัด image ออก (llama.cpp embed) ป้าย vision ต้องไม่ขึ้นจากช่องนี้แทน
         "projector": bool(
             (((profile or {}).get("features") or {}).get("multimodal") or {}).get("projector_files")
-        ),
+        ) and not feature_note,
         "autostart": autostart_status(server.slug),
+        # ตั้งค่าแล้วยังไม่ restart: bundle.env/bundle.args ต่างจาก argv ที่รันอยู่ — การ์ดติดป้าย "restart to apply"
+        "pending_restart": drift,
+        # คำขอ 24 ชม. (llama.cpp /metrics · vLLM docker log · ถอยไปนับ launch_slot_) — ผู้ช่วย/รายงานฟลีตใช้ก่อนเสนอหยุด/ลบ
+        "usage": request_usage(server),
         "topology": (profile or {}).get("topology"),
         # stacked: head ตัวนี้จับคู่กับ worker ไหน (จาก cluster.env) — hub เอาไปวาดการ์ดของ worker
         "cluster": read_cluster_env(server.controller) if (profile or {}).get("topology") == "stacked" else None,
@@ -910,4 +1277,6 @@ def summary_of(models: list[dict]) -> dict:
         # controller เก่ากว่า lmds / runtime เก่ากว่าโมเดล — ตัวเลขที่ "ตรง hub" ต้องเป็น 0 ทั้งคู่
         "controllers_stale": sum(1 for m in models if ((m.get("controller") or {}).get("state")) == "stale"),
         "runtime_stale": sum(1 for m in models if ((m.get("runtime_arch") or {}).get("supported")) is False),
+        # ตั้งค่าแล้วยังไม่ restart — hub/`lmds node list` โชว์ได้โดยไม่ต้องไล่ดูทีละการ์ด
+        "restart_pending": sum(1 for m in models if ((m.get("pending_restart") or {}).get("pending"))),
     }

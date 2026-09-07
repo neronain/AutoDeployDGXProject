@@ -66,9 +66,11 @@ def test_last_failure_reads_both_native_log_and_docker_logs_and_never_fails():
 
 
 def test_the_survey_probes_of_the_second_batch_never_fail_either():
-    for name in ("runtime_info", "bench_results", "usage", "weights_on_disk"):
+    for name in ("runtime_info", "bench_results", "weights_on_disk"):
         command, _ = catalog.PROBES[name].command({"slug": "x"} if name == "bench_results" else {})
         assert command.endswith("|| true"), name
+    # usage ย้ายมาคำนวณบน hub จากแคช inventory (llama.cpp /metrics · vLLM docker log) — ไม่ grep server.log ที่ไม่มีบรรทัด POST แล้ว
+    assert catalog.PROBES["usage"].compute is not None and catalog.PROBES["usage"].command({})[0] == ""
 
 
 def test_every_new_action_has_an_impact_and_reuses_existing_commands():
@@ -473,3 +475,27 @@ def test_followups_depend_on_what_was_just_checked():
     assert nothing == ["nemo ตอนนี้เป็นยังไง"]
     assert len(assistant.followups({"probes": [{"name": n, "params": {"slug": "a"}, "target": "n1"}
                                                for n in ("model_logs", "fleet_consistency", "usage", "bench_results")]})) <= 4
+
+
+def test_usage_probe_reads_inventory_counters_from_the_cache_and_marks_unknown(monkeypatch):
+    """audit 2026-09-08: server.log ของ llama.cpp ไม่มีบรรทัด POST แล้ว — probe เดิม grep ได้ 0 ให้ทุกตัว · ตอนนี้อ่าน `usage`
+    ที่ inventory นับ (llama.cpp /metrics · vLLM docker log · launch_slot_) ทุกเครื่องจากแคช · ไม่มีค่า = "ตรวจไม่ได้" ไม่ใช่ 0"""
+    from lmds.assistant import insight
+    from lmds.web import state
+
+    snap = {"host": {"data": {"host": {}, "models": [
+                {"slug": "gemma", "running": True, "usage": {"requests_24h": 12, "prompt_tokens_24h": 3400, "generated_tokens_24h": 900,
+                                                             "source": "metrics", "note": ""}},
+                {"slug": "idle", "running": False}]}},
+            "nodes": {"spark04": {"data": {"host": {}, "models": [
+                {"slug": "qwen", "running": True, "usage": {"requests_24h": 37, "prompt_tokens_24h": None, "generated_tokens_24h": None,
+                                                            "source": "docker-log", "note": ""}},
+                {"slug": "old-node-model", "running": True}]}}}}
+    monkeypatch.setattr(state.STORE, "snapshot", lambda: snap)
+    text = insight.usage({}, "this")
+    assert "this/gemma: 12 คำขอ (24 ชม. · /metrics) · tokens in 3,400 / out 900" in text
+    assert "spark04/qwen: 37 คำขอ (24 ชม. · docker log)" in text
+    assert "this/idle: ไม่ได้รัน" in text
+    assert "spark04/old-node-model: ตรวจไม่ได้" in text and "0 คำขอ" not in text.split("old-node-model")[1].split("\n")[0]
+    only = insight.usage({}, "spark04")
+    assert "gemma" not in only and "spark04/qwen" in only

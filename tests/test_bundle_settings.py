@@ -185,3 +185,86 @@ def test_image_is_refused_for_a_native_llamacpp_bundle(tmp_path):
         {"runtime": {"engine": "llamacpp", "image": "ghcr.io/ggml-org/llama.cpp:server-cuda", "native_build": False},
          "target": {"memory_model": "discrete"}}), encoding="utf-8")
     assert write(bundle_dir, {"image": "ghcr.io/ggml-org/llama.cpp:newer"})["image"] == "ghcr.io/ggml-org/llama.cpp:newer"
+
+
+# ── audit 2026-09-08: context เกิน native ผ่านเงียบ · slots ≤ 0 · set --model-id ต้องบอกว่าตัวที่รันอยู่ยังชื่อเดิม ──
+
+def test_llamacpp_context_above_native_is_refused_with_a_rope_warning_not_a_vllm_message(tmp_path):
+    """1048676 > 1048576 (พิมพ์พลาดหนึ่งหลัก) ผ่าน `lmds set --context` แล้วทุก test เตือน RoPE — llama.cpp ไม่ปฏิเสธเองเหมือน vLLM
+    จึงต้องปฏิเสธตั้งแต่ตอนบันทึก พร้อมบอกเพดาน · ข้อความไม่พูดถึง VLLM_ALLOW_LONG_MAX_MODEL_LEN ซึ่งไม่มีผลกับ llama.cpp"""
+    import yaml
+
+    (tmp_path / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(
+        {"model": {"native_context": 1048576}, "runtime": {"engine": "llamacpp"}}), encoding="utf-8")
+    with pytest.raises(SettingsError) as exc:
+        write(tmp_path, {"context": 1048676})
+    assert "1,048,576" in str(exc.value) and "RoPE" in str(exc.value) and "VLLM_ALLOW" not in str(exc.value)
+    assert not (tmp_path / FILENAME).exists()
+    assert write(tmp_path, {"context": 1048576})["context"] == "1048576"
+
+
+def test_native_context_falls_back_to_the_controller_header_when_the_profile_lacks_it(tmp_path):
+    """bundle ที่ adopt มา/profile เก่าไม่มี model.native_context — เพดานยังอยู่ที่หัว controller (NATIVE_CONTEXT="…" ตั้งแต่ 0.6.0)
+    ไม่อ่านตรงนั้น = ค่าเกินผ่านเงียบ ๆ (audit 2026-09-08)"""
+    from lmds.fleet.bundle_settings import native_context
+
+    (tmp_path / "MODEL_PROFILE.yaml").write_text("model:\n  id: o/m\nruntime:\n  engine: llamacpp\n", encoding="utf-8")
+    (tmp_path / "m-single.sh").write_text('#!/usr/bin/env bash\nSCRIPT_VERSION="${SCRIPT_VERSION:-0.6.1}"\nNATIVE_CONTEXT="262144"\n',
+                                          encoding="utf-8")
+    assert native_context(tmp_path) == 262144
+    with pytest.raises(SettingsError):
+        write(tmp_path, {"context": 262145})
+    assert write(tmp_path, {"context": 131072})["context"] == "131072"
+    empty = tmp_path / "none"; empty.mkdir()
+    assert native_context(empty) == 0
+
+
+@pytest.mark.parametrize("bad", [0, -1, "0", "abc"])
+def test_slots_at_or_below_zero_are_refused(tmp_path, bad):
+    with pytest.raises(SettingsError) as exc:
+        write(tmp_path, {"slots": bad})
+    assert "slots" in str(exc.value)
+    assert not (tmp_path / FILENAME).exists()
+
+
+def test_set_model_id_says_the_running_server_keeps_the_old_name_until_restart(tmp_path, monkeypatch, isolated_config):
+    """msi-6 2026-09-08: `lmds set --model-id new` แล้ว API ยังตอบชื่อเก่า ผู้ใช้เข้าใจว่าไม่ติด — ค่าที่บันทึกมีผลรอบ start ถัดไป
+    · ป้าย restart to apply บนการ์ด/`lmds ps` จนกว่าจะ restart"""
+    import os
+
+    from typer.testing import CliRunner
+
+    from lmds import inventory
+    from lmds.cli.main import app
+    from tests.test_fleet import make_meta
+
+    bundle_dir = _bundle(tmp_path)
+    controller = next(bundle_dir.glob("*-single.sh"))
+    run_root = tmp_path / "run"
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(run_root))
+    make_meta(run_root, "demo", pid=os.getpid(), port=8000, controller=str(controller))
+    # argv ของ process ที่ "รันอยู่" — ชื่อเก่า
+    monkeypatch.setattr("lmds.fleet.manager._running_words",
+                        lambda info: ["llama-server", "--alias", "demo-model", "--ctx-size", "65536", "--port", "8000"])
+    monkeypatch.setenv("COLUMNS", "220")          # ตาราง rich ห้ามตัดคำในคอลัมน์สถานะ
+    runner = CliRunner()
+    result = runner.invoke(app, ["set", "demo", "--model-id", "new-name"])
+    assert result.exit_code == 0, result.output
+    assert "demo-model" in result.output and "new-name" in result.output
+    assert "restart demo" in result.output and "ยังใช้ค่าเดิม" in result.output
+    # ตั้งค่าที่ตรงกับที่รันอยู่ = ไม่ต้องเตือน
+    result = runner.invoke(app, ["set", "demo", "--model-id", "demo-model", "--context", "65536"])
+    assert result.exit_code == 0 and "ยังใช้ค่าเดิม" not in result.output, result.output
+
+    # lmds ps ติดป้าย restart to apply เมื่อ bundle.env ≠ argv
+    runner.invoke(app, ["set", "demo", "--model-id", "renamed"])
+    ps = runner.invoke(app, ["ps"])
+    assert ps.exit_code == 0 and "restart to apply" in ps.output and "served_name" in ps.output, ps.output
+    # inventory/agent info: pending_restart + ตัวนับที่ทะเบียนเก็บให้ `lmds node list`
+    from lmds.fleet import find
+    from lmds.nodes.registry import status_from_probe
+
+    payload = inventory.model_payload(find("demo"))
+    assert payload["pending_restart"]["pending"] and payload["pending_restart"]["changes"][0]["field"] == "served_name"
+    fields = status_from_probe({"host": {"lmds_version": "0.6.1"}, "models": [payload]})
+    assert fields["restart_pending"] == 1

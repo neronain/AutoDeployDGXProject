@@ -1443,6 +1443,15 @@ function modelTags(m) {
   else if (m.topology === "stacked") out.push(`<span class="tag">stacked</span>`);
   if (m.projector || (m.features || "").includes("image"))
     out.push(`<span class="tag feat" title="Accepts images (mmproj)">${ico("i-eye")}vision</span>`);
+  // mmproj มากับไฟล์ แต่รันไทม์ไม่เอาภาพเข้า /v1/embeddings (llama.cpp embed · audit 2026-09-08) — บอกเหตุที่ป้าย vision หาย
+  else if (m.feature_note)
+    out.push(`<span class="tag" data-feature-note title="${esc(m.feature_note)}">mmproj unused</span>`);
+  // ตั้งค่าแล้วยังไม่ restart: bundle.env/bundle.args ต่างจาก argv ที่รันอยู่ (msi-6 2026-09-08: เปลี่ยน model-id แล้ว API ยังตอบชื่อเก่า)
+  // — ป้าย `custom` คือกรณีกลับกัน (start ด้วย flag ที่ไม่ได้บันทึก)
+  if (m.pending_restart && m.pending_restart.pending) {
+    const what = (m.pending_restart.changes || []).map(c => `${c.field}: saved ${c.saved} · running ${c.running}`).join("\n");
+    out.push(`<span class="tag warn" data-restart-pending title="Saved settings differ from what the running server uses — restart to apply:\n${esc(what)}">${ico("i-restart")}restart to apply</span>`);
+  }
   // embedding/rerank: ไม่ใช่ chat — การ์ดต้องบอกตั้งแต่แรก ไม่ใช่รอให้กด test-text แล้วโดนปฏิเสธ
   if ((m.features || "").includes("embedding"))
     out.push(`<span class="tag feat" title="Embedding model — serves /v1/embeddings only (no chat)">EMBED</span>`);

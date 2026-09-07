@@ -445,7 +445,8 @@ def test_the_recipes_and_the_assistant_know_rerank():
         recipe = find_recipe(repo)
         assert recipe is not None and recipe.engine == "vllm" and recipe.image == "nvcr.io/nvidia/vllm:26.05-py3"
         assert recipe.serving["max_num_seqs"] == 8 and "is_original_qwen3_reranker" in recipe.serving["hf_overrides"]
-        assert "pending" in recipe.validated_on
+        # validated_on ถูกอัปเดตหลัง deploy จริงบน dgx-spark04 2026-09-08 (4B ผ่าน test-rerank · 8B ยังไม่ได้รันเอง)
+        assert "dgx-spark04" in recipe.validated_on
     assert find_recipe("Qwen/Qwen3-Reranker-0.6B") is None
 
     action = catalog.ACTIONS["run_test"]

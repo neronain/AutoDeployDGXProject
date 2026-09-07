@@ -616,7 +616,12 @@ def create_app(token: str = "") -> FastAPI:
         except SettingsError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         state.STORE.invalidate_local()
-        return {"slug": slug, "saved": saved}
+        # ตัวที่รันอยู่ยังใช้ค่าเดิมจน restart — หน้าเว็บบอกได้ทันที ไม่ต้องรอรอบ refresh ให้ป้าย restart to apply ขึ้น
+        from lmds.inventory import pending_restart
+
+        drift = pending_restart(server, saved=saved) if server.running else None
+        return {"slug": slug, "saved": saved, "restart_needed": bool(drift and drift.get("pending")),
+                "pending_restart": drift, "running_served_name": server.model if server.running else None}
 
     @app.post("/api/models/{slug}/start", dependencies=guarded)
     def start(slug: str, body: dict | None = None) -> JSONResponse:

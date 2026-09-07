@@ -233,7 +233,7 @@ recipes:
       - bundle แนบ score_template.jinja (prompt ตาม model card ของ Qwen3-Reranker) ให้ vLLM ผ่าน --chat-template
       - context ตั้งต้น 32,768 (Qwen3-Reranker รองรับ 32k) · น้ำหนัก bf16 ~8 GB ลงเครื่องเดียวคู่กับ Qwen3-Embedding-8B ได้
     source: https://docs.vllm.ai/en/latest/models/pooling_models/ (scoring · Qwen3-Reranker hf_overrides) + https://huggingface.co/Qwen/Qwen3-Reranker-4B
-    validated_on: pending — deploy บน dgx-spark04 2026-09-08
+    validated_on: dgx-spark04 (GB10, nvcr vllm 26.05 / vLLM 0.20.1) 2026-09-08 · test-rerank PASS · /v1/rerank ไทย relevance 0.94 vs 0.00 · slots 4 ctx 8192 pin 5.5 GiB RAM ~16 GB (4B) · 8B ยังไม่ได้รันเอง
 
   - match: Qwen/Qwen3-Reranker-8B
     label: Qwen3-Reranker-8B
@@ -248,7 +248,7 @@ recipes:
       - bundle แนบ score_template.jinja (prompt ตาม model card ของ Qwen3-Reranker) ให้ vLLM ผ่าน --chat-template
       - context ตั้งต้น 32,768 · น้ำหนัก bf16 ~16 GB — สูตรเดียวกับ 4B ต่างแค่ขนาด
     source: https://docs.vllm.ai/en/latest/models/pooling_models/ (scoring · Qwen3-Reranker hf_overrides) + https://huggingface.co/Qwen/Qwen3-Reranker-8B
-    validated_on: pending — สูตรเดียวกับ 4B (deploy บน dgx-spark04 2026-09-08)
+    validated_on: สถาปัตยกรรม/flag เดียวกับ 4B ที่ผ่านบน dgx-spark04 2026-09-08 · ตัว 8B ยังไม่ได้รันเอง
 
   - match: Qwen/Qwen3.5-122B-A10B-GPTQ-Int4
     label: Qwen3.5-122B-A10B (GPTQ-Int4)

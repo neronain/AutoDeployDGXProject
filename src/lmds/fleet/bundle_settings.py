@@ -170,15 +170,36 @@ def read(bundle_dir: Path) -> dict[str, str]:
 
 
 def native_context(bundle_dir: Path) -> int:
-    """เพดาน context ของโมเดลจาก MODEL_PROFILE.yaml ข้าง controller (0 = ไม่รู้)"""
+    """เพดาน context ของโมเดล — MODEL_PROFILE.yaml ก่อน · ไม่มี (adopt/profile เก่า) ถอยไปอ่าน NATIVE_CONTEXT="N" ที่หัว controller
+    (0 = ไม่รู้) · audit 2026-09-08: `lmds set --context 1048676` ผ่านเงียบ ๆ บน bundle ที่ profile ไม่มีค่านี้ แล้วทุก test เตือน RoPE"""
     import yaml
 
+    bundle_dir = Path(bundle_dir)
     try:
         profile = yaml.safe_load((bundle_dir / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")) or {}
         value = ((profile.get("model") or {}).get("native_context"))
-        return int(value) if isinstance(value, int) and value > 0 else 0
+        if isinstance(value, int) and value > 0:
+            return int(value)
     except (OSError, ValueError, AttributeError, yaml.YAMLError):
-        return 0
+        pass
+    for controller in sorted(bundle_dir.glob("*-single.sh")) + sorted(bundle_dir.glob("*-stacked.sh")):
+        try:
+            found = re.search(r'^NATIVE_CONTEXT="(\d+)"', controller.read_text(encoding="utf-8"), re.M)
+        except OSError:
+            continue
+        if found and int(found.group(1)) > 0:
+            return int(found.group(1))
+    return 0
+
+
+def _engine_of(bundle_dir: Path) -> str:
+    import yaml
+
+    try:
+        profile = yaml.safe_load((Path(bundle_dir) / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")) or {}
+        return str((profile.get("runtime") or {}).get("engine") or "")
+    except (OSError, ValueError, AttributeError, yaml.YAMLError):
+        return ""
 
 
 def _check_context_cap(bundle_dir: Path, values: dict[str, object], cleaned: dict[str, str]) -> None:
@@ -193,6 +214,13 @@ def _check_context_cap(bundle_dir: Path, values: dict[str, object], cleaned: dic
     env = " ".join([str(values.get("engine_env") or ""), read(bundle_dir).get("engine_env", "")])
     if "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1" in env.split():
         return
+    if _engine_of(bundle_dir) == "llamacpp":
+        # llama.cpp ไม่ปฏิเสธ แต่ทุกคำขอจะเตือน RoPE และคุณภาพหลังตำแหน่งที่เทรนมาไม่รับประกัน — ค่าที่เกินมักเป็น
+        # เลขพิมพ์พลาด (1048676 vs 1048576 · audit 2026-09-08) จึงปฏิเสธพร้อมบอกเพดาน ไม่ปัดเงียบ ๆ
+        raise SettingsError(
+            f"context {int(cleaned['context']):,} เกินเพดานที่โมเดลเทรนมา ({cap:,} tokens) — llama.cpp จะ start ได้แต่ทุกคำขอ"
+            f"เตือน RoPE และคุณภาพเกินตำแหน่งนั้นไม่รับประกัน · ตั้งได้สูงสุด {cap:,} (ถ้าตั้งใจใช้ RoPE scaling ใส่ "
+            f"--extra-args \"--rope-scaling yarn …\" แล้วตั้ง context ผ่าน env CTX_SIZE ตอน start แทน)")
     raise SettingsError(
         f"context {int(cleaned['context']):,} เกินเพดานของโมเดลนี้ ({cap:,} tokens = max_position_embeddings) — "
         f"vLLM จะไม่ยอม start · ตั้งได้สูงสุด {cap:,} · ถ้าต้องการเกินจริง ๆ ใส่ engine env "

@@ -417,17 +417,10 @@ _probe(Probe(
 _probe(Probe(
     name="usage",
     title="จำนวนคำขอต่อโมเดล",
-    answers="โมเดลไหนมีคนเรียกใช้จริงบ้างใน 24 ชั่วโมงที่ผ่านมา (นับ POST /v1/* จาก log) — ใช้ก่อนเสนอหยุด/ลบโมเดล หรือถามว่าตัวไหนไม่มีใครใช้",
-    build=lambda _: _survey(
-        'for c in $(docker ps --filter name=^lmds- --format "{{.Names}}" 2>/dev/null); do '
-        'n=$(docker logs --since 24h "$c" 2>&1 | grep -acE "POST /v1/(chat/)?(completions|embeddings|responses)"); '
-        'echo "$c (docker, 24h): $n คำขอ"; done; '
-        'for f in ~/.lmds/run/*/server.log; do [ -f "$f" ] || continue; s=$(basename "$(dirname "$f")"); '
-        'n=$(grep -acE "POST /v1/(chat/)?(completions|embeddings)" "$f"); '
-        'echo "$s (native, นับตั้งแต่ start รอบนี้ — log ไม่มี timestamp): $n คำขอ"; done; '
-        'echo; echo "(0 = ไม่มีใครเรียกในช่วงนั้น · โมเดลที่ไม่ได้รันไม่มี log ให้นับ)"'
-    ),
-    timeout=90,
+    answers="โมเดลไหนมีคนเรียกใช้จริงบ้างใน 24 ชั่วโมงที่ผ่านมา (llama.cpp: /metrics · vLLM: docker log · ถอยไปนับ launch_slot_) "
+            "ทุกเครื่องจากแคช inventory — ใช้ก่อนเสนอหยุด/ลบโมเดล หรือถามว่าตัวไหนไม่มีใครใช้",
+    compute=_insight("usage"),
+    timeout=30,
 ))
 
 _probe(Probe(

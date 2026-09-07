@@ -570,6 +570,13 @@ def _harden_projector(plan: DeploymentPlan, report: ModelReport) -> None:
         if declared:
             plan.warnings.append("ตัด projector_files ออก — ใช้ได้เฉพาะ engine llama.cpp")
             plan.multimodal.projector_files = []
+        # modalities เป็นข้อเท็จจริงจาก config.json (vision_config / *ForConditionalGeneration) เหมือน mmproj ของ GGUF —
+        # เดิมไม่มีใครตั้งให้ safetensors เลย: Qwen3.6-35B-A3B-NVFP4 / gemma-4-31B-it บน vLLM ได้ controller ไม่มี test-vision
+        # และการ์ดขึ้น text ล้วน ทั้งที่ตอบภาพได้ (audit 2026-09-08)
+        vision = (report.capabilities or {}).get("vision") or {}
+        if not plan.multimodal.modalities and vision.get("status") in ("yes", "likely") and plan.task == "generate":
+            plan.multimodal.modalities = ["image", "text"]
+            plan.warnings.append(f"เปิดโหมด multimodal ให้อัตโนมัติ — {vision.get('evidence') or 'config.json บอกว่ามี vision'}")
         return
 
     if not available:

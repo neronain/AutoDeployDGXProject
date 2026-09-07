@@ -258,7 +258,9 @@ def _features_from_model(adopted: "Adopted") -> dict:
     architecture = str(architectures[0]) if architectures else ""
     if config.get("vision_config") or config.get("processor_class") \
             or architecture.endswith("ForConditionalGeneration"):
-        features["multimodal"] = {"projector": True}
+        # modalities คือคีย์ที่ feature_summary/การ์ดอ่าน — `projector` เฉย ๆ ไม่มีใครแปลเป็นป้าย vision
+        # (gemma-4-31B-it ที่ adopt บน vLLM ขึ้น text ล้วน · audit 2026-09-08)
+        features["multimodal"] = {"projector": True, "modalities": ["image", "text"]}
 
     if text.get("num_nextn_predict_layers") or config.get("num_nextn_predict_layers"):
         features["speculative"] = {"embedded_mtp": True}
