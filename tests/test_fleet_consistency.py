@@ -164,3 +164,22 @@ def test_web_install_refuses_dirty_hub_and_forces_a_reprobe_when_done(hub, monke
     assert state.STORE.node_epoch("msi-4") > before, "งานจบต้อง STORE.force(name) — การ์ดห้ามโชว์ของเก่าอีก 15 วิ"
     assert state.STORE.due("msi-4")
     assert jobs.get(forced.json()["job"]["id"]).exit_code == 0
+
+
+def test_control_plane_hub_runtime_axis_is_not_applicable():
+    """เคสจริง 2026-09-07: hub (control-plane ไม่มี GPU) ถือ bundle GGUF 6 ใบไว้ push → มิติ runtime เคย "ตรวจไม่ได้" → hub
+    เป็น warn ทั้งที่ทุก node ตรง · ต้องเป็น n/a และ hub นับว่า consistent"""
+    from lmds.fleet.consistency import node_verdict
+
+    hub = {"version": "0.6.1", "commit": "34f83bb", "template_hash": "f5ce29c2d47a", "dirty": []}
+    host = {"lmds_version": "0.6.1", "lmds_commit": "34f83bb", "lmds_installed_commit": "34f83bb",
+            "template_hash": "f5ce29c2d47a", "role": {"control_plane": True}, "runtimes": {"llamacpp": []}}
+    models = [{"slug": "qwen3-8-flash-next-uncensored-gguf", "engine": "llamacpp", "template_hash": "f5ce29c2d47a",
+               "generated_by": "0.6.1", "runtime_arch": {"arch": "qwen4exp", "supported": None}}]
+    v = node_verdict({"host": host, "models": models}, hub)
+    assert v.runtimes.state == "n/a", v.runtimes
+    assert v.consistent and v.level == "ok", v.payload()
+    # เครื่องธรรมดาที่ runtime ยังตอบไม่ได้ ยังต้องเป็น unknown เหมือนเดิม
+    host_gpu = {**host, "role": {"control_plane": False}}
+    v2 = node_verdict({"host": host_gpu, "models": models}, hub)
+    assert v2.runtimes.state == "unknown" and not v2.consistent

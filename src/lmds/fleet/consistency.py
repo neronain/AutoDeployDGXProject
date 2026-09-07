@@ -258,6 +258,11 @@ def runtimes_axis(models: list[dict] | None, host: dict | None) -> Axis:
     models = [m for m in (models or []) if m.get("stacked_role") != "worker"]
     llama = [m for m in models if (m.get("engine") or "") == "llamacpp"]
     label = _runtime_label(host)
+    # hub ที่เป็น control-plane (ไม่มี GPU/docker) ถือ bundle ไว้เพื่อ push ไป node เท่านั้น — ไม่มี runtime ให้ตรวจ
+    # เคสจริง 2026-09-07: hub ขึ้น warn "ตรวจไม่ได้ 6 ใบ" ทั้งที่ทุก node ตรงครบ ผู้ใช้เข้าใจว่าฟลีตไม่ตรง
+    role = (host or {}).get("role") or {}
+    if isinstance(role, dict) and role.get("control_plane"):
+        return Axis("n/a", "control-plane ไม่รันโมเดล — bundle ที่ถือไว้มีไว้ push ไป node")
     if not llama:
         return Axis("n/a", (label + " · " if label else "") + "ไม่มี bundle llama.cpp")
     stale, unknown, good = [], [], []

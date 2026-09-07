@@ -5,6 +5,9 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **hub ที่เป็น control-plane ไม่ถูกนับว่า runtime "ตรวจไม่ได้"** — 2026-09-07 หลัง rollout 3 มิติ ทุก node ตรงครบแต่การ์ด
+  Fleet consistency ขึ้น hub เป็น warn เพราะ hub ถือ bundle GGUF ไว้ push โดยไม่มี llama.cpp/GPU · มิติ runtime ของ
+  control-plane = n/a · เทส `test_fleet_consistency.py`
 - **inventory อ่านเลข build ของ llama-server รุ่นใหม่ได้** — rollout 3 มิติรอบแรก 2026-09-06 ทุกเครื่องขึ้น
   `llama.cpp build ?` เพราะ regex จับได้แต่แบบเก่า `version: 10495 (3dc7285b4)` ขณะที่ b10xxx+ พิมพ์
   `version: 0.1.2-dev (build 10495, commit 3dc7285b4)` · เทส `test_inventory.py`
