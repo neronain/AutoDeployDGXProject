@@ -343,6 +343,45 @@ def apply_recipe(plan: DeploymentPlan, recipe, memory_model: str = "") -> Deploy
     return plan
 
 
+TASK_LABELS = {"embed": "embedding", "rerank": "reranker", "generate": "chat"}
+
+# Qwen3-Reranker ของแท้ (Qwen/Qwen3-Reranker-0.6B/4B/8B) เก็บ weight เป็น Qwen3ForCausalLM แล้วให้คะแนนจาก logit ของ
+# token "yes"/"no" — vLLM (≥0.9.1 · NGC 26.05 = 0.20.1) แปลงเป็น sequence-classification ให้เองเมื่อบอกผ่าน hf-overrides
+# ตามเอกสาร vLLM (docs/models/pooling_models/scoring.md) · JSON ไม่มีช่องว่าง: EXTRA_SERVE_ARGS ของ controller แยกคำด้วย
+# ช่องว่าง ถ้ามีช่องว่างใน JSON จะแตกเป็นหลาย argv
+QWEN3_RERANKER_HF_OVERRIDES = (
+    '--hf-overrides {"architectures":["Qwen3ForSequenceClassification"],'
+    '"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+)
+_QWEN3_RERANKER_RE = re.compile(r"qwen3[-_]?(?:vl[-_]?)?reranker", re.I)
+
+
+def is_pooling_task(task: str | None) -> bool:
+    """embed กับ rerank = โมเดล pooling (prefill ล้วน · ไม่มี output token) — ทางเดินเดียวกันเกือบทั้งหมด"""
+    return task in ("embed", "rerank")
+
+
+def rerank_family_for(report: ModelReport) -> str:
+    """ตระกูลของ reranker — ตัดสินว่า vLLM ต้อง hf-overrides/score template ไหม
+
+    qwen3 = Qwen3-Reranker ของแท้ (weight ยังเป็น *ForCausalLM · ต้อง hf-overrides + template ตาม model card) ·
+    seq-cls = โมเดลที่ config ประกาศ *ForSequenceClassification อยู่แล้ว (bge-reranker-v2-m3, jina, Qwen3-Reranker-*-seq-cls
+    ที่คนแปลง) · generic = ไม่รู้จัก → --convert classify ล้วน แล้วให้ test-rerank เป็นคนบอก
+    """
+    arch = str(report.architecture or "")
+    name = report.repo_id.split("/")[-1]
+    if _QWEN3_RERANKER_RE.search(name) and not arch.endswith("ForSequenceClassification"):
+        return "qwen3"
+    if arch.endswith("ForSequenceClassification"):
+        return "seq-cls"
+    return "generic"
+
+
+def qwen3_reranker_overrides(report: ModelReport) -> str | None:
+    """flag --hf-overrides ที่ Qwen3-Reranker ของแท้ต้องใช้บน vLLM · None = โมเดลนี้ไม่ต้อง"""
+    return QWEN3_RERANKER_HF_OVERRIDES if rerank_family_for(report) == "qwen3" else None
+
+
 def rule_based_plan(report: ModelReport, fit: FitReport,
                     engine: Engine | None = None) -> DeploymentPlan:
     # engine ที่ผู้ใช้เลือกมาชนะการเดา แต่ GGUF ยังบังคับ llama.cpp เสมอ —
@@ -352,14 +391,16 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     elif engine is None:
         engine = Engine.VLLM
     topology = topology_for_target(fit.target_name)
-    is_embed = report.task == "embed"
-    if is_embed:
-        # embedding: SGLang ไม่มีทาง pooling ในเส้นทางของเรา · stacked ไม่มีเหตุผล (โมเดล ≤ 8B ลงเครื่องเดียว)
+    # embed กับ rerank เดินทางเดียวกัน (pooling · prefill ล้วน ไม่มี output token) ต่างกันแค่ flag กับ endpoint
+    is_pooling = is_pooling_task(report.task)
+    task_label = TASK_LABELS.get(report.task, report.task)
+    if is_pooling:
+        # pooling: SGLang ไม่มีทาง pooling ในเส้นทางของเรา · stacked ไม่มีเหตุผล (โมเดล ≤ 8B ลงเครื่องเดียว)
         if engine is Engine.SGLANG:
             engine = Engine.VLLM
         if topology is not Topology.SINGLE:
             raise PlanError(
-                "โมเดล embedding รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single)")
+                f"โมเดล {task_label} รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single)")
     # stacked (TP ข้ามเครื่อง) มี controller เฉพาะ vLLM — SGLang stacked ยังไม่มี reference ที่รันผ่าน
     # เดิม renderer ปฏิเสธเฉพาะ llama.cpp ส่วน SGLang หลุดไป render ด้วย template ของ vLLM
     # → bundle ผ่าน gate แต่ควบคุมคนละ engine กับที่ผู้ใช้เลือก
@@ -372,10 +413,10 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     # ของ llama-server คือ pool ที่แบ่งให้ทุก slot เท่า ๆ กัน → คูณกลับ และตั้ง slot = concurrency
     # เดิมขอ --concurrency 4 แล้วได้ slot เดียวกับ context หารสี่ = แย่กว่าไม่ใส่ (รีวิว 2026-09-04)
     per_sequence = fit.recommended_context or 8192
-    if is_embed:
-        # embedding ไม่ generate — context คือความยาวเอกสารที่ embed ได้ต่อชิ้น · header ของ Qwen3-VL บอก 262k
-        # แต่โมเดล embedding ใช้จริงไม่เกิน 32k (Qwen3-Embedding: 32k) · ตั้งตาม header = KV ก้อนใหญ่เปล่า ๆ
-        # และ start ช้า · เพิ่มเองได้ด้วย --context ตอน start ถ้าเอกสารยาวกว่านั้นจริง
+    if is_pooling:
+        # embedding/rerank ไม่ generate — context คือความยาวเอกสารต่อชิ้น (rerank: query + document หนึ่งคู่)
+        # header ของ Qwen3-VL บอก 262k แต่โมเดล embedding ใช้จริงไม่เกิน 32k (Qwen3-Embedding/Reranker: 32k)
+        # ตั้งตาม header = KV ก้อนใหญ่เปล่า ๆ และ start ช้า · เพิ่มเองได้ด้วย --context ตอน start ถ้าเอกสารยาวกว่านั้นจริง
         per_sequence = min(per_sequence, 32768)
     slots = max(1, int(getattr(fit, "concurrency", 1) or 1)) if engine is Engine.LLAMACPP else 4
     context = per_sequence * slots if engine is Engine.LLAMACPP else per_sequence
@@ -407,7 +448,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
             max_num_seqs=slots,
             **arch_requirements(report.repo_id),
         ),
-        task="embed" if is_embed else "generate",
+        task=report.task if is_pooling else "generate",
         special_files=list(report.trust_remote_code_files),
         warnings=[
             "plan นี้สร้างแบบ rule-based (ไม่มี LLM) — ไม่มีการวิจัย parser/feature เชิงลึก",
@@ -415,13 +456,28 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         ],
         generator="rule-based",
     )
-    if is_embed:
-        # ไม่มี chat ไม่มี tool ไม่มี reasoning — ให้ค่าที่เหลือเป็นของ embedding ล้วน
+    if is_pooling:
+        # ไม่มี chat ไม่มี tool ไม่มี reasoning — ให้ค่าที่เหลือเป็นของ embedding/rerank ล้วน
         plan.serving.max_output_tokens = 16
-        plan.warnings.insert(0,
-            "โมเดล embedding — เสิร์ฟ /v1/embeddings ("
-            + ("llama.cpp --embedding" if engine is Engine.LLAMACPP else "vLLM --runner pooling")
-            + ") · ไม่มี chat/tool calling · ทดสอบด้วยคำสั่ง test-embed · เดาผิด? --task generate")
+        if plan.task == "rerank":
+            plan.warnings.insert(0,
+                "โมเดล reranker — เสิร์ฟ /v1/rerank + /v1/score ("
+                + ("llama.cpp --reranking" if engine is Engine.LLAMACPP
+                   else "vLLM --runner pooling --convert classify")
+                + ") · ไม่มี chat/tool calling · ทดสอบด้วยคำสั่ง test-rerank · เดาผิด? --task generate|embed")
+            overrides = qwen3_reranker_overrides(report)
+            if overrides and engine is Engine.VLLM:
+                # Qwen3-Reranker ของแท้ยังเป็น Qwen3ForCausalLM — vLLM ต้องถูกบอกว่าอ่านเป็นหัว yes/no
+                # (แผนจาก LLM ก็ต้องได้ตัวนี้ → _harden_rerank เติมซ้ำถ้าหาย)
+                plan.serving.extra_flags = list(dict.fromkeys(plan.serving.extra_flags + [overrides]))
+                plan.warnings.append(
+                    "Qwen3-Reranker: vLLM อ่านเป็น Qwen3ForSequenceClassification ผ่าน --hf-overrides "
+                    "(classifier_from_token no/yes) · bundle แนบ score_template.jinja ให้ /v1/rerank จัดรูป prompt ตาม model card")
+        else:
+            plan.warnings.insert(0,
+                "โมเดล embedding — เสิร์ฟ /v1/embeddings ("
+                + ("llama.cpp --embedding" if engine is Engine.LLAMACPP else "vLLM --runner pooling")
+                + ") · ไม่มี chat/tool calling · ทดสอบด้วยคำสั่ง test-embed · เดาผิด? --task generate")
         recipe = find_recipe(report.repo_id)
         if recipe is not None:
             plan = apply_recipe(plan, recipe, fit.memory_model.value)

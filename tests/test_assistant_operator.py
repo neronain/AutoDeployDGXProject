@@ -327,7 +327,7 @@ def test_the_router_prompt_lists_the_operator_catalog_with_choices():
     for name in ("fleet_consistency", "fit_preview", "last_failure", "model_recommend", "deploy_model",
                  "set_fit", "node_install", "remove_model", "run_test"):
         assert name in prompt, name
-    assert "test=test-text|test-tools|test-vision|test-reasoning|score" in prompt
+    assert "test=test-text|test-tools|test-vision|test-reasoning|test-embed|test-rerank|score" in prompt
 
 
 def test_the_card_the_user_is_looking_at_reaches_the_router():

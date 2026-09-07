@@ -23,7 +23,7 @@ from .allowlists import image_repo, is_known_image, split_flags
 from .plan_schema import DeploymentPlan, Engine, PlanError, Topology
 from .prompts import build_system_prompt, build_user_prompt
 from .providers import LlmProvider
-from .rulebased import apply_recipe, rule_based_plan
+from .rulebased import TASK_LABELS, apply_recipe, is_pooling_task, qwen3_reranker_overrides, rule_based_plan
 
 MAX_ATTEMPTS = 3
 
@@ -245,19 +245,30 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     _harden_projector(plan, report)
     _harden_draft(plan, report)
     _harden_moe(plan, report)
-    # งานของโมเดลเป็นข้อเท็จจริงจาก repo — LLM ที่วางแผนตั้งเองไม่ได้ · embedding ไม่มี parser ให้ตั้ง
-    plan.task = "embed" if getattr(report, "task", "generate") == "embed" else "generate"
-    if plan.task == "embed" and plan.topology is not Topology.SINGLE:
+    # งานของโมเดลเป็นข้อเท็จจริงจาก repo — LLM ที่วางแผนตั้งเองไม่ได้ · embedding/rerank ไม่มี parser ให้ตั้ง
+    report_task = getattr(report, "task", "generate")
+    plan.task = report_task if is_pooling_task(report_task) else "generate"
+    if is_pooling_task(plan.task) and plan.topology is not Topology.SINGLE:
         # rule-based ปฏิเสธคู่นี้อยู่แล้ว แต่แผนจาก LLM มาถึงตรงนี้ได้ → template stacked ไม่มีโหมด pooling
         # จะ render เป็น chat server ให้โมเดล embedding เงียบ ๆ (audit 2026-09-05)
         raise PlanError(
-            "โมเดล embedding รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single) · "
+            f"โมเดล {TASK_LABELS[plan.task]} รันเครื่องเดียวเสมอ — เลือก target แบบ single (เช่น dgx-spark-single) · "
             f"target {fit.target_name!r} เป็น {plan.topology.value}")
-    if plan.task == "embed":
+    if is_pooling_task(plan.task):
         plan.tool_calling.enabled = False
         plan.tool_calling.parser = None
         plan.reasoning.enabled = False
         plan.reasoning.parser = None
+        if plan.task == "rerank" and plan.runtime.engine is Engine.VLLM:
+            # Qwen3-Reranker ของแท้ต้อง --hf-overrides เสมอ (แผนจาก LLM ลืมได้) · มีซ้ำ (recipe + rule-based) เก็บตัวแรก
+            overrides = qwen3_reranker_overrides(report)
+            flags = [f for f in plan.serving.extra_flags if f]
+            seen_overrides = [f for f in flags if str(f).startswith("--hf-overrides")]
+            if overrides and not seen_overrides:
+                flags.append(overrides)
+            elif len(seen_overrides) > 1:
+                flags = [f for f in flags if not str(f).startswith("--hf-overrides")] + seen_overrides[:1]
+            plan.serving.extra_flags = flags
     else:
         _harden_parsers(plan)
 

@@ -129,8 +129,9 @@ class DeploymentPlan(BaseModel):
     artifact_type: ArtifactType
     selected_gguf: Optional[str] = None
     # งานของโมเดล: generate = chat/completions (ค่าเดิมทั้งหมด) · embed = /v1/embeddings
-    # (vLLM --runner pooling · llama.cpp --embedding) — ข้อเท็จจริงจาก repo ไม่ใช่ตัวเลือกของ LLM
-    task: Literal["generate", "embed"] = "generate"
+    # (vLLM --runner pooling --convert embed · llama.cpp --embedding) · rerank = /v1/rerank + /v1/score
+    # (vLLM --runner pooling --convert classify · llama.cpp --reranking) — ข้อเท็จจริงจาก repo ไม่ใช่ตัวเลือกของ LLM
+    task: Literal["generate", "embed", "rerank"] = "generate"
 
     facts: list[Fact] = Field(default_factory=list)
     runtime: RuntimeChoice

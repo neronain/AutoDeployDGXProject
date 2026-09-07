@@ -26,6 +26,7 @@ _ASPECTS: dict[str, tuple[str, ...]] = {
     "long_context": ("long", "context", "ยาว", "128k", "256k", "เอกสารยาว"),
     "reasoning": ("reason", "reasoning", "think", "คิด", "วิเคราะห์"),
     "embedding": ("embed", "embedding", "vector", "rag"),
+    "rerank": ("rerank", "reranker", "reranking", "จัดอันดับ", "cross-encoder"),
 }
 
 _UNCENSORED = re.compile(r"uncensored|abliterated|orcarouter|huihui|heretic|nsfw", re.I)
@@ -141,9 +142,19 @@ def _score(model: dict, aspects: list[str], recipe) -> tuple[int, list[str], lis
             else:
                 score -= 5
                 against.append("ไม่ใช่โมเดล embedding")
+        elif aspect == "rerank":
+            if "rerank" in features:
+                score += 3
+                why.append("โมเดล reranker (/v1/rerank)")
+            else:
+                score -= 5
+                against.append("ไม่ใช่โมเดล reranker")
     if "embedding" in features and "embedding" not in aspects:
         score -= 5
         against.append("เป็น embedding ไม่ใช่ chat")
+    if "rerank" in features and "rerank" not in aspects:
+        score -= 5
+        against.append("เป็น reranker ไม่ใช่ chat")
     if model.get("running"):
         score += 1
         why.append("รันอยู่ตอนนี้")

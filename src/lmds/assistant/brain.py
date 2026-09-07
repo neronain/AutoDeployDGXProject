@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# engine ที่เสิร์ฟ /v1/chat/completions แบบ OpenAI-compatible — embedding เสิร์ฟแต่ /v1/embeddings คุยไม่ได้
+# engine ที่เสิร์ฟ /v1/chat/completions แบบ OpenAI-compatible — embedding/rerank เสิร์ฟแต่ /v1/embeddings·/v1/rerank คุยไม่ได้
 _CHAT_ENGINES = ("vllm", "llamacpp", "sglang")
+_NOT_CHAT_FEATURES = ("embedding", "rerank")
 
 
 class BrainError(ValueError):
@@ -35,7 +36,7 @@ def _pick(model: dict, node: str, host: str) -> Brain:
     if not model.get("running"):
         raise BrainError(f"{model.get('slug')} ยังไม่ได้รัน — start ก่อนถึงจะใช้เป็นสมองได้")
     engine = str(model.get("engine") or "")
-    if engine not in _CHAT_ENGINES or "embedding" in str(model.get("features") or ""):
+    if engine not in _CHAT_ENGINES or any(f in str(model.get("features") or "") for f in _NOT_CHAT_FEATURES):
         raise BrainError(f"{model.get('slug')} ({engine or '?'}) ไม่ได้เสิร์ฟ chat completions — ใช้ vLLM/llama.cpp/SGLang ที่เป็นโมเดล chat")
     port = int(model.get("port") or 0)
     if not port:

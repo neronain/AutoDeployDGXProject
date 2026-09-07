@@ -710,13 +710,14 @@ _action(Action(
     impact="ถาวร — bundle และ controller หายไป · ถ้ารันอยู่จะถูกหยุด · keep_weights=0 = ลบ weight หลาย GB ที่ต้องโหลดใหม่ถ้าเปลี่ยนใจ",
 ))
 
-_TESTS = ("test-text", "test-tools", "test-vision", "test-reasoning", "score")
+_TESTS = ("test-text", "test-tools", "test-vision", "test-reasoning", "test-embed", "test-rerank", "score")
 
 _action(Action(
     name="run_test",
     title="ทดสอบโมเดล",
     answers="พิสูจน์ว่าโมเดลใช้ได้จริง: test-text ตอบไหม · test-tools คืน tool_calls ไหม · test-vision เห็นภาพไหม · "
-            "test-reasoning แยกความคิดออกไหม · score = lmds bench --quick (วัดความเร็ว+ความสามารถ)",
+            "test-reasoning แยกความคิดออกไหม · test-embed (โมเดล embedding) vector ข้ามภาษาถูกไหม · "
+            "test-rerank (โมเดล reranker) เอกสารที่เกี่ยวข้องได้อันดับหนึ่งไหม · score = lmds bench --quick (วัดความเร็ว+ความสามารถ · เฉพาะ chat)",
     params=(_SLUG_PARAM, Param("test", "choice", choices=_TESTS, describe=" | ".join(_TESTS))),
     build=lambda p: (f"lmds bench run {shlex.quote(p['slug'])} --quick" if p["test"] == "score"
                      else _ctl(p["slug"], p["test"])),

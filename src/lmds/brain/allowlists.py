@@ -35,10 +35,13 @@ VLLM_FLAGS = {
     "--block-size",
     "--generation-config",
     "--async-scheduling",
-    # embedding (โหมด pooling) — controller ใส่ให้เองเมื่อ plan.task == embed
+    # embedding/rerank (โหมด pooling) — controller ใส่ให้เองเมื่อ plan.task == embed/rerank
     "--runner",
     "--convert",
     "--task",
+    # reranker ที่ repo ยังเป็น *ForCausalLM (Qwen3-Reranker ของแท้): vLLM ต้องถูกบอกว่าอ่านเป็น
+    # Qwen3ForSequenceClassification + หัว yes/no — ค่ามาจาก rulebased/recipe ไม่ใช่ LLM คิดเอง
+    "--hf-overrides",
 }
 
 LLAMACPP_FLAGS = {
@@ -59,10 +62,11 @@ LLAMACPP_FLAGS = {
     "--batch-size",
     "--ubatch-size",
     "--rope-scaling",
-    # embedding — controller ใส่ให้เองเมื่อ plan.task == embed
+    # embedding/rerank — controller ใส่ให้เองเมื่อ plan.task == embed/rerank
     "--embedding",
     "--pooling",
     "--embd-normalize",
+    "--reranking",
 }
 
 SGLANG_FLAGS = {

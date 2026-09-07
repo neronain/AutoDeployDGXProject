@@ -37,7 +37,7 @@ lmds deploy https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF --target dgx-
 |---|---|
 | `lmds inspect <โมเดล>` | วิเคราะห์ + เช็ก fit อย่างเดียว — ไม่สร้างไฟล์ ไม่เสีย token (`--context N` ถามว่าค่านี้ได้กี่คนพร้อมกัน) |
 | `lmds plan <โมเดล>` | ดู Deployment Plan (แผน) — ไม่สร้างไฟล์ |
-| `lmds deploy <โมเดล>` | flow เต็ม: วิเคราะห์ → วางแผน → **ยืนยัน** → สร้าง bundle + ZIP (`--gguf` เลือก quant ไม่ต้องมี tty · `--task embed` · `--engine sglang`) |
+| `lmds deploy <โมเดล>` | flow เต็ม: วิเคราะห์ → วางแผน → **ยืนยัน** → สร้าง bundle + ZIP (`--gguf` เลือก quant ไม่ต้องมี tty · `--task embed\|rerank` · `--engine sglang`) |
 | `lmds generate <โมเดล>` | เหมือน deploy แต่**ข้ามขั้นยืนยัน** (ไม่ต่อรอง flag) |
 | `lmds validate <โฟลเดอร์>` | ตรวจ bundle ย้อนหลัง — exit 0 ผ่าน / 2 ไม่ผ่าน |
 | `lmds smoke <ชื่อ>` | พิสูจน์ว่า bundle รันได้จริง: download → verify → start → test-text → stop (ดู §5.5) |
@@ -146,10 +146,11 @@ cd bundles/qwen3-0-6b-gguf
 | `start` / `stop` / `restart` | เปิด-ปิดเซิร์ฟเวอร์ (ตรวจ GPU + ไฟล์ก่อน start เสมอ · GGUF บน ARM64 ที่ยังไม่มี binary จะ build llama.cpp ให้ก่อน) |
 | `status` | สถานะ container + API health |
 | `logs [N] [-f]` | log ล่าสุด N บรรทัด (default 300) · `-f`/`--follow`/`follow` = ตามต่อแบบ realtime (Ctrl-C หยุด ไม่หยุดโมเดล · llama.cpp native ใช้ `tail -F` รอด restart) · ยังไม่มี container/ไฟล์ log = บอกบรรทัดเดียวแล้วจบ |
-| `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget (bundle embedding: `max_input_tokens` = context ต่อ slot ทั้งก้อน · มี `pooling` · ไม่มี `max_output_tokens`) |
+| `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget (bundle embedding/rerank: `endpoint` ที่ต้องเรียก · `max_input_tokens` = context ต่อ slot ทั้งก้อน · embedding มี `pooling` · ไม่มี `max_output_tokens` บน llama.cpp) |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
-| `test-text` | ทดสอบ chat completion หนึ่งครั้ง (bundle embedding: บอกให้ไปใช้ `test-embed` แทน) |
+| `test-text` | ทดสอบ chat completion หนึ่งครั้ง (bundle embedding/rerank: บอกให้ไปใช้ `test-embed`/`test-rerank` แทน) |
 | `test-embed` | *(เฉพาะ bundle embedding)* ยิง `/v1/embeddings` 3 ประโยค — คู่ไทย↔อังกฤษความหมายเดียวกันต้องได้ cosine สูงกว่าประโยคที่ไม่เกี่ยว (ดู §4.9) |
+| `test-rerank` | *(เฉพาะ bundle reranker)* ยิง `/v1/rerank` query 1 + เอกสาร 3 ชิ้น (ไทย/อังกฤษ) — ชิ้นที่เกี่ยวข้องต้องได้อันดับหนึ่ง · พิมพ์คะแนนทุกชิ้น · exit 2 = เรียงผิด (ดู §4.10) |
 | `test-vision` | *(เฉพาะโมเดล multimodal)* สร้างภาพสีแดงแล้วถามว่าเห็นสีอะไร — พิสูจน์ว่า mmproj โหลดจริง (vLLM/stacked: projector ฝังใน weight) |
 | `parsers` | *(vLLM · SGLang · stacked)* ถามชื่อ `--tool-parser` / `--reasoning-parser` ที่ engine รองรับจริง — อ่าน registry `vllm.tool_parsers` (0.28 ย้ายที่) แล้วถอยไป grep `vllm serve --help` |
 | `test-tools` | ตรวจว่าคำตอบถูกแปลงเป็น `tool_calls` ได้จริง (ค่าตั้งต้นวัดโหมด `auto` ที่ agent ใช้) — ใช้ได้ทุก bundle chat ไม่ใช่เฉพาะที่เปิด tool ไว้ตอนสร้าง · vLLM: ตัวแปลคือ `--tool-parser` · llama.cpp: **ไม่มี parser ให้เลือก** chat template ที่โหลดผ่าน `--jinja` เป็นคนแปล ถ้าไม่ผ่านคำสั่งจะอ่าน `chat_template_caps` จาก `/props` มาบอกว่า template รองรับ tools ไหม |
@@ -172,6 +173,7 @@ cd bundles/qwen3-0-6b-gguf
 | `prepare-runtime` | ✅ build จาก source (native) | เฉพาะ bundle ที่มี `runtime_assets` | เฉพาะ bundle ที่มี `runtime_assets` | ✅ pull + lock image ทุก node |
 | `test-text` `test-tools` | ✅ (chat) | ✅ | ✅ | ✅ |
 | `test-embed` | ✅ (embed) | ✅ (embed) | ❌ (embed บน SGLang ถูกปฏิเสธ) | ❌ |
+| `test-rerank` | ✅ (rerank) | ✅ (rerank) | ❌ (rerank บน SGLang ถูกปฏิเสธ) | ❌ |
 | `test-vision` | ✅ ถ้ามี mmproj | ✅ ถ้าแผน multimodal | ❌ | ✅ ถ้าแผน multimodal |
 | `test-reasoning` `parsers` | ❌ | ✅ | ✅ | ✅ |
 | `bench` `stress` | ❌ (ใช้ `lmds bench`) | ✅ | ❌ | ✅ |
@@ -499,7 +501,8 @@ FAIL(auto): ไม่มี tool_calls — Claude Code และ agent อื่
 | `EXTRA_SERVE_ARGS` / `ENGINE_ENV` | *(ว่าง)* | แฟล็กเพิ่ม (เท่ากับ `--extra-args`) · env ของ engine เอง (`lmds set --engine-env`) — stacked ส่งถึง worker ด้วย |
 | `GPU_MEMORY_UTILIZATION` | ตามแผน | สัดส่วน VRAM ที่ vLLM จองได้ (ลดถ้าแชร์ GPU กับงานอื่น) |
 | `MAX_NUM_SEQS` / `PARALLEL_SEQS` | ตามแผน | จำนวน request พร้อมกันสูงสุด (vLLM / llama.cpp slot) |
-| `POOLING` / `EMBED_UBATCH` | ตามตระกูล | bundle embedding บน llama.cpp: วิธี pool (`last`/`cls`/`mean`) และ ubatch (ดู §4.9) |
+| `POOLING` / `EMBED_UBATCH` | ตามตระกูล | bundle embedding บน llama.cpp: วิธี pool (`last`/`cls`/`mean`) และ ubatch (ดู §4.9) · bundle rerank ใช้ `EMBED_UBATCH` อย่างเดียว |
+| `SCORE_TEMPLATE` | `<bundle>/score_template.jinja` | bundle rerank บน vLLM (Qwen3-Reranker): ไฟล์ score template ที่ mount ให้ `--chat-template` · `""` = ไม่ใช้ (ดู §4.10) |
 | `IMAGE_MIN_TOKENS` | ตาม projector | llama.cpp vision (เท่ากับ `--image-min-tokens`) |
 | `DRY_RUN` | *(ว่าง)* | `=1 … start` (vLLM/SGLang): พิมพ์ image + argv ที่จะรันจริง ไม่แตะ docker/GPU |
 | `CONTAINER_NAME` | `lmds-<slug>` | ชื่อ container |
@@ -752,7 +755,7 @@ deploy เดี่ยว (stop จะหยุดทุก node ให้ · �
 --target PRESET     # เครื่องเป้าหมาย (ดู 3.4) — ว่าง = เครื่องที่รันคำสั่งอยู่
 --concurrency N     # จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1)
 --gguf FILE|QUANT   # repo GGUF หลาย variant: เลือกไฟล์โดยไม่ต้องมี tty — ชื่อไฟล์เต็ม หรือชื่อ quant (Q8_K_XL, Q4_K_M)
---engine vllm|sglang  # เลือกรันไทม์เอง (ดู §5) · --task generate|embed บังคับชนิดงานเมื่อเดาผิด (ดู §4.9)
+--engine vllm|sglang  # เลือกรันไทม์เอง (ดู §5) · --task generate|embed|rerank บังคับชนิดงานเมื่อเดาผิด (ดู §4.9, §4.10)
 ```
 
 > **`--gguf`** — repo แบบ `unsloth/…-GGUF` มักมี 10–20 quant · โหมดโต้ตอบจะแสดงรายการให้เลือกหมายเลข แต่ script/hub
@@ -1165,7 +1168,7 @@ lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต
 | | ใช้กับ |
 |---|---|
 | `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` `remove --dry-run` `set` `version` `bundles refresh --all` |
-| `node ctl` | `prepare-runtime` `check-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` `logs [N] -f` (ตามสด — Ctrl-C หยุด ปลายทางหยุดตาม) |
+| `node ctl` | `prepare-runtime` `check-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `test-rerank` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` `logs [N] -f` (ตามสด — Ctrl-C หยุด ปลายทางหยุดตาม) |
 | `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start` `--dry-run`) |
 | `node push` | ส่ง bundle จากเครื่องนี้ไปติดตั้ง (`--download` `--start` · stacked: เขียน cluster.env + pair + sync/verify ให้ก่อน start) |
 | `cluster …` | `show` (= `node cluster`) · `write <slug> --head` · `pair <head> <worker…>` · `doctor <head> <worker> [--slug]` |
@@ -1215,7 +1218,7 @@ start รอบถัดไปโดยไม่มีใครเห็น · �
 | กลุ่ม | มีอะไร |
 |---|---|
 | **ตั้งค่าตอน start** | `port` · `context` · `slots` · `bind` · `API key` · `gpu-util` (เฉพาะ vLLM) · Advanced: `tool parser` · `reasoning parser` · `engine env` · `extra args` · `image` |
-| **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
+| **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `test-rerank` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
 | **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` · `logs-worker` · checkbox **worker** ในแผง Follow (ตาม log ฝั่ง worker แทน head) · ปุ่ม **Pair SSH** / **Doctor** ที่หัวกลุ่ม |
 | **จัดการ** | `restart` · `doctor` · `logs` (one-shot 300 บรรทัด) · **▶ follow** (log แบบเกือบ realtime — จุด live · บรรทัด error สีแดง · เลื่อนขึ้นอ่านแล้ว auto-scroll หยุด กดชิป ↓ กลับมา · ■ Stop ปิดสาย · start/restart เปิดแผงนี้ให้เอง) · `repair` · `verify-files` · `check-runtime` · **update runtime** (ขึ้นเมื่อการ์ดติดป้าย *runtime older than model* — llama.cpp บนเครื่องไม่รู้จัก arch ของโมเดล · = `LLAMA_CPP_UPDATE=1 prepare-runtime`) · `enable`/`disable` · `remove` · **Cancel** งานที่ค้าง |
 
@@ -1693,6 +1696,66 @@ POOLING=mean EMBED_UBATCH=4096 ./<slug>-single.sh restart # llama.cpp: เปล
 > · แนะนำโมเดลไทย: Qwen3-Embedding-0.6B/4B (ทั่วไป) · bge-m3 (hybrid + reranker คู่กัน) · รันจริงแล้ว:
 > `VesNFF/Qwen3-VL-Embedding-8B-GGUF` f16 บน dgx-spark03 (2026-09-04)
 
+## 4.10 โมเดล reranker (`/v1/rerank` + `/v1/score`)
+
+reranker (cross-encoder) รับ **query + เอกสารหลายชิ้น** แล้วให้คะแนนความเกี่ยวข้องทีละคู่ — ใช้จัดอันดับผลค้นหาจาก vector store
+อีกชั้นก่อนส่งให้ LLM (RAG: embed → ค้น top-50 → rerank → เหลือ top-5) · ไม่ใช่ embedding: ไม่มี vector ออกมา ไม่มี chat
+
+ระบบดูจาก repo เองว่าเป็น reranker — pipeline_tag `text-ranking` · ชื่อมีคำว่า rerank · tag `reranker`/`cross-encoder` ·
+`config.json` เป็น `*ForSequenceClassification` ที่มี label เดียว · GGUF ที่ `pooling_type = rank` — และตรวจ **ก่อน** embedding
+(Qwen3-Reranker ติด tag `sentence-transformers` เหมือน Qwen3-Embedding · bge-reranker มี pipeline_tag `text-classification`
+— ดูแค่ tag แล้วจะกลายเป็น embed ทั้งคู่ · เคสจริง 2026-09-08 `lmds plan Qwen/Qwen3-Reranker-4B` ออกมาเป็น embed)
+
+```bash
+lmds deploy Qwen/Qwen3-Reranker-4B --target dgx-spark-single --no-llm   # safetensors → vLLM --runner pooling --convert classify
+lmds deploy BAAI/bge-reranker-v2-m3 --no-llm                            # XLM-R cross-encoder — ไม่ต้อง hf-overrides
+lmds deploy gpustack/bge-reranker-v2-m3-GGUF --no-llm                   # GGUF → llama.cpp --reranking
+lmds deploy <repo> --task rerank                                        # เดาผิด (ชื่อ/tag ไม่บอก) → บังคับเอง · --task embed|generate กลับด้าน
+./<slug>-single.sh test-rerank                                          # query 1 + เอกสาร 3 — ชิ้นที่เกี่ยวข้องต้องได้อันดับหนึ่ง (พิมพ์คะแนน)
+SCORE_TEMPLATE="" ./<slug>-single.sh restart                            # vLLM/Qwen3-Reranker: ปิด score template ที่ bundle แนบ
+```
+
+| | llama.cpp (GGUF) | vLLM (safetensors) |
+|---|---|---|
+| flag ที่ controller ใส่ | `--reranking --batch-size N --ubatch-size N` (= pooling rank + หัว classifier ในไฟล์) | `--runner pooling --convert classify` (+ `--hf-overrides` และ `--chat-template /opt/lmds/score_template.jinja` เฉพาะ Qwen3-Reranker) |
+| endpoint | `POST /v1/rerank` (`/rerank`, `/v1/reranking`) | `POST /v1/rerank` (`/rerank`, `/v2/rerank`) และ `POST /v1/score` (`/score`) |
+| ทดสอบ | `test-rerank` | `test-rerank` |
+| client | `client-config` → `"task": "rerank"`, `"endpoint": "/v1/rerank"`, `max_input_tokens` = context ต่อ slot ทั้งก้อน (query + document รวมกัน · ไม่มี `max_output_tokens`) | `"endpoint": "/v1/rerank"`, `"score_endpoint": "/v1/score"`, `"score_template": bundled\|none` |
+| ต้องเป็นไฟล์แบบไหน | GGUF ที่แปลงมาพร้อมหัว classifier (`pooling_type` rank — bge-reranker-v2-m3, jina-reranker) · Qwen3-Reranker GGUF ที่แปลงเป็น chat ธรรมดาใช้ไม่ได้ | `*ForSequenceClassification` (bge-reranker-v2-m3, jina-reranker-v2) หรือ Qwen3-Reranker ของแท้ (`Qwen3ForCausalLM` + hf-overrides) |
+
+**เรียกใช้** — รูปเดียวกับ Jina/Cohere rerank API ทั้งสอง engine (`top_n` ไม่ใส่ = คืนทุกชิ้น · `index` = ลำดับเดิมในคำขอ):
+
+```bash
+curl -s http://<ip>:8000/v1/rerank -H 'Content-Type: application/json' -d '{
+  "model": "qwen3-reranker-4b",
+  "query": "วิธีเปลี่ยนรหัสผ่านของบัญชีผู้ใช้",
+  "documents": ["รายงานยอดขายไตรมาสที่สาม", "เปลี่ยนรหัสผ่าน: ไปที่ Settings > Security", "The cafeteria is closed on holidays"],
+  "top_n": 2 }'
+# → {"results": [{"index": 1, "relevance_score": 0.98, "document": {"text": "..."}}, {"index": 0, "relevance_score": 0.01, ...}], "usage": {...}}
+
+curl -s http://<ip>:8000/v1/score -H 'Content-Type: application/json' -d '{      # vLLM เท่านั้น — คะแนนตามลำดับเดิม ไม่เรียง
+  "model": "qwen3-reranker-4b",
+  "text_1": "วิธีเปลี่ยนรหัสผ่านของบัญชีผู้ใช้",
+  "text_2": ["รายงานยอดขายไตรมาสที่สาม", "เปลี่ยนรหัสผ่าน: ไปที่ Settings > Security"] }'
+# → {"data": [{"index": 0, "score": 0.01}, {"index": 1, "score": 0.98}], "usage": {...}}
+```
+
+- **n8n** — node *Reranker Cohere* ชี้ `Base URL` = `http://<ip>:8000` (credential ใส่ค่าอะไรก็ได้ถ้าไม่ตั้ง API key) หรือ *HTTP Request*
+  POST `/v1/rerank` แล้วต่อเข้า Vector Store Retriever · **LangChain** — `ContextualCompressionRetriever(base_compressor=CohereRerank(
+  base_url="http://<ip>:8000", model="qwen3-reranker-4b", cohere_api_key="x"))` หรือ `JinaRerank` (endpoint เดียวกัน) · **LlamaIndex** —
+  `CohereRerank(base_url=...)` · **Open WebUI** — Documents → Reranking Model → External (URL `/v1/rerank`)
+- **Qwen3-Reranker** (0.6B/4B/8B): repo ยังเป็น `Qwen3ForCausalLM` — vLLM ต้อง `--hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],
+  "classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'` (rule-based ใส่ให้ · สูตรใน catalog ก็มี · แผนจาก LLM ถูก harden
+  เติมให้) และ prompt ตาม model card (`<Instruct>/<Query>/<Document>` + system "Judge whether…") — bundle แนบ `score_template.jinja`
+  แล้ว mount ให้ vLLM ผ่าน `--chat-template` (score template ใช้ role `query`/`document` · มีใน vLLM 0.20.1 ของ NGC 26.05 แล้ว) client จึงส่ง query/document ดิบได้ ·
+  ใส่ instruction เองได้ด้วย message role `system` ผ่าน `/v1/score` แบบ messages
+- **หน่วยความจำ** — rerank เป็น prefill ล้วน: KV pin = slots × KV(context) × 1.2 เหมือน embedding · สูตร Qwen3-Reranker ตั้ง `max_num_seqs 8`
+  (คำขอสั้นแต่มาพร้อมกันเป็นชุด) ที่ context 32,768 = pin ~43 GiB บน Spark — เอกสารสั้น ๆ ลดได้: `lmds set <slug> --fit --slots 8 --context 8192`
+- **`test-rerank` FAIL** (exit 2) = เอกสารที่เกี่ยวข้องไม่ได้อันดับหนึ่ง — vLLM: ตรวจว่า `--hf-overrides`/score template ไปถึง argv จริง
+  (`DRY_RUN=1 ./<slug>-single.sh start`) · llama.cpp: ไฟล์ GGUF ไม่ใช่ reranker (ไม่มีหัว classifier) · เดาผิดชนิดงาน: deploy ใหม่ `--task embed|generate`
+  · exit 1 = ต่อไม่ได้/รูปคำตอบผิด · stacked และ SGLang ไม่รองรับ (เหมือน embedding) · หน้าเว็บ/CLI ติดป้าย "rerank (qwen3)" การ์ดขึ้น `RERANK`
+  · `lmds bench` ไม่วัดโมเดล reranker
+
 ## 5. หน้าเว็บ (ทางเลือก) — `lmds web`
 
 สำหรับคนที่ไม่ถนัด CLI หรืออยากให้ทีมดูสถานะได้โดยไม่ต้อง ssh · **หน้าเว็บเป็นภาษาอังกฤษ**
@@ -1897,7 +1960,7 @@ lmds web -b --new-token                                  # เปลี่ยน
 |---|---|
 | **download** | โหลด weight แล้ว **รัน `verify-files` ต่อให้อัตโนมัติ** พร้อม log สด — ปุ่มเปลี่ยนเป็น `start` เองเมื่อครบ (stacked: ต่อ `sync-worker && verify-worker` ด้วย) |
 | **start / stop / restart** | ใช้ตัวเลือกที่ตั้งไว้ในแท็บ manage (Advanced ส่งเฉพาะตอนเปิด) |
-| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
+| **tests** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `test-rerank` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
 | **manage** | port / context / slots / bind / API key / gpu-util · Advanced (parsers · engine env · extra args · image) · Save / Reset to bundle · autostart · คำสั่ง stacked (+ `logs-worker`) · repair · remove · Copy to another machine · Send to a serving machine |
 | **doctor** | ผลเดียวกับ `lmds doctor` พร้อมคำสั่งแก้ |
 | **logs** | log ล่าสุด 300 บรรทัด |

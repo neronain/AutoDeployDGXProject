@@ -96,6 +96,25 @@ def _client_input(plan: DeploymentPlan) -> int:
     return max(plan.serving.context - plan.serving.max_output_tokens - 2048, 0)
 
 
+# score template ของ Qwen3-Reranker (ตาม model card · สำเนาจาก vLLM examples/pooling/score/template/qwen3_reranker.jinja
+# ที่มากับ v0.20.1 = NGC 26.05) — bundle แนบไฟล์นี้ให้ vLLM ผ่าน --chat-template เพื่อให้ /v1/rerank และ /v1/score
+# รับ query/document ดิบ ๆ ได้ client ไม่ต้องประกอบ prompt <Instruct>/<Query>/<Document> เอง · ไม่มี template
+# = โมเดลยังให้คะแนนได้แต่ไม่ใช่รูปที่เทรนมา คะแนนเพี้ยน · role "system" = instruction (ว่างได้)
+QWEN3_RERANKER_SCORE_TEMPLATE = (
+    "<|im_start|>system\n"
+    "Judge whether the Document meets the requirements based on the Query and the Instruct provided. "
+    'Note that the answer can only be "yes" or "no".<|im_end|>\n'
+    "<|im_start|>user\n"
+    '<Instruct>: {{ messages | selectattr("role", "eq", "system") | map(attribute="content") | first '
+    '| default("Given a web search query, retrieve relevant passages that answer the query") }}\n'
+    '<Query>: {{ messages | selectattr("role", "eq", "query") | map(attribute="content") | first }}\n'
+    '<Document>: {{ messages | selectattr("role", "eq", "document") | map(attribute="content") | first }}<|im_end|>\n'
+    "<|im_start|>assistant\n"
+    "<think>\n\n</think>\n\n"
+)
+SCORE_TEMPLATE_FILENAME = "score_template.jinja"
+
+
 def embed_pooling_for(report: ModelReport) -> str:
     """--pooling ของ llama-server ตามตระกูลโมเดล — ใส่ผิดได้ vector ที่ดูปกติแต่ค้นหาแล้วเพี้ยน"""
     text = " ".join(filter(None, [report.architecture or "", report.model_type or "",
@@ -105,6 +124,20 @@ def embed_pooling_for(report: ModelReport) -> str:
     if any(k in text for k in ("bert", "roberta", "xlm", "bge", "e5", "gte", "arctic")):
         return "cls"
     return "mean"
+
+
+def _rerank_profile(plan: DeploymentPlan, report: ModelReport) -> dict:
+    """ก้อน features.rerank ใน MODEL_PROFILE.yaml — ตระกูล/endpoint/template ที่ controller ใช้จริง"""
+    from lmds.brain.rulebased import rerank_family_for
+
+    family = rerank_family_for(report)
+    is_vllm = plan.runtime.engine is Engine.VLLM
+    return {
+        "family": family,
+        "endpoints": ["/v1/rerank", "/v1/score"] if is_vllm else ["/v1/rerank"],
+        "score_template": bool(is_vllm and family == "qwen3"),
+        "hf_overrides": bool(is_vllm and any(str(f).startswith("--hf-overrides") for f in plan.serving.extra_flags)),
+    }
 
 
 def _quote_flag(flag: str) -> str:
@@ -289,9 +322,15 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
         features.append("reasoning")
     if plan.multimodal.modalities:
         features.append("+".join(plan.multimodal.modalities))
+    from lmds.brain.rulebased import rerank_family_for
+
     is_embed = plan.task == "embed"
+    is_rerank = plan.task == "rerank"
     if is_embed:
         features.append("embedding")
+    if is_rerank:
+        features.append("rerank")
+    rerank_family = rerank_family_for(report) if is_rerank else ""
     engine_name = {
         Engine.VLLM: "vLLM",
         Engine.SGLANG: "SGLang",
@@ -363,6 +402,14 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
         # · BERT/XLM-R ใช้ [CLS] · Gemma/ทั่วไป mean) และ ubatch ต้อง ≥ จำนวน token ของอินพุตทั้งก้อน
         # (โมเดลแบบ non-causal encode ทั้งประโยคใน batch เดียว · ค่าเดิม 512 ทำให้ข้อความยาวล้มเงียบ)
         "is_embed": is_embed,
+        # rerank: ทางเดินเดียวกับ embed (pooling · ไม่มี output token · ubatch เดียวกัน) ต่างที่ flag กับ endpoint
+        # (vLLM --runner pooling --convert classify → /v1/rerank + /v1/score · llama.cpp --reranking → /v1/rerank)
+        "is_rerank": is_rerank,
+        "is_pooling": is_embed or is_rerank,
+        "rerank_family": rerank_family,
+        # Qwen3-Reranker ของแท้: แนบ score_template.jinja แล้ว mount ให้ vLLM (--chat-template) — ดู QWEN3_RERANKER_SCORE_TEMPLATE
+        "score_template": bool(is_rerank and rerank_family == "qwen3" and plan.runtime.engine is Engine.VLLM),
+        "score_template_filename": SCORE_TEMPLATE_FILENAME,
         "embed_pooling": embed_pooling_for(report),
         "embed_ubatch": max(512, min(plan.serving.context, 8192)),
         "n_gpu_layers": n_gpu_layers,
@@ -456,6 +503,8 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
             "speculative": plan.speculative.model_dump(mode="json"),
             # embedding: pooling ที่ controller ใช้ — หน้าเว็บ/CLI ติดป้าย "embedding" จากตรงนี้
             "embedding": ({"pooling": embed_pooling_for(report)} if plan.task == "embed" else None),
+            # rerank: ตระกูล + endpoint — หน้าเว็บ/CLI ติดป้าย "rerank" จากตรงนี้ · score_template = bundle แนบ template ให้ vLLM
+            "rerank": (_rerank_profile(plan, report) if plan.task == "rerank" else None),
         },
         "facts": [f.model_dump(mode="json") for f in plan.facts],
         "warnings": plan.warnings,
@@ -488,14 +537,18 @@ def render_bundle(
     if plan.runtime.engine is Engine.LLAMACPP and not plan.selected_gguf:
         raise ValueError("llama.cpp bundle ต้องเลือกไฟล์ GGUF ก่อน (ใช้ลิงก์ไฟล์ตรง หรือระบุ variant)")
 
-    # embedding มีทางเดินแค่ llama.cpp (--embedding) กับ vLLM (--runner pooling) — template ของ SGLang
-    # ไม่รู้จัก task นี้ และจะ render controller แบบ chat ให้เงียบ ๆ: start ขึ้น /v1/chat/completions
+    # embedding/rerank มีทางเดินแค่ llama.cpp (--embedding/--reranking) กับ vLLM (--runner pooling) — template ของ
+    # SGLang ไม่รู้จัก task นี้ และจะ render controller แบบ chat ให้เงียบ ๆ: start ขึ้น /v1/chat/completions
     # ได้ปกติ แต่ /v1/embeddings ไม่มี test-embed ก็ไม่มี (rule-based ถอยไป vLLM ให้อยู่แล้ว —
     # แต่แผนจาก LLM หรือ plan ที่แก้มือยังหลุดมาถึงนี่ได้ · รีวิว 2026-09-04)
-    if plan.task == "embed" and plan.runtime.engine is Engine.SGLANG:
+    if plan.task in ("embed", "rerank") and plan.runtime.engine is Engine.SGLANG:
+        from lmds.brain.rulebased import TASK_LABELS
+
         raise ValueError(
-            "โมเดล embedding ยังไม่มี controller ของ SGLang — ใช้ --engine vllm "
-            "(safetensors → vLLM --runner pooling --convert embed) หรือไฟล์ GGUF → llama.cpp --embedding"
+            f"โมเดล {TASK_LABELS[plan.task]} ยังไม่มี controller ของ SGLang — ใช้ --engine vllm "
+            "(safetensors → vLLM --runner pooling --convert "
+            + ("classify) หรือไฟล์ GGUF → llama.cpp --reranking" if plan.task == "rerank"
+               else "embed) หรือไฟล์ GGUF → llama.cpp --embedding")
         )
 
     is_stacked = plan.topology is Topology.STACKED
@@ -565,6 +618,15 @@ def render_bundle(
     profile_path = directory / "MODEL_PROFILE.yaml"
     profile_path.write_text(_model_profile_yaml(plan, report, fit), encoding="utf-8")
     files.append(profile_path)
+
+    # Qwen3-Reranker บน vLLM: template ให้ /v1/rerank จัดรูป prompt ตาม model card — controller mount ไฟล์นี้เข้า container
+    # (ไม่ใช่ตัวอย่างใน image: path ของ examples ต่างกันตาม image และ NGC บางรุ่นไม่แนบ examples/pooling มาด้วย)
+    score_path = directory / SCORE_TEMPLATE_FILENAME
+    if context["score_template"]:
+        _atomic_write_text(score_path, QWEN3_RERANKER_SCORE_TEMPLATE)
+        files.append(score_path)
+    elif score_path.exists():
+        score_path.unlink()  # regenerate เป็นโมเดลอื่น — ไฟล์เก่าต้องไม่ค้างให้ controller หยิบไปใช้
 
     needs_special = (
         report.trust_remote_code_files

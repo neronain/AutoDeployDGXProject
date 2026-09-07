@@ -3128,7 +3128,7 @@ def deploy(
         None, "--engine",
         help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
     task: Optional[str] = typer.Option(
-        None, "--task", help="generate | embed — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ) · ใส่เมื่อเดาผิด"),
+        None, "--task", help="generate | embed | rerank — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ/config) · ใส่เมื่อเดาผิด"),
     gguf: Optional[str] = typer.Option(
         None, "--gguf",
         help="repo GGUF หลาย variant: เลือกไฟล์ด้วยชื่อเต็ม หรือชื่อ quant เช่น Q8_K_XL / Q4_K_M "
@@ -3157,12 +3157,14 @@ def deploy(
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
     report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
-        if task.strip().lower() not in {"generate", "embed"}:
-            err_console.print(f"[red]--task ต้องเป็น generate หรือ embed (ได้ '{task}')[/red]")
+        if task.strip().lower() not in {"generate", "embed", "rerank"}:
+            err_console.print(f"[red]--task ต้องเป็น generate, embed หรือ rerank (ได้ '{task}')[/red]")
             raise typer.Exit(code=2)
         report.task = task.strip().lower()
     if report.task == "embed":
         console.print("[cyan]โมเดล embedding[/cyan] — จะเสิร์ฟ /v1/embeddings ไม่มี chat · เดาผิด? --task generate")
+    elif report.task == "rerank":
+        console.print("[cyan]โมเดล reranker[/cyan] — จะเสิร์ฟ /v1/rerank (+ /v1/score บน vLLM) ไม่มี chat · เดาผิด? --task embed|generate")
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):

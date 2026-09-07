@@ -37,22 +37,54 @@ _EMBED_PIPELINES = {"feature-extraction", "sentence-similarity"}
 _EMBED_TAGS = {"sentence-transformers", "sentence-similarity", "feature-extraction",
                "text-embeddings-inference", "embeddings", "embedding"}
 _EMBED_NAME_RE = re.compile(r"embed", re.I)
+# reranker (cross-encoder): รับ query + document แล้วให้คะแนน — เสิร์ฟ /v1/rerank + /v1/score ไม่ใช่ /v1/embeddings
+# ต้องตรวจ *ก่อน* embedding: Qwen/Qwen3-Reranker-4B ติด tag sentence-transformers เหมือน Qwen3-Embedding
+# และ BAAI/bge-reranker-v2-m3 มี pipeline_tag text-classification — ดูแค่ tag แล้วจะกลายเป็น embed ทั้งคู่
+# (เคสจริง 2026-09-08: `lmds plan Qwen/Qwen3-Reranker-4B` ออกมาเป็น task embed)
+_RERANK_PIPELINES = {"text-ranking"}
+_RERANK_TAGS = {"reranker", "rerank", "reranking", "cross-encoder", "text-ranking"}
+_RERANK_NAME_RE = re.compile(r"rerank", re.I)
+# llama.cpp: {arch}.pooling_type = 4 (LLAMA_POOLING_TYPE_RANK) = ไฟล์ GGUF ที่แปลงมาพร้อมหัว classifier ของ reranker
+GGUF_POOLING_RANK = 4
 
 
 def task_of(info: dict, repo_id: str) -> str:
-    """โมเดลนี้เอาไว้ทำอะไร — embedding หรือ chat
+    """โมเดลนี้เอาไว้ทำอะไร — rerank · embedding · chat
 
-    ดูจาก pipeline_tag ก่อน (Hub ติดให้จากไลบรารี) · tags · แล้วค่อยชื่อ repo (GGUF ที่คนแปลงเอง
+    ดูจาก pipeline_tag ก่อน (Hub ติดให้จากไลบรารี) · ชื่อ repo · tags (GGUF ที่คนแปลงเอง
     มักไม่มี tag อะไรเลย เช่น VesNFF/Qwen3-VL-Embedding-8B-GGUF) · เดาผิดแก้ได้ด้วย `--task`
     """
-    if (info.get("pipeline_tag") or "") in _EMBED_PIPELINES:
-        return "embed"
+    pipeline = info.get("pipeline_tag") or ""
+    name = repo_id.split("/")[-1]
     tags = {t.lower() for t in info.get("tags", []) if isinstance(t, str)}
+    if pipeline in _RERANK_PIPELINES or _RERANK_NAME_RE.search(name) or tags & _RERANK_TAGS:
+        return "rerank"
+    if pipeline in _EMBED_PIPELINES:
+        return "embed"
     if tags & _EMBED_TAGS:
         return "embed"
-    if _EMBED_NAME_RE.search(repo_id.split("/")[-1]):
+    if _EMBED_NAME_RE.search(name):
         return "embed"
     return "generate"
+
+
+def task_from_config(config: dict) -> str | None:
+    """งานที่ config.json บอกเอง — `*ForSequenceClassification` ที่มี label เดียว = cross-encoder/reranker
+
+    (BAAI/bge-reranker-v2-m3: XLMRobertaForSequenceClassification · id2label 1 ตัว · Qwen3-Reranker ของแท้ยังเป็น
+    Qwen3ForCausalLM — ตัวนั้นจับได้จากชื่อ/pipeline_tag แทน) · หลาย label = โมเดลจัดหมวด ไม่ใช่ reranker → None
+    """
+    architectures = config.get("architectures")
+    arch = str(architectures[0]) if isinstance(architectures, list) and architectures else ""
+    if not arch.endswith("ForSequenceClassification"):
+        return None
+    labels = config.get("id2label")
+    num_labels = config.get("num_labels")
+    if isinstance(labels, dict) and len(labels) > 1:
+        return None
+    if isinstance(num_labels, int) and num_labels > 1:
+        return None
+    return "rerank"
 
 
 def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
@@ -225,6 +257,9 @@ def _inspect_safetensors(
         if isinstance(architectures, list) and architectures:
             report.architecture = str(architectures[0])
         report.model_type = config.get("model_type") or report.model_type
+        # หัว classifier ในไฟล์คือหลักฐานตรงกว่า tag บน Hub — reranker ที่ Hub ติดป้าย text-classification
+        # หรือไม่มีคำว่า rerank ในชื่อ ยังถูกจับได้จากตรงนี้
+        report.task = task_from_config(config) or report.task
         # โมเดล multimodal แยก config ของส่วนข้อความไว้ใต้ text_config — ค่า context
         # อยู่ในนั้น ไม่ใช่ระดับบนสุด · มองแค่ชั้นบนแล้วได้ None ซึ่งไม่ error อะไรเลย
         # แต่ทำให้ fit ถอยไปใช้ค่าตั้งต้น และ bundle ออกมาเล็กกว่าที่โมเดลทำได้หลายเท่า
@@ -590,6 +625,9 @@ def _inspect_gguf(
     report.moe_experts = report.moe_experts or gguf.expert_count
     report.moe_experts_active = report.moe_experts_active or gguf.expert_used_count
     report.mtp_embedded = report.mtp_embedded or bool(gguf.nextn_layers)
+    # ไฟล์ที่แปลงมาพร้อม pooling_type=RANK คือ reranker แม้ชื่อ repo จะไม่บอก (llama-server ต้อง --reranking)
+    if gguf.pooling_type == GGUF_POOLING_RANK:
+        report.task = "rerank"
 
     # ไฟล์ฝั่ง speculative ต้องถูกอ่าน header ด้วย ไม่ใช่เชื่อชื่อไฟล์: ถ้ามันเป็นหัวล้วน
     # การส่งเข้า --spec-draft-model ทำให้ start ไม่ขึ้น (ดู GgufInfo.is_standalone_model)

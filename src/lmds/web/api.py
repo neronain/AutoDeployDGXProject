@@ -1136,7 +1136,7 @@ def create_app(token: str = "") -> FastAPI:
         from . import jobs
 
         allowed = {
-            "test-text", "test-vision", "test-reasoning", "test-tools", "test-embed",
+            "test-text", "test-vision", "test-reasoning", "test-tools", "test-embed", "test-rerank",
             "bench", "stress", "client-config", "network-info", "status", "props",
             "verify-files", "prepare-runtime", "sync-worker", "verify-worker", "clear-fi-cache",
             # log ของ worker อยู่อีกเครื่อง — ปุ่ม logs ธรรมดาเห็นแต่ head · controller มี `logs worker`

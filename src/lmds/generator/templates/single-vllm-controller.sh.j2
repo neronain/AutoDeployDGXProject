@@ -106,7 +106,11 @@ REASONING_PARSER="${REASONING_PARSER:-{% if plan.reasoning.enabled %}{{ plan.rea
 # บาง template ที่มากับโมเดลไม่ได้ออกรูปแบบ tool ที่ vLLM แปลงเป็น tool_calls ได้
 # (Llama 3.3 เป็นตัวอย่าง) — สูตรจะระบุตัวที่ใช้ได้มาให้ ตั้ง parser อย่างเดียวไม่พอ
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-{{ plan.tool_calling.chat_template_override or "" }}}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
+{% if is_rerank %}# reranker: score template ที่ bundle แนบมา (Qwen3-Reranker ต้องมี — /v1/rerank จัดรูป prompt ตาม model card ให้ client)
+# mount เข้า container ที่ /opt/lmds/{{ score_template_filename }} · ว่าง/ไม่มีไฟล์ = vLLM ใช้ query/document ดิบ
+SCORE_TEMPLATE="${SCORE_TEMPLATE-{% if score_template %}$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/{{ score_template_filename }}{% endif %}}"
+SCORE_TEMPLATE_MOUNT="/opt/lmds/{{ score_template_filename }}"
+{% endif %}HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 # ========================================================================
 
 # ชื่อไฟล์เปล่าจากสูตร = ตัวอย่างที่ vLLM แจกมากับ image · เติม path ให้
@@ -161,7 +165,8 @@ validate_numbers() {
   fi
   # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
   # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
-  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 > 0.3 && v+0 <= 0.98)}' ||
+  # 0.3 พอดีต้องผ่าน — fit/sizing ตั้งพื้นไว้ที่ 0.3 ให้โมเดลเล็ก (bge-reranker 2 GB · Qwen3-Embedding-0.6B) แล้ว `> 0.3` เคยปฏิเสธ
+  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 >= 0.3 && v+0 <= 0.98)}' ||
     die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)"
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
     die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
@@ -698,6 +703,12 @@ start() {
   # embedding: vLLM ≥0.10 ใช้ runner/convert แทน --task ที่เลิกใช้ · โมเดล decoder (Qwen3-Embedding)
   # ถูกแปลงเป็น pooling model ให้เอง — /v1/embeddings ขึ้น /v1/chat/completions ไม่ขึ้น
   serve_args+=(--runner pooling --convert embed)
+{% elif is_rerank %}
+  # reranker (cross-encoder): --convert classify = sequence classification 1 label · โมเดลที่ config เป็น
+  # *ForSequenceClassification อยู่แล้ว (bge-reranker-v2-m3) vLLM ปล่อยผ่านตามเดิม · Qwen3-Reranker ของแท้
+  # ต้องมี --hf-overrides (ใน bundle.args/extra flags ข้างล่าง) ให้อ่านเป็นหัว yes/no
+  # — /v1/rerank + /v1/score ขึ้น /v1/chat/completions และ /v1/embeddings ไม่ขึ้น
+  serve_args+=(--runner pooling --convert classify)
 {% endif %}
 {% if tensor_parallel > 1 %}
   serve_args+=(--tensor-parallel-size "$TENSOR_PARALLEL_SIZE")
@@ -724,7 +735,14 @@ start() {
       serve_args+=(--chat-template "$tpl")
     fi
   fi
-
+{% if is_rerank %}
+  # score template ของ reranker เดินทาง --chat-template เดียวกัน (role query/document · vLLM 0.20.1 ใน NGC 26.05 มีแล้ว) — ไฟล์อยู่ข้างสคริปต์
+  # จึงต้อง mount (ดู docker_args) · ตั้ง SCORE_TEMPLATE="" เพื่อปิด
+  if [[ -n "$SCORE_TEMPLATE" ]]; then
+    [[ -f "$SCORE_TEMPLATE" ]] || die "SCORE_TEMPLATE ชี้ไฟล์ที่ไม่มี: $SCORE_TEMPLATE (ตั้ง SCORE_TEMPLATE=\"\" เพื่อไม่ใช้ template)"
+    serve_args+=(--chat-template "$SCORE_TEMPLATE_MOUNT")
+  fi
+{% endif %}
   if [[ -n "${DRY_RUN:-}" ]]; then
     printf 'IMAGE=%s\n' "$VLLM_IMAGE"
     printf '%s\n' "${serve_args[@]}"
@@ -755,6 +773,9 @@ start() {
 {% if runtime_assets -%}
   verify_assets
   docker_args+=(-v "${PLUGIN_DIR}:${PLUGIN_MOUNT}:ro")
+{% endif %}{% if is_rerank %}  if [[ -n "$SCORE_TEMPLATE" ]]; then
+    docker_args+=(-v "${SCORE_TEMPLATE}:${SCORE_TEMPLATE_MOUNT}:ro")
+  fi
 {% endif %}  # env ของ engine เอง — ตั้งด้วย `lmds set <slug> --engine-env "KEY=VALUE ..."`
   #
   # vLLM/SGLang มี knob จำนวนมากที่อ่านจาก environment ล้วน ๆ ส่งผ่าน flag ไม่ได้เลย
@@ -899,13 +920,69 @@ client_config() {
   "base_url": "http://$(detect_advertise_ip):${API_PORT}/v1",
   "model": "${SERVED_MODEL_NAME}",
   "task": "{{ plan.task }}",
-  "api_key": "${API_KEY:-not-required}",
+{% if is_embed %}  "endpoint": "/v1/embeddings",
+{% elif is_rerank %}  "endpoint": "/v1/rerank",
+  "score_endpoint": "/v1/score",
+  "score_template": "$([[ -n "$SCORE_TEMPLATE" ]] && echo bundled || echo none)",
+{% endif %}  "api_key": "${API_KEY:-not-required}",
   "max_input_tokens": ${input_budget},
   "max_output_tokens": ${CLIENT_OUTPUT},
   "server_context": ${MAX_MODEL_LEN}
 }
 EOF
 }
+{% if is_rerank %}
+# ยิง /v1/rerank จริง: query เดียว + เอกสาร 3 ชิ้น (เกี่ยวข้อง 1 · ไม่เกี่ยว 2 · ไทยและอังกฤษ) แล้วเช็คว่าเอกสารที่เกี่ยวข้อง
+# ได้อันดับหนึ่ง — reranker ที่ "ตอบได้" แต่หัว classifier/hf-overrides/template ผิด จะให้คะแนนเรียงมั่ว · python3 stdlib ล้วน
+# PASS = อันดับหนึ่งถูก · exit 2 = เรียงผิด · exit 1 = ต่อไม่ได้/รูปคำตอบผิด
+test_rerank() {
+  assert_our_server
+  command -v python3 >/dev/null 2>&1 || die "ต้องมี python3"
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
+import json, sys, urllib.error, urllib.request
+
+port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+query = "วิธีเปลี่ยนรหัสผ่านของบัญชีผู้ใช้"
+docs = [
+    "รายงานยอดขายไตรมาสที่สามเติบโต 12% จากปีก่อน",
+    "เปลี่ยนรหัสผ่าน: ไปที่ Settings > Security แล้วกด Change password — To change your account password open Settings > Security.",
+    "The cafeteria on the 3rd floor is closed on public holidays.",
+]
+RELEVANT = 1
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
+req = urllib.request.Request("http://127.0.0.1:%d/v1/rerank" % port,
+                             data=json.dumps({"model": model, "query": query, "documents": docs}).encode(), headers=headers)
+try:
+    with urllib.request.urlopen(req, timeout=180) as r:
+        body = json.load(r)
+except urllib.error.HTTPError as exc:
+    print("test-rerank: FAIL — HTTP %s: %s" % (exc.code, exc.read()[:300].decode("utf-8", "replace")))
+    sys.exit(1)
+except Exception as exc:  # noqa: BLE001
+    print("test-rerank: FAIL — %s" % exc)
+    sys.exit(1)
+try:
+    ranked = sorted(((int(d["index"]), float(d["relevance_score"])) for d in body["results"]), key=lambda d: -d[1])
+except (KeyError, TypeError, ValueError):
+    print("test-rerank: FAIL — คำตอบไม่ใช่รูป rerank (results[].index/relevance_score): %s"
+          % json.dumps(body, ensure_ascii=False)[:300])
+    sys.exit(1)
+if len(ranked) != len(docs):
+    print("test-rerank: FAIL — ได้ผล %d รายการจากเอกสาร %d ชิ้น" % (len(ranked), len(docs)))
+    sys.exit(1)
+for rank, (idx, score) in enumerate(ranked, 1):
+    print("test-rerank: #%d score=%.4f doc[%d] %s%s" % (rank, score, idx, docs[idx][:48], "  ← relevant" if idx == RELEVANT else ""))
+if ranked[0][0] == RELEVANT:
+    print("test-rerank: PASS — เอกสารที่เกี่ยวข้องได้อันดับหนึ่ง")
+else:
+    print("test-rerank: FAIL — เอกสารที่เกี่ยวข้อง (doc[%d]) ไม่ได้อันดับหนึ่ง · ตรวจ --hf-overrides/score template (Qwen3-Reranker) "
+          "หรือว่าโมเดลนี้เป็น reranker จริง (เดาผิด? lmds deploy --task embed|generate)" % RELEVANT)
+    sys.exit(2)
+PYEOF
+}
+{% endif %}
 
 {% if is_embed %}
 # ยิง /v1/embeddings จริง 3 ประโยค (ไทย · อังกฤษความหมายเดียวกัน · ไทยคนละเรื่อง) แล้วเช็คว่า
@@ -1213,7 +1290,7 @@ else:
 sys.exit(1)
 PYEOF
 }
-{% if not is_embed %}{% if plan.multimodal.modalities %}
+{% if not is_pooling %}{% if plan.multimodal.modalities %}
 # ─────────────────────────── test-vision ───────────────────────────
 # ทดสอบว่า vision ใช้ได้จริง ไม่ใช่แค่ plan บอกว่า multimodal — สร้าง PNG สีแดงล้วนแล้วถามโมเดล
 # ว่าเห็นสีอะไร · vLLM ฝัง projector มากับ weight (ไม่มีไฟล์แยกแบบ llama.cpp) พังได้ที่ image
@@ -1447,6 +1524,7 @@ COMMANDS
   network-info      Show current bind address and the endpoint advertised to clients
   info              Model / port / running-or-not summary (also printed by start)
 {% if is_embed %}  test-embed        Embed 3 sentences via /v1/embeddings; the TH↔EN same-meaning pair must beat unrelated text
+{% elif is_rerank %}  test-rerank       Rerank 3 documents for one query via /v1/rerank; the relevant one must rank first (prints scores)
 {% else %}  test-text         Send one chat completion request to verify the model answers
   test-reasoning    ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
   test-tools [both|auto|required]  ตรวจว่า --tool-parser แปลงเป็น tool_calls ได้จริง
@@ -1571,7 +1649,9 @@ case "${1:-help}" in
   status)       status ;;
   logs)         shift; logs "$@" ;;
 {% if is_embed %}  test-embed)      test_embed ;;
-  test-text|test-tools|test-reasoning|test-vision|bench|stress) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+  test-text|test-tools|test-reasoning|test-vision|test-rerank|bench|stress) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+{% elif is_rerank %}  test-rerank)     test_rerank ;;
+  test-text|test-tools|test-reasoning|test-vision|test-embed|bench|stress) echo "โมเดลนี้เป็น reranker — ไม่มี chat/embeddings ให้ทดสอบ · ใช้: $0 test-rerank" >&2; exit 2 ;;
 {% else %}  test-reasoning)  test_reasoning ;;
   test-tools)      test_tools "${2:-both}" ;;
 {% if plan.multimodal.modalities %}  test-vision)     test_vision ;;
@@ -1581,7 +1661,7 @@ case "${1:-help}" in
   client-config) client_config ;;
   info|banner) info ;;
   network-info) network_info ;;
-{% if not is_embed %}  test-text)    test_text ;;
+{% if not is_pooling %}  test-text)    test_text ;;
 {% endif %}  wait-health)  wait_health ;;
   *)            usage ;;
 esac

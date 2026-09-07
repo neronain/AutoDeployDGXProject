@@ -153,6 +153,10 @@ NATIVE_CONTEXT="{{ native_context }}"
 # ข้อความยาวล้ม · ปรับได้: POOLING=mean EMBED_UBATCH=4096 $0 restart
 POOLING="${POOLING:-{{ embed_pooling }}}"
 EMBED_UBATCH="${EMBED_UBATCH:-{{ embed_ubatch }}}"
+{% elif is_rerank %}
+# reranker: llama-server --reranking (= pooling rank + หัว classifier ในไฟล์ GGUF) เสิร์ฟ /v1/rerank · ubatch ต้อง ≥
+# จำนวน token ของ query + document หนึ่งคู่ (encode ทั้งคู่ใน batch เดียว) · ปรับได้: EMBED_UBATCH=4096 $0 restart
+EMBED_UBATCH="${EMBED_UBATCH:-{{ embed_ubatch }}}"
 {% endif %}
 CLIENT_OUTPUT="${CLIENT_OUTPUT:-{{ plan.serving.max_output_tokens }}}"
 CLIENT_INPUT="${CLIENT_INPUT:-auto}"
@@ -1003,6 +1007,9 @@ server_args() {
   # (เดิม `--api-key "$API_KEY"` อยู่ตรงนี้ · รีวิว 2026-09-04)
 {% if is_embed %}
   SERVER_ARGS+=(--embedding --pooling "$POOLING" --batch-size "$EMBED_UBATCH" --ubatch-size "$EMBED_UBATCH")
+{% elif is_rerank %}
+  # --reranking ตั้ง embedding + pooling rank ให้เอง (llama-server ≥ b3900) — เปิด /v1/rerank ปิด /v1/chat/completions
+  SERVER_ARGS+=(--reranking --batch-size "$EMBED_UBATCH" --ubatch-size "$EMBED_UBATCH")
 {% endif %}
 {% if mmproj_basename %}  # ไม่มีบรรทัดนี้ = llama-server รับแต่ข้อความ ทั้งที่โมเดลมองภาพได้ (พังเงียบ ไม่มี error)
   if [[ -n "$MMPROJ_FILE" ]]; then
@@ -1367,22 +1374,23 @@ client_config() {
   # llama.cpp แบ่ง --ctx-size เท่า ๆ กันให้ทุก slot (--parallel) — budget ต้องคิดจาก context ต่อ slot จริง
   local slot_context input_budget
   slot_context=$(( CTX_SIZE / PARALLEL_SEQS ))
-{% if is_embed %}
-  # embedding ไม่มี output token — งบอินพุตคือ context ต่อ slot ทั้งก้อน ไม่หัก CLIENT_OUTPUT/template
+{% if is_pooling %}
+  # embedding/rerank ไม่มี output token — งบอินพุตคือ context ต่อ slot ทั้งก้อน ไม่หัก CLIENT_OUTPUT/template
   # สูตรของ chat ข้างล่างได้ค่าติดลบกับโมเดล embed context สั้น (bge 512/8192) แล้ว die ทั้งที่
-  # เซิร์ฟเวอร์ปกติดี และ max_output_tokens ที่พิมพ์ออกไปไม่มีความหมายกับ /v1/embeddings
+  # เซิร์ฟเวอร์ปกติดี และ max_output_tokens ที่พิมพ์ออกไปไม่มีความหมายกับ /v1/embeddings หรือ /v1/rerank
+  # (rerank: งบคือ query + document หนึ่งคู่รวมกัน)
   input_budget="$slot_context"
   [[ "$CLIENT_INPUT" == "auto" ]] || input_budget="$CLIENT_INPUT"
   cat <<EOF
 {
   "base_url": "http://$(detect_advertise_ip):${API_PORT}/v1",
   "model": "${SERVED_MODEL_NAME}",
-  "task": "embed",
-  "endpoint": "/v1/embeddings",
+  "task": "{{ plan.task }}",
+  "endpoint": "{% if is_rerank %}/v1/rerank{% else %}/v1/embeddings{% endif %}",
   "api_key": "${API_KEY:-not-required}",
   "max_input_tokens": ${input_budget},
-  "pooling": "${POOLING}",
-  "server_context_total": ${CTX_SIZE},
+{% if is_embed %}  "pooling": "${POOLING}",
+{% endif %}  "server_context_total": ${CTX_SIZE},
   "context_per_slot": ${slot_context},
   "parallel_slots": ${PARALLEL_SEQS}
 }
@@ -1511,6 +1519,58 @@ if same > other:
     print("test-embed: OK — คู่ความหมายเดียวกันข้ามภาษาได้คะแนนสูงกว่าข้อความที่ไม่เกี่ยวกัน")
 else:
     print("test-embed: WARN — คู่ความหมายเดียวกันไม่ได้คะแนนสูงกว่า · ตรวจ pooling (ตอนนี้: %s)" % pooling)
+    sys.exit(2)
+PYEOF
+}
+{% endif %}
+{% if is_rerank %}
+# ยิง /v1/rerank จริง: query เดียว + เอกสาร 3 ชิ้น (เกี่ยวข้อง 1 · ไม่เกี่ยว 2 · ไทยและอังกฤษ) แล้วเช็คว่าเอกสารที่เกี่ยวข้อง
+# ได้อันดับหนึ่ง — ไฟล์ GGUF ที่ไม่มีหัว classifier (แปลงมาเป็น embedding/chat) จะให้คะแนนเรียงมั่ว · python3 stdlib ล้วน
+# PASS = อันดับหนึ่งถูก · exit 2 = เรียงผิด · exit 1 = ต่อไม่ได้/รูปคำตอบผิด
+test_rerank() {
+  assert_our_server
+  command -v python3 >/dev/null 2>&1 || die "ต้องมี python3"
+  python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
+import json, sys, urllib.error, urllib.request
+
+port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+query = "วิธีเปลี่ยนรหัสผ่านของบัญชีผู้ใช้"
+docs = [
+    "รายงานยอดขายไตรมาสที่สามเติบโต 12% จากปีก่อน",
+    "เปลี่ยนรหัสผ่าน: ไปที่ Settings > Security แล้วกด Change password — To change your account password open Settings > Security.",
+    "The cafeteria on the 3rd floor is closed on public holidays.",
+]
+RELEVANT = 1
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
+req = urllib.request.Request("http://127.0.0.1:%d/v1/rerank" % port,
+                             data=json.dumps({"model": model, "query": query, "documents": docs}).encode(), headers=headers)
+try:
+    with urllib.request.urlopen(req, timeout=180) as r:
+        body = json.load(r)
+except urllib.error.HTTPError as exc:
+    print("test-rerank: FAIL — HTTP %s: %s" % (exc.code, exc.read()[:300].decode("utf-8", "replace")))
+    sys.exit(1)
+except Exception as exc:  # noqa: BLE001
+    print("test-rerank: FAIL — %s" % exc)
+    sys.exit(1)
+try:
+    ranked = sorted(((int(d["index"]), float(d["relevance_score"])) for d in body["results"]), key=lambda d: -d[1])
+except (KeyError, TypeError, ValueError):
+    print("test-rerank: FAIL — คำตอบไม่ใช่รูป rerank (results[].index/relevance_score): %s"
+          % json.dumps(body, ensure_ascii=False)[:300])
+    sys.exit(1)
+if len(ranked) != len(docs):
+    print("test-rerank: FAIL — ได้ผล %d รายการจากเอกสาร %d ชิ้น" % (len(ranked), len(docs)))
+    sys.exit(1)
+for rank, (idx, score) in enumerate(ranked, 1):
+    print("test-rerank: #%d score=%.4f doc[%d] %s%s" % (rank, score, idx, docs[idx][:48], "  ← relevant" if idx == RELEVANT else ""))
+if ranked[0][0] == RELEVANT:
+    print("test-rerank: PASS — เอกสารที่เกี่ยวข้องได้อันดับหนึ่ง")
+else:
+    print("test-rerank: FAIL — เอกสารที่เกี่ยวข้อง (doc[%d]) ไม่ได้อันดับหนึ่ง · ไฟล์ GGUF นี้เป็น reranker จริงไหม "
+          "(ต้องแปลงมาพร้อมหัว classifier · pooling_type rank) · เดาผิด? lmds deploy --task embed|generate" % RELEVANT)
     sys.exit(2)
 PYEOF
 }
@@ -1699,6 +1759,7 @@ COMMANDS
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
 {% if is_embed %}  test-embed        Embed 3 sentences via /v1/embeddings; the TH↔EN same-meaning pair must beat unrelated text
+{% elif is_rerank %}  test-rerank       Rerank 3 documents for one query via /v1/rerank; the relevant one must rank first (prints scores)
 {% else %}  test-text         Send one chat completion request to verify the model answers
   test-tools [both|auto|required]  Prove tool calling works through the chat template (auto = what agents send)
 {% endif %}  serve-args        Print the exact llama-server arguments this bundle would start with (no start)
@@ -1842,7 +1903,9 @@ case "${1:-help}" in
   info|banner) info ;;
   network-info) network_info ;;
 {% if is_embed %}  test-embed)   test_embed ;;
-  test-text|test-tools) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+  test-text|test-tools|test-rerank) echo "โมเดลนี้เป็น embedding — ไม่มี chat ให้ทดสอบ · ใช้: $0 test-embed" >&2; exit 2 ;;
+{% elif is_rerank %}  test-rerank)  test_rerank ;;
+  test-text|test-tools|test-embed) echo "โมเดลนี้เป็น reranker — ไม่มี chat/embeddings ให้ทดสอบ · ใช้: $0 test-rerank" >&2; exit 2 ;;
 {% else %}  test-text)    test_text ;;
   test-tools)   test_tools "${2:-both}" ;;
 {% endif %}  serve-args)

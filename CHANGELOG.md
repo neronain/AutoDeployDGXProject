@@ -5,6 +5,25 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **โมเดล reranker เป็น task ของตัวเอง (`rerank`) — ไม่ใช่ embedding อีกต่อไป** — เจ้าของ 2026-09-08: `lmds plan Qwen/Qwen3-Reranker-4B`
+  ออกมาเป็น `task: embed` (เสิร์ฟ /v1/embeddings) ทั้งที่ reranker ต้องเสิร์ฟ score/rerank · inspector จับ reranker ก่อน embedding
+  (pipeline_tag `text-ranking` · ชื่อ/tag rerank·cross-encoder · `*ForSequenceClassification` label เดียวใน config.json · GGUF `pooling_type` rank —
+  Qwen3-Reranker ติด tag sentence-transformers และ bge-reranker เป็น text-classification จึงเคยหลุดไปเป็น embed) · planner: ทางเดิน pooling
+  เดียวกับ embed (SGLang→vLLM · stacked ปฏิเสธ · context ≤ 32k · ไม่มี tool/reasoning · KV pin = slots × KV(context) × 1.2) + Qwen3-Reranker
+  ของแท้ได้ `--hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'`
+  (rule-based ใส่ · harden เติมให้แผนจาก LLM · ซ้ำเก็บตัวแรก · allowlist เพิ่ม `--hf-overrides`, `--reranking`) · vLLM controller:
+  `--runner pooling --convert classify` + bundle แนบ `score_template.jinja` (prompt ตาม model card · สำเนาจาก vLLM v0.20.1 = NGC 26.05) mount ให้
+  `--chat-template` (`SCORE_TEMPLATE=""` ปิด) · llama.cpp: `--reranking` · verb ใหม่ `test-rerank` (query 1 + เอกสาร 3 ไทย/อังกฤษ — ชิ้นที่เกี่ยวข้อง
+  ต้องได้อันดับหนึ่ง พิมพ์คะแนน · exit 2 เรียงผิด) · `test-text` บน reranker บอกให้ใช้ `test-rerank` · `client-config` มี `endpoint`/`score_endpoint`
+  · `lmds deploy --task rerank` · MODEL_PROFILE `features.rerank` → ป้าย "rerank (qwen3)" · หน้าเว็บ: การ์ดขึ้น `RERANK`/`EMBED` · ปุ่ม `test-rerank`
+  (local + node) · หน้า deploy บอกว่าเป็น reranker/embedding ก่อนกดยืนยัน · ปุ่ม brain ไม่ขึ้นกับ reranker · ผู้ช่วย `run_test` รับ `test-embed`/`test-rerank`
+  และ `model_recommend` รู้จักโจทย์ rerank · สูตร `Qwen/Qwen3-Reranker-4B` และ `-8B` (NGC vLLM 26.05 · `max_num_seqs 8` · validated_on pending —
+  deploy บน dgx-spark04 2026-09-08) · **แก้พลอย:** `test-embed` ไม่เคยอยู่ใน `KNOWN_COMMANDS` ของ inventory → ปุ่มบนหน้าเว็บไม่ขึ้นให้ bundle
+  embedding ทั้งที่ controller มีคำสั่ง · เทส `test_rerank_mode.py` (ตรวจจับ · แผน · harden · pin · controller ทั้งสอง engine + `test-rerank` PASS/FAIL
+  กับเซิร์ฟเวอร์ปลอม · profile/inventory/recipe/assistant) · docs/USAGE.md §4.10 (curl `/v1/rerank` `/v1/score` · n8n/LangChain/LlamaIndex/Open WebUI)
+- **gpu-util 0.3 พอดีต้องผ่าน validate ของ controller** — พบตอนทำ rerank 2026-09-08: sizing ตั้งพื้น gpu-util เทียบเท่าไว้ที่ 0.3
+  (`max(0.3, …)`) ให้โมเดลเล็ก (bge-reranker 2 GB · Qwen3-Embedding-0.6B) แต่ controller vLLM/SGLang/stacked ตรวจ `> 0.3` → start ตาย
+  "invalid --gpu-util: 0.3 (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)" ทั้งที่ข้อความบอกว่า 0.3 ใช้ได้ · เปลี่ยนเป็น `>= 0.3` ทั้ง 3 template · เทส `test_rerank_mode.py`
 - **ค่าตั้งต้น KV pin ตอน deploy ลด gpu-util ให้เท่าที่ใช้จริงด้วย** — dgx-spark04 2026-09-08: Qwen3-Embedding-8B ได้ pin 22 GiB
   แต่ gpu-util ยัง 0.85 → start ล้ม "Free memory 66/121 GiB is less than desired 103 GiB" ขณะ Qwen3.6 รันอยู่ ทั้งที่ต้องการ
   39 GB · `apply_default_pin` ตั้ง gpu_memory_utilization = need/total + 2% (เหมือน `set --fit`) · เทส `test_kv_sizing.py`

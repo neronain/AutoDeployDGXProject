@@ -853,6 +853,10 @@ def feature_summary(profile: dict | None) -> str:
     if embedding:
         pooling = embedding.get("pooling")
         labels.append(f"embedding ({pooling})" if pooling else "embedding")
+    rerank = feats.get("rerank") or {}
+    if rerank:
+        family = rerank.get("family")
+        labels.append(f"rerank ({family})" if family else "rerank")
     return ", ".join(labels) if labels else "text"
 
 

@@ -80,7 +80,8 @@ class ModelReport(BaseModel):
     private: bool = False
     license: Optional[str] = None
     artifact_type: ArtifactType = ArtifactType.UNKNOWN
-    # "generate" (chat) หรือ "embed" — จาก pipeline_tag/tags/ชื่อ repo · เปลี่ยนได้ด้วย --task
+    # "generate" (chat) · "embed" (/v1/embeddings) · "rerank" (cross-encoder → /v1/rerank + /v1/score)
+    # — จาก pipeline_tag/tags/ชื่อ repo + architectures ใน config.json / pooling_type ใน GGUF · เปลี่ยนได้ด้วย --task
     task: str = "generate"
 
     # ตัวเลขสำหรับ Fit Analyzer

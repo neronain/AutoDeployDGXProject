@@ -11,8 +11,9 @@
 | Topology | {{ plan.topology.value }} (target: {{ fit.target_name }}) |
 {% if plan.selected_gguf %}| GGUF file | `{{ plan.selected_gguf }}` |
 {% endif %}{% if is_embed %}| Task | **embedding** — เสิร์ฟ `/v1/embeddings` เท่านั้น ไม่มี chat / tool calling / reasoning{% if plan.runtime.engine.value == "llamacpp" %} · pooling `{{ embed_pooling }}` (`POOLING=` เปลี่ยนได้ตอน restart){% endif %} |
-{% endif %}| Context เริ่มต้น | {{ "{:,}".format(plan.serving.context) }} tokens{% if is_embed %} (= ความยาวเอกสารสูงสุดต่อชิ้นที่ embed ได้){% endif %} |
-{% if is_embed %}| Client budget | input {{ "{:,}".format(plan.serving.context) }} tokens ต่อคำขอ — embedding ไม่มี output token |
+{% elif is_rerank %}| Task | **reranker** — เสิร์ฟ `/v1/rerank`{% if plan.runtime.engine.value == "vllm" %} + `/v1/score`{% endif %} เท่านั้น ไม่มี chat / tool calling / reasoning · ตระกูล `{{ rerank_family }}`{% if score_template %} · แนบ `{{ score_template_filename }}` (Qwen3-Reranker ต้องใช้ — `SCORE_TEMPLATE=""` ปิดได้){% endif %} |
+{% endif %}| Context เริ่มต้น | {{ "{:,}".format(plan.serving.context) }} tokens{% if is_embed %} (= ความยาวเอกสารสูงสุดต่อชิ้นที่ embed ได้){% elif is_rerank %} (= query + document หนึ่งคู่ยาวได้สูงสุดเท่านี้){% endif %} |
+{% if is_pooling %}| Client budget | input {{ "{:,}".format(plan.serving.context) }} tokens ต่อคำขอ — {% if is_rerank %}reranker{% else %}embedding{% endif %} ไม่มี output token |
 {% else %}| Client budget | input {{ "{:,}".format(client_input) }} / output {{ "{:,}".format(plan.serving.max_output_tokens) }} tokens |
 {% endif %}| License | {{ report.license or "ไม่ระบุ — ตรวจก่อนใช้เชิงพาณิชย์" }} |
 
@@ -70,12 +71,18 @@ chmod +x {{ controller_name }}
 {% endif %}./{{ controller_name }} start
 ./{{ controller_name }} status
 {% if is_embed %}./{{ controller_name }} test-embed     # ยิง /v1/embeddings 3 ประโยค — คู่ความหมายเดียวกัน (ไทย↔อังกฤษ) ต้องได้คะแนนสูงกว่าประโยคที่ไม่เกี่ยว
+{% elif is_rerank %}./{{ controller_name }} test-rerank    # ยิง /v1/rerank: query 1 + เอกสาร 3 ชิ้น — ชิ้นที่เกี่ยวข้องต้องได้อันดับหนึ่ง (พิมพ์คะแนนทุกชิ้น)
 {% else %}./{{ controller_name }} test-text
 {% endif %}./{{ controller_name }} client-config
 ```
 {% if is_embed %}
 > โมเดลนี้เป็น **embedding**: client เรียก `POST /v1/embeddings` ด้วย `"model"` = ชื่อใน `client-config` · ไม่มี `test-text`/`test-tools`
 > (สั่งแล้วจะบอกให้ใช้ `test-embed`) · `client-config` ให้ `max_input_tokens` เต็ม context ต่อ slot เพราะไม่มี output
+{% elif is_rerank %}
+> โมเดลนี้เป็น **reranker**: client เรียก `POST /v1/rerank` `{"model", "query", "documents": [...], "top_n"}` → `results[].index/relevance_score`
+> (รูปเดียวกับ Jina/Cohere — n8n Reranker node, LangChain `ContextualCompressionRetriever`, LlamaIndex ใช้ได้ตรง ๆ){% if plan.runtime.engine.value == "vllm" %}
+> · `POST /v1/score` `{"model", "text_1": query, "text_2": [docs]}` → `data[].score`{% endif %} · ไม่มี `test-text`/`test-tools`/`test-embed`
+> (สั่งแล้วจะบอกให้ใช้ `test-rerank`) · `client-config` ให้ `max_input_tokens` เต็ม context ต่อ slot (query + document รวมกัน) เพราะไม่มี output
 {% endif %}{% endif %}
 
 ## Conflict shutdown

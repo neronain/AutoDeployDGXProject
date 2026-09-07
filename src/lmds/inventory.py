@@ -15,7 +15,8 @@ from pathlib import Path
 KNOWN_COMMANDS = {
     "prepare-runtime", "download", "verify-files", "start", "stop", "restart", "status",
     "logs", "client-config", "network-info", "test-text", "test-vision", "test-reasoning",
-    "test-tools", "bench", "stress", "props", "info", "wait-health",
+    # test-embed เคยหายจากชุดนี้ → ปุ่มบนหน้าเว็บไม่ขึ้นให้ bundle embedding ทั้งที่ controller มีคำสั่ง (2026-09-08)
+    "test-tools", "test-embed", "test-rerank", "bench", "stress", "props", "info", "wait-health",
     "sync-worker", "verify-worker", "clear-fi-cache", "repair", "check-runtime",
 }
 _COMMAND_RE = re.compile(r"(?m)^\s{2}([a-z][a-z-]*)\)")

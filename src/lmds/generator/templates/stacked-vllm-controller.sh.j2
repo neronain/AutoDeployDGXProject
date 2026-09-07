@@ -526,7 +526,8 @@ validate_numbers() {
   fi
   # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
   # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
-  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 > 0.3 && v+0 <= 0.98)}' ||
+  # 0.3 พอดีต้องผ่าน — fit/sizing ตั้งพื้นไว้ที่ 0.3 ให้โมเดลเล็ก แล้ว `> 0.3` เคยปฏิเสธ
+  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 >= 0.3 && v+0 <= 0.98)}' ||
     die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)"
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
     die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"

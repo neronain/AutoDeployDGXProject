@@ -56,7 +56,7 @@ Options:
   --output DIR            โฟลเดอร์ output (default: ./bundles)
   --concurrency N         จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1) · llama.cpp: slot = N, ctx-size = N × ต่อ slot
   --engine vllm|sglang    เลือกรันไทม์เอง — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM) · GGUF บังคับ llama.cpp เสมอ
-  --task generate|embed   ชนิดงาน — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ) ใส่เมื่อเดาผิด · LLM ตั้งเองไม่ได้
+  --task generate|embed|rerank   ชนิดงาน — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ · architectures ใน config.json · pooling_type ใน GGUF) ใส่เมื่อเดาผิด · LLM ตั้งเองไม่ได้
   --gguf FILE|QUANT       repo GGUF หลาย variant: ชื่อไฟล์เต็ม / ชื่อ quant (Q8_K_XL ไม่สนตัวพิมพ์) / ส่วนของชื่อที่ตรงไฟล์เดียว
                           — จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข (script/hub) · ตรงหลายไฟล์ = ปฏิเสธพร้อมรายการ
   --no-llm                rule-based mode (ใช้สูตรจาก lmds recipes)
@@ -80,8 +80,9 @@ Options:
    harden บังคับกลับเสมอ และตัด flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`
    `--distributed-executor-backend`) ที่หลุดมาจาก LLM · stacked ต้องใช้ vLLM + safetensors — GGUF / SGLang / embedding
    ถูกปฏิเสธ (CLI: PlanError · เว็บ: 422 `{kind}`)
-5. **task** — `embed` มาจาก repo เท่านั้น (harden บังคับ) · llama.cpp `--embedding --pooling <ตามตระกูล>` · vLLM
-   `--runner pooling --convert embed` · SGLang ที่ขอมาถอยเป็น vLLM · stacked ปฏิเสธ
+5. **task** — `embed`/`rerank` มาจาก repo เท่านั้น (harden บังคับ) · llama.cpp `--embedding --pooling <ตามตระกูล>` / `--reranking` · vLLM
+   `--runner pooling --convert embed` / `--convert classify` (+ `--hf-overrides` ของ Qwen3-Reranker ที่ harden เติมให้ถ้าหาย · ซ้ำเก็บตัวแรก)
+   · SGLang ที่ขอมาถอยเป็น vLLM · stacked ปฏิเสธ
 6. **port** — `analyze`/`generate` เลือกพอร์ตว่างตัวแรกจาก inventory ของเครื่องปลายทาง (stacked: head และ worker) เขียนลง `bundle.env`
 7. **image** — tag ถูก resolve เป็น digest ตอน generate · digest ที่ระบุมาถูกตรวจเป็น digest ไม่ถาม registry ซ้ำ · image ของสูตร
    ที่ registry ตอบไม่พบถูกคงไว้พร้อมเตือน · ถาม registry ไม่ได้ = ใช้ tag ตามเดิม
@@ -347,7 +348,7 @@ GET  /api/jobs/{id} · POST /api/jobs/{id}/cancel
 GET  /api/nodes · POST /api/nodes · PATCH|DELETE /api/nodes/{name} · PUT /api/nodes/order
 POST /api/nodes/{name}/install | setup | fix-permissions · GET /api/nodes/{name}/inventory[?refresh=true]
 POST /api/nodes/{name}/models/{slug}/{command}        # allowlist: start stop restart repair doctor logs(-n 300) enable disable remove(--dry-run→confirm) set
-POST /api/nodes/{name}/models/{slug}/ctl/{command}    # test-text test-vision test-reasoning test-tools test-embed bench stress client-config
+POST /api/nodes/{name}/models/{slug}/ctl/{command}    # test-text test-vision test-reasoning test-tools test-embed test-rerank bench stress client-config
                                                       # network-info status props verify-files prepare-runtime sync-worker verify-worker clear-fi-cache logs-worker
 GET  /api/nodes/{name}/models/{slug}/logs/stream      # SSE ตาม log บนเครื่องอื่น — ssh.stream(hold_stdin) + follow_wrap ไม่ใช่ nodes.run (60 s)
 POST /api/nodes/{name}/models/{slug}/bench · GET /api/nodes/{name}/bench/{slug} · POST …/bench/{slug}/remove

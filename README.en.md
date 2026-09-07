@@ -8,7 +8,7 @@ Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine
 several acting as one. Nothing leaves the machine except what you ask for.
 
 [![version](https://img.shields.io/badge/version-0.6.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1785-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-1974-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -79,6 +79,7 @@ Prefer the CLI: `lmds hardware` (what this machine is) → `lmds deploy Qwen/Qwe
 ```bash
 lmds deploy unsloth/gemma-4-26B-A4B-it-GGUF --gguf Q8_K_XL --yes   # pick a quant without a tty (scripts / hub)
 lmds deploy VesNFF/Qwen3-VL-Embedding-8B-GGUF --task embed         # embedding models — detected from the repo, forced here
+lmds deploy Qwen/Qwen3-Reranker-4B --target dgx-spark-single --no-llm   # rerankers → /v1/rerank + /v1/score, tested with test-rerank
 lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked   # too big for one machine → 2× DGX Spark
 ```
 
@@ -123,7 +124,7 @@ formula does not fit both families.
 |---|---|---|
 | Engine | vLLM · llama.cpp · SGLang | **vLLM only** |
 | Artifact | safetensors or GGUF | **safetensors only** |
-| Task | chat · vision · embedding | chat · vision (embedding refused — always one machine) |
+| Task | chat · vision · embedding · rerank | chat · vision (embedding/rerank refused — always one machine) |
 | Fast link | not needed | **required**, ≥25G (200G RoCE in practice) |
 | Machines | 1 | ≤3 direct-cabled · ≤4 through a switch |
 | What you gain | fastest | **memory / KV / concurrency** — not tokens per second per user |

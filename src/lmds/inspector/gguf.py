@@ -91,6 +91,13 @@ class GgufInfo:
         return value if isinstance(value, int) and value > 0 else None
 
     @property
+    def pooling_type(self) -> int | None:
+        """{arch}.pooling_type ที่ convert_hf_to_gguf เขียนไว้ — 1 mean · 2 cls · 3 last · 4 rank (reranker) · None = ไม่มี"""
+        arch = self.architecture
+        value = self.metadata.get(f"{arch}.pooling_type") if arch else None
+        return value if isinstance(value, int) else None
+
+    @property
     def nextn_layers(self) -> int | None:
         """จำนวนชั้น NextN/MTP ที่ฝังมาในไฟล์ — >0 = เปิด speculative ได้โดยไม่ต้องมี draft แยก"""
         arch = self.architecture

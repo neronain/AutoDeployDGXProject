@@ -8,7 +8,7 @@
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
 [![version](https://img.shields.io/badge/version-0.6.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-1930-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-1974-17703f)](tests/)
 [![assistant](https://img.shields.io/badge/assistant-operator%20%C2%B7%2021%20probes%20%C2%B7%2025%20actions-6f42c1)](docs/USAGE.md#ถามผู้ช่วยให้ไปดูเครื่องให้-กล่องแชทมุมขวาล่าง)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
@@ -91,8 +91,9 @@ lmds deploy nvidia/DeepSeek-V4-Flash-NVFP4 --target dgx-spark-stacked
 # repo GGUF หลาย quant โดยไม่มี tty ให้เลือกหมายเลข (script / hub)
 lmds deploy unsloth/gemma-4-26B-A4B-it-GGUF --gguf Q8_K_XL --yes
 
-# โมเดล embedding — ระบบเดาจาก repo เอง · เดาผิดบังคับด้วย --task embed|generate
+# โมเดล embedding / reranker — ระบบเดาจาก repo เอง · เดาผิดบังคับด้วย --task embed|rerank|generate
 lmds deploy VesNFF/Qwen3-VL-Embedding-8B-GGUF --task embed
+lmds deploy Qwen/Qwen3-Reranker-4B --target dgx-spark-single --no-llm   # reranker → /v1/rerank + /v1/score (test-rerank)
 ```
 
 </details>
@@ -129,7 +130,7 @@ KV bf16 · 120 KiB ต่อ token
 |---|---|---|
 | Engine | vLLM · llama.cpp · SGLang | **vLLM เท่านั้น** |
 | Artifact | safetensors หรือ GGUF | **safetensors เท่านั้น** |
-| งาน | chat · vision · embedding | chat · vision (embedding ปฏิเสธ — ลงเครื่องเดียวเสมอ) |
+| งาน | chat · vision · embedding · rerank | chat · vision (embedding/rerank ปฏิเสธ — ลงเครื่องเดียวเสมอ) |
 | สายเชื่อม | ไม่ต้อง | **ต้องมี** ≥25G (ของจริง 200G RoCE) |
 | จำนวนเครื่อง | 1 | ต่อตรง ≤3 · ผ่าน switch ≤4 |
 | ที่ได้จริง | เร็วสุด | **หน่วยความจำ/KV/จำนวนคนพร้อมกันเพิ่ม** — ไม่ใช่ tok/s ต่อคน |
@@ -181,7 +182,7 @@ lmds web --bind 0.0.0.0 -b         # หรือรันเบื้องห�
 — ค่าที่ตั้งใจให้ติดถาวรใช้ **Save** (= `lmds set`) และ **Reset to bundle** ลบค่าที่บันทึกไว้กลับไปใช้ของ bundle
 
 deploy wizard (เลือกเครื่องปลายทาง/กลุ่ม stacked ตั้งแต่ต้น · เสนอพอร์ตว่างของเครื่องนั้น), download + verify,
-start/stop/restart, doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-reasoning` `test-tools` `test-embed`
+start/stop/restart, doctor, logs, ชุดทดสอบ (`test-text` `test-vision` `test-reasoning` `test-tools` `test-embed` `test-rerank`
 `parsers` `bench` `stress`), autostart, คำสั่ง stacked (`sync-worker` `verify-worker` `logs-worker` · ปุ่ม
 **Pair SSH** / **Doctor** บนหัวกลุ่ม), repair, remove, ยกเลิกงานที่ค้าง, กล่อง **Update** (pull → ติดตั้งบน hub →
 restart → อัปเดตทุก node ด้วยโค้ดจาก hub) — **และคุมโมเดลบนเครื่องอื่นได้เท่ากับเครื่องตัวเอง**
@@ -322,6 +323,10 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 > **0.6.0:** โมเดล **embedding** ด้วย (Qwen3-Embedding, bge-m3, embeddinggemma …) — ตรวจจับเองจาก repo, เสิร์ฟ `/v1/embeddings`
 > ผ่าน llama.cpp `--embedding --pooling` หรือ vLLM `--runner pooling`, ทดสอบด้วย `test-embed` (ดู USAGE §4.9) ·
 > รันจริงแล้ว: `VesNFF/Qwen3-VL-Embedding-8B-GGUF` บน dgx-spark03
+>
+> **0.6.1:** โมเดล **reranker** (Qwen3-Reranker, bge-reranker-v2-m3, jina-reranker …) — ตรวจจับจาก repo/config/GGUF, เสิร์ฟ
+> `/v1/rerank` (+ `/v1/score` บน vLLM) ผ่าน llama.cpp `--reranking` หรือ vLLM `--runner pooling --convert classify`
+> (Qwen3-Reranker: `--hf-overrides` + score template แนบใน bundle), ทดสอบด้วย `test-rerank` (ดู USAGE §4.10)
 
 | | ARM64 / unified (Spark) | x86_64 / discrete (RTX) |
 |---|---|---|
@@ -334,6 +339,7 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 | chat / tool calling / reasoning | ✅ (`--jinja`) | ✅ (`--tool-parser` `--reasoning-parser`) | ✅ |
 | vision | ✅ mmproj (+ `--image-min-tokens`) | ✅ | ✅ (projector ฝังใน weight) |
 | embedding | ✅ `--embedding --pooling` | ✅ `--runner pooling` | ❌ ปฏิเสธ |
+| rerank | ✅ `--reranking` (GGUF ที่มีหัว classifier) | ✅ `--runner pooling --convert classify` (+ `--hf-overrides` Qwen3-Reranker) | ❌ ปฏิเสธ |
 | MTP / speculative | ✅ draft head จาก repo | ผ่าน `--extra-args` | ผ่าน `--extra-args` |
 
 ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo · ล่าสุด (2026-09-04):

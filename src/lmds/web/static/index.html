@@ -1404,6 +1404,26 @@ const has = (m, command) => (m.commands || []).includes(command);
 // แล้วหลุดไม่เท่ากัน (หน้าเครื่องอื่นไม่เคยโชว์ MoE เลยทั้งที่ payload มีมาให้)
 // ชื่อที่ client ต้องใส่ในฟิลด์ "model" — ไม่เท่ากับ slug และเปลี่ยนได้ตอน start
 // เดิมไม่โชว์ที่ไหนเลย ตั้งชื่อใหม่แล้วหน้าจอจึงดูเหมือนไม่มีอะไรเกิดขึ้น
+// โมเดล pooling (embedding/rerank) ไม่มี /v1/chat/completions — ปุ่ม brain/bench/test-text ต้องไม่ขึ้น
+function isPoolingModel(m) {
+  const f = String((m && m.features) || "");
+  return f.includes("embedding") || f.includes("rerank");
+}
+
+// หน้า deploy: บอกก่อนกดยืนยันว่า bundle นี้ไม่ใช่ chat — endpoint ไหน ทดสอบด้วยอะไร (เจ้าของ 2026-09-08: Qwen3-Reranker
+// เคยถูกวางแผนเป็น embedding เงียบ ๆ ทั้งที่ควรเป็น /v1/rerank)
+function taskHint(p) {
+  const task = p && p.task;
+  if (task === "rerank")
+    return `<div class="ok-line" data-task-hint="rerank">Reranker (cross-encoder) — serves <code>/v1/rerank</code>${
+      p.engine === "vllm" ? " and <code>/v1/score</code>" : ""} only, no chat / tool calling / embeddings · test it with
+      <b>test-rerank</b> · wrong guess? redeploy with <code>--task embed|generate</code></div>`;
+  if (task === "embed")
+    return `<div class="ok-line" data-task-hint="embed">Embedding model — serves <code>/v1/embeddings</code> only, no chat / tool calling
+      · test it with <b>test-embed</b> · wrong guess? redeploy with <code>--task rerank|generate</code></div>`;
+  return "";
+}
+
 function servedLine(m) {
   if (!m.served_name) return "";
   const renamed = m.default_served_name && m.default_served_name !== m.served_name;
@@ -1423,6 +1443,11 @@ function modelTags(m) {
   else if (m.topology === "stacked") out.push(`<span class="tag">stacked</span>`);
   if (m.projector || (m.features || "").includes("image"))
     out.push(`<span class="tag feat" title="Accepts images (mmproj)">${ico("i-eye")}vision</span>`);
+  // embedding/rerank: ไม่ใช่ chat — การ์ดต้องบอกตั้งแต่แรก ไม่ใช่รอให้กด test-text แล้วโดนปฏิเสธ
+  if ((m.features || "").includes("embedding"))
+    out.push(`<span class="tag feat" title="Embedding model — serves /v1/embeddings only (no chat)">EMBED</span>`);
+  if ((m.features || "").includes("rerank"))
+    out.push(`<span class="tag feat" title="Reranker (cross-encoder) — serves /v1/rerank (+ /v1/score on vLLM) only (no chat)">RERANK</span>`);
   if (m.moe && m.moe.experts) {
     const a = m.moe.experts_active;
     out.push(`<span class="tag spec" title="MoE — loads the whole model but only ${a || "?"} experts think per token`
@@ -1559,6 +1584,7 @@ function testsMarkup(m) {
       ${btn("test-reasoning", "Check the reasoning parser separates chain-of-thought")}
       ${btn("test-tools", "Check the tool-call parser produces tool_calls")}
       ${btn("test-embed", "Embed 3 sentences and check the TH↔EN pair beats unrelated text")}
+      ${btn("test-rerank", "Rerank 3 documents for one query via /v1/rerank — the relevant one must come first (prints scores)")}
     </div>
     <div class="field">
       ${btn("bench", "Single-stream throughput")}
@@ -1581,7 +1607,7 @@ function manageMarkup(m) {
   const job = command =>
     has(m, command) ? `<button data-act="job:${command}" data-slug="${esc(m.slug)}">${command}</button>` : "";
 
-  const chatEngine = ["vllm", "llamacpp", "sglang"].includes(m.engine) && !String(m.features || "").includes("embedding");
+  const chatEngine = ["vllm", "llamacpp", "sglang"].includes(m.engine) && !isPoolingModel(m);
   return `<div class="pad" style="border-top:1px solid var(--line)">
     ${m.running && chatEngine ? `<div class="field" style="margin-bottom:8px">
       <button data-act="brain" data-slug="${esc(m.slug)}"
@@ -2533,6 +2559,7 @@ function planView(d) {
     ${p.recipe ? `<div class="ok-line">Using a proven recipe: <b style="font-weight:500">${
       esc(p.recipe.label)}</b>${p.recipe.validated_on ? " · validated on " + esc(p.recipe.validated_on) : ""}${
       p.recipe.controller ? " · from " + esc(p.recipe.controller) : ""}</div>` : ""}
+    ${taskHint(p)}
     ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
     <div class="field" style="margin-top:12px">
       <label>context</label>
@@ -3853,6 +3880,7 @@ function nodeModelsMarkup(name, data) {
             ${ctl("test-reasoning", "Check the parser really separates the chain-of-thought")}
             ${ctl("test-tools", "Check the parser really emits tool_calls")}
             ${ctl("test-embed", "Send 3 sentences to /v1/embeddings and check the cross-language pair beats the unrelated one")}
+            ${ctl("test-rerank", "Rerank 3 documents for one query via /v1/rerank — the relevant one must come first (prints scores)")}
             ${m.running ? `<button data-nact="nbench:full" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                       title="Measure 6 speed tasks + 7 capability checks with lmds bench (several minutes)">Score</button>
               <button data-nact="nbench:quick" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
@@ -3882,7 +3910,7 @@ function nodeModelsMarkup(name, data) {
 
           <div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-sliders"/></svg><span class="sec-title">Manage</span></div>
           <div class="field" style="width:100%">
-            ${m.running && ["vllm", "llamacpp", "sglang"].includes(m.engine) && !String(m.features || "").includes("embedding")
+            ${m.running && ["vllm", "llamacpp", "sglang"].includes(m.engine) && !isPoolingModel(m)
               ? `<button data-nact="brain" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                          title="Point the assistant (and deploy planning) at this model — openai-compat via ${esc(name)}'s IP, no API key">🧠 Use as assistant brain</button>` : ""}
             ${m.running ? nbtn("restart", "restart", "Stop and start again with the values above") : ""}

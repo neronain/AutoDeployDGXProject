@@ -215,6 +215,41 @@ recipes:
     source: https://github.com/neronain/Deploy-Llama-3.3-70B-use-vLLM-On-NVIDIA-DGX-Spark-x2
     validated_on: 2x DGX Spark (GB10) · vLLM 26.05 NGC · TP=2 · 5 ส.ค. 2569
 
+  # reranker (cross-encoder) — task rerank: controller ใส่ --runner pooling --convert classify ให้เอง · Qwen3-Reranker ของแท้
+  # เก็บ weight เป็น Qwen3ForCausalLM จึงต้องบอก vLLM ผ่าน hf-overrides ให้อ่านเป็นหัว yes/no (เอกสาร vLLM: docs/models/
+  # pooling_models/scoring.md · มีตั้งแต่ 0.9.1 · NGC 26.05 = vLLM 0.20.1) · JSON ไม่มีช่องว่าง — EXTRA_SERVE_ARGS แยกคำด้วยช่องว่าง
+  # · context ไม่ใส่ (rule-based cap ที่ 32,768 = ที่ Qwen3-Reranker ใช้จริง · fit ของเครื่องเป็นคนตัดสิน) · max_num_seqs 8:
+  # rerank คำขอสั้น (query + document หนึ่งคู่) แต่มาพร้อมกันเป็นชุด — KV pin = 8 × KV(context) × 1.2 · ปรับ: lmds set --fit --slots N
+  - match: Qwen/Qwen3-Reranker-4B
+    label: Qwen3-Reranker-4B
+    engine: vllm
+    image: nvcr.io/nvidia/vllm:26.05-py3
+    image_for: [unified]   # image เดียวกับ Qwen3-Embedding-8B ที่รันอยู่บน dgx-spark04
+    serving:
+      max_num_seqs: 8
+      hf_overrides: '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+    notes:
+      - เสิร์ฟ /v1/rerank + /v1/score เท่านั้น — ไม่มี chat/embeddings · ทดสอบด้วย test-rerank
+      - bundle แนบ score_template.jinja (prompt ตาม model card ของ Qwen3-Reranker) ให้ vLLM ผ่าน --chat-template
+      - context ตั้งต้น 32,768 (Qwen3-Reranker รองรับ 32k) · น้ำหนัก bf16 ~8 GB ลงเครื่องเดียวคู่กับ Qwen3-Embedding-8B ได้
+    source: https://docs.vllm.ai/en/latest/models/pooling_models/ (scoring · Qwen3-Reranker hf_overrides) + https://huggingface.co/Qwen/Qwen3-Reranker-4B
+    validated_on: pending — deploy บน dgx-spark04 2026-09-08
+
+  - match: Qwen/Qwen3-Reranker-8B
+    label: Qwen3-Reranker-8B
+    engine: vllm
+    image: nvcr.io/nvidia/vllm:26.05-py3
+    image_for: [unified]
+    serving:
+      max_num_seqs: 8
+      hf_overrides: '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+    notes:
+      - เสิร์ฟ /v1/rerank + /v1/score เท่านั้น — ไม่มี chat/embeddings · ทดสอบด้วย test-rerank
+      - bundle แนบ score_template.jinja (prompt ตาม model card ของ Qwen3-Reranker) ให้ vLLM ผ่าน --chat-template
+      - context ตั้งต้น 32,768 · น้ำหนัก bf16 ~16 GB — สูตรเดียวกับ 4B ต่างแค่ขนาด
+    source: https://docs.vllm.ai/en/latest/models/pooling_models/ (scoring · Qwen3-Reranker hf_overrides) + https://huggingface.co/Qwen/Qwen3-Reranker-8B
+    validated_on: pending — สูตรเดียวกับ 4B (deploy บน dgx-spark04 2026-09-08)
+
   - match: Qwen/Qwen3.5-122B-A10B-GPTQ-Int4
     label: Qwen3.5-122B-A10B (GPTQ-Int4)
     engine: vllm

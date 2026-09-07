@@ -330,6 +330,25 @@ def _gguf_embed_report():
     )
 
 
+def _st_rerank_report():
+    return ModelReport(
+        repo_id="Qwen/Qwen3-Reranker-4B", revision_sha="sha", task="rerank",
+        artifact_type=ArtifactType.SAFETENSORS, weight_bytes=int(8 * GIB),
+        architecture="Qwen3ForCausalLM", context_length=40960,
+        kv_dims=KvDims(layers=36, kv_heads=8, head_dim=128),
+    )
+
+
+def _gguf_rerank_report():
+    return ModelReport(
+        repo_id="gpustack/bge-reranker-v2-m3-GGUF", revision_sha="sha", task="rerank",
+        artifact_type=ArtifactType.GGUF, weight_bytes=int(1.1 * GIB),
+        selected_gguf="bge-reranker-v2-m3-Q8_0.gguf", architecture="bert",
+        context_length=8192, kv_dims=KvDims(layers=24, kv_heads=16, head_dim=64),
+        gguf_variants=[], tags=["gguf"],
+    )
+
+
 def test_an_embedding_plan_on_sglang_is_refused_instead_of_rendering_a_chat_controller(tmp_path):
     """template ของ SGLang ไม่รู้จัก task embed — เดิม render controller แบบ chat ให้เงียบ ๆ ไม่มี test-embed"""
     report = _st_embed_report()
@@ -574,16 +593,21 @@ def _dispatched(text: str) -> set[str]:
     return out
 
 
-@pytest.mark.parametrize("kind", ["llamacpp", "llamacpp-embed", "vllm", "vllm-embed", "sglang", "stacked"])
+@pytest.mark.parametrize("kind", ["llamacpp", "llamacpp-embed", "llamacpp-rerank", "vllm", "vllm-embed", "vllm-rerank",
+                                  "sglang", "stacked"])
 def test_every_command_in_usage_is_actually_dispatched(tmp_path, kind):
     if kind == "llamacpp":
         bundle = _bundle(tmp_path, _gguf_report())
     elif kind == "llamacpp-embed":
         bundle = _bundle(tmp_path, _gguf_embed_report())
+    elif kind == "llamacpp-rerank":
+        bundle = _bundle(tmp_path, _gguf_rerank_report())
     elif kind == "vllm":
         bundle = _bundle(tmp_path, _safetensors_report())
     elif kind == "vllm-embed":
         bundle = _bundle(tmp_path, _st_embed_report())
+    elif kind == "vllm-rerank":
+        bundle = _bundle(tmp_path, _st_rerank_report())
     elif kind == "sglang":
         bundle = _bundle(tmp_path, _safetensors_report(), engine=Engine.SGLANG)
     else:
