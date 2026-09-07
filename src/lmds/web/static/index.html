@@ -508,6 +508,19 @@ pre {
 .nout { border-top: 1px solid var(--line); }
 .nout pre { max-height: 40vh; overflow: auto; margin: 0; }
 .machine.ncompact .nout { display: none; }
+/* แผง Follow (log แบบเกือบ realtime) — บรรทัดที่เข้าข่าย error สีแดง · ชิป ↓ โผล่เมื่อผู้ใช้เลื่อนขึ้นไปอ่านแล้ว auto-scroll หยุด */
+.livelog-bar { gap: 8px; flex-wrap: wrap; padding-bottom: 10px; }
+.livelog-bar label { display: inline-flex; align-items: center; gap: 5px; }
+.livelog-bar label input { min-width: auto; flex: none; }
+.ll-wrap { position: relative; }
+.ll-out { max-height: 48vh; }
+.ll-line { min-height: 1.6em; }
+.ll-line.err { color: var(--bad); font-weight: 600; }
+.ll-jump { position: absolute; right: 18px; bottom: 12px; border-radius: 999px; }
+.dot.ll-dot.on { animation: ll-pulse 1.4s ease-in-out infinite; }
+@keyframes ll-pulse { 0%, 100% { box-shadow: 0 0 0 3px var(--ok-bg); } 50% { box-shadow: 0 0 0 7px transparent; } }
+.nlive { border-top: 1px solid var(--line); }
+.machine.ncompact .nlive { display: none; }
 /* การ์ดแบบย่อ — เหลือบรรทัดเดียว (ชื่อ + ไซต์ + จุดสถานะ) ซ่อน stats/ปุ่ม/host/รายละเอียด
    กด + เพื่อกางดูของครบ · ค่าเริ่มต้นเป็นแบบนี้เพื่อให้หลายไซต์หลายเครื่องไม่ยาวเหยียด */
 .machine.ncompact > .item { padding-top: 4px; padding-bottom: 4px; }
@@ -2003,9 +2016,16 @@ async function load(slug, kind) {
   const panel = document.getElementById("panel-" + slug);
   if (!panel) return;
   if (kind === "logs") {
+    stopLiveLog("local/" + slug);
     const r = await api(`/api/models/${encodeURIComponent(slug)}/logs?lines=300`);
     const d = await r.json();
-    panel.innerHTML = `<pre>${esc(r.ok ? (d.text || "(empty)") : d.detail)}</pre>`;
+    panel.innerHTML = `<div class="pad row" style="padding-bottom:0">
+        <span class="dim">Last 300 lines — one-shot</span><span class="grow"></span>
+        <button class="ll-once" title="Fetch the last 300 lines again">Refresh</button>
+        <button class="ll-follow" title="Follow the log live (near-realtime) — start/restart opens this automatically">▶ Follow</button>
+      </div><pre>${esc(r.ok ? (d.text || "(empty)") : d.detail)}</pre>`;
+    panel.querySelector(".ll-once").addEventListener("click", () => load(slug, "logs"));
+    panel.querySelector(".ll-follow").addEventListener("click", () => openLocalFollow(slug));
     return;
   }
   const r = await api(`/api/models/${encodeURIComponent(slug)}/doctor`);
@@ -2613,10 +2633,172 @@ async function followJob(slug, jobId) {
   tick();
 }
 
+// ── live logs (Follow) ────────────────────────────────────────────────────
+// เจ้าของ 2026-09-07: "ส่วนของ log ทำให้เป็นการแสดง detail แบบเกือบ realtime ได้ไหม user จะได้ดูว่า error อะไรด้วย
+// แทนการกด 1 ครั้งแสดง 1 รอบ" — ปุ่ม Logs เดิมเรียก controller ครั้งเดียวแล้วโชว์ก้อนนิ่ง ๆ · ตรงนี้เปิด SSE
+// /logs/stream ที่ hub spawn `controller logs N -f` ให้ แล้วเติมทีละบรรทัด · Stop/ปิดแผง/ปิดแท็บ = hub ฆ่า child
+//
+// กติกา: hub ส่ง N บรรทัดท้ายมาใหม่ทุกครั้งที่ต่อ → ล้างแผงตอน open (restart จึงได้แผงสะอาดเอง) · เลื่อนขึ้นไปอ่าน
+// = auto-scroll หยุดจนกดชิป ↓ · เก็บไม่เกิน LOG_MAX_LINES · บรรทัดที่เข้าข่าย error เป็นสีแดง · สายหลุดขณะโมเดลยังรัน
+// = ต่อใหม่ครั้งเดียว · โหมด boot (เปิดเองตอน start/restart) = ปล่อยให้ EventSource ต่อใหม่ไปเรื่อย ๆ จนคำสั่งจบ
+// เพราะช่วงแรกยังไม่มี container ให้ตาม (controller บอกหนึ่งบรรทัดแล้วจบ 0)
+const LOG_ERROR_RE = /\bERROR\b|Traceback/;
+const LOG_ERROR_RE_I = /error loading model|unknown model architecture|CUDA out of memory|\bfailed\b/i;
+const LOG_MAX_LINES = 3000;
+const LIVE_TAIL = 200;
+const liveLogs = new Map();      // key -> state · key = "local/<slug>" | "<node>/<slug>"
+
+function isLogError(line) { return LOG_ERROR_RE.test(line) || LOG_ERROR_RE_I.test(line); }
+
+function liveLogUrl(t) {
+  // token ทาง query เหมือน /api/events — EventSource ใส่ header ไม่ได้
+  const q = `tail=${LIVE_TAIL}&worker=${t.worker ? 1 : 0}` + (token ? "&token=" + encodeURIComponent(token) : "");
+  return (t.node
+    ? `/api/nodes/${encodeURIComponent(t.node)}/models/${encodeURIComponent(t.slug)}/logs/stream`
+    : `/api/models/${encodeURIComponent(t.slug)}/logs/stream`) + "?" + q;
+}
+
+function liveLogMarkup(t) {
+  return `<div class="livelog">
+    <div class="pad row livelog-bar">
+      <span class="dot ll-dot"></span>
+      <b style="font-weight:500">${esc(t.title)}</b>
+      <span class="dim ll-status">connecting…</span>
+      <span class="grow"></span>
+      ${t.stacked ? `<label class="dim" title="Follow the worker container(s) over ssh instead of the head"><input type="checkbox" class="ll-worker" ${t.worker ? "checked" : ""}> worker</label>` : ""}
+      <button class="ll-once" title="One-shot: the last 300 lines, as before">Refresh</button>
+      <button class="ll-toggle" title="Follow the log live (near-realtime) — Stop closes the stream; the hub keeps one process open per live view">■ Stop</button>
+      <button class="ll-clear" title="Clear this view only — nothing on the machine changes">Clear</button>
+      ${t.closable ? `<button class="ll-close" title="Stop following and close this box">Close</button>` : ""}
+    </div>
+    <div class="ll-wrap"><pre class="ll-out"></pre><button class="ll-jump" hidden>↓ jump to latest</button></div>
+  </div>`;
+}
+
+function liveStatus(st, text) { if (st.status) st.status.textContent = text; }
+
+function liveAppend(st, line) {
+  // แผงถูกวาดทับไปแล้ว (งานอื่นยึด panel เดียวกัน) — อย่าถือสายค้างโดยไม่มีใครดู
+  if (!st.out.isConnected) { stopLiveLog(st.key); return; }
+  const el = document.createElement("div");
+  el.className = "ll-line" + (isLogError(line) ? " err" : "");
+  el.textContent = line;
+  st.out.appendChild(el);
+  st.lines++;
+  while (st.lines > LOG_MAX_LINES && st.out.firstChild) { st.out.removeChild(st.out.firstChild); st.lines--; }
+  if (!st.paused) st.out.scrollTop = st.out.scrollHeight;
+}
+
+function liveStop(st, why) {
+  if (st.es) { st.es.close(); st.es = null; }
+  st.stopped = true; st.boot = false;
+  st.toggle.textContent = "▶ Follow";
+  st.dot.className = "dot ll-dot";
+  liveStatus(st, why);
+}
+
+function stopLiveLog(key) {
+  const st = liveLogs.get(key);
+  if (!st) return;
+  if (st.es) st.es.close();
+  liveLogs.delete(key);
+}
+
+// คำสั่ง start/restart ที่เปิดแผงนี้ไว้จบแล้ว — เลิกโหมดรอ container · สายที่ต่ออยู่ตามต่อไปตามกติกาปกติ
+function liveBootDone(key) { const st = liveLogs.get(key); if (st) st.boot = false; }
+
+function liveConnect(st) {
+  if (st.es) { st.es.close(); st.es = null; }
+  st.stopped = false; st.reconnects = 0; st.ended = null;
+  st.toggle.textContent = "■ Stop";
+  st.dot.className = "dot ll-dot load";
+  liveStatus(st, st.boot ? "waiting for the server to start…" : "connecting…");
+  const es = new EventSource(liveLogUrl(st.t));
+  st.es = es;
+  es.onopen = () => {
+    if (es !== st.es) return;
+    // hub ส่ง N บรรทัดท้ายมาใหม่ทุกครั้งที่ต่อ — ล้างของเก่าไม่งั้นซ้ำ (และ restart ได้แผงสะอาดโดยธรรมชาติ)
+    st.out.textContent = ""; st.lines = 0; st.ended = null;
+    st.dot.className = "dot ll-dot on";
+    liveStatus(st, st.boot ? "live — waiting for the server to start…" : "live");
+  };
+  es.onmessage = e => {
+    if (es !== st.es) return;
+    let d; try { d = JSON.parse(e.data); } catch { return; }
+    liveAppend(st, d.line ?? "");
+  };
+  es.addEventListener("end", e => {
+    if (es !== st.es) return;
+    let d = {}; try { d = JSON.parse(e.data); } catch { /* ไม่มี exit code ก็ไม่เป็นไร */ }
+    st.ended = d;
+    // โหมด boot: ปล่อยให้ EventSource ต่อใหม่เองตาม retry ของ hub จนกว่า container จะโผล่/คำสั่งจบ
+    if (st.boot) { st.dot.className = "dot ll-dot load"; liveStatus(st, "waiting for the server to start…"); return; }
+    const running = st.t.running ? st.t.running() : false;
+    if (running && st.reconnects < 1) {
+      st.reconnects++; st.dot.className = "dot ll-dot load"; liveStatus(st, "stream ended — reconnecting once…"); return;
+    }
+    liveStop(st, running ? `stream ended (exit ${d.exit ?? "?"})` : "stream ended — the model is not running");
+  });
+  es.onerror = () => {
+    if (es !== st.es) return;
+    // readyState 2 = เบราว์เซอร์เลิกแล้ว (HTTP ไม่ใช่ 200 เช่น 429 เกินเพดาน) — EventSource อ่าน body ไม่ได้ จึงบอกได้แค่นี้
+    if (es.readyState === 2) { liveStop(st, "could not open the stream — too many live views open, or the hub is unreachable"); return; }
+    // จบปกติ: เบราว์เซอร์ยิง error ตามมาหนึ่งครั้งก่อนต่อใหม่ — นับไปแล้วใน end · โหมด boot ต่อใหม่ได้เรื่อย ๆ
+    if (st.boot || st.ended) return;
+    if (st.reconnects >= 1) { liveStop(st, "disconnected"); return; }
+    st.reconnects++;
+    st.dot.className = "dot ll-dot load";
+    liveStatus(st, "connection lost — reconnecting once…");
+  };
+}
+
+// t = { slug, node?, title, stacked, worker, boot, closable, once(), close(), running() }
+function startLiveLog(key, host, t) {
+  // แผงเดียวรับได้สายเดียว — สายเก่าของ key นี้ หรือของโมเดลอื่นที่เคยยึด host นี้ (การ์ด node มีกล่องเดียว)
+  stopLiveLog(key);
+  for (const [k, s] of liveLogs) if (s.host === host) stopLiveLog(k);
+  host.innerHTML = liveLogMarkup(t);
+  const st = { key, t, host, es: null, lines: 0, paused: false, reconnects: 0, boot: !!t.boot, stopped: false, ended: null,
+               out: host.querySelector(".ll-out"), status: host.querySelector(".ll-status"), dot: host.querySelector(".ll-dot"),
+               toggle: host.querySelector(".ll-toggle"), jump: host.querySelector(".ll-jump") };
+  liveLogs.set(key, st);
+  host.querySelector(".ll-clear").addEventListener("click", () => { st.out.textContent = ""; st.lines = 0; });
+  host.querySelector(".ll-once").addEventListener("click", () => { stopLiveLog(key); if (t.once) t.once(); });
+  const close = host.querySelector(".ll-close");
+  if (close) close.addEventListener("click", () => { stopLiveLog(key); if (t.close) t.close(); });
+  const worker = host.querySelector(".ll-worker");
+  if (worker) worker.addEventListener("change", () => { t.worker = worker.checked; t.boot = st.boot; startLiveLog(key, host, t); });
+  st.toggle.addEventListener("click", () => { if (st.stopped) liveConnect(st); else liveStop(st, "stopped"); });
+  st.out.addEventListener("scroll", () => {
+    const gap = st.out.scrollHeight - st.out.scrollTop - st.out.clientHeight;
+    st.paused = gap > 40;
+    st.jump.hidden = !st.paused;
+  });
+  st.jump.addEventListener("click", () => { st.paused = false; st.jump.hidden = true; st.out.scrollTop = st.out.scrollHeight; });
+  liveConnect(st);
+  return st;
+}
+
+function openLocalFollow(slug, opts = {}) {
+  const panel = document.getElementById("panel-" + slug);
+  if (!panel) return;
+  const m = models_by_slug.get(slug) || { slug };
+  // แผงอื่นของโมเดลนี้ปิด แผง logs นับว่าเปิดค้าง — togglePanel เป็นคนจำว่าแผงไหนเปิดอยู่
+  ["doctor", "tests", "opts"].forEach(k => open.delete(slug + " " + k));
+  open.add(slug + " logs");
+  startLiveLog("local/" + slug, panel, {
+    slug, title: `logs · ${slug}`, stacked: m.topology === "stacked", worker: !!opts.worker, boot: !!opts.boot,
+    once: () => load(slug, "logs"),
+    running: () => !!(models_by_slug.get(slug) || {}).running,
+  });
+}
+
 function togglePanel(slug, key, render) {
   ["doctor", "logs", "tests", "opts"].filter(k => k !== key).forEach(k => open.delete(slug + " " + k));
   const panel = document.getElementById("panel-" + slug);
   const full = slug + " " + key;
+  // แผงนี้ถูกวาดใหม่ทุกทาง — สาย Follow ที่เปิดอยู่ต้องปิดด้วย ไม่งั้น hub ถือ process ค้างโดยไม่มีใครดู
+  stopLiveLog("local/" + slug);
   if (open.has(full)) { open.delete(full); panel.innerHTML = ""; return false; }
   open.add(full);
   if (render) panel.innerHTML = render();
@@ -2933,6 +3115,8 @@ document.addEventListener("click", async e => {
   busy = slug;
   btn.disabled = true;
   btn.textContent = { start: "starting…", stop: "stopping…", restart: "restarting…" }[act] || act;
+  // start/restart เปิดแผง log แบบ Follow ให้เลย — ดูการบูตสด ๆ และเห็นสาเหตุถ้าตาย โดยไม่ต้องกด logs ซ้ำ ๆ
+  if (act === "start" || act === "restart") openLocalFollow(slug, { boot: true });
   try {
     const r = await api(`/api/models/${encodeURIComponent(slug)}/${act}`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -2944,6 +3128,7 @@ document.addEventListener("click", async e => {
     }
   } finally {
     busy = null;
+    liveBootDone("local/" + slug);
     refresh();
   }
 });
@@ -3200,7 +3385,9 @@ function nodeCard(node) {
     <div class="nclus" hidden></div>
     <div class="nbody"></div>
     <!-- ผลคำสั่ง/ผลเทส — อยู่ *ใต้* รายการโมเดล ไม่ใช่แทนที่มัน -->
-    <div class="nout" hidden></div>`;
+    <div class="nout" hidden></div>
+    <!-- แผง Follow (log แบบเกือบ realtime) — แยกจาก .nout เพราะ start ที่เปิดแผงนี้เองก็สตรีมผลของ job ลง .nout พร้อมกัน -->
+    <div class="nlive" hidden></div>`;
   return block;
 }
 
@@ -3559,6 +3746,8 @@ function nodeModelsMarkup(name, data) {
             ${m.running ? nbtn("restart", "restart", "Stop and start again with the values above") : ""}
             ${nbtn("doctor", "doctor", "Find out why it still will not start")}
             ${nbtn("logs", "logs", "Last 300 log lines")}
+            <button data-nact="follow" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
+                    title="Follow the log live (near-realtime, errors in red) — start/restart opens this automatically">▶ follow</button>
             ${m.running ? "" : ctl("wait-health",
               "Keep waiting until the model is ready — for when start timed out but the server is still loading (20B+ takes minutes)")}
             ${m.self_managed_weights ? "" :
@@ -3729,6 +3918,7 @@ async function refreshNodes() {
         ip: block.querySelector(".nip"),
         body,
         out: block.querySelector(".nout"),
+        live: block.querySelector(".nlive"),
       });
       loadNode(node.name);
     }
@@ -3943,6 +4133,7 @@ document.addEventListener("click", async e => {
     return;
   }
   if (nact === "close-output") { clearNodeOutput(node); return; }
+  if (nact === "follow") { openNodeFollow(node, slug); return; }
   if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
   if (nact === "forget") {
     if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
@@ -4038,6 +4229,8 @@ document.addEventListener("click", async e => {
                : { method: "POST" }));
     if (!d) return;
 
+    // start/restart เปิดแผง log แบบ Follow ให้เลย — ผลของ job อยู่ใน .nout, log ของโมเดลอยู่ใน .nlive ข้าง ๆ กัน
+    if (d.job && (command === "start" || command === "restart")) openNodeFollow(node, slug, { boot: true });
     // งานยาวคืน job มา — ตามผลแบบสตรีมแทนการรอเงียบ ๆ
     if (d.job) { followNodeJob(node, slug, d.job.id); return; }
 
@@ -4050,7 +4243,9 @@ document.addEventListener("click", async e => {
       return;
     }
     if (command === "doctor" || command === "logs" || d.exit_code !== 0) {
-      showNodeOutput(node, `${command} · ${slug}`, d.output);
+      showNodeOutput(node, `${command} · ${slug}`, d.output, command === "logs"
+        ? `<button data-nact="follow" data-node="${esc(node)}" data-slug="${esc(slug)}"
+                   title="Follow the log live (near-realtime, errors in red)">▶ Follow</button>` : "");
       return;
     }
     pinnedOutput.delete(node);
@@ -5636,6 +5831,23 @@ function fixButtonFor(node, output) {
             >Run ${esc(command)}</button>`;
 }
 
+// แผง Follow ของโมเดลบนเครื่องอื่น — กล่อง .nlive ของการ์ด (การ์ดละหนึ่ง: ตามโมเดลใหม่ = แทนที่ของเก่า)
+function openNodeFollow(node, slug, opts = {}) {
+  const row = nodeRows.get(node);
+  if (!row || !row.live) return;
+  revealNode(node);
+  row.live.hidden = false;
+  const model = () => ((lastNodeData.get(node) || {}).models || []).find(x => x.slug === slug) || {};
+  const closeBox = () => { row.live.hidden = true; row.live.innerHTML = ""; };
+  startLiveLog(node + "/" + slug, row.live, {
+    node, slug, title: `logs · ${slug} @ ${node}`, stacked: model().topology === "stacked",
+    worker: !!opts.worker, boot: !!opts.boot, closable: true,
+    once: () => { closeBox(); row.body.querySelector(`button[data-nact="model:logs"][data-slug="${CSS.escape(slug)}"]`)?.click(); },
+    close: closeBox,
+    running: () => !!model().running,
+  });
+}
+
 function showNodeOutput(node, title, output, extra = "") {
   const row = nodeRows.get(node);
   if (!row) return;
@@ -5697,6 +5909,7 @@ function followNodeJob(node, slug, jobId) {
     if (pre) pre.scrollTop = pre.scrollHeight;
     if (running) { setTimeout(tick, 1200); return; }
     watchingNodes.delete(key);
+    liveBootDone(key);
     if (d.exit_code !== 0) {
       const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
       showNodeOutput(node, `${d.command} · ${slug} — failed (exit ${d.exit_code})`,

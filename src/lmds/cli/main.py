@@ -891,6 +891,7 @@ def node_ctl(
     ในตัว bundle ซึ่งมีขั้นตอนที่ lmds ไม่ได้ห่อไว้ (prepare-runtime, sync-worker, test-text ฯลฯ)
     """
     from lmds.nodes import NodeError, find, stream
+    from lmds.nodes.ssh import follow_wrap, is_follow_argv
 
     node = find(name)
     if node is None:
@@ -899,6 +900,11 @@ def node_ctl(
 
     # หา bundle บนเครื่องนั้นเอง — path ต่างกันไปตามที่ผู้ใช้ deploy ไว้
     quoted = " ".join(shlex.quote(c) for c in command)
+    # `logs -f` ไม่จบเอง — ห่อให้ปลายทางหยุดทันทีที่ ssh ปิด (Ctrl-C ที่นี่) แทนที่จะค้างจนมีบรรทัดใหม่
+    following = is_follow_argv(command)
+    if following:
+        quoted = follow_wrap(quoted)
+        err_console.print(f"[dim]ตาม log ของ {slug} บน {name} แบบ realtime — Ctrl-C เพื่อออก (ไม่หยุดโมเดล)[/dim]")
     # cd เข้า bundle ก่อนแล้วค่อยหา controller — เดิมคำนวณ path ก่อน cd แล้วใช้หลัง cd
     # ซึ่ง path แบบ relative จะชี้ผิดที่ทันที
     script = (
@@ -924,19 +930,30 @@ def node_ctl(
     # สตรีมทีละบรรทัดแทนการรอทั้งก้อน — download 90 GB ใช้เวลาเป็นสิบนาที ของเดิมเงียบ
     # สนิทจนจบแล้วค่อยพ่นออกมาทีเดียว ระหว่างนั้นแยกไม่ออกว่ากำลังทำงานหรือค้างไปแล้ว
     try:
-        proc = stream(node, script, secret_env)
+        proc = stream(node, script, secret_env, hold_stdin=True) if following else stream(node, script, secret_env)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
     assert proc.stdout is not None
-    for raw in iter(proc.stdout.readline, b""):
-        line = raw.decode("utf-8", "replace")
-        # ปลายทางไม่ควรพิมพ์ token อยู่แล้ว — แต่ "ไม่ควร" กับ "ไม่เคย" คนละเรื่อง
-        if token:
-            line = line.replace(token, "***")
-        print(line, end="", flush=True)
-    raise typer.Exit(code=proc.wait())
+    try:
+        for raw in iter(proc.stdout.readline, b""):
+            line = raw.decode("utf-8", "replace")
+            # ปลายทางไม่ควรพิมพ์ token อยู่แล้ว — แต่ "ไม่ควร" กับ "ไม่เคย" คนละเรื่อง
+            if token:
+                line = line.replace(token, "***")
+            print(line, end="", flush=True)
+        code = proc.wait()
+    except KeyboardInterrupt:
+        # Ctrl-C ระหว่างตาม log = ผู้ใช้ดูพอแล้ว ไม่ใช่ความผิดพลาด — ปิด ssh ให้เรียบร้อย (ปลายทางเห็น
+        # stdin ปิดแล้วหยุด controller ของตัวเอง) แล้วจบด้วย 0 ไม่ใช่ "Aborted!" กับ traceback
+        for method in ("terminate", "kill"):
+            try:
+                getattr(proc, method)()
+            except (OSError, AttributeError):
+                pass
+        code = 0
+    raise typer.Exit(code=code)
 
 @node_app.command("cluster")
 def node_cluster(

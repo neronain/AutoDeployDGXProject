@@ -437,8 +437,15 @@ function installGlobals(doc, H) {
   });
   def("history", { replaceState() {}, pushState() {}, back() { H.backs++; }, state: null });
   def("EventSource", class {
-    constructor(url) { this.url = url; this.onmessage = null; this.onerror = null; this.closed = false; H.streams.push(this); }
-    close() { this.closed = true; }
+    constructor(url) { this.url = url; this.onopen = null; this.onmessage = null; this.onerror = null; this.closed = false; this.readyState = 0; this._ls = {}; H.streams.push(this); }
+    close() { this.closed = true; this.readyState = 2; }
+    addEventListener(type, fn) { (this._ls[type] = this._ls[type] || []).push(fn); }
+    // test-side driver: emit("open") · emit("message", {data}) · emit("end", {data}) · emit("error")
+    emit(type, ev = {}) {
+      if (type === "open") this.readyState = 1;
+      const h = this["on" + type]; if (h) h(ev);
+      for (const fn of this._ls[type] || []) fn(ev);
+    }
   });
   function response(status, body) {
     const text = typeof body === "string" ? body : JSON.stringify(body ?? {});
@@ -486,7 +493,7 @@ function makeHarness(doc) {
         if (cl.contains("fold-hidden")) return false;
         if (cl.contains("nbody") && cl.contains("collapsed")) return false;
         if (cl.contains("rtree") && !cl.contains("open")) return false;
-        if ((cl.contains("nbody") || cl.contains("nclus") || cl.contains("nout")) && n.closest(".machine.ncompact")) return false;
+        if ((cl.contains("nbody") || cl.contains("nclus") || cl.contains("nout") || cl.contains("nlive")) && n.closest(".machine.ncompact")) return false;
         if (cl.contains("sitehdr") && (n.closest("#nodes.route-node") || n.closest("#nodes.route-site"))) return false;
       }
       return el.isConnected;

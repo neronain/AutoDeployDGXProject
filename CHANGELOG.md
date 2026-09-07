@@ -5,6 +5,25 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **log แบบเกือบ realtime (Follow) ทั้งเว็บและ CLI — เห็น error ตอนมันเกิด ไม่ต้องกด logs ซ้ำ ๆ** — เจ้าของ 2026-09-07:
+  "ส่วนของ log ทำให้เป็นการแสดง detail แบบเกือบ realtime ได้ไหม user จะได้ดูว่า error อะไรด้วย แทนการกด 1 ครั้งแสดง 1 รอบ" ·
+  (1) controller ทั้ง 4 แบบรับ `logs [N] [-f|--follow|follow]` (stacked: `logs worker -f` ตาม worker ทุกตัวผ่าน ssh พร้อมกัน ·
+  llama.cpp native ใช้ `tail -F` ตามชื่อไฟล์ รอด restart/หมุน log) · รัน child เบื้องหลัง + trap TERM/INT/HUP/PIPE ให้ docker logs/tail
+  ตายพร้อม controller (ใน trap `wait` ของ child ที่โดน TERM คืน 143 ต้อง `|| true` ไม่งั้น set -e ตัดก่อน exit 0) · ไม่มี container/
+  ไฟล์ log = บอกบรรทัดเดียวแล้วจบ 0 ไม่วนรอ · (2) hub SSE `GET /api/models/{slug}/logs/stream` และ
+  `/api/nodes/{name}/models/{slug}/logs/stream` (`?tail=200&worker=0|1`, token ทาง `?token=` เหมือน `/api/events`) — `lmds.web.logstream`:
+  spawn `controller logs N -f` หนึ่ง process ต่อสาย · keepalive ทุก 15 วิ · ตัดบรรทัดที่ 2000 ตัว · **ปิดสาย = ฆ่า child ทั้ง process group**
+  · เพดาน 3 สาย/โมเดล 12 สาย/hub → 429 พร้อมเหตุผล · ทาง node ใช้ `ssh.stream(hold_stdin=True)` + `follow_wrap` (ปลายทาง
+  `cat >/dev/null; kill $p` เมื่อ stdin ปิด — sshd ไม่ส่ง HUP ให้ session ไม่มี tty) ไม่ใช่ `nodes.run` ที่หมดเวลา 60 วิ ·
+  (3) หน้าเว็บ: แผง Logs มีปุ่ม **▶ Follow / ■ Stop** ข้างปุ่ม one-shot · จุดสถานะ live · auto-scroll ที่หยุดเมื่อเลื่อนขึ้นไปอ่าน
+  (ชิป ↓ jump to latest) · เก็บ 3000 บรรทัด · ล้างตอนต่อใหม่ (restart = แผงสะอาด) · บรรทัด `ERROR`/`Traceback`/`error loading model`/
+  `unknown model architecture`/`CUDA out of memory`/`failed` สีแดง · สายหลุดขณะโมเดลยังรันต่อใหม่ครั้งเดียว · **start/restart เปิดแผง
+  Follow ให้เอง** (โหมด boot: ทนสายจบจนคำสั่งจบ เพราะช่วงแรกยังไม่มี container) — ทั้งการ์ดในเครื่องนี้และการ์ด node (ปุ่ม `▶ follow`
+  + กล่อง `.nlive` แยกจากผลคำสั่ง · stacked มี checkbox **worker**) · (4) CLI: `lmds logs <slug> -f` ใช้ `logs -f` ของ controller
+  เมื่อมี (`fleet.follow_argv`, bundle เก่า fallback docker logs -f / tail -F) · `lmds node ctl <node> <slug> logs -f` ห่อด้วย follow_wrap
+  ถือ stdin และ Ctrl-C จบสะอาด (ปิด ssh, exit 0) · smoke จริง 2026-09-07: spark-head vLLM docker (`nvidia-nemotron-3-super-120b`)
+  + spark-worker llama.cpp native (`qwen3-8-flash-next-uncensored-gguf`) ตามสด 5 วิ ไม่ทิ้ง child · เทส `test_logs_follow.py`
+  (controller harness + uvicorn จริงเพราะ TestClient ตัดสายไม่ได้ + CLI) · `test_logs_follow_dom.py` (แผง Follow ใน DOM ย่อส่วน)
 - **hub ที่เป็น control-plane ไม่ถูกนับว่า runtime "ตรวจไม่ได้"** — 2026-09-07 หลัง rollout 3 มิติ ทุก node ตรงครบแต่การ์ด
   Fleet consistency ขึ้น hub เป็น warn เพราะ hub ถือ bundle GGUF ไว้ push โดยไม่มี llama.cpp/GPU · มิติ runtime ของ
   control-plane = n/a · เทส `test_fleet_consistency.py`

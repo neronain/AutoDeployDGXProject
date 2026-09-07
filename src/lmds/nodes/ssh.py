@@ -123,8 +123,13 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str
 
 
 def stream(node: Node, command: str, secret_env: dict[str, str] | None = None,
-           stdin_text: str = ""):
+           stdin_text: str = "", hold_stdin: bool = False):
     """เปิด ssh แบบอ่านผลทีละบรรทัด — ใช้กับงานยาว (download หลายสิบ GB) ที่ต้องเห็นความคืบหน้า
+
+    hold_stdin=True: เปิด stdin ของ ssh ค้างไว้ (ไม่ส่งอะไร ไม่ปิด) — คำสั่งปลายทางที่ *ไม่จบเอง*
+    (`logs -f`) ใช้ EOF ของ stdin เป็นสัญญาณว่า hub ปิดสายแล้ว: `cat >/dev/null; kill $p` · sshd ไม่ส่ง
+    SIGHUP ให้ session ที่ไม่มี tty ถ้าไม่ทำแบบนี้ docker logs -f ฝั่ง node จะอยู่ต่อจนกว่าจะมีบรรทัด
+    ใหม่ให้เขียนแล้วโดน SIGPIPE — ซึ่งกับโมเดลที่เงียบอาจเป็นชั่วโมง
 
     ต่างจาก run() ที่รอจนจบแล้วค่อยคืนทั้งก้อน · คืน Popen ให้ผู้เรียกวนอ่าน stdout เอง
 
@@ -151,8 +156,10 @@ def stream(node: Node, command: str, secret_env: dict[str, str] | None = None,
     try:
         proc = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if (secret_env or stdin_text) else subprocess.DEVNULL,
+            stdin=subprocess.PIPE if (secret_env or stdin_text or hold_stdin) else subprocess.DEVNULL,
         )
+        if proc.stdin is not None and hold_stdin and not (secret_env or stdin_text):
+            return proc
         if proc.stdin is not None:
             if secret_env:
                 for value in secret_env.values():
@@ -162,7 +169,8 @@ def stream(node: Node, command: str, secret_env: dict[str, str] | None = None,
             if stdin_text:
                 proc.stdin.write(stdin_text.encode())
             proc.stdin.flush()
-            proc.stdin.close()
+            if not hold_stdin:
+                proc.stdin.close()
         return proc
     except FileNotFoundError as exc:
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
@@ -394,6 +402,22 @@ def ctl_script(slug: str, node_name: str, argv: str, env_prefix: str = "") -> st
         f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
         f"{env_prefix}\"$ctl\" {argv}"
     )
+
+
+def follow_wrap(argv: str) -> str:
+    """argv ของ controller ที่ไม่จบเอง (`logs N -f`) → รันเบื้องหลัง + ฆ่าเมื่อ stdin ของ ssh ปิด
+
+    คู่กับ stream(hold_stdin=True): hub ปิดสาย → ssh ตาย → sshd ปิด stdin ปลายทาง → `cat` จบ → kill
+    controller (ซึ่ง trap แล้วฆ่า docker logs/tail ของมันต่อ) · `wait $p` ทำให้สคริปต์จบเองเมื่อ
+    controller จบเอง (container หยุด) — ไม่ต้องรอ EOF · subshell ของ cat ไม่ถือ stdout ไว้ ไม่งั้น sshd
+    รอมันจนกว่า stdin จะปิด แล้วสายไม่จบทั้งที่ log จบแล้ว
+    """
+    return f"{argv} & p=$!; ( cat >/dev/null; kill $p 2>/dev/null ) >/dev/null 2>&1 & wait $p"
+
+
+def is_follow_argv(argv: list[str]) -> bool:
+    """`logs … -f|--follow|follow` — คำสั่งของ controller ที่ตั้งใจให้ไม่จบเอง"""
+    return bool(argv) and argv[0] == "logs" and any(a in ("-f", "--follow", "follow") for a in argv[1:])
 
 
 # ขั้นที่ต้องใช้สิทธิ์ root บนเครื่องปลายทาง — ทำครั้งเดียวต่อเครื่อง

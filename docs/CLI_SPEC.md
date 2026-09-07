@@ -335,7 +335,7 @@ inventory ทุก 5 วิ · UI อังกฤษทั้งหมด · �
 GET  / · /api/version · /api/host · /api/models · /api/events (SSE) · /api/targets · /api/fleet/summary
 POST /api/restart · /api/update                       # update = git pull --ff-only → install.sh → restart unit ที่รันอยู่จริง
 
-GET  /api/models/{slug}/doctor | logs | settings | settings/suggest | memory | removal-plan
+GET  /api/models/{slug}/doctor | logs | logs/stream (SSE ?tail=200&worker=0|1 — controller logs -f · ปิดสาย=ฆ่า child · 429 เกินเพดาน 3/โมเดล 12/hub) | settings | settings/suggest | memory | removal-plan
 PUT  /api/models/{slug}/settings                       # = lmds set (ผ่าน bundle_settings — SettingsError = 400)
 POST /api/models/{slug}/start | stop | restart | adopt | remove | autostart | run/{command} | push/{name}
 POST /api/deploy/analyze · GET /api/deploy/{sid}/context · POST /api/deploy/{sid}/generate   # 422 {kind: hub|input|cluster, message}
@@ -349,6 +349,7 @@ POST /api/nodes/{name}/install | setup | fix-permissions · GET /api/nodes/{name
 POST /api/nodes/{name}/models/{slug}/{command}        # allowlist: start stop restart repair doctor logs(-n 300) enable disable remove(--dry-run→confirm) set
 POST /api/nodes/{name}/models/{slug}/ctl/{command}    # test-text test-vision test-reasoning test-tools test-embed bench stress client-config
                                                       # network-info status props verify-files prepare-runtime sync-worker verify-worker clear-fi-cache logs-worker
+GET  /api/nodes/{name}/models/{slug}/logs/stream      # SSE ตาม log บนเครื่องอื่น — ssh.stream(hold_stdin) + follow_wrap ไม่ใช่ nodes.run (60 s)
 POST /api/nodes/{name}/models/{slug}/bench · GET /api/nodes/{name}/bench/{slug} · POST …/bench/{slug}/remove
 GET  /api/nodes/{name}/models/{slug}/clone/targets · POST …/clone · GET …/memory · GET …/settings/suggest
 GET  /api/cluster · POST /api/cluster/write · POST /api/cluster/pair · GET /api/cluster/doctor · PATCH /api/cluster/self {stack}

@@ -2036,23 +2036,64 @@ print((data[0].get("id") or "").strip() if data else "")
 }
 
 # ─────────────────────────── logs ───────────────────────────
+# logs [head|worker] [N] [-f|--follow|follow] — รองรับทั้ง `logs <N>` (fleet: head N บรรทัด) และ
+# `logs <head|worker> [N]` · -f ตามต่อแบบ realtime (worker = ssh ไป docker logs -f ทุกตัว พร้อมกัน)
+#
+# follow รันไว้เบื้องหลังแล้ว wait — trap ของ bash ทำงานหลัง foreground child จบเท่านั้น ถ้ารันตรง ๆ
+# SIGTERM จาก hub (ผู้ใช้ปิดแผง) หรือ Ctrl-C จะไม่ถึง docker/ssh จนกว่าจะมีบรรทัดใหม่
+# ไม่มี container = บอกหนึ่งบรรทัดแล้วจบ (exit 0) ไม่วนรอ — หน้าเว็บเป็นคนต่อใหม่เองระหว่าง start
+# ใน trap: `wait` ของ child ที่โดน TERM คืน 143 — ใต้ set -e ต้อง || true ไม่งั้น errexit ตัดก่อนถึง exit 0
 logs() {
-  # รองรับทั้ง `logs <N>` (fleet: head N บรรทัด) และ `logs <head|worker> [N]`
-  local target n
-  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
-    target="head"; n="${1}"
+  local target="head" n=200 follow="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      -f|--follow|follow) follow=1 ;;
+      head|master)        target="head" ;;
+      worker|workers)     target="worker" ;;
+      '')                 ;;
+      *[!0-9]*)           die "logs target ต้องเป็น: head | worker (หรือใส่ตัวเลขจำนวนบรรทัด) · เติม -f เพื่อตามต่อแบบ realtime" ;;
+      *)                  n="$arg" ;;
+    esac
+  done
+  local pids="" wip
+  if [[ "$target" == "head" ]]; then
+    if [[ -z "$follow" ]]; then
+      docker logs --tail "$n" "$MASTER_CONTAINER" 2>&1
+      return
+    fi
+    if ! docker container inspect "$MASTER_CONTAINER" >/dev/null 2>&1; then
+      echo "ยังไม่มี container ${MASTER_CONTAINER} บน head — โมเดลยังไม่ได้ start (หรือหยุดไปแล้ว) · start แล้วค่อยตาม log"
+      return 0
+    fi
+    docker logs --tail "$n" -f "$MASTER_CONTAINER" 2>&1 &
+    pids="$!"
   else
-    target="${1:-head}"; n="${2:-200}"
+    _cluster_config_is_placeholder && die "ยังไม่ตั้งค่าคลัสเตอร์ — ไม่รู้ว่า worker อยู่ที่ไหน (IP ที่ถืออยู่เป็นตัวอย่าง) → lmds node cluster --write ${SLUG} --head <เครื่อง head>"
+    if [[ -z "$follow" ]]; then
+      for wip in $WORKER_IPS; do
+        echo "===== worker ${wip} ====="
+        ssh_at "$wip" "docker logs --tail '$n' '${WORKER_CONTAINER}' 2>&1" || true
+      done
+      return
+    fi
+    local nworkers prefix
+    nworkers="$(worker_count)"
+    for wip in $WORKER_IPS; do
+      if ! ssh_at "$wip" "docker container inspect '${WORKER_CONTAINER}' >/dev/null 2>&1"; then
+        echo "ยังไม่มี container ${WORKER_CONTAINER} บน worker ${wip} — head ยังไม่ได้สั่ง start (หรือหยุดไปแล้ว)"
+        continue
+      fi
+      # หลาย worker = ใส่ [ip] นำหน้าทุกบรรทัด (sed -u ฝั่งโน้น ไม่ buffer) · ตัวเดียวไม่ต้อง
+      prefix=""
+      if (( nworkers > 1 )); then prefix=" | sed -u 's/^/[${wip}] /'"; fi
+      ssh_at "$wip" "docker logs --tail '$n' -f '${WORKER_CONTAINER}' 2>&1${prefix}" 2>&1 &
+      pids="$pids $!"
+    done
+    [[ -n "$pids" ]] || return 0
   fi
-  case "$target" in
-    head|master) docker logs --tail "$n" "$MASTER_CONTAINER" 2>&1 ;;
-    worker)      _cluster_config_is_placeholder && die "ยังไม่ตั้งค่าคลัสเตอร์ — ไม่รู้ว่า worker อยู่ที่ไหน (IP ที่ถืออยู่เป็นตัวอย่าง) → lmds node cluster --write ${SLUG} --head <เครื่อง head>"
-                 for wip in $WORKER_IPS; do
-                   echo "===== worker ${wip} ====="
-                   ssh_at "$wip" "docker logs --tail '$n' '${WORKER_CONTAINER}' 2>&1" || true
-                 done ;;
-    *)           die "logs target ต้องเป็น: head | worker (หรือใส่ตัวเลขจำนวนบรรทัด)" ;;
-  esac
+  trap 'kill $pids 2>/dev/null; wait 2>/dev/null || true; exit 0' TERM INT HUP PIPE
+  wait || true
+  trap - TERM INT HUP PIPE
 }
 
 # ─────────────────────────── network-info ───────────────────────────
@@ -2667,7 +2708,7 @@ COMMANDS (Thai descriptions kept — same wording as the run output):
   start            worker-first → head → รอ /health
   stop | restart   หยุด / restart ทั้งสอง node
   status           สถานะ container ทั้งสอง node + API
-  logs [head|worker] [N]   log (หรือ logs N = head N บรรทัด)
+  logs [head|worker] [N] [-f]   log (หรือ logs N = head N บรรทัด) · -f ตามต่อแบบ realtime (Ctrl-C หยุด)
   client-config    ค่าตั้ง client (JSON) พร้อม token budget
   network-info     IP/fabric/endpoint
   serve-args       argv จริงของ vllm บน head/worker + engine env (ไม่แตะ docker/ssh)
@@ -2741,6 +2782,7 @@ EXAMPLES
   $0 start                                                # worker first, then head
   API_KEY=secret123 $0 restart                            # require a bearer token
   $0 logs worker 200                                      # worker-side logs
+  $0 logs worker -f                                       # follow the worker live (Ctrl-C stops)
   $0 doctor                                               # image / GPU / vLLM consistency across nodes
 EOF
 }
@@ -2811,7 +2853,7 @@ case "${1:-help}" in
   stop)            stop ;;
   restart)         stop; start ;;
   status)          status ;;
-  logs)            logs "${2:-head}" "${3:-200}" ;;
+  logs)            shift; logs "$@" ;;
   client-config)   client_config ;;
   clear-fi-cache)  clear_fi_cache ;;
   remove)          remove_workers "${@:2}" ;;

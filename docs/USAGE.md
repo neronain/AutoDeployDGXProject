@@ -145,7 +145,7 @@ cd bundles/qwen3-0-6b-gguf
 | `prepare-runtime` | เตรียม engine — **จำเป็นเฉพาะบางกรณี ดูด้านล่าง** (llama.cpp native: `start` เรียกให้เองถ้ายังไม่มี `llama-server`) |
 | `start` / `stop` / `restart` | เปิด-ปิดเซิร์ฟเวอร์ (ตรวจ GPU + ไฟล์ก่อน start เสมอ · GGUF บน ARM64 ที่ยังไม่มี binary จะ build llama.cpp ให้ก่อน) |
 | `status` | สถานะ container + API health |
-| `logs [N]` | log ล่าสุด N บรรทัด (default 300) |
+| `logs [N] [-f]` | log ล่าสุด N บรรทัด (default 300) · `-f`/`--follow`/`follow` = ตามต่อแบบ realtime (Ctrl-C หยุด ไม่หยุดโมเดล · llama.cpp native ใช้ `tail -F` รอด restart) · ยังไม่มี container/ไฟล์ log = บอกบรรทัดเดียวแล้วจบ |
 | `client-config` | ค่าตั้ง client เป็น JSON พร้อม token budget (bundle embedding: `max_input_tokens` = context ต่อ slot ทั้งก้อน · มี `pooling` · ไม่มี `max_output_tokens`) |
 | `network-info` | bind address + endpoint ที่ประกาศให้ client |
 | `test-text` | ทดสอบ chat completion หนึ่งครั้ง (bundle embedding: บอกให้ไปใช้ `test-embed` แทน) |
@@ -161,7 +161,7 @@ cd bundles/qwen3-0-6b-gguf
 | `info` / `props` | สรุปโมเดล/พอร์ต/สถานะ · รายการโมเดลจาก `/v1/models` (vLLM/stacked) |
 | `wait-health` | รอ `/health` ต่อ (ใช้เมื่อ start timeout แต่โมเดลยังโหลดอยู่) |
 | `clear-fi-cache` | *(vLLM/stacked)* หยุดแล้วล้าง FlashInfer JIT cache — ใช้เมื่อ start พังหลังเปลี่ยน image |
-| `runtime-info` · `sync-worker` · `verify-worker` · `doctor` · `logs [head\|worker] [N]` | *(stacked เท่านั้น)* ดู §3.3b |
+| `runtime-info` · `sync-worker` · `verify-worker` · `doctor` · `logs [head\|worker] [N] [-f]` | *(stacked เท่านั้น)* ดู §3.3b · `logs worker -f` ตาม worker ทุกตัวผ่าน ssh พร้อมกัน (หลายตัว = `[ip]` นำหน้าบรรทัด) |
 | `remove-plan` | *(bundle ที่มาจาก `lmds adopt`)* บอกว่า `lmds remove` จะลบ weight ที่ไหน |
 
 **คำสั่งไหนมีบน engine ไหน** (usage กับ dispatch table ของทุก template ถูกเทสว่าตรงกัน):
@@ -1084,7 +1084,7 @@ lmds node ctl spark2 my-model prepare-runtime # สั่ง "สคริปต
 | | ใช้กับ |
 |---|---|
 | `node run` | `ps` `start` `stop` `restart` `logs` `doctor` `repair` `deploy` `scan` `remove --dry-run` `set` `version` `bundles refresh --all` |
-| `node ctl` | `prepare-runtime` `check-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` |
+| `node ctl` | `prepare-runtime` `check-runtime` `download` `verify-files` `sync-worker` `verify-worker` `test-text` `test-tools` `test-reasoning` `test-vision` `test-embed` `parsers` `bench` `stress` `status` `props` `network-info` `client-config` `clear-fi-cache` `logs worker N` `logs [N] -f` (ตามสด — Ctrl-C หยุด ปลายทางหยุดตาม) |
 | `node clone` | ทำสำเนาโมเดลจากเครื่องหนึ่งไปอีกเครื่อง — ไม่โหลดจาก HF ใหม่ (`--from` `--to` `--start` `--dry-run`) |
 | `node push` | ส่ง bundle จากเครื่องนี้ไปติดตั้ง (`--download` `--start` · stacked: เขียน cluster.env + pair + sync/verify ให้ก่อน start) |
 | `cluster …` | `show` (= `node cluster`) · `write <slug> --head` · `pair <head> <worker…>` · `doctor <head> <worker> [--slug]` |
@@ -1135,8 +1135,8 @@ start รอบถัดไปโดยไม่มีใครเห็น · �
 |---|---|
 | **ตั้งค่าตอน start** | `port` · `context` · `slots` · `bind` · `API key` · `gpu-util` (เฉพาะ vLLM) · Advanced: `tool parser` · `reasoning parser` · `engine env` · `extra args` · `image` |
 | **ทดสอบ** | `test-text` · `test-vision` · `test-reasoning` · `test-tools` · `test-embed` · `parsers` · `bench` · `stress` · `client-config` · `network-info` · `status` · `props` |
-| **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` · `logs-worker` · ปุ่ม **Pair SSH** / **Doctor** ที่หัวกลุ่ม |
-| **จัดการ** | `restart` · `doctor` · `logs` · `repair` · `verify-files` · `check-runtime` · **update runtime** (ขึ้นเมื่อการ์ดติดป้าย *runtime older than model* — llama.cpp บนเครื่องไม่รู้จัก arch ของโมเดล · = `LLAMA_CPP_UPDATE=1 prepare-runtime`) · `enable`/`disable` · `remove` · **Cancel** งานที่ค้าง |
+| **stacked** | `prepare-runtime` · `sync-worker` · `verify-worker` · `clear-fi-cache` · `logs-worker` · checkbox **worker** ในแผง Follow (ตาม log ฝั่ง worker แทน head) · ปุ่ม **Pair SSH** / **Doctor** ที่หัวกลุ่ม |
+| **จัดการ** | `restart` · `doctor` · `logs` (one-shot 300 บรรทัด) · **▶ follow** (log แบบเกือบ realtime — จุด live · บรรทัด error สีแดง · เลื่อนขึ้นอ่านแล้ว auto-scroll หยุด กดชิป ↓ กลับมา · ■ Stop ปิดสาย · start/restart เปิดแผงนี้ให้เอง) · `repair` · `verify-files` · `check-runtime` · **update runtime** (ขึ้นเมื่อการ์ดติดป้าย *runtime older than model* — llama.cpp บนเครื่องไม่รู้จัก arch ของโมเดล · = `LLAMA_CPP_UPDATE=1 prepare-runtime`) · `enable`/`disable` · `remove` · **Cancel** งานที่ค้าง |
 
 ปุ่ม download บนการ์ด head ของโมเดล stacked ต่อ `sync-worker && verify-worker` ให้เป็นงานเดียว · งานที่ ssh ค้างยกเลิกได้
 (`POST /api/jobs/{id}/cancel`) แล้วล็อก (เครื่อง, โมเดล) หลุด · คำสั่งสั้น (`stop` ฯลฯ) หมดเวลาที่ 120 วิ ไม่ยึด thread ของเว็บ
@@ -1153,7 +1153,7 @@ start รอบถัดไปโดยไม่มีใครเห็น · �
 > `พอร์ตชนกับ <ชื่อ>` ให้แทน — ตั้ง `port` ให้ต่างกันก่อน start
 
 คำสั่งในเมนู (สรุป):
-`restart` · `doctor` · `logs` (300 บรรทัดล่าสุด) · `repair` · `enable`/`disable` (autostart) · `remove`
+`restart` · `doctor` · `logs` (300 บรรทัดล่าสุด · ปุ่ม **▶ Follow** ข้าง ๆ = ตามต่อแบบเกือบ realtime บรรทัด error สีแดง — start/restart เปิดให้เอง) · `repair` · `enable`/`disable` (autostart) · `remove`
 — **ปุ่มขึ้นตามสถานะจริง**: ยังไม่ได้รัน = ไม่มี `restart` · เครื่องที่ไม่มี systemd (`n/a`) =
 ไม่มีปุ่ม autostart เลย เพราะกดแล้วล้มแน่ ๆ · ป้าย `autostart` ขึ้นเฉพาะตอนสถานะเป็น `enabled` จริง
 (ไม่ใช่ `absent`/`disabled` ซึ่งเคยถูกนับเป็น "เปิดอยู่" ทั้งหมด)

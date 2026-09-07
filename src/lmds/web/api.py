@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 
 import lmds
 from lmds.config import SettingsError
-from lmds.web import state
+from lmds.web import logstream, state
 
 STATIC = Path(__file__).parent / "static"
 
@@ -409,6 +409,29 @@ def create_app(token: str = "") -> FastAPI:
             return {"slug": slug, "text": logs_text(server, lines)}
         except FleetError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/models/{slug}/logs/stream", dependencies=guarded)
+    async def logs_follow(request: Request, slug: str,
+                          tail: int = Query(logstream.TAIL_DEFAULT, ge=1, le=2000),
+                          worker: int = Query(0, ge=0, le=1)) -> StreamingResponse:
+        """ตาม log ของโมเดลในเครื่องนี้แบบเกือบ realtime (SSE) — แผง Follow ของหน้าเว็บ
+
+        spawn `controller logs N -f` (หรือ `logs worker N -f` เมื่อ worker=1) หนึ่ง process ต่อสาย ·
+        ปิดแท็บ/แผง = ฆ่ามัน · token มาทาง ?token= ได้เหมือน /api/events (EventSource ใส่ header ไม่ได้)
+        """
+        from lmds.fleet import FleetError, find, follow_argv
+
+        _check_slug(slug)
+        # find() ไล่ docker/ps — บล็อก · endpoint นี้เป็น async จึงต้องยกไป thread ไม่งั้นค้างทั้ง hub
+        server = await asyncio.get_running_loop().run_in_executor(None, find, slug)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        try:
+            argv = follow_argv(server, tail, worker=bool(worker))
+        except FleetError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        cwd = str(Path(server.controller).parent) if server.controller_exists else None
+        return logstream.response(request, key=slug, spawn=lambda: logstream.local_process(argv, cwd=cwd))
 
     def _action(slug: str, verb: str, options: dict | None = None) -> JSONResponse:
         import os
@@ -1092,6 +1115,27 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "slug": slug, "command": command,
                 "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
+
+    @app.get("/api/nodes/{name}/models/{slug}/logs/stream", dependencies=guarded)
+    async def node_logs_follow(request: Request, name: str, slug: str,
+                               tail: int = Query(logstream.TAIL_DEFAULT, ge=1, le=2000),
+                               worker: int = Query(0, ge=0, le=1)) -> StreamingResponse:
+        """ตาม log ของโมเดลบนเครื่องอื่นแบบเกือบ realtime (SSE) — ssh ค้างสายเดียวต่อแผง
+
+        ห้ามใช้ nodes.run (หมดเวลา 60 วิ) — ใช้ stream() ที่ถือ stdin ไว้ ปลายทางถูกห่อด้วย follow_wrap
+        ให้หยุดทันทีที่ hub ปิดสาย · worker=1 = `logs worker N -f` ของ controller stacked
+        """
+        from lmds.nodes import find, stream
+        from lmds.nodes.ssh import ctl_script, follow_wrap
+
+        _check_slug(slug)
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        verb = f"logs {'worker ' if worker else ''}{int(tail)} -f"
+        script = ctl_script(slug, name, follow_wrap(verb))
+        return logstream.response(request, key=f"{name}/{slug}",
+                                  spawn=lambda: stream(node, script, hold_stdin=True))
 
     @app.get("/api/nodes/{name}/bench/{slug}", dependencies=guarded)
     def node_bench_detail(name: str, slug: str) -> dict:

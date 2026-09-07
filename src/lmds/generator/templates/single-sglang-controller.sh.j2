@@ -775,7 +775,35 @@ status() {
   fi
 }
 
-logs() { docker logs --tail "${1:-300}" "$CONTAINER_NAME"; }
+# logs [N] [-f|--follow|follow] — N บรรทัดล่าสุด (default 300) · -f ตามต่อแบบ realtime
+#
+# follow รัน docker logs ไว้เบื้องหลังแล้ว wait — trap ของ bash ทำงานหลัง foreground child จบเท่านั้น
+# ถ้ารันตรง ๆ SIGTERM จาก hub (ผู้ใช้ปิดแผง) หรือ Ctrl-C จะไม่ถึง docker logs จนกว่าจะมีบรรทัดใหม่
+# ไม่มี container = บอกหนึ่งบรรทัดแล้วจบ (exit 0) ไม่วนรอ — หน้าเว็บเป็นคนต่อใหม่เองระหว่าง start
+# ใน trap: `wait` ของ child ที่โดน TERM คืน 143 — ใต้ set -e ต้อง || true ไม่งั้น errexit ตัดก่อนถึง exit 0
+logs() {
+  local n=300 follow="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      -f|--follow|follow) follow=1 ;;
+      ''|*[!0-9]*) ;;
+      *) n="$arg" ;;
+    esac
+  done
+  if [[ -z "$follow" ]]; then
+    docker logs --tail "$n" "$CONTAINER_NAME"
+    return
+  fi
+  if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    echo "ยังไม่มี container ${CONTAINER_NAME} — โมเดลยังไม่ได้ start (หรือหยุดไปแล้ว) · start แล้วค่อยตาม log"
+    return 0
+  fi
+  docker logs --tail "$n" -f "$CONTAINER_NAME" 2>&1 &
+  local pid=$!
+  trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true; exit 0' TERM INT HUP PIPE
+  wait "$pid" || true
+  trap - TERM INT HUP PIPE
+}
 
 client_config() {
   local input_budget
@@ -1033,7 +1061,7 @@ COMMANDS
   stop              Stop and remove the container
   restart           stop + start (use this to apply new options)
   status            Container state + API health + loaded model list
-  logs [N]          Show last N log lines (default 300).  Live tail: lmds logs {{ slug }} -f
+  logs [N] [-f]     Show last N log lines (default 300) · -f follows live (Ctrl-C stops; also: lmds logs {{ slug }} -f)
   wait-health       Keep waiting for /health (use if start timed out but the model is still loading)
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
@@ -1158,7 +1186,7 @@ case "${1:-help}" in
   stop)         stop ;;
   restart)      stop; start ;;
   status)       status ;;
-  logs)         logs "${2:-300}" ;;
+  logs)         shift; logs "$@" ;;
   test-reasoning)  test_reasoning ;;
   test-tools)      test_tools "${2:-both}" ;;
   parsers)         list_parsers ;;

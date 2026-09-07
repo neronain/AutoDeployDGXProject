@@ -1320,12 +1320,47 @@ status() {
   fi
 }
 
+# logs [N] [-f|--follow|follow] — N บรรทัดล่าสุด (default 300) · -f ตามต่อแบบ realtime
+#
+# follow รัน tail/docker logs ไว้เบื้องหลังแล้ว wait — trap ของ bash ทำงานหลัง foreground child จบเท่านั้น
+# ถ้ารันตรง ๆ SIGTERM จาก hub (ผู้ใช้ปิดแผง) หรือ Ctrl-C จะไม่ถึง tail จนกว่าจะมีบรรทัดใหม่
+# ไม่มีไฟล์ log/container = บอกหนึ่งบรรทัดแล้วจบ (exit 0) ไม่วนรอ — หน้าเว็บเป็นคนต่อใหม่เองระหว่าง start
+# ใน trap: `wait` ของ child ที่โดน TERM คืน 143 — ใต้ set -e ต้อง || true ไม่งั้น errexit ตัดก่อนถึง exit 0
 logs() {
+  local n=300 follow="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      -f|--follow|follow) follow=1 ;;
+      ''|*[!0-9]*) ;;
+      *) n="$arg" ;;
+    esac
+  done
   if [[ "$RUNTIME_MODE" == "native" ]]; then
-    tail -n "${1:-300}" "$LOG_FILE"
+    if [[ -z "$follow" ]]; then
+      tail -n "$n" "$LOG_FILE"
+      return
+    fi
+    if [[ ! -f "$LOG_FILE" ]]; then
+      echo "ยังไม่มีไฟล์ log ${LOG_FILE} — โมเดลยังไม่เคย start บนเครื่องนี้ · start แล้วค่อยตาม log"
+      return 0
+    fi
+    # -F ไม่ใช่ -f: ตาม *ชื่อไฟล์* ไม่ใช่ inode — restart เขียนไฟล์ใหม่/หมุน log แล้วยังตามต่อได้
+    tail -n "$n" -F "$LOG_FILE" 2>&1 &
   else
-    docker logs --tail "${1:-300}" "$CONTAINER_NAME"
+    if [[ -z "$follow" ]]; then
+      docker logs --tail "$n" "$CONTAINER_NAME"
+      return
+    fi
+    if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+      echo "ยังไม่มี container ${CONTAINER_NAME} — โมเดลยังไม่ได้ start (หรือหยุดไปแล้ว) · start แล้วค่อยตาม log"
+      return 0
+    fi
+    docker logs --tail "$n" -f "$CONTAINER_NAME" 2>&1 &
   fi
+  local pid=$!
+  trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true; exit 0' TERM INT HUP PIPE
+  wait "$pid" || true
+  trap - TERM INT HUP PIPE
 }
 
 client_config() {
@@ -1659,7 +1694,7 @@ COMMANDS
   stop              Stop the server
   restart           stop + start (use this to apply new options)
   status            Process/container state + API health
-  logs [N]          Show last N log lines (default 300).  Live tail: lmds logs {{ slug }} -f
+  logs [N] [-f]     Show last N log lines (default 300) · -f follows live (Ctrl-C stops; also: lmds logs {{ slug }} -f)
   wait-health       Keep waiting for /health (use if start timed out but the model is still loading)
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
@@ -1802,7 +1837,7 @@ case "${1:-help}" in
   stop)         stop ;;
   restart)      stop; start ;;
   status)       status ;;
-  logs)         logs "${2:-300}" ;;
+  logs)         shift; logs "$@" ;;
   client-config) client_config ;;
   info|banner) info ;;
   network-info) network_info ;;

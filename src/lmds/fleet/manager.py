@@ -956,25 +956,46 @@ def start_server(info: ServerInfo, options: list[str] | None = None,
     return _run_controller(info, "start", options)
 
 
-def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int:
-    """ดู log — follow=True ตามแบบ realtime (Ctrl-C เพื่อออก)
+def controller_follows(controller: str | Path) -> bool:
+    """controller ตัวนี้มี `logs -f` ไหม — bundle ที่ render ก่อน 0.6.1 ไม่มี (จะพิมพ์ N บรรทัดแล้วจบ ไม่ตาม)"""
+    try:
+        return "-f|--follow|follow)" in Path(controller).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
 
-    controller ไม่มีโหมด follow จึงต่อตรงที่แหล่ง log: docker logs -f / tail -f
+
+def follow_argv(info: ServerInfo, lines: int = 200, worker: bool = False) -> list[str]:
+    """argv ที่ตาม log แบบ realtime ของโมเดลนี้ — controller `logs N -f` ถ้ามัน (รุ่นใหม่) ทำได้
+    ไม่งั้นต่อตรงที่แหล่ง log (docker logs -f / tail -F) เหมือนที่ CLI ทำมาก่อน
+
+    ใช้ร่วมกันโดย `lmds logs -f` และแผง Follow ของหน้าเว็บ (/logs/stream) — คนละหน้าจอ แหล่งเดียวกัน
+    worker=True: log ฝั่ง worker ของ stacked (controller เท่านั้นที่รู้ว่า worker อยู่ไหน)
     """
-    if not follow:
-        return _run_controller(info, "logs", [str(lines)])
-
+    if info.controller_exists and controller_follows(info.controller):
+        if worker:
+            return [info.controller, "logs", "worker", str(lines), "-f"]
+        return [info.controller, "logs", str(lines), "-f"]
+    if worker:
+        raise FleetError(
+            f"controller ของ {info.slug} เป็นรุ่นก่อน 0.6.1 — ยังตาม log ของ worker ไม่ได้ · "
+            "regenerate ก่อน: lmds bundles refresh --all")
     if info.mode == "docker" and info.container:
-        return subprocess.run(
-            ["docker", "logs", "-f", "--tail", str(lines), info.container]
-        ).returncode
+        return ["docker", "logs", "-f", "--tail", str(lines), info.container]
     log_file = info.run_dir / "server.log" if info.run_dir else None
     if log_file and log_file.is_file():
-        return subprocess.run(["tail", "-n", str(lines), "-f", str(log_file)]).returncode
+        # -F ตามชื่อไฟล์ ไม่ใช่ inode — restart เขียนไฟล์ใหม่แล้วยังตามต่อได้
+        return ["tail", "-n", str(lines), "-F", str(log_file)]
     raise FleetError(
         f"ตาม log ของ {info.slug} แบบ realtime ไม่ได้ — ไม่พบ container หรือไฟล์ log "
         f"({log_file or 'ไม่ระบุ'}) · ใช้แบบไม่ follow แทน: lmds logs {info.slug}"
     )
+
+
+def logs_server(info: ServerInfo, lines: int = 200, follow: bool = False) -> int:
+    """ดู log — follow=True ตามแบบ realtime (Ctrl-C เพื่อออก)"""
+    if not follow:
+        return _run_controller(info, "logs", [str(lines)])
+    return subprocess.run(follow_argv(info, lines)).returncode
 
 
 
