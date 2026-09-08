@@ -217,9 +217,16 @@ def controllers_axis(models: list[dict] | None, hub: dict) -> Axis:
     if not models:
         return Axis("n/a", "ไม่มี bundle")
     stale, unknown, adopted, ahead = [], [], [], []
+    external = 0
     for m in models:
         if m.get("stacked_role") == "worker":
             continue  # bundle อยู่ที่ head — การ์ด worker เป็นเงา
+        if m.get("external") or not m.get("controller_exists", True):
+            # container ที่ค้นพบเอง (คนอื่น start ไว้ ไม่ใช่ bundle ของ LMDS) — ไม่มี controller ให้เทียบ template
+            # เคสจริง 2026-09-08: `vllm-gemma4` บน dgx-spark01 / `vllm-qwen3-122b` บน msi-5 ทำให้ทั้งเครื่องขึ้น
+            # "ยังไม่ตรง hub" ทั้งที่ bundle ของ LMDS ตรงหมด
+            external += 1
+            continue
         state = _controller_of(m, hub)
         tag = f"{m.get('slug')} ({state.get('generated_by') or '?'})"
         if state["state"] == "stale":
@@ -230,8 +237,11 @@ def controllers_axis(models: list[dict] | None, hub: dict) -> Axis:
             adopted.append(str(m.get("slug")))
         elif state["state"] == "ahead":
             ahead.append(tag)
-    total = len([m for m in models if m.get("stacked_role") != "worker"])
-    extra = f" · adopted {len(adopted)} (ไม่มี template)" if adopted else ""
+    total = len([m for m in models if m.get("stacked_role") != "worker"]) - external
+    extra = (f" · adopted {len(adopted)} (ไม่มี template)" if adopted else "") + \
+            (f" · container ที่ค้นพบเอง {external} (ไม่ใช่ bundle)" if external else "")
+    if total <= 0:
+        return Axis("n/a", "ไม่มี bundle" + (extra.lstrip(" ·") and f" · {extra.strip(' ·')}" or ""))
     if stale:
         return Axis("stale", f"{total} ใบ · เก่ากว่า lmds {len(stale)} ใบ: {', '.join(stale)}{extra}", [s.split(" (")[0] for s in stale])
     if ahead:

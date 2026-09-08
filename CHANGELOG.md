@@ -5,6 +5,9 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **container ที่ค้นพบเองไม่ทำให้เครื่องขึ้น "ยังไม่ตรง hub"** — 2026-09-08: `vllm-gemma4` (dgx-spark01) และ
+  `vllm-qwen3-122b` (msi-5) ที่คนอื่น start ไว้เอง (external, ไม่มี controller) ถูกนับในมิติ controller เป็น "ตรวจไม่ได้"
+  ทั้งที่ bundle ของ LMDS ตรง template หมด · ตอนนี้แยกนับเป็น "container ที่ค้นพบเอง N (ไม่ใช่ bundle)" · เทส `test_fleet_consistency.py`
 - **ชื่อ bundle จาก repo ยาว ๆ ไม่ทำให้ push ไม่ได้อีก + `lmds deploy --name`** — 2026-09-08 hub aicontrol: deploy repo
   `…-Fable-Fusion-711-Uncensored-Heretic-…-MTP-GGUF` สำเร็จ แต่กด Push to MSI10 ถูกปฏิเสธ "ชื่อโมเดล (slug) ไม่ถูกต้อง"
   เพราะ slug ยาวเกิน 64 · `slugify` ตัดที่ขอบคำให้พอดีตั้งแต่ตอนตั้งชื่อ · ข้อความ error บอกเหตุจริง (เดิมตัดโชว์ 40 ตัว

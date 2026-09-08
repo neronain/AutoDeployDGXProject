@@ -183,3 +183,23 @@ def test_control_plane_hub_runtime_axis_is_not_applicable():
     host_gpu = {**host, "role": {"control_plane": False}}
     v2 = node_verdict({"host": host_gpu, "models": models}, hub)
     assert v2.runtimes.state == "unknown" and not v2.consistent
+
+
+def test_discovered_containers_do_not_make_a_node_look_inconsistent():
+    """เคสจริง 2026-09-08: container ที่คนอื่น start เอง (`vllm-gemma4` บน dgx-spark01, `vllm-qwen3-122b` บน msi-5)
+    โผล่ใน inventory เป็น external=True ไม่มี controller → ถูกนับเป็น "ตรวจไม่ได้" ทำให้ทั้งเครื่องขึ้น "ยังไม่ตรง hub"
+    ทั้งที่ bundle ของ LMDS ตรง template หมด"""
+    from lmds.fleet.consistency import controllers_axis
+
+    hub = {"version": "0.6.1", "commit": "b9112bd", "template_hash": "f5ce29c2d47a", "dirty": []}
+    models = [
+        {"slug": "nvidia-nemotron-3-super-120b-a12b-nvfp4", "generated_by": "lmds 0.6.1",
+         "template_hash": "f5ce29c2d47a", "controller_exists": True},
+        {"slug": "vllm-gemma4", "external": True, "controller_exists": False},
+    ]
+    axis = controllers_axis(models, hub)
+    assert axis.state == "ok", axis
+    assert "1 ใบ" in axis.detail and "container ที่ค้นพบเอง 1" in axis.detail
+
+    only_external = controllers_axis([{"slug": "vllm-gemma4", "external": True, "controller_exists": False}], hub)
+    assert only_external.state == "n/a", only_external
