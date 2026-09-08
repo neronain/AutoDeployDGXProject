@@ -85,10 +85,10 @@ def gguf_report(**overrides) -> ModelReport:
     return ModelReport(**base)
 
 
-def make_bundle(report, target="dgx-spark-single", tmp_path=None):
+def make_bundle(report, target="dgx-spark-single", tmp_path=None, slug=None):
     fit = analyze(report, PRESETS[target])
     plan = build_plan(report, fit, provider=None)
-    return render_bundle(plan, report, fit, tmp_path), plan, fit
+    return render_bundle(plan, report, fit, tmp_path, slug=slug), plan, fit
 
 
 def audit_script(text: str) -> list[str]:
@@ -1572,3 +1572,34 @@ def test_controller_is_replaced_atomically_so_a_running_script_keeps_reading_the
     assert path.read_text(encoding="utf-8").endswith("echo new\n")
     assert os.access(path, os.X_OK)
     assert not list(tmp_path.glob(".ctl.sh.tmp-*")), "ไฟล์ชั่วคราวต้องไม่เหลือ"
+
+
+def test_slug_from_a_long_repo_name_stays_pushable(tmp_path):
+    """เคสจริง 2026-09-08 (hub aicontrol → MSI10): deploy repo ชื่อยาวสำเร็จ แต่กด push แล้วถูกปฏิเสธ
+    "ชื่อโมเดล (slug) ไม่ถูกต้อง" เพราะ slug ยาวเกิน 64 — bundle ที่ push ไม่ได้ตลอดกาล · ตัดตั้งแต่ตอนตั้งชื่อ"""
+    import re
+
+    from lmds.brain.rulebased import MAX_SLUG_LEN, slugify
+
+    long_repo = "DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-Thinking-Neo-Imatrix-MAX-MTP-GGUF"
+    slug = slugify(long_repo)
+    assert len(slug) <= MAX_SLUG_LEN and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", slug), slug
+    assert not slug.endswith("-") and slug.startswith("qwen3-6-27b-fable-fusion-711-uncensored")
+    # ชื่อสั้นต้องไม่เปลี่ยน
+    assert slugify("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4") == "nvidia-nemotron-3-super-120b-a12b-nvfp4"
+
+
+def test_deploy_can_name_the_bundle_and_refuses_a_bad_name(tmp_path):
+    """`lmds deploy … --name` ให้ผู้ใช้ตั้งชื่อสั้นเอง · ชื่อที่ผิดกติกาต้องถูกปฏิเสธตั้งแต่ตอน render ไม่ใช่ตอน push"""
+    import pytest
+
+    from lmds.generator.renderer import check_slug_name
+
+    assert check_slug_name("coder-th") == "coder-th"
+    for bad in ("", "-นำหน้า", "a" * 65, "has space", "slug/with-slash"):
+        with pytest.raises(ValueError):
+            check_slug_name(bad)
+
+    bundle, _plan, _fit = make_bundle(safetensors_report(), tmp_path=tmp_path, slug="short-name")
+    assert bundle.directory.name == "short-name"
+    assert (bundle.directory / "short-name-single.sh").is_file()

@@ -230,9 +230,23 @@ def arch_notes(repo_id: str, quantization: str = "",
         )
     return notes
 
+# ชื่อ bundle ยาวได้เท่าที่ตัวตรวจฝั่ง web/adopt ยอม — เคสจริง 2026-09-08 (hub aicontrol): deploy
+# `…-Fable-Fusion-711-Uncensored-Heretic-…-MTP-GGUF` สำเร็จ แต่กด push แล้วถูกปฏิเสธเพราะ slug ยาวเกิน
+# ผู้ใช้ได้ bundle ที่ push ไม่ได้ตลอดกาล · ตัดตั้งแต่ตอนตั้งชื่อดีกว่าไปห้ามตอนปลายทาง
+MAX_SLUG_LEN = 64
+
+
 def slugify(repo_id: str) -> str:
     name = repo_id.split("/")[-1].lower()
-    return re.sub(r"[^a-z0-9]+", "-", name).strip("-") or "model"
+    slug = re.sub(r"[^a-z0-9]+", "-", name).strip("-") or "model"
+    if len(slug) > MAX_SLUG_LEN:
+        cut = slug[:MAX_SLUG_LEN]
+        # ตัดที่ขอบคำ (ขีด) ถ้าคำสุดท้ายไม่ยาวเกินไป — `…-uncensored-heret` อ่านแล้วงงกว่า `…-uncensored`
+        boundary = cut.rfind("-")
+        if boundary >= MAX_SLUG_LEN - 16:
+            cut = cut[:boundary]
+        slug = cut.strip("-._") or "model"
+    return slug
 
 
 def topology_for_target(target_name: str) -> Topology:

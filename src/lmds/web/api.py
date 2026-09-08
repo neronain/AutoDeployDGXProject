@@ -123,9 +123,14 @@ _SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 def _check_slug(slug: str) -> str:
     """slug ต้องเป็นชื่อ bundle ที่ปลอดภัยพอจะไปอยู่ในคำสั่ง shell/ชื่อไฟล์ — ไม่ผ่าน = 400"""
     if not _SLUG_OK.fullmatch(slug or ""):
+        # เดิมตัดโชว์ 40 ตัวเสมอ — slug ที่ยาวเกินจึงขึ้นบนจอเป็นชื่อครึ่งท่อนลงท้ายด้วยขีด ดูเหมือน
+        # "ชื่อมีอักขระต้องห้าม" ทั้งที่ปัญหาคือความยาว (เคสจริง 2026-09-08 hub aicontrol → MSI10)
+        shown = slug if len(slug or "") <= 72 else f"{slug[:69]}…"
+        why = ("ยาว {n} ตัว (เกิน 64)".format(n=len(slug))
+               if len(slug or "") > 64 else "ใช้ได้เฉพาะ a-z A-Z 0-9 . _ - และขึ้นต้นด้วยตัวอักษร/ตัวเลข")
         raise HTTPException(
             status_code=400,
-            detail=f"ชื่อโมเดล (slug) ไม่ถูกต้อง: {slug[:40]!r} — ใช้ได้เฉพาะ a-z 0-9 . _ - ไม่เกิน 64 ตัว",
+            detail=f"ชื่อโมเดล (slug) ไม่ถูกต้อง: {shown!r} — {why} · ตั้งชื่อสั้นลงตอน deploy: lmds deploy <repo> --name <slug>",
         )
     return slug
 

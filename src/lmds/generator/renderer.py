@@ -171,6 +171,21 @@ def bundle_model_id(directory: Path) -> str:
         return ""
 
 
+
+def check_slug_name(slug: str) -> str:
+    """ตรวจชื่อ bundle ที่ผู้ใช้ตั้งเอง — กติกาเดียวกับ `_check_slug` ฝั่ง web (a-z A-Z 0-9 . _ - ไม่เกิน 64)"""
+    import re as _re
+
+    from lmds.brain.rulebased import MAX_SLUG_LEN
+
+    if not _re.fullmatch(rf"[A-Za-z0-9][A-Za-z0-9._-]{{0,{MAX_SLUG_LEN - 1}}}", slug or ""):
+        raise ValueError(
+            f"ชื่อ bundle ไม่ถูกต้อง: {slug!r} — ใช้ได้เฉพาะ a-z A-Z 0-9 . _ - "
+            f"ขึ้นต้นด้วยตัวอักษร/ตัวเลข ยาวไม่เกิน {MAX_SLUG_LEN} ตัว"
+        )
+    return slug
+
+
 def resolve_slug(output_root: Path, model_id: str) -> tuple[str, str]:
     """slug ของ bundle นี้ + คำเตือน (ว่าง = ไม่มี)
 
@@ -531,6 +546,7 @@ def render_bundle(
     report: ModelReport,
     fit: FitReport,
     output_root: Path,
+    slug: str | None = None,
 ) -> Bundle:
     from lmds.brain.rulebased import slugify
 
@@ -559,7 +575,12 @@ def render_bundle(
         )
 
     env = _environment()
-    slug, slug_note = resolve_slug(Path(output_root), plan.model_id)
+    # ผู้ใช้ตั้งชื่อเองได้ (`lmds deploy … --name`) — ชื่อยาวจาก repo id ทำให้ push ไม่ได้ (เกิน 64) และ endpoint
+    # กับชื่อ container/unit ก็ยาวตาม · ตั้งเองแล้วต้องผ่านกติกาเดียวกับที่ฝั่ง web ตรวจ
+    if slug:
+        slug, slug_note = check_slug_name(slug), ""
+    else:
+        slug, slug_note = resolve_slug(Path(output_root), plan.model_id)
     if slug_note and slug_note not in plan.warnings:
         plan.warnings.append(slug_note)
     if slug_note and plan.served_model_name == slugify(plan.model_id):

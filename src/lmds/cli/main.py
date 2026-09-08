@@ -3066,7 +3066,7 @@ def smoke(
     console.print(f"\n[green]smoke test ผ่านทุกขั้น[/green] — {slug} รันได้จริงบน {where}")
 
 
-def _render_and_package(deployment_plan, report, fit, output: str):
+def _render_and_package(deployment_plan, report, fit, output: str, slug: str | None = None):
     """render → gates → checksums → zip — ใช้ร่วมกันระหว่าง generate และ deploy"""
     from pathlib import Path
 
@@ -3075,7 +3075,7 @@ def _render_and_package(deployment_plan, report, fit, output: str):
     from lmds.validator import all_passed, run_gates
 
     try:
-        bundle = render_bundle(deployment_plan, report, fit, Path(output))
+        bundle = render_bundle(deployment_plan, report, fit, Path(output), slug=slug)
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
@@ -3151,6 +3151,9 @@ def deploy(
         None, "--gguf",
         help="repo GGUF หลาย variant: เลือกไฟล์ด้วยชื่อเต็ม หรือชื่อ quant เช่น Q8_K_XL / Q4_K_M "
              "(จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข — script/hub ใช้ทางนี้)"),
+    name: Optional[str] = typer.Option(
+        None, "--name",
+        help="ตั้งชื่อ bundle (slug) เอง — ว่าง = มาจากชื่อ repo · ชื่อจาก repo ที่ยาวเกิน 64 ตัวถูกตัดให้พอดี"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
 ) -> None:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
@@ -3250,7 +3253,7 @@ def deploy(
             console.print("ยกเลิกโดยผู้ใช้")
             raise typer.Exit(code=1)
 
-    bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output)
+    bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output, slug=name)
     _render_gates(results)
     _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit),
                      stacked=deployment_plan.topology.value == "stacked",
