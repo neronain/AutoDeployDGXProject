@@ -5,6 +5,12 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **clone ปลอดภัยขึ้น + บอกได้ว่าใครถือ lock ของ download** — ตรวจฟีเจอร์ "Copy to another machine" ทั้งเส้น 2026-09-09
+  (clone จริง spark-head → spark-worker: 0.6 GB ใน 4.3 วิ บนสายคลัสเตอร์ · verify ผ่าน · ถอนกุญแจชั่วคราวครบ):
+  เช็คเนื้อที่ปลายทางก่อนเริ่มลาก (`check_target_space` — เดิม rsync ตายกลางทางแล้วทิ้งไฟล์ครึ่ง ๆ) · ไม่ลาก
+  `.download.lock`/`*.incomplete`/`*.part` ไปด้วย · controller บอก pid/คำสั่งของ process ที่ถือ lock อยู่จริง
+  (เคสลูกค้า MSI11: ข้อความเดิมบอกให้ไป `ps -ef | grep` เอง) · deploy พิมพ์ path เต็มและเตือนเมื่อ slug ซ้ำหลาย
+  bundle root (cwd/bundles vs ~/bundles ทำให้ได้คนละ topology) · เทส `test_clone.py`, `test_cli_deploy.py`
 - **container ที่ค้นพบเองไม่ทำให้เครื่องขึ้น "ยังไม่ตรง hub"** — 2026-09-08: `vllm-gemma4` (dgx-spark01) และ
   `vllm-qwen3-122b` (msi-5) ที่คนอื่น start ไว้เอง (external, ไม่มี controller) ถูกนับในมิติ controller เป็น "ตรวจไม่ได้"
   ทั้งที่ bundle ของ LMDS ตรง template หมด · ตอนนี้แยกนับเป็น "container ที่ค้นพบเอง N (ไม่ใช่ bundle)" · เทส `test_fleet_consistency.py`

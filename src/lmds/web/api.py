@@ -2102,8 +2102,8 @@ def create_app(token: str = "") -> FastAPI:
         import tempfile as _tempfile
 
         from lmds.fleet.clone import (
-            CloneError, _install_temp_key, build_rsync_command, inspect_source,
-            make_marker, plan_clone, revoke_temp_key,
+            CloneError, _install_temp_key, build_rsync_command, check_target_space,
+            inspect_source, make_marker, plan_clone, revoke_temp_key,
         )
         from lmds.nodes import find
         from lmds.web import jobs
@@ -2115,6 +2115,8 @@ def create_app(token: str = "") -> FastAPI:
 
         try:
             plan = inspect_source(plan_clone(slug, name, target_name))
+            # ดิสก์ปลายทางไม่พอ = rsync ตายกลางทางแล้วทิ้งไฟล์ครึ่ง ๆ ไว้ · ถามก่อนเสียเวลา 1 วินาที
+            check_target_space(plan)
         except CloneError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

@@ -311,9 +311,25 @@ download() {
   # แต่ curl ยังเขียนอยู่ ล็อกก็ยังถูกถือ ซึ่งตรงกับความจริงว่ายังมีคนเขียนไฟล์ · ไม่มี flock (macOS) = ข้าม
   if command -v flock >/dev/null 2>&1; then
     exec 9>"${MODEL_DIR}/.download.lock"
-    flock -n 9 || die "download ของ bundle นี้กำลังรันอยู่แล้ว (อีก process ถือ ${MODEL_DIR}/.download.lock)
-รอให้ตัวนั้นจบก่อน — ดูว่าใคร: ps -ef | grep -E 'curl|aria2c|$(basename "$0")'   หรือดู log ของงานนั้น
+    if ! flock -n 9; then
+      # บอกไปเลยว่าใครถืออยู่ — เคสจริง 2026-09-08 (MSI11 ของลูกค้า): ข้อความเดิมบอกให้ไป `ps -ef | grep` เอง
+      # ซึ่งบนเครื่องลูกค้าที่ไม่มีใครกล้าแตะ = งานค้างเฉย ๆ · fuser/lsof บอก pid ที่ถือ fd นี้อยู่จริง
+      local holder="" who=""
+      if command -v fuser >/dev/null 2>&1; then
+        holder="$(fuser "${MODEL_DIR}/.download.lock" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | head -3 | tr '\n' ' ')"
+      elif command -v lsof >/dev/null 2>&1; then
+        holder="$(lsof -t "${MODEL_DIR}/.download.lock" 2>/dev/null | head -3 | tr '\n' ' ')"
+      fi
+      if [[ -n "$holder" ]]; then
+        who="$(ps -o pid=,etime=,args= -p ${holder} 2>/dev/null | cut -c1-160)"
+        die "download ของ bundle นี้กำลังรันอยู่จริง — process ที่ถือล็อกอยู่ตอนนี้:
+${who}
+รอให้จบแล้วสั่งซ้ำ (ไฟล์ที่โหลดไว้แล้วจะต่อจากเดิม) · จะยกเลิกตัวนั้นก็ได้: kill ${holder}"
+      fi
+      die "download ของ bundle นี้กำลังรันอยู่แล้ว (อีก process ถือ ${MODEL_DIR}/.download.lock)
+หาเจ้าของล็อกไม่ได้ (ไม่มี fuser/lsof บนเครื่องนี้) — ดูเอง: ps -ef | grep -E 'curl|aria2c|$(basename "$0")'
 (ถ้าตัวแม่ตายไปแล้วแต่ curl ยังโหลดค้าง ปล่อยให้มันโหลดจบ แล้วสั่ง download ซ้ำเพื่อต่อไฟล์ให้ครบ)"
+    fi
   fi
   local i have
   for i in "${!MODEL_FILES[@]}"; do

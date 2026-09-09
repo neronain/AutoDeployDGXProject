@@ -1485,8 +1485,8 @@ def node_clone(
     จากต้นทางไปปลายทางบนสายเร็วที่สุดที่ทั้งคู่มี ไม่ผ่าน hub และไม่ผ่านอินเทอร์เน็ต
     """
     from lmds.fleet.clone import (
-        CloneError, build_rsync_command, inspect_source, make_marker, plan_clone,
-        revoke_temp_key, _install_temp_key,
+        CloneError, build_rsync_command, check_target_space, inspect_source, make_marker,
+        plan_clone, revoke_temp_key, _install_temp_key,
     )
     from lmds.nodes import NodeError, find, stream
 
@@ -1510,6 +1510,13 @@ def node_clone(
                   f"({'สายคลัสเตอร์' if plan.link == 'cluster' else 'เส้นปกติ'})[/dim]")
     if not plan.same_site:
         console.print("[yellow]สองเครื่องนี้ไม่ได้อยู่ไซต์เดียวกัน — ข้อมูลอาจวิ่งข้ามเน็ตนอก[/yellow]")
+
+    try:
+        need, free = check_target_space(plan)
+        console.print(f"[dim]เนื้อที่ปลายทาง: ว่าง {free / 1024 ** 3:.1f} GB · ต้องใช้ {need / 1024 ** 3:.1f} GB[/dim]")
+    except CloneError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
 
     if dry_run:
         console.print("[dim]--dry-run: ยังไม่แตะเครื่องปลายทาง[/dim]")
@@ -3110,7 +3117,10 @@ def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: b
             steps.append("prepare-runtime")  # build llama.cpp / ดึงไฟล์ runtime ภายนอก (ครั้งแรกครั้งเดียว)
         steps += ["start", "test-text"]
     chain = " && ".join(f"./{bundle.controller.name} {s}" for s in steps)
-    console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory}\n  {chain}")
+    # path เต็มเสมอ — `--output ./bundles` ผูกกับ cwd ตอนสั่ง · เคสจริง 2026-09-09: deploy จาก cwd อื่นแล้ว bundle
+    # ไปอยู่คนละโฟลเดอร์กับ ~/bundles ที่คนอื่นเปิดดู เลยงงว่าทำไม topology ไม่เปลี่ยน (มันคนละสำเนากัน)
+    console.print(f"\nเริ่มใช้งาน:\n  cd {bundle.directory.resolve()}\n  {chain}")
+    _warn_duplicate_bundle(bundle)
     if stacked:
         console.print(
             "[yellow]stacked (multi-node): แก้ MASTER_IP/WORKER_IP/SSH_USER/NCCL_SOCKET_IFNAME/NCCL_IB_HCA "
@@ -3118,6 +3128,24 @@ def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: b
         )
     if native_prepare:
         console.print("[dim]prepare-runtime จะติดตั้ง build dependencies (git/cmake/ninja) ให้เองผ่าน apt — ใช้ sudo ครั้งเดียว[/dim]")
+
+
+
+def _warn_duplicate_bundle(bundle) -> None:
+    """slug เดียวกันอยู่หลาย bundle root = คำสั่งถัดไปอาจหยิบคนละสำเนา — บอกให้รู้ทันที
+
+    `bundle_roots()` ไล่ตั้งแต่ ./bundles ของ cwd ไปจนถึง ~/bundles · deploy จากคนละที่จึงได้คนละสำเนา
+    แล้ว push/list/refresh หยิบตัวแรกที่เจอ (เคสจริง 2026-09-09 บน hub: ~/bundles เป็น stacked ของเก่า
+    ส่วน ./bundles ที่เพิ่ง deploy เป็น single — คนละ topology กัน)
+    """
+    from lmds.fleet import bundle_roots
+
+    here = bundle.directory.resolve()
+    others = [r / bundle.directory.name for r in bundle_roots()
+              if (r / bundle.directory.name).is_dir() and (r / bundle.directory.name).resolve() != here]
+    if others:
+        console.print(f"[yellow]slug นี้มีอยู่หลายที่: {here} และ {', '.join(str(o.resolve()) for o in others)}"
+                      f" — คำสั่งอื่น (push/list/refresh) หยิบตัวแรกที่เจอ ลบตัวที่ไม่ใช้ทิ้งจะปลอดภัยกว่า[/yellow]")
 
 
 def _is_native_prepare(deployment_plan, fit) -> bool:

@@ -242,3 +242,46 @@ def test_inspect_source_names_the_missing_location(fleet, monkeypatch, tmp_path)
     with pytest.raises(CloneError) as err:
         inspect_source(plan_clone("x", "msi-1", "msi-2"))
     assert "models--org--x" in str(err.value)
+
+
+def test_target_disk_space_is_checked_before_dragging_the_files(fleet, monkeypatch):
+    """rsync 90 GB ที่ตายกลางทางเพราะดิสก์ปลายทางเต็ม ทิ้งไฟล์ครึ่ง ๆ ไว้ แล้ว verify ตกทุกครั้ง —
+    ถามเนื้อที่ก่อนใช้เวลาแค่วินาทีเดียว (เพิ่ม 2026-09-09 ตอนตรวจฟีเจอร์ clone ทั้งเส้น)"""
+    from lmds.fleet.clone import CloneError, check_target_space, plan_clone
+
+    plan = plan_clone("demo", "msi-1", "msi-2")
+    plan.model_dir = "/home/x/models/demo"
+    plan.files = [("big.gguf", 90 * 1024 ** 3)]
+
+    asked = {}
+
+    def df(node, script, timeout=60):
+        asked["node"] = node.name
+        asked["script"] = script
+        class _Done:
+            returncode, stdout, stderr = 0, asked["free"], ""
+
+        return _Result(_Done())
+
+    asked["free"] = str(200 * 1024 ** 3)
+    monkeypatch.setattr("lmds.nodes.run", df, raising=False)
+    need, free = check_target_space(plan)
+    assert asked["node"] == "msi-2" and "df -PB1" in asked["script"]
+    assert need > 90 * 1024 ** 3 and free == 200 * 1024 ** 3
+
+    asked["free"] = str(20 * 1024 ** 3)
+    with pytest.raises(CloneError, match="ไม่พอ"):
+        check_target_space(plan)
+
+
+def test_the_copy_leaves_download_scratch_files_behind(fleet):
+    """`.download.lock` ของต้นทาง (flock) ไปโผล่ที่ปลายทางเป็นไฟล์เปล่า และไฟล์โหลดค้าง `*.incomplete`
+    ทำให้ verify ที่ปลายทางงงว่าครบหรือยัง — เจอจากการ clone จริง spark-head → spark-worker 2026-09-09"""
+    from lmds.fleet.clone import build_rsync_command, plan_clone
+
+    plan = plan_clone("demo", "msi-1", "msi-2")
+    plan.model_dir = "/home/x/models/demo"
+    plan.bundle_dir = "/home/x/bundles/demo"
+    cmd = build_rsync_command(plan, "ops")
+    for junk in (".download.lock", "*.incomplete", "*.part"):
+        assert f"--exclude={junk}" in cmd, junk

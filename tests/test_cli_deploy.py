@@ -273,3 +273,27 @@ def test_rebuild_falls_back_when_the_stored_target_is_no_longer_a_preset(
     result = runner.invoke(app, ["rebuild", "qwen3-8b-gguf"])
     assert result.exit_code == 0, result.output
     assert "this-machine" in result.output and "auto-detect" in result.output
+
+
+def test_deploy_prints_the_absolute_path_and_warns_about_a_duplicate_slug(tmp_path, monkeypatch, capsys):
+    """เคสจริง 2026-09-09 บน hub: `lmds deploy --output ./bundles` จาก cwd อื่น ทำให้ได้ bundle คนละสำเนากับ ~/bundles
+    (อันหนึ่ง single อันหนึ่ง stacked) แล้ว push/refresh หยิบคนละตัว — ต้องบอก path เต็มและเตือนเมื่อ slug ซ้ำหลาย root"""
+    from lmds.cli.main import _render_delivery, _warn_duplicate_bundle
+
+    class _B:
+        directory = tmp_path / "here" / "demo"
+        controller = type("C", (), {"name": "demo-single.sh"})()
+
+    other_root = tmp_path / "elsewhere"
+    (other_root / "demo").mkdir(parents=True)
+    _B.directory.mkdir(parents=True)
+    monkeypatch.setattr("lmds.fleet.bundle_roots", lambda: [other_root, tmp_path / "here"], raising=False)
+
+    _render_delivery(_B(), [_B.directory / "demo-single.sh"])
+    out = capsys.readouterr().out
+    assert str((tmp_path / "here" / "demo").resolve()) in out.replace("\n", "")
+    assert "มีอยู่หลายที่" in out
+
+    monkeypatch.setattr("lmds.fleet.bundle_roots", lambda: [tmp_path / "here"], raising=False)
+    _warn_duplicate_bundle(_B())
+    assert "มีอยู่หลายที่" not in capsys.readouterr().out

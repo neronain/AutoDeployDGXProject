@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import secrets
 import shlex
+from pathlib import PurePosixPath as _PurePath
 from dataclasses import dataclass, field
 
 
@@ -147,6 +148,34 @@ def inspect_source(plan: ClonePlan) -> ClonePlan:
     return plan
 
 
+
+def check_target_space(plan: ClonePlan, margin: float = 1.05) -> tuple[int, int]:
+    """เนื้อที่ว่างบนเครื่องปลายทางพอไหม — คืน (ต้องใช้ไบต์, ว่างไบต์) · CloneError ถ้าไม่พอ
+
+    ทำไมต้องเช็คก่อน: rsync 90 GB ที่ตายกลางทางเพราะดิสก์เต็ม ทิ้งไฟล์ครึ่ง ๆ ไว้ที่ปลายทาง แล้ว verify
+    ตกทุกครั้งจนกว่าจะมีคนไปลบเอง · ถามก่อนใช้เวลา 1 วินาที
+    """
+    from lmds.nodes import NodeError, find, run
+
+    target = find(plan.target)
+    if target is None:
+        raise CloneError(f"ไม่รู้จักเครื่องปลายทาง '{plan.target}'")
+    parent = shlex.quote(str(_PurePath(plan.model_dir).parent) if plan.model_dir else "$HOME")
+    script = f'd={parent}; while [ ! -d "$d" ] && [ "$d" != "/" ]; do d="$(dirname "$d")"; done; df -PB1 "$d" | awk "NR==2{{print \$4}}"'
+    try:
+        result = run(target, script, timeout=60)
+    except NodeError as exc:
+        raise CloneError(f"ถามเนื้อที่ว่างบน {plan.target} ไม่ได้: {exc}") from exc
+    free = int((result.stdout or "0").strip().split()[0] or 0) if result.ok and (result.stdout or "").strip() else 0
+    need = int(plan.total_bytes * margin)
+    if free and free < need:
+        raise CloneError(
+            f"เนื้อที่บน {plan.target} ไม่พอ: ต้องใช้ {need / 1024 ** 3:.1f} GB (รวมเผื่อ {int((margin - 1) * 100)}%) "
+            f"แต่เหลือ {free / 1024 ** 3:.1f} GB — ลบโมเดลที่ไม่ใช้ก่อน (lmds node run {plan.target} list / remove)"
+        )
+    return need, free
+
+
 def _authorized_key_line(pubkey: str, marker: str) -> str:
     # restrict = ปิด port-forward / agent-forward / pty ทั้งหมด เหลือแค่รันคำสั่ง
     # กุญแจชั่วคราวไม่ควรเปิดอะไรมากกว่าที่งานนี้ต้องใช้
@@ -198,7 +227,10 @@ def build_rsync_command(plan: ClonePlan, target_user: str, dry_run: bool = False
     # --partial --append-verify = ขาดกลางคันแล้วต่อได้ ไม่เริ่มใหม่ (ไฟล์ระดับ 40 GB)
     # -H รักษา hardlink เผื่อ cache ของ HF ใช้ · --no-owner/--no-group เพราะ uid
     # สองเครื่องไม่จำเป็นต้องตรงกัน
-    flags = "-aH --partial --append-verify --no-owner --no-group --info=progress2"
+    # ไม่ลากไฟล์ชั่วคราวของการโหลดไปด้วย: `.download.lock` (flock ของต้นทาง — ที่ปลายทางเป็นไฟล์เปล่าไร้ความหมาย)
+    # และไฟล์ที่โหลดค้าง (`*.incomplete` ของ HF · `*.part`) ซึ่งถ้าไปโผล่ที่ปลายทางจะทำให้ verify งงว่าไฟล์ครบหรือยัง
+    flags = ("-aH --partial --append-verify --no-owner --no-group --info=progress2 "
+             "--exclude=.download.lock --exclude=*.incomplete --exclude=*.part --exclude=*.tmp")
     if dry_run:
         flags += " --dry-run"
     return (
