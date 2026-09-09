@@ -276,8 +276,8 @@ def test_set_fit_refuses_when_it_does_not_fit_and_writes_nothing(spark_head, mon
     before = read(spark_head)
     r = CliRunner().invoke(app, ["set", "nemotron", "--fit", "--slots", "40"])
     assert r.exit_code == 1
-    assert "ไม่เขียนค่าให้" in r.output and "ลด slots เหลือ 10" in r.output
-    assert read(spark_head) == before
+    assert "ไม่ได้ตั้ง slots/context/KV ให้" in r.output and "ลด slots เหลือ 10" in r.output
+    assert read(spark_head) == before   # ไม่ได้สั่งค่าอื่นมาด้วย จึงไม่มีอะไรถูกเขียน
 
 
 def test_fit_command_is_a_dry_run(spark_head):
@@ -434,3 +434,20 @@ def test_default_pin_is_capped_to_what_is_left_for_big_kv_models(tmp_path):
     assert sizing["kv_per_request_gb"] == 35.0 and sizing["full_context_requests"] == 1
     assert any("ลด context จาก 131,072" in w for w in plan.warnings)
     assert KV_PIN_HEADROOM == 1.2
+
+
+def test_set_fit_still_writes_settings_that_have_nothing_to_do_with_memory(spark_head):
+    """เคสจริง 2026-09-09 dgx-spark03: `lmds set <slug> --port 8355 --fit --slots 3` แล้ว Fit บอก "ไม่พอ" →
+    เดิมไม่เขียนอะไรเลยแม้แต่ port ที่สั่งชัด ๆ · คนสั่ง start ต่อจึงไปเปิดทับพอร์ตของอีกโมเดล
+    (port/bind/ชื่อ/parser ไม่เกี่ยวกับหน่วยความจำ — ต้องถูกเขียนอยู่ดี ส่วน slots/context/KV ไม่เขียน)"""
+    from lmds.cli.main import app
+    from lmds.fleet.bundle_settings import read
+
+    before = read(spark_head)
+    r = CliRunner().invoke(app, ["set", "nemotron", "--port", "8355", "--fit", "--slots", "40"])
+    assert r.exit_code == 1, r.output
+    saved = read(spark_head)
+    assert str(saved.get("port")) == "8355", saved
+    assert "slots" not in saved, saved
+    assert saved.get("extra_args") == before.get("extra_args"), saved   # pin เดิมไม่ถูกแตะ
+    assert "เขียนเฉพาะค่าที่ไม่เกี่ยวกับหน่วยความจำ" in r.output

@@ -1976,10 +1976,20 @@ def set_defaults(
         if not as_json:
             _print_fit_table(fit_plan)
         if why:
+            # ค่าที่ผู้ใช้สั่งมาเองและไม่เกี่ยวกับหน่วยความจำ (port/bind/ชื่อ/parser/image/env) ต้องถูกเขียนอยู่ดี —
+            # เคสจริง 2026-09-09 dgx-spark03: `set --port 8355 --fit --slots 3` แล้ว fit บอกว่าไม่พอ → ไม่เขียนอะไรเลย
+            # แม้แต่ port ที่สั่งไว้ชัด ๆ · คนสั่ง start ต่อจึงไปเปิดทับพอร์ตเดิมของอีกโมเดล
+            memory_keys = {"slots", "context", "gpu_util", "extra_args"}
+            keep = {k: v for k, v in given.items() if k not in memory_keys}
+            if keep:
+                write(bundle_dir, {**read(bundle_dir), **keep})
             if as_json:
-                print(json.dumps({"plan": fit_plan, "error": why}, ensure_ascii=False))
+                print(json.dumps({"plan": fit_plan, "error": why, "written": keep}, ensure_ascii=False))
             else:
-                err_console.print(f"[red]ไม่เขียนค่าให้ — {why}[/red]")
+                if keep:
+                    console.print("เขียนเฉพาะค่าที่ไม่เกี่ยวกับหน่วยความจำให้แล้ว: "
+                                  + " · ".join(f"{k}={v}" for k, v in keep.items()))
+                err_console.print(f"[red]ไม่ได้ตั้ง slots/context/KV ให้ — {why}[/red]")
                 err_console.print("[dim]ดูตารางข้างบนแล้วสั่งใหม่ด้วย --slots/--context ที่พอ หรือหยุดโมเดลที่ระบุก่อน[/dim]")
             raise typer.Exit(code=1)
         # แฟล็กที่ผู้ใช้ส่งมาเองในคำสั่งเดียวกันต้องไม่หาย — pin เขียนทับเฉพาะ --kv-cache-memory

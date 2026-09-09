@@ -5,6 +5,16 @@
 **สรุป 0.6.1** — แก้จากเคสจริงของลูกค้าหลังปักหมุด v0.6.0 (`7262bb3`): stacked start ที่ค้างก่อนโหลด weight ต้องบอกเองว่า
 ค้างที่การจับมือข้าม node และเช็คอะไรก่อน
 
+- **start ของ vLLM/SGLang/stacked ไม่ทับพอร์ตของโมเดลอื่นอีก + `set --fit` ไม่ทิ้งค่าที่สั่งมาด้วย** — เคสจริง
+  2026-09-09 dgx-spark03 ตอนสลับโมเดล: `set --port 8355 --fit --slots 3` เจอ "ไม่พอ" แล้วไม่เขียนอะไรเลย
+  แม้แต่ port · `start` ต่อจึงไปเปิดที่ :8000 ที่ embedding ยึดอยู่ → wait_health ได้ 200 จาก *ตัวนั้น* แล้ว
+  รายงาน "started" ใน 17 วินาที ทั้งที่โมเดลไม่ได้ขึ้น · เพิ่ม `check_port_free` (llama.cpp มีมาตั้งแต่ ส.ค.)
+  ใน 3 template ที่เหลือ · `set --fit` ที่ถูกปฏิเสธยังเขียน port/bind/ชื่อ/parser ให้ (ไม่แตะ slots/context/KV)
+  · เทส `test_controller_runs_not_just_parses.py`, `test_kv_sizing.py`
+- **bundle ชื่อยาวที่มีอยู่ก่อนกติกา 64 ตัว ยัง regenerate ได้** — 2026-09-09 หลัง rollout: spark-head/spark-worker
+  ขึ้น "controller เก่ากว่า hub" ตลอดเพราะ `bundles refresh` ปฏิเสธ (ชื่อโฟลเดอร์ 91 ตัวไม่ตรง slug ที่ตัดแล้ว) ·
+  refresh ใช้ชื่อโฟลเดอร์เดิมเป็น slug เมื่อมันขึ้นต้นด้วย slug ที่คำนวณได้ · `check_slug_name(allow_long=)` ·
+  กติกาความยาวมีไว้กันชื่อ *ใหม่* ไม่ให้ push ไม่ได้ ไม่ใช่ทำให้ของเดิมซ่อมไม่ได้ · เทส `test_bundles_refresh.py`
 - **clone ปลอดภัยขึ้น + บอกได้ว่าใครถือ lock ของ download** — ตรวจฟีเจอร์ "Copy to another machine" ทั้งเส้น 2026-09-09
   (clone จริง spark-head → spark-worker: 0.6 GB ใน 4.3 วิ บนสายคลัสเตอร์ · verify ผ่าน · ถอนกุญแจชั่วคราวครบ):
   เช็คเนื้อที่ปลายทางก่อนเริ่มลาก (`check_target_space` — เดิม rsync ตายกลางทางแล้วทิ้งไฟล์ครึ่ง ๆ) · ไม่ลาก

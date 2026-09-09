@@ -279,7 +279,7 @@ def test_vllm_start_hands_the_api_key_to_docker_through_the_environment(tmp_path
     stubs = """
         die() { echo "ERROR: $*" >&2; exit 1; }
         need() { :; }; check_gpu() { :; }; verify_files() { :; }; check_architecture() { :; }
-        verify_assets() { :; }; write_meta() { :; }; wait_health() { :; }
+        verify_assets() { :; }; write_meta() { :; }; wait_health() { :; }; check_port_free() { :; }
         warn_open_endpoint() { :; }; network_info() { :; }
         detect_advertise_ip() { echo 1.2.3.4; }
         _resolve_chat_template() { echo "$1"; }; _container_hub_cache() { echo /cache/hub; }

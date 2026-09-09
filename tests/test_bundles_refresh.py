@@ -232,3 +232,23 @@ def test_regenerate_on_node_runs_bundles_refresh_there(monkeypatch):
     answer = client.post(f"/api/nodes/spark-worker/models/{SLUG}/regenerate").json()
     assert answer["exit_code"] == 0 and seen == [f"lmds bundles refresh {SLUG}"]
     assert client.post("/api/nodes/spark-worker/models/x%27%3Bid%3B%27/regenerate").status_code == 400
+
+
+def test_a_bundle_named_before_the_length_rule_can_still_be_regenerated(tmp_path, monkeypatch):
+    """เคสจริง 2026-09-09 spark-head/spark-worker: หลังจาก slugify ตัดชื่อยาวเกิน 64 (แก้ 2026-09-08) bundle เดิมที่ชื่อ
+    91 ตัวขึ้น "ชื่อโฟลเดอร์ไม่ตรง slug ของโมเดล — render ทับที่เดิมไม่ได้" ทุกครั้ง = regenerate ไม่ได้อีกเลย
+    (fleet consistency ก็ค้างเป็น controller เก่ากว่า hub ตลอด)"""
+    from lmds.brain.rulebased import MAX_SLUG_LEN, slugify
+    from lmds.generator.renderer import check_slug_name
+
+    long_repo = "DavidAU/Qwen3.6-40B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-NEO-CODE-DI-Imatrix-MAX-GGUF"
+    legacy = slugify(long_repo.split("/")[-1].lower().replace(".", "-"))  # ชื่อแบบก่อนมีเพดาน
+    capped = slugify(long_repo)
+    assert len(capped) <= MAX_SLUG_LEN
+
+    # ชื่อยาวของเดิมต้องผ่านเมื่อบอกว่าเป็น bundle ที่มีอยู่แล้ว แต่ชื่อใหม่ยาวเกินยังถูกปฏิเสธ
+    old_name = "qwen3-6-40b-claude-4-6-opus-deckard-heretic-uncensored-thinking-neo-code-di-imatrix-max-gguf"
+    assert check_slug_name(old_name, allow_long=True) == old_name
+    with pytest.raises(ValueError):
+        check_slug_name(old_name)
+    assert legacy and capped

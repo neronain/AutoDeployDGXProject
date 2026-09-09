@@ -297,10 +297,16 @@ def refresh_bundle(server, *, if_older: bool = True) -> RefreshResult:
     except ValueError as exc:
         result.detail = str(exc)
         return result
-    if target_slug != controller.parent.name:
+    folder = controller.parent.name
+    # ชื่อโฟลเดอร์คือตัวตนของ bundle — สิ่งที่กันคือ "โฟลเดอร์นี้เป็นของโมเดลอื่น" ไม่ใช่ "ชื่อไม่ตรงสูตรตั้งชื่อรุ่นล่าสุด"
+    # เคสจริง 2026-09-09: หลังจาก slugify ตัดชื่อที่ยาวเกิน 64 (แก้เมื่อ 2026-09-08) bundle เดิมที่ชื่อยาวกว่านั้น
+    # (`…-neo-code-di-imatrix-max-gguf` 91 ตัว บน spark-head) กลายเป็น "render ทับที่เดิมไม่ได้" ทุกครั้ง = regenerate
+    # ไม่ได้อีกเลย · ชื่อเดิมที่ขึ้นต้นด้วย slug ที่คำนวณได้ = bundle เดียวกัน ใช้ชื่อโฟลเดอร์ต่อไป
+    if target_slug != folder and not folder.startswith(target_slug):
         result.action = "needs-online"
-        result.detail = f"ชื่อโฟลเดอร์ ({controller.parent.name}) ไม่ตรง slug ของโมเดล ({target_slug}) — render ทับที่เดิมไม่ได้"
+        result.detail = f"ชื่อโฟลเดอร์ ({folder}) ไม่ตรง slug ของโมเดล ({target_slug}) — render ทับที่เดิมไม่ได้"
         return result
+    target_slug = folder
 
     backup = controller.with_name(f"{controller.name}.replaced-{_stamp()}")
     serial = 1
@@ -310,7 +316,7 @@ def refresh_bundle(server, *, if_older: bool = True) -> RefreshResult:
     shutil.copy2(controller, backup)
     result.replaced = str(backup)
     try:
-        bundle = render_bundle(plan, report, fit, output_root)
+        bundle = render_bundle(plan, report, fit, output_root, slug=target_slug)
     except Exception as exc:  # noqa: BLE001 — คืนของเดิมทุกกรณี ห้ามทิ้ง bundle ไว้ครึ่ง ๆ
         shutil.copy2(backup, controller)
         result.detail = f"render ไม่สำเร็จ ({str(exc)[:160]}) — คืน controller เดิมแล้ว"

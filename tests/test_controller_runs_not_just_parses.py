@@ -105,3 +105,58 @@ def test_no_shell_quote_escaping_sequences_survive_templating(tmp_path):
     แล้วมันจะกลายเป็นตัวอักษรจริง ทำให้ตัวแปรที่ตั้งใจ quote หลุดออกมาเปล่า ๆ
     """
     assert "'\"'\"'" not in _controller(tmp_path)
+
+
+def _vllm_controller(tmp_path) -> str:
+    """controller ของ vLLM (safetensors) — คนละ template กับ llama.cpp ด้านบน"""
+    report = ModelReport(
+        repo_id="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+        revision_sha="sha",
+        artifact_type=ArtifactType.SAFETENSORS,
+        weight_bytes=int(70 * GIB),
+        context_length=262144,
+        kv_dims=KvDims(layers=56, kv_heads=8, head_dim=128),
+    )
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None)
+    bundle = render_bundle(plan, report, fit, tmp_path)
+    return next(bundle.directory.glob("*-single.sh")).read_text(encoding="utf-8")
+
+
+def test_vllm_start_refuses_a_port_another_server_already_owns(tmp_path):
+    """เคสจริง 2026-09-09 dgx-spark03: start Nemotron ทับ embedding ที่ยึด :8000 อยู่ → wait_health ยิง /health
+    แล้ว *ตัวที่ยึดอยู่* ตอบ 200 ให้ → controller รายงาน "started" ใน 17 วินาที ทั้งที่โมเดลไม่ได้ขึ้นเลย
+    (ฝั่ง llama.cpp มีด่านนี้มาตั้งแต่ 2026-08-13 — vLLM/SGLang/stacked เพิ่งมี)"""
+    body = _extract(_vllm_controller(tmp_path), "check_port_free")
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        port = taken.getsockname()[1]
+        harness = textwrap.dedent("""
+            set -euo pipefail
+            API_PORT=%d
+            die() { echo "DIED: $*"; exit 9; }
+            %s
+            check_port_free
+            echo GUARD_PASSED
+        """) % (port, body)
+        script = tmp_path / "vllm_guard.sh"
+        script.write_text(harness, encoding="utf-8")
+        done = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 9, done.stdout + done.stderr
+    assert "ถูกใช้อยู่แล้ว" in done.stdout and "GUARD_PASSED" not in done.stdout
+
+    # DRY_RUN (ตอน generate บนเครื่องที่ไม่มีอะไรรัน) ต้องไม่ไปแตะ /dev/tcp
+    harness2 = textwrap.dedent("""
+        set -euo pipefail
+        API_PORT=1
+        DRY_RUN=1
+        die() { echo "DIED: $*"; exit 9; }
+        %s
+        check_port_free
+        echo GUARD_PASSED
+    """) % body
+    script2 = tmp_path / "vllm_guard_dry.sh"
+    script2.write_text(harness2, encoding="utf-8")
+    done2 = subprocess.run(["bash", str(script2)], capture_output=True, text=True, timeout=30)
+    assert done2.returncode == 0 and "GUARD_PASSED" in done2.stdout, done2.stdout + done2.stderr

@@ -666,7 +666,32 @@ else:
   esac
 }
 
+
+check_port_free() {
+  # ห้าม start ทับเซิร์ฟเวอร์ของคนอื่นที่ยึด port นี้อยู่ — wait_health ยิง /health แล้ว "ตัวที่ยึดอยู่"
+  # ตอบ 200 ให้ → รายงานว่า start สำเร็จทั้งที่ตัวเราไม่ได้ขึ้นเลย แล้วทุกคนคุยกับโมเดลผิดตัว
+  # เคสจริง 2026-09-09 dgx-spark03: start Nemotron ทับ embedding ที่ยึด :8000 อยู่ → rc=0 ใน 17 วินาที
+  # (llama.cpp controller มีด่านนี้มาตั้งแต่ 2026-08-13 · ฝั่ง vLLM/SGLang เพิ่งมี)
+  [[ -n "${DRY_RUN:-}" ]] && return 0
+  local holder=""
+  if ! (exec 3<>"/dev/tcp/127.0.0.1/${API_PORT}") 2>/dev/null; then
+    return 0
+  fi
+  holder="$(ss -ltnp 2>/dev/null | grep ":${API_PORT} " | head -1 || true)"
+  local seen=""
+  seen="$(curl -fsS -m 5 "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null \
+    | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)["data"]
+except Exception: sys.exit(0)
+print((d[0].get("id") or "").strip() if d else "")' 2>/dev/null || true)"
+  die "port ${API_PORT} ถูกใช้อยู่แล้ว${seen:+ โดยโมเดล '"'"'${seen}'"'"'}${holder:+
+     ${holder}}
+     หยุดตัวนั้นก่อน หรือรันตัวนี้คนละ port:  $0 start --port <PORT>
+     (ถ้าตั้งค่าไว้ให้ถาวร: lmds set {{ slug }} --port <PORT>)"
+}
+
 start() {
+  check_port_free
   need docker
   # container ที่ตายแล้วเป็นซากของรอบก่อน ไม่ใช่ของที่กำลังทำงานอยู่ — เก็บกวาดเองแล้วไปต่อ
   # เดิมปฏิเสธทุกกรณี ทำให้ start ที่ล้ม (เช่นโมเดลโหลดไม่ขึ้น) ปิดทางตัวเองไว้:

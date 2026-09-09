@@ -172,13 +172,17 @@ def bundle_model_id(directory: Path) -> str:
 
 
 
-def check_slug_name(slug: str) -> str:
-    """ตรวจชื่อ bundle ที่ผู้ใช้ตั้งเอง — กติกาเดียวกับ `_check_slug` ฝั่ง web (a-z A-Z 0-9 . _ - ไม่เกิน 64)"""
+def check_slug_name(slug: str, allow_long: bool = False) -> str:
+    """ตรวจชื่อ bundle ที่ผู้ใช้ตั้งเอง — กติกาเดียวกับ `_check_slug` ฝั่ง web (a-z A-Z 0-9 . _ - ไม่เกิน 64)
+
+    `allow_long=True` สำหรับ bundle ที่มีอยู่แล้วก่อนมีกติกาความยาว — regenerate ของเดิมต้องทำได้เสมอ
+    """
     import re as _re
 
     from lmds.brain.rulebased import MAX_SLUG_LEN
 
-    if not _re.fullmatch(rf"[A-Za-z0-9][A-Za-z0-9._-]{{0,{MAX_SLUG_LEN - 1}}}", slug or ""):
+    limit = 512 if allow_long else MAX_SLUG_LEN
+    if not _re.fullmatch(rf"[A-Za-z0-9][A-Za-z0-9._-]{{0,{limit - 1}}}", slug or ""):
         raise ValueError(
             f"ชื่อ bundle ไม่ถูกต้อง: {slug!r} — ใช้ได้เฉพาะ a-z A-Z 0-9 . _ - "
             f"ขึ้นต้นด้วยตัวอักษร/ตัวเลข ยาวไม่เกิน {MAX_SLUG_LEN} ตัว"
@@ -578,7 +582,10 @@ def render_bundle(
     # ผู้ใช้ตั้งชื่อเองได้ (`lmds deploy … --name`) — ชื่อยาวจาก repo id ทำให้ push ไม่ได้ (เกิน 64) และ endpoint
     # กับชื่อ container/unit ก็ยาวตาม · ตั้งเองแล้วต้องผ่านกติกาเดียวกับที่ฝั่ง web ตรวจ
     if slug:
-        slug, slug_note = check_slug_name(slug), ""
+        # bundle ที่มีอยู่แล้วชื่อยาวเกินกติกาใหม่ยัง regenerate ได้ (`lmds bundles refresh` ส่งชื่อโฟลเดอร์เดิมมา) —
+        # กติกาความยาวมีไว้กันชื่อ *ใหม่* ไม่ให้ push ไม่ได้ ไม่ใช่ทำให้ของเดิมซ่อมไม่ได้ (เคสจริง 2026-09-09)
+        existing = (Path(output_root) / slug).is_dir()
+        slug, slug_note = check_slug_name(slug, allow_long=existing), ""
     else:
         slug, slug_note = resolve_slug(Path(output_root), plan.model_id)
     if slug_note and slug_note not in plan.warnings:
