@@ -217,13 +217,41 @@ def _addr_lines(entries):
                    for i, (iface, ip) in enumerate(entries))
 
 
+#  GID ของพอร์ตจริง: ตัวแรก ๆ เป็น link-local แล้วตามด้วยคู่ IPv4-mapped (v1 แล้ว v2)
+#  controller ต้องคว้าเฉพาะตัว RoCE v2 ที่ลงท้ายด้วย IP ของสายนั้น — จงใจไม่ใช้ index 3 ในเทส
+#  เพราะเลข 3 คือค่าที่เคยฝังตายตัวไว้ ถ้าใครเผลอใส่กลับมา เทสต้องยังจับได้
+GID_INDEX = 5
+
+
+def _gid_suffix(ip: str) -> str:
+    a, b, c, d = (int(x) for x in ip.split("."))
+    return f"{a:02x}{b:02x}:{c:02x}{d:02x}"
+
+
+def _write_gids(port_dir: Path, ip: str) -> None:
+    (port_dir / "gids").mkdir(parents=True, exist_ok=True)
+    (port_dir / "gid_attrs" / "types").mkdir(parents=True, exist_ok=True)
+    entries = {
+        0: ("fe80:0000:0000:0000:0a64:00ff:fe00:0001", "IB/RoCE v1"),
+        1: ("fe80:0000:0000:0000:0a64:00ff:fe00:0001", "RoCE v2"),
+        GID_INDEX - 1: (f"0000:0000:0000:0000:0000:ffff:{_gid_suffix(ip)}", "IB/RoCE v1"),
+        GID_INDEX: (f"0000:0000:0000:0000:0000:ffff:{_gid_suffix(ip)}", "RoCE v2"),
+    }
+    for index, (gid, gid_type) in entries.items():
+        (port_dir / "gids" / str(index)).write_text(gid + "\n", encoding="utf-8")
+        (port_dir / "gid_attrs" / "types" / str(index)).write_text(gid_type + "\n", encoding="utf-8")
+
+
 def _node(remote: Path, name: str, addrs, hcas):
-    """เครื่องปลอมหนึ่งเครื่อง: ที่อยู่ + sysfs ของ RoCE (hca → iface)"""
+    """เครื่องปลอมหนึ่งเครื่อง: ที่อยู่ + sysfs ของ RoCE (hca → iface → GID ของ IP บนสายนั้น)"""
     d = remote / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "ip.txt").write_text(_addr_lines(addrs), encoding="utf-8")
+    ip_of = dict(addrs)
     for hca, iface in hcas:
         (d / "infiniband" / hca / "device" / "net" / iface).mkdir(parents=True, exist_ok=True)
+        if iface in ip_of:
+            _write_gids(d / "infiniband" / hca / "ports" / "1", ip_of[iface])
     for iface, _ip in addrs:
         (d / "net" / iface).mkdir(parents=True, exist_ok=True)
         (d / "net" / iface / "operstate").write_text("up\n", encoding="utf-8")
