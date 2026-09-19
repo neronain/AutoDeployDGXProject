@@ -1,0 +1,215 @@
+===============================================================================
+THIRD-PARTY LICENSES
+LMDS · Local Model Deploy Studio (AutoDeployDGXProject)
+Last reviewed: 2026-09-20
+===============================================================================
+
+WHAT THIS FILE IS
+
+  This file lists third-party material that LMDS derives from, or may include.
+  It exists so that attribution and license text are in place *before* any such
+  material is incorporated, not scrambled together afterwards.
+
+  Each entry records the project name, its URL, its license type, and the exact
+  copyright line that must travel with its code.
+
+  This file covers third-party *software* only. It does NOT cover:
+
+    - model weights, container images and runtimes that LMDS merely downloads
+      or launches at deploy time (vLLM, llama.cpp, Hugging Face repositories,
+      NGC images). Those are covered by their own licenses and are neither
+      included in nor distributed with LMDS. See LICENSE / NOTICE.
+    - LMDS's own code, which is proprietary. See LICENSE.
+
+CURRENT STATUS — READ THIS
+
+  As of the "Last reviewed" date above, **no code has been copied into LMDS
+  from any project listed below.** Every entry is currently marked either
+  "no code incorporated" or "reference only".
+
+  The list is published anyway, deliberately: the moment a line of code from
+  one of these projects lands in this repository, the attribution is already
+  here and correct, and only the status line has to change.
+
+"REFERENCE ONLY" MEANS FACTS, NOT CODE
+
+  Some entries are marked "reference only". Those projects contributed
+  *facts* to LMDS's recipe catalog — flag names, image tags, measured
+  throughput, context limits, parser names, known-bad settings. Facts are not
+  copyrightable subject matter, so no license obligation attaches to them and
+  no MIT notice is required for a fact.
+
+  What IS copyrightable in those repositories is their prose: README text,
+  code comments, explanations, and the expression of their scripts. None of
+  that has been copied, and none of it may be pasted into catalog `notes:`
+  fields or documentation.
+
+  Where LMDS uses a fact from one of these projects, the recipe entry carries
+  `source:` and `validated_on:` pointing at the origin. That is provenance
+  and honesty, not a license obligation.
+
+MAINTENANCE RULE
+
+  When code from a listed project is actually incorporated:
+
+    1. change that entry's Status line to "INCORPORATED", naming the specific
+       LMDS files involved and what was taken;
+    2. add a provenance header to each derived file — upstream URL, upstream
+       license, upstream copyright line, and what was changed;
+    3. keep the copyright line below byte-for-byte identical to the upstream
+       original.
+
+  When a project is added, add it here in the same shape before merging.
+
+===============================================================================
+ENTRIES
+===============================================================================
+
+-------------------------------------------------------------------------------
+1. DGX Model Manager v2
+-------------------------------------------------------------------------------
+  URL:        https://github.com/calico88x/DGX-Model-Manager
+  License:    MIT (full text in the "MIT LICENSE TEXT" section below)
+  Copyright:  Copyright (c) 2026 Nova Peck
+
+  Relevance:  Inventory metadata and lifecycle-oriented model management.
+              Referenced in docs/UPGRADE-2026-09.md (WS-6) as a design
+              reference for LMDS inventory metadata.
+
+  Status:     NO CODE INCORPORATED as of 2026-09-20.
+              Design influence and comparison only. If inventory metadata
+              handling is ported rather than reimplemented, this entry becomes
+              INCORPORATED and the MIT text below applies to the derived files.
+
+-------------------------------------------------------------------------------
+2. DeepSeek-V4.1-Flash-vLLM-DGX-Spark
+-------------------------------------------------------------------------------
+  URL:        https://github.com/tonyd2wild/DeepSeek-V4.1-Flash-vLLM-DGX-Spark
+  License:    MIT (full text in the "MIT LICENSE TEXT" section below)
+  Copyright:  Copyright (c) 2026 Tech2wild
+
+  Relevance:  Hardware-measured DGX Spark (GB10 / SM121) results for
+              DeepSeek-V4.1-Flash under vLLM — raw logs, bench JSON, actual
+              argv, per-rank NCCL latency percentiles. LMDS's recipe catalog
+              uses measured values and flag names from this work.
+
+  Status:     REFERENCE ONLY — facts, no code, as of 2026-09-20.
+              No shell, Python or configuration file has been copied. Prose
+              and code comments from this repository have not been reproduced.
+
+  Related but separate: LMDS's recipe catalog pins the community container
+              image ghcr.io/tonyd2wild/vllm-glm53-flash by digest, and the
+              image is on the runtime allowlist. That image is *pulled at
+              deploy time*, never redistributed by LMDS, and carries its own
+              license as published by its author. It is listed here for
+              transparency about where the artefact comes from, not because
+              LMDS distributes it.
+
+-------------------------------------------------------------------------------
+3. deepseek-v4.1-flash-uncensored-8x-dgx-spark
+-------------------------------------------------------------------------------
+  URL:        https://github.com/im0xMagnus/deepseek-v4.1-flash-uncensored-8x-dgx-spark
+  License:    MIT (full text in the "MIT LICENSE TEXT" section below)
+  Copyright:  Copyright (c) 2026 im0xMagnus
+
+  Relevance:  8-node DGX Spark cluster topology and measured figures for
+              DeepSeek-V4.1-Flash.
+
+  Status:     REFERENCE ONLY — facts, no code, as of 2026-09-20.
+              No shell, Python or configuration file has been copied. Prose
+              and code comments from this repository have not been reproduced.
+
+-------------------------------------------------------------------------------
+4. glm-5.3-uncensored-8x-dgx-spark
+-------------------------------------------------------------------------------
+  URL:        https://github.com/im0xMagnus/glm-5.3-uncensored-8x-dgx-spark
+  License:    MIT (full text in the "MIT LICENSE TEXT" section below)
+  Copyright:  Copyright (c) 2026 im0xMagnus
+
+  Relevance:  8-node DGX Spark cluster configuration for GLM-5.3.
+
+  Status:     REFERENCE ONLY — facts, no code, as of 2026-09-20.
+              No shell, Python or configuration file has been copied. Prose
+              and code comments from this repository have not been reproduced.
+
+-------------------------------------------------------------------------------
+5. LiteGate · AiGatewayLocal
+-------------------------------------------------------------------------------
+  URL:        https://github.com/neronain/AiGatewayLocal
+  License:    MIT (full text in the "MIT LICENSE TEXT" section below)
+  Copyright:  Copyright (c) 2026 neronain
+
+  Relevance:  Companion project — local AI gateway. Same owner as LMDS, and
+              listed here for completeness rather than because it is
+              third-party in the ordinary sense.
+
+  Status:     NO CODE INCORPORATED INTO LMDS as of 2026-09-20.
+              LMDS integrates with LiteGate over its API; it does not vendor
+              LiteGate code.
+
+              Important: LiteGate is MIT-licensed and IS free to fork, with
+              attribution preserved. That is deliberate and unchanged. Common
+              ownership does NOT make the MIT grant reversible — code already
+              released under MIT stays released under MIT. If LiteGate code is
+              ever copied into LMDS, the MIT notice below must ship with LMDS
+              even though the copyright holder is the same person.
+
+===============================================================================
+MIT LICENSE TEXT
+===============================================================================
+
+  All five projects listed above are MIT-licensed. The MIT License text is
+  identical for each; it is reproduced once here and applies to every entry
+  above, in each case together with that entry's own copyright line as printed
+  in its section.
+
+  -----------------------------------------------------------------------------
+  MIT License
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+  -----------------------------------------------------------------------------
+
+===============================================================================
+สรุปภาษาไทย
+===============================================================================
+
+  ไฟล์นี้คือรายการ "ของบุคคลที่สาม" ที่ LMDS หยิบมาใช้หรืออาจหยิบมาใช้ พร้อมชื่อโครงการ URL
+  ชนิด license และบรรทัด copyright ที่ต้องติดไปกับโค้ดนั้นเสมอ
+
+  สถานะ ณ 2026-09-20: **ยังไม่มีการคัดลอกโค้ดจากรายการใดเลย** ทุกรายการเป็น
+  "no code incorporated" หรือ "reference only" — ทำไฟล์นี้ไว้ล่วงหน้าเพื่อให้ "การอ้างอิงที่มา"
+  พร้อมอยู่แล้วตั้งแต่วินาทีที่โค้ดบรรทัดแรกถูกหยิบเข้ามา
+
+  "reference only" = เอาแค่ **ข้อเท็จจริง** (ชื่อ flag · tag ของ image · ตัวเลขที่วัดได้ ·
+  ค่า context · ชื่อ parser · ค่าที่รู้ว่าพัง) ซึ่งไม่ใช่งานอันมีลิขสิทธิ์ จึงไม่ต้องแนบ MIT
+  **แต่ร้อยแก้วของเขา — README คอมเมนต์ คำอธิบาย — เป็นงานสร้างสรรค์ ห้ามคัดลอกมาใส่
+  `notes:` หรือเอกสารของเราเด็ดขาด** · ที่มาของข้อเท็จจริงบันทึกไว้ในฟิลด์ `source:`
+  และ `validated_on:` ของ catalog อยู่แล้ว
+
+  เมื่อใดที่หยิบโค้ดมาจริง ต้องทำ 3 อย่าง: เปลี่ยนสถานะรายการนั้นเป็น INCORPORATED
+  พร้อมระบุไฟล์ · ใส่ provenance header ในไฟล์ที่ derive มา (URL · license · copyright ·
+  แก้อะไรไป) · และคงบรรทัด copyright ให้ตรงกับต้นฉบับทุกตัวอักษร
+
+  หมายเหตุ LiteGate: เป็นของเจ้าของเดียวกันและเป็น MIT — **ฟอร์กได้** และดึงกลับไม่ได้
+  ของที่ปล่อย MIT ไปแล้วคือปล่อยไปแล้ว · ถ้าวันหนึ่งเอาโค้ด LiteGate เข้ามาใน LMDS
+  ก็ยังต้องแนบข้อความ MIT มาด้วย แม้ผู้ถือลิขสิทธิ์จะเป็นคนเดียวกัน
+
+  ไฟล์นี้ไม่ครอบคลุม weight โมเดล · container image · runtime (vLLM, llama.cpp,
+  Hugging Face, NGC) ที่ LMDS แค่ "ดาวน์โหลดไปรัน" ไม่ได้แจกจ่ายเอง — ของพวกนั้นอยู่ใต้
+  license ของเจ้าของนั้น ๆ ดู LICENSE / NOTICE
