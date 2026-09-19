@@ -13,7 +13,8 @@
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
-[![license](https://img.shields.io/badge/license-proprietary-8a5300)](LICENSE)
+[![license](https://img.shields.io/badge/license-source--available-8a5300)](LICENSE)
+[![free](https://img.shields.io/badge/free-1%20machine-17703f)](docs/COMMERCIAL.md)
 
 **[ติดตั้ง](docs/INSTALL.md)** · **[คู่มือใช้งาน](docs/USAGE.md)** · **[หลายเครื่อง](docs/RUNBOOK-MULTI-NODE.md)** · **[สิ่งที่ตรวจให้ก่อน deploy](docs/PREFLIGHT.md)** · **[พอร์ต &amp; เครือข่าย](docs/NETWORK.md)** · **[English](README.en.md)**
 
@@ -448,9 +449,10 @@ python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pyte
 
 ## License
 
-**Proprietary — สงวนลิขสิทธิ์** · ดู [LICENSE](LICENSE)
+**1 เครื่อง = ฟรี** ใช้ทำอะไรก็ได้รวมถึงเชิงพาณิชย์ · **ตั้งแต่ 2 เครื่องที่บริหารร่วมกัน = ต้องมี license**
+ดู [LICENSE](LICENSE) · [เงื่อนไขเชิงพาณิชย์](docs/COMMERCIAL.md) · [ของบุคคลที่สาม](THIRD-PARTY-LICENSES)
 
-การเปิดซอร์สให้อ่านได้ในรีโปนี้ไม่ได้ให้สิทธิ์ใช้งานหรือแจกจ่ายต่อ · **bundle ที่ผู้ใช้ generate
+ซอร์สอ่านได้ แต่ไม่ใช่ open source — ฟอร์ก แจกจ่ายต่อ หรือขายต่อไม่ได้ · **bundle ที่ผู้ใช้ generate
 ออกมาเป็นของผู้ใช้เอง** ใช้/แก้/ส่งต่อได้อิสระ · โมเดล image และ runtime ของบุคคลที่สามอยู่ใต้
 license ของเจ้าของนั้น ๆ
 
