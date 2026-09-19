@@ -416,7 +416,8 @@ src/lmds/
 │                        #   (job/cancel/clean_options/_pump scrub), state.py (แคช · decorate_stacked), assistant.py, memory.py,
 │                        #   scriptedit.py, selfupdate.py, static/index.html + static/fonts/ (Geist)
 └── _build.py            # COMMIT/SOURCE ที่ install.sh ประทับ
-tests/                   # ~115 ไฟล์ · 1,720 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
+tests/                   # 128 ไฟล์ test_*.py · 2,037 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
+                         #   นับด้วย pytest --collect-only ที่ commit 45c9cc6 (2026-09-20) — ตรงกับป้ายใน README
 .github/workflows/ci.yml # pytest 3.10/3.11/3.12 + bash -n/shellcheck + secret scan
 ```
 

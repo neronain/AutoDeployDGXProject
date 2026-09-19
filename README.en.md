@@ -8,7 +8,7 @@ Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine
 several acting as one. Nothing leaves the machine except what you ask for.
 
 [![version](https://img.shields.io/badge/version-0.6.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2019-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-2037-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -126,7 +126,7 @@ formula does not fit both families.
 | Artifact | safetensors or GGUF | **safetensors only** |
 | Task | chat · vision · embedding · rerank | chat · vision (embedding/rerank refused — always one machine) |
 | Fast link | not needed | **required**, ≥25G (200G RoCE in practice) |
-| Machines | 1 | ≤3 direct-cabled · ≤4 through a switch |
+| Machines | 1 | ≤3 direct-cabled (two-cage ring) · through a switch: no ceiling we can verify — LMDS ships presets up to 4 |
 | What you gain | fastest | **memory / KV / concurrency** — not tokens per second per user |
 
 LMDS detects ConnectX/RDMA itself, says which machines can stack together, writes `cluster.env`,
@@ -284,7 +284,7 @@ Hardware-validated across all five model families — GGUF, NVFP4, MoE, dense sa
 repos · latest (2026-09-04): `unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF` (llama.cpp + vision),
 embedding `VesNFF/Qwen3-VL-Embedding-8B-GGUF`, stacked `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4` (173 GB)
 and `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` on 2× DGX Spark · **22 target presets** (7 verified on
-real hardware) · **1,785 tests**
+real hardware) · **2,037 tests** (`pytest --collect-only` at commit `45c9cc6`, 2026-09-20 — same number as the badge)
 
 > **Model source: Hugging Face only.** Ollama registry and NVIDIA NGC are phase 2 — passing such a
 > link produces a clear "not supported yet" message with an alternative. Hugging Face now serves large

@@ -38,8 +38,13 @@ PRESETS: dict[str, TargetSpec] = {
     ),
     # 4 เครื่อง: TP=4 หาร attention heads ของโมเดลส่วนใหญ่ลงตัว (64/4=16) ต่างจาก 3 เครื่อง
     # ที่ TP=3 มักหารไม่ลง — ยังไม่ได้ทดสอบจริง จึงคิดแบบ conservative
-    # ต้องมี switch ด้วย: NVIDIA ต่อสายตรงถึงกันได้สูงสุด 3 เครื่อง เกินกว่านั้นต้องผ่าน
-    # switch ซึ่งรองรับได้ถึง 4 (docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
+    # ต้องมี switch ด้วย: ต่อสายตรงถึงกันได้สูงสุด 3 เครื่อง เพราะวงแหวนใช้ cage ครบทั้งสอง
+    # ฝั่งที่ 3 เครื่องพอดี เกินกว่านั้นต้องผ่าน switch
+    # ไม่มีเพดานที่ฝั่ง switch: เดิมเคยเขียนไว้ว่า "รองรับได้ถึง 4" แต่ถอนออกแล้ว —
+    # เป็นการถอดความจาก URL เดียวที่อ่านเมื่อ 2026-08-14 โดยไม่ได้เก็บข้อความต้นฉบับไว้
+    # และ docs/NVIDIA-CLUSTER-SOURCES.md ของเราเองก็ระบุว่าสาย breakout ขยายถึง 8 เครื่องได้
+    # ปัจจุบันมีคลัสเตอร์ 8 เครื่องที่ serve อยู่จริง 2 ชุด (author-asserted ไม่มี log ยืนยัน)
+    # ดู docs/NVIDIA-CLUSTER-SOURCES.md §1
     "dgx-spark-stacked-4": TargetSpec(
         "dgx-spark-stacked-4", MemoryModel.UNIFIED, 128.0, 4, system_ram_gb=None, tested=False
     ),

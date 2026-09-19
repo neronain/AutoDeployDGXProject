@@ -255,8 +255,32 @@ NCCL_SOCKET_IFNAME=... NCCL_IB_HCA=... lmds node ctl spark-head <slug> restart
 | เครื่อง | TP | ใช้ได้ไหม |
 |---|---|---|
 | 2 | 2 | ✅ ทดสอบแล้ว |
-| **3** | 3 | ❌ Llama 3.3 70B มี 64 head — 64÷3 ไม่ลงตัว vLLM ปฏิเสธตั้งแต่ start · ต้อง **TP=2 + pipeline** |
+| **3** | 3 | ⚠️ 64÷3 ไม่ลงตัว vLLM ปฏิเสธตั้งแต่ start · **ทางที่ LMDS ทำได้ตอนนี้คือ TP=2 + pipeline** — แต่ข้อจำกัดนี้ไม่ใช่กำแพง ดูกล่องล่าง |
 | 4 | 4 | ✅ 64÷4 = 16 · หน่วยความจำรวม ~512 GB |
+
+> **TP=3 มีคนทำได้จริงแล้ว ด้วย "virtual heads" — แต่ต้องมี loader ที่ patch แล้ว ซึ่ง LMDS ไม่ได้ ship**
+> (บันทึก 2026-09-20)
+>
+> เลขคณิตยังเหมือนเดิม: 64 head / 8 output group ไม่มีตัวไหนหารด้วย 3 ลงตัว ·
+> วิธีที่เขาใช้คือ **ไม่แก้เลขคณิต แต่เติมของปลอมให้หารลง**
+>
+> - สำเนาของโมเดลสำหรับ serve ประกาศ **72 head / 9 output group** ใน `config.json`
+>   (= 24 head หรือ 3 group เต็ม ๆ ต่อเครื่อง)
+> - **ตอนโหลด** tensor ขนาด 64 head ถูก pad ก่อน vLLM จะ slice — `wq_b`/`wo_a` ซ้ำ group จริงตัวสุดท้าย
+>   ส่วน `wo_b` ได้คอลัมน์ศูนย์ (scale 1.0) · group ที่เติมเข้ามาจึงบวกศูนย์พอดี
+>   และไม่มีบล็อกศูนย์ทั้งก้อนหลุดเข้า FP8 activation quantizer
+> - ตรวจออฟไลน์เทียบกับเลขคณิต 64 head จริง: **max relative error 3.4e-6** ทุกค่า finite
+> - ต้องแก้ vocab split ด้วย — vLLM ใช้ `divide(vocab, tp)` แบบลงตัวเป๊ะ ซึ่ง assert ที่ TP3 ·
+>   เขา pad vocab ขึ้นเป็นพหุคูณของ lcm(64, tp)
+>
+> **สิ่งที่ต้องมีและเราไม่มี**: สำเนา config 72 head แยกต่างหาก · patch ฝั่ง loader (`virtual_heads.py`,
+> `vocab_parallel_embedding.py`) · patch ของ drafter · plugin kernel ที่ build เอง —
+> **ทั้งหมดไม่มีใน vLLM upstream และ LMDS ไม่ได้ ship** จึงยัง **ไม่ใช่ทางที่สั่งจาก LMDS ได้วันนี้**
+>
+> ที่มา: `Tech2wild/DeepSeek-V4.1-Flash-vLLM-DGX-Spark` → `docs/EXL3-TP3.md` (serve จริงบน 3 เครื่อง,
+> 2026-09-11) · กลไก virtual heads และผลตรวจ 3.4e-6 มีสคริปต์ทดสอบ commit ไว้ = **artifact-backed** ·
+> ส่วนตัวเลข KV pool ของ lane นั้นเป็น **คำกล่าวอ้าง** (โฟลเดอร์ `results/exl3*` ไม่มี `head.log` /
+> `kv-context.txt` / `args.json`) — อย่าหยิบไปอ้างเป็นผลวัด
 
 `lmds node cluster` บอกให้เองว่ากลุ่มนั้นใช้แบบไหน:
 
@@ -330,9 +354,28 @@ cat /sys/class/net/enp1s0f1np1/speed    # 200000 = 200G · 50000 = ต้อง�
 แก้ที่ port ของ switch ให้ตั้ง 200 Gbps ตายตัว อย่าปล่อย auto ส่วน throughput จริงที่วัดได้
 ราว 100 Gbps ต่อลิงก์เป็นเพดานของ PCIe Gen5 x4 ไม่ใช่การตั้งค่าผิด
 
-เพดานจำนวนเครื่อง: ต่อสายตรงถึงกันได้สูงสุด **3 เครื่อง** เกินกว่านั้นต้องผ่าน switch ซึ่งรองรับถึง
-**4 เครื่อง** — ที่มา [DGX Spark clustering](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html)
-สรุปเทียบกับของเราอยู่ที่ [NVIDIA-CLUSTER-SOURCES.md](NVIDIA-CLUSTER-SOURCES.md)
+> **สมมติฐานที่กำลังทดสอบ: ~100 Gbps อาจไม่ใช่เพดานสุดท้าย** (บันทึก 2026-09-20)
+>
+> QSFP cage หนึ่งช่องของ Spark คือ **สอง PCIe function** (`rocep1s0f0` และ `roceP2p1s0f0`) ·
+> ข้ออ้างคือถ้าใส่ **ทั้งคู่** ใน `NCCL_IB_HCA` แล้วตั้ง `NCCL_CROSS_NIC=1` จะได้แบนด์วิดท์คืนเท่าตัว
+> (ใส่ครึ่งเดียวตันที่ ~100G)
+>
+> **เรายังไม่ได้ยืนยัน** — รีโปที่อ้างตัวเลข **23.6 GB/s busbw** เขียนไว้ในคอมเมนต์ของ launcher
+> เท่านั้น (`glm-5.3-uncensored-8x-dgx-spark/launchers/launch-fp8-tp8.sh:81`) · รีโปนั้น
+> **ไม่มีโฟลเดอร์ `results/` เลย** = **คำกล่าวอ้างของผู้เขียน ไม่มี log รองรับ** ·
+> อีกรีโป 8 เครื่องตั้ง HCA ทั้งคู่ + `NCCL_CROSS_NIC=1` เหมือนกันแต่ **ไม่ให้ตัวเลข busbw** ·
+> ส่วนรีโปที่มี artifact ครบที่สุด (TP4) ใช้ **HCA ตัวเดียว + `NCCL_CROSS_NIC=0`** จึงเทียบกันไม่ได้
+>
+> **อย่าเพิ่งใส่ลง bundle จนกว่าจะวัดเอง** · แผนทดสอบและผล (เมื่อมี) อยู่ที่
+> [HCA-DUAL-TEST.md](HCA-DUAL-TEST.md)
+
+เพดานจำนวนเครื่อง: ต่อสายตรงถึงกันได้สูงสุด **3 เครื่อง** — ข้อนี้ยังถูก เพราะเป็นคุณสมบัติของ
+การเดินวงแหวนด้วย QSFP 2 ช่องต่อเครื่อง · **ส่วนเพดาน "ผ่าน switch ได้ถึง 4 เครื่อง" ถอนแล้ว
+(2026-09-20)** — มีคลัสเตอร์ **8 เครื่อง** serve อยู่จริง 2 ชุด บน RoCE `/24` แบน ๆ เครื่องละ 1 cage
+(ทั้งสองชุดเป็น **คำกล่าวอ้างของผู้เขียน** ไม่มี log ดิบ) · เลข "≤4" เดิมเป็นการถอดความจากการอ่าน
+[DGX Spark clustering](https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html) ครั้งเดียว
+เมื่อ 2026-08-14 โดยไม่มีข้อความต้นฉบับเก็บไว้ · รายละเอียดและระดับหลักฐานอยู่ที่
+[NVIDIA-CLUSTER-SOURCES.md](NVIDIA-CLUSTER-SOURCES.md)
 
 ## 8 · 3 เครื่องวงแหวน / 4 เครื่องผ่าน switch — หลายสายต่อเครื่อง (cluster.env v2)
 
@@ -378,8 +421,21 @@ NCCL_CROSS_NIC=1                   # ring เท่านั้น: คู่ A-
 - `serve-args` และ `start --dry-run` แสดง argv + env ของ**ทุก rank** แยกกัน (`--tensor-parallel-size 3` · worker 2 ตัวคนละ
   `VLLM_HOST_IP`/`--master-addr`) โดยไม่แตะ docker/ssh — ใช้ตรวจก่อนสั่งจริง หรือประกอบจากค่าตัวอย่างก่อนมีคลัสเตอร์ก็ได้
 
+> ### ⛔ `--target dgx-spark-stacked-3` **ยังไม่มีอยู่จริง** (ตรวจ 2026-09-20)
+>
+> `src/lmds/fit/targets.py` มี preset แค่ `dgx-spark-single` (1) · `dgx-spark-stacked` (2) ·
+> `dgx-spark-stacked-4` (4) · **ไม่มี `-3` และไม่มี `-8`** · สั่งไปจะถูกปฏิเสธตั้งแต่ขั้นวางแผน
+>
+> คำสั่งชุดข้างล่างนี้จึงเป็น **แผน ไม่ใช่ของที่ใช้ได้วันนี้** — เก็บไว้เพราะขั้นที่เหลือ
+> (`cluster --write` · `start --dry-run` · `doctor`) ถูกต้องและใช้ได้แล้วกับ preset ที่มีจริง
+>
+> งานที่ต้องทำก่อน: เพิ่ม preset `dgx-spark-stacked-3` (และ `-8`) ลง `fit/targets.py` —
+> ดู `docs/UPGRADE-2026-09.md` §1.3
+
 ```bash
+# บรรทัดแรก: PLANNED — preset -3 ยังไม่มีใน targets.py วันนี้สั่งไม่ผ่าน
 lmds node run spark-a "deploy <model> --target dgx-spark-stacked-3 --no-llm --yes"   # TP=3 · NNODES=3
+# สามบรรทัดล่างใช้ได้แล้ว (ลองกับ dgx-spark-stacked / -stacked-4 ได้เลย)
 lmds node cluster --write <slug> --on spark-a          # เขียน cluster.env v2 จาก cluster_links ในทะเบียน
 lmds node ctl spark-a <slug> start --dry-run           # ดู worker.sh ของ rank 1/2 และ docker run ของ head
 lmds node ctl spark-a <slug> doctor                    # ทุกสายขึ้น + ping ถึงคู่ปลายสาย ก่อนปล่อย worker
