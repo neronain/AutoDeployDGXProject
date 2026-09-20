@@ -1088,8 +1088,6 @@ def test_tests_refuse_to_grade_another_models_server(isolated_config, tmp_path, 
     assert "SERVED_MODEL_NAME" in text.split("assert_our_server()")[1][:900], \
         "ต้องเทียบกับชื่อโมเดลของ bundle นี้เอง"
     # ทุกฟังก์ชันที่ยิง /v1/chat/completions ต้องตรวจก่อน
-    for block in text.split("\n")[0:]:
-        pass
     import re
 
     for match in re.finditer(r"^(test_[a-z_]+)\(\) \{\n(.*?)\n\}", text, re.S | re.M):

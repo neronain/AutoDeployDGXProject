@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ทุกกี่วินาทีถึงจะรีเฟรช — เครื่องนี้ถูกกว่ามาก จึงถี่กว่า node ได้
 LOCAL_INTERVAL = 3.0

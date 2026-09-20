@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import subprocess
 
-import pytest
 
 from tests.test_generator import gguf_report, make_bundle, safetensors_report  # noqa: F401
 
 
 def _controller(tmp_path, **recipe_tools):
-    from lmds.brain.plan_schema import DeploymentPlan
     bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
     return bundle.controller.read_text(encoding="utf-8")
 

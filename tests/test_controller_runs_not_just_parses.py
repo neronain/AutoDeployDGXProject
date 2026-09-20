@@ -10,12 +10,10 @@ bash -n ผ่านฉลุย เพราะ syntax ถูกต้องท
 syntax จึงไม่มีวันจับได้ ต้องดึงฟังก์ชันออกมารันจริงภายใต้ set -euo pipefail
 """
 
-import re
 import socket
 import subprocess
 import textwrap
 
-import pytest
 
 from lmds.brain import build_plan
 from lmds.fit import PRESETS, analyze

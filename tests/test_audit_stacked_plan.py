@@ -14,7 +14,7 @@ import yaml
 
 from lmds.brain import build_plan
 from lmds.brain.orchestrator import harden_plan
-from lmds.brain.plan_schema import DeploymentPlan, Engine, Topology
+from lmds.brain.plan_schema import Topology
 from lmds.brain.rulebased import rule_based_plan
 from lmds.fit import PRESETS, Verdict, analyze
 from lmds.fit.analyzer import GIB

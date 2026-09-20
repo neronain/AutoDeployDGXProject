@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import struct
 import subprocess
 import textwrap
@@ -24,7 +23,6 @@ import yaml
 
 from lmds.brain import build_plan
 from lmds.fit import PRESETS, analyze
-from lmds.fit.analyzer import GIB
 from lmds.generator import render_bundle
 from lmds.inspector.report import ArtifactType, GgufVariant, KvDims, ModelReport
 

@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import json
 
 from tests.test_console_shell import FLEET, run_scenario
 

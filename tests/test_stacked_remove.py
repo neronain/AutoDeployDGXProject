@@ -10,7 +10,6 @@ docker ปลอมจำลอง rm -f / inspect / images / run … rm -rf (ro
 
 from __future__ import annotations
 
-import os
 import stat
 import subprocess
 from pathlib import Path
@@ -76,7 +75,7 @@ def _cluster_bundle(tmp_path: Path, monkeypatch, workers: list[str], v2: bool = 
     controller.chmod(0o755)
     (bundle_dir / "MODEL_PROFILE.yaml").write_text(
         f"topology: stacked\nmodel:\n  id: {MODEL}\nruntime:\n  engine: vllm\n", encoding="utf-8")
-    lines = [f"MASTER_IP=10.1.1.1", f"WORKER_IP={workers[0]}", f'WORKER_IPS="{" ".join(workers)}"',
+    lines = ["MASTER_IP=10.1.1.1", f"WORKER_IP={workers[0]}", f'WORKER_IPS="{" ".join(workers)}"',
              f"NNODES={len(workers) + 1}", "SSH_USER=neronain", "WORKER_HF_HOME=/wk/hf",
              "WORKER_FLASHINFER_CACHE=/wk/fi"]
     if v2:
@@ -262,7 +261,7 @@ def test_a_stacked_bundle_without_cluster_env_says_so_instead_of_pretending(tmp_
 
 
 def test_single_node_bundles_are_untouched_by_the_worker_logic(tmp_path, monkeypatch):
-    info = _cluster_bundle(tmp_path, monkeypatch, ["10.1.1.2"])
+    _cluster_bundle(tmp_path, monkeypatch, ["10.1.1.2"])  # เรียกเพื่อวาง bundle/monkeypatch
     single = tmp_path / "bundles" / "one" / "one-single.sh"
     single.parent.mkdir()
     single.write_text("#!/bin/bash\n", encoding="utf-8")

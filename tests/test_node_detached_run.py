@@ -8,7 +8,6 @@ controller บน node ตาย แต่ container ที่มันสั่
 
 from types import SimpleNamespace
 
-import pytest
 
 from lmds.cli import main as cli
 

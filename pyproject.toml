@@ -22,7 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 keyring = ["keyring>=24.0"]
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
-dev = ["pytest>=8.0", "pytest-cov>=4.0", "fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0", "fastapi>=0.110", "uvicorn>=0.27", "ruff>=0.6"]
 
 [project.scripts]
 lmds = "lmds.cli.main:app"
@@ -45,6 +45,29 @@ artifacts = ["src/lmds/_build.py"]
 # ของตารางนั้น วางไว้กลางบล็อกแล้ว `artifacts` จะกลายเป็นคีย์ของ force-include
 [tool.hatch.build.targets.wheel.force-include]
 "docs" = "lmds/assistant/_docs"
+
+# ── lint ─────────────────────────────────────────────────────────────────────
+# ขอบเขตของ gate นี้คือ **ความถูกต้อง ไม่ใช่สไตล์** — เป็นการเลือกโดยตั้งใจ ไม่ใช่ความขี้เกียจ:
+# ชุดกฎเดียวกับ LiteGate (E,F,I,UP,B) ให้ผลที่นี่ 3,362 ข้อ โดย 2,828 ข้อเป็น E501
+# บรรทัดยาว ซึ่งเกือบทั้งหมดคือคอมเมนต์ภาษาไทยที่อธิบาย "ทำไม" ของโค้ด — ตัดให้สั้นลง
+# เพื่อให้ผ่าน linter คือการแลกสิ่งที่มีค่าที่สุดในฐานโค้ดนี้กับตัวเลขที่ไม่มีใครได้ประโยชน์
+# เลือก F (bug จริง: import ค้าง, ตัวแปรลอย, ชื่อซ้ำ) + B (กับดัก: closure ในลูป,
+# zip ที่ยาวไม่เท่ากัน, exception ที่กลืน cause) แทน — รอบแรกจับของจริงได้ 2 อย่าง:
+# `running_slots` หายจาก `__all__` ของ lmds.fleet และ helper ที่ปิดทับตัวแปรลูปใน profiler
+# จะเพิ่ม E/I/UP ทีหลังได้ แต่ต้องมาพร้อมการตัดสินใจเรื่องคอมเมนต์ไทย ไม่ใช่แอบเปิด
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F", "B"]
+# B008 = ค่าเริ่มต้นเป็นการเรียกฟังก์ชัน — เป็นสำนวนปกติของ typer/FastAPI ทั้งคู่
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest ฉีด fixture ผ่านชื่อพารามิเตอร์ ตัวที่ import fixture มาแล้วรับเป็นพารามิเตอร์
+# จึงดูเหมือน "นิยามซ้ำ" ในสายตา ruff ทั้งที่เป็นวิธีใช้งานที่ถูกต้อง (18 จุดในชุดนี้)
+"tests/*" = ["F811"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

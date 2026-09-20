@@ -8,7 +8,6 @@
 3. preflight สถาปัตยกรรมข้าม native ทั้งหมด — ซึ่งคือโหมดที่ llama.cpp ใช้จริง
 """
 
-import pytest
 
 from lmds.brain.orchestrator import _pick_projector
 from lmds.inspector.report import ArtifactType, GgufVariant, KvDims, ModelReport

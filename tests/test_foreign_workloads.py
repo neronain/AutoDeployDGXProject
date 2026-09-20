@@ -10,7 +10,7 @@ port 30000) รันมา 32 ชั่วโมงและถือ GPU ไ�
 
 import lmds.hardware.profiler as profiler
 import lmds.inventory as inventory
-from lmds.hardware.profiler import DetectedGpu, compute_apps, detect_gpus
+from lmds.hardware.profiler import compute_apps, detect_gpus
 
 
 # ── ค่าจริงที่ nvidia-smi บน msi-4 (GB10, unified memory) ตอบกลับมา ──

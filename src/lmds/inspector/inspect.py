@@ -558,7 +558,7 @@ def _scaling_layers_only(
     pattern = meta.get(f"{arch}.attention.sliding_window_pattern")
     if isinstance(pattern, list) and len(pattern) == len(kv_heads):
         # pattern[i] เป็น True = layer นั้น sliding → ตัดออก เหลือแต่ full-attention
-        full = [n for n, sliding in zip(kv_heads, pattern) if not sliding]
+        full = [n for n, sliding in zip(kv_heads, pattern, strict=True) if not sliding]
         if full and all(isinstance(n, int) and n > 0 for n in full):
             # key_length เป็นของ layer full-attention อยู่แล้ว (SWA ใช้ key_length_swa)
             return len(full), max(full), head_dim

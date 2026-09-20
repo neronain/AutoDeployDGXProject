@@ -306,7 +306,7 @@ def _reserved_on_target(spec, target: str, machine: str, worker: str) -> tuple[f
     if machine:
         members = [machine] + ([worker] if worker and worker != machine else [])
         held = [_held_on_node(m) for m in members]
-        unknown = [m for m, h in zip(members, held) if h is None]
+        unknown = [m for m, h in zip(members, held, strict=True) if h is None]
         if unknown:
             notes.append(
                 f"ยังไม่มีข้อมูลหน่วยความจำที่ใช้อยู่ของ {', '.join(unknown)} — คิดจากความจุเต็ม · "

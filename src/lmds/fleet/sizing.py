@@ -146,7 +146,7 @@ def _companion_weight_bytes(server, profile: dict) -> int:
         if default:
             companions.add(default.rsplit("/", 1)[-1])
     total = 0
-    for name, size in zip(files, sizes):
+    for name, size in zip(files, sizes, strict=True):
         if name.rsplit("/", 1)[-1] in companions and size.isdigit():
             total += int(size)
     return total

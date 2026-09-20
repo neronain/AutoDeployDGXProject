@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -139,7 +138,7 @@ def test_enable_now_fails_loudly_when_the_unit_will_not_start(tmp_path, monkeypa
 
     monkeypatch.setattr(manager.subprocess, "run", fake_run)
     with pytest.raises(FleetError, match="start ไม่ขึ้น"):
-        enable_autostart(_info(tmp_path), start_now=True)
+        enable_autostart(info, start_now=True)
 
 
 def test_enable_now_accepts_a_model_still_loading(tmp_path, monkeypatch):

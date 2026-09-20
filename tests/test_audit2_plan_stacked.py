@@ -14,7 +14,7 @@ import yaml
 
 from lmds.brain import build_plan
 from lmds.brain.orchestrator import harden_plan
-from lmds.brain.plan_schema import DeploymentPlan, Engine, PlanError, Topology
+from lmds.brain.plan_schema import DeploymentPlan, PlanError
 from lmds.brain.rulebased import (
     SPARK_NVFP4_ENV,
     SPARK_NVFP4_VLLM_IMAGE,

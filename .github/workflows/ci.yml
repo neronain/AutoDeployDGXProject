@@ -29,6 +29,25 @@ jobs:
       - name: รัน unit tests
         run: pytest
 
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: ติดตั้ง package + dev deps
+        run: pip install -e '.[dev]'
+
+      # ชุดกฎอยู่ใน pyproject.toml ([tool.ruff.lint]) พร้อมเหตุผลว่าทำไมจึงเลือก
+      # เฉพาะกฎความถูกต้อง ไม่เอากฎสไตล์ — อย่าเพิ่มกฎที่นี่ ให้แก้ที่ pyproject
+      - name: ruff check
+        run: ruff check src tests scripts
+
   shell:
     name: bash syntax
     runs-on: ubuntu-latest

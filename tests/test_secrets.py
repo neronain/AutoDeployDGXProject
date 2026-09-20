@@ -82,9 +82,7 @@ def test_keyring_read_cannot_hang_get_secret(monkeypatch, tmp_path):
     """เคสจริง 2026-09-07 spark-head: keyring (D-Bus Secret Service) ค้าง → `lmds config show` ใน install.sh ค้าง 10 นาที
     → Update ทั้งฟลีตหยุด · อ่าน keyring ต้องมีเวลาจำกัด และ LMDS_NO_KEYRING=1 ต้องไม่แตะ keyring เลย"""
     import sys
-    import threading
     import time
-    import types
 
     from lmds.secrets import store
 

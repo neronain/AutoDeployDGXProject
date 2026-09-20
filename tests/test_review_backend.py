@@ -327,7 +327,6 @@ def test_hub_fix_docker_route_adds_the_group_and_schedules_a_session_restart(mon
     from fastapi.testclient import TestClient
 
     from lmds.web.api import create_app
-    import lmds.web.api as api_mod
 
     calls: list[tuple[list[str], str]] = []
     cur = {"installed": True, "usable": False, "in_group": False, "user": "cyn", "reason": "cyn is not in the docker group", "fix": ""}

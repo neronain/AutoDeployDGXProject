@@ -502,7 +502,6 @@ def create_app(token: str = "") -> FastAPI:
         ผู้ใช้ 2026-09-04: "ทำให้ระบบกรอกให้เองตาม model ได้ไหม … กลัวใส่ผิด" · ความรู้มีอยู่แล้ว
         ใน recipes กับ arch_notes แต่ไม่เคยไหลมาถึงช่องกรอก — endpoint นี้คือสะพานนั้น
         """
-        from pathlib import Path as _Path
         from lmds.fleet import bundle_profile, find
         from lmds.fleet.suggest import suggest_settings
         server = find(slug)
@@ -1688,7 +1687,6 @@ def create_app(token: str = "") -> FastAPI:
         (`source: registry`) ซึ่งบอกได้ว่าค้างกี่ใบแต่ไม่รู้ชื่อ
         """
         from lmds.fleet.consistency import fleet_report
-        from lmds.nodes import load
 
         snap = state.STORE.snapshot()
         return fleet_report(snap.get("nodes") or {}, _ordered_nodes(), (snap.get("host") or {}).get("data"))
@@ -2121,7 +2119,7 @@ def create_app(token: str = "") -> FastAPI:
             # ดิสก์ปลายทางไม่พอ = rsync ตายกลางทางแล้วทิ้งไฟล์ครึ่ง ๆ ไว้ · ถามก่อนเสียเวลา 1 วินาที
             check_target_space(plan)
         except CloneError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         target_node = find(target_name)
         marker = make_marker()
@@ -2133,14 +2131,14 @@ def create_app(token: str = "") -> FastAPI:
             private = key_file.read_text(encoding="utf-8")
             public = (key_file.with_suffix(".pub")).read_text(encoding="utf-8")
         except (OSError, _subprocess.CalledProcessError) as exc:
-            raise HTTPException(status_code=500, detail=f"สร้างกุญแจชั่วคราวไม่ได้: {exc}")
+            raise HTTPException(status_code=500, detail=f"สร้างกุญแจชั่วคราวไม่ได้: {exc}") from exc
         finally:
             _shutil.rmtree(key_dir, ignore_errors=True)
 
         try:
             _install_temp_key(target_node, public, marker)
         except CloneError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         def cleanup(job):
             # ถอนกุญแจเสมอ ไม่ว่างานจะสำเร็จหรือล้ม
@@ -2157,7 +2155,7 @@ def create_app(token: str = "") -> FastAPI:
             )
         except jobs.JobError as exc:
             revoke_temp_key(target_node, marker)
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         return {"id": job.id, "slug": slug, "source": name, "target": target_name,
                 "total_bytes": plan.total_bytes, "link": plan.link,
@@ -2195,7 +2193,7 @@ def create_app(token: str = "") -> FastAPI:
             on_node = head if on is None else (str(on).strip() or None)
             result = write_cluster_env(slug, [trimmed], head, None, on_node)
         except (ClusterEnvError, StackedError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"target": result.target, "head_ip": result.head_ip,
                 "worker_ips": result.worker_ips, "nnodes": result.nnodes,
                 "workers": [m["name"] for m in trimmed["members"][1:]],
@@ -2231,7 +2229,7 @@ def create_app(token: str = "") -> FastAPI:
         if not names:
             return
         with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
-            for name, needed in zip(names, pool.map(lambda n: sudo_needs_password(nodes[n], runner=run), names)):
+            for name, needed in zip(names, pool.map(lambda n: sudo_needs_password(nodes[n], runner=run), names), strict=True):
                 summary[name]["sudo_needed"] = True if needed is None else needed
 
     def _pair_names(body: dict) -> tuple[str, list[str]]:

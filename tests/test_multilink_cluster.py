@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from lmds.brain import build_plan
 from lmds.fit import PRESETS, analyze

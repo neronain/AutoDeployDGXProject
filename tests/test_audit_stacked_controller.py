@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -298,7 +297,7 @@ def test_prepare_runtime_pulls_the_pinned_image_everywhere_and_reports_the_faili
     assert "ghcr.io" in failed.stderr and "docker login ghcr.io" in failed.stderr   # สาเหตุที่พบบ่อยของ registry นี้
     calls = _calls(tmp_path)
     assert f"docker[head] pull {image}" in calls and f"docker[10.1.1.2] pull {image}" in calls
-    assert f"docker[10.1.1.4] pull" not in calls, "หยุดที่ตัวที่ล้ม ไม่วิ่งต่อเงียบ ๆ"
+    assert "docker[10.1.1.4] pull" not in calls, "หยุดที่ตัวที่ล้ม ไม่วิ่งต่อเงียบ ๆ"
 
     head_fail = _run(bundle, ["prepare-runtime"], tmp_path,
                      env={"WORKER_IPS": workers, "VLLM_IMAGE": image, "FAKE_PULL_FAIL_MAP": "head=1"})

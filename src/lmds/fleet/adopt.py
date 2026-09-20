@@ -142,7 +142,7 @@ class Adopted:
                 if index < len(argv):
                     return argv[index]
         # ชื่อที่วางเป็น positional ตามหลังคำสั่ง serve — รับเฉพาะรูป org/name หรือ path
-        for previous, item in zip(argv, argv[1:]):
+        for previous, item in zip(argv, argv[1:], strict=False):
             if previous.endswith(("serve", "-serve")) and not item.startswith("-"):
                 return item
         return ""

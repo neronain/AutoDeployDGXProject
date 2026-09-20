@@ -168,7 +168,7 @@ class OpenAiCompatProvider(LlmProvider):
         try:
             return resp.json()["choices"][0]["message"]["content"]
         except (KeyError, IndexError, ValueError) as exc:
-            raise ProviderError(f"รูปแบบคำตอบของ {self.name} ผิดปกติ: {exc}")
+            raise ProviderError(f"รูปแบบคำตอบของ {self.name} ผิดปกติ: {exc}") from exc
 
 
     def complete_chat(self, system: str, messages: list[dict]) -> str:
@@ -184,7 +184,7 @@ class OpenAiCompatProvider(LlmProvider):
         try:
             return resp.json()["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, ValueError) as exc:
-            raise ProviderError(f"รูปแบบคำตอบของ {self.name} ผิดปกติ: {exc}")
+            raise ProviderError(f"รูปแบบคำตอบของ {self.name} ผิดปกติ: {exc}") from exc
 
     def stream_chat(self, system: str, messages: list[dict]):
         """สตรีมจริงผ่าน SSE — คำตอบยาว ๆ จะได้ทยอยขึ้นแทนที่จะเงียบไป 30 วินาที
@@ -253,7 +253,7 @@ class GeminiProvider(LlmProvider):
         try:
             return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, ValueError) as exc:
-            raise ProviderError(f"รูปแบบคำตอบของ gemini ผิดปกติ: {exc}")
+            raise ProviderError(f"รูปแบบคำตอบของ gemini ผิดปกติ: {exc}") from exc
 
 
     def complete_chat(self, system: str, messages: list[dict]) -> str:
@@ -278,7 +278,7 @@ class GeminiProvider(LlmProvider):
         try:
             return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, ValueError) as exc:
-            raise ProviderError(f"รูปแบบคำตอบของ gemini ผิดปกติ: {exc}")
+            raise ProviderError(f"รูปแบบคำตอบของ gemini ผิดปกติ: {exc}") from exc
 
 
 class MiniMaxProvider(LlmProvider):
@@ -316,7 +316,7 @@ class MiniMaxProvider(LlmProvider):
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as exc:
-            raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}")
+            raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}") from exc
 
 
     def complete_chat(self, system: str, messages: list[dict]) -> str:
@@ -341,7 +341,7 @@ class MiniMaxProvider(LlmProvider):
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as exc:
-            raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}")
+            raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}") from exc
 
 
 def make_provider(config: ProviderConfig, api_key: str | None,

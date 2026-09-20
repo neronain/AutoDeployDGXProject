@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from pathlib import Path
 
 FILENAME = "bundle.env"

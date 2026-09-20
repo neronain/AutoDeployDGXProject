@@ -633,7 +633,6 @@ def test_commands_are_read_from_the_controller_itself(tmp_path, monkeypatch):
     """bundle เก่าไม่มีคำสั่งใหม่ ๆ — เดาจาก profile ทำให้ปุ่มขึ้นแล้วกดล้ม
     (เจอจริง: test-vision ไม่โผล่ให้ผู้ใช้เพราะ bundle สร้างก่อนมีคำสั่งนี้)
     """
-    from lmds.fleet import register_bundle
     from lmds.inventory import controller_commands as _controller_commands
     from tests.test_generator import gguf_report, make_bundle, mmproj_gguf_report
 

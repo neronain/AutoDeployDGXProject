@@ -245,7 +245,7 @@ def node_add(
         add(node)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if not reachable:
         console.print(f"\n[bold]เพิ่ม '{node.name}' แล้ว[/bold] — [yellow]แต่ยังอ่านสถานะไม่ได้[/yellow]")
@@ -384,7 +384,7 @@ def node_remove(
         node = remove(name)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     console.print(f"เอา '{node.name}' ออกแล้ว")
     console.print(
         f"[dim]key ของ LMDS ยังอยู่บนเครื่องนั้น — ถอนเองได้ที่ {node.target}: "
@@ -457,7 +457,7 @@ def list_recipes(
             )
         except SyncError as exc:
             err_console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
         if not result["features"]:
             console.print("[yellow]⚠ ไม่มี measured features[/yellow] — profile เป็น rule-based "
                           "อาจไม่ครบ · ระบุเองด้วย --features tools,vision,reasoning ให้สูตรพก "
@@ -485,7 +485,7 @@ def list_recipes(
             result = sync_recipes(repo or DEFAULT_REPO, ref or DEFAULT_REF, now=_now())
         except SyncError as exc:
             err_console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
         console.print(f"[green]ดึงมาแล้ว {result['count']} สูตร[/green] จาก "
                       f"{result['repo']} @ {result['commit']}")
         for line in result["skipped"]:
@@ -748,7 +748,7 @@ def node_install(
                 result = install_lmds(target, with_prereq=with_prereq, **extra)
             except HubDirtyError as exc:
                 err_console.print(f"[red]{exc}[/red]")
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=1) from None
             if not result.ok:
                 failed.append(target.name)
                 err_console.print(f"[red]ไม่สำเร็จ[/red] {(result.stderr or '').strip()[-200:]}")
@@ -761,7 +761,7 @@ def node_install(
         console.print("\n" + fleet_summary_line(verdicts) + (f" · ติดตั้งไม่สำเร็จ {len(failed)} ({', '.join(failed)})" if failed else ""))
         if failed or any(not v.consistent for v in verdicts.values()):
             raise typer.Exit(code=1)
-        console.print(f"[green]ทุกเครื่องตรง hub ครบ 3 มิติ[/green]")
+        console.print("[green]ทุกเครื่องตรง hub ครบ 3 มิติ[/green]")
         return
 
     if not name:
@@ -781,7 +781,7 @@ def node_install(
         result = install_lmds(node, with_prereq=with_prereq, **extra)
     except HubDirtyError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     tail = (result.stdout or "").strip().splitlines()[-6:]
     for line in tail:
         console.print(f"[dim]{line}[/dim]")
@@ -800,7 +800,7 @@ def node_install(
         verdict = settle(node)
     except NodeError as exc:
         err_console.print(f"[red]ติดตั้งแล้วแต่ยังอ่านสถานะไม่ได้: {exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     if not verdict.consistent:
         raise typer.Exit(code=1)
 
@@ -878,7 +878,7 @@ def node_set(
         node = update(name, **changes)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     console.print(f"อัปเดต '{node.name}' แล้ว — cluster IP: {node.cluster_ip or '—'} · "
                   f"ที่อยู่: {' → '.join(node.all_hosts)}"
                   + ("" if node.stack else " · [yellow]ไม่เอาเข้ากลุ่ม stacked[/yellow]"))
@@ -942,7 +942,7 @@ def node_ctl(
         proc = stream(node, script, secret_env, hold_stdin=True) if following else stream(node, script, secret_env)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     assert proc.stdout is not None
     try:
@@ -1143,7 +1143,7 @@ def _write_cluster_env(slug, groups, head_name, worker_name, on_node=None) -> No
         result = write_cluster_env(slug, groups, head_name, worker_name, on_node)
     except ClusterEnvError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     console.print(f"\n[green]เขียน {result.target} แล้ว[/green]")
     console.print(f"[dim]head {result.head_ip} · worker {' '.join(result.worker_ips)}"
@@ -1261,7 +1261,7 @@ def cluster_write_cmd(
         result = write_cluster_env(slug, [trimmed], head, None, on or head)
     except (StackedError, ClusterEnvError) as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     console.print(f"[green]เขียน {result.target} แล้ว[/green]")
     console.print(f"[dim]head {result.head_ip} · worker {' '.join(result.worker_ips)} "
                   f"({', '.join(m['name'] for m in trimmed['members'][1:])}) · {result.nnodes} เครื่อง"
@@ -1404,7 +1404,7 @@ def cluster_plan_cmd(
         plan = build_plan(list(nodes), hosts, base_subnet=subnet, topology=topology or "", nodes=reg)
     except NetplanError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     if as_json:
         console.print_json(json.dumps(plan, ensure_ascii=False))
     else:
@@ -1440,7 +1440,7 @@ def cluster_apply_cmd(
         plan = build_plan(list(nodes), hosts, base_subnet=subnet, topology=topology or "", nodes=reg)
     except NetplanError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     _print_plan(plan)
     if not plan.get("ok"):
         raise typer.Exit(code=1)
@@ -1519,7 +1519,7 @@ def node_clone(
         plan = inspect_source(plan_clone(slug, source, target))
     except CloneError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     gb = plan.total_bytes / (1024 ** 3)
     table = Table(title=f"clone {slug}: {source} → {target}")
@@ -1541,7 +1541,7 @@ def node_clone(
         console.print(f"[dim]เนื้อที่ปลายทาง: ว่าง {free / 1024 ** 3:.1f} GB · ต้องใช้ {need / 1024 ** 3:.1f} GB[/dim]")
     except CloneError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if dry_run:
         console.print("[dim]--dry-run: ยังไม่แตะเครื่องปลายทาง[/dim]")
@@ -1562,7 +1562,7 @@ def node_clone(
         public = pathlib.Path(key_file + ".pub").read_text(encoding="utf-8")
     except (OSError, subprocess.CalledProcessError) as exc:
         err_console.print(f"[red]สร้างกุญแจชั่วคราวไม่ได้: {exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     finally:
         # อยู่บนดิสก์ของ hub แค่ช่วงที่อ่านเข้าหน่วยความจำ ไม่นานกว่านั้น
         shutil.rmtree(key_dir, ignore_errors=True)
@@ -1738,7 +1738,7 @@ def node_push(
                 raise typer.Exit(code=rc)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     console.print(f"\n[dim]ต่อจากนี้สั่งจากที่นี่ได้เลย: "
                   f"[bold]lmds node run {name} doctor {slug}[/bold] · "
@@ -1846,7 +1846,7 @@ def node_run(
         result = run(node, "lmds " + " ".join(shlex.quote(c) for c in command), timeout=900)
     except NodeError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
@@ -2251,7 +2251,7 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
         source = parse_source(model)
     except SourceError as exc:
         err_console.print(f"[red]ผิดพลาด:[/red] {exc}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     if revision:
         from dataclasses import replace
 
@@ -2267,12 +2267,12 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
                 err_console.print(f"[red]{exc}[/red]")
                 if not exc.had_token:
                     err_console.print("ตั้ง token ด้วย: lmds config set-hf-token หรือ env HF_TOKEN")
-                raise typer.Exit(code=4)
+                raise typer.Exit(code=4) from None
             err_console.print(f"[yellow]{source.repo_id} เป็น gated repo[/yellow]")
             entered = typer.prompt("Hugging Face token (Enter เพื่อข้าม)", hide_input=True, default="").strip()
             if not entered:
                 err_console.print("ข้าม token — ไม่สามารถ inspect repo นี้ได้")
-                raise typer.Exit(code=4)
+                raise typer.Exit(code=4) from None
             report = inspect_model(source, HfClient(token=entered))
             # token ที่พิมพ์ตรงนี้ใช้ได้แค่รอบนี้ — controller อ่านจาก env HF_TOKEN เสมอ
             # (ไม่ฝัง secret ลง bundle) ถ้าไม่บอกให้ชัด ผู้ใช้จะไปเจอ 401 ตอน download
@@ -2287,7 +2287,7 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
             return source, report
     except RepoNotFound as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except BudgetExceeded as exc:
         # ไม่ใช่ปัญหาเครือข่าย — ไฟล์ metadata ใหญ่เกินเพดานที่ตั้งไว้
         err_console.print(f"[red]ไฟล์ metadata ใหญ่ผิดปกติ:[/red] {exc}")
@@ -2295,10 +2295,10 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
             "[yellow]ถ้าเป็นโมเดล MoE/quant ละเอียดที่ index ยาวจริง แจ้งทีมพัฒนาให้ปรับเพดาน "
             "(INDEX_FILE_CAP ใน inspector/hf_api.py)[/yellow]"
         )
-        raise typer.Exit(code=5)
+        raise typer.Exit(code=5) from None
     except HfError as exc:
         err_console.print(f"[red]ปัญหาเครือข่าย/Hub:[/red] {exc}")
-        raise typer.Exit(code=5)
+        raise typer.Exit(code=5) from None
 
 
 def _pick_gguf_variant(variants, wanted: str):
@@ -2663,7 +2663,7 @@ def plan(
 
     Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหา provider/เครือข่าย
     """
-    from lmds.brain import MissingKey, PlanError, ProviderError, build_plan, make_provider
+    from lmds.brain import MissingKey, make_provider
     from lmds.config import Settings
 
     _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
@@ -2772,12 +2772,10 @@ def generate(
 
     Exit codes: 0 สำเร็จ, 1 input ผิด, 3 โมเดลไม่ fit, 4 ต้องการ token, 5 ปัญหา provider
     """
-    from pathlib import Path
 
-    from lmds.brain import MissingKey, PlanError, ProviderError, build_plan, make_provider
+    from lmds.brain import MissingKey, make_provider
     from lmds.config import Settings
     from lmds.fit import Verdict
-    from lmds.generator import render_bundle
 
     source, report = _resolve_and_inspect(model, revision, interactive_ok=True)
     report = _ensure_gguf_selected(source, report, interactive=False, wanted=gguf or "")
@@ -2846,7 +2844,7 @@ def adopt(
             path, proc = adopt_process(pid=pid, port=port, slug=slug, output=Path(output))
         except FleetError as exc:
             err_console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
 
         name = slug or (proc.model or f"pid-{proc.pid}").replace("_", "-").lower()
         console.print(f"[green]รับ process {proc.pid} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
@@ -2878,7 +2876,7 @@ def adopt(
         path = adopt_container(container, slug=slug, output=Path(output))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     name = slug or info.container.replace("_", "-").lower()
     console.print(f"[green]รับ {info.container} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
@@ -3120,7 +3118,7 @@ def _render_and_package(deployment_plan, report, fit, output: str, slug: str | N
         bundle = render_bundle(deployment_plan, report, fit, Path(output), slug=slug)
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     results = run_gates(bundle.directory, include_checksums=False)
     if not all_passed(results):
@@ -3227,11 +3225,8 @@ def deploy(
 
     from lmds.brain import (
         MissingKey,
-        PlanError,
-        ProviderError,
         apply_asset_approvals,
         apply_flag_approvals,
-        build_plan,
         make_provider,
     )
     from lmds.config import Settings
@@ -3570,7 +3565,7 @@ def stop(
         console.print(f"หยุด {slug} แล้ว ({method})")
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
 
 @app.command()
@@ -3604,9 +3599,9 @@ def logs(
         raise typer.Exit(code=logs_server(server, lines, follow=follow))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except KeyboardInterrupt:
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=0) from None
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -3628,7 +3623,7 @@ def restart(
         method = restart_server(server, list(ctx.args))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     console.print(f"restart {slug} แล้ว ({method})")
 
 
@@ -3662,7 +3657,7 @@ def start(
         raise typer.Exit(code=start_server(server, options, force=force))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
 
 @app.command()
@@ -3680,7 +3675,7 @@ def enable(
     `--system` เขียนลง /etc/systemd/system ซึ่งต้อง sudo · ทางนั้นให้สิทธิ์เท่ากับ root
     เพราะ systemd unit รันคำสั่งอะไรก็ได้ในนามของ root
     """
-    from lmds.fleet import FleetError, enable_autostart, find, unit_name
+    from lmds.fleet import FleetError, enable_autostart, find
 
     server = find(slug)
     if server is None:
@@ -3700,7 +3695,7 @@ def enable(
         name = enable_autostart(server, timeout=timeout, start_now=now, scope=scope, password=password)
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     console.print(f"[green]✅ เปิด autostart แล้ว[/green] ({name}) — โมเดลจะกลับมาเองหลัง reboot")
     if scope == "user":
         from lmds.fleet.manager import _linger_on
@@ -3725,7 +3720,7 @@ def disable(
         name = disable_autostart(slug)
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     console.print(f"[green]ปิด autostart แล้ว[/green] ({name}) — ตัวที่รันอยู่ตอนนี้ยังไม่หยุด (ใช้ lmds stop {slug} ถ้าต้องการ)")
 
 
@@ -3901,7 +3896,7 @@ def web(
                 daemon.validate_token(value)
             except daemon.TokenError as exc:
                 err_console.print(f"[red]{where}: {exc}[/red]")
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=1) from None
 
     def show_running(state: dict, prefix: str) -> None:
         """พิมพ์ลิงก์ของ *ตัวที่เสิร์ฟจริง* — ลิงก์ที่ใช้ไม่ได้แย่กว่าไม่พิมพ์เลย"""
@@ -3924,8 +3919,8 @@ def web(
                 console.print(f"  [bold]http://{host}:{port}/[/bold]")
             if token_now:
                 console.print(f"\n  token: [bold]{token_now}[/bold]")
-            console.print(f"[dim]เปิดใหม่: lmds web --restart · หยุด: lmds web --stop · "
-                          f"เลิกให้ขึ้นเอง: lmds web --disable[/dim]")
+            console.print("[dim]เปิดใหม่: lmds web --restart · หยุด: lmds web --stop · "
+                          "เลิกให้ขึ้นเอง: lmds web --disable[/dim]")
             return
         if state is None:
             console.print("ไม่มีหน้าเว็บที่รันเบื้องหลังอยู่ — เปิดด้วย: [bold]lmds web -b --bind 0.0.0.0[/bold]")
@@ -4022,7 +4017,7 @@ def web(
     except ImportError:
         err_console.print("[red]ยังไม่ได้ติดตั้งส่วนเว็บ[/red] — ติดตั้ง: "
                           "[bold]~/.local/share/lmds/venv/bin/pip install 'fastapi>=0.110' 'uvicorn>=0.27'[/bold]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     # มีตัวรันอยู่แล้วต้องไม่สตาร์ตซ้อน — รอบสองจะ bind ไม่ได้แล้วตาย แต่เราเผลอพิมพ์
     # token ใหม่ให้ไปแล้ว ผู้ใช้จึงเปิดลิงก์แล้วเจอ "ต้องมี token" ทั้งที่ copy มาถูก
@@ -4189,7 +4184,7 @@ def repair(
         code = repair_server(server, force=force)
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     if code == 0:
         console.print(f"[green]{slug} ไฟล์ครบและถูกต้อง · รันไทม์รู้จักโมเดลแล้ว[/green]")
     else:
@@ -4621,14 +4616,14 @@ def set_provider(
             chosen = fleet_brain.from_live(node or "this", from_model)
         except fleet_brain.BrainError as exc:
             err_console.print(f"[red]ผิดพลาด:[/red] {exc}")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
         model, base_url = model or chosen.model, chosen.base_url
         console.print(f"สมองจากฟลีต: [bold]{chosen.slug}[/bold] @ {chosen.node} → {chosen.base_url} (model {chosen.model})")
     try:
         provider = settings.set_provider(name, model=model, base_url=base_url)
     except ValueError as exc:
         err_console.print(f"[red]ผิดพลาด:[/red] {exc}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     settings.save()
     console.print(f"ตั้งค่า provider: [bold]{provider.name.value}[/bold] (model: {provider.model})")
     if provider.base_url:

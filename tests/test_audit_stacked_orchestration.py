@@ -372,7 +372,7 @@ def test_cluster_write_from_the_web_follows_the_bundle_node_count(tmp_path, monk
             import re
             blob = re.search(r"echo (\S+) \| base64 -d", cmd).group(1)
             written[node.name] = base64.b64decode(blob).decode()
-            return 0, f"/home/nvidia/bundles/x/cluster.env", ""
+            return 0, "/home/nvidia/bundles/x/cluster.env", ""
         return 0, "", ""
     monkeypatch.setattr("lmds.nodes.run", FakeSSH(answer))
     api = client()

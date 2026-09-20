@@ -70,7 +70,7 @@ def test_local_refresh_keeps_its_cadence_while_nodes_are_slow(monkeypatch):
     # ลูปเดินทุก 1 วิ (stop.wait(1.0)) นั่นคือเพดานจริงของความถี่ — ที่ต้องพิสูจน์คือ
     # มันเดินตามเพดานนั้นได้ ไม่ใช่ถูกถ่วงจนเหลือรอบละหลายวิ
     assert len(local_calls) >= 3, f"เครื่องนี้รีเฟรชแค่ {len(local_calls)} ครั้งใน 3.5 วิ"
-    gaps = [b - a for a, b in zip(local_calls, local_calls[1:])]
+    gaps = [b - a for a, b in zip(local_calls, local_calls[1:], strict=False)]
     assert max(gaps) < 1.5, f"มีช่วงที่เครื่องนี้เงียบไป {max(gaps):.1f} วิ"
     assert peak > 1, "probe ยังเรียงคิวอยู่ ไม่ได้ทำพร้อมกัน"
 

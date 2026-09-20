@@ -13,14 +13,12 @@ from __future__ import annotations
 
 import json
 import stat
-import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import pytest
 
 from tests.test_audit_stacked_controller import (
-    _DOCKER, _SSH, HEAD, WORKER, _bin, _bundle, _calls, _report, _run, _seed_head_cache, _shim,
+    _DOCKER, _SSH, WORKER, _bin, _bundle, _calls, _report, _run, _seed_head_cache,
 )
 
 _LOG_CURL = 'echo "curl $*" >> "$FAKE_LOG"; echo "{}"; exit 0\n'

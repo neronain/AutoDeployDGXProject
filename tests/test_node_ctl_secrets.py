@@ -9,7 +9,6 @@
 สนิทเป็นสิบนาที แยกไม่ออกว่าทำงานอยู่หรือค้างไปแล้ว
 """
 
-import subprocess
 
 import pytest
 from typer.testing import CliRunner

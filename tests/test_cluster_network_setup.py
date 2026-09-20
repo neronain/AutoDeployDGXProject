@@ -425,7 +425,6 @@ def test_apply_runs_the_sequence_per_node_and_keeps_the_password_out_of_argv_and
     assert "enp1s0f1np1" in a_cmds[2] and "20260905-120000" in a_cmds[2]
     assert a_cmds[3].startswith("ip -br addr show dev enp1s0f1np1")
     # b ถูกแตะหลัง a เสร็จครบ (ไม่สลับกัน) และ ping/pair มาหลังทั้งคู่ขึ้น
-    order = [(n, c.split()[0]) for n, c, _ in fleet.calls]
     idx_b_apply = next(i for i, (n, c, _) in enumerate(fleet.calls) if n == "b" and "netplan generate" in c)
     idx_a_verify = next(i for i, (n, c, _) in enumerate(fleet.calls) if n == "a" and c.startswith("ip -br addr"))
     assert idx_a_verify < idx_b_apply
@@ -549,7 +548,7 @@ def test_remove_net_moves_the_file_aside_and_clears_the_registry():
     result = remove_net(find("a"), "pw", runner=fleet, stamp="S2")
     assert result["ok"] and result["removed"]
     moved = [c for c in fleet.on("a") if "LMDS_NETPLAN_REMOVED" in c]
-    assert len(moved) == 1 and f"mv \"$f\" \"$d/$(basename \"$f\").$s\"" in moved[0] and "S2" in moved[0]
+    assert len(moved) == 1 and "mv \"$f\" \"$d/$(basename \"$f\").$s\"" in moved[0] and "S2" in moved[0]
     assert "netplan generate; netplan apply" in moved[0]
     node = find("a")
     assert (node.cluster_ip, node.cluster_iface, node.cluster_links) == ("", "", [])

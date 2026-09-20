@@ -118,6 +118,21 @@ def memory_held_gb() -> float:
         return 0.0
 
 
+def _field_float(fields: list[str], index: int) -> float | None:
+    """ค่าที่อ่านไม่ได้/[N/A] → None — อย่าแปลงเป็น 0 เพราะความหมายคนละอย่าง"""
+    if len(fields) <= index:
+        return None
+    try:
+        return float(fields[index].strip())
+    except ValueError:
+        return None
+
+
+def _field_int(fields: list[str], index: int) -> int | None:
+    value = _field_float(fields, index)
+    return None if value is None else int(value)
+
+
 def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
     notes: list[str] = []
     if shutil.which("nvidia-smi") is None:
@@ -137,27 +152,13 @@ def detect_gpus() -> tuple[list[DetectedGpu], list[str]]:
         vram = int(float(parts[1])) if len(parts) > 1 and parts[1].replace(".", "").isdigit() else None
         cc = parts[2] if len(parts) > 2 and parts[2] else None
 
-        def _num(index: int):
-            """ค่าที่อ่านไม่ได้/[N/A] → None — อย่าแปลงเป็น 0 เพราะความหมายคนละอย่าง"""
-            if len(parts) <= index:
-                return None
-            raw = parts[index].strip()
-            try:
-                return float(raw)
-            except ValueError:
-                return None
-
-        def _int(index: int) -> int | None:
-            value = _num(index)
-            return None if value is None else int(value)
-
         gpus.append(DetectedGpu(
             name=name, vram_mib=vram, compute_capability=cc, known=lookup_gpu(name),
-            vram_used_mib=_int(3), utilization_pct=_int(4),
-            temperature_c=_int(5), power_w=_num(6), power_limit_w=_num(7), fan_pct=_int(8),
-            clock_graphics_mhz=_int(9), clock_graphics_max_mhz=_int(10),
-            clock_memory_mhz=_int(11), clock_sm_mhz=_int(12),
-            pcie_gen=_int(13), pcie_width=_int(14),
+            vram_used_mib=_field_int(parts, 3), utilization_pct=_field_int(parts, 4),
+            temperature_c=_field_int(parts, 5), power_w=_field_float(parts, 6), power_limit_w=_field_float(parts, 7), fan_pct=_field_int(parts, 8),
+            clock_graphics_mhz=_field_int(parts, 9), clock_graphics_max_mhz=_field_int(parts, 10),
+            clock_memory_mhz=_field_int(parts, 11), clock_sm_mhz=_field_int(parts, 12),
+            pcie_gen=_field_int(parts, 13), pcie_width=_field_int(parts, 14),
         ))
 
     # เครื่อง unified memory ไม่รายงาน memory.used — รวมจาก process ที่ถืออยู่แทน

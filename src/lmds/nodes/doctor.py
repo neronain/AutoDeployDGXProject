@@ -13,7 +13,6 @@ from __future__ import annotations
 import shlex
 
 from .cluster import (
-    MIN_STACK_GBPS,
     check_cluster_ip,
     link_network,
     link_warning,
@@ -216,7 +215,7 @@ def diagnose_pair(head_name: str, worker_name: str, *, nodes: dict[str, Node],
     signatures = [machine_signature(head_host), machine_signature(worker_host)]
     findings.append(_finding("hardware", signatures[0] == signatures[1], pair,
                              signatures=" vs ".join(f"{n}: {s[2]} ×{s[3]} {s[0]}"
-                                                    for n, s in zip(pair, signatures))))
+                                                    for n, s in zip(pair, signatures, strict=True))))
 
     checks = {n: check_cluster_ip(hosts[n] or {}, nodes[n].cluster_ip) for n in pair}
     for name in pair:

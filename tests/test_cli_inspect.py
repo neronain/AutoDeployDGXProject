@@ -1,6 +1,5 @@
 from typer.testing import CliRunner
 
-import lmds.cli.main as cli_main
 from lmds.cli.main import app
 from lmds.inspector import ArtifactType, AuthRequired, ModelReport
 
