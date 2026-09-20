@@ -7,8 +7,8 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.9.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2224-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.10.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-2311-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04%20%7C%2025.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10--3.13-3776ab)](pyproject.toml)
@@ -186,7 +186,7 @@ autostart · คำสั่ง stacked · repair · remove · ปุ่ม **Up
 | **คอนโซลต้องมี token เสมอ** | ไม่ว่า bind ที่ไหน · เดิม `127.0.0.1` ถูกปล่อยโล่ง ซึ่งเปิดให้ผู้ใช้อื่นบนเครื่องเดียวกัน และเพจใดก็ได้ที่เปิดในเบราว์เซอร์ (CSRF/DNS rebinding) สั่งได้ · `--no-auth` เปิดโล่งได้แต่ต้องสั่งเอง |
 | **โมเดลที่ deploy ใหม่มี API key ตั้งแต่เกิด** | เก็บที่ `~/.lmds/keys/<slug>` (0600) **ไม่ได้อยู่ในโฟลเดอร์ bundle** ซึ่งถูก zip แจกต่อได้ · controller อ่านเองตอน start จึงไม่หายหลัง reboot |
 | **ร่องรอยว่าใครสั่งอะไร** | `lmds audit` — เวลา · IP · คำสั่ง · ผล · เก็บเฉพาะคำสั่งที่เปลี่ยนสถานะกับคำขอที่ถูกปฏิเสธ · ไม่เก็บ body และ query string |
-| **ปักหมุดเวอร์ชันได้** | `export LMDS_REPO_REF=v0.9.1` บน hub → ทุกเครื่องได้ tag นั้นตรง ๆ ไม่ใช่ปลาย branch |
+| **ปักหมุดเวอร์ชันได้** | `export LMDS_REPO_REF=v0.10.0` บน hub → ทุกเครื่องได้ tag นั้นตรง ๆ ไม่ใช่ปลาย branch |
 | **key ไม่เคยอยู่บน argv** | llama.cpp ใช้ไฟล์ 0600 ผ่าน `--api-key-file` · vLLM ผ่าน env · `lmds key set` รับทาง stdin |
 
 ```bash
@@ -281,7 +281,7 @@ lmds recipes --publish <ชื่อ> --features tools,vision     # ส่งต
 | MTP / speculative | ✅ draft head จาก repo | ผ่าน `--extra-args` | ผ่าน `--extra-args` |
 
 ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo ·
-**22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,224 เทสต์** รันครบทุก push บน Python 3.10–3.13
+**24 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,311 เทสต์** รันครบทุก push บน Python 3.10–3.13
 
 **MoE กับ MTP ถูกรายงานเป็นข้อเท็จจริงจากไฟล์** ไม่ใช่สิ่งที่ LLM เดา — จำนวน expert ทั้งหมด/ที่เปิด
 ต่อ token อ่านจาก `config.json` หรือ GGUF metadata เพราะ *total บอกว่าต้องมีหน่วยความจำเท่าไร ส่วน
@@ -305,7 +305,7 @@ lmds fleet check --check                                 # ทุกเครื
 > ⚠️ **`git pull` อย่างเดียวไม่พอ** — ติดตั้งแบบ copy เข้า venv คำสั่ง `lmds` จะยังเป็นโค้ดเก่าจนกว่าจะรัน
 > `./install.sh` ซ้ำ · config และ key เดิมอยู่ครบ · `install.sh` ย้าย venv เดิมไว้ก่อนแล้วคืนให้ถ้า pip ล้ม
 
-ไซต์ที่ต้องล็อกเวอร์ชัน: `export LMDS_REPO_REF=v0.9.1` บน hub แล้วสั่ง `lmds node install` ตามปกติ
+ไซต์ที่ต้องล็อกเวอร์ชัน: `export LMDS_REPO_REF=v0.10.0` บน hub แล้วสั่ง `lmds node install` ตามปกติ
 
 ## ใช้คู่กับ LiteGate (ทางเลือก)
 

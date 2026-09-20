@@ -69,7 +69,12 @@
 
 เรียงตามที่แนะนำ:
 
-1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · ✅ **0.6.0 (4 ก.ย. 2569)** audit ทั้ง lifecycle + `lmds cluster pair/doctor/write` + ชุดทดสอบบน stacked → Qwen3.8-Flash-Next-NVFP4 173 GB และ Nemotron-3-Super-120B รันจริง · ✅ **wizard ตั้งค่าเครือข่ายคลัสเตอร์ (2026-09-05)** — ดูแถวในตาราง 0.6.0 ด้านบน · งานต่อยอดที่เหลือ: 4 เครื่องบนเครื่องจริง (ติดที่ยังไม่มีเครื่องที่สาม), ตัวเลือก `--topology both` ของ `lmds deploy` (สร้าง single+stacked พร้อมกัน — ยังไม่ได้ทำ · อย่าสับสนกับ `--topology` ของ `lmds cluster` ซึ่งเป็นผังสาย direct|ring|switch และมีแล้ว)
+1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · ✅ **0.6.0 (4 ก.ย. 2569)** audit ทั้ง lifecycle + `lmds cluster pair/doctor/write` + ชุดทดสอบบน stacked → Qwen3.8-Flash-Next-NVFP4 173 GB และ Nemotron-3-Super-120B รันจริง · ✅ **wizard ตั้งค่าเครือข่ายคลัสเตอร์ (2026-09-05)** — ดูแถวในตาราง 0.6.0 ด้านบน · ✅ **สร้าง single+stacked พร้อมกัน — ทำแล้ว** ในชื่อ `lmds deploy --also-stacked` (ไม่ใช่ `--topology both` ที่เคยเขียนไว้
+   ตรงนี้): `--topology` ของ `lmds cluster` คือ *ผังสาย* `direct|ring|switch` คนละเรื่องกัน และใน `deploy` เอง topology
+   เป็นของที่อนุมานจาก target เสมอ (`topology_for_target()` + harden บังคับกลับ) — เปิด `--topology` ที่นั่นจะชวนให้พิมพ์
+   `--topology stacked` แล้วโดนปฏิเสธ · ได้ `<slug>` (single) + `<slug>-stacked` คนละโฟลเดอร์ คนละ controller คนละ API key
+   จากการวิเคราะห์/ยืนยันรอบเดียว (`tests/test_deploy_topology_both.py`)
+   · งานต่อยอดที่เหลือ: 4 เครื่องบนเครื่องจริง (ติดที่ยังไม่มีเครื่องที่สาม)
 2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
    verify-files, 2026-08-02) · ~~ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้~~
    → ✅ **ทำแล้ว (2026-08-27)** ผู้ช่วยในหน้าเว็บเปิด log ของ controller บนเครื่องนั้นเอง (พร้อม
@@ -93,11 +98,20 @@
    · ~~job progress / log สด~~ **ทำแล้ว** (แผงงาน + SSE + ยกเลิกได้) · ~~deploy wizard เลือกเครื่อง
    ปลายทางได้ตั้งแต่ต้น~~ **ทำแล้ว (0.5.2/0.6.0)** — ช่อง Run on + ปุ่ม "Deploy ลงกลุ่มนี้" + เสนอพอร์ตว่างของเครื่องนั้น
    · **0.6.0**: app shell เมนูซ้าย/router/Overview/Needs attention · เมนูอังกฤษ · ฟอร์มตั้งค่าย่อ + Advanced พับ
-   · งานต่อยอด: command palette (⌘K)
+   · ~~งานต่อยอด: command palette (⌘K)~~ → ✅ **ทำแล้ว (2026-09-21)** ⌘K / Ctrl-K (หรือ `/` ตอนไม่ได้พิมพ์
+   อยู่ในช่อง) เปิด · พิมพ์เพื่อกรอง · ↑↓ เลือก · Enter ไป · Esc ปิด · ค้นได้: **หน้าในเมนูซ้ายทุกหน้า**
+   · **ไซต์** · **เครื่องในฟลีต** (รวม hub · เครื่องที่ต่อไม่ได้ก็ยังค้นเจอ) · **โมเดล/bundle** ทั้งในเครื่องและบน node
+   · คำสั่งที่ใช้บ่อย (deploy · ตรวจคลัสเตอร์ · เพิ่มเครื่อง · สแกน weight · provider) — ทุกปลายทางใช้ router
+   เดิม (`#/node/<ชื่อ>` `#/site/<ไซต์>` `#/hub` …) ไม่ได้สร้างระบบนำทางใหม่ · `tests/test_web_i18n_dom.py`
 5. ~~**Runtime smoke test อัตโนมัติ**~~ — ✅ **ทำแล้ว (2026-08-06)** `lmds smoke <slug> [--on เครื่อง]`
    download → verify-files → start → test-text → stop · หยุด server เสมอแม้ล้มกลางทาง
    · **เหตุผลที่ต้องมี**: บั๊กที่เจ็บที่สุดทุกตัวของรอบ 0.2.0 ผ่าน gate แบบ static ทั้งหมด
-   แล้วไปตายตอนรันจริง · งานต่อยอด: ให้รันอัตโนมัติหลัง deploy (ตอนนี้ต้องสั่งเอง)
+   แล้วไปตายตอนรันจริง · ~~งานต่อยอด: ให้รันอัตโนมัติหลัง deploy (ตอนนี้ต้องสั่งเอง)~~
+   → ✅ **ทำแล้ว** `lmds deploy --smoke` เดินขั้นเดียวกันต่อท้าย deploy · เป็น **opt-in ไม่ใช่ opt-out**:
+   smoke โหลด weight จริงหลายสิบ GB, `deploy` เป็นทางเดินที่ hub/หน้าเว็บ/สคริปต์เรียกด้วย `--yes` อยู่แล้ว,
+   และ deploy บน hub มักสร้าง bundle ให้ *เครื่องอื่น* (hub อาจไม่มี GPU) — เปิดเป็นค่าเริ่มต้นคือทำให้ทางเดิน
+   fleet ผิดทั้งเส้น · ล้มแล้วได้ exit 6 แยกจาก exit 2 ที่แปลว่าไม่ผ่าน gates (`tests/test_deploy_autosmoke.py`)
+   · งานต่อยอด: `--smoke --on <เครื่อง>` หลัง `lmds node push` ให้พิสูจน์บนเครื่องที่จะรันจริง
 6. **สูตรที่รันผ่านจริง (recipes)** — ✅ **ทำแล้ว (2026-08-05)** `lmds recipes` แก้ปัญหาลูกค้า/SI
    ที่ไม่มี API key แล้ว deploy ผ่านแต่ start ไม่ขึ้น · งานต่อยอด: ให้ LLM ร่างสูตรใหม่จาก config
    ที่รันสำเร็จ แล้วคนตรวจก่อนเข้าแคตตาล็อก (LLM สำรวจ · สูตรจดจำ)
@@ -105,7 +119,24 @@
    `lmds node` (ทะเบียนเครื่อง + `lmds agent info` ผ่าน SSH) พร้อมตรวจ ConnectX/200G และจับคู่ stacked
    · ~~push bundle ไปติดตั้งบน node ให้อัตโนมัติ~~ **ทำแล้ว** (`lmds node push` + wizard) · ~~ยืนยัน fabric detection
    กับ ConnectX จริง~~ **ทำแล้ว (5 ส.ค. 2569)** · **0.6.0**: hub ส่งโค้ดไปติดตั้ง node เอง (ไม่ต้องมี deploy key) ·
-   `lmds cluster doctor/pair` · งานต่อยอด: Anthropic provider, i18n ไทยเต็มรูปของหน้าเว็บ (ตอนนี้หน้าเว็บอังกฤษ CLI ไทย)
+   `lmds cluster doctor/pair` · งานต่อยอด: Anthropic provider
+   · **i18n ไทยของหน้าเว็บ — ทำแล้วบางส่วน (2026-09-21)**: ปุ่มลูกโลกบนแถบหัว (ข้างธีม/ขนาดตัวอักษร)
+   สลับ อังกฤษ ⇄ ไทย · **อังกฤษยังเป็นค่าตั้งต้น** ไทยเป็นตัวเลือก · จำไว้ที่ `localStorage["lmds-lang"]`
+   ชุดเดียวกับ `lmds-theme` / `lmds-fontsize` (เป็นความชอบของคนที่นั่งดูจอ ไม่ใช่ค่าของ hub)
+   · สลับแล้ววาดใหม่ทันทีโดยไม่ reload และสลับกลับได้ข้อความอังกฤษตัวเดิมเป๊ะ (เก็บต้นฉบับไว้)
+   · ศัพท์ตามที่ CLI ใช้: ทับศัพท์ bundle · controller · runtime · context · slots · start/stop/restart
+   และ ฟลีต · ไซต์ · คลัสเตอร์ · พอร์ต
+   · **แปลแล้ว** (~250 จุด · พจนานุกรม 268 คีย์ อยู่ในสคริปต์หัวหน้าของ `index.html`): เมนูซ้าย · เส้นทาง (breadcrumb) · แถบหัว · หัวข้อหมวดทุกหมวด · ภาพรวมทั้งฟลีต
+   (KPI · เกจต่อเครื่อง · โดนัท engine · Needs attention · ตารางไซต์ · Fleet consistency) · ตารางโมเดลทั้งฟลีต
+   · ปุ่มและป้ายบนการ์ดโมเดล · การ์ดเครื่องและแถบ cluster · ข้อความผิดพลาด/แถบแจ้งเตือน · command palette
+   · ปุ่มหลักของแผง Manage/Fit
+   · **ยังไม่ได้แปล** (~250 จุด เท่า ๆ กัน · ส่วนใหญ่เป็นคำอธิบายยาวและ tooltip): เนื้อในตัวช่วย deploy
+   (wizard), ตัวช่วยตั้งเครือข่ายคลัสเตอร์ (5 ขั้น), แผงคะแนน/bench, แผงสแกน weight, แผงสูตร,
+   กล่องผู้ช่วย (assistant), หน้า login, แผงไลเซนส์, ตาราง Fit รายบรรทัด, แผงงาน/log สด,
+   และคำอธิบาย `.dim` ยาว ๆ ในแผง Manage / เมนู ⋯ ของ node
+   · ทุกจุดที่ยังไม่มีคำแปลจะอ่านออกเป็นอังกฤษตามเดิม ไม่ใช่ว่างเปล่า — เติมคำแปลทีหลังได้โดยไม่ต้องแตะโค้ด
+   (คีย์คือข้อความอังกฤษตัวเต็ม)
+   · `tests/test_web_i18n_dom.py`
 
 ## เฟส 3 — ข้อเสนอระยะยาว
 

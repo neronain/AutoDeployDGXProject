@@ -7,8 +7,8 @@
 Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine or
 several acting as one. Nothing leaves the machine except what you ask for.
 
-[![version](https://img.shields.io/badge/version-0.9.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2224-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.10.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-2311-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04%20%7C%2025.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -292,8 +292,8 @@ has no password field by design.
 Hardware-validated across all five model families — GGUF, NVFP4, MoE, dense safetensors, gated
 repos · latest (2026-09-04): `unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF` (llama.cpp + vision),
 embedding `VesNFF/Qwen3-VL-Embedding-8B-GGUF`, stacked `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4` (173 GB)
-and `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` on 2× DGX Spark · **22 target presets** (7 verified on
-real hardware) · **2,224 tests** (`pytest --collect-only` at 0.9.1, 2026-09-21 — same number as the badge)
+and `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` on 2× DGX Spark · **24 target presets** (7 verified on
+real hardware) · **2,311 tests** (`pytest --collect-only` at 0.10.0, 2026-09-21 — same number as the badge)
 
 > **Model source: Hugging Face only.** Ollama registry and NVIDIA NGC are phase 2 — passing such a
 > link produces a clear "not supported yet" message with an alternative. Hugging Face now serves large
