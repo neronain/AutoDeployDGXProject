@@ -28,7 +28,10 @@ from lmds.fit.analyzer import GIB
 from lmds.generator import render_bundle
 from lmds.inspector.report import ArtifactType, GgufVariant, KvDims, ModelReport
 
-SAFE_PATH = "/usr/bin:/bin"
+# /sbin กับ /usr/sbin อยู่ในนี้เพราะ macOS วาง sha256sum ไว้ที่ /sbin ไม่ใช่ /usr/bin
+# (GNU coreutils บน Linux วางที่ /usr/bin) · ไม่มีแล้ว controller `die` ตั้งแต่ need sha256sum
+# เทสทั้งไฟล์เลยล้มก่อนถึงตรรกะที่ตั้งใจจะวัด — เครื่อง dev ที่เป็น Mac จะเห็นแดงยกแผง
+SAFE_PATH = "/usr/bin:/bin:/sbin:/usr/sbin"
 ARCH = "qwen4exp"
 GGUF_NAME = "Qwen3-8-Flash-Next-Q4_K_M.gguf"
 

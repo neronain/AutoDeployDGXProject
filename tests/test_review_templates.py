@@ -23,7 +23,10 @@ from lmds.generator import render_bundle, renderer
 from lmds.inspector.report import ArtifactType, GgufVariant, KvDims, ModelReport
 
 TEMPLATES = Path(renderer.__file__).parent / "templates"
-SAFE_PATH = "/usr/bin:/bin"
+# /sbin กับ /usr/sbin อยู่ในนี้เพราะ macOS วาง sha256sum ไว้ที่ /sbin ไม่ใช่ /usr/bin
+# (GNU coreutils บน Linux วางที่ /usr/bin) · ไม่มีแล้ว controller `die` ตั้งแต่ need sha256sum
+# เทสทั้งไฟล์เลยล้มก่อนถึงตรรกะที่ตั้งใจจะวัด — เครื่อง dev ที่เป็น Mac จะเห็นแดงยกแผง
+SAFE_PATH = "/usr/bin:/bin:/sbin:/usr/sbin"
 
 
 # ───────────────────────── helpers ─────────────────────────
@@ -400,7 +403,7 @@ def test_aria2c_receives_the_token_via_a_private_conf_file(tmp_path):
         printf '%s\\n' "$@" >> "{logs}/aria2c.argv"
         for a in "$@"; do
           case "$a" in
-            --conf-path=*) cp "${{a#*=}}" "{logs}/aria2c.conf"; stat -c %a "${{a#*=}}" > "{logs}/aria2c.mode"
+            --conf-path=*) cp "${{a#*=}}" "{logs}/aria2c.conf"; {{ stat -c %a "${{a#*=}}" 2>/dev/null || stat -f %A "${{a#*=}}"; }} > "{logs}/aria2c.mode"
                            echo "${{a#*=}}" > "{logs}/aria2c.path" ;;
           esac
         done

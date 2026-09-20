@@ -26,7 +26,10 @@ from lmds.fit.analyzer import GIB
 from lmds.generator import render_bundle
 from lmds.inspector.report import ArtifactType, GgufVariant, KvDims, ModelReport
 
-SAFE_PATH = "/usr/bin:/bin"
+# /sbin กับ /usr/sbin อยู่ในนี้เพราะ macOS วาง sha256sum ไว้ที่ /sbin ไม่ใช่ /usr/bin
+# (GNU coreutils บน Linux วางที่ /usr/bin) · ไม่มีแล้ว controller `die` ตั้งแต่ need sha256sum
+# เทสทั้งไฟล์เลยล้มก่อนถึงตรรกะที่ตั้งใจจะวัด — เครื่อง dev ที่เป็น Mac จะเห็นแดงยกแผง
+SAFE_PATH = "/usr/bin:/bin:/sbin:/usr/sbin"
 
 # ใช้ harness ของ test_parallel_fetch (curl ปลอมที่รองรับ -r) ต่อ — ไม่เขียนซ้ำ
 _spec = importlib.util.spec_from_file_location("_pf", Path(__file__).with_name("test_parallel_fetch.py"))
