@@ -57,7 +57,10 @@ API_KEY="${API_KEY:-}"
 # ห้ามอยู่ใน bundle.env · แต่การไม่เก็บไว้เลยแปลว่า systemd ตอน autostart ซึ่งเรียกสคริปต์นี้
 # เปล่า ๆ ไม่เคยได้ key เลย → พอ reboot โมเดลกลับมาเปิดโล่งบน 0.0.0.0 ทั้งที่ผู้ใช้ตั้ง key
 # ไว้แล้ว และไม่มีอะไรบอก · ตั้ง/ดู/ลบด้วย `lmds key` · env กับ flag ยังชนะไฟล์นี้เสมอ
-API_KEY_STORE="${LMDS_KEY_ROOT:-${HOME}/.lmds/keys}/{{ slug }}"
+# ${HOME:-} ไม่ใช่ ${HOME} เพราะสคริปต์นี้รันด้วย `set -u` · วันนี้ยังไม่ต่างกันในทางปฏิบัติ
+# (บรรทัด LLAMA_CPP_DIR ข้างบนต้องการ HOME อยู่แล้วและตายก่อนถึงตรงนี้) แต่บรรทัดใหม่
+# ไม่ควรเพิ่มที่ให้ตายอีกจุด · ไม่มี HOME = path ที่ไม่มีจริง → -r ไม่ผ่าน → ข้ามไปเงียบ ๆ
+API_KEY_STORE="${LMDS_KEY_ROOT:-${HOME:-}/.lmds/keys}/{{ slug }}"
 if [[ -z "$API_KEY" && -r "$API_KEY_STORE" ]]; then
   API_KEY="$(tr -d '\r\n' < "$API_KEY_STORE")"
 fi
