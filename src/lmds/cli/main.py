@@ -4264,13 +4264,72 @@ def bundles_refresh(
         raise typer.Exit(code=1)
 
 
+def _freshness(source: str, last_seen: str, probed: bool) -> str:
+    """ข้อมูลของแถวนี้เก่าแค่ไหน — "สด" เฉพาะรอบที่เพิ่งต่อเข้าไปจริง"""
+    if probed and source == "cache":
+        return "[green]สด[/green]"
+    if not last_seen:
+        return "[yellow]ยังไม่เคย probe[/yellow]"
+    from datetime import datetime
+
+    try:
+        then = datetime.fromisoformat(last_seen)
+    except ValueError:
+        return f"[dim]{last_seen[:16]}[/dim]"
+    minutes = int((datetime.now(then.tzinfo) - then).total_seconds() // 60)
+    if minutes < 2:
+        return "[green]เมื่อครู่[/green]"
+    if minutes < 90:
+        return f"{minutes} นาทีก่อน"
+    hours = minutes // 60
+    if hours < 48:
+        return f"[yellow]{hours} ชม.ก่อน[/yellow]"
+    return f"[red]{hours // 24} วันก่อน[/red]"
+
+
+def _probe_fleet(nodes: list) -> dict:
+    """probe ทุกเครื่องพร้อมกันแล้วคืนรูปเดียวกับ snapshot ของหน้าเว็บ ({ชื่อ: {"data": …}})
+
+    หน้าเว็บมีตัว refresh เบื้องหลังคอยอุ่นแคชไว้ให้ · CLI เป็น process ครั้งเดียวจบ
+    จึงไม่มีแคชอะไรเลยและตกไปใช้ตัวนับจากทะเบียนเสมอ — ซึ่งเป็นของรอบที่ probe ล่าสุด
+    ไม่ใช่ของตอนนี้ · เขียนผลกลับทะเบียนด้วย ครั้งถัดไปที่ไม่ใส่ --check จะได้ไม่เก่าเท่าเดิม
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from lmds.nodes import NodeError, probe, status_from_probe, update
+
+    def one(node):
+        try:
+            info = probe(node)
+        except NodeError as exc:
+            update(node.name, last_error=str(exc)[:200])
+            return node.name, None
+        try:
+            update(node.name, last_seen=_now(), last_error="", **status_from_probe(info))
+        except Exception:  # noqa: BLE001 — เขียนทะเบียนไม่ได้ไม่ควรทำให้รายงานล้ม
+            pass
+        return node.name, info
+
+    if not nodes:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as pool:
+        return {name: {"data": info} for name, info in pool.map(one, nodes) if info}
+
+
 @fleet_app.command("check")
 def fleet_check(
     json_out: bool = typer.Option(False, "--json", help="พิมพ์รายงานเป็น JSON (โครงเดียวกับ GET /api/fleet/consistency)"),
+    check: bool = typer.Option(False, "--check", "-c",
+                               help="ต่อเข้าทุกเครื่องเพื่อดูสภาพ *ตอนนี้* (ช้ากว่า) — ไม่ใส่ = ใช้ของที่ทะเบียนจำไว้"),
 ) -> None:
-    """ทุกเครื่องตรง hub ครบ 3 มิติไหม — จากทะเบียน + bundle ของ hub เอง ไม่ SSH (ข้อมูลจาก probe ล่าสุด)
+    """ทุกเครื่องตรง hub ครบ 3 มิติไหม — code · controllers · runtime
 
-    exit 1 เมื่อมีเครื่องไม่ตรง (แดง) · เหลือง = ตรวจไม่ได้ (probe เครื่องนั้นก่อน: lmds node list --check)
+    **ไม่ใส่ `--check` = ไม่ SSH** ตัวเลขมาจากทะเบียนซึ่งเป็นของรอบที่ probe ล่าสุด ·
+    หลัง `lmds node install` เสร็จ ตัวเลขจึงยังเป็นของเก่าจนกว่าจะ probe ใหม่
+
+    `--check` ต่อเข้าทุกเครื่องพร้อมกันแล้วรายงานสภาพตอนนี้ พร้อมเขียนผลกลับทะเบียนให้ด้วย
+
+    exit 1 เมื่อมีเครื่องไม่ตรง (แดง) · เหลือง = ตรวจไม่ได้
     """
     from lmds.fleet import discover
     from lmds.fleet.consistency import fleet_report
@@ -4279,7 +4338,13 @@ def fleet_check(
 
     models = [model_payload(s) for s in discover()]
     local = {"host": with_runtimes(host_payload(), models), "models": models}
-    report = fleet_report({}, load(), local)
+    nodes = load()
+    snapshot = {}
+    if check:
+        if not json_out and nodes:
+            console.print(f"[dim]ต่อเข้า {len(nodes)} เครื่องเพื่อดูสภาพตอนนี้…[/dim]")
+        snapshot = _probe_fleet(nodes)
+    report = fleet_report(snapshot, nodes, local)
     if json_out:
         print(json.dumps(report, ensure_ascii=False))
     else:
@@ -4290,17 +4355,24 @@ def fleet_check(
             v = hub["verdict"]
             console.print(f"  bundle บน hub: controllers {v['controllers']['detail']}")
         table = Table(title="Fleet consistency — code · controllers · runtime")
-        for col in ("เครื่อง", "code", "controllers", "runtime", "สรุป"):
+        for col in ("เครื่อง", "code", "controllers", "runtime", "สรุป", "ข้อมูลเมื่อ"):
             table.add_column(col)
         mark = {"ok": "[green]✓[/green]", "n/a": "[green]✓[/green]", "unknown": "[yellow]?[/yellow]"}
+        seen_at = {node.name: getattr(node, "last_seen", "") for node in nodes}
         for n in report["nodes"]:
             cells = []
             for axis in ("code", "controllers", "runtimes"):
                 a = n[axis]
                 cells.append(f"{mark.get(a['state'], '[red]✗[/red]')} {a['detail'][:70]}")
             verdict = "[green]ตรง hub[/green]" if n["consistent"] else ("[yellow]ตรวจไม่ได้[/yellow]" if n["level"] == "warn" else "[red]ยังไม่ตรง[/red]")
-            table.add_row(n["name"], *cells, verdict + (f" [dim]({n['source']})[/dim]" if n["source"] == "registry" else ""))
+            table.add_row(n["name"], *cells, verdict, _freshness(n["source"], seen_at.get(n["name"], ""), check))
         console.print(table)
+        # ตัวเลขที่เก่าอ่านเหมือนตัวเลขที่ใหม่ทุกประการ — ป้ายเล็ก ๆ ท้ายแถวไม่พอ
+        # (เคสจริง: node install เสร็จแล้วแต่ fleet check ยังบอกเวอร์ชันเก่า คนอ่านคิดว่า install ไม่ติด)
+        if not check and any(n["source"] == "registry" for n in report["nodes"]):
+            console.print("[yellow]ตัวเลขข้างบนมาจากทะเบียน ไม่ได้ต่อเข้าเครื่องจริง[/yellow] — "
+                          "เพิ่งติดตั้ง/อัปเดตไปแล้วเห็นของเก่าคือเรื่องปกติ · ดูสภาพตอนนี้: "
+                          "[bold]lmds fleet check --check[/bold]")
         console.print(report["summary"]["line"])
         console.print("[dim]แก้: controller ค้าง → lmds node run <เครื่อง> bundles refresh --all · runtime ค้าง → ปุ่ม update runtime / "
                       "lmds node ctl <เครื่อง> <slug> prepare-runtime (LLAMA_CPP_UPDATE=1) · หรือ lmds node install --all ทำให้ทั้งหมด[/dim]")

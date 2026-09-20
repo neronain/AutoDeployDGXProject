@@ -203,3 +203,99 @@ def test_discovered_containers_do_not_make_a_node_look_inconsistent():
 
     only_external = controllers_axis([{"slug": "vllm-gemma4", "external": True, "controller_exists": False}], hub)
     assert only_external.state == "n/a", only_external
+
+
+# ── ความสดของข้อมูล: `fleet check` เคยอ่านแต่ทะเบียนเสมอ ─────────────────────────────
+#
+# หน้าเว็บมีตัว refresh เบื้องหลังคอยอุ่นแคชไว้ · CLI เป็น process ครั้งเดียวจบจึงส่ง {}
+# เข้า fleet_report ทุกครั้ง แล้วตกไปใช้ตัวนับจากทะเบียน = ของรอบที่ probe ล่าสุด
+# เคสจริง: `lmds node install` เสร็จแล้ว `fleet check` ยังบอกเวอร์ชันเก่า คนอ่านคิดว่า install ไม่ติด
+
+def test_fleet_check_without_check_says_out_loud_that_the_numbers_are_not_live(hub, monkeypatch):
+    add(Node(name="msi-4", host="10.0.0.4", user="ops"))
+    update("msi-4", **status_from_probe(_info("msi-4")))
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: (_ for _ in ()).throw(AssertionError("ต้องไม่ SSH")))
+
+    done = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check"])
+    assert done.exit_code == 0, done.output
+    assert "มาจากทะเบียน ไม่ได้ต่อเข้าเครื่องจริง" in done.output
+    assert "lmds fleet check --check" in done.output
+
+
+def test_fleet_check_with_check_probes_every_machine_and_reports_now(hub, monkeypatch):
+    """ตัวเลขต้องมาจากการต่อจริงรอบนี้ ไม่ใช่จากที่ทะเบียนจำไว้ก่อนหน้า"""
+    add(Node(name="msi-4", host="10.0.0.4", user="ops"))
+    update("msi-4", **status_from_probe(_info("msi-4", ctl_ok=False)))   # ทะเบียนจำว่า controller ค้าง
+
+    probed: list[str] = []
+
+    def fake_probe(node):
+        probed.append(node.name)
+        return _info(node.name)                                          # ของจริงตอนนี้: ตรงแล้ว
+    monkeypatch.setattr("lmds.nodes.probe", fake_probe)
+
+    stale = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check", "--json"])
+    assert json.loads(stale.output.strip().splitlines()[-1])["nodes"][0]["controllers"]["state"] == "stale"
+    assert not probed, "ไม่ใส่ --check ต้องไม่ SSH"
+
+    live = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check", "--check", "--json"])
+    assert live.exit_code == 0, live.output
+    node = json.loads(live.output.strip().splitlines()[-1])["nodes"][0]
+    assert probed == ["msi-4"]
+    assert node["controllers"]["state"] == "ok" and node["source"] == "cache"
+
+
+def test_probing_writes_the_result_back_so_the_next_run_is_not_stale_again(hub, monkeypatch):
+    """เดิมผู้ใช้ต้องสั่ง `lmds node list --check` ก่อนเองทุกครั้ง — ทำให้แทนเลย"""
+    from lmds.nodes import find as find_node
+
+    add(Node(name="msi-4", host="10.0.0.4", user="ops"))
+    update("msi-4", **status_from_probe(_info("msi-4", ctl_ok=False)))
+    assert find_node("msi-4").controllers_stale == 1
+
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: _info(node.name))
+    assert CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check", "--check"]).exit_code == 0
+
+    after = find_node("msi-4")
+    assert after.controllers_stale == 0 and after.last_seen, "ผลต้องถูกเขียนกลับทะเบียน"
+
+
+def test_a_machine_that_cannot_be_reached_falls_back_instead_of_failing_the_whole_report(hub, monkeypatch):
+    """เครื่องหนึ่งดับไม่ควรทำให้รายงานทั้งฟลีตใช้ไม่ได้ — ถอยไปใช้ของที่ทะเบียนจำไว้"""
+    from lmds.nodes import NodeError, find as find_node
+
+    add(Node(name="up", host="10.0.0.1", user="ops"))
+    add(Node(name="down", host="10.0.0.2", user="ops"))
+    for name in ("up", "down"):
+        update(name, **status_from_probe(_info(name)))
+
+    def fake_probe(node):
+        if node.name == "down":
+            raise NodeError("ssh: connect to host 10.0.0.2 port 22: No route to host")
+        return _info(node.name)
+    monkeypatch.setattr("lmds.nodes.probe", fake_probe)
+
+    done = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check", "--check", "--json"])
+    report = json.loads(done.output.strip().splitlines()[-1])
+    sources = {n["name"]: n["source"] for n in report["nodes"]}
+    assert sources == {"up": "cache", "down": "registry"}
+    assert "No route to host" in find_node("down").last_error
+
+
+def test_every_row_carries_when_its_data_was_taken(hub):
+    """ตัวเลขที่เก่าอ่านเหมือนตัวเลขที่ใหม่ — ผู้อ่านรายงานต้องบอกได้ว่าเป็นของเมื่อไหร่"""
+    add(Node(name="msi-4", host="10.0.0.4", user="ops"))
+    update("msi-4", last_seen="2026-09-20T10:00:00", **status_from_probe(_info("msi-4")))
+
+    done = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check", "--json"])
+    node = json.loads(done.output.strip().splitlines()[-1])["nodes"][0]
+    assert node["last_seen"] == "2026-09-20T10:00:00"
+
+    table = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check"])
+    assert "ข้อมูลเมื่อ" in table.output
+
+
+def test_a_machine_that_was_never_probed_is_labelled_as_such(hub):
+    add(Node(name="never", host="10.0.0.99", user="ops"))
+    table = CliRunner(env={"COLUMNS": "300"}).invoke(app, ["fleet", "check"])
+    assert "ยังไม่เคย probe" in table.output

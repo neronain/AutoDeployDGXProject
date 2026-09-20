@@ -30,6 +30,7 @@ lmds bench run|list|show|remove            # คะแนนโมเดลท�
 lmds fit <MODEL> [--target] [--slots] [--context]   # ต้องใช้ RAM เท่าไรบนเครื่องนี้ — ไม่เขียนอะไร
 lmds bundles refresh [SLUG] [--all]        # regenerate controller เก่าให้ตรง template ปัจจุบัน (ออฟไลน์)
 lmds fleet check                           # ทั้งฟลีตตรง hub ครบ 3 มิติไหม (code · controller · runtime)
+lmds fleet check --check                   # ต่อเข้าทุกเครื่องก่อน — สภาพตอนนี้ ไม่ใช่ของที่ทะเบียนจำไว้
 lmds license show|seats|install <FILE>     # ไลเซนส์ของเครื่องนี้ (ออฟไลน์ล้วน — ดู LICENSING.md)
 lmds node add|list|remove|install|setup|set|run|ctl|cluster|clone|push   # fleet หลายเครื่อง
 lmds cluster show|write|pair|doctor|inspect|plan|apply|remove-net   # คลัสเตอร์ stacked

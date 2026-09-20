@@ -558,7 +558,7 @@ lmds node remove <name> [-y]
 lmds node install [<name>|--all] [--with-prereq] [--no-runtimes] [--force]
                                       # hub ส่งโค้ดไปเอง → regenerate controller เก่า → build llama.cpp ที่ค้าง → พิมพ์ 3 มิติ
                                       # --force = ส่งแม้ hub มีไฟล์แก้ค้าง · exit 1 เมื่อมีเครื่องไม่ตรง hub
-lmds fleet check [--json]             # ทั้งฟลีต code · controllers · runtime จากทะเบียน+แคช (ไม่ SSH)
+lmds fleet check [--json] [--check]   # ทั้งฟลีต code · controllers · runtime · ไม่ใส่ --check = ไม่ SSH (ของที่ทะเบียนจำไว้)
 lmds bundles refresh [--all] [--if-older] [<slug>…] [--json]   # regenerate controller ออฟไลน์บนเครื่องนี้
 lmds node setup   [<name>|--all] [--with-prereq]    # ขั้น sudo — ถามรหัสตอนนี้ ใช้ครั้งเดียว
 lmds node run <name> <คำสั่ง lmds...>
@@ -659,6 +659,7 @@ find "$SITE" \( -name '*.py' -o -name '*.j2' \) | LC_ALL=C sort | xargs sha256su
 ```bash
 lmds node install --all         # ต่อเครื่อง: code / controllers / runtime / สรุป · "ตรง hub ✓" เฉพาะเมื่อ ok ครบ · exit 1 ถ้ามีเครื่องไม่ตรง
 lmds fleet check [--json]       # ทั้งฟลีตจากทะเบียน+แคช ไม่ SSH (= GET /api/fleet/consistency) · exit 1 เมื่อมีแดง
+lmds fleet check --check        # ต่อเข้าทุกเครื่องพร้อมกันก่อนรายงาน แล้วเขียนผลกลับทะเบียนให้ด้วย
 lmds node list                  # คอลัมน์ bundles (controller ค้าง n / runtime ค้าง n) และ llama.cpp (build · วันที่) จาก probe ล่าสุด
 ```
 

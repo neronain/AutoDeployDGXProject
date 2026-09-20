@@ -405,6 +405,9 @@ def fleet_report(snapshot_nodes: dict, registry_nodes: list, local_info: dict | 
         out["nodes"].append({"name": node.name, "site": getattr(node, "site", ""), "source": source,
                              "reachable": bool(data) or not getattr(node, "last_error", ""),
                              "error": getattr(node, "last_error", "") if not data else "",
+                             # ตัวเลขที่เก่าอ่านเหมือนตัวเลขที่ใหม่ — ผู้อ่านรายงานนี้ (CLI, หน้าเว็บ,
+                             # สคริปต์ของลูกค้า) ต้องบอกได้ว่ามันเป็นของเมื่อไหร่ ไม่ใช่แค่ว่ามาจากไหน
+                             "last_seen": getattr(node, "last_seen", ""),
                              **verdict.payload()})
     out["summary"] = {
         "total": len(verdicts),
