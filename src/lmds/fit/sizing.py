@@ -8,13 +8,14 @@
 กติกาที่พิสูจน์แล้ว (unified memory: gpu-util ของ vLLM คิดจาก *ทั้ง* 128 GB รวม OS ด้วย 0.85 = 109 GB ต่อโมเดล
 ซึ่งไม่เหลือให้ตัวที่สอง — จึงเลิกคุมด้วย gpu-util แล้วปักหมุด KV แทน):
 
-    RAM ของโมเดล vLLM  = weights (ตามที่โหลดจริง) + overhead ~3 GB (activation/CUDA graph) + KV pin
+    RAM ของโมเดล vLLM  = weights (ตามที่โหลดจริง) + overhead ~3 GB **ต่อ GPU** (activation/CUDA graph) + KV pin
     KV pin (bytes)      = slots × KV ของ 1 คำขอเต็ม context × 1.2      ← ส่งเป็น --kv-cache-memory ไม่ใช่ gpu-util
     เหลือให้ OS/desktop ≥ 12 GB → ใช้ได้ ≈ total − 12 (121 GiB ที่ free -g เห็น → ~109)
     โมเดลที่สองใส่ได้ก็ต่อเมื่อ  Σ RAM ของทุกโมเดล ≤ ที่ใช้ได้
 
     context คงไว้ที่ native ของโมเดล (pin แล้ว context ไม่ทำให้ RAM เพิ่ม) · slots = จำนวนคนที่ใช้พร้อมกันจริง (2–4 ต่อคนเดียว)
-    llama.cpp: weights + KV(ctx ทั้ง pool) + overhead 1.5 — จอง KV ล่วงหน้าทั้งก้อน แบ่งให้ทุก slot เท่ากัน
+    llama.cpp: weights (+ mmproj/MTP ถ้ามี) + KV(ctx ทั้ง pool) + overhead 1.5 **ต่อ GPU** — จอง KV
+    ล่วงหน้าทั้งก้อน แบ่งให้ทุก slot เท่ากัน · เครื่องหลายใบคูณ overhead ตามจำนวนใบ (BesthaiAi 2026-09-20)
 
 วัดจริง 2026-09-07 (ดู docstring ใน tests/test_kv_sizing.py):
     spark-head   Nemotron-3-Super-120B NVFP4 (hybrid Mamba): loading took 69.62 GiB · pin 6 GiB → 1,179,648 tokens
@@ -33,14 +34,19 @@ import re
 
 from .analyzer import (
     GIB,
-    LLAMACPP_OVERHEAD_GB,
+    LLAMACPP_OVERHEAD_GB_PER_GPU,
     UNIFIED_OS_RESERVE_GB,
     VLLM_MIN_KV_GB,
 )
 
 # activation / CUDA graph / MoE workspace ของ vLLM ที่ไม่อยู่ใน weights และ KV — วัดบน Spark ~0.9–3 GiB
 # (Qwopus: compute-apps 84.2 GiB − loading 71.32 − pin 12 = 0.9 · Nemotron ใช้ CUDA graph เต็ม ~3) เผื่อไว้ที่ 3
-VLLM_RUNTIME_OVERHEAD_GB = 3.0
+#
+# **ต่อ GPU** — ทั้งสองตัวเลขข้างบนวัดบน DGX Spark ซึ่งมี GPU ใบเดียวต่อเครื่อง จึงแยกไม่ออกว่า
+# เป็น "ต่อโมเดล" หรือ "ต่อใบ" · activation buffer, CUDA graph pool และ CUDA context เป็นของ
+# แต่ละ device ทั้งหมด (analyzer.VLLM_OVERHEAD_GB_PER_GPU ตั้งชื่อไว้แบบนั้นมาตั้งแต่ต้น)
+VLLM_RUNTIME_OVERHEAD_GB_PER_GPU = 3.0
+VLLM_RUNTIME_OVERHEAD_GB = VLLM_RUNTIME_OVERHEAD_GB_PER_GPU  # ชื่อเดิม (ยังไม่มีใครนอกไฟล์นี้ใช้)
 # เผื่อ KV เกินที่คำนวณ 20% — block ของ vLLM ปัดเป็นหน้า + mamba/linear state ของ hybrid ที่สูตร per-token ไม่นับ
 KV_PIN_HEADROOM = 1.2
 # ปัด pin ขึ้นเป็นขั้นละครึ่ง GiB — เลขกลม ๆ อ่านใน docker inspect แล้วรู้ทันทีว่ามาจากไหน
@@ -133,10 +139,12 @@ def plan_kv_pin(model_info: dict, host_info: dict, slots: int | None = None,
                 context: int | None = None) -> dict:
     """ตั้ง slots/context เท่านี้บนเครื่องนี้ → ต้องใช้ RAM เท่าไร ปักหมุด KV เท่าไร ใส่ได้ไหม
 
-    ``model_info``  engine · weight_bytes · kv_bytes_per_token (bf16, ต่อคลัสเตอร์) · native_context · context/slots
-                    ที่ตั้งอยู่ · extra_args (หา pin/dtype) · running · own_gb (ที่ตัวมันถืออยู่ตอนนี้) ·
-                    measured (จาก measured_from_log) · node_count · slug
+    ``model_info``  engine · weight_bytes · companion_weight_bytes (mmproj/MTP — คนละไฟล์กับ weight
+                    แต่อยู่บน GPU เหมือนกัน) · kv_bytes_per_token (bf16, ต่อคลัสเตอร์) · native_context ·
+                    context/slots ที่ตั้งอยู่ · extra_args (หา pin/dtype) · running ·
+                    own_gb (ที่ตัวมันถืออยู่ตอนนี้) · measured (จาก measured_from_log) · node_count · slug
     ``host_info``   memory_model · total_gb · free_gb (ตอนนี้) · held_gb (ที่ process GPU ทุกตัวถือรวมกัน) ·
+                    gpu_count (จำนวน GPU ของเครื่องนี้ — overhead เกิดต่อใบ · ไม่ส่ง = 1) ·
                     others [{slug, gb}] (โมเดลอื่นที่รันอยู่ แยกรายตัวถ้ารู้)
 
     ค่าที่คืนถูกปัดที่นี่ (1 ตำแหน่ง) เพราะทุกปลายทางแสดงตรง ๆ · bytes เป็น int เสมอ
@@ -146,6 +154,9 @@ def plan_kv_pin(model_info: dict, host_info: dict, slots: int | None = None,
     vllm_like = engine in ("vllm", "sglang")
     unified = (host_info.get("memory_model") or "unified") == "unified"
     node_count = max(1, int(model_info.get("node_count") or 1))
+    # จำนวน GPU ของเครื่องนี้ — DGX Spark = 1 (ค่าตั้งต้นเดิมจึงไม่เปลี่ยน) · กล่อง RTX หลายใบ
+    # ต้องคูณ overhead ตามจำนวนใบ ไม่ใช่คิดครั้งเดียวทั้งโมเดล (ดู BesthaiAi ใน analyzer.py)
+    devices = max(1, int(host_info.get("gpu_count") or 1))
     notes: list[str] = []
 
     native = model_info.get("native_context") or None
@@ -184,7 +195,25 @@ def plan_kv_pin(model_info: dict, host_info: dict, slots: int | None = None,
         weights_gb = float(model_info["weight_bytes"]) / GIB
         weights_source = "profile"
 
-    overhead_gb = VLLM_RUNTIME_OVERHEAD_GB if vllm_like else LLAMACPP_OVERHEAD_GB
+    # mmproj/MTP อยู่คนละไฟล์กับ weight แต่ llama-server โหลดขึ้น GPU ด้วย — ยอดจากดิสก์ต้องบวกเพิ่ม
+    # (ค่าที่วัดจาก log ของ vLLM รวมทุกอย่างอยู่แล้ว และ vLLM ก็ไม่มีไฟล์ projector แยก)
+    companion_gb = float(model_info.get("companion_weight_bytes") or 0) / GIB
+    if weights_gb is not None and companion_gb and weights_source == "profile":
+        weights_gb += companion_gb
+        notes.append(
+            f"รวมไฟล์คู่ (mmproj/MTP) {companion_gb:.1f} GB ไว้ในยอด weights แล้ว — "
+            "MODEL_PROFILE.weight_bytes นับแค่ไฟล์ GGUF ที่เลือก"
+        )
+    else:
+        companion_gb = 0.0
+
+    overhead_per_gpu = VLLM_RUNTIME_OVERHEAD_GB_PER_GPU if vllm_like else LLAMACPP_OVERHEAD_GB_PER_GPU
+    overhead_gb = overhead_per_gpu * devices
+    if devices > 1:
+        notes.append(
+            f"เครื่องนี้มี GPU {devices} ใบ: overhead {overhead_per_gpu:.1f} GB ต่อใบ = {overhead_gb:.1f} GB "
+            "(CUDA context + compute buffer เกิดขึ้นทุกใบที่ engine แบ่ง layer ลงไป ไม่ใช่ครั้งเดียวทั้งโมเดล)"
+        )
 
     # KV ที่ต้องมี
     kv_per_request_gb = (per_token * context / GIB) if (per_token and context) else None
@@ -290,7 +319,9 @@ def plan_kv_pin(model_info: dict, host_info: dict, slots: int | None = None,
             stack.append({"kind": "other", "label": o.get("slug") or "other", "gb": _r(o.get("gb") or 0.0)})
         if weights_gb is not None:
             stack.append({"kind": "weights", "label": "weights", "gb": _r(weights_gb)})
-            stack.append({"kind": "overhead", "label": "overhead", "gb": _r(overhead_gb)})
+            stack.append({"kind": "overhead",
+                          "label": f"overhead ×{devices} GPU" if devices > 1 else "overhead",
+                          "gb": _r(overhead_gb)})
         if kv_gb is not None:
             stack.append({"kind": "kv", "label": "KV pin" if pin_supported else "KV", "gb": _r(kv_gb)})
         if ram_after_gb is not None:
@@ -315,7 +346,10 @@ def plan_kv_pin(model_info: dict, host_info: dict, slots: int | None = None,
         "current_pin_bytes": current_pin,
         "weights_gb": _r(weights_gb),
         "weights_source": weights_source,
+        "companion_weights_gb": _r(companion_gb),
         "overhead_gb": _r(overhead_gb),
+        "overhead_per_gpu_gb": _r(overhead_per_gpu),
+        "gpu_count": devices,
         "ram_needed_gb": _r(ram_needed_gb),
         "total_gb": _r(total_gb),
         "os_reserve_gb": _r(os_reserve),

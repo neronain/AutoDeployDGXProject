@@ -101,9 +101,55 @@ def host_info_from(host: dict, models: list[dict], slug: str) -> dict:
         "total_gb": total,
         "free_gb": free,
         "held_gb": vram_used,
+        # จำนวน GPU — overhead ของ engine เกิดต่อใบ ไม่ใช่ครั้งเดียวทั้งโมเดล · เดิมค่านี้ถูกยุบหายไป
+        # ตอนรวม vram_total แล้ว plan_kv_pin ก็ไม่มีทางรู้ว่าเครื่องมีกี่ใบ (BesthaiAi 3× RTX 3060
+        # ถูกคิด overhead 1.5 GB แทนที่จะเป็น 4.5 — ดู fit/analyzer.LLAMACPP_OVERHEAD_GB_PER_GPU)
+        "gpu_count": len(gpus),
         "others": others,
         "own_gb": own,
     }
+
+
+def _companion_weight_bytes(server, profile: dict) -> int:
+    """ขนาดของ mmproj/MTP ที่ controller โหลดขึ้น GPU ด้วย แต่ไม่อยู่ใน `model.weight_bytes`
+
+    `MODEL_PROFILE.model.weight_bytes` = ขนาดไฟล์ GGUF ที่เลือกไฟล์เดียว · projector กับ draft head
+    ถูกต่อท้าย `MODEL_FILES` ของ controller ตอน render (generator/renderer.py) พร้อม `EXPECTED_SIZES`
+    ที่ตรงกับไบต์จริงบน Hub — อ่านจากตรงนั้นได้โดยไม่ต้องแตะเครื่องหรือยิงเน็ต
+
+    ไฟล์ไหนคือ "ไฟล์คู่" ดูจากสองทาง: `features.multimodal.projector_files` /
+    `features.speculative.draft_files` ใน profile และค่าตั้งต้นของ `MMPROJ_FILE` / `MTP_FILE`
+    ที่หัว controller (bundle ที่มาจาก adopt/refresh อาจมีแค่อย่างใดอย่างหนึ่ง) — วิธีจับคู่เดียว
+    กับที่ `fleet/refresh._gguf_variants()` ใช้อยู่แล้ว
+
+    คืน 0 เมื่ออ่านไม่ได้ ไม่ใช่เดา — ตัวเลขที่เดาแล้วต่ำไปคือสิ่งที่บั๊กนี้เกิดจากมันตั้งแต่แรก
+    """
+    controller = getattr(server, "controller", None)
+    if not controller:
+        return 0
+    try:
+        text = Path(controller).read_text(encoding="utf-8", errors="replace")
+        from lmds.fleet.refresh import _bash_array, _default_of
+    except (OSError, ImportError):
+        return 0
+    files = _bash_array(text, "MODEL_FILES") or []
+    sizes = _bash_array(text, "EXPECTED_SIZES") or []
+    if not files or len(sizes) != len(files):
+        return 0
+    features = (profile or {}).get("features") or {}
+    companions: set[str] = set()
+    for section, key in (("multimodal", "projector_files"), ("speculative", "draft_files")):
+        for name in ((features.get(section) or {}).get(key) or []):
+            companions.add(name.rsplit("/", 1)[-1])
+    for var in ("MMPROJ_FILE", "MTP_FILE"):
+        default = _default_of(text, var)
+        if default:
+            companions.add(default.rsplit("/", 1)[-1])
+    total = 0
+    for name, size in zip(files, sizes):
+        if name.rsplit("/", 1)[-1] in companions and size.isdigit():
+            total += int(size)
+    return total
 
 
 def model_info_for(server, profile: dict | None, settings: dict, host_models: list[dict] | None = None,
@@ -127,6 +173,7 @@ def model_info_for(server, profile: dict | None, settings: dict, host_models: li
         "slug": server.slug,
         "engine": (profile.get("runtime") or {}).get("engine") or server.engine or "vllm",
         "weight_bytes": model.get("weight_bytes"),
+        "companion_weight_bytes": _companion_weight_bytes(server, profile),
         "kv_bytes_per_token": model.get("kv_bytes_per_token"),
         "native_context": model.get("native_context"),
         "context": int(settings.get("context") or serving.get("context") or 0) or None,
