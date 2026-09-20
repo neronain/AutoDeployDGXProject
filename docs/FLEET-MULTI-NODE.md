@@ -329,7 +329,14 @@ lmds node set spark2                                # ดูค่าปัจ�
 | เครื่อง | world size | ใช้ได้ไหม |
 |---|---|---|
 | 2 | 2 | ✅ TP=2 (ทดสอบแล้ว) |
-| **3** | 3 | ⚠️ TP=3 หาร head ไม่ลง (Llama 3.3 70B มี 64 head) — vLLM ปฏิเสธตั้งแต่ start · ต้องใช้ **TP=2 + pipeline** |
+| **3** | 3 | ⚠️ TP=3 หาร head ไม่ลง (Llama 3.3 70B มี 64 head) — vLLM ปฏิเสธตั้งแต่ start · **ทางที่ LMDS ทำได้ตอนนี้คือ TP=2 + pipeline** |
+
+> **เลขคณิตนี้จริง แต่ไม่ใช่กำแพง** (2026-09-20) — มีคลัสเตอร์ที่ serve **TP=3 อยู่จริง** ด้วยวิธี
+> "virtual heads": สำเนาของโมเดลสำหรับ serve ประกาศ **72 head / 9 output group** แล้ว pad tensor
+> ขนาด 64 head **ตอนโหลด** ก่อน vLLM จะ slice (group ที่เติมบวกศูนย์พอดี · ตรวจแล้ว max relative
+> error 3.4e-6) · **ต้องมี loader ที่ patch แล้ว ซึ่งไม่มีใน vLLM upstream และ LMDS ไม่ได้ ship** —
+> จึงยังสั่งจาก LMDS ไม่ได้วันนี้ · กลไกเต็ม ๆ และระดับหลักฐานอยู่ที่
+> [RUNBOOK-MULTI-NODE §7](RUNBOOK-MULTI-NODE.md)
 | 4 | 4 | ✅ TP=4 (64÷4=16) · หน่วยความจำรวม ~512 GB |
 
 `lmds node cluster` บอกให้เองว่ากลุ่มนั้นใช้ TP ตรง ๆ ได้ไหม:

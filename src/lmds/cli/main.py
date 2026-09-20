@@ -340,7 +340,10 @@ def node_list(
             table.add_row(*row_for(node))
         console.print(table)
 
+    # ตารางนี้คือ "ทะเบียน" จึงไม่มีแถวของ hub — แต่ hub ก็ตั้งอยู่ที่ไซต์ใดไซต์หนึ่งเหมือนกัน
+    # บอกคำสั่งของมันไว้ตรงนี้ ไม่งั้นไม่มีที่ไหนบนหน้าจอบอกเลยว่าตั้งไซต์ให้ hub ได้
     console.print("[dim]จัดกลุ่มตามไซต์: lmds node set <ชื่อ> --site <ไซต์>"
+                  " · hub เครื่องนี้: lmds node cluster --self-site <ไซต์>"
                   + ("" if check else " · เช็กสถานะจริง: lmds node list --check")
                   + (f" · hub อยู่ที่ {hub_commit} — ≠ hub = อัปเดตด้วย lmds node install <ชื่อ>" if hub_commit else "")
                   + " · bundles/llama.cpp = controller ที่เก่ากว่า template ของ hub และ build ที่ไม่รู้จัก arch ของโมเดล"
@@ -977,6 +980,11 @@ def node_cluster(
         None, "--self-stack/--no-self-stack",
         help="เอา 'เครื่องนี้' (hub) เข้ากลุ่ม stacked ด้วยไหม — จำค่าไว้ใน config (node อื่นใช้ node set --no-stack)",
     ),
+    self_site: Optional[str] = typer.Option(
+        None, "--self-site", metavar="SITE",
+        help="ไซต์ที่ 'เครื่องนี้' (hub) ตั้งอยู่ — จำค่าไว้ใน config เพราะ hub ไม่มีแถวในทะเบียน "
+             "(node อื่นใช้ node set <ชื่อ> --site · ว่าง = เอาป้ายออก) · ไซต์เป็นตัวบังคับตอนจับกลุ่ม stacked",
+    ),
 ) -> None:
     """เครื่องไหนจับคู่ stacked กันได้บ้าง — ต่อทุกเครื่องจริงจึงช้ากว่า node list"""
     from lmds.config import Settings
@@ -987,15 +995,22 @@ def node_cluster(
     )
 
     settings = Settings.load()
+    dirty = False
     if self_stack is not None and self_stack != settings.cluster.stack_self:
         settings.cluster.stack_self = self_stack
+        dirty = True
+    # ไซต์ของ hub เอง — เก็บที่เดียวกับ stack_self ด้วยเหตุผลเดียวกัน (ไม่มีแถวในทะเบียน)
+    if self_site is not None and self_site.strip() != settings.cluster.site:
+        settings.cluster.site = self_site.strip()
+        dirty = True
+    if dirty:
         settings.save()
     stack_self = settings.cluster.stack_self
 
     local = host_payload()
     local_name = local.get("hostname") or "เครื่องนี้"
     machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
-                 "site": "", "cluster_name": "", "stack": stack_self}]
+                 "site": settings.cluster.site, "cluster_name": "", "stack": stack_self}]
 
     table = Table(title="สายเชื่อมของแต่ละเครื่อง")
     table.add_column("เครื่อง")
@@ -1204,9 +1219,15 @@ def cluster_show(
     self_stack: Optional[bool] = typer.Option(
         None, "--self-stack/--no-self-stack",
         help="เอา 'เครื่องนี้' (hub) เข้ากลุ่ม stacked ด้วยไหม — จำค่าไว้ใน config"),
+    self_site: Optional[str] = typer.Option(
+        None, "--self-site", metavar="SITE",
+        help="ไซต์ที่ 'เครื่องนี้' (hub) ตั้งอยู่ — จำค่าไว้ใน config (ว่าง = เอาป้ายออก)"),
 ) -> None:
     """เครื่องไหนจับคู่ stacked กันได้บ้าง (เหมือน `lmds node cluster`)"""
-    node_cluster(write=None, worker=None, head=None, on=None, self_stack=self_stack)
+    # ส่งครบทุกอาร์กิวเมนต์ — เรียกฟังก์ชันตรง ๆ แบบนี้ ตัวที่ไม่ส่งจะได้ `OptionInfo` ของ typer
+    # มาเป็นค่า ไม่ใช่ None แล้วไปพังข้างในตอนเอาไปใช้ (เจอจริงตอนเพิ่ม --self-site)
+    node_cluster(write=None, worker=None, head=None, on=None,
+                 self_stack=self_stack, self_site=self_site)
 
 
 @cluster_app.command("write")

@@ -60,7 +60,7 @@
 - **US2**: ผู้ใช้วางลิงก์โมเดล gated (เช่น Llama) → ระบบตรวจพบ 401/403 → ถาม HF token (ข้ามได้) → ถ้าใส่ ใช้ token ทั้งตอน inspect และฝังวิธีใช้ token ใน controller (ผ่าน env ไม่ hard-code)
 - **US3** (❌ เฟส 2): ผู้ใช้วางลิงก์ `https://ollama.com/library/qwen3:32b` → ระบบ resolve manifest → เสนอทางเลือก: (a) controller แบบ Ollama หรือ (b) ดึง GGUF ไปรันด้วย llama.cpp controller มาตรฐาน
 - **US4**: ผู้ใช้รันบนเครื่อง RTX 4090 24GB → ระบบ profile ฮาร์ดแวร์ → เตือนว่าโมเดล FP16 70B ไม่พอ → เสนอ quant ที่พอ (เช่น GGUF Q4) พร้อมเหตุผลตัวเลข
-- **US5** (บางส่วน — `lmds repair` ซ่อมไฟล์ที่ขาดได้แล้ว ส่วนวิเคราะห์ log ยังเป็นเฟส 2): ผู้ใช้เอา log ที่รันพังมาวาง → ระบบเข้าสู่ repair workflow → วิเคราะห์ → แก้ controller ทีละตัวแปร → ออก bundle เวอร์ชันใหม่
+- **US5** (✅ **ทำแล้ว** — แก้ 2026-09-20 ให้ตรง ROADMAP): `lmds repair` ซ่อมไฟล์ที่ขาดได้ตั้งแต่ 2026-08-02 · **ขั้นวิเคราะห์ log ทำแล้วเมื่อ 2026-08-27** — ผู้ช่วยในหน้าเว็บเปิด log ของ controller บนเครื่องนั้นเอง แล้วเสนอวิธีแก้เป็นเมนู *แก้เลย / ทีละขั้น / ยังไม่ทำ* (`src/lmds/web/assistant.py`, `logstream.py`) · **งานต่อยอดที่ยังเหลือ**: รับ log ที่ผู้ใช้วางมาเองจากเครื่องนอกทะเบียน และให้ `lmds doctor` ป้อนอาการเข้าผู้ช่วยโดยตรง
 - **US6**: ผู้ใช้ตั้งค่า provider ครั้งเดียว (`lmds config set-provider openai`) → ใช้ได้ทุกครั้งโดย key เก็บใน OS keyring หรือไฟล์ `0600`
 
 ## 6. ขอบเขตฟังก์ชัน (Functional Requirements)
@@ -287,7 +287,7 @@ validation_notes: [...]
 - **Templating**: Jinja2 — template สืบทอดจาก `templates/*.sh` ของ pack v3.0.0
 - **LLM adapters**: เขียน adapter บางเอง (OpenAI SDK, `google-genai`, `anthropic`) — ไม่ใช้ framework หนัก; ทุก provider ต้องรองรับ structured output/JSON mode
 - **Schema**: `pydantic` v2 สำหรับ Deployment Plan + MODEL_PROFILE
-- **Packaging**: `pipx` / wheel; เฟส 2 เพิ่ม FastAPI + หน้า web เดียวสำหรับทีมที่ไม่ถนัด CLI
+- **Packaging**: `pipx` / wheel · ~~เฟส 2 เพิ่ม FastAPI + หน้า web เดียว~~ → ✅ **ทำแล้ว (2026-08-04)** `lmds web` (FastAPI + `src/lmds/web/`) · ขยายเป็นคอนโซลของทั้งฟลีตตั้งแต่ 0.5.x (แก้ 2026-09-20)
 
 ## 9. ความปลอดภัย (Security Requirements)
 
@@ -324,8 +324,17 @@ validation_notes: [...]
 - **เกณฑ์สำเร็จ**: โมเดลอ้างอิง 5 ตัว (dense safetensors, GGUF, NVFP4, MoE, gated) ได้ bundle ที่รันจริงบนเครื่อง Spark และ RTX อย่างละ 1 เครื่อง
 
 ### เฟส 2
-- Ollama + NGC source, stacked controller, repair workflow, Anthropic provider
-- Web UI หน้าเดียว, runtime smoke test อัตโนมัติบนเครื่องเป้าหมาย, i18n ไทยเต็มรูป
+
+> สถานะจริง ณ 2026-09-20 — เดิมทั้งบล็อกนี้เขียนเหมือนยังไม่ได้ทำทั้งหมด
+> ตัวจริงอยู่ที่ [ROADMAP.md](ROADMAP.md) ซึ่งละเอียดกว่า
+
+- ~~stacked controller~~ ✅ **ทำแล้ว** (M8, 2026-07-24 · hardware pass 2 เครื่อง 2026-08-05)
+- ~~repair workflow~~ ✅ **ทำแล้ว** (ไฟล์ 2026-08-02 · วิเคราะห์ log 2026-08-27)
+- ~~Web UI หน้าเดียว~~ ✅ **ทำแล้ว** (2026-08-04 · ขยายเป็นคอนโซลทั้งฟลีตใน 0.5.x–0.6.x)
+- ~~runtime smoke test อัตโนมัติ~~ ✅ **ทำแล้ว** (`lmds smoke`, 2026-08-06) — ยังต้องสั่งเอง ไม่รันหลัง deploy ให้
+- **Ollama + NGC source** — ❌ ยังไม่ทำ (แหล่งโมเดลยังเป็น Hugging Face อย่างเดียว)
+- **Anthropic provider** — ❌ ยังไม่ทำ (ตั้งค่าได้แต่ adapter ยังไม่มี · error ตอนใช้จริง)
+- **i18n ไทยเต็มรูปของหน้าเว็บ** — ❌ ยังไม่ทำ (ตอนนี้หน้าเว็บอังกฤษ CLI ไทย)
 
 ### เฟส 3
 - Multi-GPU RTX (tensor parallel), docker-compose/systemd hardened output, Kubernetes/Helm
@@ -359,7 +368,7 @@ validation_notes: [...]
 | 2026-08-05 | **cluster IP ระบบเสนอได้ แต่คนต้องยืนยัน** | ตรวจเจอการ์ด 200G เป็นคนละเรื่องกับรู้ว่า NCCL คุยกันทาง IP ไหน · เครื่องจริงมี fabric หลายวงและพอร์ตที่ยังไม่ตั้งค่าจะได้ 169.254.x.x มาเอง · เดาผิด = ค้างตอน NCCL init แบบไล่สาเหตุยาก จึงเสนอเฉพาะวงที่ทุกเครื่องมีขาร่วมกัน และมี blocker `split-fabric`/`link-local` |
 | 2026-08-05 | **stacked ใช้ `mp` backend ไม่ใช้ Ray** | ทดสอบ Llama 3.3 70B บน DGX Spark 2 เครื่องจริง — vLLM native multi-node (`--nnodes/--node-rank/--headless`) จับ NCCL ข้ามเครื่องผ่าน RoCE ได้ · ตัดสินใจ **ไม่** เพิ่ม Ray/tmux/`run_cluster.sh` เข้าระบบตามที่สคริปต์มือของผู้ใช้ทำ เพราะชิ้นส่วนน้อยกว่าและได้ผลเท่ากัน |
 | 2026-08-05 | **image ตั้งต้นแยกตามเครื่องเป้าหมาย** | DGX Spark (GB10/SM121) ใช้ `nvcr.io/nvidia/vllm` ของ NGC · `vllm/vllm-openai` มี manifest arm64 แต่ไม่ได้ build kernel ให้ SM121 · โมเดลที่ต้องใช้ build เฉพาะ (เช่น DeepSeek V4) override ผ่าน `cluster.env` ได้ |
-| 2026-08-05 | **static gate ไม่พอ ต้องรันจริง** | การรัน stacked ครั้งแรกบนฮาร์ดแวร์เจอบั๊ก 3 ตัวที่ gate ทั้ง 10 ด่านจับไม่ได้ เพราะทั้งหมดเป็น bash ที่ syntax ถูกต้อง (head container ไม่เคย start, Jinja หลุดเข้าไฟล์ผลลัพธ์, ล็อก image ใช้ร่วมทั้งเครื่อง) · เพิ่ม gate `template-rendered` และยึดหลักว่า **สถานะ hardware-validated ต้องมาจากการรันจริงเท่านั้น** |
+| 2026-08-05 | **static gate ไม่พอ ต้องรันจริง** | การรัน stacked ครั้งแรกบนฮาร์ดแวร์เจอบั๊ก 3 ตัวที่ gate ทั้ง 10 ด่าน **ที่มีอยู่ตอนนั้น** จับไม่ได้ (ปัจจุบัน 12 ด่าน) เพราะทั้งหมดเป็น bash ที่ syntax ถูกต้อง (head container ไม่เคย start, Jinja หลุดเข้าไฟล์ผลลัพธ์, ล็อก image ใช้ร่วมทั้งเครื่อง) · เพิ่ม gate `template-rendered` และยึดหลักว่า **สถานะ hardware-validated ต้องมาจากการรันจริงเท่านั้น** |
 
 | 2026-08-06 | **หน้าเว็บต้อง login ด้วย token ไม่ใช่ token ใน URL** | เดิมพิมพ์ลิงก์ที่มี `?token=` ให้ผู้ใช้ ซึ่งไปโผล่ใน history ของเบราว์เซอร์, log ของ proxy และ referrer — และคนที่ยืนดูจอก็อ่านได้ · เปลี่ยนเป็นลิงก์ล้วน + หน้า login ที่ต้องผ่านก่อนวาดอะไร (เดิมโครงหน้าขึ้นมาก่อนแล้วค่อยพังตอนเรียก API คนที่ไม่มีสิทธิ์จึงเห็นชื่อเครื่อง) · `?token=` ยังรับได้เพื่อ compat แต่ถูกลบออกจากแถบที่อยู่ทันที |
 | 2026-08-06 | **token อยู่ยาว + ถามตอนสร้าง** | สุ่มใหม่ทุกครั้งแปลว่าลิงก์ที่ bookmark ไว้ตายทุก restart ผู้ใช้ต้องกลับไปหา terminal ทุกรอบ ซึ่งขัดกับเหตุผลที่มีหน้าเว็บ · ลำดับที่มา: `--token` → `$LMDS_WEB_TOKEN` → ที่จำไว้ (0600) → **ถามตอนสตาร์ตครั้งแรก** → สุ่มให้เมื่อไม่มี tty · ตั้งเองได้ ≥ 8 ตัวไม่จำกัดชนิดตัวอักษร (กันแค่ช่องว่าง/ตัวควบคุมที่ทำให้ copy-paste เพี้ยน) · กันเดาด้วยการหน่วงแบบทวีคูณหลังผิด 5 ครั้งต่อ IP |
@@ -374,7 +383,13 @@ validation_notes: [...]
 ### คำถามเปิด (ยังรอคำตอบ — ไม่ block เฟส 1)
 
 1. **Ollama controller**: ลูกค้า RTX อยากได้ output แบบ "ติดตั้ง Ollama + Modelfile" (ง่ายสุด) หรือแบบ llama.cpp controller มาตรฐาน v3.0.0 (ควบคุมได้มากกว่า)? — เฟส 1 จะทำ llama.cpp path ก่อน และรองรับ Ollama link แบบ resolve-to-GGUF
-2. **License โปรแกรม**: ขายลูกค้า (proprietary) หรือ open-source บางส่วน?
+2. ~~**License โปรแกรม**: ขายลูกค้า (proprietary) หรือ open-source บางส่วน?~~
+   → **ตัดสินแล้ว 20 ก.ย. 69** · `LICENSE` + `NOTICE` ในรีโปคือตัวจริง · **bundle ที่ generate
+   ออกมาเป็นของผู้ใช้** (รันและเก็บได้) แต่ตัว generator ไม่ใช่ · โปรเจกต์พี่น้อง
+   **LiteGate เป็น MIT** แยกต่างหาก · source-available · **1 เครื่อง = ฟรีทุกวัตถุประสงค์รวมเชิงพาณิชย์** ·
+   **ตั้งแต่ 2 เครื่องที่บริหารร่วมกัน = ต้องมี license** · เหตุผลที่เลือกแบบนี้คือเส้นทางกฎหมาย
+   กับด่านทางเทคนิคเป็นเส้นเดียวกัน จึงไม่มีสภาพ "ปลดล็อกได้แต่ผิดสัญญา" · ให้อ่าน `LICENSE` /
+   `NOTICE` / `docs/COMMERCIAL.md` เป็นตัวจริงเสมอ
 3. **เครื่องทดสอบ**: มีเครื่อง RTX รุ่นไหนให้ทดสอบ MVP บ้าง (เพื่อกำหนด GPU allowlist เริ่มต้น)?
 4. **ชื่อผลิตภัณฑ์**: "Local Model Deploy Studio (LMDS)" เป็นชื่อชั่วคราว (ชื่อ repo คือ AutoDeployDGXProject) — ชื่อ CLI command ใช้ `lmds` ไปก่อน เปลี่ยนภายหลังได้
 

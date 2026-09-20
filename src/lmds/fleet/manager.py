@@ -469,16 +469,37 @@ def _pid_alive(pid_file: str) -> bool:
 
 
 def _container_running(container: str) -> bool:
+    """container ชื่อนี้ "กำลังรันอยู่จริง" ไหม — ถาม State ตรง ๆ ไม่ใช่เดาจากว่า `docker ps` พิมพ์อะไรออกมา
+
+    ของเดิมยิง `docker ps --filter "name=^<ชื่อ>$"` แล้วนับว่า *มีบรรทัดออกมา = รันอยู่* ซึ่งผิดสองชั้น:
+
+    1) ตัวกรอง `name=` ของ docker เป็น **regex** ไม่ใช่การเทียบสตริงตรงตัว · slug ของ LMDS เต็มไปด้วยจุด
+       (`qwen3.6-35b-a3b-…`, `…-claude-4.7-opus-…`) ซึ่งใน regex แปลว่า "อักขระอะไรก็ได้" · ชื่อของตัวที่
+       **หยุดไปแล้ว** จึงไปตรงกับชื่อของ container **อีกตัวที่กำลังรันอยู่** แล้วตัวที่ตายถูกรายงานกลับมาว่า
+       running · พิสูจน์กับ docker 29.4.0 จริง (2026-09-20):
+
+           $ docker create --name 'lmds-probe-qwen3.6-x' …      # สร้างไว้เฉย ๆ ไม่ได้รัน
+           $ docker run -d  --name 'lmds-probe-qwen3-6-x' …      # คนละตัว · รันอยู่
+           $ docker ps --filter 'name=^lmds-probe-qwen3.6-x$' --format '{{.Names}}'
+           lmds-probe-qwen3-6-x        ← ของคนละตัว แต่ผู้เรียกอ่านผลนี้ว่า "ตัวที่ถามรันอยู่"
+
+    2) ถึงชื่อจะตรงตัวจริง มันก็วัดแค่ "โผล่ในรายการ" ไม่ได้วัดสถานะ — `docker ps` ยังลิสต์ตัวที่
+       restarting/paused ซึ่งไม่ได้เสิร์ฟอะไรให้ใครเลย
+
+    `docker container inspect` เทียบชื่อแบบตรงตัว (ไม่ใช่ regex) และตอบ `State.Running` ตรง ๆ ·
+    ใช้ `container inspect` ไม่ใช่ `inspect` เฉย ๆ เพราะตัวหลังถอยไปดู image ที่ชื่อเดียวกันด้วย
+    """
     if not container or shutil.which("docker") is None:
         return False
     try:
         proc = subprocess.run(
-            ["docker", "ps", "--filter", f"name=^{container}$", "--format", "{{.Names}}"],
+            ["docker", "container", "inspect", "--format", "{{.State.Running}}", container],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return proc.returncode == 0 and bool(proc.stdout.strip())
+    # ไม่มี container ชื่อนี้ → exit != 0 · มีแต่หยุดอยู่ → "false" · ทั้งสองกรณีคือ "ไม่ได้รัน"
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
 def _health_ok(port: int, engine: str = "") -> bool:
@@ -671,16 +692,24 @@ def _orphan_docker(known_containers: set[str]) -> list[ServerInfo]:
         return []
     try:
         proc = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}"],
+            # {{.State}} ต่อท้าย — สถานะต้องมาจาก docker ไม่ใช่จากข้อสมมติว่า "อยู่ในรายการ = รันอยู่"
+            # (`docker ps` ลิสต์ restarting/paused ด้วย ซึ่งไม่ได้เสิร์ฟอะไรเลย)
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.State}}"],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
+    if proc.returncode != 0:
+        return []   # daemon ล่ม/สิทธิ์ไม่พอ = "ไม่รู้" ไม่ใช่ "ไม่มีอะไรรันอยู่" — อย่าเดาต่อจาก stdout ว่าง
     return _parse_docker_ps(proc.stdout, known_containers)
 
 
 def _parse_docker_ps(output: str, known_containers: set[str]) -> list[ServerInfo]:
-    """แปลงผล `docker ps` → ServerInfo (แยกออกมาเป็นฟังก์ชันล้วนเพื่อเทสได้ตรง ๆ)"""
+    """แปลงผล `docker ps` → ServerInfo (แยกออกมาเป็นฟังก์ชันล้วนเพื่อเทสได้ตรง ๆ)
+
+    คอลัมน์: ชื่อ · image · ports · state — คอลัมน์ state เป็นตัวเลือก (ผู้เรียกรุ่นเก่า/เทสที่ป้อนสามคอลัมน์
+    มาจาก `docker ps` เปล่า ๆ ซึ่งลิสต์เฉพาะตัวที่ไม่ได้หยุด) · มีมาเมื่อไรใช้ค่านั้นตัดสิน running เสมอ
+    """
     orphans: list[ServerInfo] = []
     for line in output.splitlines():
         parts = line.split("\t")
@@ -689,6 +718,7 @@ def _parse_docker_ps(output: str, known_containers: set[str]) -> list[ServerInfo
         name = parts[0]
         image = parts[1] if len(parts) > 1 else ""
         ports = parts[2] if len(parts) > 2 else ""
+        state = parts[3].strip() if len(parts) > 3 else "running"
         if name in known_containers:
             continue
         # container ช่วยโหลด weight (`lmds-dl-<pid>-<rand>`) ไม่ใช่ model server — เคสจริง 2026-09-07 dgx-veerasiam:
@@ -706,7 +736,7 @@ def _parse_docker_ps(output: str, known_containers: set[str]) -> list[ServerInfo
             mode="docker",
             container=name,
             port=_first_published_port(ports),
-            running=True,
+            running=state == "running",
             registered=False,
             external=not is_lmds,
         ))

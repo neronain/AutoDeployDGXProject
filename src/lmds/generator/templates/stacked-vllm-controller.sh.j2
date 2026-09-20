@@ -123,7 +123,14 @@ NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-}"
 NCCL_IB_HCA="${NCCL_IB_HCA:-}"
 # ค่าที่ผู้ใช้ตั้งเองใช้ทั้งคลัสเตอร์ · ค่าที่ detect ให้เป็นของแต่ละเครื่อง (worker หาของตัวเองใน start)
 NCCL_IB_HCA_EXPLICIT="$NCCL_IB_HCA"
-NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-3}"
+# GID index ของ RoCEv2 ไม่มีค่า default — หาเองจาก sysfs ของแต่ละเครื่องตอน start
+# (detect_gid_index_for_device) · เดิมฝัง 3 ไว้ตายตัว ซึ่งดริฟท์ได้หลังอัปเฟิร์มแวร์หรือรีบูต
+# แล้ว NCCL init ค้างนิ่ง ๆ โดยไม่มี diagnostic ให้ไล่ (DGX-SPARK-VLLM-FIELD-NOTES §6)
+# ตั้งเอง = ใช้เลขนั้นทั้งคลัสเตอร์และข้ามการตรวจ (ท่าเดียวกับ NCCL_IB_HCA)
+NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX:-}"
+NCCL_IB_GID_INDEX_EXPLICIT="$NCCL_IB_GID_INDEX"
+# ที่พักผลจาก _resolve_gid_index_for_node (คืนค่าทาง stdout ไม่ได้ — ดูเหตุผลที่ตัวฟังก์ชัน)
+GID_INDEX_RESOLVED=""
 
 # ── Paths ──
 HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
@@ -1286,6 +1293,126 @@ detect_hca_for_interface() {
   return 0
 }
 
+# IPv4 → ท้าย GID แบบ IPv4-mapped (10.100.0.10 → 0a64:000a) — ใช้จับคู่ GID กับ IP ของสายนั้น
+# 10# บังคับฐานสิบ ไม่งั้น octet ที่มีศูนย์นำ (เช่น 010) จะถูก printf อ่านเป็นฐานแปด
+_ipv4_to_gid_suffix() {
+  local a b c d
+  IFS=. read -r a b c d <<< "${1:-}"
+  [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$c" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]] || return 1
+  printf '%02x%02x:%02x%02x' "$((10#$a))" "$((10#$b))" "$((10#$c))" "$((10#$d))"
+}
+
+# GID index ของ RoCE v2 บน HCA ตัวหนึ่ง — เหตุผลเดียวกับ detect_hca_for_interface คือมันเป็นของ
+# **เครื่องนั้น** ไม่ใช่ของคลัสเตอร์: ลำดับ GID ของแต่ละเครื่องไม่จำเป็นต้องตรงกัน และสลับได้เองหลัง
+# อัปเฟิร์มแวร์/รีบูต · เลขผิดแล้ว NCCL init ค้างนิ่ง ๆ ไม่มีข้อความบอก (field notes §6) จึงห้ามเดา
+# $1 = ชื่อ rdma device (rocep1s0f0)  $2 = IPv4 ของ interface ที่คู่กับ device นั้น
+# รับ index เฉพาะที่ **ครบสองเงื่อนไข**: GID ลงท้ายด้วย IPv4-mapped ของ IP นั้น **และ** type = "RoCE v2"
+# (จับแค่ *ffff* อย่างเดียวจะคว้า index ของสายอื่น/เครื่องอื่น หรือของ RoCE v1 มาแบบเงียบ ๆ)
+detect_gid_index_for_device() {
+  local dev="${1:-}" ip="${2:-}" suffix port idx gtype
+  [[ -n "$dev" && -n "$ip" ]] || return 1
+  suffix="$(_ipv4_to_gid_suffix "$ip")" || return 1
+  for port in "$IB_SYSFS_ROOT/$dev/ports"/*; do
+    [[ -d "$port/gids" ]] || continue
+    # เรียงเลข ไม่ใช่เรียงสตริงแบบ glob (glob ให้ 0 1 10 100 2 …) — เจอหลายตัวให้ได้ค่าต่ำสุดซ้ำเดิมทุกครั้ง
+    while IFS= read -r idx; do
+      [[ -n "$idx" ]] || continue
+      [[ "$(cat "$port/gids/$idx" 2>/dev/null || true)" == *ffff:"$suffix" ]] || continue
+      gtype="$(cat "$port/gid_attrs/types/$idx" 2>/dev/null || true)"
+      [[ "$gtype" == "RoCE v2" ]] || continue
+      printf '%s' "$idx"
+      return 0
+    done < <(ls -1 "$port/gids" 2>/dev/null | sort -n)
+  done
+  return 1
+}
+
+# สคริปต์สแกน GID ของเครื่องหนึ่ง — รันได้ทั้งในเครื่อง (bash -c) และผ่าน ssh บน worker
+# (ท่าเดียวกับ _links_probe_script · ssh ไม่พาฟังก์ชัน/env ของ head ไปให้ จึงส่งตัวฟังก์ชันไปด้วย
+#  แทนที่จะเขียน logic ซ้ำอีกชุด — สองชุดที่ต้องตรงกันเสมอคือที่ที่มันจะเริ่มไม่ตรงกัน)
+# $1 = comma list ของ HCA  $2 = sysfs root (ไม่ส่ง = ของจริงบนเครื่องปลายทาง)
+# พิมพ์บรรทัดละ HCA: "<hca> <iface|-> <ip|-> <gid|->"
+_gid_scan_script() {
+  printf 'IB_SYSFS_ROOT=%q; HCAS=%q\n' "${2:-/sys/class/infiniband}" "$1"
+  declare -f _ipv4_to_gid_suffix detect_gid_index_for_device
+  cat <<'GIDSCAN'
+for hca in ${HCAS//,/ }; do
+  iface=""
+  for n in "$IB_SYSFS_ROOT/$hca/device/net"/*; do [ -e "$n" ] && { iface="${n##*/}"; break; }; done
+  ip=""
+  [ -n "$iface" ] && ip="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+  gid=""
+  [ -n "$ip" ] && gid="$(detect_gid_index_for_device "$hca" "$ip" || true)"
+  printf '%s %s %s %s\n' "$hca" "${iface:--}" "${ip:--}" "${gid:--}"
+done
+GIDSCAN
+}
+
+# หา GID index ของเครื่องหนึ่ง (ทุก HCA ที่เครื่องนั้นจะส่งให้ NCCL) แล้วเก็บไว้ที่ GID_INDEX_RESOLVED
+#
+# ไม่คืนค่าทาง stdout เพราะผู้เรียกจะต้องห่อด้วย $( ) แล้ว die ข้างในจะฆ่าแค่ subshell —
+# ผู้เรียกเดินต่อด้วยค่าว่างเหมือนไม่มีอะไรเกิดขึ้น ซึ่งคือพฤติกรรม "fallback เงียบ ๆ" แบบเดียว
+# กับเลข 3 ที่เพิ่งเอาออกไป
+# $1 = ป้ายชื่อเครื่อง (ขึ้นในข้อความ error) · $2 = host สำหรับ ssh (ว่าง = เครื่องนี้) · $3 = comma list ของ HCA
+_resolve_gid_index_for_node() {
+  local label="$1" host="$2" hcas="$3" scan at="" hca iface ip gid picked="" picked_dev=""
+  GID_INDEX_RESOLVED=""
+  [[ -n "$hcas" ]] || return 0
+  [[ -z "$host" ]] || at="ssh ${SSH_USER}@${host} "
+  if [[ -n "$host" ]]; then
+    scan="$(ssh_at "$host" "$(_gid_scan_script "$hcas")" 2>/dev/null || true)"
+  else
+    scan="$(bash -c "$(_gid_scan_script "$hcas" "$IB_SYSFS_ROOT")" 2>/dev/null || true)"
+  fi
+  # herestring ไม่ใช่ pipe — ลูปต้องอยู่ใน shell ตัวนี้ ไม่งั้น die ข้างในจะฆ่าแค่ subshell
+  while read -r hca iface ip gid; do
+    [[ -n "$hca" ]] || continue
+    # แยกสามอาการให้ชัด — "หา GID ไม่เจอ" กับ "ไม่มี device" กับ "สายไม่มี IP" คนละเรื่องคนละวิธีแก้
+    [[ "$iface" != "-" ]] || die "ไม่มี RoCE device ชื่อ ${hca} ใน sysfs ของ ${label} — ตรวจ GID index ไม่ได้
+    ชื่อนี้มาจาก cluster.env (NCCL_IB_HCAS_*) หรือ NCCL_IB_HCA ที่ตั้งไว้ · เครื่องนั้นอาจ enumerate คนละชื่อ
+    ดูของจริง: ${at}'ls /sys/class/infiniband/'   ว่างเปล่า = ไดรเวอร์ RoCE ยังไม่ขึ้น (ตรวจด้วย ibv_devinfo)
+    แก้ทะเบียนแล้วเขียนใหม่: lmds node cluster --write ${SLUG} --head <เครื่อง head>"
+    [[ "$ip" != "-" ]] || die "สายของ ${hca} บน ${label} ยังไม่มี IPv4 — ตรวจ GID index ไม่ได้
+    GID ที่ NCCL ต้องใช้ถูกผูกกับ IP ของสายนั้น ไม่มี IP ก็ไม่มี GID ให้เลือก
+    ดู: ${at}'ip -br addr show ${iface}'   ·   สายหลุด/ยังไม่ตั้ง IP ให้ดู: $0 network-info"
+    [[ "$gid" != "-" ]] || die "หา RoCEv2 GID index ของ ${hca} (สาย ${iface} · IP ${ip}) บน ${label} ไม่เจอ — ไม่เดาเลขให้
+    NCCL ต้องได้ index ที่ GID ลงท้ายด้วย IP ของสายนั้นจริง ๆ และ type เป็น RoCE v2 · เลขตายตัว (เดิมใช้ 3)
+    ดริฟท์ได้หลังอัปเฟิร์มแวร์/รีบูต แล้ว NCCL init จะค้างนิ่ง ๆ โดยไม่มีข้อความบอก
+    ดู GID ทั้งหมด: ${at}'for g in /sys/class/infiniband/${hca}/ports/*/gids/*; do echo \"\$g \$(cat \$g)\"; done'
+    ดู type: ${at}'cat /sys/class/infiniband/${hca}/ports/1/gid_attrs/types/<idx>'   # ต้องได้ RoCE v2
+    ไม่มีบรรทัดไหนลงท้าย ffff:$(_ipv4_to_gid_suffix "$ip" 2>/dev/null || echo '<ip ไม่ถูกต้อง>') = สายนี้ยังไม่ได้ตั้ง RoCEv2 หรือ IP อยู่คนละสาย
+    ยืนยันเลขเองแล้วข้ามการตรวจ: NCCL_IB_GID_INDEX=<idx> $0 start"
+    if [[ -z "$picked" ]]; then
+      picked="$gid"; picked_dev="$hca"
+    elif [[ "$picked" != "$gid" ]]; then
+      die "GID index ของแต่ละ HCA บน ${label} ไม่ตรงกัน: ${picked_dev}=${picked} แต่ ${hca}=${gid}
+    NCCL_IB_GID_INDEX มีค่าเดียวต่อ process — ส่งเลขใดเลขหนึ่งไป อีกสายจะใช้ GID ผิดแล้วช้าลงหรือค้างแบบเงียบ ๆ
+    ดูให้ครบทั้งสองพอร์ต: ${at}'for g in /sys/class/infiniband/*/ports/*/gids/*; do echo \"\$g \$(cat \$g)\"; done'
+    ปกติสองสายบนเครื่องเดียวกันต้องได้เลขเดียวกัน — ไม่ตรง = ตั้ง RoCE คนละแบบต่อพอร์ต (แก้ที่เครื่องนั้น)
+    ยืนยันเลขเองแล้วข้ามการตรวจ: NCCL_IB_GID_INDEX=<idx> $0 start"
+    fi
+  done <<< "$scan"
+  [[ -n "$picked" ]] || die "อ่าน sysfs ของ RoCE บน ${label} ไม่ได้เลย (HCA ที่จะใช้: ${hcas}) — ตรวจ GID index ไม่ได้
+    ${at:+เครื่องนั้นตอบ ssh ไหม: ssh ${SSH_USER}@${host} true}
+    ดู: ${at}'ls /sys/class/infiniband/'   ว่างเปล่า = ไดรเวอร์ RoCE ยังไม่ขึ้น (ตรวจด้วย ibv_devinfo)
+    ยืนยันเลขเองแล้วข้ามการตรวจ: NCCL_IB_GID_INDEX=<idx> $0 start"
+  GID_INDEX_RESOLVED="$picked"
+  return 0
+}
+
+# GID index ของ head — ลำดับความสำคัญเดียวกับ NCCL_IB_HCA: ค่าที่ผู้ใช้ตั้งเองชนะเสมอ
+_resolve_gid_index() {
+  [[ -n "$NCCL_IB_GID_INDEX" ]] && return 0
+  # dry-run ต้องประกอบคำสั่งให้ดูได้บนเครื่องที่ไม่มี ConnectX เลย — ไม่แตะ sysfs
+  [[ -n "$DRY_RUN" ]] && return 0
+  # ไม่มี HCA = _nccl_env_pairs สั่ง NCCL_IB_DISABLE=1 อยู่แล้ว ไม่มี GID ให้หา
+  [[ -n "$NCCL_IB_HCA" ]] || return 0
+  _resolve_gid_index_for_node "head (${TRANSPORT_IP_MASTER})" "" "$NCCL_IB_HCA"
+  NCCL_IB_GID_INDEX="$GID_INDEX_RESOLVED"
+  log "พบ RoCEv2 GID index ของ ${NCCL_IB_HCA} บน head: ${NCCL_IB_GID_INDEX}"
+  return 0
+}
+
 _resolve_hca() {
   [[ -n "$NCCL_IB_HCA" ]] && return 0
   # v2: ทะเบียนรู้ HCA ของ head อยู่แล้ว (ทุกสาย) — ไม่รู้ค่อยเดินจาก sysfs ทีละ interface
@@ -1317,8 +1444,11 @@ _nccl_env_pairs() {
   # ชื่อผิด = NCCL หา HCA ไม่เจอแล้วตกไป TCP เงียบ ๆ ทั้งที่ head ใช้ RoCE อยู่
   local ifname="${1:-$NCCL_SOCKET_IFNAME}"
   local hca="${2-$NCCL_IB_HCA}"
+  # GID index เป็นของเครื่องนั้นเหมือน HCA — ยืมเลขของ head ไปใช้ไม่ได้ (ดู detect_gid_index_for_device)
+  local gid="${3-$NCCL_IB_GID_INDEX}"
   echo "NCCL_IGNORE_CPU_AFFINITY=1"
-  echo "NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX}"
+  # ว่างได้เฉพาะตอน dry-run หรือเครื่องที่ไม่มี RoCE — ส่ง NCCL_IB_GID_INDEX= ไปเปล่า ๆ NCCL จะอ่านเป็น 0
+  if [[ -n "$gid" ]]; then echo "NCCL_IB_GID_INDEX=${gid}"; fi
   # ring: คู่ A-B วิ่งสายหนึ่ง คู่ A-C อีกสาย — ไม่เปิดตัวนี้ NCCL บังคับ NIC เดียวทั้ง communicator
   if [[ -n "${NCCL_CROSS_NIC:-}" ]]; then echo "NCCL_CROSS_NIC=${NCCL_CROSS_NIC}"; fi
   if [[ -n "$ifname" ]]; then
@@ -1607,6 +1737,7 @@ start() {
   fi
   _resolve_ifname
   _resolve_hca
+  _resolve_gid_index
   local WORKER_IFNAME="$NCCL_SOCKET_IFNAME"
   # ข้อมูลเพื่อ log เท่านั้น (worker แต่ละตัวถูกถามจริงในลูปข้างล่าง) — dry-run/v2 ไม่ต้อง ssh เพิ่ม
   local detected_worker=""
@@ -1654,7 +1785,7 @@ start() {
     _ensure_worker_owned_dir "$worker_fi"
   else
     echo "== DRY RUN: ${CLUSTER_TOPOLOGY:-single-link} · NNODES=${NNODES} TP=${TENSOR_PARALLEL_SIZE} · head ${TRANSPORT_IP_MASTER} · worker(s) ${WORKER_IPS} =="
-    echo "== head NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-<auto>} NCCL_IB_HCA=${NCCL_IB_HCA:-<auto>}${NCCL_CROSS_NIC:+ NCCL_CROSS_NIC=$NCCL_CROSS_NIC} =="
+    echo "== head NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-<auto>} NCCL_IB_HCA=${NCCL_IB_HCA:-<auto>} NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX:-<หาจาก sysfs ตอนรันจริง>}${NCCL_CROSS_NIC:+ NCCL_CROSS_NIC=$NCCL_CROSS_NIC} =="
   fi
 
   build_common_args
@@ -1670,7 +1801,7 @@ start() {
 
   # ── Step 1: worker ทุกตัว (rank 1..N-1, headless) ก่อน ──
   # container ชื่อเดียวกันได้เพราะอยู่คนละเครื่อง · rank เรียงตามลำดับใน WORKER_IPS
-  local rank=0 worker_script wifname whca wtip wmaster detected _ifn _h
+  local rank=0 worker_script wifname whca wgid wtip wmaster detected _ifn _h
   for wip in $WORKER_IPS; do
     rank=$(( rank + 1 ))
     # interface/IP ที่ worker ใช้คุย NCCL คือฝั่ง transport (สาย 200G) ไม่ใช่ IP ที่ head ssh ไปหา
@@ -1705,9 +1836,17 @@ start() {
       done
     fi
     [[ -z "$whca" || "$whca" == "$NCCL_IB_HCA" ]] || log "worker ${wip} ใช้ HCA คนละตัวกับ head: ${whca}"
+    # GID index ก็ต้องอ่านจาก sysfs ของ worker เองด้วยเหตุผลเดียวกับ HCA — เลขของ head ใช้แทนกันไม่ได้
+    # ค่าที่ผู้ใช้ตั้งเองใช้ทั้งคลัสเตอร์ · ไม่มี HCA = เครื่องนั้นไป TCP อยู่แล้ว ไม่ต้องหา · dry-run ไม่ ssh
+    wgid="$NCCL_IB_GID_INDEX_EXPLICIT"
+    if [[ -z "$wgid" && -n "$whca" && -z "$DRY_RUN" ]]; then
+      _resolve_gid_index_for_node "worker rank ${rank} (${wip})" "$wip" "$whca"
+      wgid="$GID_INDEX_RESOLVED"
+    fi
+    [[ -z "$wgid" || "$wgid" == "$NCCL_IB_GID_INDEX" ]] || log "worker ${wip} ใช้ GID index คนละเลขกับ head: ${wgid}"
     build_common_args "$wmaster"
     quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
-    log "Starting worker rank ${rank} (headless) on ${wip} [${wtip} → head ${wmaster} · ${wifname:-auto}${whca:+ / ${whca}}] …"
+    log "Starting worker rank ${rank} (headless) on ${wip} [${wtip} → head ${wmaster} · ${wifname:-auto}${whca:+ / ${whca}}${wgid:+ gid ${wgid}}] …"
     # env ทุกตัวผ่าน %q — ค่าที่มีช่องว่าง/อักขระพิเศษ (เช่น JSON ใน VLLM_* หรือ path) เคยถูก
     # แตกเป็นหลาย token ตอน export ในสคริปต์ของ worker ทั้งที่ head ได้ค่าถูกผ่าน docker -e
     worker_script="$(cat <<WSCRIPT
@@ -1731,7 +1870,7 @@ else
 fi
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-$(_nccl_env_pairs "$wifname" "$whca" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
+$(_nccl_env_pairs "$wifname" "$whca" "$wgid" 2>/dev/null | grep -v '^WARN:' | sed 's/^/export /')
 $(for pair in "${EXTRA_DOCKER_ENV[@]}"; do printf 'export %q\n' "$pair"; done)
 $(for pair in ${ENGINE_ENV}; do printf 'export %q\n' "$pair"; done)
 exec vllm${quoted_common} --node-rank ${rank} --host 127.0.0.1 --port ${WORKER_API_PORT} --headless
@@ -1748,6 +1887,10 @@ WSCRIPT
     fi
     local -a wrun=(
       docker run -d --name "${WORKER_CONTAINER}"
+      # HEALTHCHECK ของ image ชี้พอร์ตของตัวมันเอง ไม่ใช่ของ LMDS → "(unhealthy)" ค้างตลอด ·
+      # worker ยิ่งไม่มี API ให้ถามเลย (rank ≠ 0 ไม่เปิด /health) healthcheck จึงล้มแน่นอน 100%
+      # แล้วคนที่ดู `docker ps` บน worker จะเห็นแต่สัญญาณเตือนปลอม (ดูเหตุผลเต็มใน llamacpp controller)
+      --no-healthcheck
       --gpus all --network host --ipc host
       -v "${worker_hf}:/cache"
       -v "${WORKER_VLLM_CACHE}:/root/.cache/vllm"
@@ -1769,7 +1912,8 @@ WSCRIPT
   quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
 
   if [[ -n "$DRY_RUN" ]]; then
-    local -a hdry=(docker run -d --name "$MASTER_CONTAINER" --gpus all --network host --ipc host
+    # ต้องเหมือน hrun ข้างล่างทุกธง — DRY RUN ที่พิมพ์คำสั่งไม่ตรงกับของที่รันจริงคือคำโกหกอีกแบบ
+    local -a hdry=(docker run -d --name "$MASTER_CONTAINER" --no-healthcheck --gpus all --network host --ipc host
       -e "VLLM_HOST_IP=${TRANSPORT_IP_MASTER}")
     while IFS= read -r line; do [[ "$line" == WARN:* ]] || hdry+=(-e "$line"); done < <(_nccl_env_pairs 2>/dev/null)
     for pair in "${EXTRA_DOCKER_ENV[@]}"; do hdry+=(-e "$pair"); done
@@ -1800,6 +1944,8 @@ WSCRIPT
   log "Starting head (rank 0, API) locally …"
   local -a hrun=(
     docker run -d --name "$MASTER_CONTAINER"
+    # เหตุผลเดียวกับ worker/llamacpp: HEALTHCHECK ของ image ชี้พอร์ตของตัวมันเอง ไม่ใช่ของ LMDS
+    --no-healthcheck
     --gpus all --network host --ipc host
     -v "${HF_HOME}:/cache"
     -v "${VLLM_CACHE}:/root/.cache/vllm"

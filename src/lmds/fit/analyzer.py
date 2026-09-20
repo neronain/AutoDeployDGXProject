@@ -24,7 +24,29 @@ GIB = 1024**3
 
 # ค่าคงที่ของสูตร — ปรับจากผลรันจริงตอน M7 (hardware validation)
 VLLM_OVERHEAD_GB_PER_GPU = 2.5  # CUDA context + activations + graphs
-LLAMACPP_OVERHEAD_GB = 1.5  # compute buffer + context
+# llama.cpp: CUDA primary context + compute buffer — ทั้งคู่เกิด **ต่อ device** ไม่ใช่ต่อโมเดล
+# ทุกใบที่ llama.cpp แบ่ง layer ลงไปต้องสร้าง CUDA context ของตัวเอง (ไม่กี่ร้อย MB ต่อใบ เป็น
+# ของ driver ไม่ใช่ของโมเดล) และจอง compute buffer ของตัวเอง — ค่านี้จึงโตตามจำนวนใบเสมอ
+#
+# เคสจริง 2026-09-20 เครื่อง BesthaiAi (3× RTX 3060 12 GB · Qwen3.6-35B-A3B MoE Q4_K
+# ctx 262,144 · llama.cpp ใน docker · --n-gpu-layers 999):
+#   `lmds fit` ทำนาย  weights 20.2 + overhead 1.5 + KV 5.5 = 27.2 GB
+#   nvidia-smi วัดจริง 11475 + 10143 + 10995 MiB = 32,613 MiB = 31.8 GiB  → ต่ำไป 4.6 GB
+# แยกสาเหตุได้ (ดู tests/test_multi_gpu_overhead.py):
+#   3.0 GB = overhead ถูกคิดใบเดียวแทนที่จะคิดสามใบ — `_budget_gb()` ที่นี่คูณ gpu_count อยู่แล้ว
+#            แต่ `plan_kv_pin()` ใน fit/sizing.py (ตัวที่พิมพ์ตาราง `lmds fit`) ไม่เคยคูณ
+#   0.9 GB = mmproj (vision projector) ที่ไม่เคยถูกนับใน weights เลย — ดู companion_weight_bytes()
+#   0.7 GB = เหลือแยกไม่ออกจากการวัดครั้งเดียว (allocator slack / KV ที่ปัดเป็น block / ค่า
+#            per-token ใน profile เอง) — ยังไม่มีใครมีสิทธิ์ตั้งชื่อให้มัน
+# **เลข 1.5 ไม่ได้ถูกแก้** — หน่วยของมันต่างหากที่ผิด · ชื่อใหม่บอกหน่วยไว้แล้ว
+#
+# รูปของการแก้ตรงกับหลักฐานอีกทางที่จดไว้แล้ว: docs/DGX-SPARK-VLLM-FIELD-NOTES.md §6 และ
+# docs/UPGRADE-2026-09.md §1.5 — NCCL 8 ทางจอง ~24 GiB **ต่อ rank** นอกงบของ vLLM · ตัวเลขนั้น
+# เป็นคำกล่าวอ้างของผู้เขียน (ไม่มี log ดิบ) ใช้ยืนยันได้แค่ "โตตามจำนวน device" · และ NCCL reserve
+# เป็น **คนละก้อน** กับค่านี้ ยังไม่มีในสูตร (stacked ใช้ STACKED_COMM_BUFFER_GB_PER_NODE แทน)
+LLAMACPP_OVERHEAD_GB_PER_GPU = 1.5
+# ชื่อเดิม — web/deploy.py กับ web/memory.py ยัง import ชื่อนี้อยู่ ห้ามลบจนกว่าจะแก้ทั้งสองที่
+LLAMACPP_OVERHEAD_GB = LLAMACPP_OVERHEAD_GB_PER_GPU
 UNIFIED_OS_RESERVE_GB = 12.0  # OS + desktop + services บน DGX Spark
 GPU_MEMORY_UTILIZATION = 0.85  # ตรงกับ default ของ controller v3.0.0
 UNTESTED_BUDGET_FACTOR = 0.95  # หักเพิ่ม 5% เมื่อ target ไม่อยู่ในรายการทดสอบแล้ว
@@ -78,6 +100,9 @@ class FitReport(BaseModel):
     # ไปหา TargetSpec กลับมาเทียบเอง (ผู้ช่วย LLM กับหน้าเว็บได้แค่รายงานก้อนนี้)
     node_count: int = 1
     weights_gb: Optional[float] = None
+    # ส่วนของ weights_gb ที่มาจากไฟล์คู่ (mmproj projector / MTP draft head) — แยกไว้ให้คนอ่าน
+    # รายงานเห็นว่ายอด weights ไม่ได้เท่ากับขนาดไฟล์ GGUF ที่เลือก (0 = ไม่มีไฟล์คู่)
+    companion_weights_gb: float = 0.0
     budget_gb: float = 0.0
     # ภาพรวมหน่วยความจำ — หน้าเว็บเอาไปวาดแถบ "เครื่องมีเท่านี้ · ใช้อยู่แล้ว · weights · KV · เหลือ"
     # ไม่มีสามค่านี้ ผู้ใช้เห็นแค่ budget ก้อนเดียวแล้วเดาไม่ออกว่ามันมาจากอะไร และไม่รู้เลยว่า
@@ -121,7 +146,7 @@ def _engine_for(report: ModelReport) -> str:
 def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tuple[float, list[str]]:
     notes: list[str] = []
     if target.memory_model is MemoryModel.UNIFIED:
-        overhead = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB
+        overhead = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB_PER_GPU
         budget = target.total_gpu_memory_gb - UNIFIED_OS_RESERVE_GB * target.gpu_count - overhead * target.gpu_count
         if target.node_count > 1:
             # หักจริง ไม่ใช่แค่โน้ต — ดู STACKED_COMM_BUFFER_GB_PER_NODE
@@ -132,10 +157,14 @@ def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tup
             )
     else:
         usable = target.total_gpu_memory_gb * GPU_MEMORY_UTILIZATION
-        overhead = (VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB) * target.gpu_count
+        per_gpu = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB_PER_GPU
+        overhead = per_gpu * target.gpu_count
         budget = usable - overhead
         if target.gpu_count > 1:
-            notes.append(f"multi-GPU ×{target.gpu_count}: ใช้ tensor parallel — โมเดลต้องแบ่ง layer/head ลงตัว")
+            notes.append(
+                f"multi-GPU ×{target.gpu_count}: ใช้ tensor parallel — โมเดลต้องแบ่ง layer/head ลงตัว · "
+                f"หัก overhead {per_gpu:.1f} GB ต่อใบ = {overhead:.1f} GB (CUDA context + compute buffer เกิดทุกใบ)"
+            )
     if not target.tested:
         budget *= UNTESTED_BUDGET_FACTOR
         notes.append("target ยังไม่เคยทดสอบจริง — ใช้โหมด conservative (หัก budget เพิ่ม 5%)")
@@ -161,6 +190,32 @@ def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tup
 def _largest_step(limit: float) -> int | None:
     fitting = [s for s in CONTEXT_STEPS if s <= limit]
     return fitting[-1] if fitting else None
+
+
+def companion_weight_bytes(report: ModelReport) -> int:
+    """ไบต์ของไฟล์คู่ GGUF (mmproj / MTP draft) ที่ controller โหลดขึ้น GPU ด้วย แต่ไม่อยู่ใน weight_bytes
+
+    `report.weight_bytes` ของ GGUF = ขนาดของ variant ที่เลือก **ไฟล์เดียว** (inspector/inspect.py
+    `report.weight_bytes = selected.size_bytes`) ส่วน projector กับ draft head เป็นไฟล์แยก ที่
+    generator/renderer.py ต่อท้าย MODEL_FILES ให้ controller โหลดและส่งเป็น `--mmproj` /
+    `--spec-draft-model` — llama-server วางทั้งคู่ไว้บน GPU เหมือน weight แต่สูตร fit ไม่เคยนับ
+
+    เคสจริง 2026-09-20 BesthaiAi: mmproj f16 0.9 GB หายไปจากยอด weights ทั้งก้อน (ดูคอมเมนต์
+    ของ LLAMACPP_OVERHEAD_GB_PER_GPU) — เป็นคนละบั๊กกับเรื่อง overhead ต่อใบ และแก้แยกกัน
+
+    นับ **ไฟล์เดียวต่อประเภท** เพราะ llama-server รับ `--mmproj` ได้ไฟล์เดียวและ
+    `--spec-draft-model` ได้ไฟล์เดียว ไม่ใช่ผลรวมของทุก precision ที่ repo แถมมา (repo ที่ใส่
+    mmproj ทั้ง BF16/F16/F32 ไว้ด้วยกันมีจริง — รวมทั้งสามจะเกินจริงเท่าตัว)
+    เลือกไฟล์เล็กสุดให้ตรงกับที่ `brain._pick_projector()` เลือกจริง (มันเลือก min ตามขนาด) ·
+    repo ที่เอา projector ของโมเดลคนละตัวมาปนกันอาจได้ตัวที่เล็กกว่าของจริงอยู่ระดับร้อย MB —
+    ยอมรับไว้ก่อน เพราะไฟล์ที่ใช้จริงถูกตัดสินหลัง fit และที่นี่ยังไม่มีข้อมูลนั้น
+    """
+    total = 0
+    for flag in ("is_mmproj", "is_mtp"):
+        sizes = [v.size_bytes for v in report.gguf_variants if getattr(v, flag, False) and v.size_bytes]
+        if sizes:
+            total += min(sizes)
+    return total
 
 
 def kv_replication(dims, nodes: int) -> int:
@@ -222,6 +277,15 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
         return fit
 
     weights_gb = weights_bytes / GIB
+    # ไฟล์คู่ (mmproj/MTP) กินหน่วยความจำ GPU เหมือน weight — ต้องอยู่ในยอดเดียวกัน ไม่ใช่โน้ตข้าง ๆ
+    companion_gb = companion_weight_bytes(report) / GIB
+    if companion_gb:
+        weights_gb += companion_gb
+        fit.companion_weights_gb = round(companion_gb, 1)
+        fit.notes.append(
+            f"รวมไฟล์คู่ (mmproj/MTP) {companion_gb:.1f} GB ไว้ในยอด weights แล้ว — "
+            "llama-server โหลดขึ้น GPU พร้อมกับ weight ไม่ใช่ไฟล์ที่วางไว้เฉย ๆ"
+        )
     fit.weights_gb = round(weights_gb, 1)
     kv_budget_gb = budget - weights_gb
     fit.kv_budget_gb = round(kv_budget_gb, 1)

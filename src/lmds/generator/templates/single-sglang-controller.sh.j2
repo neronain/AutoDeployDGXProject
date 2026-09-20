@@ -323,7 +323,10 @@ download() {
     # ของเดิมเขียน `-e HF_TOKEN="$HF_TOKEN"` ซึ่งเอาค่าจริงไปแปะไว้ใน **argv ของ
     # docker run** — user ทุกคนบนเครื่องอ่านได้ด้วย `ps` เฉย ๆ (เจอจริงบน spark-head)
     # ทั้งที่ LMDS มีหลักเรื่องนี้อยู่แล้วในเส้นทาง SSH: ความลับไม่เดินทางผ่าน argv
+    # container โหลด weight ก็กินของแถมนี้ด้วย: มันรัน python3 ไม่ได้เปิด API อะไรเลย healthcheck
+    # ของ image จึงล้มแน่นอน แล้ว `docker ps` ขึ้น "(unhealthy)" ค้างทั้งชั่วโมงที่กำลังโหลดอยู่ดี ๆ
     docker run -d --name "$name" \
+      --no-healthcheck \
       --user "$(id -u):$(id -g)" \
       -e HOME=/tmp -e USER=lmds -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
       -e PYTHONUNBUFFERED=1 \
@@ -681,6 +684,11 @@ start() {
 
   local docker_args=(
     run -d --name "$CONTAINER_NAME"
+    # HEALTHCHECK ที่ image แถมมาชี้พอร์ตของตัวมันเอง ไม่ใช่พอร์ตที่ LMDS สั่งรัน → `docker ps` ขึ้น
+    # "(unhealthy)" ตลอดทั้งที่เสิร์ฟอยู่ดี ๆ · กับ SGLang ยิ่งห้ามเปิด: /health ของมัน **prefill จริง**
+    # ทุกครั้งที่ถูกเรียก — healthcheck ที่รันเองทุก 30 วิ = ปลุก GPU ตลอดเวลา ซ้ำรอยเคส spark-head
+    # 2026-09-01 ที่ LMDS เพิ่งปิดไปด้วยการย้ายไปถาม /v1/models แทน (ดูเหตุผลเต็มใน llamacpp controller)
+    --no-healthcheck
     --network host --ipc host --gpus all
     -v "${HF_HOME}:/cache"
     -e HF_HOME=/cache -e "HF_HUB_CACHE=$(_container_hub_cache)" -e HOME=/tmp -e USER=lmds

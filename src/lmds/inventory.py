@@ -703,12 +703,20 @@ def with_runtimes(host: dict, models: list[dict]) -> dict:
 
 def host_payload() -> dict:
     import lmds
+    from lmds.config import Settings, SettingsError
     from lmds.fit.targets import from_hardware_report
     from lmds.generator.renderer import template_hash
     from lmds.hardware import probe, serving
     from lmds.hardware.profiler import detect_cpu, detect_fabric, host_summary
 
     report = probe()
+    # ไซต์ของเครื่องนี้เอง — node อื่นเก็บใน nodes.yaml แต่เครื่องนี้ไม่มีแถวของตัวเองในทะเบียน
+    # จึงเก็บใน config.yaml (แบบเดียวกับ cluster.stack_self) · config.yaml เสียต้องไม่ทำให้
+    # payload ทั้งก้อนหายไป — เครื่องยัง "มีตัวตน" อยู่ แค่ไม่รู้ว่าอยู่ไซต์ไหน
+    try:
+        site = Settings.load().cluster.site
+    except (SettingsError, OSError):
+        site = ""
     summary = host_summary()
     target = from_hardware_report(report)
     cpu = detect_cpu()
@@ -729,6 +737,9 @@ def host_payload() -> dict:
         "runtimes": {"llamacpp": []},
         "images": [],
         "hostname": summary.hostname,
+        # ป้ายไซต์ของเครื่องนี้ — คอนโซลใช้จัดกลุ่ม hub เข้าไซต์เดียวกับ node ที่อยู่ที่เดียวกัน
+        # (node อ่านจากทะเบียนได้ แต่ hub ไม่มีแถวในทะเบียน จึงต้องส่งมากับ payload)
+        "site": site,
         "ip": summary.ip,
         # ที่อยู่ทุกเส้น ไม่ใช่แค่เส้นที่ออกเน็ต — hub รู้จักเครื่องนี้จากที่อยู่ SSH ซึ่งอาจ
         # เป็นชื่อ (`orb`, ชื่อบน Tailscale) จึงไม่มีทางรู้เลยว่าเครื่องถือ IP อะไรอยู่จริง

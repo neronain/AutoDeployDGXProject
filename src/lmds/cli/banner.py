@@ -24,7 +24,7 @@ from rich.text import Text
 AUTHOR = "neronain"
 AUTHOR_URL = "https://www.facebook.com/neronain.minidev"
 PRODUCT = "Local Model Deploy Studio"
-LICENSE_NOTE = "Proprietary — All rights reserved"
+LICENSE_NOTE = "Source-available — ฟรี 1 เครื่อง · ดู LICENSE"
 
 CREDIT = f"{PRODUCT} — สร้างโดย {AUTHOR} ⚡ fb.com/neronain.minidev"
 

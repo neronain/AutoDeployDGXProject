@@ -52,6 +52,30 @@ recipes:
     source: https://github.com/neronain/deepseek-v4-flash-nvfp4-stacked-on-DGX-Spark
     validated_on: 2x DGX Spark (GB10) · vLLM dspark build · TP=2 · test-text ผ่าน 5 ส.ค. 2569
 
+  # ── สูตร "ห้าม deploy" ────────────────────────────────────────────────────────
+  # ตั้งใจไม่ใส่ image/serving/env — สูตรนี้มีไว้เตือนอย่างเดียว ไม่มีค่าที่ควรเอาไปรัน
+  # notes ทุกบรรทัดถูกคัดลอกลง plan.warnings (brain/rulebased.py:354-356) ผู้ใช้จึงเห็นก่อนลงมือ
+  - match: nvidia/DeepSeek-V4.1-Flash-NVFP4
+    label: DeepSeek-V4.1-Flash (NVFP4) · ห้าม deploy บน DGX Spark — โหลด weight ไม่ผ่านสักครั้ง
+    engine: vllm
+    notes:
+      - ห้าม deploy บน DGX Spark — 4x DGX Spark (GB10) TP=4 boot A ถึง N รวม 14 ครั้ง เมื่อ 17 ก.ย. 2569 ไม่เคยเสิร์ฟได้สักครั้ง
+      - สาเหตุอยู่ที่ loader ของ vLLM ไม่ใช่การตั้งค่า — ตอนคัดลอก expert ของ fused-MoE (py-spy ชี้ที่ _load_w13/_load_w2
+        ใน weight_loader/load_weights) mapping แบบ MAP_PRIVATE ของ safetensors shard โดน copy-on-write break
+        ทำให้ file page ที่ kernel ทวงคืนได้กลายเป็น anonymous page ~27 GiB ต่อ rank ที่ทวงคืนไม่ได้ (ยืนยันจาก /proc/<pid>/smaps)
+      - บน GB10 หน่วยความจำก้อนนั้นคือก้อนเดียวกับของ GPU เครื่องจึงโดน watchdog reset ไม่ใช่โดน OOM kill
+      - ตัดออกทีละ boot แล้ว — page cache, THP, glibc arena retention, pinned host allocator ของ PyTorch,
+        DSpark drafter, NVFP4 MoE backend ทุกตัว และ PP2xTP2 · ตัวชี้ขาดคือ EXL3 checkpoint บนเครื่องชุดเดียวกัน
+        สกปรกแค่ 2 MiB จึงเป็นปัญหาเฉพาะ FP4 pack ที่เดินผ่านทาง fused-MoE ไม่ใช่ปัญหา checkpoint ใหญ่บน unified memory ทั่วไป
+      - ตัวช่วยเดียวที่ได้ผลแต่ยังไม่พอ — ต้องใส่ --enable-expert-parallel คู่กับ --enable-ep-weight-filter
+        (ใส่ตัวแรกตัวเดียวไม่มีผล เพราะ enable_ep_weight_filter ตั้งต้นเป็น False) แล้ว anon ตอนโหลดลดจาก 27 GiB
+        เหลือ 2-3 GiB ข้ามไป 194.6 จาก 302 GiB ต่อ rank แต่หลังโหลดเสร็จก็ยังตายอยู่ดี
+      - 'ตรงกับ upstream — vLLM PR #47580 (ยังไม่ merge) และ issue #56824 · ต้องรอ patch ที่ loader แก้ด้วย flag ไม่ได้'
+      - ผลที่ตามมากับสูตรอื่น — checkpoint NVFP4 MoE แบบ modelopt ที่ใหญ่พอจนต้อง TP ข้ามเครื่องบน GB10
+        คาดว่าจะตายตอนโหลดแบบเดียวกัน ไม่ว่าจะตั้ง gpu_memory_utilization เท่าไรก็ตาม
+    source: https://github.com/tonyd2wild/DeepSeek-V4.1-Flash-vLLM-DGX-Spark/blob/main/runs/2026-09-17-nvfp4/STATE.md
+    validated_on: รันจริงแล้ว "ล้มทุกครั้ง" — 4x DGX Spark (GB10) · TP=4 · 17 ก.ย. 2569 · boot A ถึง N (14 ครั้ง) · ไม่เคยขึ้นถึงขั้นเสิร์ฟ · เป็นการยืนยันว่าใช้ไม่ได้ ไม่ใช่การยืนยันว่าใช้ได้
+
   - match: mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4
     label: Qwen3.8-Flash-Next Uncensored (NVFP4) · 2-node
     engine: vllm

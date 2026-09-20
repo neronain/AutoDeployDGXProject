@@ -1205,7 +1205,24 @@ start() {
     # key เป็นไฟล์ 0600 mount แบบ ro เข้า container แล้วชี้ด้วย --api-key-file — ไม่อยู่บน argv ของ docker run
     # (env LLAMA_ARG_API_KEY ไม่มีใน llama-server จริง — ดูหมายเหตุในโหมด native)
     if [[ -n "$API_KEY" ]]; then _write_api_key_file; SERVER_ARGS+=(--api-key-file /run/lmds-api-key); fi
+    # --no-healthcheck: HEALTHCHECK ที่ image แถมมาชี้พอร์ตของ *ตัวมันเอง* ไม่ใช่พอร์ตที่ LMDS สั่งรัน
+    #
+    # ghcr.io/ggml-org/llama.cpp:server-cuda ฝัง `HEALTHCHECK CMD curl -f http://localhost:8080/health`
+    # มาในตัว image (ยืนยันจาก config blob บน registry จริง 2026-09-20 — ไม่ได้เดา) · LMDS เลือกพอร์ตว่าง
+    # ให้เอง เคสจริงบน BesthaiAi ได้ 8001 เพราะ 8000 ถูก portainer ถือไว้ (check_port_free จับถูกแล้ว) —
+    # healthcheck จึงไปเคาะ 8080 ที่ไม่มีใครฟัง แล้ว `docker ps` ขึ้น "(unhealthy)" ตลอดอายุ container
+    # ทั้งที่ `curl http://127.0.0.1:8001/health` ตอบ 200 · ใน health log มีแต่
+    # `curl: (7) Failed to connect to localhost port 8080` ซ้ำไปเรื่อย ๆ
+    #
+    # **ปิดทิ้ง ไม่ใช่เขียนทับด้วย --health-cmd** เพราะ LMDS มี wait_health/_health_ok ของตัวเองที่รู้จัก
+    # engine อยู่แล้ว (SGLang ถาม /v1/models เพราะ /health ของมัน prefill จริงทุกครั้ง — เคส spark-head
+    # 2026-09-01 ที่ GPU 78% ทั้งที่ไม่มีใครถามอะไร) · สัญญาณสุขภาพตัวที่สองที่โง่กว่าและขัดกับตัวแรกได้
+    # แย่กว่าไม่มีสัญญาณเลย: ปัญหาจริงจะแยกไม่ออกจากเสียงรบกวน ซึ่งคือบั๊กเดิมในรูปใหม่
+    #
+    # --network host: healthcheck ในคอนเทนเนอร์ใช้ network stack ของ host — "localhost:8080" คือ
+    # 8080 ของเครื่อง ไม่ใช่ของ container · ต่อให้ map พอร์ตก็ยังแก้ไม่ตรงจุด
     docker run -d --name "$CONTAINER_NAME" \
+      --no-healthcheck \
       --network host --gpus all \
       ${API_KEY:+-v} ${API_KEY:+"${API_KEY_FILE}:/run/lmds-api-key:ro"} \
       -v "${MODEL_DIR}:/models:ro" \

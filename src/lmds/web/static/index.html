@@ -1166,6 +1166,19 @@ body { padding: 0; }
         <button id="brain" class="brain" title="LLM used to plan deployments — click to change">…</button></div>
       <div class="dim">Deploys work without an LLM (rule-based + verified recipes) · with one set, plans research parsers and features in more depth</div>
     </div></div>
+    <!-- ไซต์ของ hub เอง — node อื่นตั้งด้วยปุ่ม 🏷 Site บนการ์ดของมัน แต่ hub ไม่มีแถวในทะเบียน
+         ให้ตั้ง จึงต้องมีช่องของตัวเองที่นี่ (ลงที่ config.yaml → cluster.site) -->
+    <div class="card"><div class="pad">
+      <div class="field"><label class="dim" style="min-width:150px">Site of this machine</label>
+        <input id="hub-site" type="text" placeholder="e.g. isit · HQ" list="hub-site-options"
+               style="min-width:220px" autocomplete="off">
+        <datalist id="hub-site-options"></datalist>
+        <button id="hub-site-save">Save</button>
+        <span id="hub-site-msg" class="dim"></span></div>
+      <div class="dim">Groups this machine with the nodes at the same place, on screen and when machines are
+        paired into a cluster · empty = remove the label · same idea as <b>🏷 Site</b> on a node card
+        (CLI: <code>lmds node cluster --self-site &lt;site&gt;</code>)</div>
+    </div></div>
   </section>
 
 </div>
@@ -1265,6 +1278,40 @@ window.addEventListener("unhandledrejection", event => {
   alert(`The command failed — ${String((reason && reason.message) || reason || "unknown reason")}`);
 });
 const gb = v => v == null ? "—" : Math.round(v) + " GB";
+
+// รวมการ์ดทุกใบของเครื่องเดียวให้เป็นตัวเลขเดียว — `host.gpus` เป็น *ลิสต์* ไม่มีฟิลด์ผลรวม
+//
+// เคสจริง 2026-09-20: เครื่องที่มี RTX 3060 12 GB สามใบขึ้นบนการ์ดว่า "12 GB" เพราะทุกที่
+// บนหน้าอ่าน `gpus[0]` ใบเดียว · ขณะที่ `lmds fit` บนเครื่องเดียวกันตอบถูกว่า "เครื่องมี 36.0 GB"
+// เลขสองฝั่งขัดกันคือกรณีที่แย่ที่สุด: ผู้ใช้เชื่อการ์ดแล้วสรุปว่าโมเดลไม่ลง ทั้งที่ลงได้
+// รวมที่นี่ที่เดียว ทุกที่บนหน้าจะได้พูดตัวเลขชุดเดียวกัน · การ์ดรายใบ (gpuCard) ยังอยู่ครบ
+//
+// กติกาที่ต้องไม่ผิด:
+//  · vram_gb  — บวกเฉพาะใบที่รายงาน · ไม่มีใบไหนรายงานเลย = null (ไม่ใช่ 0)
+//  · vram_used_gb — บวกต่อเมื่อ "ทุกใบ" รายงาน · บวกบางใบคือโกหก (เกจจะดูว่างกว่าจริง)
+//    ตรงกับกติกาของ payload เอง (inventory.py ที่ "temperature_c": None = การ์ดรุ่นนี้ไม่รายงาน
+//    หน้าเว็บต้องซ่อนช่องนั้น ไม่ใช่โชว์ 0) · GB10/unified มักคืน vram_used_gb: null จริง ๆ
+//  · name — ป้ายที่พูดความจริง: "3 × RTX 3060" เมื่อรุ่นเดียวกัน · คนละรุ่นในเครื่องเดียวกัน
+//    มีจริง จึงต้องไม่พูดเหมือนเป็นรุ่นเดียวกันทั้งหมด (คั่นด้วย + และดู sameModel ประกอบ)
+function gpuTotals(gpus) {
+  const list = (gpus || []).filter(Boolean);
+  const caps = list.filter(g => g.vram_gb != null);
+  const used = list.filter(g => g.vram_used_gb != null);
+  const r1 = xs => Math.round(xs.reduce((s, v) => s + v, 0) * 10) / 10;   // กัน 11.9+11.9+11.9 = 35.699999
+  const names = [...new Set(list.map(g => (g.name || "").replace(/^NVIDIA /, "").trim()).filter(Boolean))];
+  const sameModel = names.length <= 1;
+  const label = !names.length ? ""
+    : sameModel ? (list.length > 1 ? `${list.length} × ${names[0]}` : names[0])
+    : names.join(" + ");
+  return {
+    count: list.length,
+    vram_gb: caps.length ? r1(caps.map(g => g.vram_gb)) : null,
+    vram_used_gb: list.length && used.length === list.length ? r1(used.map(g => g.vram_used_gb)) : null,
+    sameModel,
+    name: label,
+  };
+}
+
 const open = new Set();
 let busy = null;
 
@@ -1351,13 +1398,18 @@ function renderHost(h, models) {
   hostLine.textContent = `${h.hostname || ""} · ${ipLabel(h)}`;
   // เครื่องที่มีหลายเส้น (LAN + Tailscale + สายคลัสเตอร์) เห็นได้ครบโดยไม่กินที่บนหัว
   hostLine.title = ipTitle(h);
-  const gpu = h.gpus[0];
+  // การ์ดทุกใบรวมกัน ไม่ใช่ใบแรกใบเดียว — เครื่อง 3060 สามใบต้องอ่านว่า 36 GB เท่าที่ fit คิด
+  const g = gpuTotals(h.gpus);
+  // compute/tested เป็นของรายใบ — ใบแรกใช้แทนได้เมื่อรุ่นเดียวกัน · คนละรุ่นแล้วพูดค่าเดียวไม่ได้
+  const first = (h.gpus || [])[0] || {};
   const unified = h.memory_model === "unified";
   const cards = [];
 
-  cards.push(gpu
-    ? statCard("GPU", gpu.name.replace(/^NVIDIA /, ""),
-        `${gpu.vram_gb ? gpu.vram_gb + " GB" : ""}${gpu.compute ? " · SM" + gpu.compute.replace(".", "") : ""}${gpu.tested ? "" : " · conservative"}`,
+  cards.push(g.count
+    ? statCard("GPU", g.name,
+        `${g.vram_gb != null ? g.vram_gb + " GB" : ""}${
+          g.sameModel && first.compute ? " · SM" + first.compute.replace(".", "") : ""}${
+          g.sameModel && first.tested ? "" : g.sameModel ? " · conservative" : " · mixed models"}`,
         "", "cool")
     : statCard("GPU", "not found", "check nvidia-smi"));
 
@@ -1852,7 +1904,8 @@ function benchDetailMarkup(run) {
   const probes = run.probes || [];
   const env = run.environment || {};
   const machine = run.machine || {};
-  const gpu = (machine.gpus || [])[0] || {};
+  // เบนช์รันบนทั้งเครื่อง ไม่ใช่บนการ์ดใบแรก — หัวข้อจึงต้องบอกทั้งเครื่อง
+  const gpu = gpuTotals(machine.gpus);
   const speed = benchSpeed(workloads);
 
   const maxDecode = Math.max(...workloads.map(w => w.decode_tps), 0);
@@ -1890,8 +1943,8 @@ function benchDetailMarkup(run) {
     </div>
 
     <div class="bheads">
-      ${head("running on", gpu.name ? gpu.name.replace(/^NVIDIA /, "") : "—",
-             gpu.vram_gb ? gpu.vram_gb + " GB"
+      ${head("running on", gpu.name || "—",
+             gpu.vram_gb != null ? gpu.vram_gb + " GB"
                : (machine.ram_total_gb ? Math.round(machine.ram_total_gb) + " GB unified" : ""))}
       ${head("model", run.served_name || run.slug)}
       ${head("quantization", env.quant || "—")}
@@ -3565,7 +3618,8 @@ function nodeCard(node) {
 // ตัวเลขจริงอยู่ใต้ทุกเกจ เพราะ "80%" ของ 122 GB กับของ 8 GB ไม่ใช่เรื่องเดียวกัน
 function systemCard(host) {
   const cpu = host.cpu || {};
-  const gpu = (host.gpus || [])[0];
+  // ทั้งเครื่อง ไม่ใช่การ์ดใบแรก — เกจ VRAM ของเครื่องที่มีหลายใบเคยบอกความจุของใบเดียว
+  const gpu = gpuTotals(host.gpus);
   const unified = host.memory_model === "unified";
   const used = host.ram_used_gb, total = host.ram_total_gb;
   const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
@@ -3576,7 +3630,8 @@ function systemCard(host) {
   // และคำถามจริงตอนจะโหลดโมเดล 150 GB คือ "เหลือพอไหม"
   const diskPct = free != null && diskTotal ? Math.round(free / diskTotal * 100) : null;
   // unified = GPU กินจาก pool เดียวกับ RAM · โชว์แยกอีกเกจคือนับซ้ำ
-  const vramPct = !unified && gpu && gpu.vram_used_gb != null && gpu.vram_gb
+  // vram_used_gb เป็น null เมื่อมีใบใดใบหนึ่งไม่รายงาน — เกจหายไปทั้งอัน ดีกว่าโชว์เลขที่บวกไม่ครบ
+  const vramPct = !unified && gpu.vram_used_gb != null && gpu.vram_gb
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
 
   const tags = [
@@ -3598,7 +3653,7 @@ function systemCard(host) {
       ${gauge(memPct, 100, unified ? "Unified" : "RAM", "%", loadColour(memPct),
               used != null ? `${Math.round(used)} / ${gb(total)}` : "")}
       ${vramPct == null ? "" : gauge(vramPct, 100, "VRAM", "%", loadColour(vramPct),
-              `${gpu.vram_used_gb} / ${gpu.vram_gb} GB`)}
+              `${gpu.vram_used_gb} / ${gpu.vram_gb} GB${gpu.count > 1 ? ` · ${gpu.count} cards` : ""}`)}
       ${gauge(diskPct, 100, "Disk free", "%", freeColour(diskPct),
               free != null ? `${gb(free)} / ${gb(diskTotal)}` : "")}
     </div>
@@ -3677,7 +3732,10 @@ function nodeModelsMarkup(name, data) {
   const models = data.models || [];
   const host = data.host || {};
   const sum = data.summary || {};
-  const gpuNames = (host.gpus || []).map(g => g.name.replace(/^NVIDIA /, "")).join(", ") || "no GPU";
+  // เดิมต่อชื่อทุกใบด้วย "," — เครื่อง 3060 สามใบอ่านว่า "RTX 3060, RTX 3060, RTX 3060"
+  // และไม่บอกความจุรวมเลย · gpuTotals ย่อให้เป็น "3 × RTX 3060" แล้วเติม GB รวมต่อท้าย
+  const g = gpuTotals(host.gpus);
+  const gpuNames = (g.name || "no GPU") + (g.vram_gb != null ? ` · ${g.vram_gb} GB` : "");
   const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}${host.lmds_commit ? " (" + esc(host.lmds_commit) + ")" : ""}
     · ${sum.running || 0} of ${sum.total || models.length} running${
       data.age_seconds ? ` · updated ${Math.round(data.age_seconds)}s ago` : ""}</div>
@@ -6125,11 +6183,15 @@ function summaryMarkup(host, sum) {
   const cpu = (host.cpu || {}).percent;
   const used = host.ram_used_gb, total = host.ram_total_gb;
   const mem = used != null && total ? Math.round(used / total * 100) : null;
-  const gpu = (host.gpus || [])[0];
+  const gpu = gpuTotals(host.gpus);
+  const cards = (host.gpus || []).filter(Boolean);
   const unified = host.memory_model === "unified";
-  const vram = !unified && gpu && gpu.vram_used_gb != null && gpu.vram_gb
+  const vram = !unified && gpu.vram_used_gb != null && gpu.vram_gb
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
-  const busy = gpu ? gpu.utilization_pct : null;
+  // โหลดและอุณหภูมิบวกกันไม่ได้ (ไม่ใช่ปริมาณ) — เอาใบที่หนักสุด ซึ่งคือใบที่จะเป็นคอขวดก่อน
+  // ใบที่ไม่รายงานถูกข้าม · ไม่มีใบไหนรายงานเลย = ไม่ต้องโชว์ชิป ไม่ใช่โชว์ 0
+  const peak = key => { const v = cards.map(c => c[key]).filter(x => x != null); return v.length ? Math.max(...v) : null; };
+  const busy = peak("utilization_pct");
   // สีเดียวกับเกจข้างใน — ตัวเลขชุดเดียวกันต้องอ่านได้เหมือนกันทั้งย่อและกาง
   const chip = (icon, label, pct, extra = "") => pct == null ? "" :
     `<span class="chip" title="${esc(label)}" style="--c:${pct >= 90 ? "var(--bad)" : pct >= 75 ? "var(--warn)" : "var(--fg3)"}">
@@ -6146,17 +6208,18 @@ function summaryMarkup(host, sum) {
   const diskChip = diskPct == null ? "" :
     `<span class="chip" title="free disk" style="--c:${diskPct <= 5 ? "var(--bad)" : diskPct <= 15 ? "var(--warn)" : "var(--fg3)"}">
        ${chipIcon("i-disk")}<b>${diskPct}%</b><span class="dim"> ${gb(free)} free</span></span>`;
-  // อุณหภูมิ GPU — ตัวที่บอกว่าเครื่องกำลังลำบากก่อนที่ throughput จะตก
-  const temp = gpu ? gpu.temperature_c : null;
+  // อุณหภูมิ GPU — ตัวที่บอกว่าเครื่องกำลังลำบากก่อนที่ throughput จะตก · หลายใบ = เอาใบที่ร้อนสุด
+  const temp = peak("temperature_c");
   const tempChip = temp == null ? "" :
-    `<span class="chip" title="GPU temperature" style="--c:${temp >= 85 ? "var(--bad)" : temp >= 75 ? "var(--warn)" : "var(--fg3)"}">
+    `<span class="chip" title="${gpu.count > 1 ? "hottest GPU of " + gpu.count : "GPU temperature"}" style="--c:${temp >= 85 ? "var(--bad)" : temp >= 75 ? "var(--warn)" : "var(--fg3)"}">
        ${chipIcon("i-temp")}<b>${Math.round(temp)}°</b></span>`;
   return run
     + chip("i-pulse", "CPU", cpu == null ? null : Math.min(cpu, 100))
     + chip("i-chip", unified ? "unified memory" : "RAM", mem,
            used != null ? ` ${Math.round(used)}/${gb(total)}` : "")
-    + chip("i-chip", "VRAM", vram)
-    + chip("i-spark", "GPU load", busy)
+    + chip("i-chip", gpu.count > 1 ? `VRAM · ${gpu.count} cards` : "VRAM", vram,
+           gpu.vram_used_gb != null ? ` ${Math.round(gpu.vram_used_gb)}/${gb(gpu.vram_gb)}` : "")
+    + chip("i-spark", gpu.count > 1 ? `GPU load · busiest of ${gpu.count}` : "GPU load", busy)
     + tempChip
     + diskChip
     + cacheChip(host.cache);
@@ -6360,11 +6423,17 @@ function parseRoute() {
 function navigateNode(name) { const h = `#/node/${encodeURIComponent(name)}`; if (location.hash !== h) location.hash = h; }
 
 function siteOfNode(name) { return (lastNodeRegistry.get(name) || {}).site || ""; }
+// ไซต์ของ hub เอง — มาจาก host payload ไม่ใช่ทะเบียน เพราะ hub ไม่มีแถวใน nodes.yaml
+// (เก็บที่ config.yaml → cluster.site · ตั้งด้วย PATCH /api/cluster/self หรือ lmds node cluster --self-site)
+// ไม่มีทางนี้ hub จะคืน "" ตลอดกาลแล้วไปกอง "Unassigned site" ต่อให้ผู้ใช้จัด node ไว้ไซต์ไหน
+function siteOfHub() { return (LAST_HOST && LAST_HOST.site) || ""; }
+function hubLabel() { return (LAST_HOST && LAST_HOST.hostname) || "This machine"; }
 function siteLabel(s) { return s || "Unassigned site"; }
 function nodeUsage(name) {
   const d = lastNodeData.get(name);
-  const g = ((d && d.host && d.host.gpus) || [])[0];
-  if (!g || !g.vram_gb) return { pct: null, used: null, cap: null, reachable: !!(d && d.reachable) };
+  // แถบบนรางซ้ายต้องพูดถึงทั้งเครื่อง — เครื่องที่มีหลายใบเคยขึ้นเป็นความจุของใบแรกใบเดียว
+  const g = gpuTotals((d && d.host && d.host.gpus) || []);
+  if (!g.count || g.vram_gb == null) return { pct: null, used: null, cap: null, reachable: !!(d && d.reachable) };
   return { pct: g.vram_used_gb != null ? Math.round(g.vram_used_gb / g.vram_gb * 100) : null,
            used: g.vram_used_gb, cap: g.vram_gb, reachable: !!(d && d.reachable) };
 }
@@ -6378,8 +6447,11 @@ function renderRail() {
   if (route.kind === "node") open.add(siteOfNode(route.name));
   if (route.kind === "site") open.add(route.site);
   const names = nodeOrder.length ? nodeOrder.filter(n => lastNodeRegistry.has(n)) : [...lastNodeRegistry.keys()];
-  const sites = new Map();
+  // hub อยู่ในไซต์ของมันด้วย — ตั้งไว้ก่อนเสมอ ไซต์นั้นจึงมีอยู่แม้ยังไม่มี node เครื่องไหนอยู่ด้วย
+  const hubSite = siteOfHub();
+  const sites = new Map([[hubSite, []]]);
   for (const n of names) { const s = siteOfNode(n); (sites.get(s) || sites.set(s, []).get(s)).push(n); }
+  if (route.kind === "hub") open.add(hubSite);
   const order = [...sites.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b, "th"));
   const ic = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
   const item = (href, icon, label, count, on) =>
@@ -6391,9 +6463,19 @@ function renderRail() {
   h += item("#/nodes", "i-link", "All machines", names.length, route.kind === "nodes");
   for (const s of order) {
     const list = sites.get(s), isOpen = open.has(s);
+    // hub นับเป็นเครื่องหนึ่งในไซต์นั้นด้วย ไม่งั้นตัวเลขข้างชื่อไซต์จะไม่ตรงกับที่ตาเห็นในกิ่ง
+    const hubHere = s === hubSite;
     h += `<a href="#/site/${encodeURIComponent(s)}" class="rsite ${isOpen ? "open" : ""} ${route.kind === "site" && route.site === s ? "on" : ""}" data-site="${esc(s)}">
-            ${ic("i-network")}${esc(siteLabel(s))}<span class="rcount">${list.length}</span><span class="rchev" data-toggle="${esc(s)}">›</span></a>
+            ${ic("i-network")}${esc(siteLabel(s))}<span class="rcount">${list.length + (hubHere ? 1 : 0)}</span><span class="rchev" data-toggle="${esc(s)}">›</span></a>
           <div class="rtree ${isOpen ? "open" : ""}" data-tree="${esc(s)}">`;
+    if (hubHere) {
+      // ลิงก์ไปหน้า hub เหมือนรายการข้างบน — ที่นี่มีไว้ให้เห็นว่า hub กับ node อยู่ที่เดียวกัน
+      const u = gpuTotals((LAST_HOST || {}).gpus);
+      const pct = u.vram_used_gb != null && u.vram_gb ? Math.round(u.vram_used_gb / u.vram_gb * 100) : null;
+      h += `<a href="#/hub" class="${route.kind === "hub" ? "on" : ""}" data-hub-in-site="${esc(s)}" title="${esc(hubLabel())} · this machine (hub)">
+              <span class="rdot ${pct >= 90 ? "hot" : localRunning ? "on" : ""}"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(hubLabel())} <span class="dim">hub</span></span>
+              <span class="rbar"><i class="${sevOf(pct)}" style="width:${pct ?? 0}%"></i></span></a>`;
+    }
     for (const n of list) {
       const u = nodeUsage(n);
       const d = lastNodeData.get(n);
@@ -6461,7 +6543,10 @@ function applyRouteFilter() {
   // ชี้มาที่เครื่อง/ไซต์ที่ไม่มีแล้ว (bookmark เก่า · เครื่องถูก Forget/เปลี่ยนชื่อ) — หน้าว่าง
   // เฉย ๆ แยกไม่ออกจากบั๊กข้างบน · บอกตรง ๆ แล้วให้ทางกลับ · รอให้ทะเบียนมาก่อน ไม่งั้น
   // ขึ้นวาบตอนกำลังโหลด
-  const stranded = (sel || site != null) && lastNodeRegistry.size > 0
+  // hub อยู่ในไซต์นี้ด้วยแต่การ์ดของมันอยู่คนละหน้า (#/hub) — ไซต์ที่มีแต่ hub จึงไม่ใช่ไซต์ว่าง
+  // ถ้าไม่ยกเว้นตรงนี้ หน้าจะขึ้นว่า "No machines in site isit" ทั้งที่ผู้ใช้เพิ่งจัด hub เข้าไปเอง
+  const hubHere = site != null && site === siteOfHub();
+  const stranded = (sel || site != null) && lastNodeRegistry.size > 0 && !hubHere
     && ![...nodeRows.values()].some(r => !r.block.hidden);
   let note = box.querySelector(".route-empty");
   if (stranded) {
@@ -6471,9 +6556,51 @@ function applyRouteFilter() {
       : `No machines in site <b>${esc(siteLabel(site))}</b>`} — it may have been forgotten or renamed
       <br><a href="#/nodes">Show all machines</a></div>`;
   } else if (note) note.remove();
+  // เครื่องนี้เองก็อยู่ไซต์นี้ — พาไปที่การ์ดของมัน ไม่งั้นผู้ใช้ที่จัด hub เข้าไซต์แล้วจะไม่เห็นมันเลย
+  let hubLink = box.querySelector(".route-hub");
+  if (hubHere) {
+    if (!hubLink) { hubLink = document.createElement("div"); hubLink.className = "card route-hub"; box.prepend(hubLink); }
+    hubLink.innerHTML = `<div class="pad dim">This machine (<b>${esc(hubLabel())}</b>) is in this site too —
+      its card lives on <a href="#/hub">This machine (hub)</a></div>`;
+  } else if (hubLink) hubLink.remove();
   const title = document.getElementById("nodes-title");
   if (title) title.textContent = sel ? sel : site != null ? `Site ${siteLabel(site)}` : "Other machines";
 }
+
+// ช่องไซต์ของ hub ในหน้า Hub settings — เติมค่าจาก host payload ทุกครั้งที่เข้าหน้านี้
+// ไม่เขียนทับตอนผู้ใช้กำลังพิมพ์อยู่ (poll ทุกไม่กี่วิจะกระชากตัวอักษรที่เพิ่งพิมพ์หายไป)
+function fillHubSite() {
+  const inp = document.getElementById("hub-site");
+  if (!inp || document.activeElement === inp) return;
+  inp.value = siteOfHub();
+  // ชื่อไซต์ที่มีอยู่แล้วจากเครื่องอื่น — เลือกจากลิสต์ ไม่ใช่พิมพ์ใหม่ ไม่งั้น "isit" กับ "ISIT"
+  // กลายเป็นคนละกลุ่มเพราะพิมพ์ต่างนิดเดียว (เหตุผลเดียวกับฟอร์ม Site ของ node)
+  const dl = document.getElementById("hub-site-options");
+  if (dl) dl.innerHTML = [...new Set([...lastNodeRegistry.values()].map(n => (n.site || "").trim()).filter(Boolean))]
+    .sort().map(s => `<option value="${esc(s)}">`).join("");
+}
+
+document.addEventListener("click", async e => {
+  if (!e.target.closest("#hub-site-save")) return;
+  const btn = e.target.closest("#hub-site-save");
+  const inp = document.getElementById("hub-site");
+  const msg = document.getElementById("hub-site-msg");
+  if (!inp) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/cluster/self", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ site: inp.value.trim() }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { if (msg) { msg.textContent = d.detail || "could not save"; msg.style.color = "var(--bad)"; } return; }
+    // host payload รอบถัดไปจะพารางซ้ายไปกลุ่มใหม่เอง — แต่ค่าในมือเราถูกแล้ว อัปเดตทันทีไม่ต้องรอ
+    if (LAST_HOST) LAST_HOST.site = d.site || "";
+    if (msg) { msg.textContent = d.site ? `saved — grouped under ${d.site}` : "saved — label removed"; msg.style.color = "var(--ok)"; }
+    renderRail();
+    applyRouteFilter();
+  } finally { btn.disabled = false; }
+});
 
 function routeRender() {
   route = parseRoute();
@@ -6483,7 +6610,11 @@ function routeRender() {
   document.body.dataset.route = route.kind;
   const trail = [["#/overview", "Fleet"]];
   if (route.kind === "overview") trail.push([null, "Overview"]);
-  else if (route.kind === "hub") trail.push([null, "This machine (hub)"]);
+  // hub ที่จัดไซต์ไว้แล้วต้องอ่านเส้นทางได้เหมือน node — Fleet › <ไซต์> › This machine (hub)
+  else if (route.kind === "hub") {
+    if (siteOfHub()) trail.push([`#/site/${encodeURIComponent(siteOfHub())}`, siteLabel(siteOfHub())]);
+    trail.push([null, "This machine (hub)"]);
+  }
   else if (route.kind === "nodes") trail.push([null, "All machines"]);
   else if (route.kind === "site") trail.push(["#/nodes", "All machines"], [null, siteLabel(route.site)]);
   else if (route.kind === "node") trail.push([`#/site/${encodeURIComponent(siteOfNode(route.name))}`, siteLabel(siteOfNode(route.name))], [null, route.name]);
@@ -6493,6 +6624,7 @@ function routeRender() {
     ? `<b>${esc(t)}</b>` : `<a href="${h}">${esc(t)}</a><span class="csep">›</span>`).join("");
   renderRail();
   applyRouteFilter();
+  if (route.kind === "settings") fillHubSite();
   if (route.kind === "overview") renderOverview(true);
   if (route.kind === "models") renderAllModels();
   if (route.kind === "node") {
@@ -6566,15 +6698,22 @@ function renderOverview(force = false) {
       <circle cx="60" cy="60" r="${R}" fill="none" stroke="var(--meter-track)" stroke-width="14"/>${segs}
       <text x="60" y="57" text-anchor="middle" style="font-size:20px;font-weight:700;fill:var(--fg)">${running}</text>
       <text x="60" y="73" text-anchor="middle" style="font-size:9.5px;fill:var(--fg2)">running</text></svg>`;
-  const sites = new Map();
+  // hub นับอยู่ในไซต์ของมันเหมือนกัน — ตารางนี้กับรางซ้ายต้องบอกจำนวนเครื่องตรงกัน
+  const hubSite = siteOfHub();
+  const hubGpu = gpuTotals((LAST_HOST || {}).gpus);
+  const sites = new Map([[hubSite, []]]);
   for (const n of names) { const s = siteOfNode(n); (sites.get(s) || sites.set(s, []).get(s)).push(n); }
   const siteRows = [...sites.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b, "th")).map(s => {
     const l = sites.get(s); const us = l.map(nodeUsage).filter(u => u.cap);
-    const u = us.reduce((a, x) => a + (x.used || 0), 0), c = us.reduce((a, x) => a + x.cap, 0);
-    const run = l.reduce((a, n) => a + (((lastNodeData.get(n) || {}).models || []).filter(m => m.running).length), 0);
-    const online = l.filter(n => (lastNodeData.get(n) || {}).reachable).length;
+    const hubHere = s === hubSite;
+    let u = us.reduce((a, x) => a + (x.used || 0), 0), c = us.reduce((a, x) => a + x.cap, 0);
+    // hub อยู่ตรงหน้าเราเสมอ (นับว่า online) · VRAM ของมันบวกเข้าไปได้เฉพาะตอนที่รายงานมาจริง
+    if (hubHere && hubGpu.vram_gb != null) { c += hubGpu.vram_gb; u += hubGpu.vram_used_gb || 0; }
+    const run = l.reduce((a, n) => a + (((lastNodeData.get(n) || {}).models || []).filter(m => m.running).length), 0)
+      + (hubHere ? (lastLocalModels || []).filter(m => m.running).length : 0);
+    const online = l.filter(n => (lastNodeData.get(n) || {}).reachable).length + (hubHere ? 1 : 0);
     const p = c ? Math.round(u / c * 100) : null;
-    return `<tr class="orow" data-href="#/site/${encodeURIComponent(s)}"><td><b>${esc(siteLabel(s))}</b></td><td class="r">${l.length}</td><td class="r">${online}</td><td class="r">${run}</td><td class="r">${Math.round(u)} / ${Math.round(c)}</td>
+    return `<tr class="orow" data-href="#/site/${encodeURIComponent(s)}"><td><b>${esc(siteLabel(s))}</b></td><td class="r">${l.length + (hubHere ? 1 : 0)}</td><td class="r">${online}</td><td class="r">${run}</td><td class="r">${Math.round(u)} / ${Math.round(c)}</td>
       <td style="width:150px"><div class="hbar" style="grid-template-columns:1fr;padding:0"><div class="htrack"><i class="${sevOf(p)}" style="width:${p ?? 0}%"></i></div></div></td></tr>`; }).join("");
   const S = lastFleetSummary || {};
   el.innerHTML = `

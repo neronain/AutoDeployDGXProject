@@ -25,6 +25,9 @@
 - **ไม่มี wgmma / tcgen05 / TMA multicast / DSMEM / cluster>1×1×1** (Hopper/SM100 เท่านั้น) — ยืนยันโดย NVIDIA staff (albond "What didn't ship")
 - **Hardware FP8 e4m3 MMA มีจริง** แต่ end-to-end ที่ batch=1 launch overhead กินกำไรหมด (albond) → fp8 ไม่ค่อยคุ้มบน single stream
 - **Unified LPDDR5X แชร์ CPU+GPU** → `--gpu-memory-utilization` ต้องต่ำ: AEON ใช้ ≤0.88, MiaAI ใช้ 0.835 (text)/0.80 (vision) กัน page-thrash
+  — **และค่านี้ขึ้นกับจำนวน rank ด้วย ไม่ใช่แค่ตัวโมเดล: 0.80 ที่ TP4 แต่ 0.75 ที่ TP8 · ดู §6**
+- **EC ล็อก GPU clock ต่ำกว่า 1 GHz ได้โดย `nvidia-smi` ไม่แสดงอะไรผิด** — อาการเดียวคือช้า
+  **ต้องรัน burn check ก่อนเชื่อ benchmark ใด ๆ บนฟลีต Spark · ดู §10**
 - **NVML ไม่รองรับ unified memory** → อย่าเปิด `VLLM_ENABLE_STARTUP_PLAN=1` (engine ตายตอน init) ⚠️ AEON เดียว
 - **ไม่มี NVLink ระหว่าง Spark** — TP ข้ามเครื่องวิ่งบน ConnectX RoCE/IB เท่านั้น; อย่าเปิด NCCL symmetric memory ⚠️
 - **build image เอง**: pin torch/torchvision/torchaudio วันเดียวกันทั้ง 2 build stage + `TORCH_CUDA_ARCH_LIST=12.1a`
@@ -113,6 +116,24 @@ Source: `MiaAI-Lab` `docker-compose.dspark.yml:187-223`. **อย่า copy fla
 - mesh (switchless) vs switched มี NCCL env ต่างกัน; power-of-2 nodes (2/4/8) สำหรับ TP, 3-node mesh สำหรับ PP/DP
 - โมเดลใหญ่ (Qwen3.5-397B, MiniMax): ใช้ `mods/drop-caches` + `--earlyoom` กัน OOM ตอน load
 
+**gpu-util ต้องลดลงเมื่อ rank เพิ่ม** (เพิ่ม 2026-09-20) — **0.80 ที่ TP4 · 0.75 ที่ TP8**
+
+NCCL แบบ 8 ทางจอง **~24 GiB ต่อ rank นอกงบของ vLLM** งบจริงจึงเป็น
+`gpu_util × 121.7 GiB + 24 GiB + OS ต้องอยู่ใน 121.7 GiB` — ที่ TP8 ค่า 0.80 ไม่ขึ้น
+ส่วน 0.77 หัวเครื่องเหลือ 1.1–1.4 GiB ตอน prefill 500K–900K จึงลงมาที่ 0.75
+**นี่คือช่องว่างในโมเดลคำนวณ ไม่ใช่แค่ตัวเลขผิด** — ค่าคงที่ต่อเครื่องไม่พอ ต้องโตตามจำนวน rank
+
+| ค่า | ที่มา | ระดับหลักฐาน |
+|---|---|---|
+| 0.80 ที่ TP4 | `Tech2wild/DeepSeek-V4.1-Flash-vLLM-DGX-Spark` boot 10 | **หลักฐาน** — head log, `args.json`, `kv-context.txt` commit ไว้ครบ |
+| 0.75 ที่ TP8 + ตัวเลข ~24 GiB/rank | `im0xMagnus/deepseek-v4.1-flash-uncensored-8x-dgx-spark` README | **คำกล่าวอ้างของผู้เขียน** — คลัสเตอร์ 8 เครื่องทั้งชุดมี result file เดียว ไม่มี log ดิบ |
+
+> **ข้อขัดแย้งที่ยังไม่ได้ตัดสิน** — อีกรีโป 8 เครื่อง (`im0xMagnus/glm-5.3-uncensored-8x-dgx-spark`)
+> ใช้ **0.80 ที่ TP8** กับ GLM-5.3 และบอกว่า 0.86 โดน OOM kill ตอน boot แรก · คนละโมเดล คนละขนาด
+> weights และรีโปนั้น **ไม่มีโฟลเดอร์ `results/` เลย** · กฎที่ปลอดภัยกว่าและเข้ากับทั้งสองชุด:
+> **เพดานคือ host headroom ไม่ใช่เพดานของ GPU — ยิ่ง rank เยอะ NCCL ยิ่งกินนอกงบ ต้องลด gpu-util ลง**
+> ⚠️ **ยังไม่ได้วัดบนฟลีตของเราเอง**
+
 ## 7. Benchmark methodology (เอาเข้า `lmds bench`) — ⚠️ AEON
 
 - **6 หมวด × 4 prompt**: reasoning/math/code/prose/dialogue/summary — spread สูงถึง 2.5× (code 39.6 vs prose 16.0)
@@ -137,7 +158,81 @@ Source: `MiaAI-Lab` `docker-compose.dspark.yml:187-223`. **อย่า copy fla
   repo นี้เป็นการ **เทรน** MTP head warm-start บน fine-tuned base — LMDS เป็น deploy ไม่เกี่ยวโดยตรง
 - ยืนยัน SM121 hardware facts (§1) เป็นอิสระ
 
+## 10. GPU clock latch บน GB10 — ✅ artifact-backed (Tech2wild)
+
+**อ่านหัวข้อนี้ก่อน benchmark ทุกครั้ง** — เป็นข้อเดียวในไฟล์ที่ทำให้ตัวเลขทุกตัวข้างบนโกหกได้
+
+**อาการ** — EC (embedded controller) ล็อก GPU ไว้ที่ **631–949 MHz** ทั้งตอน idle และตอนมีโหลด
+ขณะที่เครื่องอื่นในชุดเดียวกันวิ่ง 2177–2561 MHz · `nvidia-smi` **ไม่แสดงอะไรผิดเลย**:
+P0 · persistence on · application clocks 2418 (max 3003) · ไม่มี clock event reason
+(ไม่ power cap ไม่ thermal ไม่ HW slowdown) · ไม่มี locked clock · kernel log สะอาด
+
+**ทำไมมันร้ายใน TP** — ทุก collective รอ rank ที่ช้าที่สุด เครื่องที่ latch สองเครื่องจึงลากทั้งคลัสเตอร์
+ในชุด 4 เครื่องที่เจอ: boot ก่อนแก้ count 41.5 / code 32.9 tok/s · boot หลัง power-cycle
+count 60.8 / code 57.1 · **ระวัง**: สอง boot นั้นเปลี่ยน gmu 0.78 → 0.80 และเปิด tools/vision ด้วย
+เจ้าของรีโปยกให้เป็นผลของ clock latch — ไม่ใช่การทดลองที่คุมตัวแปรตัวเดียว
+
+**สาเหตุ** — EC ตัดสินใจ DVFS อยู่ใต้ OS และ latch ค้างในสถานะคล็อกต่ำได้ ·
+**รีบูตปกติหรือ soft shutdown ไม่หาย** เพราะ EC ยังกินไฟ standby ตราบที่ adapter เสียบอยู่
+
+**วิธีแก้ทางเดียว**
+
+1. ปิดเครื่อง
+2. **ถอดปลั๊ก adapter 30–60 วินาที** (นานกว่านั้นได้)
+3. เสียบกลับแล้วเปิด
+
+ระหว่างถอด เช็คด้วยว่าเป็น adapter ตัวเดิมและเสียบแน่น — EC ลดคล็อกเองเมื่อเห็นว่าไฟไม่พอ
+
+**วิธีตรวจ — burn check 15 วินาที** fp16 matmul 4096² แล้วอ่าน `clocks.sm` + `power.draw`
+ที่วินาทีที่ 12
+
+```
+ปกติ     ≥80 W · 2.2–2.4 GHz · 75–90 TFLOPS
+latched  ~700–950 MHz · <20 W
+เกณฑ์ fail  <50 TFLOPS
+```
+
+ค่าที่วัดได้จริงหลัง power-cycle ในรีโปต้นทาง: 84.0 / 76.6 TFLOPS บนสองเครื่องที่ latch
+เทียบกับ 89.2 / 88.8 บนสองเครื่องที่ไม่ latch — **หลัง power-cycle ทั้งสี่เครื่องเท่ากัน**
+
+ที่มา: `Tech2wild/DeepSeek-V4.1-Flash-vLLM-DGX-Spark` → `docs/gpu-clock-latch.md` (2026-09-10)
+พร้อมตารางค่าต่อเครื่องและสคริปต์ `tools/recover.sh` ที่ commit ไว้ — **artifact-backed**
+
+**สิ่งที่ LMDS ยังไม่มี**: ไม่มี burn gate ก่อน launch และ `lmds bench` ไม่เตือนเรื่องนี้เลย
+
+## 11. อย่าเชื่อเลข "KV pool tokens" ที่ engine พิมพ์ — ✅ artifact-backed (Tech2wild)
+
+vLLM พิมพ์ `max_concurrency × max_model_len` (`kv_cache_utils.py:2306`) **ไม่ใช่ความจุจริง**
+เลขนั้นจึงกระโดดตาม `--max-model-len` ที่ตั้ง ทั้งที่หน่วยความจำเท่าเดิม
+
+วัดจริงบนเครื่องเดียวกัน คนละ `max-model-len`:
+
+| max-model-len | KV cache ที่ได้จริง |
+|---|---|
+| 500K | **29.97 GiB** |
+| 300K | **30.14 GiB** |
+
+**เกือบเท่ากัน** ส่วนตัวเลข token ต่างกันลิบ · ที่มา: `runs/2026-09-19-speedrun2/README.md`
+พร้อม `results/s2-00-baseline/kv-context.txt` และ `results/e00-ctx300k/kv-context.txt`
+ที่ commit ไว้ทั้งคู่ — **artifact-backed**
+
+**ให้อ่าน GiB จากบรรทัด `Available KV cache memory:` เสมอ** ไม่ใช่จำนวน token ·
+งานฝั่งเรา: `fit/sizing.py` อ่าน `measured["kv_cache_tokens"]` มาคำนวณอยู่ — ต้องเปลี่ยนไปอ่าน GiB
+(แจ้งไว้ใน `docs/UPGRADE-2026-09.md` §1.6 · ยังไม่แก้)
+
 ---
 
-_อัปเดตล่าสุด: 2026-08-19 · สกัดโดย review 5 community repo (albond, dgxtop, eugr, MiaAI-Lab, AEON-7)._
-_`dgxtop` = monitor TUI ธรรมดา ไม่มีของเข้า LMDS._
+## ความสดของข้อมูล — อ่านก่อนใช้ตัวเลขในไฟล์นี้
+
+| ส่วน | เก็บข้อมูลเมื่อ | แหล่ง |
+|---|---|---|
+| §1–§9 | **2026-08-19** | review 5 community repo (albond, dgxtop, eugr, MiaAI-Lab, AEON-7) — ไม่ได้ตรวจซ้ำตั้งแต่นั้น |
+| §1 (gpu-util ตาม rank) · §6 · §10 · §11 | **2026-09-20** | รีโปไต้หวัน 3 ชุด · run จริง 2026-09-10..19 |
+
+`dgxtop` = monitor TUI ธรรมดา ไม่มีของเข้า LMDS
+
+**กฎ**: ที่ใดที่ §1–§9 ขัดกับ run จริงของรีโปไต้หวัน ให้ถือว่า run จริงถูกแล้วไปตรวจซ้ำ ·
+ทุกข้อที่มาจากรีโปภายนอกบอกไว้ว่าเป็น **artifact-backed** (มี log/JSON commit ไว้) หรือ
+**คำกล่าวอ้างของผู้เขียน** (มีแต่ README)
+
+_อัปเดตล่าสุด: 2026-09-20_

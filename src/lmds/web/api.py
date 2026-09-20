@@ -2030,10 +2030,13 @@ def create_app(token: str = "") -> FastAPI:
         local = host_payload()
         local_name = local.get("hostname") or "this machine"
         # hub เองไม่ได้อยู่ในทะเบียน จึงยังไม่มีที่เก็บ cluster IP ของตัวเอง — เสนอจากการ์ดที่ตรวจพบ
-        # ส่วน "เอาเข้ากลุ่มไหม" เก็บใน config.yaml (ทะเบียนไม่มีแถวของ hub ให้เก็บ)
-        stack_self = Settings.load().cluster.stack_self
+        # ส่วน "เอาเข้ากลุ่มไหม" และไซต์ เก็บใน config.yaml (ทะเบียนไม่มีแถวของ hub ให้เก็บ)
+        # ไซต์เป็นคีย์หนึ่งของการจับกลุ่ม (cluster.py) — เดิมฝังเป็น "" ตายตัว hub จึงจับคู่กับ
+        # เครื่องที่ผู้ใช้จัดไว้ไซต์เดียวกันไม่ได้เลย แม้สายและฮาร์ดแวร์จะตรงกันทุกอย่าง
+        hub_cluster = Settings.load().cluster
+        stack_self = hub_cluster.stack_self
         machines = [{"name": local_name, "host": local, "cluster_ip": suggest_cluster_ip(local),
-                     "site": "", "cluster_name": "", "stack": stack_self}]
+                     "site": hub_cluster.site, "cluster_name": "", "stack": stack_self}]
         rows = [row(local_name, local, machines[0]["cluster_ip"], True, stack_self, "")]
         snapshot = state.STORE.snapshot() if not refresh else {}
         cached_nodes = (snapshot.get("nodes") or {}) if isinstance(snapshot, dict) else {}
@@ -2489,15 +2492,24 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.patch("/api/cluster/self", dependencies=guarded)
     def cluster_self_patch(body: dict) -> dict:
-        """เปิด/ปิดการเอา hub เองเข้ากลุ่ม stacked — node อื่นใช้ PATCH /api/nodes/{name}"""
+        """ค่าของ hub เองที่เครื่องอื่นเก็บไว้ในทะเบียน — node อื่นใช้ PATCH /api/nodes/{name}
+
+        stack = เอา hub เข้ากลุ่ม stacked ไหม · site = ไซต์ที่ hub ตั้งอยู่ (ว่าง = เอาป้ายออก)
+        ทั้งคู่ลงที่ config.yaml เพราะ hub ไม่มีแถวของตัวเองใน nodes.yaml
+        """
         from lmds.config import Settings
 
-        if "stack" not in body:
-            raise HTTPException(status_code=400, detail="ต้องระบุฟิลด์ stack (true/false)")
+        if "stack" not in body and "site" not in body:
+            raise HTTPException(status_code=400, detail="ต้องระบุฟิลด์ stack (true/false) หรือ site")
         settings = Settings.load()
-        settings.cluster.stack_self = bool(body["stack"])
+        if "stack" in body:
+            settings.cluster.stack_self = bool(body["stack"])
+        if "site" in body:
+            # ตัดช่องว่างหัวท้ายเหมือน PATCH /api/nodes/{name} — " isit" กับ "isit" ต้องเป็นไซต์เดียวกัน
+            # ไม่งั้นรางซ้ายจะขึ้นสองกลุ่มที่อ่านแล้วเหมือนกันเป๊ะ
+            settings.cluster.site = str(body["site"] or "").strip()
         settings.save()
-        return {"stack": settings.cluster.stack_self}
+        return {"stack": settings.cluster.stack_self, "site": settings.cluster.site}
 
     @app.patch("/api/nodes/{name}", dependencies=guarded)
     def node_patch(name: str, body: dict) -> dict:

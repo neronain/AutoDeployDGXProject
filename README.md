@@ -7,13 +7,14 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.6.1-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2019-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.7.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-2118-17703f)](tests/)
 [![assistant](https://img.shields.io/badge/assistant-operator%20%C2%B7%2021%20probes%20%C2%B7%2025%20actions-6f42c1)](docs/USAGE.md#ถามผู้ช่วยให้ไปดูเครื่องให้-กล่องแชทมุมขวาล่าง)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
-[![license](https://img.shields.io/badge/license-proprietary-8a5300)](LICENSE)
+[![license](https://img.shields.io/badge/license-source--available-8a5300)](LICENSE)
+[![free](https://img.shields.io/badge/free-1%20machine-17703f)](docs/COMMERCIAL.md)
 
 **[ติดตั้ง](docs/INSTALL.md)** · **[คู่มือใช้งาน](docs/USAGE.md)** · **[หลายเครื่อง](docs/RUNBOOK-MULTI-NODE.md)** · **[สิ่งที่ตรวจให้ก่อน deploy](docs/PREFLIGHT.md)** · **[พอร์ต &amp; เครือข่าย](docs/NETWORK.md)** · **[English](README.en.md)**
 
@@ -132,7 +133,7 @@ KV bf16 · 120 KiB ต่อ token
 | Artifact | safetensors หรือ GGUF | **safetensors เท่านั้น** |
 | งาน | chat · vision · embedding · rerank | chat · vision (embedding/rerank ปฏิเสธ — ลงเครื่องเดียวเสมอ) |
 | สายเชื่อม | ไม่ต้อง | **ต้องมี** ≥25G (ของจริง 200G RoCE) |
-| จำนวนเครื่อง | 1 | ต่อตรง ≤3 · ผ่าน switch ≤4 |
+| จำนวนเครื่อง | 1 | ต่อตรง ≤3 (วงแหวน 2 cage) · ผ่าน switch ยังไม่มีเพดานที่ยืนยันได้ — LMDS มี preset ถึง 4 |
 | ที่ได้จริง | เร็วสุด | **หน่วยความจำ/KV/จำนวนคนพร้อมกันเพิ่ม** — ไม่ใช่ tok/s ต่อคน |
 
 ระบบตรวจ ConnectX/RDMA ให้เอง บอกว่าเครื่องคู่ไหน stacked กันได้ เขียน `cluster.env` ให้
@@ -353,7 +354,8 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 เท่าไร ส่วน active บอกว่าจะได้ความเร็วเท่าไร* — บนเครื่องที่คอขวดคือ bandwidth สองค่านี้
 ต่างกันหลายเท่า · repo ที่แถม MTP draft head มาให้จะถูกโหลด + ต่อสายให้อัตโนมัติ
 (วัดจริงบน DGX Spark: gemma4-26B-A4B ได้ **1.78x** โดย output เท่าเดิม)
-· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **1,720 เทสต์**
+· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,037 เทสต์**
+(`pytest --collect-only` ที่ commit `45c9cc6` · 2026-09-20 — ตัวเลขเดียวกับป้ายบนหัวไฟล์)
 
 > **แหล่งโมเดล: Hugging Face เท่านั้น** — Ollama registry และ NVIDIA NGC อยู่ในเฟส 2
 > (ใส่ลิงก์เข้าไปแล้วระบบบอกเองว่ายังไม่รองรับ พร้อมแนะทางอื่น) · HF ย้ายไฟล์ใหญ่ไป **Xet** แล้ว —
@@ -447,9 +449,10 @@ python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pyte
 
 ## License
 
-**Proprietary — สงวนลิขสิทธิ์** · ดู [LICENSE](LICENSE)
+**1 เครื่อง = ฟรี** ใช้ทำอะไรก็ได้รวมถึงเชิงพาณิชย์ · **ตั้งแต่ 2 เครื่องที่บริหารร่วมกัน = ต้องมี license**
+ดู [LICENSE](LICENSE) · [เงื่อนไขเชิงพาณิชย์](docs/COMMERCIAL.md) · [ของบุคคลที่สาม](THIRD-PARTY-LICENSES)
 
-การเปิดซอร์สให้อ่านได้ในรีโปนี้ไม่ได้ให้สิทธิ์ใช้งานหรือแจกจ่ายต่อ · **bundle ที่ผู้ใช้ generate
+ซอร์สอ่านได้ แต่ไม่ใช่ open source — ฟอร์ก แจกจ่ายต่อ หรือขายต่อไม่ได้ · **bundle ที่ผู้ใช้ generate
 ออกมาเป็นของผู้ใช้เอง** ใช้/แก้/ส่งต่อได้อิสระ · โมเดล image และ runtime ของบุคคลที่สามอยู่ใต้
 license ของเจ้าของนั้น ๆ
 

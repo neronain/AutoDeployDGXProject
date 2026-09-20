@@ -232,3 +232,56 @@ def test_llm_path_also_gets_the_recipe():
     assert "--compilation-config" in " ".join(plan.serving.extra_flags)
     # แต่ไม่ไปยุ่งกับสิ่งที่สูตรไม่ได้พูดถึง
     assert plan.served_model_name == "ds-v4-from-llm"
+
+
+# ── สูตร "ห้าม deploy" ───────────────────────────────────────────────────────────
+# nvidia/DeepSeek-V4.1-Flash-NVFP4 เป็นสูตรแรกที่ไม่มีค่าให้รันเลย — มีไว้เพื่อ "ห้าม" อย่างเดียว
+# ตัวที่พาข้อความถึงผู้ใช้คือ notes → plan.warnings (brain/rulebased.py:354-356) ไม่ใช่ image/serving
+DO_NOT_DEPLOY = "nvidia/DeepSeek-V4.1-Flash-NVFP4"
+
+
+def test_do_not_deploy_recipe_reaches_the_operator():
+    """14 boot บน 4 เครื่องที่ไม่เคยเสิร์ฟได้ ต้องกลายเป็นคำเตือนที่ผู้ใช้เห็นก่อนลงมือ
+
+    ไม่ใช่แค่มีบรรทัดใน catalog — ถ้าทางเดิน notes → warnings ขาด ผู้ใช้จะ deploy
+    แล้วไปเจอ watchdog reset เอง โดยที่เรารู้ล่วงหน้าอยู่แล้วว่ามันจะเกิด
+    """
+    plan = plan_for(DO_NOT_DEPLOY)
+    warnings = "\n".join(plan.warnings)
+    assert "ห้าม deploy" in warnings
+    # เหตุผลต้องมาด้วย ไม่ใช่แค่คำสั่งห้าม — ผู้ใช้ต้องตัดสินใจเองได้ว่าของตัวเองเข้าข่ายไหม
+    assert "MAP_PRIVATE" in warnings and "watchdog reset" in warnings
+    # ตัวช่วยที่ได้ผลครึ่งทาง ต้องบอกว่าต้องใส่ "คู่กัน" ไม่งั้นคนจะใส่ตัวเดียวแล้วคิดว่าแก้แล้ว
+    assert "--enable-expert-parallel" in warnings and "--enable-ep-weight-filter" in warnings
+
+
+def test_do_not_deploy_recipe_carries_nothing_runnable():
+    """สูตรห้าม deploy ต้องไม่มีค่าที่เอาไปรันได้ — ไม่งั้นมันคือสูตรที่ชวนให้ลอง
+
+    โดยเฉพาะ --enable-expert-parallel/--enable-ep-weight-filter ที่ลด anon จาก 27 GiB
+    เหลือ 2-3 GiB แต่ "ยังตายอยู่ดี" — ใส่ลง extra_flags เมื่อไรก็เท่ากับบอกว่ารันได้
+    """
+    recipe = find_recipe(DO_NOT_DEPLOY)
+    assert recipe is not None
+    assert not recipe.image and not recipe.serving and not recipe.env and not recipe.extra_flags
+    assert not recipe.tool_calling and not recipe.reasoning and not recipe.speculative
+
+    plan = plan_for(DO_NOT_DEPLOY)
+    assert not plan.serving.extra_flags
+
+
+def test_do_not_deploy_warning_survives_hardening():
+    """คำเตือนต้องอยู่ถึงมือผู้ใช้จริง ไม่ใช่หายระหว่างทาง — harden_plan จัดการ warnings อยู่หลายจุด"""
+    from lmds.brain.orchestrator import harden_plan
+
+    report = report_for(DO_NOT_DEPLOY)
+    fit = analyze(report, PRESETS["dgx-spark-stacked"])
+    hardened = harden_plan(rule_based_plan(report, fit), report, fit)
+    assert any("ห้าม deploy" in w for w in hardened.warnings)
+
+
+def test_v41_recipe_does_not_swallow_v4():
+    """`nvidia/DeepSeek-V4.1-…` กับ `nvidia/DeepSeek-V4-…` เป็นคนละโมเดล — prefix ต้องไม่ข้ามกัน
+    ถ้าข้าม สูตรห้าม deploy จะไปปิด V4-Flash ที่รันผ่านแล้ว (หรือกลับกัน)"""
+    assert find_recipe("nvidia/DeepSeek-V4-Flash-NVFP4").match == "nvidia/DeepSeek-V4-Flash-NVFP4"
+    assert find_recipe(DO_NOT_DEPLOY).match == DO_NOT_DEPLOY
