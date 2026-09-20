@@ -80,6 +80,10 @@ class Node:
     # bundle ที่ตั้งค่า (lmds set/หน้าเว็บ) แล้วยังไม่ restart — argv ที่รันอยู่ต่างจาก bundle.env (audit 2026-09-08 msi-6)
     restart_pending: Optional[int] = None
     llamacpp_build: str = ""
+    # เครื่องนี้ "เสิร์ฟโมเดลได้" ไหม ตาม LICENSE §1.1 (llama-server ใช้ได้ หรือ docker+GPU)
+    # — ตัวนับของระบบไลเซนส์ใช้ฟิลด์นี้ ไม่ใช่จำนวนแถวในทะเบียน เพราะ control plane
+    # ไม่นับตามสัญญา · None = ยังไม่เคย probe ด้วย lmds ที่รายงานฟิลด์นี้ (ไม่ใช่ False)
+    serving: Optional[bool] = None
     # ป้ายจัดกลุ่มตามที่ตั้งเครื่อง (เช่น ชื่อไซต์/ลูกค้า) — ใช้ "แสดงผลและกรอง" อย่างเดียว
     # ตั้งแต่ 2026-08-31 ฟิลด์นี้ **เป็นตัวบังคับ** ตอนจับกลุ่ม stacked ด้วย ไม่ใช่แค่ป้าย
     # แสดงผลอย่างเดิม — stacked ข้ามไซต์ทำไม่ได้จริง (NCCL วิ่งบนสายในแร็ค ไม่ใช่ผ่าน WAN)
@@ -282,6 +286,11 @@ def status_from_probe(info: dict) -> dict:
     if isinstance(models, list) and any(isinstance(m, dict) and "pending_restart" in m for m in models):
         fields["restart_pending"] = sum(
             1 for m in models if isinstance(m, dict) and ((m.get("pending_restart") or {}).get("pending")))
+    # บทบาทของเครื่อง — เก็บเป็น bool เพราะตัวนับไลเซนส์ต้องแยก "ไม่เสิร์ฟ" (False)
+    # ออกจาก "ยังไม่รู้" (ไม่มีคีย์) ให้ได้ · node รุ่นเก่าไม่ส่ง role มาเลย จึงต้องไม่ทับของเดิม
+    role = host.get("role")
+    if isinstance(role, dict) and "control_plane" in role:
+        fields["serving"] = not bool(role.get("control_plane"))
     builds = (host.get("runtimes") or {}).get("llamacpp") if isinstance(host.get("runtimes"), dict) else None
     if isinstance(builds, list):
         fields["llamacpp_build"] = " / ".join(
@@ -289,6 +298,8 @@ def status_from_probe(info: dict) -> dict:
             for b in builds if isinstance(b, dict) and b.get("present"))
     # คีย์ที่ปลายทางไม่ได้ส่งมาแปลว่า "ไม่รู้" ไม่ใช่ "ไม่มี" — เขียนทับด้วยค่าว่างคือทิ้งของ
     # ที่เคยรู้จริงไปเพราะ node รุ่นเก่ารุ่นเดียวที่ยังไม่ส่งฟิลด์นั้น (ตัวนับ 0 ไม่ใช่ค่าว่าง)
+    # `value not in ("", None)` ใช้ == เปรียบเทียบ ซึ่ง False == 0 แต่ไม่เท่ากับ "" หรือ None
+    # → serving=False รอดออกไปถูกต้อง (เคยพลาดง่ายตรงนี้ จึงมีเทสคุมไว้)
     return {key: value for key, value in fields.items() if value not in ("", None)}
 
 

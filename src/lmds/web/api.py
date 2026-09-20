@@ -2490,6 +2490,62 @@ def create_app(token: str = "") -> FastAPI:
                   else f"netplan file moved to {DISABLED_DIR} on {name}, ports released, registry cleared")
         return {"node": name, "detail": detail, **result}
 
+    @app.get("/api/license", dependencies=guarded)
+    def license_get() -> dict:
+        """สถานะไลเซนส์ของ hub นี้ + ตัวเลขที่นับได้ — ไม่ต่อออกเน็ตทั้งสิ้น"""
+        from lmds import licensing
+        from lmds.licensing import store as license_store
+
+        status = licensing.load()
+        count = licensing.count_here()
+        lic = status.license
+        return {
+            "state": status.state,
+            "summary": status.describe(),
+            "reason": status.reason,
+            "path": str(status.path or licensing.license_path()),
+            "read_only": status.read_only,
+            "unlimited": status.unlimited,
+            "machines_allowed": status.machines_allowed,
+            "free_machines": licensing.FREE_SERVING_MACHINES,
+            "permissions_warning": license_store.permissions_warning(status.path),
+            "counted": {
+                "serving": count.serving,
+                "control_plane": count.control_plane,
+                "unknown": count.unknown,
+                "serving_names": count.serving_names,
+                "unknown_names": count.unknown_names,
+                "explain": count.explain(),
+            },
+            "license": None if lic is None else {
+                "id": lic.id,
+                "tier": lic.tier,
+                "licensed_to": lic.licensed_to,
+                "machines": lic.machines,
+                "issued": lic.issued.isoformat(),
+                "expires": lic.expires.isoformat() if lic.expires else None,
+                "contact": lic.contact,
+            },
+        }
+
+    @app.post("/api/license", dependencies=guarded)
+    def license_post(body: dict) -> dict:
+        """ติดตั้งไฟล์ไลเซนส์ที่วางมาในช่อง — ตรวจลายเซ็นก่อนเขียนเสมอ
+
+        ใบที่ใช้ไม่ได้ต้องไม่เขียนทับใบเดิมที่ยังดีอยู่ (store.install จัดการให้แล้ว)
+        จึงตอบ 400 พร้อมเหตุผล ไม่ใช่เขียนลงไปก่อนแล้วค่อยบ่น
+        """
+        from lmds import licensing
+
+        text = str((body or {}).get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="วางเนื้อไฟล์ไลเซนส์มาด้วย")
+        status = licensing.install(text)
+        if status.state == "invalid":
+            raise HTTPException(status_code=400,
+                                detail=f"ไลเซนส์ใช้ไม่ได้ — ไม่ได้เขียนทับของเดิม · {status.reason}")
+        return {"state": status.state, "summary": status.describe(), "path": str(status.path)}
+
     @app.patch("/api/cluster/self", dependencies=guarded)
     def cluster_self_patch(body: dict) -> dict:
         """ค่าของ hub เองที่เครื่องอื่นเก็บไว้ในทะเบียน — node อื่นใช้ PATCH /api/nodes/{name}

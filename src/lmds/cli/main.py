@@ -57,6 +57,10 @@ fleet_app = typer.Typer(help="ภาพรวมทั้งฟลีต: ทุ
                         no_args_is_help=True)
 app.add_typer(fleet_app, name="fleet")
 
+license_app = typer.Typer(help="ไลเซนส์ของเครื่องนี้: ดูสถานะ · ติดตั้งใบ · นับเครื่องที่นับตามสัญญา",
+                          no_args_is_help=True)
+app.add_typer(license_app, name="license")
+
 console = Console()
 err_console = Console(stderr=True)
 
@@ -4713,6 +4717,91 @@ def defaults_list() -> None:
     for provider, model in DEFAULT_MODELS.items():
         table.add_row(provider.value, model or "(ต้องระบุเอง)")
     console.print(table)
+
+
+# ── lmds license ───────────────────────────────────────────────────────────────
+#
+# สามคำสั่งเท่าที่จำเป็น: ดูว่าตอนนี้เป็นอะไร · เอาใบใหม่เข้าเครื่อง · นับเครื่องให้ดูว่าทำไมได้เลขนั้น
+# ไม่มีคำสั่ง activate/deactivate เพราะไม่มีอะไรต้องติดต่อออกไปข้างนอก
+
+
+@license_app.command("show")
+def license_show() -> None:
+    """สถานะไลเซนส์ของเครื่องนี้ — ไม่ต่อเน็ต ไม่ส่งอะไรออกไป"""
+    from lmds import licensing
+    from lmds.licensing import store as license_store
+
+    status = licensing.load()
+    colour = {"active": "green", "free": "cyan", "expired": "yellow", "invalid": "red"}
+    table = Table(title="ไลเซนส์", show_header=False)
+    table.add_column("", style="bold")
+    table.add_column("")
+    table.add_row("สถานะ", f"[{colour.get(status.state, 'white')}]{status.state}[/]")
+    table.add_row("สรุป", status.describe())
+    lic = status.license
+    if lic is not None:
+        table.add_row("ผู้ถือ", lic.licensed_to)
+        table.add_row("license id", lic.id)
+        table.add_row("ระดับ", lic.tier)
+        table.add_row("เครื่องที่ครอบคลุม", "ไม่จำกัด" if lic.unlimited else str(lic.machines))
+        table.add_row("ออกเมื่อ", lic.issued.isoformat())
+        table.add_row("หมดอายุ", lic.expires.isoformat() if lic.expires else "ไม่มีวันหมดอายุ")
+        if lic.contact:
+            table.add_row("ติดต่อ", lic.contact)
+    table.add_row("ไฟล์", str(status.path or licensing.license_path()))
+    console.print(table)
+
+    count = licensing.count_here()
+    console.print(f"ตอนนี้นับได้: [bold]{count.serving}[/] · {count.explain()}")
+    if status.state == "free":
+        console.print("[dim]โหมดฟรีไม่ต้องมีไฟล์ไลเซนส์ ไม่ต้องลงทะเบียน และไม่มีอะไรหมดอายุ[/dim]")
+    warning = license_store.permissions_warning(status.path)
+    if warning:
+        console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+
+@license_app.command("install")
+def license_install(
+    path: str = typer.Argument(..., help="ไฟล์ไลเซนส์ที่ได้รับมา (.yaml)"),
+) -> None:
+    """ติดตั้งไฟล์ไลเซนส์ลงเครื่องนี้ — ตรวจลายเซ็นก่อนเขียนเสมอ"""
+    from lmds import licensing
+
+    source = Path(path).expanduser()
+    if not source.is_file():
+        err_console.print(f"[red]ไม่พบไฟล์ {source}[/red]")
+        raise typer.Exit(2)
+    status = licensing.install(source.read_text(encoding="utf-8"))
+    if status.state == "invalid":
+        err_console.print(f"[red]ไลเซนส์ใช้ไม่ได้ — ไม่ได้เขียนทับของเดิม[/red]\n{status.reason}")
+        raise typer.Exit(2)
+    console.print(f"[green]ติดตั้งแล้ว[/green] → {status.path}")
+    console.print(status.describe())
+
+
+@license_app.command("seats")
+def license_seats() -> None:
+    """นับเครื่องที่ "เสิร์ฟได้" ตาม LICENSE §1.1 — แสดงให้เห็นว่านับใครบ้างและทำไม"""
+    from lmds import licensing
+
+    status = licensing.load()
+    count = licensing.count_here()
+    allowed = "ไม่จำกัด" if status.unlimited else str(status.machines_allowed)
+
+    table = Table(title="เครื่องที่นับตามสัญญา")
+    table.add_column("เครื่อง")
+    table.add_column("นับ")
+    for name in count.serving_names:
+        table.add_row(name, "[green]1[/green]")
+    for name in count.unknown_names:
+        table.add_row(name, "[yellow]ยังไม่ได้ตรวจ — ไม่นับ[/yellow]")
+    if count.control_plane:
+        table.add_row(f"control plane {count.control_plane} เครื่อง", "[dim]0 — ฟรี[/dim]")
+    console.print(table)
+    console.print(f"รวมที่นับได้ [bold]{count.serving}[/] จากที่ครอบคลุม [bold]{allowed}[/]")
+    if count.unknown:
+        console.print("[dim]เครื่องที่ยังไม่ได้ตรวจไม่ถูกนับ — รัน lmds node list --check "
+                      "เพื่อให้ตัวเลขครบ[/dim]")
 
 
 if __name__ == "__main__":

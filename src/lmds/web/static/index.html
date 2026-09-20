@@ -1216,6 +1216,28 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
         paired into a cluster · empty = remove the label · same idea as <b>🏷 Site</b> on a node card
         (CLI: <code>lmds node cluster --self-site &lt;site&gt;</code>)</div>
     </div></div>
+
+    <!-- ไลเซนส์ — ไฟล์ลงนามออฟไลน์ล้วน ไม่มีการต่อออกเน็ต ไม่มี activation server
+         โหมดฟรีไม่ต้องมีไฟล์ จึงต้องไม่แสดงเหมือนเป็น "ยังตั้งค่าไม่เสร็จ" -->
+    <div class="card"><div class="pad">
+      <div class="field"><label class="dim" style="min-width:150px">License</label>
+        <span id="lic-state" class="dim">…</span></div>
+      <div id="lic-detail" class="dim" style="margin-top:6px"></div>
+      <div id="lic-warn" class="dim" style="margin-top:6px;color:var(--warn,#d19a26)" hidden></div>
+      <div style="margin-top:10px">
+        <button id="lic-toggle" class="ghost">Add or replace a licence…</button>
+      </div>
+      <div id="lic-form" hidden style="margin-top:10px">
+        <textarea id="lic-text" rows="10" spellcheck="false" placeholder="วางเนื้อไฟล์ license.yaml ทั้งไฟล์ที่นี่"
+                  style="width:100%;font-family:var(--mono);font-size:calc(12px * var(--fs))"></textarea>
+        <div class="field" style="margin-top:8px">
+          <button id="lic-save">Install licence</button>
+          <span id="lic-msg" class="dim"></span>
+        </div>
+        <div class="dim">ตรวจลายเซ็นก่อนเขียนเสมอ — ใบที่ใช้ไม่ได้จะไม่เขียนทับใบเดิม ·
+          เหมือน <code>lmds license install &lt;ไฟล์&gt;</code></div>
+      </div>
+    </div></div>
   </section>
 
 </div>
@@ -6604,6 +6626,70 @@ function applyRouteFilter() {
   if (title) title.textContent = sel ? sel : site != null ? `Site ${siteLabel(site)}` : "Other machines";
 }
 
+// แผงไลเซนส์ในหน้า Hub settings
+//
+// โหมดฟรีเป็นสถานะปกติที่คนส่วนใหญ่อยู่ถาวร — ห้ามแสดงเป็นสีเตือนหรือทำให้รู้สึกว่า
+// "ยังตั้งค่าไม่เสร็จ" · สีเตือนสงวนไว้ให้ใบที่หมดอายุหรือไฟล์ที่ใช้ไม่ได้จริง ๆ
+let licLoaded = false;
+async function fillLicense(force) {
+  const box = document.getElementById("lic-state");
+  if (!box || (licLoaded && !force)) return;
+  licLoaded = true;
+  let d;
+  try { d = await api("/api/license"); }
+  catch { box.textContent = "อ่านสถานะไลเซนส์ไม่ได้"; return; }
+
+  const tone = { active: "var(--ok,#3fb950)", free: "var(--fg2)",
+                 expired: "var(--warn,#d19a26)", invalid: "var(--bad,#f85149)" }[d.state] || "";
+  box.innerHTML = `<b style="color:${tone}">${esc(d.state)}</b> · ${esc(d.summary || "")}`;
+
+  const lines = [];
+  if (d.license) {
+    const limit = d.unlimited ? "ไม่จำกัด" : `${d.license.machines} เครื่อง`;
+    lines.push(`${esc(d.license.licensed_to)} · ${esc(d.license.tier)} · ${limit}` +
+               ` · id ${esc(d.license.id)}`);
+    lines.push(`ออก ${esc(d.license.issued)} · หมดอายุ ` +
+               (d.license.expires ? esc(d.license.expires) : "ไม่มีวันหมดอายุ"));
+  }
+  const c = d.counted || {};
+  lines.push(`นับได้ <b>${c.serving ?? "?"}</b> จากที่ครอบคลุม <b>` +
+             `${d.unlimited ? "ไม่จำกัด" : esc(String(d.machines_allowed))}</b> — ${esc(c.explain || "")}`);
+  if (d.read_only) {
+    lines.push("<b>อ่านอย่างเดียว</b> — ของที่รันอยู่ทุกเครื่องไม่ถูกแตะ · " +
+               "ps · logs · doctor · start · stop ยังใช้ได้ตามปกติ");
+  }
+  lines.push(`<span class="dim">ไฟล์: <code>${esc(d.path || "")}</code> · ` +
+             `ไม่มีการต่อออกเน็ตเพื่อตรวจไลเซนส์</span>`);
+  document.getElementById("lic-detail").innerHTML = lines.join("<br>");
+
+  const warn = document.getElementById("lic-warn");
+  if (warn) { warn.hidden = !d.permissions_warning; warn.textContent = d.permissions_warning || ""; }
+}
+
+document.addEventListener("click", async e => {
+  if (e.target.closest("#lic-toggle")) {
+    const form = document.getElementById("lic-form");
+    if (form) form.hidden = !form.hidden;
+    return;
+  }
+  if (!e.target.closest("#lic-save")) return;
+  const btn = e.target.closest("#lic-save");
+  const text = (document.getElementById("lic-text") || {}).value || "";
+  const msg = document.getElementById("lic-msg");
+  if (!text.trim()) { if (msg) msg.textContent = "วางเนื้อไฟล์มาก่อน"; return; }
+  btn.disabled = true;
+  if (msg) msg.textContent = "กำลังตรวจลายเซ็น…";
+  try {
+    const r = await api("/api/license", { method: "POST", body: JSON.stringify({ text }) });
+    if (msg) msg.textContent = "ติดตั้งแล้ว · " + (r.summary || "");
+    document.getElementById("lic-text").value = "";
+    document.getElementById("lic-form").hidden = true;
+    await fillLicense(true);
+  } catch (err) {
+    if (msg) msg.textContent = String((err && err.message) || err);
+  } finally { btn.disabled = false; }
+});
+
 // ช่องไซต์ของ hub ในหน้า Hub settings — เติมค่าจาก host payload ทุกครั้งที่เข้าหน้านี้
 // ไม่เขียนทับตอนผู้ใช้กำลังพิมพ์อยู่ (poll ทุกไม่กี่วิจะกระชากตัวอักษรที่เพิ่งพิมพ์หายไป)
 function fillHubSite() {
@@ -6661,7 +6747,7 @@ function routeRender() {
     ? `<b>${esc(t)}</b>` : `<a href="${h}">${esc(t)}</a><span class="csep">›</span>`).join("");
   renderRail();
   applyRouteFilter();
-  if (route.kind === "settings") fillHubSite();
+  if (route.kind === "settings") { fillHubSite(); fillLicense(); }
   if (route.kind === "overview") renderOverview(true);
   if (route.kind === "models") renderAllModels();
   if (route.kind === "node") {

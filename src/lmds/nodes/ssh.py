@@ -623,13 +623,94 @@ def explain_install_failure(output: str, node: Node) -> str:
     return ""
 
 
+# คำสั่งเดียวที่บอกได้ว่าเครื่องปลายทาง "เสิร์ฟโมเดลได้ไหม" ตาม LICENSE §1.1 โดยที่
+# ยังไม่ต้องมี lmds อยู่บนเครื่องนั้น — ใช้เกณฑ์เดียวกับ lmds.hardware.serving เป๊ะ:
+# llama-server ที่รันได้ **หรือ** docker + NVIDIA GPU อย่างน้อยหนึ่งใบ
+_SERVING_PROBE = r"""
+have_server=0
+for p in "$HOME/src/llama.cpp/build/bin/llama-server" "$HOME/llama.cpp/build/bin/llama-server"; do
+  [ -x "$p" ] && have_server=1
+done
+command -v llama-server >/dev/null 2>&1 && have_server=1
+gpus=0
+if command -v nvidia-smi >/dev/null 2>&1; then
+  gpus=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -c . || echo 0)
+fi
+docker=0
+command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker=1
+if [ "$have_server" = 1 ] || { [ "$docker" = 1 ] && [ "$gpus" -gt 0 ]; }; then
+  echo serving
+else
+  echo control-plane
+fi
+"""
+
+
+def probe_serving(node: Node, timeout: int = 45) -> bool | None:
+    """เครื่องนี้เสิร์ฟโมเดลได้ไหม — True/False · None เมื่อตอบไม่ได้ (ต่อไม่ติด ฯลฯ)
+
+    ต้องถามก่อนติดตั้งเพราะระบบไลเซนส์นับเฉพาะ "เครื่องที่เสิร์ฟได้" · control plane
+    เพิ่มได้ไม่จำกัดและฟรีตามสัญญา ถ้าเดาว่าทุกเครื่องที่เพิ่มคือเครื่องเสิร์ฟ เราจะบล็อก
+    คนที่กำลังเพิ่ม hub สำรองหรือเครื่องที่ใช้ push อย่างเดียว ซึ่งผิดทั้งสัญญาและเจตนา
+    """
+    result = run(node, _SERVING_PROBE, timeout=timeout)
+    if not result.ok:
+        return None
+    answer = (result.stdout or "").strip().splitlines()
+    if not answer:
+        return None
+    last = answer[-1].strip()
+    return True if last == "serving" else (False if last == "control-plane" else None)
+
+
 def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False, force: bool = False) -> Result:
     """ติดตั้งหรืออัปเดต LMDS บน node ผ่าน SSH
 
     ค่าเริ่มต้นข้ามขั้นตอน prerequisite (docker/toolkit) เพราะขั้นนั้นต้องใช้ sudo ซึ่งไม่มี tty
     ให้กรอกรหัสผ่าน — เครื่องที่ยังไม่มี Docker ต้องไปรัน install.sh เองบนเครื่องนั้น
+
+    **จุดบังคับใช้ไลเซนส์จุดเดียวของทั้งฟลีต** (ดู lmds/licensing/enforce.py):
+    ติดตั้ง lmds ลงเครื่องที่เสิร์ฟได้เครื่องใหม่ = ขยายฟลีตที่บริหารร่วมกัน ซึ่งคือสิ่งที่
+    LICENSE §1.3 จำกัด · อัปเดตเครื่องที่นับอยู่แล้วไม่เคยถูกห้าม (กฎข้อ 2: ห้ามหยุดของที่รันอยู่)
     """
+    _require_licence_for(node)
     return run(node, prepare_install(node, with_prereq, force=force), timeout=timeout)
+
+
+def _require_licence_for(node: Node) -> None:
+    """ปล่อยผ่านทุกกรณีที่ไม่ใช่ "เพิ่มเครื่องเสิร์ฟเครื่องใหม่เกินสิทธิ์" """
+    from lmds import licensing
+    from lmds.nodes import registry
+
+    try:
+        nodes = registry.load()
+    except Exception:
+        return                                   # อ่านทะเบียนไม่ได้ = ไม่บล็อก
+
+    known = next((n for n in nodes if n.name == node.name), None)
+    if known is not None and known.serving is True:
+        return                                   # นับอยู่แล้ว — อัปเดตได้เสมอ
+
+    status = licensing.load()
+    if status.unlimited:
+        return
+
+    from lmds.hardware.serving import detect
+
+    try:
+        hub_serves = detect().can_serve
+    except Exception:
+        hub_serves = None
+    count = licensing.count_fleet([n for n in nodes if n.name != node.name],
+                                  hub_serves=hub_serves)
+    if count.serving < status.machines_allowed:
+        return                                   # ยังมีที่ว่าง ไม่ต้องถามปลายทางด้วยซ้ำ
+
+    serves = probe_serving(node)
+    if serves is not True:
+        return                                   # control plane หรือตอบไม่ได้ → ไม่บล็อก
+
+    licensing.require(licensing.FLEET_GROW, serving_now=count.serving, adding=1, status=status)
 
 
 def check_login(host: str, user: str, port: int = 22) -> bool:
