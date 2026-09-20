@@ -72,6 +72,7 @@ def _web_sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon, "port_busy", lambda host, port, timeout=0.4: False)
     monkeypatch.setattr(daemon, "wait_until_serving", lambda bind, port, pid: True)
     monkeypatch.setattr(daemon, "write_state", lambda *a, **k: None)
+    # เทสที่อยากจำลอง env ของ unit เดิมจะตั้งเองทีหลัง — ที่นี่แค่ล้างของเครื่องที่รันเทส
     monkeypatch.delenv("LMDS_WEB_TOKEN", raising=False)
     return daemon
 
@@ -244,3 +245,32 @@ def test_the_cli_says_where_the_file_is_when_there_is_nothing_yet(audit_log):
     result = runner.invoke(app, ["audit"], env={"COLUMNS": "300"})
     assert result.exit_code == 0 and "ยังไม่มีรายการ" in result.stdout
     assert audit_log.name in result.stdout
+
+
+def test_an_old_service_unit_with_an_empty_token_closes_itself_on_the_next_restart(monkeypatch, tmp_path, audit_log):
+    """ทางอัปเกรดจริงของเครื่องที่เปิดคอนโซลไว้แล้ว
+
+    unit ที่สร้างไว้ก่อนหน้านี้บน 127.0.0.1 มีบรรทัด `Environment=LMDS_WEB_TOKEN=` ว่าง
+    ถ้าค่าว่างถูกนับว่า "ตั้งมาแล้ว" service จะกลับมาเปิดโล่งต่อหลัง restart โดยไม่มีใครรู้
+    """
+    import subprocess
+
+    daemon = _web_sandbox(monkeypatch, tmp_path)
+    seen: dict = {}
+
+    class FakeProc:
+        pid = 99
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (seen.update(argv=list(argv), env=dict(kw.get("env") or {})), FakeProc())[1])
+    monkeypatch.setenv("LMDS_WEB_TOKEN", "")          # เหมือน unit เดิมเป๊ะ
+    result = runner.invoke(app, ["web", "-b"])
+    assert result.exit_code == 0, result.output
+
+    minted = daemon.remembered_token()
+    assert minted, "ค่าว่างต้องไม่ถูกนับว่าเป็น token ที่ตั้งมาแล้ว"
+    assert seen["env"]["LMDS_WEB_TOKEN"] == minted
+    assert "--no-auth" not in seen["argv"]
