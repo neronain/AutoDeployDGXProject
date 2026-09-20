@@ -7,8 +7,8 @@
 Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine or
 several acting as one. Nothing leaves the machine except what you ask for.
 
-[![version](https://img.shields.io/badge/version-0.7.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2118-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.8.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-2161-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
@@ -285,7 +285,7 @@ Hardware-validated across all five model families — GGUF, NVFP4, MoE, dense sa
 repos · latest (2026-09-04): `unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF` (llama.cpp + vision),
 embedding `VesNFF/Qwen3-VL-Embedding-8B-GGUF`, stacked `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4` (173 GB)
 and `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` on 2× DGX Spark · **22 target presets** (7 verified on
-real hardware) · **2,037 tests** (`pytest --collect-only` at commit `45c9cc6`, 2026-09-20 — same number as the badge)
+real hardware) · **2,161 tests** (`pytest --collect-only` at 0.8.0, 2026-09-20 — same number as the badge)
 
 > **Model source: Hugging Face only.** Ollama registry and NVIDIA NGC are phase 2 — passing such a
 > link produces a clear "not supported yet" message with an alternative. Hugging Face now serves large
@@ -348,11 +348,13 @@ other what to fix.
 | [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | Running many machines from one — installing/updating nodes from the hub, `lmds cluster pair/doctor/write`, cluster.env |
 | [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | NVIDIA's clustering docs — what they confirm, what they add |
 | [PRD.md](docs/PRD.md) · [CLI_SPEC.md](docs/CLI_SPEC.md) · [ROADMAP.md](docs/ROADMAP.md) | Requirements, command spec, roadmap |
+| [LICENSING.md](docs/LICENSING.md) | How licensing actually works — how machines are counted, what is locked, and **what is never locked** |
 | [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) | What leaves the machine · dev setup and rules · history |
 
 ## Requirements
 
-- **Ubuntu 22.04 / 24.04** (ARM64 or x86_64) — development works on macOS
+- **Ubuntu 22.04 / 24.04 / 25.04** (ARM64 or x86_64) — development works on macOS
+- **Python 3.10–3.13** — all four are tested in CI on every push (24.04 ships 3.12 · 25.04 ships 3.13)
 - **Python 3.10+**
 - **Docker + NVIDIA Container Toolkit** on target machines (`./install.sh` can install both; *Add machine* in the console does it with the sudo password once)
 - **git + python3** on every node — the hub ships its code as a git bundle for the node to clone; no GitHub access needed

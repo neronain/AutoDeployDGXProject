@@ -322,7 +322,12 @@ download() {
         holder="$(lsof -t "${MODEL_DIR}/.download.lock" 2>/dev/null | head -3 | tr '\n' ' ')"
       fi
       if [[ -n "$holder" ]]; then
-        who="$(ps -o pid=,etime=,args= -p ${holder} 2>/dev/null | cut -c1-160)"
+        # `|| true` สำคัญ: สคริปต์รันใต้ `set -Eeuo pipefail` · ถ้า PID ที่ fuser เพิ่งบอกมา
+        # ตายไปก่อน ps จะถูกเรียก ไพป์ไลน์คืนค่าไม่ใช่ศูนย์ การกำหนดค่าธรรมดารับสถานะนั้นมา
+        # แล้ว errexit ฆ่าสคริปต์ทิ้ง **ก่อน die ได้พิมพ์อะไรเลย** — download ตายเงียบ exit 1
+        # ไม่มี stdout/stderr ซึ่งตรงข้ามกับเหตุผลที่บล็อกนี้มีอยู่ · บน CI ไม่เจอเพราะ PID
+        # ยังอยู่ตอนตรวจ แต่บนเครื่องจริงที่โหลดเสร็จพอดีคือเจอได้
+        who="$(ps -o pid=,etime=,args= -p ${holder} 2>/dev/null | cut -c1-160 || true)"
         die "download ของ bundle นี้กำลังรันอยู่จริง — process ที่ถือล็อกอยู่ตอนนี้:
 ${who}
 รอให้จบแล้วสั่งซ้ำ (ไฟล์ที่โหลดไว้แล้วจะต่อจากเดิม) · จะยกเลิกตัวนั้นก็ได้: kill ${holder}"

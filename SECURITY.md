@@ -117,8 +117,9 @@ repo เดินทางเข้าไปใน prompt ของผู้ช�
 lmds validate <โฟลเดอร์>
 ```
 
-รัน quality gates ทั้ง 12 ด่าน (bash syntax · ไม่มี template tag เหลือ · numeric underscore · pipefail · line continuation ·
+รัน quality gates ทั้ง 13 ด่าน (bash syntax · ไม่มี template tag เหลือ · numeric underscore · pipefail · line continuation ·
 controller contract · stacked contract · multimodal assets · profile schema · serving consistent · **secret scan** ·
+origin stamp ·
 checksums) และตรวจ `PACKAGE_SHA256SUMS` ว่าไม่มีใครแก้ไฟล์
 
 ## แจ้งช่องโหว่

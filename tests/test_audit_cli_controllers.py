@@ -644,7 +644,12 @@ def test_a_second_download_of_the_same_bundle_is_refused_while_the_first_is_stil
                             env=env, timeout=30)
     out, err = first.communicate(timeout=60)
 
-    assert second.returncode != 0 and "กำลังรันอยู่แล้ว" in second.stderr, second.stdout + second.stderr
+    # ข้อความมีสองแบบ แล้วแต่ว่าเครื่องนั้นระบุเจ้าของล็อกได้ไหม:
+    #   มี fuser/lsof  → "…กำลังรันอยู่จริง — process ที่ถือล็อกอยู่ตอนนี้: <ps>"
+    #   ไม่มีทั้งคู่    → "…กำลังรันอยู่แล้ว (อีก process ถือ …)"
+    # เดิมยืนยันเฉพาะแบบหลัง ซึ่งผ่านบนเครื่องที่ *ไม่มี* fuser/lsof เท่านั้น — GitHub runner
+    # มี psmisc/lsof ติดมา จึงเข้าทางที่ดีกว่าแล้วเทสแดง ทั้งที่ controller ทำถูกกว่าเดิม
+    assert second.returncode != 0 and "กำลังรันอยู่" in second.stderr, second.stdout + second.stderr
     assert first.returncode == 0, out + err
     assert (tmp_path / "models" / "Qwen3-8B-Q4_K_M.gguf").read_bytes() == b"GGUF12345678"
     # ตัวแรกจบแล้ว ล็อกหลุด — สั่งซ้ำได้ตามปกติ

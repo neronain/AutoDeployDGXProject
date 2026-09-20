@@ -16,6 +16,8 @@ context จาก env อย่างเดียว ทั้งที่ SGLan
 import json
 from unittest.mock import patch
 
+from lmds.fleet import adopt as adopt_mod
+
 from lmds.fleet.adopt import inspect_container
 
 
@@ -30,7 +32,16 @@ def _adopted(image: str, args: list[str], env=None, entrypoint=None):
             "HostConfig": {"Binds": [], "PortBindings": {}, "NetworkMode": "host",
                            "Runtime": "nvidia", "IpcMode": "host", "ShmSize": 0},
         }])
-    with patch("lmds.fleet.adopt.subprocess.run", return_value=R()):
+    # หมายเหตุ: patch ผ่าน `patch.object(adopt_mod.subprocess, ...)` ไม่ใช่สตริง
+    # "lmds.fleet.adopt.subprocess.run"
+    #
+    # `lmds/fleet/__init__.py` ทำ `from .adopt import adopt` ซึ่งผูก *ฟังก์ชัน* ชื่อ adopt
+    # ทับ attribute ของแพ็กเกจหลังระบบ import ตั้ง `lmds.fleet.adopt = <โมดูล>` ไว้แล้ว
+    # ชื่อนั้นจึงชี้ไปที่ฟังก์ชันถาวร · mock ของ Python 3.10 หาเป้าหมายด้วยการไล่ getattr
+    # จึงเจอฟังก์ชันแล้วตาย "No module named 'lmds.fleet.adopt.subprocess'"
+    # ส่วน 3.11+ เปลี่ยนไปใช้ pkgutil.resolve_name (อ่านจาก sys.modules) จึงไม่เจอปัญหา
+    # — เทสนี้เลยแดงเฉพาะ 3.10 บน CI มาตลอดโดยที่เครื่อง dev (3.12) เขียวเสมอ
+    with patch.object(adopt_mod.subprocess, "run", return_value=R()):
         return inspect_container("srv")
 
 

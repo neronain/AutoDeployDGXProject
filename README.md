@@ -7,8 +7,8 @@
 ระบบวางโมเดลภาษาลงเครื่องตัวเอง สำหรับ **NVIDIA DGX Spark** และ **Ubuntu + RTX**
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
-[![version](https://img.shields.io/badge/version-0.7.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2118-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-0.8.0-1f5fbf)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-2161-17703f)](tests/)
 [![assistant](https://img.shields.io/badge/assistant-operator%20%C2%B7%2021%20probes%20%C2%B7%2025%20actions-6f42c1)](docs/USAGE.md#ถามผู้ช่วยให้ไปดูเครื่องให้-กล่องแชทมุมขวาล่าง)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
@@ -354,8 +354,8 @@ lmds recipes --publish <ชื่อ> --features tools,vision   # ส่งส�
 เท่าไร ส่วน active บอกว่าจะได้ความเร็วเท่าไร* — บนเครื่องที่คอขวดคือ bandwidth สองค่านี้
 ต่างกันหลายเท่า · repo ที่แถม MTP draft head มาให้จะถูกโหลด + ต่อสายให้อัตโนมัติ
 (วัดจริงบน DGX Spark: gemma4-26B-A4B ได้ **1.78x** โดย output เท่าเดิม)
-· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,037 เทสต์**
-(`pytest --collect-only` ที่ commit `45c9cc6` · 2026-09-20 — ตัวเลขเดียวกับป้ายบนหัวไฟล์)
+· **22 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,161 เทสต์**
+(`pytest --collect-only` ที่ 0.8.0 · 2026-09-20 — ตัวเลขเดียวกับป้ายบนหัวไฟล์)
 
 > **แหล่งโมเดล: Hugging Face เท่านั้น** — Ollama registry และ NVIDIA NGC อยู่ในเฟส 2
 > (ใส่ลิงก์เข้าไปแล้วระบบบอกเองว่ายังไม่รองรับ พร้อมแนะทางอื่น) · HF ย้ายไฟล์ใหญ่ไป **Xet** แล้ว —
@@ -422,12 +422,14 @@ script-update (candidates) เพื่อรอ review → promote ขึ้น
 | [FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md) | คุมหลายเครื่องจากเครื่องเดียว — ติดตั้ง/อัปเดต node จาก hub, `lmds cluster pair/doctor/write`, cluster.env |
 | [NVIDIA-CLUSTER-SOURCES.md](docs/NVIDIA-CLUSTER-SOURCES.md) | เอกสารคลัสเตอร์ของ NVIDIA — อะไรยืนยันของเรา อะไรเติมของใหม่ |
 | [PRD.md](docs/PRD.md) · [CLI_SPEC.md](docs/CLI_SPEC.md) · [ROADMAP.md](docs/ROADMAP.md) | ข้อกำหนด, สเปกคำสั่ง, แผนพัฒนา |
+| [LICENSING.md](docs/LICENSING.md) | ระบบไลเซนส์ทำงานยังไง — นับเครื่องแบบไหน ล็อกอะไรบ้าง (และ **อะไรที่ไม่มีวันล็อก**) ไฟล์ไลเซนส์หน้าตาเป็นอย่างไร |
 | [SECURITY.md](SECURITY.md) | ข้อมูลอะไรออกนอกเครื่อง, secret เก็บที่ไหน, แจ้งช่องโหว่ |
 | [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) | ตั้ง dev env + กฎที่ห้ามละเมิด · ประวัติการเปลี่ยนแปลง |
 
 ## Requirements
 
-- **Ubuntu 22.04 / 24.04** (ARM64 หรือ x86_64) — พัฒนาบน macOS ได้
+- **Ubuntu 22.04 / 24.04 / 25.04** (ARM64 หรือ x86_64) — พัฒนาบน macOS ได้
+- **Python 3.10–3.13** — CI ทดสอบครบทั้งสี่รุ่นทุก push (24.04 มาพร้อม 3.12 · 25.04 มาพร้อม 3.13)
 - **Python 3.10+**
 - **Docker + NVIDIA Container Toolkit** บนเครื่องเป้าหมาย (`./install.sh` ลงให้ได้ · จากหน้าเว็บ *Add machine* ลงให้ด้วยรหัส sudo ครั้งเดียว)
 - **git + python3** บนเครื่อง node — hub ส่งโค้ดเป็น git bundle ไปให้ clone เอง ไม่ต้องมีสิทธิ์เข้า GitHub

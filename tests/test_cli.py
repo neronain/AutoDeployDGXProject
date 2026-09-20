@@ -1,3 +1,5 @@
+import re
+
 import sys
 from types import SimpleNamespace
 
@@ -69,7 +71,11 @@ def test_completion_options_available():
     """lmds ต้องมี --install-completion ให้ผู้ใช้เปิด tab completion ได้"""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "--install-completion" in result.output
+    # typer เปิด FORCE_TERMINAL เองเมื่อเห็น env GITHUB_ACTIONS (rich_utils.py) → rich ระบายสี
+    # ชื่อธงเป็นสามช่วง SGR แยกกัน (`-` / `-install` / `-completion`) สตริงเต็มจึงหาไม่เจอ
+    # ทั้งที่ธงมีอยู่จริงและ help ยาวเท่ากันเป๊ะ · ถอดโค้ดสีออกก่อนแล้วค่อยเทียบ
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--install-completion" in plain
 
 
 def test_complete_slug_includes_local_bundles(tmp_path, monkeypatch):

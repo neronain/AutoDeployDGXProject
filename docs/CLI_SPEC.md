@@ -1,4 +1,4 @@
-# CLI Specification — 0.6.0
+# CLI Specification — 0.8.0
 
 สเปกคำสั่งของ `lmds` เขียนด้วย Python 3.10+, `typer` + `rich` · ปรับให้ตรง `lmds --help` ของ 0.6.0 (a4ec6bb, 2026-09-04)
 
@@ -12,7 +12,7 @@ lmds deploy <MODEL> [options]              # flow หลัก: วิเคร�
 lmds inspect <MODEL> [--target …] [--context N] [--kv-dtype bf16|fp8] [--json]
 lmds plan <MODEL> [--no-llm] [--target] [--engine] [--json]     # Deployment Plan อย่างเดียว
 lmds generate <MODEL> [--gguf] [--engine] …                      # เหมือน deploy --yes แต่ไม่ต่อรอง flag
-lmds validate <BUNDLE_DIR> [--fix]         # quality gates 12 ด่าน — exit 0 ผ่าน, 2 ไม่ผ่าน
+lmds validate <BUNDLE_DIR> [--fix]         # quality gates 13 ด่าน — exit 0 ผ่าน, 2 ไม่ผ่าน
 lmds smoke <SLUG> [--on NODE] [--keep] [--skip-download]        # download → verify → start → test-text → stop
 lmds rebuild <SLUG> [--output DIR]         # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน in-place ไม่เรียก LLM
 lmds adopt [CONTAINER] | --port N | --pid N [--slug] [--take-over]   # รับโมเดลที่รันอยู่ก่อน LMDS
@@ -27,8 +27,12 @@ lmds scan [--root DIR]… [--all] [--json]   # weight ที่มีอยู�
 lmds recipes [MODEL] [--sync] [--repo] [--ref] [--publish SLUG --features … --no-push]
 lmds prune [-y]                            # ล้างทะเบียนที่ชี้ไป bundle ที่ไม่มีแล้ว
 lmds bench run|list|show|remove            # คะแนนโมเดลที่รันอยู่ (ดู BENCH.md)
+lmds fit <MODEL> [--target] [--slots] [--context]   # ต้องใช้ RAM เท่าไรบนเครื่องนี้ — ไม่เขียนอะไร
+lmds bundles refresh [SLUG] [--all]        # regenerate controller เก่าให้ตรง template ปัจจุบัน (ออฟไลน์)
+lmds fleet check                           # ทั้งฟลีตตรง hub ครบ 3 มิติไหม (code · controller · runtime)
+lmds license show|seats|install <FILE>     # ไลเซนส์ของเครื่องนี้ (ออฟไลน์ล้วน — ดู LICENSING.md)
 lmds node add|list|remove|install|setup|set|run|ctl|cluster|clone|push   # fleet หลายเครื่อง
-lmds cluster show|write|pair|doctor        # คลัสเตอร์ stacked
+lmds cluster show|write|pair|doctor|inspect|plan|apply|remove-net   # คลัสเตอร์ stacked
 lmds web [--port --bind --token -b --stop --restart --status --new-token --enable --disable]
 lmds config set-provider|set-key|set-hf-token|show|defaults
 lmds agent info|bench                      # JSON ให้ hub เรียกผ่าน SSH
@@ -364,9 +368,9 @@ GET  /api/cluster · POST /api/cluster/write · POST /api/cluster/pair · GET /a
 
 ## `lmds validate`
 
-รัน quality gates 12 ด่านกับ bundle ใด ๆ (รวม bundle ที่แก้มือ): `bash -n` · template rendered (ไม่มี tag เหลือ) · numeric
+รัน quality gates 13 ด่านกับ bundle ใด ๆ (รวม bundle ที่แก้มือ): `bash -n` · template rendered (ไม่มี tag เหลือ) · numeric
 underscore · pipefail-safe · line continuation · controller contract v3.0.0 · stacked contract · multimodal assets · profile
-schema (+ pinned revision) · serving consistent · secret scan · checksums (`--fix` regenerate `PACKAGE_SHA256SUMS`)
+schema (+ pinned revision) · serving consistent · secret scan · **origin stamp** · checksums (`--fix` regenerate `PACKAGE_SHA256SUMS`)
 
 Output: ตาราง pass/fail ต่อ gate + exit `0/2`
 
@@ -387,7 +391,7 @@ Output: ตาราง pass/fail ต่อ gate + exit `0/2`
 ~/.local/share/lmds/venv # ตัวโปรแกรม (venv.old ระหว่างอัปเดต) · ~/.local/bin/lmds symlink
 ```
 
-## โครงสร้าง source (ของจริง ณ 0.6.0)
+## โครงสร้าง source (ของจริง ณ 0.8.0)
 
 ```text
 src/lmds/
@@ -401,7 +405,10 @@ src/lmds/
 ├── recipes/             # catalog.yaml + sync/publish (รวมทีละคีย์)
 ├── assistant/           # catalog.py (probe/action), runner.py, policy.py (ตั๋ว), router.py, knowledge.py + playbook.md
 ├── generator/           # renderer.py + templates/ single-vllm · single-llamacpp · single-sglang · stacked-vllm · README · SPECIAL_FILES
-├── validator/           # gates.py — quality gates 12 ด่าน
+├── licensing/           # ed25519.py (verify/sign) · model.py (รูปแบบไฟล์) · store.py (อ่าน+ตรวจ)
+│                        #   seats.py (นับเครื่องตาม LICENSE §1.1) · enforce.py (จุดบังคับใช้ที่เดียว)
+│                        #   stamp.py (ตราประทับบน bundle) · keys.py (public key ที่ฝังมา)
+├── validator/           # gates.py — quality gates 13 ด่าน
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 ├── doctor/              # checks.py — role/controller/hf-token/weights/…/architecture/grammar/port/server
 ├── bench/               # runner.py, workloads.py, capability.py, score.py, store.py
@@ -416,9 +423,9 @@ src/lmds/
 │                        #   (job/cancel/clean_options/_pump scrub), state.py (แคช · decorate_stacked), assistant.py, memory.py,
 │                        #   scriptedit.py, selfupdate.py, static/index.html + static/fonts/ (Geist)
 └── _build.py            # COMMIT/SOURCE ที่ install.sh ประทับ
-tests/                   # 132 ไฟล์ test_*.py · 2,118 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
-                         #   นับด้วย pytest --collect-only ที่ commit 45c9cc6 (2026-09-20) — ตรงกับป้ายใน README
-.github/workflows/ci.yml # pytest 3.10/3.11/3.12 + bash -n/shellcheck + secret scan
+tests/                   # 133 ไฟล์ test_*.py · 2,161 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
+                         #   นับด้วย pytest --collect-only ที่ 0.8.0 (2026-09-20) — ตรงกับป้ายใน README
+.github/workflows/ci.yml # pytest 3.10/3.11/3.12/3.13 + bash -n/shellcheck + secret scan
 ```
 
 > ยังไม่มี: `tests/fixtures/` สำหรับ regression เทียบ controllers v3.0.0 (ใช้ `tests/test_v3_regression.py` port กฎ 13 ข้อแทน) ·

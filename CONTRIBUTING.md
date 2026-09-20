@@ -36,7 +36,7 @@ pytest
 ## รันเทส
 
 ```bash
-pytest                      # ทั้งหมด (2,118 เทส · 132 ไฟล์)
+pytest                      # ทั้งหมด (2,161 เทส · 133 ไฟล์)
 pytest tests/test_brain.py  # เฉพาะไฟล์
 pytest -k stacked           # เฉพาะที่ชื่อตรง
 pytest -v -rA -k embed      # อยากเห็นชื่อเทส/ผลทีละข้อ — pyproject ตั้ง addopts = "-q" ไว้ ผลปกติจึงเงียบ
@@ -115,7 +115,7 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
 ### แก้ template ของ controller
 
 `src/lmds/generator/templates/*.j2` (single-vllm · single-llamacpp · single-sglang · stacked-vllm) — หลังแก้ต้องผ่าน
-quality gates ทั้ง 12 ด่านโดยอัตโนมัติ (เทสใน `tests/test_generator.py` เรียก `run_gates` ให้อยู่แล้ว) · ข้อควรระวังที่ gate จับ:
+quality gates ทั้ง 13 ด่านโดยอัตโนมัติ (เทสใน `tests/test_generator.py` เรียก `run_gates` ให้อยู่แล้ว) · ข้อควรระวังที่ gate จับ:
 
 - ห้าม numeric underscore literal ใน arithmetic (`(( 65_536 ))`)
 - ห้าม pipefail-unsafe (`... | grep -q`)

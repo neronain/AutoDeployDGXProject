@@ -490,3 +490,18 @@ def test_a_custom_named_bundle_can_still_be_regenerated_offline(tmp_path):
     # ชื่อที่ไม่ตรงเลย + profile เป็นของโมเดลเดียวกัน = ต้องไปต่อได้
     marker = source[source.index("if target_slug != folder"):]
     assert "owner != plan.model_id" in marker[:1200], "ต้องเทียบเจ้าของจาก profile ก่อนปฏิเสธ"
+
+
+def test_the_download_lock_message_cannot_be_killed_by_errexit():
+    """บล็อกที่บอกว่า "ใครถือล็อกอยู่" ต้องไม่ตายเงียบเพราะ errexit
+
+    เจอตอนไล่หาเหตุที่เทสแดงบน CI: สคริปต์รันใต้ `set -Eeuo pipefail` · ถ้า PID ที่ fuser
+    เพิ่งบอกมาตายไปก่อน `ps` จะถูกเรียก ไพป์ไลน์คืนค่าไม่ใช่ศูนย์ แล้ว errexit ฆ่าสคริปต์
+    ก่อน `die` ได้พิมพ์ — download ตายเงียบ exit 1 ไม่มีข้อความเลย ซึ่งตรงข้ามกับเหตุผล
+    ที่บล็อกนี้มีอยู่ · บน CI ไม่เจอเพราะ PID ยังอยู่ตอนตรวจ
+    """
+    template = (ROOT / "src/lmds/generator/templates/single-llamacpp-controller.sh.j2").read_text(
+        encoding="utf-8")
+    line = next(l for l in template.splitlines() if l.strip().startswith('who="$(ps -o pid='))
+    assert "|| true" in line, (
+        "การกำหนดค่า who= ต้องจบด้วย || true ไม่งั้น errexit ฆ่าสคริปต์ก่อน die ได้พิมพ์ข้อความ")

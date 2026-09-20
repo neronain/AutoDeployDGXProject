@@ -78,12 +78,23 @@ grep -rInE '(sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|hf_[A-Za-z0-9]{30,}|ghp_
 **บัมพ์เวอร์ชันใน commit เดียวกับที่ tag:**
 
 ```
-src/lmds/__init__.py   __version__ = "0.7.0"
+src/lmds/__init__.py   __version__ = "<X.Y.Z>"
                        TEMPLATE_STANDARD  ← บัมพ์เมื่อ template contract เปลี่ยน เท่านั้น
-CHANGELOG.md           หัวข้อ 0.7.0 พร้อมวันที่
-README.md / README.en.md   badge version + badge tests
-docs/CLI_SPEC.md       จำนวนไฟล์เทส/เทส ถ้าขยับ
-git tag -a v0.7.0
+CHANGELOG.md           หัวข้อ <X.Y.Z> พร้อมวันที่
+README.md / README.en.md   badge version + badge tests + **ตัวเลขเทสในเนื้อความ**
+                       (README.md และ README.en.md เขียนจำนวนเทสไว้ *สองที่* คือป้ายกับย่อหน้า
+                        ท้ายไฟล์ ซึ่งประกาศเองว่า "ตัวเลขเดียวกับป้าย" — 2026-09-20 หลุดกันจริง
+                        ป้ายขึ้น 2118 ส่วนเนื้อความยังเป็น 2037)
+CONTRIBUTING.md        จำนวนเทส/ไฟล์ ในบรรทัดคำสั่ง pytest
+docs/CLI_SPEC.md       หัวไฟล์ "CLI Specification — <X.Y.Z>" · จำนวนไฟล์เทส/เทส · โครงสร้าง source
+                       · คำสั่งที่เพิ่มใหม่ (สเปกเคยตกหล่น license/fit/fleet/bundles ไปทั้งชุด)
+git tag -a v<X.Y.Z>
+
+ถ้าเพิ่ม/ลด quality gate ต้องไล่แก้ **แปดที่**: CLI_SPEC (×3) · CONTRIBUTING · SECURITY ·
+PRD · ROADMAP · USAGE — เลขจำนวนด่านฝังไว้ทุกที่ ตัวจริงคือ `ALL_GATES` ใน validator/gates.py
+
+วิธีนับเทสที่เชื่อได้ (RTK proxy กิน summary line ของ pytest):
+  pytest --collect-only 2>&1 | tail -3
 ```
 
 LiteGate: `pyproject.toml` `version` + `app/__init__.py` ถ้ามี + `CHANGELOG.md` + badge
@@ -108,7 +119,7 @@ _INSTALL_SCRIPT = """
 
 `LMDS_REPO_URL` เปลี่ยนได้แค่ *"repo ไหน"* **ไม่ใช่ *"commit ไหน"***
 
-→ **เครื่องลูกค้าวิ่งตามปลาย `main` เสมอ ไม่มีทางบอกว่า "อยู่ที่ v0.7.0 พอ"**
+→ **เครื่องลูกค้าวิ่งตามปลาย `main` เสมอ ไม่มีทางบอกว่า "อยู่ที่ tag นั้นพอ"**
 
 ### ที่ต้องแก้ (เข้าคิว WS)
 
