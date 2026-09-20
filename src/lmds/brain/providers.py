@@ -1,7 +1,8 @@
 """LLM provider adapters — เรียก REST API ตรงผ่าน httpx (ไม่พึ่ง SDK หนัก)
 
 adapter เดียว (OpenAI-compatible) ครอบทั้ง OpenAI จริงและ endpoint local ทุกตัว
-Gemini ใช้ REST ของ Google โดยตรง — Anthropic เตรียม interface ไว้ (เฟส 2)
+Gemini ใช้ REST ของ Google โดยตรง · Anthropic ใช้ Messages API ซึ่งคนละโครงกับ
+/chat/completions พอสมควร (system แยกออกจาก messages, max_tokens เป็นฟิลด์บังคับ)
 """
 
 from __future__ import annotations
@@ -12,15 +13,18 @@ from abc import ABC, abstractmethod
 
 import httpx
 
-from lmds.config.settings import ProviderConfig, ProviderName
+from lmds.config.settings import DEFAULT_MODELS, ProviderConfig, ProviderName
 
 OPENAI_BASE = "https://api.openai.com/v1"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 MINIMAX_BASE = "https://api.minimax.io/v1"
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 
 # error ชั่วคราว: rate limit / ฝั่ง provider ล่มชั่วคราว — retry คุ้ม
 # ไม่รวม 400/401/403/404 (ผิดที่ config ของเรา retry ไปก็เหมือนเดิม)
-RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+# 529 เป็นของ Anthropic ตัวเดียว (overloaded_error = ฝั่งเขารับงานไม่ไหว ไม่ใช่เราส่งผิด)
+# ตัวอื่นไม่เคยคืน status นี้ อยู่ในลิสต์รวมจึงไม่กระทบใคร
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
 MAX_HTTP_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 2.0
 MAX_RETRY_AFTER_SECONDS = 30.0
@@ -344,6 +348,213 @@ class MiniMaxProvider(LlmProvider):
             raise ProviderError(f"รูปแบบคำตอบของ minimax ผิดปกติ: {exc}") from exc
 
 
+# ── Anthropic (Messages API) ──────────────────────────────────────────────────
+# ทุกคำขอต้องมี header เวอร์ชัน ไม่งั้นโดน 400 ตั้งแต่ก่อนดู payload
+ANTHROPIC_VERSION = "2023-06-01"
+
+# งานของสมองตัวนี้คือวางแผน deploy: อ่าน fit report แล้วตอบ JSON ตาม schema —
+# ต้องการ reasoning มากกว่าความเร็ว และยิงครั้งเดียวต่อ deploy หนึ่งครั้ง ไม่ใช่งานปริมาณมาก
+# ผู้ใช้ทับได้ด้วย `--model` ตอน set-provider (ดูชื่อที่ key ใช้ได้จริงจาก list_models())
+# ค่านี้ได้ใช้เมื่อ config ไม่ได้ระบุรุ่นมาเท่านั้น — ปกติ set-provider เติมจาก DEFAULT_MODELS
+# ให้ก่อนแล้ว · **ดึงจากที่นั่นตรง ๆ ไม่เขียนชื่อรุ่นซ้ำ**: ค่าคงที่สองตัวที่ "ต้องเป็นรุ่นเดียวกัน"
+# จะแยกจากกันวันหนึ่งเสมอ แล้วผู้ใช้ที่แก้ config.yaml เองจะได้คนละรุ่นกับที่ set-provider เขียนให้
+# โดยไม่มีอะไรบอก (เกิดขึ้นแล้วตอนเพิ่ม adapter ตัวนี้: opus-5 กับ sonnet-5)
+ANTHROPIC_DEFAULT_MODEL = DEFAULT_MODELS[ProviderName.ANTHROPIC]
+
+# Anthropic บังคับ max_tokens เสมอ (ไม่มี default ฝั่ง server แบบ OpenAI) และรุ่น 4.6 ขึ้นไป
+# เปิด adaptive thinking มาให้เอง โดย token ที่ใช้คิดถูกนับรวมในเพดานนี้ด้วย — ตั้งแคบแบบ
+# 1500 ที่ provider อื่นใช้กับแชท จะหมดไปกับการคิดจนได้ content ว่างกลับมา
+# พร้อม stop_reason="max_tokens" · แผน deploy เป็น JSON ยาว จึงให้ที่มากกว่าฝั่งแชท
+ANTHROPIC_MAX_TOKENS = 8192
+ANTHROPIC_CHAT_MAX_TOKENS = 4096
+
+
+class AnthropicProvider(LlmProvider):
+    """Claude ผ่าน Messages API
+
+    ลอกโครง OpenAI มาตรง ๆ ไม่ได้อยู่ 4 จุด: system เป็นฟิลด์บนสุดไม่ใช่ message,
+    max_tokens บังคับ, คำตอบเป็น list ของ block หลายชนิดไม่ใช่ message.content ก้อนเดียว,
+    และรุ่น 4.6 ขึ้นไปไม่รับ temperature/top_p อีกแล้ว (ส่งไป = 400 ทั้งคำขอ)
+    """
+
+    def __init__(self, model: str, api_key: str, base_url: str | None = None,
+                 client: httpx.Client | None = None):
+        self.name = "anthropic"
+        self.model = model or ANTHROPIC_DEFAULT_MODEL
+        self._key = api_key
+        self._base = (base_url or ANTHROPIC_BASE).rstrip("/")
+        self._client = client or httpx.Client(timeout=120.0)
+
+    def complete_json(self, system: str, user: str) -> str:
+        # ไม่มี response_format/JSON mode แบบ OpenAI ให้เปิด — ความเป็น JSON มาจาก prompt
+        # และ orchestrator ที่ validate ด้วย schema + retry อยู่แล้ว (เหมือนทาง minimax)
+        resp = _post_with_retry(
+            self._client,
+            f"{self._base}/messages",
+            headers=self._headers(),
+            payload=self._payload(system, [{"role": "user", "content": user}],
+                                  max_tokens=ANTHROPIC_MAX_TOKENS),
+            provider_name=self.name,
+        )
+        return self._text_or_raise(resp)
+
+    def complete_chat(self, system: str, messages: list[dict]) -> str:
+        resp = _post_with_retry(
+            self._client,
+            f"{self._base}/messages",
+            headers=self._headers(),
+            payload=self._payload(system, self._chat_messages(messages),
+                                  max_tokens=ANTHROPIC_CHAT_MAX_TOKENS),
+            provider_name=self.name,
+        )
+        # แชทที่ถูกตัดกลางคันยังอ่านรู้เรื่อง — โชว์เท่าที่ได้ดีกว่าขึ้น error แล้วไม่ได้อะไรเลย
+        return self._text_or_raise(resp, allow_truncated=True)
+
+    def stream_chat(self, system: str, messages: list[dict]):
+        """สตรีมผ่าน SSE — เหตุผลเดียวกับฝั่ง OpenAI-compat: คำตอบยาวต้องทยอยขึ้น
+
+        ไม่ผ่าน _post_with_retry เพราะ retry กลาง stream แปลว่าผู้ใช้เห็นคำตอบซ้ำ
+        ต่อไม่ติดตั้งแต่แรกค่อยตกไปเป็นแบบไม่สตรีม (ผู้เรียกจับ ProviderError)
+        """
+        payload = self._payload(system, self._chat_messages(messages),
+                                max_tokens=ANTHROPIC_CHAT_MAX_TOKENS)
+        payload["stream"] = True
+        try:
+            with self._client.stream(
+                "POST", f"{self._base}/messages", headers=self._headers(), json=payload
+            ) as resp:
+                if resp.status_code != 200:
+                    resp.read()
+                    raise self._http_error(resp)
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue  # บรรทัด event:/ว่างของ SSE — ข้อมูลจริงอยู่บรรทัด data
+                    try:
+                        event = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue  # ping หรือบรรทัดที่ไม่ใช่ JSON — ข้ามไป
+                    # ล้มกลางสตรีมยังเป็น HTTP 200 (ต่อสายไปแล้ว) — error มาเป็น event
+                    # ไม่เช็คตรงนี้คำตอบจะหยุดกลางประโยคเฉย ๆ โดยไม่มีใครบอกว่าทำไม
+                    if event.get("type") == "error":
+                        detail = (event.get("error") or {}).get("message") or "ไม่ทราบสาเหตุ"
+                        raise ProviderError(f"anthropic หยุดกลางคำตอบ: {detail}")
+                    # event มีหลายชนิด (message_start / content_block_stop / message_delta)
+                    # เอาเฉพาะ text_delta · thinking_delta เป็นความคิด ไม่ใช่คำตอบที่จะโชว์
+                    if event.get("type") != "content_block_delta":
+                        continue
+                    delta = event.get("delta") or {}
+                    if delta.get("type") == "text_delta" and delta.get("text"):
+                        yield delta["text"]
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"anthropic สตรีมไม่สำเร็จ: {exc}") from exc
+
+    def _headers(self) -> dict[str, str]:
+        # ไม่ใช่ Bearer — Anthropic ใช้ x-api-key ของมันเอง
+        return {"x-api-key": self._key, "anthropic-version": ANTHROPIC_VERSION}
+
+    def _payload(self, system: str, messages: list[dict], *, max_tokens: int) -> dict:
+        payload: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        # system เป็นฟิลด์บนสุด ไม่ใช่ role ใน messages — ใส่เป็น role จะโดนปฏิเสธทั้งคำขอ
+        # ส่งตอนว่างก็ไม่ผ่านเหมือนกัน (ห้าม text block ว่าง) จึงใส่เฉพาะตอนมีค่า
+        if system:
+            payload["system"] = system
+        # ไม่ส่ง temperature: รุ่น 4.6 ขึ้นไปถอด sampling parameter ออกแล้ว ส่งไปได้ 400
+        # (ค่าตั้งต้นเราเป็นรุ่นใหม่ และผู้ใช้ทับเป็นรุ่นเก่าได้ — ไม่ส่งเลยใช้ได้ทั้งสองทาง)
+        return payload
+
+    def _chat_messages(self, messages: list[dict]) -> list[dict]:
+        """ปรับประวัติแชทให้ตรงกติกาของ Anthropic ก่อนส่ง
+
+        สามข้อที่ทำให้ทั้งคำขอถูกปฏิเสธถ้าปล่อยผ่าน: content ว่าง (ห้าม text block ว่าง),
+        role อื่นนอกจาก user/assistant, และข้อความแรกต้องเป็น user เสมอ
+        ข้อสุดท้ายเกิดจริงกับกล่องแชท — build_messages() ตัดท้ายด้วย history[-MAX_TURNS:]
+        ซึ่งตัดมาลงตรงคำตอบของผู้ช่วยได้ตามปกติ (กติกาคนละแบบกับ Gemini ที่ต้อง map
+        assistant → model แต่ทำที่จุดเดียวกัน)
+        """
+        cleaned = [
+            {"role": "assistant" if m.get("role") == "assistant" else "user",
+             "content": str(m.get("content") or "")}
+            for m in messages
+            if str(m.get("content") or "").strip()
+        ]
+        while cleaned and cleaned[0]["role"] != "user":
+            cleaned.pop(0)
+        return cleaned
+
+    def _text_or_raise(self, resp: httpx.Response, *, allow_truncated: bool = False) -> str:
+        if resp.status_code != 200:
+            raise self._http_error(resp)
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise ProviderError(f"รูปแบบคำตอบของ anthropic ผิดปกติ: {exc}") from exc
+
+        stop = data.get("stop_reason")
+        # การปฏิเสธด้วยเหตุผลความปลอดภัยยังเป็น HTTP 200 — ไม่เช็คตรงนี้ผู้ใช้จะเห็นแค่
+        # "คำตอบว่าง" แล้วไปไล่หาที่ key กับเน็ตแทน ทั้งที่ต้องแก้ที่คำถาม
+        if stop == "refusal":
+            raise ProviderError(
+                "anthropic ปฏิเสธคำขอนี้ (stop_reason=refusal) — ลองเรียบเรียงคำถามใหม่ "
+                "หรือใช้ provider อื่น/--no-llm สำหรับ rule-based mode"
+            )
+        # คำตอบเป็น list ของ block และรุ่นใหม่เปิด adaptive thinking มาให้เอง — block แรก
+        # จึงเป็น thinking (ข้อความว่างเมื่อไม่ได้ขอให้แสดง) ไม่ใช่คำตอบ · หยิบ content[0]
+        # ตรง ๆ แบบ OpenAI จะได้ string ว่างทั้งที่คำตอบอยู่ block ถัดไป
+        text = "".join(
+            block.get("text") or ""
+            for block in (data.get("content") or [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if stop == "max_tokens" and not (allow_truncated and text):
+            raise ProviderError(
+                "anthropic ตอบไม่จบ — ชนเพดาน max_tokens (stop_reason=max_tokens) "
+                "คำตอบถูกตัดกลางคันจึงใช้ไม่ได้ · ลองใหม่อีกครั้ง หรือลดขนาดข้อมูลที่ส่งไป"
+            )
+        if not text:
+            raise ProviderError(
+                f"รูปแบบคำตอบของ anthropic ผิดปกติ: ไม่มี block ชนิด text (stop_reason={stop})"
+            )
+        return text
+
+    def _http_error(self, resp: httpx.Response) -> ProviderError:
+        """แปลง status เป็นข้อความที่บอกว่าต้องไปแก้อะไร
+
+        Anthropic ส่งเหตุผลจริงมาใน error.message (เช่นชื่อโมเดลไหนไม่มี) แต่ตัว status
+        อย่างเดียวไม่พอให้ผู้ใช้รู้ว่าต้องแก้ที่ key, ที่ชื่อโมเดล หรือแค่รอ — เคสที่เจอบ่อย
+        คือ 401 กับ 400 แล้วไปนั่งไล่ผิดที่
+        """
+        hints = {
+            400: "ชื่อโมเดลไม่มีจริงหรือพารามิเตอร์ผิด — ตรวจชื่อรุ่นที่ตั้งไว้ "
+                 f"(ต้องเป็น id เต็ม เช่น {ANTHROPIC_DEFAULT_MODEL})",
+            401: "key ไม่ถูกต้องหรือหมดอายุ — ตั้งใหม่ด้วย: lmds config set-key anthropic",
+            403: "key นี้ไม่มีสิทธิ์เรียกโมเดลนี้ — ตรวจสิทธิ์/workspace ของ key",
+            404: "ไม่พบปลายทางหรือโมเดลนี้ — ตรวจชื่อโมเดลและ base URL",
+            413: "prompt ใหญ่เกินที่ API รับ — ลดข้อมูลที่ส่งไป",
+            429: "ยิงถี่เกินโควตา (rate limit) — รอแล้วลองใหม่ หรือลดความถี่/เพิ่มโควตาในบัญชี",
+            529: "ฝั่ง Anthropic รับงานไม่ไหวชั่วคราว — ลองใหม่อีกครั้ง",
+        }
+        hint = hints.get(resp.status_code, "")
+        detail = self._error_detail(resp)
+        message = f"anthropic ตอบ HTTP {resp.status_code}: {detail}"
+        return ProviderError(f"{message} — {hint}" if hint else message)
+
+    @staticmethod
+    def _error_detail(resp: httpx.Response) -> str:
+        """เอา error.message มาแทน body ดิบ — body ดิบ 300 ตัวแรกมักหมดไปกับ wrapper JSON"""
+        try:
+            body = resp.json()
+        except ValueError:
+            return resp.text[:300]
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])[:300]
+        return resp.text[:300]
+
+
 def make_provider(config: ProviderConfig, api_key: str | None,
                   client: httpx.Client | None = None) -> LlmProvider:
     """สร้าง provider จาก config + key
@@ -361,15 +572,13 @@ def make_provider(config: ProviderConfig, api_key: str | None,
     if config.name is ProviderName.MINIMAX:
         return MiniMaxProvider(config.model, api_key, base_url=config.base_url, client=client)
     if config.name is ProviderName.ANTHROPIC:
-        raise ProviderError("Anthropic adapter อยู่ใน roadmap เฟส 2 — ใช้ openai/gemini/openai-compat ก่อน")
+        return AnthropicProvider(config.model, api_key, base_url=config.base_url, client=client)
     return OpenAiCompatProvider(config.name.value, config.model, api_key, client=client)
 
 
 # ── รายชื่อโมเดลที่ key นี้ใช้ได้จริง ────────────────────────────────────────────
 # ผู้ใช้ที่ไม่ได้อยู่กับ provider นั้นทุกวันไม่มีทางรู้ชื่อโมเดล — พิมพ์ผิดตัวเดียวแล้วรู้ตอน
 # deploy ล้มกลางทาง · ถามจาก provider ตรง ๆ ได้ ก็ควรถาม
-ANTHROPIC_BASE = "https://api.anthropic.com/v1"
-
 _LIST_TIMEOUT = 15.0
 
 
@@ -393,7 +602,7 @@ def list_models(name: ProviderName, api_key: str, base_url: str | None = None) -
                 )
             if name is ProviderName.ANTHROPIC:
                 resp = client.get(f"{ANTHROPIC_BASE}/models", headers={
-                    "x-api-key": api_key, "anthropic-version": "2023-06-01"})
+                    "x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION})
                 resp.raise_for_status()
                 return sorted(m["id"] for m in resp.json().get("data", []))
 

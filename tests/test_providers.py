@@ -290,10 +290,14 @@ def test_openai_real_still_requires_key():
         make_provider(ProviderConfig(name=ProviderName.OPENAI, model="gpt-4.1"), api_key=None)
 
 
-def test_make_provider_anthropic_phase2():
-    config = ProviderConfig(name=ProviderName.ANTHROPIC, model="claude-sonnet-5")
-    with pytest.raises(ProviderError, match="เฟส 2"):
-        make_provider(config, "k-123")
+def test_make_provider_anthropic_dispatch():
+    """เคยเด้ง "เฟส 2" ตรงนี้ — ตอนนี้มี adapter จริงแล้ว (เทสเต็มอยู่ test_anthropic_provider.py)"""
+    from lmds.brain.providers import AnthropicProvider
+
+    config = ProviderConfig(name=ProviderName.ANTHROPIC, model="claude-opus-5")
+    assert isinstance(make_provider(config, "k-123"), AnthropicProvider)
+    with pytest.raises(MissingKey, match="set-key anthropic"):
+        make_provider(config, None)
 
 
 # ── ถามรายชื่อโมเดลจาก provider ────────────────────────────────────────────────

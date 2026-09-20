@@ -333,7 +333,7 @@ validation_notes: [...]
 - ~~Web UI หน้าเดียว~~ ✅ **ทำแล้ว** (2026-08-04 · ขยายเป็นคอนโซลทั้งฟลีตใน 0.5.x–0.6.x)
 - ~~runtime smoke test อัตโนมัติ~~ ✅ **ทำแล้ว** (`lmds smoke`, 2026-08-06) — ยังต้องสั่งเอง ไม่รันหลัง deploy ให้
 - **Ollama + NGC source** — ❌ ยังไม่ทำ (แหล่งโมเดลยังเป็น Hugging Face อย่างเดียว)
-- **Anthropic provider** — ❌ ยังไม่ทำ (ตั้งค่าได้แต่ adapter ยังไม่มี · error ตอนใช้จริง)
+- ~~Anthropic provider~~ ✅ **ทำแล้ว** (adapter Messages API, 2026-09-21) — `lmds config set-provider anthropic` ใช้ได้แล้ว · ด่านเดิมใน `Settings.set_provider()` ที่ปฏิเสธไว้ตอนยังไม่มี adapter ถูกปลดพร้อมกัน
 - **i18n ไทยเต็มรูปของหน้าเว็บ** — ❌ ยังไม่ทำ (ตอนนี้หน้าเว็บอังกฤษ CLI ไทย)
 
 ### เฟส 3

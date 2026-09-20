@@ -2,6 +2,7 @@ import pytest
 import yaml
 
 from lmds.config import ProviderName, Settings
+from lmds.config.settings import DEFAULT_MODELS
 from lmds.config.paths import config_file
 
 
@@ -22,12 +23,30 @@ def test_set_provider_default_model(isolated_config):
     assert reloaded.provider.name is ProviderName.OPENAI
 
 
-def test_anthropic_rejected_at_config_time(isolated_config):
-    """เดิมตั้งค่าผ่าน แล้วไปพังตอน deploy — ต้องบอกตั้งแต่ตอนตั้งค่า"""
+def test_anthropic_is_accepted_now_that_the_adapter_exists(isolated_config):
+    """เดิมด่านนี้ปฏิเสธ anthropic ตั้งแต่ตอนตั้งค่า เพราะ adapter ยังไม่มี
+
+    ตั้งค่าผ่านแล้วไปพังตอน deploy แย่กว่าถูกปฏิเสธตั้งแต่ต้น — จึงปฏิเสธไว้ก่อนถูกแล้ว
+    ตอนนี้ adapter มีจริง (`brain/providers.AnthropicProvider`) ด่านจึงต้องเปิด
+    ไม่งั้นฟีเจอร์ที่ทำเสร็จแล้วยังเข้าถึงผ่าน CLI ไม่ได้
+    """
     settings = Settings.load()
-    with pytest.raises(ValueError, match="เฟส 2"):
-        settings.set_provider(ProviderName.ANTHROPIC)
-    assert settings.provider is None  # ไม่เขียนทับ config เดิม
+    config = settings.set_provider(ProviderName.ANTHROPIC)
+    assert config.name is ProviderName.ANTHROPIC
+    assert config.model == DEFAULT_MODELS[ProviderName.ANTHROPIC]
+    settings.save()
+    assert Settings.load().provider.name is ProviderName.ANTHROPIC, "ต้องถูกเขียนลง config จริง"
+
+
+def test_the_anthropic_default_model_has_one_source(isolated_config):
+    """ค่าคงที่สองตัวที่ "ต้องเป็นรุ่นเดียวกัน" จะแยกจากกันวันหนึ่งเสมอ
+
+    เกิดขึ้นแล้วตอนเพิ่ม adapter: providers.py ตั้ง opus-5 ส่วน settings ตั้ง sonnet-5
+    ผู้ใช้ที่แก้ config.yaml เองจะได้คนละรุ่นกับที่ set-provider เขียนให้ โดยไม่มีอะไรบอก
+    """
+    from lmds.brain.providers import ANTHROPIC_DEFAULT_MODEL
+
+    assert ANTHROPIC_DEFAULT_MODEL == DEFAULT_MODELS[ProviderName.ANTHROPIC]
 
 
 def test_openai_compat_requires_base_url(isolated_config):
