@@ -975,42 +975,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     const saved = parseInt(localStorage.getItem(RAIL_KEY) || "", 10);
     if (Number.isFinite(saved)) setRail(saved);
   } catch { /* โหมดส่วนตัว/ปิด storage — ใช้ค่า default ไป ไม่ต้องพัง */ }
-
-  addEventListener("DOMContentLoaded", () => {
-    const grip = document.getElementById("rgrip");
-    if (!grip) return;
-    const save = (px) => { try { localStorage.setItem(RAIL_KEY, String(clampRail(px))); } catch {} };
-
-    grip.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      // pointer capture = ลากออกนอกที่จับหรือออกนอกหน้าต่างแล้วยังลากต่อได้
-      grip.setPointerCapture(e.pointerId);
-      grip.classList.add("dragging");
-      document.body.classList.add("rail-dragging");
-      const move = (ev) => setRail(ev.clientX);
-      const up = (ev) => {
-        grip.releasePointerCapture(ev.pointerId);
-        grip.classList.remove("dragging");
-        document.body.classList.remove("rail-dragging");
-        grip.removeEventListener("pointermove", move);
-        grip.removeEventListener("pointerup", up);
-        save(ev.clientX);
-      };
-      grip.addEventListener("pointermove", move);
-      grip.addEventListener("pointerup", up);
-    });
-
-    grip.addEventListener("dblclick", () => { setRail(RAIL_DEFAULT); save(RAIL_DEFAULT); });
-
-    // ลากด้วยเมาส์ไม่ได้ก็ต้องมีทางอื่น — ที่จับ focus ได้อยู่แล้ว (tabindex) ให้ลูกศรทำงานด้วย
-    grip.addEventListener("keydown", (e) => {
-      const step = e.shiftKey ? 24 : 8;
-      const now = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--rail-w"), 10) || RAIL_DEFAULT;
-      if (e.key === "ArrowLeft") { e.preventDefault(); setRail(now - step); save(now - step); }
-      if (e.key === "ArrowRight") { e.preventDefault(); setRail(now + step); save(now + step); }
-      if (e.key === "Home") { e.preventDefault(); setRail(RAIL_DEFAULT); save(RAIL_DEFAULT); }
-    });
-  });
+  // ต่อสายที่จับอยู่ใน script ท้ายหน้า (ตอนนั้น #rgrip มีแล้ว) — ที่นี่แค่เปิดทางให้เรียกถึง
+  window.railSizing = { setRail, clampRail, RAIL_KEY, RAIL_DEFAULT };
 
   // อยู่โหมดตามเครื่องแล้วผู้ใช้สลับธีมของ OS ระหว่างเปิดหน้าค้างไว้ ต้องเปลี่ยนตามทันที
   window.matchMedia("(prefers-color-scheme: dark)")
@@ -7700,6 +7666,49 @@ async function chatBoot() {
 }
 
 boot().then(chatBoot).catch(chatBoot);
+
+// ── ที่จับลากขยายเมนูซ้าย ───────────────────────────────────────────────────────
+// อยู่ใน script ท้ายหน้าเพราะต้องการให้ #rgrip ถูกสร้างแล้ว · ผูกที่นี่จึงไม่ต้องรอ
+// DOMContentLoaded ซึ่ง harness ของเทส DOM ไม่ได้ยิงให้ (และ addEventListener เปล่า ๆ
+// ก็ไม่มีใน context ของ vm ที่ harness ใช้รันสคริปต์ของหน้า)
+(() => {
+  const { setRail, clampRail, RAIL_KEY, RAIL_DEFAULT } = window.railSizing || {};
+  const grip = document.getElementById("rgrip");
+  if (!grip || !setRail) return;
+  const save = (px) => { try { localStorage.setItem(RAIL_KEY, String(clampRail(px))); } catch {} };
+
+  // ฟังที่ document ไม่ใช่ที่ตัวที่จับ และไม่ใช้ pointer capture — กฎเดียวกับที่จับลาก
+  // เรียงการ์ด (test_web.py::test_drag_listens_on_the_document_not_the_handle)
+  // ที่นั่นเจอมาแล้วว่าผูกไว้กับตัวที่จับแล้วลากได้ก้าวเดียวก็ค้าง · ที่จับของ rail ไม่ถูก
+  // ย้ายใน DOM จึงไม่เจออาการนั้นตรง ๆ แต่กฎนี้บังคับทั้งหน้า และ document ก็ถูกกว่าอยู่แล้ว
+  // (ลากเลยขอบหน้าต่างออกไปแล้วยังลากต่อได้)
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    grip.classList.add("dragging");
+    document.body.classList.add("rail-dragging");
+    const move = (ev) => setRail(ev.clientX);
+    const up = (ev) => {
+      grip.classList.remove("dragging");
+      document.body.classList.remove("rail-dragging");
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      save(ev.clientX);
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+  });
+
+  grip.addEventListener("dblclick", () => { setRail(RAIL_DEFAULT); save(RAIL_DEFAULT); });
+
+  // ลากด้วยเมาส์ไม่ได้ก็ต้องมีทางอื่น — ที่จับ focus ได้อยู่แล้ว (tabindex) ให้ลูกศรทำงานด้วย
+  grip.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 24 : 8;
+    const now = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--rail-w"), 10) || RAIL_DEFAULT;
+    if (e.key === "ArrowLeft") { e.preventDefault(); setRail(now - step); save(now - step); }
+    if (e.key === "ArrowRight") { e.preventDefault(); setRail(now + step); save(now + step); }
+    if (e.key === "Home") { e.preventDefault(); setRail(RAIL_DEFAULT); save(RAIL_DEFAULT); }
+  });
+})();
 </script>
 <button id="chat-open" class="chat-fab" hidden title="Ask the assistant" aria-label="Ask the assistant"><svg class="ai-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2.5l1.55 4.7a3 3 0 0 0 1.9 1.9l4.7 1.55-4.7 1.55a3 3 0 0 0-1.9 1.9L11 18.8l-1.55-4.7a3 3 0 0 0-1.9-1.9L2.85 10.65l4.7-1.55a3 3 0 0 0 1.9-1.9L11 2.5z"/><path d="M18.4 14.2l.62 1.88a1.2 1.2 0 0 0 .76.76l1.88.62-1.88.62a1.2 1.2 0 0 0-.76.76l-.62 1.88-.62-1.88a1.2 1.2 0 0 0-.76-.76l-1.88-.62 1.88-.62a1.2 1.2 0 0 0 .76-.76z"/></svg></button>
 <div id="chat-panel" class="chat-panel" hidden>
