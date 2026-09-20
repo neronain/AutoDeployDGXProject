@@ -9,11 +9,13 @@
 
 ```text
 lmds deploy <MODEL> [options]              # flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
+lmds deploy <MODEL> --also-stacked         # ได้ bundle สองใบในรอบเดียว: <slug> (single) + <slug>-stacked (2 เครื่อง)
+lmds deploy <MODEL> --smoke                # รัน smoke test ต่อท้าย (โหลด weight จริง — opt-in เสมอ)
 lmds inspect <MODEL> [--target …] [--context N] [--kv-dtype bf16|fp8] [--json]
 lmds plan <MODEL> [--no-llm] [--target] [--engine] [--json]     # Deployment Plan อย่างเดียว
 lmds generate <MODEL> [--gguf] [--engine] …                      # เหมือน deploy --yes แต่ไม่ต่อรอง flag
 lmds validate <BUNDLE_DIR> [--fix]         # quality gates 13 ด่าน — exit 0 ผ่าน, 2 ไม่ผ่าน
-lmds smoke <SLUG> [--on NODE] [--keep] [--skip-download]        # download → verify → start → test-text → stop
+lmds smoke <SLUG> [--on NODE] [--keep] [--skip-download]        # download → verify → start → test-text → stop (ตัวเดียวกับ deploy --smoke)
 lmds rebuild <SLUG> [--output DIR]         # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน in-place ไม่เรียก LLM
 lmds adopt [CONTAINER] | --port N | --pid N [--slug] [--take-over]   # รับโมเดลที่รันอยู่ก่อน LMDS
 lmds ps [--all] | list | start | stop [--all] | restart | logs [-n] [-f] | enable [--now] [--timeout] [--system] | disable
@@ -42,7 +44,6 @@ lmds version                               # เวอร์ชัน + commit �
 lmds --install-completion | --show-completion
 
 lmds repair <BUNDLE_DIR> --log <FILE|->  ❌ # repair จาก log ความล้มเหลว (เฟส 2 — ผู้ช่วยบนหน้าเว็บอ่าน log ให้แทน)
-lmds deploy --topology both              ❌ # สร้าง single+stacked พร้อมกัน
 lmds config profile edit                 ❌
 ```
 
@@ -67,6 +68,10 @@ Options:
                           — จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข (script/hub) · ตรงหลายไฟล์ = ปฏิเสธพร้อมรายการ
   --no-llm                rule-based mode (ใช้สูตรจาก lmds recipes)
   --yes / -y              ข้ามขั้นยืนยัน — flag ค้างอนุมัติจะไม่ถูกใส่
+  --also-stacked          ทำ bundle ของ dgx-spark-stacked (2 เครื่อง) เพิ่มอีกใบจากการวิเคราะห์/ยืนยันรอบเดียวกัน
+                          → ได้ <slug> (single) และ <slug>-stacked · คนละโฟลเดอร์ คนละ controller คนละ API key
+  --smoke                 รัน smoke test ต่อท้าย: download → verify-files → start → test-text → stop
+                          — โหลด weight จริงหลายสิบ GB · ไม่ใส่ = ได้แค่ bundle เหมือนเดิม (opt-in เสมอ)
 
 ยังไม่ implement:
   --context TOKENS   ❌  ใช้ขั้นยืนยัน interactive แทน (deploy ถาม) · หลัง generate ใช้ lmds set --context
@@ -81,7 +86,8 @@ Options:
    `ใส่ Hugging Face token (Enter เพื่อข้าม)` · `--yes`/ไม่มี tty → fail exit 4 พร้อมบอกวิธีตั้ง · analyze บนหน้าเว็บบอกวิธีใส่ตรง ๆ
 2. **ขั้นยืนยันแผน** — ตารางสรุป (model/revision, runtime+image digest, topology, context, budget, feature, คำเตือน, facts `unverified`)
    ให้ ยืนยัน / แก้ context / ยกเลิก · flag นอก allowlist ถามทีละตัว default = ไม่อนุมัติ
-3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network
+3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network ·
+   `6` bundle ผ่าน gates แต่ `--smoke` รันจริงไม่ผ่าน (คนละอาการคนละทางแก้กับ `2` ซึ่งแปลว่าสคริปต์ผิดตั้งแต่ยังไม่รัน)
 4. **Topology มาจาก target** — `dgx-spark-stacked[-4]` → stacked (controller multi-node) · `rtx-*-dual` → multi-gpu · นอกนั้น single ·
    harden บังคับกลับเสมอ และตัด flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`
    `--distributed-executor-backend`) ที่หลุดมาจาก LLM · stacked ต้องใช้ vLLM + safetensors — GGUF / SGLang / embedding
@@ -92,6 +98,20 @@ Options:
 6. **port** — `analyze`/`generate` เลือกพอร์ตว่างตัวแรกจาก inventory ของเครื่องปลายทาง (stacked: head และ worker) เขียนลง `bundle.env`
 7. **image** — tag ถูก resolve เป็น digest ตอน generate · digest ที่ระบุมาถูกตรวจเป็น digest ไม่ถาม registry ซ้ำ · image ของสูตร
    ที่ registry ตอบไม่พบถูกคงไว้พร้อมเตือน · ถาม registry ไม่ได้ = ใช้ tag ตามเดิม
+8. **`--also-stacked`** — ใบที่สองถูก *วางแผนใหม่ทั้งใบ* จาก fit ของ `dgx-spark-stacked` (TP · image · ขนาด KV · เพดาน context
+   ขึ้นกับ target ทั้งหมด และ harden บังคับ topology จาก `fit.target_name` อยู่แล้ว) — ไม่ใช่ plan เดิมที่สลับ field ·
+   slug ต้องคนละตัว (`<slug>-stacked`) เพราะ `render_bundle()` ย้าย controller ที่ topology ไม่ตรงออกเป็น `.replaced-<เวลา>`:
+   slug เดียวกันสองรอบจะได้ bundle ใบเดียวที่ทับตัวเอง · flag/ไฟล์ runtime ที่อนุมัติไปแล้วและ context ที่ผู้ใช้ *พิมพ์เอง*
+   ถูกใช้ซ้ำกับใบที่สอง (ไม่ถามซ้ำ — การอนุมัติผูกกับโมเดล ไม่ใช่กับจำนวนเครื่อง) · ปฏิเสธตั้งแต่ก่อน render เมื่อ
+   target เป็น stacked อยู่แล้ว / ไม่ใช่ preset DGX Spark / GGUF / SGLang / `embed`·`rerank` และเมื่อโฟลเดอร์ `<slug>-stacked`
+   เป็นของ repo อื่นอยู่ก่อน · ชื่อ `--topology both` ที่ ROADMAP เขียนไว้ถูกเปลี่ยนเป็นชื่อนี้ — `--topology` ของ
+   `lmds cluster` คือ *ผังสาย* `direct|ring|switch` คนละเรื่องกัน และ topology ของ `deploy` มาจาก target เสมอ (ข้อ 4)
+   การเปิด `--topology` ที่นี่จะชวนให้พิมพ์ `--topology stacked` แล้วโดนปฏิเสธ
+9. **`--smoke`** — opt-in เสมอ ไม่มีโหมด opt-out: smoke โหลด weight จริงหลายสิบ GB · `deploy` เป็นทางเดินที่ hub/หน้าเว็บ/สคริปต์
+   เรียกด้วย `--yes` อยู่แล้ว · และ deploy บน hub มักสร้าง bundle ให้ *เครื่องอื่น* (hub อาจไม่มี GPU) — เปิดเป็นค่าเริ่มต้น
+   คือทำให้ทางเดิน fleet ผิดทั้งเส้น · ใช้ตัวเดินขั้นเดียวกับ `lmds smoke` (หยุด server เสมอแม้ล้มกลางทาง) ·
+   คู่กับ `--also-stacked` จะ smoke เฉพาะใบ single แล้วบอกว่าข้ามใบ stacked เพราะอะไร (stacked ต้องตั้ง
+   MASTER_IP/WORKER_IP + กุญแจ head→worker ก่อน — ยิงทันทีหลัง generate คือล้มที่ `sync-worker` ทุกครั้ง)
 
 ## `lmds inspect`
 

@@ -1107,6 +1107,22 @@ def node_cluster(
                     f"(ควรได้ >={warning['expected_gbps']}G): {', '.join(warning['names'])} — "
                     f"stacked ได้อยู่ แต่ช้ากว่าที่ควร ตรวจ port speed ที่ switch[/yellow]"
                 )
+            elif warning["kind"] == "needs-switch":
+                # กลุ่มเกิน max_direct เครื่องแต่สายที่เสียบอยู่ยังเป็นแบบต่อตรง = คลัสเตอร์นี้
+                # ไม่มีวันครบ · ต้องบอกว่าต้องซื้ออะไรตรงนี้ ไม่ใช่ปล่อยให้ไปเจอ "unknown
+                # topology" ตอน apply · รหัสนี้เคยมีใน payload แล้วแต่ไม่มีใครพิมพ์ออกมา
+                console.print(
+                    f"    [yellow]· {warning['node_count']} เครื่องต้องผ่าน switch — "
+                    f"ต่อสายตรงถึงกันได้สูงสุด {warning['max_direct']} เครื่อง "
+                    f"(QSFP 2 ช่อง/เครื่อง) แต่สายที่เสียบอยู่เป็นแบบต่อตรง: "
+                    f"{', '.join(warning['names'])}[/yellow]"
+                )
+                for item in warning.get("shopping", []):
+                    console.print(f"      [dim]· ต้องมี: {item}[/dim]")
+            else:
+                # รหัสใหม่ที่ CLI ยังไม่รู้จักต้องโผล่เป็นรหัส ไม่ใช่หายเงียบ — บทเรียนเดียวกับ
+                # blocker ด้านล่างที่เคยทำให้ `cluster show` ตายทั้งตารางเพราะรหัสที่ไม่รู้จัก
+                console.print(f"    [yellow]· {warning['kind']}: {', '.join(warning.get('names', []))}[/yellow]")
         for blocker in group["blockers"]:
             names = ", ".join(blocker["names"])
             # รหัสที่ยังไม่รู้จักต้องพิมพ์ออกมาเป็นรหัส ไม่ใช่ KeyError ทั้งคำสั่ง — `no-shared-fabric` ของกลุ่มที่ตั้งชื่อเอง
@@ -1372,7 +1388,7 @@ def _print_plan(plan: dict) -> None:
 
 @cluster_app.command("inspect")
 def cluster_inspect_cmd(
-    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–4 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head)"),
+    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–8 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head) · เกิน 3 ต้องผ่าน switch"),
     topology: Optional[str] = typer.Option(None, "--topology", help="บังคับผัง: direct | ring | switch"),
 ) -> None:
     """ดูว่าพอร์ต QSFP ไหนมีสาย ตั้ง IP อะไรอยู่ และเสียบเป็นผังไหน — อ่านอย่างเดียว"""
@@ -1394,7 +1410,7 @@ def cluster_inspect_cmd(
 
 @cluster_app.command("plan")
 def cluster_plan_cmd(
-    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–4 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head)"),
+    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–8 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head) · เกิน 3 ต้องผ่าน switch"),
     subnet: str = typer.Option("10.100.152.0/24", "--subnet", help="วงแรก — ลิงก์ถัดไปได้วงถัดไป (.153, .154)"),
     topology: Optional[str] = typer.Option(None, "--topology", help="บังคับผัง: direct | ring | switch"),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์แผนเป็น JSON (ส่งต่อให้ apply/หน้าเว็บได้)"),
@@ -1422,7 +1438,7 @@ def cluster_plan_cmd(
 
 @cluster_app.command("apply")
 def cluster_apply_cmd(
-    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–4 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head)"),
+    nodes: list[str] = typer.Argument(..., help="เครื่อง 2–8 ตัว เรียงตามลำดับที่เสียบสาย (ตัวแรก = head) · เกิน 3 ต้องผ่าน switch"),
     subnet: str = typer.Option("10.100.152.0/24", "--subnet", help="วงแรก — ลิงก์ถัดไปได้วงถัดไป"),
     topology: Optional[str] = typer.Option(None, "--topology", help="บังคับผัง: direct | ring | switch"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ถามยืนยันแผน (ยังถามรหัส sudo)"),
@@ -3051,6 +3067,18 @@ def smoke(
 
     exit 0 ผ่านทุกขั้น · 2 ล้มบางขั้น (บอกว่าขั้นไหนและ log ท้าย)
     """
+    if _run_smoke(slug, node=node, keep=keep, skip_download=skip_download):
+        raise typer.Exit(code=2)
+
+
+def _run_smoke(slug: str, node: str = "", keep: bool = False, skip_download: bool = False) -> str:
+    """เดินทุกขั้นของ smoke แล้วคืน *ชื่อขั้นที่ล้ม* (ว่าง = ผ่านหมด)
+
+    แยกตัวเดินออกจากคำสั่ง `smoke` เพราะ `deploy --smoke` ต้องเรียกของเดียวกัน แต่แปลผล
+    เป็น exit code คนละชุด — ถ้า deploy ไปเรียกคำสั่ง `smoke()` ตรง ๆ typer.Exit(2) ของมัน
+    จะโผล่ออกมาเป็น exit 2 ของ deploy ซึ่งสัญญาไว้ว่าแปลว่า "ไม่ผ่าน quality gates"
+    คนละเรื่องกันคนละทางแก้ (ของ smoke คือรันแล้วพัง ของ gates คือสคริปต์ผิดตั้งแต่ยังไม่รัน)
+    """
     steps = [s for s in SMOKE_STEPS if not (skip_download and s[0] in ("download", "verify-files"))]
     where = node or "เครื่องนี้"
     console.print(f"[bold]smoke test {slug}[/bold] บน {where} — {len(steps)} ขั้น")
@@ -3106,8 +3134,9 @@ def smoke(
 
     if failed_at:
         err_console.print(f"\n[red]smoke test ไม่ผ่าน — ติดที่ '{failed_at}'[/red]")
-        raise typer.Exit(code=2)
+        return failed_at
     console.print(f"\n[green]smoke test ผ่านทุกขั้น[/green] — {slug} รันได้จริงบน {where}")
+    return ""
 
 
 def _render_and_package(deployment_plan, report, fit, output: str, slug: str | None = None):
@@ -3216,6 +3245,132 @@ def _is_native_prepare(deployment_plan, fit) -> bool:
     return deployment_plan.runtime.engine.value == "llamacpp" and fit.memory_model.value == "unified"
 
 
+# target ของ bundle ใบที่สองเมื่อสั่ง `deploy --also-stacked` — 2 เครื่อง เพราะเป็นขนาดเดียว
+# ที่ผ่าน hardware regression จริง (Llama 3.3 70B, 5 ส.ค. 2569) · อยาก 4 เครื่องให้ deploy อีกรอบ
+# ด้วย --target dgx-spark-stacked-4 ตรง ๆ จะได้เห็นตาราง fit ของมันเองก่อนยืนยัน
+STACKED_COMPANION_TARGET = "dgx-spark-stacked"
+
+
+def _companion_slug(base: str) -> str:
+    """slug ของ bundle stacked ที่คู่กับ single — ต้อง *คนละโฟลเดอร์* กันเสมอ
+
+    `render_bundle()` เขียนลง <output>/<slug> และย้าย controller ที่ topology ไม่ตรงออกเป็น
+    `.replaced-<เวลา>` (กันเคส 2026-09-05 ที่ download วิ่ง controller หนึ่ง start วิ่งอีกตัว) —
+    ยิง render สอง topology ด้วย slug เดียวกันจึงไม่ได้ bundle สองชุด แต่ได้ชุดเดียวที่ทับตัวเอง
+    โดยไม่มีใครรู้ · ตัดให้พอดี MAX_SLUG_LEN ก่อนต่อท้าย ไม่งั้นชื่อยาวจาก repo จะทำให้
+    `check_slug_name` โยน ValueError ทิ้งงานทั้งรอบ *หลัง* bundle ใบแรกลงดิสก์ไปแล้ว
+    """
+    from lmds.brain.rulebased import MAX_SLUG_LEN
+
+    suffix = "-stacked"
+    return (base[: MAX_SLUG_LEN - len(suffix)].rstrip("-._") or "model") + suffix
+
+
+def _reject_impossible_companion(target: str | None, engine: str | None, report=None) -> None:
+    """ปฏิเสธ `--also-stacked` ที่ยังไงก็ไม่มีทางสำเร็จ — ตรวจ *ก่อน* ลงมือ ไม่ใช่หลัง
+
+    เงื่อนไขพวกนี้ renderer/planner ปฏิเสธอยู่แล้ว แต่มันปฏิเสธตอนที่ bundle ใบแรก
+    ถูกเขียน ลงทะเบียนกับ fleet และ mint key ไปเรียบร้อยแล้ว — ผู้ใช้เลยได้ทั้ง error
+    ทั้งของครึ่งใบ แล้วต้องมานั่งเดาว่าที่ได้มาใช้ได้ไหม · ตรงนี้ตัดจบตั้งแต่ยังไม่มีอะไรบนดิสก์
+    เรียกสองรอบ: รอบแรกด้วยสิ่งที่รู้จาก argv (ก่อนยิง Hub) รอบสองเมื่อรู้ชนิดไฟล์/งานจริงแล้ว
+    """
+    why = ""
+    if target and "stacked" in target.lower():
+        why = (f"--target {target} เป็น stacked อยู่แล้ว — --also-stacked ไม่มีอะไรให้เพิ่ม "
+               f"(อยากได้ single ด้วย: deploy อีกรอบด้วย --target dgx-spark-single)")
+    elif target and not target.lower().startswith("dgx-spark"):
+        why = (f"stacked มีแต่ preset ของ DGX Spark — --target {target} จับคู่กับ "
+               f"{STACKED_COMPANION_TARGET} ไม่ได้ (คนละเครื่องคนละสเปก)")
+    elif (engine or "").strip().lower() == "sglang":
+        why = "stacked ยังไม่มี controller ของ SGLang — ใบที่สองจะ render ไม่ได้"
+    elif report is not None:
+        from lmds.inspector.report import ArtifactType
+
+        if report.artifact_type is ArtifactType.GGUF:
+            why = "stacked (TP ข้ามเครื่อง) ยังมีแต่ controller ของ vLLM — GGUF บังคับ llama.cpp เสมอ"
+        elif report.task in ("embed", "rerank"):
+            why = f"โมเดล {report.task} รันเครื่องเดียวเสมอ (pooling ไม่มีเหตุผลให้กระจายข้ามเครื่อง)"
+    if why:
+        err_console.print(f"[red]--also-stacked ใช้กับงานนี้ไม่ได้: {why}[/red]")
+        raise typer.Exit(code=1)
+
+
+def _companion_collides(output: str, slug: str, model_id: str) -> bool:
+    """โฟลเดอร์ <slug>-stacked ถูกจองโดยโมเดล *คนละ repo* อยู่แล้วหรือเปล่า
+
+    ส่ง slug ตรง ๆ ให้ render_bundle แปลว่าข้าม `resolve_slug()` ซึ่งเป็นตัวกันชนกันปกติ —
+    ไม่ตรวจเองตรงนี้ bundle ของคนอื่นจะถูกทับเงียบ ๆ แบบเดียวกับเคส ucbye/nvidia (2026-09-05)
+    """
+    from lmds.generator.renderer import bundle_model_id
+
+    existing = bundle_model_id(Path(output) / slug)
+    return bool(existing) and existing.lower() != model_id.lower()
+
+
+def _deploy_companion_stacked(report, provider, engine, concurrency: int, output: str, *,
+                              base_slug: str, approved: list[str], approved_assets: list[str],
+                              chosen_context: int | None) -> str:
+    """render bundle ใบที่สองแบบ stacked จาก report เดิม — คืน slug ที่ได้
+
+    วางแผนใหม่ทั้งใบแทนที่จะก๊อป plan เดิมมาสลับ topology: TP, image, ขนาด KV, เพดาน context
+    และ flag ที่ controller เป็นเจ้าของ ล้วนขึ้นกับ fit ของ target · harden ก็บังคับ topology
+    จาก `fit.target_name` อยู่แล้ว (orchestrator บรรทัด ~214) การแก้ field เองจึงได้ plan
+    ที่ขัดกับ fit ที่มันอ้างอิง
+    """
+    from lmds.brain import apply_asset_approvals, apply_flag_approvals
+    from lmds.fit import Verdict
+
+    slug = _companion_slug(base_slug)
+    console.print(f"\n[bold]ใบที่ 2/2 — stacked[/bold] ({STACKED_COMPANION_TARGET}) → slug [bold]{slug}[/bold]")
+    if _companion_collides(output, slug, report.repo_id):
+        err_console.print(f"[red]โฟลเดอร์ {slug} เป็นของโมเดลอื่นอยู่แล้ว — ไม่ทับให้ "
+                          f"(ลบด้วย lmds remove {slug} ถ้าไม่ใช้แล้ว)[/red]")
+        raise typer.Exit(code=1)
+
+    fit = _compute_fits(report, [STACKED_COMPANION_TARGET], concurrency)[0]
+    if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
+        err_console.print(f"[red]ใบ stacked ไม่ fit ({fit.verdict.value}) — ใบ single ที่ได้ไปแล้วยังใช้ได้ปกติ[/red]")
+        for alt in fit.alternatives:
+            err_console.print(f"[yellow]→ {alt}[/yellow]")
+        raise typer.Exit(code=3)
+
+    plan = _build_plan_safe(report, fit, provider, engine=_engine_choice(engine))
+    # การอนุมัติผูกกับ *โมเดล* (flag ของ runtime, ไฟล์ที่จะ mount) ไม่ใช่กับจำนวนเครื่อง —
+    # ผู้ใช้อ่าน URL และเหตุผลไปแล้วรอบหนึ่ง ถามซ้ำคือฝึกให้กด y รัว ๆ
+    if approved:
+        apply_flag_approvals(plan, approved)
+    if approved_assets:
+        apply_asset_approvals(plan, approved_assets)
+    if chosen_context:
+        ceiling = fit.max_safe_context or chosen_context
+        plan.serving.context = min(chosen_context, ceiling)
+
+    _render_plan(plan, fit)
+    bundle, results, delivered = _render_and_package(plan, report, fit, output, slug=slug)
+    _render_gates(results)
+    _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(plan, fit),
+                     stacked=plan.topology.value == "stacked", assets=bool(plan.runtime_assets))
+    return bundle.directory.name
+
+
+def _smoke_after_deploy(slug: str, skipped_stacked: str = "") -> None:
+    """รัน smoke ต่อท้าย deploy — ขั้นนี้คือขั้นเดียวที่พิสูจน์ว่า bundle *รัน* ได้ ไม่ใช่แค่ถูกไวยากรณ์
+
+    stacked ไม่ถูก smoke ให้: controller ของมันอ่าน MASTER_IP/WORKER_IP/SSH_USER จาก CONFIG
+    ที่คนต้องกรอกเอง + ต้องมีกุญแจ head→worker ก่อน — ยิงทันทีหลัง generate คือโหลด weight
+    หลายสิบ GB ทิ้งแล้วไปล้มที่ sync-worker ทุกครั้ง · ใช้ `lmds cluster write` + `lmds smoke`
+    เมื่อตั้งคู่เสร็จแทน
+    """
+    console.print("\n[bold]smoke test[/bold] — โหลด weight จริงแล้วลองรัน (นานเป็นสิบนาทีถึงชั่วโมง)")
+    if skipped_stacked:
+        console.print(f"[dim]ข้าม {skipped_stacked}: stacked ต้องตั้ง MASTER_IP/WORKER_IP + กุญแจ head→worker ก่อน "
+                      f"(lmds cluster write … แล้วค่อย lmds smoke {skipped_stacked})[/dim]")
+    if _run_smoke(slug):
+        err_console.print(f"[red]bundle ผ่าน gate แบบ static แต่รันจริงไม่ผ่าน — ดู log ท้ายด้านบน "
+                          f"หรือ lmds doctor {slug}[/red]")
+        raise typer.Exit(code=6)
+
+
 def _render_gates(results) -> None:
     table = Table(title="Quality Gates")
     table.add_column("Gate")
@@ -3247,10 +3402,19 @@ def deploy(
         None, "--name",
         help="ตั้งชื่อ bundle (slug) เอง — ว่าง = มาจากชื่อ repo · ชื่อจาก repo ที่ยาวเกิน 64 ตัวถูกตัดให้พอดี"),
     yes: bool = typer.Option(False, "--yes", "-y", help="ข้ามขั้นยืนยัน (สำหรับ scripting; ไม่อนุมัติ flag ค้าง)"),
+    also_stacked: bool = typer.Option(
+        False, "--also-stacked",
+        help=f"สร้าง bundle ของ {STACKED_COMPANION_TARGET} (2 เครื่อง) เพิ่มอีกใบในรอบเดียว — "
+             "ได้ <slug> (single) และ <slug>-stacked · วิเคราะห์/ยืนยันครั้งเดียวใช้ทั้งสองใบ"),
+    smoke_test: bool = typer.Option(
+        False, "--smoke",
+        help="รัน smoke test ต่อท้าย: download → verify-files → start → test-text → stop — "
+             "โหลด weight จริงหลายสิบ GB ใช้เวลานาน (ไม่ใส่ = ได้แค่ bundle เหมือนเดิม)"),
 ) -> None:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
 
-    Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก, 2 ไม่ผ่าน gates, 3 ไม่ fit, 4 ต้องการ token, 5 provider
+    Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก, 2 ไม่ผ่าน gates, 3 ไม่ fit, 4 ต้องการ token,
+    5 provider, 6 bundle ผ่าน gate แต่ `--smoke` รันจริงไม่ผ่าน
     """
     import sys
 
@@ -3264,6 +3428,9 @@ def deploy(
     from lmds.fit import Verdict
 
     interactive = sys.stdin.isatty() and not yes
+    if also_stacked:
+        # เช็คจาก argv ก่อนยิง Hub — `--also-stacked --target rtx-5090` ไม่ควรกิน inspect รอบหนึ่งก่อนถึงจะบอกว่าไม่ได้
+        _reject_impossible_companion(target, engine)
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
     report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
@@ -3275,12 +3442,19 @@ def deploy(
         console.print("[cyan]โมเดล embedding[/cyan] — จะเสิร์ฟ /v1/embeddings ไม่มี chat · เดาผิด? --task generate")
     elif report.task == "rerank":
         console.print("[cyan]โมเดล reranker[/cyan] — จะเสิร์ฟ /v1/rerank (+ /v1/score บน vLLM) ไม่มี chat · เดาผิด? --task embed|generate")
+    if also_stacked:
+        _reject_impossible_companion(target, engine, report)
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
     if fit.verdict in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT):
         err_console.print(f"[red]โมเดลไม่ fit กับ target {fit.target_name} ({fit.verdict.value})[/red]")
         for alt in fit.alternatives:
             err_console.print(f"[yellow]→ {alt}[/yellow]")
+        if also_stacked:
+            # --also-stacked ต่อยอดจากใบ single — ใบแรกไม่ fit ก็ไม่มีใบให้ต่อยอด · โมเดลที่ใหญ่เกิน
+            # เครื่องเดียวแต่ลง 2 เครื่องได้ ต้องสั่ง stacked ตรง ๆ จะได้เห็นตาราง fit ของมันก่อนยืนยัน
+            err_console.print(f"[yellow]→ ใหญ่เกินเครื่องเดียว: ใช้ --target {STACKED_COMPANION_TARGET} "
+                              f"(ไม่ใช่ --also-stacked ซึ่งต้องมีใบ single ที่ fit ก่อน)[/yellow]")
         raise typer.Exit(code=3)
 
     provider = None
@@ -3298,9 +3472,13 @@ def deploy(
 
     _render_plan(deployment_plan, fit)
 
+    # เก็บสิ่งที่ผู้ใช้ตัดสินใจไว้ใช้กับ bundle ใบที่สอง (--also-stacked) — คนอนุมัติ flag/ไฟล์
+    # ให้ "โมเดลตัวนี้" ไม่ใช่ "ให้ topology นี้" การถามซ้ำชุดเดิมอีกรอบคือกดผ่านโดยไม่อ่าน
+    approved: list[str] = []
+    approved_assets: list[str] = []
+    chosen_context: int | None = None
     if interactive:
         # อนุมัติ flag นอก allowlist รายตัว — การอนุมัติเป็นสิทธิ์ของผู้ใช้เท่านั้น
-        approved: list[str] = []
         for flag in list(deployment_plan.flags_needing_approval):
             if typer.confirm(f"อนุมัติ flag นอก allowlist: {flag} ?", default=False):
                 approved.append(flag)
@@ -3308,7 +3486,6 @@ def deploy(
             apply_flag_approvals(deployment_plan, approved)
 
         # ไฟล์ runtime ภายนอก = โค้ดที่จะรันใน container — แสดง URL ให้เห็นเต็ม ๆ ก่อนถาม
-        approved_assets: list[str] = []
         for asset in list(deployment_plan.assets_needing_approval):
             err_console.print(f"[yellow]ไฟล์ runtime ภายนอก:[/yellow] {asset.filename}")
             err_console.print(f"  จาก: {asset.url}")
@@ -3336,18 +3513,36 @@ def deploy(
             if requested > ceiling:
                 err_console.print(f"[yellow]เกินเพดานที่ปลอดภัย — ใช้ {ceiling:,} แทน[/yellow]")
                 requested = ceiling
+            # จำไว้เฉพาะตอนที่ผู้ใช้ *เปลี่ยน* ค่า — กด Enter เฉย ๆ ได้ค่าเดิมกลับมาเป็นตัวเลขเหมือนกัน
+            # แต่แปลว่า "ตามแผน" ไม่ใช่ "เอาเท่านี้" · เอาไปบังคับใบ stacked ด้วยคือตัดหน่วยความจำ
+            # ของเครื่องที่สองทิ้งเปล่า ๆ
+            if requested != deployment_plan.serving.context:
+                chosen_context = requested
             deployment_plan.serving.context = requested
 
         if not typer.confirm("สร้าง bundle ตามแผนนี้?", default=True):
             console.print("ยกเลิกโดยผู้ใช้")
             raise typer.Exit(code=1)
 
+    if also_stacked:
+        console.print(f"\n[bold]ใบที่ 1/2 — single[/bold] ({fit.target_name})")
     bundle, results, delivered = _render_and_package(deployment_plan, report, fit, output, slug=name)
     _render_gates(results)
     _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(deployment_plan, fit),
                      stacked=deployment_plan.topology.value == "stacked",
                      assets=bool(deployment_plan.runtime_assets))
     console.print("\n[dim]สถานะ: static-validated — รัน acceptance ตามลำดับด้านบนเพื่อยืนยันบนเครื่องจริง[/dim]")
+
+    companion = ""
+    if also_stacked:
+        companion = _deploy_companion_stacked(
+            report, provider, engine, concurrency, output,
+            base_slug=bundle.directory.name, approved=approved,
+            approved_assets=approved_assets, chosen_context=chosen_context,
+        )
+
+    if smoke_test:
+        _smoke_after_deploy(bundle.directory.name, skipped_stacked=companion)
 
 
 @app.command()
