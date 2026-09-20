@@ -766,6 +766,18 @@ def _demote_for_control_plane(findings: list[Finding]) -> list[Finding]:
 _LOCAL_BINDS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
+def _reads_key_store(controller: str) -> bool:
+    """controller ตัวนี้ไปอ่าน ~/.lmds/keys/<slug> เองไหม
+
+    อ่านจากตัวสคริปต์ ไม่ใช่เดาจากเวอร์ชัน — bundle ที่ adopt มาไม่มี template ให้
+    regenerate และไม่ได้เดินตามเลขเวอร์ชันของ lmds เลย
+    """
+    try:
+        return "LMDS_KEY_ROOT" in Path(controller).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
 def _check_open_endpoint(server: ServerInfo) -> list[Finding]:
     """เปิดให้ทั้งวง network โดยไม่ต้องยืนยันตัวตนไหม
 
@@ -782,7 +794,17 @@ def _check_open_endpoint(server: ServerInfo) -> list[Finding]:
     if bind in _LOCAL_BINDS:
         return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} — เข้าถึงได้เฉพาะในเครื่องนี้")]
     if apikey.read(server.slug):
-        return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} และมี API key เก็บไว้")]
+        # มีไฟล์ key ไม่ได้แปลว่า controller หยิบไปใช้ได้ · controller ที่ render ก่อนรุ่นนี้
+        # และ bundle ที่ adopt มาจาก container ซึ่งไม่มีตัวแปรชื่อ *API_KEY* ให้เติม
+        # ยังเสิร์ฟแบบเปิดอยู่ทั้งที่ `lmds key show` บอกว่ามี — เขียวตรงนี้คือคำโกหก
+        if _reads_key_store(server.controller):
+            return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} และมี API key เก็บไว้")]
+        return [Finding(
+            "endpoint", Status.WARN,
+            f"ผูกกับ {bind} · มี API key เก็บไว้แต่ controller ตัวนี้หยิบไปใช้ไม่ได้ — ยังเสิร์ฟแบบเปิดอยู่",
+            f"regenerate ให้รู้จักที่เก็บ: lmds bundles refresh {server.slug} · "
+            "bundle ที่ adopt มาแล้วไม่มีตัวแปรชื่อ *API_KEY* ต้องตั้ง auth ที่คำสั่งของ engine เอง",
+        )]
     return [Finding(
         "endpoint", Status.WARN,
         f"ผูกกับ {bind} โดยไม่มี API key — ใครก็ตามที่ถึงเครื่องนี้ใช้โมเดลได้โดยไม่ต้องยืนยันตัวตน",

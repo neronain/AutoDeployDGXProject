@@ -356,9 +356,31 @@ def test_a_stored_key_clears_the_open_endpoint_warning(tmp_path, monkeypatch):
     monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
     from lmds.fleet import apikey
 
+    # controller ที่ render จาก template ปัจจุบันอ่านที่เก็บเอง — จำลองด้วยเครื่องหมายเดียวกัน
+    controller = tmp_path / "bundles" / slug / f"{slug}-single.sh"
+    controller.write_text('#!/usr/bin/env bash\nAPI_KEY_STORE="${LMDS_KEY_ROOT:-}/x"\n', encoding="utf-8")
+
     apikey.write(slug, apikey.mint())
     endpoint = next(f for f in diagnose(slug).findings if f.name == "endpoint")
     assert endpoint.status is Status.OK and "มี API key" in endpoint.detail
+
+
+def test_a_key_that_the_controller_cannot_use_is_not_counted_as_protection(tmp_path, monkeypatch):
+    """มีไฟล์ key ไม่ได้แปลว่า controller หยิบไปใช้ได้
+
+    สองเคสจริง: controller ที่ render ก่อนรุ่นที่รู้จักที่เก็บ และ bundle ที่ adopt มาจาก
+    container ซึ่งไม่มีตัวแปรชื่อ *API_KEY* ให้เติม — ทั้งคู่ยังเสิร์ฟแบบเปิดอยู่ทั้งที่
+    `lmds key show` บอกว่ามี key · ขึ้นเขียวตรงนี้คือคำโกหกที่อันตรายกว่าไม่มีการตรวจ
+    """
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
+    from lmds.fleet import apikey
+
+    apikey.write(slug, apikey.mint())            # controller ของ _setup เป็นสคริปต์เปล่า
+    endpoint = next(f for f in diagnose(slug).findings if f.name == "endpoint")
+    assert endpoint.status is Status.WARN
+    assert "หยิบไปใช้ไม่ได้" in endpoint.detail and "ยังเสิร์ฟแบบเปิด" in endpoint.detail
+    assert "bundles refresh" in endpoint.fix
 
 
 def test_binding_only_loopback_is_fine_without_a_key(tmp_path, monkeypatch):

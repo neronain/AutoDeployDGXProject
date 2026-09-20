@@ -465,6 +465,11 @@ def _pid_on_port(port: int) -> int:
 # ทาง env/stdin เท่านั้น (ดู node ctl) สคริปต์ที่ adopt สร้างต้องอยู่ใต้กติกาเดียวกัน
 _SECRET_ENV = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|CREDENTIAL)", re.IGNORECASE)
 
+# ในบรรดาความลับที่ถูกถอดค่าออก มีแค่ "API key ของ model server" ที่ระบบเรามีที่เก็บให้
+# (`lmds key` → ~/.lmds/keys/<slug>) · HF token / รหัสผ่าน proxy เป็นของคนละเรื่อง
+# เติมค่าจากที่เก็บลงตัวที่ไม่ใช่ API key = ส่งของผิดไปให้ engine
+_API_KEY_ENV = re.compile(r"API_?KEY", re.IGNORECASE)
+
 
 def redact_secrets(env_items: list[str]) -> tuple[list[str], list[str]]:
     """คืน (env ที่จะเขียนลงสคริปต์, ชื่อที่ถูกถอดค่าออก)
@@ -495,6 +500,41 @@ def download_before_serve(command: str) -> str:
     m = _DOWNLOAD_THEN_SERVE.search(command or "")
     return m.group(2) if m else ""
 
+def _load_key_block(slug: str, names: list[str]) -> str:
+    """บล็อกที่เติม API key จากที่เก็บของเครื่องให้ตัวแปรที่ถูกถอดค่าออก
+
+    สคริปต์ที่ adopt สร้างเป็น 0755 อ่านได้ทุก user ค่าของ key จึงห้ามอยู่ในนั้น — ตัวที่เป็น
+    ความลับถูกส่งเป็น `--env ชื่อ` เฉย ๆ แล้วให้ docker หยิบจาก environment ของเชลล์ที่สั่ง
+    start ซึ่งถูกตามเจตนา แต่ systemd ตอน autostart ไม่มี environment นั้นให้ →
+    docker ข้ามตัวแปรไป → container ขึ้นมาแบบไม่มี auth เงียบ ๆ ทุก reboot
+
+    ที่เก็บอยู่คนละไฟล์ (~/.lmds/keys/<slug> โหมด 0600) หลักเดิมจึงไม่เสีย: สคริปต์ยังไม่มี
+    ความลับอยู่ข้างใน แค่ไปอ่านตอน start · env ที่ตั้งมาจากภายนอกชนะไฟล์นี้เสมอ
+    """
+    if not names:
+        # ไม่มีตัวแปรชื่อ *API_KEY* ใน container นี้ = เราไม่รู้ว่า engine ตัวนี้อ่าน key จากไหน
+        # เขียนไว้ตรง ๆ ดีกว่าปล่อยให้คนคิดว่า `lmds key` คุมตัวนี้อยู่
+        return ("# LMDS ไม่เห็นตัวแปรชื่อ *API_KEY* ใน container นี้ จึงไม่รู้ว่า engine อ่าน key จากไหน\n"
+                "# — `lmds key {slug}` ไม่มีผลกับ bundle นี้ · ตั้ง auth ที่คำสั่งของ engine เอง\n"
+                "load_api_key() {{ :; }}\n").format(slug=slug)
+    loop = " ".join(shlex.quote(n) for n in names)
+    return (
+        "# API key ของโมเดลนี้เก็บอยู่ที่ ~/.lmds/keys/<slug> (0600) ไม่ได้อยู่ในไฟล์นี้ซึ่งเป็น 0755\n"
+        "# systemd ตอน autostart เรียกสคริปต์นี้โดยไม่มี environment ของเชลล์ — ไม่เติมให้\n"
+        "# container จะขึ้นมาแบบไม่มี auth ทุก reboot · env ที่ตั้งมาจากภายนอกชนะไฟล์นี้เสมอ\n"
+        "load_api_key() {{\n"
+        '  local store="${{LMDS_KEY_ROOT:-${{HOME:-}}/.lmds/keys}}/{slug}"\n'
+        '  [[ -r "$store" ]] || return 0\n'
+        '  local value; value="$(tr -d \'\\r\\n\' < "$store")"\n'
+        '  [[ -n "$value" ]] || return 0\n'
+        "  local name\n"
+        "  for name in {loop}; do\n"
+        '    [[ -n "${{!name:-}}" ]] || export "$name=$value"\n'
+        "  done\n"
+        "}}\n"
+    ).format(slug=slug, loop=loop)
+
+
 def render_controller(adopted: Adopted, slug: str) -> str:
     """สคริปต์ที่รัน container เดิมซ้ำได้ — คำสั่งเดียวกับที่มันรันอยู่ตอนนี้"""
     env_items, redacted = redact_secrets(meaningful_env(adopted))
@@ -506,11 +546,18 @@ def render_controller(adopted: Adopted, slug: str) -> str:
     else:
         env_lines_note = ""
     env_lines = "".join(f'  --env {shlex.quote(e)} \\\n' for e in env_items)
+    # หมายเหตุต้องอยู่ *เหนือ* `docker run` ไม่ใช่แทรกกลาง — บรรทัดก่อนหน้าจบด้วย `\` ซึ่ง
+    # ต่อเข้าบรรทัดคอมเมนต์ แล้วคำสั่งก็จบตรงนั้นทันที: docker run ถูกยิงโดยไม่มี image และ
+    # ไม่มี --env สักตัว ส่วนบรรทัด `--env …` ที่เหลือกลายเป็นคำสั่งใหม่ ("--env: command not
+    # found") · ผลคือ adopted bundle ที่มี env ความลับสักตัว (HF_TOKEN/API_KEY/PASSWORD)
+    # `start` ไม่ขึ้นเลย — เจอตอนเขียนเทสที่รันสคริปต์จริง 2026-09-21
+    notes = env_lines_note
     if redacted:
         names = " ".join(redacted)
-        env_lines = (f"  # ค่าของ {names} ไม่ได้เก็บไว้ในไฟล์นี้ — export ไว้ในเชลล์ก่อน start "
-                     f"(docker หยิบจาก environment ให้เอง)\n") + env_lines
-    env_lines = env_lines_note + env_lines
+        notes += (f"  # ค่าของ {names} ไม่ได้เก็บไว้ในไฟล์นี้ — export ไว้ในเชลล์ก่อน start "
+                  f"(docker หยิบจาก environment ให้เอง)\n")
+    key_names = [n for n in redacted if _API_KEY_ENV.search(n)]
+    load_key = _load_key_block(slug, key_names)
     bind_lines = "".join(f'  --volume {shlex.quote(b)} \\\n' for b in adopted.binds)
     def _publish(spec: str, binding: list) -> str:
         # เดิมทิ้ง HostIp → container ที่เคย bind แค่ 127.0.0.1 กลายเป็นเปิดทุก interface หลัง adopt
@@ -590,7 +637,9 @@ remove_plan() {{
   echo "  container: {adopted.container} (หยุดและลบ · image {adopted.image} ไม่ถูกลบ)"
 }}
 
+{load_key}
 start() {{
+  load_api_key
   local running
   running="$(docker ps --filter "name=^${{CONTAINER_NAME}}$" --format '{{{{.Names}}}}' 2>/dev/null || true)"
   [[ -z "$running" ]] || die "container ${{CONTAINER_NAME}} กำลังรันอยู่ — รัน: $0 stop ก่อน"
@@ -600,7 +649,7 @@ start() {{
     echo "เก็บซาก container จากรอบก่อน (${{CONTAINER_NAME}}) แล้วเริ่มใหม่"
     docker rm -f "${{CONTAINER_NAME}}" >/dev/null 2>&1 || true
   fi
-  docker run -d --name "${{CONTAINER_NAME}}" --restart unless-stopped \\
+{notes}  docker run -d --name "${{CONTAINER_NAME}}" --restart unless-stopped \\
 {runtime}{ipc}{shm}{network}{port_lines}{bind_lines}{env_lines}{entry}  "${{IMAGE}}" {args}
   echo "started: ${{CONTAINER_NAME}} (port ${{API_PORT}})"
 }}
