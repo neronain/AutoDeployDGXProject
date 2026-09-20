@@ -393,7 +393,10 @@ download() {
     # ของเดิมเขียน `-e HF_TOKEN="$HF_TOKEN"` ซึ่งเอาค่าจริงไปแปะไว้ใน **argv ของ
     # docker run** — user ทุกคนบนเครื่องอ่านได้ด้วย `ps` เฉย ๆ (เจอจริงบน spark-head)
     # ทั้งที่ LMDS มีหลักเรื่องนี้อยู่แล้วในเส้นทาง SSH: ความลับไม่เดินทางผ่าน argv
+    # container โหลด weight ก็กินของแถมนี้ด้วย: มันรัน python3 ไม่ได้เปิด API อะไรเลย healthcheck
+    # ของ image จึงล้มแน่นอน แล้ว `docker ps` ขึ้น "(unhealthy)" ค้างทั้งชั่วโมงที่กำลังโหลดอยู่ดี ๆ
     docker run -d --name "$name" \
+      --no-healthcheck \
       --user "$(id -u):$(id -g)" \
       -e HOME=/tmp -e USER=lmds -e HF_HOME=/cache -e HF_HUB_CACHE="$(_container_hub_cache)" \
       -e PYTHONUNBUFFERED=1 \
@@ -776,6 +779,11 @@ start() {
 
   local docker_args=(
     run -d --name "$CONTAINER_NAME"
+    # HEALTHCHECK ที่ image แถมมาชี้พอร์ตของตัวมันเอง (llama.cpp ฝัง localhost:8080 มาจริง — ตรวจกับ
+    # registry 2026-09-20) ไม่ใช่พอร์ตที่ LMDS สั่งรัน → `docker ps` ขึ้น "(unhealthy)" ตลอดทั้งที่
+    # /health ตอบ 200 · ปิดทิ้งแทนการเขียนทับด้วย --health-cmd: wait_health/_health_ok ของ LMDS
+    # รู้จัก engine อยู่แล้ว และต้องเป็นแหล่งความจริงแหล่งเดียว (ดูเหตุผลเต็มใน llamacpp controller)
+    --no-healthcheck
     --network host --ipc host --gpus all
     -v "${HF_HOME}:/cache"
     -e HF_HOME=/cache -e "HF_HUB_CACHE=$(_container_hub_cache)" -e HOME=/tmp -e USER=lmds

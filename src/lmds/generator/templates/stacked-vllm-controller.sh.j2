@@ -1887,6 +1887,10 @@ WSCRIPT
     fi
     local -a wrun=(
       docker run -d --name "${WORKER_CONTAINER}"
+      # HEALTHCHECK ของ image ชี้พอร์ตของตัวมันเอง ไม่ใช่ของ LMDS → "(unhealthy)" ค้างตลอด ·
+      # worker ยิ่งไม่มี API ให้ถามเลย (rank ≠ 0 ไม่เปิด /health) healthcheck จึงล้มแน่นอน 100%
+      # แล้วคนที่ดู `docker ps` บน worker จะเห็นแต่สัญญาณเตือนปลอม (ดูเหตุผลเต็มใน llamacpp controller)
+      --no-healthcheck
       --gpus all --network host --ipc host
       -v "${worker_hf}:/cache"
       -v "${WORKER_VLLM_CACHE}:/root/.cache/vllm"
@@ -1908,7 +1912,8 @@ WSCRIPT
   quoted_common="$(printf ' %q' "${COMMON_ARGS[@]}")"
 
   if [[ -n "$DRY_RUN" ]]; then
-    local -a hdry=(docker run -d --name "$MASTER_CONTAINER" --gpus all --network host --ipc host
+    # ต้องเหมือน hrun ข้างล่างทุกธง — DRY RUN ที่พิมพ์คำสั่งไม่ตรงกับของที่รันจริงคือคำโกหกอีกแบบ
+    local -a hdry=(docker run -d --name "$MASTER_CONTAINER" --no-healthcheck --gpus all --network host --ipc host
       -e "VLLM_HOST_IP=${TRANSPORT_IP_MASTER}")
     while IFS= read -r line; do [[ "$line" == WARN:* ]] || hdry+=(-e "$line"); done < <(_nccl_env_pairs 2>/dev/null)
     for pair in "${EXTRA_DOCKER_ENV[@]}"; do hdry+=(-e "$pair"); done
@@ -1939,6 +1944,8 @@ WSCRIPT
   log "Starting head (rank 0, API) locally …"
   local -a hrun=(
     docker run -d --name "$MASTER_CONTAINER"
+    # เหตุผลเดียวกับ worker/llamacpp: HEALTHCHECK ของ image ชี้พอร์ตของตัวมันเอง ไม่ใช่ของ LMDS
+    --no-healthcheck
     --gpus all --network host --ipc host
     -v "${HF_HOME}:/cache"
     -v "${VLLM_CACHE}:/root/.cache/vllm"
