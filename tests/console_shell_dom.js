@@ -501,10 +501,14 @@ function makeHarness(doc) {
     visibleMachines() { return [...doc.querySelectorAll("#nodes .machine")].filter(H.visible).map(m => m.querySelector(".name").firstChild.textContent.trim()); },
     // Fake fleet API from a compact fixture: nodes[{name, site, models:[…], gpu:{…}}], cluster groups optional
     defaultRoutes(fx) {
+      // `gpus` (ลิสต์) มาก่อน `gpu` (ใบเดียว) — เครื่องหลายการ์ดเป็นของจริง (RTX 3060 ×3)
+      // และเป็นเคสที่บั๊ก "อ่าน gpus[0] ใบเดียว" โผล่ · fixture เดิมที่ใช้ `gpu` ยังทำงานเหมือนเดิม
+      const cards = n => n.gpus || [n.gpu || { name: "NVIDIA GB10", vram_gb: 128, vram_used_gb: 40 }];
       const inv = n => ({ name: n.name, reachable: n.reachable !== false, error: n.error || "", age_seconds: 1,
-        host: { hostname: n.name, lmds_version: "0.6.0", lmds_commit: "abc1234", gpus: [n.gpu || { name: "NVIDIA GB10", vram_gb: 128, vram_used_gb: 40 }], docker: true, toolkit: true, profile: "spark", arch: "arm64", role: { control_plane: false, engines: ["llamacpp"] } },
+        host: { hostname: n.name, lmds_version: "0.6.0", lmds_commit: "abc1234", gpus: cards(n), docker: true, toolkit: true, profile: "spark", arch: "arm64", role: { control_plane: false, engines: ["llamacpp"] } },
         models: n.models || [], summary: { running: (n.models || []).filter(m => m.running).length, total: (n.models || []).length } });
-      const hostData = { hostname: "hub", gpus: [], ips: [], docker: true, toolkit: true, profile: "x86", arch: "x86_64", memory_model: "discrete", role: { control_plane: true, engines: [] } };
+      // hub มีไซต์ของตัวเองได้ (config.yaml → cluster.site) — ไม่ได้มาจากทะเบียน
+      const hostData = Object.assign({ hostname: "hub", gpus: [], ips: [], docker: true, toolkit: true, profile: "x86", arch: "x86_64", memory_model: "discrete", role: { control_plane: true, engines: [] } }, fx.host || {});
       return [
         ["/api/auth", () => ({ required: false })],
         ["/api/host", () => hostData],
@@ -521,7 +525,7 @@ function makeHarness(doc) {
     snapshot(fx) {
       const nodes = {};
       for (const n of fx.nodes) nodes[n.name] = n.reachable === false ? { error: n.error || "down", age_seconds: 2 } : { age_seconds: 2, data: {
-        host: { hostname: n.name, lmds_version: "0.6.0", lmds_commit: "abc1234", gpus: [n.gpu || { name: "NVIDIA GB10", vram_gb: 128, vram_used_gb: 40 }], docker: true, toolkit: true, profile: "spark", arch: "arm64" },
+        host: { hostname: n.name, lmds_version: "0.6.0", lmds_commit: "abc1234", gpus: n.gpus || [n.gpu || { name: "NVIDIA GB10", vram_gb: 128, vram_used_gb: 40 }], docker: true, toolkit: true, profile: "spark", arch: "arm64" },
         models: n.models || [], summary: { running: (n.models || []).filter(m => m.running).length, total: (n.models || []).length } } };
       return { nodes };
     },
