@@ -16,7 +16,12 @@ worker ที่ต่อกลับมาเจอ Connection refused ก็�
 import json
 from unittest.mock import patch
 
-from lmds.fleet import adopt as adopt_mod
+import importlib
+
+# ต้องดึงผ่าน import_module — `from lmds.fleet import adopt` คืน **ฟังก์ชัน** ไม่ใช่โมดูล
+# ด้วยเหตุผลเดียวกับที่อธิบายไว้ข้างล่าง (แพ็กเกจผูกชื่อทับ) · import_module อ่านจาก
+# sys.modules จึงได้ตัวโมดูลจริงเสมอ
+adopt_mod = importlib.import_module("lmds.fleet.adopt")
 
 from lmds.fleet.adopt import Adopted, render_controller, inspect_container
 
