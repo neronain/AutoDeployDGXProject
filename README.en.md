@@ -30,16 +30,24 @@ Built and maintained by **neronain** — [facebook.com/neronain.minidev](https:/
 
 <div align="center">
 
-<img src="docs/img/fleet.png" alt="LMDS web console — the whole fleet on one page" width="900">
+<img src="docs/img/fleet.png" alt="Overview — the whole fleet on one page" width="900">
 
-*Every machine on one page — GPUs, RAM, temperature, how many models are serving. A machine
-with no GPU knows it is a control plane and refuses to pull weights down.*
+*16 machines · 7 GPUs · 688 GB VRAM · 21 models serving — on one page. Memory bars sorted
+fullest first, and **Needs attention** computed from real state (here: two machines have several
+models claiming port 8000, so the stopped ones cannot start until the port changes).*
+
+<img src="docs/img/machine.png" alt="Machine detail — gauges and fabric" width="900">
+
+*Click any machine and its detail opens in place — the same CPU / Unified / Disk gauges on every
+machine, the GB10 with clocks and temperature, every IP the machine actually holds, the **200G
+RDMA** fabric and the `CLUSTER A` pair it can stack with. Values the card does not report are
+hidden, not shown as 0.*
 
 <img src="docs/img/model-scores.png" alt="Model scores measured against the real server" width="900">
 
-*Scores measured through the running server own OpenAI API — decode tok/s, TTFT, the context
-it will actually accept, and seven capabilities probed one at a time. Comparable across engines
-and across machines.*
+*Scores measured through the running server's own OpenAI API — decode / prefill / TTFT split
+across six workloads, plus seven capabilities probed one at a time. Here: Qwen3.6-35B-A3B (Q4_K)
+on 3× RTX 3060 at 65.7–84.4 tok/s with a 262,144 context. Comparable across engines and machines.*
 
 </div>
 
