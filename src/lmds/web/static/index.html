@@ -6649,9 +6649,24 @@ async function fillLicense(force) {
   const box = document.getElementById("lic-state");
   if (!box || (licLoaded && !force)) return;
   licLoaded = true;
+  // api() คืน Response ดิบ ไม่ใช่ JSON ที่ parse แล้ว — เผลออ่าน .state จาก Response
+  // ตรง ๆ ทำให้ทุกฟิลด์เป็น undefined แล้วแผงขึ้นว่า "นับได้ ? จากที่ครอบคลุม undefined"
+  // โดยไม่มี error ให้เห็นเลย (เจอจริง 2026-09-20)
   let d;
-  try { d = await api("/api/license"); }
-  catch { box.textContent = "อ่านสถานะไลเซนส์ไม่ได้"; return; }
+  try {
+    const r = await api("/api/license");
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      box.textContent = typeof body.detail === "string" ? body.detail
+                                                        : `อ่านสถานะไลเซนส์ไม่ได้ (HTTP ${r.status})`;
+      return;
+    }
+    d = await r.json();
+  } catch (err) {
+    box.textContent = "อ่านสถานะไลเซนส์ไม่ได้ — " + String((err && err.message) || err);
+    return;
+  }
+  if (!d || typeof d.state !== "string") { box.textContent = "คำตอบจากเซิร์ฟเวอร์ผิดรูปแบบ"; return; }
 
   const tone = { active: "var(--ok,#3fb950)", free: "var(--fg2)",
                  expired: "var(--warn,#d19a26)", invalid: "var(--bad,#f85149)" }[d.state] || "";
@@ -6674,6 +6689,12 @@ async function fillLicense(force) {
   }
   lines.push(`<span class="dim">ไฟล์: <code>${esc(d.path || "")}</code> · ` +
              `ไม่มีการต่อออกเน็ตเพื่อตรวจไลเซนส์</span>`);
+  if (d.state !== "active") {
+    lines.push(`<span class="dim">ขอไลเซนส์: ` +
+               `<a href="mailto:tananan99@icloud.com">tananan99@icloud.com</a> · ` +
+               `<a href="https://www.facebook.com/neronain.minidev" target="_blank" rel="noopener">` +
+               `fb.com/neronain.minidev</a></span>`);
+  }
   document.getElementById("lic-detail").innerHTML = lines.join("<br>");
 
   const warn = document.getElementById("lic-warn");
@@ -6691,17 +6712,14 @@ document.addEventListener("click", async e => {
   const text = (document.getElementById("lic-text") || {}).value || "";
   const msg = document.getElementById("lic-msg");
   if (!text.trim()) { if (msg) msg.textContent = "วางเนื้อไฟล์มาก่อน"; return; }
-  btn.disabled = true;
   if (msg) msg.textContent = "กำลังตรวจลายเซ็น…";
-  try {
-    const r = await api("/api/license", { method: "POST", body: JSON.stringify({ text }) });
-    if (msg) msg.textContent = "ติดตั้งแล้ว · " + (r.summary || "");
-    document.getElementById("lic-text").value = "";
-    document.getElementById("lic-form").hidden = true;
-    await fillLicense(true);
-  } catch (err) {
-    if (msg) msg.textContent = String((err && err.message) || err);
-  } finally { btn.disabled = false; }
+  const r = await withButton(btn, "…", () =>
+    api("/api/license", { method: "POST", body: JSON.stringify({ text }) }));
+  if (!r) { if (msg) msg.textContent = ""; return; }   // withButton เด้ง alert ให้แล้ว
+  if (msg) msg.textContent = "ติดตั้งแล้ว · " + (r.summary || "");
+  document.getElementById("lic-text").value = "";
+  document.getElementById("lic-form").hidden = true;
+  await fillLicense(true);
 });
 
 // ช่องไซต์ของ hub ในหน้า Hub settings — เติมค่าจาก host payload ทุกครั้งที่เข้าหน้านี้

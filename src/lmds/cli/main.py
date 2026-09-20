@@ -4755,6 +4755,10 @@ def license_show() -> None:
     console.print(f"ตอนนี้นับได้: [bold]{count.serving}[/] · {count.explain()}")
     if status.state == "free":
         console.print("[dim]โหมดฟรีไม่ต้องมีไฟล์ไลเซนส์ ไม่ต้องลงทะเบียน และไม่มีอะไรหมดอายุ[/dim]")
+    if status.state != "active":
+        from lmds.licensing.enforce import CONTACT_EMAIL, CONTACT_URL
+
+        console.print(f"[dim]ขอไลเซนส์: {CONTACT_EMAIL} · {CONTACT_URL}[/dim]")
     warning = license_store.permissions_warning(status.path)
     if warning:
         console.print(f"[yellow]⚠ {warning}[/yellow]")

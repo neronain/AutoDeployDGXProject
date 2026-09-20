@@ -71,9 +71,15 @@ class Decision:
         return self.allowed
 
 
+# ช่องทางขอไลเซนส์ — รวมไว้ที่เดียว เพราะข้อความนี้โผล่ทั้งใน CLI, หน้าเว็บ และข้อความ
+# ตอนถูกบล็อก · แยกกันเขียนเมื่อไรจะมีที่ใดที่หนึ่งตกรุ่นแล้วลูกค้าติดต่อไม่ได้
+CONTACT_EMAIL = "tananan99@icloud.com"
+CONTACT_URL = "fb.com/neronain.minidev"
+
+
 def _buy_line() -> str:
-    return ("ดูเงื่อนไขใน LICENSE · ติดต่อขอไลเซนส์: fb.com/neronain.minidev\n"
-            "ติดตั้งไฟล์ที่ได้มาด้วย:  lmds license install <ไฟล์>")
+    return (f"ดูเงื่อนไขใน LICENSE · ติดต่อขอไลเซนส์: {CONTACT_EMAIL} · {CONTACT_URL}\n"
+            f"ติดตั้งไฟล์ที่ได้มาด้วย:  lmds license install <ไฟล์>")
 
 
 def check(capability: str, *, serving_now: int | None = None,
