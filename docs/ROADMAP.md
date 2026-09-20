@@ -69,7 +69,7 @@
 
 เรียงตามที่แนะนำ:
 
-1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · ✅ **0.6.0 (4 ก.ย. 2569)** audit ทั้ง lifecycle + `lmds cluster pair/doctor/write` + ชุดทดสอบบน stacked → Qwen3.8-Flash-Next-NVFP4 173 GB และ Nemotron-3-Super-120B รันจริง · งานต่อยอด: 4 เครื่องบนเครื่องจริง, **wizard ตั้งค่าเครือข่ายคลัสเตอร์ (กำลังทำ)**, ตัวเลือก `--topology both` (สร้าง single+stacked พร้อมกัน)
+1. ~~**Stacked controller ใน CLI**~~ — ✅ **เสร็จแล้ว (M8, 2026-07-24)** ผ่าน `lmds deploy --target dgx-spark-stacked` (worker-first + sync/verify-worker ครบ) · ~~งานต่อยอด: hardware regression บนคลัสเตอร์จริง~~ → ✅ **ผ่านแล้ว (5 ส.ค. 2569)** Llama 3.3 70B บน DGX Spark 2 เครื่อง (mp backend ไม่ใช้ Ray) · ✅ **0.6.0 (4 ก.ย. 2569)** audit ทั้ง lifecycle + `lmds cluster pair/doctor/write` + ชุดทดสอบบน stacked → Qwen3.8-Flash-Next-NVFP4 173 GB และ Nemotron-3-Super-120B รันจริง · ✅ **wizard ตั้งค่าเครือข่ายคลัสเตอร์ (2026-09-05)** — ดูแถวในตาราง 0.6.0 ด้านบน · งานต่อยอดที่เหลือ: 4 เครื่องบนเครื่องจริง (ติดที่ยังไม่มีเครื่องที่สาม), ตัวเลือก `--topology both` ของ `lmds deploy` (สร้าง single+stacked พร้อมกัน — ยังไม่ได้ทำ · อย่าสับสนกับ `--topology` ของ `lmds cluster` ซึ่งเป็นผังสาย direct|ring|switch และมีแล้ว)
 2. **Repair workflow ขั้นวิเคราะห์ log** — ส่วน *ไฟล์* ทำแล้ว (`lmds repair` = download resume →
    verify-files, 2026-08-02) · ~~ที่เหลือคือรับ log ที่รันพังมาวิเคราะห์แล้วแก้ค่าใน controller ให้~~
    → ✅ **ทำแล้ว (2026-08-27)** ผู้ช่วยในหน้าเว็บเปิด log ของ controller บนเครื่องนั้นเอง (พร้อม
