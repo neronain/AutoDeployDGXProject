@@ -757,7 +757,29 @@ def generate(
         "gates": gates,
         "files": [str(p) for p in [*bundle.files, checksums, zip_path]],
         "zip": str(zip_path),
+        # bundle ใหม่เกิดมาพร้อม key — ค่าเริ่มต้นเดิมคือ bind 0.0.0.0 แบบไม่มี key
+        # คืนตัว key มาด้วยเพราะนี่เป็นครั้งเดียวที่ผู้ใช้ได้เห็นโดยไม่ต้องไปสั่งบนเครื่อง
+        "api_key": _mint_key_for_new_bundle(bundle.directory.name),
     }
+
+
+def _mint_key_for_new_bundle(slug: str) -> str:
+    """API key ของ bundle ใหม่ — คืนค่าว่างเมื่อมีอยู่แล้วหรือเก็บไม่ได้
+
+    ไม่ทำใน `render_bundle()` เพราะ `bundles refresh` ก็เรียกตัวเดียวกัน — mint ที่นั่น
+    แปลว่า bundle ที่ติดตั้งไปแล้วจู่ ๆ ต้องใช้ key หลัง update แล้ว client ทุกตัวพังพร้อมกัน
+
+    key เก็บที่ ~/.lmds/keys/<slug> ของเครื่องนี้ ไม่ใช่ในโฟลเดอร์ bundle ซึ่งถูก zip แจกต่อได้
+    """
+    from lmds.fleet import apikey
+
+    if apikey.read(slug):
+        return ""
+    try:
+        apikey.write(slug, key := apikey.mint())
+    except (apikey.ApiKeyError, OSError):
+        return ""      # เขียนไม่ได้ไม่ควรทำให้ deploy ที่สำเร็จแล้วกลายเป็นล้ม
+    return key
 
 
 def _positive_int(name: str, value, low: int, high: int) -> Optional[int]:

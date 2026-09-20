@@ -703,3 +703,78 @@ def test_run_detached_does_not_replay_the_whole_log_after_one_failed_poll(monkey
     rc = _run_detached(Node(name="n", host="h", user="u"), "lmds repair x", "x", timeout=30, poll=0)
     assert rc == 0
     assert capsys.readouterr().out == "line1\nline2\n"
+
+
+# ── API key ที่เก็บไว้กับเครื่อง (~/.lmds/keys/<slug>) ────────────────────────────────
+#
+# key ไม่อยู่ใน bundle.env เพราะโฟลเดอร์ bundle ถูก zip แจกต่อได้ — ถูกแล้ว แต่ผลคือ key
+# ไม่เคยถูกเก็บที่ไหนเลย: หน้าเว็บส่ง API_KEY= ตอนกด start ครั้งเดียว ส่วน systemd unit
+# เรียก `<controller> start` เปล่า ๆ · reboot แล้วโมเดลกลับมาเปิดโล่งบน 0.0.0.0 เงียบ ๆ
+
+def test_the_controller_picks_up_the_key_stored_on_the_machine(tmp_path):
+    """จำลอง autostart: ไม่มี API_KEY ใน env เลย — key ต้องมาจากที่เก็บของเครื่อง"""
+    bundle = _bundle(tmp_path, _gguf_report())
+    _build_shims(tmp_path / "bin")
+    store = tmp_path / ".lmds" / "keys"
+    store.mkdir(parents=True)
+    (store / bundle.directory.name).write_text("stored-key-7f3a\n", encoding="utf-8")
+
+    env = _native_env(tmp_path, bundle, _free_port())      # ไม่ส่ง API_KEY ไปด้วย = autostart
+    done = subprocess.run(["bash", str(bundle.controller), "start"], capture_output=True, text=True,
+                          env=env, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+    launched = _launched_argv(tmp_path / "fake.log")
+    assert "--api-key-file" in launched, "key ที่เก็บไว้ต้องถูกใช้ ไม่ใช่ขึ้นแบบเปิด"
+    key_file = launched.split("--api-key-file ", 1)[1].split()[0]
+    assert Path(key_file).read_text(encoding="utf-8").strip() == "stored-key-7f3a"
+    assert "stored-key-7f3a" not in launched, "key ต้องไม่โผล่ใน argv (ps อ่านได้ทั้งเครื่อง)"
+    assert "คำเตือน: เปิดให้ทั้งวง network" not in done.stderr, "มี key แล้วต้องไม่เตือน"
+
+
+def test_an_api_key_passed_in_beats_the_stored_one(tmp_path):
+    """ลำดับ: flag/env > ไฟล์ที่เก็บไว้ — ตรงกับ knob อื่นทุกตัวของ controller"""
+    bundle = _bundle(tmp_path, _gguf_report())
+    _build_shims(tmp_path / "bin")
+    store = tmp_path / ".lmds" / "keys"
+    store.mkdir(parents=True)
+    (store / bundle.directory.name).write_text("stored-key-7f3a\n", encoding="utf-8")
+
+    env = _native_env(tmp_path, bundle, _free_port(), {"API_KEY": "passed-in-9c21"})
+    done = subprocess.run(["bash", str(bundle.controller), "start"], capture_output=True, text=True,
+                          env=env, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+    key_file = _launched_argv(tmp_path / "fake.log").split("--api-key-file ", 1)[1].split()[0]
+    assert Path(key_file).read_text(encoding="utf-8").strip() == "passed-in-9c21"
+
+
+def test_no_stored_key_still_serves_open_and_says_so(tmp_path):
+    """ไม่มีที่เก็บ = พฤติกรรมเดิมทุกประการ — bundle ที่ติดตั้งไปแล้วต้องไม่ถูกแตะ"""
+    bundle = _bundle(tmp_path, _gguf_report())
+    _build_shims(tmp_path / "bin")
+    assert not (tmp_path / ".lmds" / "keys").exists()
+
+    env = _native_env(tmp_path, bundle, _free_port())
+    done = subprocess.run(["bash", str(bundle.controller), "start"], capture_output=True, text=True,
+                          env=env, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "--api-key-file" not in _launched_argv(tmp_path / "fake.log")
+    assert "คำเตือน: เปิดให้ทั้งวง network" in done.stderr
+
+
+def test_the_key_store_lives_outside_the_bundle_folder(tmp_path):
+    """โฟลเดอร์ bundle ถูก zip แจกต่อได้ — key ที่หลุดเข้าไปคือ key ที่แจกออกไปด้วย"""
+    from lmds.fleet import apikey
+
+    bundle = _bundle(tmp_path, _gguf_report())
+    monkey = tmp_path / "keyroot"
+    import os as _os
+
+    _os.environ["LMDS_KEY_ROOT"] = str(monkey)
+    try:
+        written = apikey.write(bundle.directory.name, apikey.mint())
+    finally:
+        _os.environ.pop("LMDS_KEY_ROOT", None)
+    bundle_dir = Path(bundle.controller).parent
+    assert bundle_dir not in written.parents and written.parent != bundle_dir
+    assert not any(p.name == bundle.directory.name for p in bundle_dir.rglob("*") if p.is_file())

@@ -53,6 +53,14 @@ NATIVE_CONTEXT="{{ native_context }}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 API_KEY="${API_KEY:-}"
+# key ที่เก็บไว้กับ "เครื่อง" ไม่ใช่กับ bundle — โฟลเดอร์ bundle ถูก zip แจกต่อได้ key จึง
+# ห้ามอยู่ใน bundle.env · แต่การไม่เก็บไว้เลยแปลว่า systemd ตอน autostart ซึ่งเรียกสคริปต์นี้
+# เปล่า ๆ ไม่เคยได้ key เลย → พอ reboot โมเดลกลับมาเปิดโล่งบน 0.0.0.0 ทั้งที่ผู้ใช้ตั้ง key
+# ไว้แล้ว และไม่มีอะไรบอก · ตั้ง/ดู/ลบด้วย `lmds key` · env กับ flag ยังชนะไฟล์นี้เสมอ
+API_KEY_STORE="${LMDS_KEY_ROOT:-${HOME}/.lmds/keys}/{{ slug }}"
+if [[ -z "$API_KEY" && -r "$API_KEY_STORE" ]]; then
+  API_KEY="$(tr -d '\r\n' < "$API_KEY_STORE")"
+fi
 ENGINE_ENV="${ENGINE_ENV:-}"
 # แฟล็กเพิ่มของ engine — อ่านทั้งบรรทัดจาก bundle.args (เขียนโดย `lmds set --extra-args`)
 # ไม่เก็บใน bundle.env เพราะรูป ${VAR:-value} ของ bash หยุดที่ `}` ตัวแรก JSON อย่าง

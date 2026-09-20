@@ -58,15 +58,29 @@ stdin และถูกกรองออกจากผลงานสดต�
 
 ## ความปลอดภัยของ endpoint ที่ deploy ออกไป
 
-⚠️ **ค่า default คือ bind `0.0.0.0` และไม่มี API key** — ใครที่เข้าถึงเครือข่ายเดียวกันยิงโมเดลได้ทันที
-controller จะพิมพ์คำเตือนหลัง `start` ทุกครั้งที่เป็นแบบนี้
+**bundle ที่ deploy ใหม่ได้ API key ตั้งแต่เกิด** — `lmds deploy` และ wizard บนหน้าเว็บสุ่ม key
+ให้แล้วเก็บไว้ที่เครื่องที่เสิร์ฟ (`~/.lmds/keys/<slug>` โหมด 0600) · bind ยังเป็น `0.0.0.0`
+ตามเดิมเพราะคลัสเตอร์และ gateway คนละเครื่องต้องการ — ที่เปลี่ยนคือมี key คู่กับมันแล้ว
 
 ```bash
-./xxx-single.sh restart --bind 127.0.0.1              # ใช้เฉพาะในเครื่อง
-API_KEY=$(openssl rand -hex 24) ./xxx-single.sh restart   # หรือบังคับ Bearer token
+lmds key show <slug> --reveal      # ดู key ของ bundle นี้
+lmds key new  <slug>               # สุ่มใหม่ (client ทุกตัวต้องเปลี่ยนตาม)
+echo -n "$KEY" | lmds key set <slug>   # ใช้ key ที่มีอยู่แล้ว — ไม่รับทาง argv
+lmds key clear <slug>              # ตั้งใจให้เปิด
+lmds set <slug> --bind 127.0.0.1   # หรือปิดด้วยการผูกเฉพาะในเครื่อง
 ```
 
-`API_KEY` **ไม่เก็บใน bundle** (`lmds set` ปฏิเสธ — โฟลเดอร์ถูก zip แจกต่อได้) และ**ไม่เคยอยู่บน argv**:
+⚠️ **bundle ที่ติดตั้งไปก่อนหน้านี้ไม่ถูกแตะ** — ยังเสิร์ฟแบบเปิดจนกว่าจะสั่ง `lmds key new`
+เอง (ถ้า `bundles refresh` ไปแจก key ให้เอง client ทุกตัวของลูกค้าจะพังพร้อมกันหลัง update)
+· controller พิมพ์คำเตือนหลัง `start` และ `lmds doctor` ขึ้นข้อ `endpoint` ให้ทุกครั้งที่ยังเปิดอยู่
+
+`API_KEY` **ไม่เก็บใน bundle** (`lmds set` ปฏิเสธ — โฟลเดอร์ถูก zip แจกต่อได้) แต่เก็บ**ข้างเครื่อง**
+ที่ `~/.lmds/keys/<slug>` ซึ่ง controller อ่านเองเมื่อไม่มีใครส่ง `API_KEY` มาให้ · จำเป็นเพราะ
+systemd ตอน autostart เรียก `<controller> start` เปล่า ๆ — ไม่มีที่เก็บแปลว่าทุก reboot โมเดล
+กลับมาเปิดโล่งเงียบ ๆ ทั้งที่ผู้ใช้ตั้ง key ไว้แล้ว · ลำดับ: flag/env > ไฟล์นี้ > ไม่มี key
+· ย้าย bundle ไปเครื่องอื่นแล้ว key ไม่ตามไป (ตั้งใจ) ต้อง `lmds key new` ที่เครื่องนั้น
+
+key **ไม่เคยอยู่บน argv**:
 
 | engine | key ไปถึงยังไง | ใครอ่านได้บนเครื่องเดียวกัน |
 |---|---|---|
@@ -74,8 +88,8 @@ API_KEY=$(openssl rand -hex 24) ./xxx-single.sh restart   # หรือบั�
 | vLLM เดี่ยว · stacked | export แล้ว `docker run -e VLLM_API_KEY` (ไม่มีค่าบน argv) · stacked เฉพาะ head | ผู้ที่ใช้ `docker` (`docker inspect`) |
 | SGLang | ยังต้องส่ง `--api-key <ค่า>` บน argv (engine ไม่มี env คู่) — **ข้อจำกัดที่รู้ตัว** | ทุกคนบนเครื่องผ่าน `ps` |
 
-`serve-args` / `DRY_RUN=1 start` ไม่พิมพ์ key · หน้าเว็บส่ง API key เป็น env ของ controller และเก็บไว้ใน localStorage ของ
-เบราว์เซอร์ ไม่ขึ้นไปอยู่บน hub · ข้อจำกัดที่ควรรู้: env ใน container อ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก
+`serve-args` / `DRY_RUN=1 start` ไม่พิมพ์ key · หน้าเว็บยังส่ง API key เป็น env ของ controller ได้
+เหมือนเดิม (ชนะไฟล์ที่เก็บไว้) · ข้อจำกัดที่ควรรู้: env ใน container อ่านได้ด้วย `docker inspect` (ไม่ใช่ช่องโหว่ต่อคนนอก
 แต่ไม่ควรใช้ key เดียวกับระบบอื่น) · **การเปลี่ยนเรื่อง auth ต้องรันกับ binary จริงก่อนเสมอ** — env ที่ engine ไม่รู้จัก
 ไม่ error แต่เปิดประตูทิ้งไว้
 

@@ -2731,6 +2731,13 @@ function resultView(r) {
     <div class="name">${esc(r.slug)} <span class="tag ok">passed ${r.gates.length} gates</span></div>
     <div class="kv"><span>context</span><span>${r.context.toLocaleString()} tok</span>
       <span>ZIP</span><span class="mono">${esc(r.zip)}</span></div>
+    ${r.api_key ? `<div class="warn-line" style="margin-top:10px">
+      <b>API key for this model — copy it now.</b> It is stored on the serving machine
+      (<span class="mono">~/.lmds/keys/${esc(r.slug)}</span>, mode 0600), not inside the bundle folder,
+      so it never travels in the ZIP. This panel is the only place it is shown; afterwards read it on that
+      machine with <span class="mono">lmds key show ${esc(r.slug)} --reveal</span>.
+      <div class="mono" style="margin-top:6px;word-break:break-all;user-select:all">${esc(r.api_key)}</div>
+    </div>` : ""}
     <div class="dim">Next: press download on the row below — it downloads and verifies, then start becomes available.</div>
     <div class="field" style="margin-top:12px"><button id="w-close">Close</button></div>
   </div>`;

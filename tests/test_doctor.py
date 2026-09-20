@@ -334,3 +334,47 @@ def test_doctor_flags_controller_older_than_lmds(tmp_path, monkeypatch):
     (bundle / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump(profile), encoding="utf-8")
     adopted = next(f for f in diagnose(slug).findings if f.name == "controller-stale")
     assert adopted.status is Status.OK and "adopted" in adopted.detail
+
+
+# ── endpoint ที่เปิดให้ทั้งวง network โดยไม่มี API key ──────────────────────────────
+#
+# controller เตือนตอน start อยู่แล้ว แต่ข้อความนั้นเลื่อนหายไปกับ log ของการบูตเครื่อง
+# doctor คือที่ที่คนมาดูตอนสงสัย จึงต้องบอกซ้ำตรงนี้
+
+def test_binding_the_whole_network_without_a_key_is_called_out(tmp_path, monkeypatch):
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
+
+    endpoint = next(f for f in diagnose(slug).findings if f.name == "endpoint")
+    assert endpoint.status is Status.WARN
+    assert "0.0.0.0" in endpoint.detail and "ไม่มี API key" in endpoint.detail
+    assert f"lmds key new {slug}" in endpoint.fix and "--bind 127.0.0.1" in endpoint.fix
+
+
+def test_a_stored_key_clears_the_open_endpoint_warning(tmp_path, monkeypatch):
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
+    from lmds.fleet import apikey
+
+    apikey.write(slug, apikey.mint())
+    endpoint = next(f for f in diagnose(slug).findings if f.name == "endpoint")
+    assert endpoint.status is Status.OK and "มี API key" in endpoint.detail
+
+
+def test_binding_only_loopback_is_fine_without_a_key(tmp_path, monkeypatch):
+    """ตั้งใจให้ใช้เฉพาะในเครื่อง (เช่น มี gateway อยู่หน้าเดียวกัน) = ไม่ต้องมี key"""
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
+    (tmp_path / "bundles" / slug / "bundle.env").write_text(
+        'API_HOST="${API_HOST:-127.0.0.1}"\n', encoding="utf-8")
+
+    endpoint = next(f for f in diagnose(slug).findings if f.name == "endpoint")
+    assert endpoint.status is Status.OK and "เฉพาะในเครื่องนี้" in endpoint.detail
+
+
+def test_an_open_endpoint_is_a_warning_not_a_blocker(tmp_path, monkeypatch):
+    """วงแลนแยกที่ตั้งใจเปิดมีจริง — บอกให้รู้ ไม่ใช่ตัดสินว่าเครื่องพัง"""
+    slug = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
+    result = diagnose(slug)
+    assert not [f for f in result.failed if f.name == "endpoint"]

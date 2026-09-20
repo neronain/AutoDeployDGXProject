@@ -762,6 +762,35 @@ def _demote_for_control_plane(findings: list[Finding]) -> list[Finding]:
     return demoted
 
 
+# ที่อยู่ที่แปลว่า "เฉพาะในเครื่องนี้" — ทุกตัวที่ไม่อยู่ในนี้ = คนอื่นในวง network ยิงถึง
+_LOCAL_BINDS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _check_open_endpoint(server: ServerInfo) -> list[Finding]:
+    """เปิดให้ทั้งวง network โดยไม่ต้องยืนยันตัวตนไหม
+
+    ค่าเริ่มต้นของ controller คือ bind 0.0.0.0 ซึ่งถูกสำหรับคลัสเตอร์ (head ต้องคุย worker)
+    และสำหรับ gateway ที่อยู่คนละเครื่อง — ที่ไม่ถูกคือ *ไม่มี key* คู่กับมัน
+
+    controller เตือนเรื่องนี้ตอน start อยู่แล้ว แต่ข้อความนั้นเลื่อนหายไปกับ log ของการ
+    บูตเครื่อง · doctor คือที่ที่คนมาดูตอนสงสัย จึงต้องบอกซ้ำตรงนี้ด้วย
+    """
+    from lmds.fleet import apikey
+    from lmds.fleet.manager import _bundle_env_value
+
+    bind = _bundle_env_value(Path(server.controller).parent, "API_HOST") or "0.0.0.0"
+    if bind in _LOCAL_BINDS:
+        return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} — เข้าถึงได้เฉพาะในเครื่องนี้")]
+    if apikey.read(server.slug):
+        return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} และมี API key เก็บไว้")]
+    return [Finding(
+        "endpoint", Status.WARN,
+        f"ผูกกับ {bind} โดยไม่มี API key — ใครก็ตามที่ถึงเครื่องนี้ใช้โมเดลได้โดยไม่ต้องยืนยันตัวตน",
+        f"ตั้ง key: lmds key new {server.slug} แล้ว lmds restart {server.slug} · "
+        f"หรือถ้าตั้งใจให้ใช้เฉพาะในเครื่อง: lmds set {server.slug} --bind 127.0.0.1",
+    )]
+
+
 def diagnose(slug: str) -> Diagnosis:
     """ตรวจทุกข้อของ slug เดียว — ไม่แก้อะไรให้เอง แค่บอกสาเหตุกับคำสั่ง"""
     server = find(slug)
@@ -793,6 +822,7 @@ def diagnose(slug: str) -> Diagnosis:
         result.findings.extend(_check_llamacpp_grammar(profile, slug))
 
     result.findings.extend(_check_port(server))
+    result.findings.extend(_check_open_endpoint(server))
     result.findings.extend(_check_server(server))
     result.findings = _demote_for_control_plane(result.findings)
     return result

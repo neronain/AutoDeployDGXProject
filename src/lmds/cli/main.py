@@ -61,6 +61,10 @@ license_app = typer.Typer(help="ไลเซนส์ของเครื่อ
                           no_args_is_help=True)
 app.add_typer(license_app, name="license")
 
+key_app = typer.Typer(help="API key ของ model server บนเครื่องนี้ — เก็บนอกโฟลเดอร์ bundle จึงไม่ติดไปกับ zip",
+                      no_args_is_help=True)
+app.add_typer(key_app, name="key")
+
 console = Console()
 err_console = Console(stderr=True)
 
@@ -1945,7 +1949,7 @@ def set_defaults(
     คำสั่งนี้เขียน `bundle.env` ไว้ข้าง controller ซึ่ง controller อ่านก่อนตั้ง default
     ทุกตัว env จากภายนอกและ flag บรรทัดคำสั่งยังชนะไฟล์นี้เสมอ
 
-    ไม่เก็บ API key — โฟลเดอร์ bundle ถูก zip แจกต่อได้ ส่ง `API_KEY=` ตอน start แทน
+    ไม่เก็บ API key — โฟลเดอร์ bundle ถูก zip แจกต่อได้ · key อยู่กับเครื่องแทน: `lmds key`
 
     `--fit`: ให้ระบบคิดให้ว่า slots/context เท่านี้ต้องใช้ RAM เท่าไรบนเครื่องนี้ (รวมโมเดลอื่นที่รันอยู่)
     แล้วเขียน slots · context · gpu-util เทียบเท่า · `--kv-cache-memory` ลง bundle — ไม่พอ = ไม่เขียน บอกว่าต้องลด
@@ -3132,7 +3136,34 @@ def _render_and_package(deployment_plan, report, fit, output: str, slug: str | N
     from lmds.fleet import register_bundle
 
     register_bundle(bundle.controller)
+    _mint_key_for_new_bundle(bundle)
     return bundle, results, [*bundle.files, checksums_path, zip_path]
+
+
+def _mint_key_for_new_bundle(bundle) -> None:
+    """bundle ใหม่ได้ API key ตั้งแต่เกิด — ค่าเริ่มต้นเดิมคือ bind 0.0.0.0 แบบไม่มี key
+
+    ทำตรงนี้ไม่ใช่ใน `render_bundle()` เพราะ `bundles refresh` ก็เรียก render_bundle
+    เหมือนกัน — mint ที่นั่นแปลว่า bundle ที่ติดตั้งไปแล้วจู่ ๆ ต้องใช้ key หลัง update
+    แล้ว client ทุกตัวพังพร้อมกัน · ของเดิมจึงไม่ถูกแตะ เปลี่ยนแค่ "ของใหม่เกิดมาปิด"
+
+    key อยู่ที่ ~/.lmds/keys/<slug> ของเครื่องนี้ ไม่ใช่ในโฟลเดอร์ bundle (ซึ่งถูก zip
+    แจกต่อได้) — ย้าย bundle ไปเครื่องอื่นแล้วต้อง `lmds key new` ที่นั่น ไม่งั้น
+    controller จะเตือนตอน start ว่าเปิดโล่ง
+    """
+    from lmds.fleet import apikey
+
+    slug = bundle.directory.name
+    if apikey.read(slug):
+        return
+    try:
+        apikey.write(slug, apikey.mint())
+    except (apikey.ApiKeyError, OSError) as exc:
+        # เขียนไม่ได้ (โฮมอ่านอย่างเดียว/สิทธิ์ผิด) ไม่ควรทำให้ deploy ล้ม — เตือนแล้วไปต่อ
+        err_console.print(f"[yellow]เก็บ API key ให้ '{slug}' ไม่ได้ ({exc}) — เซิร์ฟเวอร์จะขึ้นแบบเปิด[/yellow]")
+        return
+    console.print(f"[green]ตั้ง API key ให้ '{slug}' แล้ว[/green] — ดู: [bold]lmds key show {slug} --reveal[/bold]")
+    console.print("[dim]key อยู่ที่เครื่องนี้ (~/.lmds/keys) ไม่ได้อยู่ในโฟลเดอร์ bundle จึงไม่ติดไปกับ zip[/dim]")
 
 
 def _render_delivery(bundle, delivered, native_prepare: bool = False, stacked: bool = False,
@@ -4801,6 +4832,132 @@ def license_seats() -> None:
     if count.unknown:
         console.print("[dim]เครื่องที่ยังไม่ได้ตรวจไม่ถูกนับ — รัน lmds node list --check "
                       "เพื่อให้ตัวเลขครบ[/dim]")
+
+
+# ── API key ของ model server ────────────────────────────────────────────────────
+#
+# key ไม่อยู่ใน bundle.env เพราะโฟลเดอร์ bundle ถูก zip แจกต่อได้ · แต่การไม่เก็บไว้ที่ไหนเลย
+# แปลว่า systemd ตอน autostart ซึ่งเรียก controller เปล่า ๆ ไม่เคยได้ key → reboot แล้วโมเดล
+# กลับมาเปิดโล่ง · ที่เก็บจึงอยู่ข้างเครื่อง (~/.lmds/keys/<slug> โหมด 0600) ไม่ใช่ข้าง bundle
+
+def _key_warn_unknown_slug(slug: str) -> None:
+    """bundle ที่ไม่รู้จักไม่ใช่ข้อผิดพลาด (ตั้ง key ล่วงหน้าก่อน deploy ได้) แต่ต้องบอก"""
+    try:
+        from lmds.fleet import find
+
+        if find(slug) is None:
+            err_console.print(f"[yellow]ยังไม่มี bundle ชื่อ '{slug}' บนเครื่องนี้ — key ถูกเก็บไว้รอแล้ว[/yellow]")
+    except Exception:  # noqa: BLE001 — ทะเบียนอ่านไม่ได้ไม่ควรกันไม่ให้ตั้ง key
+        pass
+
+
+@key_app.command("show")
+def key_show(
+    slug: str = typer.Argument(..., help="slug ของ bundle"),
+    reveal: bool = typer.Option(False, "--reveal", help="พิมพ์ตัว key ออกมาจริง (ระวัง shell history/บันทึกหน้าจอ)"),
+) -> None:
+    """มี key เก็บไว้ให้ bundle นี้ไหม — ไม่พิมพ์ตัว key ออกมาถ้าไม่สั่ง --reveal"""
+    from lmds.fleet import apikey
+
+    try:
+        path = apikey.path_for(slug)
+    except apikey.ApiKeyError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    value = apikey.read(slug)
+    if not value:
+        console.print(f"ไม่มี key เก็บไว้ให้ '{slug}' — เซิร์ฟเวอร์จะรันแบบไม่ต้องยืนยันตัวตน")
+        console.print(f"[dim]ตั้งใหม่: lmds key new {slug}[/dim]")
+        raise typer.Exit(code=1)
+    console.print(f"มี key เก็บไว้ให้ '{slug}' ที่ {path}")
+    if reveal:
+        console.print(value)
+    else:
+        console.print(f"[dim]{value[:4]}…{value[-4:]} · ดูเต็ม: lmds key show {slug} --reveal[/dim]")
+
+
+@key_app.command("new")
+def key_new(
+    slug: str = typer.Argument(..., help="slug ของ bundle"),
+    force: bool = typer.Option(False, "--force", help="ทับ key เดิมที่มีอยู่"),
+) -> None:
+    """สร้าง key ใหม่ให้ bundle นี้แล้วเก็บไว้ — client ทุกตัวต้องเปลี่ยนตาม"""
+    from lmds.fleet import apikey
+
+    if apikey.read(slug) and not force:
+        err_console.print(f"[red]'{slug}' มี key อยู่แล้ว — ทับด้วย --force (client ทุกตัวต้องเปลี่ยนตาม)[/red]")
+        raise typer.Exit(code=1)
+    try:
+        value = apikey.mint()
+        path = apikey.write(slug, value)
+    except apikey.ApiKeyError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    _key_warn_unknown_slug(slug)
+    console.print(f"[green]สร้าง key ให้ '{slug}' แล้ว[/green] → {path}")
+    console.print(value)
+    console.print(f"[dim]ตัวที่รันอยู่ยังใช้ key เดิมจนกว่าจะ restart: lmds restart {slug}[/dim]")
+
+
+@key_app.command("set")
+def key_set(
+    slug: str = typer.Argument(..., help="slug ของ bundle"),
+) -> None:
+    """ตั้ง key ที่มีอยู่แล้วให้ bundle นี้ — อ่านจาก stdin
+
+    ไม่รับทาง argv โดยตั้งใจ: `ps` อ่าน argv ของทุก process บนเครื่องได้ และ shell
+    เก็บบรรทัดคำสั่งลง history — เหตุผลเดียวกับที่ controller ส่ง key ทาง
+    --api-key-file ไม่ใช่ --api-key
+
+        echo -n "$KEY" | lmds key set my-model
+    """
+    import sys
+
+    from lmds.fleet import apikey
+
+    value = sys.stdin.read().strip()
+    if not value:
+        err_console.print("[red]ไม่ได้รับ key ทาง stdin — ใช้: echo -n \"$KEY\" | lmds key set <slug>[/red]")
+        raise typer.Exit(code=1)
+    try:
+        path = apikey.write(slug, value)
+    except apikey.ApiKeyError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    _key_warn_unknown_slug(slug)
+    console.print(f"[green]เก็บ key ให้ '{slug}' แล้ว[/green] → {path}")
+    console.print(f"[dim]ตัวที่รันอยู่ยังใช้ key เดิมจนกว่าจะ restart: lmds restart {slug}[/dim]")
+
+
+@key_app.command("clear")
+def key_clear(
+    slug: str = typer.Argument(..., help="slug ของ bundle"),
+) -> None:
+    """เอา key ที่เก็บไว้ออก — bundle นี้จะกลับไปเสิร์ฟแบบไม่ต้องยืนยันตัวตน"""
+    from lmds.fleet import apikey
+
+    if not apikey.clear(slug):
+        console.print(f"ไม่มี key เก็บไว้ให้ '{slug}' อยู่แล้ว")
+        raise typer.Exit(code=0)
+    err_console.print(f"[yellow]เอา key ของ '{slug}' ออกแล้ว — หลัง restart จะเสิร์ฟแบบเปิด[/yellow]")
+    console.print(f"[dim]ตัวที่รันอยู่ยังใช้ key เดิมจนกว่าจะ restart: lmds restart {slug}[/dim]")
+
+
+@key_app.command("list")
+def key_list() -> None:
+    """bundle ไหนบนเครื่องนี้มี key เก็บไว้บ้าง — ไม่พิมพ์ตัว key"""
+    from lmds.fleet import apikey
+
+    found = apikey.listing()
+    if not found:
+        console.print(f"ยังไม่มี key เก็บไว้เลย ({apikey.key_root()})")
+        return
+    table = Table(title=f"API key ที่เก็บไว้ ({apikey.key_root()})")
+    table.add_column("bundle")
+    table.add_column("key")
+    for slug, has in found.items():
+        table.add_row(slug, "[green]มี[/green]" if has else "[red]ไฟล์ว่าง[/red]")
+    console.print(table)
 
 
 if __name__ == "__main__":
