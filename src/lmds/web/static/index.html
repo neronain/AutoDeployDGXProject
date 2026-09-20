@@ -803,14 +803,28 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
 .rnav a:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .rnav a.on { background: var(--accent-bg); color: var(--accent); }
 .rnav a .ic { width: 15px; height: 15px; flex: none; }
-.rnav .rcount { margin-left: auto; color: var(--fg3); font-family: var(--mono); font-size: calc(11.5px * var(--fs)); }
+/* ตัวเลขท้ายแถวในรางซ้าย — ต้องอยู่คอลัมน์เดียวกันทุกแถว
+   เดิมเลขของแถวไซต์ถูกลูกศรพับดันเข้ามา ส่วนแถวที่ไม่มีลูกศร (All machines, Fleet models)
+   ไปชิดขอบขวาสุด → เลขยืนคนละแนวสองคอลัมน์ · และ 1 กับ 10 กว้างไม่เท่ากันเลยไม่ตรงกันอีกชั้น
+   min-width + text-align:right จัดหลักหน่วยให้ตรงกัน · tabular-nums ทำให้ทุกหลักกว้างเท่ากัน */
+.rnav .rcount { margin-left: auto; color: var(--fg3); font-family: var(--mono);
+  font-size: calc(11.5px * var(--fs)); min-width: 2.1em; text-align: right;
+  font-variant-numeric: tabular-nums; flex: none; }
+/* แถวที่ไม่มีลูกศรพับต้องเว้นที่ "เท่ากล่องลูกศรจริง ๆ" ไม่งั้นเลขของมันเลยออกไปทางขวา
+   ใช้กล่องเปล่าแทนการเดา margin เพราะระยะจริงคือ ความกว้างลูกศร + gap ของ flex
+   ซึ่งถ้าวันหนึ่งใครแก้ gap แล้ว margin ที่ฝังเลขไว้จะเพี้ยนเงียบ ๆ · กล่องเปล่าได้ gap
+   มาเองจาก flex จึงตรงกันเสมอโดยไม่ต้องรู้เลข */
+.rnav a:not(.rsite)::after { content: ""; width: 15px; flex: none; }
 .reyebrow { font-size: calc(10.5px * var(--fs)); letter-spacing: .08em; text-transform: uppercase; color: var(--fg3);
   font-weight: 600; padding: 12px 10px 2px; }
-.rsite { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-top: 4px; cursor: pointer;
+/* gap ต้องเท่ากับ .rnav a (9px) เป๊ะ — ต่างกัน 1px คอลัมน์ตัวเลขก็เหลื่อมกัน 1px */
+.rsite { display: flex; align-items: center; gap: 9px; padding: 6px 10px; margin-top: 4px; cursor: pointer;
   color: var(--fg2); font-size: calc(12px * var(--fs)); font-weight: 600; border-radius: var(--r-sm); text-decoration: none; }
 .rsite:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .rsite.on { color: var(--accent); }
-.rsite .rchev { margin-left: auto; transition: transform .15s; color: var(--fg3); }
+/* ลูกศรกว้างคงที่ — เดิมเป็น margin-left:auto ซึ่งแย่งพื้นที่กับ .rcount ทำให้เลขไม่นิ่ง */
+.rsite .rchev { margin-left: 0; width: 15px; flex: none; text-align: center;
+  transition: transform .15s; color: var(--fg3); }
 .rsite.open .rchev { transform: rotate(90deg); }
 .rtree { margin: 2px 0 0 8px; border-left: 1px solid var(--line); padding-left: 6px; display: none; }
 .rtree.open { display: block; }
