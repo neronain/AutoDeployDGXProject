@@ -394,3 +394,29 @@ def test_the_whole_besthaiai_path_end_to_end(tmp_path):
     assert plan["gpu_count"] == BESTHAIAI_GPUS
     assert plan["ram_needed_gb"] == pytest.approx(31.1, abs=0.05)
     assert 0 < MEASURED_GIB - plan["ram_needed_gb"] < 1.0
+
+
+def test_the_download_lock_is_not_mistaken_for_a_broken_weight_file(tmp_path, monkeypatch):
+    """เคสจริงบนเครื่องลูกค้า 2026-09-20 — doctor ฟ้อง lock ของตัวเองว่าเป็นไฟล์เสีย
+
+    `.download.lock` คือ flock ที่ controller สร้างด้วย `exec 9>` จึงขนาด 0 เสมอ
+    doctor เดิมนับรวมในกติกา "ไฟล์ขนาด 0 ไบต์ = เสีย" แล้วแนะให้ `lmds repair`
+    ซึ่งโหลด weight 21 GB ใหม่ หยุดโมเดลที่กำลังเสิร์ฟอยู่ แล้วจบด้วยการทิ้ง lock ไว้อีก
+    — วนไม่รู้จบทั้งที่ weight มี .sha256-ok ครบตลอด
+    """
+    from lmds.doctor import checks
+
+    directory = tmp_path / "models" / "demo"
+    directory.mkdir(parents=True)
+    (directory / "model.gguf").write_bytes(b"x" * 64)
+    (directory / ".download.lock").touch()          # 0 ไบต์ — ปกติ ไม่ใช่อาการเสีย
+    monkeypatch.setattr(checks, "_model_dir", lambda slug: directory)
+
+    profile = {"runtime": {"engine": "llamacpp"}, "model": {"selected_gguf": "model.gguf"}}
+    statuses = {f.name: f.status.name for f in checks._check_weights(profile, "demo")}
+    assert statuses["weights"] == "OK", "lock ของ LMDS เองไม่ควรถูกนับว่าเป็น weight เสีย"
+
+    # ไฟล์ 0 ไบต์ที่ *ไม่ใช่* ของ LMDS ยังต้องถูกจับได้เหมือนเดิม
+    (directory / "mmproj.gguf").touch()
+    statuses = {f.name: f.status.name for f in checks._check_weights(profile, "demo")}
+    assert statuses["weights"] == "FAIL", "ไฟล์ 0 ไบต์จริง ๆ ต้องยังฟ้องอยู่"

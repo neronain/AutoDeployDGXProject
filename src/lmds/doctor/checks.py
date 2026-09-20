@@ -526,7 +526,16 @@ def _check_weights(profile: dict, slug: str) -> list[Finding]:
         return [Finding("weights", Status.FAIL, f"ไฟล์ที่ต้องมีหายไป: {', '.join(missing)}",
                         f"lmds repair {slug}  (โหลดเฉพาะส่วนที่ขาด)")]
 
-    empty = [p.name for p in directory.glob("*") if p.is_file() and p.stat().st_size == 0]
+    # ข้ามไฟล์ทำงานของ LMDS เอง — `.download.lock` เป็น flock ที่ controller สร้างด้วย
+    # `exec 9>` จึง **ขนาด 0 เสมอโดยธรรมชาติ** ไม่ใช่อาการเสีย (ดู single-llamacpp-controller
+    # .sh.j2 และ fleet/clone.py ที่ exclude ไฟล์นี้อยู่แล้วเพราะถือว่าเป็นของชั่วคราว)
+    #
+    # เคสจริง 2026-09-20 บนเครื่องลูกค้า: repair เสร็จแล้วทิ้ง lock ไว้ → doctor ฟ้อง
+    # "ไฟล์ขนาด 0 ไบต์" → แนะให้ repair → repair โหลด weight 21 GB ใหม่และหยุดโมเดลที่รันอยู่
+    # → จบแล้วทิ้ง lock อีก → วนอยู่อย่างนั้น · weight ทั้งสองไฟล์มี .sha256-ok ครบตลอดทาง
+    ignore = {".download.lock"}
+    empty = [p.name for p in directory.glob("*")
+             if p.is_file() and p.stat().st_size == 0 and p.name not in ignore]
     if empty:
         return [Finding("weights", Status.FAIL, f"มีไฟล์ขนาด 0 ไบต์: {', '.join(empty[:3])}",
                         f"lmds repair {slug}")]
