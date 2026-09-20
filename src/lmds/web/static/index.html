@@ -772,9 +772,27 @@ details.adv[open] { border-top: 1px dashed var(--line); padding-top: 6px; margin
    การ์ดเครื่อง/แผงเดิมทั้งหมดยังอยู่ที่เดิม (nodeRows, handler, เทสไม่เปลี่ยน) — shell แค่ตัดสิน
    ว่า view ไหนโชว์ และในหน้าเครื่องโชว์การ์ดของเครื่องไหน */
 body { padding: 0; }
-#shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 100vh; }
+#shell { display: grid; grid-template-columns: var(--rail-w, 238px) minmax(0, 1fr);
+  min-height: 100vh; position: relative; }
 #rail { position: sticky; top: 0; height: 100vh; overflow: auto; background: var(--sunken);
   border-right: 1px solid var(--line); padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+
+/* แถบเลื่อนของ rail — เดิมใช้ของ default ซึ่งบนพื้นมืดกลายเป็นเส้นขาวหนาข้างเมนู
+   เด่นกว่าตัวเมนูเอง · ทำให้บางลงและโผล่เฉพาะตอนเอาเมาส์ไปโดน */
+#rail { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+#rail:hover { scrollbar-color: var(--line2) transparent; }
+#rail::-webkit-scrollbar { width: 8px; }
+#rail::-webkit-scrollbar-track { background: transparent; }
+#rail::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+#rail:hover::-webkit-scrollbar-thumb { background: var(--line2); }
+
+/* ที่จับลากขยายเมนู — วางทับเส้นแบ่งพอดี ไม่กินคอลัมน์ของ grid จึงไม่ขยับ layout เดิม
+   กว้าง 7px ให้จับติดง่าย แต่เห็นเป็นเส้นบางเท่าเดิมจนกว่าจะ hover */
+#rgrip { position: absolute; top: 0; bottom: 0; left: calc(var(--rail-w, 238px) - 3px);
+  width: 7px; cursor: col-resize; z-index: 30; touch-action: none; }
+#rgrip::after { content: ""; position: absolute; inset: 0 3px; background: transparent; transition: background .12s; }
+#rgrip:hover::after, #rgrip.dragging::after { background: var(--acc, var(--line2)); }
+body.rail-dragging { cursor: col-resize; user-select: none; }
 .rbrand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 12px; }
 .rbrand .rlogo { width: 30px; height: 30px; border-radius: 7px; background: var(--g-mix); color: #fff;
   display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 12px; flex: none; }
@@ -943,6 +961,57 @@ body { padding: 0; }
   };
   window.applyFontSize();
 
+  // ── ความกว้างเมนูซ้าย ────────────────────────────────────────────────────────
+  //
+  // 238px ตายตัวพอดีตอนมีไม่กี่เครื่อง · พอฟลีตโตเป็น 16 เครื่องที่มีชื่อไซต์นำหน้า ชื่อ
+  // ถูกตัดด้วย "…" เกือบทุกแถว จนแยกไม่ออกว่าเครื่องไหนเป็นเครื่องไหน
+  //
+  // ตั้งค่าไว้ที่ documentElement ตั้งแต่ก่อนวาด (ไม่รอ DOMContentLoaded) ไม่งั้นเมนูจะ
+  // กระพริบจากกว้างเดิมไปกว้างใหม่ทุกครั้งที่เปิดหน้า
+  const RAIL_KEY = "lmds-rail-width", RAIL_MIN = 190, RAIL_MAX = 460, RAIL_DEFAULT = 238;
+  const clampRail = (px) => Math.max(RAIL_MIN, Math.min(RAIL_MAX, Math.round(px)));
+  const setRail = (px) => document.documentElement.style.setProperty("--rail-w", clampRail(px) + "px");
+  try {
+    const saved = parseInt(localStorage.getItem(RAIL_KEY) || "", 10);
+    if (Number.isFinite(saved)) setRail(saved);
+  } catch { /* โหมดส่วนตัว/ปิด storage — ใช้ค่า default ไป ไม่ต้องพัง */ }
+
+  addEventListener("DOMContentLoaded", () => {
+    const grip = document.getElementById("rgrip");
+    if (!grip) return;
+    const save = (px) => { try { localStorage.setItem(RAIL_KEY, String(clampRail(px))); } catch {} };
+
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      // pointer capture = ลากออกนอกที่จับหรือออกนอกหน้าต่างแล้วยังลากต่อได้
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add("dragging");
+      document.body.classList.add("rail-dragging");
+      const move = (ev) => setRail(ev.clientX);
+      const up = (ev) => {
+        grip.releasePointerCapture(ev.pointerId);
+        grip.classList.remove("dragging");
+        document.body.classList.remove("rail-dragging");
+        grip.removeEventListener("pointermove", move);
+        grip.removeEventListener("pointerup", up);
+        save(ev.clientX);
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", up);
+    });
+
+    grip.addEventListener("dblclick", () => { setRail(RAIL_DEFAULT); save(RAIL_DEFAULT); });
+
+    // ลากด้วยเมาส์ไม่ได้ก็ต้องมีทางอื่น — ที่จับ focus ได้อยู่แล้ว (tabindex) ให้ลูกศรทำงานด้วย
+    grip.addEventListener("keydown", (e) => {
+      const step = e.shiftKey ? 24 : 8;
+      const now = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--rail-w"), 10) || RAIL_DEFAULT;
+      if (e.key === "ArrowLeft") { e.preventDefault(); setRail(now - step); save(now - step); }
+      if (e.key === "ArrowRight") { e.preventDefault(); setRail(now + step); save(now + step); }
+      if (e.key === "Home") { e.preventDefault(); setRail(RAIL_DEFAULT); save(RAIL_DEFAULT); }
+    });
+  });
+
   // อยู่โหมดตามเครื่องแล้วผู้ใช้สลับธีมของ OS ระหว่างเปิดหน้าค้างไว้ ต้องเปลี่ยนตามทันที
   window.matchMedia("(prefers-color-scheme: dark)")
     .addEventListener("change", () => { if (window.themeMode === "auto") window.applyTheme(); });
@@ -1065,6 +1134,8 @@ body { padding: 0; }
     <button id="restart-web" title="Restart the console with the updated code — this page drops for a moment and reconnects"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg>Restart console</button>
   </div>
 </aside>
+<div id="rgrip" role="separator" aria-orientation="vertical" tabindex="0"
+     title="ลากเพื่อปรับความกว้างเมนู — ดับเบิลคลิกกลับค่าเดิม"></div>
 <div id="mainc">
 <header class="topbar">
   <div class="wrap">
