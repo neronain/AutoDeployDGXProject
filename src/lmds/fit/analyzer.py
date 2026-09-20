@@ -155,6 +155,11 @@ def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tup
                 f"stacked {target.node_count} เครื่อง: ตัวเลขเป็นยอดรวมของคลัสเตอร์ — หัก communication buffer "
                 f"(NCCL/TP) {STACKED_COMM_BUFFER_GB_PER_NODE:.0f} GB ต่อเครื่องแล้ว · ดูค่าต่อเครื่องที่ per_node"
             )
+            # "กี่เครื่อง" ไม่พอ ต้องบอก "ต่อกันอย่างไร" ด้วย — คนที่เลือก target 4 เครื่อง
+            # แต่ไม่มี switch จะเสียบวงแหวนไม่ได้ (QSFP หมดตั้งแต่ 3 เครื่อง) แล้วไปเจอ
+            # "unknown topology" ตอน `lmds cluster apply` ซึ่งไม่บอกว่าต้องซื้ออะไร ·
+            # ตรงนี้คือจุดแรกสุดที่รู้จำนวนเครื่อง จึงเป็นจุดที่ควรเตือน
+            notes.append(target.interconnect.note)
     else:
         usable = target.total_gpu_memory_gb * GPU_MEMORY_UTILIZATION
         per_gpu = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB_PER_GPU

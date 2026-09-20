@@ -127,7 +127,7 @@ _FIX = {
     "opted-out": "lmds node set {name} --stack",
     "same-site": "lmds node set <name> --site <same site>",
     "cabling": "plug a QSFP cable into {name} and check the link LED, then: lmds cluster inspect …",
-    "topology": "re-cable to one of: 2 direct · 3 ring (both ports) · 2–4 via switch (one cable each)",
+    "topology": "re-cable to one of: 2 direct · 3 ring (both ports) · up to 8 via switch (one cable each)",
     "port-speed": "set the switch port to 200G fixed (no auto-negotiation)",
     "netplan-managed": "lmds cluster apply {names}   (moves the NVIDIA Sync file aside automatically)",
     "firewall": "sudo ufw allow in on {iface}   (on {node}; lmds cluster apply does this for you)",
@@ -311,7 +311,7 @@ def _result(head: str, worker: str, findings: list[dict]) -> dict:
 def diagnose_network(order: list[str], *, nodes: dict[str, Node], hosts: dict[str, dict | None],
                      errors: dict[str, str] | None = None, runner=None, topology: str = "",
                      plan: dict | None = None) -> dict:
-    """ตรวจสาย/พอร์ต/function/netplan ของกลุ่ม 2–4 เครื่อง — คืน {"ok", "findings", "names", "topology"}
+    """ตรวจสาย/พอร์ต/function/netplan ของกลุ่ม 2–8 เครื่อง (เกิน 3 ต้องผ่าน switch) — คืน {"ok", "findings", "names", "topology"}
 
     ต่างจาก diagnose_pair ตรงที่ทำงานได้ตั้งแต่ยังไม่มี cluster IP: คำถามคือ "เสียบสายถูกไหม" ไม่ใช่
     "IP ตรงกันไหม" · `plan` (จาก netplan.build_plan) ทำให้ ping ต่อลิงก์ได้ผ่าน `runner`

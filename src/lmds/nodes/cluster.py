@@ -13,6 +13,8 @@ from __future__ import annotations
 import ipaddress
 from typing import Iterable
 
+from lmds.hardware.profiler import group_qsfp_ports
+
 # ต่ำกว่านี้ stacked จะช้ากว่ารันแยกเครื่องจนไม่คุ้ม (activation/KV วิ่งข้ามเครื่องทุก token)
 MIN_STACK_GBPS = 25
 
@@ -216,6 +218,63 @@ def parallelism_note(world_size: int) -> dict:
             "largest_tp": 1 << (world_size.bit_length() - 1)}
 
 
+def cabled_qsfp_ports(host: dict) -> list[int]:
+    """ช่อง QSFP ที่ "มีสายและอีกฝั่งขึ้น" ของเครื่องนี้ — [] เมื่อ node รุ่นเก่าไม่ได้ส่งข้อมูลมา
+
+    ต่างจาก `fabric_links()` ตรงที่นับ *ช่องที่เสียบสาย* ไม่ใช่ *ลิงก์ที่ตั้ง IP แล้ว* —
+    จำนวนช่องที่ใช้ไปคือหลักฐานเดียวที่บอกได้ว่าเขาเดินสายตรงหรือผ่าน switch
+    """
+    fabric = host.get("fabric") or {}
+    ports = fabric.get("qsfp_ports")
+    if ports is None:                       # node รุ่นเก่าไม่มี qsfp_ports → จัดกลุ่มจาก links เอง
+        ports = group_qsfp_ports(fabric.get("links") or [])
+    return sorted(p["port"] for p in ports if p.get("carrier") and p.get("port") in (1, 2))
+
+
+def observed_cabling(members: list[dict]) -> str:
+    """เดาจากสายที่เสียบจริงว่ากลุ่มนี้เดินแบบไหน — "direct" | "switch" | "unknown"
+
+    carrier บอกได้แค่ "ช่องนี้มีสาย" ไม่บอกว่าปลายอีกข้างคือใคร แต่ *จำนวนช่องที่ใช้* พอแล้ว:
+    switch ใช้เครื่องละเส้น (1 ช่อง) · ต่อตรง/วงแหวนกินสองช่องของเครื่องที่อยู่กลางวง
+    เครื่องที่ไม่มีข้อมูลพอร์ตเลย (node รุ่นเก่า) ทำให้ทั้งกลุ่มเป็น unknown — เดาไม่ได้ดีกว่าเดาผิด
+    """
+    # `m["host"]` ตรง ๆ จะ KeyError แทนที่จะคืน "unknown" ตามที่ docstring สัญญาไว้ —
+    # สมาชิกที่ยังไม่เคย probe มีจริงในทะเบียน และฟังก์ชันนี้ถูก export ออกไปแล้ว
+    # รหัสที่ไม่รู้จักเคยทำให้ `lmds cluster show` ตายทั้งตารางมาแล้ว อย่าเปิดช่องเดิมอีก
+    counts = [len(cabled_qsfp_ports(m.get("host") or {})) for m in members]
+    if not counts or any(c == 0 for c in counts):
+        return "unknown"
+    if all(c == 1 for c in counts):
+        return "switch"
+    return "direct"
+
+
+def interconnect_note(members: list[dict]) -> dict:
+    """กลุ่มขนาดนี้ต้องเดินสายแบบไหน · ที่เสียบอยู่ตรงกันไหม · ต้องซื้ออะไรเพิ่ม
+
+    เหตุผลที่ต้องมี: จำนวนเครื่องอย่างเดียวไม่พอ · Spark มี QSFP 2 ช่อง/เครื่อง วงแหวน 3 เครื่อง
+    ใช้ครบพอดี เครื่องที่ 4 ไม่มีช่องเหลือ — คนที่มี 4 เครื่องแต่ไม่มี switch จึงต่อไม่ได้เลย
+    และเดิมไม่มีอะไรบอกเขาจนกว่าจะไปล้มที่ `lmds cluster apply` ด้วย "unknown topology"
+
+    คืนรหัส ไม่ใช่ประโยค — CLI (ไทย) กับหน้าเว็บ (อังกฤษ) เรียบเรียงเอง · `note` ไทยแถมไว้
+    ให้ผู้เรียกที่แสดง free text ได้เลย (เหมือน `check_cluster_ip`)
+    """
+    # deferred: lmds.nodes ถูก import ในเส้นทางที่เบา — ห้ามลาก pydantic ของ lmds.fit เข้ามาทั้งก้อน
+    from lmds.fit.targets import MAX_DIRECT_NODES, interconnect_for
+
+    required = interconnect_for(len(members))
+    cabling = observed_cabling(members)
+    return {
+        "kind": required.cabling,          # ผังที่ *ต้องใช้* ตามจำนวนเครื่อง
+        "node_count": required.node_count,
+        "max_direct": MAX_DIRECT_NODES,
+        "needs_switch": required.needs_switch,
+        "cabling": cabling,                # ผังที่ *เห็นจากสายจริง* (unknown = ข้อมูลไม่พอ)
+        "shopping": list(required.shopping),
+        "note": required.note,
+    }
+
+
 def drop_duplicate_machines(members: list[dict]) -> tuple[list[dict], list[dict]]:
     """เครื่องเดียวที่ถูกลงทะเบียนหลายชื่อ → เก็บชื่อแรก ที่เหลือคืนออกมาเป็นตัวซ้ำ"""
     seen: dict[tuple, str] = {}
@@ -351,6 +410,19 @@ def _group_payload(site: str, cluster_name: str, signature: tuple, members: list
 
     # เตือน ≠ บล็อก · กลุ่มยังพร้อมและยังนับ world size เต็ม แค่ต้องรู้ว่าวิ่งไม่เต็มสาย
     warnings = []
+    # กลุ่มที่เกิน 3 เครื่องต้องผ่าน switch เสมอ — ถ้าสายที่เสียบอยู่ยังเป็นแบบต่อตรง แปลว่า
+    # เขายังไม่มี switch และคลัสเตอร์นี้จะไม่มีวันครบ · ต้องบอกว่า "ต้องซื้ออะไร" ตรงนี้
+    # ไม่ใช่ปล่อยให้ไปเจอ "unknown topology" ตอน `lmds cluster apply`
+    # (กลุ่มที่ตั้งชื่อคลัสเตอร์เองข้ามการแบ่งตาม subnet ได้ วงแหวน 3+1 จึงมาโผล่ตรงนี้ได้จริง)
+    interconnect = interconnect_note(members)
+    if interconnect["needs_switch"] and interconnect["cabling"] == "direct":
+        warnings.append({
+            "kind": "needs-switch",
+            "names": [m["name"] for m in members],
+            "node_count": interconnect["node_count"],
+            "max_direct": interconnect["max_direct"],
+            "shopping": interconnect["shopping"],
+        })
     under = [d for d in detail if (d.get("warning") or {}).get("kind") == "under-negotiated"]
     if under:
         warnings.append({
@@ -410,6 +482,8 @@ def _group_payload(site: str, cluster_name: str, signature: tuple, members: list
         "usable_world_size": gpu_count * sum(1 for d in detail if d["state"] == "ok"),
         "fabric_network": network,
         "parallelism": parallelism_note(gpu_count * len(members)),
+        # คู่กับ parallelism: อันนั้นตอบ "แบ่งงานยังไง" อันนี้ตอบ "ต่อสายยังไง/ต้องซื้ออะไร"
+        "interconnect": interconnect,
         "blockers": blockers,
         "warnings": warnings,
         "ready": not blockers,

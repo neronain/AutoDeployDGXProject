@@ -6,6 +6,7 @@ node ล่มหนึ่งเครื่องไม่กระทบเค
 
 from .cluster import (
     MIN_STACK_GBPS,
+    cabled_qsfp_ports,
     check_cluster_ip,
     link_warning,
     cluster_groups,
@@ -13,6 +14,8 @@ from .cluster import (
     connected_subset,
     connected_subsets,
     fabric_links,
+    interconnect_note,
+    observed_cabling,
     link_network,
     machine_identity,
     networks_of,
@@ -59,6 +62,9 @@ from .ssh import (
 )
 
 __all__ = [
+    "observed_cabling",
+    "interconnect_note",
+    "cabled_qsfp_ports",
     "add",
     "check_cluster_ip",
     "link_warning",

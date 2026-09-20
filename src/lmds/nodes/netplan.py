@@ -11,8 +11,9 @@ Spark มาใหม่เสียบสายแล้วก็ยังต�
   พอร์ต 1 = `enp1s0f0np0` + `enp1s0f1np1` · พอร์ต 2 = `enP2p1s0f0np0` + `enP2p1s0f1np1` — ชื่อเหมือนกันทุกเครื่อง
 - ลิงก์ที่ตั้งค่าใช้ **function เดียว** ของช่องนั้น (ฟลีตนี้ใช้ f1: spark-head `enp1s0f1np1` = 10.100.152.1)
 - 2 เครื่องต่อตรง (1 สาย) · 3 เครื่องต่อตรงเป็นวง (3 สาย ใช้ทั้งสองช่องทุกเครื่อง: A.p1→B.p2, B.p1→C.p2,
-  C.p1→A.p2) · 4 เครื่องต้องผ่าน switch (สายละเครื่อง ตั้ง port ที่ switch เป็น 200G ตายตัว) · 2–3 เครื่อง
-  ผ่าน switch ก็ได้ · ห้ามปนตรงกับ switch
+  C.p1→A.p2) · **4 เครื่องขึ้นไปต้องผ่าน switch** (สายละเครื่อง ตั้ง port ที่ switch เป็น 200G ตายตัว)
+  เพราะช่อง QSFP หมดตั้งแต่วง 3 เครื่อง — เพดานตรง/สวิตช์อยู่ที่ MAX_DIRECT_NODES/MAX_SWITCH_NODES
+  ใน fit/targets.py · 2–3 เครื่องผ่าน switch ก็ได้ · ห้ามปนตรงกับ switch
 - NVIDIA Sync เขียน `/etc/netplan/99-nvidia-sync-cluster.yaml` (IP ส่วนตัวต่อลิงก์ แยกจากสายบริหาร) ·
   ถอนด้วยการย้ายไฟล์ไป /root/netplan-disabled แล้ว netplan generate/apply
 - throughput ที่วัดได้จริง ~100 Gb/s ต่อลิงก์คือเพดาน PCIe x4 ไม่ใช่ความผิด
@@ -44,6 +45,14 @@ IPERF_WARN_GBPS = 90
 VERIFY_ATTEMPTS = 6
 VERIFY_PAUSE_S = 3.0
 TOPOLOGY_CHOICES = ("direct", "ring", "switch")
+# ของที่ต้องซื้อเมื่อเกินเพดานต่อตรง — ภาษาอังกฤษเพราะ `reason` ถูกโชว์ตรง ๆ ทั้งหน้าเว็บและ CLI
+# รุ่นเดียวกับ docs/NVIDIA-CLUSTER-SOURCES.md "ของที่ควรซื้อ" และ SWITCH_SHOPPING_LIST ใน fit/targets.py
+# บอกชื่อรุ่นเพราะ "you need a switch" เฉย ๆ ไม่ช่วยคนที่กำลังยืนอยู่หน้าเครื่องสี่ตัวที่ต่อไม่ติด
+SWITCH_SHOPPING_HINT = (
+    "a 400G QSFP56-DD switch (e.g. MikroTik CRS804-4DDQ-HRM, 4 ports, half-rack 1U), one "
+    "QSFP-DD→QSFP56 cable per machine (1→2 breakout to go past 4 machines), and the switch "
+    "ports pinned to 200G — auto-negotiation often settles at 50G"
+)
 
 
 class NetplanError(Exception):
@@ -89,15 +98,24 @@ def infer_topology(cabled: dict[str, list[int]], order: list[str], forced: str =
     carrier บอกได้แค่ว่า "ช่องนี้มีสายและอีกฝั่งขึ้น" ไม่บอกว่าปลายอีกข้างคือใคร — วง 3 เครื่องและคู่
     ที่เสียบสองสายจึงเป็น *สมมติฐาน* ตามผังของ NVIDIA ที่ต้อง ping ยืนยันตอน apply · `forced`
     (direct/ring/switch) ใช้เมื่อหลักฐานตีความได้สองทาง (2 เครื่องสายละช่อง = ต่อตรงหรือผ่าน switch ก็ได้)
+
+    เพดานสองชั้น (เลขเดียวกับ fit/targets.py ไม่เขียนซ้ำ): ต่อตรง/วงแหวนได้ถึง MAX_DIRECT_NODES
+    เพราะ QSFP มี 2 ช่องต่อเครื่อง · เกินกว่านั้นต้องผ่าน switch ถึง MAX_SWITCH_NODES
     """
+    # deferred: netplan ถูก import ในเส้นทางที่เบา — ห้ามลาก pydantic ของ lmds.fit เข้ามาตอน import
+    from lmds.fit.targets import MAX_DIRECT_NODES, MAX_SWITCH_NODES
+
     order = [n for n in order if n]
     n = len(order)
     # หน้าเว็บส่งค่าที่ inspect ตอบกลับมาทั้งก้อน ("direct-2" / "switch-4") — เอาแค่ชนิด
     forced = (forced or "").strip().lower().split("-")[0]
     if forced and forced not in TOPOLOGY_CHOICES:
         return _unknown(f"unknown topology '{forced}' — use one of {', '.join(TOPOLOGY_CHOICES)}", order)
-    if n < 2 or n > 4:
-        return _unknown(f"a cluster is 2–4 machines (got {n})", order)
+    # เดิมปิดไว้ที่ 4 ตามประโยค "ผ่าน switch สูงสุด 4" ที่ถอนออกไปแล้ว (docs/NVIDIA-CLUSTER-SOURCES.md §1):
+    # ประโยคนั้นเป็นการถอดความจาก URL เดียวที่ไม่ได้เก็บต้นฉบับไว้ · ตอนนี้มีคนอ้างว่ารัน 8 เครื่องอยู่จริง
+    # (คำกล่าวอ้างของผู้เขียน ไม่มี log ดิบ) จึงเปิดถึง 8 แต่ไม่เปิดไปมากกว่าที่มีใครเคยเห็นของจริง
+    if n < 2 or n > MAX_SWITCH_NODES:
+        return _unknown(f"a cluster is 2–{MAX_SWITCH_NODES} machines (got {n})", order)
     if len(set(order)) != n:
         return _unknown("the same machine is listed twice", order)
 
@@ -107,6 +125,15 @@ def infer_topology(cabled: dict[str, list[int]], order: list[str], forced: str =
         return _unknown(
             f"no cable detected on {', '.join(missing)} (both QSFP ports show NO-CARRIER) — "
             "plug the QSFP cable and check the link LED", order)
+
+    # สั่งมาว่าจะต่อตรง/วงแหวนแต่จำนวนเครื่องเกินที่ช่อง QSFP รับไหว — ตอบว่าซื้ออะไรถึงจะไปต่อได้
+    # ไม่ใช่แค่ "unsupported": คนที่พิมพ์ --topology ring กับ 4 เครื่องคือคนที่ยังไม่มี switch
+    if forced in ("direct", "ring") and n > MAX_DIRECT_NODES:
+        return _unknown(
+            f"{n} machines cannot be cabled directly: each DGX Spark has 2 QSFP cages, so a direct "
+            f"ring uses both cages on every machine and tops out at {MAX_DIRECT_NODES} — the 4th "
+            f"machine has nothing left to plug into. Past {MAX_DIRECT_NODES} machines you need "
+            f"{SWITCH_SHOPPING_HINT}", order)
 
     one_each = all(c == 1 for c in counts.values())
     two_each = all(c == 2 for c in counts.values())
@@ -158,10 +185,14 @@ def infer_topology(cabled: dict[str, list[int]], order: list[str], forced: str =
             "mixed cabling: a 3-machine ring needs both ports on every machine, a switch needs "
             f"exactly one cable per machine — cabled ports: {', '.join(odd)}", order)
 
+    # n >= 4 และไม่ใช่สายละเครื่อง = เขาพยายามเดินวงแหวนกับเครื่องที่มากกว่าที่ช่อง QSFP รับไหว
+    # นี่คือเคสของคนที่มี 4 เครื่องแต่ไม่มี switch — ต้องได้ยินว่า *ต้องซื้ออะไร* ตั้งแต่ตรงนี้
     both = [name for name in order if counts[name] == 2]
     return _unknown(
-        f"4 machines must go through a switch (one cable per machine) — {', '.join(both)} "
-        "has both ports cabled", order)
+        f"{n} machines must go through a switch (one cable per machine) — {', '.join(both)} "
+        f"{'has' if len(both) == 1 else 'have'} both ports cabled, which is direct/ring wiring and "
+        f"only reaches {MAX_DIRECT_NODES} machines (2 QSFP cages each). To run {n} machines you "
+        f"need {SWITCH_SHOPPING_HINT}", order)
 
 
 # ── IP allocation ───────────────────────────────────────────────────────────────
