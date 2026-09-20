@@ -3915,6 +3915,8 @@ def web(
     new_token: bool = typer.Option(False, "--new-token", help="สุ่ม token ใหม่ (ลิงก์เดิมใช้ไม่ได้ทันที)"),
     enable: bool = typer.Option(False, "--enable", help="ให้ขึ้นเองหลัง reboot และฟื้นเองถ้าตาย (systemd user service)"),
     disable: bool = typer.Option(False, "--disable", help="เลิกให้ขึ้นเอง"),
+    no_auth: bool = typer.Option(False, "--no-auth",
+                                 help="เปิดโดยไม่ต้องใช้ token — ใครที่ถึงพอร์ตนี้ได้คุมทั้งฟลีตได้"),
 ) -> None:
     """เปิดหน้าเว็บคุมโมเดล — ดูสถานะ, start/stop, doctor, logs ในหน้าเดียว"""
     from lmds.web import daemon
@@ -3996,8 +3998,10 @@ def web(
             err_console.print("[red]เครื่องนี้ไม่มี systemd[/red] — ใช้ lmds web -b แทน "
                               "(รันจนกว่าเครื่องจะรีบูต)")
             raise typer.Exit(code=1)
+        # service ก็ต้องมี token เหมือนกัน ไม่ว่าจะ bind ที่ไหน — เดิมสุ่มให้เฉพาะตอนเปิด
+        # ออก network แล้วปล่อย 127.0.0.1 โล่ง · --no-auth คือทางเดียวที่จะไม่มี
         token = token or os.environ.get(daemon.TOKEN_ENV) or daemon.remembered_token()
-        if not token and bind not in {"127.0.0.1", "localhost", "::1"}:
+        if not token and not no_auth:
             token = daemon.new_token()
             daemon.remember_token(token)
         # ตัวที่รันอยู่แบบ -b จะชนพอร์ตกับ service — หยุดให้ก่อน
@@ -4006,8 +4010,8 @@ def web(
             daemon.wait_until_free(bind, port)
         path = daemon.unit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(daemon.render_unit(port, bind, token), encoding="utf-8")
-        path.chmod(0o600)     # ไฟล์นี้มี token อยู่ข้างใน
+        # ไฟล์นี้มี token อยู่ข้างใน — เขียนแบบ 0600 ตั้งแต่แรก ไม่ใช่เขียนก่อนแล้ว chmod ทีหลัง
+        daemon.write_private(path, daemon.render_unit(port, bind, token))
         _sp.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
         result = _sp.run(["systemctl", "--user", "enable", "--now", daemon.UNIT_NAME],
                          capture_output=True, text=True)
@@ -4070,23 +4074,35 @@ def web(
                           f"หรือใช้พอร์ตอื่น: [bold]lmds web --port {port + 1}[/bold][/dim]")
         raise typer.Exit(code=1)
 
-    # หน้านี้สั่ง start/stop โมเดลได้ — เปิดออก network โดยไม่มี token = ใครในวงก็สั่งได้
-    # จึงสุ่ม token ให้เองแทนที่จะปล่อยโล่ง (ผู้ใช้ตั้งเองได้ด้วย --token)
+    # หน้านี้สั่ง start/stop/ลบโมเดลได้ทุกเครื่องในทะเบียน ผ่าน SSH ด้วยกุญแจของ hub —
+    # ใครที่ยิงถึงพอร์ตนี้ได้โดยไม่ต้องยืนยันตัวตน คุมทั้งฟลีตได้
+    #
+    # เดิม token ถูกสุ่มให้เฉพาะตอน bind ออก network ส่วน 127.0.0.1 (ค่าปริยาย) ปล่อยโล่ง
+    # โดยถือว่า "เครื่องนี้เท่านั้น" = ปลอดภัย ซึ่งไม่จริงสองทาง:
+    #   · ผู้ใช้อื่นบนเครื่องเดียวกันเปิด localhost:8600 แล้วได้สิทธิ์ของ user ที่รัน hub
+    #   · เพจใดก็ได้ที่ผู้ใช้เปิดในเบราว์เซอร์ยิง POST มาที่ 127.0.0.1 ได้ (CSRF/DNS rebinding)
+    #     — token ปิดทางนี้เพราะเพจคนละ origin อ่าน localStorage ของหน้านี้ไม่ได้
+    # ตอนนี้จึงต้องมี token เสมอ เว้นแต่สั่ง --no-auth มาเอง
     exposed = bind not in {"127.0.0.1", "localhost", "::1"}
     if new_token:
         daemon.forget_token()
 
     # ลำดับที่มาของ token — ตัวบนสุดที่มีค่าชนะ · ผู้ใช้ต้องเดาได้ว่ามันมาจากไหน
-    #   1. --token   2. $LMDS_WEB_TOKEN   3. ที่จำไว้ในเครื่อง   4. ถามตอนสตาร์ต   5. สุ่มให้
+    #   1. --no-auth   2. --token   3. $LMDS_WEB_TOKEN   4. ที่จำไว้ในเครื่อง   5. ถามตอนสตาร์ต   6. สุ่มให้
     source = "--token"
-    if token:
+    if no_auth:
+        if token or os.environ.get(daemon.TOKEN_ENV):
+            err_console.print("[red]--no-auth ใช้คู่กับ --token/$LMDS_WEB_TOKEN ไม่ได้ — เลือกอย่างใดอย่างหนึ่ง[/red]")
+            raise typer.Exit(code=1)
+        token, source = "", "--no-auth"
+    elif token:
         token = daemon.validate_token(token)
     elif os.environ.get(daemon.TOKEN_ENV):
         token = daemon.validate_token(os.environ[daemon.TOKEN_ENV])
         source = f"${daemon.TOKEN_ENV}"
-    elif exposed and daemon.remembered_token():
+    elif daemon.remembered_token():
         token, source = daemon.remembered_token(), "ที่จำไว้ในเครื่อง"
-    elif exposed:
+    else:
         # ครั้งแรกของเครื่องนี้ — ถามก่อน ปล่อยว่างแล้วสุ่มให้ · ไม่มี terminal ก็สุ่มเลย
         if sys.stdin.isatty():
             console.print(f"[bold]ตั้ง token สำหรับเข้าหน้าเว็บ[/bold] "
@@ -4104,6 +4120,11 @@ def web(
         else:
             token, source = daemon.new_token(), "สุ่มให้"
         daemon.remember_token(token)
+
+    if not token:
+        err_console.print("[red]--no-auth: หน้านี้เปิดโดยไม่ต้องยืนยันตัวตน[/red] — "
+                          "ใครที่ยิงถึงพอร์ตนี้ได้ start/stop/ลบโมเดลได้ทุกเครื่องในทะเบียน")
+        err_console.print("[dim]เอา --no-auth ออกเพื่อกลับไปใช้ token (จำไว้ให้แล้ว ไม่ต้องตั้งใหม่)[/dim]")
 
     # ไม่ใส่ token ใน URL อีกต่อไป — URL ไปอยู่ใน history/log/referrer ของเบราว์เซอร์
     # และคนที่ยืนดูจอก็อ่านได้ · หน้าเว็บมีช่องให้กรอก token เอง (จำไว้ให้ในเบราว์เซอร์)
@@ -4131,11 +4152,19 @@ def web(
 
         log_path = daemon.log_file()
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # token ไปทาง environment ไม่ใช่ argv — `ps` อ่าน argv ของทุก process บนเครื่องได้
+        # ส่วน /proc/<pid>/environ อ่านได้เฉพาะเจ้าของกับ root · เหตุผลเดียวกับที่ controller
+        # ส่ง key ของโมเดลทาง --api-key-file และ `lmds key set` รับทาง stdin
+        child_env = {**os.environ}
+        if token:
+            child_env[daemon.TOKEN_ENV] = token
+        else:
+            child_env.pop(daemon.TOKEN_ENV, None)
         with open(log_path, "ab") as log:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "lmds.cli.main", "web",
-                 "--port", str(port), "--bind", bind, *(["--token", token] if token else [])],
-                stdout=log, stderr=log, start_new_session=True,
+                 "--port", str(port), "--bind", bind, *([] if token else ["--no-auth"])],
+                stdout=log, stderr=log, start_new_session=True, env=child_env,
             )
         # ต้องรอให้มันรับ connection ได้จริงก่อน — เคสที่พังคือ bind ไม่ได้แล้วตายใน 0.2 วิ
         # ซึ่ง Popen มองว่าสำเร็จ แล้วเราก็พิมพ์ลิงก์พร้อม token ที่ไม่มีใครถืออยู่ให้ผู้ใช้
@@ -5030,6 +5059,59 @@ def key_list() -> None:
     for slug, has in found.items():
         table.add_row(slug, "[green]มี[/green]" if has else "[red]ไฟล์ว่าง[/red]")
     console.print(table)
+
+
+@app.command()
+def audit(
+    lines: int = typer.Option(40, "--lines", "-n", help="จำนวนรายการล่าสุด"),
+    failed_only: bool = typer.Option(False, "--failed", help="เฉพาะที่ถูกปฏิเสธ (401/403/429)"),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์เป็น JSON บรรทัดละรายการ"),
+) -> None:
+    """ใครสั่งอะไรกับคอนโซลเว็บของเครื่องนี้บ้าง
+
+    คอนโซลสั่ง start/stop/ลบโมเดลได้ทุกเครื่องในทะเบียน และติดตั้ง LMDS ลง node ใหม่ได้
+    ผ่าน SSH ด้วยกุญแจของ hub — เวลามีอะไรผิดปกติ คำถามแรกคือ "ใครสั่ง"
+
+    เก็บเฉพาะคำสั่งที่เปลี่ยนสถานะ (POST/PUT/DELETE) กับคำขอที่ถูกปฏิเสธ · ไม่เก็บ body
+    และไม่เก็บ query string เพราะ token เดินทางมาทางนั้นได้
+
+    ปิดด้วย $LMDS_AUDIT=0 · ย้ายไฟล์ด้วย $LMDS_AUDIT_LOG
+    """
+    from lmds.web import audit as audit_log
+
+    if not audit_log.enabled():
+        err_console.print("[yellow]audit ถูกปิดอยู่ ($LMDS_AUDIT=0)[/yellow]")
+
+    # ขอเผื่อไว้แล้วค่อยกรอง — ไม่งั้น --failed กับ -n 10 ได้ไม่ครบ 10 เมื่อของส่วนใหญ่ผ่าน
+    items = audit_log.read(lines * 20 if failed_only else lines)
+    if failed_only:
+        items = [i for i in items if int(i.get("status") or 0) in {401, 403, 429}]
+    items = items[-lines:]
+
+    if as_json:
+        for item in items:
+            print(json.dumps(item, ensure_ascii=False))
+        return
+    if not items:
+        console.print(f"ยังไม่มีรายการ [dim]({audit_log.log_path()})[/dim]")
+        return
+
+    table = Table(title=f"Audit — {audit_log.log_path()}")
+    for col in ("เมื่อ", "จาก", "คำสั่ง", "ผล", "ใช้เวลา"):
+        table.add_column(col)
+    for item in items:
+        status = int(item.get("status") or 0)
+        colour = "green" if 200 <= status < 300 else ("yellow" if status in {401, 403, 429} else "red")
+        table.add_row(str(item.get("at", ""))[:19].replace("T", " "),
+                      str(item.get("ip", "?")),
+                      f"{item.get('method', '')} {item.get('path', '')}",
+                      f"[{colour}]{status}[/{colour}]",
+                      f"{item.get('ms', 0)} ms")
+    console.print(table)
+    refused = sum(1 for i in items if int(i.get("status") or 0) in {401, 403, 429})
+    if refused:
+        console.print(f"[yellow]ถูกปฏิเสธ {refused} รายการ[/yellow] — "
+                      "ไล่เดา token จะเห็นเป็นชุดจาก IP เดียวกัน · ดูเฉพาะพวกนี้: lmds audit --failed")
 
 
 if __name__ == "__main__":

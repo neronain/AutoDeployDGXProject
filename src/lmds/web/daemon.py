@@ -60,6 +60,22 @@ def new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
+def write_private(path: Path, text: str) -> None:
+    """เขียนไฟล์ที่มีความลับโดยไม่มีช่วงที่คนอื่นอ่านได้
+
+    `write_text()` แล้ว `chmod(0o600)` ทีหลังเปิดช่องระหว่างสองขั้นนั้น: ไฟล์เกิดมาด้วย
+    umask ปกติ (มักอ่านได้ทั้งเครื่อง) แล้วค่อยถูกปิด — ใครที่อ่านจังหวะนั้นพอดีได้ token ไป
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.new")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.replace(temporary, path)
+
+
 def token_file() -> Path:
     """token ที่ใช้ซ้ำได้ข้ามการ start/stop — อยู่ใน config ไม่ใช่ run/ เพราะต้องอยู่ยาว"""
     from lmds.config import config_dir
@@ -80,13 +96,7 @@ def remembered_token() -> str:
 
 
 def remember_token(token: str) -> None:
-    path = token_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token, encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    write_private(token_file(), token)
 
 
 def forget_token() -> None:
@@ -142,11 +152,8 @@ def write_state(pid: int, port: int, bind: str, token: str) -> None:
     path = state_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"pid": pid, "port": port, "bind": bind, "token": token, "started_at": time.time()}
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    try:
-        path.chmod(0o600)  # มี token อยู่ข้างใน — ผู้ใช้อื่นบนเครื่องเดียวกันไม่ควรอ่านได้
-    except OSError:
-        pass
+    # มี token อยู่ข้างใน — ผู้ใช้อื่นบนเครื่องเดียวกันต้องไม่มีจังหวะไหนอ่านได้เลย
+    write_private(path, json.dumps(payload))
 
 
 def clear_state() -> None:

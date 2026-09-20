@@ -34,7 +34,8 @@ lmds fleet check --check                   # ต่อเข้าทุกเ�
 lmds license show|seats|install <FILE>     # ไลเซนส์ของเครื่องนี้ (ออฟไลน์ล้วน — ดู LICENSING.md)
 lmds node add|list|remove|install|setup|set|run|ctl|cluster|clone|push   # fleet หลายเครื่อง
 lmds cluster show|write|pair|doctor|inspect|plan|apply|remove-net   # คลัสเตอร์ stacked
-lmds web [--port --bind --token -b --stop --restart --status --new-token --enable --disable]
+lmds web [--port --bind --token --no-auth -b --stop --restart --status --new-token --enable --disable]
+lmds audit [-n --failed --json]            # ใครสั่งอะไรกับคอนโซลของเครื่องนี้บ้าง
 lmds config set-provider|set-key|set-hf-token|show|defaults
 lmds agent info|bench                      # JSON ให้ hub เรียกผ่าน SSH
 lmds version                               # เวอร์ชัน + commit ที่รันอยู่ + template standard
@@ -301,19 +302,34 @@ image รู้จัก `model_type` · llama.cpp native: `libllama.so` ขอ�
 (llama.cpp มี `cd0fa6051` ไหม — WARN) · `port` (ใครยึด) · `server` · บน control plane ข้อที่แปลว่า "รันไม่ได้" ไม่นับเป็นตัวบล็อก ·
 `multimodal` เป็น WARN
 
+## `lmds audit`
+
+| ตัวเลือก | ค่าเริ่มต้น | ความหมาย |
+|---|---|---|
+| `--lines` / `-n` | 40 | จำนวนรายการล่าสุด |
+| `--failed` | ปิด | เฉพาะที่ถูกปฏิเสธ (401/403/429) |
+| `--json` | ปิด | บรรทัดละรายการเป็น JSON |
+
+`~/.lmds/audit.log` (0600) เก็บคำสั่งที่เปลี่ยนสถานะกับคำขอที่ถูกปฏิเสธ: เวลา · IP · method+path · ผล · ms ·
+เก็บที่ middleware จุดเดียว route ใหม่จึงไม่มีทางลืม · **ไม่เก็บ body และ query string** (token มาทาง `?token=` ได้) ·
+หมุนที่ 5 MB เก็บรุ่นเดียว · `$LMDS_AUDIT=0` ปิด · `$LMDS_AUDIT_LOG` ย้ายที่
+
 ## `lmds web`
 
 | ตัวเลือก | ค่าเริ่มต้น | ความหมาย |
 |---|---|---|
 | `--port` | 8600 | พอร์ตของหน้าเว็บ |
-| `--bind` | `127.0.0.1` | `0.0.0.0` = ทั้งวง network (ถาม/สุ่ม token ให้ถ้าไม่ตั้ง `--token`) |
-| `--token` | ว่าง | บังคับ token เอง (≥ 8 ตัว ไม่มีช่องว่าง/ตัวควบคุม) |
+| `--bind` | `127.0.0.1` | `0.0.0.0` = ทั้งวง network · **ต้องมี token ทั้งสองแบบ** |
+| `--token` | ว่าง | บังคับ token เอง (≥ 8 ตัว ไม่มีช่องว่าง/ตัวควบคุม) · ว่าง = ถาม/สุ่มให้ |
+| `--no-auth` | ปิด | เปิดโดยไม่ต้องยืนยันตัวตน — ใครที่ถึงพอร์ตนี้ได้คุมทั้งฟลีตได้ · พิมพ์คำเตือนสีแดงทุกครั้ง |
 | `--background` / `-b` | ปิด | รันเบื้องหลัง · รอจนรับ connection ได้จริงก่อนบอกว่าสำเร็จ |
 | `--enable` / `--disable` | — | systemd **user** service — ขึ้นเองหลัง reboot ฟื้นเองถ้าตาย (ต้องมี linger) / เลิก |
 | `--stop` · `--restart` · `--status` | — | หยุด / เปิดใหม่ (ลิงก์เดิมใช้ได้) / บอกลิงก์ + token ของตัวที่รันอยู่ |
 | `--new-token` | — | สุ่ม token ใหม่ — ลิงก์เดิมใช้ไม่ได้ทันที |
 
-- สตาร์ตซ้อนไม่ได้ — พิมพ์ลิงก์ของตัวที่เสิร์ฟจริงแทน · **ที่มาของ token**: `--token` → `$LMDS_WEB_TOKEN` → `~/.config/lmds/web-token`
+- **ต้องมี token เสมอไม่ว่า bind ที่ไหน** — เดิม `127.0.0.1` ถูกปล่อยโล่ง ซึ่งเปิดให้ผู้ใช้อื่นบนเครื่องเดียวกัน
+  และเพจใดก็ได้ที่ผู้ใช้เปิดในเบราว์เซอร์ (CSRF/DNS rebinding) สั่งได้ · token ไปยัง process เบื้องหลังทาง **environment ไม่ใช่ argv**
+- สตาร์ตซ้อนไม่ได้ — พิมพ์ลิงก์ของตัวที่เสิร์ฟจริงแทน · **ที่มาของ token**: `--no-auth` → `--token` → `$LMDS_WEB_TOKEN` → `~/.config/lmds/web-token`
   (0600) → ถามตอนสตาร์ตครั้งแรก → สุ่ม · ลิงก์ที่พิมพ์ไม่มี token · `?token=` ในลิงก์ถูกย้ายเข้าที่เก็บของเบราว์เซอร์แล้วลบออกจากแถบที่อยู่
 - `GET /api/auth` → `{"required"}` · `POST /api/auth` (header `x-lmds-token`) → 200/401 · ผิด >5 ครั้งต่อ IP → 429 หน่วงทวีคูณสูงสุด 60 วิ
 - สถานะที่ `~/.lmds/run/web.json` (0600) · `GET /api/version` คืน `commit` · `installed` · **`boot`** (ลายเซ็น process — หน้าเว็บ

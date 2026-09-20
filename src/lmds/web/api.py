@@ -171,6 +171,22 @@ def create_app(token: str = "") -> FastAPI:
 
     guarded = [Depends(require_token)]
 
+    # ร่องรอยของคำสั่งที่เปลี่ยนสถานะ — ทำที่ middleware ไม่ใช่ในแต่ละ route เพราะ route
+    # ใหม่ที่ลืมใส่จะเงียบ ไม่ใช่พัง · เก็บเฉพาะ method+path ไม่เอา query string
+    # (`require_token` รับ token ทาง ?token= ได้ การเก็บ query = เขียน token ลงไฟล์)
+    @app.middleware("http")
+    async def _audit(request: Request, call_next):
+        from lmds.web import audit
+
+        timer = audit.Timer().__enter__()
+        response = await call_next(request)
+        mutating = request.method in {"POST", "PUT", "DELETE", "PATCH"}
+        # 401/429 ต้องเก็บทุก method: การไล่เดา token คือสิ่งที่ audit มีไว้ให้เห็น
+        if mutating or response.status_code in {401, 403, 429}:
+            audit.record(request.method, request.url.path, ip=_client_ip(request),
+                         status=response.status_code, ms=timer.ms)
+        return response
+
     @app.get("/api/auth")
     def auth_mode() -> dict:
         """หน้าเว็บถามก่อนวาดว่าเครื่องนี้ต้อง token ไหม — bind 127.0.0.1 ไม่ต้อง"""
