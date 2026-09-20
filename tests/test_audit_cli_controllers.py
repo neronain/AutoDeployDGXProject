@@ -196,6 +196,31 @@ def _build_shims(bin_dir: Path) -> None:
     _shim(bin_dir, "curl", 'case " $* " in *" --help "*) echo "--retry-all-errors";; esac; exit 0\n')
 
 
+# controller ยิง llama-server เพื่อ *ถาม* ก่อนสั่งรันจริง — `--version` ตอนเช็ก build และ
+# `--help` ตอนดูว่ารู้จัก --metrics ไหม · สองอันนี้ไม่ใช่ argv ที่เซิร์ฟเวอร์ถูกสั่งรัน
+_PROBE_ARGV = re.compile(r"--(version|help)\b")
+
+
+def _launched_argv(log_path: Path, timeout: float = 20.0) -> str:
+    """argv ที่เซิร์ฟเวอร์ถูกสั่งรันจริง — รอจนบรรทัดนั้นโผล่
+
+    เซิร์ฟเวอร์ถูกสั่งด้วย `nohup ... &` จึงเขียนบรรทัดของตัวเองแบบ async ส่วน controller
+    เขียน pid แล้วพิมพ์ "started:" จบไปก่อนได้ · อ่าน log ทันทีแล้วสมมติว่าบรรทัดโผล่แล้ว
+    = แดงเป็นครั้งคราวบนเครื่องที่โหลดหนัก (CI 3.13 2026-09-20: เหลือแต่บรรทัด --help
+    จึงไปเทียบกับ probe แทนของจริง) — ไม่ใช่บั๊กของ controller แต่เป็นของเทสเอง
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        lines = [l for l in log_path.read_text(encoding="utf-8").splitlines()
+                 if l.startswith("llama-server argv:") and not _PROBE_ARGV.search(l)]
+        if lines:
+            return lines[-1]
+        assert time.monotonic() < deadline, (
+            f"ไม่มีบรรทัด argv ของเซิร์ฟเวอร์ใน {timeout:.0f} วิ — มีแต่ probe:\n"
+            + log_path.read_text(encoding="utf-8"))
+        time.sleep(0.1)
+
+
 def test_start_builds_llama_cpp_itself_when_the_binary_is_missing(tmp_path):
     """เคสจริง 2026-09-04: node ใหม่กด start จากหน้าเว็บ → "ยังไม่มี llama-server — รัน prepare-runtime" ทั้งที่
     prepare-runtime ไม่ต้องถามอะไรเมื่อ build deps ครบ · ตอนนี้ start build ให้เอง แล้วเซิร์ฟเวอร์ต้องขึ้นจริง"""
@@ -217,10 +242,10 @@ def test_start_builds_llama_cpp_itself_when_the_binary_is_missing(tmp_path):
 
     # ── API key ไปทางไฟล์ 0600 + --api-key-file ไม่ใช่ argv และ *ไม่ใช่* env LLAMA_ARG_API_KEY
     # (build จริง b10799 ไม่มี env ตัวนั้น — ตั้งแล้วเซิร์ฟเวอร์รันแบบไม่มี auth · พิสูจน์บน dgx-spark03 2026-09-04)
-    argv_lines = [l for l in log.splitlines() if l.startswith("llama-server argv:") and "--version" not in l]
-    assert argv_lines and "sekrit-123" not in argv_lines[-1] and "--api-key " not in argv_lines[-1]
-    assert "--api-key-file" in argv_lines[-1]
-    key_file = argv_lines[-1].split("--api-key-file ", 1)[1].split()[0]
+    launched = _launched_argv(tmp_path / "fake.log")
+    assert "sekrit-123" not in launched and "--api-key " not in launched
+    assert "--api-key-file" in launched
+    key_file = launched.split("--api-key-file ", 1)[1].split()[0]
     assert Path(key_file).read_text(encoding="utf-8").strip() == "sekrit-123"
     assert oct(Path(key_file).stat().st_mode & 0o777) == "0o600"
 
