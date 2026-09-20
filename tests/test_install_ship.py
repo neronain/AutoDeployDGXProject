@@ -28,8 +28,9 @@ def _git_repo(tmp_path: Path) -> Path:
 
 def test_the_bundle_script_clones_from_the_shipped_file_and_points_origin_back_to_github():
     script = ssh.install_script(bundle="/tmp/lmds-src.bundle")
-    assert "git clone -q -b main /tmp/lmds-src.bundle AutoDeployDGXProject" in script
-    assert "git fetch -q /tmp/lmds-src.bundle main" in script
+    assert "git clone -q /tmp/lmds-src.bundle AutoDeployDGXProject" in script
+    assert "git fetch -q /tmp/lmds-src.bundle HEAD" in script
+    assert "git checkout -q -B main HEAD" in script, "clone จาก bundle ที่มีแต่ HEAD = detached"
     assert f"git remote set-url origin {ssh.REPO_URL}" in script
     assert "rm -f /tmp/lmds-src.bundle" in script
     assert "LMDS_SKIP_PREREQ=1 ./install.sh" in script
@@ -70,7 +71,7 @@ def test_prepare_install_ships_the_code_first_and_falls_back_when_scp_fails(tmp_
     script = ssh.prepare_install(node)
     assert pushed and pushed[0][1] == ssh.REMOTE_BUNDLE
     assert Path(pushed[0][0]).is_file()
-    assert f"git clone -q -b main {ssh.REMOTE_BUNDLE}" in script
+    assert f"git clone -q {ssh.REMOTE_BUNDLE}" in script
 
     monkeypatch.setattr(ssh, "push_file", lambda *a, **k: SimpleNamespace(ok=False))
     assert "git clone --depth 1" in ssh.prepare_install(node), "ส่งไม่ได้ → ถอยไป GitHub ไม่ใช่ล้ม"
@@ -102,7 +103,7 @@ def _node_home(tmp_path: Path) -> Path:
 
 def _bundle_of(root: Path, tmp_path: Path, name: str) -> Path:
     out = tmp_path / name
-    _git(root, "bundle", "create", str(out), "main")
+    _git(root, "bundle", "create", str(out), "HEAD")
     return out
 
 
@@ -227,3 +228,113 @@ def test_install_script_refreshes_stale_bundles(tmp_path):
     assert done.returncode == 0, done.stderr
     assert "lmds bundles refresh --all --if-older" in calls.read_text(encoding="utf-8")
     assert "regenerate controller ไม่สำเร็จ" in done.stdout, "รุ่นเก่าไม่มีคำสั่ง = บอกแล้วไปต่อ ไม่ล้ม install"
+
+
+# ── ปักหมุดเวอร์ชัน (LMDS_REPO_REF) + bundle ต้องเป็นโค้ดที่ hub รันอยู่จริง ──────────
+#
+# สองข้อนี้เป็นเรื่องเดียวกัน: "เครื่องลูกค้าปักหมุดเวอร์ชันไม่ได้" — องค์กรที่มีหน้าต่าง
+# เปลี่ยนแปลง/ต้องผ่าน audit รับการที่กด update แล้วเดินตาม main ของเราทันทีไม่ได้
+
+def test_the_bundle_carries_the_commit_the_hub_actually_runs_not_the_tip_of_main(tmp_path, monkeypatch):
+    """hub ที่ checkout tag ไว้เคยส่ง *main* ไปให้ทั้งฟลีต โดย stamp ยังบอกว่า "ตรง hub"
+
+    เทสนี้จำลองเป๊ะ: main เดินไปข้างหน้าแล้ว แต่ hub ยืนอยู่ที่ tag เก่า
+    """
+    src = _source(tmp_path)
+    pinned = _git(src, "rev-parse", "HEAD")
+    _git(src, "tag", "v-pinned")
+    (src / "after.txt").write_text("main เดินต่อ", encoding="utf-8")
+    _git(src, "add", "."); _git(src, "commit", "-q", "-m", "main moves on")
+    moved = _git(src, "rev-parse", "HEAD")
+    assert moved != pinned
+    _git(src, "checkout", "-q", "--detach", "v-pinned")      # hub ยืนที่ tag
+
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: src)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    bundle = ssh.source_bundle()
+    assert bundle is not None, "hub ที่ checkout tag ไว้ต้อง pack ได้ ไม่ใช่ถอยไป GitHub เงียบ ๆ"
+
+    home = _node_home(tmp_path)
+    done = _run_node_script(home, bundle)
+    assert done.returncode == 0, done.stderr
+    checkout = home / "AutoDeployDGXProject"
+    assert _git(checkout, "rev-parse", "HEAD") == pinned, "node ต้องได้ commit ที่ hub รันอยู่"
+    assert not (checkout / "after.txt").exists(), "ของจาก main ที่ hub ไม่ได้รันต้องไม่หลุดไป"
+    assert _git(checkout, "branch", "--show-current") == "main", "clone จาก bundle ต้องไม่ทิ้ง node ไว้ที่ detached"
+
+
+def test_a_hub_cloned_at_a_tag_can_still_ship_its_code(tmp_path, monkeypatch):
+    """`git clone --branch v0.8.0` ไม่มี ref `main` ในเครื่องเลย — ของเดิม pack ล้มทุกครั้ง"""
+    src = _source(tmp_path)
+    _git(src, "tag", "v0.8.0")
+    shallow = tmp_path / "hub-at-tag"
+    subprocess.run(["git", "clone", "-q", "--branch", "v0.8.0", str(src), str(shallow)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(shallow), "branch", "-D", "main"], capture_output=True)
+    assert subprocess.run(["git", "-C", str(shallow), "rev-parse", "--verify", "-q", "main"],
+                          capture_output=True).returncode != 0, "ต้องไม่มี main จริง ๆ"
+
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: shallow)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    assert ssh.source_bundle() is not None
+
+
+def test_a_pinned_ref_is_what_the_node_installs(tmp_path, monkeypatch):
+    """$LMDS_REPO_REF=<tag> → node ต้องได้ tag นั้น ไม่ใช่ปลาย branch ปริยาย"""
+    src = _source(tmp_path)
+    pinned = _git(src, "rev-parse", "HEAD")
+    _git(src, "tag", "v-locked")
+    (src / "unreleased.txt").write_text("ยังไม่ปล่อย", encoding="utf-8")
+    _git(src, "add", "."); _git(src, "commit", "-q", "-m", "unreleased work")
+
+    monkeypatch.setattr(ssh, "REPO_REF", "v-locked")
+    monkeypatch.setattr(ssh, "REPO_URL", str(src))
+    script = ssh.install_script()
+    assert "\nref=v-locked\n" in script and 'git clone -q --depth 1 --branch "$ref"' in script
+
+    home = _node_home(tmp_path)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env={"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+    assert done.returncode == 0, done.stderr
+    checkout = home / "AutoDeployDGXProject"
+    assert _git(checkout, "rev-parse", "HEAD") == pinned
+    assert not (checkout / "unreleased.txt").exists(), "ของที่ยังไม่ปล่อยต้องไม่ไปถึงเครื่องลูกค้า"
+    assert "ติดตั้งจาก ref ที่ปักหมุดไว้: v-locked" in done.stdout
+
+
+def test_a_pinned_ref_stops_the_hub_from_shipping_its_own_code_over_it(tmp_path, monkeypatch):
+    """ปักหมุดแล้วยังส่ง bundle ของ hub ไป = ลบล้างคำสั่งเงียบ ๆ (HEAD ของ hub ไม่ใช่ ref นั้น)"""
+    root = _git_repo(tmp_path)
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: root)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    node = Node(name="n", host="h", user="u")
+    pushed = []
+    monkeypatch.setattr(ssh, "push_file", lambda n, l, r, timeout=1800:
+                        (pushed.append(l), SimpleNamespace(ok=True))[1])
+
+    assert ssh.REMOTE_BUNDLE in ssh.prepare_install(node) and pushed, "ไม่ปักหมุด = ส่ง bundle ตามเดิม"
+
+    pushed.clear()
+    monkeypatch.setattr(ssh, "REPO_REF", "v-locked")
+    script = ssh.prepare_install(node)
+    assert not pushed, "ปักหมุดแล้วต้องไม่ส่ง bundle ไปทับ"
+    assert "\nref=v-locked\n" in script and ssh.REMOTE_BUNDLE not in script
+
+
+def test_the_web_service_carries_the_pin_into_its_own_environment():
+    """ปุ่ม install/update ทำงานในบริบทของ service ไม่ใช่ shell ที่ผู้ใช้ export ไว้ —
+    ไม่ส่งต่อ = กดจากหน้าเว็บแล้วได้เวอร์ชันผิดเงียบ ๆ ทั้งที่ CLI ถูก"""
+    from lmds.web import daemon
+
+    assert "LMDS_REPO_REF" in daemon._FORWARD_ENV and "LMDS_REPO_URL" in daemon._FORWARD_ENV
+
+
+def test_a_private_repo_error_does_not_promise_a_bundle_that_pinning_disabled(monkeypatch):
+    node = Node(name="n", host="h", user="u")
+    failure = "fatal: could not read Username for 'https://github.com'"
+    assert "ปกติ hub จะส่งโค้ดของตัวเองไปให้" in ssh.explain_install_failure(failure, node)
+
+    monkeypatch.setattr(ssh, "REPO_REF", "v0.8.0")
+    pinned = ssh.explain_install_failure(failure, node)
+    assert "ปกติ hub จะส่งโค้ดของตัวเองไปให้" not in pinned, "ปักหมุดแล้ว hub จงใจไม่ส่ง — บอกแบบนั้นคือโกหก"
+    assert "v0.8.0" in pinned and "ถอนหมุด" in pinned

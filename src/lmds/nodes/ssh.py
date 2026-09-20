@@ -332,11 +332,34 @@ def probe(node: Node, timeout: int = 30) -> dict:
 # คู่กับ deploy key บนเครื่องนั้น) หรือ mirror ภายในของตัวเอง
 # ค่าตายตัวตัวเดียวแปลว่า `lmds node install` ใช้กับ repo ส่วนตัวไม่ได้เลย
 REPO_URL = os.environ.get("LMDS_REPO_URL") or "https://github.com/neronain/AutoDeployDGXProject"
+
+# ref ที่ node จะติดตั้ง — ว่าง = branch ปริยายของ repo (พฤติกรรมเดิม)
+#
+# ไซต์ที่ต้องล็อกเวอร์ชันตั้งเป็น tag เช่น `LMDS_REPO_REF=v0.8.0` — ไม่มีตัวนี้แปลว่า
+# ทุกครั้งที่กด update เครื่องลูกค้าจะเดินตาม main ของเราทันที ซึ่งองค์กรที่มีหน้าต่าง
+# เปลี่ยนแปลง/ต้องผ่าน audit รับไม่ได้ และเราเองก็ไม่มีทางบอกได้ว่า ณ วันเกิดปัญหา
+# เครื่องนั้นรันโค้ดชุดไหน
+#
+# ตั้งแล้ว hub จะ **ไม่** ส่ง bundle ของตัวเองไปแทน (ดู prepare_install) เพราะ HEAD
+# ของ hub ไม่จำเป็นต้องเป็น ref ที่ปักไว้ — ส่งไปก็เท่ากับลบล้างคำสั่งเงียบ ๆ
+# แลกมาด้วยการที่เครื่องนั้นต้องเข้าถึง repo เองได้ (deploy key หรือ mirror ภายใน)
+REPO_REF = (os.environ.get("LMDS_REPO_REF") or "").strip()
 _INSTALL_SCRIPT = """
 set -e
 cd "$HOME"
+ref={ref}
+if [ -n "$ref" ]; then echo "ติดตั้งจาก ref ที่ปักหมุดไว้: $ref"; fi
 if [ -d AutoDeployDGXProject/.git ]; then
-  cd AutoDeployDGXProject && git pull --ff-only
+  cd AutoDeployDGXProject
+  if [ -n "$ref" ]; then
+    # tag ff-merge ไม่ได้ (และถอยเวอร์ชันลงก็ไม่ได้) — ปักหมุดคือ "เอา ref นี้" ตรง ๆ
+    git fetch -q --depth 1 origin "$ref"
+    git checkout -q --detach FETCH_HEAD
+  else
+    git pull --ff-only
+  fi
+elif [ -n "$ref" ]; then
+  git clone -q --depth 1 --branch "$ref" {repo} AutoDeployDGXProject && cd AutoDeployDGXProject
 else
   git clone --depth 1 {repo} AutoDeployDGXProject && cd AutoDeployDGXProject
 fi
@@ -361,7 +384,7 @@ cd "$HOME"
 stamp=$(date +%Y%m%d-%H%M)
 if [ -d AutoDeployDGXProject/.git ]; then
   cd AutoDeployDGXProject
-  git fetch -q {bundle} main
+  git fetch -q {bundle} HEAD
   if ! git merge -q --ff-only FETCH_HEAD >/dev/null 2>&1; then
     echo "checkout บนเครื่องนี้แก้ไว้/แยกสายจาก hub — เก็บของเดิมไว้ที่ branch local-$stamp (+stash) แล้วตามโค้ดของ hub"
     git branch -f "local-$stamp" HEAD
@@ -373,9 +396,11 @@ else
     echo "AutoDeployDGXProject เดิมไม่ใช่ git checkout (ติดตั้งแบบ copy) — ย้ายไป AutoDeployDGXProject.bak-$stamp"
     mv AutoDeployDGXProject "AutoDeployDGXProject.bak-$stamp"
   fi
-  # -b main จำเป็น: bundle มีแต่ ref main ไม่มี HEAD → clone เฉย ๆ เตือน "remote HEAD refers to
-  # nonexistent ref" แล้วไม่ checkout ไฟล์ให้เลย → ./install.sh: No such file (exit 127)
-  git clone -q -b main {bundle} AutoDeployDGXProject && cd AutoDeployDGXProject && git remote set-url origin {repo}
+  # bundle มี ref เดียวคือ HEAD = commit ที่ hub รันอยู่จริง (ไม่ใช่ปลาย main ของ hub —
+  # hub ที่ checkout tag ไว้เคยส่ง main ไปให้ทั้งฟลีตโดยไม่มีใครรู้) · clone แล้วได้
+  # detached HEAD จึงตั้ง branch main ให้เองเพื่อให้ pull/status ของ node ต่อไปตามปกติ
+  git clone -q {bundle} AutoDeployDGXProject && cd AutoDeployDGXProject \
+    && git checkout -q -B main HEAD && git remote set-url origin {repo}
 fi
 rm -f {bundle}
 LMDS_ASSUME_YES=1 {skip}./install.sh
@@ -520,7 +545,7 @@ def install_script(with_prereq: bool = False, bundle: str = "") -> str:
     if bundle:
         return _INSTALL_FROM_BUNDLE_SCRIPT.format(
             repo=REPO_URL, skip=skip, bundle=shlex.quote(bundle))
-    return _INSTALL_SCRIPT.format(repo=REPO_URL, skip=skip)
+    return _INSTALL_SCRIPT.format(repo=REPO_URL, skip=skip, ref=shlex.quote(REPO_REF))
 
 
 def source_bundle() -> Path | None:
@@ -544,7 +569,11 @@ def source_bundle() -> Path | None:
     if target.is_file():
         return target
     try:
-        done = subprocess.run(["git", "-C", str(root), "bundle", "create", str(target), "main"],
+        # HEAD ไม่ใช่ "main": ชื่อไฟล์แคชผูกกับ HEAD อยู่แล้ว แต่ของข้างในเคยเป็น main —
+        # hub ที่ checkout tag/branch อื่น (หรือ detached) จึงส่งโค้ดคนละชุดกับที่ตัวเองรัน
+        # ไปให้ทั้งฟลีต โดย stamp ยังรายงานว่า "ตรง hub" · และ hub ที่ clone มาแบบ
+        # --branch v0.8.0 ไม่มี ref main ในเครื่องเลย → pack ล้ม แล้วถอยไป GitHub เงียบ ๆ
+        done = subprocess.run(["git", "-C", str(root), "bundle", "create", str(target), "HEAD"],
                               capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -600,7 +629,9 @@ def prepare_install(node: Node, with_prereq: bool = False, force: bool = False) 
     root, dirty = hub_dirty_files()
     if dirty and not force:
         raise HubDirtyError(root, dirty)
-    return install_script(with_prereq, bundle=ship_source(node))
+    # $LMDS_REPO_REF = ผู้ดูแลสั่งว่าเครื่องนี้ต้องเป็นเวอร์ชันนั้น · ส่ง bundle ของ hub ไปแทน
+    # เท่ากับลบล้างคำสั่งเงียบ ๆ เพราะ HEAD ของ hub ไม่จำเป็นต้องเป็น ref ที่ปักไว้
+    return install_script(with_prereq, bundle="" if REPO_REF else ship_source(node))
 
 
 def explain_install_failure(output: str, node: Node) -> str:
@@ -611,6 +642,16 @@ def explain_install_failure(output: str, node: Node) -> str:
     """
     text = output or ""
     if "could not read Username" in text or "Authentication failed" in text:
+        if REPO_REF:
+            # ปักหมุดไว้ = hub จงใจไม่ส่ง bundle · บอกว่า "ปกติ hub จะส่งให้" ตรงนี้คือโกหก
+            return (
+                f"{node.name} เข้าถึง repo ไม่ได้ — repo เป็น private และเครื่องนั้นยังไม่มีสิทธิ์\n"
+                f"ตั้ง $LMDS_REPO_REF={REPO_REF} ไว้ = ปักหมุดเวอร์ชัน ซึ่ง hub จะไม่ส่งโค้ดของตัวเอง\n"
+                "ไปแทน (HEAD ของ hub อาจไม่ใช่ ref ที่ปักไว้) · เครื่องนั้นจึงต้องเข้าถึง repo เองให้ได้:\n"
+                f"  1. ใส่ deploy key บน {node.name} แล้วชี้ remote ไป SSH · หรือ\n"
+                "  2. ตั้ง $LMDS_REPO_URL ให้ชี้ mirror ภายในที่มี tag นั้น · หรือ\n"
+                "  3. ถอนหมุด (ไม่ตั้ง $LMDS_REPO_REF) แล้วให้ hub ส่ง bundle ของตัวเองไปตามเดิม"
+            )
         return (
             f"{node.name} เข้าถึง repo ไม่ได้ — repo เป็น private และเครื่องนั้นยังไม่มีสิทธิ์\n"
             "ปกติ hub จะส่งโค้ดของตัวเองไปให้ (ไม่ต้องใช้ GitHub) — เห็นข้อความนี้แปลว่า hub ตัวนี้\n"

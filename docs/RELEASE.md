@@ -106,30 +106,48 @@ LiteGate: `pyproject.toml` `version` + `app/__init__.py` ถ้ามี + `CHAN
 
 ---
 
-## 4. ลูกค้าได้อัปเดตยังไง — และช่องว่างที่ยังไม่แก้
+## 4. ลูกค้าได้อัปเดตยังไง
 
-### วันนี้
+### ปักหมุดเวอร์ชัน — `LMDS_REPO_REF`
 
-```python
-_INSTALL_SCRIPT = """
-  cd AutoDeployDGXProject && git pull --ff-only     # ตามปลาย branch
-  หรือ  git clone --depth 1 {repo}                   # ได้ default branch
-"""
+ไม่ตั้ง = เครื่องนั้นเดินตาม branch ปริยายของ repo ทุกครั้งที่กด update (พฤติกรรมเดิม)
+เหมาะกับเครื่องในบ้านและไซต์ที่อยากได้ของใหม่ทันที
+
+ไซต์ที่มีหน้าต่างเปลี่ยนแปลงหรือต้องผ่าน audit ตั้งเป็น tag:
+
+```bash
+export LMDS_REPO_REF=v0.8.0        # บน *hub* ไม่ใช่บน node
+lmds node install <ชื่อเครื่อง>
 ```
 
-`LMDS_REPO_URL` เปลี่ยนได้แค่ *"repo ไหน"* **ไม่ใช่ *"commit ไหน"***
+ตั้งแล้ว:
 
-→ **เครื่องลูกค้าวิ่งตามปลาย `main` เสมอ ไม่มีทางบอกว่า "อยู่ที่ tag นั้นพอ"**
+- node ได้ `v0.8.0` ตรง ๆ (`git clone --depth 1 --branch` / `git fetch` + `checkout --detach`)
+  ไม่ใช่ปลาย branch — ของที่ยังไม่ปล่อยไปไม่ถึงเครื่องลูกค้า
+- hub จะ **ไม่** ส่ง git bundle ของตัวเองไปแทน เพราะ HEAD ของ hub ไม่จำเป็นต้องเป็น ref
+  ที่ปักไว้ ส่งไปก็เท่ากับลบล้างคำสั่งเงียบ ๆ · แลกมาด้วยการที่เครื่องนั้นต้องเข้าถึง repo
+  เองให้ได้ (deploy key หรือ mirror ภายใน) — ถ้าเข้าไม่ได้ ข้อความ error จะบอกทางออก
+  ทั้งสามทางรวมถึงการถอนหมุด
+- เปิดคอนโซลเว็บอยู่ ให้ `lmds web --enable` ใหม่หนึ่งครั้ง เพื่อให้ unit ถือ env ตัวนี้ไปด้วย
+  (ปุ่ม install/update ทำงานในบริบทของ service ไม่ใช่ shell ที่ export ไว้)
 
-### ที่ต้องแก้ (เข้าคิว WS)
+`LMDS_REPO_URL` ยังทำหน้าที่เดิม — เลือกว่า *repo ไหน* (repo ส่วนตัวต้องเป็น SSH remote
+หรือ mirror ภายใน เพราะ GitHub เลิกรับรหัสผ่านตั้งแต่ 2021)
 
-1. **`LMDS_REPO_REF`** — ให้ปักหมุด tag/commit ได้ · ลูกค้าองค์กรจะขอข้อนี้เป็นข้อแรก
-2. **`source_bundle()` hardcode `main`**
-   ```python
-   git bundle create {target} main
-   ```
-   hub ที่ checkout branch อื่น **ส่งโค้ดของตัวเองไป node ไม่ได้** · และ CLI `lmds node install` ไม่เคยส่ง `bundle=` เลย — ใช้ `git pull` จาก GitHub ทางเดียว ทำให้เครื่อง air-gapped อัปเดตผ่าน CLI ไม่ได้
-3. **`fleet check` อ่าน cache ไม่ probe สด** — หลัง `node install` เสร็จยังรายงานเวอร์ชันเก่า ต้อง `lmds node list --check` ก่อน · ป้าย `(registry)` บอกอยู่แล้วแต่อ่านง่ายเกินจะพลาด
+### เครื่องที่เข้า GitHub เองไม่ได้
+
+ไม่ปักหมุด hub จะแพ็ก checkout ของตัวเองเป็น git bundle ส่งไปให้ (`source_bundle()` →
+`ship_source()`) ทั้ง CLI `lmds node install` และปุ่มในหน้าเว็บเดินทางเดียวกันผ่าน
+`prepare_install()` · bundle บรรจุ **HEAD ของ hub** คือ commit ที่ hub รันอยู่จริง
+ไม่ใช่ปลาย `main` — hub ที่ยืนอยู่ที่ tag จึงส่งของที่ตัวเองรันไปให้ ไม่ใช่ของที่ยังไม่ปล่อย
+
+hub ที่มีไฟล์แก้ค้างถูกปฏิเสธ (`HubDirtyError`) เพราะ bundle ส่งได้แค่ commit —
+node จะได้โค้ดคนละชุดกับที่ hub รันแต่ stamp รายงานว่า "ตรง hub"
+
+### ยังไม่แก้
+
+- **`fleet check` อ่าน cache ไม่ probe สด** — หลัง `node install` เสร็จยังรายงานเวอร์ชันเก่า
+  ต้อง `lmds node list --check` ก่อน · ป้าย `(registry)` บอกอยู่แล้วแต่อ่านง่ายเกินจะพลาด
 
 ---
 

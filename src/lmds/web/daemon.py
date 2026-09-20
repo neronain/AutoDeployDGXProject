@@ -292,7 +292,7 @@ def unit_path():
 
 # env ที่ service ต้องถือไปด้วย — ปุ่มในหน้าเว็บทำงานในบริบทของ service ไม่ใช่ของ shell
 # ที่ผู้ใช้ export ไว้ · ไม่ส่งต่อ = `node install` จากหน้าเว็บใช้ repo ผิดตัวเงียบ ๆ
-_FORWARD_ENV = ("LMDS_REPO_URL",)
+_FORWARD_ENV = ("LMDS_REPO_URL", "LMDS_REPO_REF")
 
 
 def render_unit(port: int, bind: str, token: str) -> str:
