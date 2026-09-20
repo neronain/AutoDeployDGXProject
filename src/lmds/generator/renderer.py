@@ -363,6 +363,9 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
         "fit": fit,
         "slug": slug,
         "lmds_version": lmds.__version__,
+        # บรรทัดเดียวบอกว่า bundle นี้ generate บนเครื่องที่ถือไลเซนส์ของใคร — โผล่ในหัว
+        # controller เพราะไฟล์นั้นคือสิ่งที่ถูกส่งต่อ ไม่ใช่ MODEL_PROFILE.yaml
+        "origin_label": _origin_label(),
         "controller_version": version_match.group(0) if version_match else "0.0.0",
         # ลายเซ็น template — หัว controller ฝังไว้ให้ hub เทียบว่า bundle นี้ render จากชุดเดียวกับที่ hub ถือไหม
         "template_hash": template_hash(),
@@ -453,6 +456,31 @@ def _sizing_record(plan: DeploymentPlan, fit: FitReport) -> dict | None:
         return None
 
 
+def _origin_label() -> str:
+    """ข้อความสั้น ๆ ของตราประทับสำหรับหัว controller — ไม่เคยทำให้ render ล้ม"""
+    try:
+        from lmds.licensing.stamp import describe
+
+        return describe(_origin_stamp())
+    except Exception:
+        return "unlicensed build"
+
+
+def _origin_stamp() -> dict:
+    """ตราประทับของเครื่องที่ generate — ไม่เคยทำให้ generate ล้ม
+
+    การอ่านไลเซนส์พังไม่ควรกัน deploy · คนใช้ฟรีต้อง generate ได้ตามปกติ และเครื่อง
+    ที่ไฟล์ไลเซนส์เสียก็ยังต้องทำงานได้ (กฎข้อ 2 ของ licensing/enforce.py)
+    """
+    try:
+        from lmds.licensing import load as load_license
+        from lmds.licensing.stamp import build
+
+        return build(load_license(), lmds_version=lmds.__version__)
+    except Exception:
+        return {"tier": "unknown", "licensed_to": None, "license_id": None}
+
+
 def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> str:
     """MODEL_PROFILE.yaml — source of truth ภายใน bundle (ตาม template v3.0.0)"""
     profile = {
@@ -529,6 +557,9 @@ def _model_profile_yaml(plan: DeploymentPlan, report: ModelReport, fit: FitRepor
         "warnings": plan.warnings,
         "flags_needing_approval": plan.flags_needing_approval,
         "validation": {"static": True, "hardware": False},
+        # ตราประทับ — bundle นี้ generate บนเครื่องที่ถือไลเซนส์ใบไหน (ดู licensing/stamp.py)
+        # ไม่ใช่การล็อก · มีไว้ตอบว่า bundle มาจากใคร ตอนพาร์ตเนอร์เอาไปขายต่อในนามคนอื่น
+        "origin": _origin_stamp(),
     }
     return yaml.safe_dump(profile, allow_unicode=True, sort_keys=False)
 

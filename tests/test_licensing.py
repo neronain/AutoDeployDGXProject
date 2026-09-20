@@ -344,3 +344,129 @@ def test_no_private_key_ever_ships_with_the_package():
                              capture_output=True, text=True).stdout.splitlines()
     bad = [f for f in tracked if "license-signing" in f or f.endswith(".license-key")]
     assert not bad, f"private key หลุดเข้ารีโป: {bad}"
+
+
+# ── ตราประทับบน bundle ─────────────────────────────────────────────────────────
+
+def _stamped(tmp_path, **overrides) -> dict:
+    """ตราจากใบจริง — ผ่านเส้นทางเดียวกับตอน generate ของจริง"""
+    from lmds.licensing.stamp import build
+
+    text, _ = _issue(tmp_path, **overrides)
+    status = store.install(text, tmp_path / "license.yaml")
+    assert status.state == "active"
+    return build(status, lmds_version="0.7.0")
+
+
+def test_a_stamp_from_a_real_licence_verifies(tmp_path):
+    from lmds.licensing.stamp import verify as verify_stamp
+
+    stamped = _stamped(tmp_path)
+    assert stamped["licensed_to"] == "ลูกค้าทดสอบ"
+    ok, detail = verify_stamp(stamped)
+    assert ok, detail
+    assert "ลูกค้าทดสอบ" in detail
+
+
+def test_renaming_the_owner_on_a_stamp_is_caught(tmp_path):
+    """เหตุผลทั้งหมดที่ฟีเจอร์นี้มีอยู่ — พาร์ตเนอร์ A เอา bundle ไปขายต่อในนาม B"""
+    from lmds.licensing.stamp import verify as verify_stamp
+
+    stamped = _stamped(tmp_path)
+    stamped["licensed_to"] = "พาร์ตเนอร์ที่แอบอ้าง"
+    ok, detail = verify_stamp(stamped)
+    assert not ok
+    assert "แก้ชื่อเจ้าของ" in detail
+
+
+def test_editing_the_signed_payload_of_a_stamp_is_caught(tmp_path):
+    from lmds.licensing.stamp import verify as verify_stamp
+
+    stamped = _stamped(tmp_path)
+    stamped["attestation"]["payload"]["licensed_to"] = "คนอื่น"
+    stamped["licensed_to"] = "คนอื่น"
+    ok, detail = verify_stamp(stamped)
+    assert not ok
+    assert "ลายเซ็น" in detail
+
+
+def test_a_free_tier_stamp_is_honest_and_passes(tmp_path):
+    """เครื่องโหมดฟรี generate ได้ตามสัญญา — ตราบอกตรง ๆ ว่าไม่มีใบ ไม่ใช่แกล้งว่ามี"""
+    from lmds.licensing.stamp import build, verify as verify_stamp
+
+    stamped = build(store.Status("free"), lmds_version="0.7.0")
+    assert stamped["tier"] == "community"
+    assert stamped["licensed_to"] is None
+    assert "attestation" not in stamped
+    ok, _ = verify_stamp(stamped)
+    assert ok
+
+
+def test_a_bundle_with_no_stamp_at_all_still_passes():
+    """bundle ที่ generate ก่อนมีฟีเจอร์นี้ต้องไม่กลายเป็นของเสียข้ามคืน"""
+    from lmds.licensing.stamp import verify as verify_stamp
+
+    assert verify_stamp(None)[0]
+    assert verify_stamp({})[0]
+
+
+def test_claiming_an_owner_without_an_attestation_is_caught():
+    """เติมชื่อเจ้าของเข้าไปเองโดยไม่มีลายเซ็นมายืนยัน"""
+    from lmds.licensing.stamp import verify as verify_stamp
+
+    ok, detail = verify_stamp({"tier": "enterprise", "licensed_to": "ใครก็ไม่รู้",
+                               "license_id": "LMDS-ของปลอม"})
+    assert not ok
+    assert "attestation" in detail
+
+
+def test_an_expired_licence_stamps_as_community_not_as_active(tmp_path):
+    """ใบหมดอายุไม่ควรประทับตราว่ายังเป็นลูกค้าอยู่ — แต่ก็ต้อง generate ได้ตามปกติ"""
+    from lmds.licensing.stamp import build, verify as verify_stamp
+
+    text, _ = _issue(tmp_path, expires=date(2026, 1, 2))
+    path = tmp_path / "license.yaml"
+    store.install(text, path)
+    status = store.load(path, today=date(2026, 6, 1))
+    assert status.state == "expired"
+
+    stamped = build(status, lmds_version="0.7.0")
+    assert stamped["licensed_to"] is None
+    assert verify_stamp(stamped)[0]
+
+
+def test_the_stamp_gate_runs_before_the_checksum_gate():
+    """run_gates() ตัดตัวสุดท้ายด้วย ALL_GATES[:-1] — gate_checksums ต้องอยู่ท้ายเสมอ
+
+    แทรก gate ต่อท้ายโดยไม่ดูบรรทัดนี้ = ตอน include_checksums=False จะตัดผิดตัวเงียบ ๆ
+    """
+    from lmds.validator.gates import ALL_GATES, gate_checksums, gate_origin_stamp
+
+    assert ALL_GATES[-1] is gate_checksums
+    assert gate_origin_stamp in ALL_GATES[:-1]
+
+
+def test_the_gate_reads_a_real_bundle_profile(tmp_path):
+    """ด่านต้องอ่าน MODEL_PROFILE.yaml จริง ไม่ใช่แค่ทำงานกับ dict ในเทส"""
+    import yaml as _yaml
+
+    from lmds.validator.gates import gate_origin_stamp
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    stamped = _stamped(tmp_path)
+
+    (bundle / "MODEL_PROFILE.yaml").write_text(
+        _yaml.safe_dump({"model": {"id": "x"}, "origin": stamped}, allow_unicode=True),
+        encoding="utf-8")
+    assert gate_origin_stamp(bundle).passed
+
+    stamped["licensed_to"] = "คนที่แอบอ้าง"
+    (bundle / "MODEL_PROFILE.yaml").write_text(
+        _yaml.safe_dump({"model": {"id": "x"}, "origin": stamped}, allow_unicode=True),
+        encoding="utf-8")
+    assert not gate_origin_stamp(bundle).passed
+
+    # bundle ที่ไม่มี profile เลย = ไม่ใช่เรื่องของด่านนี้
+    (bundle / "MODEL_PROFILE.yaml").unlink()
+    assert gate_origin_stamp(bundle).passed

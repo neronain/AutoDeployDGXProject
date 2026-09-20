@@ -353,6 +353,28 @@ def gate_serving_consistent(bundle_dir: Path) -> GateResult:
     return GateResult(name, True, f"input {input_budget:,} ต่อ slot")
 
 
+def gate_origin_stamp(bundle_dir: Path) -> GateResult:
+    """ตราประทับต้องเป็นของจริง ถ้ามีการอ้างชื่อเจ้าของ
+
+    **ไม่ใช่ด่านไลเซนส์** — bundle ที่ไม่มีตรา และ bundle จากเครื่องโหมดฟรี ผ่านทั้งคู่
+    ด่านนี้จับอย่างเดียวคือ *ตราที่ถูกแก้* เช่นพาร์ตเนอร์เปลี่ยน licensed_to เป็นชื่อตัวเอง
+    แล้วเอาไปขายต่อ · ลายเซ็นในตราเซ็นด้วยกุญแจของเราบนเครื่องของเรา แก้ชื่อแล้วไม่ตรงทันที
+    """
+    name = "origin-stamp"
+    path = bundle_dir / "MODEL_PROFILE.yaml"
+    if not path.exists():
+        return GateResult(name, True, "n/a (ไม่มี profile)")
+    try:
+        profile = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return GateResult(name, True, "n/a (profile อ่านไม่ได้ — ปล่อยให้ gate อื่นจับ)")
+
+    from lmds.licensing.stamp import verify as verify_stamp
+
+    ok, detail = verify_stamp(profile.get("origin"))
+    return GateResult(name, ok, detail)
+
+
 ALL_GATES = [
     gate_serving_consistent,
     gate_bash_syntax,
@@ -365,6 +387,9 @@ ALL_GATES = [
     gate_multimodal_assets,
     gate_profile_schema,
     gate_secret_scan,
+    gate_origin_stamp,
+    # gate_checksums ต้องอยู่ท้ายสุดเสมอ — run_gates() ตัดตัวสุดท้ายออกด้วย ALL_GATES[:-1]
+    # ตอน include_checksums=False · แทรกอะไรต่อท้ายนี่คือตัดผิดตัวแบบเงียบ ๆ
     gate_checksums,
 ]
 

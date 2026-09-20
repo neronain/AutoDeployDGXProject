@@ -40,6 +40,10 @@ class Status:
     license: License | None = None
     reason: str = ""               # ทำไมถึงเป็นสถานะนี้ (ภาษาคน ใช้โชว์ได้เลย)
     path: Path | None = None
+    # ลายเซ็นดิบของใบนี้ — เก็บไว้ให้ตราประทับบน bundle พกติดไปด้วยได้ (licensing/stamp.py)
+    # ผู้รับ bundle ไม่มีไฟล์ไลเซนส์ของเรา จึงต้องมีลายเซ็นไปด้วยถึงจะตรวจที่มาได้
+    signature_key: str = ""
+    signature_value: str = ""
 
     @property
     def machines_allowed(self) -> int:
@@ -113,13 +117,16 @@ def verify_document(document: dict, *, today: date | None = None) -> Status:
                       reason="ลายเซ็นไม่ตรงกับเนื้อไลเซนส์ — ไฟล์ถูกแก้หลังออกใบ "
                              "หรือก๊อปมาไม่ครบ")
 
+    raw_key = str(signature_block.get("value") or "")
     if lic.expired_on(today):
         return Status("expired", license=lic,
-                      reason=f"หมดอายุเมื่อ {lic.expires.isoformat()}")
+                      reason=f"หมดอายุเมื่อ {lic.expires.isoformat()}",
+                      signature_key=key_id, signature_value=raw_key)
 
     left = lic.days_left(today)
     reason = "ไม่มีวันหมดอายุ" if left is None else f"เหลืออีก {left} วัน"
-    return Status("active", license=lic, reason=reason)
+    return Status("active", license=lic, reason=reason,
+                  signature_key=key_id, signature_value=raw_key)
 
 
 def load(path: Path | None = None, *, today: date | None = None) -> Status:
@@ -141,7 +148,8 @@ def load(path: Path | None = None, *, today: date | None = None) -> Status:
         return Status("invalid", reason=f"อ่านไฟล์ไลเซนส์ไม่ได้: {exc}", path=target)
 
     status = verify_document(document, today=today)
-    return Status(status.state, status.license, status.reason, target)
+    return Status(status.state, status.license, status.reason, target,
+                  status.signature_key, status.signature_value)
 
 
 def permissions_warning(path: Path | None = None) -> str:
@@ -183,6 +191,7 @@ def install(document_text: str, path: Path | None = None) -> Status:
     if status.state == "invalid":
         return Status("invalid", status.license, status.reason, target)
 
+
     target.parent.mkdir(parents=True, exist_ok=True)
     # เขียนไฟล์ใหม่ด้วยสิทธิ์ 0600 ตั้งแต่ตอนสร้าง — เขียนก่อนแล้ว chmod ทีหลังจะมีช่วงสั้น ๆ
     # ที่ไฟล์เปิดให้คนอื่นอ่านได้
@@ -190,4 +199,5 @@ def install(document_text: str, path: Path | None = None) -> Status:
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(document_text if document_text.endswith("\n") else document_text + "\n")
     os.chmod(target, 0o600)
-    return Status(status.state, status.license, status.reason, target)
+    return Status(status.state, status.license, status.reason, target,
+                  status.signature_key, status.signature_value)
