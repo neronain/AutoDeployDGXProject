@@ -303,9 +303,24 @@ def refresh_bundle(server, *, if_older: bool = True) -> RefreshResult:
     # (`…-neo-code-di-imatrix-max-gguf` 91 ตัว บน spark-head) กลายเป็น "render ทับที่เดิมไม่ได้" ทุกครั้ง = regenerate
     # ไม่ได้อีกเลย · ชื่อเดิมที่ขึ้นต้นด้วย slug ที่คำนวณได้ = bundle เดียวกัน ใช้ชื่อโฟลเดอร์ต่อไป
     if target_slug != folder and not folder.startswith(target_slug):
-        result.action = "needs-online"
-        result.detail = f"ชื่อโฟลเดอร์ ({folder}) ไม่ตรง slug ของโมเดล ({target_slug}) — render ทับที่เดิมไม่ได้"
-        return result
+        # ชื่อที่ผู้ใช้ตั้งเอง (`lmds deploy … --name qwen36-35b-abl`) ไม่ได้ขึ้นต้นด้วย slug
+        # ของโมเดลเลย · ตัวตัดสินว่า "โฟลเดอร์นี้เป็นของโมเดลอื่นไหม" คือ MODEL_PROFILE.yaml
+        # ที่อยู่ในโฟลเดอร์นั้น ไม่ใช่รูปแบบของชื่อ
+        #
+        # เคสจริง 2026-09-20 บนเครื่องลูกค้า: bundle ชื่อสั้นที่ตั้งเอง regenerate ออฟไลน์
+        # ไม่ได้เลยตลอดกาล → เครื่องนั้นขึ้น "controller ค้าง 1" ค้างถาวร ไปถึง "ตรง hub"
+        # ไม่ได้อีก · ส่วน `lmds rebuild` ก็ไม่ใช่ทางออกเพราะมันสร้าง bundle ใหม่อีกก้อน
+        # ในชื่อ slug เต็ม กลายเป็นโมเดลซ้ำสองตัวบนเครื่องเดียว
+        from lmds.generator.renderer import bundle_model_id
+
+        owner = bundle_model_id(controller.parent)
+        if owner != plan.model_id:
+            result.action = "needs-online"
+            result.detail = (
+                f"ชื่อโฟลเดอร์ ({folder}) ไม่ตรง slug ของโมเดล ({target_slug}) "
+                + (f"และ profile ในโฟลเดอร์เป็นของ {owner} — render ทับที่เดิมไม่ได้"
+                   if owner else "และอ่าน profile ในโฟลเดอร์ไม่ได้ — render ทับที่เดิมไม่ได้"))
+            return result
     target_slug = folder
 
     backup = controller.with_name(f"{controller.name}.replaced-{_stamp()}")

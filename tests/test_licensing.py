@@ -470,3 +470,23 @@ def test_the_gate_reads_a_real_bundle_profile(tmp_path):
     # bundle ที่ไม่มี profile เลย = ไม่ใช่เรื่องของด่านนี้
     (bundle / "MODEL_PROFILE.yaml").unlink()
     assert gate_origin_stamp(bundle).passed
+
+
+def test_a_custom_named_bundle_can_still_be_regenerated_offline(tmp_path):
+    """bundle ที่ผู้ใช้ตั้งชื่อเองต้อง regenerate ออฟไลน์ได้ ไม่งั้นไปถึง "ตรง hub" ไม่ได้ตลอดกาล
+
+    เคสจริง 2026-09-20: `qwen36-35b-abl` (ชื่อสั้นที่ตั้งเอง) ไม่ขึ้นต้นด้วย slug ของโมเดล
+    (`huihui-qwen3-6-35b-a3b-…`) ด่านเดิมจึงปฏิเสธทุกครั้ง · เครื่องนั้นขึ้น "controller ค้าง 1"
+    ค้างถาวร และ `lmds rebuild` ก็ไม่ช่วยเพราะสร้าง bundle ก้อนที่สองในชื่อ slug เต็ม
+    """
+    import inspect
+
+    from lmds.fleet import refresh
+
+    source = inspect.getsource(refresh)
+    assert "bundle_model_id" in source, (
+        "ด่านชื่อโฟลเดอร์ต้องถาม MODEL_PROFILE.yaml ว่าโฟลเดอร์นี้เป็นของโมเดลไหน "
+        "ไม่ใช่ตัดสินจากรูปแบบของชื่อ")
+    # ชื่อที่ไม่ตรงเลย + profile เป็นของโมเดลเดียวกัน = ต้องไปต่อได้
+    marker = source[source.index("if target_slug != folder"):]
+    assert "owner != plan.model_id" in marker[:1200], "ต้องเทียบเจ้าของจาก profile ก่อนปฏิเสธ"
