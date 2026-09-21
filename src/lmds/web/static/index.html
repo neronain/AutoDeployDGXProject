@@ -963,6 +963,51 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
   // คำแปลไทย · คีย์คือข้อความอังกฤษตัวเต็มที่อยู่บนหน้า
   // {…} คือช่องเติมค่า — ลำดับคำไทยกับอังกฤษไม่เหมือนกัน การต่อสตริงเองจึงใช้ไม่ได้
   const TH = {
+    // ── key ของโมเดล · ร่องรอยการใช้งาน ───────────────────────────────
+    "Key": "กุญแจ",
+    "Generate a key": "สุ่มกุญแจให้",
+    "Show the value": "ดูค่าเต็ม",
+    "Remove the key": "เอากุญแจออก",
+    "Use this one": "ใช้ตัวนี้",
+    "…or paste a key you already use": "…หรือวางกุญแจที่ใช้อยู่แล้ว",
+    "key set": "ตั้งกุญแจแล้ว",
+    "served open": "เสิร์ฟแบบเปิด",
+    "Stored at": "เก็บไว้ที่",
+    "Anything that can reach this port can use the model.":
+      "อะไรก็ตามที่ยิงถึงพอร์ตนี้ได้ ใช้โมเดลได้เลย",
+    "Could not read the key state": "อ่านสถานะกุญแจไม่ได้",
+    "This is the value clients must send.": "นี่คือค่าที่ client ต้องส่งมา",
+    "Restart the model for it to take effect — the running one still uses the old key.":
+      "ต้อง restart โมเดลถึงจะมีผล — ตัวที่รันอยู่ยังใช้กุญแจเดิม",
+    "Remove the key for {slug}? After a restart this bundle serves open.":
+      "เอากุญแจของ {slug} ออกไหม · หลัง restart bundle นี้จะเสิร์ฟแบบเปิด",
+    "There was no key to remove.": "ไม่มีกุญแจให้เอาออกอยู่แล้ว",
+    "{slug} already has a key. Replacing it breaks every client still using the old one. Continue?":
+      "{slug} มีกุญแจอยู่แล้ว · ทับแล้ว client ทุกตัวที่ถือใบเก่าจะใช้ไม่ได้ · ทำต่อไหม",
+    ["The key is kept on this machine outside the bundle folder, readable only by its owner — " +
+     "bundles get zipped and shared, so a key inside one would travel with it."]:
+      "กุญแจถูกเก็บไว้บนเครื่องนี้นอกโฟลเดอร์ของ bundle และเจ้าของเท่านั้นที่อ่านได้ — " +
+      "bundle ถูกบีบเป็น ZIP แล้วส่งต่อกัน กุญแจที่อยู่ข้างในจะเดินทางไปด้วย",
+    "Copied": "คัดลอกแล้ว",
+    "Select the value and copy it": "เลือกค่าแล้วคัดลอกเอง",
+    "Copy": "คัดลอก",
+    "Reading…": "กำลังอ่าน…",
+    "Who did what": "ใครสั่งอะไร",
+    "Show recent activity": "ดูความเคลื่อนไหวล่าสุด",
+    "refused attempts only": "เฉพาะที่ถูกปฏิเสธ",
+    "When": "เมื่อไร", "From": "จากที่ไหน", "Command": "คำสั่ง", "Result": "ผล", "Took": "ใช้เวลา",
+    "Recording is switched off on this machine (LMDS_AUDIT=0).":
+      "เครื่องนี้ปิดการบันทึกไว้ (LMDS_AUDIT=0)",
+    "Nothing has been refused.": "ยังไม่มีอะไรถูกปฏิเสธ",
+    "Nothing recorded yet.": "ยังไม่มีอะไรถูกบันทึก",
+    "{shown} entries · {refused} refused": "{shown} รายการ · ถูกปฏิเสธ {refused}",
+    ["Records the time, the address it came from, the command and the result — never the request body " +
+     "or the query string, because the token can travel in the query string and this file is meant to " +
+     "be read by people (CLI: <code>lmds audit --failed</code>)"]:
+      "บันทึกเวลา · ที่อยู่ที่ยิงมา · คำสั่ง · ผลลัพธ์ — ไม่เก็บ body และไม่เก็บ query string " +
+      "เพราะ token เดินทางมาทาง query string ได้ และไฟล์นี้มีไว้ให้คนอ่าน " +
+      "(CLI: <code>lmds audit --failed</code>)",
+
     // ── เมนูซ้าย · เส้นทาง ────────────────────────────────────────────
     "Overview": "ภาพรวม",
     "This machine (hub)": "เครื่องนี้ (hub)",
@@ -1518,6 +1563,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
   <symbol id="i-sliders" viewBox="0 0 24 24">
     <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3"/>
     <circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24">
+    <circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3.5M15.5 12v2.5"/></symbol>
   <symbol id="i-pulse" viewBox="0 0 24 24">
     <path d="M3 12h3.6l2-5.6 3.5 11.2 2.5-5.6H21"/></symbol>
   <symbol id="i-logs" viewBox="0 0 24 24">
@@ -1718,6 +1765,24 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
         <div class="dim">ตรวจลายเซ็นก่อนเขียนเสมอ — ใบที่ใช้ไม่ได้จะไม่เขียนทับใบเดิม ·
           เหมือน <code>lmds license install &lt;ไฟล์&gt;</code></div>
       </div>
+    </div></div>
+
+    <!-- ร่องรอยการใช้งาน — คอนโซลนี้ start/stop/ลบโมเดลได้ทุกเครื่องในทะเบียน และติดตั้ง
+         LMDS ลง node ใหม่ได้ผ่าน SSH ด้วยกุญแจของ hub · เวลามีอะไรผิดปกติ คำถามแรกคือ
+         "ใครสั่ง" · `lmds audit` ตอบได้อยู่แล้ว แต่คนที่ใช้ GUI อย่างเดียวเข้าไม่ถึง
+         และลูกค้าที่เปิดคอนโซลออกวง network ต้องเห็นเองว่ามีใครพยายามเข้า -->
+    <div class="card"><div class="pad">
+      <div class="field">
+        <label class="dim" style="min-width:150px" data-i18n>Who did what</label>
+        <button id="audit-load" data-i18n>Show recent activity</button>
+        <label class="dim" style="margin-left:4px">
+          <input id="audit-failed" type="checkbox"> <span data-i18n>refused attempts only</span></label>
+        <span id="audit-msg" class="dim"></span>
+      </div>
+      <div id="audit-out" style="margin-top:10px"></div>
+      <div class="dim" style="margin-top:8px" data-i18n>Records the time, the address it came from, the
+        command and the result — never the request body or the query string, because the token can travel
+        in the query string and this file is meant to be read by people (CLI: <code>lmds audit --failed</code>)</div>
     </div></div>
   </section>
 
@@ -2200,6 +2265,33 @@ function testsMarkup(m) {
   </div>`;
 }
 
+// key ของ bundle นี้ · โครงเดียวกับแผงอื่น: วาดโครงก่อน แล้วค่อยเติมสถานะจาก API
+//
+// **ทำไมแผงนี้ถึงต้องมี** — wizard deploy บนหน้านี้พิมพ์ข้อความบอกให้ไปรัน
+// `lmds key show <slug> --reveal` ซึ่งเป็นคำสั่งที่คนที่ใช้ GUI อย่างเดียวพิมพ์ไม่ได้อยู่แล้ว
+function keyMarkup(m) {
+  const slug = esc(m.slug);
+  return `<div class="pad" style="border-top:1px solid var(--line)">
+    <div class="key-state dim" data-slug="${slug}">${esc(T("Reading…"))}</div>
+    <div class="field" style="margin-top:10px">
+      <button data-act="key:new" data-slug="${slug}" data-i18n>Generate a key</button>
+      <button data-act="key:reveal" data-slug="${slug}" class="ghost" data-i18n>Show the value</button>
+      <button data-act="key:clear" data-slug="${slug}" class="ghost" data-i18n
+              style="border-color:var(--bad);color:var(--bad)">Remove the key</button>
+    </div>
+    <div class="field" style="margin-top:6px">
+      <input class="key-own" type="text" spellcheck="false" autocomplete="off"
+             placeholder="${esc(T("…or paste a key you already use"))}"
+             style="min-width:260px;font-family:var(--mono)">
+      <button data-act="key:set" data-slug="${slug}" class="ghost" data-i18n>Use this one</button>
+    </div>
+    <div class="key-out" style="margin-top:8px"></div>
+    <div class="dim" style="margin-top:8px">${esc(T(
+      "The key is kept on this machine outside the bundle folder, readable only by its owner — " +
+      "bundles get zipped and shared, so a key inside one would travel with it."))}</div>
+  </div>`;
+}
+
 function manageMarkup(m) {
   const o = opts(m.slug);
   const auto = m.autostart;
@@ -2649,6 +2741,7 @@ function renderFleet(models) {
           <span class="acts"></span>
           <button data-act="tests" data-slug="${esc(m.slug)}" data-i18n><svg class="ic" aria-hidden="true"><use href="#i-flask"/></svg>Tests</button>
           <button data-act="opts" data-slug="${esc(m.slug)}" data-i18n><svg class="ic" aria-hidden="true"><use href="#i-sliders"/></svg>Manage</button>
+          <button data-act="key" data-slug="${esc(m.slug)}" data-i18n><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg>Key</button>
           <button data-act="doctor" data-slug="${esc(m.slug)}" data-i18n><svg class="ic" aria-hidden="true"><use href="#i-pulse"/></svg>Doctor</button>
           <button data-act="logs" data-slug="${esc(m.slug)}" data-i18n><svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>Logs</button>
         </div>
@@ -3474,8 +3567,114 @@ function openLocalFollow(slug, opts = {}) {
   });
 }
 
+// สถานะของ key — **ไม่ดึงค่าเต็ม** endpoint นี้คืนแค่ว่ามีไหมกับปลายสี่ตัว
+// ค่าเต็มต้องกดขอเอง (`key:reveal`) เพราะหน้านี้ถูกเปิดค้างไว้ทั้งวันบนจอที่คนเดินผ่าน
+async function loadKeyState(slug) {
+  const box = document.querySelector(`#panel-${CSS.escape(slug)} .key-state`);
+  if (!box) return;
+  try {
+    const d = await (await api(`/api/models/${encodeURIComponent(slug)}/key`)).json();
+    const pill = d.has_key
+      ? `<span class="pill" style="border-color:var(--ok);color:var(--ok)">${esc(T("key set"))}</span>`
+      : `<span class="pill" style="border-color:var(--warn);color:var(--warn)">${esc(T("served open"))}</span>`;
+    box.innerHTML = d.has_key
+      ? `${pill} <code class="mono">${esc(d.hint || "")}</code>
+         <div class="dim" style="margin-top:4px">${esc(T("Stored at"))} <code>${esc(d.path || "")}</code></div>`
+      // ไม่มี key = ใครยิงถึงพอร์ตนี้ก็ใช้โมเดลได้ · ต้องพูดให้ตรง ไม่ใช่ปล่อยว่าง
+      : `${pill} <div class="dim" style="margin-top:4px">${esc(T(
+          "Anything that can reach this port can use the model."))}</div>`;
+  } catch (err) {
+    box.innerHTML = `<span class="warn-line">${esc(T("Could not read the key state"))}</span>`;
+  }
+}
+
+// ทุกทางที่เปลี่ยนสถานะจบด้วยการอ่านสถานะใหม่ — แผงต้องไม่ค้างแสดงของเก่าหลังกด
+async function keyAction(what, slug, button) {
+  const panel = document.getElementById("panel-" + slug);
+  const out = panel && panel.querySelector(".key-out");
+  const base = `/api/models/${encodeURIComponent(slug)}/key`;
+  if (!out) return;
+  out.innerHTML = "";
+
+  if (what === "reveal") {
+    const d = await withButton(button, "…", () => api(base + "/reveal"));
+    if (!d) return;
+    out.innerHTML = keyValueMarkup(d.key, T("This is the value clients must send."));
+    return;
+  }
+
+  if (what === "clear") {
+    if (!confirm(T("Remove the key for {slug}? After a restart this bundle serves open.", { slug }))) return;
+    const d = await withButton(button, "…", () => api(base, { method: "DELETE" }));
+    if (!d) return;
+    out.innerHTML = d.removed
+      ? `<div class="warn-line">${esc(d.warning || "")}</div>`
+      : `<div class="dim">${esc(T("There was no key to remove."))}</div>`;
+    await loadKeyState(slug);
+    return;
+  }
+
+  const own = what === "set" ? (panel.querySelector(".key-own") || {}).value : "";
+  if (what === "set" && !String(own || "").trim()) { panel.querySelector(".key-own").focus(); return; }
+
+  // ทับของเดิมต้องยืนยัน — client ทุกตัวที่ถือใบเก่าใช้ไม่ได้ทันทีที่โมเดล restart
+  // ฝั่ง server ตอบ 409 เมื่อไม่ส่ง force · ถามตรงนี้ก่อนจะได้ไม่ต้องให้ผู้ใช้เจอ error แล้วเดาต่อ
+  const existing = await (await api(base)).json().catch(() => ({}));
+  if (existing.has_key && !confirm(T(
+      "{slug} already has a key. Replacing it breaks every client still using the old one. Continue?",
+      { slug }))) return;
+
+  const body = { force: !!existing.has_key };
+  if (what === "set") body.key = String(own).trim();
+  const d = await withButton(button, "…", () => api(base, { method: "POST", body: JSON.stringify(body) }));
+  if (!d) return;
+  const field = panel.querySelector(".key-own");
+  if (field) field.value = "";
+  out.innerHTML = keyValueMarkup(d.key, d.restart_required
+    ? T("Restart the model for it to take effect — the running one still uses the old key.")
+    : "");
+  await loadKeyState(slug);
+}
+
+// ค่าเต็มแสดงครั้งเดียวตรงนี้ · มีปุ่มคัดลอกเพราะคนที่เพิ่งสร้างต้องเอาไปตั้งที่ client
+// และการให้เขาลากเมาส์เลือกสตริง 48 ตัวคือที่ที่ตัวอักษรหายไปหนึ่งตัวแล้วไล่หาสาเหตุทั้งวัน
+function keyValueMarkup(value, note) {
+  return `<div class="mono" style="word-break:break-all;padding:8px;border:1px solid var(--line);
+      border-radius:var(--r);background:var(--sunken)">${esc(value || "")}</div>
+    <div class="field" style="margin-top:6px">
+      <button class="ghost key-copy" data-i18n>Copy</button>
+      ${note ? `<span class="dim">${esc(note)}</span>` : ""}
+    </div>`;
+}
+
+// คัดลอกอ่านค่าจากกล่องที่แสดงอยู่ ไม่ได้พก key ไปกับปุ่ม · clipboard ใช้ไม่ได้บน http
+// ที่ไม่ใช่ localhost (ลูกค้าเปิดคอนโซลผ่าน IP ในวง LAN เป็นเรื่องปกติ) — ล้มแล้วต้องบอก
+// ให้เลือกเอง ไม่ใช่เงียบแล้วคนกดคิดว่าคัดลอกไปแล้ว
+document.addEventListener("click", async e => {
+  const btn = e.target.closest(".key-copy");
+  if (!btn) return;
+  const box = btn.closest(".key-out") && btn.closest(".key-out").querySelector(".mono");
+  const value = box ? box.textContent : "";
+  try {
+    if (!navigator.clipboard) throw new Error("no clipboard");
+    await navigator.clipboard.writeText(value);
+    const was = btn.textContent;
+    btn.textContent = T("Copied");
+    setTimeout(() => { btn.textContent = was; }, 1500);
+  } catch {
+    btn.textContent = T("Select the value and copy it");
+    if (box && window.getSelection) {
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+});
+
 function togglePanel(slug, key, render) {
-  ["doctor", "logs", "tests", "opts"].filter(k => k !== key).forEach(k => open.delete(slug + " " + k));
+  ["doctor", "logs", "tests", "opts", "key"].filter(k => k !== key).forEach(k => open.delete(slug + " " + k));
   const panel = document.getElementById("panel-" + slug);
   const full = slug + " " + key;
   // แผงนี้ถูกวาดใหม่ทุกทาง — สาย Follow ที่เปิดอยู่ต้องปิดด้วย ไม่งั้น hub ถือ process ค้างโดยไม่มีใครดู
@@ -3588,6 +3787,9 @@ document.addEventListener("click", async e => {
     if (togglePanel(slug, act)) await load(slug, act);
     return;
   }
+
+  if (act === "key") { if (togglePanel(slug, "key", () => keyMarkup(model))) await loadKeyState(slug); return; }
+  if (act.startsWith("key:")) { await keyAction(act.slice(4), slug, e.target); return; }
 
   if (act === "push") {
     const box = document.getElementById("push-" + slug);
@@ -7344,6 +7546,52 @@ function fillHubSite() {
   if (dl) dl.innerHTML = [...new Set([...lastNodeRegistry.values()].map(n => (n.site || "").trim()).filter(Boolean))]
     .sort().map(s => `<option value="${esc(s)}">`).join("");
 }
+
+// ร่องรอยโหลดเมื่อกดเท่านั้น — ไม่ poll · ไฟล์นี้โตได้ถึง 5 MB และคนเปิดหน้าตั้งค่าทิ้งไว้
+// ทั้งวัน การดึงเองทุกรอบคือการอ่านดิสก์ซ้ำ ๆ เพื่อของที่ไม่มีใครดู
+document.addEventListener("click", async e => {
+  if (!e.target.closest("#audit-load")) return;
+  const btn = e.target.closest("#audit-load");
+  const out = document.getElementById("audit-out");
+  const msg = document.getElementById("audit-msg");
+  const failed = !!(document.getElementById("audit-failed") || {}).checked;
+  if (msg) { msg.textContent = ""; msg.style.color = ""; }
+  const d = await withButton(btn, T("Reading…"),
+    () => api(`/api/audit?lines=200${failed ? "&failed_only=true" : ""}`));
+  if (!d || !out) return;
+
+  if (!d.enabled) {
+    // ปิดไว้เองด้วย LMDS_AUDIT=0 — ต่างจาก "เปิดอยู่แต่ยังไม่มีใครทำอะไร" คนละเรื่องกันสิ้นเชิง
+    out.innerHTML = `<div class="warn-line">${esc(T("Recording is switched off on this machine (LMDS_AUDIT=0)."))}</div>`;
+    return;
+  }
+  const rows = d.entries || [];
+  if (!rows.length) {
+    out.innerHTML = `<div class="dim">${esc(failed
+      ? T("Nothing has been refused.")
+      : T("Nothing recorded yet."))}</div>`;
+    if (msg) msg.textContent = d.path || "";
+    return;
+  }
+  // ใหม่อยู่บนสุด — คนเปิดดูเพราะเพิ่งเกิดอะไรบางอย่าง ไม่ได้มาอ่านประวัติตั้งแต่ต้น
+  const tone = st => (st >= 500 ? "var(--bad)" : st === 401 || st === 403 || st === 429 ? "var(--warn)"
+    : st >= 400 ? "var(--warn)" : "var(--ok)");
+  out.innerHTML = `<div style="overflow-x:auto"><table class="ov-table mono" style="font-size:calc(12px * var(--fs))">
+      <thead><tr>
+        <th data-i18n>When</th><th data-i18n>From</th><th data-i18n>Command</th>
+        <th data-i18n>Result</th><th data-i18n>Took</th>
+      </tr></thead><tbody>${rows.slice().reverse().map(r => `<tr>
+        <td>${esc(String(r.at || "").replace("T", " "))}</td>
+        <td>${esc(r.ip || "?")}</td>
+        <td>${esc(r.method || "")} ${esc(r.path || "")}</td>
+        <td style="color:${tone(Number(r.status) || 0)}">${esc(r.status)}</td>
+        <td>${esc(r.ms)} ms</td></tr>`).join("")}</tbody></table></div>`;
+  window.applyI18nStatic(out);
+  if (msg) {
+    msg.textContent = T("{shown} entries · {refused} refused", { shown: rows.length, refused: d.refused || 0 });
+    if (d.refused) msg.style.color = "var(--warn)";
+  }
+});
 
 document.addEventListener("click", async e => {
   if (!e.target.closest("#hub-site-save")) return;
