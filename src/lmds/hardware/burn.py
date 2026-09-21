@@ -275,11 +275,20 @@ done
 if command -v docker >/dev/null 2>&1; then
   # image ที่ bundle บนเครื่องนี้ใช้จริง — จาก bundle.env (ผู้ใช้ตั้งเอง) และจากค่า default
   # ที่ฝังอยู่ในตัว controller · เอาเฉพาะที่ `docker image inspect` เห็น = มีอยู่แล้วจริง
-  images=$( {{ sed -n 's/^[A-Z_]*IMAGE=//p' ~/bundles/*/bundle.env ~/*/bundles/*/bundle.env 2>/dev/null
-              sed -n 's/.*[A-Z_]*IMAGE:-\\([^}}]*\\)}}.*/\\1/p' ~/bundles/*/*.sh ~/*/bundles/*/*.sh 2>/dev/null
-              printf '%s\\n' "${{LMDS_BURN_IMAGE:-}}"; }} \\
-            | sed 's/^ *//; s/ *$//; s/^"//; s/"$//' | grep -v '^$' | sort -u )
-  for img in $images; do
+  bundle_images=$( {{ sed -n 's/^[A-Z_]*IMAGE=//p' ~/bundles/*/bundle.env ~/*/bundles/*/bundle.env 2>/dev/null
+                      sed -n 's/.*[A-Z_]*IMAGE:-\\([^}}]*\\)}}.*/\\1/p' ~/bundles/*/*.sh ~/*/bundles/*/*.sh 2>/dev/null; }} \\
+                   | sed 's/^ *//; s/ *$//; s/^"//; s/"$//' | grep -v '^$' | sort -u )
+  # image ของ llama.cpp ไม่มี python/torch — เครื่องที่ deploy แต่ llama.cpp จึงไม่มีอะไรให้ยืม
+  # **ทั้งที่ image ของ vLLM นอนอยู่บนเครื่องนั้นจริง** แค่ไม่มี bundle ไหนอ้างถึง
+  # (เจอบน msi-5 กับ msi-6 ตอนวัดฟลีตจริง 2026-09-21 — ทั้งคู่มี vllm/vllm-openai อยู่)
+  # ดูจาก `docker images` ด้วยจึงเห็นของที่มีอยู่ตรงหน้า · ยังไม่ pull อะไรเหมือนเดิม
+  # และยังจำกัดด้วยชื่อ ไม่ใช่เอา image แรกที่เจอมารันดื้อ ๆ
+  local_images=$(docker images --format '{{{{.Repository}}}}:{{{{.Tag}}}}' 2>/dev/null \\
+                 | grep -v ':<none>$' \\
+                 | grep -Ei '(^|/)(vllm|pytorch)|nvcr\\.io/nvidia/(vllm|pytorch)' | head -4)
+  # ที่ผู้ดูแลชี้เองมาก่อนเสมอ แล้วค่อยของ bundle (ตรงกับรันไทม์ของเครื่องนั้นที่สุด) แล้วค่อยที่เหลือ
+  for img in $(printf '%s\\n' "${{LMDS_BURN_IMAGE:-}}" $bundle_images $local_images \\
+               | grep -v '^$' | awk '!seen[$0]++'); do
     docker image inspect "$img" >/dev/null 2>&1 || continue
     attempt docker run --rm -i --gpus all --entrypoint python3 "$img" || continue
   done

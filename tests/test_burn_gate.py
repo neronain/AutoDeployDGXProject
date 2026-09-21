@@ -283,6 +283,31 @@ def test_the_script_never_pulls_anything_from_the_network():
     assert "curl" not in script and "wget" not in script
 
 
+def test_an_image_on_the_machine_is_usable_even_when_no_bundle_mentions_it():
+    """เจอจริงตอนวัดฟลีต (2026-09-21) · `msi-5` กับ `msi-6` ตอบ "ไม่มี torch" ทั้งที่มี
+    `vllm/vllm-openai` นอนอยู่บนเครื่อง — bundle ของสองเครื่องนั้นอ้างถึงแต่ image ของ
+    llama.cpp ซึ่งไม่มี python/torch และสคริปต์สแกนจาก "image ที่ bundle อ้างถึง" เท่านั้น
+
+    ผลคือเครื่องที่ *วัดได้* ถูกรายงานว่าวัดไม่ได้ ทั้งที่ของที่ต้องใช้อยู่ตรงหน้า
+    """
+    script = burn.burn_script()
+
+    assert "docker images" in script, "ต้องดูของที่มีอยู่บนเครื่องด้วย ไม่ใช่แค่ที่ bundle อ้างถึง"
+    assert "bundle_images" in script and "local_images" in script
+    # จำกัดด้วยชื่อ ไม่ใช่หยิบ image แรกที่เจอมารัน
+    assert "vllm|pytorch" in script
+    assert ":<none>$" in script, "tag ที่หลุดต้องไม่ถูกหยิบมาใช้"
+
+
+def test_the_operator_override_is_tried_before_anything_found_automatically():
+    """คนที่ชี้ `LMDS_BURN_IMAGE` มาเองรู้ดีกว่าเรา — และเดิม `sort -u` สลับลำดับทิ้งหมด"""
+    script = burn.burn_script()
+    loop = next(line for line in script.splitlines() if line.strip().startswith("for img in"))
+
+    assert loop.index("LMDS_BURN_IMAGE") < loop.index("bundle_images") < loop.index("local_images")
+    assert "awk '!seen[$0]++'" in script, "ลำดับต้องคงไว้ตอนตัดตัวซ้ำ (sort -u ทำลายลำดับ)"
+
+
 def test_shortening_the_burn_keeps_the_sample_point_at_the_same_ratio():
     """§10 อ่านค่าที่วินาทีที่ 12 จาก 15 — ย่อ burn แล้วจุดอ่านต้องย่อตาม ไม่ใช่ค้างที่ 12"""
     assert "SAMPLE_AT = 12.0" in burn.burn_program(seconds=15.0)

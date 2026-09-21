@@ -8,7 +8,7 @@
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
 [![version](https://img.shields.io/badge/version-0.10.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2447-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-2449-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04%20%7C%2025.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10--3.13-3776ab)](pyproject.toml)
@@ -363,7 +363,7 @@ lmds recipes --publish <ชื่อ> --features tools,vision     # ส่งต
 | MTP / speculative | ✅ draft head จาก repo | ผ่าน `--extra-args` | ผ่าน `--extra-args` |
 
 ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo ·
-**24 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,447 เทสต์** รันครบทุก push บน Python 3.10–3.13
+**24 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,449 เทสต์** รันครบทุก push บน Python 3.10–3.13
 
 **MoE กับ MTP ถูกรายงานเป็นข้อเท็จจริงจากไฟล์** ไม่ใช่สิ่งที่ LLM เดา — จำนวน expert ทั้งหมด/ที่เปิด
 ต่อ token อ่านจาก `config.json` หรือ GGUF metadata เพราะ *total บอกว่าต้องมีหน่วยความจำเท่าไร ส่วน

@@ -534,7 +534,7 @@ src/lmds/
 │                        #   scriptedit.py, selfupdate.py, keysapi.py (key ของโมเดล + /api/audit), audit.py (middleware log),
 │                        #   fit.py, logstream.py, static/index.html (i18n en/th) + static/fonts/ (Geist)
 └── _build.py            # COMMIT/SOURCE ที่ install.sh ประทับ
-tests/                   # 149 ไฟล์ test_*.py · 2,447 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
+tests/                   # 149 ไฟล์ test_*.py · 2,449 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
                          #   นับด้วย pytest --collect-only ที่ 0.10.0 (2026-09-21) — ตรงกับป้ายใน README
 .github/workflows/ci.yml # pytest 3.10/3.11/3.12/3.13 + ruff check + bash -n/shellcheck + secret scan
 ```
