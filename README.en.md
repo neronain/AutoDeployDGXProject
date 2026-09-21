@@ -335,6 +335,16 @@ Check another machine with `--node <name>` or the whole fleet with `--all`: it *
 rather than calling `lmds` on the node**, so machines that never had LMDS installed, or run an older
 version than the hub, can still be checked — and it fetches nothing from the network.
 
+> **Know this before you rely on it** · Measuring needs a torch that can see CUDA on that machine —
+> found from an interpreter first, then from an image **already on the machine** (**nothing is
+> pulled**; air-gapped sites have to work). That means **a machine running only llama.cpp usually
+> cannot be measured**, because it never needed a vLLM image. Measured across our own 16-machine
+> fleet (2026-09-21): exactly one machine had torch with CUDA installed natively, most of the rest
+> were measurable only by borrowing a vLLM image, and **three could not be measured at all**.
+> Those answer "cannot tell" rather than "failed", with the fix: copy an image from a neighbour with
+> `docker save` → `docker load` (no internet needed), or point at one yourself with
+> `LMDS_BURN_PYTHON` / `LMDS_BURN_IMAGE`.
+
 ### `lmds watchdog` — `/health` can be green while a rank is stuck
 
 `/health` can answer 200 while the forward pass is not moving. The only thing that proves it still
