@@ -378,6 +378,27 @@ def preflight(node: Node, new: str = "", *, nodes: dict, hosts: dict,
     return out
 
 
+def read_hostname(node: Node, runner=None) -> tuple[str, str]:
+    """ชื่อปัจจุบัน**จากเครื่องจริง** → (ตัวดิบ, ตัวที่ normalise แล้ว) · ว่างทั้งคู่เมื่ออ่านไม่ได้
+
+    คืนตัวดิบมาด้วยเพราะการแก้ `/etc/hosts` ต้องเทียบตามตัวพิมพ์เดิม — เครื่องที่ชื่อ
+    "DGX-Spark" มีคำนั้นอยู่ในไฟล์แบบนั้น เอาตัวพิมพ์เล็กไปเทียบจะไม่เจอ แล้วบรรทัดเก่าจะ
+    ค้างปนกับบรรทัดใหม่ · ส่วนการตัดสิน (ชน/ซ้ำ/ที่อยู่ SSH) ใช้ตัวที่ normalise แล้ว
+
+    แยกออกมาเป็นฟังก์ชันสาธารณะเพราะ **CLI ต้องรู้ชื่อจริงก่อนจะถามรหัส sudo** ·
+    `preflight()` ใช้ชื่อจากแคชของ hub ซึ่งเร็วแต่เก่าได้ — ตัดสินใจว่า "ไม่ต้องทำอะไรแล้ว"
+    จากแคชคือการเชื่อของที่อาจไม่จริง
+    """
+    from lmds.nodes.ssh import run as ssh_run
+
+    run = runner or ssh_run
+    read = run(node, read_script(), timeout=30)
+    if not read.ok:
+        return "", ""
+    raw = _tagged(read.stdout or "", "LMDS_HN") or _tagged(read.stdout or "", "LMDS_STATIC")
+    return raw, normalise(raw)
+
+
 # ── ทำจริง ────────────────────────────────────────────────────────────────────
 def rename_host(node: Node, new: str, password: str = "", *, nodes: dict | None = None,
                 hosts: dict | None = None, models: list[dict] | None = None,
@@ -416,9 +437,6 @@ def rename_host(node: Node, new: str, password: str = "", *, nodes: dict | None 
     report["new"] = new
 
     read = run(node, read_script(), timeout=30)
-    # เก็บทั้งตัวดิบและตัวที่ normalise แล้ว: การตัดสิน (ชน/ซ้ำ/ที่อยู่ SSH) ใช้ตัวที่ normalise แล้ว
-    # แต่การ **แก้ /etc/hosts ต้องเทียบตัวดิบ** — เครื่องที่ชื่อ "DGX-Spark" มีคำนั้นอยู่ในไฟล์ตามตัวพิมพ์
-    # เดิม ถ้าเอาตัวพิมพ์เล็กไปเทียบก็ไม่เจอ แล้วบรรทัดเก่าจะค้างอยู่ปนกับบรรทัดใหม่ที่ถูกเติมเข้าไป
     raw = _tagged(read.stdout or "", "LMDS_HN") or _tagged(read.stdout or "", "LMDS_STATIC")
     old = normalise(raw)
     if not read.ok or not old:

@@ -532,6 +532,67 @@ def test_the_cli_asks_before_it_touches_anything_and_never_echoes_the_password(o
     assert "ทะเบียน" in out.output, "ต้องบอกว่าชื่อในทะเบียนไม่ได้เปลี่ยนไปด้วย"
 
 
+def test_the_cli_never_asks_for_a_password_when_the_name_is_already_right(one_box, monkeypatch):
+    """เจอจริง 2026-09-21 · `lmds node rename-host spark-head gigabyte01 --yes` บนเครื่องที่ชื่อ
+    `gigabyte01` อยู่แล้ว **ยังถามรหัส sudo** แล้วจบด้วย exit 1 เมื่อไม่มีใครพิมพ์ให้
+
+    ตรรกะ "ชื่อตรงอยู่แล้ว = ไม่ต้องทำอะไร" อยู่ใน `rename_host()` มาตลอด แต่ CLI ถามรหัส
+    **ก่อน** จะเรียกมัน · หน้าเว็บไม่เจอเพราะเรียก `preflight()` ก่อนโชว์ฟอร์ม
+    """
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+
+    box = FakeBox("spark1", password="s3cret")
+    monkeypatch.setattr("lmds.nodes.run", box)
+    monkeypatch.setattr("lmds.nodes.probe", lambda node, timeout=30: {"host": spark("spark1"), "models": []})
+    monkeypatch.setattr("lmds.cli.main._live_cluster_groups",
+                        lambda names=None: ({"msi-6": one_box}, {"msi-6": spark("spark1")}, {}, []))
+
+    def never(prompt=""):
+        raise AssertionError("ต้องไม่ถามรหัสเมื่อไม่มีอะไรต้องเปลี่ยน")
+
+    monkeypatch.setattr("getpass.getpass", never)
+
+    out = CliRunner().invoke(app, ["node", "rename-host", "msi-6", "spark1", "--yes"],
+                             env={"COLUMNS": "200"})
+
+    assert out.exit_code == 0, out.output       # ไม่มีอะไรต้องทำ = สำเร็จ ไม่ใช่ล้มเหลว
+    assert box.name == "spark1"                  # และต้องไม่ไปแตะเครื่อง
+    assert "spark1" in out.output
+
+
+def test_the_cli_refuses_a_blocked_machine_before_asking_for_the_password(one_box, monkeypatch):
+    """ผลพวงเดียวกันที่แรงกว่า — เครื่องที่จะถูกปฏิเสธอยู่แล้วก็ถูกถามรหัสก่อน
+
+    คนกรอกรหัส sudo ของเครื่อง production ให้เปล่า ๆ แล้วค่อยถูกบอกว่าทำไม่ได้ตั้งแต่แรก
+    """
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+
+    box = FakeBox("spark1", password="s3cret")
+    monkeypatch.setattr("lmds.nodes.run", box)
+    # stacked รันอยู่ = ห้ามเปลี่ยนชื่อ (NCCL rendezvous กับ /etc/hosts มีชีวิตอยู่)
+    monkeypatch.setattr("lmds.nodes.probe", lambda node, timeout=30: {
+        "host": spark("spark1"),
+        "models": [{"slug": "glm-4.6", "running": True, "topology": "stacked"}]})
+    monkeypatch.setattr("lmds.cli.main._live_cluster_groups",
+                        lambda names=None: ({"msi-6": one_box}, {"msi-6": spark("spark1")}, {}, []))
+
+    def never(prompt=""):
+        raise AssertionError("ต้องปฏิเสธก่อนถามรหัส")
+
+    monkeypatch.setattr("getpass.getpass", never)
+
+    out = CliRunner().invoke(app, ["node", "rename-host", "msi-6", "spark-7", "--yes"],
+                             env={"COLUMNS": "200"})
+
+    assert out.exit_code == 1
+    assert box.name == "spark1", "ต้องไม่แตะเครื่องเลย"
+    assert "ยังไม่ได้แตะอะไร" in out.output
+
+
 def test_the_cli_refuses_a_bad_name_before_it_connects_to_anything(one_box, monkeypatch):
     from typer.testing import CliRunner
 

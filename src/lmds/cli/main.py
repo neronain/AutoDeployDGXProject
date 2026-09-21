@@ -1867,7 +1867,9 @@ def node_rename_host(
     import platform
 
     from lmds.nodes import NodeError, probe, run
-    from lmds.nodes.hostname import HostnameError, rename_host, validate
+    from lmds.nodes.hostname import (
+        HostnameError, blockers as hostname_blockers, read_hostname, rename_host, validate,
+    )
     from lmds.nodes.netplan import sudo_needs_password
 
     (target,) = _require_nodes(name)
@@ -1886,8 +1888,34 @@ def node_rename_host(
     except NodeError:
         models = []
 
+    # อ่านชื่อจริงจากเครื่อง **ก่อน** ถามอะไรทั้งนั้น
+    #
+    # เดิมถามรหัส sudo ก่อนแล้วค่อยให้ `rename_host` ไปเจอเองว่าไม่ต้องทำอะไร — ผลคือ
+    # ตั้งชื่อเดิมทับตัวเองก็ยังถูกถามรหัส (เจอจริง 2026-09-21 บน spark-head) และที่แย่กว่า
+    # คือ **เครื่องที่จะถูกปฏิเสธอยู่แล้วก็ถูกถามรหัสก่อน** · หน้าเว็บไม่เจอเพราะมันเรียก
+    # `preflight()` ก่อนโชว์ฟอร์ม — ทาง CLI เท่านั้นที่ข้ามขั้นนั้นไป
+    #
+    # ไม่ใช้ `preflight()` ตรงนี้เพราะมันอ่านชื่อจากแคชของ hub ซึ่งเร็วแต่เก่าได้ ·
+    # การตัดสินว่า "ไม่ต้องทำอะไรแล้ว" จากแคชคือการเชื่อของที่อาจไม่จริง
+    _raw, current = read_hostname(target, runner=run)
+    if not current:
+        err_console.print(f"[red]อ่าน hostname ปัจจุบันของ {name} ไม่ได้[/red] — ต่อเครื่องไม่ติดหรือ ssh ล้ม")
+        raise typer.Exit(code=1)
+    if current == wanted:
+        console.print(f"[green]✓[/green] {name} ชื่อ '{current}' อยู่แล้ว — ไม่มีอะไรต้องเปลี่ยน")
+        raise typer.Exit(code=0)
+
+    stuck = hostname_blockers(target, current, wanted, nodes=nodes, hosts=hosts,
+                              models=models, hub_hostname=platform.node())
+    if stuck:
+        err_console.print(f"[red]เปลี่ยนชื่อ {name} ไม่ได้:[/red]")
+        for item in stuck:
+            err_console.print(f"  · {item['text']}")
+        err_console.print("[dim]ยังไม่ได้แตะอะไรบนเครื่องนั้นเลย[/dim]")
+        raise typer.Exit(code=1)
+
     if not yes and not typer.confirm(
-            f"เปลี่ยน hostname ของ {name} เป็น '{wanted}'?", default=False):
+            f"เปลี่ยน hostname ของ {name} จาก '{current}' เป็น '{wanted}'?", default=False):
         raise typer.Exit(code=1)
     # ไม่ถามรหัสเลยเมื่อเครื่องนั้น NOPASSWD — เหมือน `lmds cluster apply` ที่รับค่าว่างได้
     password = ""
