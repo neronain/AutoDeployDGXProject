@@ -140,6 +140,31 @@ make_venv "$NEW_VENV" || {
 }
 # เน็ตช้าไม่ควรทำให้ติดตั้งล้ม — pip ค่าเริ่มต้นลอง 5 ครั้ง timeout 15 วิ ซึ่งไม่พอสำหรับไซต์ที่ PyPI ตอบช้า
 export PIP_RETRIES="${PIP_RETRIES:-8}" PIP_TIMEOUT="${PIP_TIMEOUT:-60}"
+
+# แคชของ pip ต้องเขียนได้ ไม่งั้นมันปิดแคชเองพร้อม WARNING สี่บรรทัด (สองบรรทัดต่อการเรียก
+# pip หนึ่งครั้ง และไฟล์นี้เรียกสองครั้ง) — ซึ่งคือสิ่งที่เห็นทุกครั้งที่อัปเดต node
+#
+# สาเหตุอยู่ในตัวเราเอง ไม่ใช่เครื่องลูกค้า: ขั้นติดตั้ง prerequisite เรียก installer ผ่าน
+# `sudo env HOME="$HOME"` (nodes/ssh.py) เพราะ `~` ใต้ sudo คือ /root ไม่ใช่ home ของผู้ใช้ ·
+# ผลคือ pip รันเป็น root แต่เห็น ~/.cache/pip ที่เป็นของผู้ใช้ธรรมดา ซึ่งเป็นรูปแบบเดียวกับ
+# ที่ข้อความของ pip แนะนำให้ใช้ `sudo -H` — แต่เราใช้ -H ไม่ได้ เพราะทั้ง installer พึ่ง HOME
+# ของผู้ใช้ในการหา checkout และที่ติดตั้ง · กรณีที่สองคือ ~/.cache กลายเป็นของ root จาก
+# sudo ครั้งเก่า (`lmds node fix-perms` มีไว้ซ่อมกรณีนั้น)
+#
+# **ไม่เลือก --no-cache-dir** เพราะแคชที่หายไม่ใช่แค่ช้าลง: ไซต์ที่ PyPI ตอบช้าเคยทำให้ขั้นนี้
+# ล้มจนเครื่องเหลือแบบไม่มี lmds เลยมาแล้ว (เคสจริง 2026-09-04 ที่เขียนไว้ข้างบน) · ย้ายแคช
+# ไปไว้ในโฟลเดอร์ของ LMDS เองแทน ซึ่งเรา mkdir มาเองเมื่อครู่จึงเขียนได้แน่ทั้งสองกรณี
+pip_cache_is_writable_by_us() {
+  # ดูตัวที่ "มีอยู่จริง" ตัวในสุด · ไม่มีทั้งคู่ = pip สร้างเองได้ ไม่ต้องย้าย
+  if [ -e "${HOME:-}/.cache/pip" ]; then [ -O "${HOME:-}/.cache/pip" ] && [ -w "${HOME:-}/.cache/pip" ]
+  elif [ -e "${HOME:-}/.cache" ]; then [ -O "${HOME:-}/.cache" ] && [ -w "${HOME:-}/.cache" ]
+  else return 0
+  fi
+}
+if [ -z "${PIP_CACHE_DIR:-}" ] && ! pip_cache_is_writable_by_us; then
+  export PIP_CACHE_DIR="${INSTALL_DIR}/pip-cache"
+  echo "· ~/.cache/pip ใช้ไม่ได้ (เจ้าของคนละคน) — ใช้แคชที่ ${PIP_CACHE_DIR} แทน"
+fi
 "${NEW_VENV}/bin/pip" install --quiet --upgrade pip
 
 # ประทับ commit ที่กำลังติดตั้งลงไปในแพ็กเกจ — ติดตั้งแบบปกติ (ไม่ใช่ editable) ทำให้โค้ดที่รัน
