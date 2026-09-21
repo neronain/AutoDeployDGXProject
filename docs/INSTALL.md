@@ -6,12 +6,13 @@
 
 | เครื่อง | ต้องมี | หมายเหตุ |
 |---|---|---|
-| เครื่องที่รัน **LMDS** (ตัวสร้าง bundle) | Python ≥ 3.10, git | ไม่ต้องมี GPU ก็ได้ · ใช้ดิสก์ < 200 MB |
+| เครื่องที่รัน **LMDS** (ตัวสร้าง bundle) | Python 3.10–3.13, git | ไม่ต้องมี GPU ก็ได้ · ใช้ดิสก์ < 200 MB |
 | เครื่องที่รัน **bundle** (ตัวเสิร์ฟโมเดล) | NVIDIA driver, Docker, NVIDIA Container Toolkit | ต้องมี GPU · ต้องมีดิสก์ว่างพอสำหรับ **runtime image + น้ำหนักโมเดล** (ดู §1.6) |
 
 > กรณีทั่วไปคือ **เครื่องเดียวกัน** (เช่น DGX Spark หรือเครื่อง RTX) — ติดตั้งครบทั้งสองส่วนในเครื่องนั้น
 
-รองรับ: Ubuntu 22.04 / 24.04 ทั้ง x86_64 (RTX) และ ARM64 (DGX Spark GB10)
+รองรับ: **Ubuntu 22.04 / 24.04 / 25.04** ทั้ง x86_64 (RTX) และ ARM64 (DGX Spark GB10) · Python 3.10–3.13
+(24.04 มาพร้อม 3.12 · 25.04 มาพร้อม 3.13 — CI ทดสอบครบทั้งสี่รุ่น)
 
 **LMDS ไม่ได้ติดตั้ง vLLM หรือ llama.cpp ให้ตอนนี้** — ตัว engine จะถูกดึง/สร้างตอนรัน bundle
 (vLLM = docker image, llama.cpp = docker image หรือ build จาก source) รายละเอียดทั้งหมดอยู่ที่ **[§4](#ส่วนที่-4--โมเดล-local-ถูกดึงมาและรันอย่างไร-vllm--llamacpp)**
@@ -31,7 +32,7 @@
 ### 1.1 ตรวจ Python
 
 ```bash
-python3 --version        # ต้องได้ 3.10 ขึ้นไป
+python3 --version        # ต้องได้ 3.10–3.13
 ```
 
 ถ้าไม่มีหรือขาดโมดูล venv:
@@ -235,6 +236,13 @@ lmds web --enable --bind 0.0.0.0     # systemd user service — ขึ้นเ�
 | `lmds web --disable` | เลิกให้ขึ้นเอง |
 | `lmds web -b --bind 0.0.0.0` | เครื่องที่ไม่มี systemd — รันเบื้องหลังจนกว่าจะรีบูต |
 
+> **สลับภาษาได้จากปุ่มบนหัวหน้า** — หน้าเว็บเป็นอังกฤษเป็นค่าเริ่มต้นและมีคำแปลไทยครบ
+> (จำต่อเบราว์เซอร์) · help ของ CLI เป็นไทยเสมอ
+
+หลังเปิดคอนโซลแล้ว งานที่เคยต้องพิมพ์ CLI ทำจากหน้าเว็บได้ — deploy wizard, start/stop/restart,
+doctor, logs, ชุดทดสอบ, ปุ่ม **Key** บนการ์ดโมเดล (สุ่ม/ดู/ถอน API key), ปุ่ม **Rename host**
+บนการ์ดเครื่อง และแผง **"ใครสั่งอะไร"** ในหน้า *Hub settings* (= `lmds audit`)
+
 ### 2.2 เพิ่มเครื่องอื่นจากหน้าเว็บ
 
 บนคอนโซล → **Add machine** → ใส่ชื่อ, host (IP หรือ hostname), user และ**รหัสผ่าน sudo ของ user นั้น**
@@ -262,10 +270,12 @@ lmds version
 ควรได้:
 
 ```text
-lmds 0.6.0
+lmds 0.10.0  (93e8cb9)
 template standard: dgx-spark-controllers-v3.0.0
 Local Model Deploy Studio — สร้างโดย neronain ⚡ fb.com/neronain.minidev
 ```
+
+(ในวงเล็บคือ commit ที่ `install.sh` ประทับไว้ — ตัวเดียวกับที่ป้ายเทียบรุ่นกับ hub และปุ่ม Update ใช้)
 
 > ตอนรันบน terminal จริงจะมี banner ขึ้นก่อนด้วย — พิมพ์ออก **stderr** และเงียบเองเมื่อถูก pipe
 > (`lmds inspect ... --json > out.json` ได้ JSON สะอาด) · ปิดถาวรได้ด้วย `export LMDS_NO_BANNER=1`
@@ -594,6 +604,23 @@ cd bundles/qwen3-0-6b-gguf
 
 ผ่านครบ = เครื่องพร้อม deploy โมเดลจริง · ไม่ผ่านข้อไหน กลับไปดูข้อนั้นในตารางของ [USAGE.md §7](USAGE.md)
 
+### 5.1 Tab completion
+
+`install.sh` ถามให้แล้ว — ถ้าข้ามไปหรืออยากติดตั้งทีหลัง:
+
+```bash
+lmds --install-completion
+```
+
+แล้ว**เปิด terminal ใหม่** (หรือ `source ~/.bashrc`) · รองรับ bash / zsh / fish
+
+```text
+lmds depl<TAB>                       → lmds deploy
+lmds stop qwen<TAB>                  → เติมชื่อ bundle ให้
+lmds deploy <url> --target dgx<TAB>  → dgx-spark-single / dgx-spark-stacked
+```
+
+
 ---
 
 ## การอัปเดตเวอร์ชัน
@@ -628,24 +655,6 @@ docker rmi vllm/vllm-openai:latest ghcr.io/ggml-org/llama.cpp:server-cuda
 ```
 
 > ถ้าเคยตั้ง autostart ไว้ ให้ `lmds disable <ชื่อ>` **ก่อน**ลบโปรแกรม ไม่งั้น systemd unit จะค้าง
-
----
-
-### 5.1 Tab completion
-
-`install.sh` ถามให้แล้ว — ถ้าข้ามไปหรืออยากติดตั้งทีหลัง:
-
-```bash
-lmds --install-completion
-```
-
-แล้ว**เปิด terminal ใหม่** (หรือ `source ~/.bashrc`) · รองรับ bash / zsh / fish
-
-```text
-lmds depl<TAB>                       → lmds deploy
-lmds stop qwen<TAB>                  → เติมชื่อ bundle ให้
-lmds deploy <url> --target dgx<TAB>  → dgx-spark-single / dgx-spark-stacked
-```
 
 ---
 

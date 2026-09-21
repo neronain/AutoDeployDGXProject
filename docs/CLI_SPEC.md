@@ -1,9 +1,9 @@
-# CLI Specification — 0.8.0
+# CLI Specification — 0.10.0
 
-สเปกคำสั่งของ `lmds` เขียนด้วย Python 3.10+, `typer` + `rich` · ปรับให้ตรง `lmds --help` ของ 0.6.0 (a4ec6bb, 2026-09-04)
+สเปกคำสั่งของ `lmds` เขียนด้วย Python 3.10+, `typer` + `rich` · ตรวจกับ `lmds --help` ของ 0.10.0 (2026-09-21)
 
 > **เอกสารนี้คือ *สเปก* ไม่ใช่คู่มือใช้งาน** — ส่วนที่ยังไม่ได้ implement ทำเครื่องหมาย ❌ ไว้
-> วิธีใช้และตัวอย่างจริง ดู [USAGE.md](USAGE.md) หรือ `lmds <คำสั่ง> --help` (help ทุกคำสั่งเป็นไทย · หน้าเว็บอังกฤษ)
+> วิธีใช้และตัวอย่างจริง ดู [USAGE.md](USAGE.md) หรือ `lmds <คำสั่ง> --help` (help ทุกคำสั่งเป็นไทย · หน้าเว็บสลับอังกฤษ/ไทยได้)
 
 ## ภาพรวมคำสั่ง
 
@@ -38,6 +38,9 @@ lmds node add|list|remove|install|setup|set|rename-host|run|ctl|cluster|clone|pu
 lmds cluster show|write|pair|doctor|inspect|plan|apply|remove-net   # คลัสเตอร์ stacked
 lmds web [--port --bind --token --no-auth -b --stop --restart --status --new-token --enable --disable]
 lmds audit [-n --failed --json]            # ใครสั่งอะไรกับคอนโซลของเครื่องนี้บ้าง
+lmds key show|new|set|clear|list <SLUG>    # API key ของ model server บนเครื่องนี้ (เก็บนอกโฟลเดอร์ bundle)
+lmds burn [--node|--all] [--force] [--seconds N] [--json]   # GB10: คล็อก GPU ถูก EC ล็อกอยู่ไหม — ใส่โหลดจริงแล้ววัด
+lmds watchdog arm|disarm|status|run <SLUG> # เฝ้าด้วย generate จริง แล้ว restart เมื่อไม่ตอบ — opt-in ต่อ slug
 lmds config set-provider|set-key|set-hf-token|show|defaults
 lmds agent info|bench                      # JSON ให้ hub เรียกผ่าน SSH
 lmds version                               # เวอร์ชัน + commit ที่รันอยู่ + template standard
@@ -338,7 +341,60 @@ image รู้จัก `model_type` · llama.cpp native: `libllama.so` ขอ�
 
 `~/.lmds/audit.log` (0600) เก็บคำสั่งที่เปลี่ยนสถานะกับคำขอที่ถูกปฏิเสธ: เวลา · IP · method+path · ผล · ms ·
 เก็บที่ middleware จุดเดียว route ใหม่จึงไม่มีทางลืม · **ไม่เก็บ body และ query string** (token มาทาง `?token=` ได้) ·
-หมุนที่ 5 MB เก็บรุ่นเดียว · `$LMDS_AUDIT=0` ปิด · `$LMDS_AUDIT_LOG` ย้ายที่
+หมุนที่ 5 MB เก็บรุ่นเดียว · `$LMDS_AUDIT=0` ปิด · `$LMDS_AUDIT_LOG` ย้ายที่ · หน้าเว็บอ่านชุดเดียวกันได้ที่
+แผง **"ใครสั่งอะไร"** ในหน้า Hub settings (`GET /api/audit?lines=&failed_only=`)
+
+## `lmds key`
+
+```text
+lmds key show <SLUG> [--reveal]     # มี key เก็บไว้ไหม — ไม่พิมพ์ค่าถ้าไม่สั่ง --reveal
+lmds key new  <SLUG>                # สุ่มใหม่ (client ทุกตัวที่ถือใบเก่าต้องเปลี่ยนตาม)
+lmds key set  <SLUG>                # ตั้ง key ที่มีอยู่แล้ว — **อ่านจาก stdin เท่านั้น** ไม่รับทาง argv
+lmds key clear <SLUG>               # ถอนออก — หลัง restart bundle นี้เสิร์ฟแบบเปิด
+lmds key list                       # bundle ไหนมี key บ้าง — ไม่พิมพ์ตัว key
+```
+
+- เก็บที่ `~/.lmds/keys/<slug>` (0600) **นอกโฟลเดอร์ bundle** เพราะโฟลเดอร์ถูก zip แจกต่อ · controller อ่านเองตอน start
+  จึงไม่หายหลัง reboot (systemd เรียก `<controller> start` เปล่า ๆ) · ลำดับ: flag/env > ไฟล์นี้ > ไม่มี key
+- ย้าย bundle ไปเครื่องอื่นแล้ว key **ไม่ตามไป** (ตั้งใจ) — ต้อง `lmds key new` ที่เครื่องนั้น
+- REST (หน้าเว็บ · ปุ่ม **Key** บนการ์ดโมเดล): `GET /api/models/{slug}/key` (สถานะ + hint 4 ตัวหน้า/หลัง ไม่คืนค่าเต็ม) ·
+  `GET …/key/reveal` (แยก endpoint เพื่อไม่ให้ key เดินทางทุกครั้งที่หน้าเว็บ poll) · `POST …/key` (`{key?, force?}` —
+  ทับของเดิมต้อง `force` มิฉะนั้น 409) · `DELETE …/key` · ทุกตัวตอบ `restart_required`
+
+## `lmds burn`
+
+```text
+lmds burn [--node NAME | --all] [--force] [--seconds N] [--json]
+```
+
+ใส่โหลดเต็ม GPU 15 วินาที (ค่าเริ่มต้นตามบันทึกภาคสนาม) แล้ววัดว่าคล็อกขึ้นจริงไหม — EC ของ GB10 ล็อก GPU ไว้ต่ำกว่า
+1 GHz ได้โดย `nvidia-smi` ไม่รายงานอะไรผิดเลย และ**รีบูตไม่หาย** · ค่าที่อ่านตอน GPU ว่างแยกเครื่องดีกับเครื่องที่ถูกล็อกไม่ได้
+จึงต้องใส่โหลดจริง
+
+- **สามสภาพที่แยกออกจากกัน**: คล็อกต่ำ + ไฟต่ำ = latched (คืน `remedy()` เป็นขั้นตอนทางกายภาพ — ถอดปลั๊ก 30–60 วินาที) ·
+  คล็อกต่ำ + มี clock event reason = thermal/power cap **ไม่ใช่ latch** · คล็อกปกติ + TFLOPS ต่ำ = มีคนใช้ GPU อยู่
+- **exit 1 เฉพาะเมื่อต้องไปทำอะไรกับเครื่อง** (latched / throttled) · "GPU ไม่ว่าง" กับ "ตรวจไม่ได้" ขึ้นเหลืองแต่ exit 0 ·
+  เครื่องที่ไม่ใช่ GB10 / ไม่มี NVIDIA ตอบว่า "ไม่เกี่ยว" ไม่ใช่ "ตก" (`--force` = วัดเอาตัวเลขดิบ เกณฑ์ผ่าน/ตกใช้ไม่ได้)
+- `--node`/`--all` **ส่งสคริปต์เชลล์ไปรัน ไม่ได้เรียก `lmds` บน node** (เหมือน `nodes/netplan.py`) — node ที่ lmds เก่ากว่า hub
+  หรือยังไม่เคยติดตั้งก็ตรวจได้ · หา torch จาก interpreter ที่มีก่อน แล้วถอยไปใช้ image ที่**มีอยู่ในเครื่องแล้ว**
+  (`docker image inspect` ไม่ใช่ `docker pull`) — ไม่ต่อเน็ต
+- `lmds bench run` เรียกให้อัตโนมัติก่อนวัดแล้วเก็บผลไปกับตัวเลข (`--skip-burn` ข้าม) · ยังไม่มี REST — CLI อย่างเดียว
+
+## `lmds watchdog`
+
+```text
+lmds watchdog arm <SLUG> · disarm <SLUG> · status · run <SLUG>
+```
+
+`/health` ตอบ 200 ได้ทั้งที่ forward pass ไม่เดิน · watchdog ยิง **generate จริง 2 token** ทุก 120 วินาที แล้ว restart
+เมื่อพลาดติดกันหลายรอบ · แกนคือ `run` ซึ่งเป็นลูป foreground ธรรมดา · `arm` เขียนไฟล์สถานะแล้วติดตั้ง **systemd user
+service** ให้ถ้ามี (เครื่องใน LXC/Docker ที่ไม่มี init เต็มใช้ `run` ใต้ตัวคุม process อะไรก็ได้)
+
+- **opt-in ต่อ slug เท่านั้น ไม่มีอะไรเปิดเอง** — LMDS คุมเครื่องที่มีโมเดลของลูกค้ารันอยู่ก่อนแล้ว
+- **ปฏิเสธตอน arm**: container ที่ไม่ได้มาจาก LMDS (`external`/`adopt`) · ไม่มีทะเบียน · โมเดล embedding/rerank
+- **เพดาน restart ต่อกรอบเวลาแล้ว `gave_up` ถาวร** (ยังตรวจ ยังรายงาน แต่ไม่ restart อีก) · backoff ระหว่างครั้ง ·
+  settle หลัง restart · **4xx = ยังไม่ตาย** (404/401 → `misconfigured` ไม่ restart)
+- ทุก restart ลง `lmds audit` พร้อมเหตุผล · ยังไม่มี REST — CLI อย่างเดียว
 
 ## `lmds web`
 
@@ -391,9 +447,12 @@ GET/PUT /api/provider · POST /api/provider/models · POST /api/secrets/hf
 GET  /api/recipes · POST /api/recipes/sync · GET /api/scan[?all_nodes=true]
 GET  /api/bench · /api/bench/fleet · /api/bench/{slug} · DELETE /api/bench/{slug} · POST /api/bench/{slug}/run
 GET  /api/jobs/{id} · POST /api/jobs/{id}/cancel
+GET  /api/models/{slug}/key · GET …/key/reveal · POST …/key {key?,force?} (409 เมื่อมีอยู่แล้วและไม่ force) · DELETE …/key
+GET  /api/audit[?lines=100&failed_only=true]          # แผง "ใครสั่งอะไร" ในหน้า Hub settings
 
 GET  /api/nodes · POST /api/nodes · PATCH|DELETE /api/nodes/{name} · PUT /api/nodes/order
 POST /api/nodes/{name}/install | setup | fix-permissions · GET /api/nodes/{name}/inventory[?refresh=true]
+GET|POST /api/nodes/{name}/rename-host               # GET = ตรวจว่าเปลี่ยนได้ไหม (เหตุผลที่ปฏิเสธ) · POST = ลงมือ (รหัส sudo ทาง stdin)
 POST /api/nodes/{name}/models/{slug}/{command}        # allowlist: start stop restart repair doctor logs(-n 300) enable disable remove(--dry-run→confirm) set
 POST /api/nodes/{name}/models/{slug}/ctl/{command}    # test-text test-vision test-reasoning test-tools test-embed test-rerank bench stress client-config
                                                       # network-info status props verify-files prepare-runtime sync-worker verify-worker clear-fi-cache logs-worker
@@ -434,7 +493,7 @@ Output: ตาราง pass/fail ต่อ gate + exit `0/2`
 ~/.local/share/lmds/venv # ตัวโปรแกรม (venv.old ระหว่างอัปเดต) · ~/.local/bin/lmds symlink
 ```
 
-## โครงสร้าง source (ของจริง ณ 0.8.0)
+## โครงสร้าง source (ของจริง ณ 0.10.0)
 
 ```text
 src/lmds/
@@ -442,8 +501,9 @@ src/lmds/
 ├── config/              # settings.py (config.yaml + provider), paths.py
 ├── resolver/            # parse.py — HF เท่านั้น (Ollama/NGC โยน UnsupportedSource)
 ├── inspector/           # inspect.py, hf_api.py (read 120s / connect 30s), gguf.py (header ผ่าน HTTP Range), report.py (task embed)
-├── hardware/            # profiler.py (nvidia-smi/docker · gpus_per_node), profiles.py (GPU allowlist · tested)
-├── fit/                 # analyzer.py (memory/KV cache · GQA/MLA · per_node + NCCL buffer), targets.py (22 PRESETS)
+├── hardware/            # profiler.py (nvidia-smi/docker · gpus_per_node), profiles.py (GPU allowlist · tested),
+│                        #   burn.py (GB10 clock latch — runner-injectable), serving.py
+├── fit/                 # analyzer.py (memory/KV cache · GQA/MLA · per_node + NCCL buffer), targets.py (24 PRESETS · 7 tested)
 ├── brain/               # providers.py, orchestrator.py, plan_schema.py, prompts.py, rulebased.py, allowlists.py
 ├── recipes/             # catalog.yaml + sync/publish (รวมทีละคีย์)
 ├── assistant/           # catalog.py (probe/action), runner.py, policy.py (ตั๋ว), router.py, knowledge.py + playbook.md
@@ -456,19 +516,22 @@ src/lmds/
 ├── doctor/              # checks.py — role/controller/hf-token/weights/…/architecture/grammar/port/server
 ├── bench/               # runner.py, workloads.py, capability.py, score.py, store.py
 ├── fleet/               # manager.py (discover/start/stop/remove/repair/systemd · ลบผ่าน docker), adopt.py, bundle_settings.py (lmds set),
-│                        #   clone.py, cluster_env.py, suggest.py (--auto)
+│                        #   clone.py, cluster_env.py, suggest.py (--auto), apikey.py (~/.lmds/keys/<slug> 0600),
+│                        #   watchdog.py (liveness ด้วย generate จริง · opt-in), consistency.py, refresh.py, sizing.py
 ├── nodes/               # registry.py (nodes.yaml + lock), ssh.py (key/probe/run/ship git bundle/install script), cluster.py (จับคู่ stacked),
-│                        #   cluster_ssh.py (pair), doctor.py (cluster doctor), stacked.py (NNODES ของ bundle)
+│                        #   cluster_ssh.py (pair), doctor.py (cluster doctor), stacked.py (NNODES ของ bundle),
+│                        #   hostname.py (rename-host ผ่าน SSH+sudo), netplan.py (cluster inspect/plan/apply)
 ├── inventory.py         # payload ชุดเดียวที่หน้าเว็บและ `lmds agent info` ใช้ร่วมกัน (+ read_cluster_env)
 ├── scanner.py           # lmds scan
 ├── secrets/             # store.py (env/keyring/file), redact.py
 ├── web/                 # api.py (FastAPI routes), daemon.py (refresher/SSE), deploy.py (analyze/generate · suggest_port), jobs.py
 │                        #   (job/cancel/clean_options/_pump scrub), state.py (แคช · decorate_stacked), assistant.py, memory.py,
-│                        #   scriptedit.py, selfupdate.py, static/index.html + static/fonts/ (Geist)
+│                        #   scriptedit.py, selfupdate.py, keysapi.py (key ของโมเดล + /api/audit), audit.py (middleware log),
+│                        #   fit.py, logstream.py, static/index.html (i18n en/th) + static/fonts/ (Geist)
 └── _build.py            # COMMIT/SOURCE ที่ install.sh ประทับ
-tests/                   # 133 ไฟล์ test_*.py · 2,161 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
-                         #   นับด้วย pytest --collect-only ที่ 0.8.0 (2026-09-20) — ตรงกับป้ายใน README
-.github/workflows/ci.yml # pytest 3.10/3.11/3.12/3.13 + bash -n/shellcheck + secret scan
+tests/                   # 149 ไฟล์ test_*.py · 2,439 เทส (unit + E2E + review/audit + JS shell ใน node) · addopts = -q
+                         #   นับด้วย pytest --collect-only ที่ 0.10.0 (2026-09-21) — ตรงกับป้ายใน README
+.github/workflows/ci.yml # pytest 3.10/3.11/3.12/3.13 + ruff check + bash -n/shellcheck + secret scan
 ```
 
 > ยังไม่มี: `tests/fixtures/` สำหรับ regression เทียบ controllers v3.0.0 (ใช้ `tests/test_v3_regression.py` port กฎ 13 ข้อแทน) ·

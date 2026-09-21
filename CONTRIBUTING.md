@@ -36,14 +36,14 @@ pytest
 ## รันเทส
 
 ```bash
-pytest                      # ทั้งหมด (2,161 เทส · 133 ไฟล์)
+pytest                      # ทั้งหมด (2,439 เทส · 149 ไฟล์)
 pytest tests/test_brain.py  # เฉพาะไฟล์
 pytest -k stacked           # เฉพาะที่ชื่อตรง
 pytest -v -rA -k embed      # อยากเห็นชื่อเทส/ผลทีละข้อ — pyproject ตั้ง addopts = "-q" ไว้ ผลปกติจึงเงียบ
 ```
 
-CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บน Python 3.10/3.11/3.12,
-`bash -n` + shellcheck สคริปต์ในรีโป, และ secret scan
+CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บน Python **3.10/3.11/3.12/3.13**,
+`ruff check src tests scripts`, `bash -n` + shellcheck สคริปต์ในรีโป, และ secret scan
 
 ### เทสที่ต้องมี `node` — หน้าเว็บรัน JS จริง
 
@@ -164,9 +164,15 @@ controller (`tests/test_stacked_test_commands.py` ฯลฯ) · secret ห้า
   [SECURITY.md](SECURITY.md) · ปิดงานที่อยู่ในแผน → [docs/ROADMAP.md](docs/ROADMAP.md)
   · แตะ install.sh / node install → [docs/INSTALL.md](docs/INSTALL.md) + [docs/FLEET-MULTI-NODE.md](docs/FLEET-MULTI-NODE.md)
   · เพิ่มการตรวจก่อน deploy/start → [docs/PREFLIGHT.md](docs/PREFLIGHT.md) · `bench`/`stress`/คะแนน → [docs/BENCH.md](docs/BENCH.md)
-- badge จำนวนเทสใน README ทั้งสองไฟล์ = `pytest --collect-only -q tests/ | tail -1` · เวอร์ชันจาก `src/lmds/__init__.py`
-- **ฟีเจอร์ใหม่ต้องมีทางกดบนหน้าเว็บด้วย** (PRD FR-1b.14) — ทำแค่ CLI/API เท่ากับไม่มีสำหรับทีมที่ทำงานผ่านคอนโซล ·
-  ข้อความบนหน้าเว็บเป็นอังกฤษ comment ในโค้ดและ CLI เป็นไทย
+- badge จำนวนเทสใน **README ทั้งสองไฟล์** ต้องเป็นตัวเลขที่นับจริง:
+  `pytest --collect-only -q 2>/dev/null | grep -E '^\S+\.py: [0-9]+$' | awk -F': ' '{s+=$2} END {print s}'`
+  (`addopts = -q` ทำให้ผลสรุปเป็นจำนวนต่อไฟล์ ไม่ใช่บรรทัดรวมบรรทัดเดียว) · เวอร์ชันจาก `src/lmds/__init__.py` ·
+  จำนวน preset จาก `python -c "from lmds.fit import PRESETS; print(len(PRESETS))"` — **อย่าเดาเลขพวกนี้** เคยพลาดมาแล้วทั้งคู่
+- **ฟีเจอร์ใหม่ต้องมีทางกดบนหน้าเว็บด้วย** (PRD FR-1b.14) — ทำแค่ CLI/API เท่ากับไม่มีสำหรับทีมที่ทำงานผ่านคอนโซล
+  ซึ่งตอนนี้คือลูกค้าส่วนใหญ่ (ที่มาของปุ่ม **Key** บนการ์ดโมเดล, แผง **"ใครสั่งอะไร"** และปุ่ม **Rename host**)
+- **ภาษา**: comment ในโค้ดและ help ของ CLI เป็นไทย · หน้าเว็บเขียนเป็น**อังกฤษก่อน** แล้วคำแปลไทยอยู่ในตาราง `TH`
+  ของ `src/lmds/web/static/index.html` (คีย์คือข้อความอังกฤษตัวเต็ม · ไม่มีคำแปล = คืนข้อความเดิม ไม่ใช่หน้าพัง) —
+  ข้อความใหม่บนหน้าเว็บต้องเติมคีย์ลงตารางนั้นด้วย
 
 ## โครงสร้างโค้ด
 

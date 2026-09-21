@@ -1,6 +1,16 @@
 # LMDS · การใช้งานเชิงพาณิชย์
 
-**ร่าง — ยังไม่ประกาศใช้**
+**มีผลแล้ว** — อ้างอิง [LICENSE](../LICENSE) Version 1.0 ซึ่งมีผลตั้งแต่ 20 กันยายน 2026 · เอกสารนี้เป็นคำอธิบายของสัญญานั้น ถ้าขัดกัน **ให้ถือตาม LICENSE** · **[English version ↓](#english)**
+
+| อยากรู้เรื่องอะไร | ไปที่ |
+|---|---|
+| ต้องจ่ายไหม | [กฎข้อเดียวที่ต้องจำ](#กฎข้อเดียวที่ต้องจำ) · [Tier ตามจำนวนเครื่อง](#tier-ของ-license-ตามจำนวนเครื่อง) |
+| "เครื่อง" นับยังไง | [นับ "เครื่อง" ยังไง](#นับ-เครื่อง-ยังไง) |
+| อยากลอง stacked | [stacked ต้องใช้ 2 เครื่อง](#-ก่อนอื่น-stacked-ต้องใช้-2-เครื่อง) · [Trial ฟรี 30 วัน](#trial-ฟรี-30-วัน--ระบบออกให้อัตโนมัติ) |
+| หมดอายุแล้วอะไรดับบ้าง | [ไม่มีอะไรดับ](#หมดอายุ--อยู่ใน-cooldown-แล้วเกิดอะไรขึ้น--ไม่มีอะไรดับ) · [สัญญาเรา 3 ข้อ](#สัญญาเรา-3-ข้อ-ที่จะไม่ผิดคำพูด) |
+| ตัดขาดจากอินเทอร์เน็ต | [องค์กรที่ตัดขาดจากอินเทอร์เน็ต](#องค์กรที่ตัดขาดจากอินเทอร์เน็ต-air-gapped) |
+
+กลไกการนับและสิ่งที่ **ไม่มีวันล็อก** อยู่ที่ [LICENSING.md](LICENSING.md) · ตัวสัญญาอยู่ที่ [LICENSE](../LICENSE)
 
 ---
 
@@ -251,9 +261,21 @@ bundle ที่ generate ออกมามี `licensed_to` · `license_id` ·
 หรืออยากได้ catalog
 
 ---
----
 
 # English
+
+**In force** — see [LICENSE](../LICENSE) Version 1.0, in force from 20 September 2026. This page explains that licence; **where the two differ, the LICENSE governs**. · **[ฉบับภาษาไทย ↑](#lmds--การใช้งานเชิงพาณิชย์)**
+
+| What you want to know | Go to |
+|---|---|
+| Do I have to pay | [The rule, in one line](#the-rule-in-one-line) · [Licence tiers](#machine-count-licence-tiers) |
+| What counts as a machine | [What counts as a machine](#what-counts-as-a-machine) |
+| I want to try stacked | [Stacked needs two machines](#-first-something-you-should-know-stacked-needs-two-machines) · [The free 30-day trial](#the-free-30-day-trial--issued-automatically) |
+| What stops when it expires | [Nothing stops](#what-happens-at-expiry-or-during-a-cooldown--nothing-stops) · [Three promises](#three-promises-we-will-not-break) |
+| We are air-gapped | [Air-gapped organisations](#air-gapped-organisations) |
+
+How counting actually works, and what is **never locked**, is in [LICENSING.md](LICENSING.md);
+the agreement itself is [LICENSE](../LICENSE).
 
 ## The rule, in one line
 
