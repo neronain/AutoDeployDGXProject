@@ -72,6 +72,11 @@ def record(method: str, path: str, *, ip: str = "", status: int = 0, ms: int = 0
     }
     if actor:
         entry["actor"] = actor
+    _write(entry)
+
+
+def _write(entry: dict) -> None:
+    """ต่อท้ายไฟล์หนึ่งบรรทัด — เงียบเสมอเมื่อเขียนไม่ได้ (เหตุผลอยู่ใน `record`)"""
     try:
         target = log_path()
         with _LOCK:
@@ -85,6 +90,33 @@ def record(method: str, path: str, *, ip: str = "", status: int = 0, ms: int = 0
                 os.close(fd)
     except OSError:
         pass
+
+
+def event(action: str, target: str, *, actor: str, reason: str = "", status: int = 200,
+          ms: int = 0) -> None:
+    """เหตุการณ์ที่ **ระบบสั่งเอง** ไม่ได้มาจากคำขอ HTTP — เช่น watchdog สั่ง restart
+
+    ทำไมต้องลงที่เดียวกับ audit ของหน้าเว็บ: คำถามแรกเวลามีอะไรผิดปกติคือ "ใครสั่ง" ·
+    เดิมคำตอบที่เป็นไปได้มีแค่ "คนที่ IP นี้" — พอมีตัวที่สั่ง restart ได้เองแล้ว คำตอบ
+    "ระบบสั่งเอง" ต้องหาเจอในที่เดียวกัน ไม่ใช่ต้องไปรื้อ journal ของ service คนละตัว
+
+    `ip` เป็น "-" ไม่ใช่ "?" — "?" ของ `record()` แปลว่า *มีคนยิงมาแต่ไม่รู้จาก IP ไหน*
+    ส่วนอันนี้คือ **ไม่มี IP ตั้งแต่ต้น** ซึ่งคนละเรื่องกันตอนไล่ย้อนหลัง
+    """
+    if not enabled():
+        return
+    entry = {
+        "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "ip": "-",
+        "method": action,
+        "path": target,
+        "status": status,
+        "ms": ms,
+        "actor": actor,
+    }
+    if reason:
+        entry["reason"] = reason
+    _write(entry)
 
 
 def read(limit: int = 50, *, path: Path | None = None) -> list[dict]:

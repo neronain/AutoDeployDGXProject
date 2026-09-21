@@ -239,10 +239,32 @@ lmds set <ชื่อ> --image <digest> --tool-parser qwen3_xml --extra-args "�
 lmds adopt <container> / --port N   # รับโมเดลที่รันอยู่ก่อน LMDS เข้ามาในระบบ
 lmds remove <ชื่อ>        # ลบทั้งหมด (--keep-weights = เก็บ weight)
 lmds recipes             # สูตรที่รันผ่านจริง — ใช้เองเมื่อไม่มี API key
+lmds burn [--all]        # DGX Spark: คล็อก GPU ถูก EC ล็อกอยู่ไหม (ดูด้านล่าง)
+lmds watchdog arm <ชื่อ>  # เฝ้าด้วย generate จริง แล้ว restart ให้เมื่อไม่ตอบ — ต้องสั่งเปิดเอง
 ```
 
 `lmds ps` เห็น **container ที่ไม่ได้ deploy ผ่าน LMDS** ด้วย (vLLM/llama.cpp/Ollama/TGI ที่รันอยู่แล้ว)
 — stop/restart/logs/enable ได้เหมือนกัน โดยกลุ่มนี้ใช้ `docker stop` ไม่ลบ container ทิ้ง
+
+### `lmds burn` — คล็อก GPU ที่ `nvidia-smi` บอกว่าปกติ แต่ไม่ปกติ
+
+EC ของ GB10 ล็อก GPU ไว้ต่ำกว่า 1 GHz ได้ โดย `nvidia-smi` ไม่แสดงอะไรผิดเลย (P0 · persistence on ·
+ไม่มี clock event reason · ไม่ power cap ไม่ thermal) · **อาการเดียวคือช้า** และ **รีบูตไม่หาย** ·
+ในกลุ่ม stacked เครื่องเดียวที่โดนลากทั้งกลุ่ม เพราะทุก collective รอ rank ที่ช้าที่สุด
+
+`lmds burn` ใส่โหลดเต็ม GPU 15 วินาทีแล้ววัด — เจอแล้วบอก **ขั้นตอนทางกายภาพ** (ปิดเครื่อง →
+ถอดปลั๊ก adapter 30–60 วินาที → เสียบกลับ) เพราะซ่อมจากระยะไกลไม่ได้ · `lmds bench run` เรียกให้
+อัตโนมัติก่อนวัดทุกครั้ง แล้ว **เก็บผลไปกับตัวเลข** เพื่อให้รู้ทีหลังว่ารอบนั้นคล็อกจริงหรือเปล่า
+(ข้าม: `--skip-burn`) · เครื่องที่ไม่ใช่ GB10 / ไม่มี NVIDIA ตอบว่า "ไม่เกี่ยว" ไม่ใช่ "ตก"
+
+### `lmds watchdog` — `/health` เขียวได้ทั้งที่ rank ค้าง
+
+`/health` ตอบ 200 ได้โดยที่ forward pass ไม่เดิน · watchdog ยิง **generate จริง 2 token** ทุก 120 วินาที
+แล้ว restart ให้เมื่อพลาดติดกันหลายรอบ
+
+**ต้องสั่งเปิดเองทีละตัว** และปฏิเสธ container ที่ LMDS ไม่ได้สร้าง (`lmds adopt`) กับโมเดล
+embedding/rerank · มีเพดานจำนวน restart ต่อกรอบเวลา มี backoff มีช่วงพักให้โมเดลโหลด และ
+**เลิก restart ถาวรเมื่อหมดโควตา** แทนที่จะวนทั้งคืน · ทุก restart ลง `lmds audit` พร้อมเหตุผล
 
 </details>
 

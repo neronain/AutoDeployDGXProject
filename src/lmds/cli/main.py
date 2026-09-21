@@ -1325,6 +1325,11 @@ def cluster_doctor_cmd(
             console.print(f"      [dim]แก้: {finding['fix']}[/dim]")
     if report["ok"]:
         console.print("[green]คู่นี้พร้อมสำหรับ stacked[/green]")
+        # หมอตัวนี้ **อ่านอย่างเดียว** โดยตั้งใจ จึงมองไม่เห็นข้อเดียวที่ทำให้คู่ที่ "ผ่านทุกข้อ"
+        # ยังช้าอยู่ดี: GPU clock latch ของ EC ซึ่งต้องใส่โหลดถึงจะเห็น (field notes §10) ·
+        # ใน TP ทุก collective รอ rank ที่ช้าที่สุด เครื่องเดียวที่ latch จึงลากทั้งคู่
+        console.print("[dim]ผ่านหมดแต่ยังช้า? ข้อที่หมอตัวนี้มองไม่เห็นคือคล็อก GPU ที่ถูก EC ล็อก "
+                      "— ต้องใส่โหลดถึงจะเห็น: [bold]lmds burn --all[/bold][/dim]")
     else:
         console.print("[red]ยังไม่พร้อม — แก้ตามข้อที่ ✕ ก่อน[/red]")
         raise typer.Exit(code=1)
@@ -4725,6 +4730,34 @@ def _bench_environment(server, profile: dict) -> dict:
     return environment
 
 
+def _bench_burn_gate(skip: bool) -> dict:
+    """burn check ก่อนวัด — คืนก้อนที่จะถูกเก็บไปกับผล (ดู `hardware.burn.stamp`)
+
+    **เตือน ไม่บล็อก** โดยตั้งใจ: การวัดเป็นสิ่งที่ผู้ใช้สั่งเอง การปฏิเสธไม่ให้วัดเพราะคล็อกต่ำ
+    จะทำให้คนที่ *กำลังพยายามพิสูจน์ว่าเครื่องช้า* ทำงานไม่ได้พอดี · สิ่งที่แก้ปัญหาจริงคือการ
+    **ติดป้ายไว้กับตัวเลข** ไม่ใช่การห้ามวัด — ตัวเลขที่ถูกเก็บไว้เดินทางต่อไปนานกว่าคำเตือนบนจอ
+    """
+    from lmds.hardware import burn as burn_check
+
+    if skip:
+        return {"kind": "skipped", "ok": None,
+                "reason": "ผู้ใช้สั่ง --skip-burn — ไม่มีหลักฐานว่าคล็อกของรอบนี้จริง"}
+    console.print(f"[dim]burn check {burn_check.DEFAULT_SECONDS:.0f} วินาทีก่อนวัด — "
+                  f"คล็อกที่ถูกล็อกทำให้ตัวเลขข้างล่างโกหกได้ทั้งหมด (field notes §10) · "
+                  f"ข้าม: --skip-burn[/dim]")
+    result = burn_check.check_local()
+    if result.get("kind") == "ok":
+        console.print(f"[green]✅ {result['summary']}[/green]")
+    elif result.get("kind") != "not-applicable":
+        console.print(f"[yellow]⚠ {result['summary']}[/yellow]")
+        for line in result.get("remedy") or []:
+            console.print(f"  {line}")
+        if result.get("kind") == "latched":
+            console.print("[red]ตัวเลขที่กำลังจะวัดต่อจากนี้ใช้เทียบกับรอบอื่นไม่ได้[/red] — "
+                          "ผลจะถูกเก็บพร้อมป้ายกำกับไว้ให้")
+    return burn_check.stamp(result)
+
+
 @bench_app.command("run")
 def bench_run(
     slug: str = typer.Argument(..., help="ชื่อ (slug) ของโมเดลที่รันอยู่", autocompletion=_complete_slug),
@@ -4732,11 +4765,18 @@ def bench_run(
     runs: int = typer.Option(3, "--runs", help="ยิงกี่รอบต่อหนึ่งงาน แล้วเอาค่ากลาง"),
     speed_only: bool = typer.Option(False, "--speed-only", help="วัดความเร็วอย่างเดียว"),
     caps_only: bool = typer.Option(False, "--caps-only", help="ตรวจความสามารถอย่างเดียว"),
+    skip_burn: bool = typer.Option(False, "--skip-burn",
+                                   help="ข้าม burn check 15 วินาทีก่อนวัด (ผลที่เก็บจะไม่มีหลักฐานว่าคล็อกจริง)"),
 ) -> None:
     """วัดโมเดลที่รันอยู่ แล้วเก็บผลไว้เทียบทีหลัง
 
     ทุกอย่างวัดจากเซิร์ฟเวอร์จริงผ่าน OpenAI API — ได้ตัวเลขที่เทียบข้าม engine ได้
     ต่างจากคำสั่ง bench ของ controller ที่แต่ละ engine มีไม่เท่ากันและวัดคนละวิธี
+
+    **burn check 15 วินาทีก่อนวัดทุกครั้ง** (ข้ามด้วย `--skip-burn`): GB10 ที่ EC ล็อกคล็อกไว้
+    ทำให้ตัวเลขทุกตัวในรายงานนี้โกหกโดยไม่มีอะไรบอก — และ `nvidia-smi` ก็ไม่บอก · ผลของ
+    burn ถูก **เก็บไปกับผลวัด** ไม่ใช่แค่เตือนบนจอ เพราะคนที่เปิดดูตัวเลขนี้อีกสามเดือนให้หลัง
+    ไม่ได้อยู่ตรงนี้ตอนมันเตือน
     """
     from lmds import bench
     from lmds.fleet import bundle_profile, find
@@ -4760,6 +4800,8 @@ def bench_run(
     console.print(f"วัด [bold]{slug}[/bold] · {served} · {endpoint}")
     if environment.get("engine_build"):
         console.print(f"[dim]build {environment['engine_build']} · context {context_limit:,}[/dim]")
+
+    environment["clocks"] = _bench_burn_gate(skip_burn)
 
     workload_rows: list[dict] = []
     if not caps_only:
@@ -4930,7 +4972,27 @@ def bench_show(
     console.print(f"[bold]{slug}[/bold] · {run.get('model_id')} · {run.get('engine')}")
     console.print(f"[dim]{machine.get('hostname')} · {', '.join(g['name'] for g in machine.get('gpus') or []) or 'ไม่มี GPU'}"
                   f" · วัดเมื่อ {(run.get('stamped_at') or '').replace('T', ' ')}[/dim]")
+    _print_clock_stamp((run.get("environment") or {}).get("clocks") or {})
     _print_bench(run.get("workloads") or [], run.get("probes") or [])
+
+
+def _print_clock_stamp(clocks: dict) -> None:
+    """ป้ายกำกับความน่าเชื่อถือของตัวเลขในรอบนี้ — เงียบเมื่อคล็อกปกติหรือเรื่องนี้ไม่เกี่ยว
+
+    รอบเก่าที่วัดก่อนมี burn gate ไม่มีคีย์นี้ · **ไม่พิมพ์อะไรเลย** ดีกว่าพิมพ์ว่า "ไม่รู้"
+    ทุกบรรทัด — รอบเก่ามีเยอะกว่ารอบใหม่อยู่พักใหญ่
+    """
+    kind = (clocks or {}).get("kind")
+    if kind in (None, "ok", "not-applicable"):
+        return
+    if kind == "skipped":
+        console.print("[yellow]รอบนี้ข้าม burn check[/yellow] — ไม่มีหลักฐานว่าคล็อก GPU "
+                      "ตอนวัดเป็นของจริง (lmds burn)")
+        return
+    tflops = clocks.get("tflops")
+    measured = f" · {tflops:.1f} TFLOPS" if isinstance(tflops, (int, float)) else ""
+    console.print(f"[red]ตัวเลขรอบนี้วัดตอนคล็อก GPU ไม่ปกติ ({kind}{measured})[/red] — "
+                  "เทียบกับรอบอื่นไม่ได้ · ดู lmds burn")
 
 
 def _human_size(num_bytes: int) -> str:
@@ -4993,6 +5055,240 @@ def hardware() -> None:
     console.print(table)
     for note in report.notes:
         err_console.print(f"[yellow]• {note}[/yellow]")
+
+
+# ── burn gate: คล็อก GPU ถูก EC ล็อกไว้หรือเปล่า ─────────────────────────────
+# วางไว้เป็นคำสั่งระดับบนสุด ไม่ใช่ใต้ `doctor` หรือ `hardware` ด้วยเหตุผลเดียว: ของสองตัวนั้น
+# **อ่านอย่างเดียว** ส่วนอันนี้ใส่โหลดเต็ม GPU 15 วินาที — คนสั่งต้องรู้ตัวว่ากำลังสั่งอะไร
+def _burn_line(result: dict) -> str:
+    colour = {"ok": "green", "latched": "red", "throttled": "red", "slow": "red",
+              "contended": "yellow", "unknown": "yellow", "not-applicable": "dim"}
+    mark = {"ok": "✅", "latched": "🔌", "throttled": "🌡", "slow": "🐢", "contended": "⏳",
+            "unknown": "?", "not-applicable": "—"}
+    kind = result.get("kind", "unknown")
+    return f"[{colour.get(kind, 'yellow')}]{mark.get(kind, '?')} {result['summary']}[/{colour.get(kind, 'yellow')}]"
+
+
+def _render_burn(results: list[dict]) -> None:
+    for result in results:
+        label = result.get("node") or "เครื่องนี้"
+        console.print(f"[bold]{label}[/bold] · {_burn_line(result)}")
+        for line in result.get("remedy") or []:
+            console.print(f"  {line}")
+
+
+@app.command()
+def burn(
+    node: str = typer.Option("", "--node", "-n", help="ตรวจเครื่องในทะเบียนแทนเครื่องนี้",
+                             autocompletion=_complete_node),
+    all_nodes: bool = typer.Option(False, "--all", help="ตรวจทุกเครื่องในทะเบียนพร้อมกัน"),
+    force: bool = typer.Option(False, "--force",
+                               help="วัดแม้ไม่ใช่ GB10 — ได้ตัวเลขดิบ แต่เกณฑ์ผ่าน/ตกใช้ไม่ได้"),
+    seconds: float = typer.Option(0.0, "--seconds", help="ความยาว burn (ว่าง = 15 วินาทีตามบันทึกภาคสนาม)"),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON"),
+) -> None:
+    """ใส่โหลดเต็ม GPU 15 วินาที แล้วดูว่าคล็อกขึ้นจริงไหม (DGX Spark / GB10)
+
+    EC ของ GB10 ล็อก GPU ไว้ต่ำกว่า 1 GHz ได้โดยที่ `nvidia-smi` ไม่แสดงอะไรผิดเลย —
+    ไม่มี clock event reason ไม่ power cap ไม่ thermal และ **รีบูตไม่หาย** (ต้องถอดปลั๊ก) ·
+    อาการเดียวคือช้า ซึ่งแปลว่าตัวเลขจาก `lmds bench` ทุกตัวบนเครื่องที่โดนจะโกหก และถ้า
+    เครื่องนั้นอยู่ในกลุ่ม stacked มันลากทั้งกลุ่ม (ทุก collective รอ rank ที่ช้าที่สุด)
+
+    เครื่องที่ไม่ใช่ GB10 / ไม่มี NVIDIA ตอบว่า "ไม่เกี่ยว" ไม่ใช่ "ตก"
+
+    exit 1 เมื่อเจอเครื่องที่ **ต้องไปทำอะไรกับมัน** (latched / throttled) เท่านั้น ·
+    "GPU ไม่ว่าง" กับ "ตรวจไม่ได้" ขึ้นเหลืองแต่ exit 0 เพราะไม่ใช่ความผิดของเครื่อง
+    """
+    from lmds.hardware import burn as burn_check
+    from lmds.nodes import find as find_node, load as load_nodes
+
+    length = seconds if seconds > 0 else burn_check.DEFAULT_SECONDS
+    if node and all_nodes:
+        err_console.print("[red]เลือกอย่างใดอย่างหนึ่ง: --node หรือ --all[/red]")
+        raise typer.Exit(code=1)
+
+    if all_nodes:
+        nodes = load_nodes()
+        if not nodes:
+            # --json ต้องได้ JSON เสมอ แม้เป็นลิสต์ว่าง — ผู้เรียกอีกฝั่งเป็นสคริปต์ ไม่ใช่คน
+            if as_json:
+                print("[]")
+            else:
+                console.print("ยังไม่มีเครื่องในทะเบียน — เพิ่มก่อน: lmds node add")
+            raise typer.Exit(code=0)
+        if not as_json:
+            console.print(f"[dim]burn {len(nodes)} เครื่องพร้อมกัน เครื่องละ {length:.0f} วินาที — "
+                          f"พร้อมกันโดยตั้งใจ เพราะอาการนี้แสดงตัวตอนทุกเครื่องมีโหลดพร้อมกัน[/dim]")
+        results = burn_check.check_fleet(nodes, force=force, seconds=length,
+                                         timeout=int(length) + 105)
+    elif node:
+        target = find_node(node)
+        if target is None:
+            err_console.print(f"[red]ไม่รู้จักเครื่อง '{node}'[/red] — ดู: lmds node list")
+            raise typer.Exit(code=1)
+        results = [burn_check.check_node(target, force=force, seconds=length,
+                                         timeout=int(length) + 105)]
+    else:
+        if not as_json:
+            console.print(f"[dim]burn เครื่องนี้ {length:.0f} วินาที (fp16 matmul "
+                          f"{burn_check.DEFAULT_MATRIX}²) — GPU จะไม่ว่างระหว่างนี้[/dim]")
+        results = [burn_check.check_local(force=force, seconds=length,
+                                          timeout=int(length) + 105)]
+
+    if as_json:
+        print(json.dumps(results, ensure_ascii=False))
+    else:
+        _render_burn(results)
+        if any(r.get("kind") == "ok" and r.get("suspect") for r in results):
+            console.print("[yellow]ผ่านเกณฑ์แต่ต่ำกว่าช่วงปกติ (75-90 TFLOPS)[/yellow] — "
+                          "วัดซ้ำตอนไม่มีโมเดลรันอยู่ก่อนสรุป")
+    # ตกเพราะ "GPU ไม่ว่าง"/"ตรวจไม่ได้" ไม่ใช่เครื่องเสีย — ถ้าให้ exit 1 ด้วย คนจะเลิกสนใจ
+    # รหัสออกภายในสัปดาห์เดียว แล้วเคสที่ต้องไปถอดปลั๊กจริงก็จะจมไปกับมัน
+    raise typer.Exit(code=1 if any(r.get("kind") in {"latched", "throttled", "slow"} for r in results) else 0)
+
+
+# ── watchdog: ยิง generate จริงเป็นระยะ ───────────────────────────────────────
+watchdog_app = typer.Typer(
+    help="เฝ้าโมเดลด้วยการยิง generate จริง (ไม่ใช่ /health) แล้ว restart ให้เมื่อไม่ตอบ — ต้องสั่งเปิดเอง",
+    no_args_is_help=True)
+app.add_typer(watchdog_app, name="watchdog")
+
+
+def _watchdog_server(slug: str):
+    from lmds.fleet import find
+
+    server = find(slug)
+    if server is None:
+        err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds ps หรือ lmds list")
+        raise typer.Exit(code=1)
+    return server
+
+
+@watchdog_app.command("arm")
+def watchdog_arm(
+    slug: str = typer.Argument(..., help="ชื่อ (slug)", autocompletion=_complete_slug),
+    interval: int = typer.Option(0, "--interval", help="ยิงทุกกี่วินาที (ว่าง = 120)"),
+    failures: int = typer.Option(0, "--failures", help="พลาดติดกันกี่ครั้งถึง restart (ว่าง = 3)"),
+    max_restarts: int = typer.Option(0, "--max-restarts", help="restart ได้ไม่เกินกี่ครั้งในกรอบเวลา (ว่าง = 3)"),
+    window_hours: int = typer.Option(0, "--window-hours", help="กรอบเวลาของเพดาน (ว่าง = 6 ชั่วโมง)"),
+    settle: int = typer.Option(0, "--settle", help="หลัง restart หยุดยิงกี่วินาทีให้โมเดลโหลดจบ (ว่าง = จาก controller)"),
+    service: bool = typer.Option(False, "--service", help="ติดตั้ง systemd user service ให้รันเองเลย"),
+) -> None:
+    """เปิด watchdog ของโมเดลตัวหนึ่ง — **ไม่มีอะไรเปิดเอง ต้องสั่งทีละตัว**
+
+    เหตุผลที่ต้องสั่งเอง: LMDS คุมเครื่องที่มีโมเดลของลูกค้ารันอยู่ก่อนได้ (`lmds adopt`) ·
+    ของที่ restart โมเดลของคนอื่นได้เองโดยไม่มีใครสั่ง เป็นเรื่องใหญ่กว่าการปล่อยให้ค้าง
+
+    ปฏิเสธตั้งแต่ตรงนี้: container ที่ LMDS ไม่ได้สร้าง · ตัวที่ไม่มีทะเบียน ·
+    โมเดล embedding/rerank (ยิง generate ใส่มันไม่มีความหมาย ผลคือ restart เพราะเราถามผิด)
+    """
+    from lmds.fleet import FleetError, watchdog as wd
+
+    server = _watchdog_server(slug)
+    state = wd.load(slug)
+    policy = wd.policy_of(state)
+    if interval:
+        policy.interval = interval
+    if failures:
+        policy.failures_before_restart = failures
+    if max_restarts:
+        policy.max_restarts = max_restarts
+    if window_hours:
+        policy.window_seconds = window_hours * 3600
+    if settle:
+        policy.settle_seconds = settle
+
+    for line in wd.warnings_for(server):
+        console.print(f"[yellow]⚠ {line}[/yellow]")
+    try:
+        state = wd.arm(server, policy=policy)
+    except FleetError as exc:
+        err_console.print(f"[red]เปิด watchdog ของ {slug} ไม่ได้:[/red]\n{exc}")
+        raise typer.Exit(code=1) from None
+
+    console.print(f"[green]เปิด watchdog ของ {slug} แล้ว[/green]")
+    for line in wd.describe(state):
+        console.print(f"  {line}")
+    if service:
+        try:
+            name = wd.install_service(slug)
+        except FleetError as exc:
+            err_console.print(f"[yellow]{exc}[/yellow]")
+            raise typer.Exit(code=1) from None
+        console.print(f"[green]ติดตั้ง {name} แล้ว[/green] — เช็ก: systemctl --user status {name}")
+    else:
+        console.print("[yellow]สถานะถูกบันทึกแล้ว แต่ยังไม่มีอะไรรันลูปให้[/yellow] — เลือกทางใดทางหนึ่ง:")
+        console.print(f"  systemd:       lmds watchdog arm {slug} --service")
+        console.print(f"  ไม่มี systemd:  {wd.manual_command(slug)}")
+
+
+@watchdog_app.command("disarm")
+def watchdog_disarm(
+    slug: str = typer.Argument(..., help="ชื่อ (slug)", autocompletion=_complete_slug),
+) -> None:
+    """ปิด watchdog — ลูปที่รันอยู่จะหยุดเองรอบถัดไป และ service (ถ้ามี) ถูกถอนออก"""
+    from lmds.fleet import watchdog as wd
+
+    wd.disarm(slug)
+    wd.remove_service(slug)
+    console.print(f"[green]ปิด watchdog ของ {slug} แล้ว[/green] — โมเดลที่รันอยู่ไม่ถูกแตะ")
+
+
+@watchdog_app.command("status")
+def watchdog_status(
+    slug: str = typer.Argument("", help="ว่าง = ทุกตัวที่เปิดไว้", autocompletion=_complete_slug),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์เป็น JSON"),
+) -> None:
+    """watchdog ของเครื่องนี้เปิดไว้กี่ตัว · restart ไปแล้วกี่ครั้ง · เพราะอะไร
+
+    ประวัติการ restart แบบเต็ม (พร้อมเวลาและเหตุผล) อยู่ใน `lmds audit` ที่เดียวกับคำสั่งของคน
+    """
+    from dataclasses import asdict
+
+    from lmds.fleet import watchdog as wd
+
+    slugs = [slug] if slug else wd.armed_slugs()
+    if not slugs:
+        console.print("ยังไม่มี watchdog ที่เปิดไว้บนเครื่องนี้ — เปิด: lmds watchdog arm <slug>")
+        return
+    states = [wd.load(s) for s in slugs]
+    if as_json:
+        print(json.dumps([asdict(s) for s in states], ensure_ascii=False))
+        return
+    for state in states:
+        console.print(f"[bold]{state.slug}[/bold]")
+        for line in wd.describe(state):
+            console.print(f"  {line}")
+
+
+@watchdog_app.command("run")
+def watchdog_run(
+    slug: str = typer.Argument(..., help="ชื่อ (slug)", autocompletion=_complete_slug),
+    rounds: int = typer.Option(0, "--rounds", help="จบหลังกี่รอบ (0 = ไม่จบเอง — ค่าที่ service ใช้)"),
+    once: bool = typer.Option(False, "--once", help="ยิงรอบเดียวแล้วจบ (เท่ากับ --rounds 1)"),
+) -> None:
+    """ลูปเฝ้าจริง — ปกติ systemd เรียกให้ ไม่ต้องเรียกเอง
+
+    รันมือได้เมื่อเครื่องไม่มี systemd (LXC/คอนเทนเนอร์): ให้ตัวคุม process ของเครื่องนั้น
+    เป็นคนดูแลแทน · เพดาน restart อยู่ในไฟล์สถานะบนดิสก์ การ restart ตัวลูปเองจึงไม่ล้างโควตา
+    """
+    from lmds.fleet import FleetError, watchdog as wd
+
+    def show(report: dict) -> None:
+        probe = report.get("probe")
+        detail = report.get("reason") or (getattr(probe, "detail", "") if probe else "")
+        colour = {"ok": "green", "restart": "red", "gave-up": "red",
+                  "misconfigured": "yellow"}.get(report["action"], "dim")
+        console.print(f"[dim]{_now()}[/dim] [{colour}]{report['action']}[/{colour}]"
+                      + (f" — {detail}" if detail else ""))
+
+    try:
+        wd.loop(slug, rounds=1 if once else rounds, on_tick=show)
+    except FleetError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    except KeyboardInterrupt:
+        console.print("[dim]หยุดแล้ว — watchdog ยังเปิดอยู่ในทะเบียน (ปิดจริง: lmds watchdog disarm)[/dim]")
 
 
 @config_app.command("set-provider")
@@ -5376,12 +5672,24 @@ def audit(
     for item in items:
         status = int(item.get("status") or 0)
         colour = "green" if 200 <= status < 300 else ("yellow" if status in {401, 403, 429} else "red")
+        # รายการที่ "ระบบสั่งเอง" (watchdog) มี reason ติดมาด้วย — คำสั่งของคนไม่มี · พิมพ์ต่อท้าย
+        # เฉพาะเมื่อมีจริง เพื่อไม่ให้ตารางของทุกคนสูงขึ้นเป็นสองเท่าเพราะคอลัมน์ที่ว่างเกือบตลอด
+        reason = str(item.get("reason") or "")
+        actor = str(item.get("actor") or "")
+        command = f"{item.get('method', '')} {item.get('path', '')}"
+        if actor and item.get("ip") == "-":
+            command += f"  [dim](โดย {actor})[/dim]"
+        if reason:
+            command += f"\n[dim]{reason}[/dim]"
         table.add_row(str(item.get("at", ""))[:19].replace("T", " "),
                       str(item.get("ip", "?")),
-                      f"{item.get('method', '')} {item.get('path', '')}",
+                      command,
                       f"[{colour}]{status}[/{colour}]",
                       f"{item.get('ms', 0)} ms")
     console.print(table)
+    if any(str(i.get("actor") or "") == "watchdog" for i in items):
+        console.print("[dim]บรรทัดที่ขึ้นว่า WATCHDOG-* คือระบบสั่งเอง ไม่มีคนกด — "
+                      "ดูว่าเปิดไว้ตัวไหนบ้าง: lmds watchdog status[/dim]")
     refused = sum(1 for i in items if int(i.get("status") or 0) in {401, 403, 429})
     if refused:
         console.print(f"[yellow]ถูกปฏิเสธ {refused} รายการ[/yellow] — "
