@@ -1099,6 +1099,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "{gb} GB VRAM total": "VRAM รวม {gb} GB",
     "known so far": "เท่าที่รู้ตอนนี้",
     "{healthy} serving · {total} deployed": "เสิร์ฟอยู่ {healthy} · deploy ไว้ {total}",
+    "{healthy} serving · {total} deployed · {n} machines not counted yet":
+      "เสิร์ฟอยู่ {healthy} · deploy ไว้ {total} · ยังไม่ได้นับอีก {n} เครื่อง",
     "GPU memory per machine": "หน่วยความจำ GPU ต่อเครื่อง",
     "{used} / {cap} GB in use · fullest first": "ใช้ไป {used} / {cap} GB · เต็มสุดขึ้นก่อน",
     "No machine data yet": "ยังไม่มีข้อมูลเครื่อง",
@@ -1939,7 +1941,10 @@ function renderFleetSummary(s) {
     statCard(T("GPUs"), String(s.gpus),
       s.vram_gb ? T("{gb} GB VRAM total", { gb: s.vram_gb }) : T("known so far"), "", "warm"),
     statCard(T("Models running"), String(s.models_running),
-      T("{healthy} serving · {total} deployed", { healthy: s.models_healthy, total: s.models_total })),
+      s.pending
+        ? T("{healthy} serving · {total} deployed · {n} machines not counted yet",
+            { healthy: s.models_healthy, total: s.models_total, n: s.pending })
+        : T("{healthy} serving · {total} deployed", { healthy: s.models_healthy, total: s.models_total })),
   ].join("");
 }
 
@@ -7706,7 +7711,13 @@ function renderOverview(force = false) {
   const withUsage = names.map(n => ({ n, u: nodeUsage(n) })).filter(x => x.u.cap);
   const used = withUsage.reduce((a, x) => a + (x.u.used || 0), 0), cap = withUsage.reduce((a, x) => a + x.u.cap, 0);
   const eng = {};
-  for (const n of names) for (const m of ((lastNodeData.get(n) || {}).models || [])) if (m.running) eng[m.engine] = (eng[m.engine] || 0) + 1;
+  let deployed = 0;
+  for (const n of names) {
+    const ms = (lastNodeData.get(n) || {}).models || [];
+    deployed += ms.length;
+    for (const m of ms) if (m.running) eng[m.engine] = (eng[m.engine] || 0) + 1;
+  }
+  deployed += (lastLocalModels || []).length;
   for (const m of (lastLocalModels || [])) if (m.running) eng[m.engine] = (eng[m.engine] || 0) + 1;
   const running = Object.values(eng).reduce((a, b) => a + b, 0);
   const al = ovAlerts();
@@ -7747,7 +7758,7 @@ function renderOverview(force = false) {
       <div style="display:grid;gap:14px">
         <div class="card ov-panel"><div class="ov-hd"><h3>${esc(T("Running models by engine"))}</h3></div><div class="ov-bd" style="display:flex;gap:16px;align-items:center">${donut}
           <div class="ov-legend">${parts.map(p => `<span><i style="background:${p.c}"></i>${esc(p.label)} <b>${p.v}</b></span>`).join("")}
-            <span class="dim">${S.models_total != null ? esc(T("{total} bundles fleet-wide · {stopped} stopped", { total: S.models_total, stopped: S.models_total - (S.models_running || 0) })) : ""}</span></div></div></div>
+            <span class="dim">${deployed ? esc(T("{total} bundles fleet-wide · {stopped} stopped", { total: deployed, stopped: deployed - running })) : ""}</span></div></div></div>
         <div class="card ov-panel"><div class="ov-hd"><h3>${esc(T("Needs attention"))}</h3><div class="r">${esc(T("{n} items", { n: al.length }))}</div></div><div class="ov-bd">
           ${al.slice(0, 6).map(a => `<a class="ov-alert ${a.lv}" href="${a.href}" style="text-decoration:none"><i></i><div><b>${esc(a.t)}</b><span>${esc(a.s)}</span></div></a>`).join("") || `<div class="empty">${esc(T("Nothing needs attention"))}</div>`}
         </div></div>
