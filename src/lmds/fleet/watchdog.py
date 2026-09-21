@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -497,16 +499,38 @@ def unit_name(slug: str) -> str:
     return f"lmds-watchdog-{slug}.service"
 
 
-def manual_command(slug: str, executable: str = "lmds") -> str:
+def lmds_path() -> str:
+    """พาธเต็มของคำสั่ง `lmds` บนเครื่องนี้
+
+    **systemd ไม่ค้น `$PATH` ให้** — `ExecStart=lmds ...` จึงล้มด้วย `status=203/EXEC`
+    ทุกครั้ง แล้ว `Restart=always` ก็พามันวนใหม่ทุก 30 วินาทีโดยไม่เคยรันสำเร็จเลย ·
+    เจอจริงบน msi-4 (2026-09-22): unit วนไป 9 รอบ ส่วน `watchdog status` ยังรายงานว่า
+    "เปิดอยู่" — **ดูเหมือนทำงาน แต่ไม่เคยยิง probe สักครั้ง** ซึ่งเป็นความล้มเหลวแบบที่
+    แย่ที่สุดสำหรับฟีเจอร์นี้: เฝ้าอยู่ในนาม แต่ของจริงไม่มีใครเฝ้า
+
+    หาจาก interpreter ที่กำลังรันอยู่ก่อน เพราะ console script อยู่ข้าง ๆ กันเสมอ
+    """
+    beside = Path(sys.executable).with_name("lmds")
+    if beside.exists():
+        return str(beside)
+    found = shutil.which("lmds")
+    if found:
+        return str(Path(found).resolve())
+    # ไม่เจอ console script = เรียกผ่าน interpreter ตรง ๆ · ยังเป็นพาธเต็มเหมือนกัน
+    return f"{sys.executable} -m lmds.cli.main"
+
+
+def manual_command(slug: str, executable: str = "") -> str:
     """คำสั่งให้ไปรันเองใต้ตัวคุม process อะไรก็ได้ — เครื่องที่ไม่มี systemd ใช้ทางนี้
 
     `docs` ของเราเองระบุว่าลูกค้าบางรายรันใน LXC/Docker ที่ไม่มี init system เต็ม · ถ้าฟีเจอร์นี้
     ผูกกับ systemd อย่างเดียว เครื่องกลุ่มนั้นจะไม่มีทางใช้ได้เลย ทั้งที่ลูปมันเป็นแค่ foreground process
     """
-    return f"nohup {executable} watchdog run {slug} >> ~/.lmds/watchdog-{slug}.log 2>&1 &"
+    return (f"nohup {executable or lmds_path()} watchdog run {slug} "
+            f">> ~/.lmds/watchdog-{slug}.log 2>&1 &")
 
 
-def install_service(slug: str, executable: str = "lmds") -> str:
+def install_service(slug: str, executable: str = "") -> str:
     """ติดตั้ง + enable + start systemd **user** service — คืนชื่อ unit
 
     โยน `FleetError` เมื่อไม่มี systemd โดยแนบคำสั่งทางเลือกไปด้วย ไม่ใช่แค่บอกว่าทำไม่ได้
@@ -546,7 +570,7 @@ def remove_service(slug: str) -> str:
     return name
 
 
-def render_unit(slug: str, executable: str = "lmds") -> str:
+def render_unit(slug: str, executable: str = "") -> str:
     """systemd **user** unit ของ watchdog — ไม่ต้อง sudo ด้วยเหตุผลเดียวกับ `manager.render_unit`
 
     ต่างจาก unit ของโมเดลตรงที่อันนี้เป็น `Type=simple` + `Restart=always`: ตัว watchdog เองตาย
@@ -560,7 +584,7 @@ def render_unit(slug: str, executable: str = "lmds") -> str:
         "",
         "[Service]",
         "Type=simple",
-        f"ExecStart={executable} watchdog run {slug}",
+        f"ExecStart={executable or lmds_path()} watchdog run {slug}",
         "Restart=always",
         "RestartSec=30",
         "",

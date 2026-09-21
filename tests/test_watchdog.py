@@ -437,7 +437,8 @@ def test_the_unit_restarts_the_watchdog_itself_but_that_does_not_widen_the_budge
     unit = wd.render_unit("qwen3-32b")
 
     assert "Restart=always" in unit
-    assert "ExecStart=lmds watchdog run qwen3-32b" in unit
+    # พาธเต็มเสมอ — systemd ไม่ค้น $PATH ให้ (ดู test_the_unit_uses_an_absolute_path…)
+    assert "watchdog run qwen3-32b" in unit
     # เพดานอยู่ในไฟล์สถานะ ไม่ใช่ในหน่วยความจำ — เทสที่พิสูจน์ข้อนี้คือ
     # test_the_budget_survives_the_watchdog_process_being_restarted
     assert "WantedBy=default.target" in unit      # user scope ไม่ใช่ multi-user.target
@@ -446,3 +447,32 @@ def test_the_unit_restarts_the_watchdog_itself_but_that_does_not_widen_the_budge
 def test_a_machine_without_systemd_still_gets_a_command_it_can_run():
     """เครื่องลูกค้าบางรายอยู่ใน LXC/คอนเทนเนอร์ที่ไม่มี init system เต็ม"""
     assert "lmds watchdog run qwen3-32b" in wd.manual_command("qwen3-32b")
+
+
+# ── พาธของ ExecStart ────────────────────────────────────────────────────────
+
+def test_the_unit_uses_an_absolute_path_because_systemd_does_not_search_path():
+    """เจอจริงบน msi-4 (2026-09-22) · `ExecStart=lmds watchdog run <slug>` ล้มด้วย
+    `status=203/EXEC` ทุกครั้งเพราะ **systemd ไม่ค้น `$PATH` ให้** แล้ว `Restart=always`
+    พามันวนใหม่ทุก 30 วินาที — รีสตาร์ตไป 9 รอบโดยไม่เคยรันสำเร็จเลย
+
+    ที่อันตรายที่สุดคือ `lmds watchdog status` ยังรายงานว่า **"เปิดอยู่"** เพราะสถานะ
+    อ่านจากไฟล์บนดิสก์ ไม่ได้ถาม systemd · ผลคือ "เฝ้าอยู่ในนาม แต่ไม่มีใครเฝ้าจริง"
+    ซึ่งเป็นความล้มเหลวที่แย่ที่สุดของฟีเจอร์นี้ — แย่กว่าไม่เปิดเลย
+    """
+    from lmds.fleet import watchdog as wd
+
+    line = next(x for x in wd.render_unit("demo").splitlines() if x.startswith("ExecStart="))
+    command = line.split("=", 1)[1]
+
+    assert command.startswith("/"), f"ต้องเป็นพาธเต็ม: {command}"
+    assert not command.startswith("lmds "), "ชื่อเปล่า ๆ คือบั๊กเดิม"
+    assert " watchdog run demo" in command
+
+
+def test_the_manual_command_is_absolute_too():
+    """เครื่องที่ไม่มี systemd ใช้บรรทัด nohup นี้ · เชลล์ค้น PATH ให้ก็จริง แต่ผู้ใช้
+    อาจก๊อปไปวางใน cron หรือ supervisor ที่ไม่มี PATH เหมือนกัน"""
+    from lmds.fleet import watchdog as wd
+
+    assert wd.manual_command("demo").split()[1].startswith("/")
