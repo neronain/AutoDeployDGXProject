@@ -1129,6 +1129,17 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "newer image needed": "ต้องใช้ image ใหม่กว่านี้",
     "update runtime": "อัปเดต runtime",
     "Running models by engine": "โมเดลที่รันอยู่ แยกตาม engine",
+    "installed, but the machine could not be probed afterwards — not confirmed":
+      "ติดตั้งแล้ว แต่ probe เครื่องหลังจากนั้นไม่ได้ — ยังยืนยันไม่ได้",
+    "code {c} · controllers {k} · runtime {r}": "โค้ด {c} · controller {k} · รันไทม์ {r}",
+    "matches the hub ({marks})": "ตรง hub ({marks})",
+    "matches as far as it could be checked — {what} ({marks})":
+      "ตรง hub เท่าที่ตรวจได้ — {what} ({marks})",
+    "does not match the hub yet — {what} ({marks})": "ยังไม่ตรง hub — {what} ({marks})",
+    "{what} could not be checked ({why})": "{what} ตรวจไม่ได้ ({why})",
+    "code": "โค้ด",
+    "controllers": "controller",
+    "runtime": "รันไทม์",
     "running": "รันอยู่",
     "loading": "กำลังขึ้น",
     "stopped": "หยุดอยู่",
@@ -6892,18 +6903,31 @@ async function nodeVerdict(name) {
   return ((lastFleetConsistency || {}).nodes || []).find(n => n.name === name) || null;
 }
 
+// **"ตรวจไม่ได้" ไม่ใช่ "ไม่ผ่าน"** — เครื่องที่ code ✓ controllers ✓ แต่เช็ค runtime ไม่ได้
+// เพราะ weight ยังไม่ถูก download ไม่ได้มีอะไรผิดเลย · ฝั่ง server แยกไว้ถูกแล้วด้วย
+// `Verdict.level` (`bad` = มีอะไรผิดจริง · `warn` = แค่ยังไม่รู้) แต่หน้านี้เคยทิ้งค่านั้นแล้ว
+// พิมพ์ "does not match the hub yet" เหมือนกันทั้งสองแบบ
+//
+// ผลคือเครื่องที่ปกติดีขึ้นเป็นสีเดียวกับเครื่องที่พัง ในรายการที่มี 16 เครื่องเรียงกัน —
+// คนที่กวาดตาดูจะไปไล่แก้เครื่องที่ไม่ได้เสีย และพอมันขึ้นแบบนี้บ่อย ๆ ก็จะเลิกอ่านทั้งคอลัมน์
+// ซึ่งคือตอนที่เครื่องที่พังจริงจะถูกมองข้าม · หลักเดียวกับที่ `lmds burn` ยึดไว้แล้ว
 function verdictText(v) {
-  if (!v) return "installed, but the machine could not be probed afterwards — not confirmed";
+  if (!v) return T("installed, but the machine could not be probed afterwards — not confirmed");
   const mark = a => (a.state === "ok" || a.state === "n/a") ? "✓" : a.state === "unknown" ? "?" : "✗";
-  const marks = `code ${mark(v.code)} · controllers ${mark(v.controllers)} · runtime ${mark(v.runtimes)}`;
-  if (v.consistent) return `matches the hub (${marks})`;
-  const bad = [];
-  for (const [k, a] of [["code", v.code], ["controllers", v.controllers], ["runtime", v.runtimes]]) {
+  const marks = T("code {c} · controllers {k} · runtime {r}",
+    { c: mark(v.code), k: mark(v.controllers), r: mark(v.runtimes) });
+  if (v.consistent) return T("matches the hub ({marks})", { marks });
+  const wrong = [], unknown = [];
+  for (const [k, a] of [[T("code"), v.code], [T("controllers"), v.controllers], [T("runtime"), v.runtimes]]) {
     if (a.state === "ok" || a.state === "n/a") continue;
-    bad.push(a.state === "unknown" ? `${k} could not be checked (${a.detail})`
-      : `${k} ${a.state}${(a.items || []).length ? ` (${a.items.join(", ")})` : ` — ${a.detail}`}`);
+    if (a.state === "unknown") unknown.push(T("{what} could not be checked ({why})", { what: k, why: a.detail }));
+    else wrong.push(`${k} ${a.state}${(a.items || []).length ? ` (${a.items.join(", ")})` : ` — ${a.detail}`}`);
   }
-  return `does not match the hub yet — ${bad.join(" · ")} (${marks})`;
+  // ไม่มีอะไรผิด มีแต่ที่ยังตรวจไม่ได้ → บอกตามนั้น ไม่ใช่บอกว่าไม่ตรง
+  if (!wrong.length) return T("matches as far as it could be checked — {what} ({marks})",
+    { what: unknown.join(" · "), marks });
+  return T("does not match the hub yet — {what} ({marks})",
+    { what: [...wrong, ...unknown].join(" · "), marks });
 }
 
 document.getElementById("update").addEventListener("click", updateEverything);
