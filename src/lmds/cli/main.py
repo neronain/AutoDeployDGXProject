@@ -1843,6 +1843,85 @@ def node_setup(
     console.print("\n[green]ตั้งค่าครบทุกเครื่องแล้ว[/green]")
 
 
+@node_app.command("rename-host")
+def node_rename_host(
+    name: str = typer.Argument(..., autocompletion=_complete_node),
+    hostname: str = typer.Argument(..., help="hostname ใหม่ของ OS — a-z 0-9 '-' ไม่เกิน 63 ตัว"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="ไม่ถามยืนยัน (ยังถามรหัส sudo)"),
+) -> None:
+    """เปลี่ยน hostname ของ OS บนเครื่องนั้น (hostnamectl + /etc/hosts) — ถามรหัส sudo ตอนนี้
+
+    เปลี่ยน **ชื่อของตัวเครื่อง** ไม่ใช่ชื่อในทะเบียน: ชื่อในทะเบียนคือป้ายที่ทุกคำสั่งและทุกปุ่มใช้เรียก
+    เครื่องนี้ (`lmds node run <ชื่อ>`, ลำดับการ์ด, สมาชิกกลุ่ม stacked) จึงเปลี่ยนที่นี่ไม่ได้โดยตั้งใจ
+    เหมือน host/user/port — ดู `lmds node set --help`
+
+    ต้องสำรวจทั้งฟลีตก่อนเพราะต้องรู้ว่า hostname ไหนถูกใช้ไปแล้วบ้าง — การกันชื่อซ้ำคือเหตุผล
+    ทั้งหมดของคำสั่งนี้ · ล้มกลางคัน = ถอยกลับให้เอง (สำเนาเดิมอยู่ที่ /root/lmds-hostname บนเครื่อง)
+    """
+    import getpass
+    import platform
+
+    from lmds.nodes import NodeError, probe, run
+    from lmds.nodes.hostname import HostnameError, rename_host, validate
+    from lmds.nodes.netplan import sudo_needs_password
+
+    (target,) = _require_nodes(name)
+    try:
+        wanted = validate(hostname)
+    except HostnameError as exc:
+        err_console.print(f"[red]ชื่อใช้ไม่ได้:[/red] {exc}")
+        raise typer.Exit(code=1) from None
+
+    console.print(f"สำรวจทั้งฟลีตเพื่อดูว่า '{wanted}' ซ้ำกับเครื่องไหนไหม — [dim]ใช้เวลาสักครู่[/dim]")
+    nodes, hosts, _errors, _groups = _live_cluster_groups()
+    # `_live_cluster_groups` เก็บแต่ `host` — ต้องการรายการโมเดลของเครื่องนี้ด้วยเพื่อดูว่ามี stacked
+    # รันอยู่ไหม · ต่อไม่ติดก็ไม่ต้องล้มตรงนี้ rename_host ต่อเองอีกทีแล้วล้มพร้อมเหตุผลที่ตรงกว่า
+    try:
+        models = probe(target).get("models") or []
+    except NodeError:
+        models = []
+
+    if not yes and not typer.confirm(
+            f"เปลี่ยน hostname ของ {name} เป็น '{wanted}'?", default=False):
+        raise typer.Exit(code=1)
+    # ไม่ถามรหัสเลยเมื่อเครื่องนั้น NOPASSWD — เหมือน `lmds cluster apply` ที่รับค่าว่างได้
+    password = ""
+    if sudo_needs_password(target, runner=run) is not False:
+        password = getpass.getpass(
+            f"รหัส sudo ของ {name} ({target.user}) — เว้นว่างถ้าเครื่องนั้น sudo ไม่ถามรหัส: ")
+
+    def show(step: dict) -> None:
+        mark = {"pass": "[green]✓[/green]", "warn": "[yellow]![/yellow]"}.get(step["level"], "[red]✕[/red]")
+        console.print(f"  {mark} {step['step']}" + (f" — {step['detail']}" if step.get("detail") else ""))
+
+    try:
+        result = rename_host(target, wanted, password, nodes=nodes, hosts=hosts, models=models,
+                             hub_hostname=platform.node(), runner=run, progress=show)
+    except HostnameError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    except NodeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    finally:
+        password = ""   # noqa: F841 — เคลียร์ทันที ไม่ให้ค้างในเฟรม
+
+    for warning in result["warnings"]:
+        console.print(f"[yellow]![/yellow] {warning}")
+    if result["ok"] and result["changed"]:
+        console.print(f"[green]{name} ชื่อ '{result['new']}' แล้ว[/green] "
+                      f"[dim](ชื่อในทะเบียนยังเป็น '{name}' เหมือนเดิม)[/dim]")
+        return
+    if result["ok"]:
+        console.print(f"[dim]{name} ชื่อ '{result['new']}' อยู่แล้ว — ไม่ได้แตะอะไร[/dim]")
+        return
+    if result["rolled_back"]:
+        err_console.print(f"[yellow]ถอยกลับแล้ว — {name} ยังชื่อ '{result['old']}' เหมือนเดิม[/yellow]")
+    else:
+        err_console.print("[red]ไม่สำเร็จ[/red] — อ่านบรรทัดข้างบนก่อนลองใหม่")
+    raise typer.Exit(code=1)
+
+
 @node_app.command(
     "run",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},

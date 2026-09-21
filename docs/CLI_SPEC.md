@@ -34,7 +34,7 @@ lmds bundles refresh [SLUG] [--all]        # regenerate controller เก่า�
 lmds fleet check                           # ทั้งฟลีตตรง hub ครบ 3 มิติไหม (code · controller · runtime)
 lmds fleet check --check                   # ต่อเข้าทุกเครื่องก่อน — สภาพตอนนี้ ไม่ใช่ของที่ทะเบียนจำไว้
 lmds license show|seats|install <FILE>     # ไลเซนส์ของเครื่องนี้ (ออฟไลน์ล้วน — ดู LICENSING.md)
-lmds node add|list|remove|install|setup|set|run|ctl|cluster|clone|push   # fleet หลายเครื่อง
+lmds node add|list|remove|install|setup|set|rename-host|run|ctl|cluster|clone|push   # fleet หลายเครื่อง
 lmds cluster show|write|pair|doctor|inspect|plan|apply|remove-net   # คลัสเตอร์ stacked
 lmds web [--port --bind --token --no-auth -b --stop --restart --status --new-token --enable --disable]
 lmds audit [-n --failed --json]            # ใครสั่งอะไรกับคอนโซลของเครื่องนี้บ้าง
@@ -249,6 +249,7 @@ lmds node setup   [<name>|--all] [--with-prereq]   # ขั้นที่ใช
 lmds node list [--check]
 lmds node set <name> [--cluster-ip] [--cluster-iface] [--note] [--site] [--cluster-name] [--alt-host a,b] [--stack|--no-stack]
 lmds node remove <name> [-y]
+lmds node rename-host <name> <hostname> [-y]   # hostname ของ *OS* บนเครื่องนั้น (hostnamectl + /etc/hosts) — ไม่ใช่ชื่อในทะเบียน
 lmds node run <name> <คำสั่ง lmds...>          # ห่อด้วย bash -lc
 lmds node ctl <name> <slug> <คำสั่ง controller...>   # prepare-runtime / download / sync-worker / test-* … · ยืม HF token ทาง stdin
 lmds node clone <slug> --from NODE --to NODE [--verify/--no-verify] [--start] [--dry-run] [-y]
@@ -263,6 +264,11 @@ lmds node cluster [--write SLUG --head NAME] [--worker NAME] [--on NODE] [--self
 - **ไม่เก็บรหัสผ่าน** — key ของ hub `~/.config/lmds/id_lmds` (ed25519, comment `lmds-hub`) · `Node` dataclass ไม่มีฟิลด์รหัสผ่าน
 - ทะเบียน `~/.config/lmds/nodes.yaml` (0600) เขียนใต้ RLock + `flock` · แก้ host/user/port ผ่าน `set` ไม่ได้โดยตั้งใจ ·
   cluster IP link-local ถูกปฏิเสธ · `alt_hosts:`/`labels:` ว่างในไฟล์ที่แก้มือ = ไม่พัง
+- `node rename-host` เปลี่ยน **hostname ของ OS** ไม่ใช่ชื่อในทะเบียน (คนละอย่างโดยตั้งใจ — ชื่อในทะเบียนคือป้ายที่ทุกคำสั่ง/ทุกปุ่มใช้เรียกเครื่อง) ·
+  `hostnamectl set-hostname` + `/etc/hosts` ในคำสั่ง sudo เดียว (ไม่แก้ hosts = `sudo` ช้าลงเป็นวินาทีทุกครั้ง) · ตรวจ RFC 1123 และ
+  **กันชื่อซ้ำกับเครื่องอื่นในทะเบียนและกับ hub** (เครื่องเดียวที่ถูก add ไว้สองชื่อไม่นับว่าซ้ำ — `machine_identity`) ·
+  ปฏิเสธเมื่อ hub เข้าเครื่องนั้นด้วยชื่อที่กำลังจะเปลี่ยน หรือมีโมเดล stacked รันอยู่ · ล้มกลางคัน = ถอยกลับเอง
+  (สำเนาเดิมอยู่ที่ `/root/lmds-hostname/*.<stamp>` บนเครื่อง) · REST: `GET|POST /api/nodes/{name}/rename-host`
 - `node cluster` ตรวจ ConnectX/RDMA/ความเร็วลิงก์จาก `/sys` แล้วจับกลุ่มด้วยกุญแจ ไซต์ · ชื่อคลัสเตอร์ · ลายเซ็นฮาร์ดแวร์ แล้วแบ่งย่อยตาม
   subnet · `--site` เป็นป้ายจัดระเบียบและตัวบังคับตอนจับกลุ่ม (คนละไซต์จับคู่กันไม่ได้)
 - `_same_commit` เทียบแบบ prefix — `node list` ป้าย `≠ hub` เฉพาะที่ต่างจริง

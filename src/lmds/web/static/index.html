@@ -1249,6 +1249,40 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "ยังไม่มีคู่ที่ stacked ได้ — ต้องมีอย่างน้อยสองเครื่องที่ GPU รุ่นเดียวกันและจำนวนเท่ากัน และอยู่บนสายอย่างน้อย 25G",
     "paused · {age}s ago": "หยุดวาดชั่วคราว · {age} วิที่แล้ว",
 
+    // ── เปลี่ยน hostname ของเครื่อง (ฟอร์มบนการ์ด) ────────────────────
+    // ศัพท์ตรงกับ CLI: hostname ทับศัพท์ (CLI ก็ทับ) · "ชื่อในทะเบียน" คือชื่อที่ LMDS ใช้เรียกเครื่อง
+    // ซึ่งเป็นคนละอย่างกับ hostname ของ OS — ความต่างนี้คือหัวใจของฟอร์มนี้ ห้ามแปลให้กลืนเป็นคำเดียวกัน
+    "Rename host": "เปลี่ยน hostname",
+    "Change the machine's own hostname over SSH — for boxes that shipped with the same name and can only be reached through this console":
+      "เปลี่ยน hostname ของตัวเครื่องผ่าน SSH — สำหรับเครื่องที่ส่งออกไปแล้วชื่อซ้ำกัน และเข้าได้ทางคอนโซลนี้ทางเดียว",
+    "Change the hostname of {node}": "เปลี่ยน hostname ของ {node}",
+    "This is the name the machine calls itself (hostnamectl) — not its name in this registry, which stays “{node}”. /etc/hosts is updated in the same step so sudo keeps resolving it.":
+      "นี่คือชื่อที่ตัวเครื่องเรียกตัวเอง (hostnamectl) — ไม่ใช่ชื่อในทะเบียนซึ่งยังเป็น “{node}” เหมือนเดิม · /etc/hosts ถูกแก้ในขั้นเดียวกัน sudo จะได้ยัง resolve ชื่อตัวเองได้",
+    "current": "ชื่อตอนนี้",
+    "not known yet — refresh the machine first": "ยังไม่รู้ — กด Refresh ที่เครื่องนี้ก่อน",
+    "Nothing was changed on the machine.": "ยังไม่ได้แตะอะไรบนเครื่องเลย",
+    "new hostname": "hostname ใหม่",
+    "a-z, 0-9 and '-' · at most 63": "a-z, 0-9 และ '-' · ยาวไม่เกิน 63 ตัว",
+    "sudo on this machine does not ask for a password — nothing to type":
+      "sudo บนเครื่องนี้ไม่ถามรหัส — ไม่ต้องกรอกอะไร",
+    "sudo password": "รหัส sudo",
+    "used once, never stored": "ใช้ครั้งเดียว ไม่ถูกเก็บไว้",
+    "Already taken in this fleet:": "ชื่อที่ถูกใช้ไปแล้วในฟลีตนี้:",
+    "Rename": "เปลี่ยนชื่อ",
+    "The password goes over ssh's stdin — never written to disk, never on a command line, never stored in the registry · the previous /etc/hostname and /etc/hosts are kept on the machine under {dir} so the change can be undone by hand":
+      "รหัสผ่านเดินทางทาง stdin ของ ssh — ไม่เขียนลงดิสก์ ไม่อยู่ในบรรทัดคำสั่ง ไม่ถูกเก็บในทะเบียน · ไฟล์ /etc/hostname และ /etc/hosts ของเดิมถูกสำรองไว้บนเครื่องที่ {dir} ถอยกลับด้วยมือได้",
+    "Use the short name only, not an FQDN": "ใส่ชื่อสั้นอย่างเดียว ไม่ใช่ FQDN",
+    "At most 63 characters": "ยาวได้ไม่เกิน 63 ตัว",
+    "Use a-z, 0-9 and '-', not starting or ending with '-'": "ใช้ a-z, 0-9 และ '-' · ห้ามขึ้นต้นหรือลงท้ายด้วย '-'",
+    "“{name}” is already used by another machine": "“{name}” ถูกเครื่องอื่นใช้อยู่แล้ว",
+    "Enter the new hostname first": "ใส่ hostname ใหม่ก่อน",
+    "Renaming…": "กำลังเปลี่ยนชื่อ…",
+    "Done — this machine is now “{name}”": "เรียบร้อย — เครื่องนี้ชื่อ “{name}” แล้ว",
+    "Nothing to change": "ไม่มีอะไรต้องเปลี่ยน",
+    "Rolled back — the machine is still “{name}”": "ถอยกลับแล้ว — เครื่องยังชื่อ “{name}” เหมือนเดิม",
+    "Failed — check the lines above before touching the machine again":
+      "ไม่สำเร็จ — อ่านบรรทัดข้างบนก่อนจะไปแตะเครื่องนั้นอีกครั้ง",
+
     // ── ข้อความผิดพลาด · แถบแจ้งเตือน ────────────────────────────────
     "The command failed (HTTP {status})": "ทำคำสั่งไม่สำเร็จ (HTTP {status})",
     "Could not reach LMDS — {error}": "ต่อ LMDS ไม่ได้ — {error}",
@@ -4113,6 +4147,8 @@ function nodeCard(node) {
               title="Give the model cache back to the user — for when a container ran as root and sync-worker/start dies with Permission denied">Fix permissions</button>
       <button data-nact="site" data-node="${esc(node.name)}" data-i18n
               title="Set or change the site this machine lives at — groups it on screen, no effect on clusters">🏷 Site</button>
+      <button data-nact="rename-host" data-node="${esc(node.name)}" data-i18n
+              title="Change the machine's own hostname over SSH — for boxes that shipped with the same name and can only be reached through this console">Rename host</button>
       <button data-nact="refresh" data-node="${esc(node.name)}" data-i18n>Refresh</button>
       <button data-nact="forget" data-node="${esc(node.name)}" class="danger">Forget</button>
     </div>
@@ -4906,6 +4942,116 @@ document.addEventListener("click", async e => {
       pinnedOutput.delete(node);
       refreshNodes();       // badge/กลุ่มอัปเดตทันที
     } catch (e) { if (out) out.textContent = "Save failed: " + e.message; }
+    return;
+  }
+  if (nact === "rename-host") {
+    // เครื่องที่ส่งไปอยู่กับลูกค้าแล้วเข้าได้ทางคอนโซลนี้ทางเดียว — ฟอร์มนี้คือทางเดียวที่แก้ชื่อซ้ำได้
+    // · ฟอร์มในหน้า ไม่ใช่ prompt() ด้วยเหตุผลเดียวกับ setup: รหัส sudo ต้องไม่โผล่เป็นตัวอักษรล้วน
+    const d = await withButton(btn, T("Checking…"), () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/rename-host`));
+    if (!d) return;
+    showNodeOutput(node, `${T("Rename host")} · ${node}`, "");
+    const row = nodeRows.get(node);
+    if (!row) return;
+    // ชื่อที่ถูกใช้ไปแล้วทั้งฟลีต — โชว์ให้เห็นตั้งแต่ก่อนพิมพ์ ดีกว่าให้พิมพ์จบแล้วเด้งว่าซ้ำ
+    // (เซิร์ฟเวอร์ยังตรวจซ้ำอยู่ดี ตรงนี้คือความสะดวก ไม่ใช่ด่านกั้น)
+    const taken = [...new Set([
+      ...[...lastNodeData.entries()].filter(([n]) => n !== node)
+        .map(([, v]) => ((v || {}).host || {}).hostname || ""),
+      (LAST_HOST && LAST_HOST.hostname) || "",
+    ].map(s => s.trim().toLowerCase()).filter(Boolean))].sort();
+    const lines = (items, colour) => items.map(t =>
+      `<div class="warn-line" style="color:var(--${colour})">${esc(t)}</div>`).join("");
+    const stopped = (d.blockers || []).length > 0;
+    row.body.innerHTML = `<div class="pad">
+      <div class="name">${esc(T("Change the hostname of {node}", { node }))}</div>
+      <div class="dim" style="margin:6px 0 12px">${esc(T(
+        "This is the name the machine calls itself (hostnamectl) — not its name in this registry, "
+        + "which stays “{node}”. /etc/hosts is updated in the same step so sudo keeps resolving it.",
+        { node }))}</div>
+      <div class="field">
+        <label>${esc(T("current"))}</label>
+        <span class="mono">${esc(d.current || T("not known yet — refresh the machine first"))}</span>
+      </div>
+      ${stopped ? lines((d.blockers || []).map(b => b.text), "bad")
+        + `<div class="dim" style="margin-top:8px">${esc(T("Nothing was changed on the machine."))}</div>
+           <div class="field"><button data-nact="close-output" data-node="${esc(node)}">${esc(T("Cancel"))}</button></div>`
+        : `<div class="field">
+        <label>${esc(T("new hostname"))}</label>
+        <input id="rh-name" type="text" autocomplete="off" spellcheck="false"
+               placeholder="${esc(T("a-z, 0-9 and '-' · at most 63"))}" style="min-width:220px">
+      </div>
+      ${d.sudo_needed === false ? `<div class="dim">${esc(T(
+          "sudo on this machine does not ask for a password — nothing to type"))}</div>`
+        : `<div class="field">
+        <label>${esc(T("sudo password"))}</label>
+        <input id="rh-pw" type="password" autocomplete="current-password"
+               placeholder="${esc(T("used once, never stored"))}" style="min-width:240px">
+      </div>`}
+      ${taken.length ? `<div class="dim" style="margin-bottom:8px">${esc(T("Already taken in this fleet:"))}
+        ${taken.map(t => `<span class="tag">${esc(t)}</span>`).join(" ")}</div>` : ""}
+      ${lines(d.warnings || [], "warn")}
+      <div class="field">
+        <button data-nact="rename-host-go" data-node="${esc(node)}">${esc(T("Rename"))}</button>
+        <button data-nact="close-output" data-node="${esc(node)}">${esc(T("Cancel"))}</button>
+      </div>
+      <div class="dim">${esc(T(
+        "The password goes over ssh's stdin — never written to disk, never on a command line, "
+        + "never stored in the registry · the previous /etc/hostname and /etc/hosts are kept on the "
+        + "machine under {dir} so the change can be undone by hand", { dir: d.backup_dir || "/root/lmds-hostname" }))}</div>`}
+      <div id="rh-out" style="margin-top:10px"></div>
+    </div>`;
+    const input = row.body.querySelector("#rh-name");
+    input?.focus();
+    input?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") row.body.querySelector('[data-nact="rename-host-go"]')?.click();
+    });
+    // เตือนรูปแบบตั้งแต่ตอนพิมพ์ · กติกาเดียวกับ nodes/hostname.validate() แต่ **เซิร์ฟเวอร์คือคนตัดสิน**
+    // — ตรงนี้มีไว้ไม่ให้ต้องกดปุ่มแล้วรอ ssh ถึงจะรู้ว่าพิมพ์ผิด
+    input?.addEventListener("input", () => {
+      const out = row.body.querySelector("#rh-out");
+      const value = input.value.trim().toLowerCase();
+      if (!out) return;
+      let problem = "";
+      if (value.includes(".")) problem = T("Use the short name only, not an FQDN");
+      else if (value.length > 63) problem = T("At most 63 characters");
+      else if (value && !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(value)) problem = T("Use a-z, 0-9 and '-', not starting or ending with '-'");
+      else if (value && taken.includes(value)) problem = T("“{name}” is already used by another machine", { name: value });
+      out.innerHTML = problem ? `<div class="warn-line" style="color:var(--warn)">${esc(problem)}</div>` : "";
+    });
+    return;
+  }
+  if (nact === "rename-host-go") {
+    const row = nodeRows.get(node);
+    const input = row && row.body.querySelector("#rh-name");
+    const pw = row && row.body.querySelector("#rh-pw");
+    const out = row && row.body.querySelector("#rh-out");
+    const wanted = (input && input.value.trim()) || "";
+    if (!wanted) {
+      if (out) out.innerHTML = `<div class="warn-line" style="color:var(--warn)">${esc(T("Enter the new hostname first"))}</div>`;
+      return;
+    }
+    const d = await withButton(btn, T("Renaming…"), () =>
+      api(`/api/nodes/${encodeURIComponent(node)}/rename-host`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hostname: wanted, password: (pw && pw.value) || "" }),
+      }));
+    if (pw) pw.value = "";              // ไม่ทิ้งรหัสผ่านค้างไว้ใน DOM
+    if (!d) return;
+    // ทุกขั้นขึ้นทีละบรรทัดเหมือนปุ่ม setup — "สำเร็จ/ไม่สำเร็จ" อย่างเดียวไม่พอสำหรับงานที่ถอยกลับเองได้
+    if (out) out.innerHTML = (d.steps || []).map(s =>
+      `<div class="warn-line" style="color:${s.ok ? (s.level === "warn" ? "var(--warn)" : "var(--ok)") : "var(--bad)"}">
+        ${s.ok ? (s.level === "warn" ? "!" : "✓") : "✕"} ${esc(s.step)}${s.detail ? " — " + esc(s.detail) : ""}</div>`).join("")
+      + (d.ok
+        ? `<div class="dim" style="margin-top:6px">${esc(d.changed
+            ? T("Done — this machine is now “{name}”", { name: d.new })
+            : T("Nothing to change"))}</div>`
+        : `<div class="warn-line" style="color:var(--bad)">${esc(d.rolled_back
+            ? T("Rolled back — the machine is still “{name}”", { name: d.old })
+            : T("Failed — check the lines above before touching the machine again"))}</div>`);
+    // ไม่เรียก loadNode ตรงนี้ทั้งที่อยากให้ป้ายอัปเดตทันที — มันเขียนทับ .nbody ทั้งก้อน ผลที่ผู้ใช้
+    // กำลังอ่านอยู่ก็หายไปพร้อมกัน (ปุ่ม setup ซึ่งเป็นงานลักษณะเดียวกันก็ไม่เรียกด้วยเหตุผลเดียวกัน) ·
+    // hub สั่งสำรวจเครื่องนั้นใหม่ไปแล้วตอนตอบ 200 — snapshot รอบถัดไปพาชื่อใหม่มาเองเมื่อผู้ใช้อ่านจบ
     return;
   }
   if (nact === "close-output") { clearNodeOutput(node); return; }

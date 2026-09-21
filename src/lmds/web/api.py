@@ -1859,6 +1859,75 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "steps": outcomes, "ok": all(step["ok"] for step in outcomes)}
 
+    # ── เปลี่ยน hostname ของ OS บนเครื่องนั้น ──────────────────────────────────────
+    # เครื่องที่ส่งออกไปแล้วเข้าได้ทางคอนโซลนี้ทางเดียว (ไม่มี SSH ตรง) — ปุ่มนี้จึงเป็น *ทางเดียว*
+    # ที่ผู้ดูแลจะแก้ชื่อที่ตั้งซ้ำกันได้ · เดินตามรอยเดียวกับ wizard เครือข่ายคลัสเตอร์ทุกอย่าง:
+    # รหัส sudo มากับ request นี้ ใช้ครั้งเดียว ไปทาง stdin ของ ssh ไม่เขียนดิสก์ ไม่อยู่ใน argv
+    def _rename_context(name: str) -> tuple:
+        """(node, ทะเบียนทั้งฟลีต, host payload จากแคช, โมเดลของเครื่องนี้, hostname ของ hub)"""
+        import platform
+
+        from lmds.nodes import find
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        nodes, hosts, _errors = _cluster_hosts()
+        entry = state.STORE.snapshot()["nodes"].get(name) or {}
+        models = ((entry.get("data") or {}).get("models")) or []
+        # hub ไม่มีแถวในทะเบียน — ชื่อสมาชิกคลัสเตอร์ของมันคือ hostname ของ OS ตรง ๆ (ดู /api/cluster)
+        # จึงต้องนับเข้าไปในรายการ "ชื่อที่ถูกใช้ไปแล้ว" ด้วย · platform.node() คือแหล่งเดียวกับที่
+        # profiler ใช้ ไม่ต้องไป profile ฮาร์ดแวร์ใหม่เพื่ออ่านสตริงเดียว
+        return node, nodes, hosts, models, platform.node()
+
+    @app.get("/api/nodes/{name}/rename-host", dependencies=guarded)
+    def node_rename_host_preflight(name: str, hostname: str = "") -> dict:
+        """สิ่งที่ต้องรู้ก่อนโชว์ฟอร์มเปลี่ยนชื่อ — {current, new, valid, error, blockers, warnings, sudo_needed}
+
+        `?hostname=` ว่าง = ยังไม่ได้พิมพ์ (ตรวจเฉพาะข้อห้ามที่ไม่ขึ้นกับชื่อใหม่) · ตรวจที่นี่เป็นการ
+        บอกล่วงหน้าเท่านั้น POST ตรวจซ้ำทุกข้อกับเครื่องจริงอีกครั้ง
+        """
+        from lmds.nodes import run
+        from lmds.nodes.hostname import preflight
+        from lmds.nodes.netplan import sudo_needs_password
+
+        node, nodes, hosts, models, hub = _rename_context(name)
+        needed = sudo_needs_password(node, runner=run)
+        return preflight(node, hostname, nodes=nodes, hosts=hosts, models=models,
+                         hub_hostname=hub, sudo_needed=True if needed is None else needed)
+
+    @app.post("/api/nodes/{name}/rename-host", dependencies=guarded)
+    def node_rename_host(name: str, body: dict) -> dict:
+        """เปลี่ยน hostname ของ OS บนเครื่องนั้น — body: {"hostname", "password"?}
+
+        → {ok, changed, old, new, steps, rolled_back, blockers, warnings} · ล้มกลางคัน = ถอยกลับ
+        ให้เองด้วยสำเนาของรอบนั้น (เก็บไว้ที่ /root/lmds-hostname บนเครื่อง ไม่ได้ลบทิ้ง)
+
+        **ชื่อในทะเบียนไม่ถูกแตะ** — คนละอย่างกับ hostname ของ OS โดยตั้งใจ (ดู nodes/hostname.py)
+        ทะเบียนไม่มีฟิลด์ hostname ด้วยซ้ำ จึงแค่สั่งสำรวจเครื่องนั้นใหม่ให้ป้ายบนจอตรงทันที
+        """
+        from lmds.nodes import NodeError, run
+        from lmds.nodes.hostname import HostnameError, rename_host, twin_names
+
+        node, nodes, hosts, models, hub = _rename_context(name)
+        twins = twin_names(name, hosts)
+        try:
+            result = rename_host(node, str((body or {}).get("hostname") or ""),
+                                 str((body or {}).get("password") or ""),
+                                 nodes=nodes, hosts=hosts, models=models, hub_hostname=hub, runner=run)
+        except HostnameError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if result["changed"]:
+            # ป้ายในคอนโซลและตัวยุบฝาแฝด (machine_identity = hostname + ชุด IP) อ่านจาก payload
+            # ที่แคชไว้ — ไม่บังคับสำรวจใหม่ ชื่อเก่าจะค้างบนจออีก 15 วินาทีแล้วดูเหมือนกดไม่ติด
+            # · แถวฝาแฝด (เครื่องเดียวกันที่ถูก add ไว้สองชื่อ) ต้องสำรวจพร้อมกัน ไม่งั้นช่วง 15 วิ นั้น
+            #   มันจะถือ hostname คนละค่ากัน แล้วถูกนับเป็นสองเครื่องจนแผน parallel ของกลุ่มเปลี่ยน
+            for target in [name, *twins]:
+                state.STORE.force(target)
+        return result
+
     def _attach_node_jobs(name: str, payload: dict) -> dict:
         """แปะงานที่กำลังรันของแต่ละโมเดลลงไปใน payload — หน้าเว็บจะได้ตามต่อได้หลังรีเฟรช"""
         from . import jobs
