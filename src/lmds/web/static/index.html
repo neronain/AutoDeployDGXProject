@@ -1101,6 +1101,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "{healthy} serving · {total} deployed": "เสิร์ฟอยู่ {healthy} · deploy ไว้ {total}",
     "{healthy} serving · {total} deployed · {n} machines not counted yet":
       "เสิร์ฟอยู่ {healthy} · deploy ไว้ {total} · ยังไม่ได้นับอีก {n} เครื่อง",
+    "{healthy} serving · {total} deployed · {n} machine not counted yet":
+      "เสิร์ฟอยู่ {healthy} · deploy ไว้ {total} · ยังไม่ได้นับอีก {n} เครื่อง",
     "GPU memory per machine": "หน่วยความจำ GPU ต่อเครื่อง",
     "{used} / {cap} GB in use · fullest first": "ใช้ไป {used} / {cap} GB · เต็มสุดขึ้นก่อน",
     "No machine data yet": "ยังไม่มีข้อมูลเครื่อง",
@@ -1953,7 +1955,10 @@ function renderFleetSummary(s) {
       s.vram_gb ? T("{gb} GB VRAM total", { gb: s.vram_gb }) : T("known so far"), "", "warm"),
     statCard(T("Models running"), String(s.models_running),
       s.pending
-        ? T("{healthy} serving · {total} deployed · {n} machines not counted yet",
+        // เอกพจน์/พหูพจน์แยกคีย์เหมือนที่รางซ้ายทำอยู่ — "1 machines" อ่านแล้วสะดุด
+        // และเป็นจุดที่คนมองบ่อยที่สุดจุดหนึ่งของหน้า
+        ? T(s.pending === 1 ? "{healthy} serving · {total} deployed · {n} machine not counted yet"
+                            : "{healthy} serving · {total} deployed · {n} machines not counted yet",
             { healthy: s.models_healthy, total: s.models_total, n: s.pending })
         : T("{healthy} serving · {total} deployed", { healthy: s.models_healthy, total: s.models_total })),
   ].join("");

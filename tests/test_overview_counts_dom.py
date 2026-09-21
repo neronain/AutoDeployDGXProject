@@ -67,7 +67,9 @@ def test_a_fleet_wide_total_says_when_it_is_still_incomplete(tmp_path):
         await H.tick(20);
         console.log(JSON.stringify({ tiles: tiles(), errors: H.errors }));
     """)
-    assert "1 machines not counted yet" in out["tiles"], out["tiles"]
+    # เอกพจน์ — "1 machines" อ่านแล้วสะดุด และนี่คือค่าที่พบบ่อยที่สุด (เครื่องเดียวที่ probe ไม่ทัน)
+    assert "1 machine not counted yet" in out["tiles"], out["tiles"]
+    assert "1 machines" not in out["tiles"]
 
 
 def test_a_fully_probed_fleet_does_not_get_the_caveat(tmp_path):
@@ -94,3 +96,11 @@ def test_a_fleet_with_no_data_yet_shows_no_invented_total(tmp_path):
     """)
     assert "bundles fleet-wide" not in out["text"]
     assert out["errors"] == []
+
+
+def test_more_than_one_uncounted_machine_reads_as_plural(tmp_path):
+    (out,) = run_scenario(tmp_path, FLEET.replace("pending: 1", "pending: 3"), PROBE + """
+        await H.tick(20);
+        console.log(JSON.stringify({ tiles: tiles(), errors: H.errors }));
+    """)
+    assert "3 machines not counted yet" in out["tiles"], out["tiles"]

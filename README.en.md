@@ -8,7 +8,7 @@ Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine
 several acting as one. Nothing leaves the machine except what you ask for.
 
 [![version](https://img.shields.io/badge/version-0.10.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2444-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-2445-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04%20%7C%2025.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10--3.13-3776ab)](pyproject.toml)
@@ -41,10 +41,11 @@ Built and maintained by **neronain** — [facebook.com/neronain.minidev](https:/
 
 <img src="docs/img/fleet.png" alt="Overview — the whole fleet on one page" width="900">
 
-*The Overview page: 16 machines · 7 GPUs · 688 GB VRAM · 29 bundles fleet-wide — a memory bar per
-machine sorted fullest first, an engine donut, and a **Needs attention** list computed from real
-state (here: two machines have several models claiming port 8000, so the stopped ones cannot start
-until the port changes).*
+*The Overview page: 16 of 17 machines · 18 GPUs · 1,748 GB VRAM · 47 bundles fleet-wide, 21 running
+— a memory bar per machine sorted fullest first, an engine donut, and a **Needs attention** list
+computed from real state (here: two machines have several models claiming port 8000, so the stopped
+ones cannot start until the port changes). The tile says so itself when one machine has not been
+probed yet: a fleet-wide total has to admit when it is still incomplete.*
 
 </div>
 
@@ -166,7 +167,9 @@ for the whole fleet — **and models on other machines are controlled exactly li
 *Click any machine and its detail opens in place — the same CPU / Unified / Disk gauges on every
 machine, the GB10 with its Graphics/SM clocks and temperature, every IP the machine actually holds,
 the **200G RDMA** fabric and the `CLUSTER A` frame around the pair it can stack with. Values the
-card does not report are hidden, not shown as 0.*
+card does not report are hidden, not shown as 0. The button row carries **Rename host**, which
+changes that machine's OS hostname from here — machines already shipped to a site that turn out to
+share a name are usually reachable on port 8600 and nothing else.*
 
 </div>
 
@@ -395,7 +398,7 @@ our repositories.
 | MTP / speculative | ✅ draft head from the repo | via `--extra-args` | via `--extra-args` |
 
 Hardware-validated across all five model families — GGUF, NVFP4, MoE, dense safetensors, gated
-repos · **24 target presets** (7 verified on real hardware) · **2,444 tests** on every push across
+repos · **24 target presets** (7 verified on real hardware) · **2,445 tests** on every push across
 Python 3.10–3.13
 
 **MoE and MTP are reported as facts read from files**, not guessed by an LLM — total and active

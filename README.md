@@ -8,7 +8,7 @@
 เครื่องเดียวหรือหลายเครื่องรวมเป็นโมเดลเดียวก็ได้ · ไม่มีอะไรออกนอกเครื่องนอกจากที่คุณสั่ง
 
 [![version](https://img.shields.io/badge/version-0.10.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2444-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-2445-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04%20%7C%2025.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10--3.13-3776ab)](pyproject.toml)
@@ -37,9 +37,11 @@
 
 <img src="docs/img/fleet.png" alt="หน้า Overview — ทั้งฟลีตในหน้าเดียว" width="900">
 
-*หน้า Overview: 16 เครื่อง · 7 GPU · 688 GB VRAM · 29 bundle ทั้งฟลีต — แถบหน่วยความจำต่อเครื่อง
-เรียงจากเครื่องที่เต็มที่สุด, โดนัทแยกตาม engine และ **Needs attention** ที่คำนวณจากของจริง
-(ในภาพ: สองเครื่องมีหลายโมเดลจองพอร์ต 8000 ตัวเดียวกัน ตัวที่หยุดอยู่จึง start ไม่ขึ้นจนกว่าจะเปลี่ยนพอร์ต)*
+*หน้า Overview: 16 จาก 17 เครื่อง · 18 GPU · 1,748 GB VRAM · 47 bundle ทั้งฟลีต · รัน 21 —
+แถบหน่วยความจำต่อเครื่องเรียงจากเครื่องที่เต็มที่สุด, โดนัทแยกตาม engine และ **Needs attention**
+ที่คำนวณจากของจริง (ในภาพ: สองเครื่องมีหลายโมเดลจองพอร์ต 8000 ตัวเดียวกัน ตัวที่หยุดอยู่จึง start
+ไม่ขึ้นจนกว่าจะเปลี่ยนพอร์ต) · ไทล์บอกเองว่ายังมีอีก 1 เครื่องที่ probe ไม่ทัน — ยอดรวมทั้งฟลีต
+ต้องบอกได้ว่าตัวเองยังนับไม่ครบ*
 
 </div>
 
@@ -155,7 +157,9 @@ autostart · คำสั่ง stacked · repair · remove · **ตั้ง/�
 
 *กดที่เครื่องไหนก็ได้แล้วรายละเอียดกางเต็ม — เกจ CPU / Unified / Disk ชุดเดียวกันทุกเครื่อง,
 GB10 พร้อมคล็อก Graphics/SM และอุณหภูมิ, ทุก IP ที่เครื่องนั้นถืออยู่จริง, สาย **200G RDMA** และรั้ว
-`CLUSTER A` ที่คร่อมคู่ซึ่ง stacked กันได้ · ค่าที่การ์ดไม่รายงานถูกซ่อน ไม่ใช่โชว์ 0*
+`CLUSTER A` ที่คร่อมคู่ซึ่ง stacked กันได้ · ค่าที่การ์ดไม่รายงานถูกซ่อน ไม่ใช่โชว์ 0 ·
+แถวปุ่มบนสุดมี **Rename host** ซึ่งเปลี่ยนชื่อ OS ของเครื่องนั้นได้จากหน้านี้ — เครื่องที่ส่งออกไป
+แล้วชนชื่อกันมักเข้าถึงได้แต่พอร์ต 8600 ทางเดียว*
 
 </div>
 
@@ -351,7 +355,7 @@ lmds recipes --publish <ชื่อ> --features tools,vision     # ส่งต
 | MTP / speculative | ✅ draft head จาก repo | ผ่าน `--extra-args` | ผ่าน `--extra-args` |
 
 ผ่าน hardware validation ครบทั้ง 5 ตระกูลโมเดล — GGUF, NVFP4, MoE, dense safetensors, gated repo ·
-**24 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,444 เทสต์** รันครบทุก push บน Python 3.10–3.13
+**24 target preset** (7 ตัวทดสอบบนเครื่องจริงแล้ว) · **2,445 เทสต์** รันครบทุก push บน Python 3.10–3.13
 
 **MoE กับ MTP ถูกรายงานเป็นข้อเท็จจริงจากไฟล์** ไม่ใช่สิ่งที่ LLM เดา — จำนวน expert ทั้งหมด/ที่เปิด
 ต่อ token อ่านจาก `config.json` หรือ GGUF metadata เพราะ *total บอกว่าต้องมีหน่วยความจำเท่าไร ส่วน
