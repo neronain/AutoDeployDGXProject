@@ -465,10 +465,16 @@ def loop(slug: str, *, info: ServerInfo | None = None, rounds: int = 0, clock=ti
 
 
 # ── รายงาน ───────────────────────────────────────────────────────────────────
-def describe(state: State, lang: str = "th") -> list[str]:
-    """สถานะเป็นประโยค — ใช้ทั้งใน `lmds watchdog status` และตอนสรุปท้าย arm"""
+def describe(state: State, lang: str = "th", now: float | None = None) -> list[str]:
+    """สถานะเป็นประโยค — ใช้ทั้งใน `lmds watchdog status` และตอนสรุปท้าย arm
+
+    ระหว่าง settle ต้องบอกว่ากำลัง settle **ไม่ใช่โชว์ผล probe ครั้งก่อนค้างไว้** —
+    ผลครั้งก่อนคือตอนโมเดลล่ม ซึ่ง restart ไปแล้ว คนอ่านจะนึกว่ายังล่มอยู่ทั้งที่หายแล้ว
+    """
     policy = policy_of(state)
     recent = len(state.restarts)
+    now = time.time() if now is None else now
+    settling = max(0, int(state.settle_until - now))
     if lang == "th":
         lines = [f"{'เปิดอยู่' if state.armed else 'ปิดอยู่'} · ยิงทุก {policy.interval} วินาที · "
                  f"พลาดติดกัน {policy.failures_before_restart} ครั้งถึงจะ restart · "
@@ -479,7 +485,9 @@ def describe(state: State, lang: str = "th") -> list[str]:
         if recent:
             last = state.restarts[-1]
             lines.append(f"restart อัตโนมัติไปแล้ว {recent} ครั้ง · ครั้งล่าสุด: {last.get('reason', '')}")
-        if state.last_detail:
+        if settling:
+            lines.append(f"เพิ่ง restart ไป — พักให้โมเดลตั้งตัวก่อน เหลืออีก {settling} วินาทีจึงจะยิงรอบใหม่")
+        elif state.last_detail:
             lines.append(f"รอบล่าสุด: {state.last_detail}")
         return lines
     lines = [f"{'armed' if state.armed else 'disarmed'} · probe every {policy.interval}s · "
@@ -490,7 +498,9 @@ def describe(state: State, lang: str = "th") -> list[str]:
                      f"again until: lmds watchdog arm {state.slug}")
     if recent:
         lines.append(f"{recent} automatic restarts so far · last: {state.restarts[-1].get('reason', '')}")
-    if state.last_detail:
+    if settling:
+        lines.append(f"just restarted — letting the model settle, {settling}s before the next probe")
+    elif state.last_detail:
         lines.append(f"last round: {state.last_detail}")
     return lines
 

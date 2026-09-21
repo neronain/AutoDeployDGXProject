@@ -476,3 +476,39 @@ def test_the_manual_command_is_absolute_too():
     from lmds.fleet import watchdog as wd
 
     assert wd.manual_command("demo").split()[1].startswith("/")
+
+
+# ── status ต้องไม่โชว์ผล probe เก่าค้างระหว่าง settle ───────────────────────────
+#
+# เจอจริงตอน smoke test: watchdog restart โมเดลสำเร็จ โมเดลกลับมาแล้ว (curl 200)
+# แต่ `watchdog status` ยังขึ้น "รอบล่าสุด: Connection refused" อยู่แปดนาที เพราะ
+# ระหว่าง settle มันไม่ยิง last_detail จึงค้างอยู่ที่ผลตอนโมเดลล่ม คนอ่านเข้าใจผิดว่ายังล่ม
+def _settling_state(left: float, detail: str = "ConnectError: Connection refused"):
+    st = wd.State(slug="m", armed=True)
+    st.settle_until = 1000.0 + left
+    st.last_detail = detail
+    return st
+
+
+def test_describe_says_settling_not_the_stale_failure():
+    lines = " ".join(wd.describe(_settling_state(407), "th", now=1000.0))
+    assert "407" in lines and "ตั้งตัว" in lines
+    assert "Connection refused" not in lines
+
+
+def test_describe_says_settling_in_english_too():
+    lines = " ".join(wd.describe(_settling_state(407), "en", now=1000.0))
+    assert "407s" in lines and "settle" in lines
+    assert "Connection refused" not in lines
+
+
+def test_describe_shows_the_probe_again_once_settle_is_over():
+    lines = " ".join(wd.describe(_settling_state(0), "th", now=1000.0))
+    assert "Connection refused" in lines
+
+
+def test_describe_still_works_without_an_explicit_clock():
+    # ผู้เรียกเดิมส่งแค่ state — ต้องไม่พัง
+    st = wd.State(slug="m", armed=True)
+    st.last_detail = "ok"
+    assert any("ok" in line for line in wd.describe(st))
