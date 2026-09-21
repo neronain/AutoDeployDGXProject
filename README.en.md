@@ -8,7 +8,7 @@ Deploy language models to **NVIDIA DGX Spark** and **Ubuntu + RTX**, one machine
 several acting as one. Nothing leaves the machine except what you ask for.
 
 [![version](https://img.shields.io/badge/version-0.10.0-1f5fbf)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-2445-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-2447-17703f)](tests/)
 [![platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%2024.04%20%7C%2025.04-555)](docs/INSTALL.md)
 [![arch](https://img.shields.io/badge/arch-ARM64%20%C2%B7%20x86__64-555)](docs/INSTALL.md)
 [![python](https://img.shields.io/badge/python-3.10--3.13-3776ab)](pyproject.toml)
@@ -398,7 +398,7 @@ our repositories.
 | MTP / speculative | ✅ draft head from the repo | via `--extra-args` | via `--extra-args` |
 
 Hardware-validated across all five model families — GGUF, NVFP4, MoE, dense safetensors, gated
-repos · **24 target presets** (7 verified on real hardware) · **2,445 tests** on every push across
+repos · **24 target presets** (7 verified on real hardware) · **2,447 tests** on every push across
 Python 3.10–3.13
 
 **MoE and MTP are reported as facts read from files**, not guessed by an LLM — total and active

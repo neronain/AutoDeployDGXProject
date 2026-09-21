@@ -36,7 +36,7 @@ pytest
 ## รันเทส
 
 ```bash
-pytest                      # ทั้งหมด (2,445 เทส · 149 ไฟล์)
+pytest                      # ทั้งหมด (2,447 เทส · 149 ไฟล์)
 pytest tests/test_brain.py  # เฉพาะไฟล์
 pytest -k stacked           # เฉพาะที่ชื่อตรง
 pytest -v -rA -k embed      # อยากเห็นชื่อเทส/ผลทีละข้อ — pyproject ตั้ง addopts = "-q" ไว้ ผลปกติจึงเงียบ

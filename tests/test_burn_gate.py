@@ -190,6 +190,44 @@ def test_a_machine_with_no_torch_anywhere_says_how_to_point_at_one():
     assert "LMDS_BURN_IMAGE" in "\n".join(result["remedy"])
 
 
+def test_torch_that_cannot_see_the_gpu_is_not_reported_as_missing_torch():
+    """เจอจริงบน dgx-spark02 (2026-09-21) · `python3 rc=3 torch has no usable CUDA device`
+    ถูกยุบรวมกับ "ไม่มี torch" แล้วข้อความบอกให้ไปติดตั้ง torch — ที่ติดตั้งอยู่แล้ว
+
+    สองอาการนี้แก้คนละทางกันสิ้นเชิง และเรารู้ด้วยซ้ำว่าไดรเวอร์ปกติ เพราะ `nvidia-smi`
+    ตอบชื่อการ์ดกลับมาในผลเดียวกัน · คำแนะนำที่ส่งคนไปผิดทางแย่กว่าไม่มีคำแนะนำ
+    """
+    stdout = ("LMDS_BURN_GPU NVIDIA GB10\n"
+              "LMDS_BURN_NOCUDA tried: python3 · last: python3 rc=4 "
+              "torch has no usable CUDA device\n")
+    result = burn.check_node(NODE, runner=runner_for(stdout))
+    remedy = "\n".join(result["remedy"])
+
+    assert result["kind"] == "unknown" and result["ok"] is True    # ยังไม่ใช่ "ตก"
+    assert result["reason"] == "no-cuda"
+    for lang in ("summary", "summary_en"):
+        assert "torch" in result[lang].lower()
+        assert "no Python with torch" not in result[lang]
+        assert "ไม่มี Python ที่มี torch" not in result[lang]
+    # ทางแก้ที่เป็นไปได้จริงต้องมาก่อน — ล้อ ARM64 จาก PyPI มักเป็น CPU-only
+    assert "CPU-only" in remedy or "CPU-only" in remedy
+    assert "torch.version.cuda" in remedy
+    assert "LMDS_BURN_PYTHON" in remedy
+
+
+def test_the_two_reasons_do_not_share_a_remedy():
+    """กันการยุบรวมกลับ — ถ้าใครทำให้สองอาการนี้พูดเหมือนกันอีก เทสนี้ดัง"""
+    missing = burn.check_node(NODE, runner=runner_for(
+        "LMDS_BURN_GPU NVIDIA GB10\nLMDS_BURN_NOPYTHON tried: python3 · last: python3 rc=3 no torch\n"))
+    blind = burn.check_node(NODE, runner=runner_for(
+        "LMDS_BURN_GPU NVIDIA GB10\nLMDS_BURN_NOCUDA tried: python3 · last: python3 rc=4 "
+        "torch has no usable CUDA device\n"))
+
+    assert missing["reason"] != blind["reason"]
+    assert missing["summary"] != blind["summary"]
+    assert missing["remedy"] != blind["remedy"]
+
+
 def test_a_gpu_too_full_to_allocate_asks_for_the_models_to_be_stopped():
     stdout = ("LMDS_BURN_GPU NVIDIA GB10\n"
               'LMDS_BURN {"error": "alloc", "detail": "CUDA out of memory", "matrix": 4096}\n')

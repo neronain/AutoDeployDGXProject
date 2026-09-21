@@ -157,8 +157,9 @@ except Exception as exc:
     sys.stderr.write("no torch: %s\\n" % str(exc)[:160])
     raise SystemExit(3)
 if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+    # rc 4 ไม่ใช่ 3 — "ไม่มี torch" กับ "มี torch แต่มองไม่เห็น GPU" แก้คนละทางกันสิ้นเชิง
     sys.stderr.write("torch has no usable CUDA device\\n")
-    raise SystemExit(3)
+    raise SystemExit(4)
 
 try:
     left = torch.randn(N, N, device="cuda", dtype=torch.float16)
@@ -245,7 +246,7 @@ prog=$(cat <<'LMDS_BURN_PY'
 LMDS_BURN_PY
 )
 
-tried=""; last=""
+tried=""; last=""; sawcuda=""
 # mktemp ไม่ใช่ /tmp/<ชื่อที่เดาได้>.$$ — เครื่องที่ใช้ร่วมกันหลายคนมีจริง และ pid เดาได้
 errf=$(mktemp "${{TMPDIR:-/tmp}}/lmds-burn.XXXXXX") || errf=/dev/null
 trap 'rm -f "$errf"' EXIT INT TERM
@@ -254,7 +255,9 @@ attempt() {{
   tried="$tried $1"
   out=$(printf '%s\\n' "$prog" | "$@" - 2>"$errf"); rc=$?
   why="$1 rc=$rc $(tr '\\n' ' ' < "$errf" 2>/dev/null | cut -c1-160)"
-  # 3 = interpreter ตัวนี้ไม่มี torch/CUDA · 126,127 = เรียกไม่ได้เลย — ทั้งสามคือ "ลองตัวถัดไป"
+  # 3 = ไม่มี torch · 4 = มี torch แต่มองไม่เห็น GPU · 126,127 = เรียกไม่ได้เลย
+  # — ทั้งสี่คือ "ลองตัวถัดไป" แต่ 4 ต้องจำไว้ เพราะมันแก้คนละทางกับอีกสามตัว
+  case "$rc" in 4) sawcuda=1; last="$why"; return 1 ;; esac
   case "$rc" in 3|126|127) last="$why"; return 1 ;; esac
   line=$(printf '%s\\n' "$out" | grep -m1 '^LMDS_BURN ' || true)
   if [ -n "$line" ]; then printf '%s\\n' "$line"; exit 0; fi
@@ -282,7 +285,13 @@ if command -v docker >/dev/null 2>&1; then
   done
 fi
 
-printf 'LMDS_BURN_NOPYTHON tried:%s · last: %s\\n' "$tried" "$last"
+# มี torch อยู่แล้วแต่ CUDA ใช้ไม่ได้ = คนละปัญหากับ "ไม่มี torch" และคนละทางแก้
+# บอกแยกกัน ไม่งั้นคนไปไล่ติดตั้ง torch ที่ติดตั้งอยู่แล้ว
+if [ -n "$sawcuda" ]; then
+  printf 'LMDS_BURN_NOCUDA tried:%s · last: %s\\n' "$tried" "$last"
+else
+  printf 'LMDS_BURN_NOPYTHON tried:%s · last: %s\\n' "$tried" "$last"
+fi
 '''
 
 
@@ -312,6 +321,9 @@ def parse(text: str) -> dict:
         elif line.startswith("LMDS_BURN_SKIP "):
             out["error"] = "not-gb10"
             out["gpu"] = line[len("LMDS_BURN_SKIP "):].strip()
+        elif line.startswith("LMDS_BURN_NOCUDA"):
+            out["error"] = "no-cuda"
+            out["detail"] = line[len("LMDS_BURN_NOCUDA"):].strip()
         elif line.startswith("LMDS_BURN_NOPYTHON"):
             out["error"] = "no-torch"
             out["detail"] = line[len("LMDS_BURN_NOPYTHON"):].strip()
@@ -423,6 +435,12 @@ _REASON = {
                             "GB10 ล้วน — ไม่ตัดสิน"),
     "no-torch": ("no Python with torch and no local image that has one ({detail})",
                  "ไม่มี Python ที่มี torch และไม่มี image ในเครื่องที่มี ({detail})"),
+    # เจอจริงบน dgx-spark02 (2026-09-21): torch ติดตั้งอยู่ แต่ `torch.cuda.is_available()`
+    # เป็น False · ข้อความเดิมบอกว่า "ไม่มี torch" ซึ่งส่งคนไปติดตั้งของที่มีอยู่แล้ว
+    "no-cuda": ("torch is installed but cannot see the GPU — the driver is fine "
+                "(nvidia-smi answered), so it is this Python that cannot reach it ({detail})",
+                "torch ติดตั้งอยู่แต่มองไม่เห็น GPU — ไดรเวอร์ปกติ (nvidia-smi ตอบ) "
+                "ปัญหาอยู่ที่ Python ตัวนี้เข้าไม่ถึงการ์ด ({detail})"),
     "alloc": ("could not allocate {matrix}² fp16 on the GPU — stop the models first ({detail})",
               "จอง {matrix}² fp16 บน GPU ไม่ได้ — หยุดโมเดลก่อน ({detail})"),
     "burn-failed": ("the burn program failed: {detail}", "โปรแกรม burn ล้ม: {detail}"),
@@ -532,6 +550,19 @@ def remedy(result: dict, lang: str = "th") -> list[str]:
                     "ตัวเลขนี้บอกว่า GPU ไม่ว่าง ไม่ได้บอกว่าเครื่องเสีย"]
         return ["Stop what is using the GPU first (lmds ps, then lmds stop) and measure again — "
                 "this number says the GPU is busy, not that the machine is faulty"]
+    if kind == "unknown" and result.get("reason") == "no-cuda":
+        # เรารู้ว่าไดรเวอร์ปกติเพราะ nvidia-smi ตอบชื่อการ์ดมาแล้ว — ตัดข้อสันนิษฐานนั้นออกได้เลย
+        if lang == "th":
+            return ["สาเหตุที่พบบ่อยที่สุดคือ torch เป็นรุ่น CPU-only (ล้อ ARM64 จาก PyPI มักไม่มี CUDA) "
+                    "— เช็ก: python3 -c 'import torch; print(torch.__version__, torch.version.cuda)'",
+                    "ถ้าเป็น container: ต้องมี NVIDIA container toolkit และ --gpus all",
+                    "ชี้ไปที่ interpreter หรือ image ที่มี torch แบบ CUDA ได้: "
+                    "LMDS_BURN_PYTHON=/path/to/python หรือ LMDS_BURN_IMAGE=<image> lmds burn"]
+        return ["Most often the torch build is CPU-only (ARM64 wheels from PyPI usually are) — "
+                "check: python3 -c 'import torch; print(torch.__version__, torch.version.cuda)'",
+                "In a container this needs the NVIDIA container toolkit and --gpus all",
+                "Or point at an interpreter or image whose torch has CUDA: "
+                "LMDS_BURN_PYTHON=/path/to/python or LMDS_BURN_IMAGE=<image> lmds burn"]
     if kind == "unknown" and result.get("reason") == "no-torch":
         if lang == "th":
             return ["ชี้ interpreter ที่มี torch ให้เองได้: LMDS_BURN_PYTHON=/path/to/python lmds burn",
