@@ -25,6 +25,25 @@ SANDBOX_HOME = Path(tempfile.mkdtemp(prefix="lmds-tests-home-"))
 # fixture (เช่น --collect-only หรือ collect พัง) จะทิ้งโฟลเดอร์ค้างใน /tmp ทุกครั้ง
 atexit.register(shutil.rmtree, SANDBOX_HOME, ignore_errors=True)
 
+# ─── เครื่องมือ GNU บน macOS ────────────────────────────────────────────────
+# controller ที่ระบบ generate ออกมาเล็ง Linux โดยตั้งใจ (ลูกค้ารัน Ubuntu ทั้งหมด) จึงใช้
+# `sha256sum` `stat -c` `find -printf` ซึ่ง BSD ของ macOS ไม่มี · ผลคือเทสบางตัวแดงบน
+# เครื่องพัฒนาเป็นประจำ แล้วคนก็เลิกอ่านว่าแดงกี่ตัว — ซึ่งคือที่ที่ regression จริงจะแอบเข้ามา
+#
+# homebrew วางตัว GNU ไว้ใน gnubin แยกต่างหากเพื่อไม่ให้ทับของระบบ · หยิบมาใส่ PATH ให้
+# subprocess ของเทสเองตรงนี้ แทนที่จะให้แต่ละคนไปแก้ PATH ในเชลล์ตัวเอง (คนที่ลืม = แดง
+# คนละชุดกับเพื่อน) · ไม่มี = ไม่เป็นไร เทสที่ต้องใช้ก็แดงเหมือนเดิม ไม่ได้ทำให้แย่ลง
+if sys.platform == "darwin":
+    _gnubin = [
+        "/opt/homebrew/opt/coreutils/libexec/gnubin",
+        "/opt/homebrew/opt/findutils/libexec/gnubin",
+        "/usr/local/opt/coreutils/libexec/gnubin",      # Intel Mac
+        "/usr/local/opt/findutils/libexec/gnubin",
+    ]
+    _found = [d for d in _gnubin if Path(d).is_dir()]
+    if _found:
+        os.environ["PATH"] = os.pathsep.join([*_found, os.environ.get("PATH", "")])
+
 os.environ["HOME"] = str(SANDBOX_HOME)
 os.environ["LMDS_CONFIG_DIR"] = str(SANDBOX_HOME / ".config" / "lmds")
 os.environ["LMDS_RUN_ROOT"] = str(SANDBOX_HOME / ".lmds" / "run")
