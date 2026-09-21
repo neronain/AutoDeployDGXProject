@@ -76,13 +76,35 @@ def test_measured_from_log_reads_both_line_shapes():
     """หัว 0.10 พิมพ์ tokens+concurrency บรรทัดเดียว · รุ่นใหม่แยกสองบรรทัด — ต้องอ่านได้ทั้งคู่"""
     a = measured_from_log(NEMOTRON_LOG)
     assert a == {"loading_took_gib": 69.62, "initial_free_gib": 114.28, "reserved_kv_gib": 6.0, "kv_pool_gib": 6.0,
-                 "kv_cache_tokens": 1179648, "concurrency_context": 262144, "concurrency": 4.5}
+                 "kv_cache_tokens": 1179648, "concurrency_context": 262144, "concurrency": 4.5,
+                 "kv_measured_context": 262144, "kv_per_request_gib": pytest.approx(6.0 / 4.50)}
     b = measured_from_log(QWOPUS_LOG)
     assert b["kv_cache_tokens"] == 508031 and b["concurrency"] == 1.94 and b["kv_pool_gib"] == 12.0
     assert measured_from_log("") == {}
     # ไม่มี pin: profiling บอก "Available KV cache memory" — ใช้เป็น pool แทน
     c = measured_from_log("Available KV cache memory: 60.10 GiB\nGPU KV cache size: 393,936 tokens")
     assert c["kv_pool_gib"] == 60.1 and c["kv_cache_tokens"] == 393936
+    # ไม่มีบรรทัด Maximum concurrency → ไม่รู้ context ที่วัด จึงยังสรุป GiB ต่อคำขอไม่ได้
+    assert "kv_measured_context" not in c and "kv_per_request_gib" not in c
+
+
+def test_the_token_line_that_vllm_prints_is_concurrency_times_max_model_len():
+    """§11: "GPU KV cache size: N tokens" ของ vLLM คือ ``max_concurrency × max_model_len``
+    **ไม่ใช่ความจุ** — พิสูจน์ด้วย log สองก้อนที่เราเก็บไว้เอง ไม่ใช่คำบอกเล่า
+
+    ผลที่ตามมาสองข้อ ซึ่งเป็นเหตุผลของทุกอย่างที่ทำในเรื่องนี้:
+      1. ``pool ÷ tokens`` ที่โค้ดเดิมใช้ **ไม่ผิด** ที่ context ที่วัด — max_model_len ตัดกันพอดี
+         จนได้ ``pool ÷ concurrency`` = GiB ต่อคำขอจริง (นี่คือเหตุผลที่เราไม่รื้อสูตรเดิมทิ้ง)
+      2. แต่ผลลัพธ์ **ผูกกับ context นั้น** — เอาไปคูณที่ context อื่นตรง ๆ ไม่ได้
+    """
+    a = measured_from_log(NEMOTRON_LOG)
+    assert a["concurrency"] * a["concurrency_context"] == a["kv_cache_tokens"] == 1179648
+    b = measured_from_log(QWOPUS_LOG)
+    # 508,031 ÷ 262,144 = 1.9380… → เลขที่พิมพ์คือ 1.94 (ปัด 2 ตำแหน่ง) · token จึงละเอียดกว่า
+    assert round(b["kv_cache_tokens"] / b["concurrency_context"], 2) == b["concurrency"] == 1.94
+    # GiB ต่อคำขอที่เราสรุป = pool ÷ concurrency ตามนิยามของ vLLM เอง
+    assert a["kv_per_request_gib"] == pytest.approx(6.0 / 4.50, abs=1e-6)
+    assert b["kv_per_request_gib"] == pytest.approx(12.0 / 1.938, abs=0.01)
 
 
 def test_pin_flag_round_trip_and_replacement():

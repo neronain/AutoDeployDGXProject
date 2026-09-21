@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Optional
 
@@ -43,21 +44,96 @@ VLLM_OVERHEAD_GB_PER_GPU = 2.5  # CUDA context + activations + graphs
 # รูปของการแก้ตรงกับหลักฐานอีกทางที่จดไว้แล้ว: docs/DGX-SPARK-VLLM-FIELD-NOTES.md §6 และ
 # docs/UPGRADE-2026-09.md §1.5 — NCCL 8 ทางจอง ~24 GiB **ต่อ rank** นอกงบของ vLLM · ตัวเลขนั้น
 # เป็นคำกล่าวอ้างของผู้เขียน (ไม่มี log ดิบ) ใช้ยืนยันได้แค่ "โตตามจำนวน device" · และ NCCL reserve
-# เป็น **คนละก้อน** กับค่านี้ ยังไม่มีในสูตร (stacked ใช้ STACKED_COMM_BUFFER_GB_PER_NODE แทน)
+# เป็น **คนละก้อน** กับค่านี้ — ตอนนี้อยู่ที่ `nccl_reserve_gb_per_rank()` ด้านล่าง
 LLAMACPP_OVERHEAD_GB_PER_GPU = 1.5
 # ชื่อเดิม — web/deploy.py กับ web/memory.py ยัง import ชื่อนี้อยู่ ห้ามลบจนกว่าจะแก้ทั้งสองที่
 LLAMACPP_OVERHEAD_GB = LLAMACPP_OVERHEAD_GB_PER_GPU
-UNIFIED_OS_RESERVE_GB = 12.0  # OS + desktop + services บน DGX Spark
+# OS + desktop + services บน DGX Spark
+# **ระดับหลักฐาน: ค่าเดา — ไม่เคยวัด** · ตั้งไว้ตั้งแต่ต้นโครงและไม่มี artifact รองรับสักชิ้น
+# docs/GPU-UTIL-RANK-PROTOCOL.md §6 จะส่ง `UNIFIED_OS_RESERVE_GB_measured` (= idle_used ที่วัดจาก
+# /proc/meminfo ก่อน serving) มาแทนค่านี้ · จนกว่าจะถึงตอนนั้น 12.0 คือตัวเลขที่ควรสงสัยที่สุดในไฟล์
+UNIFIED_OS_RESERVE_GB = 12.0
 GPU_MEMORY_UTILIZATION = 0.85  # ตรงกับ default ของ controller v3.0.0
 UNTESTED_BUDGET_FACTOR = 0.95  # หักเพิ่ม 5% เมื่อ target ไม่อยู่ในรายการทดสอบแล้ว
 UNKNOWN_KV_RESERVE_FRAC = 0.20  # ไม่รู้มิติ KV → กัน budget 20%
 RAM_OFFLOAD_FRAC = 0.70  # llama.cpp offload: ใช้ RAM ได้ไม่เกิน 70%
 MIN_PRACTICAL_CONTEXT = 4096
-# stacked (TP ข้ามเครื่อง): NCCL buffer + torch.distributed + CUDA graph pool ของ all-reduce ต่อเครื่อง
+# stacked (TP ข้ามเครื่อง): NCCL buffer + torch.distributed + CUDA graph pool ของ all-reduce
 # — เดิมเป็นแค่โน้ต "ต้องเผื่อ communication buffer" ไม่เคยถูกหักจริง budget รวม 227 GB จึงสูงเกินจริง
-# และผู้ใช้ไม่เห็นตัวเลขต่อเครื่องเลย (audit stacked 2026-09-04) · ค่านี้เผื่อจากที่วัดบน 2×Spark:
-# ~2–3 GB ต่อ rank สำหรับ NCCL ring/tree + pool ของ TP all-reduce ที่ ctx ยาว
+# และผู้ใช้ไม่เห็นตัวเลขต่อเครื่องเลย (audit stacked 2026-09-04)
+#
+# ค่านี้เผื่อจากที่วัดบน 2×Spark: ~2–3 GB ต่อ rank สำหรับ NCCL ring/tree + pool ของ TP all-reduce
+#
+# ── ขอบเขตที่อ้างได้ (เพิ่ม 2026-09-21) ────────────────────────────────────────────────────
+# **วัดที่ 2 rank เท่านั้น** → `STACKED_COMM_BUFFER_valid_for_node_counts = [1, 2]`
+# (docs/GPU-UTIL-RANK-PROTOCOL.md §6) · ที่ 3+ เครื่องเรากำลังอ้างนอกช่วงที่วัด และ `_budget_gb()`
+# ต้องพูดออกมาเป็นโน้ต ไม่ใช่เงียบ · ภาคสนามอ้างว่าก้อนนี้โตตามจำนวน rank — ดูพจน์ที่ปิดอยู่ข้างล่าง
 STACKED_COMM_BUFFER_GB_PER_NODE = 3.0
+
+# ── พจน์ที่จะสเกลตาม rank — **ยังปิดอยู่ โดยตั้งใจ** ────────────────────────────────────────
+# ภาคสนาม (FIELD-NOTES §6) อ้างว่า NCCL 8 ทางจอง ~24 GiB **ต่อ rank** ซึ่งถ้าจริงแปลว่าค่าคงที่
+# ต่อเครื่องข้างบนไม่พอ ต้องมีพจน์ที่โตตามจำนวน peer · **แต่เรายังใส่ไม่ได้** ด้วยสามเหตุผล:
+#
+#   1. หลักฐานเป็น **คำกล่าวอ้างของผู้เขียน** (README ไม่มี log ดิบ) และผู้เขียนคนเดียวกันเขียน
+#      อีก README ที่ใช้ 0.80 ที่ TP8 ขัดกันเอง — รีโปนั้นไม่มีโฟลเดอร์ `results/` เลย
+#   2. ตัวเลข ~24 GiB/rank อยู่ใกล้ ~27 GiB/rank ของ **COW break** (fused-MoE expert copy ที่
+#      UPGRADE-2026-09.md §1.7 R8 วินิจฉัยไว้) มาก · นั่นเป็นคนละกลไกและ **ไม่โตตาม rank เลย**
+#      มันโตตาม checkpoint · แยกกันได้ที่ N=1 ซึ่งไม่มี NCCL อยู่ในโปรเซส
+#   3. ฟลีตเรา **รัน TP4/TP8 ไม่ได้** — recon ของเราเอง (docs/HCA-DUAL-TEST.md §3, 2026-09-20)
+#      พบ world size สูงสุดบน fabric เดียวคือ **2** จึงจะไม่มีใครยืนยันรูปนี้ให้เราในเร็ว ๆ นี้
+#
+# docs/GPU-UTIL-RANK-PROTOCOL.md §5 จึงสั่งไว้ล่วงหน้า (ก่อนรู้ผล) ว่า **ห้ามเปลี่ยนค่าคงที่ข้างบน
+# ให้สเกลตาม rank จนกว่าจะได้ verdict = R** เพราะถ้าผลออกมาเป็น C (checkpoint) หรือ H (host
+# headroom) การเปลี่ยนนั้นคือการเข้ารหัสสมมติฐานที่ผิดลงในสินค้า แล้ว **ทุก stacked fit จะผิด
+# ในแบบที่ดูน่าเชื่อถือกว่าเดิม** ซึ่งแย่กว่าการไม่มีพจน์นั้นเลย
+#
+# โครงสร้างจึงอยู่ครบแล้วแต่ **ค่าเริ่มต้นให้ผลเท่าพฤติกรรมเดิมทุกจำนวน rank** · เปิดใช้โดยตั้ง
+# ค่านี้เป็นตัวเลข (`dx_rank_gib` จาก `fit-input.json` ที่โปรโตคอลจะส่งมา) เมื่อ verdict = R เท่านั้น
+NCCL_COMM_BUFFER_GB_PER_PEER: float | None = None
+# ถ้า verdict = C: ของที่ต้องเพิ่มคือ footprint ต่อ **checkpoint** ไม่ใช่ต่อ rank
+# (`checkpoint_host_footprint_gib` ใน fit-input.json) — 0.0 = ยังไม่มีผลวัด ไม่เปลี่ยนอะไรวันนี้
+CHECKPOINT_HOST_FOOTPRINT_GB = 0.0
+# GPU-util ที่คนตั้งจริงเป็นขั้นละ 0.05 (0.85/0.80/0.75) — ปัด **ลง** เข้าขั้นเสมอ เพื่อให้เพดานที่เรา
+# แนะนำไม่มีทางสูงกว่าค่าที่มีคนรันผ่านจริง และเพื่อให้คำตอบไม่ขยับตามการปัด GiB/decimal ของ capacity
+GPU_UTIL_NOTCH = 0.05
+
+
+def nccl_reserve_gb_per_rank(ranks: int) -> float:
+    """หน่วยความจำนอกงบของ vLLM กี่ GB **ต่อ rank** เมื่อ world size = ``ranks``
+
+    ค่าเริ่มต้น = พฤติกรรมเดิมเป๊ะ: 0 ที่ 1 rank · ``STACKED_COMM_BUFFER_GB_PER_NODE`` คงที่ที่ 2+
+    (ค่าที่เราวัดเองบน 2×Spark · อ้างได้ถึงแค่ 2 rank — ดู valid_for_node_counts ในโปรโตคอล §6)
+
+    ``NCCL_COMM_BUFFER_GB_PER_PEER`` ที่ไม่ใช่ None จะเปลี่ยนเป็นรูปที่โตตามจำนวน peer
+    — **เปิดได้ต่อเมื่อ docs/GPU-UTIL-RANK-PROTOCOL.md ให้ verdict = R** เท่านั้น
+    """
+    ranks = max(1, int(ranks))
+    if ranks == 1:
+        return 0.0
+    if NCCL_COMM_BUFFER_GB_PER_PEER is None:
+        return STACKED_COMM_BUFFER_GB_PER_NODE
+    return NCCL_COMM_BUFFER_GB_PER_PEER * (ranks - 1)
+
+
+def gpu_util_ceiling(total_gb: float, ranks: int, *, os_reserve_gb: float = UNIFIED_OS_RESERVE_GB) -> float:
+    """เพดาน --gpu-memory-utilization ที่ host นี้รับไหว — **เพดานคือ host headroom ไม่ใช่เพดานของ GPU**
+
+    vLLM คิด gpu-util จากหน่วยความจำ *ทั้งเครื่อง* แต่มีของที่จองอยู่ *นอก* งบนั้น จึงต้องเหลือที่ให้:
+
+        gpu_util × total + X(ranks) + OS ≤ total
+
+    รูปเดียวกับที่ docs/GPU-UTIL-RANK-PROTOCOL.md §1 เขียนไว้ (``gpu_util_max = (MemTotal − X − safety)
+    / MemTotal``) — ประเด็นทั้งหมดคือ **0.75/0.80 ไม่ใช่ค่าคงที่ของฮาร์ดแวร์ มันคือผลหาร** ใครที่
+    รายงาน "0.75 ที่ TP8" กำลังรายงาน X ของเขาโดยไม่รู้ตัว · ฟังก์ชันนี้จึงเป็น "สูตร" ไม่ใช่ "ตาราง"
+
+    **ด้วย X วันนี้ (คงที่ 3 GB ที่ 2+ rank) เพดานนี้จึงยัง *ไม่* ลดตามจำนวน rank** — 0.90 ที่ 1 rank
+    และ 0.85 ที่ 2+ · นั่นคือสิ่งที่หลักฐานของเรารองรับจริง ไม่มากกว่านั้น · เมื่อ X ถูกวัดตามโปรโตคอล
+    (ไม่ว่าผลจะเป็น R, C หรือ H) เพดานจะขยับเองโดยไม่ต้องแก้ฟังก์ชันนี้
+    """
+    if not total_gb or total_gb <= 0:
+        return GPU_MEMORY_UTILIZATION
+    head = float(total_gb) - nccl_reserve_gb_per_rank(ranks) - CHECKPOINT_HOST_FOOTPRINT_GB - os_reserve_gb
+    return max(0.30, math.floor(head / float(total_gb) / GPU_UTIL_NOTCH) * GPU_UTIL_NOTCH)
 # vLLM: หลังโหลด weight ต้องเหลือให้ profiling run (activation ที่ max_num_batched_tokens) + cache blocks
 # ต่ำกว่านี้ไม่ใช่ "context เล็ก" แต่คือ start ไม่ขึ้น ("No available memory for the cache blocks")
 VLLM_MIN_KV_GB = 2.0
@@ -122,6 +198,9 @@ class FitReport(BaseModel):
     # ภาพ "ต่อเครื่อง" ของ stacked — tensor parallel แบ่ง weights/KV เท่ากันทุกเครื่อง ผู้ใช้ต้องเห็นว่า
     # แต่ละเครื่องจะถืออะไรเท่าไร ไม่ใช่แค่ยอดรวมของคลัสเตอร์ (single: เท่ากับค่ารวม)
     comm_buffer_gb: float = 0.0             # NCCL/communication buffer ที่หักแล้ว (รวมทุกเครื่อง)
+    comm_buffer_gb_per_node: float = 0.0    # ต่อ rank — โตตามจำนวน peer (nccl_reserve_gb_per_rank)
+    # เพดาน --gpu-memory-utilization ต่อเครื่อง (unified เท่านั้น) — ยิ่ง rank เยอะยิ่งต้องลด ดู gpu_util_ceiling()
+    gpu_util_ceiling: Optional[float] = None
     per_node_capacity_gb: float = 0.0
     per_node_budget_gb: float = 0.0
     per_node_weights_gb: Optional[float] = None
@@ -149,12 +228,20 @@ def _budget_gb(target: TargetSpec, engine: str, reserved_gb: float = 0.0) -> tup
         overhead = VLLM_OVERHEAD_GB_PER_GPU if engine == "vllm" else LLAMACPP_OVERHEAD_GB_PER_GPU
         budget = target.total_gpu_memory_gb - UNIFIED_OS_RESERVE_GB * target.gpu_count - overhead * target.gpu_count
         if target.node_count > 1:
-            # หักจริง ไม่ใช่แค่โน้ต — ดู STACKED_COMM_BUFFER_GB_PER_NODE
-            budget -= STACKED_COMM_BUFFER_GB_PER_NODE * target.node_count
+            # หักจริง ไม่ใช่แค่โน้ต — และ **โตตามจำนวน rank** ไม่ใช่ค่าคงที่ต่อเครื่อง
+            per_rank = nccl_reserve_gb_per_rank(target.node_count)
+            budget -= per_rank * target.node_count
             notes.append(
                 f"stacked {target.node_count} เครื่อง: ตัวเลขเป็นยอดรวมของคลัสเตอร์ — หัก communication buffer "
-                f"(NCCL/TP) {STACKED_COMM_BUFFER_GB_PER_NODE:.0f} GB ต่อเครื่องแล้ว · ดูค่าต่อเครื่องที่ per_node"
+                f"(NCCL/TP) {per_rank:.0f} GB ต่อเครื่องแล้ว · ดูค่าต่อเครื่องที่ per_node"
             )
+            if target.node_count > 2:
+                # ค่านี้วัดที่ 2 rank · เกินกว่านั้นเป็นการอ้างนอกขอบเขต ต้องบอก ไม่ใช่เงียบ
+                notes.append(
+                    f"⚠️ communication buffer {per_rank:.0f} GB/เครื่อง วัดไว้ที่ 2 เครื่องเท่านั้น — "
+                    f"ที่ {target.node_count} เครื่องยังไม่มีผลวัดรองรับ (ดู docs/GPU-UTIL-RANK-PROTOCOL.md) · "
+                    "ถ้าภาคสนามถูกว่าก้อนนี้โตตามจำนวน rank ตัวเลขนี้จะ **ต่ำกว่าจริง**"
+                )
             # "กี่เครื่อง" ไม่พอ ต้องบอก "ต่อกันอย่างไร" ด้วย — คนที่เลือก target 4 เครื่อง
             # แต่ไม่มี switch จะเสียบวงแหวนไม่ได้ (QSFP หมดตั้งแต่ 3 เครื่อง) แล้วไปเจอ
             # "unknown topology" ตอน `lmds cluster apply` ซึ่งไม่บอกว่าต้องซื้ออะไร ·
@@ -263,9 +350,18 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
         notes=notes,
     )
     nodes = max(1, target.node_count)
-    fit.comm_buffer_gb = round(STACKED_COMM_BUFFER_GB_PER_NODE * nodes, 1) if nodes > 1 else 0.0
+    fit.comm_buffer_gb = round(nccl_reserve_gb_per_rank(nodes) * nodes, 1) if nodes > 1 else 0.0
+    fit.comm_buffer_gb_per_node = round(nccl_reserve_gb_per_rank(nodes), 1) if nodes > 1 else 0.0
     fit.per_node_capacity_gb = round(target.total_gpu_memory_gb / nodes, 1)
     fit.per_node_budget_gb = round(budget / nodes, 1)
+    if target.memory_model is MemoryModel.UNIFIED:
+        # เพดาน gpu-util ของ *เครื่องหนึ่งเครื่อง* — ไม่ใช่ของคลัสเตอร์ (vLLM ตั้งค่านี้ต่อ rank)
+        fit.gpu_util_ceiling = round(gpu_util_ceiling(fit.per_node_capacity_gb, nodes), 2)
+        if nodes > 1 and fit.gpu_util_ceiling < GPU_MEMORY_UTILIZATION:
+            fit.notes.append(
+                f"gpu-util ไม่ควรเกิน {fit.gpu_util_ceiling:.2f} ที่ {nodes} เครื่อง — เหลือที่ให้ของที่จอง "
+                f"*นอก* งบของ vLLM {fit.comm_buffer_gb_per_node:.0f} GB/เครื่อง + OS {UNIFIED_OS_RESERVE_GB:.0f} GB"
+            )
 
     weights_bytes = report.weight_bytes
     if weights_bytes is None:

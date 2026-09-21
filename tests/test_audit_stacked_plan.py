@@ -318,17 +318,21 @@ def test_the_llm_is_told_how_many_nodes_and_who_sets_tensor_parallel():
 def test_stacked_fit_reports_per_node_memory_and_budgets_the_comm_buffer():
     """หน้าเว็บ/CLI เห็นแค่ budget รวม 227 GB — ผู้ใช้ตัดสินใจไม่ได้ว่า "เครื่องละเท่าไร" และ NCCL
     buffer ของ TP ข้ามเครื่องไม่เคยถูกหักจริง (มีแต่โน้ต) · ต้องมีตัวเลขต่อเครื่องในรายงาน"""
-    from lmds.fit.analyzer import STACKED_COMM_BUFFER_GB_PER_NODE
+    from lmds.fit.analyzer import nccl_reserve_gb_per_rank
 
+    # 2 เครื่อง = 1 peer ต่อ rank → 3 GB/rank เท่าค่าเดิมที่วัดบน 2×Spark (รูปใหม่ไม่เปลี่ยนตัวเลขตรงนี้)
+    two_node_buffer = nccl_reserve_gb_per_rank(2)
+    assert two_node_buffer == pytest.approx(3.0)
     report = deepseek_report()
     fit = _stacked_fit(report)
     assert fit.node_count == 2
     assert fit.verdict in (Verdict.FITS, Verdict.FITS_REDUCED_CONTEXT)
     assert fit.per_node_weights_gb == pytest.approx(156.7 / 2, abs=0.2)
     assert fit.per_node_budget_gb == pytest.approx(fit.budget_gb / 2, abs=0.1)
-    assert fit.comm_buffer_gb == pytest.approx(STACKED_COMM_BUFFER_GB_PER_NODE * 2, abs=0.01)
+    assert fit.comm_buffer_gb == pytest.approx(two_node_buffer * 2, abs=0.01)
+    assert fit.comm_buffer_gb_per_node == pytest.approx(two_node_buffer, abs=0.01)
     # budget รวมต้องหัก buffer แล้ว: 2×128 − 2×12 (OS) − 2×2.5 (engine) − 2×buffer
-    assert fit.budget_gb == pytest.approx(256 - 24 - 5 - STACKED_COMM_BUFFER_GB_PER_NODE * 2, abs=0.1)
+    assert fit.budget_gb == pytest.approx(256 - 24 - 5 - two_node_buffer * 2, abs=0.1)
     assert fit.per_node_kv_budget_gb == pytest.approx(fit.kv_budget_gb / 2, abs=0.1)
     # single ไม่มีของพวกนี้
     single = analyze(qwen_coder_report(), PRESETS["dgx-spark-single"])
