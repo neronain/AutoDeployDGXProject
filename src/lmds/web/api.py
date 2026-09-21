@@ -2904,6 +2904,13 @@ def create_app(token: str = "") -> FastAPI:
         return {"node": name, "slug": slug, "command": command,
                 "exit_code": result.exit_code, "output": (result.stdout + result.stderr)[-8000:]}
 
+    # key ของโมเดลกับ audit อยู่คนละไฟล์ — สองเรื่องนี้แตะความลับ แยกไว้ให้รีวิวได้
+    # โดยไม่ต้องอ่าน api.py ทั้ง 2,800 บรรทัด · ส่ง guarded/_check_slug เข้าไปแทนที่จะให้
+    # มัน import เอง เพราะทั้งคู่ผูกกับ token ของแอปตัวนี้ (create_app รับ token เป็นพารามิเตอร์)
+    from lmds.web import keysapi
+
+    keysapi.register(app, guarded, _check_slug)
+
     return app
 
 
