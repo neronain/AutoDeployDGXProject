@@ -56,3 +56,40 @@ def test_it_says_docker_login_will_not_help():
     html = CONSOLE.read_text(encoding="utf-8")
     assert "does not fix it" in html
     assert "/var/run/docker.sock" in html
+
+
+# ── docker ใช้ไม่ได้ต้องเห็นตั้งแต่การ์ดขึ้น ───────────────────────────────────
+#
+# ข้อมูล host.docker_access ส่งมาถึง hub ตั้งแต่ทักเครื่องครั้งแรก แต่เดิมแสดงเฉพาะ
+# การ์ด hub — เครื่องอื่นตกสำรวจ ลูกค้าจึงรู้ตอนกด download แล้ว pull ล้มเท่านั้น
+def _warning_fn() -> str:
+    html = CONSOLE.read_text(encoding="utf-8")
+    body = html[html.index("function dockerAccessWarning("):]
+    return body[:body.index("\nfunction ")]
+
+
+def test_the_node_card_warns_before_a_pull_can_fail():
+    html = CONSOLE.read_text(encoding="utf-8")
+    assert "dockerAccessWarning(name, host)" in html, "ต้องถูกเรียกตอนวาดการ์ดเครื่อง"
+
+
+def test_it_stays_quiet_when_docker_works_or_the_node_is_too_old_to_say():
+    """เครื่องรุ่นเก่าไม่ส่ง docker_access มา — ห้ามเดาว่าพังแล้วขึ้นเตือนมั่ว"""
+    fn = _warning_fn()
+    assert "!da.user || da.usable !== false" in fn
+    # `!da.usable` เฉย ๆ จะจริงตอน undefined ด้วย ซึ่งคือ "ไม่รู้" ไม่ใช่ "พัง"
+    assert "!da.usable)" not in fn
+
+
+def test_the_button_only_appears_when_it_can_actually_help():
+    """ปุ่มแก้เรื่องกลุ่ม docker — ถ้ายังไม่ได้ติดตั้ง docker กดไปก็ไม่ช่วย ต้องบอกคำสั่งติดตั้งแทน"""
+    fn = _warning_fn()
+    assert "da.installed === true" in fn
+    assert 'data-nact="fix-docker"' in fn
+    assert "da.fix" in fn, "กรณีกดปุ่มไม่ได้ ต้องยังบอกวิธีแก้"
+
+
+def test_it_heads_off_the_wrong_conclusion_about_denied():
+    """คำว่า denied ในข้อความของ docker คือเหตุที่ทำให้เข้าใจผิดว่าเป็นเรื่อง registry"""
+    fn = _warning_fn()
+    assert "not the registry" in fn

@@ -4393,6 +4393,28 @@ function nodeCard(node) {
 // `lmds agent info` payload the local cards use, so the numbers mean the same thing.
 // CPU / memory / disk เป็นมาตรวัดชุดเดียวกับการ์ด GPU — อ่านทั้งเครื่องได้ในสายตาเดียว
 // ตัวเลขจริงอยู่ใต้ทุกเกจ เพราะ "80%" ของ 122 GB กับของ 8 GB ไม่ใช่เรื่องเดียวกัน
+// docker ใช้ไม่ได้ต้องเห็นตั้งแต่การ์ดขึ้น ไม่ใช่ตอนกด download แล้วล้ม
+//
+// เคสจริง 2026-09-22 (ลูกค้า cynbangkok, Kirz-MSI-203): กด download → pull ตายด้วย
+// permission denied ที่ /var/run/docker.sock · ข้อมูลชุดนี้ (host.docker_access) ส่งมา
+// ถึง hub ตั้งแต่ทักเครื่องครั้งแรกอยู่แล้ว แค่ไม่เคยถูกเอามาแสดงบนการ์ดของเครื่องอื่น
+// (การ์ด hub แสดงมาตั้งแต่ 2026-09-05 — เครื่องอื่นตกสำรวจ)
+function dockerAccessWarning(name, host) {
+  const da = host.docker_access || {};
+  // ไม่มีข้อมูล = เครื่องรุ่นเก่ายังไม่ส่งมา · ใช้ได้อยู่ = ไม่ต้องรบกวน
+  if (!da.user || da.usable !== false) return "";
+  // ปุ่มนี้แก้เรื่อง "เข้ากลุ่ม docker" เท่านั้น — ถ้า docker ยังไม่ได้ติดตั้ง กดไปก็ไม่ช่วย
+  const fixable = da.installed === true;
+  return `<div class="warn-line" style="color:var(--bad);background:var(--bad-bg)">
+    ⚠ ${esc(da.reason || T("docker is not usable by that user"))}
+    ${fixable
+      ? `— <button data-nact="fix-docker" data-node="${esc(name)}" class="mini">${T("Fix docker access")}</button>`
+      : da.fix ? `— <code>${esc(da.fix)}</code>` : ""}
+    <div class="dim" style="margin-top:3px">${esc(T(
+      "Pulling an image will fail until this is fixed — and the error mentions “denied”, which is about this machine, not the registry."))}</div>
+  </div>`;
+}
+
 function systemCard(host) {
   const cpu = host.cpu || {};
   // ทั้งเครื่อง ไม่ใช่การ์ดใบแรก — เกจ VRAM ของเครื่องที่มีหลายใบเคยบอกความจุของใบเดียว
@@ -4526,6 +4548,7 @@ function nodeModelsMarkup(name, data) {
   const head = `<div class="dim" style="margin-bottom:8px">${esc(gpuNames)} · lmds ${esc(host.lmds_version || "?")}${host.lmds_commit ? " (" + esc(host.lmds_commit) + ")" : ""}
     · ${esc(T("{running} of {total} running", { running: sum.running || 0, total: sum.total || models.length }))}${
       data.age_seconds ? " · " + esc(T("updated {age}s ago", { age: Math.round(data.age_seconds) })) : ""}</div>
+    ${dockerAccessWarning(name, host)}
     ${systemCard(host)}
     ${(host.gpus || []).map(gpuCard).join("")}`;
 
