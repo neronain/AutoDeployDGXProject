@@ -93,3 +93,7 @@ def test_it_heads_off_the_wrong_conclusion_about_denied():
     """คำว่า denied ในข้อความของ docker คือเหตุที่ทำให้เข้าใจผิดว่าเป็นเรื่อง registry"""
     fn = _warning_fn()
     assert "not the registry" in fn
+    # ...แต่เฉพาะตอนที่ docker ติดตั้งแล้วเท่านั้น ถ้ายังไม่ได้ติดตั้ง docker จะตอบ
+    # "cannot connect" ไม่ใช่ "denied" — อธิบายผิดเรื่องแย่กว่าไม่อธิบาย
+    assert "fixable ? T(" in fn
+    assert "until Docker is installed" in fn

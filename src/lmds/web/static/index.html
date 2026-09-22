@@ -4410,8 +4410,9 @@ function dockerAccessWarning(name, host) {
     ${fixable
       ? `— <button data-nact="fix-docker" data-node="${esc(name)}" class="mini">${T("Fix docker access")}</button>`
       : da.fix ? `— <code>${esc(da.fix)}</code>` : ""}
-    <div class="dim" style="margin-top:3px">${esc(T(
-      "Pulling an image will fail until this is fixed — and the error mentions “denied”, which is about this machine, not the registry."))}</div>
+    <div class="dim" style="margin-top:3px">${esc(fixable ? T(
+      "Pulling an image will fail until this is fixed — and the error mentions “denied”, which is about this machine, not the registry.")
+      : T("Pulling an image will fail until Docker is installed and this user can reach it."))}</div>
   </div>`;
 }
 
