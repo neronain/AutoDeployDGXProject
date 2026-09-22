@@ -1601,3 +1601,69 @@ def test_deploy_can_name_the_bundle_and_refuses_a_bad_name(tmp_path):
     bundle, _plan, _fit = make_bundle(safetensors_report(), tmp_path=tmp_path, slug="short-name")
     assert bundle.directory.name == "short-name"
     assert (bundle.directory / "short-name-single.sh").is_file()
+
+
+# ── วินิจฉัย docker pull ต้องแยก "socket ในเครื่อง" ออกจาก "สิทธิ์บน registry" ──
+#
+# ลูกค้าเจอจริง 2026-09-22 บน Kirz-MSI-203: docker บอกว่า
+#   permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+# แต่ LMDS ตอบว่า "ไม่มีสิทธิ์ดึง image นี้ — docker login ด้วยบัญชีที่เข้าถึงได้"
+# เพราะสาขา unauthorized|denied ดักคำว่า denied ไปกินก่อน
+#
+# ผลคือส่งลูกค้าไปผิดทางสนิท — docker login กี่รอบก็ไม่หาย ของจริงคือผู้ใช้ไม่ได้อยู่
+# ในกลุ่ม docker ซึ่งปุ่ม "setup" ในหน้าเว็บแก้ให้อยู่แล้ว
+def _diagnose(tmp_path, controller_text: str, docker_says: str) -> str:
+    """ดึงฟังก์ชัน _pull_diagnosis ออกมารันจริงด้วย bash — ไม่ใช่ grep หาข้อความ"""
+    start = controller_text.index("_pull_diagnosis() {")
+    end = controller_text.index("\n}", start) + 2
+    errlog = tmp_path / "err.log"
+    errlog.write_text(docker_says, encoding="utf-8")
+    script = tmp_path / "diag.sh"
+    script.write_text(
+        "set -o pipefail\n"
+        + controller_text[start:end]
+        + f'\n_pull_diagnosis "{errlog}" ""\n',
+        encoding="utf-8",
+    )
+    r = subprocess.run(["bash", str(script)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stderr
+
+
+SOCKET_DENIED = (
+    "permission denied while trying to connect to the docker API at "
+    "unix:///var/run/docker.sock"
+)
+
+
+def test_socket_permission_is_not_reported_as_a_registry_problem(isolated_config, tmp_path):
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    said = _diagnose(tmp_path, bundle.controller.read_text(encoding="utf-8"), SOCKET_DENIED)
+    assert "socket" in said
+    # พูดถึง docker login ได้ แต่ต้องพูดเพื่อ *ตัดทิ้ง* เท่านั้น — ห้ามอยู่ในบรรทัดที่บอกวิธีแก้
+    fixes = [ln for ln in said.splitlines() if "แก้:" in ln]
+    assert fixes, said
+    assert not any("docker login" in ln for ln in fixes), fixes
+    assert "ไม่ช่วย" in said                          # บอกตรง ๆ ว่าอย่าไปเสียเวลากับมัน
+    assert any("setup" in ln or "usermod" in ln or "systemctl restart user@" in ln
+               for ln in fixes), fixes               # ชี้ไปที่ของที่แก้ได้จริง
+
+
+def test_a_real_registry_denial_still_says_docker_login(isolated_config, tmp_path):
+    """กันไม่ให้แก้บั๊กหนึ่งแล้วไปทำอีกอันพัง — เคสนี้ docker login คือคำตอบที่ถูก"""
+    bundle, _, _ = make_bundle(safetensors_report(), tmp_path=tmp_path)
+    said = _diagnose(
+        tmp_path, bundle.controller.read_text(encoding="utf-8"),
+        "Error response from daemon: pull access denied for vllm/vllm-openai, "
+        "repository does not exist or may require 'docker login'",
+    )
+    assert "docker login" in said
+
+
+def test_the_socket_branch_is_checked_before_the_denied_branch(isolated_config, tmp_path):
+    """ลำดับคือตัวบั๊ก ไม่ใช่ถ้อยคำ — socket ต้องมาก่อน ไม่งั้น denied กินไปก่อนเหมือนเดิม"""
+    text = make_bundle(safetensors_report(), tmp_path=tmp_path)[0].controller.read_text(
+        encoding="utf-8")
+    fn = text[text.index("_pull_diagnosis() {"):]
+    fn = fn[:fn.index("\n}") + 2]
+    assert fn.index("docker\\.sock") < fn.index("unauthorized|denied")
