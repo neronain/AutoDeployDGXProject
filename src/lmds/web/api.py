@@ -1859,6 +1859,29 @@ def create_app(token: str = "") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"node": name, "steps": outcomes, "ok": all(step["ok"] for step in outcomes)}
 
+    @app.post("/api/nodes/{name}/fix-docker", dependencies=guarded)
+    def node_fix_docker(name: str, body: dict) -> dict:
+        """ให้ user บนเครื่องนั้นเรียก docker ได้ — ทางเดียวกับปุ่ม setup (รหัสใช้ครั้งเดียว)
+
+        เคสจริง 2026-09-22 (ลูกค้า cynbangkok, Kirz-MSI-203): กด download แล้ว docker ตอบ
+        `permission denied ... unix:///var/run/docker.sock` · hub มี /api/hub/fix-docker
+        มาตั้งแต่ 2026-09-05 แต่ node ไม่มี — ลูกค้าที่ใช้หน้าเว็บอย่างเดียวจึงตันสนิท
+        """
+        from lmds.nodes import NodeError, docker_group_steps, find, run_privileged
+
+        node = find(name)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        password = (body or {}).get("password") or ""
+        if not password:
+            raise HTTPException(status_code=400, detail="ต้องใส่รหัสผ่าน sudo ของ user บนเครื่องนั้น")
+        try:
+            outcomes = run_privileged(node, password, steps=docker_group_steps(node.user))
+        except NodeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        state.STORE.force(name)
+        return {"node": name, "steps": outcomes, "ok": all(step["ok"] for step in outcomes)}
+
     # ── เปลี่ยน hostname ของ OS บนเครื่องนั้น ──────────────────────────────────────
     # เครื่องที่ส่งออกไปแล้วเข้าได้ทางคอนโซลนี้ทางเดียว (ไม่มี SSH ตรง) — ปุ่มนี้จึงเป็น *ทางเดียว*
     # ที่ผู้ดูแลจะแก้ชื่อที่ตั้งซ้ำกันได้ · เดินตามรอยเดียวกับ wizard เครือข่ายคลัสเตอร์ทุกอย่าง:

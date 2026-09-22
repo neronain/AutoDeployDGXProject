@@ -1813,8 +1813,9 @@ def test_sudo_password_is_never_typed_into_a_browser_prompt():
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     import re
 
-    # ฟอร์มนี้ใช้ร่วมกับ "แก้สิทธิ์ไฟล์" แล้ว — เงื่อนไขเดียวกันคุมทั้งสองงาน
-    setup = page.split('if (nact === "setup" || nact === "fix-perms")')[1].split('if (nact === "install")')[0]
+    # ฟอร์มนี้ใช้ร่วมกับ "แก้สิทธิ์ไฟล์" และ "ให้ user เรียก docker ได้" — เงื่อนไขเดียวคุมทั้งสาม
+    # ยึดกับ `if (nact === "setup"` เท่านั้น เพราะสาขาถูกเพิ่มเรื่อย ๆ (ครั้งล่าสุด fix-docker)
+    setup = page.split('if (nact === "setup"')[1].split('if (nact === "install")')[0]
     # คอมเมนต์ไม่ได้ถูกรัน — ที่อธิบายว่า "ไม่ใช้ prompt()" ไม่ใช่การเรียก prompt()
     code = re.sub(r"//.*", "", setup)
     assert "prompt(" not in code, "ต้องใช้ฟอร์มในหน้าที่ปิดรหัสได้"
@@ -1968,6 +1969,52 @@ def test_fix_permissions_only_touches_the_model_cache(registered, monkeypatch):
     assert not any("s3cret" in c for c in ran)
 
 
+def test_fix_docker_adds_the_group_then_restarts_the_session(registered, monkeypatch):
+    """ลูกค้า cynbangkok 2026-09-22: pull ตายด้วย permission denied ที่ /var/run/docker.sock
+
+    hub มีปุ่มนี้มาตั้งแต่ 2026-09-05 แต่ node ไม่มี — ใช้หน้าเว็บอย่างเดียวแล้วตัน
+    """
+    ran = []
+
+    def fake_run(node, command, timeout=0, stdin_text=None):
+        ran.append(command)
+        # ยังเรียก docker ไม่ได้จนกว่าจะ usermod แล้ว restart session
+        if "id -nG" in command:
+            return SimpleNamespace(ok=any("usermod" in c for c in ran[:-1]),
+                                   exit_code=0, stdout="", stderr="")
+        if "docker info" in command:
+            return SimpleNamespace(ok=any("systemctl restart user@" in c for c in ran[:-1]),
+                                   exit_code=0, stdout="", stderr="")
+        return SimpleNamespace(ok=True, exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr("lmds.nodes.ssh.run", fake_run)
+    payload = TestClient(create_app()).post(
+        "/api/nodes/spark2/fix-docker", json={"password": "s3cret"}).json()
+
+    assert payload["ok"] is True
+    usermod = next(c for c in ran if "usermod" in c)
+    assert "usermod -aG docker ops" in usermod
+    assert "sudo -S -p ''" in usermod           # รหัสผ่านไปทาง stdin ไม่ใช่ argv
+    # สองขั้นแยกกัน เพราะ "เข้ากลุ่มแล้วแต่ session เก่ายังไม่เห็น" คืออาการที่ดูเหมือนยังไม่ได้แก้
+    assert len(payload["steps"]) == 2
+    assert any("systemctl restart user@" in c for c in ran)
+    assert not any("s3cret" in c for c in ran)
+
+
+def test_fix_docker_never_touches_the_registry(registered, monkeypatch):
+    """ทั้งปุ่มนี้มีขึ้นเพราะมีคนถูกส่งไป docker login — ห้ามมีคำสั่งไปยุ่งกับ registry"""
+    from lmds.nodes.ssh import docker_group_steps
+
+    for command, _what, verify in docker_group_steps("ops"):
+        assert "docker login" not in command
+        assert "docker pull" not in command and "docker pull" not in verify
+
+
+def test_fix_docker_needs_a_password():
+    assert TestClient(create_app()).post("/api/nodes/spark2/fix-docker",
+                                         json={}).status_code in (400, 404)
+
+
 def test_fix_permissions_needs_a_password():
     assert TestClient(create_app()).post("/api/nodes/spark2/fix-permissions",
                                          json={}).status_code in (400, 404)
@@ -1989,7 +2036,7 @@ def test_setup_form_says_which_user_it_will_use():
     """ผู้ใช้ถามว่า "จะรู้ได้ยังไงว่า user ไหน" — ต้องบอก ไม่ใช่ให้เดา"""
     page = (Path(__file__).resolve().parents[1] / "src/lmds/web/static/index.html").read_text(encoding="utf-8")
     assert "lastNodeRegistry" in page
-    setup = page.split('if (nact === "setup" || nact === "fix-perms")')[1].split('if (nact === "setup-go")')[0]
+    setup = page.split('if (nact === "setup"')[1].split('if (nact === "setup-go")')[0]
     assert "the same user SSH already uses" in setup      # UI เป็นอังกฤษตั้งแต่ 0.6.0
 
 

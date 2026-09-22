@@ -336,7 +336,7 @@ _pull_diagnosis() {
   # ต้องเช็คก่อน 'denied' ข้างล่าง — ข้อความนี้มีคำว่า "permission denied" อยู่ในตัว
   # แต่เป็นคนละเรื่องกับสิทธิ์บน registry โดยสิ้นเชิง docker บอกว่าเราต่อ *socket ในเครื่อง*
   # ไม่ได้ คือยังไม่ได้เริ่มคุยกับ registry ด้วยซ้ำ — docker login ไปก็ไม่หาย
-  if grep -qiE 'docker\.sock|dial unix' "$errlog" && grep -qi 'permission denied' "$errlog"; then
+  if grep -qi -e 'docker\.sock' -e 'dial unix' "$errlog" && grep -qi 'permission denied' "$errlog"; then
     _u="$(id -un)"
     echo "  → สาเหตุ: ผู้ใช้ ${_u} ต่อ docker socket ในเครื่องไม่ได้ — ยังไม่ทันได้คุยกับ registry" >&2
     echo "    ไม่เกี่ยวกับสิทธิ์ดึง image และ docker login ไม่ช่วย" >&2
@@ -344,8 +344,9 @@ _pull_diagnosis() {
       echo "    ${_u} อยู่ในกลุ่ม docker แล้ว แต่ session นี้เปิดก่อนถูกเพิ่มเข้ากลุ่ม — ต้องเข้าใหม่" >&2
       echo "    แก้: sudo systemctl restart user@\$(id -u ${_u})  (หรือ logout/login)" >&2
     else
-      echo "    แก้: กดปุ่ม \"setup\" ของเครื่องนี้ในหน้าเว็บ — หรือ lmds node setup <ชื่อเครื่อง>" >&2
+      echo "    แก้: กดปุ่ม \"Fix docker access\" ของเครื่องนี้ในหน้าเว็บ (ใส่รหัส sudo ครั้งเดียว)" >&2
       echo "    เบื้องหลังคือ: sudo usermod -aG docker ${_u} แล้วรีสตาร์ต session ให้กลุ่มมีผล" >&2
+      echo "    ปุ่ม \"setup\" ไม่ใช่ตัวนี้ — มันทำแค่ enable-linger ไม่ได้แตะกลุ่ม docker" >&2
     fi
   elif grep -qiE 'no such host|server misbehaving|i/o timeout|TLS handshake timeout|network is unreachable|connection refused|proxyconnect' "$errlog"; then
     echo "  → สาเหตุ: เครื่อง${where:+ $where} ออกเน็ตไปหา registry ไม่ได้ (DNS/ไฟร์วอลล์/proxy) — ไม่ใช่ image หาย" >&2

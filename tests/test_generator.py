@@ -1645,8 +1645,10 @@ def test_socket_permission_is_not_reported_as_a_registry_problem(isolated_config
     assert fixes, said
     assert not any("docker login" in ln for ln in fixes), fixes
     assert "ไม่ช่วย" in said                          # บอกตรง ๆ ว่าอย่าไปเสียเวลากับมัน
-    assert any("setup" in ln or "usermod" in ln or "systemctl restart user@" in ln
-               for ln in fixes), fixes               # ชี้ไปที่ของที่แก้ได้จริง
+    # ต้องชี้ไปที่ปุ่มที่แก้เรื่องนี้ได้จริง — "setup" ทำแค่ enable-linger ไม่ได้แตะกลุ่ม docker
+    assert any("Fix docker access" in ln or "systemctl restart user@" in ln
+               for ln in fixes), fixes
+    assert not any(ln.strip().startswith("แก้:") and "lmds node setup" in ln for ln in fixes), fixes
 
 
 def test_a_real_registry_denial_still_says_docker_login(isolated_config, tmp_path):

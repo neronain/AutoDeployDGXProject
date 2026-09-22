@@ -490,6 +490,30 @@ def ownership_steps(user: str) -> list[tuple[str, str, str]]:
     )]
 
 
+def docker_group_steps(user: str) -> list[tuple[str, str, str]]:
+    """ให้ user บนเครื่องนั้นเรียก docker ได้ — usermod -aG docker แล้วรีสตาร์ต session
+
+    เคสจริง 2026-09-22 (ลูกค้า cynbangkok, Kirz-MSI-203): กด download แล้ว docker ตอบ
+    `permission denied ... unix:///var/run/docker.sock` — hub มีปุ่ม "Fix docker access"
+    มาตั้งแต่ 2026-09-05 แต่ **node ไม่มี** ลูกค้าที่ใช้หน้าเว็บอย่างเดียวจึงตัน
+
+    สองขั้นแยกกันเพราะล้มคนละแบบ: เข้ากลุ่มได้แล้วแต่ session เก่ายังไม่เห็นกลุ่มใหม่
+    เป็นอาการที่ดูเหมือนยังไม่ได้แก้ ทั้งที่แก้ไปแล้ว — ต้องเห็นเป็นคนละบรรทัด
+    """
+    quoted = shlex.quote(user)
+    return [(
+        f"sudo -S -p '' usermod -aG docker {quoted}",
+        f"เพิ่ม {user} เข้ากลุ่ม docker",
+        f"id -nG {quoted} | tr ' ' '\\n' | grep -qx docker",
+    ), (
+        # กลุ่มใหม่มีผลกับ session ใหม่เท่านั้น — process ที่รันอยู่ (รวม service ของผู้ใช้)
+        # ยังถือ group list เดิมไว้จนกว่าจะเกิดใหม่
+        f"sudo -S -p '' systemctl restart user@\"$(id -u {quoted})\".service",
+        "รีสตาร์ต session ของผู้ใช้ให้กลุ่มใหม่มีผล",
+        "docker info >/dev/null 2>&1",
+    )]
+
+
 def run_privileged(node: Node, password: str, with_prereq: bool = False,
                    steps: list[tuple[str, str, str]] | None = None) -> list[dict]:
     """ทำขั้นที่ต้องใช้ root บนเครื่องปลายทาง — รหัสผ่านส่งทาง stdin ใช้ครั้งเดียว
