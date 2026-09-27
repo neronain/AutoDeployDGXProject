@@ -62,9 +62,23 @@ class Adopted:
     ports: dict = field(default_factory=dict)
     network: str = ""
     runtime: str = ""
+    # `--gpus all` บน docker รุ่นใหม่ **ไม่ได้** ตั้ง Runtime=nvidia — มันไปอยู่ใน
+    # HostConfig.DeviceRequests ส่วน Runtime ยังเป็น "runc" ตาม default ของ daemon
+    device_requests: list = field(default_factory=list)
     entrypoint: list[str] = field(default_factory=list)
     ipc_mode: str = ""
     shm_size: int = 0
+
+    @property
+    def wants_gpu(self) -> bool:
+        """คอนเทนเนอร์นี้ถูกรันมาโดยขอ GPU หรือเปล่า — นับทั้งทางเก่าและทางใหม่"""
+        if self.runtime == "nvidia":
+            return True
+        for req in self.device_requests or []:
+            for group in (req or {}).get("Capabilities") or []:
+                if "gpu" in [str(c).lower() for c in (group or [])]:
+                    return True
+        return False
 
     @property
     def argv_tokens(self) -> list[str]:
@@ -200,6 +214,7 @@ def inspect_container(container: str) -> Adopted:
         ports=dict(host.get("PortBindings") or {}),
         network=host.get("NetworkMode") or "",
         runtime=host.get("Runtime") or "",
+        device_requests=list(host.get("DeviceRequests") or []),
         entrypoint=list(config.get("Entrypoint") or []),
         ipc_mode=host.get("IpcMode") or "",
         shm_size=int(host.get("ShmSize") or 0),
@@ -580,7 +595,15 @@ def render_controller(adopted: Adopted, slug: str) -> str:
     # แย่กว่าไม่มีเลย) — แต่ทางของ adopt ตกสำรวจ เพราะประกอบคำสั่ง docker run ขึ้นเองที่นี่
     entry = f'  --entrypoint {shlex.quote(adopted.entrypoint[0])} \\\n' if adopted.entrypoint else ""
     network = f'  --network {shlex.quote(adopted.network)} \\\n' if adopted.network not in ("", "default") else ""
-    runtime = '  --gpus all \\\n' if adopted.runtime == "nvidia" else ""
+    # GPU มาได้สองทาง และเช็คทางเดียวไม่พอ:
+    #   · `--runtime=nvidia` (ทางเก่า)  → HostConfig.Runtime == "nvidia"
+    #   · `--gpus all`       (ทางใหม่)  → HostConfig.DeviceRequests มี capability "gpu"
+    #                                     ส่วน Runtime ยังเป็น "runc" ตาม default ของ daemon
+    #
+    # เคสจริง 2026-09-27 msi-1: คอนเทนเนอร์ vLLM ที่รันด้วย `--gpus all` ถูก adopt แล้ว
+    # controller ที่เขียนออกมา **ไม่มี --gpus เลย** เพราะเช็คแค่ Runtime == "nvidia"
+    # ครั้งถัดไปที่ใครสั่ง start โมเดลจะขึ้นโดยไม่เห็น GPU — เงียบสนิท ไม่มีอะไรฟ้องตอน adopt
+    runtime = '  --gpus all \\\n' if adopted.wants_gpu else ""
     # NCCL/torch.distributed คุยกันผ่าน /dev/shm — docker ให้มาแค่ 64 MB โดยปริยาย
     #
     # เคสจริง 2026-09-01: adopt โมเดล stacked (MiniMax M3 บน SGLang 2 เครื่อง) แล้ว

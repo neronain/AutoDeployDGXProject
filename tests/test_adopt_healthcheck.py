@@ -85,3 +85,59 @@ def test_the_flag_sits_on_its_own_continued_line():
     block = _start_block(render_controller(_adopted(), slug="m"))
     line = next(ln for ln in block.splitlines() if "--no-healthcheck" in ln)
     assert line.rstrip().endswith("\\"), f"บรรทัดนี้ต้องต่อบรรทัด: {line!r}"
+
+
+# ── GPU มาได้สองทาง เช็คทางเดียวไม่พอ ────────────────────────────────────────
+#
+# เคสจริง 2026-09-27 msi-1: adopt คอนเทนเนอร์ vLLM ที่รันด้วย `--gpus all` แล้ว
+# controller ที่เขียนออกมา **ไม่มี --gpus เลย** เพราะโค้ดเช็คแค่ Runtime == "nvidia"
+#
+# `--gpus all` บน docker รุ่นใหม่ไม่ได้ตั้ง Runtime=nvidia — มันไปอยู่ใน DeviceRequests
+# ส่วน Runtime ยังเป็น "runc" ตาม default ของ daemon · ครั้งถัดไปที่ใครสั่ง start
+# โมเดลจะขึ้นโดยไม่เห็น GPU เงียบ ๆ ไม่มีอะไรฟ้องตอน adopt
+GPUS_ALL = [{"Driver": "", "Count": -1, "DeviceIDs": None,
+             "Capabilities": [["gpu"]], "Options": {}}]
+
+
+def _with_gpu(runtime: str, device_requests: list) -> Adopted:
+    payload = json.dumps([{
+        "Name": "/coder-next",
+        "Args": ["serve", "/models/X"],
+        "Config": {"Image": "org/vllm:v1", "Env": [], "Entrypoint": None},
+        "HostConfig": {"Binds": [], "PortBindings": {}, "NetworkMode": "default",
+                       "Runtime": runtime, "DeviceRequests": device_requests,
+                       "IpcMode": "private", "ShmSize": 67108864},
+    }])
+
+    class R:
+        returncode = 0
+        stdout = payload
+
+    with patch.object(adopt_mod.subprocess, "run", return_value=R()):
+        return inspect_container("coder-next")
+
+
+def test_gpus_all_survives_adopt_even_when_runtime_is_runc():
+    """payload จริงจาก msi-1 — Runtime=runc แต่ DeviceRequests ขอ gpu"""
+    a = _with_gpu("runc", GPUS_ALL)
+    assert a.wants_gpu is True
+    assert "--gpus all" in render_controller(a, slug="m")
+
+
+def test_the_old_runtime_nvidia_path_still_works():
+    a = _with_gpu("nvidia", [])
+    assert a.wants_gpu is True
+    assert "--gpus all" in render_controller(a, slug="m")
+
+
+def test_a_cpu_container_does_not_get_gpus():
+    """ใส่ --gpus ให้เครื่องที่ไม่มี GPU = start ไม่ขึ้นเลย แย่กว่าไม่ใส่"""
+    a = _with_gpu("runc", [])
+    assert a.wants_gpu is False
+    assert "--gpus" not in render_controller(a, slug="m")
+
+
+def test_a_non_gpu_device_request_is_not_mistaken_for_one():
+    """DeviceRequests ใช้กับ device อื่นได้ด้วย — ห้ามเหมาว่ามีอะไรก็คือ GPU"""
+    a = _with_gpu("runc", [{"Capabilities": [["compute"]], "Count": 1}])
+    assert a.wants_gpu is False
