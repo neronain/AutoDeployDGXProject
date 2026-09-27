@@ -569,6 +569,15 @@ def render_controller(adopted: Adopted, slug: str) -> str:
     port_lines = "".join(
         _publish(spec, binding) for spec, binding in (adopted.ports or {}).items() if binding
     )
+    # --no-healthcheck: HEALTHCHECK ที่ฝังมาใน image ชี้พอร์ตของ *ตัวมันเอง* ไม่ใช่พอร์ตที่เราสั่งรัน
+    #
+    # เคสจริง 2026-09-27 msi-1: adopt คอนเทนเนอร์ vLLM (avarok/dgx-vllm-nvfp4-kernel:v23) ซึ่งฝัง
+    # `HEALTHCHECK curl -f http://localhost:8888/health` มา แต่ LMDS รันบนพอร์ต 8000 → `docker ps`
+    # ขึ้น "(unhealthy)" ตลอดอายุคอนเทนเนอร์ ทั้งที่ `curl :8000/health` ตอบ 200
+    #
+    # เทมเพลต controller ทุกตัวปิดทิ้งมาตั้งแต่ 2026-09-20 แล้ว (ดูเหตุผลเต็มใน llamacpp controller:
+    # LMDS มี wait_health ของตัวเองที่รู้จัก engine · สัญญาณสุขภาพตัวที่สองที่โง่กว่าและขัดกันเองได้
+    # แย่กว่าไม่มีเลย) — แต่ทางของ adopt ตกสำรวจ เพราะประกอบคำสั่ง docker run ขึ้นเองที่นี่
     entry = f'  --entrypoint {shlex.quote(adopted.entrypoint[0])} \\\n' if adopted.entrypoint else ""
     network = f'  --network {shlex.quote(adopted.network)} \\\n' if adopted.network not in ("", "default") else ""
     runtime = '  --gpus all \\\n' if adopted.runtime == "nvidia" else ""
@@ -650,6 +659,7 @@ start() {{
     docker rm -f "${{CONTAINER_NAME}}" >/dev/null 2>&1 || true
   fi
 {notes}  docker run -d --name "${{CONTAINER_NAME}}" --restart unless-stopped \\
+  --no-healthcheck \\
 {runtime}{ipc}{shm}{network}{port_lines}{bind_lines}{env_lines}{entry}  "${{IMAGE}}" {args}
   echo "started: ${{CONTAINER_NAME}} (port ${{API_PORT}})"
 }}
