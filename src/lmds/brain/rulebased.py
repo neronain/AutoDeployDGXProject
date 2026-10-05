@@ -10,6 +10,7 @@ import re
 
 from lmds.fit import FitReport
 from lmds.recipes import find_recipe
+from lmds.inspector.formats import unsupported_alternatives, unsupported_reason
 from lmds.inspector.report import ArtifactType, ModelReport
 
 from .plan_schema import (
@@ -396,8 +397,21 @@ def qwen3_reranker_overrides(report: ModelReport) -> str | None:
     return QWEN3_RERANKER_HF_OVERRIDES if rerank_family_for(report) == "qwen3" else None
 
 
+def refuse_unsupported(report: ModelReport) -> None:
+    """หยุดก่อนเข้า decision matrix ถ้า weight เป็นรูปแบบที่ไม่มี engine ไหนโหลดได้ (MLX)
+
+    matrix ข้างล่างถามแค่ "GGUF ไหม" ที่เหลือส่งให้ vLLM หมด — checkpoint MLX เก็บใน .safetensors จึงหลุดไปเป็น
+    "safetensors→vLLM" แล้วได้ bundle ที่ผ่าน gate ทุกด่านแต่ start ไม่ขึ้นหลังโหลด 113 GB
+    (เคสจริง 2026-10-05: Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP) · --engine เลือกทางออกให้ไม่ได้: ไม่มี engine ไหนรับ
+    """
+    why = unsupported_reason(report)
+    if why:
+        raise PlanError(" · ".join([why, *unsupported_alternatives(report)]))
+
+
 def rule_based_plan(report: ModelReport, fit: FitReport,
                     engine: Engine | None = None) -> DeploymentPlan:
+    refuse_unsupported(report)
     # engine ที่ผู้ใช้เลือกมาชนะการเดา แต่ GGUF ยังบังคับ llama.cpp เสมอ —
     # vLLM กับ SGLang อ่านไฟล์ GGUF ไม่ได้ ยอมตามคำขอคือส่ง bundle ที่ start ไม่ขึ้นให้
     if report.artifact_type is ArtifactType.GGUF:

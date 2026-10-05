@@ -23,7 +23,9 @@ from .allowlists import image_repo, is_known_image, split_flags
 from .plan_schema import DeploymentPlan, Engine, PlanError, Topology
 from .prompts import build_system_prompt, build_user_prompt
 from .providers import LlmProvider
-from .rulebased import TASK_LABELS, apply_recipe, is_pooling_task, qwen3_reranker_overrides, rule_based_plan
+from .rulebased import (
+    TASK_LABELS, apply_recipe, is_pooling_task, qwen3_reranker_overrides, refuse_unsupported, rule_based_plan,
+)
 
 MAX_ATTEMPTS = 3
 
@@ -717,6 +719,8 @@ def build_plan(
     `engine` คือสิ่งที่ผู้ใช้เลือกมาเอง (`--engine sglang`) · safetensors เสิร์ฟได้ทั้ง
     vLLM และ SGLang การเดาจึงเป็นแค่ค่าตั้งต้น ไม่ใช่คำตัดสิน
     """
+    # ก่อนเรียก LLM — รูปแบบที่ไม่มี engine ไหนโหลดได้ไม่มีอะไรให้วางแผน และ LLM ก็เลือกทางออกให้ไม่ได้
+    refuse_unsupported(report)
     if provider is None:
         plan = _finish(harden_plan(rule_based_plan(report, fit, engine), report, fit), fit)
         _log_session(report, fit, [], plan)

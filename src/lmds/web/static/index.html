@@ -3366,7 +3366,7 @@ async function analyzeNow(overrides = {}) {
       wizForm(det.message, `<div class="field" style="margin-top:10px">
         <input id="w-token" type="password" placeholder="Hugging Face token">
         <button id="w-retry">Try again</button></div>`);
-    } else if (det.kind === "no-fit") {
+    } else if (det.kind === "no-fit" || det.kind === "unsupported") {
       wizForm(det.message, `<div style="margin-top:8px">${(det.alternatives || []).map(a =>
         `<div class="warn-line">→ ${esc(a)}</div>`).join("")}</div>`);
     } else {

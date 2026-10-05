@@ -539,6 +539,14 @@ def analyze(
     except HfError as exc:
         raise DeployError("hub", str(exc)) from exc
 
+    # checkpoint MLX ลงท้าย .safetensors เหมือนกันแต่ไม่มี engine ไหนโหลดได้ — หยุดก่อน fit/plan · เดิมผ่าน analyze
+    # เป็นแผน vLLM ที่กด generate → push → download 113 GB ได้จนสุดทาง แล้วไปล้มตอน start (เคสจริง 2026-10-05)
+    from lmds.inspector.formats import unsupported_alternatives, unsupported_reason
+
+    blocked = unsupported_reason(report)
+    if blocked:
+        raise DeployError("unsupported", blocked, {"alternatives": unsupported_alternatives(report)})
+
     if spec.node_count > 1 and (
         report.artifact_type is ArtifactType.GGUF
         or (report.artifact_type is ArtifactType.MIXED and (selected_gguf or report.selected_gguf))

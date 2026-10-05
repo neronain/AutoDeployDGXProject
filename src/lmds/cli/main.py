@@ -2334,8 +2334,30 @@ def inspect(
         return
 
     _render_report(report)
+    if _print_unsupported(report):
+        # ตาราง fit/context ของ checkpoint ที่ไม่มี engine โหลดได้ คือตัวเลขที่ถูกแต่พาไปผิดทาง — ไม่แสดง
+        return
     _render_fits(fit_reports)
     _render_context(report, fit_reports, context, kv_dtype)
+
+
+def _print_unsupported(report) -> bool:
+    """บอกสาเหตุ + ของที่ใช้แทนได้ เมื่อ weight เป็นรูปแบบที่ไม่มี engine โหลดได้ (MLX) — คืน True ถ้าเป็นเคสนั้น"""
+    from lmds.inspector.formats import unsupported_alternatives, unsupported_reason
+
+    why = unsupported_reason(report)
+    if not why:
+        return False
+    err_console.print(f"[red]⛔ ไม่รองรับ:[/red] {why}")
+    for alt in unsupported_alternatives(report):
+        err_console.print(f"[yellow]→ {alt}[/yellow]")
+    return True
+
+
+def _refuse_unsupported(report) -> None:
+    """plan/generate/deploy/rebuild หยุดตรงนี้ — ก่อน fit ก่อนเรียก LLM และก่อนมีไฟล์ไหนถูกเขียนหรือดาวน์โหลด"""
+    if _print_unsupported(report):
+        raise typer.Exit(code=1)
 
 
 def _engine_choice(name):
@@ -2687,6 +2709,7 @@ def _render_fits(fit_reports: list) -> None:
         Verdict.FITS_WITH_OFFLOAD: "🟡",
         Verdict.NEEDS_SMALLER_QUANT: "❌",
         Verdict.NO_FIT: "❌",
+        Verdict.UNSUPPORTED: "⛔",
         Verdict.UNKNOWN: "❓",
     }
     table = Table(title="Fit Analysis")
@@ -2722,7 +2745,9 @@ def _render_report(report) -> None:
 
     table = Table(title=f"Inspect: {report.repo_id}", show_header=False)
     table.add_row("Revision (pinned)", report.revision_sha)
-    table.add_row("Artifact", report.artifact_type.value + ("  🔒 gated" if report.gated else ""))
+    # นามสกุลไฟล์อย่างเดียวทำให้ checkpoint MLX ดูเป็น safetensors ธรรมดา — บอกในแถวเดียวกับที่คนอ่านชนิดไฟล์
+    unsupported = f" · {report.unsupported_format.upper()} — ไม่รองรับ" if report.unsupported_format else ""
+    table.add_row("Artifact", report.artifact_type.value + unsupported + ("  🔒 gated" if report.gated else ""))
     table.add_row("License", report.license or "ไม่ระบุ")
     if report.params_total:
         table.add_row("Parameters", f"{report.params_total / 1e9:.1f}B")
@@ -2793,12 +2818,13 @@ def plan(
 ) -> None:
     """สร้าง Deployment Plan (ขั้นวางแผนของ deploy) — ยังไม่ generate สคริปต์
 
-    Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหา provider/เครือข่าย
+    Exit codes: 0 สำเร็จ, 1 input ผิด/รูปแบบ weight ที่ไม่รองรับ (MLX), 4 ต้องการ token, 5 ปัญหา provider/เครือข่าย
     """
     from lmds.brain import MissingKey, make_provider
     from lmds.config import Settings
 
     _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
+    _refuse_unsupported(report)
     fits = _compute_fits(report, [target] if target else [], concurrency)
     fit = fits[0]
 
@@ -2910,6 +2936,7 @@ def generate(
     from lmds.fit import Verdict
 
     source, report = _resolve_and_inspect(model, revision, interactive_ok=True)
+    _refuse_unsupported(report)
     report = _ensure_gguf_selected(source, report, interactive=False, wanted=gguf or "")
     fit = _compute_fits(report, [target] if target else [], concurrency)[0]
 
@@ -3100,6 +3127,7 @@ def rebuild(
     console.print(f"สร้าง [bold]{slug}[/bold] ใหม่จากค่าเดิม — {model_id} · target {target or 'อัตโนมัติ'}")
 
     source, report = _resolve_and_inspect(model_id, revision, interactive_ok=True)
+    _refuse_unsupported(report)
     if model.get("selected_gguf"):
         # inspect ซ้ำด้วยไฟล์ที่ profile เคยเลือกไว้ — repo ที่มีหลาย variant จะไม่เลือกให้เอง
         # แล้วไม่มีใครเปิด GGUF header เลย: architecture / context / kv dims / MoE หายหมด
@@ -3525,8 +3553,8 @@ def deploy(
 ) -> None:
     """Flow หลัก: วิเคราะห์ → วางแผน → ยืนยัน → generate → validate → ZIP
 
-    Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก, 2 ไม่ผ่าน gates, 3 ไม่ fit, 4 ต้องการ token,
-    5 provider, 6 bundle ผ่าน gate แต่ `--smoke` รันจริงไม่ผ่าน
+    Exit codes: 0 สำเร็จ, 1 input ผิด/ยกเลิก/รูปแบบ weight ที่ไม่รองรับ (MLX), 2 ไม่ผ่าน gates, 3 ไม่ fit,
+    4 ต้องการ token, 5 provider, 6 bundle ผ่าน gate แต่ `--smoke` รันจริงไม่ผ่าน
     """
     import sys
 
@@ -3544,6 +3572,7 @@ def deploy(
         # เช็คจาก argv ก่อนยิง Hub — `--also-stacked --target rtx-5090` ไม่ควรกิน inspect รอบหนึ่งก่อนถึงจะบอกว่าไม่ได้
         _reject_impossible_companion(target, engine)
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
+    _refuse_unsupported(report)
     report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
         if task.strip().lower() not in {"generate", "embed", "rerank"}:

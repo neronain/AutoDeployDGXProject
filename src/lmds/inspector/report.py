@@ -80,6 +80,12 @@ class ModelReport(BaseModel):
     private: bool = False
     license: Optional[str] = None
     artifact_type: ArtifactType = ArtifactType.UNKNOWN
+    # ไลบรารีที่ Hub ระบุให้ repo (transformers · mlx · sentence-transformers …)
+    library_name: Optional[str] = None
+    # weight อยู่ในรูปแบบที่ไม่มี engine ไหนของ LMDS โหลดได้ ("mlx") — None = ไม่พบ · artifact_type ยังเป็น
+    # safetensors ตามนามสกุลไฟล์ จึงต้องมีช่องนี้แยก: นามสกุลบอกภาชนะ ไม่ได้บอกของข้างใน (ดู inspector/formats.py)
+    unsupported_format: Optional[str] = None
+    unsupported_evidence: list[str] = Field(default_factory=list)
     # "generate" (chat) · "embed" (/v1/embeddings) · "rerank" (cross-encoder → /v1/rerank + /v1/score)
     # — จาก pipeline_tag/tags/ชื่อ repo + architectures ใน config.json / pooling_type ใน GGUF · เปลี่ยนได้ด้วย --task
     task: str = "generate"

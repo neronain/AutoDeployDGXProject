@@ -17,6 +17,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from lmds.hardware import MemoryModel
+from lmds.inspector.formats import unsupported_alternatives, unsupported_reason
 from lmds.inspector.report import ArtifactType, ModelReport
 
 from .targets import TargetSpec
@@ -159,6 +160,8 @@ class Verdict(str, Enum):
     FITS_WITH_OFFLOAD = "fits-with-offload"  # llama.cpp แบ่ง layer ลง RAM — ช้าลงชัดเจน
     NEEDS_SMALLER_QUANT = "needs-smaller-quant"
     NO_FIT = "no-fit"
+    # รูปแบบ weight ที่ไม่มี engine ไหนของเราโหลดได้ (MLX) — ไม่ใช่เรื่องหน่วยความจำ ลดขนาด/เพิ่มเครื่องไม่ช่วย
+    UNSUPPORTED = "unsupported"
     UNKNOWN = "unknown"
 
 
@@ -171,7 +174,7 @@ class VariantFit(BaseModel):
 class FitReport(BaseModel):
     target_name: str
     memory_model: MemoryModel
-    engine_assumed: str  # vllm | llamacpp
+    engine_assumed: str  # vllm | llamacpp · "none" = ไม่มี engine ที่โหลดรูปแบบนี้ได้ (verdict unsupported)
     # จำนวนเครื่อง — คนอ่านรายงานต้องรู้ว่าเป็น target ข้ามเครื่องไหม โดยไม่ต้อง
     # ไปหา TargetSpec กลับมาเทียบเอง (ผู้ช่วย LLM กับหน้าเว็บได้แค่รายงานก้อนนี้)
     node_count: int = 1
@@ -336,6 +339,21 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
     ผู้เรียกที่รู้ว่าเครื่องเป้าหมายคือเครื่องจริง (ไม่ใช่ preset สมมติ) ควรส่งค่านี้มา —
     ดู `_budget_gb` ว่าทำไมการไม่ส่งถึงทำให้เลือก quant ใหญ่เกินเครื่อง
     """
+    if unsupported_reason(report):
+        # "weights 105 / budget 113 GB ✅ fits (vllm)" กับ checkpoint ที่ vLLM โหลดไม่ได้ คือคำตอบที่ถูกทุกตัวเลข
+        # แต่พาคนไปดาวน์โหลด 113 GB ฟรี (เคสจริง 2026-10-05 · ดู inspector/formats.py) — ไม่คำนวณต่อ
+        return FitReport(
+            target_name=target.name,
+            memory_model=target.memory_model,
+            engine_assumed="none",
+            node_count=target.node_count,
+            capacity_gb=round(target.total_gpu_memory_gb, 1),
+            concurrency=concurrency,
+            verdict=Verdict.UNSUPPORTED,
+            notes=[f"checkpoint รูปแบบ {str(report.unsupported_format).upper()} — ไม่มี engine ที่โหลดได้ "
+                   "จึงไม่ประเมินหน่วยความจำ"],
+            alternatives=unsupported_alternatives(report),
+        )
     engine = _engine_for(report)
     budget, notes = _budget_gb(target, engine, reserved_gb)
     fit = FitReport(

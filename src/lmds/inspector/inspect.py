@@ -9,6 +9,7 @@ from lmds.resolver import ModelSource
 
 import re
 
+from .formats import MLX, mlx_evidence, mlx_quantization
 from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
 from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport, ShardFile
@@ -104,6 +105,7 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         private=bool(info.get("private")),
         license=_license_of(info),
         artifact_type=artifact,
+        library_name=_library_of(info),
         params_total=_params_of(info),
         tags=[t for t in info.get("tags", []) if isinstance(t, str)],
         task=task_of(info, source.repo_id),
@@ -163,6 +165,11 @@ def _classify(has_safetensors: bool, has_gguf: bool) -> ArtifactType:
     if has_gguf:
         return ArtifactType.GGUF
     return ArtifactType.UNKNOWN
+
+
+def _library_of(info: dict[str, Any]) -> str | None:
+    value = info.get("library_name") or (info.get("cardData") or {}).get("library_name")
+    return str(value) if value else None
 
 
 def _license_of(info: dict[str, Any]) -> str | None:
@@ -283,6 +290,7 @@ def _inspect_safetensors(
         report.moe_experts, report.moe_experts_active = _moe_from_config(config)
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
+    _mark_mlx(report, config)
 
     # ModelOpt เก็บ quant_algo (NVFP4/FP8) ไว้ใน hf_quant_config.json ส่วน config.json มักบอกแค่ "modelopt"
     # ซึ่งไม่บอกว่าเป็น FP4 หรือ FP8 → planner เลือก image ผิด (nvidia/Llama-3.3-70B-Instruct-FP4 ได้ nvcr
@@ -318,6 +326,26 @@ def _inspect_safetensors(
         moe_experts=report.moe_experts,
         moe_experts_active=report.moe_experts_active,
     ).to_dict()
+
+
+def _mark_mlx(report: ModelReport, config: dict[str, Any] | None) -> None:
+    """checkpoint แบบ MLX เก็บใน .safetensors เหมือนกัน — ต้องแยกออกตรงนี้ ก่อนใครเอา artifact_type ไปเลือก engine
+
+    เคสจริง 2026-10-05: Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP ถูกรายงานเป็น safetensors ธรรมดา
+    (Quantization "quantized") แล้ว planner ส่งให้ vLLM ซึ่งโหลดไม่ได้ — เกณฑ์อยู่ที่ formats.mlx_evidence
+    """
+    evidence, decisive = mlx_evidence(report.repo_id, report.library_name, report.tags, config)
+    if decisive:
+        report.unsupported_format = MLX
+        report.unsupported_evidence = evidence
+        quant = mlx_quantization(config)
+        if quant is not None:
+            report.quantization = f"mlx-{quant['bits']}bit"
+    elif evidence:
+        report.warnings.append(
+            f"มีร่องรอยของ MLX ({' · '.join(evidence)}) แต่ไม่พอชี้ขาด — เช็ค model card ก่อน deploy: "
+            "ถ้า weight เป็นรูปแบบ MLX จริง vLLM/SGLang จะโหลดไม่ได้"
+        )
 
 
 def _quantization_label(quant: dict) -> str:

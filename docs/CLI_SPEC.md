@@ -66,6 +66,7 @@ Options:
   --output DIR            โฟลเดอร์ output (default: ./bundles)
   --concurrency N         จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1) · llama.cpp: slot = N, ctx-size = N × ต่อ slot
   --engine vllm|sglang    เลือกรันไทม์เอง — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM) · GGUF บังคับ llama.cpp เสมอ
+                          · checkpoint รูปแบบ MLX (ลงท้าย .safetensors เหมือนกัน) ไม่มี engine ไหนโหลดได้ — ถูกปฏิเสธก่อน plan ไม่ว่าเลือกอะไร
   --task generate|embed|rerank   ชนิดงาน — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ · architectures ใน config.json · pooling_type ใน GGUF) ใส่เมื่อเดาผิด · LLM ตั้งเองไม่ได้
   --gguf FILE|QUANT       repo GGUF หลาย variant: ชื่อไฟล์เต็ม / ชื่อ quant (Q8_K_XL ไม่สนตัวพิมพ์) / ส่วนของชื่อที่ตรงไฟล์เดียว
                           — จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข (script/hub) · ตรงหลายไฟล์ = ปฏิเสธพร้อมรายการ
@@ -89,7 +90,7 @@ Options:
    `ใส่ Hugging Face token (Enter เพื่อข้าม)` · `--yes`/ไม่มี tty → fail exit 4 พร้อมบอกวิธีตั้ง · analyze บนหน้าเว็บบอกวิธีใส่ตรง ๆ
 2. **ขั้นยืนยันแผน** — ตารางสรุป (model/revision, runtime+image digest, topology, context, budget, feature, คำเตือน, facts `unverified`)
    ให้ ยืนยัน / แก้ context / ยกเลิก · flag นอก allowlist ถามทีละตัว default = ไม่อนุมัติ
-3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network ·
+3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก/รูปแบบ weight ที่ไม่รองรับ (MLX — `inspect` ยังคืน `0` และบอกว่าไม่รองรับ) · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network ·
    `6` bundle ผ่าน gates แต่ `--smoke` รันจริงไม่ผ่าน (คนละอาการคนละทางแก้กับ `2` ซึ่งแปลว่าสคริปต์ผิดตั้งแต่ยังไม่รัน)
 4. **Topology มาจาก target** — `dgx-spark-stacked[-4]` → stacked (controller multi-node) · `rtx-*-dual` → multi-gpu · นอกนั้น single ·
    harden บังคับกลับเสมอ และตัด flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`
