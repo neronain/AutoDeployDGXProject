@@ -186,11 +186,24 @@ def plan_kv_pin(model_info: dict, host_info: dict, slots: int | None = None,
 
     native = model_info.get("native_context") or None
     context = int(context or model_info.get("context") or native or 0)
-    if native and context > native:
-        notes.append(f"context {context:,} เกิน native {native:,} — ใช้ {native:,}")
-        context = int(native)
     slots = int(slots or model_info.get("slots") or (4 if vllm_like else 1))
     slots = max(1, slots)
+    # เพดานของโมเดล (native) เป็นเพดาน "ต่อคำขอ" · vLLM/SGLang: context คือค่าต่อคำขออยู่แล้ว
+    # llama.cpp: context คือ --ctx-size = ก้อนรวมที่หารให้ทุก slot → ต้องเทียบ context ÷ slots
+    #
+    # เดิมเทียบก้อนรวมกับ native ตรง ๆ ทุก engine: GGUF native 131,072 ที่ deploy ด้วย
+    # --concurrency 4 (ก้อนรวม 524,288 = 131,072 × 4 ซึ่ง planner ตั้งให้โดยชอบ) ถูก `lmds fit`
+    # ปัดเหลือ 131,072 · รายงาน KV ต่ำไป 4 เท่า · แล้ว `set --fit` เขียนค่านั้นลง bundle —
+    # คำขอเดียวหล่นจาก 131,072 เหลือ 32,768 โดยที่ทุกหน้าจอบอกว่า "ใส่ได้" (ตรวจ 2026-10-05)
+    native_pool = int(native) * slots if (native and engine == "llamacpp") else native
+    if native_pool and context > native_pool:
+        if engine == "llamacpp" and slots > 1:
+            notes.append(
+                f"context {context:,} ÷ {slots} slot = {context // slots:,} ต่อคำขอ เกิน native "
+                f"{native:,} — ใช้ {native_pool:,} ({native:,} ต่อคำขอ)")
+        else:
+            notes.append(f"context {context:,} เกิน native {native:,} — ใช้ {native:,}")
+        context = int(native_pool)
 
     extra_args = model_info.get("extra_args") or ""
     current_pin = parse_kv_pin(extra_args)

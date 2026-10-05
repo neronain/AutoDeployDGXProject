@@ -3640,7 +3640,7 @@ def deploy(
 
         # เพดานจริงจาก fit มักสูงกว่าค่าที่แผนเสนอมาก (แผนถูก cap ไว้ที่ค่ามาตรฐาน v3.0.0)
         # ถ้าไม่บอก ผู้ใช้จะไม่มีทางรู้ว่าเครื่องรับได้อีกเยอะ — เคสจริง: เสนอ 65,536 แต่รันได้ 262,144
-        ceiling = fit.max_safe_context or deployment_plan.serving.context
+        ceiling = context_prompt_ceiling(deployment_plan, fit)
         if ceiling > deployment_plan.serving.context:
             console.print(
                 f"[dim]หน่วยความจำรองรับได้ถึง {ceiling:,} tokens "
@@ -4091,6 +4091,24 @@ def disable(
     console.print(f"[green]ปิด autostart แล้ว[/green] ({name}) — ตัวที่รันอยู่ตอนนี้ยังไม่หยุด (ใช้ lmds stop {slug} ถ้าต้องการ)")
 
 
+def context_prompt_ceiling(plan, fit) -> int:
+    """เพดานของช่อง "context" ที่ `lmds deploy` ถามในเทอร์มินัล — หน่วยเดียวกับ plan.serving.context
+
+    vLLM/SGLang: context เป็นค่าต่อคำขอ = เพดานจาก fit ตรง ๆ
+    llama.cpp: context คือ --ctx-size = ก้อนรวมของทุก slot ส่วนเพดานจาก fit เป็นค่าต่อ 1 sequence
+    → คูณจำนวน slot เหมือนที่ orchestrator ทำตอนวางแผน
+
+    เดิมไม่คูณ: `lmds deploy <gguf> --concurrency 4` แล้วกด Enter รับค่าตามแผน (524,288) ถูกปัด
+    เป็น 131,072 ว่า "เกินเพดานที่ปลอดภัย" คำขอเดียวจึงเหลือ 32,768 (ตรวจ 2026-10-05) ·
+    โหมด --yes และหน้าเว็บไม่ผ่านทางนี้ จึงไม่โดน
+    """
+    ceiling = int(fit.max_safe_context or plan.serving.context)
+    if plan.runtime.engine.value == "llamacpp":
+        ceiling *= max(1, int(plan.serving.max_num_seqs or 1))
+    # ค่าที่แผนเสนอเองต้องไม่ถูกปัดลงเพราะกด Enter
+    return max(ceiling, int(plan.serving.context))
+
+
 @app.command("list")
 def list_bundles() -> None:
     """แสดง bundle ทั้งหมดที่รู้จักในเครื่อง (เคย start อย่างน้อยหนึ่งครั้ง)"""
@@ -4099,7 +4117,6 @@ def list_bundles() -> None:
         bundle_profile,
         discover,
         feature_summary,
-        profile_context,
     )
 
     servers = discover()
@@ -4112,7 +4129,10 @@ def list_bundles() -> None:
         "absent": "[dim]—[/dim]",
         "n/a": "[dim]n/a[/dim]",
     }
+    from lmds.inventory import serving_now
+
     table = Table(title="Bundles ในเครื่องนี้")
+    split_seen = False
     table.add_column("ชื่อ (slug)")
     # สถานะเป็นสัญลักษณ์ตัวเดียว — ตารางนี้มี 7 คอลัมน์อยู่แล้ว ใส่คำเต็มจะเบียดจนหัวตารางหาย
     # บนจอแคบ (มีคำอธิบายสัญลักษณ์ใต้ตาราง) · รายละเอียดเต็ม + endpoint ดูที่ lmds ps
@@ -4120,14 +4140,19 @@ def list_bundles() -> None:
     table.add_column("โมเดล", max_width=32, overflow="fold")
     table.add_column("engine")
     table.add_column("port", justify="right")
-    table.add_column("context", justify="right")
+    # ตัวเลขที่ "คำขอเดียว" ใช้ได้ — ไม่ใช่ --ctx-size ของ llama.cpp ซึ่งเป็นก้อนรวมของทุก slot
+    table.add_column("context\nต่อคำขอ", justify="right", no_wrap=True)
     table.add_column("รองรับ (support)")
     table.add_column("autostart")
     for server in servers:
         profile = bundle_profile(server.controller) if server.controller_exists else None
         engine = ((profile or {}).get("runtime") or {}).get("engine") or server.engine or "-"
-        context = profile_context(profile)
+        serving = serving_now(server, profile)
+        context = serving["context_per_request"]
         context_str = f"{context:,}" if context else "-"
+        if context and serving["context"] and context < serving["context"]:
+            context_str += f" [dim]×{serving['slots']}[/dim]"
+            split_seen = True
         support = feature_summary(profile) if profile else "-"
         status = autostart_status(server.slug) if server.controller_exists else "absent"
         # controller หาย = สั่ง start/restart ไม่ได้ — ใช้สัญลักษณ์เตือนแทนคอลัมน์แยก
@@ -4149,6 +4174,9 @@ def list_bundles() -> None:
     console.print(
         "\n[dim]สถานะ:[/dim] [green]●[/green] [dim]running ·[/dim] [yellow]◐[/yellow] [dim]loading ·[/dim] "
         "○ [dim]stopped ·[/dim] [red]⚠[/red] [dim]ไฟล์ controller หาย (start/restart ไม่ได้)[/dim]\n"
+        "[dim]context/คำขอ = token ที่คำขอเดียวใช้ได้ (prompt + คำตอบ) ตามค่าที่รันอยู่/บันทึกไว้[/dim]"
+        + ("[dim] · ×N = llama.cpp แบ่ง --ctx-size ให้ N slot เท่า ๆ กัน[/dim]" if split_seen else "")
+        + "\n"
         "[dim]คอลัมน์แรก (slug) คือชื่อที่ใช้กับทุกคำสั่ง — copy ไปใช้ได้เลย:[/dim]\n"
         f"  lmds start {first}\n"
         f"  lmds start {first} --port 8001   [dim]# flag ของ controller ส่งต่อได้เลย[/dim]\n"

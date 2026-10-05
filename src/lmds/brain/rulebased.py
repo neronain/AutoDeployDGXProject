@@ -446,7 +446,10 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         # header ของ Qwen3-VL บอก 262k แต่โมเดล embedding ใช้จริงไม่เกิน 32k (Qwen3-Embedding/Reranker: 32k)
         # ตั้งตาม header = KV ก้อนใหญ่เปล่า ๆ และ start ช้า · เพิ่มเองได้ด้วย --context ตอน start ถ้าเอกสารยาวกว่านั้นจริง
         per_sequence = min(per_sequence, 32768)
-    slots = max(1, int(getattr(fit, "concurrency", 1) or 1)) if engine is Engine.LLAMACPP else 4
+    # vLLM/SGLang: fit หาร context ด้วย concurrency ที่ขอไปแล้วเช่นกัน — ถ้าปล่อย max_num_seqs
+    # ไว้ที่ 4 ตายตัว คนขอ --concurrency 8 จะได้ context ที่หารแปด แต่เสิร์ฟพร้อมกันแค่สี่
+    concurrency = max(1, int(getattr(fit, "concurrency", 1) or 1))
+    slots = concurrency if engine is Engine.LLAMACPP else max(4, concurrency)
     context = per_sequence * slots if engine is Engine.LLAMACPP else per_sequence
     plan = DeploymentPlan(
         model_id=report.repo_id,

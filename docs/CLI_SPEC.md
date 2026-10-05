@@ -198,7 +198,7 @@ Docker ✅ | NVIDIA Container Toolkit ✅ | โปรไฟล์: rtx-single
 
 ```text
 lmds ps [--all]               # เครื่อง + โมเดลที่รัน/เคยรัน + สถานะจริง + endpoint (--all = ทุกเครื่องในทะเบียน)
-lmds list                     # bundle ทั้งหมด + สถานะ (●/◐/○/⚠) + engine/port/context/feature (รวม embedding (pooling)) + autostart
+lmds list                     # bundle ทั้งหมด + สถานะ (●/◐/○/⚠) + engine/port/context ต่อคำขอ (llama.cpp หลาย slot: `32,768 ×2`)/feature (รวม embedding (pooling)) + autostart
 lmds start <slug> [flag...]   # flag ที่ไม่ใช่ของ lmds ส่งต่อให้ controller
 lmds stop <slug> | --all
 lmds restart <slug> [flag...] # controller ถ้ามี ไม่งั้น docker restart

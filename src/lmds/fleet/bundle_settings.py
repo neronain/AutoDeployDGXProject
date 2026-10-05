@@ -204,6 +204,25 @@ def _engine_of(bundle_dir: Path) -> str:
         return ""
 
 
+def _slots_for(bundle_dir: Path, cleaned: dict[str, str]) -> int:
+    """จำนวน slot ที่ค่า context ชุดนี้จะถูกหารด้วย: ที่ส่งมาพร้อมกัน > ที่บันทึกไว้ > ที่แผนตั้ง > 1"""
+    import yaml
+
+    candidates: list[object] = [cleaned.get("slots"), read(bundle_dir).get("slots")]
+    try:
+        profile = yaml.safe_load((Path(bundle_dir) / "MODEL_PROFILE.yaml").read_text(encoding="utf-8")) or {}
+        candidates.append((profile.get("serving") or {}).get("max_num_seqs"))
+    except (OSError, ValueError, AttributeError, yaml.YAMLError):
+        pass
+    for value in candidates:
+        try:
+            if value not in (None, "") and int(value) >= 1:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 1
+
+
 def _check_context_cap(bundle_dir: Path, values: dict[str, object], cleaned: dict[str, str]) -> None:
     """context ที่ตั้งต้องไม่เกิน max_position_embeddings ของโมเดล — ไม่งั้น vLLM ปฏิเสธตอน start
     (เคสจริง 2026-09-05 msi-4/msi-5: Llama-3.3-70B ตั้ง 262144 > 131072 → worker ตายก่อน head จะเริ่ม)
@@ -213,15 +232,26 @@ def _check_context_cap(bundle_dir: Path, values: dict[str, object], cleaned: dic
     cap = native_context(bundle_dir)
     if not cap or int(cleaned["context"]) <= cap:
         return
+    if _engine_of(bundle_dir) == "llamacpp":
+        # llama.cpp: context ที่บันทึกคือ --ctx-size = ก้อนรวมของทุก slot · เพดานของโมเดลเป็นเพดาน
+        # ต่อคำขอ จึงต้องเทียบ context ÷ slots · 4 slot × 131,072 = 524,288 คือค่าที่ถูกต้องและ
+        # planner ตั้งให้เองเมื่อ deploy ด้วย --concurrency 4 — เดิม `lmds set --context` ปฏิเสธ
+        # ค่านี้ว่า "เกินเพดานที่โมเดลเทรนมา" (ตรวจ 2026-10-05)
+        slots = _slots_for(bundle_dir, cleaned)
+        if int(cleaned["context"]) // slots <= cap:
+            return
     env = " ".join([str(values.get("engine_env") or ""), read(bundle_dir).get("engine_env", "")])
     if "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1" in env.split():
         return
     if _engine_of(bundle_dir) == "llamacpp":
         # llama.cpp ไม่ปฏิเสธ แต่ทุกคำขอจะเตือน RoPE และคุณภาพหลังตำแหน่งที่เทรนมาไม่รับประกัน — ค่าที่เกินมักเป็น
         # เลขพิมพ์พลาด (1048676 vs 1048576 · audit 2026-09-08) จึงปฏิเสธพร้อมบอกเพดาน ไม่ปัดเงียบ ๆ
+        per_request = int(cleaned["context"]) // slots
+        split = f" ÷ {slots} slot = {per_request:,} ต่อคำขอ" if slots > 1 else ""
         raise SettingsError(
-            f"context {int(cleaned['context']):,} เกินเพดานที่โมเดลเทรนมา ({cap:,} tokens) — llama.cpp จะ start ได้แต่ทุกคำขอ"
-            f"เตือน RoPE และคุณภาพเกินตำแหน่งนั้นไม่รับประกัน · ตั้งได้สูงสุด {cap:,} (ถ้าตั้งใจใช้ RoPE scaling ใส่ "
+            f"context {int(cleaned['context']):,}{split} เกินเพดานที่โมเดลเทรนมา ({cap:,} tokens) — llama.cpp จะ start ได้แต่ทุกคำขอ"
+            f"เตือน RoPE และคุณภาพเกินตำแหน่งนั้นไม่รับประกัน · ตั้งได้สูงสุด {cap * slots:,}"
+            f"{f' ({cap:,} × {slots} slot)' if slots > 1 else ''} (ถ้าตั้งใจใช้ RoPE scaling ใส่ "
             f"--extra-args \"--rope-scaling yarn …\" แล้วตั้ง context ผ่าน env CTX_SIZE ตอน start แทน)")
     raise SettingsError(
         f"context {int(cleaned['context']):,} เกินเพดานของโมเดลนี้ ({cap:,} tokens = max_position_embeddings) — "

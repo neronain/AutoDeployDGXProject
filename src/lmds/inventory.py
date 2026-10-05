@@ -1168,6 +1168,47 @@ def request_usage(server, now: float | None = None) -> dict | None:
     return out
 
 
+def serving_now(server, profile) -> dict:
+    """context · slots · ต่อคำขอ ที่ใช้จริงของ bundle นี้ — ที่เดียว ใช้ทั้ง CLI และหน้าเว็บ
+
+    ลำดับความเชื่อ: ที่ process กำลังรัน > ที่ผู้ใช้บันทึกไว้ (`lmds set` → bundle.env) > ที่แผนจดไว้
+    ตอนสร้าง bundle · แต่ละค่าไล่ชั้นของตัวเอง (controller เก่าบางตัวไม่ส่ง --parallel บน argv)
+
+    `context` คือค่าที่ส่งเข้า engine: vLLM/SGLang = เพดานต่อคำขอ · llama.cpp = `--ctx-size`
+    ซึ่งเป็น **ก้อนรวม** ที่หารให้ทุก slot เท่ากัน · `context_per_request` คือสิ่งที่คำขอเดียวได้จริง
+    และเป็นตัวเลขที่ผู้ใช้ต้องเอาไปตั้งใน client / gateway
+
+    เคสจริง 2026-10-05 spark-head · gemma (llama.cpp) ตั้ง context 65,536 · slots 2:
+    `lmds list` ขึ้น 251,904 (ค่าที่แผนจดไว้ตอน deploy) ขณะที่ /props ของเซิร์ฟเวอร์ตอบ
+    32,768 ต่อคำขอ — ไม่มีตัวเลขไหนบนจอตรงกับของจริงเลย
+    """
+    from lmds.fleet import profile_context, running_context, running_slots
+
+    def _int(value) -> int | None:
+        try:
+            return int(value) if value not in (None, "") and int(value) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    saved: dict[str, str] = {}
+    controller = getattr(server, "controller", "")
+    if controller:
+        try:
+            from lmds.fleet.bundle_settings import read
+
+            saved = read(Path(controller).parent)
+        except Exception:  # noqa: BLE001 — อ่านค่าที่บันทึกไม่ได้ = ใช้ชั้นถัดไป ไม่ใช่ล้ม
+            saved = {}
+    planned = (profile or {}).get("serving") or {}
+    context = running_context(server) or _int(saved.get("context")) or profile_context(profile)
+    slots = running_slots(server) or _int(saved.get("slots")) or _int(planned.get("max_num_seqs"))
+    engine = getattr(server, "engine", "") or ((profile or {}).get("runtime") or {}).get("engine") or ""
+    per_request = context
+    if engine == "llamacpp" and context and slots and int(slots) > 1:
+        per_request = int(context) // int(slots)
+    return {"context": context, "slots": slots, "context_per_request": per_request}
+
+
 def model_payload(server, active_job: dict | None = None, memory_gb: float | None = None) -> dict:
     """`memory_gb` = ที่ตัวนี้ถือบน GPU ตอนนี้ (จาก memory_by_slug) — None = ไม่ได้รัน/จับคู่ไม่ได้"""
     from lmds.fleet.consistency import controller_header, controller_state
@@ -1186,15 +1227,12 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
     self_managed = self_managed_weights(profile) or (
         bool(commands) and "download" not in commands
     )
-    ctx_now = running_context(server) or profile_context(profile)
-    slots = running_slots(server) or ((profile or {}).get("serving") or {}).get("max_num_seqs") or None
+    serving = serving_now(server, profile)
+    ctx_now, slots = serving["context"], serving["slots"]
     argv = _argv_words(server)
     features, feature_note = effective_features(profile, server, argv)
     drift = pending_restart(server, argv)
-    if (server.engine or "") == "llamacpp" and ctx_now and slots and int(slots) > 1:
-        context_per_request = int(ctx_now) // int(slots)
-    else:
-        context_per_request = ctx_now
+    context_per_request = serving["context_per_request"]
     return {
         "slug": server.slug,
         "model_id": server.model_id or server.model,
@@ -1209,7 +1247,7 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
         "endpoint": server.endpoint,
         # ค่าที่ *กำลังรัน* ชนะค่าที่ bundle ตั้งไว้เสมอ — ผู้ใช้ตั้ง context ตอน start แล้ว
         # หน้าเว็บโชว์ค่าเก่าต่อไป ดูเหมือนช่องที่กรอกไม่ทำงาน ทั้งที่ทำงานถูกต้อง
-        "context": running_context(server) or profile_context(profile),
+        "context": ctx_now,
         "context_configured": profile_context(profile),
         # llama.cpp แบ่ง --ctx-size ให้ทุก slot เท่ากัน → คำขอเดียวได้ context ÷ slots (vLLM: max-model-len เป็นต่อคำขออยู่แล้ว)
         # เคสจริง 2026-09-07 dgx-veerasiam: ตั้ง 131,071 slots 2 แล้ว Score บอก ctx max 65,536 — ผู้ใช้เข้าใจว่าค่าไม่ติด

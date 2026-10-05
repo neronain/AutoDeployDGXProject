@@ -805,7 +805,7 @@ vLLM จอง `gpu-util × แรมทั้งเครื่อง` → ห�
 
 ```bash
 lmds ps                  # เครื่อง + ใครรันอยู่บ้าง: สถานะ ● running / ◐ loading / ○ stopped + endpoint
-lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context/ฟีเจอร์ + autostart
+lmds list                # bundle ทั้งหมด + สถานะ + engine/port/context ต่อคำขอ/ฟีเจอร์ + autostart
 lmds start <ชื่อ>         # รันโมเดลที่เคย deploy ไว้ (เช่น หลัง reboot)
 lmds stop <ชื่อ>          # หยุดตามชื่อ — ไม่ต้อง cd ไปหา .sh
 lmds stop --all          # หยุดทุกตัวที่รันอยู่
@@ -842,6 +842,38 @@ lmds stop --all                                                # ปิดทั
 
 > ระบบรู้จักเซิร์ฟเวอร์จากไฟล์ทะเบียนที่ controller เขียนเองตอน `start` (ใต้ `~/.lmds/run/`)
 > — ถ้า controller ถูกลบ/ย้าย `lmds stop` ยัง fallback หยุดตรง ๆ ให้ได้ (kill pid / docker rm)
+
+### 4.0 context ต่อคำขอ · slot · ก้อนรวม — สามตัวเลขที่ห้ามปนกัน
+
+ทุกโมเดลมีสามตัวเลข และ flag ของแต่ละ engine ไม่ได้หมายถึงตัวเดียวกัน:
+
+| | flag ที่ตั้ง | คือ | คำขอเดียวได้ |
+|---|---|---|---|
+| llama.cpp | `--ctx-size N` · `--parallel S` | **ก้อนรวม** หารเท่ากันให้ทุก slot | `N ÷ S` |
+| vLLM | `--max-model-len N` · `--max-num-seqs S` | เพดานต่อคำขอ (ก้อนรวมเป็นงบหน่วยความจำแยก: `--kv-cache-memory`) | `N` |
+| SGLang | `--context-length N` | เพดานต่อคำขอ | `N` |
+
+- **context ต่อคำขอ** — prompt + คำตอบของคำขอเดียว · คือตัวเลขที่เอาไปตั้งใน client และ gateway
+  (LiteGate: `limits.context_tokens`) · ห้ามเกินเพดานของโมเดล (native / `max_position_embeddings`)
+- **slot** — จำนวนคำขอที่เสิร์ฟพร้อมกัน
+- **ก้อนรวม (KV pool)** — token ที่เซิร์ฟเวอร์เก็บได้พร้อมกันของทุกคำขอ · ตัวนี้คือตัวที่กิน RAM
+
+`lmds set <slug> --context` รับค่าในหน่วยของ flag: กับ llama.cpp คือ **ก้อนรวม** — อยากได้ 131,072
+ต่อคำขอ 4 slot ต้องตั้ง `--context 524288 --slots 4` · เพดานของโมเดลถูกเทียบกับค่า **ต่อ slot**
+(`lmds fit` · `lmds set` · controller ตอน start ใช้กติกาเดียวกัน)
+
+**ทุกหน้าจอแสดงค่าที่คำขอเดียวได้** ตามลำดับความเชื่อ: ที่กำลังรัน > ที่บันทึกไว้ด้วย `lmds set` >
+ที่แผนจดไว้ตอน deploy:
+
+- `lmds list` คอลัมน์ `context/คำขอ` — llama.cpp หลาย slot ขึ้น `32,768 ×2` (= ก้อนรวม 65,536)
+- หน้าเว็บ: การ์ดโมเดลและการ์ด node มีป้าย `32,768/request` ข้าง ๆ ก้อนรวม · ตาราง Fleet models
+  คอลัมน์ "context ต่อคำขอ"
+- `lmds fit` แถว "KV pool (ctx ทั้งก้อน ÷ N slot = … ต่อ slot)"
+- ถามเซิร์ฟเวอร์ตรง ๆ: llama.cpp `GET /props` → `default_generation_settings.n_ctx` (ต่อ slot) และ
+  `total_slots` · vLLM `GET /v1/models` → `max_model_len`
+
+เคสจริง 2026-10-05 spark-head: gemma (llama.cpp) บันทึก context 65,536 · slots 2 · `lmds list`
+รุ่นก่อนหน้าขึ้น 251,904 (ค่าที่แผนจดไว้ตอน deploy) ขณะที่ `/props` ตอบ 32,768 ต่อคำขอ
 
 ### 4.1 อ่านสถานะใน `lmds list`
 

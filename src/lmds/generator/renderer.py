@@ -93,7 +93,12 @@ def _is_qwen_family(report, plan) -> bool:
 
 
 def _client_input(plan: DeploymentPlan) -> int:
-    return max(plan.serving.context - plan.serving.max_output_tokens - 2048, 0)
+    # งบ input ของ "คำขอเดียว" · llama.cpp: serving.context เป็นก้อนรวม หารด้วยจำนวน slot ก่อน
+    # (ก้อนรวม 262,144 กับ 4 slot เคยขึ้น README ว่า input 251,904 ขณะที่ client-config บอก 55,296)
+    per_request = plan.serving.context
+    if plan.runtime.engine.value == "llamacpp":
+        per_request //= max(1, int(plan.serving.max_num_seqs or 1))
+    return max(per_request - plan.serving.max_output_tokens - 2048, 0)
 
 
 # score template ของ Qwen3-Reranker (ตาม model card · สำเนาจาก vLLM examples/pooling/score/template/qwen3_reranker.jinja

@@ -1193,6 +1193,7 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "engine": "engine",
     "port": "พอร์ต",
     "context": "context",
+    "context / request": "context ต่อคำขอ",
     "Capabilities": "ความสามารถ",
     "No data yet": "ยังไม่มีข้อมูล",
     "{n} bundle": "{n} bundle",
@@ -2112,6 +2113,17 @@ function servedLine(m) {
   </div>`;
 }
 
+// llama.cpp แบ่ง --ctx-size ให้ทุก slot เท่ากัน — ตัวเลขที่คำขอเดียวได้จริงคือ context ÷ slots
+// ทุกที่ที่โชว์ context ต้องบอกค่านี้ด้วย ไม่งั้นผู้ใช้เอาก้อนรวมไปตั้งเป็นเพดานต่อคำขอใน client/gateway
+// (เดิมมีเฉพาะการ์ดของ node · การ์ดเครื่องนี้กับตารางทั้งฟลีตโชว์ก้อนรวมเฉย ๆ)
+function ctxSplit(m) {
+  return !!(m && m.context && m.context_per_request && m.context_per_request < m.context);
+}
+function perRequestTag(m) {
+  if (!ctxSplit(m)) return "";
+  return ` <span class="tag" title="llama.cpp splits --ctx-size ${Number(m.context).toLocaleString()} evenly across ${m.slots} slots — each request gets ${Number(m.context_per_request).toLocaleString()} tokens. Want the full amount per request? set context = per-request × slots, or slots 1">${Number(m.context_per_request).toLocaleString()}/request</span>`;
+}
+
 function modelTags(m) {
   const out = [];
   const ico = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -2173,7 +2185,7 @@ function rowMarkup(m) {
   if (!m.controller_exists) tags.push(`<span class="tag bad">${esc(T("controller missing"))}</span>`);
   else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">${esc(T("not downloaded"))}</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
-    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</div>
+    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}${perRequestTag(m)}</div>
     ${servedLine(m)}`;
 }
 
@@ -2332,8 +2344,10 @@ function manageMarkup(m) {
     <div class="field">
       <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
       <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px"
-        ${m.native_context ? `max="${m.native_context}" title="Model maximum ${Number(m.native_context).toLocaleString()} tokens (max_position_embeddings) — above that vLLM refuses to start"` : ""}>
-      ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}</span>` : ""}
+        ${m.engine === "llamacpp"
+          ? `title="llama.cpp: this is the pool (--ctx-size) shared by all slots — one request gets context ÷ slots${m.native_context ? `. Model maximum ${Number(m.native_context).toLocaleString()} tokens per request` : ""}"`
+          : (m.native_context ? `max="${m.native_context}" title="Model maximum ${Number(m.native_context).toLocaleString()} tokens (max_position_embeddings) — above that vLLM refuses to start"` : "")}>
+      ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}${m.engine === "llamacpp" ? "/request" : ""}</span>` : ""}
       <label>slots</label><input type="number" class="o-slots" value="${o.slots || m.max_num_seqs || 4}" style="flex:none;width:90px"
         title="Concurrent requests. llama.cpp splits the context evenly across slots.">
       <label>bind</label>
@@ -4621,10 +4635,12 @@ function nodeModelsMarkup(name, data) {
             <label style="flex:none">context</label>
             <input type="number" class="n-ctx" value="${esc(o.context ?? "")}"
                    placeholder="${esc(m.context_configured ?? m.context ?? "")}" style="flex:none;width:130px"
-                   ${m.native_context ? `max="${esc(m.native_context)}"` : ""}
-                   title="Tokens per request (input + output) — check the memory line below to see if it fits${
-                     m.native_context ? `. Model maximum ${Number(m.native_context).toLocaleString()} (max_position_embeddings) — above that vLLM refuses to start` : ""}">
-            ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}</span>` : ""}
+                   ${m.native_context && m.engine !== "llamacpp" ? `max="${esc(m.native_context)}"` : ""}
+                   title="${m.engine === "llamacpp"
+                     ? `llama.cpp: this is the pool (--ctx-size) shared by all slots — one request gets context ÷ slots${m.native_context ? `. Model maximum ${Number(m.native_context).toLocaleString()} tokens per request` : ""}`
+                     : `Tokens per request (input + output) — check the memory line below to see if it fits${
+                     m.native_context ? `. Model maximum ${Number(m.native_context).toLocaleString()} (max_position_embeddings) — above that vLLM refuses to start` : ""}`}">
+            ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}${m.engine === "llamacpp" ? "/request" : ""}</span>` : ""}
             <label style="flex:none">slots</label>
             <input type="number" class="n-slots" value="${esc(o.slots ?? "")}"
                    placeholder="${esc(m.max_num_seqs ?? 4)}" style="flex:none;width:80px"
@@ -7919,10 +7935,10 @@ function renderAllModels() {
       <td class="mono" title="${esc(m.slug)}">${esc(m.slug.length > 40 ? m.slug.slice(0, 40) + "…" : m.slug)}</td>
       <td>${esc(where)}${node ? `<span class="dim"> · ${esc(siteLabel(siteOfNode(node)))}</span>` : ""}</td>
       <td><span class="tag">${esc(m.engine === "llamacpp" ? "llama.cpp" : m.engine === "vllm" ? "vLLM" : m.engine || "?")}</span></td>
-      <td class="mono">${m.port ?? ""}</td><td class="r">${m.context ? Number(m.context).toLocaleString() : "—"}</td>
+      <td class="mono">${m.port ?? ""}</td><td class="r"${ctxSplit(m) ? ` title="llama.cpp: pool ${Number(m.context).toLocaleString()} ÷ ${m.slots} slots"` : ""}>${m.context ? Number(m.context_per_request || m.context).toLocaleString() + (ctxSplit(m) ? ` <span class="dim">×${m.slots}</span>` : "") : "—"}</td>
       <td>${esc(m.features || "")}</td></tr>`).join("");
   el.innerHTML = `<div class="vhead"><h2>${esc(T("Fleet models"))}</h2><span class="tag">${esc(T("{n} bundle", { n: all.length }))}</span><span class="tag ok">${esc(T("{n} running", { n: all.filter(x => x.m.running).length }))}</span></div>
-    <div class="card"><div style="overflow-x:auto"><table class="ov-table"><tr><th>${esc(T("Status"))}</th><th>${esc(T("bundle"))}</th><th>${esc(T("Machine"))}</th><th>${esc(T("engine"))}</th><th>${esc(T("port"))}</th><th class="r">${esc(T("context"))}</th><th>${esc(T("Capabilities"))}</th></tr>${rows || `<tr><td colspan="7" class="empty">${esc(T("No data yet"))}</td></tr>`}</table></div></div>`;
+    <div class="card"><div style="overflow-x:auto"><table class="ov-table"><tr><th>${esc(T("Status"))}</th><th>${esc(T("bundle"))}</th><th>${esc(T("Machine"))}</th><th>${esc(T("engine"))}</th><th>${esc(T("port"))}</th><th class="r">${esc(T("context / request"))}</th><th>${esc(T("Capabilities"))}</th></tr>${rows || `<tr><td colspan="7" class="empty">${esc(T("No data yet"))}</td></tr>`}</table></div></div>`;
   el.querySelectorAll("tr.orow").forEach(tr => tr.onclick = () => {
     const node = tr.dataset.node, slug = tr.dataset.slug;
     if (node) { navigateNode(node); setTimeout(() => jumpToNode(node, slug), 50); }

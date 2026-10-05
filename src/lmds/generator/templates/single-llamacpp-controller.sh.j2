@@ -207,8 +207,16 @@ validate_numbers() {
   [[ "$CTX_SIZE" =~ ^[0-9]+$ ]] && (( CTX_SIZE > 0 )) ||
     die "invalid context: $CTX_SIZE"
   # llama.cpp ยอมให้เกิน n_ctx_train (ยืด RoPE ให้) แต่คุณภาพตกเงียบ ๆ — เตือนพอ ไม่ปฏิเสธ
-  if (( NATIVE_CONTEXT > 0 && CTX_SIZE > NATIVE_CONTEXT )); then
-    echo "WARN: context ${CTX_SIZE} เกินที่โมเดลเทรนมา (${NATIVE_CONTEXT}) — llama.cpp ยืด RoPE ให้ แต่คำตอบช่วงท้ายอาจเพี้ยน" >&2
+  # --ctx-size เป็นก้อนรวมที่หารให้ทุก slot · เพดานของโมเดลเป็นเพดานต่อคำขอ จึงเทียบค่า "ต่อ slot"
+  # (4 slot × 131072 = 524288 ถูกต้อง ไม่ต้องเตือน — เดิมเตือนทุกครั้งที่ start)
+  local _slots="${PARALLEL_SEQS:-1}"
+  [[ "$_slots" =~ ^[1-9][0-9]*$ ]] || _slots=1
+  if (( NATIVE_CONTEXT > 0 && CTX_SIZE / _slots > NATIVE_CONTEXT )); then
+    if (( _slots > 1 )); then
+      echo "WARN: context ต่อคำขอ $(( CTX_SIZE / _slots )) (= ${CTX_SIZE} ÷ ${_slots} slot) เกินที่โมเดลเทรนมา (${NATIVE_CONTEXT}) — llama.cpp ยืด RoPE ให้ แต่คำตอบช่วงท้ายอาจเพี้ยน" >&2
+    else
+      echo "WARN: context ${CTX_SIZE} เกินที่โมเดลเทรนมา (${NATIVE_CONTEXT}) — llama.cpp ยืด RoPE ให้ แต่คำตอบช่วงท้ายอาจเพี้ยน" >&2
+    fi
   fi
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
     die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
@@ -295,7 +303,11 @@ network_info() {
   else
     echo "Model:     ${SERVED_MODEL_NAME} (${MODEL_FILE})"
   fi
-  echo "Context:   ${CTX_SIZE}"
+  if [[ "${PARALLEL_SEQS:-1}" =~ ^[0-9]+$ ]] && (( ${PARALLEL_SEQS:-1} > 1 )); then
+    echo "Context:   $(( CTX_SIZE / PARALLEL_SEQS )) ต่อคำขอ (pool ${CTX_SIZE} ÷ ${PARALLEL_SEQS} slot)"
+  else
+    echo "Context:   ${CTX_SIZE}"
+  fi
   echo "Runtime:   ${RUNTIME_MODE}"
 }
 
@@ -1301,7 +1313,7 @@ explain_crash() {
         echo "  แก้: lmds set {{ slug }} --image <image llama.cpp ใหม่กว่า>  แล้ว  $0 start" >&2
       fi ;;
     *"out of memory"*|*"failed to allocate"*|*"cudaMalloc failed"*|*"Cannot allocate memory"*)
-      echo "  หน่วยความจำไม่พอสำหรับ context ${CTX_SIZE} × ${PARALLEL_SEQS} slots — ลด context หรือหยุดโมเดลอื่นบนเครื่อง" >&2
+      echo "  หน่วยความจำไม่พอสำหรับ context pool ${CTX_SIZE} (แบ่งให้ ${PARALLEL_SEQS} slot) — ลด context หรือหยุดโมเดลอื่นบนเครื่อง" >&2
       echo "  แก้ถาวร: lmds set {{ slug }} --context <น้อยลง>   ลองทันที: $0 restart --context 32768   (หรือ N_GPU_LAYERS=<น้อยลง>)" >&2 ;;
     *check_tensor_dims*|*"not found"*|*"wrong shape"*|*"wrong number of tensors"*)
       echo "  ไฟล์โมเดล/draft ไม่เข้ากันหรือไม่ครบ — ตรวจ: $0 verify-files{% if mtp_basename or mtp_embedded %} · ถ้าเปิด MTP อยู่ลอง $0 restart --no-mtp{% endif %}" >&2 ;;
@@ -1889,7 +1901,8 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
   --interface NAME      Pick the advertised IP from this interface (e.g. eth0) instead of auto-detect
 
  Memory & limits
-  --context N           Max context length in tokens              [default: ${CTX_SIZE}]
+  --context N           Context POOL in tokens (--ctx-size), split evenly across slots:
+                        one request gets N / slots                [default: ${CTX_SIZE}]
   --extra-args "..."    Extra engine flags appended verbatim (space-separated; write JSON without spaces) [default: ${EXTRA_SERVE_ARGS}]
                         Lower this first if the server runs out of memory.
   --client-input N|auto Input token budget written into client-config   [default: ${CLIENT_INPUT}]
