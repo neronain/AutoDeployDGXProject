@@ -966,36 +966,175 @@ def _bounded(args, **kwargs):
         return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="")
 
 
+# controller พูดอะไรไว้ก่อนล้ม — เก็บท้าย ๆ ไว้แนบกับ error ของเรา
+_TAIL_LINES = 8
+# หลังสั่งหยุด รอให้ process/container หายจริงได้นานแค่ไหนก่อนยอมรับว่า "ยังไม่หยุด"
+# SIGTERM เป็นแค่คำขอ และ llama-server ที่ถือ weight หลายสิบ GB คืนหน่วยความจำไม่ทันในเสี้ยววินาที
+STOP_CONFIRM_SECONDS = 10.0
+
+
+def _controller_checked(info: ServerInfo, command: str, extra: list[str] | None = None) -> None:
+    """รัน controller แล้ว **โยน FleetError เมื่อมันจบด้วย exit ≠ 0** พร้อมบรรทัดท้าย ๆ ที่มันพูดเอง
+
+    `_run_controller` คืน exit code ให้ผู้เรียกตัดสินเอง · stop/restart เคยเรียกมันแล้วทิ้งค่านั้น —
+    เคสจริงจาก audit 2026-10-06: controller พิมพ์ error ของ docker
+    (`permission denied … unix:///var/run/docker.sock`) แล้วจบด้วย exit 1 ส่วน LMDS พิมพ์ต่อว่า
+    `restart qwen แล้ว (controller)` และจบด้วย exit 0 · หน้าเว็บได้ `ok: true` · watchdog จดว่า
+    restart สำเร็จแล้วพัก settle ให้โมเดลที่ไม่เคยถูก restart
+
+    ผลลัพธ์ของ controller ยังไหลออกจอสด ๆ เหมือนเดิม (stdout → stdout · stderr → stderr) —
+    restart โมเดลใหญ่ใช้เวลาเป็นสิบนาที เก็บเงียบไว้แล้วค่อยพิมพ์ตอนจบคือให้ผู้ใช้นั่งมองจอว่าง ·
+    ที่เพิ่มคือสำเนาบรรทัดท้าย ๆ ไว้แนบกับ error เพราะหน้าเว็บกับ watchdog ไม่มีจอให้ดู
+    """
+    import sys
+    import threading
+    from collections import deque
+
+    if not info.controller_exists:
+        raise FleetError(
+            f"ไม่พบ controller ของ {info.slug} ({info.controller or 'ไม่ระบุ'}) — "
+            "bundle อาจถูกย้าย/ลบ (ใช้ lmds stop จะ fallback หยุดตรง ๆ ให้)"
+        )
+    tail: deque[str] = deque(maxlen=_TAIL_LINES)
+    pending = {"out": "", "err": ""}
+
+    def pump(pipe, sink, key: str) -> None:
+        # อ่านเป็นก้อน ไม่ใช่ทีละบรรทัด — progress ของ docker pull เลื่อนด้วย \r ไม่ขึ้นบรรทัดใหม่
+        while True:
+            chunk = os.read(pipe.fileno(), 8192)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", "replace")
+            try:
+                sink.write(text)
+                sink.flush()
+            except (OSError, ValueError):
+                pass                      # จอปิดไปแล้ว — ยังต้องอ่านต่อ ไม่งั้น controller ค้างที่ท่อเต็ม
+            lines = (pending[key] + text).replace("\r", "\n").split("\n")
+            pending[key] = lines.pop()
+            tail.extend(line.strip() for line in lines if line.strip())
+
+    try:
+        proc = subprocess.Popen([info.controller, command, *(extra or [])],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise FleetError(f"เรียก controller ของ {info.slug} ไม่ได้: {exc}") from exc
+    readers = [threading.Thread(target=pump, args=(proc.stdout, sys.stdout, "out"), daemon=True),
+               threading.Thread(target=pump, args=(proc.stderr, sys.stderr, "err"), daemon=True)]
+    for reader in readers:
+        reader.start()
+    try:
+        code = proc.wait()
+    finally:
+        for reader in readers:
+            reader.join(timeout=5)
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    if code == 0:
+        return
+    tail.extend(rest.strip() for rest in pending.values() if rest.strip())
+    said = "\n".join(f"    {line[:300]}" for line in tail) or "    (controller ไม่ได้พิมพ์อะไรออกมา)"
+    raise FleetError(
+        f"{command} {info.slug} ไม่สำเร็จ — controller จบด้วย exit {code} · สิ่งที่มันพูดก่อนจบ:\n{said}")
+
+
+def _server_pid(info: ServerInfo) -> int:
+    if info.pid:
+        return int(info.pid)
+    try:
+        return int(Path(info.pid_file).read_text(encoding="utf-8").strip()) if info.pid_file else 0
+    except (OSError, ValueError):
+        return 0
+
+
+def _still_running(info: ServerInfo, pid: int = 0) -> bool:
+    """ถามของจริงอีกครั้งว่าโมเดลตัวนี้ยังรันอยู่ไหม — pid ที่จำไว้ก่อนหยุด หรือ container ของมัน"""
+    if info.mode == "native":
+        pid = pid or _server_pid(info)
+        if not pid:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True                   # EPERM = มีอยู่แต่ไม่ใช่ของเรา — ยังรันอยู่
+        return True
+    return _container_running(info.container)
+
+
+def _confirm_stopped(info: ServerInfo, pid: int, how: str) -> None:
+    """ไม่บอกว่า "หยุดแล้ว" จนกว่าจะถามซ้ำแล้วเห็นว่าหยุดจริง — exit 0 ไม่ใช่หลักฐาน
+
+    audit 2026-10-06: `lmds stop demo` พิมพ์ "หยุด demo แล้ว (controller)" ทั้งที่ process ยังอยู่ ·
+    บนเครื่อง unified-memory คนสั่ง stop เพื่อเอาหน่วยความจำไปให้โมเดลถัดไป — คำว่า "หยุดแล้ว"
+    ที่ไม่จริงจบที่ start ตัวถัดไปแล้ว OOM โดยไม่มีอะไรบอกว่าตัวเก่ายังกินที่อยู่
+    """
+    import time
+
+    deadline = time.monotonic() + STOP_CONFIRM_SECONDS
+    while _still_running(info, pid):
+        if time.monotonic() >= deadline:
+            what = f"pid {pid}" if info.mode == "native" else f"container {info.container}"
+            raise FleetError(
+                f"{info.slug} ยังไม่หยุด — {how} แต่ {what} ยังรันอยู่\n"
+                f"ดูว่ามันติดอะไร: lmds logs {info.slug}")
+        time.sleep(0.2)
+
+
 def stop_server(info: ServerInfo) -> str:
-    """หยุดผ่าน controller; ถ้า controller หาย/ไม่ลงทะเบียน ใช้ fallback (kill pid / docker rm)"""
+    """หยุดผ่าน controller; ถ้า controller หาย/ไม่ลงทะเบียน ใช้ fallback (kill pid / docker rm)
+
+    คืนวิธีที่ใช้ **เมื่อหยุดได้จริงเท่านั้น** — controller ล้ม · docker ปฏิเสธ · หรือสั่งแล้วของยังรันอยู่
+    ล้วนเป็น `FleetError` (ดู `_controller_checked` กับ `_confirm_stopped`)
+    """
+    pid = _server_pid(info) if info.mode == "native" else 0
     if info.controller_exists:
-        _run_controller(info, "stop")
+        _controller_checked(info, "stop")
+        _confirm_stopped(info, pid, "controller stop จบด้วย exit 0")
         return "controller"
     if info.mode == "native":
-        if info.pid:
-            os.kill(info.pid, 15)
-        elif info.pid_file and _pid_alive(info.pid_file):
-            pid = int(Path(info.pid_file).read_text(encoding="utf-8").strip())
-            os.kill(pid, 15)
+        if pid:
+            try:
+                os.kill(pid, 15)
+            except ProcessLookupError:
+                pass                      # ตายไปก่อนแล้ว — คือสิ่งที่ต้องการอยู่แล้ว
+            except OSError as exc:
+                raise FleetError(f"หยุด {info.slug} ไม่ได้ — ส่ง SIGTERM ให้ pid {pid} ไม่ผ่าน: {exc}") from exc
+            _confirm_stopped(info, pid, "ส่ง SIGTERM")
+        if info.pid_file:
             Path(info.pid_file).unlink(missing_ok=True)
         return "kill"
-    if info.external:
-        # ของคนอื่น — หยุดอย่างเดียว ห้ามลบ container ทิ้ง
-        _bounded(["docker", "stop", info.container], capture_output=True)
-        return "docker-stop"
-    _bounded(["docker", "rm", "-f", info.container], capture_output=True)
-    return "docker-rm"
+    # ของคนอื่น — หยุดอย่างเดียว ห้ามลบ container ทิ้ง
+    argv = ["docker", "stop", info.container] if info.external else ["docker", "rm", "-f", info.container]
+    try:
+        proc = _bounded(argv, capture_output=True, text=True)
+    except OSError as exc:                # ไม่มีคำสั่ง docker บนเครื่องนี้
+        raise FleetError(f"หยุด {info.slug} ไม่ได้ — เรียก docker ไม่ได้: {exc}") from exc
+    if proc.returncode != 0:
+        why = (str(getattr(proc, "stderr", "") or "").strip().splitlines() or
+               ["หมดเวลารอ" if proc.returncode == 124 else f"exit {proc.returncode}"])[-1]
+        raise FleetError(f"หยุด {info.slug} ไม่สำเร็จ — `{' '.join(argv)}` ล้ม: {why[:300]}")
+    _confirm_stopped(info, 0, " ".join(argv[:-1]))
+    return "docker-stop" if info.external else "docker-rm"
 
 
 def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
-    """restart — controller ถ้ามี, ไม่งั้น docker restart (ใช้ได้กับ container ภายนอกด้วย)"""
+    """restart — controller ถ้ามี, ไม่งั้น docker restart (ใช้ได้กับ container ภายนอกด้วย)
+
+    controller ที่จบด้วย exit ≠ 0 คือ restart ที่ล้ม — โยน `FleetError` พร้อมสิ่งที่มันพูด ไม่คืน "controller"
+    """
     if info.controller_exists:
-        _run_controller(info, "restart", options)
+        _controller_checked(info, "restart", options)
         return "controller"
     if info.mode == "docker" and info.container:
-        proc = _bounded(["docker", "restart", info.container], capture_output=True)
+        proc = _bounded(["docker", "restart", info.container], capture_output=True, text=True)
         if proc.returncode != 0:
-            raise FleetError(f"docker restart {info.container} ล้มเหลว")
+            why = (str(getattr(proc, "stderr", "") or "").strip().splitlines() or [""])[-1]
+            raise FleetError(f"docker restart {info.container} ล้มเหลว" + (f": {why[:300]}" if why else ""))
         return "docker-restart"
     raise FleetError(
         f"restart {info.slug} ไม่ได้ — ไม่มี controller และไม่ใช่ container "
@@ -1496,6 +1635,8 @@ def _remove_on_worker(worker_items: list[RemovalItem]) -> list[str]:
 def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
     """หยุด → ยกเลิก autostart → ลบไฟล์บน head → ลบของบน worker ทุกตัว (stacked) — คืนรายการสิ่งที่ทำจริง
 
+    โยน `FleetError` **ก่อนลบอะไรทั้งสิ้น** เมื่อโมเดลรันอยู่แล้วหยุดไม่ได้
+
     ลำดับสำคัญ: ต้องหยุด/ยกเลิก autostart ก่อนลบ ไม่งั้นเหลือ container ค้าง
     หรือ systemd unit ที่ชี้ไปไฟล์ที่ไม่มีแล้ว · worker ทีหลัง head — ต้องอ่าน cluster.env จาก bundle
     ก่อน bundle หาย และ controller `stop` (หยุด container ทุก node) ยังต้องมีสคริปต์ให้เรียก
@@ -1507,7 +1648,14 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
         try:
             done.append(f"หยุดเซิร์ฟเวอร์ ({stop_server(info)})")
         except (FleetError, OSError) as exc:
-            done.append(f"หยุดไม่สำเร็จ: {exc}")
+            # หยุดไม่ได้ = จบตรงนี้ ยังไม่ลบอะไรทั้งสิ้น · เดิมจดเป็นบรรทัดหนึ่งในรายงานแล้วเดินต่อไปลบ
+            # bundle กับ weight ของโมเดลที่ยังรันอยู่ (audit 2026-10-06: หน้าเว็บตอบ 200 พร้อม
+            # "หยุดเซิร์ฟเวอร์ (controller)" ทั้งที่ controller จบด้วย exit 1) — process ที่ mmap ไฟล์ไว้
+            # รันต่อได้จนกว่าจะ restart แล้วไม่มีวันขึ้นอีก และไม่มี controller เหลือให้สั่งหยุด
+            raise FleetError(
+                f"ลบ {info.slug} ไม่ได้ — หยุดโมเดลไม่สำเร็จ มันยังรันอยู่ จึงยังไม่ได้ลบอะไรเลย "
+                f"(bundle · weight · ทะเบียน อยู่ครบ)\n{exc}\n"
+                f"หยุดให้ได้ก่อน (lmds stop {info.slug}) แล้วค่อยสั่งลบอีกครั้ง") from exc
     if have_systemctl() and autostart_status(info.slug) in {"enabled", "disabled"}:
         try:
             disable_autostart(info)

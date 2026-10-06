@@ -4334,12 +4334,21 @@ def stop(
         if not running:
             console.print("ไม่มีโมเดลรันอยู่")
             return
+        failed: list[str] = []
         for server in running:
             try:
                 method = stop_server(server)
                 console.print(f"หยุด {server.slug} แล้ว ({method})")
             except FleetError as exc:
+                failed.append(server.slug)
                 err_console.print(f"[red]{exc}[/red]")
+        if failed:
+            # ตัวไหนไม่หยุดต้องอยู่บรรทัดสุดท้ายและออกด้วย exit ≠ 0 — เดิม error ของแต่ละตัวเลื่อนหาย
+            # ไปกับผลของตัวถัดไป แล้วคำสั่งจบด้วย exit 0 (audit 2026-10-06) · สคริปต์ที่สั่ง
+            # `lmds stop --all && lmds start <ตัวใหม่>` จึงเดินต่อทั้งที่หน่วยความจำยังไม่ว่าง
+            err_console.print(f"[red]หยุดไม่ได้ {len(failed)} จาก {len(running)} ตัว — ยังรันอยู่: "
+                              f"{', '.join(failed)}[/red]")
+            raise typer.Exit(code=1)
         return
 
     if not slug:
@@ -4632,7 +4641,7 @@ def remove(
 
     `--dry-run` ใช้ดูรายการก่อนตัดสินใจ (และเป็นตัวที่หน้าเว็บเรียกก่อนถามยืนยัน)
     """
-    from lmds.fleet import find, removal_failed, removal_plan, remove_server
+    from lmds.fleet import FleetError, find, removal_failed, removal_plan, remove_server
 
     server = find(slug)
     if server is None:
@@ -4675,7 +4684,12 @@ def remove(
         console.print("ยกเลิก")
         raise typer.Exit(code=1)
 
-    lines = remove_server(server, include_weights=not keep_weights)
+    try:
+        lines = remove_server(server, include_weights=not keep_weights)
+    except FleetError as exc:
+        # หยุดโมเดลไม่ได้ = ยังไม่ได้ลบอะไร — ไม่ใช่เรื่องสิทธิ์ไฟล์ จึงไม่พาไปที่ `sudo rm -rf` ข้างล่าง
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
     for line in lines:
         console.print(f"  {line}")
 

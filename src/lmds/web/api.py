@@ -1552,7 +1552,7 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/remove", dependencies=guarded)
     def remove(slug: str, body: dict | None = None) -> dict:
-        from lmds.fleet import find, remove_server
+        from lmds.fleet import FleetError, find, remove_server
 
         server = find(slug)
         if server is None:
@@ -1562,6 +1562,9 @@ def create_app(token: str = "") -> FastAPI:
 
         try:
             lines = remove_server(server, include_weights=not keep)
+        except FleetError as exc:
+            # หยุดโมเดลไม่ได้ → ยังไม่ได้ลบอะไร · 409 พร้อมเหตุผล หน้าเว็บโชว์ detail แล้วคงรายการไว้
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         finally:
             # หลังลบเสร็จเท่านั้น — ลบไปแล้วบางส่วนก็ยังต้องทิ้งแคช ไม่งั้นหน้าเว็บโชว์ของที่ไม่มีอยู่
             state.STORE.invalidate_local()

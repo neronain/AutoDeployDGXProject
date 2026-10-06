@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from lmds.fleet import manager
 
 
@@ -55,7 +57,12 @@ def test_a_caller_that_chose_its_own_limit_keeps_it(monkeypatch):
 
 
 def test_stopping_a_wedged_container_still_returns(monkeypatch):
-    """stop_server ต้องคืนค่าเสมอ — มันคือขั้นแรกของการลบ ถ้าค้างตรงนี้ก็ไม่มีอะไรเดินต่อ"""
+    """stop_server ต้องจบเสมอ ไม่แขวนคำขอ — แต่ "จบ" ไม่ได้แปลว่า "หยุดได้"
+
+    เดิมเทสนี้ยืนยันว่ามันคืนค่า truthy ซึ่งคือการรายงานว่าหยุดแล้วทั้งที่ `docker rm` หมดเวลา ·
+    container ที่ค้างยังถือไฟล์อยู่ และ remove เดินต่อไปลบของข้างใต้ (audit 2026-10-06) ·
+    ที่ถูกคือจบเร็วด้วย error ที่บอกว่าหมดเวลา
+    """
     def hang(args, **kwargs):
         raise subprocess.TimeoutExpired(args, 1)
 
@@ -63,4 +70,6 @@ def test_stopping_a_wedged_container_still_returns(monkeypatch):
     info = type("S", (), {"pid": None, "controller_exists": False, "mode": "docker",
                           "container": "stuck", "slug": "x", "controller": "",
                           "external": False, "running": True})()
-    assert manager.stop_server(info)
+    with pytest.raises(manager.FleetError) as caught:
+        manager.stop_server(info)
+    assert "หมดเวลา" in str(caught.value)

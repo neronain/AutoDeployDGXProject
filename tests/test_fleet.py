@@ -41,6 +41,24 @@ def make_meta(root: Path, slug: str, mode: str = "native", pid: int | None = Non
     return run_dir
 
 
+def spare_model() -> int:
+    """process จริงที่ทำตัวเป็นโมเดล — ไม่ใช่ลูกของ pytest (ลูกที่ถูกฆ่าจะค้างเป็น zombie ซึ่ง `kill -0`
+    ยังตอบว่าอยู่) · `stop_server` ถามซ้ำว่าหยุดจริงไหมก่อนรายงาน (audit 2026-10-06) จึงต้องมีของ
+    ที่ตายได้จริงให้มันหยุด — pid ของ pytest เองใช้ไม่ได้อีกแล้ว"""
+    import subprocess
+
+    out = subprocess.run(["bash", "-c", "( exec sleep 300 ) >/dev/null 2>&1 & echo $!"],
+                         capture_output=True, text=True, check=True)
+    return int(out.stdout.strip())
+
+
+# controller ที่หยุดโมเดลจริง: ฆ่า pid ใน pid file ข้าง server.meta แล้วรอจนตาย
+STOPPING_CONTROLLER = """#!/bin/bash
+pid="$(cat "{pid_file}")"; kill "$pid" 2>/dev/null
+while kill -0 "$pid" 2>/dev/null; do sleep 0.05; done
+"""
+
+
 def test_discover_native_running_and_stopped(tmp_path, monkeypatch):
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     make_meta(tmp_path, "model-a", pid=os.getpid(), port=8000)   # pid ของ pytest เอง = alive
@@ -70,6 +88,8 @@ def test_stop_native_fallback_kills_pid(tmp_path, monkeypatch):
 
     def fake_kill(pid, sig):
         if sig == 0:
+            if killed.get("pid") == pid:
+                raise ProcessLookupError(pid)      # SIGTERM ปลอมได้ผล — หลังจากนั้นมัน "ตายแล้ว"
             return real_kill(pid, 0)
         killed["pid"], killed["sig"] = pid, sig
 
@@ -83,13 +103,16 @@ def test_stop_native_fallback_kills_pid(tmp_path, monkeypatch):
 def test_stop_via_controller_when_exists(tmp_path, monkeypatch):
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     controller = tmp_path / "ctl.sh"
-    controller.write_text("#!/bin/bash\necho stopped > " + str(tmp_path / "stopped.flag") + "\n")
+    controller.write_text(
+        STOPPING_CONTROLLER.format(pid_file=tmp_path / "model-a" / "server.pid")
+        + "echo stopped > " + str(tmp_path / "stopped.flag") + "\n")
     controller.chmod(0o755)
-    make_meta(tmp_path, "model-a", pid=os.getpid(), controller=str(controller))
+    make_meta(tmp_path, "model-a", pid=spare_model(), controller=str(controller))
 
     method = stop_server(find("model-a"))
     assert method == "controller"
     assert (tmp_path / "stopped.flag").exists()
+    assert find("model-a").running is False
 
 
 def test_cli_ps_lists_servers(tmp_path, monkeypatch, isolated_config):
@@ -120,9 +143,9 @@ def test_cli_stop_requires_slug_or_all(tmp_path, monkeypatch, isolated_config):
 def test_cli_stop_all(tmp_path, monkeypatch, isolated_config):
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     controller = tmp_path / "ctl.sh"
-    controller.write_text("#!/bin/bash\nexit 0\n")
+    controller.write_text(STOPPING_CONTROLLER.format(pid_file=tmp_path / "model-a" / "server.pid"))
     controller.chmod(0o755)
-    make_meta(tmp_path, "model-a", pid=os.getpid(), controller=str(controller))
+    make_meta(tmp_path, "model-a", pid=spare_model(), controller=str(controller))
     make_meta(tmp_path, "model-b", pid=999999999)  # ไม่รัน — ต้องถูกข้าม
 
     result = runner.invoke(app, ["stop", "--all"])
@@ -675,18 +698,16 @@ def test_restart_passes_unknown_flags_to_the_controller(tmp_path, monkeypatch, i
     """
     monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path))
     controller = tmp_path / "ctl.sh"
-    controller.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    # controller จริงที่จด argv ของตัวเอง — ไม่ใช่ stub ของฟังก์ชันภายใน (restart ไม่ผ่าน
+    # `_run_controller` แล้ว: มันต้องอ่าน exit code กับสิ่งที่ controller พูด — audit 2026-10-06)
+    controller.write_text(f'#!/bin/bash\necho "$@" > "{tmp_path}/argv.txt"\nexit 0\n', encoding="utf-8")
     controller.chmod(0o755)
     make_meta(tmp_path, "m", controller=str(controller))
-
-    seen = {}
-    monkeypatch.setattr("lmds.fleet.manager._run_controller",
-                        lambda info, command, extra=None: seen.update(cmd=command, extra=extra) or 0)
     monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
 
     result = runner.invoke(app, ["restart", "m", "--port", "8001"])
     assert result.exit_code == 0, result.output
-    assert seen == {"cmd": "restart", "extra": ["--port", "8001"]}
+    assert (tmp_path / "argv.txt").read_text(encoding="utf-8").split() == ["restart", "--port", "8001"]
 
 
 def test_logs_explains_a_model_that_never_ran(tmp_path, monkeypatch, isolated_config):
