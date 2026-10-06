@@ -66,10 +66,14 @@ Options:
   --output DIR            โฟลเดอร์ output (default: ./bundles)
   --concurrency N         จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (default 1) · llama.cpp: slot = N, ctx-size = N × ต่อ slot
   --engine vllm|sglang    เลือกรันไทม์เอง — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM) · GGUF บังคับ llama.cpp เสมอ
-                          · checkpoint รูปแบบ MLX (ลงท้าย .safetensors เหมือนกัน) ไม่มี engine ไหนโหลดได้ — ถูกปฏิเสธก่อน plan ไม่ว่าเลือกอะไร
+                          · repo ที่มีทั้ง checkpoint safetensors และ GGUF: ไม่เลือกไฟล์ GGUF = safetensors (vLLM/SGLang) ·
+                            `--engine llamacpp` โดยไม่บอกไฟล์ = ถูกปฏิเสธพร้อมรายชื่อไฟล์ (ใส่ --gguf)
+                          · repo ที่ไม่มีอะไรให้ engine เสิร์ฟถูกปฏิเสธก่อน plan ไม่ว่าเลือกอะไร — ดู "สิ่งที่ถูกปฏิเสธก่อน plan"
   --task generate|embed|rerank   ชนิดงาน — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ · architectures ใน config.json · pooling_type ใน GGUF) ใส่เมื่อเดาผิด · LLM ตั้งเองไม่ได้
   --gguf FILE|QUANT       repo GGUF หลาย variant: ชื่อไฟล์เต็ม / ชื่อ quant (Q8_K_XL ไม่สนตัวพิมพ์) / ส่วนของชื่อที่ตรงไฟล์เดียว
                           — จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข (script/hub) · ตรงหลายไฟล์ = ปฏิเสธพร้อมรายการ
+                          · ใช้กับ repo ที่มีทั้ง safetensors และ GGUF ได้: เลือกไฟล์ = แผน llama.cpp ด้วยไฟล์นั้น
+                            (เท่ากับใส่ลิงก์ …/blob/…/x.gguf ตรง ๆ) · split GGUF ที่ repo มีไม่ครบทุก part ถูกปฏิเสธพร้อมเลข part ที่ขาด
   --name SLUG             ตั้งชื่อ bundle เอง (a-z A-Z 0-9 . _ - ไม่เกิน 64) — ว่าง = จากชื่อ repo · ชื่อที่เป็นของ repo *อื่น* อยู่แล้ว
                           (โฟลเดอร์ปลายทางมี MODEL_PROFILE.yaml ที่ model.id ต่างกัน หรือเครื่องนี้ลงทะเบียนชื่อนั้นไว้ให้ bundle ของ
                           repo อื่นที่ --output อื่น) = ปฏิเสธ exit 1 ก่อนวางแผน บอกว่าใครเป็นเจ้าของ + `lmds remove <ชื่อ>` ·
@@ -98,13 +102,35 @@ stderr แล้ว exit `3` ก่อนเรียก LLM (`--json`: stdout �
 
 1. **HF token (optional)** — เจอ 401/403 ตอน inspect: มี token ใน credential store / `HF_TOKEN` → ใช้เลย · ไม่มี → prompt
    `ใส่ Hugging Face token (Enter เพื่อข้าม)` · `--yes`/ไม่มี tty → fail exit 4 พร้อมบอกวิธีตั้ง · analyze บนหน้าเว็บบอกวิธีใส่ตรง ๆ
+   · สาเหตุอ่านจาก `x-error-code` ของ Hub: `GatedRepo` = "เป็น gated" · 401 ที่ไม่มี code = **"ไม่พบ repo นี้ หรือเป็น repo
+   private"** (Hub ตอบเหมือนกันทั้งสองกรณีเมื่อไม่มี token — exit 4 เหมือนเดิม แต่ไม่อ้างว่า gated) · `RevisionNotFound` =
+   exit 1 "ไม่พบ revision …" · repo ที่ Hub ย้ายชื่อแล้ว: แผนยังใช้ชื่อที่ให้มา พร้อมคำเตือนว่าชื่อนั้นทำงานผ่าน redirect
+   และชื่อปัจจุบันคืออะไร
 2. **ขั้นยืนยันแผน** — ตารางสรุป (model/revision, runtime+image digest, topology, context, budget, feature, คำเตือน, facts `unverified`)
    ให้ ยืนยัน / แก้ context / ยกเลิก · flag นอก allowlist ถามทีละตัว default = ไม่อนุมัติ
-3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก/รูปแบบ weight ที่ไม่รองรับ (MLX — `inspect` ยังคืน `0` และบอกว่าไม่รองรับ) · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network ·
-   `6` bundle ผ่าน gates แต่ `--smoke` รันจริงไม่ผ่าน (คนละอาการคนละทางแก้กับ `2` ซึ่งแปลว่าสคริปต์ผิดตั้งแต่ยังไม่รัน) ·
+3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก/repo ที่ไม่มีอะไรให้เสิร์ฟ (MLX · EXL2/EXL3 · adapter · ONNX … ดูตารางข้างล่าง — `inspect` ยังคืน `0` และบอกว่าไม่รองรับ) · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network ·
+   `6` bundle ผ่าน gates แต่ `--smoke` รันจริงไม่ผ่าน (คนละอาการคนละทางแก้กับ `2` ซึ่งแปลว่าสคริปต์ผิดตั้งแต่ยังไม่รัน)
    ค่า option ที่ผิด (`--concurrency` < 1 · `--task`/`--engine`/`--target` ที่ไม่รู้จัก · `--name` ผิดรูป) = `1` พร้อมข้อความแดง
    ตรวจตั้งแต่ตอน parse ก่อน inspect — ไม่ใช่ `2` (เดิม `--task bogus` ออก `2` ชนกับช่องของ gates และ `--concurrency 0` เป็น
    ZeroDivisionError) · `2` ที่มาจาก typer เอง (option ที่ไม่มีอยู่ · ตัวเลขที่พิมพ์เป็นตัวอักษร) ยังเป็น usage error ของ click ตามเดิม
+   **สิ่งที่ถูกปฏิเสธก่อน plan** (`ModelReport.unsupported_format` → fit `unsupported` / engine `none` → `plan`/`generate`/`deploy`
+   exit 1 → หน้าเว็บ `unsupported`) — ทุกข้อบอกสาเหตุ หลักฐานที่ใช้ ขนาดที่จะโหลดฟรี และของที่ใช้แทนได้:
+
+   | ค่า | รู้ได้จาก | ชี้ไปที่ |
+   |---|---|---|
+   | `mlx` | library_name `mlx`/`mlx-*` · บล็อก quantization แบบ MLX · tag `mlx` + ชื่อ repo | GGUF / NVFP4 / ต้นฉบับ |
+   | `exl2` `exl3` | `quant_method` exl2/exl3 · library exllamav2/v3 · สองอย่างจาก tag/ชื่อ repo/`bpw`/library trellis | GGUF / NVFP4 / ต้นฉบับ |
+   | `adapter` | `adapter_config.json` / `adapter_model.safetensors` / library peft และไม่มี checkpoint ที่ราก | base model จาก card |
+   | `diffusers` | `model_index.json` ที่ราก · library_name diffusers | — |
+   | `no-weights` | ไม่มี `.safetensors`/`.gguf` ของตัวโมเดล (บอกว่ามีอะไรแทน: ONNX · RKLLM · MNN · `.bin` …) | repo safetensors/GGUF ของโมเดลเดียวกัน |
+   | `no-root-checkpoint` `no-config` | `.safetensors` อยู่แต่ในโฟลเดอร์ย่อย · ไม่มี `config.json` ที่ราก (รูปแบบ mistral ที่มี `params.json` ไม่ปฏิเสธ) | repo ที่มี checkpoint ที่ราก |
+   | `non-llm-gguf` | `general.architecture` ของไฟล์ที่เลือก: flux · sd3 · qwen_image · hidream · aura · lumina2 · wan · hyvid · ltxv · whisper · asr · qwen3-tts(-tokenizer) | — |
+   | `incomplete-gguf` | split GGUF ที่ขาด part (เทียบกับ `-of-NNNNN` ในชื่อไฟล์) | quant อื่นที่ครบชุด |
+   | `no-serving-mode` | task = `other`: pipeline_tag สร้างภาพ/วิดีโอ · เสียง/อนุกรมเวลา/vision/encoder ที่ weight ไม่ใช่ causal LM · `is_encoder_decoder` · หัว classifier | **ทับได้ด้วย `--task`** (เป็นการจัดประเภท ไม่ใช่โครงสร้างไฟล์) |
+
+   repo ที่มี GGUF อยู่ด้วยไม่ถูกปฏิเสธเพราะ `.safetensors` ข้าง ๆ ใช้ไม่ได้ — เป็น repo GGUF (เหตุผลอยู่ในคำเตือนของแผน) ·
+   bitsandbytes ไม่ปฏิเสธ (เตือน) · แผน chat ที่ context ต่อคำขอ < 2,561 tokens (template overhead 2,048 + คำตอบ 512 + คำถาม)
+   ถูกปฏิเสธด้วยเหตุผลนั้น — `client-config` ของ bundle จะปฏิเสธตัวเองอยู่ดี
 4. **Topology มาจาก target** — `dgx-spark-stacked[-4]` → stacked (controller multi-node) · `rtx-*-dual` → multi-gpu · นอกนั้น single ·
    harden บังคับกลับเสมอ และตัด flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`
    `--distributed-executor-backend`) ที่หลุดมาจาก LLM · stacked ต้องใช้ vLLM + safetensors — GGUF / SGLang / embedding

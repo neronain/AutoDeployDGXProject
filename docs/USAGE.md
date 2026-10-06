@@ -762,6 +762,21 @@ deploy เดี่ยว (stop จะหยุดทุก node ให้ · �
 > ไม่มี tty จึงเคย exit 1 "ต้องระบุไฟล์" · ใส่ `--gguf Q8_0` (ไม่สนตัวพิมพ์) หรือชื่อไฟล์เต็ม · ชื่อที่ตรงหลายไฟล์
 > (`--gguf q8` เจอทั้ง Q8_0 และ Q8_K_XL) จะถูกปฏิเสธพร้อมรายการให้เลือกใหม่ ไม่เดาให้ · ใช้กับ `generate` ได้เหมือนกัน
 
+> **repo ที่มีทั้ง `.safetensors` และ `.gguf`** — LMDS บอกในผล inspect และในคำเตือนของแผนว่าใช้ฝั่งไหน อีกฝั่งคืออะไร:
+> ไม่เลือกไฟล์ GGUF = ใช้ checkpoint safetensors ที่ราก repo กับ vLLM/SGLang · ใส่ `--gguf <quant>` หรือวางลิงก์ไฟล์
+> `.gguf` ตรง ๆ (หน้าเว็บ: วางลิงก์ไฟล์ในช่องโมเดล) = llama.cpp ด้วยไฟล์นั้น · `.safetensors` ที่เสิร์ฟไม่ได้ (อยู่ในโฟลเดอร์ย่อย ·
+> ไม่มี `config.json` ที่ราก · เป็น MLX/EXL) ไม่ทำให้ repo GGUF กลายเป็นงานของ vLLM — repo นั้นเป็น repo GGUF ตามปกติ
+>
+> **ขนาด weight ที่รายงาน** คือ checkpoint ที่ engine โหลดจริง (ชุดที่ `model.safetensors.index.json` ที่ราก repo ชี้) ไม่ใช่
+> ผลรวมของทุกไฟล์ใน repo — สำเนาที่สอง (`original/` · `consolidated*.safetensors` · `.bin`) ถูกรายงานแยกว่า "ไฟล์ weight
+> อื่น … ไม่นับ" พร้อมจำนวนและขนาด
+>
+> **repo ที่ deploy ไม่ได้ถูกปฏิเสธตั้งแต่ inspect/plan** (ก่อนดาวน์โหลด) พร้อมสาเหตุ หลักฐาน และของที่ใช้แทน: weight รูปแบบ
+> MLX / EXL2 / EXL3 · adapter (LoRA) ล้วน · ONNX/RKLLM/MNN/`.bin` ล้วน · pipeline ของ diffusers · GGUF ที่ไม่ใช่ LLM
+> (FLUX · Wan · Whisper …) · split GGUF ไม่ครบชุด · งานที่ไม่ใช่ chat/embedding/rerank (ข้อสุดท้ายทับได้ด้วย `--task`
+> ถ้าจัดประเภทผิด) — ตารางเต็มอยู่ใน [CLI_SPEC.md](CLI_SPEC.md) หัวข้อ "สิ่งที่ถูกปฏิเสธก่อน plan" · โมเดลที่ไม่รู้ native context
+> (config/tokenizer ไม่ระบุ) ได้ context 16,384 พร้อมหมายเหตุว่าเป็นค่าเดา — ตั้งเองได้ด้วย `--context` ตามที่ model card บอก
+
 > **`--concurrency` มีผลกับ memory โดยตรง** — KV cache โตตามจำนวน request ที่รันพร้อมกัน
 > ใส่ `--concurrency 4` แปลว่า "กันหน่วยความจำเผื่อ 4 คนใช้พร้อมกัน" ผลคือ context ที่แนะนำจะลดลง
 > · กับ llama.cpp แผนจะตั้ง slot = N และ `--ctx-size` = N × context ต่อ slot (llama-server แบ่ง pool ให้ทุก slot เท่า ๆ กัน)
