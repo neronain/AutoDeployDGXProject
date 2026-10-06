@@ -1362,6 +1362,12 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "working": "กำลังทำงาน",
+    "Could not read what would be removed": "อ่านรายการที่จะถูกลบไม่ได้",
+    "Deletes {gb} GB — the weights are kept · cannot be undone": "ลบ {gb} GB — เก็บ weight ไว้ · ย้อนกลับไม่ได้",
+    "Deletes {gb} GB, weights included — cannot be undone": "ลบ {gb} GB รวม weight ด้วย — ย้อนกลับไม่ได้",
+    "{slug} is still starting or stopping — buttons on this machine's models wait until that finishes":
+      "{slug} ยัง start/stop ไม่เสร็จ — ปุ่มของโมเดลบนเครื่องนี้รอจนกว่าจะเสร็จ",
     "Could not add the machine": "เพิ่มเครื่องไม่ได้",
     "Could not read the cluster state — {why}": "อ่านสถานะคลัสเตอร์ไม่ได้ — {why}",
     "The hub could not report its own state — {why}": "hub รายงานสถานะของตัวเองไม่ได้ — {why}",
@@ -4093,7 +4099,12 @@ document.addEventListener("click", async e => {
   }
 
   const btn = e.target.closest("button[data-act]");
-  if (!btn || busy) return;
+  if (!btn) return;
+  if (busy) {
+    // เดิม return เฉย ๆ — กดอะไรก็ไม่มีอะไรเกิด ไม่มีอะไรบอก เป็นนาทีระหว่างโมเดลโหลด · ยังรอเหมือนเดิม แต่บอกเหตุผล
+    showError(T("{slug} is still starting or stopping — buttons on this machine's models wait until that finishes", { slug: busy }), "warn");
+    return;
+  }
   const { act, slug } = btn.dataset;
   const model = models_by_slug.get(slug) || { slug };
 
@@ -4230,16 +4241,34 @@ document.addEventListener("click", async e => {
 
   if (act === "removeask") {
     const box = document.getElementById("rm-" + slug);
-    const d = await (await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`)).json();
-    const size = b => (b / 1024 ** 3).toFixed(1);
+    const planned = await api(`/api/models/${encodeURIComponent(slug)}/removal-plan`);
+    // คำตอบที่ล้มไม่ใช่แผนการลบ — เดิม {detail} ถูกวาดเป็น "Deletes NaN GB" พร้อมปุ่มยืนยัน
+    if (!planned.ok) { box.innerHTML = `<div class="warn-line">${esc(await failureText(planned, T("Could not read what would be removed")))}</div>`; return; }
+    const d = await planned.json();
+    const size = b => ((numOrNull(b) || 0) / 1024 ** 3).toFixed(1);
+    // แผนถูกขอแบบ "ลบทั้งหมด" (รวม weights) แต่ช่อง Keep the weights ติ๊กไว้ตั้งแต่ต้น — หัวกล่องเคยบอกยอดที่รวม
+    // weights (เป็นสิบ ๆ GB) ทั้งที่กดยืนยันแล้วจะลบแค่ bundle ไม่กี่ MB · ยอดต้องตามช่องติ๊ก ณ ตอนนั้น
+    const removalTotal = keep => (d.items || []).filter(i => !(keep && i.is_weights)).reduce((sum, i) => sum + (numOrNull(i.bytes) || 0), 0);
+    const wireTotal = () => {
+      const keepBox = document.getElementById("keep-" + slug), total = box.querySelector("[data-removal-total]");
+      if (!keepBox || !total) return;
+      const paint = () => {
+        total.textContent = keepBox.checked
+          ? T("Deletes {gb} GB — the weights are kept · cannot be undone", { gb: size(removalTotal(true)) })
+          : T("Deletes {gb} GB, weights included — cannot be undone", { gb: size(removalTotal(false)) });
+        box.querySelectorAll("[data-weights-item]").forEach(el => { el.style.textDecoration = keepBox.checked ? "line-through" : ""; });
+      };
+      keepBox.addEventListener("change", paint);
+      paint();
+    };
     box.innerHTML = `<div style="border:1px solid var(--bad);border-radius:7px;padding:12px;margin-top:10px">
-      <div class="warn-line" style="color:var(--bad)">Deletes ${size(d.total_bytes)} GB — cannot be undone</div>
+      <div class="warn-line" style="color:var(--bad)" data-removal-total>${esc(T("Deletes {gb} GB — the weights are kept · cannot be undone", { gb: size(removalTotal(true)) }))}</div>
       <!-- ค่าที่หายไปหนึ่งฟิลด์ไม่ควรทำให้ทั้งหน้าหยุดทำงาน · ก่อนหน้านี้ .map() ยิงตรง
              บน property ของ response · พอเซิร์ฟเวอร์ตอบไม่ครบ (จบงานแล้วรูปแบบเปลี่ยน,
              จังหวะที่ของถูกลบไปแล้ว) จะได้ TypeError หลุดออกไปถึง unhandledrejection
              แล้วเด้ง "คำสั่งไม่สำเร็จ — Cannot read properties of undefined (reading 'map')"
              ซึ่งไม่ได้บอกอะไรผู้ใช้เลย และปุ่มค้างอยู่อย่างนั้น -->
-            ${(d.items || []).filter(i => !i.kept).map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
+            ${(d.items || []).filter(i => !i.kept).map(i => `<div class="dim mono"${i.is_weights ? " data-weights-item" : ""}>${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
       <!-- weight ที่ bundle อื่นยังใช้ (โมเดลเดียวกัน deploy สองใบ / --also-stacked) ไม่ถูกลบ — บอกว่าใครถืออยู่
              ไม่งั้นผู้ใช้เห็นยอด "Deletes" เล็กกว่าที่คิดโดยไม่รู้เหตุผล (audit 2026-10-06) -->
             ${(d.items || []).filter(i => i.kept).map(i => `<div class="mono" style="color:var(--warn)">${esc(T("Kept — still used by {who}", { who: (i.shared_with || []).join(", ") }))}: ${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
@@ -4248,6 +4277,7 @@ document.addEventListener("click", async e => {
         <button data-act="removego" data-slug="${esc(slug)}" style="border-color:var(--bad);color:var(--bad)">Confirm removal</button>
         <button data-act="removecancel" data-slug="${esc(slug)}">Cancel</button>
       </div></div>`;
+    wireTotal();
     return;
   }
   if (act === "removecancel") { document.getElementById("rm-" + slug).innerHTML = ""; return; }
@@ -4908,6 +4938,10 @@ function nodeModelsMarkup(name, data) {
       const rival = models.find(x => x.slug !== m.slug && x.running && x.port === m.port);
       // งานค้างจากก่อนรีเฟรชหน้า — ตามต่อเองโดยไม่ต้องให้ผู้ใช้กดซ้ำ
       if (m.job && m.job.running) followNodeJob(name, m.slug, m.job.id);
+      // /api/events ส่ง snapshot ของแคชตรง ๆ — งานของ node ถูกแปะเฉพาะใน /inventory · frame ถัดไปหลังเริ่มงานจึงไม่มี
+      // m.job แล้วป้าย "repair…" กลายเป็นปุ่ม download/start ที่กดได้ทั้งที่งานยังรัน (กดแล้วได้ 409) ·
+      // งานที่หน้านี้กำลังตามอยู่ (ทั้งที่เพิ่งกดเอง และที่ /inventory บอกมาตอนโหลด) จึงใช้แทน
+      const job = m.job && m.job.running ? m.job : followedNodeJob(name, m.slug);
       const state = m.running ? (m.healthy ? "on" : "load") : "";
       const label = T(m.running ? (m.healthy ? "running" : "loading")
         : (m.self_managed_weights ? "stopped · self-managed weights"
@@ -4945,8 +4979,8 @@ function nodeModelsMarkup(name, data) {
               ${esc(T("port clash with {slug}", { slug: rival.slug }))}</span>` : ""}</span>
           <span class="mono muted">:${num(m.port)}</span>
           <span class="muted">${label}</span>
-          ${m.job && m.job.running
-            ? `<span class="tag warn">${esc(m.job.command)}…</span>`
+          ${job
+            ? `<span class="tag warn" data-node-job>${esc(job.command || T("working"))}…</span>`
             : (act ? nbtn(act, act, act === "download" ? "Download the weights and verify the files (lmds repair)" : "") : "")}
           <button data-nact="menu" data-node="${esc(name)}" data-slug="${esc(m.slug)}"
                   class="${open ? "on" : ""}" title="${esc(T("Settings + all commands"))}">⋯</button>
@@ -6371,7 +6405,7 @@ const CNW_JOB_STEPS = [
 const CNW_TOPOLOGY_TEXT = {
   "direct-2": "2 machines — one QSFP cable straight between them, no switch (either port on each side).",
   "ring-3": "3 machines — a ring: both QSFP ports on every machine are in use, each cable joins two neighbours.",
-  "switch": "4 machines — through a switch, one cable per machine. Set the switch ports to 200G by hand: auto-negotiation often settles at 50G.",
+  "switch": "4 or more machines — through a switch, one cable per machine. Set the switch ports to 200G by hand: auto-negotiation often settles at 50G.",
   "unknown": "No supported topology detected yet — check the cables below.",
 };
 const cnwBox = document.getElementById("cnw");
@@ -6569,7 +6603,7 @@ function cnwStepDevices() {
       <td class="mono">${esc(c.cluster_ip || "—")}</td><td>${esc(c.site || "—")}</td>
       <td class="dim">${esc(c.why)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="empty">No machines registered — add the Sparks first (Add machine)</div>`}
-    <div class="dim" style="margin-top:8px">${n} selected${n && (n < 2 || n > 4) ? ` — need 2 to 4` : ""} · order matters: the first machine becomes the head</div>`;
+    <div class="dim" style="margin-top:8px">${n} selected${n && (n < 2 || n > 8) ? ` — need 2 to 8` : ""} · order matters: the first machine becomes the head</div>`;
 }
 
 function cnwFindingLine(f) {
@@ -6590,7 +6624,7 @@ function cnwStepCabling() {
       <span class="dim">${esc(topo.reason)}</span>
       <span class="grow"></span><button data-cnw="recheck">Re-check</button></div>
     <div class="dim" style="margin-bottom:10px">${esc(cnwTopologyText())}
-      <br>Rules: 2 machines → 1 cable · 3 machines → ring over both ports · 4 machines → switch (ports fixed at 200G).
+      <br>Rules: 2 machines → 1 cable · 3 machines → ring over both ports · 4–8 machines → switch (ports fixed at 200G).
       Selected: ${n} → needs ${cnwRequiredPorts(n)} cabled port${cnwRequiredPorts(n) > 1 ? "s" : ""} per machine.</div>
     ${[...cnw.selected].map(name => `<div class="cnw-node"><div class="name" style="margin-bottom:4px">${esc(name)}</div>${cnwPortsMarkup(name)}</div>`).join("")}
     ${findings.length ? `<div class="cnw-h">Network doctor</div>${findings.map(cnwFindingLine).join("")}` : ""}
@@ -6799,7 +6833,9 @@ function cnwInspectMarkup() {
 
 function cnwCanNext() {
   const n = cnw.selected.size;
-  if (cnw.step === "devices") return n >= 2 && n <= 4;
+  // 2–8 = ช่วงที่ nodes/netplan.py วางแผนได้จริง (fit/targets.py: ต่อตรง/วงแหวนถึง 3 · ผ่านสวิตช์ถึง MAX_SWITCH_NODES = 8)
+  // เดิมปิดที่ 4 ขณะที่ข้อความบนจอและปุ่มบอก 2–8 — เลือก 5 เครื่องแล้วปุ่ม Next ดับโดยไม่มีเหตุผล
+  if (cnw.step === "devices") return n >= 2 && n <= 8;
   if (cnw.step === "cabling") return !cnw.busy && !!cnw.inspect && !cnwMissingCables().length;
   if (cnw.step === "plan") { const v = cnwPlanView(cnw.plan); return !cnw.busy && !!v && v.ok; }
   if (cnw.step === "apply") return !!cnw.result && !!cnw.result.applied;
@@ -7554,6 +7590,12 @@ function closeNodeForm(node) {
 // งานยาวบนเครื่องอื่น (download/start/remove) — สตรีมผลให้เห็นความคืบหน้า
 // เดิมรอใน request เดียวแล้วเงียบเป็นสิบนาที ผู้ใช้แยกไม่ออกว่าคืบหน้าอยู่หรือค้างไปแล้ว
 const watchingNodes = new Map();   // "<node>/<slug>" -> job id
+// คำสั่งของงานที่กำลังตามอยู่ — ให้แถวโมเดลยังบอกว่า "repair…" ได้เมื่อ frame ของ SSE ไม่มี m.job ติดมา
+const nodeJobCommand = new Map();  // "<node>/<slug>" -> command
+function followedNodeJob(node, slug) {
+  const key = node + "/" + slug;
+  return watchingNodes.has(key) ? { id: watchingNodes.get(key), command: nodeJobCommand.get(key) || "", running: true } : null;
+}
 
 // นาฬิกาที่เดินอยู่คือสิ่งเดียวที่แยก "เงียบเพราะกำลังทำงาน" ออกจาก "เงียบเพราะตายไปแล้ว"
 // บางขั้นไม่มีอะไรให้พิมพ์จริง ๆ (verify shard 50 GB) — ถ้าแผงนิ่งสนิทโดยไม่มีตัวเลขเดิน
@@ -7581,6 +7623,7 @@ function followNodeJob(node, slug, jobId) {
     const d = await pollJob(jobId, {
       update(d) {
         last = d;
+        if (d.command) nodeJobCommand.set(key, d.command);
         const since = elapsedText(d.elapsed);
         showNodeOutput(node, `${d.command} · ${slug}${d.running ? ` — running… (${since})` : ""}`,
                        d.output || `Started — no output yet (${since})\n`
@@ -7606,6 +7649,7 @@ function followNodeJob(node, slug, jobId) {
       },
     });
     watchingNodes.delete(key);
+    nodeJobCommand.delete(key);
     jobFollowers.delete(jobId);
     liveBootDone(key);
     if (!d) return null;

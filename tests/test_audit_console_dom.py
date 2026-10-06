@@ -898,6 +898,113 @@ def test_a_failed_response_is_never_read_as_data(tmp_path):
     assert "openai" in llm["before"] and llm["after"] == llm["before"] and "config.yaml อ่านไม่ได้" in llm["title"]
 
 
+# ───────────────────── ข้อ 10 — ข้อสงสัยของผู้ตรวจ (ยืนยันใน harness แล้วว่าเป็นจริงทั้งสี่) ─────────────────────
+
+def test_a_running_node_job_keeps_its_tag_on_live_frames_instead_of_a_clickable_button(tmp_path):
+    """/api/events ส่ง snapshot ของแคชตรง ๆ — งานของ node ถูกแปะเฉพาะใน /inventory · หลังกด download frame ถัดไปจึง
+    ไม่มี m.job แล้วป้าย "repair…" กลายเป็นปุ่ม download ที่กดได้ทั้งที่งานยังรัน"""
+    (running, done) = run_scenario(tmp_path, MODEL + """H.fastTimers(50);
+        const fx = { nodes: [{ name: "spark-01", site: "TKC", models: [model({ downloaded: false })] }] }; H.fx = fx;
+        H.job = { id: "j1", command: "repair", running: true, elapsed: 3, output: "downloading 1/9\\n", exit_code: null };
+        H.routes = [
+          ["/api/nodes/spark-01/models/qwen/repair", () => ({ job: H.job })],
+          ["/api/jobs/j1", () => H.job],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        location.hash = "#/nodes"; await H.tick(30);
+        const row = nodeRows.get("spark-01");
+        const view = () => ({ tag: (row.body.querySelector("[data-node-job]") || { textContent: "" }).textContent,
+          button: !!row.body.querySelector('button[data-nact="model:download"]') });
+        row.body.querySelector('button[data-nact="model:download"]').click(); await H.tick(10); await H.sleep(60);
+        for (let i = 0; i < 3; i++) { H.sse(H.snapshot(H.fx)); await H.tick(3); }      // frame ของ SSE ไม่มี job ติดมา
+        console.log(JSON.stringify(view()));
+        H.fx.nodes[0].models[0].downloaded = true;
+        H.job = { ...H.job, running: false, exit_code: 0, output: "done\\n" };
+        await H.sleep(120); await H.tick(10); H.sse(H.snapshot(H.fx)); await H.tick(3);
+        console.log(JSON.stringify({ ...view(), start: !!row.body.querySelector('button[data-nact="model:start"]') }));
+        H.errors.length = 0;
+    """)
+    assert running == {"tag": "repair…", "button": False}
+    assert done == {"tag": "", "button": False, "start": True}, "งานจบแล้วปุ่มกลับมาตามสถานะจริง"
+
+
+def test_the_local_removal_box_counts_what_will_really_be_deleted(tmp_path):
+    """แผนถูกขอแบบรวม weights แต่ช่อง "Keep the weights" ติ๊กไว้ตั้งแต่ต้น — หัวกล่องเคยขึ้น "Deletes 40.0 GB"
+    สำหรับการลบที่จะเอาออกแค่ bundle 0.1 GB"""
+    (kept, all_of_it, broken) = run_scenario(tmp_path, MODEL + """
+        const fx = { nodes: [], localModels: [model({})] }; H.fx = fx; H.planBroken = false;
+        const GB = 1024 ** 3;
+        H.routes = [
+          ["/api/models/qwen/removal-plan", () => H.planBroken ? { status: 404, body: { detail: "ไม่รู้จัก qwen" } } : { slug: "qwen", total_bytes: 40.1 * GB, items: [
+              { label: "bundle", path: "/bundles/qwen", bytes: 0.1 * GB, is_weights: false },
+              { label: "weights", path: "/models/qwen", bytes: 40 * GB, is_weights: true }] }],
+          [/\\/fit$/, () => ({ status: 409, body: { detail: "n/a" } })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        location.hash = "#/hub"; await H.tick(30);
+        document.querySelector('button[data-act="opts"][data-slug="qwen"]').click(); await H.tick(10);
+        const ask = async () => { document.querySelector('button[data-act="removeask"][data-slug="qwen"]').click(); await H.tick(10); };
+        const head = () => (document.querySelector("#rm-qwen .warn-line") || { textContent: "" }).textContent.replace(/\\s+/g, " ").trim();
+        await ask();
+        const keep = document.getElementById("keep-qwen");
+        console.log(JSON.stringify({ keepTicked: keep.checked, head: head() }));
+        keep.checked = false; keep.dispatchEvent(new Event("change", { bubbles: true }));
+        console.log(JSON.stringify({ head: head() }));
+        H.planBroken = true; await ask();
+        console.log(JSON.stringify({ head: head(), confirm: !!document.querySelector('#rm-qwen button[data-act="removego"]') }));
+        H.errors.length = 0;
+    """)
+    assert kept == {"keepTicked": True, "head": "Deletes 0.1 GB — the weights are kept · cannot be undone"}
+    assert all_of_it == {"head": "Deletes 40.1 GB, weights included — cannot be undone"}
+    assert "ไม่รู้จัก qwen" in broken["head"] and broken["confirm"] is False, "คำตอบที่ล้มไม่ใช่แผนการลบ — ไม่มีปุ่มยืนยัน"
+
+
+def test_buttons_ignored_during_a_local_start_say_why(tmp_path):
+    (out,) = run_scenario(tmp_path, MODEL + """
+        const fx = { nodes: [], host: { role: { control_plane: false, engines: ["llamacpp"] } },
+                     localModels: [model({ slug: "big" }), model({ slug: "other", port: 8081, running: true, healthy: true })] }; H.fx = fx;
+        H.release = null;
+        H.routes = [
+          ["/api/models/big/start", () => new Promise(resolve => { H.release = () => resolve({ ok: true }); })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        location.hash = "#/hub"; await H.tick(30);
+        document.querySelector('button[data-act="start"][data-slug="big"]').click(); await H.tick(10);
+        document.querySelector('button[data-act="tests"][data-slug="other"]').click(); await H.tick(5);
+        const during = { toast: document.getElementById("toast").textContent, panel: document.getElementById("panel-other").textContent.trim() };
+        H.release(); await H.tick(20);
+        document.querySelector('button[data-act="tests"][data-slug="other"]').click(); await H.tick(5);
+        console.log(JSON.stringify({ during, afterPanelOpen: document.getElementById("panel-other").textContent.includes("test-text") || document.getElementById("panel-other").textContent.includes("status") }));
+        H.errors.length = 0;
+    """)
+    assert out["during"]["panel"] == "" and "big is still starting or stopping" in out["during"]["toast"]
+    assert out["afterPanelOpen"] is True
+
+
+def test_the_cluster_wizard_lets_through_the_machine_counts_it_says_it_supports(tmp_path):
+    """ข้อความบนจอและปุ่มบอก "2–8 DGX Sparks" (backend วางแผนได้ถึง MAX_SWITCH_NODES = 8) แต่ Next ดับเมื่อเลือกเกิน 4"""
+    out = run_scenario(tmp_path, """
+        const spark = n => ({ name: n, site: "HQ", gpu: { name: "NVIDIA GB10", vram_gb: 128 } });
+        const fx = { nodes: [1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => spark("spark-" + i)) }; H.fx = fx;
+        H.routes = H.defaultRoutes(fx);
+    """, """
+        location.hash = "#/nodes"; await H.tick(40);
+        for (const n of [1, 2, 4, 5, 8, 9]) {
+          openClusterNetWizard(H.fx.nodes.slice(0, n).map(x => x.name));
+          const next = document.querySelector('#cnw button[data-cnw="next"]');
+          console.log(JSON.stringify({ n, selected: cnw.selected.size, next: !next.disabled,
+            says: document.getElementById("cnw-body").textContent.replace(/\\s+/g, " ").trim().match(/\\d+ selected[^·]*/)[0].trim() }));
+        }
+        H.errors.length = 0;
+    """)
+    assert [(o["n"], o["selected"], o["next"]) for o in out] == [(1, 1, False), (2, 2, True), (4, 4, True), (5, 5, True), (8, 8, True), (9, 9, False)]
+    says = {o["n"]: o["says"] for o in out}
+    assert says[5] == "5 selected" and says[9] == "9 selected — need 2 to 8" and says[1] == "1 selected — need 2 to 8"
+
+
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
     (out,) = run_scenario(tmp_path, """
         const fx = { nodes: [] }; H.fx = fx;
