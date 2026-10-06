@@ -78,12 +78,18 @@ def test_only_nvfp4_quantization_triggers_the_nvfp4_note(quant, expected):
 
 
 def test_cli_plan_for_gpt_oss_on_an_rtx_no_longer_prints_other_families_advice(isolated_config, monkeypatch):
-    fake = RealHub(GPT_OSS_120B)
+    # ตัว 20B ใส่ rtx-4090 ได้ จึงได้แผนจริงออกมาให้ดูคำเตือน · ตัว 120B ไม่ fit กับการ์ดนี้ และ `plan` ของโมเดลที่ไม่ fit
+    # ไม่ออกแผนแล้ว (exit 3) — เดิมเทสนี้ใช้ 120B ซึ่งผ่านได้เพราะ plan เคยออกแผนให้โมเดลที่ไม่ fit
+    fake = RealHub(GPT_OSS_120B, GPT_OSS_20B)
     monkeypatch.setattr("lmds.inspector.HfClient", fake.client)
-    result = runner.invoke(app, ["plan", GPT_OSS_120B, "--target", "rtx-4090", "--no-llm"])
+    result = runner.invoke(app, ["plan", GPT_OSS_20B, "--target", "rtx-4090", "--no-llm"])
     assert result.exit_code == 0, result.output
     said = flat(result.output)
     assert "DeltaNet" not in said and "MTPhead" not in said and "NVFP4" not in said
 
-    result = runner.invoke(app, ["plan", GPT_OSS_120B, "--target", "rtx-4090", "--no-llm", "--json"])
+    result = runner.invoke(app, ["plan", GPT_OSS_20B, "--target", "rtx-4090", "--no-llm", "--json"])
     assert not any("Qwen3.5" in w for w in json.loads(result.stdout)["warnings"])
+
+    too_big = runner.invoke(app, ["plan", GPT_OSS_120B, "--target", "rtx-4090", "--no-llm"])
+    assert too_big.exit_code == 3, too_big.output
+    assert "DeltaNet" not in flat(too_big.output) and "SM121" not in flat(too_big.output)

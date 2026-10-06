@@ -174,7 +174,8 @@ def test_the_api_forwards_the_chosen_machine(monkeypatch):
 def test_the_page_sends_the_machine_and_draws_the_bar():
     page = (Path(__file__).resolve().parents[1] / "src" / "lmds" / "web" / "static" / "index.html"
             ).read_text(encoding="utf-8")
-    body = page[page.index('api("/api/deploy/analyze"'):][:700]
+    start = page.index('api("/api/deploy/analyze"')
+    body = page[start:page.index("});", start)]          # ทั้งคำสั่งเรียก — ไม่ผูกกับจำนวนบรรทัดคอมเมนต์ข้างใน
     assert "machine:" in body and "worker:" in body, "หน้าเว็บยังไม่ส่งเครื่องปลายทางไปกับ analyze"
     assert 'id="w-mem"' in page and "already in use" in page, "ยังไม่มีแถบหน่วยความจำ"
     # โน้ตจาก fit (เช่น "ยังไม่มีข้อมูลหน่วยความจำของเครื่องนี้ คิดจากความจุเต็ม") ต้องถูกวาด —

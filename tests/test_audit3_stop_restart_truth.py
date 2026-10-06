@@ -363,7 +363,7 @@ def test_web_remove_answers_409_and_keeps_the_bundle(fleet):
 
     fleet.model("qwen", DENIED)
 
-    answer = TestClient(create_app()).post("/api/models/qwen/remove", json={})
+    answer = TestClient(create_app()).post("/api/models/qwen/remove", json={"confirm": "qwen"})
 
     assert answer.status_code == 409, answer.text
     assert "ยังรันอยู่" in answer.json()["detail"]
