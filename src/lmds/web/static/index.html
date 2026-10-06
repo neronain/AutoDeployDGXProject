@@ -1825,6 +1825,10 @@ let token = localStorage.getItem(TOKEN_KEY) || "";
     history.replaceState(null, "", location.pathname);
   }
 }
+// header ของ fetch รับได้แค่ ISO-8859-1 — token ที่เป็นภาษาไทย (lmds web --token รับ) ทำให้ fetch โยน
+// TypeError ก่อนจะส่งอะไรออกไปด้วยซ้ำ: กด Sign in แล้วเงียบ · ส่งเป็นไบต์ UTF-8 ทีละไบต์แทน ซึ่ง hub
+// ถอดกลับเป็นข้อความเดิม (api.supplied_token) · token ที่เป็น ASCII ได้ค่าเดิมทุกตัวอักษร
+const tokenHeader = t => { try { return unescape(encodeURIComponent(t)); } catch (_) { return ""; } };
 // ส่ง body เป็น JSON แต่ไม่ประกาศ content-type = FastAPI อ่านไม่ออกแล้วตอบ 422
 // ซึ่งบนหน้าจอโผล่มาเป็น "ทำคำสั่งไม่สำเร็จ (HTTP 422)" ที่ไม่ได้บอกอะไรเลย
 //
@@ -1835,7 +1839,7 @@ const api = (p, o = {}) => fetch(p, {
   headers: {
     ...(typeof o.body === "string" ? { "content-type": "application/json" } : {}),
     ...(o.headers || {}),
-    ...(token ? { "x-lmds-token": token } : {}),
+    ...(token ? { "x-lmds-token": tokenHeader(token) } : {}),
   },
 });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -7356,7 +7360,7 @@ function loginScreen(message = "") {
     if (!typed) return;
     const err = document.getElementById("tok-err");
     err.textContent = "";
-    const r = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": typed } });
+    const r = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": tokenHeader(typed) } });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       // 429 = ผิดหลายครั้งเกินไป · ข้อความจาก server บอกว่าต้องรอนานแค่ไหน
@@ -7974,7 +7978,7 @@ async function boot() {
   const mode = await fetch("/api/auth").then(r => r.json()).catch(() => ({ required: false }));
   if (mode.required) {
     if (!token) { loginScreen(); return; }
-    const ok = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": token } });
+    const ok = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": tokenHeader(token) } });
     if (!ok.ok) {
       const d = await ok.json().catch(() => ({}));
       loginScreen(d.detail || T("The saved token no longer works"));

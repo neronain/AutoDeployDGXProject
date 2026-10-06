@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import secrets
 import shlex
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -93,6 +95,73 @@ class _Attempts:
 
     def passed(self, ip: str) -> None:
         self._by_ip.pop(ip, None)
+
+
+# ── เทียบ token ──
+#
+# audit 2026-10: `secrets.compare_digest(str, str)` โยน TypeError เมื่อมีอักขระนอก ASCII ·
+# `lmds web --token` รับ passphrase ภาษาไทยโดยตั้งใจ (daemon.validate_token) ผลคือ
+#   · ตั้ง token ไทย → ทุกคำขอที่ผ่าน guard ตอบ 500 รวมทั้งตัวที่ถูก ขณะที่ `lmds web` บอกว่าเปิดแล้ว
+#   · token ASCII + เดาด้วยค่าที่ไม่ใช่ ASCII → 500 ก่อนถึง attempts.failed จึงไม่เคยนับเข้า lockout
+# เทียบ digest ของไบต์ UTF-8 แทน: ไม่มีชนิดไหนทำให้ระเบิด และไม่รั่วความยาวของ token
+class TokenUnusable(ValueError):
+    """token ที่ตั้งไว้ไม่มีทางถูกยืนยันได้ — หน้าเว็บต้องไม่ขึ้นด้วย token แบบนี้"""
+
+
+def _token_digest(text: str) -> bytes:
+    # NFC: "é" ที่พิมพ์บนเครื่องหนึ่งอาจเป็นสองจุดรหัส อีกเครื่องเป็นจุดเดียว — ต้องนับเป็น passphrase เดียวกัน
+    # surrogatepass: ค่าที่ client ส่งมาจะเพี้ยนแค่ไหนก็ต้องเทียบได้ (แล้วไม่ตรง) ไม่ใช่โยน error
+    normal = unicodedata.normalize("NFC", text if isinstance(text, str) else "")
+    return hashlib.sha256(normal.encode("utf-8", "surrogatepass")).digest()
+
+
+def token_matches(supplied: str, token: str) -> bool:
+    """เทียบ token ในเวลาคงที่ — รับทุกสตริง ไม่โยน error ไม่ว่าจะมีอักขระอะไร"""
+    return secrets.compare_digest(_token_digest(supplied), _token_digest(token))
+
+
+def supplied_token(request: Request) -> str:
+    """token ที่คำขอนี้แนบมา — header `x-lmds-token` ก่อน แล้ว `?token=` (EventSource ใส่ header ไม่ได้)
+
+    header ของ HTTP เป็นไบต์ · ASGI ถอดเป็น latin-1 ให้ทุกครั้ง ส่วน client (curl · หน้าเว็บ) ส่งไบต์
+    UTF-8 ของ token มา — ถอดกลับเป็น UTF-8 ก่อนเทียบ · ถอดไม่ได้ = ไม่ใช่ token ของเราอยู่แล้ว
+    ส่งต่อไปให้เทียบแล้วไม่ตรง (นับเข้า lockout ตามปกติ)
+    """
+    raw = request.headers.get("x-lmds-token")
+    if raw:
+        try:
+            return raw.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            return raw
+    return request.query_params.get("token", "")
+
+
+def _selfcheck_token(guard, token: str) -> None:
+    """ส่ง token ของตัวเองผ่าน guard ตัวจริงทั้งทาง header และทาง ?token= — ไม่ผ่าน = TokenUnusable
+
+    ใช้ guard ตัวที่จะเฝ้าคำขอจริง ไม่ใช่ตรรกะสำเนา: วันที่ guard เปลี่ยนแล้วมี token รูปแบบไหน
+    ที่มันยืนยันไม่ได้ (เคส 2026-10 คือ token ที่ไม่ใช่ ASCII) process จะไม่ขึ้น แทนที่จะขึ้นแล้วตอบ
+    500/401 ให้ทุกคน · token จาก environment ที่มีไบต์ซึ่งไม่ใช่ UTF-8 ก็ตกที่นี่ (ไม่มี client ไหนส่งได้)
+    """
+    from urllib.parse import quote
+
+    try:
+        if token != token.strip() or any(ord(ch) < 32 or ord(ch) == 127 for ch in token):
+            raise ValueError("มีช่องว่างหัวท้ายหรือตัวควบคุม — header ของ HTTP ส่งค่านี้ไม่ได้")
+        wire = token.encode("utf-8")
+        probes = (
+            {"headers": [(b"x-lmds-token", wire)], "query_string": b""},
+            {"headers": [], "query_string": b"token=" + quote(wire, safe="").encode("ascii")},
+        )
+        for probe in probes:
+            guard(Request({"type": "http", "method": "POST", "path": "/api/auth",
+                           "client": ("selfcheck", 0), **probe}))
+    except Exception as exc:  # noqa: BLE001 — อะไรก็ตามที่ทำให้ guard ไม่ยอมรับ token ของตัวเอง
+        reason = getattr(exc, "detail", None) or str(exc) or type(exc).__name__
+        raise TokenUnusable(
+            f"token ของหน้าเว็บใช้ไม่ได้ — guard ยืนยันค่านี้ไม่ได้ ({reason}) · "
+            "ตั้งใหม่: lmds web --new-token หรือ lmds web --token <ค่าใหม่>"
+        ) from exc
 
 
 def _running_unit() -> str:
@@ -212,12 +281,17 @@ def create_app(token: str = "") -> FastAPI:
         wait = attempts.locked_for(ip)
         if wait:
             raise HTTPException(status_code=429, detail=f"ผิดหลายครั้งเกินไป — รออีก {wait:.0f} วินาที")
-        supplied = request.headers.get("x-lmds-token") or request.query_params.get("token", "")
-        # compare_digest กัน timing attack — เทียบสตริงตรง ๆ รั่วความยาวและ prefix
-        if not secrets.compare_digest(supplied, token):
+        # เทียบเป็นไบต์ UTF-8 ในเวลาคงที่ (ดู token_matches) — ทุกค่าที่ไม่ตรงนับเข้า lockout
+        # ไม่ว่าหน้าตาจะเป็นอะไร: เดิมค่าที่ไม่ใช่ ASCII ระเบิดก่อนถึง attempts.failed จึงเดาได้ไม่อั้น
+        if not token_matches(supplied_token(request), token):
             attempts.failed(ip)
             raise HTTPException(status_code=401, detail="token ไม่ถูกต้อง")
         attempts.passed(ip)
+
+    # ตรวจก่อนรับคำขอแรก: guard ตัวจริงต้องยอมรับ token ของตัวเองผ่านทุกทางที่ client ส่งมาได้
+    # ไม่ผ่าน = create_app ล้มตรงนี้ `lmds web` จึงรายงานว่า "เปิดแล้ว" ทั้งที่ไม่มีใครเข้าได้ไม่ได้อีก
+    if token:
+        _selfcheck_token(require_token, token)
 
     guarded = [Depends(require_token)]
 
@@ -3046,7 +3120,14 @@ def serve(host: str = "127.0.0.1", port: int = 8600, token: Optional[str] = None
     # SSE (/api/events) เป็น connection ที่ไม่มีวันปิดเอง — uvicorn รอให้ connection หมดก่อนจบ
     # จึงค้างจน systemd หมดความอดทน (TimeoutStopSec=10) แล้ว SIGKILL ทุก restart
     # (journal 2026-09-04: "State 'stop-sigterm' timed out. Killing.") · ให้รอแค่ 3 วิ
-    uvicorn.run(create_app(token or ""), host=host, port=port, log_level="warning",
+    try:
+        application = create_app(token or "")
+    except TokenUnusable as exc:
+        # ยังไม่ได้ bind พอร์ต — จบด้วยรหัสไม่ใช่ 0 พร้อมเหตุผล · `lmds web -b` รอพอร์ตแล้วเห็น process ตาย
+        # จึงรายงาน "เปิดไม่สำเร็จ" พร้อมบรรทัดนี้จาก log แทนที่จะพิมพ์ลิงก์กับ token ที่ไม่มีใครเข้าได้
+        print(f"lmds web: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
+    uvicorn.run(application, host=host, port=port, log_level="warning",
                 timeout_graceful_shutdown=3)
     # ThreadPoolExecutor ของ refresher ถูก join ตอน interpreter ออก (atexit ของ concurrent.futures)
     # → รอ ssh probe ที่ค้างอยู่ได้ถึง 30 วิ · หลัง uvicorn จบไม่มีอะไรต้อง flush อีก ออกเลย

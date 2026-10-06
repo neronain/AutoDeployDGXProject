@@ -46,12 +46,22 @@ def validate_token(token: str) -> str:
     ไม่บังคับรูปแบบตัวอักษร (ผู้ใช้อยากใช้ passphrase ภาษาไทยก็ได้) แต่ช่องว่างกับ
     ตัวควบคุมทำให้ copy ไป paste แล้วเพี้ยนโดยไม่มีใครรู้ตัว จึงกันไว้
     """
+    import unicodedata
+
     token = token.strip()
     if len(token) < MIN_TOKEN_LEN:
         raise TokenError(f"token ต้องยาวอย่างน้อย {MIN_TOKEN_LEN} ตัว (ได้มา {len(token)})")
-    if any(ch.isspace() or ord(ch) < 32 for ch in token):
+    # Cc = ตัวควบคุมทั้งหมด (รวม DEL และ C1 ที่ ord >= 127) · header ของ HTTP ส่งค่าพวกนี้ไม่ได้
+    if any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in token):
         raise TokenError("token ต้องไม่มีช่องว่างหรือตัวควบคุม — copy/paste แล้วเพี้ยนโดยไม่รู้ตัว")
-    return token
+    # ภาษาอะไรก็ได้ แต่ต้องเป็นข้อความที่เข้ารหัส UTF-8 ได้ — $LMDS_WEB_TOKEN ที่มีไบต์เสีย (locale ผิด)
+    # มาถึงตรงนี้เป็น surrogate ซึ่งไม่มี client ไหนส่งกลับมาได้ หน้าเว็บจะขึ้นแต่ไม่มีใครเข้าได้
+    try:
+        token.encode("utf-8")
+    except UnicodeEncodeError:
+        raise TokenError("token มีไบต์ที่ไม่ใช่ข้อความ UTF-8 — ตั้งใหม่ด้วยตัวอักษรที่พิมพ์ได้") from None
+    # รูปเดียวกับที่ guard ใช้เทียบ (NFC) — ค่าที่พิมพ์/จำ/แสดง จะได้เป็นตัวเดียวกับที่ถูกยืนยัน
+    return unicodedata.normalize("NFC", token)
 
 
 def new_token() -> str:
