@@ -71,13 +71,33 @@ def _model_payload(server) -> dict:
 _FAIL_WINDOW = 300.0      # ลืมความผิดพลาดหลังเงียบไป 5 นาที
 _FAIL_FREE = 5            # ผิดได้เท่านี้ก่อนโดนหน่วง (พิมพ์ผิดจริง ๆ ไม่ควรโดนลงโทษ)
 _FAIL_LOCK_MAX = 60.0     # หน่วงสูงสุดต่อครั้ง
+_GUESS_MEMORY = 32        # จำ token ผิดที่เคยเห็นต่อ IP ได้เท่านี้ตัว (เก็บเป็น digest) — เกินแล้วตัวเก่าสุดหลุด
 
 
 class _Attempts:
-    """นับความพยายามที่ผิดต่อ IP — อยู่ในหน่วยความจำของ process เดียว พอสำหรับงานนี้"""
+    """นับความพยายามที่ผิดต่อ IP — อยู่ในหน่วยความจำของ process เดียว พอสำหรับงานนี้
+
+    **นับ "การเดา" ไม่ใช่ "คำขอที่ถูกปฏิเสธ"** (audit หน้าเว็บ 2026-10):
+
+    เปลี่ยน token ที่ hub ระหว่างที่มีแท็บเปิดค้างอยู่ → แท็บนั้น poll ต่อด้วย token เก่าทุก 5 วิ · เดิมทุกคำขอ
+    ถูกนับเป็นการเดาผิด ห้าครั้งก็ล็อกทั้ง IP — ทุกแท็บและทุกคนหลัง NAT เดียวกัน รวมถึงคนที่กำลังกรอก
+    token ที่ **ถูกต้อง** (ได้ 429) · แต่ token เก่าที่ถูกยื่นซ้ำ ๆ ไม่ได้บอกอะไรผู้โจมตีเพิ่มเลย: คำตอบของ
+    ครั้งที่สองเหมือนครั้งแรกทุกตัวอักษร สิ่งที่ต้องจำกัดคือจำนวน *ค่าที่ต่างกัน* ที่ลองได้ต่อหน่วยเวลา
+
+    - `POST /api/auth` (กด Sign in เอง) — นับทุกครั้งเหมือนเดิม ไม่ว่าจะซ้ำหรือไม่
+    - คำขออื่นที่พก token ผิด — นับเฉพาะ **ค่าที่ยังไม่เคยเห็น** จาก IP นั้นในหน้าต่างเวลาเดียวกัน
+      (เดา token ทาง header/`?token=` ของ endpoint ไหนก็ตาม จึงยังชนเพดานเดิมที่ค่าที่ 6)
+    - คำขอที่ไม่พก token เลย — ไม่ใช่การเดา ไม่นับ (ได้ 401 ตามเดิม)
+
+    ค่าที่เห็นเก็บเป็น digest ที่ใส่ key สุ่มต่อ process — token ผิดอาจเป็น token *เก่าที่เคยถูก* หรือ token จริง
+    ที่พิมพ์ตกไปตัวเดียว จึงไม่เก็บตัวมันเองไว้ในหน่วยความจำ
+    """
 
     def __init__(self) -> None:
         self._by_ip: dict[str, tuple[int, float]] = {}
+        self._seen: dict[str, dict[bytes, None]] = {}     # ip -> digest ของ token ผิดที่เห็นแล้ว (เรียงตามเวลา)
+        self._key = secrets.token_bytes(16)
+        self._lock = threading.Lock()
 
     def locked_for(self, ip: str) -> float:
         count, last = self._by_ip.get(ip, (0, 0.0))
@@ -87,14 +107,33 @@ class _Attempts:
         remaining = wait - (time.time() - last)
         return max(0.0, remaining)
 
-    def failed(self, ip: str) -> None:
-        count, last = self._by_ip.get(ip, (0, 0.0))
-        if time.time() - last > _FAIL_WINDOW:
-            count = 0
-        self._by_ip[ip] = (count + 1, time.time())
+    def failed(self, ip: str, supplied: str = "", explicit: bool = True) -> None:
+        import hashlib
+
+        # route แบบ sync รันใน threadpool — แท็บเก่าที่ยิงพร้อมกันหลายคำขอมาถึงตรงนี้พร้อมกันจริง
+        with self._lock:
+            count, last = self._by_ip.get(ip, (0, 0.0))
+            if time.time() - last > _FAIL_WINDOW:
+                # เงียบไปนานพอ = เริ่มนับใหม่ และลืมค่าที่เคยเห็นไปด้วยกัน (สองอย่างนี้ต้องหมดอายุพร้อมกัน
+                # ไม่งั้น token เก่าที่ถูกลืมจะกลับมานับซ้ำทับยอดเดิม)
+                count = 0
+                self._seen.pop(ip, None)
+            if not explicit:
+                if not supplied:
+                    return
+                mark = hashlib.blake2b(supplied.encode("utf-8", "replace"), key=self._key, digest_size=8).digest()
+                seen = self._seen.setdefault(ip, {})
+                if mark in seen:
+                    return
+                seen[mark] = None
+                while len(seen) > _GUESS_MEMORY:
+                    seen.pop(next(iter(seen)), None)
+            self._by_ip[ip] = (count + 1, time.time())
 
     def passed(self, ip: str) -> None:
-        self._by_ip.pop(ip, None)
+        with self._lock:
+            self._by_ip.pop(ip, None)
+            self._seen.pop(ip, None)
 
 
 # ── เทียบ token ──
@@ -281,10 +320,12 @@ def create_app(token: str = "") -> FastAPI:
         wait = attempts.locked_for(ip)
         if wait:
             raise HTTPException(status_code=429, detail=f"ผิดหลายครั้งเกินไป — รออีก {wait:.0f} วินาที")
-        # เทียบเป็นไบต์ UTF-8 ในเวลาคงที่ (ดู token_matches) — ทุกค่าที่ไม่ตรงนับเข้า lockout
-        # ไม่ว่าหน้าตาจะเป็นอะไร: เดิมค่าที่ไม่ใช่ ASCII ระเบิดก่อนถึง attempts.failed จึงเดาได้ไม่อั้น
-        if not token_matches(supplied_token(request), token):
-            attempts.failed(ip)
+        # เทียบเป็นไบต์ UTF-8 ในเวลาคงที่ (ดู token_matches) — เดิมค่าที่ไม่ใช่ ASCII ระเบิดก่อนถึงตัวนับ
+        supplied = supplied_token(request)
+        if not token_matches(supplied, token):
+            # กด Sign in เอง = นับทุกครั้ง · คำขออื่น = นับเฉพาะค่าที่ยังไม่เคยเห็นจาก IP นี้ในรอบนี้ (ดู _Attempts)
+            explicit = request.method == "POST" and request.url.path == "/api/auth"
+            attempts.failed(ip, supplied, explicit=explicit)
             raise HTTPException(status_code=401, detail="token ไม่ถูกต้อง")
         attempts.passed(ip)
 

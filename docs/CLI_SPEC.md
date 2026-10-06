@@ -519,7 +519,7 @@ service** ให้ถ้ามี (เครื่องใน LXC/Docker ท�
   และเพจใดก็ได้ที่ผู้ใช้เปิดในเบราว์เซอร์ (CSRF/DNS rebinding) สั่งได้ · token ไปยัง process เบื้องหลังทาง **environment ไม่ใช่ argv**
 - สตาร์ตซ้อนไม่ได้ — พิมพ์ลิงก์ของตัวที่เสิร์ฟจริงแทน · **ที่มาของ token**: `--no-auth` → `--token` → `$LMDS_WEB_TOKEN` → `~/.config/lmds/web-token`
   (0600) → ถามตอนสตาร์ตครั้งแรก → สุ่ม · ลิงก์ที่พิมพ์ไม่มี token · `?token=` ในลิงก์ถูกย้ายเข้าที่เก็บของเบราว์เซอร์แล้วลบออกจากแถบที่อยู่
-- `GET /api/auth` → `{"required"}` · `POST /api/auth` (header `x-lmds-token`) → 200/401 · ผิด >5 ครั้งต่อ IP → 429 หน่วงทวีคูณสูงสุด 60 วิ
+- `GET /api/auth` → `{"required"}` · `POST /api/auth` (header `x-lmds-token`) → 200/401 · ผิด >5 ครั้งต่อ IP → 429 หน่วงทวีคูณสูงสุด 60 วิ (POST นี้นับทุกครั้ง · endpoint อื่นนับเฉพาะ token ผิดค่าที่ยังไม่เคยเห็น · ไม่พก token = 401 ไม่นับ)
 - สถานะที่ `~/.lmds/run/web.json` (0600) · `GET /api/version` คืน `commit` · `installed` · **`boot`** (ลายเซ็น process — หน้าเว็บ
   ใช้รอ restart) · restart/update นอก systemd → 409 · shutdown ตั้ง `timeout_graceful_shutdown=3` (SSE ค้างไม่ทำให้โดน SIGKILL)
 - `GET /fonts/{name}` — ฟอนต์ Geist ในแพ็กเกจ (allowlist ชื่อ · ไม่ต้องใช้ token · cache 1 ปี)

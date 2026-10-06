@@ -1357,6 +1357,11 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "Cannot reach LMDS — is the server still running?": "ต่อ LMDS ไม่ได้ — เซิร์ฟเวอร์ยังรันอยู่ไหม",
     "The token no longer works": "token นี้ใช้ไม่ได้แล้ว",
     "The saved token no longer works": "token ที่จำไว้ใช้ไม่ได้แล้ว",
+    // ── audit หน้าเว็บ 2026-10 ──
+    "This page's access token no longer works — it was changed on the hub. Sign in with the current one.":
+      "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
+    "Wrong token": "token ไม่ถูกต้อง",
+    "Could not sign in": "เข้าใช้งานไม่ได้",
     "Restart was issued but the console has not come back — refresh manually":
       "สั่งรีสตาร์ตไปแล้วแต่คอนโซลยังไม่กลับมา — รีเฟรชหน้าเอง",
 
@@ -1834,15 +1839,56 @@ const tokenHeader = t => { try { return unescape(encodeURIComponent(t)); } catch
 //
 // เจอจริงกับปุ่มบันทึกค่าของ node: ทุกที่อื่นในไฟล์นี้ใส่ header เองทีละจุด พอมีที่หนึ่ง
 // ลืมก็พังเงียบ ๆ · เติมให้ตรงนี้ที่เดียว แล้วจุดที่ใส่เองอยู่แล้วยังชนะเหมือนเดิม
-const api = (p, o = {}) => fetch(p, {
+//
+// 401 = token ของหน้านี้ใช้ไม่ได้แล้ว (ถูกเปลี่ยน/เพิกถอนที่ hub ระหว่างเปิดหน้าค้างไว้) · ตรงนี้คือทางออก
+// *ทางเดียว* ของทุกคำขอ จึงเป็นที่เดียวที่กันได้ครบว่า "หลัง 401 ครั้งแรก ไม่มีคำขอไหนออกไปพร้อม token เก่าอีก":
+// เคสจริงจาก audit — วง poll 5 วิ / ตัวตาม job / ตัวอ่านสูตร ยิงต่อทุกรอบ แต่ละครั้งถูกนับเป็นการเดา token ผิด
+// ครบห้าครั้ง IP นั้น (ทุกแท็บ ทุกคนหลัง NAT เดียวกัน) โดนล็อก — รวมถึงคนที่กำลังกรอก token ที่ถูกต้อง
+// promise ที่ไม่มีวันจบ ไม่ใช่ reject: วงรอบที่ await อยู่หยุดนิ่งตรงนั้นเอง ไม่มี catch ไหนเอา 401 ไปอ่านเป็นข้อมูล
+// และไม่มี unhandledrejection มาเด้งใส่หน้า login · หน้านี้ reload ทั้งหน้าหลัง sign in จึงไม่มีอะไรค้างให้เก็บ
+let signedOut = false;
+const neverSettles = () => new Promise(() => {});
+const api = (p, o = {}) => signedOut ? neverSettles() : fetch(p, {
   ...o,
   headers: {
     ...(typeof o.body === "string" ? { "content-type": "application/json" } : {}),
     ...(o.headers || {}),
     ...(token ? { "x-lmds-token": tokenHeader(token) } : {}),
   },
+}).then(r => {
+  if (r.status !== 401) return r;
+  endSession();
+  return neverSettles();
 });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// คำตอบที่ "ล้ม" → ข้อความเดียวที่คนอ่านได้ ไม่ว่ามันจะมารูปไหน · ทุกจุดที่อ่าน error ต้องผ่านตัวนี้
+// เดิมแต่ละจุดเดารูปเอง แล้วเดาไม่ครบ: `d.detail || {}` กลายเป็น "[object Object]" บนจอ · JSON ของ error
+// ถูกอ่านเป็น *ข้อมูล* (500 {detail} → "served open — ใครก็ใช้โมเดลได้" · 500 → "No stackable pair yet")
+//   {detail: "…"}                       HTTPException / ตัวจับ SettingsError ของแอป
+//   {detail: {message, kind, …}}        deploy (kind บอก UI ว่าทำอะไรต่อ — ผู้เรียกที่สนใจ kind อ่านเองก่อน)
+//   {detail: [{loc, msg}, …]}           FastAPI 422 (body ผิดรูป)
+//   ไม่ใช่ JSON                          "Internal Server Error" · หน้า 502/504 ของ proxy ที่คั่นอยู่
+function detailText(d, status, fallback = "", raw = "") {
+  const det = d && typeof d === "object" ? d.detail : undefined;
+  if (typeof det === "string" && det.trim()) return det;
+  if (Array.isArray(det) && det.length)
+    return det.map(e => typeof e === "string" ? e
+      : `${(e.loc || []).filter(x => x !== "body").join(".")}${(e.loc || []).length ? ": " : ""}${e.msg || JSON.stringify(e)}`).join(" · ");
+  if (det && typeof det === "object" && typeof det.message === "string" && det.message.trim()) return det.message;
+  // body ที่ไม่ใช่ JSON: ตัดแท็กของหน้า error ทิ้ง เหลือบรรทัดสั้น ๆ พอให้รู้ว่าใครตอบ (proxy หรือแอป)
+  const plain = d == null ? String(raw || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 140) : "";
+  const head = fallback ? `${fallback} (HTTP ${status})` : T("The command failed (HTTP {status})", { status });
+  return plain ? `${head} — ${plain}` : head;
+}
+async function failureText(r, fallback = "") {
+  let raw = "", d = null;
+  try { raw = await r.text(); } catch { /* อ่าน body ไม่ได้ — เหลือแค่รหัสสถานะ */ }
+  try { d = JSON.parse(raw); } catch { /* ไม่ใช่ JSON */ }
+  return detailText(d, r.status, fallback, raw);
+}
+// fetch ที่โยน (สายหลุด / hub ไม่ตอบ) — คนละเรื่องกับคำสั่งที่ server ปฏิเสธ
+const unreachableText = err => T("Could not reach LMDS — {error}", { error: String((err && err.message) || err) });
 
 // กดปุ่มแล้ว "เงียบ" คือบั๊กที่เจอจริง: ปุ่มถูก disable + เปลี่ยนข้อความเป็น "…" แล้วถ้า fetch
 // พังกลางทาง (สายหลุด/เซิร์ฟเวอร์รีสตาร์ต/งานยาวเกินจนถูกตัด) จะไม่มีใครคืนสถานะปุ่มและ
@@ -6749,10 +6795,11 @@ document.addEventListener("click", e => {
 async function refresh() {
   try {
     const [h, m] = await Promise.all([api("/api/host"), api("/api/models")]);
-    // token ถูกเพิกถอน/เปลี่ยนระหว่างเปิดหน้าค้างไว้ — กลับไปหน้า login แทนที่จะโชว์หน้าเปล่า
-    if (h.status === 401 || h.status === 429) {
-      const d = await h.json().catch(() => ({}));
-      loginScreen(d.detail || T("The token no longer works"));
+    // token ถูกเพิกถอน/เปลี่ยน (401) จบที่ api() แล้ว — ไม่มาถึงตรงนี้ · 429 คือ IP นี้ถูกหน่วงเพราะมีคนกรอก token
+    // ผิดซ้ำ ๆ: token ของหน้านี้ยังใช้ได้ จึงไม่ทิ้งหน้าไปหน้า login (เดิมทำ แล้วผู้ใช้ต้องกรอกใหม่ทั้งที่ไม่ได้ทำอะไรผิด)
+    // แค่บอกเหตุผลจาก server แล้วรอรอบถัดไป
+    if (h.status === 429 || m.status === 429) {
+      showError(await failureText(h.status === 429 ? h : m), "warn");
       return;
     }
     const models = (await m.json()).models;
@@ -7317,8 +7364,26 @@ function startStream() {
   };
   // เบราว์เซอร์หรือ proxy บางตัวปิด SSE — ถอยไป poll แทนดีกว่าหน้าค้าง
   stream.onerror = () => {
-    if (!pollTimer) pollTimer = setInterval(() => { if (busy) return; refresh(); pollNodesFallback(); }, 5000);
+    // เครื่องอื่นถูกถามหลัง refresh() ตอบแล้วเท่านั้น — token ที่ใช้ไม่ได้แล้วจึงถูกยื่นให้ hub แค่ชุดเดียว
+    // (host + models) แล้วทุกอย่างหยุดที่ api() · เดิมยิงพร้อมกันทั้ง 2 + จำนวนเครื่อง ทุก 5 วิ ไม่มีวันหยุด
+    if (!pollTimer && !signedOut) pollTimer = setInterval(async () => { if (busy) return; await refresh(); pollNodesFallback(); }, 5000);
   };
+}
+
+// token ใช้ไม่ได้แล้ว — หยุดทุกอย่างที่ยิงเองได้ *ก่อน* วาดหน้า login แล้วไม่วาดซ้ำอีก
+// ลำดับสำคัญ: หน้า login แทนที่ทั้ง body · ตัวจับเวลาที่ยังเดินอยู่จะวาดทับมัน (ช่องที่กำลังพิมพ์หายทุก 5 วิ)
+// และยื่น token เก่าให้ hub ซ้ำ ๆ จนถูกนับเป็นการเดา · api() ปิดประตูคำขอไปแล้วด้วยธง signedOut —
+// ตรงนี้เก็บของที่ไม่ผ่าน api(): วง poll · สาย SSE ของสถานะ · สาย log ที่ตามอยู่ (EventSource พก token ไปใน URL)
+function endSession(message = "") {
+  if (signedOut) return;
+  signedOut = true;
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (stream) { stream.onmessage = null; stream.onerror = null; stream.close(); stream = null; }
+  for (const key of [...liveLogs.keys()]) stopLiveLog(key);
+  clearTimeout(ctxAdviceTimer);
+  // ไม่เคยมี token (เปิดหน้าครั้งแรก) = ไม่มีอะไร "ใช้ไม่ได้แล้ว" ให้บอก — หน้า login เปล่า ๆ ถูกแล้ว
+  loginScreen(message || (token
+    ? T("This page's access token no longer works — it was changed on the hub. Sign in with the current one.") : ""));
 }
 
 // poll แทน SSE ต้องครอบคลุมเครื่องอื่นด้วย — เดิม refresh() ดึงแค่ /api/host + /api/models
@@ -7343,6 +7408,9 @@ async function pollNodesFallback() {
 // ต้องผ่าน token ก่อนถึงจะวาดอะไร — เดิมหน้าโหลดขึ้นมาก่อนแล้วค่อยพังตอนเรียก API
 // ซึ่งทำให้คนที่ไม่มีสิทธิ์ยังเห็นโครงหน้าและชื่อเครื่อง
 function loginScreen(message = "") {
+  // ขึ้นอยู่แล้ว = ห้ามวาดทับ — ช่อง token ที่กำลังพิมพ์อยู่ต้องรอด ไม่ว่าใครจะเรียกซ้ำ
+  if (document.getElementById("tok")) return;
+  signedOut = true;       // ทุกทางที่มาถึงหน้านี้ (รวม boot ที่ยังไม่มี token) = ไม่มีคำขอเบื้องหลังอีก
   document.body.innerHTML = `
     <div class="login">
       <div class="login-box">
@@ -7357,19 +7425,28 @@ function loginScreen(message = "") {
       </div>
     </div>`;
   const input = document.getElementById("tok");
+  // POST /api/auth ออกไปจากที่นี่ที่เดียวทั้งหน้า และเฉพาะตอนผู้ใช้กดเอง — ฝั่ง hub นับ "กรอกผิด" จาก endpoint นี้
+  let checking = false;
   const submit = async () => {
     const typed = input.value.trim();
-    if (!typed) return;
+    if (!typed || checking) return;       // กด Enter ค้าง/ดับเบิลคลิก = ครั้งเดียว ไม่ใช่สองครั้งที่ถูกนับ
     const err = document.getElementById("tok-err");
+    const go = document.getElementById("tok-go");
     err.textContent = "";
-    const r = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": tokenHeader(typed) } });
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      // 429 = ผิดหลายครั้งเกินไป · ข้อความจาก server บอกว่าต้องรอนานแค่ไหน
-      err.textContent = d.detail || "Wrong token";
-      input.select();
+    checking = true; go.disabled = true;
+    try {
+      const r = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": tokenHeader(typed) } });
+      if (!r.ok) {
+        // 429 = ผิดหลายครั้งเกินไป · ข้อความจาก server บอกว่าต้องรอนานแค่ไหน
+        err.textContent = r.status === 401 ? T("Wrong token") : await failureText(r, T("Could not sign in"));
+        input.select();
+        return;
+      }
+    } catch (e) {
+      // hub ไม่ตอบ ≠ token ผิด — เดิมหลุดไปเป็น "this page retries on its own" ซึ่งหน้านี้ไม่ได้ลองเอง
+      err.textContent = unreachableText(e);
       return;
-    }
+    } finally { checking = false; go.disabled = false; }
     localStorage.setItem(TOKEN_KEY, typed);
     location.reload();
   };
@@ -7980,10 +8057,11 @@ async function boot() {
   const mode = await fetch("/api/auth").then(r => r.json()).catch(() => ({ required: false }));
   if (mode.required) {
     if (!token) { loginScreen(); return; }
-    const ok = await fetch("/api/auth", { method: "POST", headers: { "x-lmds-token": tokenHeader(token) } });
-    if (!ok.ok) {
-      const d = await ok.json().catch(() => ({}));
-      loginScreen(d.detail || T("The saved token no longer works"));
+    // token ที่จำไว้ยังใช้ได้ไหม — ถามด้วย GET ธรรมดาที่ต้องใช้ token ไม่ใช่ POST /api/auth: endpoint นั้นคือ
+    // "ผู้ใช้กดลองกรอก" และ hub นับทุกครั้งที่ผิด · แท็บเก่าที่ถูก reload ซ้ำ ๆ หลังเปลี่ยน token ไม่ใช่การเดา
+    const ok = await fetch("/api/version", { headers: { "x-lmds-token": tokenHeader(token) } }).catch(() => null);
+    if (ok && (ok.status === 401 || ok.status === 429)) {
+      loginScreen(ok.status === 401 ? T("The saved token no longer works") : await failureText(ok));
       return;
     }
     document.getElementById("signout").hidden = false;

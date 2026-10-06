@@ -58,6 +58,82 @@ def test_the_shell_and_fonts_stay_open_so_the_login_page_can_render(audit_log):
     assert client.get("/api/auth").status_code == 200
 
 
+# ── กันเดา token: นับ "การเดา" ไม่ใช่ "คำขอที่ถูกปฏิเสธ" (audit หน้าเว็บ 2026-10) ────────────
+#
+# เปลี่ยน token ที่ hub ระหว่างมีแท็บเปิดค้าง → แท็บนั้น poll ต่อด้วย token เก่า · เดิมห้าคำขอก็ล็อกทั้ง IP
+# (ทุกแท็บ ทุกคนหลัง NAT เดียวกัน) แล้ว token ที่ถูกต้องก็ได้ 429 · token เก่าที่ยื่นซ้ำไม่ใช่การเดาครั้งใหม่
+
+def test_a_stale_tab_polling_with_the_old_token_does_not_lock_out_the_right_one(audit_log):
+    client = TestClient(create_app(TOKEN))
+    stale = {"x-lmds-token": "the-token-before-rotation"}
+    codes = [client.get(path, headers=stale).status_code
+             for _ in range(10) for path in ("/api/host", "/api/models", "/api/fleet/summary")]
+    assert set(codes) == {401}, "token เก่ายังต้องถูกปฏิเสธทุกครั้ง — แค่ไม่ถูกนับเป็นการเดาใหม่"
+    # สามสิบคำขอด้วยค่าเดียวกัน = การเดาครั้งเดียว · คนที่กรอก token ที่ถูกต้องต้องเข้าได้ทันที
+    assert client.post("/api/auth", headers={"x-lmds-token": TOKEN}).status_code == 200
+
+
+def test_the_old_token_in_the_event_stream_url_is_the_same_single_guess(audit_log):
+    """EventSource ใส่ header ไม่ได้ จึงพก token ไปใน `?token=` — เบราว์เซอร์ต่อใหม่เองซ้ำ ๆ ด้วยค่าเดิม"""
+    client = TestClient(create_app(TOKEN))
+    for _ in range(8):
+        assert client.get("/api/version", params={"token": "the-token-before-rotation"}).status_code == 401
+        assert client.get("/api/version", headers={"x-lmds-token": "the-token-before-rotation"}).status_code == 401
+    assert client.post("/api/auth", headers={"x-lmds-token": TOKEN}).status_code == 200
+
+
+def test_guessing_different_tokens_through_any_endpoint_is_still_throttled(audit_log):
+    """ช่องนี้ต้องไม่กลายเป็นทางเดาฟรี: ค่าที่ *ต่างกัน* ทุกค่านับ ไม่ว่ายิงเข้า endpoint ไหน ทาง header หรือ query"""
+    client = TestClient(create_app(TOKEN))
+    codes = []
+    for i in range(12):
+        guess = f"guess-number-{i}"
+        if i % 2:
+            codes.append(client.get("/api/host", headers={"x-lmds-token": guess}).status_code)
+        else:
+            codes.append(client.get("/api/version", params={"token": guess}).status_code)
+    assert codes[:5] == [401] * 5, "ห้าค่าแรกเป็น 401 ธรรมดา — เท่าเพดานเดิม"
+    assert 429 in codes, "ค่าที่ต่างกันเกินเพดานต้องโดนหน่วง"
+    # ระหว่างถูกหน่วง token ที่ถูกก็ยังไม่ผ่าน — ไม่งั้นการหน่วงไม่ได้จำกัดอัตราการเดาเลย
+    assert client.post("/api/auth", headers={"x-lmds-token": TOKEN}).status_code == 429
+
+
+def test_repeating_one_wrong_token_does_not_buy_extra_guesses(audit_log):
+    """สลับค่าเดิมคั่นระหว่างค่าที่เดาใหม่ ต้องไม่ช่วยให้เดาได้มากขึ้น — เพดานคือจำนวนค่าที่ต่างกัน"""
+    client = TestClient(create_app(TOKEN))
+    distinct = 0
+    for i in range(40):
+        guess = f"guess-{i // 4}" if i % 4 == 0 else "filler-token"
+        if client.get("/api/host", headers={"x-lmds-token": guess}).status_code == 429:
+            break
+        if i % 4 == 0:
+            distinct += 1
+    assert distinct <= 6, f"ลองค่าที่ต่างกันได้ {distinct} ค่าก่อนโดนหน่วง — เกินเพดาน"
+
+
+def test_pressing_sign_in_with_the_same_wrong_token_still_counts_every_time(audit_log):
+    """`POST /api/auth` คือผู้ใช้กดเอง — นับทุกครั้งเหมือนเดิม แม้เป็นค่าเดิม"""
+    client = TestClient(create_app(TOKEN))
+    codes = [client.post("/api/auth", headers={"x-lmds-token": "nope-nope"}).status_code for _ in range(8)]
+    assert codes[:5] == [401] * 5 and 429 in codes
+
+
+def test_a_request_without_any_token_is_refused_but_is_not_a_guess(audit_log):
+    """ตัวเฝ้าระบบ/แท็บที่ยังไม่ได้ login ยิงมาโดยไม่มี token — ไม่ได้เดาอะไร จึงไม่ควรล็อกคนอื่นหลัง NAT เดียวกัน"""
+    client = TestClient(create_app(TOKEN))
+    assert {client.get("/api/host").status_code for _ in range(12)} == {401}
+    assert client.post("/api/auth", headers={"x-lmds-token": TOKEN}).status_code == 200
+
+
+def test_refused_background_requests_are_still_on_the_audit_trail(audit_log):
+    """ไม่นับเป็นการเดา ≠ ไม่มีร่องรอย — ผู้ดูแลยังต้องเห็นว่ามีแท็บไหนยิง token เก่าอยู่"""
+    client = TestClient(create_app(TOKEN))
+    for _ in range(3):
+        client.get("/api/host", headers={"x-lmds-token": "the-token-before-rotation"})
+    refused = [e for e in _entries(audit_log) if int(e["status"]) == 401 and e["path"] == "/api/host"]
+    assert len(refused) == 3
+
+
 # ── `lmds web` ต้องตั้ง token ให้เสมอ ไม่ใช่เฉพาะตอนเปิดออก network ──────────────────
 
 def _web_sandbox(monkeypatch, tmp_path):

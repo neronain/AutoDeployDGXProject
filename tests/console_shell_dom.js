@@ -12,6 +12,7 @@
 //     H.fixture        — quick fleet fixture builder (see defaultRoutes)
 //     H.sse(snapshot)  — push one SSE frame through the page's EventSource
 //     H.tick(n)        — let promises / timers settle
+//     H.fastTimers(k)  — (prelude) run the page's setTimeout/setInterval k× faster; H.sleep stays real time
 //     H.go(hash)       — set location.hash and settle (hashchange fires like a browser task)
 //     H.visible(el)    — is the element actually painted (hidden attr, style.display, CSS rules)
 //     H.assert(cond, message)
@@ -331,7 +332,12 @@ class Element extends Node {
     if (this.tagName === "TEXTAREA") return this.textContent;
     return this.getAttribute("value") || "";
   }
-  set value(v) { this._value = String(v); }
+  set value(v) {
+    // <select> ตาม HTML spec: ตั้งค่าที่ไม่มี <option> ไหนถืออยู่ = ไม่มีตัวไหนถูกเลือก แล้ว .value อ่านกลับเป็น ""
+    // (เดิม harness จำค่าที่ตั้งไว้เฉย ๆ — บั๊ก "Run on ไม่มีตัวเลือกของ hub แล้ว draft.machine ถูกล้าง" จึงมองไม่เห็นในเทส)
+    if (this.tagName === "SELECT" && !this.querySelectorAll("option").some(o => o.value === String(v))) { this._value = ""; return; }
+    this._value = String(v);
+  }
   get checked() { return this._checked !== undefined ? this._checked : this.hasAttribute("checked"); } set checked(v) { this._checked = !!v; }
   get options() { return this.querySelectorAll("option"); }
   get selectedIndex() { const o = this.options; const v = this.value; return o.findIndex(x => x.value === v); }
@@ -474,11 +480,19 @@ function installGlobals(doc, H) {
 }
 
 // ───────────────────────────── harness ─────────────────────────────
+const realSetTimeout = globalThis.setTimeout, realSetInterval = globalThis.setInterval;
 function makeHarness(doc) {
   const H = {
     routes: [], calls: [], streams: [], alerts: [], confirms: [], prompts: [], errors: [], reloads: 0, backs: 0,
     confirmAnswer: true, promptAnswer: undefined,
-    sleep: ms => new Promise(r => setTimeout(r, ms)),
+    // H.sleep จับ setTimeout ตัวจริงไว้ — เวลาของ scenario เดินปกติเสมอ แม้หน้าเว็บจะถูกเร่งด้วย fastTimers
+    sleep: ms => new Promise(r => realSetTimeout(r, ms)),
+    // เร่งนาฬิกาของ *หน้าเว็บ* (setTimeout/setInterval ที่สคริปต์ของหน้าเรียก) — วงรอบ poll 1.2 วิ / 5 วิ
+    // และ backoff ของมันทดสอบได้ในไม่กี่สิบมิลลิวินาที โดยไม่ต้องให้เทสนั่งรอเวลาจริง · เรียกใน prelude ก่อนบูต
+    fastTimers(factor = 50) {
+      globalThis.setTimeout = (fn, ms = 0, ...args) => realSetTimeout(fn, ms / factor, ...args);
+      globalThis.setInterval = (fn, ms = 0, ...args) => realSetInterval(fn, Math.max(1, ms / factor), ...args);
+    },
     async tick(n = 6) { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); await H.sleep(1); for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); },
     async go(hash) { globalThis.location.hash = hash; await H.tick(); },
     sse(snapshot) { const s = H.streams[H.streams.length - 1]; if (!s || !s.onmessage) throw new Error("no EventSource open"); s.onmessage({ data: JSON.stringify(snapshot) }); },
