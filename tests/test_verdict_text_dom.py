@@ -101,3 +101,45 @@ def test_the_whole_line_follows_the_language_of_the_console(tmp_path):
     }, lang="th")
     assert "ตรวจไม่ได้" in text
     assert "could not be checked" not in text and "as far as" not in text
+
+
+# ── ของที่จำไว้ไม่ใช่ของที่ตรวจตอนนี้ (audit 2026-10-06) ────────────────────────────────────────
+#
+# server ติด `unverified` ให้เครื่องที่ต่อไม่ได้/ข้อมูลเก่า (consistent=false · level=warn · สามมิติยังเป็นของที่จำไว้)
+# หน้าเว็บเดิมจะพิมพ์ "matches as far as it could be checked —  (…)" ที่ช่อง {what} ว่าง และการ์ดขึ้นแค่ "(last probe)"
+
+REMEMBERED = {"code": OK, "controllers": OK, "runtimes": OK, "consistent": False, "level": "warn",
+              "verified": False, "unverified": "ต่อเครื่องไม่ได้ตอนนี้ · ข้อมูลล่าสุด 3 ชม.ก่อน"}
+
+
+def test_a_remembered_verdict_is_not_called_a_match_nor_a_mismatch(tmp_path):
+    text = _ask(tmp_path, REMEMBERED)
+    assert text.startswith("not verified now"), text
+    assert "3 ชม.ก่อน" in text, "อายุของข้อมูลต้องไปถึงผู้ใช้"
+    assert "matches" not in text and "does not match" not in text
+    assert "code ✓" in text, "สิ่งที่จำไว้ยังบอกได้ — ในฐานะของที่จำไว้"
+
+
+def test_a_remembered_verdict_with_a_known_problem_is_still_a_mismatch(tmp_path):
+    text = _ask(tmp_path, {**REMEMBERED, "level": "bad",
+                           "controllers": {"state": "stale", "detail": "เก่ากว่า lmds 2 ใบ", "items": []}})
+    assert "does not match the hub yet" in text
+
+
+def test_the_fleet_card_marks_a_machine_it_could_not_verify_now(tmp_path):
+    verified = {**REMEMBERED, "consistent": True, "level": "ok", "verified": True, "unverified": ""}
+    report = {"hub": {"dirty": [], "verdict": None},
+              "summary": {"total": 2, "consistent": 1, "unverified": 1, "line": ""},
+              "nodes": [{"name": "up", "source": "cache", **verified},
+                        {"name": "down", "source": "registry", **REMEMBERED}]}
+    (out,) = run_scenario(tmp_path, FLEET, f"""
+        await H.tick(4);
+        lastFleetConsistency = {json.dumps(report)};
+        console.log(JSON.stringify({{ html: fleetConsistencyCard(), errors: H.errors }}));
+    """)
+    assert out["errors"] == []
+    rows = {row.split("</b>")[0].split("<b>")[-1]: row for row in out["html"].split("<tr")[1:]}
+    assert "not verified now" in rows["down"] and "3 ชม.ก่อน" in rows["down"], rows["down"]
+    assert "fc-warn" in rows["down"].split(">")[0], "แถวต้องเป็นสีเหลือง ไม่ใช่เขียว"
+    assert "not verified now" not in rows["up"]
+    assert "1 / 2 machines match the hub" in out["html"]

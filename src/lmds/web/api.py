@@ -2037,7 +2037,8 @@ def create_app(token: str = "") -> FastAPI:
             remember(last_error=str(exc)[:200])
             return {"name": name, "reachable": False, "error": str(exc), "host": None, "models": []}
         state.STORE.set_node(name, info)
-        remember(last_error="", **status_from_probe(info))
+        # last_seen ด้วย — ทะเบียนที่มีผล probe ใหม่แต่เวลาเก่า ถูกอ่านว่า "ยังไม่ได้ตรวจตอนนี้" (consistency.remembered_only)
+        remember(last_error="", last_seen=_timestamp(), **status_from_probe(info))
         # อ่านกลับจากแคชเพื่อให้ได้บทบาท stacked (decorate_stacked) เหมือนทางแคช/SSE
         decorated = (state.STORE.snapshot()["nodes"].get(name) or {}).get("data") or info
         return _attach_node_jobs(name, {"name": name, "reachable": True, "error": "", **decorated})

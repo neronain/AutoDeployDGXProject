@@ -267,8 +267,10 @@ def fleet_consistency(params: dict[str, str], target: str) -> str:
     mark = {"ok": "✓", "n/a": "✓", "unknown": "?"}
     # หนึ่งบรรทัดต่อเครื่อง (15 เครื่อง × 4 บรรทัดเกินงบ 4,000 ตัวของ probe) · ขยายเฉพาะมิติที่ไม่ผ่าน/ตรวจไม่ได้
     for n in report.get("nodes") or []:
-        summary = "ตรง hub" if n.get("consistent") else ("ตรวจไม่ได้ครบ" if n.get("level") == "warn" else "ยังไม่ตรง")
-        src = " (จากทะเบียน ยังไม่มี probe ล่าสุด)" if n.get("source") == "registry" else ""
+        # ของที่จำไว้ (ต่อไม่ได้/ข้อมูลเก่า) ไม่ใช่คำยืนยันของตอนนี้ — ผู้ช่วยต้องไม่ตอบว่า "ตรง hub" หรือ "ไม่ตรง" จากมัน
+        summary = ("ตรง hub" if n.get("consistent") else "ยังไม่ตรง" if n.get("level") == "bad"
+                   else f"ยังไม่ได้ตรวจตอนนี้ ({n['unverified'][:120]})" if n.get("unverified") else "ตรวจไม่ได้ครบ")
+        src = " (จากทะเบียน ยังไม่มี probe ล่าสุด)" if n.get("source") == "registry" and not n.get("unverified") else ""
         axes = {axis: (n.get(axis) or {}) for axis in ("code", "controllers", "runtimes")}
         marks = " · ".join(f"{axis} {mark.get(a.get('state'), '✗')}" for axis, a in axes.items())
         lines.append(f"- {n.get('name')}: {summary}{src} — {marks}")

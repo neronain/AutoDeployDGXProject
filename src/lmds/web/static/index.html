@@ -1138,6 +1138,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "matches as far as it could be checked — {what} ({marks})":
       "ตรง hub เท่าที่ตรวจได้ — {what} ({marks})",
     "does not match the hub yet — {what} ({marks})": "ยังไม่ตรง hub — {what} ({marks})",
+    "not verified now — {why} · remembered: {marks}": "ยังไม่ได้ตรวจตอนนี้ — {why} · ที่จำไว้: {marks}",
+    "not verified now": "ยังไม่ได้ตรวจตอนนี้",
     "{what} could not be checked ({why})": "{what} ตรวจไม่ได้ ({why})",
     "code": "โค้ด",
     "controllers": "controller",
@@ -6974,6 +6976,9 @@ function verdictText(v) {
   const marks = T("code {c} · controllers {k} · runtime {r}",
     { c: mark(v.code), k: mark(v.controllers), r: mark(v.runtimes) });
   if (v.consistent) return T("matches the hub ({marks})", { marks });
+  // ของที่ทะเบียนจำไว้ (ต่อเครื่องไม่ได้ / ข้อมูลเก่า) ที่ไม่มีอะไรรู้ว่าผิด — ไม่ใช่ "ตรง" และไม่ใช่ "ไม่ตรง"
+  // server ส่ง `unverified` พร้อมอายุข้อมูลมาแล้ว (Verdict.unverified · audit 2026-10-06)
+  if (v.unverified && v.level !== "bad") return T("not verified now — {why} · remembered: {marks}", { why: v.unverified, marks });
   const wrong = [], unknown = [];
   for (const [k, a] of [[T("code"), v.code], [T("controllers"), v.controllers], [T("runtime"), v.runtimes]]) {
     if (a.state === "ok" || a.state === "n/a") continue;
@@ -7860,7 +7865,7 @@ function fleetConsistencyCard() {
   const ok = a => a.state === "ok" || a.state === "n/a";
   const cell = a => `<td class="${ok(a) ? "" : a.state === "unknown" ? "fc-warn" : "fc-bad"}" title="${esc(a.detail)}">${ok(a) ? "✓" : a.state === "unknown" ? "?" : "✗"} <span class="dim">${esc((a.detail || "").slice(0, 56))}</span></td>`;
   const rows = ((FC || {}).nodes || []).map(n =>
-    `<tr class="orow ${n.level === "bad" ? "fc-bad" : n.level === "warn" ? "fc-warn" : ""}" data-href="#/node/${encodeURIComponent(n.name)}"><td><b>${esc(n.name)}</b>${n.source === "registry" ? ` <span class="dim" title="from the registry's last probe — open the card to refresh">(last probe)</span>` : ""}</td>${cell(n.code)}${cell(n.controllers)}${cell(n.runtimes)}</tr>`).join("");
+    `<tr class="orow ${n.level === "bad" ? "fc-bad" : n.level === "warn" ? "fc-warn" : ""}" data-href="#/node/${encodeURIComponent(n.name)}"><td><b>${esc(n.name)}</b>${n.unverified ? ` <span class="fc-warn" title="${esc(n.unverified)}">(${esc(T("not verified now"))})</span>` : n.source === "registry" ? ` <span class="dim" title="from the registry's last probe — open the card to refresh">(last probe)</span>` : ""}</td>${cell(n.code)}${cell(n.controllers)}${cell(n.runtimes)}</tr>`).join("");
   const hubV = FC && FC.hub && FC.hub.verdict;
   const hubRow = hubV ? `<tr class="orow ${hubV.level === "bad" ? "fc-bad" : hubV.level === "warn" ? "fc-warn" : ""}" data-href="#/hub"><td><b>hub</b></td><td title="${esc(T("hub is the reference"))}">— </td>${cell(hubV.controllers)}${cell(hubV.runtimes)}</tr>` : "";
   const dirty = FC && FC.hub && (FC.hub.dirty || []).length;
