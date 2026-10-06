@@ -727,7 +727,7 @@ find "$SITE" \( -name '*.py' -o -name '*.j2' \) | LC_ALL=C sort | xargs sha256su
 | มิติ | ผ่านเมื่อ | ตรวจจาก |
 |---|---|---|
 | **code** | commit ของ node = hub (prefix ≥7) · ติดตั้งแล้วรันของที่ติดตั้ง · **hub ไม่มีไฟล์แก้ค้าง** | `host.lmds_commit`, `host.lmds_installed_commit`, `git status` ของ hub |
-| **controllers** | ทุก bundle มี `template_hash` ตรงกับของ hub (ลายเซ็น `generator/templates/*.j2` ที่ renderer ฝังใน `MODEL_PROFILE.yaml` + หัว controller) — ไม่ใช่เลข version · ไม่มี hash = เก่าแน่ · `lmds adopt` = n/a | `models[].controller.state` |
+| **controllers** | ทุก bundle มี `template_hash` ตรงกับของ hub (ลายเซ็น `generator/templates/*.j2` + `RENDER_REVISION` ของ renderer — ที่ renderer ฝังใน `MODEL_PROFILE.yaml` + หัว controller) — ไม่ใช่เลข version · ไม่มี hash = เก่าแน่ · `lmds adopt` = n/a | `models[].controller.state` |
 | **runtime** | ทุก bundle llama.cpp: build/image ที่ผูกไว้รู้จัก arch ของโมเดล (`runtime_arch.supported == true`) · `null` = "ตรวจไม่ได้" ไม่ใช่ผ่าน | `models[].runtime_arch`, `host.runtimes.llamacpp[]` |
 
 ```bash

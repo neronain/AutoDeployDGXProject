@@ -55,9 +55,17 @@ def llamacpp_arch_since(architecture: str | None) -> dict[str, str] | None:
 
 _TEMPLATE_HASH: dict[str, str] = {}
 
+# รุ่นของ "วิธี render" — เพิ่มทีละ 1 เมื่อแก้ renderer.py / shellsafe.py แล้ว controller ที่ได้เปลี่ยน *โดยไม่ได้แตะไฟล์ template*
+#
+# template_hash เดิมคิดจากไฟล์ .j2 อย่างเดียว · การ escape ค่าทำที่ renderer ไม่ใช่ใน template — ถ้าไม่นับรวม bundle ที่ render
+# ด้วย renderer รุ่นที่ยังไม่ escape จะได้ลายเซ็นเดียวกับรุ่นที่ escape แล้ว hub จะรายงานว่า "ตรง template" ทั้งที่ไม่ใช่ และ
+# `lmds bundles refresh --if-older` (ขั้นสุดท้ายของ `lmds node install`) ก็ข้ามไป
+#   2 = 2026-10-06 escape ทุกค่าตามบริบทของ bash (audit: ชื่อไฟล์จาก Hub / served_model_name รันคำสั่งบน node ได้)
+RENDER_REVISION = 2
+
 
 def template_hash(templates_dir: Path | None = None) -> str:
-    """ลายเซ็นของชุด template ที่แพ็กเกจนี้ถือ — sha256 ของชื่อ+เนื้อหา `templates/*.j2` เรียงตามชื่อ (12 ตัวแรก)
+    """ลายเซ็นของชุด template ที่แพ็กเกจนี้ถือ — sha256 ของ RENDER_REVISION + ชื่อ+เนื้อหา `templates/*.j2` เรียงตามชื่อ (12 ตัวแรก)
 
     ทำไมไม่ใช้เลข version: `generated_by: lmds 0.6.0` กับ 0.6.1 ที่ template ไม่ได้แก้เลยคือ controller ตัวเดียวกัน
     ส่วน 0.6.1 สองรอบที่แก้ template ระหว่างทาง (ยังไม่ bump) คือคนละตัว · renderer ฝังค่านี้ลง MODEL_PROFILE.yaml
@@ -67,10 +75,11 @@ def template_hash(templates_dir: Path | None = None) -> str:
     import hashlib
 
     directory = Path(templates_dir) if templates_dir else TEMPLATES_DIR
-    key = str(directory)
+    key = f"{directory}#{RENDER_REVISION}"
     if key in _TEMPLATE_HASH and templates_dir is None:
         return _TEMPLATE_HASH[key]
     digest = hashlib.sha256()
+    digest.update(f"render-revision:{RENDER_REVISION}\0".encode("utf-8"))
     for path in sorted(directory.glob("*.j2")):
         digest.update(path.name.encode("utf-8") + b"\0")
         digest.update(path.read_bytes())
