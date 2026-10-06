@@ -38,6 +38,20 @@
   มองหาแค่ `*-single.sh`/`*-stacked.sh` จึงกลับมาเองไม่ได้ · ตอนนี้จด path เต็ม · ทะเบียนเก่าที่เป็น path สัมพัทธ์
   ถูกอ่านออก · `*-adopted.sh` ถูกสแกนเจอ (ด้วยชื่อ container เดิม ไม่ใช่ `lmds-<slug>`) · hub ตาม log ของ bundle
   ที่ adopt ไว้บนเครื่องอื่นได้ · `lmds clone` ของ bundle ที่ adopt มาบอกเหตุผลแทน "ไม่พบ controller"
+- **`lmds node install` หลาย process พร้อมกัน ถอยไป GitHub เงียบ ๆ แทนโค้ดของ hub** (audit 2026-10-06) ·
+  วิธี rollout ของทีมคือยิง 15 process พร้อมกัน · แคช bundle เป็นแบบ "ดูว่ามีไหม → ไม่มีก็
+  `git bundle create` ลงชื่อนั้นเลย" และ git ถือ `<ชื่อ>.lock` — แคชเย็น 14 ใน 15 ตัวตายด้วย exit 128
+  แล้วสคริปต์ถอยไป `git pull --ff-only` จาก GitHub โดยไม่มีบรรทัดไหนบอก · hub ที่ HEAD ยังไม่ push /
+  ยืนที่ tag / node ที่ออกเน็ตไม่ได้ จึงจบที่คนละ commit หรือล้ม
+  - `source_bundle()` pack ลงชื่อชั่วคราวของตัวเองแล้ว `os.replace` + ล็อกไฟล์ให้ pack รอบเดียว —
+    ทุก process ได้ bundle เดียวกัน · ไม่เชื่อของที่วางรอไว้ที่ชื่อแคช (symlink / ไฟล์ของ user อื่น)
+  - **ถอยไป GitHub ไม่เงียบอีก**: `⚠ ไม่ได้ติดตั้งจากโค้ดของ hub — <เหตุผล>` พิมพ์ทั้งใน CLI
+    (`node install`, `--all`, `node add --install`) และเป็นบรรทัดแรกของ log งานบนหน้าเว็บ ·
+    API ใหม่ `nodes.plan_install()` คืน (สคริปต์, notice) · `Result.notice`
+  - ทางติดตั้งจาก GitHub (hub ไม่มี checkout · `$LMDS_REPO_REF` · ถอยมา) ต่อด้วย
+    `lmds bundles refresh --all --if-older` เหมือนทาง bundle — เดิมข้าม จบที่ code ใหม่ controller เก่า
+  - bundle ที่ส่งไป node วางที่ `~/.lmds-src.bundle` ของ user นั้น แทน `/tmp/lmds-src.bundle`
+    (ชื่อตายตัวในโฟลเดอร์ที่ทุก user เขียนได้ แล้วถูก clone มารัน install.sh)
 
 - **context ต่อคำขอ · slot · ก้อนรวม ของ llama.cpp ถูกเอามาปนกัน** (ตรวจ 2026-10-05) ·
   `serving.context` ของ llama.cpp คือ `--ctx-size` = ก้อนรวมที่หารให้ทุก slot ส่วนเพดานของ

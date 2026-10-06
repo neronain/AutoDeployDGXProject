@@ -257,7 +257,11 @@ doctor, logs, ชุดทดสอบ, ปุ่ม **Key** บนการ์�
 1. ใส่ SSH key ของ hub ลง `~/.ssh/authorized_keys` ของเครื่องนั้น
 2. **ส่งโค้ดของ hub ไป** (git bundle ~2 MB ผ่าน scp แล้ว `git clone -b main` / `git pull` จากไฟล์นั้น · origin ชี้กลับ
    GitHub เผื่อวันหน้า) แล้วรัน `install.sh` บนเครื่องนั้น — เครื่องนั้น **ไม่ต้องเข้าถึง GitHub** และไม่ต้องมี deploy key
-   ต้องมีแค่ `git` + `python3` (hub ที่ไม่ได้ติดตั้งจาก git checkout จะถอยไป `git clone` จาก GitHub ตามเดิม) ·
+   ต้องมีแค่ `git` + `python3` · ไฟล์ที่ส่งไปวางที่ `~/.lmds-src.bundle` ของ user ที่ ssh เข้าไป (ไม่ใช่ `/tmp` ที่ทุก user
+   บนเครื่องนั้นเขียนได้) แล้วถูกลบเมื่อ clone เสร็จ · **ส่งไม่ได้ = ถอยไป `git clone`/`git pull` จาก GitHub และบอกเสมอว่าทำไม**
+   (hub ไม่ได้ติดตั้งจาก git checkout · pack ไม่ได้ · scp ล้ม) — บรรทัด `⚠ ไม่ได้ติดตั้งจากโค้ดของ hub — <เหตุผล>` ขึ้นทั้งใน
+   CLI และ log ของงานบนหน้าเว็บ เพราะเครื่องที่ถอยอาจได้คนละ commit กับ hub · ทั้งสองทางจบด้วย
+   `lmds bundles refresh --all --if-older` เหมือนกัน ·
    โฟลเดอร์ `~/AutoDeployDGXProject` เดิมที่ไม่ใช่ git (ติดตั้งแบบ copy) ถูกย้ายไป `.bak-<เวลา>` · checkout ที่แก้ไว้/แยกสาย
    ถูกเก็บที่ branch `local-<เวลา>` + stash แล้วตามโค้ดของ hub
 3. ติดตั้ง Docker / NVIDIA Container Toolkit / กลุ่ม docker / linger ด้วยรหัสผ่านที่ให้มา (ส่งทาง stdin ไม่เขียนดิสก์)

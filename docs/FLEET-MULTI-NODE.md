@@ -102,8 +102,10 @@ hub **ไม่ได้ส่ง agent ไปรัน** บนเครื่�
 
 ```bash
 lmds node install <ชื่อเครื่อง>      # hub ส่งโค้ดของตัวเองไป (git bundle ~2 MB ผ่าน scp) แล้วรัน install.sh บนเครื่องนั้น
-                                     # — เครื่องนั้นไม่ต้องเข้า GitHub · hub ที่ไม่ได้ติดตั้งจาก checkout ถอยไป clone เอง
-lmds node install --all              # อัปเดตทุกเครื่อง (แคช bundle ต่อ commit — pack ครั้งเดียว)
+                                     # — เครื่องนั้นไม่ต้องเข้า GitHub · ส่งไม่ได้ (hub ไม่มี checkout / pack / scp ล้ม) = ถอยไป
+                                     #   clone จาก GitHub และพิมพ์ "⚠ ไม่ได้ติดตั้งจากโค้ดของ hub — <เหตุผล>" เสมอ
+lmds node install --all              # อัปเดตทุกเครื่อง (แคช bundle ต่อ commit — pack ครั้งเดียว · ยิงหลาย process
+                                     #   พร้อมกันได้ ทุกตัวได้ bundle เดียวกัน)
 lmds node add <ip> --user <u> --install   # เพิ่ม + ติดตั้งในคำสั่งเดียว
 lmds node setup <ชื่อ> --with-prereq  # ขั้นที่ใช้ sudo (Docker / toolkit / กลุ่ม docker / linger) — ถามรหัสตอนนี้ ใช้ครั้งเดียว
 ```

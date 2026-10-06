@@ -16,12 +16,20 @@ import pty
 import select
 import shutil
 import shlex
+import stat
 import subprocess
 import tempfile
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from lmds.config.paths import config_dir, ensure_config_dir
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — เครื่องพัฒนาที่ไม่ใช่ POSIX
+    fcntl = None
 
 from .registry import Node, NodeError
 
@@ -67,6 +75,9 @@ class Result:
     exit_code: int
     stdout: str
     stderr: str
+    # สิ่งที่ hub ต้องบอกผู้สั่งเกี่ยวกับงานนี้ นอกเหนือจากผลของคำสั่งปลายทาง — ตอนนี้มีเรื่องเดียว:
+    # `install_lmds` ไม่ได้ส่งโค้ดของ hub ไป (ดู plan_install) · ว่าง = ไม่มีอะไรต้องบอก
+    notice: str = ""
 
     @property
     def ok(self) -> bool:
@@ -346,6 +357,7 @@ REPO_URL = os.environ.get("LMDS_REPO_URL") or "https://github.com/neronain/AutoD
 REPO_REF = (os.environ.get("LMDS_REPO_REF") or "").strip()
 _INSTALL_SCRIPT = """
 set -e
+{notice}
 cd "$HOME"
 ref={ref}
 if [ -n "$ref" ]; then echo "ติดตั้งจาก ref ที่ปักหมุดไว้: $ref"; fi
@@ -365,6 +377,14 @@ else
 fi
 LMDS_ASSUME_YES=1 {skip}./install.sh
 "$HOME/.local/bin/lmds" version
+{refresh}"""
+
+# ท้ายสคริปต์ติดตั้ง **ทั้งสองทาง** — เดิมมีแต่ทาง bundle · ทาง GitHub (hub ไม่มี checkout / ปักหมุด
+# $LMDS_REPO_REF / ถอยมาเพราะส่ง bundle ไม่ได้) จบที่ code ใหม่แต่ controller เก่า ทั้งที่ "ตรง hub" นับ
+# controller ด้วย และ `lmds node install` บอกผู้ใช้ว่า regenerate ให้ (audit 2026-10-06)
+_REFRESH_BUNDLES = """\
+echo "── regenerate controller ที่เก่ากว่า template ของ lmds (ออฟไลน์ · bundle.env/bundle.args คงเดิม) ──"
+"$HOME/.local/bin/lmds" bundles refresh --all --if-older || echo "regenerate controller ไม่สำเร็จ (exit $?) — ดูด้วย: lmds bundles refresh --all"
 """
 
 # ติดตั้งจากโค้ดที่ hub ส่งมาให้ (git bundle) — เครื่องปลายทางไม่ต้องเข้าถึง GitHub เลย
@@ -405,11 +425,25 @@ fi
 rm -f {bundle}
 LMDS_ASSUME_YES=1 {skip}./install.sh
 "$HOME/.local/bin/lmds" version
-echo "── regenerate controller ที่เก่ากว่า template ของ lmds (ออฟไลน์ · bundle.env/bundle.args คงเดิม) ──"
-"$HOME/.local/bin/lmds" bundles refresh --all --if-older || echo "regenerate controller ไม่สำเร็จ (exit $?) — ดูด้วย: lmds bundles refresh --all"
-"""
+{refresh}"""
 
-REMOTE_BUNDLE = "/tmp/lmds-src.bundle"
+# ที่วาง bundle บนเครื่องปลายทาง — path **สัมพัทธ์** = ใต้ home ของ user ที่ ssh เข้าไป (scp วางตรงนั้น ·
+# สคริปต์อ้างผ่าน "$HOME" ดู _remote_path)
+#
+# เดิม `/tmp/lmds-src.bundle`: ชื่อตายตัวในโฟลเดอร์ที่ทุก user บนเครื่องนั้นเขียนได้ แล้วถูก `git clone`
+# มารัน install.sh (audit 2026-10-06) — สองทางที่พัง: (1) ไฟล์ค้างของ user อื่น (สคริปต์ตายก่อนถึง
+# `rm -f` · เครื่องที่ถูกเพิ่มเข้าทะเบียนสองชื่อคนละ user) ทำให้ scp เขียนทับไม่ได้ตลอดไป แล้วทุกรอบ
+# ถอยไป GitHub  (2) ใครก็ตามบนเครื่องนั้นวางไฟล์รอไว้ได้ — เคอร์เนลที่ไม่มี fs.protected_regular
+# ปล่อยให้ scp เขียนลงไฟล์ของคนอื่น ซึ่งเจ้าของแก้ต่อได้ก่อน clone = โค้ดของเขาถูกรันในชื่อ user ของเรา
+REMOTE_BUNDLE = ".lmds-src.bundle"
+
+
+def _remote_path(path: str) -> str:
+    """path บนเครื่องปลายทางในรูปที่ใส่ลงสคริปต์ได้ — สัมพัทธ์ = ใต้ $HOME (ที่เดียวกับที่ scp วาง)
+
+    ต้องเป็น path เต็มเพราะสคริปต์ `cd AutoDeployDGXProject` ก่อนใช้ · `~` ใช้ไม่ได้ (อยู่ใน quote แล้วไม่ขยาย)
+    """
+    return shlex.quote(path) if path.startswith("/") else '"$HOME"/' + shlex.quote(path)
 
 
 def ctl_script(slug: str, node_name: str, argv: str, env_prefix: str = "") -> str:
@@ -563,64 +597,167 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False,
     return results
 
 
-def install_script(with_prereq: bool = False, bundle: str = "") -> str:
+def _one_line(text: str | None, limit: int = 300) -> str:
+    """ข้อความของ git/scp หลายบรรทัด → บรรทัดเดียว (ไปอยู่ในบรรทัด echo ของสคริปต์และในตารางของ CLI)"""
+    return " ".join((text or "").split())[:limit]
+
+
+def _fallback_notice(reason: str) -> str:
+    """บรรทัดที่ต้องถึงคนสั่งทุกครั้งที่ node ไม่ได้โค้ดของ hub — ถอยเงียบ ๆ คือที่มาของ "ฟลีตคนละ commit" """
+    return (f"⚠ ไม่ได้ติดตั้งจากโค้ดของ hub — {reason} · เครื่องนี้จะดึงจาก {REPO_URL} เองแทน "
+            "ซึ่งอาจเป็นคนละ commit กับที่ hub รันอยู่ (ยืนยันด้วย: lmds fleet check --check)")
+
+
+def install_script(with_prereq: bool = False, bundle: str = "", fallback_reason: str = "") -> str:
     """สคริปต์ติดตั้ง — แยกออกมาเพื่อให้ทั้งแบบรอผลและแบบสตรีมใช้ตัวเดียวกัน
 
     `bundle` = path ของ git bundle ที่ส่งไปไว้บนเครื่องนั้นแล้ว → ติดตั้งจากไฟล์นั้น
     ว่าง = ทางเดิม (clone จาก GitHub ซึ่งเครื่องนั้นต้องมีสิทธิ์เข้าถึงเอง)
+    `fallback_reason` = ทำไมรอบนี้ไม่ได้ส่ง bundle ทั้งที่ควรส่ง → สคริปต์พิมพ์บอกเป็นบรรทัดแรก
+    (งานจากหน้าเว็บสตรีม output ของสคริปต์ตรง ๆ — บรรทัดนี้คือทางเดียวที่ผู้ใช้หน้าเว็บจะเห็น)
     """
     skip = "" if with_prereq else "LMDS_SKIP_PREREQ=1 "
     if bundle:
         return _INSTALL_FROM_BUNDLE_SCRIPT.format(
-            repo=REPO_URL, skip=skip, bundle=shlex.quote(bundle))
-    return _INSTALL_SCRIPT.format(repo=REPO_URL, skip=skip, ref=shlex.quote(REPO_REF))
+            repo=REPO_URL, skip=skip, bundle=_remote_path(bundle), refresh=_REFRESH_BUNDLES)
+    notice = f"echo {shlex.quote(_fallback_notice(fallback_reason))}" if fallback_reason else ""
+    return _INSTALL_SCRIPT.format(repo=REPO_URL, skip=skip, ref=shlex.quote(REPO_REF),
+                                  notice=notice, refresh=_REFRESH_BUNDLES)
 
 
-def source_bundle() -> Path | None:
-    """git bundle ของ checkout ที่ hub ตัวนี้ติดตั้งมา — None เมื่อ hub ไม่ได้ติดตั้งจาก git
+def _own_file(path: Path) -> bool:
+    """ไฟล์ธรรมดาที่ user นี้เป็นเจ้าของ — ไม่ตาม symlink
 
-    แคชต่อ commit ใน temp dir: ฟลีต 15 เครื่องกด update พร้อมกันไม่ต้อง pack 15 รอบ
+    แคชอยู่ใน temp dir ที่ทุก user เขียนได้ และชื่อเดาได้จาก commit · `is_file()` เฉย ๆ เชื่อทุกอย่างที่
+    วางรอไว้ตรงนั้น (symlink ไป bundle อื่น · ไฟล์ของ user อื่น) แล้วส่งให้ทั้งฟลีตไปรัน install.sh
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    owner = getattr(os, "getuid", lambda: info.st_uid)()
+    return stat.S_ISREG(info.st_mode) and info.st_uid == owner and info.st_size > 0
+
+
+@contextmanager
+def _packing_lock(directory: Path):
+    """ให้ pack ทีละตัวข้าม process — ตัวที่รออยู่จะได้ใช้ของที่ตัวแรกทำเสร็จ ไม่ต้อง pack ซ้ำ 15 รอบ
+
+    ล็อกไม่ได้ (ไม่มี fcntl · โฟลเดอร์เขียนไม่ได้ · มีของขวางชื่อไฟล์ล็อก) = ไปต่อโดยไม่ล็อก —
+    ความถูกต้องไม่ได้พึ่งล็อก (ดู _source_bundle: ชื่อไฟล์ชั่วคราวไม่ซ้ำ + os.replace) ล็อกแค่ประหยัดงาน
+    """
+    handle = None
+    if fcntl is not None:
+        try:
+            # O_NOFOLLOW: ไฟล์ล็อกอยู่ในโฟลเดอร์ที่ทุกคนเขียนได้ — ไม่เปิดตาม symlink ที่ใครวางไว้
+            fd = os.open(directory / "lmds-src.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            handle = os.fdopen(fd, "r+")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError:
+            if handle is not None:
+                handle.close()
+            handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
+def _discard(scratch: Path) -> None:
+    """ลบไฟล์ชั่วคราวของรอบที่ล้ม รวม `.lock` ที่ git ทิ้งไว้เมื่อถูกฆ่ากลางทาง — ไม่งั้นกองอยู่ใน temp dir"""
+    for leftover in (scratch, scratch.with_name(scratch.name + ".lock")):
+        try:
+            leftover.unlink()
+        except OSError:
+            pass
+
+
+def _source_bundle() -> tuple[Path | None, str]:
+    """(bundle, "") หรือ (None, เหตุผลที่ไม่ได้) — เหตุผลต้องไปถึงคนสั่งเสมอ (ดู plan_install)
+
+    สร้างแบบ **หลาย process พร้อมกันได้**: วิธี rollout ของทีมคือ `lmds node install <n>` 15 process
+    พร้อมกัน (audit 2026-10-06) · ของเดิม "ดูว่ามีไฟล์ไหม → ไม่มีก็ `git bundle create` ลงชื่อนั้นเลย" —
+    git ถือ `<ชื่อ>.lock` ระหว่างเขียน ตัวที่มาชนตายด้วย exit 128 → แคชเย็น 14 ใน 15 เครื่องได้ None
+    แล้วถอยไป `git pull` จาก GitHub เงียบ ๆ · ตอนนี้ pack ลงชื่อชั่วคราวของตัวเองแล้ว os.replace (atomic):
+    ไม่มีใครชนใคร และไม่มีใครเห็นไฟล์ที่เขียนไม่จบ
     """
     from lmds.web.selfupdate import source_root
 
     root = source_root()
     if root is None:
-        return None
+        return None, "hub ตัวนี้ไม่ได้ติดตั้งจาก git checkout"
     try:
         head = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"อ่าน HEAD ของ {root} ไม่ได้: {_one_line(str(exc))}"
     if head.returncode != 0 or not head.stdout.strip():
-        return None
+        return None, f"อ่าน HEAD ของ {root} ไม่ได้: {_one_line(head.stderr) or f'git exit {head.returncode}'}"
     target = Path(tempfile.gettempdir()) / f"lmds-src-{head.stdout.strip()}.bundle"
-    if target.is_file():
-        return target
+    if _own_file(target):
+        return target, ""
+    with _packing_lock(target.parent):
+        if _own_file(target):
+            return target, ""               # ตัวอื่น pack เสร็จระหว่างที่รอล็อก
+        scratch = target.with_name(f"{target.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            # HEAD ไม่ใช่ "main": ชื่อไฟล์แคชผูกกับ HEAD อยู่แล้ว แต่ของข้างในเคยเป็น main —
+            # hub ที่ checkout tag/branch อื่น (หรือ detached) จึงส่งโค้ดคนละชุดกับที่ตัวเองรัน
+            # ไปให้ทั้งฟลีต โดย stamp ยังรายงานว่า "ตรง hub" · และ hub ที่ clone มาแบบ
+            # --branch v0.8.0 ไม่มี ref main ในเครื่องเลย → pack ล้ม แล้วถอยไป GitHub เงียบ ๆ
+            done = subprocess.run(["git", "-C", str(root), "bundle", "create", str(scratch), "HEAD"],
+                                  capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _discard(scratch)
+            return None, f"git bundle create ล้ม: {_one_line(str(exc))}"
+        if done.returncode != 0 or not scratch.is_file():
+            _discard(scratch)
+            return None, f"git bundle create ล้ม (exit {done.returncode}): {_one_line(done.stderr) or 'ไม่มีข้อความ'}"
+        try:
+            os.replace(scratch, target)
+        except OSError as exc:
+            # ของ user อื่นขวางชื่อแคชอยู่ในโฟลเดอร์ sticky (/tmp) — เขียนทับไม่ได้ และไม่ควรเชื่อของนั้น
+            _discard(scratch)
+            if _own_file(target):
+                return target, ""
+            return None, f"วาง bundle ที่ {target} ไม่ได้: {_one_line(str(exc))}"
+    return target, ""
+
+
+def source_bundle() -> Path | None:
+    """git bundle ของ checkout ที่ hub ตัวนี้ติดตั้งมา — None เมื่อ hub ไม่ได้ติดตั้งจาก git หรือ pack ไม่ได้
+
+    แคชต่อ commit ใน temp dir: ฟลีต 15 เครื่องกด update พร้อมกันไม่ต้อง pack 15 รอบ
+    """
+    return _source_bundle()[0]
+
+
+def _ship_source(node: Node) -> tuple[str, str]:
+    """(path บนเครื่องปลายทาง, "") หรือ ("", เหตุผลที่ส่งไม่ได้)"""
+    local, why = _source_bundle()
+    if local is None:
+        return "", why
     try:
-        # HEAD ไม่ใช่ "main": ชื่อไฟล์แคชผูกกับ HEAD อยู่แล้ว แต่ของข้างในเคยเป็น main —
-        # hub ที่ checkout tag/branch อื่น (หรือ detached) จึงส่งโค้ดคนละชุดกับที่ตัวเองรัน
-        # ไปให้ทั้งฟลีต โดย stamp ยังรายงานว่า "ตรง hub" · และ hub ที่ clone มาแบบ
-        # --branch v0.8.0 ไม่มี ref main ในเครื่องเลย → pack ล้ม แล้วถอยไป GitHub เงียบ ๆ
-        done = subprocess.run(["git", "-C", str(root), "bundle", "create", str(target), "HEAD"],
-                              capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return target if done.returncode == 0 and target.is_file() else None
+        pushed = push_file(node, str(local), REMOTE_BUNDLE, timeout=300)
+    except NodeError as exc:
+        return "", f"ส่งไฟล์ไป {node.name} ไม่ได้: {_one_line(str(exc))}"
+    if not pushed.ok:
+        said = _one_line(getattr(pushed, "stderr", "")) or f"scp exit {getattr(pushed, 'exit_code', '?')}"
+        return "", f"ส่งไฟล์ไป {node.name} ไม่ได้: {said}"
+    return REMOTE_BUNDLE, ""
 
 
 def ship_source(node: Node) -> str:
     """ส่งโค้ดของ hub ไปเครื่องนั้น — คืน path บนเครื่องปลายทาง หรือ "" เมื่อส่งไม่ได้
 
-    ส่งไม่ได้ (hub ไม่มี checkout / scp ล้ม) ไม่ใช่ความผิดพลาด — แค่ถอยไปทาง GitHub ตามเดิม
+    ส่งไม่ได้ (hub ไม่มี checkout / scp ล้ม) ไม่ทำให้การติดตั้งล้ม — ถอยไปทาง GitHub · แต่ **ต้องบอก**:
+    ผู้เรียกที่ต้องการเหตุผลใช้ plan_install
     """
-    local = source_bundle()
-    if local is None:
-        return ""
-    try:
-        pushed = push_file(node, str(local), REMOTE_BUNDLE, timeout=300)
-    except NodeError:
-        return ""
-    return REMOTE_BUNDLE if pushed.ok else ""
+    return _ship_source(node)[0]
 
 
 class HubDirtyError(NodeError):
@@ -647,19 +784,32 @@ def hub_dirty_files() -> tuple[Path | None, list[str]]:
     return root, dirty_files(root)
 
 
-def prepare_install(node: Node, with_prereq: bool = False, force: bool = False) -> str:
-    """สคริปต์ติดตั้งสำหรับเครื่องนี้ — ส่งโค้ดจาก hub ไปก่อนถ้าทำได้ แล้วค่อยคืนสคริปต์
+def plan_install(node: Node, with_prereq: bool = False, force: bool = False) -> tuple[str, str]:
+    """(สคริปต์ติดตั้งสำหรับเครื่องนี้, notice) — ส่งโค้ดจาก hub ไปก่อนถ้าทำได้ แล้วค่อยคืนสคริปต์
 
-    จุดเดียวที่ทั้ง CLI (`lmds node install`) และหน้าเว็บ (ปุ่ม install/update) เรียก
+    จุดเดียวที่ทั้ง CLI (`lmds node install`) และหน้าเว็บ (ปุ่ม install/update) เดินผ่าน
     · hub ที่มีไฟล์แก้ค้าง = ปฏิเสธ (HubDirtyError) เว้นแต่ `force` — audit 2026-09-06 §5.2 C3: hub dirty=8 ขณะที่ทุก node
     dirty=0 แล้ว "ตรง hub" ทั้งฟลีตทั้งที่ hub รันโค้ด (a)–(d) ที่ node ไม่มี
+    · notice ไม่ว่าง = รอบนี้ **ไม่ได้** ส่งโค้ดของ hub ไป พร้อมเหตุผล (audit 2026-10-06: เดิมถอยไป GitHub
+    โดยไม่มีบรรทัดไหนบอก) — สคริปต์พิมพ์บรรทัดเดียวกันนี้เองด้วย ผู้เรียกที่ไม่โชว์ output ของสคริปต์ต้องพิมพ์ notice
     """
     root, dirty = hub_dirty_files()
     if dirty and not force:
         raise HubDirtyError(root, dirty)
     # $LMDS_REPO_REF = ผู้ดูแลสั่งว่าเครื่องนี้ต้องเป็นเวอร์ชันนั้น · ส่ง bundle ของ hub ไปแทน
     # เท่ากับลบล้างคำสั่งเงียบ ๆ เพราะ HEAD ของ hub ไม่จำเป็นต้องเป็น ref ที่ปักไว้
-    return install_script(with_prereq, bundle="" if REPO_REF else ship_source(node))
+    # (จงใจ ไม่ใช่การถอย — สคริปต์พิมพ์ "ติดตั้งจาก ref ที่ปักหมุดไว้" เองอยู่แล้ว จึงไม่มี notice)
+    if REPO_REF:
+        return install_script(with_prereq), ""
+    remote, why = _ship_source(node)
+    if remote:
+        return install_script(with_prereq, bundle=remote), ""
+    return install_script(with_prereq, fallback_reason=why), _fallback_notice(why)
+
+
+def prepare_install(node: Node, with_prereq: bool = False, force: bool = False) -> str:
+    """สคริปต์ติดตั้งสำหรับเครื่องนี้ — ดู plan_install (ตัวนี้ทิ้ง notice · สคริปต์ยังพิมพ์เหตุผลเองเป็นบรรทัดแรก)"""
+    return plan_install(node, with_prereq, force=force)[0]
 
 
 def explain_install_failure(output: str, node: Node) -> str:
@@ -743,7 +893,12 @@ def install_lmds(node: Node, timeout: int = 1800, with_prereq: bool = False, for
     LICENSE §1.3 จำกัด · อัปเดตเครื่องที่นับอยู่แล้วไม่เคยถูกห้าม (กฎข้อ 2: ห้ามหยุดของที่รันอยู่)
     """
     _require_licence_for(node)
-    return run(node, prepare_install(node, with_prereq, force=force), timeout=timeout)
+    script, notice = plan_install(node, with_prereq, force=force)
+    result = run(node, script, timeout=timeout)
+    if notice:
+        # สคริปต์พิมพ์บรรทัดนี้เองด้วย แต่ผู้เรียกฝั่ง CLI โชว์แค่ท้าย stdout (หรือไม่โชว์เลยตอน --all) — ส่งแยกมาให้พิมพ์
+        result.notice = notice
+    return result
 
 
 def _require_licence_for(node: Node) -> None:

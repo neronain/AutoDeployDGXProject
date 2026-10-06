@@ -71,7 +71,7 @@ def test_prepare_install_ships_the_code_first_and_falls_back_when_scp_fails(tmp_
     script = ssh.prepare_install(node)
     assert pushed and pushed[0][1] == ssh.REMOTE_BUNDLE
     assert Path(pushed[0][0]).is_file()
-    assert f"git clone -q {ssh.REMOTE_BUNDLE}" in script
+    assert f'git clone -q "$HOME"/{ssh.REMOTE_BUNDLE} AutoDeployDGXProject' in script, "วางใต้ home ไม่ใช่ /tmp"
 
     monkeypatch.setattr(ssh, "push_file", lambda *a, **k: SimpleNamespace(ok=False))
     assert "git clone --depth 1" in ssh.prepare_install(node), "ส่งไม่ได้ → ถอยไป GitHub ไม่ใช่ล้ม"
@@ -338,3 +338,274 @@ def test_a_private_repo_error_does_not_promise_a_bundle_that_pinning_disabled(mo
     pinned = ssh.explain_install_failure(failure, node)
     assert "ปกติ hub จะส่งโค้ดของตัวเองไปให้" not in pinned, "ปักหมุดแล้ว hub จงใจไม่ส่ง — บอกแบบนั้นคือโกหก"
     assert "v0.8.0" in pinned and "ถอนหมุด" in pinned
+
+
+# ── 15 เครื่องพร้อมกัน: ทุกตัวต้องได้ bundle ของ hub · ถอยไป GitHub ต้องบอกเสมอว่าทำไม ──────────
+#
+# audit 2026-10-06: วิธี rollout ที่ทีมใช้จริงคือยิง `lmds node install <n>` 15 process พร้อมกัน ·
+# แคชเป็นแบบ "ดูว่ามีไหม → ไม่มีก็สร้าง" บนไฟล์เดียวกัน และ `git bundle create` ถือ `<ไฟล์>.lock`
+# → แคชเย็น 14 ใน 15 ตัวตายด้วย exit 128 · source_bundle() คืน None · สคริปต์ถอยไป `git pull` จาก
+# GitHub โดยไม่มีบรรทัดไหนบอก (และทางนั้นไม่ regenerate controller ด้วย) — hub ที่ HEAD ยังไม่ push /
+# ยืนอยู่ที่ tag / node ที่ออกเน็ตไม่ได้ จบที่ "ฟลีตคนละ commit" โดยทุกตัวรายงานว่าสำเร็จ
+
+_RACE_WORKER = """
+import json, os, sys, time
+from pathlib import Path
+import lmds.web.selfupdate as selfupdate
+selfupdate.source_root = lambda: Path(os.environ["RACE_REPO"])
+from lmds.nodes import ssh
+if os.environ.get("RACE_NO_FLOCK"):
+    ssh.fcntl = None                      # ระบบไฟล์/แพลตฟอร์มที่ล็อกไม่ได้ — ต้องยังได้ครบทุกตัว
+box = Path(os.environ["RACE_BOX"])
+(box / f"ready-{sys.argv[1]}").write_text("")
+deadline = time.time() + 60
+while not (box / "go").exists() and time.time() < deadline:
+    time.sleep(0.005)                     # ปล่อยพร้อมกันทุกตัว เหมือน `( lmds node install $n ) &` × 15
+bundle = ssh.source_bundle()
+print(json.dumps({"bundle": str(bundle) if bundle else None}))
+"""
+
+
+def _slow_git(tmp_path: Path) -> tuple[Path, Path]:
+    """git จริงที่ `bundle create` ช้าลง 0.3 วิ — ให้ทุก process ซ้อนกันตรงขั้น pack แน่นอน ไม่ใช่แล้วแต่ดวง
+
+    repo ของเทสเล็กจน pack เสร็จใน ~10 ms (ของจริง 6.7 MB ใช้ ~0.2 วิ) · คืน (โฟลเดอร์ที่ใส่หน้า PATH, log)
+    """
+    import shlex
+    import shutil
+
+    real = shutil.which("git")
+    assert real, "เทสนี้ต้องมี git จริง"
+    bin_dir = tmp_path / "slow-git"
+    bin_dir.mkdir()
+    log = tmp_path / "git-bundle-calls.log"
+    wrapper = bin_dir / "git"
+    wrapper.write_text(
+        "#!/bin/bash\n"
+        'case " $* " in *" bundle create "*) echo create >> ' + shlex.quote(str(log)) + "; sleep 0.3 ;; esac\n"
+        f"exec {shlex.quote(real)} \"$@\"\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return bin_dir, log
+
+
+def _race(tmp_path: Path, count: int, *, flock: bool) -> tuple[list[dict], Path, Path, Path]:
+    import json
+    import os
+    import sys
+    import time
+
+    src = _source(tmp_path)
+    cache = tmp_path / "hub-tmp"
+    box = tmp_path / "box"
+    cache.mkdir(); box.mkdir()
+    bin_dir, log = _slow_git(tmp_path)
+    env = {**os.environ, "RACE_REPO": str(src), "RACE_BOX": str(box), "TMPDIR": str(cache),
+           "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    env.pop("RACE_NO_FLOCK", None)
+    if not flock:
+        env["RACE_NO_FLOCK"] = "1"
+    procs = [subprocess.Popen([sys.executable, "-c", _RACE_WORKER, str(i)], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for i in range(count)]
+    try:
+        deadline = time.time() + 120
+        while len(list(box.glob("ready-*"))) < count:
+            assert time.time() < deadline, "worker ไม่พร้อมใน 120 วิ"
+            assert all(p.poll() is None for p in procs), [p.communicate() for p in procs if p.poll() is not None]
+            time.sleep(0.01)
+        (box / "go").write_text("")
+        results = []
+        for proc in procs:
+            out, err = proc.communicate(timeout=180)
+            assert proc.returncode == 0, err
+            results.append(json.loads(out.strip().splitlines()[-1]))
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+    return results, src, cache, log
+
+
+@pytest.mark.parametrize("flock", [True, False], ids=["with-flock", "no-flock"])
+def test_fifteen_installs_at_once_all_get_the_hubs_own_bundle(tmp_path, flock):
+    """rollout จริง: 15 process · แคชเย็น · ทุกตัวต้องได้ bundle ของ commit ที่ hub รัน ไม่มีตัวไหนได้ None"""
+    results, src, cache, log = _race(tmp_path, 15, flock=flock)
+
+    got = {r["bundle"] for r in results}
+    assert None not in got, f"{sum(r['bundle'] is None for r in results)} ใน 15 ตัวไม่ได้ bundle → ถอยไป GitHub"
+    assert len(got) == 1, got
+    bundle = Path(got.pop())
+    assert subprocess.run(["git", "bundle", "verify", str(bundle)], capture_output=True, cwd=src).returncode == 0
+    heads = subprocess.run(["git", "bundle", "list-heads", str(bundle)], capture_output=True, text=True).stdout
+    assert heads.split()[0] == _git(src, "rev-parse", "HEAD"), "ของข้างในต้องเป็น commit ที่ hub รันอยู่"
+    # ไม่ทิ้งไฟล์ครึ่ง ๆ กลาง ๆ ไว้ให้รอบหน้าหยิบไปใช้ (ไฟล์ชั่วคราวของเรา / .lock ของ git)
+    leftovers = [p.name for p in cache.iterdir() if p.name.endswith((".tmp", ".bundle.lock"))]
+    assert not leftovers, leftovers
+    packs = log.read_text(encoding="utf-8").count("create")
+    if flock:
+        assert packs == 1, f"ล็อกได้ = pack รอบเดียวพอ ที่เหลือรอแล้วใช้ของที่เสร็จ (pack ไป {packs} รอบ)"
+
+
+def test_a_decoy_sitting_at_the_cache_path_is_not_shipped_to_the_fleet(tmp_path, monkeypatch):
+    """แคชอยู่ใน temp dir ที่ทุก user เขียนได้และชื่อเดาได้ (lmds-src-<commit>.bundle) — ของที่วางรอไว้
+    (symlink / ไฟล์ของ user อื่น) ต้องไม่ถูกหยิบไปส่งให้ทั้งฟลีตแทนโค้ดของ hub"""
+    src = _source(tmp_path)
+    head = _git(src, "rev-parse", "HEAD")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    decoy = _bundle_of(_git_repo(elsewhere), tmp_path, "decoy.bundle")
+    decoy_bytes = decoy.read_bytes()
+
+    cache = tmp_path / "hub-tmp"
+    cache.mkdir()
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: src)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(cache))
+    (cache / f"lmds-src-{_git(src, 'rev-parse', '--short', 'HEAD')}.bundle").symlink_to(decoy)
+
+    bundle = ssh.source_bundle()
+    assert bundle is not None
+    heads = subprocess.run(["git", "bundle", "list-heads", str(bundle)], capture_output=True, text=True).stdout
+    assert heads.split()[0] == head, "ส่งของที่คนอื่นวางรอไว้แทนโค้ดของ hub"
+    assert decoy.read_bytes() == decoy_bytes, "ต้องไม่เขียนทะลุ symlink ไปทับไฟล์ปลายทาง"
+
+
+def test_a_pack_that_fails_says_why_instead_of_quietly_using_github(tmp_path, monkeypatch):
+    """pack ไม่ได้ (ที่นี่: temp dir เขียนไม่ได้ — git จริงล้มจริง) → สคริปต์ที่ได้ต้องพิมพ์เหตุผล และ notice ต้องมีข้อความของ git"""
+    import os
+
+    src = _source(tmp_path)
+    cache = tmp_path / "read-only-tmp"
+    cache.mkdir()
+    cache.chmod(0o500)
+    if os.access(cache, os.W_OK):
+        pytest.skip("รันเป็น root — โฟลเดอร์ 0500 ยังเขียนได้ จำลองเคสนี้ไม่ได้")
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: src)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(cache))
+    monkeypatch.setattr(ssh, "REPO_URL", str(src))
+    pushed = []
+    monkeypatch.setattr(ssh, "push_file", lambda *a, **k: pushed.append(a) or SimpleNamespace(ok=True, stderr=""))
+    try:
+        script, notice = ssh.plan_install(Node(name="msi-4", host="h", user="u"))
+    finally:
+        cache.chmod(0o700)
+    assert not pushed, "ไม่มี bundle ก็ต้องไม่มีอะไรให้ส่ง"
+    assert "git bundle create" in notice and "Permission denied" in notice, notice
+
+    home = _node_home(tmp_path)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env={"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+    assert done.returncode == 0, done.stderr
+    said = [ln for ln in done.stdout.splitlines() if "ไม่ได้ติดตั้งจากโค้ดของ hub" in ln]
+    assert said and "Permission denied" in said[0] and str(src) in said[0], done.stdout
+    assert done.stdout.index(said[0]) < done.stdout.index("installed"), "ต้องบอกก่อนลงมือ ไม่ใช่ท้ายงาน"
+
+
+def test_a_failed_copy_says_why_and_no_checkout_says_so_too(tmp_path, monkeypatch):
+    node = Node(name="msi-4", host="h", user="u")
+    root = _git_repo(tmp_path)
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: root)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(ssh, "push_file", lambda *a, **k: ssh.Result(
+        1, "", 'scp: dest open ".lmds-src.bundle": No space left on device\n'))
+    script, notice = ssh.plan_install(node)
+    assert "git clone --depth 1" in script
+    assert "ส่งไฟล์ไป msi-4 ไม่ได้" in notice and "No space left on device" in notice
+
+    def boom(*a, **k):
+        raise ssh.NodeError("ไม่พบคำสั่ง scp — ติดตั้ง openssh-client ก่อน")
+    monkeypatch.setattr(ssh, "push_file", boom)
+    assert "ไม่พบคำสั่ง scp" in ssh.plan_install(node)[1]
+
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: None)
+    script, notice = ssh.plan_install(node)
+    assert "ไม่ได้ติดตั้งจาก git checkout" in notice
+    assert ssh.prepare_install(node) == script, "หน้าเว็บ (prepare_install) ต้องได้สคริปต์ตัวเดียวกับ CLI — ที่มีบรรทัดบอกเหตุผล"
+
+    # ทางปกติ (ส่ง bundle ได้) และทางปักหมุด (จงใจไม่ส่ง) ไม่ใช่การถอย — ไม่มีอะไรต้องเตือน
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: root)
+    monkeypatch.setattr(ssh, "push_file", lambda *a, **k: ssh.Result(0, "", ""))
+    assert ssh.plan_install(node)[1] == ""
+    monkeypatch.setattr(ssh, "REPO_REF", "v0.8.0")
+    assert ssh.plan_install(node)[1] == ""
+
+
+def test_node_install_prints_the_fallback_reason_on_the_cli(tmp_path, monkeypatch):
+    """`lmds node install` โชว์แค่ 6 บรรทัดท้ายของ stdout (และ --all ไม่โชว์เลย) — เหตุผลต้องมาถึงคนสั่งอยู่ดี"""
+    from typer.testing import CliRunner
+
+    from lmds.cli.main import app
+    from lmds.nodes import add
+
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: None)
+    monkeypatch.setattr("lmds.fleet.consistency.hub_facts",
+                        lambda: {"version": "0.9.0", "commit": "6e2b474", "template_hash": "aaaa1111", "dirty": []})
+    add(Node(name="msi-4", host="10.0.0.4", user="ops"))
+    sent = []
+
+    def fake_ssh(target, port, wrapped, timeout, stdin_text=""):
+        sent.append(wrapped)
+        return ssh.Result(0, "\n".join(f"line {i}" for i in range(40)) + "\nlmds 0.9.0 (6e2b474)\n", "")
+    monkeypatch.setattr(ssh, "_run_ssh", fake_ssh)
+    monkeypatch.setattr("lmds.nodes.probe", lambda node: {
+        "host": {"lmds_version": "0.9.0", "lmds_commit": "6e2b474"}, "models": []})
+
+    runner = CliRunner(env={"COLUMNS": "300"})
+    one = runner.invoke(app, ["node", "install", "msi-4"])
+    assert one.exit_code == 0, one.output
+    assert "ไม่ได้ติดตั้งจากโค้ดของ hub" in one.output and "ไม่ได้ติดตั้งจาก git checkout" in one.output, one.output
+    assert any("git clone --depth 1" in wrapped for wrapped in sent), "ต้องเป็นสคริปต์ทาง GitHub จริง"
+
+    every = runner.invoke(app, ["node", "install", "--all"])
+    assert every.exit_code == 0, every.output
+    assert "ไม่ได้ติดตั้งจากโค้ดของ hub" in every.output, every.output
+
+
+def test_the_github_path_regenerates_stale_controllers_like_the_bundle_path(tmp_path, monkeypatch):
+    """สองทางติดตั้งต้องจบที่สภาพเดียวกัน — เดิมทาง GitHub (hub ไม่มี checkout · ปักหมุด · ถอยมา) ข้าม
+    `bundles refresh` → code ตรงแต่ controller ค้าง ทั้งที่ `lmds node install` สัญญาว่า regenerate ให้"""
+    src = _source(tmp_path)
+    monkeypatch.setattr(ssh, "REPO_URL", str(src))
+    home = _node_home(tmp_path)
+    calls = home / "lmds-calls.log"
+    (home / ".local" / "bin" / "lmds").write_text(
+        f"#!/bin/bash\necho \"lmds $*\" >> {calls}\n[ \"$1\" = bundles ] && exit 2\necho lmds-stub\n", encoding="utf-8")
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/local/bin"}
+
+    done = subprocess.run(["bash", "-c", ssh.install_script()], capture_output=True, text=True, env=env)
+    assert done.returncode == 0, done.stderr
+    said = calls.read_text(encoding="utf-8").splitlines()
+    assert said == ["lmds version", "lmds bundles refresh --all --if-older"], said
+    assert "regenerate controller ไม่สำเร็จ" in done.stdout, "lmds รุ่นเก่าไม่มีคำสั่ง = บอกแล้วไปต่อ ไม่ล้ม install"
+
+    # รอบสอง = อัปเดต (git pull) — ทางเดียวกัน
+    calls.write_text("", encoding="utf-8")
+    again = subprocess.run(["bash", "-c", ssh.install_script()], capture_output=True, text=True, env=env)
+    assert again.returncode == 0, again.stderr
+    assert "lmds bundles refresh --all --if-older" in calls.read_text(encoding="utf-8")
+
+
+def test_the_shipped_file_lands_in_the_users_home_not_in_shared_tmp(tmp_path, monkeypatch):
+    """/tmp/lmds-src.bundle เป็นชื่อตายตัวในโฟลเดอร์ที่ทุก user บนเครื่องนั้นเขียนได้ แล้วถูก clone มาติดตั้ง:
+    ไฟล์ค้างของ user อื่น (สคริปต์ตายก่อน rm) ทำให้ scp ล้มตลอดไป และไฟล์ที่วางรอไว้คือโค้ดที่จะถูกรัน
+    → วางใต้ home ของ user ที่ ssh เข้าไป (scp ปลายทางแบบ path สัมพัทธ์) แล้วสคริปต์อ้างผ่าน $HOME"""
+    assert not ssh.REMOTE_BUNDLE.startswith("/"), "path สัมพัทธ์ = scp วางใต้ home"
+    src = _source(tmp_path)
+    spaced = tmp_path / "home with space"
+    spaced.mkdir()
+    home = _node_home(spaced)
+    landed = home / ssh.REMOTE_BUNDLE
+    landed.write_bytes(_bundle_of(src, tmp_path, "h.bundle").read_bytes())    # สิ่งที่ scp ทำ
+
+    monkeypatch.setattr("lmds.web.selfupdate.source_root", lambda: src)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    pushed = []
+    monkeypatch.setattr(ssh, "push_file", lambda n, l, r, timeout=1800: pushed.append(r) or ssh.Result(0, "", ""))
+    script = ssh.prepare_install(Node(name="n", host="h", user="u"))
+    assert pushed == [ssh.REMOTE_BUNDLE]
+
+    # รันจากโฟลเดอร์อื่น + HOME ที่มีช่องว่าง — path ต้องยังชี้ถูกหลัง `cd AutoDeployDGXProject`
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=str(tmp_path),
+                          env={"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+    assert done.returncode == 0, done.stderr
+    assert _git(home / "AutoDeployDGXProject", "rev-parse", "HEAD") == _git(src, "rev-parse", "HEAD")
+    assert not landed.exists(), "ติดตั้งเสร็จต้องเก็บไฟล์ที่ส่งมา"

@@ -161,6 +161,18 @@ def _kv_dtypes() -> tuple[str, ...]:
     return tuple(KV_DTYPE_BYTES)
 
 
+def _print_install_notice(result) -> None:
+    """บอกเมื่อ `install_lmds` ไม่ได้ส่งโค้ดของ hub ไป (ถอยไป GitHub) พร้อมเหตุผล
+
+    เดิมไม่มีบรรทัดไหนบอกเลย: rollout 15 เครื่องพร้อมกัน 14 เครื่องถอยไป `git pull` จาก GitHub เงียบ ๆ
+    (audit 2026-10-06) · เหตุผลอยู่ในบรรทัดแรกของ stdout ของสคริปต์ด้วย แต่คำสั่งนี้โชว์แค่ 6 บรรทัดท้าย
+    และ `--all` ไม่โชว์เลย — จึงพิมพ์จาก notice ตรง ๆ · getattr เพราะตัวแทนเก่า (เทส/ปลั๊กอิน) ไม่มีฟิลด์นี้
+    """
+    notice = getattr(result, "notice", "")
+    if notice:
+        err_console.print(f"[yellow]{notice}[/yellow]", highlight=False)
+
+
 def _complete_node(incomplete: str) -> list[str]:
     try:
         from lmds.nodes import load
@@ -275,6 +287,7 @@ def node_add(
             if install:
                 console.print(f"ติดตั้ง LMDS บน {node.target} (ใช้เวลาสักพัก) …")
                 result = install_lmds(node)
+                _print_install_notice(result)
                 if not result.ok:
                     err_console.print((result.stderr or result.stdout)[-800:])
                     err_console.print("[red]ติดตั้ง LMDS บนเครื่องนั้นไม่สำเร็จ[/red]")
@@ -798,6 +811,7 @@ def node_install(
             except HubDirtyError as exc:
                 err_console.print(f"[red]{exc}[/red]")
                 raise typer.Exit(code=1) from None
+            _print_install_notice(result)
             if not result.ok:
                 failed.append(target.name)
                 err_console.print(f"[red]ไม่สำเร็จ[/red] {(result.stderr or '').strip()[-200:]}")
@@ -834,6 +848,7 @@ def node_install(
     tail = (result.stdout or "").strip().splitlines()[-6:]
     for line in tail:
         console.print(f"[dim]{line}[/dim]")
+    _print_install_notice(result)
     if not result.ok:
         from lmds.nodes import explain_install_failure
 

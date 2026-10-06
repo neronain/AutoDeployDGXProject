@@ -138,8 +138,14 @@ lmds node install <ชื่อเครื่อง>
 
 ไม่ปักหมุด hub จะแพ็ก checkout ของตัวเองเป็น git bundle ส่งไปให้ (`source_bundle()` →
 `ship_source()`) ทั้ง CLI `lmds node install` และปุ่มในหน้าเว็บเดินทางเดียวกันผ่าน
-`prepare_install()` · bundle บรรจุ **HEAD ของ hub** คือ commit ที่ hub รันอยู่จริง
+`plan_install()` / `prepare_install()` · bundle บรรจุ **HEAD ของ hub** คือ commit ที่ hub รันอยู่จริง
 ไม่ใช่ปลาย `main` — hub ที่ยืนอยู่ที่ tag จึงส่งของที่ตัวเองรันไปให้ ไม่ใช่ของที่ยังไม่ปล่อย
+
+แคช bundle (`$TMPDIR/lmds-src-<commit>.bundle`) สร้างแบบหลาย process พร้อมกันได้ — rollout ที่ยิง
+`lmds node install <n>` 15 ตัวพร้อมกันได้ bundle เดียวกันทุกตัว (pack ลงชื่อชั่วคราวแล้ว `os.replace` +
+ล็อกไฟล์ให้ pack รอบเดียว) · ส่งไม่ได้ด้วยเหตุใดก็ตาม node จะถอยไปดึงจาก GitHub และ **พิมพ์
+`⚠ ไม่ได้ติดตั้งจากโค้ดของ hub — <เหตุผล>` เสมอ** — เห็นบรรทัดนี้กับเครื่องที่เข้า GitHub ไม่ได้ หรือ
+ตอน HEAD ของ hub ยังไม่ push = เครื่องนั้นไม่ได้โค้ดชุดเดียวกับ hub
 
 hub ที่มีไฟล์แก้ค้างถูกปฏิเสธ (`HubDirtyError`) เพราะ bundle ส่งได้แค่ commit —
 node จะได้โค้ดคนละชุดกับที่ hub รันแต่ stamp รายงานว่า "ตรง hub"
