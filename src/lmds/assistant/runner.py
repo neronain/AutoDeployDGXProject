@@ -38,6 +38,8 @@ class Outcome:
     exit_code: int = 0
     output: str = ""
     error: str = ""
+    # เป้าหมายไม่มีคำสั่งที่สั่ง (เช่น test-vision บน bundle ที่ไม่ใช่ multimodal) — ไม่ใช่ทั้ง "ผ่าน" และ "รันแล้วล้ม"
+    unsupported: bool = False
 
     @property
     def ok(self) -> bool:
@@ -50,6 +52,7 @@ class Outcome:
             "target": self.target,
             "params": self.params,
             "ok": self.ok,
+            "unsupported": self.unsupported,
             "exit_code": self.exit_code,
             "output": self.output,
             "error": self.error,
@@ -190,4 +193,9 @@ def run_action(name: str, target: str = LOCAL, params: dict | None = None) -> Ou
     except ParamError as exc:
         return Outcome(name=name, title=action.title, target=target,
                        error=str(exc), exit_code=255)
-    return _execute(action.name, action.title, target, command, clean, action.timeout)
+    outcome = _execute(action.name, action.title, target, command, clean, action.timeout)
+    if action.unsupported_exit is not None and not outcome.error and outcome.exit_code == action.unsupported_exit:
+        # controller บอกเองว่า bundle นี้ไม่มีคำสั่งนั้น — ขึ้นต้นให้ชัด LLM/ผู้ใช้จะได้ไม่อ่านเป็น "โมเดลสอบตก"
+        outcome.unsupported = True
+        outcome.output = _trim("ไม่รองรับ — เป้าหมายไม่มีคำสั่งนี้ (ไม่ใช่ผลทดสอบ: ไม่มีอะไรถูกรัน)\n" + outcome.output)
+    return outcome

@@ -419,3 +419,15 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+@pytest.fixture
+def box(tmp_path, request):
+    """Box ของ engine ที่เทสขอผ่าน parametrize("kind") — เก็บกวาด process ปลอมทุกตัวตอนจบ
+    (ไฟล์เทส import fixture นี้ไปใช้: `from tests.single_controller_harness import box`)"""
+    kind = request.getfixturevalue("kind")
+    made = Box(tmp_path, kind, render(tmp_path, kind))
+    try:
+        yield made
+    finally:
+        made.close()

@@ -1268,6 +1268,7 @@ COMMANDS
   wait-health       Keep waiting for /health (use if start timed out but the model is still loading)
   client-config     Print client settings as JSON (base_url, model name, token budget)
   network-info      Show current bind address and the endpoint advertised to clients
+  info              Model / port / running-or-not summary
   test-text         Send one chat completion request to verify the model answers
   test-reasoning    ตรวจว่า --reasoning-parser แยก chain-of-thought ได้จริง (37×43=1591)
   test-tools [both|auto|required]  ตรวจว่า --tool-parser แปลงเป็น tool_calls ได้จริง
@@ -1342,6 +1343,40 @@ EXAMPLES
 EOF
 }
 
+# ── คำสั่งที่ไม่รู้จัก / ไม่รองรับ ต้องล้ม ──────────────────────────────────────────
+# เดิม `*) usage ;;` พิมพ์ usage แล้วคืน 0 ให้ทุกอย่างที่ไม่รู้จัก: พิมพ์ผิด (`stpo`) · คำสั่งของ lmds (`repair`) · คำสั่งที่
+# มีใน engine อื่นแต่ไม่มีที่นี่ · hub กับผู้ช่วยอ่าน exit code แล้วรายงานว่า "สำเร็จ" ทั้งที่ไม่ได้ทำอะไร — ผู้ช่วย (run_test)
+# ส่ง test-vision/test-reasoning/test-embed/test-rerank ให้ bundle ไหนก็ได้โดยไม่ดูว่ามีไหม จึงได้ "เทสผ่าน" จากความว่างเปล่า
+# (audit 2026-10-06 · stacked แก้ไปก่อนแล้ว) · help / -h / ไม่ใส่คำสั่ง ยังคืน 0 ตามเดิม
+#
+# รหัสออก 64 (EX_USAGE) โดยเจตนา ไม่ใช่ 1/2: ผู้เรียกต้องแยก "bundle นี้ไม่มีคำสั่งนั้น" ออกจาก "รันแล้วไม่ผ่าน" ได้
+# (lmds.assistant.catalog.CONTROLLER_UNSUPPORTED_EXIT อ่านค่านี้ — เปลี่ยนต้องเปลี่ยนคู่กัน) · ไม่พ่น usage ทั้งหน้า:
+# หน้าเว็บโชว์แค่ท้ายผลลัพธ์ สาเหตุต้องเป็นบรรทัดที่เห็น
+#
+# รายการที่รองรับอ่านจากบล็อก COMMANDS ของ usage() เอง — เทสบังคับอยู่แล้วว่าทุกบรรทัดในนั้นถูก dispatch จริง
+# ⚠️ รายชื่อคำสั่งข้างล่างต้องเยื้อง 4 ช่องและคั่นด้วย | เสมอ: หน้าเว็บสร้างปุ่มจากบรรทัดรูป `  <คำสั่ง>)` (เยื้อง 2 ช่อง
+# คำสั่งเดียว — inventory.controller_commands) บรรทัดปฏิเสธที่หน้าตาแบบนั้นจะกลายเป็นปุ่มของคำสั่งที่ไม่มีจริง
+_supported_verbs() {
+  usage | awk '/^COMMANDS/ { on = 1; next } /^OPTIONS/ { on = 0 } on && /^  [a-z]/ { printf "%s ", $1 }' || true
+}
+
+_reject_unknown_verb() {
+  local verb="${1:-}"
+  case "$verb" in ""|help|--help|-h) return 0 ;; esac
+  case "$verb" in
+    repair|remove|doctor)
+      echo "ERROR: '${verb}' เป็นคำสั่งของ lmds ไม่ใช่ของ controller — รัน: lmds ${verb} {{ slug }}" >&2 ;;
+    # รูปแบบชื่อ ไม่ใช่รายชื่อเต็ม: ครอบ test-* ที่จะมีเพิ่ม และไม่ฝังชื่อคำสั่งที่ bundle นี้ไม่มีลงในสคริปต์
+    test-*|*-runtime|*-worker|runtime-info|serve-args|props|parsers|bench|stress|clear-fi-cache)
+      echo "ERROR: bundle นี้ (SGLang) ไม่รองรับคำสั่ง '${verb}' — เป็นคำสั่งของ engine หรือชนิดโมเดลอื่น ไม่มีอะไรถูกรัน" >&2 ;;
+    *)
+      echo "ERROR: ไม่รู้จักคำสั่ง '${verb}'" >&2 ;;
+  esac
+  echo "  คำสั่งที่ bundle นี้รองรับ: $(_supported_verbs)" >&2
+  echo "  รายละเอียดแต่ละคำสั่ง: $0 help" >&2
+  exit 64
+}
+
 parse_options "$@"
 set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 
@@ -1398,5 +1433,5 @@ case "${1:-help}" in
   network-info) network_info ;;
   test-text)    test_text ;;
   wait-health)  wait_health ;;
-  *)            usage ;;
+  *)            _reject_unknown_verb "${1:-}"; usage ;;
 esac

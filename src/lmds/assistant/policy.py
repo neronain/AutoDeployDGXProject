@@ -108,7 +108,9 @@ class Ticket:
     def failed_index(self) -> int:
         """ขั้นแรกที่เริ่มไปแล้วแต่ไม่สำเร็จ (ล้ม หรือระเบิดจนไม่มีผล) — -1 = ไม่มี · ใช้ตอนไม่มีขั้นไหนกำลังรัน"""
         for index, step in enumerate(self.steps):
-            if step.done and not (step.result or {}).get("ok"):
+            result = step.result or {}
+            # "bundle นี้ไม่มีคำสั่งนั้น" ไม่ใช่ขั้นที่ล้ม — ไม่ควรหยุดตั๋วทั้งใบ (ดู Outcome.unsupported)
+            if step.done and not result.get("ok") and not result.get("unsupported"):
                 return index
         return -1
 
@@ -288,13 +290,14 @@ def advance(ticket_id: str) -> tuple[Ticket, list[Outcome]]:
                 step.done = True
             outcome = run_action(step.action, step.target, step.params)
             result = outcome.payload()
-            if not outcome.ok:
+            if not outcome.ok and not outcome.unsupported:
                 result["explain"] = explain_failure(step)
             step.result = result
             outcomes.append(outcome)
             if ticket.mode == STEP:
                 break
-            if not outcome.ok:
+            # "bundle นี้ไม่มีคำสั่งนั้น" (เทสที่ engine นี้ไม่มี) ไม่ใช่ขั้นที่ล้ม — ขั้นถัดไปยังเดินต่อได้
+            if not outcome.ok and not outcome.unsupported:
                 # ขั้นถัดไปมักตั้งอยู่บนสมมติฐานว่าขั้นก่อนหน้าสำเร็จ — หยุดแล้วให้คนดู
                 break
     finally:

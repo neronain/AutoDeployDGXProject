@@ -459,6 +459,9 @@ class Action:
     # งานประกอบ: คืนรายการขั้นย่อย [{action, target, params}] ที่ policy จะขยายเป็นตั๋วขั้นต่อขั้น
     # (deploy_model = plan → push → download → start → test) · build ของตัวมันเองไม่ถูกใช้
     expand: Callable[[dict[str, str], str], list[dict]] | None = None
+    # รหัสออกที่แปลว่า "bundle นี้ไม่มีคำสั่งที่สั่ง" ไม่ใช่ "รันแล้วล้ม" (None = action นี้ไม่แยก) — ดู
+    # CONTROLLER_UNSUPPORTED_EXIT · runner ติดธง unsupported ให้ผลลัพธ์ และ policy ไม่หยุดตั๋วเพราะขั้นแบบนี้
+    unsupported_exit: int | None = None
 
     def command(self, given: dict) -> tuple[str, dict[str, str]]:
         clean = clean_params(self.params, given)
@@ -705,6 +708,12 @@ _action(Action(
 
 _TESTS = ("test-text", "test-tools", "test-vision", "test-reasoning", "test-embed", "test-rerank", "score")
 
+# single controller ตอบรหัสนี้เมื่อ bundle ไม่มีคำสั่งที่ถูกสั่ง (พิมพ์ผิด · คำสั่งของ engine อื่น เช่น test-reasoning บน
+# llama.cpp หรือ test-vision บนโมเดลที่ไม่ใช่ multimodal) · run_test ส่งชื่อเทสให้ bundle ไหนก็ได้โดยไม่รู้ล่วงหน้าว่ามีไหม —
+# เดิม controller พิมพ์ usage แล้วคืน 0 ผู้ช่วยจึงรายงานว่า "เทสผ่าน" ทั้งที่ไม่มีอะไรถูกทดสอบ (audit 2026-10-06) ·
+# ต้องแยกจาก 1/2 ที่แปลว่าเทสรันแล้วไม่ผ่าน เพราะทางไปต่อคนละทาง (เลือกเทสอื่น vs แก้โมเดล)
+CONTROLLER_UNSUPPORTED_EXIT = 64
+
 _action(Action(
     name="run_test",
     title="ทดสอบโมเดล",
@@ -717,6 +726,7 @@ _action(Action(
     risk="low",
     timeout=900,
     impact="ยิงคำขอจริงเข้าโมเดล (ใช้ GPU ไม่กี่วินาที ถึงหลายนาทีสำหรับ score) · โมเดลต้องรันอยู่",
+    unsupported_exit=CONTROLLER_UNSUPPORTED_EXIT,
 ))
 
 _action(Action(

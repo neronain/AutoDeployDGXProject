@@ -33,7 +33,7 @@ def test_start_with_a_specific_bind_address_sees_the_server_it_just_started(box,
     HEALTH_TIMEOUT (600–7200 วิ) แล้วจบ exit 1 ทั้งที่เซิร์ฟเวอร์ขึ้นแล้ว · status/info/test-text ก็บอกว่า down"""
     ip, port = specific_ip(), free_port()
     flags = ["--bind", ip, "--port", str(port)]
-    started = box.run("start", *flags, env={"HEALTH_TIMEOUT": "12"})
+    started = box.run("start", *flags)
     assert started.returncode == 0, started.stdout + started.stderr
     assert "started:" in started.stdout
     assert f"listening {ip}:{port}" in box.calls(), "engine ปลอมต้องถูกสั่งให้ผูก IP นั้นจริง"
