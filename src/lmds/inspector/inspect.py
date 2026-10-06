@@ -9,7 +9,7 @@ from lmds.resolver import ModelSource
 
 import re
 
-from .formats import MLX, mlx_evidence, mlx_quantization
+from .formats import MLX, exl_evidence, mlx_evidence, mlx_quantization
 from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
 from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport, ShardFile
@@ -474,6 +474,8 @@ def _inspect_safetensors(
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
     _mark_mlx(report, config)
+    _mark_exl(report, config)
+    _warn_bitsandbytes(report, config)
 
     # ModelOpt เก็บ quant_algo (NVFP4/FP8) ไว้ใน hf_quant_config.json ส่วน config.json มักบอกแค่ "modelopt"
     # ซึ่งไม่บอกว่าเป็น FP4 หรือ FP8 → planner เลือก image ผิด (nvidia/Llama-3.3-70B-Instruct-FP4 ได้ nvcr
@@ -529,6 +531,42 @@ def _mark_mlx(report: ModelReport, config: dict[str, Any] | None) -> None:
         report.warnings.append(
             f"มีร่องรอยของ MLX ({' · '.join(evidence)}) แต่ไม่พอชี้ขาด — เช็ค model card ก่อน deploy: "
             "ถ้า weight เป็นรูปแบบ MLX จริง vLLM/SGLang จะโหลดไม่ได้"
+        )
+
+
+def _mark_exl(report: ModelReport, config: dict[str, Any] | None) -> None:
+    """quant ของ ExLlama (EXL2/EXL3) เก็บใน .safetensors เหมือนกัน — บั๊กตัวเดียวกับ MLX อีกรอบ
+
+    เคสจริง 2026-10-06: `lmds generate doth4580/Qwen3.8-Flash-Next-EXL3-4.05bpw` ได้ bundle vLLM context 217,088
+    เปิด tool calling ให้ ผ่านทุก gate (108 GB) · เดิมอ่าน `quant_method: exl3` แล้วแค่พิมพ์ลงช่อง Quantization
+    """
+    if report.unsupported_format:
+        return
+    evidence, kind = exl_evidence(report.repo_id, report.library_name, report.tags, config)
+    if kind is not None:
+        report.unsupported_format = kind
+        report.unsupported_evidence = evidence
+        bits = ((config or {}).get("quantization_config") or {}).get("bits")
+        report.quantization = f"{kind}-{bits}bpw" if isinstance(bits, (int, float)) else kind
+    elif evidence:
+        report.warnings.append(
+            f"มีร่องรอยของ quant แบบ ExLlama ({' · '.join(evidence)}) แต่ไม่พอชี้ขาด — เช็ค model card ก่อน deploy: "
+            "ถ้า weight เป็น EXL2/EXL3 จริง vLLM/SGLang จะโหลดไม่ได้"
+        )
+
+
+def _warn_bitsandbytes(report: ModelReport, config: dict[str, Any] | None) -> None:
+    """bitsandbytes (bnb-4bit/8bit): vLLM โหลดได้ *ถ้า* image มีแพ็กเกจ bitsandbytes — ยังไม่เคยยืนยันบน image ของเรา
+
+    ไม่ปฏิเสธ: พิสูจน์ไม่ได้ว่า image ที่ LMDS ใช้ไม่มีแพ็กเกจนี้ (ปฏิเสธผิด = ขวางลูกค้าโดยไม่มีทางข้าม) ·
+    แต่ต้องบอก เพราะถ้าไม่มีจะรู้ตอน start หลังโหลดครบแล้ว และ vLLM ไม่ทำ tensor parallel ให้ bitsandbytes
+    """
+    quant = (config or {}).get("quantization_config")
+    if isinstance(quant, dict) and str(quant.get("quant_method") or "").lower() == "bitsandbytes":
+        report.warnings.append(
+            "quantize ด้วย bitsandbytes — vLLM โหลดได้เฉพาะเมื่อ image มีแพ็กเกจ bitsandbytes (ยังไม่ได้ยืนยันกับ image "
+            "ที่ LMDS ใช้) และไม่รองรับ tensor parallel (stacked / หลาย GPU) · ถ้า start ไม่ขึ้นให้ใช้ checkpoint ต้นฉบับ "
+            "หรือรุ่น AWQ/GPTQ/NVFP4/GGUF ของโมเดลเดียวกันแทน"
         )
 
 

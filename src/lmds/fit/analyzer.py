@@ -17,7 +17,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from lmds.hardware import MemoryModel
-from lmds.inspector.formats import unsupported_alternatives, unsupported_reason
+from lmds.inspector.formats import unsupported_alternatives, unsupported_label, unsupported_reason
 from lmds.inspector.report import ArtifactType, ModelReport
 
 from .targets import TargetSpec
@@ -354,7 +354,7 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
             capacity_gb=round(target.total_gpu_memory_gb, 1),
             concurrency=concurrency,
             verdict=Verdict.UNSUPPORTED,
-            notes=[f"checkpoint รูปแบบ {str(report.unsupported_format).upper()} — ไม่มี engine ที่โหลดได้ "
+            notes=[f"checkpoint รูปแบบ {unsupported_label(report.unsupported_format)} — ไม่มี engine ที่โหลดได้ "
                    "จึงไม่ประเมินหน่วยความจำ"],
             alternatives=unsupported_alternatives(report),
         )

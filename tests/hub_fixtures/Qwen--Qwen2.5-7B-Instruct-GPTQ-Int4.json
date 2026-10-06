@@ -1,0 +1,119 @@
+{
+ "repo": "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4",
+  "sha": "e9c932ac1893a49ae0fc497ad6e1e86e2e39af20",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "qwen2",
+   "text-generation",
+   "chat",
+   "conversational",
+   "base_model:Qwen/Qwen2.5-7B-Instruct",
+   "base_model:quantized:Qwen/Qwen2.5-7B-Instruct",
+   "license:apache-2.0",
+   "text-generation-inference",
+   "endpoints_compatible",
+   "4-bit",
+   "gptq",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "apache-2.0",
+   "base_model": "Qwen/Qwen2.5-7B-Instruct",
+   "pipeline_tag": "text-generation"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 11343},
+   {"rfilename": "config.json", "size": 1262},
+   {"rfilename": "generation_config.json", "size": 243},
+   {"rfilename": "model-00001-of-00002.safetensors", "size": 3999234216},
+   {"rfilename": "model-00002-of-00002.safetensors", "size": 1576146928},
+   {"rfilename": "model.safetensors.index.json", "size": 75421},
+   {"rfilename": "tokenizer.json", "size": 7031645},
+   {"rfilename": "tokenizer_config.json", "size": 7305},
+   {"rfilename": "vocab.json", "size": 2776833}
+  ],
+  "safetensors": {
+   "parameters": {
+    "I32": 6525288448,
+    "F16": 1090328064
+   },
+   "total": 7615616512
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Qwen2ForCausalLM"
+   ],
+   "attention_dropout": 0.0,
+   "hidden_act": "silu",
+   "hidden_size": 3584,
+   "initializer_range": 0.02,
+   "intermediate_size": 18944,
+   "max_position_embeddings": 32768,
+   "max_window_layers": 28,
+   "model_type": "qwen2",
+   "num_attention_heads": 28,
+   "num_hidden_layers": 28,
+   "num_key_value_heads": 4,
+   "quantization_config": {
+    "batch_size": 1,
+    "bits": 4,
+    "block_name_to_quantize": null,
+    "cache_block_outputs": true,
+    "damp_percent": 0.01,
+    "dataset": null,
+    "desc_act": false,
+    "exllama_config": {
+     "version": 1
+    },
+    "group_size": 128,
+    "max_input_length": null,
+    "model_seqlen": null,
+    "module_name_preceding_first_block": null,
+    "modules_in_block_to_quantize": null,
+    "pad_token_id": null,
+    "quant_method": "gptq",
+    "sym": true,
+    "tokenizer": null,
+    "true_sequential": true,
+    "use_cuda_fp16": false,
+    "use_exllama": true
+   },
+   "rms_norm_eps": 1e-06,
+   "rope_theta": 1000000.0,
+   "sliding_window": 131072,
+   "tie_word_embeddings": false,
+   "torch_dtype": "float16",
+   "transformers_version": "4.39.3",
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 152064
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 131072,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "Qwen2Tokenizer"
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_size": 5575277568
+   },
+   "weight_map": {
+    "lm_head.weight": "model-00002-of-00002.safetensors",
+    "model.embed_tokens.weight": "model-00001-of-00002.safetensors"
+   }
+  }
+ }
+}

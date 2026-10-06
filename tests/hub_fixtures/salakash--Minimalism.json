@@ -1,0 +1,81 @@
+{
+ "repo": "salakash/Minimalism",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "salakash/Minimalism",
+  "sha": "27527c88a9b9b874d8d1aec03b2e09bcc3b7ad9b",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "mlx-lm",
+  "tags": [
+   "mlx-lm",
+   "qwen2",
+   "code",
+   "coding-assistant",
+   "lora",
+   "mlx",
+   "apple-silicon",
+   "qwen2.5",
+   "text-generation",
+   "base_model:Qwen/Qwen2.5-Coder-0.5B-Instruct",
+   "base_model:adapter:Qwen/Qwen2.5-Coder-0.5B-Instruct",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "mlx-lm",
+   "license": "apache-2.0",
+   "base_model": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+   "pipeline_tag": "text-generation"
+  },
+  "siblings": [
+   {"rfilename": "0000100_adapters.safetensors", "size": 11754630},
+   {"rfilename": "adapter_config.json", "size": 748},
+   {"rfilename": "adapters.safetensors", "size": 11754630},
+   {"rfilename": "config.json", "size": 597},
+   {"rfilename": "run_meta.json", "size": 245}
+  ]
+ },
+ "files": {
+  "config.json": {
+   "model_type": "qwen2",
+   "adapter_type": "lora",
+   "base_model": "mlx-community/Qwen2.5-Coder-0.5B-Instruct-4bit",
+   "base_model_reference": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+   "task": "text-generation",
+   "framework": "mlx",
+   "lora_rank": 8,
+   "lora_alpha": 16,
+   "lora_dropout": 0.05,
+   "trained_on": "flwrlabs/code-alpaca-20k",
+   "training_samples": 2000,
+   "training_iterations": 100,
+   "model_name": "Minimalism",
+   "description": "LoRA adapter for Qwen2.5-Coder-0.5B-Instruct trained on code-alpaca-20k dataset. Provides runnable-first coding assistance.",
+   "license": "apache-2.0"
+  },
+  "adapter_config.json": {
+   "batch_size": 4,
+   "fine_tune_type": "lora",
+   "grad_accumulation_steps": 1,
+   "grad_checkpoint": false,
+   "iters": 100,
+   "learning_rate": 2e-05,
+   "mask_prompt": false,
+   "max_seq_length": 2048,
+   "model": "mlx-community/Qwen2.5-Coder-0.5B-Instruct-4bit",
+   "num_layers": 16,
+   "optimizer": "adam",
+   "save_every": 100,
+   "seed": 0,
+   "steps_per_eval": 200,
+   "steps_per_report": 10,
+   "test": false,
+   "test_batches": 500,
+   "train": true,
+   "val_batches": 25
+  }
+ }
+}

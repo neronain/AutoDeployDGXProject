@@ -10,6 +10,7 @@
   "pipeline_tag": "text-generation",
   "library_name": "mlx",
   "tags": [
+   "mlx",
    "safetensors",
    "gguf",
    "qwen3_5",

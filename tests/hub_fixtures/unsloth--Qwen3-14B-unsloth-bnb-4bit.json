@@ -1,0 +1,121 @@
+{
+ "repo": "unsloth/Qwen3-14B-unsloth-bnb-4bit",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "unsloth/Qwen3-14B-unsloth-bnb-4bit",
+  "sha": "46105e245750aad3be7fd1d81c21cb03a0e438ed",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "qwen3",
+   "text-generation",
+   "qwen",
+   "unsloth",
+   "conversational",
+   "base_model:Qwen/Qwen3-14B",
+   "base_model:quantized:Qwen/Qwen3-14B",
+   "license:apache-2.0",
+   "text-generation-inference",
+   "endpoints_compatible",
+   "4-bit",
+   "bitsandbytes",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "apache-2.0",
+   "base_model": "Qwen/Qwen3-14B"
+  },
+  "siblings": [
+   {"rfilename": "added_tokens.json", "size": 707},
+   {"rfilename": "chat_template.jinja", "size": 4673},
+   {"rfilename": "config.json", "size": 1416},
+   {"rfilename": "generation_config.json", "size": 237},
+   {"rfilename": "model-00001-of-00003.safetensors", "size": 4974351586},
+   {"rfilename": "model-00002-of-00003.safetensors", "size": 4589082716},
+   {"rfilename": "model-00003-of-00003.safetensors", "size": 1555824768},
+   {"rfilename": "model.safetensors.index.json", "size": 167747},
+   {"rfilename": "special_tokens_map.json", "size": 614},
+   {"rfilename": "tokenizer.json", "size": 11422654},
+   {"rfilename": "tokenizer_config.json", "size": 10534},
+   {"rfilename": "vocab.json", "size": 2776833}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 2358410240,
+    "F32": 831152,
+    "U8": 12797799708
+   },
+   "total": 15157041100
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 5120,
+   "initializer_range": 0.02,
+   "intermediate_size": 17408,
+   "max_position_embeddings": 40960,
+   "max_window_layers": 40,
+   "model_type": "qwen3",
+   "num_attention_heads": 40,
+   "num_hidden_layers": 40,
+   "num_key_value_heads": 8,
+   "quantization_config": {
+    "_load_in_4bit": true,
+    "_load_in_8bit": false,
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "bnb_4bit_quant_storage": "uint8",
+    "bnb_4bit_quant_type": "nf4",
+    "bnb_4bit_use_double_quant": true,
+    "llm_int8_enable_fp32_cpu_offload": false,
+    "llm_int8_has_fp16_weight": false,
+    "llm_int8_skip_modules": [
+     "lm_head",
+     "multi_modal_projector"
+    ],
+    "llm_int8_threshold": 6.0,
+    "load_in_4bit": true,
+    "load_in_8bit": false,
+    "quant_method": "bitsandbytes"
+   },
+   "rms_norm_eps": 1e-06,
+   "rope_scaling": null,
+   "rope_theta": 1000000,
+   "sliding_window": null,
+   "tie_word_embeddings": false,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.51.3",
+   "unsloth_fixed": true,
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 151936
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 40960,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "Qwen2Tokenizer"
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_size": 11119044942
+   },
+   "weight_map": {
+    "lm_head.weight": "model-00003-of-00003.safetensors",
+    "model.embed_tokens.weight": "model-00001-of-00003.safetensors",
+    "model.layers.17.input_layernorm.weight": "model-00002-of-00003.safetensors"
+   }
+  }
+ }
+}

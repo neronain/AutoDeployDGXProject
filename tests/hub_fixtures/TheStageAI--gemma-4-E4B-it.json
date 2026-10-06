@@ -10,6 +10,7 @@
   "pipeline_tag": "image-text-to-text",
   "library_name": "mlx",
   "tags": [
+   "mlx",
    "gguf",
    "gemma4",
    "gemma",
@@ -20,6 +21,7 @@
    "quantization",
    "gptq",
    "aqlm",
+   "ple",
    "image-text-to-text",
    "multilingual",
    "base_model:google/gemma-4-E4B-it",

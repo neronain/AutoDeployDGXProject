@@ -14,6 +14,7 @@
    "safetensors",
    "hunyuan_vl",
    "image-text-to-text",
+   "ocr",
    "vision-language-model",
    "document-parsing",
    "text-spotting",

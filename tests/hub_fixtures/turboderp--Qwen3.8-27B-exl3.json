@@ -1,0 +1,44 @@
+{
+ "repo": "turboderp/Qwen3.8-27B-exl3",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "turboderp/Qwen3.8-27B-exl3",
+  "sha": "d23340a1fdb479f3c2878136dcede06cf57ea31a",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": null,
+  "library_name": null,
+  "tags": [
+   "exl3",
+   "base_model:Qwen/Qwen3.8-27B",
+   "base_model:quantized:Qwen/Qwen3.8-27B",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "apache-2.0",
+   "base_model": "Qwen/Qwen3.8-27B",
+   "base_model_relation": "quantized"
+  },
+  "siblings": [
+   {"rfilename": "cal_trace.json", "size": 3410836},
+   {"rfilename": "cal_trace.safetensors", "size": 4096088},
+   {"rfilename": "kld_table.json", "size": 190470},
+   {"rfilename": "measurement.json", "size": 60916},
+   {"rfilename": "noise_attrib.json", "size": 257094},
+   {"rfilename": "qbench_prompts_gen.json", "size": 344109},
+   {"rfilename": "recipe_1.40bpw.yaml", "size": 21487},
+   {"rfilename": "recipe_1.60bpw.yaml", "size": 21487},
+   {"rfilename": "recipe_1.80bpw.yaml", "size": 21487},
+   {"rfilename": "recipe_2.00bpw.yaml", "size": 21490},
+   {"rfilename": "recipe_2.20bpw.yaml", "size": 21484},
+   {"rfilename": "recipe_3.00bpw.yaml", "size": 21487},
+   {"rfilename": "recipe_4.00bpw.yaml", "size": 21487},
+   {"rfilename": "recipe_5.00bpw.yaml", "size": 21486},
+   {"rfilename": "recipe_6.00bpw.yaml", "size": 21486},
+   {"rfilename": "rfn_2.00bpw.json", "size": 85427}
+  ]
+ },
+ "files": {}
+}
