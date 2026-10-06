@@ -339,7 +339,8 @@ def test_stacked_health_wait_checks_workers_and_workers_resolve_their_own_hca(tm
     assert "WORKER_CHECK_INTERVAL" in health
     assert "docker inspect -f '{{.State.Running}}' '${WORKER_CONTAINER}'" in health
     assert "docker logs --tail 100 '${WORKER_CONTAINER}'" in health
-    assert 'docker rm -f "$MASTER_CONTAINER"' in health
+    # การหยุด head (และ worker ตัวอื่น) เมื่อ worker ตาย ย้ายไปอยู่ใน rollback ของ die — พิสูจน์ด้วยการรันจริงที่
+    # test_audit3_stacked_controller.py::test_a_worker_that_dies_while_the_head_loads_takes_the_head_and_the_other_workers_down
     assert "worker container บน ${wip} ตายระหว่างรอ head health" in health
     # HCA ของ worker ถามที่ worker เอง แล้วส่งเป็น arg ที่สองของ _nccl_env_pairs
     assert "/sys/class/infiniband/*" in start and 'ssh_at "$wip" "for d in /sys/class/infiniband/*' in start

@@ -235,7 +235,13 @@ _resolve_chat_template() {
   echo "/opt/vllm/vllm-src/examples/${value}"
 }
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+# start ที่ล้มหลังเปิด container ไปแล้วบางตัว ต้องไม่ออกไปเฉย ๆ — ทุกทางออกของ start ที่เป็น "ล้ม" ผ่าน die
+# (รวม die ในฟังก์ชันย่อยที่ลูป worker เรียก) จึงเก็บกวาดที่นี่จุดเดียว: หยุดของที่รอบนี้เปิดไว้แล้วรายงานทีละ node
+# **ก่อน** พิมพ์สาเหตุ เพื่อให้สาเหตุยังเป็นบรรทัดท้ายสุดเหมือนเดิม · START_ROLLBACK ว่าง (ทุกคำสั่งอื่น) = die ธรรมดา
+die() {
+  if [[ -n "${START_ROLLBACK:-}" ]]; then _rollback_start || true; fi
+  echo "ERROR: $*" >&2; exit 1
+}
 
 # พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
 # ยึดพอร์ตนี้อยู่ ชุดทดสอบจะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
@@ -2029,7 +2035,12 @@ WSCRIPT
       printf '%q ' "${wrun[@]}"; echo
       continue
     fi
-    ssh_at "$wip" "$(printf '%q ' "${wrun[@]}")" || die "start worker container บน ${wip} ไม่สำเร็จ"
+    # จากบรรทัดนี้ไป start ที่ล้มจะทิ้ง container ไว้บน worker ได้ — จดไว้ก่อนสั่ง (docker run ที่ล้มก็ทิ้งซาก Created ได้)
+    # die อ่าน START_ROLLBACK แล้วหยุดของที่จดไว้ให้ · ทางออกที่ไม่ผ่าน die มี trap EXIT บอกว่าอะไรยังรันอยู่
+    START_LAUNCHED_WORKERS="${START_LAUNCHED_WORKERS:+$START_LAUNCHED_WORKERS }${wip}"
+    START_ROLLBACK=1
+    trap '_start_left_running' EXIT
+    ssh_at "$wip" "$(printf '%q ' "${wrun[@]}")" || die "start worker container บน ${wip} ไม่สำเร็จ (ข้อความของ docker/ssh ด้านบน) — ผลการหยุด worker ที่เปิดไปก่อนหน้าอยู่ด้านบน"
   done
   # head ใช้ COMMON_ARGS ของตัวเอง (--master-addr = TRANSPORT_IP_MASTER) — ลูปข้างบนเพิ่งประกอบของ worker
   build_common_args
@@ -2090,9 +2101,9 @@ WSCRIPT
   # array ขึ้นต้นด้วย docker อยู่แล้ว — เรียกซ้ำจะได้ `docker docker run -d …`
   # head ไม่ขึ้น (GPU runtime หาย · daemon สะอึก) = worker ที่เปิดไปแล้วต้องถูกหยุด ไม่ใช่ทิ้งให้ค้างรอ head ที่ไม่มีวันมา
   # ยึด GPU ไว้จน start รอบหน้า — เดิม set -e ออกเงียบด้วยข้อความของ docker เปล่า ๆ
+  START_LAUNCHED_HEAD=1
   if ! "${hrun[@]}"; then
-    _stop_workers
-    die "docker run ของ head ไม่ขึ้น (ข้อความของ docker ด้านบน) — หยุด worker ที่เปิดไปแล้วให้แล้ว
+    die "docker run ของ head ไม่ขึ้น (ข้อความของ docker ด้านบน) — ผลการหยุด worker ที่เปิดไปแล้วอยู่ด้านบน (ทีละเครื่อง)
   เช็คบน head: docker info · docker run --rm --gpus all '${VLLM_IMAGE}' nvidia-smi   (GPU runtime) · df -h /var/lib/docker"
   fi
 
@@ -2108,6 +2119,7 @@ WSCRIPT
     _who_answers_port 5
     case "$PORT_ANSWER" in
       ours|unverified)
+        START_ROLLBACK=""; trap - EXIT
         log "Server พร้อม"
         [[ "$PORT_ANSWER" == ours ]] ||
           log "(อ่าน /v1/models ไม่ได้ จึงไม่ได้เทียบชื่อโมเดล — container ${MASTER_CONTAINER} รันอยู่และ /health ตอบ)"
@@ -2141,8 +2153,7 @@ WSCRIPT
         elif (( wstate != 0 )); then
           ssh_at "$wip" "docker logs --tail 100 '${WORKER_CONTAINER}' 2>&1" || true
           _explain_worker_crash "$wip"
-          docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
-          die "worker container บน ${wip} ตายระหว่างรอ head health — หยุด head แล้ว · log ของ worker อยู่ด้านบน (เพิ่มเติม: $0 logs worker 200)"
+          die "worker container บน ${wip} ตายระหว่างรอ head health — log ของ worker อยู่ด้านบน (เพิ่มเติม: $0 logs worker 200) · ผลการหยุด head และ worker ตัวอื่นอยู่เหนือบรรทัดนี้"
         fi
       done
       next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
@@ -2155,7 +2166,46 @@ WSCRIPT
   done
   CONTAINER_NAME="$MASTER_CONTAINER" explain_crash || true
   (( stuck_hinted )) || _rendezvous_stuck_hint || true
-  die "ไม่ health ภายใน ${STARTUP_TIMEOUT}s — container ยังรันอยู่ ดู: $0 logs head 200"
+  # หมดเวลารอ ≠ ล้ม: โมเดลใหญ่โหลดเกิน STARTUP_TIMEOUT ได้ จึงตั้งใจไม่หยุดอะไร — แต่ต้องบอกให้ครบว่าเครื่องไหนยังรัน
+  START_ROLLBACK=""; trap - EXIT
+  die "ไม่ health ภายใน ${STARTUP_TIMEOUT}s — ไม่ได้หยุดอะไร: container ยังรันอยู่บน head (${MASTER_CONTAINER}) และ worker ${START_LAUNCHED_WORKERS} (${WORKER_CONTAINER}) และยังถือ GPU memory
+  อาจแค่โหลดยังไม่จบ — ดู: $0 logs head 200 · $0 status   ·   เลิกรอแล้วคืน GPU ทุกเครื่อง: $0 stop"
+}
+
+# container ที่ start รอบนี้เปิดไว้ — die ใช้ตัดสินว่าต้องเก็บกวาดเครื่องไหน
+START_ROLLBACK=""             # ไม่ว่าง = start เปิด container ไปแล้วและยังไม่ถึงจุดที่ถือว่าสำเร็จ/ตั้งใจปล่อยไว้
+START_LAUNCHED_WORKERS=""     # IP ของ worker ที่รอบนี้สั่ง docker run ไปแล้ว (เรียงตามลำดับที่สั่ง)
+START_LAUNCHED_HEAD=""
+
+# start ล้มหลังเปิด container ไปแล้วบางตัว — เดิม "start worker container … ไม่สำเร็จ" · "worker … หยุดก่อน head จะเริ่ม" ·
+# "head container หยุดก่อน health ผ่าน" ออกไปเฉย ๆ ทิ้ง worker ตัวที่เปิดไปก่อนหน้าให้ค้างรอ head ที่ไม่มีวันมา ถือ GPU memory
+# ไว้โดยไม่มีบรรทัดไหนบอก (worker ตายระหว่างรอ ก็ลบแค่ head — คลัสเตอร์ 3–4 เครื่องเหลือ worker อีกสองตัว)
+# หยุดเฉพาะตัวที่ **ยังรัน** (โหมด running ของ _stop_node): ตัวที่ตายเองคือหลักฐาน — `logs head|worker` ยังต้องอ่านมันได้
+_rollback_start() {
+  local workers="$START_LAUNCHED_WORKERS" head="$START_LAUNCHED_HEAD"
+  START_ROLLBACK=""; trap - EXIT
+  [[ -n "${workers}${head}" ]] || return 0
+  STOP_UNSURE=""
+  {
+    echo "start ล้มกลางทาง — หยุด container ที่รอบนี้เปิดไว้ (ตัวที่หยุดไปเองเก็บไว้ให้ดู log · สาเหตุอยู่บรรทัด ERROR ถัดไป):"
+    [[ -z "$head" ]] || _stop_node "head" "" "$MASTER_CONTAINER" running
+    _stop_workers running "$workers"
+  } >&2
+  [[ -z "$STOP_UNSURE" ]] || _stop_unsure_report "  ⚠ ยืนยันไม่ได้ว่าหยุดแล้วบน:"
+  return 0
+}
+
+# ทางออกของ start ที่ไม่ผ่าน die (Ctrl-C · hub ยกเลิก job · คำสั่งภายในล้มใต้ set -e): ไม่หยุดอะไรให้ — งานที่ถูกตัดสาย
+# กลางทางต้องไม่ฆ่าโมเดลที่โหลดมาเป็นชั่วโมง — แต่ต้องบอกว่าอะไรยังรันอยู่ (trap EXIT ตั้งตอนเปิด worker ตัวแรก)
+_start_left_running() {
+  [[ -n "${START_ROLLBACK:-}" ]] || return 0
+  START_ROLLBACK=""
+  {
+    echo "start จบก่อนเสร็จ (ถูกขัดจังหวะ หรือคำสั่งภายในล้ม) — container ที่รอบนี้เปิดไว้ไม่ได้ถูกหยุด และอาจยังโหลดโมเดลต่ออยู่:"
+    [[ -z "$START_LAUNCHED_HEAD" ]] || echo "    head  ${MASTER_CONTAINER}"
+    [[ -z "$START_LAUNCHED_WORKERS" ]] || echo "    worker ${START_LAUNCHED_WORKERS}  ${WORKER_CONTAINER}"
+    echo "  ดูสถานะ: $0 status   ·   หยุดทั้งหมดแล้วคืน GPU: $0 stop"
+  } >&2 2>/dev/null || true
 }
 
 # head รอ /health นานแต่ยังไม่ขึ้นบรรทัดโหลด weight เลย = vLLM ค้างที่ torch.distributed/NCCL rendezvous

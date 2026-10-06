@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import os
 import socket
+import signal
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -325,6 +327,135 @@ def test_start_and_restart_still_refuse_the_bad_knob_and_say_how_to_fix_it(tmp_p
     # ค่าที่ใช้ได้ผ่านทาง flag = ไปต่อได้ (ไม่ใช่ปฏิเสธเหมา)
     ok = _run(bundle, ["restart", "--gpu-util", "0.9"], tmp_path)
     assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+# ═════════════════════ 6. start ล้มกลางทาง ═════════════════════
+def test_a_worker_that_fails_to_launch_does_not_leave_the_earlier_workers_running(tmp_path):
+    """คลัสเตอร์ 3 worker: rank 1 เปิดแล้ว → rank 2 `docker run` ล้ม → เดิม die "start worker container … ไม่สำเร็จ"
+    แล้วออก ทิ้ง rank 1 ค้างรอ head ที่ไม่มีวันมา ถือ GPU memory โดยไม่มีบรรทัดไหนบอก"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 0\n")
+    _seed_head_cache(tmp_path / "home")
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2} {W3}", env={"FAKE_RUN_FAIL": W2})
+    assert done.returncode != 0
+    assert _left(tmp_path, bundle) == set(), f"worker ที่เปิดไปแล้วยังรันอยู่: {done.stderr}"
+    assert f"docker[{W3}] run -d" not in _calls(tmp_path), "ล้มที่ rank 2 แล้วต้องไม่เปิด rank 3 ต่อ"
+    assert any(W1 in ln and "หยุด" in ln for ln in done.stderr.splitlines()), done.stderr
+    # สาเหตุต้องยังเป็นข้อความท้ายสุด (hub/คน อ่านท้าย) — รายงานการเก็บกวาดมาก่อน
+    assert done.stderr.index("start ล้มกลางทาง") < done.stderr.rindex("ERROR:"), done.stderr
+    assert W2 in done.stderr.split("ERROR:")[-1], "บรรทัดสาเหตุต้องชี้เครื่องที่ล้ม"
+
+
+def test_a_worker_that_dies_before_the_head_starts_takes_the_other_workers_down_and_keeps_its_own_log(tmp_path):
+    """worker หนึ่งตัวตายตอน init ("worker … หยุดก่อน head จะเริ่ม") → เดิมออกเลย worker อีกตัวยังรัน · ตัวที่ตายเอง
+    ต้องไม่ถูกลบ — `logs worker` ยังต้องอ่าน log ของมันได้"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 0\n")
+    _seed_head_cache(tmp_path / "home")
+    _, worker = _names(bundle)
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2}", env={"FAKE_RUN_DIES": W2})
+    assert done.returncode != 0
+    assert _left(tmp_path, bundle) == set(), done.stderr
+    assert _container(tmp_path, W2, worker).exists(), "container ที่ตายเองคือหลักฐาน ต้องไม่ถูกลบ"
+    assert "docker[head] run -d" not in _calls(tmp_path)
+    assert any(W1 in ln and "หยุด" in ln for ln in done.stderr.splitlines()), done.stderr
+
+
+def test_a_head_that_dies_before_health_does_not_leave_the_workers_holding_gpu_memory(tmp_path):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 7\n")
+    _seed_head_cache(tmp_path / "home")
+    head, _ = _names(bundle)
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2}", env={"FAKE_RUN_DIES": "head"})
+    assert done.returncode != 0
+    assert "head container" in done.stderr
+    assert _left(tmp_path, bundle) == set(), done.stderr
+    assert _container(tmp_path, "head", head).exists(), "head ที่ตายเองต้องเก็บไว้ให้ `logs head` อ่าน"
+    for node in (W1, W2):
+        assert any(node in ln and "หยุด" in ln for ln in done.stderr.splitlines()), done.stderr
+
+
+def test_a_worker_that_dies_while_the_head_loads_takes_the_head_and_the_other_workers_down(tmp_path):
+    """worker ตายระหว่างรอ head health → เดิมลบแค่ head แล้วออก: คลัสเตอร์ 3 เครื่องเหลือ worker อีกตัวถือ GPU ไว้
+    โดยข้อความบอกแค่ "หยุด head แล้ว" · ตัวที่ตายเองเก็บไว้ให้ดู log"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 7\n")
+    _seed_head_cache(tmp_path / "home")
+    head, worker = _names(bundle)
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2}", env={"FAKE_HEAD_RUN_KILLS": W2})
+    assert done.returncode != 0
+    assert W2 in done.stderr.split("ERROR:")[-1]
+    assert _left(tmp_path, bundle) == set(), done.stderr
+    assert not _container(tmp_path, "head", head).exists(), "head ที่ยังรันต้องถูกหยุดจริง"
+    assert _container(tmp_path, W2, worker).exists(), "worker ที่ตายเองต้องเก็บไว้ให้ `logs worker` อ่าน"
+    for label in ("head", W1):
+        assert any(label in ln and "หยุด" in ln for ln in done.stderr.split("ERROR:")[0].splitlines()), done.stderr
+
+
+def test_a_rollback_that_cannot_reach_a_worker_says_which_one_is_still_running(tmp_path):
+    """เก็บกวาดแล้วไปไม่ถึงบางเครื่อง (สาย management หลุดหลัง worker เปิดไปแล้ว) ต้องบอกชื่อเครื่องนั้น —
+    ห้ามออกโดยทิ้ง container ไว้เงียบ ๆ และห้ามเหมาว่าเครื่องที่หยุดได้ก็ยังรัน"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 7\n")
+    _seed_head_cache(tmp_path / "home")
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2}",
+                env={"FAKE_RUN_DIES": "head", "FAKE_HEAD_RUN_CUTS_SSH": W1})
+    assert done.returncode != 0
+    assert _left(tmp_path, bundle) == {W1}
+    assert any(W1 in ln and "GPU" in ln for ln in done.stderr.splitlines()), done.stderr
+    assert not any(W2 in ln and "GPU" in ln for ln in done.stderr.splitlines()), done.stderr
+
+
+def test_a_health_timeout_leaves_the_cluster_loading_and_says_exactly_what_is_still_up(tmp_path):
+    """หมดเวลารอ health ≠ ล้ม (โมเดลใหญ่โหลดเกินได้) — ตั้งใจไม่หยุด แต่ต้องบอกครบทุกเครื่องที่ยังถือ GPU และวิธีคืน"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 7\n", sleep="exit 0\n")      # sleep ปลอม: ลูปรอหมุนจนครบ STARTUP_TIMEOUT โดยไม่ต้องรอ 10 วิ/รอบ
+    _seed_head_cache(tmp_path / "home")
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2}", env={"STARTUP_TIMEOUT": "1", "STUCK_HINT_AFTER": "9999"})
+    assert done.returncode != 0
+    assert _left(tmp_path, bundle) == {"head", W1, W2}, "timeout ต้องไม่ฆ่าโมเดลที่กำลังโหลด"
+    last = done.stderr.split("ERROR:")[-1]
+    assert W1 in last and W2 in last and "head" in last and " stop" in last, last
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_a_cancelled_start_never_kills_the_cluster_that_is_still_loading(tmp_path, sig):
+    """hub ยกเลิก job / สาย ssh ของ hub หลุด / Ctrl-C ระหว่างรอ health (โมเดลใหญ่ = ชั่วโมงกว่า) ต้องไม่ใช่เหตุให้เก็บกวาด —
+    การหยุดของที่รอบนี้เปิดไว้เป็นของ "start ล้ม" เท่านั้น · container ต้องยังรันครบ และบอกว่าอะไรยังรันอยู่"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 7\n")
+    _seed_head_cache(tmp_path / "home")
+    proc = subprocess.Popen([BASH, str(bundle.controller), "start"], env=_env(tmp_path, workers=f"{W1} {W2}"),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        deadline = time.monotonic() + 60
+        while "docker[head] run -d" not in _calls(tmp_path):        # รอจนเข้าช่วงรอ health จริง
+            assert proc.poll() is None and time.monotonic() < deadline, proc.communicate()
+            time.sleep(0.1)
+        time.sleep(0.5)
+        if sig == signal.SIGINT:
+            os.killpg(proc.pid, sig)      # Ctrl-C ไปทั้ง process group (bash + sleep ที่มันรออยู่) — ส่งให้ bash ตัวเดียวมันไม่ออก
+        else:
+            proc.send_signal(sig)         # hub: proc.terminate() / สาย ssh หลุด — ถึง controller ตัวเดียว
+        out, err = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+    assert proc.returncode != 0
+    assert _left(tmp_path, bundle) == {"head", W1, W2}, err
+    assert "rm -f" not in _calls(tmp_path).split("docker[head] run -d")[-1], "ถูกขัดจังหวะ ≠ ล้ม — ห้ามลบอะไร"
+    assert W1 in err and W2 in err and " stop" in err, f"ต้องบอกว่าอะไรยังรันอยู่และหยุดอย่างไร: {err!r}"
+
+
+def test_a_successful_start_does_not_roll_anything_back(tmp_path):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 0\n")
+    _seed_head_cache(tmp_path / "home")
+    done = _run(bundle, ["start"], tmp_path, workers=f"{W1} {W2}")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _left(tmp_path, bundle) == {"head", W1, W2}
+    assert "start ล้มกลางทาง" not in done.stderr and "start จบก่อนเสร็จ" not in done.stderr
 
 
 # ═════════════════════ 2. info / รอ health: 200 ที่พอร์ต ≠ โมเดลของเรา ═════════════════════
