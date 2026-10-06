@@ -317,15 +317,27 @@ lmds cluster remove-net spark-worker                  # ถอน: ย้าย�
 
 ลำดับเครื่องที่พิมพ์ = ลำดับสาย (ตัวแรกเป็น head · วงแหวนเรียงตามสาย A→B→C)
 
-**apply ทำอะไรบนแต่ละเครื่อง** — ตรวจรหัส sudo ของ *ทุก* เครื่องก่อนแตะเครื่องแรก → เขียน
-`/etc/netplan/99-lmds-cluster.yaml` (`renderer: networkd` · `dhcp4: no` · `addresses` · `optional: true` ·
+**apply ทำอะไรบนแต่ละเครื่อง** — ตรวจรหัส sudo ของ *ทุก* เครื่องก่อนแตะเครื่องแรก → **preflight ทุกเครื่อง**
+(อ่านอย่างเดียว: ไฟล์ใน `/etc/netplan` ที่ประกาศ interface ของแผน ประกาศ interface อื่นอยู่ด้วยไหม — ดูกรอบข้างล่าง) → เขียน
+`/etc/netplan/99-lmds-cluster.yaml` (`renderer: networkd` **ใต้ interface แต่ละตัว** ไม่ใช่ระดับ `network:` — ไม่เปลี่ยน
+backend ของทั้งเครื่อง · `dhcp4: no` · `addresses` · `optional: true` ·
 ไม่มี route/gateway · เฉพาะ interface ของคลัสเตอร์ สายบริหาร/Wi-Fi ไม่ถูกแตะ) → ไฟล์อื่นใน `/etc/netplan`
-ที่อ้าง interface เดียวกัน (เช่น `99-nvidia-sync-cluster.yaml` ของ NVIDIA Sync ซึ่งชื่อเรียงหลังของเราและจะชนะ)
+ที่ประกาศ interface เดียวกัน (เช่น `99-nvidia-sync-cluster.yaml` ของ NVIDIA Sync ซึ่งชื่อเรียงหลังของเราและจะชนะ)
 ถูกย้ายไป `/root/netplan-disabled/` ประทับเวลา → `netplan generate` + `netplan apply` → ยืนยันว่า `ip -br addr`
 เห็น IP และ `LOWER_UP` (ลองซ้ำ ~18 วิ เพราะลิงก์กระพริบหลัง apply) → **ล้ม = ถอยกลับ**ไฟล์เดิมของเครื่องนั้นทันที
 และไม่แตะเครื่องถัดไป → ping ทุกลิงก์จากทั้งสองปลาย → `lmds cluster pair` (กุญแจ head→worker บน IP ใหม่) →
 iperf3 5 วิ ถ้ามีทั้งสองฝั่ง (เตือนเมื่อ <90 Gbit/s — เพดาน PCIe x4 คือ ~100 ไม่ใช่ 200) → ทะเบียน:
 `cluster_ip`/`cluster_iface` = เส้นที่ head↔worker ใช้ + `cluster_links` ทุกลิงก์
+
+> **ไฟล์ netplan ที่รวมสายบริหารกับพอร์ต ConnectX — apply หยุดก่อนแตะเครื่องไหนเลย** (audit 2026-10-06) ·
+> การเอาไฟล์อื่นที่ประกาศ interface เดียวกันออกทำได้ทางเดียวคือย้าย *ทั้งไฟล์* · เครื่องที่ installer เขียนทุก NIC ลงไฟล์เดียว
+> (`50-cloud-init.yaml`: `eno1` IP บริหาร + default route + `enp1s0f1np1`) เคยถูกย้ายออกทั้งไฟล์ — สายบริหารไม่ถูกตั้งค่า
+> ที่ไหนเลยและทุกขั้นขึ้น ✓ · ตอนนี้ขั้น `safe to write netplan …` ล้ม (✕) พร้อมชื่อไฟล์ · interface อื่นในไฟล์ · และสิ่งที่ต้องทำ:
+> บนเครื่องนั้น เอา stanza ของ interface คลัสเตอร์ออกจากไฟล์ (หรือแยกเป็นไฟล์ของมันเอง) → `sudo netplan apply` → apply ใหม่ ·
+> ย้ายได้ตามเดิม: ไฟล์ที่มีแต่ interface ของแผน · stanza ของ interface อื่นที่มีแต่ `link-local`/`optional`/`mtu`
+> (ไฟล์ `40-cx7.yaml` ตามคู่มือ NVIDIA) · ไฟล์ของ NVIDIA Sync — รายงานในบรรทัด ✓ ว่าอะไรไปด้วย · อ่านไฟล์ไม่ออก /
+> ไม่มี `python3-yaml` บนเครื่อง = หยุดเช่นกัน ("ตรวจไม่ได้" ไม่เท่ากับ "ผ่าน") · `cluster inspect`/`plan` และ wizard เตือนล่วงหน้า
+> เมื่อ inventory ของ hub เห็นอยู่แล้ว (เฉพาะไฟล์ที่ผู้ใช้ของ node อ่านได้ — ไฟล์ 0600 ของ root รู้ได้ตอน preflight เท่านั้น)
 
 **ไฟร์วอลล์** — ตั้งแต่ 0.6.1 apply ตรวจ `ufw status` ทุกเครื่อง ถ้าเปิดอยู่จะ `ufw allow in on <iface สายคลัสเตอร์>` ให้เอง (เคสจริง: ping ถึงแต่ worker ต่อ head:25000 ไม่ได้ → stacked start ตาย `client socket has timed out`) · `lmds cluster inspect` และขั้น Cabling check ของ wizard ขึ้นเตือนเมื่อ ufw เปิดแต่ยังไม่ปล่อย interface
 

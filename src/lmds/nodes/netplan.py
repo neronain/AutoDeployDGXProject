@@ -44,6 +44,9 @@ PREFERRED_FUNCTION = 1
 IPERF_WARN_GBPS = 90
 VERIFY_ATTEMPTS = 6
 VERIFY_PAUSE_S = 3.0
+# ชื่อ step ของ preflight — มีคำว่า "write … netplan" โดยตั้งใจ: wizard บนหน้าเว็บจับหมวด "write netplan" ด้วย regex นั้น
+# ขั้นนี้ล้ม = ติ๊ก write netplan ของเครื่องนั้นเป็น ✕ (ไม่ใช่ค้าง "รอ" เหมือนไม่มีอะไรเกิดขึ้น)
+PREFLIGHT_STEP = "safe to write netplan (files to move hold no other interface)"
 TOPOLOGY_CHOICES = ("direct", "ring", "switch")
 # ของที่ต้องซื้อเมื่อเกินเพดานต่อตรง — ภาษาอังกฤษเพราะ `reason` ถูกโชว์ตรง ๆ ทั้งหน้าเว็บและ CLI
 # รุ่นเดียวกับ docs/NVIDIA-CLUSTER-SOURCES.md "ของที่ควรซื้อ" และ SWITCH_SHOPPING_LIST ใน fit/targets.py
@@ -296,23 +299,68 @@ def render_netplan(assignments: list[dict], renderer: str = "networkd") -> str:
 
     ไม่มี routes/gateway โดยตั้งใจ: วงคลัสเตอร์เป็น point-to-point ไม่ควรมีอะไรวิ่งออกไปทางนี้
     `optional: true` เพราะสายที่ถอดออกต้องไม่ทำให้บูตค้างรอ network-online
+
+    `renderer` อยู่ **ใต้ interface แต่ละตัว** ไม่ใช่ที่ `network:` — เดิมเขียน `renderer: networkd` ไว้ระดับบนสุด ซึ่งเป็น
+    ค่า scalar คีย์เดียวกับของไฟล์อื่น และ netplan อ่านไฟล์ตามลำดับชื่อแล้ว "the old value is overwritten by the new
+    value" (netplan-generate(8)) · ไฟล์ `99-…` ของเราจึงเปลี่ยน backend **ของทั้งเครื่อง** จาก NetworkManager
+    (`01-network-manager-all.yaml` ของ DGX OS / Ubuntu Desktop) เป็น networkd ทั้งที่ตั้งใจจะพูดถึงแค่พอร์ต ConnectX ·
+    คู่มือ netplan: renderer "can be specified globally in network:, for a device type (in e.g. ethernets:) or for a
+    particular device definition" — ใส่ที่ระดับ interface ได้ผลเท่าเดิมกับพอร์ตของเรา และไม่แตะของคนอื่น (audit 2026-10-06)
     """
     lines = [
         "# Managed by LMDS (lmds cluster apply) — ConnectX cluster links. Do not edit by hand;",
         "# re-run `lmds cluster apply` or remove with `lmds cluster remove-net <node>`.",
         "network:",
         "  version: 2",
-        f"  renderer: {renderer}",
         "  ethernets:",
     ]
     for item in sorted(assignments, key=lambda a: a["iface"]):
         lines += [
             f"    {item['iface']}:",
+            f"      renderer: {renderer}",
             "      dhcp4: no",
             f"      addresses: [{item['ip']}/{item['prefix']}]",
             "      optional: true",
         ]
     return "\n".join(lines) + "\n"
+
+
+def shared_netplan_files(host: dict | None, cluster_ifaces: list[str]) -> list[dict]:
+    """ไฟล์ netplan ที่ประกาศทั้ง interface ของคลัสเตอร์ **และ** interface อื่นที่มี IP ใช้งานอยู่ — เท่าที่ payload บอกได้
+
+    apply ย้ายไฟล์ที่ประกาศ interface ของคลัสเตอร์ออกทั้งไฟล์ · ไฟล์เดียวที่รวมทุก NIC (เช่น `50-cloud-init.yaml` ของ
+    Ubuntu Server installer: สายบริหาร + default route + พอร์ต ConnectX) จึงถูก apply ปฏิเสธ (ดู preflight_script) —
+    ตรงนี้ใช้ข้อมูลที่ hub มีอยู่แล้วบอกล่วงหน้าตั้งแต่ขั้น inspect/plan · payload รู้แค่ "ไฟล์ไหนเอ่ยถึง interface ไหน"
+    (และเฉพาะไฟล์ที่ผู้ใช้ของ node อ่านได้ — ส่วนใหญ่เป็น 0600 ของ root) จึงเป็นคำเตือน ไม่ใช่คำตัดสิน: ตัวตัดสินคือ
+    preflight บนเครื่องจริงซึ่งอ่านใต้ sudo · interface อื่นที่ไม่มี IP จริง (link-local/ว่าง) ไม่นับ — stanza แบบนั้น
+    ย้ายไปด้วยได้
+
+    คืน [{"file", "cluster_ifaces": [...], "other_ifaces": [...], "other_ips": {iface: ip}}]
+    """
+    fabric = (host or {}).get("fabric") or {}
+    wanted = set(cluster_ifaces)
+    by_file: dict[str, dict[str, str]] = {}
+    for link in fabric.get("links") or []:
+        for name in link.get("netplan_files") or []:
+            by_file.setdefault(str(name), {})[str(link.get("iface") or "")] = (
+                "" if link.get("link_local") or str(link.get("ip") or "").startswith("169.254.") else str(link.get("ip") or ""))
+    own, sync = NETPLAN_FILE.rsplit("/", 1)[-1], NVIDIA_SYNC_FILE.rsplit("/", 1)[-1]
+    shared = []
+    for name in sorted(by_file):
+        if name in (own, sync):
+            continue
+        mine = sorted(i for i in by_file[name] if i in wanted)
+        others = {i: ip for i, ip in sorted(by_file[name].items()) if i and i not in wanted and ip}
+        if mine and others:
+            shared.append({"file": name, "cluster_ifaces": mine, "other_ifaces": list(others), "other_ips": others})
+    return shared
+
+
+def _shared_warning(node: str, item: dict) -> str:
+    held = ", ".join(f"{i} ({ip})" for i, ip in item["other_ips"].items())
+    return (f"{node}: /etc/netplan/{item['file']} defines {', '.join(item['cluster_ifaces'])} together with {held} — "
+            f"apply will stop before changing anything rather than move that file aside (it would drop {held}). "
+            f"On {node}, take the {', '.join(item['cluster_ifaces'])} stanza out of that file first, then `sudo netplan apply`")
 
 
 # ── plan ────────────────────────────────────────────────────────────────────────
@@ -327,7 +375,7 @@ def build_plan(order: list[str], hosts: dict[str, dict | None], *, base_subnet: 
                   "a": ends[0], "b": ends[1]}],
        "nodes": {name: {"links"/"iface_ips": [{"iface", "ip", "prefix", "peer_node", "peer_ip", "link_id", "qsfp_port"}],
                         "netplan"/"netplan_yaml": "<yaml>", "cluster_ip", "cluster_iface", "changed": bool,
-                        "changes": [str]}},
+                        "changes": [str], "netplan_shared": [...shared_netplan_files...]}},
        "per_node": (ตัวเดียวกับ nodes),
        "registry": {name: {"cluster_ip", "cluster_iface", "cluster_links": [...]}}}
     """
@@ -395,6 +443,7 @@ def build_plan(order: list[str], hosts: dict[str, dict | None], *, base_subnet: 
         if current is not None and current.cluster_ip != main["ip"]:
             changes.append(f"registry: cluster_ip {current.cluster_ip or '(unset)'} → {main['ip']}")
         yaml_text = render_netplan(assignments, renderer)
+        shared = shared_netplan_files(hosts[name], [a["iface"] for a in assignments])
         nodes_out[name] = {
             "links": entry["links"],
             "iface_ips": entry["links"],
@@ -404,7 +453,9 @@ def build_plan(order: list[str], hosts: dict[str, dict | None], *, base_subnet: 
             "cluster_iface": main["iface"],
             "changed": changed,
             "changes": changes,
+            "netplan_shared": shared,
         }
+        warnings += [_shared_warning(name, item) for item in shared]
         registry[name] = {"cluster_ip": main["ip"], "cluster_iface": main["iface"],
                           "cluster_links": entry["links"]}
 
@@ -444,21 +495,160 @@ def stage_script() -> str:
     return "f=$(mktemp /tmp/lmds-netplan.XXXXXX) && cat > \"$f\" && chmod 600 \"$f\" && echo \"$f\""
 
 
-def apply_script(staged: str, ifaces: list[str], stamp: str) -> str:
-    """สคริปต์ที่รันใต้ sudo: สำรองของเดิม → ปลดไฟล์อื่นที่อ้าง interface เดียวกัน → ติดตั้ง → generate → apply
+# โปรแกรมที่ preflight รันบน node (python3 ใต้ sudo · อ่านอย่างเดียว) — argv: <ไฟล์ของเรา> <interface ของแผน>...
+# พิมพ์หนึ่งบรรทัดต่อไฟล์ที่ประกาศ interface ของแผน:
+#   LMDS_PREFLIGHT_FILE\t<path>\t<ของแผน,…>\t<interface อื่นที่ตั้งค่าจริง,…>\t<interface อื่นที่มีแต่ link-local,…>
+#   LMDS_PREFLIGHT_UNPARSED\t<path>\t<เหตุผล>     อ่าน YAML ไม่ได้ แต่ข้อความในไฟล์เอ่ยถึง interface ของแผน
+# ปิดท้าย LMDS_PREFLIGHT_DONE เสมอ — ไม่มีบรรทัดนี้ = สคริปต์ไม่จบ ผู้เรียกต้องถือว่า "ไม่รู้" ไม่ใช่ "ไม่มีปัญหา"
+#
+# ใช้ YAML parser จริง (python3-yaml เป็น dependency ของ netplan.io เอง — เครื่องที่มีคำสั่ง netplan มีแน่) ไม่ใช่ grep:
+# ต้องแยกให้ออกว่าคีย์ไหนคือ "ชื่อ interface" และ stanza ของมันตั้งค่าอะไร · "ตั้งค่าจริง" = มีคีย์อื่นนอกจาก
+# link-local/optional/mtu และ dhcp4/dhcp6/accept-ra ที่ปิดอยู่ หรืออยู่ใต้ section ที่ไม่ใช่ ethernets (bond/bridge/vlan) —
+# รายการอนุญาต ไม่ใช่รายการห้าม: คีย์ที่ไม่รู้จักนับเป็น "ตั้งค่าจริง" (พลาดทางนี้ = ผู้ใช้ต้องแก้ไฟล์เอง · พลาดอีกทาง = เครื่องหลุด)
+_PREFLIGHT_PROGRAM = r"""
+import glob, re, sys
+ours, want = sys.argv[1], set(sys.argv[2:])
+try:
+    import yaml
+except Exception:
+    yaml = None
+mention = re.compile(r"^\s+[\"']?(%s)[\"']?\s*:" % "|".join(re.escape(w) for w in sorted(want)), re.M)
+def quiet(section, stanza):
+    if section != "ethernets":
+        return False
+    if stanza is None:
+        return True
+    if not isinstance(stanza, dict):
+        return False
+    for key, value in stanza.items():
+        if key in ("link-local", "optional", "mtu"):
+            continue
+        if key in ("dhcp4", "dhcp6", "accept-ra") and value in (False, None, "no", "false", "off"):
+            continue
+        return False
+    return True
+for path in sorted(glob.glob("/etc/netplan/*.yaml")):
+    if path == ours:
+        continue
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        print("LMDS_PREFLIGHT_UNPARSED\t%s\tcannot be read" % path)
+        continue
+    defined = None
+    if yaml is not None:
+        try:
+            defined = {}
+            for section, body in ((yaml.safe_load(text) or {}).get("network") or {}).items():
+                if isinstance(body, dict):
+                    for name, stanza in body.items():
+                        defined[str(name)] = (str(section), stanza)
+        except Exception:
+            defined = None
+    if defined is None:
+        if mention.search(text):
+            print("LMDS_PREFLIGHT_UNPARSED\t%s\t%s" % (path, "python3-yaml is missing" if yaml is None else "is not valid YAML"))
+        continue
+    mine = sorted(n for n in defined if n in want)
+    if not mine:
+        continue
+    busy = sorted(n for n in defined if n not in want and not quiet(*defined[n]))
+    idle = sorted(n for n in defined if n not in want and quiet(*defined[n]))
+    print("LMDS_PREFLIGHT_FILE\t%s\t%s\t%s\t%s" % (path, ",".join(mine), ",".join(busy), ",".join(idle)))
+print("LMDS_PREFLIGHT_DONE")
+"""
+# ชื่อไฟล์ที่ยอมย้าย — path นี้มาจาก stdout ของเครื่องปลายทางแล้วถูกวางในคำสั่งที่รันเป็น root จึงต้องเป็นรูปที่รู้จักเท่านั้น
+_MOVABLE_FILE_RE = re.compile(r"/etc/netplan/[A-Za-z0-9][A-Za-z0-9._+@-]*\.yaml")
+
+
+def preflight_script(ifaces: list[str]) -> str:
+    """อ่านอย่างเดียวใต้ sudo: ไฟล์ไหนใน /etc/netplan ประกาศ interface ของแผน และไฟล์นั้นประกาศ interface อื่นอะไรอีก
+
+    apply ต้องเอาไฟล์อื่นที่ประกาศ interface เดียวกันออก (ไม่งั้น merge แล้ว IP ของเราไม่ขึ้น) และทำได้ทางเดียวคือย้ายทั้งไฟล์
+    — คำถามที่ต้องตอบ *ก่อน* ย้ายคือ "ไฟล์นั้นมีของคนอื่นอยู่ด้วยไหม" · รูปแบบผลลัพธ์อยู่ที่ _PREFLIGHT_PROGRAM
+    """
+    wanted = " ".join(_q(i) for i in sorted(ifaces))
+    pattern = "|".join(re.escape(i) for i in sorted(ifaces))
+    return (
+        "if command -v python3 >/dev/null 2>&1; then "
+        f"python3 -c {_q(_PREFLIGHT_PROGRAM)} {NETPLAN_FILE} {wanted}; "
+        # ไม่มี python3 เลย (ไม่ควรเกิดบนเครื่องที่มี netplan) — ตอบได้แค่ว่าไฟล์ไหนเอ่ยถึง ไม่รู้ว่ามีอะไรอีก = ให้ผู้เรียกปฏิเสธ
+        f"else for g in /etc/netplan/*.yaml; do [ -f \"$g\" ] || continue; [ \"$g\" = {NETPLAN_FILE} ] && continue; "
+        f"if grep -qE {_q(f'^[[:space:]]+({pattern}):')} \"$g\"; then "
+        "printf 'LMDS_PREFLIGHT_UNPARSED\\t%s\\tpython3 is missing\\n' \"$g\"; fi; done; echo LMDS_PREFLIGHT_DONE; fi"
+    )
+
+
+def read_preflight(node: str, stdout: str, ifaces: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """ผลของ preflight_script → (ไฟล์ที่ย้ายได้, ปัญหาที่ต้องหยุด, หมายเหตุ) — ปัญหาไม่ว่าง = ห้ามแตะเครื่องไหนเลย
+
+    หยุดเมื่อ: ไฟล์ที่ต้องย้ายตั้งค่า interface อื่นอยู่ด้วย (เคส `50-cloud-init.yaml` ที่รวมสายบริหารกับพอร์ต ConnectX) ·
+    อ่านไฟล์ไม่ออก · ชื่อไฟล์แปลกเกินจะวางในคำสั่ง root · หรือสคริปต์ไม่จบ (ไม่มี DONE) — "ตรวจไม่ได้" ไม่เท่ากับ "ผ่าน"
+
+    ยกเว้นสองอย่างที่ย้ายได้แม้มี interface อื่น: (1) stanza ที่มีแต่ link-local (ไฟล์ `40-cx7.yaml` ตามคู่มือ NVIDIA ประกาศ
+    ทั้ง f0 และ f1 ของพอร์ตเป็น `link-local: [ipv4]` — ไม่มี address/DHCP/route ให้เสีย) (2) ไฟล์ของ NVIDIA Sync
+    ซึ่งมีแต่ลิงก์คลัสเตอร์โดยนิยาม และแผนประกาศไว้แล้วว่าจะย้าย — ทั้งสองกรณีรายงานในหมายเหตุว่าอะไรไปด้วย
+    """
+    mine_text = ", ".join(sorted(ifaces))
+    move: list[str] = []
+    problems: list[str] = []
+    notes: list[str] = []
+    lines = (stdout or "").splitlines()
+    if "LMDS_PREFLIGHT_DONE" not in [line.strip() for line in lines]:
+        return [], [f"could not inspect /etc/netplan on {node} — nothing was changed"], []
+    for line in lines:
+        parts = line.rstrip("\r").split("\t")
+        if parts[0] == "LMDS_PREFLIGHT_UNPARSED" and len(parts) >= 3:
+            problems.append(
+                f"{parts[1]} mentions {mine_text} but {parts[2]}, so LMDS cannot tell what else it configures. "
+                f"Nothing was changed. On {node}: check the file, take the {mine_text} stanza out of it by hand, "
+                "run `sudo netplan apply`, then apply again.")
+        elif parts[0] == "LMDS_PREFLIGHT_FILE" and len(parts) >= 5:
+            path, mine = parts[1], [x for x in parts[2].split(",") if x]
+            busy, idle = [x for x in parts[3].split(",") if x], [x for x in parts[4].split(",") if x]
+            if not _MOVABLE_FILE_RE.fullmatch(path):
+                problems.append(f"{path!r} defines {', '.join(mine)} but its name is not one LMDS will move for you. "
+                                f"Nothing was changed. On {node}: take the {', '.join(mine)} stanza out of it by hand, "
+                                "run `sudo netplan apply`, then apply again.")
+            elif busy and path != NVIDIA_SYNC_FILE:
+                problems.append(
+                    f"{path} configures {', '.join(busy)} as well as {', '.join(mine)}. Applying means moving every "
+                    f"file that defines {', '.join(mine)} to {DISABLED_DIR}, which would leave {', '.join(busy)} with no "
+                    "configuration — if that is the management network, this machine drops off it. Nothing was changed. "
+                    f"On {node}: take the {', '.join(mine)} stanza out of {path} (or split it into its own file), "
+                    "run `sudo netplan apply`, then apply again.")
+            else:
+                move.append(path)
+                dropped = busy + idle
+                notes.append(f"will move {path}" + (f" (also drops its stanza for {', '.join(dropped)})" if dropped else ""))
+    return move, problems, notes
+
+
+def apply_script(staged: str, move: list[str], stamp: str) -> str:
+    """สคริปต์ที่รันใต้ sudo: สำรองของเดิม → ย้ายไฟล์อื่นที่ประกาศ interface เดียวกัน → ติดตั้ง → generate → apply
 
     ไฟล์ netplan ถูก merge ตามชื่อ: `99-lmds` แพ้ `99-nvidia-sync` ถ้าปล่อยไว้ทั้งคู่ → IP ของเราไม่เคยขึ้น
-    เงียบ ๆ · จึงย้ายไฟล์ *ที่เอ่ยถึง interface ของเรา* ไป /root/netplan-disabled (ทางเดียวกับที่ NVIDIA
-    ใช้ถอนคลัสเตอร์) ประทับ stamp ให้ rollback หาเจอ · ไฟล์ของสายบริหาร (ไม่เอ่ยถึง ConnectX) ไม่ถูกแตะ
+    เงียบ ๆ · จึงย้ายไฟล์ที่ประกาศ interface ของเราไป /root/netplan-disabled (ทางเดียวกับที่ NVIDIA
+    ใช้ถอนคลัสเตอร์) ประทับ stamp ให้ rollback หาเจอ
+
+    `move` = รายชื่อไฟล์ที่ preflight (read_preflight) ตรวจแล้วว่าไม่มีของคนอื่นอยู่ด้วย — ไม่ใช่ glob + grep ในสคริปต์นี้อีก:
+    เดิมย้ายทุกไฟล์ที่ grep เจอ `<iface>:` โดยเชื่อว่า "ไฟล์ของสายบริหารไม่เอ่ยถึง ConnectX" ซึ่งไม่จริงกับเครื่องที่
+    installer เขียนทุก NIC ลงไฟล์เดียว — `50-cloud-init.yaml` ที่มี eno1 (IP บริหาร + default route) กับ enp1s0f1np1
+    ถูกย้ายออกทั้งไฟล์ เหลือ `99-lmds-cluster.yaml` ไฟล์เดียว สายบริหารไม่ถูกตั้งค่าที่ไหนเลย และทุกขั้นรายงาน pass
+    เพราะ verify ดูแค่ interface ของคลัสเตอร์ (audit 2026-10-06) · สคริปต์นี้จึงย้ายเฉพาะสิ่งที่ถูกตรวจและตั้งชื่อมาให้
     """
-    pattern = "|".join(re.escape(i) for i in sorted(ifaces))
+    for path in move:
+        if not _MOVABLE_FILE_RE.fullmatch(path) or path == NETPLAN_FILE:
+            raise NetplanError(f"refusing to move {path!r} — not a netplan file LMDS inspected")
+    moving = ""
+    if move:
+        moving = (f"for g in {' '.join(_q(path) for path in move)}; do [ -f \"$g\" ] || continue; "
+                  "mv \"$g\" \"$d/$(basename \"$g\").$s\"; echo \"disabled $g\"; done; ")
     return (
         "set -e; "
         f"f={NETPLAN_FILE}; d={DISABLED_DIR}; s={_q(stamp)}; mkdir -p \"$d\"; "
         "if [ -f \"$f\" ]; then cp -p \"$f\" \"$d/$(basename \"$f\").$s\"; echo \"backup $d/$(basename \"$f\").$s\"; fi; "
-        "for g in /etc/netplan/*.yaml; do [ -f \"$g\" ] || continue; [ \"$g\" = \"$f\" ] && continue; "
-        f"if grep -qE {_q(f'^[[:space:]]+({pattern}):')} \"$g\"; then "
-        "mv \"$g\" \"$d/$(basename \"$g\").$s\"; echo \"disabled $g\"; fi; done; "
+        + moving +
         f"install -m 0600 -o root -g root {_q(staged)} \"$f\"; rm -f {_q(staged)}; "
         "netplan generate && netplan apply && echo LMDS_NETPLAN_APPLIED"
     )
@@ -529,12 +719,12 @@ def _unreachable(result) -> bool:
     return getattr(result, "exit_code", 1) in (124, 255)
 
 
-def _scrub(text: str, secrets: list[str]) -> str:
+def _scrub(text: str, secrets: list[str], limit: int = 300) -> str:
     text = (text or "").strip()
     for secret in secrets:
         if secret:
             text = text.replace(secret, "•••")
-    return text[-300:]
+    return text[-limit:]
 
 
 def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] | None = None,
@@ -543,7 +733,8 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
     """ตั้งค่าตามแผนบนทุกเครื่อง — คืน {"ok", "applied", "steps", "nodes", "pings", "pairing", "speed", "registry"}
 
     ลำดับ: ตรวจรหัส sudo ของทุกเครื่อง *ก่อน* แตะเครื่องแรก (รหัสผิดเครื่องที่สองไม่ควรทิ้งเครื่องแรกไว้
-    ครึ่งทาง) → ต่อเครื่อง: stage YAML → sudo apply → ยืนยัน (IP ขึ้น + LOWER_UP, ลองซ้ำเพราะลิงก์กระพริบ
+    ครึ่งทาง) → preflight ทุกเครื่อง (อ่านอย่างเดียว: ไฟล์ที่ต้องย้ายมีของ interface อื่นอยู่ด้วยไหม — มี = หยุด
+    ทั้งแผนก่อนแตะเครื่องไหนเลย) → ต่อเครื่อง: stage YAML → sudo apply → ยืนยัน (IP ขึ้น + LOWER_UP, ลองซ้ำเพราะลิงก์กระพริบ
     หลัง netplan apply) → ล้ม = rollback → ping ทุกลิงก์จากทั้งสองปลาย → กุญแจ head→worker → iperf3
     (ถ้ามีทั้งสองฝั่ง เตือนอย่างเดียว) → ทะเบียน · รันซ้ำได้: ไฟล์เดิมถูกสำรองแล้วเขียนทับด้วยเนื้อหาเดิม
 
@@ -566,8 +757,8 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
     report = {"ok": False, "applied": False, "steps": steps, "nodes": {}, "pings": [],
               "pairing": [], "speed": [], "registry": {}, "stamp": stamp}
 
-    def step(node: str, what: str, ok: bool, detail: str = "", level: str = "") -> dict:
-        item = {"node": node, "step": what, "ok": ok, "detail": _scrub(detail, secrets),
+    def step(node: str, what: str, ok: bool, detail: str = "", level: str = "", limit: int = 300) -> dict:
+        item = {"node": node, "step": what, "ok": ok, "detail": _scrub(detail, secrets, limit),
                 "level": level or ("pass" if ok else "fail")}
         steps.append(item)
         if progress is not None:
@@ -591,6 +782,28 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
         if not ok:
             return report
 
+    # 1b. preflight ทุกเครื่องก่อนแตะเครื่องแรก — อ่านอย่างเดียว · เครื่องไหนมีไฟล์ที่ย้ายแล้วจะพาของ interface อื่นไปด้วย
+    #     (สายบริหารอยู่ไฟล์เดียวกับพอร์ต ConnectX) = ล้มตรงนี้ทั้งแผน ไม่ใช่ pass พร้อมหมายเหตุ และไม่ทิ้งเครื่องแรกไว้ครึ่งทาง
+    to_move: dict[str, list[str]] = {}
+    blocked = False
+    for name in order:
+        ifaces = [l["iface"] for l in _unique_assignments(plan["nodes"][name]["links"])]
+        checked = run(nodes[name], sudo_wrap(preflight_script(ifaces)), timeout=60, stdin_text=passwords[name] + "\n")
+        if _unreachable(checked):
+            move, problems, notes = [], [f"unreachable while inspecting /etc/netplan on {name} — nothing was changed"], []
+        elif not checked.ok:
+            move, problems, notes = [], [f"could not inspect /etc/netplan on {name} — nothing was changed: "
+                                         + (checked.stderr or checked.stdout or "no output")[-200:]], []
+        else:
+            move, problems, notes = read_preflight(name, checked.stdout or "", ifaces)
+        to_move[name] = move
+        blocked = blocked or bool(problems)
+        step(name, PREFLIGHT_STEP, not problems,
+             " ".join(problems) if problems else ("; ".join(notes) or f"no other netplan file defines {', '.join(sorted(ifaces))}"),
+             limit=1200)
+    if blocked:
+        return report
+
     # 2. ต่อเครื่อง
     for name in order:
         node = nodes[name]
@@ -607,7 +820,7 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
             return report
         step(name, "stage netplan file", True, path)
 
-        applied = run(node, sudo_wrap(apply_script(path, [a["iface"] for a in assignments], stamp)),
+        applied = run(node, sudo_wrap(apply_script(path, to_move[name], stamp)),
                       timeout=180, stdin_text=passwords[name] + "\n")
         applied_ok = applied.ok and "LMDS_NETPLAN_APPLIED" in (applied.stdout or "")
         notes = [line for line in (applied.stdout or "").splitlines() if line.startswith(("backup", "disabled"))]
@@ -862,7 +1075,8 @@ def inspect_nodes(order: list[str], hosts: dict[str, dict | None], errors: dict[
                                             "interfaces": [{"iface", "function", "carrier", "speed_gbps", "ip", "prefix",
                                                             "rdma_device", "netplan_managed"}]}],
                                  "links": [...ดิบจาก agent...], "netplan_files", "nvidia_sync"},
-                      "ports": [...group_qsfp_ports...], "netplan_files", "nvidia_sync"}},
+                      "ports": [...group_qsfp_ports...], "netplan_files", "nvidia_sync",
+                      "netplan_shared": [{"file", "cluster_ifaces", "other_ifaces", "other_ips", "text"}]}},
      "topology": {"kind", "topology", "links", "reason", "order", "cabled": {name: [port]}}}
     """
     errors = errors or {}
@@ -873,6 +1087,7 @@ def inspect_nodes(order: list[str], hosts: dict[str, dict | None], errors: dict[
         if not host:
             out[name] = {"reachable": False, "error": errors.get(name) or "no data yet", "hostname": "",
                          "spark": False, "sudo_needed": True, "ports": [], "netplan_files": [], "nvidia_sync": False,
+                         "netplan_shared": [],
                          "fabric": {"ports": [], "links": [], "netplan_files": [], "nvidia_sync": False}}
             continue
         fabric = host.get("fabric") or {}
@@ -890,6 +1105,10 @@ def inspect_nodes(order: list[str], hosts: dict[str, dict | None], errors: dict[
                        "nvidia_sync": bool(fabric.get("nvidia_sync_netplan"))},
             "netplan_files": fabric.get("netplan_files") or [],
             "nvidia_sync": bool(fabric.get("nvidia_sync_netplan")),
+            # ไฟล์ที่รวมพอร์ต QSFP กับ interface อื่นที่มี IP จริง — apply จะปฏิเสธ (ยังไม่รู้ว่าแผนใช้ interface ไหน
+            # จึงนับทุก interface ของพอร์ต QSFP) · `text` ไว้ให้หน้าเว็บ/CLI โชว์ตรง ๆ
+            "netplan_shared": [{**item, "text": _shared_warning(name, item)} for item in shared_netplan_files(
+                host, [iface for port in ports for iface in port.get("ifaces") or []])],
         }
     if all(out[n]["reachable"] for n in order) and order:
         inferred = infer_topology(cabled, list(order), topology)

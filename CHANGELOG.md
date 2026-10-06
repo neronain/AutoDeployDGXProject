@@ -87,6 +87,19 @@
   ในตาราง "เก็บไว้ ไม่ลบ" ของ `lmds remove [--dry-run]`, ในผลลัพธ์ (`เก็บ … ไว้ทั้งก้อน — ยังใช้โดย …`) และในกล่องยืนยัน
   ของหน้าเว็บ (`/api/models/<slug>/removal-plan` มี `kept` + `shared_with` · `total_bytes` ไม่นับของที่เก็บ) · ใบสุดท้ายที่ใช้
   ลบตามเดิม · เทส: `tests/test_shared_weights_remove.py`
+- **`lmds cluster apply` ย้ายไฟล์ netplan ที่ถือสายบริหารออกจาก `/etc/netplan` แล้วรายงาน pass ทุกขั้น** (audit 2026-10-06) ·
+  ไฟล์ที่ประกาศ interface ของคลัสเตอร์ถูกย้ายทั้งไฟล์ด้วย grep โดยเชื่อว่า "ไฟล์สายบริหารไม่เอ่ยถึง ConnectX" — ไม่จริงกับ
+  `50-cloud-init.yaml` ที่ installer ของ Ubuntu Server รวมทุก NIC ไว้ (`eno1` + default route + `enp1s0f1np1`): หลัง apply
+  เหลือ `99-lmds-cluster.yaml` ไฟล์เดียว · ตอนนี้มี **preflight ทุกเครื่องก่อนแตะเครื่องแรก** (python3 + YAML parser จริงใต้
+  sudo อ่านอย่างเดียว): ไฟล์ที่ต้องย้ายตั้งค่า interface อื่นอยู่ด้วย = ขั้น `safe to write netplan …` **ล้ม** บอกไฟล์ ·
+  interface · วิธีแก้ และไม่มีอะไรถูกเปลี่ยนบนเครื่องไหน · apply ย้ายเฉพาะไฟล์ที่ preflight ตั้งชื่อ (ไม่ glob+grep อีก) ·
+  ยกเว้น stanza ที่มีแต่ link-local (`40-cx7.yaml` ตามคู่มือ NVIDIA) และไฟล์ของ NVIDIA Sync · อ่านไม่ออก/ไม่มี python3-yaml =
+  หยุด · `cluster inspect`/`plan`/wizard เตือนล่วงหน้าเมื่อ inventory เห็น (`netplan_shared`) · เทส: `tests/test_netplan_shared_file.py`
+  รันสคริปต์จริงกับ `/etc/netplan` ในแซนด์บ็อกซ์
+- **`99-lmds-cluster.yaml`: `renderer: networkd` ย้ายจากระดับ `network:` ไปอยู่ใต้ interface แต่ละตัว** · ค่าระดับบนสุดเป็น
+  scalar คีย์เดียวกับไฟล์อื่น และ netplan ให้ไฟล์ที่ชื่อเรียงหลังทับ (netplan-generate(8)) — ไฟล์ `99-…` ของเราจึงเปลี่ยน backend
+  ของทั้งเครื่องจาก NetworkManager (DGX OS) เป็น networkd · ผลต่อพอร์ตคลัสเตอร์เท่าเดิม · เครื่องที่ apply ไปแล้วได้ไฟล์รูปใหม่
+  เมื่อ `lmds cluster apply` รอบถัดไป
 - **context ต่อคำขอ · slot · ก้อนรวม ของ llama.cpp ถูกเอามาปนกัน** (ตรวจ 2026-10-05) ·
   `serving.context` ของ llama.cpp คือ `--ctx-size` = ก้อนรวมที่หารให้ทุก slot ส่วนเพดานของ
   โมเดล (native) เป็นเพดานต่อคำขอ · planner รู้ (ตั้งก้อนรวม = ต่อคำขอ × slot) แต่ที่เหลือไม่รู้:

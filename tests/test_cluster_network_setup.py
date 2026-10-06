@@ -20,6 +20,7 @@ from lmds.nodes import Node, add, find
 from lmds.nodes.netplan import (
     DISABLED_DIR,
     NETPLAN_FILE,
+    PREFLIGHT_STEP,
     NetplanError,
     allocate_links,
     apply_plan,
@@ -275,9 +276,9 @@ def test_netplan_yaml_lists_only_cluster_interfaces_with_static_addresses():
     assert text == (
         "# Managed by LMDS (lmds cluster apply) — ConnectX cluster links. Do not edit by hand;\n"
         "# re-run `lmds cluster apply` or remove with `lmds cluster remove-net <node>`.\n"
-        "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n"
-        "    enP2p1s0f1np1:\n      dhcp4: no\n      addresses: [10.100.153.1/24]\n      optional: true\n"
-        "    enp1s0f1np1:\n      dhcp4: no\n      addresses: [10.100.152.1/24]\n      optional: true\n"
+        "network:\n  version: 2\n  ethernets:\n"
+        "    enP2p1s0f1np1:\n      renderer: networkd\n      dhcp4: no\n      addresses: [10.100.153.1/24]\n      optional: true\n"
+        "    enp1s0f1np1:\n      renderer: networkd\n      dhcp4: no\n      addresses: [10.100.152.1/24]\n      optional: true\n"
     )
     assert "gateway" not in text and "routes" not in text
     import yaml
@@ -335,6 +336,8 @@ class FakeFleet:
         self.staged: dict[str, str] = {}
         self.lose_carrier_on = lose_carrier_on
         self.ping_fail = ping_fail
+        # ไฟล์ netplan อื่นที่ประกาศ interface ของแผนบนแต่ละเครื่อง (สิ่งที่ preflight จะรายงาน) — b เคยผ่าน NVIDIA Sync
+        self.conflicting: dict[str, list[str]] = {"b": ["99-nvidia-sync-cluster.yaml"]}
 
     def __call__(self, node, command, timeout=60, stdin_text=""):
         self.calls.append((node.name, command, stdin_text))
@@ -355,8 +358,19 @@ class FakeFleet:
                 return 1, "", "Sorry, try again."
             if command.endswith("-v && echo LMDS_SUDO_OK"):
                 return 0, "LMDS_SUDO_OK\n", ""
+            if "LMDS_PREFLIGHT_DONE" in command:
+                # preflight (อ่านอย่างเดียว ก่อนแตะเครื่องไหนเลย): เครื่องที่เคยผ่าน NVIDIA Sync มีไฟล์ของ Sync ที่ประกาศ
+                # interface ของแผน — ไฟล์เดียวที่ต้องย้าย · เครื่องอื่นไม่มีไฟล์ไหนเอ่ยถึง
+                found = "".join(f"LMDS_PREFLIGHT_FILE\t/etc/netplan/{f}\tenp1s0f1np1\t\t\n"
+                                for f in getattr(self, "conflicting", {}).get(name, []))
+                return 0, found + "LMDS_PREFLIGHT_DONE\n", ""
             if "netplan generate && netplan apply" in command:
-                return 0, "disabled /etc/netplan/99-nvidia-sync-cluster.yaml\nLMDS_NETPLAN_APPLIED\n", ""
+                # สคริปต์ย้ายเฉพาะไฟล์ที่ preflight ตั้งชื่อมาให้ — ตอบตามที่มันถูกสั่งจริง
+                import re as _re
+
+                moved = _re.findall(r"/etc/netplan/[A-Za-z0-9._-]+\.yaml", command.split("for g in ", 1)[1].split("; do", 1)[0]) \
+                    if "for g in " in command else []
+                return 0, "".join(f"disabled {m}\n" for m in moved) + "LMDS_NETPLAN_APPLIED\n", ""
             if "LMDS_NETPLAN_ROLLED_BACK" in command:
                 return 0, "restored 99-nvidia-sync-cluster.yaml\nLMDS_NETPLAN_ROLLED_BACK\n", ""
             if "LMDS_NETPLAN_REMOVED" in command:
@@ -419,11 +433,18 @@ def test_apply_runs_the_sequence_per_node_and_keeps_the_password_out_of_argv_and
     # รหัสของทุกเครื่องถูกตรวจก่อนแตะเครื่องแรก
     assert names[:2] == ["a", "b"] and all(c.endswith("-v && echo LMDS_SUDO_OK") for _, c, _ in fleet.calls[:2])
     a_cmds = fleet.on("a")
-    assert a_cmds[1].startswith("f=$(mktemp /tmp/lmds-netplan.")
-    assert a_cmds[2].startswith("sudo -S -p '' bash -c ") and "netplan generate && netplan apply" in a_cmds[2]
-    assert "/root/netplan-disabled" in a_cmds[2] and "install -m 0600 -o root -g root /tmp/lmds-netplan.a" in a_cmds[2]
-    assert "enp1s0f1np1" in a_cmds[2] and "20260905-120000" in a_cmds[2]
-    assert a_cmds[3].startswith("ip -br addr show dev enp1s0f1np1")
+    # preflight (อ่านอย่างเดียว) ของทุกเครื่องมาก่อนการเขียนครั้งแรก — ถามถึง interface ของแผน
+    assert names[2:4] == ["a", "b"] and all("LMDS_PREFLIGHT_DONE" in c for _, c, _ in fleet.calls[2:4])
+    assert a_cmds[1].startswith("sudo -S -p '' bash -c ") and "enp1s0f1np1" in a_cmds[1]
+    assert a_cmds[2].startswith("f=$(mktemp /tmp/lmds-netplan.")
+    assert a_cmds[3].startswith("sudo -S -p '' bash -c ") and "netplan generate && netplan apply" in a_cmds[3]
+    assert "/root/netplan-disabled" in a_cmds[3] and "install -m 0600 -o root -g root /tmp/lmds-netplan.a" in a_cmds[3]
+    assert "20260905-120000" in a_cmds[3]
+    # a ไม่มีไฟล์ให้ย้าย — สคริปต์ของมันไม่ย้ายอะไรเลย · b ย้ายเฉพาะไฟล์ที่ preflight ตั้งชื่อ
+    assert "mv " not in a_cmds[3]
+    b_apply = next(c for c in fleet.on("b") if "netplan generate && netplan apply" in c)
+    assert "for g in /etc/netplan/99-nvidia-sync-cluster.yaml; do" in b_apply and "/etc/netplan/*.yaml" not in b_apply
+    assert a_cmds[4].startswith("ip -br addr show dev enp1s0f1np1")
     # b ถูกแตะหลัง a เสร็จครบ (ไม่สลับกัน) และ ping/pair มาหลังทั้งคู่ขึ้น
     idx_b_apply = next(i for i, (n, c, _) in enumerate(fleet.calls) if n == "b" and "netplan generate" in c)
     idx_a_verify = next(i for i, (n, c, _) in enumerate(fleet.calls) if n == "a" and c.startswith("ip -br addr"))
@@ -446,9 +467,9 @@ def test_apply_runs_the_sequence_per_node_and_keeps_the_password_out_of_argv_and
     assert result["registry"]["b"]["cluster_ip"] == "10.100.152.2"
     assert result["speed"] and result["speed"][0]["skipped"] == "iperf3 not installed on both ends"
     kinds = [s["step"] for s in result["steps"] if s["node"] == "a"]
-    assert kinds[:4] == ["sudo password accepted", "stage netplan file",
+    assert kinds[:5] == ["sudo password accepted", PREFLIGHT_STEP, "stage netplan file",
                          f"write {NETPLAN_FILE} + netplan apply", "verify addresses + carrier"]
-    assert "disabled /etc/netplan/99-nvidia-sync-cluster.yaml" in [s["detail"] for s in result["steps"] if s["node"] == "b"][2]
+    assert "disabled /etc/netplan/99-nvidia-sync-cluster.yaml" in [s["detail"] for s in result["steps"] if s["node"] == "b"][3]
 
 
 def test_apply_is_idempotent_on_a_second_run(fresh_pair):

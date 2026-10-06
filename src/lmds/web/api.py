@@ -2493,6 +2493,9 @@ def create_app(token: str = "") -> FastAPI:
         what, ok, detail = step.get("step", ""), step.get("ok"), step.get("detail") or ""
         tail = f" — {detail}" if detail else ""
         state = "ok" if ok else "failed"
+        # ตรวจก่อนแตะเครื่อง (netplan.PREFLIGHT_STEP) — เดิมไม่มีสาขานี้จะตกไป "pair SSH — …" ข้างล่างซึ่งอ่านผิดเรื่อง
+        if what.startswith("safe to write netplan"):
+            return [f"[{node}] netplan preflight: {state}{tail}"]
         if what == "stage netplan file":
             return [f"[{node}] write netplan: {state}{tail}"]
         if what.startswith("write ") and "netplan apply" in what:

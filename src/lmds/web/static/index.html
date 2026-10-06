@@ -6198,7 +6198,8 @@ function cnwPortsMarkup(name) {
         : `<div class="dim">no interface reported</div>`}
       <div class="dim">${p.managed ? "netplan-managed" : "not managed by netplan"}</div>
     </div>`).join("")}</div>
-    ${node.nvidia_sync ? `<div class="dim" style="margin-top:4px">NVIDIA Sync's netplan file is on this machine — apply moves it aside so only the LMDS file claims these ports</div>` : ""}`;
+    ${node.nvidia_sync ? `<div class="dim" style="margin-top:4px">NVIDIA Sync's netplan file is on this machine — apply moves it aside so only the LMDS file claims these ports</div>` : ""}
+    ${(node.netplan_shared || []).map(s => `<div class="warn-line" style="margin-top:4px">${esc(s.text || s.file || "")}</div>`).join("")}`;
 }
 
 function cnwStepDevices() {
@@ -6311,7 +6312,7 @@ function cnwStepLine(s) {
 
 function cnwStepApply() {
   if (!cnw.job) {
-    return `<div class="dim" style="margin-bottom:8px">The hub will, on each machine: check the sudo password → write netplan → apply → verify addresses → ping peers → pair SSH (head → workers) → save cluster IPs to the registry. A failure rolls that machine back to its previous netplan.</div>
+    return `<div class="dim" style="margin-bottom:8px">The hub will, on each machine: check the sudo password → check that no netplan file it has to move also configures another interface (if one does, nothing is changed on any machine) → write netplan → apply → verify addresses → ping peers → pair SSH (head → workers) → save cluster IPs to the registry. A failure rolls that machine back to its previous netplan.</div>
       ${cnwPasswordFields()}
       ${cnw.applyError ? `<div class="warn-line">${esc(cnw.applyError)}</div>` : ""}
       <div class="field" style="margin-top:8px"><button data-cnw="apply">Apply network plan</button></div>`;

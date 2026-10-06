@@ -1446,6 +1446,10 @@ def _print_ports(inspection: dict) -> None:
         if info.get("nvidia_sync"):
             table.add_row("", "", "[yellow]มีไฟล์ของ NVIDIA Sync[/yellow]", "", "", "", "")
     console.print(table)
+    # ไฟล์ netplan ที่รวมพอร์ต QSFP กับ interface อื่นที่มี IP จริง (สายบริหาร) — apply จะหยุดก่อนแตะเครื่อง บอกตั้งแต่ตรงนี้
+    for info in inspection["nodes"].values():
+        for shared in info.get("netplan_shared") or []:
+            console.print(f"  [yellow]![/yellow] {shared['text']}", highlight=False)
 
 
 def _print_plan(plan: dict) -> None:
