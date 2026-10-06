@@ -296,3 +296,112 @@ def test_the_score_table_is_read_again_when_the_benchmark_ends_not_when_it_start
     node, local = out
     assert node["readsAfterFinish"] >= 1 and "qwen" in node["table"] and "90/100" in node["table"], node
     assert local["readsAfterFinish"] >= 1 and "local-m" in local["table"], local
+
+
+# ───────────────────── ข้อ 3 — คีย์ "เมนูเปิดอยู่" ที่ค้าง แช่แข็งการ์ดทั้งใบ ─────────────────────
+
+MENUS = MODEL + """const fx = { nodes: [
+  { name: "spark-01", site: "TKC", models: [model({ slug: "a", running: true, healthy: true }), model({ slug: "b", port: 8081 })] },
+  { name: "spark-02", site: "TKC", models: [model({ slug: "c", running: true, healthy: true })] }] };
+H.fx = fx;
+H.routes = [
+  ["/api/nodes/spark-01/models/b/remove", (url, opts) => {
+     if (!opts.body) return { exit_code: 0, output: "would remove bundles/b (1.2 GB)" };
+     H.fx.nodes[0].models = H.fx.nodes[0].models.filter(m => m.slug !== "b");
+     return { exit_code: 0, output: "removed" }; }],
+  [/\\/clone\\/targets$/, () => ({ targets: [] })],
+  [/\\/fit$/, () => ({ status: 409, body: { detail: "n/a" } })],
+  ...H.defaultRoutes(fx),
+];
+"""
+CARD_STATE = """
+        const row = nodeRows.get("spark-01");
+        const railDot = () => [...document.querySelectorAll("#rail-nav a")].find(a => a.getAttribute("href") === "#/node/spark-01").querySelector(".rdot").className;
+        const overview = () => { const was = location.hash; route = { kind: "overview" }; renderOverview(true);
+          const ov = document.getElementById("ov"); const out = { ring: ov.querySelector("svg[role=img]").getAttribute("aria-label"),
+            attention: [...ov.querySelectorAll(".ov-alert b")].map(b => b.textContent) }; route = parseRoute(); return out; };
+        const state = () => ({ body: row.body.textContent.replace(/\\s+/g, " "), headerDot: row.dot.className, railDot: railDot(),
+          held: (row.version.querySelector("[data-held]") || {}).textContent || "", menus: [...openModelMenus],
+          submenus: row.body.querySelectorAll(".submenu").length, inUse: nodeIsInUse("spark-01"), ...overview() });
+        const frames = async n => { for (let i = 0; i < n; i++) { H.sse(H.snapshot(H.fx)); await H.tick(3); } };
+"""
+
+
+def test_removing_a_model_with_its_menu_open_does_not_freeze_the_card(tmp_path):
+    """ลบโมเดลขณะเมนู ⋯ ของมันเปิดอยู่ → คีย์ค้าง → การ์ดไม่ถูกวาดอีกเลย: โมเดลอื่นดับ/ทั้งเครื่องดับ ก็ยังขึ้น running"""
+    (removed, stopped, down) = run_scenario(tmp_path, MENUS, """
+        location.hash = "#/nodes"; await H.tick(30);""" + CARD_STATE + """
+        row.block.querySelector(".ntoggle").click();
+        row.body.querySelector('button[data-nact="menu"][data-slug="b"]').click(); await H.tick(10);
+        row.body.querySelector('button[data-nact="model:remove"][data-slug="b"]').click(); await H.tick(10);
+        row.out.querySelector('button[data-confirm="1"]').click(); await H.tick(20);         // Delete permanently
+        console.log(JSON.stringify(state()));
+        H.fx.nodes[0].models[0].running = false; H.fx.nodes[0].models[0].healthy = false;      // a ดับ
+        await frames(3);
+        console.log(JSON.stringify(state()));
+        H.fx.nodes[0].reachable = false; H.fx.nodes[0].error = "ssh: connect to host 10.0.0.1 port 22: No route to host";
+        await frames(3);
+        console.log(JSON.stringify(state()));
+        H.errors.length = 0;
+    """)
+    assert removed["menus"] == [] and removed["inUse"] is False and removed["submenus"] == 0
+    assert "stopped" in stopped["body"] and "running" not in stopped["body"].split("lmds")[1].split("System")[1], stopped["body"]
+    assert stopped["ring"] == "1 running", "วงแหวนภาพรวมต้องเหลือแค่โมเดลของ spark-02"
+    assert "Unreachable" in down["body"] and "No route to host" in down["body"]
+    assert down["headerDot"] == "dot " and down["railDot"] == "rdot down"
+    assert any("spark-01 unreachable" in t for t in down["attention"]), down["attention"]
+
+
+def test_a_card_held_for_an_open_menu_still_tells_the_truth_everywhere_else(tmp_path):
+    """เมนูที่เปิดจริงยังถือรายการโมเดลไว้ได้ (ค่าที่พิมพ์ต้องไม่หาย) — แต่ rail · ภาพรวม · หัวการ์ด ต้องตามความจริง
+    และป้าย paused ต้องขึ้นทันทีโดยนับจากเวลาที่การ์ดถูกวาด ไม่ใช่อายุ probe ของ hub (ซึ่งสดอยู่ตลอด)"""
+    (held, later, down) = run_scenario(tmp_path, MENUS, """
+        const real = Date.now.bind(Date); H.skew = 0; Date.now = () => real() + H.skew;
+        location.hash = "#/nodes"; await H.tick(30);""" + CARD_STATE + """
+        row.block.querySelector(".ntoggle").click();
+        row.body.querySelector('button[data-nact="menu"][data-slug="a"]').click(); await H.tick(10);
+        row.body.querySelector(".n-port").value = "9001";                                      // ผู้ใช้กำลังกรอก
+        H.fx.nodes[0].models[0].running = false; H.fx.nodes[0].models[0].healthy = false;      // a ดับ ขณะเมนูเปิดอยู่
+        await frames(2);
+        const typed = () => (row.body.querySelector(".n-port") || {}).value;
+        console.log(JSON.stringify({ ...state(), typed: typed() }));
+        H.skew = 95000; await frames(1);                                                       // ผ่านไปอีก 95 วิ · probe ยังอายุ 2 วิ
+        console.log(JSON.stringify({ ...state(), typed: typed() }));
+        H.fx.nodes[0].reachable = false; H.fx.nodes[0].error = "ssh: No route to host";        // ทั้งเครื่องดับ
+        await frames(2);
+        console.log(JSON.stringify({ ...state(), typed: typed() }));
+        H.errors.length = 0;
+    """)
+    assert held["typed"] == "9001" and held["submenus"] == 1 and held["inUse"] is True, "เมนูที่เปิดอยู่จริงยังถูกถือไว้"
+    assert held["held"].startswith("paused"), "ถือการ์ดไว้เมื่อไรต้องบอกเมื่อนั้น — ไม่รอ 20 วิ"
+    assert held["ring"] == "1 running" and held["railDot"] == "rdot ", "rail กับภาพรวมอ่านความจริงล่าสุด ไม่ใช่ของที่ค้างบนการ์ด"
+    assert later["held"] == "paused · 95s ago", later["held"]
+    # เครื่องดับ: เมนูของโมเดลที่ไม่อยู่ใน payload แล้วไม่มีอะไรให้ถือ — การ์ดบอกตามจริง
+    assert down["menus"] == [] and "Unreachable" in down["body"] and down["held"] == ""
+    assert down["railDot"] == "rdot down" and any("spark-01 unreachable" in t for t in down["attention"])
+
+
+def test_jumping_to_a_stacked_worker_shadow_row_does_not_pin_the_card(tmp_path):
+    """แถวเงาของ worker ไม่มีเมนู ⋯ — คลิกจากตาราง Fleet models / ค้นหา / palette เคยเพิ่มคีย์ที่ไม่มีใครปิดได้"""
+    (out,) = run_scenario(tmp_path, """
+        const head = { slug: "qwopus", model_id: "Q/q", engine: "vllm", port: 8000, context: 262144, running: true, healthy: true,
+          downloaded: true, controller_exists: true, topology: "stacked", stacked_role: "head", stacked_peers: ["spark-worker"], commands: ["status"] };
+        const shadow = { slug: "qwopus", model_id: "Q/q", engine: "vllm", port: 8000, running: true, healthy: true, context: 262144,
+          downloaded: true, topology: "stacked", stacked_role: "worker", stacked_head: "spark-head", commands: [], controller_exists: false };
+        const fx = { nodes: [{ name: "spark-head", site: "N", models: [head] }, { name: "spark-worker", site: "N", models: [shadow] }] };
+        H.fx = fx;
+        H.routes = [[/\\/clone\\/targets$/, () => ({ targets: [] })], [/\\/fit$/, () => ({ status: 409, body: { detail: "n/a" } })], ...H.defaultRoutes(fx)];
+    """, """
+        location.hash = "#/nodes"; await H.tick(30);
+        jumpToNode("spark-worker", "qwopus"); jumpToNode("spark-worker", "no-such-model"); await H.tick(10);
+        const shadowKeys = [...openModelMenus];
+        jumpToNode("spark-head", "qwopus"); await H.tick(10);
+        H.fx.nodes[1].reachable = false; H.sse(H.snapshot(H.fx)); await H.tick(5);
+        console.log(JSON.stringify({ shadowKeys, keysNow: [...openModelMenus], workerInUse: nodeIsInUse("spark-worker"),
+          workerBody: nodeRows.get("spark-worker").body.textContent.replace(/\\s+/g, " ").trim().slice(0, 30),
+          headMenu: nodeRows.get("spark-head").body.querySelectorAll(".submenu").length }));
+        H.errors.length = 0;
+    """)
+    assert out["shadowKeys"] == [] and out["workerInUse"] is False
+    assert out["keysNow"] == ["spark-head/qwopus"] and out["headMenu"] == 1, "แถวที่มีเมนูจริงยังกางได้ตามเดิม"
+    assert out["workerBody"].startswith("Unreachable")

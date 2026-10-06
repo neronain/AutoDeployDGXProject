@@ -1362,6 +1362,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "The model list on this card is not being redrawn while its ⋯ menu is open or a field in it has focus — the header, the left rail and the overview keep following the hub. Close the menu to resume.":
+      "รายการโมเดลบนการ์ดนี้หยุดวาดใหม่ชั่วคราว ระหว่างที่เมนู ⋯ เปิดอยู่หรือเคอร์เซอร์อยู่ในช่องกรอกของการ์ด — หัวการ์ด รางซ้าย และภาพรวมยังตาม hub ต่อ · ปิดเมนูเพื่อให้วาดต่อ",
     "Lost contact with the hub — the job may still be running · retrying in {s}s ({why})":
       "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่ · ลองใหม่ในอีก {s} วิ ({why})",
     "the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})":
@@ -4481,6 +4483,27 @@ function readNodeOpts(node, slug) {
 const openModelMenus = new Set();
 // payload ล่าสุดของแต่ละเครื่อง — ใช้วาดใหม่ตอนพับ/กางเมนูโดยไม่ต้องยิง SSH ซ้ำ
 const lastNodeData = new Map();
+
+// แถว "เงา" ของโมเดล stacked บนการ์ดของ worker (state.decorate_stacked เติมให้เพื่อให้เห็นว่าเครื่องนั้นถูกใช้อยู่)
+// — ไม่ใช่ bundle อีกตัว: ไม่มีปุ่ม ไม่มีเมนู ⋯ และต้องไม่ถูกนับเป็นโมเดลอีกหนึ่ง · ทุกที่ที่ต้องแยกใช้ตัวนี้ตัวเดียว
+const isWorkerShadow = m => !!m && m.stacked_role === "worker";
+const ownModels = list => (list || []).filter(m => !isWorkerShadow(m));
+
+// คีย์ในชุด openModelMenus คือ "การ์ดนี้ห้ามวาดทับ" — คีย์ที่ชี้ไปหาเมนูที่ไม่มีอยู่บนจอจึงแช่แข็งการ์ดตลอดไป
+// audit หน้าเว็บ 2026-10 ข้อ 3 มีสองทางเข้า: ลบโมเดลขณะเมนู ⋯ ของมันเปิดอยู่ (คีย์ค้าง) · กระโดดไปหาแถวเงาของ
+// worker (ไม่มีเมนูให้ปิด) → เครื่องที่ดับไปแล้วยังขึ้น "running" บนการ์ด จุดใน rail วงแหวนภาพรวม จนกว่าจะ reload
+function hasModelMenu(node, slug) {
+  return ownModels((lastNodeData.get(node) || {}).models).some(m => m.slug === slug);
+}
+function pruneModelMenus(name, data) {
+  const live = new Set(ownModels(data && data.models).map(m => m.slug));
+  for (const key of [...openModelMenus]) {
+    if (!key.startsWith(name + "/")) continue;
+    const slug = key.slice(name.length + 1);
+    // slug ไม่มี "/" (รูปแบบ slug ของ bundle) — มี = คีย์ของเครื่องอื่นที่ชื่อขึ้นต้นเหมือนกัน
+    if (!slug.includes("/") && !live.has(slug)) openModelMenus.delete(key);
+  }
+}
 // ทะเบียนของแต่ละเครื่อง (user/host/port) — ฟอร์มที่ต้องบอกว่า "ใช้ user ไหน" อ่านจากตรงนี้
 const lastNodeRegistry = new Map();
 
@@ -4671,6 +4694,9 @@ function paintNodeBody(row, name, data) {
   // การ์ดวาดใหม่ได้อิสระเสมอ — ห้ามผูกการวาดกับ "มีผลคำสั่งค้างอยู่ไหม" อีก (ผลอยู่ใน .nout
   // คนละกล่องแล้ว · tests/test_web.py::test_command_output_lives_outside_the_body_it_must_survive)
   if (row) row.body.innerHTML = nodeModelsMarkup(name, data);
+  // ตัวนับของป้าย "paused" เริ่มจากตรงนี้ — เวลาที่ *การ์ดใบนี้* ถูกวาดครั้งสุดท้าย (ดู markStale)
+  row.paintedAt = Date.now();
+  if (row.version) row.version.querySelector("[data-held]")?.remove();
   // แล้วค่อยแปลป้ายที่ติด data-i18n ไว้ใน markup ก้อนนั้น — ทุกทางที่วาดรายการโมเดลของเครื่อง
   // ต้องผ่านตัวนี้ ไม่งั้นแผงที่วาดใหม่จะกลับเป็นอังกฤษทั้งที่ทั้งหน้าเป็นไทยอยู่
   window.applyI18nStatic(row.body);
@@ -5050,6 +5076,7 @@ async function loadNode(name) {
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   paintNodeVersion(row, d, name);
   lastNodeData.set(name, d);
+  pruneModelMenus(name, d);
   paintSummary(name, d.host, d.summary);
   paintNodeBody(row, name, d);
   // แผงที่เปิดค้างอยู่ต้องได้บรรทัดคำนวณกลับมาด้วย (ค่า "ว่างตอนนี้" เปลี่ยนตามการ์ดที่เพิ่ง refresh)
@@ -5138,7 +5165,7 @@ async function refreshNodes() {
   // ทะเบียนฝั่งเบราว์เซอร์ต้องลืมเครื่องที่ hub ลืมแล้วด้วย — ภาพรวม/rail/alert วนจาก
   // lastNodeRegistry โดยตรง เครื่องที่กด Forget ไปแล้วจึงยังโผล่ "unreachable" อยู่จน reload
   for (const name of [...lastNodeRegistry.keys()]) {
-    if (!seen.has(name)) { lastNodeRegistry.delete(name); lastNodeData.delete(name); }
+    if (!seen.has(name)) { lastNodeRegistry.delete(name); lastNodeData.delete(name); pruneModelMenus(name, null); }
   }
   // การ์ดที่เพิ่ง append ไปต่อท้าย box ต้องถูกดึงกลับเข้าลำดับที่จัดไว้และรั้วกลุ่มของมัน
   //
@@ -7421,10 +7448,21 @@ function nodeIsInUse(name) {
 }
 
 // หยุดวาดทับแล้วต้องบอกด้วยว่าตัวเลขที่เห็นเริ่มเก่า — เงียบ ๆ ไปเฉย ๆ คือโกหกผู้ใช้
-function markStale(row, entry) {
+// อายุนับจากเวลาที่ *การ์ดใบนี้ถูกวาดครั้งสุดท้าย* ไม่ใช่อายุ probe ของ hub: probe สดทุก 2 วิ ขณะที่รายการโมเดล
+// บนการ์ดค้างมาเป็นนาที (เดิมจึงไม่เคยขึ้นป้ายเลย) · ขึ้นทุกครั้งที่การ์ดถูกถือไว้ ไม่รอให้เกิน 20 วิ
+// เป็นป้ายแยกในหัวการ์ด — ไม่เขียนทับป้ายรุ่น/ปุ่ม update ที่ยังใช้ได้อยู่
+function markStale(row) {
   if (!row || !row.version) return;
-  const age = Math.round(entry.age_seconds || 0);
-  row.version.textContent = age > 20 ? T("paused · {age}s ago", { age }) : row.version.textContent;
+  const age = Math.max(0, Math.round((Date.now() - (row.paintedAt || Date.now())) / 1000));
+  let tag = row.version.querySelector("[data-held]");
+  if (!tag) {
+    tag = document.createElement("span");
+    tag.className = "tag warn";
+    tag.setAttribute("data-held", "");
+    row.version.prepend(tag, " ");
+  }
+  tag.textContent = T("paused · {age}s ago", { age });
+  tag.title = T("The model list on this card is not being redrawn while its ⋯ menu is open or a field in it has focus — the header, the left rail and the overview keep following the hub. Close the menu to resume.");
 }
 
 function applySnapshot(snap) {
@@ -7446,16 +7484,22 @@ function applySnapshot(snap) {
     //
     // เดิมมี pinnedOutput ในเงื่อนไขนี้ด้วย เพื่อกันไม่ให้ผลลัพธ์ที่เพิ่งขอดูถูกลบทิ้ง —
     // ตอนนี้ผลอยู่คนละที่กับ body แล้ว การ์ดจึงอัปเดตสดต่อไปได้ระหว่างที่ผู้ใช้อ่านผลข้างล่าง
+    //
+    // สิ่งที่ถือไว้ได้มีอย่างเดียวคือ *รายการโมเดลในตัวการ์ด* (ที่มีปุ่มและช่องกรอก) · ความจริงล่าสุดต้องเข้า
+    // lastNodeData ทุก frame เสมอ — rail · วงแหวนภาพรวม · Needs attention · ตาราง Fleet models อ่านจากตรงนั้น
+    // เดิมข้ามทั้งก้อน: เครื่องที่ดับไปแล้วยังขึ้น "running" ทุกที่จนกว่าจะ reload (audit หน้าเว็บ 2026-10 ข้อ 3)
+    // · เมนูของโมเดลที่ไม่อยู่ใน payload แล้ว (ถูกลบ · เครื่องต่อไม่ได้) ไม่มีอะไรให้ถือ — ปลดคีย์ทิ้งก่อนตัดสิน
+    lastNodeData.set(name, payload);
+    pruneModelMenus(name, payload);
+    row.dot.className = "dot " + (entry.data ? "on" : "");
+    paintNodeVersion(row, { reachable: !!entry.data, host: (entry.data || {}).host }, name);
     if (busy || nodeIsInUse(name)) {
       // แถบสรุปในหัวไม่มีอะไรให้ผู้ใช้กดหรือพิมพ์ — อัปเดตได้เสมอแม้ตัวการ์ดถูกล็อกอยู่
       paintSummary(name, (entry.data || {}).host, (entry.data || {}).summary);
-      markStale(row, entry);
+      markStale(row);
       continue;
     }
-    lastNodeData.set(name, payload);
     paintSummary(name, (entry.data || {}).host, (entry.data || {}).summary);
-    row.dot.className = "dot " + (entry.data ? "on" : "");
-    paintNodeVersion(row, { reachable: !!entry.data, host: (entry.data || {}).host }, name);
     paintNodeBody(row, name, payload);
   }
   renderRail();
@@ -8367,7 +8411,8 @@ function jumpToNode(node, slug) {
   navigateNode(node);   // shell: ไปหน้าเครื่องนั้นก่อน ไม่งั้นการ์ดถูกซ่อนอยู่
   // ไซต์ที่ยุบ/การ์ดที่ย่อต้องกางก่อน ไม่งั้นกระโดดไปแล้วไม่เห็นอะไร
   revealNode(node);
-  openModelMenus.add(node + "/" + slug);
+  // กางเมนูให้เฉพาะแถวที่ *มี* เมนู — แถวเงาของ worker กับโมเดลที่ไม่อยู่แล้วไม่มีปุ่ม ⋯ ให้ปิดคืน คีย์จะค้างตลอดไป
+  if (hasModelMenu(node, slug)) openModelMenus.add(node + "/" + slug);
   paintNodeBody(row, node, lastNodeData.get(node) || {});
   row.block.scrollIntoView({ behavior: "smooth", block: "center" });
 }
