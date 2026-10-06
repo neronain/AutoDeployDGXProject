@@ -560,6 +560,37 @@ def test_the_deploy_wizard_asks_for_recipes_once_per_open_and_says_what_came_bac
     assert by["retry"]["whileOpen"] == 1 and by["retry"]["chips"] == 1 and "Proven recipes (1)" in by["retry"]["says"]
 
 
+def test_one_stacked_model_is_one_model_everywhere_on_the_overview(tmp_path):
+    """ข้อ 8: snapshot ของโมเดล stacked หนึ่งตัวมีสองแถว (head + เงาบนการ์ด worker) — วงแหวน · "bundles fleet-wide" ·
+    ตาราง Sites · ตาราง Fleet models เคยนับเป็นสอง · rail กับไทล์อ่านจาก /api/fleet/summary (แก้ที่ api.py)"""
+    (overview, models) = run_scenario(tmp_path, """
+        const head = { slug: "qwopus-122b", model_id: "Q/q", engine: "vllm", port: 8000, context: 262144, running: true, healthy: true,
+          downloaded: true, controller_exists: true, topology: "stacked", stacked_role: "head", stacked_peers: ["spark-worker"], commands: ["status"] };
+        const shadow = { slug: "qwopus-122b", model_id: "Q/q", engine: "vllm", port: 8000, running: true, healthy: true, context: 262144,
+          downloaded: true, topology: "stacked", stacked_role: "worker", stacked_head: "spark-head", commands: [], controller_exists: false };
+        const fx = { nodes: [{ name: "spark-head", site: "Neronain", models: [head] }, { name: "spark-worker", site: "Neronain", models: [shadow] }] };
+        H.fx = fx;
+        H.routes = [
+          ["/api/fleet/summary", () => ({ machines: 3, online: 3, pending: 0, gpus: 2, vram_gb: 256, models_running: 1, models_healthy: 1, models_total: 1 })],
+          ...H.defaultRoutes(fx)];
+    """, """
+        await H.tick(30); H.sse(H.snapshot(H.fx)); await H.tick(10); renderOverview(true);
+        const txt = el => el.textContent.replace(/\\s+/g, " ").trim();
+        console.log(JSON.stringify({ ring: document.querySelector("#ov svg[role=img]").getAttribute("aria-label"),
+          legend: txt(document.querySelector("#ov .ov-legend")),
+          siteRunning: [...document.querySelectorAll("#ov tr.orow[data-href^='#/site'] td")].map(txt)[3] }));
+        location.hash = "#/models"; await H.tick(10);
+        console.log(JSON.stringify({ head: txt(document.querySelector("#allmodels .vhead")),
+          rows: [...document.querySelectorAll("#allmodels tr.orow")].map(tr => tr.dataset.node),
+          workerCard: txt(nodeRows.get("spark-worker").body).includes("stacked worker of spark-head") }));
+        H.errors.length = 0;
+    """)
+    assert overview["ring"] == "1 running" and "1 bundles fleet-wide · 0 stopped" in overview["legend"], overview
+    assert overview["siteRunning"] == "1"
+    assert models["head"] == "Fleet models1 bundle1 running" and models["rows"] == ["spark-head"]
+    assert models["workerCard"] is True, "การ์ดของ worker ยังต้องเห็นว่าเครื่องนี้ถูกใช้อยู่ — ซ่อนจากการนับ ไม่ได้ซ่อนจากการ์ด"
+
+
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
     (out,) = run_scenario(tmp_path, """
         const fx = { nodes: [] }; H.fx = fx;

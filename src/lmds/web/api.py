@@ -1870,7 +1870,10 @@ def create_app(token: str = "") -> FastAPI:
         def agg(data: dict | None) -> tuple[int, float, int, int, int]:
             data = data or {}
             host = data.get("host") or {}
-            models = data.get("models") or []
+            # แถว "เงา" ที่ state.decorate_stacked เติมลงการ์ดของ worker ไม่ใช่ bundle อีกตัว — โมเดล stacked
+            # หนึ่งตัวนับที่ head ครั้งเดียว (เดิมไทล์ "Models running" ขึ้น 2 running · 2 deployed สำหรับโมเดลเดียว ·
+            # กติกาเดียวกับ fleet/consistency.py และ isWorkerShadow ของหน้าเว็บ)
+            models = [m for m in (data.get("models") or []) if m.get("stacked_role") != "worker"]
             gpus = host.get("gpus") or []
             vram = sum((g.get("vram_gb") or 0) for g in gpus)
             running = sum(1 for m in models if m.get("running"))

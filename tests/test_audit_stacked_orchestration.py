@@ -557,6 +557,23 @@ def test_snapshot_shows_the_stacked_model_on_the_worker_card_with_its_role():
     assert len(snap["nodes"]["spark-worker"]["data"]["models"]) == 1
 
 
+def test_the_fleet_summary_counts_a_stacked_model_once_not_once_per_card():
+    """แถวเงาบนการ์ดของ worker มีไว้ให้ *เห็น* ว่าเครื่องนั้นถูกใช้อยู่ — ไม่ใช่ bundle อีกตัว
+
+    audit หน้าเว็บ 2026-10 ข้อ 8: ไทล์ "Models running" ขึ้น 2 · "2 serving · 2 deployed" สำหรับโมเดล stacked
+    ตัวเดียว เพราะ /api/fleet/summary นับทุกแถวของ snapshot ที่ decorate แล้ว (consistency.py ข้ามเงาอยู่แล้ว)
+    """
+    register("spark-head", "10.2.1.195", "10.100.152.1", spark("10.100.152.1", "10.2.1.195"),
+             models=[stacked_model(running=True, healthy=True)])
+    register("spark-worker", "10.2.1.194", "10.100.152.2", spark("10.100.152.2", "10.2.1.194"),
+             models=[{"slug": "own-bundle", "engine": "llamacpp", "port": 8080, "running": False, "healthy": False}])
+    shadows = [m for m in state.STORE.snapshot()["nodes"]["spark-worker"]["data"]["models"]
+               if m.get("stacked_role") == "worker"]
+    assert len(shadows) == 1, "ตั้งต้น: การ์ดของ worker ต้องมีแถวเงาอยู่จริง ไม่งั้นเทสนี้ไม่ได้ทดสอบอะไร"
+    summary = client().get("/api/fleet/summary").json()
+    assert (summary["models_total"], summary["models_running"], summary["models_healthy"]) == (2, 1, 1), summary
+
+
 # ── 4. หน้าเว็บ (รันสคริปต์จริงของหน้าใน node) ─────────────────────────────────
 def _node() -> str:
     found = shutil.which("node")

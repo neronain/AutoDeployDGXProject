@@ -4792,7 +4792,7 @@ function nodeModelsMarkup(name, data) {
     ${head}
     <div style="margin-top:10px"></div>
     ${models.map(m => {
-      if (m.stacked_role === "worker") return stackedWorkerRow(name, m);
+      if (isWorkerShadow(m)) return stackedWorkerRow(name, m);
       // ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าตัวอื่นรันอยู่บนพอร์ตนี้ ชุดทดสอบของตัวนี้
       // จะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล (bundle เก่ายังไม่มีตัวตรวจในสคริปต์)
       const rival = models.find(x => x.slug !== m.slug && x.running && x.port === m.port);
@@ -5102,7 +5102,7 @@ function paintNodeVersion(row, d, name) {
 }
 
 function versionChips(d) {
-  const models = (d.models || []).filter(m => m.stacked_role !== "worker");
+  const models = ownModels(d.models);
   const stale = models.filter(controllerStale);
   const rt = models.filter(runtimeStale);
   const builds = ((d.host || {}).runtimes || {}).llamacpp || [];
@@ -8164,7 +8164,9 @@ function renderOverview(force = false) {
   const eng = {};
   let deployed = 0;
   for (const n of names) {
-    const ms = (lastNodeData.get(n) || {}).models || [];
+    // แถวเงาบนการ์ดของ worker ไม่ใช่ bundle อีกตัว — โมเดล stacked หนึ่งตัวนับที่ head ครั้งเดียว (audit 2026-10 ข้อ 8:
+    // วงแหวน · "bundles fleet-wide" · ตาราง Sites · Fleet models เคยนับเป็นสอง ขณะที่ป้ายรุ่นกับ consistency นับถูก)
+    const ms = ownModels((lastNodeData.get(n) || {}).models);
     deployed += ms.length;
     for (const m of ms) if (m.running) eng[m.engine] = (eng[m.engine] || 0) + 1;
   }
@@ -8196,7 +8198,7 @@ function renderOverview(force = false) {
     let u = us.reduce((a, x) => a + (x.used || 0), 0), c = us.reduce((a, x) => a + x.cap, 0);
     // hub อยู่ตรงหน้าเราเสมอ (นับว่า online) · VRAM ของมันบวกเข้าไปได้เฉพาะตอนที่รายงานมาจริง
     if (hubHere && hubGpu.vram_gb != null) { c += hubGpu.vram_gb; u += hubGpu.vram_used_gb || 0; }
-    const run = l.reduce((a, n) => a + (((lastNodeData.get(n) || {}).models || []).filter(m => m.running).length), 0)
+    const run = l.reduce((a, n) => a + ownModels((lastNodeData.get(n) || {}).models).filter(m => m.running).length, 0)
       + (hubHere ? (lastLocalModels || []).filter(m => m.running).length : 0);
     const online = l.filter(n => (lastNodeData.get(n) || {}).reachable).length + (hubHere ? 1 : 0);
     const p = c ? Math.round(u / c * 100) : null;
@@ -8298,7 +8300,8 @@ function renderAllModels() {
   if (!el) return;
   const all = [];
   for (const m of (lastLocalModels || [])) all.push({ where: T("This machine"), node: null, m });
-  for (const [name, d] of lastNodeData) for (const m of (d.models || [])) all.push({ where: name, node: name, m });
+  // แถวเงาของ worker ไม่อยู่ในตารางนี้ — มันคือโมเดลเดียวกับแถวของ head และไม่มีอะไรให้เปิดบนการ์ดของ worker
+  for (const [name, d] of lastNodeData) for (const m of ownModels(d.models)) all.push({ where: name, node: name, m });
   all.sort((a, b) => (b.m.running - a.m.running) || a.m.slug.localeCompare(b.m.slug));
   const rows = all.map(({ where, node, m }) => `<tr class="orow" data-node="${esc(node || "")}" data-slug="${esc(m.slug)}">
       <td><span class="ov-pill ${m.running ? "on" : ""}"><i></i>${esc(T(m.running ? (m.healthy ? "running" : "loading") : "stopped"))}</span></td>
