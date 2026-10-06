@@ -440,10 +440,21 @@ class ServerInfo:
     healthy: bool = False
     registered: bool = True  # False = ตรวจเจอแต่ไม่มี server.meta (bundle รุ่นเก่า)
     external: bool = False  # container ที่ไม่ได้มาจาก lmds — จัดการได้แต่ต้องระวังกว่า
+    # ที่อยู่ที่ตัวที่ *รันอยู่* พิสูจน์แล้วว่าตอบ (อ่านจาก argv ของ process — ดู `_server_healthy`)
+    # ว่าง = ใช้ค่าที่บันทึกกับ bundle (bundle.env) ซึ่งคือกรณีปกติ
+    host: str = ""
+
+    @property
+    def local_host(self) -> str:
+        """ที่อยู่ที่ process บนเครื่องนี้ใช้คุยกับโมเดลตัวนี้ — ตาม bind ของ bundle ไม่ใช่ 127.0.0.1 ตายตัว"""
+        if self.host:
+            return self.host
+        saved = _bundle_env_value(Path(self.controller).parent, "API_HOST") if self.controller else ""
+        return local_api_host(saved)
 
     @property
     def endpoint(self) -> str:
-        return f"http://127.0.0.1:{self.port}/v1" if self.port else ""
+        return f"http://{_url_host(self.local_host)}:{self.port}/v1" if self.port else ""
 
     @property
     def controller_exists(self) -> bool:
@@ -502,7 +513,33 @@ def _container_running(container: str) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
-def _health_ok(port: int, engine: str = "") -> bool:
+# bind ที่แปลว่า "ฟังทุกที่ รวม loopback" — ชุดเดียวกับ `_local_api_host` ใน controller (stacked)
+_LOOPBACK_BINDS = frozenset({"", "0.0.0.0", "127.0.0.1", "localhost", "::", "[::]"})
+
+
+def local_api_host(bind: str) -> str:
+    """ที่อยู่ที่ใช้คุยกับโมเดลจากเครื่องเดียวกัน เมื่อมันผูก `bind` — กติกาเดียวกับ controller
+
+    0.0.0.0 / ว่าง / localhost → 127.0.0.1 · IP เฉพาะ (เช่น `--bind 10.2.1.195` ผูกแค่สาย management)
+    → IP นั้น เพราะ engine ที่ผูก IP เฉพาะ **ไม่ฟัง loopback** (controller รัน `--network host`
+    และส่ง `--host "$API_HOST"` ตรง ๆ)
+
+    เดิม health · endpoint · watchdog ยิง 127.0.0.1 ตายตัว — audit 2026-10-06: หลัง
+    `lmds set --bind <ip>` ของจริงตอบ `GET http://<ip>:<port>/health → 200` แต่ LMDS บอก
+    `healthy=False endpoint=http://127.0.0.1:<port>/v1` และ watchdog สั่ง restart 3 ครั้งใส่โมเดล
+    ที่ตอบทุกคำขอ แล้วเลิก · controller แก้เรื่องเดียวกันนี้ของตัวเองไปแล้ว (`_local_api_host`)
+    ฝั่ง python ต้องตีความ bind แบบเดียวกันเป๊ะ — มีเทสที่รันฟังก์ชัน bash จริงมาเทียบ
+    """
+    bind = (bind or "").strip()
+    return "127.0.0.1" if bind in _LOOPBACK_BINDS else bind
+
+
+def _url_host(host: str) -> str:
+    """IPv6 ต้องอยู่ในวงเล็บเหลี่ยมเมื่อเป็นส่วนหนึ่งของ URL"""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _health_ok(port: int, engine: str = "", host: str = "127.0.0.1") -> bool:
     """เช็คว่ายังเสิร์ฟอยู่ไหม — โดยไม่ไปปลุก GPU
 
     /health ของ SGLang **รันโมเดลจริงหนึ่งรอบ** ทุกครั้งที่ถูกเรียก (prefill 1 token)
@@ -521,9 +558,39 @@ def _health_ok(port: int, engine: str = "") -> bool:
         return False
     path = "/v1/models" if engine == "sglang" else "/health"
     try:
-        return httpx.get(f"http://127.0.0.1:{port}{path}", timeout=2.0).status_code == 200
+        return httpx.get(f"http://{_url_host(host or '127.0.0.1')}:{port}{path}",
+                         timeout=2.0).status_code == 200
     except httpx.HTTPError:
         return False
+
+
+def _running_bind(info: "ServerInfo") -> str:
+    """`--host` ที่ process ที่รันอยู่ถูกสั่งไว้จริง — "" ถ้าไม่รัน/อ่านไม่ได้/ไม่ได้ระบุ"""
+    words = _running_words(info)
+    for index, word in enumerate(words):
+        if word == "--host" and index + 1 < len(words):
+            return words[index + 1]
+        if word.startswith("--host="):
+            return word.split("=", 1)[1]
+    return ""
+
+
+def _server_healthy(info: "ServerInfo") -> bool:
+    """health ของโมเดลตัวนี้ **ที่ที่อยู่ที่มันผูกจริง**
+
+    ลำดับ: ที่อยู่ตาม bundle.env ก่อน (ค่าที่ `lmds set --bind` บันทึก — อ่านไฟล์เดียว ไม่มีค่าใช้จ่าย)
+    · ไม่ตอบ จึงค่อยถาม argv ของ process ที่รันอยู่ เพราะ `lmds start <slug> --bind <ip>` มีผลแค่ครั้งนั้น
+    ไม่ได้ลงไฟล์ และค่าที่บันทึกทีหลังก็ยังไม่มีผลจนกว่าจะ restart · ที่อยู่จาก argv ถูกเชื่อก็ต่อเมื่อ
+    **ตอบจริง** (argv ของ container ที่ไม่ได้ใช้ host network คือที่อยู่ข้างในคอนเทนเนอร์) แล้วจำไว้ใน
+    `info.host` ให้ endpoint กับ watchdog ใช้ที่เดียวกัน
+    """
+    if _health_ok(info.port, info.engine, info.local_host):
+        return True
+    live = local_api_host(_running_bind(info))
+    if live != info.local_host and _health_ok(info.port, info.engine, live):
+        info.host = live
+        return True
+    return False
 
 
 def _pgrep_llama() -> list[tuple[int, str]]:
@@ -786,7 +853,7 @@ def discover() -> list[ServerInfo]:
             info.running = bool(info.pid_file) and _pid_alive(info.pid_file)
         else:
             info.running = _container_running(info.container)
-        info.healthy = info.running and _health_ok(info.port, info.engine)
+        info.healthy = info.running and _server_healthy(info)
 
         # ทะเบียนของ bundle ที่ "ไม่เคยถูก start" และ controller ก็ไม่อยู่แล้ว = ตายสนิท
         # เกิดตอน generate ไว้ที่อื่นแล้วลบทิ้ง (เครื่อง hub ที่ใช้สร้างอย่างเดียวจะเต็มไปด้วยรายการปลอม)
@@ -810,7 +877,7 @@ def discover() -> list[ServerInfo]:
     known_containers = {s.container for s in servers if s.container}
     busy_ports = {s.port for s in servers if s.running and s.port}
     for orphan in [*_orphan_native(known_pids, busy_ports), *_orphan_docker(known_containers)]:
-        orphan.healthy = orphan.running and _health_ok(orphan.port, orphan.engine)
+        orphan.healthy = orphan.running and _server_healthy(orphan)
         servers.append(orphan)
 
     # bundle ที่อยู่บนดิสก์แต่ยังไม่เคย start — ต้องเห็นด้วย ไม่งั้น deploy เสร็จแล้วไปต่อไม่ถูก

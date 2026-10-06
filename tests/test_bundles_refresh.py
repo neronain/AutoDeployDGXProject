@@ -86,7 +86,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
     monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
     monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
-    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda port, engine="": False)   # ไม่ยิง /health ของเครื่องจริง
+    monkeypatch.setattr("lmds.fleet.manager._health_ok", lambda *_, **__: False)   # ไม่ยิง /health ของเครื่องจริง
 
 
 def _bundle(tmp_path: Path, monkeypatch, profile: dict = PROFILE_051, controller: str = CONTROLLER_051,
