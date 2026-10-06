@@ -294,6 +294,32 @@ def _next_subnet(net: ipaddress.IPv4Network) -> ipaddress.IPv4Network:
 
 
 # ── netplan YAML ────────────────────────────────────────────────────────────────
+# ชื่อ interface ของ kernel (IFNAMSIZ 15 ตัว) — เกณฑ์เดียวกับ fleet/cluster_env._IFACE_OK
+_IFACE_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,14}")
+_RENDERERS = ("networkd", "NetworkManager")
+
+
+def checked_assignment(item: dict) -> dict:
+    """iface / ip / prefix ของหนึ่งลิงก์ ในรูปที่เขียนลงไฟล์ของ root ได้ — ผิดรูป = ValueError
+
+    ค่าพวกนี้ถูกวางลง YAML ที่ `sudo install` ไปเป็น /etc/netplan/99-lmds-cluster.yaml · แผนที่ `cluster apply` รับ
+    มาทั้งก้อนจาก request (`POST /api/cluster/apply`) และชื่อ interface ต้นทางมาจาก payload ที่ node รายงานเอง —
+    ทั้งสองทางเป็นข้อมูล ไม่ใช่ของที่เชื่อได้ · ชื่อที่มีขึ้นบรรทัดใหม่หรือ `:` คือการเขียน stanza ของ interface อื่น
+    (สายบริหาร · default route) ลงไฟล์ของ root บนเครื่องนั้น (audit 2026-10-06)
+    """
+    iface = item.get("iface") if isinstance(item, dict) else None
+    if not isinstance(iface, str) or not _IFACE_OK.fullmatch(iface):
+        raise ValueError(f"ชื่อ interface ไม่ถูกรูป: {iface!r}")
+    try:
+        ip = str(ipaddress.IPv4Address(str(item.get("ip"))))
+    except ValueError:
+        raise ValueError(f"IP ของ {iface} ไม่ถูกรูป: {item.get('ip')!r}") from None
+    prefix = item.get("prefix")
+    if isinstance(prefix, bool) or not isinstance(prefix, int) or not 1 <= prefix <= 32:
+        raise ValueError(f"prefix ของ {iface} ต้องเป็นจำนวนเต็ม 1–32: {prefix!r}")
+    return {"iface": iface, "ip": ip, "prefix": prefix}
+
+
 def render_netplan(assignments: list[dict], renderer: str = "networkd") -> str:
     """YAML ของ /etc/netplan/99-lmds-cluster.yaml — เฉพาะ interface ที่แผนตั้ง ที่เหลือไม่แตะ
 
@@ -307,6 +333,9 @@ def render_netplan(assignments: list[dict], renderer: str = "networkd") -> str:
     คู่มือ netplan: renderer "can be specified globally in network:, for a device type (in e.g. ethernets:) or for a
     particular device definition" — ใส่ที่ระดับ interface ได้ผลเท่าเดิมกับพอร์ตของเรา และไม่แตะของคนอื่น (audit 2026-10-06)
     """
+    if renderer not in _RENDERERS:
+        raise ValueError(f"renderer ของ netplan ต้องเป็น {' หรือ '.join(_RENDERERS)}: {renderer!r}")
+    assignments = [checked_assignment(a) for a in assignments]
     lines = [
         "# Managed by LMDS (lmds cluster apply) — ConnectX cluster links. Do not edit by hand;",
         "# re-run `lmds cluster apply` or remove with `lmds cluster remove-net <node>`.",
@@ -773,6 +802,16 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
     if missing:
         step("", "registry", False, f"{', '.join(missing)} not in the registry")
         return report
+    # ไฟล์ที่จะติดตั้งเป็นของ root ถูก render ใหม่ตรงนี้จากลิงก์ที่ตรวจรูปแล้ว — ไม่ใช้ข้อความ `netplan` ที่แนบมากับแผน:
+    # แผนมาจาก request ทั้งก้อน ข้อความนั้นจึงเป็นได้ทุกอย่าง และไม่จำเป็นต้องตรงกับตารางลิงก์ที่คนเห็นก่อนกดยืนยัน
+    # · ตรวจทุกเครื่องก่อนแตะเครื่องแรก เหมือนด่านอื่นของฟังก์ชันนี้
+    rendered: dict[str, str] = {}
+    try:
+        for name in order:
+            rendered[name] = render_netplan(_unique_assignments(plan["nodes"][name]["links"]))
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        step("", "plan", False, f"the plan's links are malformed — nothing was changed: {exc}")
+        return report
     passwords = {n: (passwords.get(n) or "") for n in order}
 
     # 1. sudo ทุกเครื่องก่อน — `sudo -S -v` ไม่ทำอะไรนอกจากตรวจรหัส · ไม่ส่งรหัสมา = เครื่องนั้นต้องมี
@@ -813,7 +852,7 @@ def apply_plan(plan: dict, passwords: dict[str, str], *, nodes: dict[str, Node] 
         outcome = {"ok": False, "rolled_back": False}
         report["nodes"][name] = outcome
 
-        staged = run(node, stage_script(), timeout=30, stdin_text=spec["netplan"])
+        staged = run(node, stage_script(), timeout=30, stdin_text=rendered[name])
         path = (staged.stdout or "").strip().splitlines()[-1].strip() if staged.ok and (staged.stdout or "").strip() else ""
         if not staged.ok or not path.startswith("/tmp/lmds-netplan."):
             step(name, "stage netplan file", False, staged.stderr or staged.stdout or "mktemp failed")

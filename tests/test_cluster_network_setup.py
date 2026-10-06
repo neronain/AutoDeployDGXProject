@@ -836,3 +836,65 @@ def test_network_doctor_flags_an_active_ufw_that_blocks_the_cluster_interface():
     unreadable = next(f for f in diagnose_network(["h", "w"], nodes={"h": find("h"), "w": find("w")}, hosts=hosts, runner=runner)["findings"]
                       if f["kind"] == "firewall" and f["names"] == ["h"])
     assert unreadable["level"] == "warn" and "not readable" in unreadable["data"]["state"]
+
+
+# ── ไฟล์ที่ติดตั้งเป็นของ root ต้องมาจากลิงก์ที่ตรวจรูปแล้ว ไม่ใช่ข้อความที่แนบมากับแผน (audit 2026-10-06) ──────────────
+# `POST /api/cluster/apply` รับแผนทั้งก้อนจาก request แล้ว apply_plan ส่ง `plan["nodes"][n]["netplan"]` เข้า stdin ของ
+# สคริปต์ stage ตรง ๆ → ใครแก้แผนระหว่างทางได้ก็เขียนอะไรลง /etc/netplan/99-lmds-cluster.yaml ของ node ก็ได้ (สายบริหาร ·
+# default route) โดยตารางลิงก์ที่คนเห็นก่อนกดยืนยันยังดูปกติ · ชื่อ interface ต้นทางก็มาจาก payload ที่ node รายงานเอง
+
+
+def _staged_yaml(fleet: "FakeFleet", node: str) -> str:
+    """ข้อความที่ถูกส่งเข้า stdin ของขั้น stage บนเครื่องนั้น = สิ่งที่จะถูก install เป็นไฟล์ของ root"""
+    return next(stdin for name, command, stdin in fleet.calls
+                if name == node and command.startswith("f=$(mktemp /tmp/lmds-netplan."))
+
+
+def test_apply_installs_what_the_link_table_says_not_the_text_attached_to_the_plan(fresh_pair):
+    plan = json.loads(json.dumps(fresh_pair))          # สำเนา เหมือนแผนที่เดินทางผ่าน HTTP
+    honest = plan["nodes"]["a"]["netplan"]
+    plan["nodes"]["a"]["netplan"] = (
+        "network:\n  version: 2\n  ethernets:\n    eno1:\n      addresses: [203.0.113.9/24]\n"
+        "      routes: [{to: default, via: 203.0.113.1}]\n")
+    passwords = {"a": "pw-a", "b": "pw-b"}
+    fleet = FakeFleet(passwords)
+    result = apply_plan(plan, dict(passwords), nodes={"a": find("a"), "b": find("b")}, runner=fleet,
+                        sleep=lambda s: None)
+    assert result["ok"], [s for s in result["steps"] if not s["ok"]]
+    staged = _staged_yaml(fleet, "a")
+    assert staged == honest, "ต้องเป็น YAML ที่ render จากลิงก์ของแผน"
+    assert "eno1" not in staged and "routes" not in staged
+
+
+@pytest.mark.parametrize("field,value", [
+    ("iface", "enp1s0f1np1:\n      dhcp4: yes\n    eno1"),     # ขึ้นบรรทัดใหม่ = stanza ของ interface อื่น
+    ("iface", "eth0: {dhcp4: yes}, x"),
+    ("iface", ""),
+    ("iface", "a" * 16),                                       # เกิน IFNAMSIZ
+    ("ip", "10.0.0.1/8]\n      routes: [{to: default, via: 10.0.0.254}"),
+    ("ip", "not-an-ip"),
+    ("prefix", "24]\n      dhcp4: yes"),
+    ("prefix", 0),
+    ("prefix", 33),
+    ("prefix", True),
+])
+def test_a_plan_with_malformed_links_is_refused_before_any_machine_is_touched(fresh_pair, field, value):
+    plan = json.loads(json.dumps(fresh_pair))
+    for link in plan["nodes"]["b"]["links"]:               # เครื่องที่สอง — เครื่องแรกก็ต้องไม่ถูกแตะ
+        link[field] = value
+    passwords = {"a": "pw-a", "b": "pw-b"}
+    fleet = FakeFleet(passwords)
+    result = apply_plan(plan, dict(passwords), nodes={"a": find("a"), "b": find("b")}, runner=fleet,
+                        sleep=lambda s: None)
+    assert not result["ok"] and not result["applied"]
+    assert fleet.calls == [], "ต้องปฏิเสธก่อนคำสั่งแรก — รวมถึงก่อนถาม sudo"
+    assert any(not s["ok"] and s["step"] == "plan" for s in result["steps"])
+
+
+def test_render_netplan_refuses_values_that_would_write_someone_elses_stanza():
+    good = [{"iface": "enp1s0f1np1", "ip": "10.100.0.1", "prefix": 24}]
+    assert "enp1s0f1np1:" in render_netplan(good)
+    with pytest.raises(ValueError):
+        render_netplan([{**good[0], "iface": "x:\n    eno1"}])
+    with pytest.raises(ValueError):
+        render_netplan(good, renderer="networkd\n  ethernets: {}")
