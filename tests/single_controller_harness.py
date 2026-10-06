@@ -267,7 +267,7 @@ case "${1:-}" in
   info) echo /var/lib/docker; exit 0 ;;
   inspect|container)
     name="${@: -1}"; alive "$name" && { echo true; exit 0; }; exit 1 ;;
-  wait) echo 0; exit 0 ;;
+  wait) name="${@: -1}"; cat "$state/$name.exit" 2>/dev/null || echo 0; exit 0 ;;
   rm)
     name="${@: -1}"
     if [[ -f "$state/$name.pid" ]]; then
@@ -298,6 +298,14 @@ case "${1:-}" in
     # image ของ llama.cpp ไม่ถูก override entrypoint — ตัว image เองรัน llama-server
     [[ -n "$entry" ]] || entry="llama-server"
     fakes=(); while IFS='=' read -r k _; do [[ "$k" == FAKE_* ]] && fakes+=("$k=${!k}"); done < <(env)
+    if [[ "$entry" == "python3" ]]; then
+      # container งานสั้น (download): รันสคริปต์ที่ controller ฝังมา **จริง** จนจบก่อนคืน — `docker inspect` จึงตอบว่าจบแล้ว
+      # และ controller ไม่ต้องนั่ง sleep 30 รอ · exit code เก็บไว้ให้ `docker wait`
+      env -i PATH="$PATH" FAKE_MOUNTS="$mounts" "${fakes[@]}" ${envs[@]+"${envs[@]}"} "$entry" "$@" >> "$state/$name.out" 2>&1
+      echo $? > "$state/$name.exit"
+      echo "c0ffee-$name"
+      exit 0
+    fi
     nohup env -i PATH="$PATH" FAKE_MOUNTS="$mounts" "${fakes[@]}" ${envs[@]+"${envs[@]}"} "$entry" "$@" >> "$state/$name.out" 2>&1 &
     echo $! > "$state/$name.pid"
     echo "c0ffee$!"

@@ -470,6 +470,24 @@ download() {
     du -sb "$(_model_cache_dir)" 2>/dev/null | cut -f1 || echo 0
   }
 
+  # โหลดเฉพาะที่ bundle นี้ใช้ — ไม่ใช่ทั้ง repo
+  #
+  # เดิม `snapshot_download(repo_id, revision)` ไม่มีตัวกรอง จึงดึงทุกไฟล์: checkpoint ซ้ำ (`original/` ของ openai/gpt-oss-*
+  # = น้ำหนัก 2 เท่า · `consolidated*.safetensors` ของทุก repo mistralai) · GGUF ทุก quant ใน repo สองรูปแบบ (repo จริง
+  # ตัวหนึ่ง 1.6 TB · 105 GGUF) · ONNX ฯลฯ ขณะที่แผน · fit · การเช็คดิสก์ นับแค่ shard ในแผน (audit 2026-10-06)
+  #
+  # กติกา: "ทุกไฟล์ ยกเว้นไฟล์รูปแบบ weight ที่ไม่อยู่ในแผน" — ไม่ใช่ allow-list แคบ ๆ: config · tokenizer · chat template ·
+  # processor · remote code (*.py) · ไฟล์ในโฟลเดอร์ย่อย ไม่มีวันถูกทิ้งเพราะเราลืมนึกถึงชื่อมัน · weight ที่ต้องได้คือ
+  # SHARD_FILES ของแผนเป๊ะ (รายการเดียวกับที่ verify-files ตรวจ) · ignore_patterns ของ huggingface_hub ทำ "ยกเว้นแต่ที่อยู่
+  # ในแผน" ไม่ได้ (ignore ชนะ allow) จึงถามรายชื่อไฟล์ของ revision นั้นแล้วส่งรายชื่อที่จะเอาเป็น allow_patterns ตรง ๆ
+  # รายชื่อเข้า container ทาง env (ชื่อเดียวบน argv) · แผนไม่มีรายการ shard (Hub ไม่รายงาน) = โหลดทั้ง repo ตามเดิมและบอกไว้
+  local LMDS_WEIGHT_FILES="" LMDS_REQUIRED_FILES=""
+  if declare -p SHARD_FILES >/dev/null 2>&1 && (( {{ '${#SHARD_FILES[@]}' }} > 0 )); then
+    LMDS_WEIGHT_FILES="$(printf '%s\n' "${SHARD_FILES[@]}")"
+  fi
+  LMDS_REQUIRED_FILES="$(printf '%s\n' {{ required_files }})"
+  export LMDS_WEIGHT_FILES LMDS_REQUIRED_FILES
+
   _snapshot_download() {
     local disable_xet="$1"
     local name="lmds-dl-$$-${RANDOM}"
@@ -489,10 +507,40 @@ download() {
       -e HF_HUB_DOWNLOAD_TIMEOUT=30 \
       ${HF_TOKEN:+-e HF_TOKEN} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
+      -e LMDS_WEIGHT_FILES -e LMDS_REQUIRED_FILES \
       -v "${HF_HOME}:/cache" \
       --entrypoint python3 "$SGLANG_IMAGE" -u -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='${MODEL_ID}', revision='${MODEL_REVISION}', cache_dir=None)
+import glob, os
+from huggingface_hub import HfApi, snapshot_download
+repo, rev = '${MODEL_ID}', '${MODEL_REVISION}'
+planned = [f for f in os.environ.get('LMDS_WEIGHT_FILES', '').split('\n') if f]
+required = [f for f in os.environ.get('LMDS_REQUIRED_FILES', '').split('\n') if f]
+# นามสกุลของไฟล์น้ำหนักโมเดลทุกรูปแบบ — ตัวที่ไม่อยู่ในแผนคือ checkpoint ซ้ำ / quant อื่น / export รูปแบบอื่น
+WEIGHT_EXT = ('.safetensors', '.gguf', '.bin', '.pt', '.pth', '.ckpt', '.onnx', '.onnx_data', '.ot', '.msgpack',
+              '.h5', '.tflite', '.mlmodel', '.npz', '.pb', '.engine')
+SMALL = 16 * 1024 * 1024
+allow = None
+if planned:
+    keep, skipped, skipped_bytes = [], [], 0
+    for item in HfApi().model_info(repo, revision=rev, files_metadata=True).siblings or []:
+        name, size = item.rfilename, getattr(item, 'size', None)
+        low = name.lower()
+        weight = low.endswith(WEIGHT_EXT) or '.mlpackage/' in low
+        # ไฟล์เล็กที่นามสกุลเหมือน weight (tokenizer.bin · training_args.bin) เก็บไว้ — ไม่มี config ตัวไหนถูกทิ้งเพราะนามสกุล
+        if not weight or name in planned or name in required or (size is not None and size <= SMALL):
+            keep.append(name)
+        else:
+            skipped.append(name)
+            skipped_bytes += size or 0
+    keep += [name for name in planned + required if name not in keep]
+    allow = [glob.escape(name) for name in keep]
+    print('download: %d files (%d planned weight files)' % (len(keep), len(planned)), flush=True)
+    if skipped:
+        print('download: skipping %d weight-format files that are not in the plan (%.1f GB): %s%s'
+              % (len(skipped), skipped_bytes / 1e9, ', '.join(skipped[:8]), ' ...' if len(skipped) > 8 else ''), flush=True)
+else:
+    print('download: plan lists no weight files - downloading the whole repository', flush=True)
+snapshot_download(repo_id=repo, revision=rev, cache_dir=None, allow_patterns=allow)
 print('download complete')
 " >/dev/null || return 1
 
