@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_audit_stacked_controller import (
-    SAFE_PATH, _SSH, _bundle, _calls, _seed_head_cache, _shim,
+    SAFE_PATH, SHARDS, _SSH, _bundle, _calls, _seed_head_cache, _shim,
 )
 
 HEAD = "10.1.1.1"
@@ -700,3 +700,281 @@ def test_verify_worker_refuses_a_snapshot_of_another_revision_on_every_worker(tm
     assert "verify-worker: PASS" not in done.stdout
     out = done.stdout + done.stderr
     assert "OLD-REVISION-0000" in out and "rev-ds4" in out and W1 in out, out
+
+
+# ═════════════════════ 7. download / sync-worker: เฉพาะ weight ที่อยู่ในแผน ═════════════════════
+# repo แบบที่กัดจริง: checkpoint ซ้ำใต้ original/ (openai/gpt-oss-*) · consolidated.safetensors (mistralai) · GGUF ·
+# ONNX · pytorch_model.bin — แผนของ bundle (SHARD_FILES) มีแค่ shard สองตัวที่ราก
+_PLANNED = {name: size for name, size in SHARDS}
+_KEEP = {"config.json": 2, "generation_config.json": 2, "tokenizer.json": 9, "tokenizer_config.json": 5,
+         "chat_template.jinja": 7, "preprocessor_config.json": 3, "model.safetensors.index.json": 11, "README.md": 4,
+         "original/config.json": 2}
+_SURPLUS = {"original/model-00001-of-00002.safetensors": 12, "original/model-00002-of-00002.safetensors": 7,
+            "consolidated.safetensors": 19, "DeepSeek-V4-Flash-Q4_K_M.gguf": 30, "onnx/model.onnx": 8,
+            "onnx/model.onnx_data": 40, "pytorch_model.bin": 19, "flax_model.msgpack": 19}
+_REPO = {**_KEEP, **_PLANNED, **_SURPLUS}
+
+# huggingface_hub ปลอม: กรองไฟล์ด้วยกติกาเดียวกับของจริง (fnmatch ต่อ path เต็ม · allow ก่อน แล้ว ignore) แล้ว "โหลด"
+# ลง cache_dir จริง ๆ + จดว่าถูกเรียกด้วยอะไรและได้ไฟล์ไหน
+_FAKE_HF_HUB = '''
+import fnmatch, json, os
+
+LISTING = json.loads(os.environ["FAKE_REPO_FILES"])
+
+
+class HfApi:
+    def list_repo_files(self, repo_id, revision=None, **_):
+        return list(LISTING)
+
+
+def _patterns(value):
+    if value is None:
+        return None
+    value = [value] if isinstance(value, str) else list(value)
+    return [p + "*" if p.endswith("/") else p for p in value]
+
+
+def snapshot_download(repo_id, revision=None, cache_dir=None, allow_patterns=None, ignore_patterns=None, **_):
+    allow, ignore = _patterns(allow_patterns), _patterns(ignore_patterns)
+    snap = os.path.join(cache_dir, "models--" + repo_id.replace("/", "--"), "snapshots", revision)
+    got = []
+    for path, size in LISTING.items():
+        if allow is not None and not any(fnmatch.fnmatch(path, p) for p in allow):
+            continue
+        if ignore is not None and any(fnmatch.fnmatch(path, p) for p in ignore):
+            continue
+        full = os.path.join(snap, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as fh:
+            fh.write(b"x" * size)
+        got.append(path)
+    with open(os.environ["FAKE_DL_RECORD"], "w") as fh:
+        json.dump({"repo_id": repo_id, "revision": revision, "downloaded": sorted(got)}, fh)
+    return snap
+'''
+
+# docker ปลอม + ตัวโหลด: `run -d … --entrypoint python3 IMAGE -u -c <สคริปต์>` รันสคริปต์ของ controller จริงในเครื่องนี้
+# (-e K=V → env · -v <host>:/cache → CACHE_DIR ชี้โฟลเดอร์จริง) กับ huggingface_hub ปลอมบน PYTHONPATH
+_DOCKER_DL = _DOCKER.replace('''  run)
+''', '''  wait) cat "$state/dl.rc" 2>/dev/null || echo 0; exit 0 ;;
+  logs) cat "$state/dl.log" 2>/dev/null; exit 0 ;;
+  run)
+    if [[ "$*" == *"snapshot_download"* ]]; then
+      args=("$@"); script="$last"; name=""; vol=""; i=0
+      while (( i < ${#args[@]} - 1 )); do
+        case "${args[$i]}" in
+          -e) kv="${args[$(( i + 1 ))]}"; [[ "$kv" == *=* ]] && export "$kv"; i=$(( i + 1 )) ;;
+          -v) vol="${args[$(( i + 1 ))]%%:*}"; i=$(( i + 1 )) ;;
+          --name) name="${args[$(( i + 1 ))]}"; i=$(( i + 1 )) ;;
+        esac
+        i=$(( i + 1 ))
+      done
+      rc=0
+      CACHE_DIR="${vol}${CACHE_DIR#/cache}" PYTHONPATH="$FAKE_PYTHONPATH" python3 -c "$script" > "$state/dl.log" 2>&1 || rc=$?
+      echo "$rc" > "$state/dl.rc"; echo exited > "$state/$name"; echo "cid-$name"; exit 0
+    fi
+''')
+
+# du -sb ที่ใช้ได้ทั้ง macOS/Linux (ของ BSD ไม่มี -b · controller เป้าหมายคือ Linux) — ผลรวม st_size แบบเดียวกับ GNU du -sb
+_DU = '''
+exec python3 - "${@: -1}" <<'PY'
+import os, sys
+total = 0
+for root, dirs, files in os.walk(sys.argv[1]):
+    for name in files + dirs:
+        total += os.lstat(os.path.join(root, name)).st_size
+print(f"{total}\\t{sys.argv[1]}")
+PY
+'''
+_DF_KB = '''
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake 1 1 ${FAKE_DF_KB:-999999999999} 1% /"
+'''
+
+# rsync ปลอมที่ **ส่งไฟล์จริง**: คัดลอกต้นทาง → ปลายทาง (user@host:path = path ในเครื่องนี้) โดยทำตาม --exclude /
+# --exclude-from แบบ rsync (ขึ้นต้น / = ยึดราก · \\x = อักขระตรงตัว) — เทสจึงดูได้ว่า worker **ได้อะไรไปจริง**
+_RSYNC_REAL = '''
+echo "rsync $*" >> "$FAKE_LOG"
+exec python3 - "$@" <<'PY'
+import fnmatch, os, re, shutil, sys
+
+names, anchored, paths = [], [], []
+args = sys.argv[1:]
+i = 0
+while i < len(args):
+    a = args[i]
+    if a.startswith("--exclude-from="):
+        for line in open(a.split("=", 1)[1], encoding="utf-8"):
+            line = line.rstrip("\\n")
+            if line:
+                (anchored if line.startswith("/") else names).append(line)
+    elif a.startswith("--exclude="):
+        names.append(a.split("=", 1)[1])
+    elif a == "-e":
+        i += 1
+    elif not a.startswith("-"):
+        paths.append(a)
+    i += 1
+src, dst = paths[0], paths[1].split(":", 1)[1]
+as_glob = lambda pat: re.sub(r"\\\\(.)", lambda m: "[" + m.group(1) + "]", pat)
+for root, _dirs, files in os.walk(src):
+    for name in files:
+        full = os.path.join(root, name)
+        rel = "/" + os.path.relpath(full, src)
+        if any(fnmatch.fnmatchcase(name, p) for p in names) or any(fnmatch.fnmatchcase(rel, as_glob(p)) for p in anchored):
+            continue
+        out = os.path.join(dst, rel[1:])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        if os.path.lexists(out):
+            os.remove(out)
+        if os.path.islink(full):
+            os.symlink(os.readlink(full), out)
+        else:
+            shutil.copyfile(full, out)
+PY
+'''
+
+
+def _hf_cache(home: Path, files: dict[str, int], rev: str = "rev-ds4", shared_blob: dict[str, str] | None = None) -> Path:
+    """cache ของ HF แบบของจริง: blobs/<hash> + snapshots/<rev>/<path> เป็น symlink ชี้ blob (path ซ้อนชั้นได้)
+    shared_blob = {path: path ที่มันใช้ blob ร่วม} — เนื้อไฟล์เดียวกัน Hub เก็บ blob เดียว"""
+    model = home / ".cache/huggingface/hub" / f"models--{MODEL.replace('/', '--')}"
+    snap = model / "snapshots" / rev
+    (model / "blobs").mkdir(parents=True, exist_ok=True)
+    blob_of: dict[str, str] = {}
+    for n, (path, size) in enumerate(files.items()):
+        twin = (shared_blob or {}).get(path)
+        blob = blob_of[twin] if twin else f"blob{n:03d}"
+        blob_of[path] = blob
+        if not twin:
+            (model / "blobs" / blob).write_bytes(b"x" * size)
+        entry = snap / path
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.symlink_to(os.path.relpath(model / "blobs" / blob, entry.parent))
+    return model
+
+
+def _snapshot_files(model: Path, rev: str = "rev-ds4") -> set[str]:
+    snap = model / "snapshots" / rev
+    return {str(p.relative_to(snap)) for p in snap.rglob("*") if p.is_file() or p.is_symlink()} if snap.exists() else set()
+
+
+def test_download_fetches_the_planned_weights_and_every_config_file_but_no_other_weights(tmp_path):
+    """เดิม snapshot_download(repo, revision) ไม่มีตัวกรอง → โหลดทั้ง repo: original/ · consolidated · GGUF · ONNX · .bin
+    (น้ำหนักหลายเท่าของที่แผน/fit/ด่านดิสก์นับ) · ไฟล์ที่ไม่ใช่ weight ต้องมาครบ — ส่วนไฟล์ชื่อเดียวกับ shard ในแผน
+    แต่อยู่คนละโฟลเดอร์ (original/model-00001-of-00002.safetensors) ต้อง **ไม่** มา"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, docker=_DOCKER_DL, curl="exit 0\n")
+    fake_pkg = tmp_path / "fakepy" / "huggingface_hub"
+    fake_pkg.mkdir(parents=True)
+    (fake_pkg / "__init__.py").write_text(_FAKE_HF_HUB, encoding="utf-8")
+    record = tmp_path / "dl-record.json"
+    env = {"FAKE_PYTHONPATH": str(tmp_path / "fakepy"), "FAKE_REPO_FILES": json.dumps(_REPO),
+           "FAKE_DL_RECORD": str(record)}
+    wanted = set(_KEEP) | set(_PLANNED)
+
+    done = _run(bundle, ["download"], tmp_path, env=env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    got = set(json.loads(record.read_text())["downloaded"])
+    assert got == wanted, f"เกิน: {sorted(got - wanted)} · ขาด: {sorted(wanted - got)}"
+    model = tmp_path / "home/.cache/huggingface/hub" / f"models--{MODEL.replace('/', '--')}"
+    assert _snapshot_files(model) == wanted
+    assert "original/model-00001-of-00002.safetensors" in done.stdout, "ต้องบอกว่าข้ามไฟล์ไหน"
+
+    # ของที่โหลดมาต้องผ่าน verify-files — ตัวกรองกับตัวตรวจต้องพูดเรื่องเดียวกัน
+    verified = _run(bundle, ["verify-files"], tmp_path, env=env)
+    assert verified.returncode == 0 and "verify-files: OK" in verified.stdout, verified.stdout + verified.stderr
+
+    # ทางออกเมื่อผู้ใช้ต้องการทั้ง repo จริง ๆ
+    record.unlink()
+    everything = _run(bundle, ["download"], tmp_path, env={**env, "ALL_REPO_FILES": "1"})
+    assert everything.returncode == 0, everything.stdout + everything.stderr
+    assert set(json.loads(record.read_text())["downloaded"]) == set(_REPO)
+
+
+def test_verify_files_accepts_a_cache_that_also_holds_weights_outside_the_plan(tmp_path):
+    """cache ที่โหลดทั้ง repo มาก่อน (controller รุ่นเดิม) มี consolidated.safetensors อยู่ข้าง shard ในแผน → เดิมนับ
+    *.safetensors ได้ 3 ≠ SHARD_COUNT 2 แล้วปฏิเสธด้วย "shard ไม่ครบ" ทั้งที่ไฟล์ในแผนครบและขนาดตรง"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    _hf_cache(tmp_path / "home", _REPO)
+    done = _run(bundle, ["verify-files"], tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "verify-files: OK (2 shards" in done.stdout
+    note = [ln for ln in done.stdout.splitlines() if "นอกแผน" in ln]
+    assert note and f" {len(_SURPLUS)} " in note[0], done.stdout
+
+    # ของในแผนที่ขาดจริงยังต้องถูกจับ
+    snap = tmp_path / "home/.cache/huggingface/hub" / f"models--{MODEL.replace('/', '--')}" / "snapshots/rev-ds4"
+    (snap / SHARDS[1][0]).unlink()
+    broken = _run(bundle, ["verify-files"], tmp_path)
+    assert broken.returncode != 0 and "verify-files: OK" not in broken.stdout, broken.stdout
+
+
+def test_sync_worker_sends_the_planned_weights_and_config_files_but_no_other_weights(tmp_path):
+    """head ที่มี weight นอกแผนค้างใน cache → เดิม rsync ทั้งโฟลเดอร์ไปทุก worker · worker ต้องได้เฉพาะของในแผน + ไฟล์
+    config ครบ (ทั้ง entry ใต้ snapshots/ และ blob) · blob ที่ไฟล์ในแผนใช้ร่วมกับไฟล์นอกแผนต้องยังไปถึง"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, docker=_DOCKER_VERIFY, rsync=_RSYNC_REAL)
+    # consolidated-copy.safetensors มีเนื้อเดียวกับ shard แรก (blob เดียวกัน) — ห้ามข้าม blob นั้น
+    files = {**_REPO, "consolidated-copy.safetensors": 12}
+    head = _hf_cache(tmp_path / "home", files, shared_blob={"consolidated-copy.safetensors": SHARDS[0][0]})
+    worker_hf = tmp_path / "worker-hf"
+    env = {"WORKER_HF_HOME": str(worker_hf)}
+    wanted = set(_KEEP) | set(_PLANNED)
+
+    done = _run(bundle, ["sync-worker"], tmp_path, workers=f"{W1} {W2}", env=env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    worker = worker_hf / "hub" / head.name
+    assert _snapshot_files(worker) == wanted
+    # ทุก entry ที่ไปถึงต้องอ่านได้จริง (blob มาด้วย) และไม่มี blob ของ weight นอกแผนติดไป
+    snap = worker / "snapshots/rev-ds4"
+    assert all((snap / rel).stat().st_size == _REPO[rel] for rel in wanted)
+    sent_bytes = sum(p.stat().st_size for p in (worker / "blobs").iterdir())
+    assert sent_bytes == sum(_KEEP.values()) + sum(_PLANNED.values()), "blob ของ weight นอกแผนถูกส่งไปด้วย"
+    assert sum(1 for ln in _calls(tmp_path).splitlines() if ln.startswith("rsync ")) == 2, "ต้องทำกับ worker ทุกตัว"
+
+    # ของที่ส่งไปต้องผ่าน verify-worker — ตัวกรองกับตัวตรวจต้องพูดเรื่องเดียวกัน
+    verified = _run(bundle, ["verify-worker"], tmp_path, workers=f"{W1} {W2}", env=env)
+    assert verified.returncode == 0 and "verify-worker: PASS" in verified.stdout, verified.stdout + verified.stderr
+
+    # ALL_REPO_FILES=1 = ส่งทั้งโฟลเดอร์เหมือนเดิม
+    everything = _run(bundle, ["sync-worker"], tmp_path, env={**env, "ALL_REPO_FILES": "1"})
+    assert everything.returncode == 0, everything.stderr
+    assert _snapshot_files(worker) == set(files)
+    # worker ที่มี weight นอกแผนจากรอบเก่า (จำนวน *.safetensors เกินแผน) ยังต้องผ่าน verify-worker
+    again = _run(bundle, ["verify-worker"], tmp_path, env=env)
+    assert again.returncode == 0 and "verify-worker: PASS" in again.stdout, again.stdout + again.stderr
+
+
+def _big(model: Path, rel: str, size: int, rev: str = "rev-ds4") -> None:
+    """ไฟล์ sparse ขนาด `size` ใน snapshot (ไม่กินดิสก์จริง) — แทน weight นอกแผนก้อนใหญ่"""
+    path = model / "snapshots" / rev / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.truncate(size)
+
+
+def test_the_worker_disk_check_counts_only_what_will_be_sent(tmp_path):
+    """head ถือ GGUF นอกแผน 8 MB · worker เหลือที่ 1 MB ซึ่งพอสำหรับของในแผน (ไม่กี่สิบไบต์) → เดิมด่านดิสก์นับทั้ง
+    โฟลเดอร์แล้วปฏิเสธว่า worker ไม่พอ ทั้งที่ของที่จะส่งจริงลงได้สบาย"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, rsync=_RSYNC_REAL, du=_DU, df=_DF_KB)
+    head = _hf_cache(tmp_path / "home", {**_KEEP, **_PLANNED})
+    _big(head, "DeepSeek-V4-Flash-Q4_K_M.gguf", 8 * 1024 * 1024)
+    done = _run(bundle, ["sync-worker"], tmp_path, env={"WORKER_HF_HOME": str(tmp_path / "worker-hf"), "FAKE_DF_KB": "1024"})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _snapshot_files(tmp_path / "worker-hf/hub" / head.name) == set(_KEEP) | set(_PLANNED)
+
+
+def test_the_head_disk_check_counts_only_planned_bytes_as_already_there(tmp_path):
+    """cache มี weight นอกแผน 1 GiB แต่ยังไม่มี shard ในแผนสักตัว · ต้องโหลดอีก ~1 GB · ดิสก์เหลือ 512 MB → เดิมด่านนับ
+    ขนาดทั้งโฟลเดอร์เป็น "ที่มีแล้ว" จึงคิดว่าไม่ต้องโหลดอะไรอีก แล้วปล่อยไปเต็มกลางทาง"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, docker=_DOCKER_DL, du=_DU, df=_DF_KB, curl="exit 0\n")
+    model = tmp_path / "home/.cache/huggingface/hub" / f"models--{MODEL.replace('/', '--')}"
+    _big(model, "DeepSeek-V4-Flash-Q4_K_M.gguf", 1024 ** 3)
+    done = _run(bundle, ["download"], tmp_path, env={"TOTAL_SIZE_APPROX_GB": "1", "FAKE_DF_KB": str(512 * 1024)})
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "run -d" not in _calls(tmp_path), "ต้องหยุดก่อนเริ่มโหลด"
+    assert "512 MB" in done.stderr and "HF_HOME=" in done.stderr, done.stderr

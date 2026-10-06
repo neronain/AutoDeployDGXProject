@@ -858,6 +858,96 @@ _download_bytes() {
   du -sb "$(_model_cache_dir)" 2>/dev/null | cut -f1 || echo 0
 }
 
+# ── โหลดและส่งไป worker เฉพาะ weight ที่อยู่ในแผน ──
+#
+# เดิม snapshot_download(repo, revision) ไม่มีตัวกรอง = โหลดทั้ง repo: checkpoint ซ้ำ (`original/` ของ openai/gpt-oss-*
+# · `consolidated*.safetensors` ของ mistralai ทุก repo = น้ำหนักสองเท่า) · GGUF ทุก quant ใน repo สองฟอร์แมต · ONNX ฯลฯ
+# ทั้งที่แผน/fit/ด่านดิสก์นับเฉพาะ shard ในแผน (SHARD_FILES) — แล้ว sync-worker ก็ rsync ส่วนเกินนั้นไปทุก worker อีกรอบ
+# กติกา: เอา **ทุกไฟล์** ยกเว้นไฟล์ฟอร์แมต weight ที่ไม่อยู่ใน SHARD_FILES · config/tokenizer/template/processor ไม่ถูกแตะ
+# นามสกุลที่ถือว่าเป็น weight (ตัวเล็ก ไม่มีจุด) — เพิ่ม/ลดได้ผ่าน env · โหลดทั้ง repo เหมือนเดิม: ALL_REPO_FILES=1
+WEIGHT_FILE_EXTS="${WEIGHT_FILE_EXTS:-safetensors gguf bin pt pth ckpt onnx onnx_data ot msgpack h5 tflite mlmodel}"
+ALL_REPO_FILES="${ALL_REPO_FILES:-}"
+
+# $1 = path ภายใน snapshot (เช่น original/model-00001.safetensors) → 0 = เป็น weight ที่ไม่อยู่ในแผน
+# bundle ที่ไม่มี SHARD_FILES (ไม่รู้แผน) หรือ ALL_REPO_FILES=1 = ไม่มีอะไรเป็นส่วนเกิน
+_is_surplus_weight() {
+  local rel="$1" lower ext i
+  [[ -z "$ALL_REPO_FILES" ]] || return 1
+  declare -p SHARD_FILES >/dev/null 2>&1 || return 1
+  lower="$(printf '%s' "$rel" | tr '[:upper:]' '[:lower:]')"
+  for ext in $WEIGHT_FILE_EXTS; do
+    [[ "$lower" == *".${ext}" ]] || continue
+    for i in "${!SHARD_FILES[@]}"; do
+      [[ "${SHARD_FILES[$i]}" == "$rel" ]] && return 1
+    done
+    return 0
+  done
+  return 1
+}
+
+# weight นอกแผนที่ค้างอยู่ใน cache ของโมเดล (โหลดมาก่อนมีตัวกรอง หรือด้วยเครื่องมืออื่น) — บรรทัดละ path เทียบกับ
+# โฟลเดอร์ cache: entry ใต้ snapshots/<rev>/… และ blob ที่มันชี้ · blob ที่ entry ในแผน/ไฟล์ config ชี้ร่วมอยู่ไม่ถูกนับ
+# $1 = โฟลเดอร์ cache ของโมเดล (…/models--org--name)
+_surplus_cache_paths() {
+  local model_cache="$1" entry rel target blob keep=" " drop=""
+  [[ -d "${model_cache}/snapshots" ]] || return 0
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    rel="${entry#"${model_cache}"/snapshots/}"; rel="${rel#*/}"       # ตัดชื่อ revision ออก เหลือ path ใน snapshot
+    blob=""
+    if [[ -L "$entry" ]]; then
+      target="$(readlink "$entry" 2>/dev/null || true)"
+      [[ "$target" == *blobs/* ]] && blob="${target##*/}"
+    fi
+    if _is_surplus_weight "$rel"; then
+      printf '%s\n' "${entry#"${model_cache}"/}"
+      [[ -z "$blob" ]] || drop="${drop}${blob} "
+    else
+      [[ -z "$blob" ]] || keep="${keep}${blob} "
+    fi
+  done < <(find "${model_cache}/snapshots" -mindepth 2 \( -type f -o -type l \) 2>/dev/null | sort)
+  local seen=" "
+  for blob in $drop; do
+    [[ "$keep" == *" ${blob} "* || "$seen" == *" ${blob} "* ]] && continue
+    seen="${seen}${blob} "
+    printf 'blobs/%s\n' "$blob"
+  done
+  return 0
+}
+
+# ขนาดจริง (ไบต์) ของรายการจาก _surplus_cache_paths — symlink ใน snapshots ไม่นับ (ตัว blob ถูกนับแทน)
+# $1 = โฟลเดอร์ cache ของโมเดล · stdin = รายการ path
+_surplus_bytes() {
+  local model_cache="$1" rel size total=0
+  while IFS= read -r rel; do
+    [[ -n "$rel" && ! -L "${model_cache}/${rel}" && -f "${model_cache}/${rel}" ]] || continue
+    size="$(stat -c %s "${model_cache}/${rel}" 2>/dev/null || stat -f %z "${model_cache}/${rel}" 2>/dev/null || echo 0)"
+    total=$(( total + ${size:-0} ))
+  done
+  echo "$total"
+}
+
+# ไบต์ของ **ไฟล์ในแผน** ที่มีอยู่แล้วบน head — ด่านดิสก์ของ download ใช้ตัวนี้ ไม่ใช่ขนาดทั้งโฟลเดอร์ cache
+# (cache ที่มี weight นอกแผน/ revision อื่นค้างอยู่ทำให้ "ที่มีแล้ว" ดูมากเกินจริง แล้วด่านปล่อยผ่านทั้งที่ดิสก์ไม่พอ)
+# ที่โหลดค้าง (blobs/*.incomplete) นับด้วย — resume ต่อจากตรงนั้น · ไม่รู้แผน = ขนาดทั้งโฟลเดอร์เหมือนเดิม
+_planned_bytes_present() {
+  declare -p SHARD_FILES >/dev/null 2>&1 || { _download_bytes; return 0; }
+  local snap path size total=0 i
+  snap="$(_snapshot_path "$HF_HOME")"
+  for i in "${!SHARD_FILES[@]}"; do
+    path="${snap}/${SHARD_FILES[$i]}"
+    [[ -e "$path" ]] || continue
+    size="$(stat -Lc %s "$path" 2>/dev/null || stat -Lf %z "$path" 2>/dev/null || echo 0)"
+    total=$(( total + ${size:-0} ))
+  done
+  for path in "$(_model_cache_dir)"/blobs/*.incomplete; do
+    [[ -f "$path" ]] || continue
+    size="$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0)"
+    total=$(( total + ${size:-0} ))
+  done
+  echo "$total"
+}
+
 # โฟลเดอร์ hub cache ฝั่งคอนเทนเนอร์ที่ snapshot_download จะเขียนลง
 #
 # เดิมใช้ cache_dir='/cache' = เลย์เอาต์แบน ($HF_HOME/models--…) ซึ่งต่างจากทุกทางอื่นของระบบ
@@ -877,7 +967,7 @@ _download_cache_dir() {
 _check_download_disk() {
   (( TOTAL_SIZE_APPROX_GB > 0 )) || return 0
   local have need free_kb need_kb
-  have="$(_download_bytes)"
+  have="$(_planned_bytes_present)"
   need=$(( TOTAL_SIZE_APPROX_GB * 1024 * 1024 * 1024 - ${have:-0} ))
   (( need > 0 )) || return 0
   need_kb=$(( need / 1024 * 105 / 100 ))          # เผื่อ 5% ให้ .incomplete/metadata
@@ -981,13 +1071,32 @@ download() {
   # "Unable to parse string as hex hash value" — ลองซ้ำโดยปิด Xet ให้อัตโนมัติ
   [[ -n "${HF_HUB_DISABLE_XET:-}" ]] && dl_args+=(-e "HF_HUB_DISABLE_XET=1")
   dl_args+=(-e "CACHE_DIR=$(_download_cache_dir)")
+  # แผนของ bundle นี้ (ชื่อ shard คั่นด้วยขึ้นบรรทัดใหม่) + นามสกุลที่ถือเป็น weight — ว่าง = ไม่กรอง (โหลดทั้ง repo)
+  # ต้องอยู่ **หลัง** CACHE_DIR บน argv: ค่านี้มีหลายบรรทัด
+  if [[ -z "$ALL_REPO_FILES" ]] && declare -p SHARD_FILES >/dev/null 2>&1; then
+    dl_args+=(-e "WEIGHT_FILE_EXTS=${WEIGHT_FILE_EXTS}" -e "PLANNED_WEIGHTS=$(printf '%s\n' "${SHARD_FILES[@]}")")
+  fi
+  # ถาม Hub ว่า repo มีไฟล์อะไร แล้วสั่งข้าม weight ที่ไม่อยู่ในแผนด้วยชื่อเต็ม (ignore_patterns รับ glob จึง escape ชื่อก่อน)
+  # ไม่ใช้ allow_patterns: รายการที่ "ต้องเอา" นอกจาก weight คือทุกอย่างที่เหลือ ซึ่งแต่ละ repo ไม่เหมือนกัน
   dl_args+=(--entrypoint python3 "$VLLM_IMAGE" -u -c "
-import os
+import glob, os
 from huggingface_hub import snapshot_download
+repo, rev = os.environ['MODEL_ID'], os.environ['MODEL_REVISION']
+planned = set(f for f in os.environ.get('PLANNED_WEIGHTS', '').splitlines() if f)
+exts = tuple('.' + e for e in os.environ.get('WEIGHT_FILE_EXTS', '').split())
+skip = []
+if planned and exts:
+    from huggingface_hub import HfApi
+    files = HfApi().list_repo_files(repo, revision=rev)
+    skip = sorted(f for f in files if f.lower().endswith(exts) and f not in planned)
+    if skip:
+        print('skipping %d weight file(s) that are not in this bundle plan (ALL_REPO_FILES=1 to fetch the whole repo): %s%s'
+              % (len(skip), ', '.join(skip[:8]), ' ...' if len(skip) > 8 else ''), flush=True)
 path = snapshot_download(
-    repo_id=os.environ['MODEL_ID'],
-    revision=os.environ['MODEL_REVISION'],
+    repo_id=repo,
+    revision=rev,
     cache_dir=os.environ['CACHE_DIR'],
+    ignore_patterns=[glob.escape(f) for f in skip] or None,
 )
 print('download complete:', path, flush=True)
 ")
@@ -1152,10 +1261,13 @@ verify_files() {
   local broken
   broken="$(find -L "$snap" -type l 2>/dev/null || true)"
   [[ -z "$broken" ]] || die "พบ symlink เสียใน cache: $broken"
-  local n
+  local n planned=""
+  declare -p SHARD_FILES >/dev/null 2>&1 && planned=1
   n="$(find "$snap" -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l | tr -d ' ')"
   (( n >= 1 )) || die "ไม่พบ .safetensors shard ใน ${snap}"
-  if (( SHARD_COUNT > 0 )) && (( n != SHARD_COUNT )); then
+  # รู้รายชื่อไฟล์ในแผน (SHARD_FILES) = ตรวจทีละไฟล์ข้างล่างเป็นตัวตัดสิน · จำนวนที่ **มากกว่า** แผนคือ weight นอกแผนที่ค้าง
+  # ใน cache (consolidated*.safetensors ที่โหลดมาก่อนมีตัวกรอง) ไม่ใช่ของขาด — เดิม `!=` ปฏิเสธด้วย "shard ไม่ครบ" ทั้งที่ครบ
+  if (( SHARD_COUNT > 0 )) && { (( n < SHARD_COUNT )) || { [[ -z "$planned" ]] && (( n != SHARD_COUNT )); }; }; then
     die "shard ไม่ครบ: คาด ${SHARD_COUNT} พบ ${n} ใน ${snap}"
   fi
 {% endraw %}{% if shard_files %}
@@ -1182,7 +1294,17 @@ verify_files() {
     fi
   done
   echo "shard ครบ {{ '${#SHARD_FILES[@]}' }} ไฟล์ (ขนาดตรงกับ Hub)"
+  n="{{ '${#SHARD_FILES[@]}' }}"
 {% endif %}{% raw %}
+  # weight นอกแผนที่ค้างอยู่ — ไม่ใช่ข้อผิดพลาด แต่ต้องบอก: มันกินดิสก์ และ sync-worker จะไม่ส่งมันไป worker
+  local extra extra_n=0 extra_bytes
+  extra="$(_surplus_cache_paths "$(_model_cache_dir "$HF_HOME")")"
+  if [[ -n "$extra" ]]; then
+    extra_n="$(grep -c '^snapshots/' <<< "$extra" || true)"
+    extra_bytes="$(_surplus_bytes "$(_model_cache_dir "$HF_HOME")" <<< "$extra")"
+    echo "หมายเหตุ: cache มีไฟล์ weight นอกแผน ${extra_n} ไฟล์ (~$(_human_kb "$(( extra_bytes / 1024 ))")) — ไม่ถูกใช้ · sync-worker ไม่ส่งไป worker · ลบได้ถ้าต้องการที่คืน:"
+    grep '^snapshots/' <<< "$extra" | head -n 5 | sed 's/^/    /' || true
+  fi
   echo "verify-files: OK (${n} shards @ ${snap})"
 }
 
@@ -1203,6 +1325,19 @@ sync_worker() {
   cache_name="$(basename "$model_cache")"
   worker_hf="${WORKER_HF_HOME}"
   have_bytes="$(du -sb "$model_cache" 2>/dev/null | cut -f1 || echo 0)"
+  # weight นอกแผนที่ค้างใน cache ของ head ไม่ต้องไป worker — ส่งรายการให้ rsync ข้าม และหักออกจากที่ที่ worker ต้องมี
+  # (เดิม rsync ทั้งโฟลเดอร์: head ที่โหลดทั้ง repo มาส่ง checkpoint ซ้ำ/GGUF/ONNX ไปทุก worker อีกเท่าตัว)
+  local surplus surplus_bytes=0 skip_file=""
+  surplus="$(_surplus_cache_paths "$model_cache")"
+  if [[ -n "$surplus" ]]; then
+    surplus_bytes="$(_surplus_bytes "$model_cache" <<< "$surplus")"
+    (( ${have_bytes:-0} > surplus_bytes )) && have_bytes=$(( have_bytes - surplus_bytes ))
+    skip_file="$(mktemp 2>/dev/null || true)"
+    [[ -n "$skip_file" ]] || die "สร้างไฟล์ชั่วคราวสำหรับรายการที่ rsync ต้องข้ามไม่ได้ (mktemp ล้ม — /tmp เต็ม?) · ส่งทั้งโฟลเดอร์แทนได้: ALL_REPO_FILES=1 $0 sync-worker"
+    # รูปแบบของ rsync: ขึ้นต้น / = ยึดกับรากของโฟลเดอร์ที่ส่ง · อักขระ glob ในชื่อไฟล์ต้อง escape
+    sed -e 's/[][*?\\]/\\&/g' -e 's|^|/|' <<< "$surplus" > "$skip_file"
+    log "ไม่ส่งไฟล์ weight นอกแผน $(grep -c '^snapshots/' <<< "$surplus" || true) ไฟล์ (~$(_human_kb "$(( surplus_bytes / 1024 ))")) ไป worker — ส่งทั้งหมดแทน: ALL_REPO_FILES=1 $0 sync-worker"
+  fi
   local wip rank=0 sip
   for wip in $WORKER_IPS; do
     rank=$(( rank + 1 ))
@@ -1236,10 +1371,12 @@ sync_worker() {
     rc=0
     rsync -aH --info=progress2 --no-owner --no-group --partial --append-verify \
       --exclude='*.lock' --exclude='tmp_*' --exclude='*.incomplete' \
+      ${skip_file:+--exclude-from="$skip_file"} \
       -e "$_RSYNC_SSH" \
       "${model_cache}/" \
       "${SSH_USER}@${wip}:${worker_hf}/hub/${cache_name}/" || rc=$?
     if (( rc != 0 )); then
+      [[ -z "$skip_file" ]] || rm -f "$skip_file"
       local why="rsync exit ${rc}"
       case "$rc" in
         11) why="ดิสก์ปลายทางเต็ม / เขียนไม่ได้ (rsync exit 11)" ;;
@@ -1252,6 +1389,7 @@ sync_worker() {
   ดูของบน worker: ssh ${SSH_USER}@${wip} ls -la '${worker_hf}/hub/${cache_name}/blobs'"
     fi
   done
+  [[ -z "$skip_file" ]] || rm -f "$skip_file"
   log "sync-worker: DONE — ตรวจต่อ: $0 verify-worker"
 }
 
@@ -1296,7 +1434,9 @@ shards = sorted(snap.glob('*.safetensors'))
 if not shards:
     sys.exit('no shards on worker  (run sync-worker)')
 print('worker shards:', len(shards))
-if want and len(shards) != want:
+# รู้รายชื่อไฟล์ในแผน (SHARD_SPEC) = ตรวจทีละไฟล์ข้างล่างเป็นตัวตัดสิน · มากกว่าแผน = weight นอกแผนจาก sync รอบเก่า ไม่ใช่ของขาด
+planned = os.environ.get('SHARD_SPEC', '').split()
+if want and (len(shards) < want or (not planned and len(shards) != want)):
     sys.exit('worker shard count %d != expected %d  (run sync-worker to resume)' % (len(shards), want))
 bad = []
 for item in os.environ.get('SHARD_SPEC', '').split():
@@ -3411,6 +3551,7 @@ ENVIRONMENT VARIABLES
   HF_HOME               Where model weights live on the head      [default: \${HOME}/.cache/huggingface]
   WORKER_HF_HOME        Same on the worker(s)                     [default: same as HF_HOME]
   HTTPS_PROXY / HF_ENDPOINT  Forwarded into the download container when set (proxy / mirror)
+  ALL_REPO_FILES=1      download / sync-worker take the whole repo, not just the planned weights + config files
   TRANSPORT_IP_WORKER   IP the first worker uses for NCCL (fabric) [default: WORKER_IP]
   TRANSPORT_IPS_WORKER  Same for every worker, rank order, space-separated (3+ nodes)
   cluster.env v2 (multi-link: 3-node ring / switch) — written by the hub, per rank:
