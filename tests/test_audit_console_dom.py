@@ -685,6 +685,108 @@ def test_a_control_plane_hub_is_never_treated_as_the_head(tmp_path):
     assert out == {"analyzeMachine": "", "clusterCalls": 0, "stackedScreen": False, "screen": "q-stacked passed 2 gates"}
 
 
+# ───────────────────── ข้อ 9 — เรื่องเล็กที่หน้าจอพูดไม่ตรงกับที่เกิด ─────────────────────
+
+def test_update_runtimes_does_not_say_started_when_the_hub_refused_everything(tmp_path):
+    (refused, mixed) = run_scenario(tmp_path, MODEL + """H.fastTimers(50);
+        const fx = { nodes: [{ name: "spark-01", site: "TKC", models: [model({ slug: "qwen4" }), model({ slug: "qwen5", port: 8081 })] }] }; H.fx = fx;
+        const A = (state, extra = {}) => ({ state, detail: "", items: [], ...extra });
+        H.accept = [];
+        H.routes = [
+          ["/api/fleet/consistency", () => ({ summary: { consistent: 0, total: 1, controllers_stale: 0, runtime_stale: 2, line: "2 runtimes stale" },
+             hub: { verdict: null, dirty: [] },
+             nodes: [{ name: "spark-01", level: "bad", consistent: false, code: A("ok"), controllers: A("ok"),
+                       runtimes: A("stale", { items: ["qwen4", "qwen5"], detail: "build too old" }) }] })],
+          [/\\/ctl\\/update-runtime$/, url => H.accept.includes(url.split("/")[5])
+             ? { job: { id: "jr", command: "update-runtime", running: true } }
+             : { status: 409, body: { detail: "มีงานอื่นของโมเดลนี้รันอยู่แล้ว" } }],
+          ["/api/jobs/jr", () => ({ id: "jr", command: "update-runtime", running: true, output: "building…", exit_code: null })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        await H.tick(30);
+        for (const accept of [[], ["qwen5"]]) {
+          H.accept = accept; H.alerts.length = 0;
+          renderOverview(true); await H.tick(5);
+          const btn = document.getElementById("ov-runtimes");
+          btn.onclick(); await H.tick(30);
+          console.log(JSON.stringify({ says: btn.textContent, alerts: [...H.alerts], followed: [...watchingNodes.keys()] }));
+        }
+        H.errors.length = 0;
+    """)
+    assert refused["says"] == "No rebuild was started" and refused["followed"] == []
+    assert len(refused["alerts"]) == 1 and refused["alerts"][0].count("มีงานอื่นของโมเดลนี้รันอยู่แล้ว") == 2, refused["alerts"]
+    assert "spark-01 / qwen4" in refused["alerts"][0]
+    assert mixed["says"] == "1 rebuild(s) started, 1 not started" and mixed["followed"] == ["spark-01/qwen5"]
+
+
+def test_a_gated_repo_token_is_sent_whichever_box_and_button_the_user_picks(tmp_path):
+    """จอ "ต้องใช้ token" มีสองช่องสองปุ่ม — เดิมแต่ละปุ่มอ่านคนละช่อง: สองในสี่ทางส่ง hf_token:"" แล้วได้จอเดิมกลับมา"""
+    out = run_scenario(tmp_path, """
+        const fx = { nodes: [] }; H.fx = fx; H.analyze = [];
+        H.routes = [
+          ["/api/deploy/analyze", (url, opts) => { H.analyze.push(JSON.parse(opts.body));
+             return { status: 422, body: { detail: { kind: "gated", message: "ต้องใช้ token" } } }; }],
+          ["/api/targets", () => ({ targets: [] })], ["/api/recipes", () => ({ recipes: [{ match: "Q/q", label: "Q", engine: "vllm" }] })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        await H.tick(20);
+        for (const [box, button] of [["w-hf", "w-retry"], ["w-token", "w-go"], ["w-hf", "w-go"], ["w-token", "w-retry"]]) {
+          document.getElementById("new").click(); await H.tick(10);
+          document.getElementById("w-model").value = "meta-llama/Llama-3.3-70B-Instruct";
+          document.getElementById("w-go").click(); await H.tick(20);                 // → จอ gated (สองช่อง)
+          document.getElementById("w-hf").value = ""; document.getElementById("w-token").value = "";
+          document.getElementById(box).value = "hf_REALTOKEN";
+          document.getElementById(button).click(); await H.tick(20);
+          console.log(JSON.stringify({ box, button, sent: H.analyze.at(-1).hf_token }));
+          document.getElementById("w-close").click(); await H.tick(5);
+        }
+        H.errors.length = 0;
+    """)
+    assert [(o["box"], o["button"], o["sent"]) for o in out] == [
+        ("w-hf", "w-retry", "hf_REALTOKEN"), ("w-token", "w-go", "hf_REALTOKEN"),
+        ("w-hf", "w-go", "hf_REALTOKEN"), ("w-token", "w-retry", "hf_REALTOKEN")]
+
+
+def test_an_expired_analysis_is_not_presented_as_a_limit_of_the_model(tmp_path):
+    (shown, expired, again, broken) = run_scenario(tmp_path, """
+        const fx = { nodes: [] }; H.fx = fx; H.ctx = "ok"; H.analysed = 0;
+        const plan = { model_id: "Q/q", engine: "vllm", image: "img", revision: "abc", generator: "rules", context: 32768,
+          fit: { target: "dgx-spark-single", verdict: "fits", budget_gb: 100, capacity_gb: 128, weights_gb: 20, max_safe_context: 131072, kv_at_context_gb: 3, notes: [] },
+          capabilities: {}, warnings: [], flags_needing_approval: [] };
+        H.routes = [
+          ["/api/deploy/analyze", () => { H.analysed++; H.ctx = "ok"; return { id: "s1", notes: [], plan }; }],
+          [/^\\/api\\/deploy\\/s1\\/context/, () => H.ctx === "ok"
+             ? { available: true, asked: 32768, kv_dtype: "bf16", kv_bytes_per_token: 100000, ladder: [], advice: [] }
+             : H.ctx === "expired" ? { status: 422, body: { detail: { kind: "expired", message: "ผลวิเคราะห์หมดอายุแล้ว — วิเคราะห์ใหม่อีกครั้ง" } } }
+             : { status: 502, body: "<html>Bad Gateway</html>" }],
+          ["/api/targets", () => ({ targets: [] })], ["/api/recipes", () => ({ recipes: [{ match: "Q/q", label: "Q", engine: "vllm" }] })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        await H.tick(20);
+        document.getElementById("new").click(); await H.tick(10);
+        document.getElementById("w-model").value = "Q/q"; document.getElementById("w-go").click(); await H.tick(20);
+        const advice = () => document.getElementById("w-ctx-advice").textContent.replace(/\\s+/g, " ").trim();
+        console.log(JSON.stringify({ advice: advice() }));
+        H.ctx = "expired";                                         // hub ถูก restart / session ถูกไล่ออก
+        document.getElementById("w-ctx").value = "65536"; await paintContextAdvice(); await H.tick(5);
+        console.log(JSON.stringify({ advice: advice(), button: !!document.getElementById("w-reanalyse") }));
+        document.getElementById("w-reanalyse").click(); await H.tick(20);
+        console.log(JSON.stringify({ analysed: H.analysed, advice: advice(), planBack: !!document.getElementById("w-make") }));
+        H.ctx = "502"; await paintContextAdvice(); await H.tick(5);
+        console.log(JSON.stringify({ advice: advice(), button: !!document.getElementById("w-reanalyse") }));
+        H.errors.length = 0;
+    """)
+    assert shown["advice"].startswith("KV bf16")
+    assert "expired on the hub" in expired["advice"] and "ผลวิเคราะห์หมดอายุแล้ว" in expired["advice"] and expired["button"]
+    assert "does not expose KV dimensions" not in expired["advice"]
+    assert again == {"analysed": 2, "advice": "KV bf16 · 98 KiB per token context KV each at once", "planBack": True}
+    assert "Could not check this context" in broken["advice"] and "HTTP 502" in broken["advice"] and not broken["button"]
+    assert "does not expose KV dimensions" not in broken["advice"]
+
+
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
     (out,) = run_scenario(tmp_path, """
         const fx = { nodes: [] }; H.fx = fx;

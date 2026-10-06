@@ -1362,6 +1362,14 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "the hub did not start a job": "hub ไม่ได้เริ่มงาน",
+    "{started} rebuild(s) started, {refused} not started": "เริ่ม rebuild {started} ตัว · ไม่ได้เริ่ม {refused} ตัว",
+    "No rebuild was started": "ไม่มี rebuild ตัวไหนเริ่ม",
+    "Not started:": "ที่ไม่ได้เริ่ม:",
+    "This analysis has expired on the hub (it was restarted, or too many newer analyses pushed it out) — analyse again to continue. ({why})":
+      "ผลวิเคราะห์นี้หมดอายุบน hub แล้ว (hub ถูก restart หรือมีการวิเคราะห์ใหม่กว่าดันออกไป) — วิเคราะห์ใหม่เพื่อทำต่อ ({why})",
+    "Could not check this context — {why}": "ตรวจ context นี้ไม่ได้ — {why}",
+    "Analyse again": "วิเคราะห์ใหม่",
     "head = this machine ({hub}) · worker = {worker} — cluster.env is written here and SSH is paired at the end":
       "head = เครื่องนี้ ({hub}) · worker = {worker} — cluster.env เขียนลงเครื่องนี้ และจับคู่ SSH ให้ตอนท้าย",
     "Could not read the proven recipes — {why}": "อ่านสูตรที่รันผ่านแล้วไม่ได้ — {why}",
@@ -3419,7 +3427,21 @@ async function paintContextAdvice() {
 
   let data;
   try {
-    data = await (await api(`/api/deploy/${sess}/context?value=${value}&kv_dtype=${dtype}`)).json();
+    const r = await api(`/api/deploy/${sess}/context?value=${value}&kv_dtype=${dtype}`);
+    if (!r.ok) {
+      // คำตอบที่ล้มไม่ใช่ "โมเดลไม่บอกมิติ KV": hub ถูก restart / session ถูกไล่ออก = 422 kind:"expired" — เดิมอ่าน JSON
+      // ของ error เป็นข้อมูล (available ไม่มี → "The model config does not expose KV dimensions…") ผู้ใช้จึงเชื่อว่าโมเดล
+      // คำนวณไม่ได้ ทั้งที่แค่ต้องวิเคราะห์ใหม่ · บอกเหตุผลจริง และให้ปุ่มวิเคราะห์ใหม่เมื่อนั่นคือทางแก้
+      const d = await r.json().catch(() => null);
+      const expired = !!(d && d.detail && d.detail.kind === "expired");
+      box.innerHTML = `<div class="warn-line" data-ctx-error="${expired ? "expired" : "failed"}">${esc(expired
+        ? T("This analysis has expired on the hub (it was restarted, or too many newer analyses pushed it out) — analyse again to continue. ({why})",
+            { why: detailText(d, r.status) })
+        : T("Could not check this context — {why}", { why: detailText(d, r.status) }))}
+        ${expired ? `<button id="w-reanalyse" class="mini">${esc(T("Analyse again"))}</button>` : ""}</div>`;
+      return;
+    }
+    data = await r.json();
   } catch { box.innerHTML = ""; return; }
   if (!data.available) {
     box.innerHTML = `<div class="dim gsub">${esc(CTX_ADVICE["kv-dims-unknown"]())}</div>`;
@@ -3533,7 +3555,11 @@ async function analyzeNow(overrides = {}) {
   const target = el("w-target") ? el("w-target").value : draft.target;
   const noLlm = el("w-nollm") ? el("w-nollm").checked : draft.no_llm;
   const engine = el("w-engine") ? el("w-engine").value : draft.engine;
-  const hfToken = el("w-hf") ? el("w-hf").value.trim() : draft.hf_token;
+  // จอ "ต้องใช้ token" มีช่อง token สองช่อง (HF token ของฟอร์ม + ช่องใต้ข้อความ) และสองปุ่ม (Analyse / Try again) —
+  // เดิมแต่ละปุ่มอ่านคนละช่อง: พิมพ์ช่องบนแล้วกด Try again หรือพิมพ์ช่องล่างแล้วกด Analyse = ส่ง hf_token:"" ไป
+  // แล้วได้จอเดิมกลับมาเหมือน token ผิด · อ่านทั้งสองช่องที่เดียวตรงนี้: ช่องไหนมีค่า = ค่านั้น (ช่องล่างคือที่เพิ่งถูกขอ จึงมาก่อน)
+  const typedToken = [el("w-token"), el("w-hf")].map(box => box ? box.value.trim() : "").find(Boolean);
+  const hfToken = el("w-hf") || el("w-token") ? (typedToken || "") : draft.hf_token;
   const hfSave = el("w-hf-save") ? el("w-hf-save").checked : draft.hf_save;
   if (!model) return;
   Object.assign(draft, { model, target, engine, no_llm: noLlm, hf_token: hfToken, hf_save: hfSave });
@@ -4022,13 +4048,13 @@ document.addEventListener("click", async e => {
 
   const chip = e.target.closest("button[data-recipe]");
   if (chip) { pickRecipe(+chip.dataset.recipe); return; }
-  if (id === "w-go") { analyzeNow(); return; }
+  if (id === "w-go" || id === "w-reanalyse") { analyzeNow(); return; }
   if (id === "w-gguf") {
     const picked = document.querySelector('input[name="gguf"]:checked');
     if (picked) analyzeNow({ selected_gguf: picked.value });
     return;
   }
-  if (id === "w-retry") { analyzeNow({ hf_token: (document.getElementById("w-token") || {}).value || "" }); return; }
+  if (id === "w-retry") { analyzeNow(); return; }      // token อ่านจากทั้งสองช่องใน analyzeNow — ไม่ทับด้วยช่องเดียวอีก
   if (id === "w-make") {
     const ctx = parseInt((document.getElementById("w-ctx") || {}).value, 10);
     const flags = [...document.querySelectorAll(".w-flag:checked")].map(c => c.value);
@@ -8347,20 +8373,30 @@ function bindFleetConsistencyButtons(el) {
   const rt = el.querySelector("#ov-runtimes");
   if (rt) rt.onclick = async () => {
     rt.disabled = true; rt.textContent = T("Starting rebuilds…");
+    // นับของจริง: เดิม finally เขียน "Rebuilds started" เสมอ — server ปฏิเสธทุกคำขอ (409 มีงานอื่นรันอยู่) ก็ยังขึ้นว่าเริ่มแล้ว
+    // โดยไม่มี toast · alert · งานให้ตาม (audit หน้าเว็บ 2026-10 ข้อ 9) · คำตอบที่ล้มต้องบอกเหตุผลของ server รายเครื่อง
+    let started = 0;
+    const refused = [];
     try {
       for (const n of FC.nodes || []) {
         if (n.runtimes.state !== "stale") continue;
         for (const slug of n.runtimes.items || []) {
+          const what = `${n.name} / ${slug}`;
           try {
             const r = await api(`/api/nodes/${encodeURIComponent(n.name)}/models/${encodeURIComponent(slug)}/ctl/update-runtime`, { method: "POST" });
-            const d = r.ok ? await r.json() : null;
-            if (d && d.job) followNodeJob(n.name, slug, d.job.id);
-          } catch { /* เครื่องนั้นต่อไม่ได้ — การ์ดของมันบอกเอง */ }
+            if (!r.ok) { refused.push(`${what}: ${await failureText(r)}`); continue; }
+            const d = await r.json().catch(() => null);
+            if (d && d.job) { followNodeJob(n.name, slug, d.job.id); started += 1; }
+            else refused.push(`${what}: ${T("the hub did not start a job")}`);
+          } catch (err) { refused.push(`${what}: ${unreachableText(err)}`); }
         }
       }
     } finally {
       rt.disabled = false;
-      rt.textContent = T("Rebuilds started — see each machine's card");
+      rt.textContent = !refused.length && started ? T("Rebuilds started — see each machine's card")
+        : started ? T("{started} rebuild(s) started, {refused} not started", { started, refused: refused.length })
+        : T("No rebuild was started");
+      if (refused.length) alert(T("Not started:") + "\n\n" + refused.join("\n"));
     }
   };
 }
