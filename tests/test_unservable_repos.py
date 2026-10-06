@@ -274,3 +274,32 @@ def test_a_transformers_repo_tagged_diffusers_is_not_a_diffusers_pipeline():
 
     report = inspect("tencent/Hunyuan-MT-7B", edits={"tencent/Hunyuan-MT-7B": tag_it})
     assert report.unsupported_format is None and report.artifact_type is ArtifactType.SAFETENSORS
+
+
+def test_cli_deploy_task_really_overrides_the_unserved_task_refusal(hub, tmp_path):
+    """ข้อความปฏิเสธบอกให้ใส่ `--task` — ทางออกนั้นต้องใช้ได้จริงผ่านคำสั่งที่ลูกค้าพิมพ์
+
+    เดิม `deploy` เรียกด่าน "ไม่รองรับ" ก่อนบรรทัดที่ตั้ง task จาก `--task` → ใส่แล้วก็ยังถูกปฏิเสธ
+    ด้วยข้อความเดิมที่บอกให้ใส่ `--task` (เจอตอนรวมงานรอบตรวจ 2026-10-06)
+    """
+    out = tmp_path / "bundles"
+    base = ["deploy", "google-bert/bert-base-uncased", "--target", "dgx-spark-single", "--no-llm",
+            "--yes", "--output", str(out)]
+
+    refused = runner.invoke(app, base)
+    assert refused.exit_code == 1 and "--task" in flat(refused.output)
+    assert not out.exists()
+
+    allowed = runner.invoke(app, [*base, "--task", "embed"])
+    assert allowed.exit_code == 0, allowed.output
+    assert any(out.glob("*/MODEL_PROFILE.yaml")), "ต้องได้ bundle จริง"
+
+
+def test_cli_deploy_task_cannot_override_a_structural_refusal(hub, tmp_path):
+    """`--task` ข้ามได้เฉพาะการเดางาน — รูปแบบ weight ที่โหลดไม่ได้ยังต้องถูกปฏิเสธ"""
+    out = tmp_path / "bundles"
+    structural = next(s for s, kind, *_ in REFUSED if kind == "adapter")
+    result = runner.invoke(app, ["deploy", structural, "--target", "dgx-spark-single", "--no-llm",
+                                 "--yes", "--output", str(out), "--task", "generate"])
+    assert result.exit_code == 1
+    assert not out.exists()

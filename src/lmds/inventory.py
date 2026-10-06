@@ -1216,7 +1216,6 @@ def model_payload(server, active_job: dict | None = None, memory_gb: float | Non
         autostart_status,
         bundle_profile,
         profile_context,
-        running_context, running_slots,
     )
 
     profile = bundle_profile(server.controller)

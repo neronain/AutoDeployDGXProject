@@ -2915,11 +2915,12 @@ def _render_fits(fit_reports: list) -> None:
 
 def _render_report(report) -> None:
     from lmds.inspector import ArtifactType
+    from lmds.inspector.formats import unsupported_label
 
     table = Table(title=f"Inspect: {report.repo_id}", show_header=False)
     table.add_row("Revision (pinned)", report.revision_sha)
     # นามสกุลไฟล์อย่างเดียวทำให้ checkpoint MLX ดูเป็น safetensors ธรรมดา — บอกในแถวเดียวกับที่คนอ่านชนิดไฟล์
-    unsupported = f" · {report.unsupported_format.upper()} — ไม่รองรับ" if report.unsupported_format else ""
+    unsupported = f" · {unsupported_label(report.unsupported_format)} — ไม่รองรับ" if report.unsupported_format else ""
     table.add_row("Artifact", report.artifact_type.value + unsupported + ("  🔒 gated" if report.gated else ""))
     table.add_row("License", report.license or "ไม่ระบุ")
     if report.params_total:
@@ -4095,12 +4096,16 @@ def deploy(
         # เช็คจาก argv ก่อนยิง Hub — `--also-stacked --target rtx-5090` ไม่ควรกิน inspect รอบหนึ่งก่อนถึงจะบอกว่าไม่ได้
         _reject_impossible_companion(target, engine)
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
+    if task:
+        # ต้องตั้งก่อนด่าน "ไม่รองรับ": repo ที่ถูกปฏิเสธเพราะเดา task ไม่ออก (no-serving-mode) ข้อความบอกให้ใส่ --task
+        # แต่เดิมด่านนั้นรันก่อนบรรทัดนี้ — ทางออกที่ข้อความชี้ไปจึงใช้ไม่ได้จริง (รอบตรวจ 2026-10-06)
+        report.task = task
     _refuse_unsupported(report)
     if name:
         _refuse_taken_name(output, name, report.repo_id)
     report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
-        # ค่าผ่าน `_one_of` มาแล้ว (ผิด = exit 1 ตั้งแต่ก่อน inspect — เดิมออก exit 2 ซึ่งเป็นช่องของ "ไม่ผ่าน gates")
+        # การเลือกไฟล์ GGUF inspect ซ้ำแล้วได้รายงานใบใหม่ — ตั้งอีกรอบ · ค่าผ่าน `_one_of` มาแล้ว (ผิด = exit 1 ตั้งแต่ก่อน inspect — เดิมออก exit 2 ซึ่งเป็นช่องของ "ไม่ผ่าน gates")
         report.task = task
     if report.task == "embed":
         console.print("[cyan]โมเดล embedding[/cyan] — จะเสิร์ฟ /v1/embeddings ไม่มี chat · เดาผิด? --task generate")

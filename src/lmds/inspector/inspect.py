@@ -240,7 +240,7 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         )
     if skipped:
         # repr() โดยเจตนา — ชื่อพวกนี้คือสิ่งที่เราไม่ไว้ใจ ห้ามพิมพ์ดิบลงที่ที่อาจถูก copy ไปวางในเชลล์
-        report.warnings.append(
+        base.warnings.append(
             f"ข้ามไฟล์ใน repo {len(skipped)} ไฟล์ที่ชื่อมีอักขระนอกชุดที่รองรับ (ตัวอักษร ตัวเลข . _ - + = @ , / ช่องว่าง) — "
             "LMDS จะไม่ดาวน์โหลด/ตรวจ/เสิร์ฟไฟล์เหล่านี้: "
             + ", ".join(repr(name[:80]) for name in skipped[:5]) + (" …" if len(skipped) > 5 else "")
