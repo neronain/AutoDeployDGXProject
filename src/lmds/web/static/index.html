@@ -1873,6 +1873,19 @@ const api = (p, o = {}) => signedOut ? neverSettles() : fetch(p, {
 });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// ── กติกาเดียวของทุก template ที่ลง innerHTML: ค่าจาก payload ต้องผ่าน esc() หรือตัวช่วยตัวเลขข้างล่าง ──
+// audit หน้าเว็บ 2026-10 ข้อ 4: JSON จาก node (`lmds agent info` / bench / scan) ไหลผ่าน hub มาถึงหน้านี้โดยไม่มีใคร
+// ตรวจชนิด · ฟิลด์ที่ "ควรเป็นตัวเลข" (port, slots, cores, pcie_gen, score, size_gb …) ถูกแปะลง markup ตรง ๆ
+// เพราะเชื่อว่าเป็นตัวเลข — node ที่ถูกยึด (หรือไฟล์ bench/scan ที่ถูกแก้บนเครื่องนั้น) ส่ง `<img onerror=…>`
+// มาในช่องนั้นได้ และคอนโซลของ hub ถือ token ที่สั่งได้ทุกไซต์ · `x.toLocaleString()` ก็ไม่ช่วย: ของสตริงคืนตัวมันเอง
+// ตัวช่วยพวกนี้ **ไม่เคยคืนสิ่งที่ได้รับมา** — คืนตัวเลขที่จัดรูปแล้ว หรือตัวแทน ("—") เมื่อไม่ใช่ตัวเลข
+// (สตริงที่เป็นตัวเลขล้วนอย่าง "8080" ยังนับเป็นตัวเลข — node รุ่นเก่าส่ง port เป็นสตริงได้)
+const numOrNull = v => typeof v === "number" ? (Number.isFinite(v) ? v : null)
+  : (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
+const num = (v, fallback = "—") => { const n = numOrNull(v); return n == null ? fallback : String(n); };
+const nloc = (v, fallback = "—") => { const n = numOrNull(v); return n == null ? fallback : n.toLocaleString(); };
+const nfix = (v, digits, fallback = "—") => { const n = numOrNull(v); return n == null ? fallback : n.toFixed(digits); };
+
 // คำตอบที่ "ล้ม" → ข้อความเดียวที่คนอ่านได้ ไม่ว่ามันจะมารูปไหน · ทุกจุดที่อ่าน error ต้องผ่านตัวนี้
 // เดิมแต่ละจุดเดารูปเอง แล้วเดาไม่ครบ: `d.detail || {}` กลายเป็น "[object Object]" บนจอ · JSON ของ error
 // ถูกอ่านเป็น *ข้อมูล* (500 {detail} → "served open — ใครก็ใช้โมเดลได้" · 500 → "No stackable pair yet")
@@ -2014,18 +2027,18 @@ function renderFleetSummary(s) {
   const el = document.getElementById("fleet-summary");
   if (!el || !s) return;
   el.innerHTML = [
-    statCard(T("Machines"), `${s.online} / ${s.machines}`,
-      s.pending ? T("{n} not probed yet", { n: s.pending }) : T("all reachable"), "", "cool"),
-    statCard(T("GPUs"), String(s.gpus),
-      s.vram_gb ? T("{gb} GB VRAM total", { gb: s.vram_gb }) : T("known so far"), "", "warm"),
-    statCard(T("Models running"), String(s.models_running),
-      s.pending
+    statCard(T("Machines"), `${num(s.online)} / ${num(s.machines)}`,
+      esc(s.pending ? T("{n} not probed yet", { n: num(s.pending) }) : T("all reachable")), "", "cool"),
+    statCard(T("GPUs"), num(s.gpus),
+      esc(s.vram_gb ? T("{gb} GB VRAM total", { gb: num(s.vram_gb) }) : T("known so far")), "", "warm"),
+    statCard(T("Models running"), num(s.models_running),
+      esc(s.pending
         // เอกพจน์/พหูพจน์แยกคีย์เหมือนที่รางซ้ายทำอยู่ — "1 machines" อ่านแล้วสะดุด
         // และเป็นจุดที่คนมองบ่อยที่สุดจุดหนึ่งของหน้า
         ? T(s.pending === 1 ? "{healthy} serving · {total} deployed · {n} machine not counted yet"
                             : "{healthy} serving · {total} deployed · {n} machines not counted yet",
-            { healthy: s.models_healthy, total: s.models_total, n: s.pending })
-        : T("{healthy} serving · {total} deployed", { healthy: s.models_healthy, total: s.models_total })),
+            { healthy: num(s.models_healthy), total: num(s.models_total), n: num(s.pending) })
+        : T("{healthy} serving · {total} deployed", { healthy: num(s.models_healthy), total: num(s.models_total) }))),
   ].join("");
 }
 
@@ -2098,9 +2111,9 @@ function renderHost(h, models) {
 
   cards.push(g.count
     ? statCard(T("GPU"), g.name,
-        `${g.vram_gb != null ? g.vram_gb + " GB" : ""}${
-          g.sameModel && first.compute ? " · SM" + first.compute.replace(".", "") : ""}${
-          g.sameModel && first.tested ? "" : g.sameModel ? " · " + T("conservative") : " · " + T("mixed models")}`,
+        esc(`${g.vram_gb != null ? g.vram_gb + " GB" : ""}${
+          g.sameModel && first.compute ? " · SM" + String(first.compute).replace(".", "") : ""}${
+          g.sameModel && first.tested ? "" : g.sameModel ? " · " + T("conservative") : " · " + T("mixed models")}`),
         "", "cool")
     : statCard(T("GPU"), T("not found"), T("check nvidia-smi")));
 
@@ -2185,7 +2198,7 @@ function ctxSplit(m) {
 }
 function perRequestTag(m) {
   if (!ctxSplit(m)) return "";
-  return ` <span class="tag" title="llama.cpp splits --ctx-size ${Number(m.context).toLocaleString()} evenly across ${m.slots} slots — each request gets ${Number(m.context_per_request).toLocaleString()} tokens. Want the full amount per request? set context = per-request × slots, or slots 1">${Number(m.context_per_request).toLocaleString()}/request</span>`;
+  return ` <span class="tag" title="llama.cpp splits --ctx-size ${Number(m.context).toLocaleString()} evenly across ${num(m.slots, "?")} slots — each request gets ${Number(m.context_per_request).toLocaleString()} tokens. Want the full amount per request? set context = per-request × slots, or slots 1">${Number(m.context_per_request).toLocaleString()}/request</span>`;
 }
 
 function modelTags(m) {
@@ -2212,9 +2225,9 @@ function modelTags(m) {
   if ((m.features || "").includes("rerank"))
     out.push(`<span class="tag feat" title="Reranker (cross-encoder) — serves /v1/rerank (+ /v1/score on vLLM) only (no chat)">RERANK</span>`);
   if (m.moe && m.moe.experts) {
-    const a = m.moe.experts_active;
+    const a = numOrNull(m.moe.experts_active);
     out.push(`<span class="tag spec" title="MoE — loads the whole model but only ${a || "?"} experts think per token`
-      + `, so speed follows the active size, not the total">${ico("i-chip")}MoE ${m.moe.experts}e`
+      + `, so speed follows the active size, not the total">${ico("i-chip")}MoE ${num(m.moe.experts, "?")}e`
       + (a ? `/${a}a` : "") + `</span>`);
   }
   if (m.speculative)
@@ -2249,7 +2262,7 @@ function rowMarkup(m) {
   if (!m.controller_exists) tags.push(`<span class="tag bad">${esc(T("controller missing"))}</span>`);
   else if (!m.downloaded && !m.running) tags.push(`<span class="tag warn">${esc(T("not downloaded"))}</span>`);
   return `<div class="name">${esc(m.slug)} ${tags.join(" ")}</div>
-    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}${perRequestTag(m)}</div>
+    <div class="muted">${esc(m.model_id)} · ${esc(m.engine)}${m.context ? " · " + nloc(m.context) + " tok" : ""}${perRequestTag(m)}</div>
     ${servedLine(m)}`;
 }
 
@@ -2406,13 +2419,13 @@ function manageMarkup(m) {
     <div class="dim" style="margin-bottom:8px">Applied on start — same as
       <code>API_KEY=… ./&lt;slug&gt;-single.sh start --port … --context … --bind …</code></div>
     <div class="field">
-      <label>port</label><input type="number" class="o-port" value="${o.port || m.port || 8000}" style="flex:none;width:110px">
-      <label>context</label><input type="number" class="o-ctx" value="${o.context || m.context || ""}" style="flex:none;width:130px"
+      <label>port</label><input type="number" class="o-port" value="${esc(o.port || m.port || 8000)}" style="flex:none;width:110px">
+      <label>context</label><input type="number" class="o-ctx" value="${esc(o.context || m.context || "")}" style="flex:none;width:130px"
         ${m.engine === "llamacpp"
           ? `title="llama.cpp: this is the pool (--ctx-size) shared by all slots — one request gets context ÷ slots${m.native_context ? `. Model maximum ${Number(m.native_context).toLocaleString()} tokens per request` : ""}"`
-          : (m.native_context ? `max="${m.native_context}" title="Model maximum ${Number(m.native_context).toLocaleString()} tokens (max_position_embeddings) — above that vLLM refuses to start"` : "")}>
+          : (m.native_context ? `max="${num(m.native_context, "")}" title="Model maximum ${Number(m.native_context).toLocaleString()} tokens (max_position_embeddings) — above that vLLM refuses to start"` : "")}>
       ${m.native_context ? `<span class="dim" style="flex:none">max ${Number(m.native_context).toLocaleString()}${m.engine === "llamacpp" ? "/request" : ""}</span>` : ""}
-      <label>slots</label><input type="number" class="o-slots" value="${o.slots || m.max_num_seqs || 4}" style="flex:none;width:90px"
+      <label>slots</label><input type="number" class="o-slots" value="${esc(o.slots || m.max_num_seqs || 4)}" style="flex:none;width:90px"
         title="Concurrent requests. llama.cpp splits the context evenly across slots.">
       <label>bind</label>
       <select class="o-bind" style="flex:none">
@@ -2469,7 +2482,7 @@ function manageMarkup(m) {
       <span class="dim">Needs sudo — if the server can't, it prints the commands to run yourself.</span>`}
     </div>
 
-    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked${m.cluster && m.cluster.nnodes ? ` (${m.cluster.nnodes} nodes)` : ""}</span></div>
+    ${m.topology === "stacked" ? `<div class="sec" style="margin:16px 0 6px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked${m.cluster && m.cluster.nnodes ? ` (${num(m.cluster.nnodes, "?")} nodes)` : ""}</span></div>
     <div class="field">
       ${job("prepare-runtime")}${job("sync-worker")}${job("verify-worker")}${job("clear-fi-cache")}
     </div>` : ""}
@@ -2572,7 +2585,7 @@ function benchRow(entry) {
     <div class="row between">
       <div><span class="name">${esc(entry.slug || "")}</span>
         ${score === null || score === undefined ? ""
-          : `<span class="tag ${benchScoreClass(score)}">${score}/100</span>`}
+          : `<span class="tag ${benchScoreClass(numOrNull(score))}">${num(score, "?")}/100</span>`}
         <div class="muted">${esc(entry.model_id || "")}</div></div>
       <div class="dim" style="text-align:right">${esc(entry.machine_name || entry.hostname || "")}<br>
         ${esc(entry.engine || "")} ${esc(String(env.engine_build || "").slice(0, 18))}
@@ -2586,20 +2599,20 @@ function benchRow(entry) {
                 style="margin-top:4px">Delete</button></div>
     </div>
     <div class="bstats">
-      ${stat("decode", tps ? tps.toFixed(1) + " tok/s" : "—", "median of all workloads")}
-      ${stat("longest context", long ? long.toFixed(1) + " tok/s" : "—",
-             speed.longest_context ? speed.longest_context.toLocaleString() + " tok" : "")}
-      ${stat("TTFT", speed.ttft_s_short ? speed.ttft_s_short.toFixed(2) + "s" : "—", "shortest prompt")}
+      ${stat("decode", tps ? nfix(tps, 1) + " tok/s" : "—", "median of all workloads")}
+      ${stat("longest context", long ? nfix(long, 1) + " tok/s" : "—",
+             speed.longest_context ? nloc(speed.longest_context) + " tok" : "")}
+      ${stat("TTFT", speed.ttft_s_short ? nfix(speed.ttft_s_short, 2) + "s" : "—", "shortest prompt")}
       ${stat("context", env.context ? Number(env.context).toLocaleString() : "—", env.quant || "")}
     </div>
     <div class="npills" style="margin-top:6px">${benchChips(cap)}</div>
     <div class="dim" style="margin-top:4px">measured ${
-      esc((entry.stamped_at || "").replace("T", " ").slice(0, 16))}${
-      speed.failed ? ` · ${speed.failed} failed` : ""}${
+      esc(String(entry.stamped_at || "").replace("T", " ").slice(0, 16))}${
+      speed.failed ? ` · ${num(speed.failed, "?")} failed` : ""}${
       entry.speed_from ? ` · speed from ${
-        esc(entry.speed_from.replace("T", " ").slice(0, 16))}` : ""}${
+        esc(String(entry.speed_from).replace("T", " ").slice(0, 16))}` : ""}${
       entry.probes_from ? ` · capability from ${
-        esc(entry.probes_from.replace("T", " ").slice(0, 16))}` : ""}</div>
+        esc(String(entry.probes_from).replace("T", " ").slice(0, 16))}` : ""}</div>
   </div>`;
 }
 
@@ -2639,9 +2652,9 @@ function benchDetailMarkup(run) {
   const gpu = gpuTotals(machine.gpus);
   const speed = benchSpeed(workloads);
 
-  const maxDecode = Math.max(...workloads.map(w => w.decode_tps), 0);
-  const maxPrefill = Math.max(...workloads.map(w => w.prefill_tps), 0);
-  const maxTtft = Math.max(...workloads.map(w => w.ttft_s), 0);
+  const maxDecode = Math.max(...workloads.map(w => numOrNull(w.decode_tps) || 0), 0);
+  const maxPrefill = Math.max(...workloads.map(w => numOrNull(w.prefill_tps) || 0), 0);
+  const maxTtft = Math.max(...workloads.map(w => numOrNull(w.ttft_s) || 0), 0);
 
   const head = (label, value, sub = "") =>
     `<div class="bhead"><div class="dim">${esc(label)}</div>
@@ -2650,10 +2663,10 @@ function benchDetailMarkup(run) {
 
   const rows = (pick, max, colour, fmt) => workloads.map(w => `
     <div class="brow2">
-      <span class="blabel">${esc(w.label)} <span class="dim">${w.target_input}→${
-        w.completion_tokens || ""}</span></span>
-      ${benchBar(pick(w), max, colour)}
-      <span class="bnum">${fmt(pick(w))}</span>
+      <span class="blabel">${esc(w.label)} <span class="dim">${num(w.target_input, "?")}→${
+        num(w.completion_tokens, "")}</span></span>
+      ${benchBar(numOrNull(pick(w)) || 0, max, colour)}
+      <span class="bnum">${numOrNull(pick(w)) == null ? "—" : fmt(numOrNull(pick(w)))}</span>
     </div>`).join("");
 
   const passed = probes.filter(p => p.passed && !p.skipped).map(p => p.key);
@@ -2666,11 +2679,11 @@ function benchDetailMarkup(run) {
         <div class="btitle">${esc(gpu.name || machine.hostname || "")}</div>
         <div class="muted">${esc(run.model_id || run.slug)}</div>
         <div class="dim">${esc(machine.hostname || "")} · ${esc(machine.cpu || "")}${
-          machine.ram_total_gb ? " · " + Math.round(machine.ram_total_gb) + " GB RAM" : ""}</div>
+          numOrNull(machine.ram_total_gb) ? " · " + Math.round(numOrNull(machine.ram_total_gb)) + " GB RAM" : ""}</div>
       </div>
       <div class="dim" style="text-align:right">${esc(run.engine || "")} ${
         esc(env.engine_build || "")}<br>measured ${
-        esc((run.stamped_at || "").replace("T", " ").slice(0, 16))}</div>
+        esc(String(run.stamped_at || "").replace("T", " ").slice(0, 16))}</div>
     </div>
 
     <div class="bheads">
@@ -2708,16 +2721,16 @@ function benchDetailMarkup(run) {
         </div>
         ${probes.filter(p => !p.passed && !p.skipped).map(p =>
           `<div class="dim" style="margin-top:6px">${esc(BENCH_PROBE_NAMES[p.key] || p.key)}: ${
-            esc((p.detail || "").slice(0, 160))}</div>`).join("")}
+            esc(String(p.detail || "").slice(0, 160))}</div>`).join("")}
       </div>
     </div>
 
     <div class="bcards">
       ${workloads.map(w => `<div class="bcard">
         <div class="dim">${esc(w.label)}</div>
-        <div class="bcardv">${w.decode_tps.toFixed(2)} <span class="dim">tok/s</span></div>
-        <div class="dim">${Math.round(w.prefill_tps)} prefill · ${
-          (w.prompt_tokens || 0).toLocaleString()} tok · TTFT ${w.ttft_s.toFixed(2)}s</div>
+        <div class="bcardv">${nfix(w.decode_tps, 2)} <span class="dim">tok/s</span></div>
+        <div class="dim">${nfix(w.prefill_tps, 0)} prefill · ${
+          nloc(w.prompt_tokens || 0)} tok · TTFT ${nfix(w.ttft_s, 2)}s</div>
       </div>`).join("")}
     </div>
 
@@ -2726,13 +2739,13 @@ function benchDetailMarkup(run) {
         speed.max != null ? speed.max.toFixed(2) : "—"} tok/s ·
       ${workloads.length}/${(run.workloads || []).length} workloads valid ·
       ${esc(run.slug)} on ${esc(machine.hostname || "")}
-      ${run.cached_note || ""}
+      ${esc(run.cached_note || "")}
     </div>
   </div>`;
 }
 
 function benchSpeed(workloads) {
-  const values = workloads.map(w => w.decode_tps).filter(v => v > 0).sort((a, b) => a - b);
+  const values = workloads.map(w => numOrNull(w.decode_tps)).filter(v => v > 0).sort((a, b) => a - b);
   if (!values.length) return { avg: null, min: null, max: null };
   const mid = Math.floor(values.length / 2);
   return {
@@ -3133,7 +3146,7 @@ async function pushAfterBuild(built, machine, stacked = false) {
     }
     wiz.innerHTML = `<div class="pad">
       <div class="name">Installed ${esc(slug)} on ${esc(machine)}</div>
-      <div class="muted">${esc(d.path || "")} · ${d.size_mb} MB</div>
+      <div class="muted">${esc(d.path || "")} · ${num(d.size_mb, "?")} MB</div>
       ${cluster ? `<div class="warn-line" style="color:var(--${cluster.ok ? "ok" : "bad"})">${esc(cluster.text)}</div>` : ""}
       ${cluster && !cluster.ok ? `<div class="dim">Or from a terminal:
         <code>lmds cluster write ${esc(slug)} --head ${esc(machine)} --worker ${esc(draft.worker || "<worker>")}</code>
@@ -3225,12 +3238,12 @@ let ctxAdviceTimer = null;
 // · วาดใหม่ทุกครั้งที่พิมพ์ context หรือสลับ fp8 (KV เปลี่ยน spare เปลี่ยน)
 let planFit = null;
 function memoryView(f, context, kvAt, dtype = "bf16") {
-  const cap = f.capacity_gb || 0;
+  const cap = numOrNull(f.capacity_gb) || 0;
   if (!cap) return "";
   // budget คิดจากเครื่องเปล่า (ตัดสินว่าสร้าง bundle ได้) · reserved คือของที่รันอยู่ *ตอนนี้*
   // spare จึงเป็น "ตอนนี้" — ติดลบ = deploy ได้แต่ start ไม่ได้จนกว่าจะหยุดของอื่น/ลด context
-  const reserved = f.reserved_gb || 0, weights = f.weights_gb || 0, budget = f.budget_gb || 0;
-  const kv = kvAt == null ? null : Math.max(0, kvAt);
+  const reserved = numOrNull(f.reserved_gb) || 0, weights = numOrNull(f.weights_gb) || 0, budget = numOrNull(f.budget_gb) || 0;
+  const kv = numOrNull(kvAt) == null ? null : Math.max(0, numOrNull(kvAt));
   const overhead = Math.max(0, cap - budget);                     // OS reserve + engine overhead
   const spare = kv == null ? null : budget - reserved - weights - kv;
   const pct = v => Math.max(0, Math.min(100, v / cap * 100)).toFixed(1) + "%";
@@ -3275,7 +3288,7 @@ function fitNotesView(notes) {
 // (ผู้ใช้ 2026-09-04: "ลูกค้าอาจจะยังไม่ได้รัน เพียงแต่ต้องการรู้ค่าและ deploy ลงไปก่อน")
 function startNowLine(f, context, spare) {
   if (!(f.reserved_gb > 0) || spare == null) return "";
-  const who = (f.running_now || []).length ? esc(f.running_now.join(", ")) : esc(f.reserved_source);
+  const who = Array.isArray(f.running_now) && f.running_now.length ? esc(f.running_now.join(", ")) : esc(f.reserved_source);
   if (spare >= 0) {
     return `<div class="ok-line" style="margin-top:6px">Can start right now — ${esc(f.reserved_source)} still has room \
 next to ${who}.</div>`;
@@ -3283,7 +3296,7 @@ next to ${who}.</div>`;
   const cap = f.now_max_safe_context;
   return `<div class="warn-line" style="margin-top:6px"><b>Deployable, but cannot start right now</b> — \
 ${(-spare).toFixed(1)} GB short at ${Number(context).toLocaleString()} context. ${
-    cap ? `Lower the context to ${cap.toLocaleString()} to start now, or s` : "S"}top ${who} first. \
+    cap ? `Lower the context to ${nloc(cap)} to start now, or s` : "S"}top ${who} first. \
 The bundle is built and pushed either way.</div>`;
 }
 
@@ -3312,9 +3325,9 @@ async function paintContextAdvice() {
   const rows = (data.ladder || []).map(r => {
     const here = r.context === data.asked;
     return `<tr${here ? ' style="font-weight:600"' : ""}>
-      <td style="text-align:right;padding:2px 10px 2px 0">${r.context.toLocaleString()}</td>
-      <td style="text-align:right;padding:2px 10px 2px 0">${r.fits ? r.kv_gb + " GB" : "—"}</td>
-      <td style="text-align:right">${r.fits ? r.concurrency.toFixed(1) : "does not fit"}</td>
+      <td style="text-align:right;padding:2px 10px 2px 0">${nloc(r.context)}</td>
+      <td style="text-align:right;padding:2px 10px 2px 0">${r.fits ? num(r.kv_gb) + " GB" : "—"}</td>
+      <td style="text-align:right">${r.fits ? nfix(r.concurrency, 1) : "does not fit"}</td>
     </tr>`;
   }).join("");
 
@@ -3325,7 +3338,7 @@ async function paintContextAdvice() {
     return `<div class="${cls}">${esc(say(a.facts))}</div>`;
   }).join("");
 
-  box.innerHTML = `<div class="dim gsub" style="margin:8px 0 4px">KV ${data.kv_dtype} · ${
+  box.innerHTML = `<div class="dim gsub" style="margin:8px 0 4px">KV ${esc(data.kv_dtype)} · ${
     Math.round(data.kv_bytes_per_token / 1024)} KiB per token</div>
     <table class="dim" style="border-collapse:collapse;margin-bottom:6px">
       <tr class="dim"><th style="text-align:right;padding-right:10px">context</th>
@@ -3344,7 +3357,7 @@ function planView(d) {
       <span>runtime</span><span>${esc(p.engine)} · ${esc(p.image)}${
         p.engine_reason ? `<div class="dim">${esc(p.engine_reason)}</div>` : ""}</span>
       <span>revision</span><span class="mono">${esc(p.revision)}</span>
-      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${f.budget_gb} GB</span>
+      <span>target</span><span>${esc(f.target)} · ${esc(f.verdict)} · budget ${num(f.budget_gb, "?")} GB</span>
       ${p.selected_gguf ? `<span>GGUF file</span><span class="mono">${esc(p.selected_gguf)}</span>` : ""}
       <span>planner</span><span>${esc(p.generator)}</span>
     </div>
@@ -3358,11 +3371,11 @@ function planView(d) {
     ${(d.notes || []).concat(p.warnings || []).map(w => `<div class="warn-line">${esc(w)}</div>`).join("")}
     <div class="field" style="margin-top:12px">
       <label>context</label>
-      <input id="w-ctx" type="number" value="${p.context}" max="${head}" style="flex:none;width:140px">
+      <input id="w-ctx" type="number" value="${num(p.context, "")}" max="${num(head, "")}" style="flex:none;width:140px">
       <label class="dim" style="display:inline-flex;align-items:center;gap:5px;flex:none">
         <input type="checkbox" id="w-fp8" style="min-width:auto;flex:none"> fp8 KV cache</label>
       ${f.max_safe_context && f.max_safe_context > p.context
-        ? `<span class="dim">This machine can hold ${f.max_safe_context.toLocaleString()} — the suggested value is the v3.0.0 default, not a limit</span>` : ""}
+        ? `<span class="dim">This machine can hold ${nloc(f.max_safe_context)} — the suggested value is the v3.0.0 default, not a limit</span>` : ""}
     </div>
     <div id="w-ctx-advice"></div>
     ${p.flags_needing_approval.length ? `<div style="margin-top:10px">
@@ -3388,8 +3401,8 @@ function planView(d) {
 function resultView(r) {
   sess = null;
   wiz.innerHTML = `<div class="pad">
-    <div class="name">${esc(r.slug)} <span class="tag ok">passed ${r.gates.length} gates</span></div>
-    <div class="kv"><span>context</span><span>${r.context.toLocaleString()} tok</span>
+    <div class="name">${esc(r.slug)} <span class="tag ok">passed ${Array.isArray(r.gates) ? r.gates.length : "?"} gates</span></div>
+    <div class="kv"><span>context</span><span>${nloc(r.context)} tok</span>
       <span>ZIP</span><span class="mono">${esc(r.zip)}</span></div>
     ${r.api_key ? `<div class="warn-line" style="margin-top:10px">
       <b>API key for this model — copy it now.</b> It is stored on the serving machine
@@ -3438,7 +3451,7 @@ async function analyzeNow(overrides = {}) {
     if (det.kind === "choose-gguf") {
       wizForm(det.message, `<div style="margin-top:10px">${(det.variants || []).map(v =>
         `<label style="display:block;padding:3px 0"><input type="radio" name="gguf" value="${esc(v.filename)}" style="min-width:auto;flex:none">
-         <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? v.size_gb + " GB" : ""}</span></label>`).join("")}
+         <span class="mono">${esc(v.filename)}</span> <span class="dim">${v.size_gb ? num(v.size_gb, "?") + " GB" : ""}</span></label>`).join("")}
         <button id="w-gguf" style="margin-top:8px">Use this file</button></div>`);
     } else if (det.kind === "gated") {
       wizForm(det.message, `<div class="field" style="margin-top:10px">
@@ -3958,7 +3971,7 @@ document.addEventListener("click", async e => {
       api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(target)}`, { method: "POST" }));
     if (!d) { box.innerHTML = ""; return; }
     box.innerHTML = `<div class="warn-line" style="color:var(--ok)">Installed at ${esc(target)}:${esc(d.path || "")}
-          (${d.size_mb} MB) — go to that machine's card to run download / start</div>`;
+          (${num(d.size_mb, "?")} MB) — go to that machine's card to run download / start</div>`;
     refreshNodes();
     return;
   }
@@ -4196,6 +4209,7 @@ document.addEventListener("click", async e => {
 // ค่าที่เป็น null คือ "การ์ดรุ่นนี้ไม่รายงาน" ไม่ใช่ศูนย์ — GB10 (unified SoC) ไม่บอก
 // power limit / fan / memory clock · โชว์ 0 ตรงนั้นคือการโกหกผู้ใช้ จึงซ่อนไปเลย
 function gauge(value, max, label, unit, colour, sub = "") {
+  value = numOrNull(value);            // ไม่ใช่ตัวเลข = การ์ดรุ่นนี้ไม่รายงาน (เกจหายไป) — ไม่ใช่ทั้งการ์ดพังเพราะ .toFixed ของสตริง
   if (value == null) return "";
   const pct = max ? Math.max(0, Math.min(1, value / max)) : 0;
   const r = 26, c = 2 * Math.PI * r, arc = c * 0.75;          // เว้นช่องล่างเหมือนมาตรวัดจริง
@@ -4218,8 +4232,9 @@ function gauge(value, max, label, unit, colour, sub = "") {
 }
 
 function clockRow(label, mhz, max, colour) {
+  mhz = numOrNull(mhz);
   if (mhz == null) return "";
-  const pct = max ? Math.min(100, Math.round(mhz / max * 100)) : 0;
+  const pct = numOrNull(max) ? Math.min(100, Math.round(mhz / numOrNull(max) * 100)) : 0;
   return `<div class="clock-row">
     <div><div class="dim">${esc(label)}</div>
       <div class="clock-bar"><i style="width:${pct}%;background:${colour}"></i></div></div>
@@ -4229,20 +4244,20 @@ function clockRow(label, mhz, max, colour) {
 
 function gpuCard(g) {
   const busy = g.utilization_pct;
-  const link = g.pcie_gen ? `<span class="tag">GEN ${g.pcie_gen} ×${g.pcie_width || "?"}</span>` : "";
+  const link = g.pcie_gen ? `<span class="tag">GEN ${num(g.pcie_gen, "?")} ×${num(g.pcie_width, "?")}</span>` : "";
   const vram = g.vram_used_gb != null && g.vram_gb
-    ? `<span class="npill"><span class="muted">VRAM</span> ${g.vram_used_gb}/${g.vram_gb} GB</span>`
-    : (g.vram_gb ? `<span class="npill"><span class="muted">MEMORY</span> ${g.vram_gb} GB pool</span>`
+    ? `<span class="npill"><span class="muted">VRAM</span> ${num(g.vram_used_gb)}/${num(g.vram_gb)} GB</span>`
+    : (g.vram_gb ? `<span class="npill"><span class="muted">MEMORY</span> ${num(g.vram_gb)} GB pool</span>`
                  : `<span class="npill"><span class="muted">MEMORY</span> N/A (SoC)</span>`);
   return `<div class="gpu">
     <div class="gpu-head">
       <span class="gpu-name">${esc(g.name)}</span>
-      ${g.compute ? `<span class="tag">SM${esc(g.compute.replace(".", ""))}</span>` : ""}
+      ${g.compute ? `<span class="tag">SM${esc(String(g.compute).replace(".", ""))}</span>` : ""}
       ${link}<span class="grow"></span>${vram}
     </div>
     <div class="gauges">
       ${gauge(busy, 100, "Compute", "%", "url(#gr-warm)")}
-      ${gauge(g.power_w, g.power_limit_w || Math.max(g.power_w || 0, 100), "Power", "W", "url(#gr-ok)")}
+      ${gauge(g.power_w, numOrNull(g.power_limit_w) || Math.max(numOrNull(g.power_w) || 0, 100), "Power", "W", "url(#gr-ok)")}
       ${gauge(g.temperature_c, 100, "Temp", "°C", tempColour(g.temperature_c))}
       ${gauge(g.fan_pct, 100, "Fan", "%", "url(#gr-cool)")}
     </div>
@@ -4288,7 +4303,7 @@ function nodeOpts(key) {
 // ไม่รู้จัก --kv-cache-memory และนับหน่วยความจำของโมเดลที่รันอยู่เป็น "ไม่ว่าง" จนเตือนว่า start ไม่ได้ให้ตัวมันเอง
 // ตอนนี้ hub คืนตาราง (weights · overhead · KV ต่อคำขอ · pin · โมเดลอื่น · เหลือ) + แถบซ้อนของทั้งเครื่อง
 // ตัวเลขของโมเดลที่รันอยู่มาจาก log จริงของ vLLM · ปุ่ม Fit เขียนลง bundle เหมือน `lmds set --fit`
-const gb1 = x => x == null ? "?" : (Math.round(x * 10) / 10).toFixed(1);
+const gb1 = x => numOrNull(x) == null ? "?" : (Math.round(numOrNull(x) * 10) / 10).toFixed(1);
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 function fitStackHtml(p) {
@@ -4310,8 +4325,8 @@ function fitVerdictHtml(p) {
     const short = gb1(-(p.ram_after_gb || 0));
     const stop = p.stop_suggestion ? `stop <b>${esc(p.stop_suggestion)}</b> (${gb1((p.others || [])[0] && p.others[0].gb)} GB) first` : "";
     let fix;
-    if (p.suggested_slots_max >= 1) fix = `lower slots to <b>${p.suggested_slots_max}</b> (KV per request ${gb1(p.kv_per_request_gb)} GB × 1.2)${stop ? " · or " + stop : ""}`;
-    else if (p.suggested_context_max >= 4096) fix = `lower context to ≤ <b>${p.suggested_context_max.toLocaleString()}</b>${stop ? " · or " + stop : ""}`;
+    if (p.suggested_slots_max >= 1) fix = `lower slots to <b>${num(p.suggested_slots_max)}</b> (KV per request ${gb1(p.kv_per_request_gb)} GB × 1.2)${stop ? " · or " + stop : ""}`;
+    else if (p.suggested_context_max >= 4096) fix = `lower context to ≤ <b>${nloc(p.suggested_context_max)}</b>${stop ? " · or " + stop : ""}`;
     else fix = stop ? `even 1 slot needs more — ${stop}` : "this model is too big for this machine";
     return `<span class="warn-line">❌ Does not fit — short by <b>${short} GB</b> · ${fix}</span>`;
   }
@@ -4321,16 +4336,16 @@ function fitVerdictHtml(p) {
 function fitTableHtml(p) {
   const src = { measured: "measured from the vLLM log", profile: "from MODEL_PROFILE" };
   const row = (k, v, s = "", cls = "") => `<span class="k ${cls}">${k}</span><span class="v ${cls}">${v}</span><span class="s">${s}</span>`;
-  const ctx = (p.context || 0).toLocaleString();
+  const ctx = nloc(p.context || 0);
   const rows = [
     row("weights", gb1(p.weights_gb), src[p.weights_source] || "unknown"),
     row("overhead (activations / CUDA graphs)", gb1(p.overhead_gb), ""),
     row(`KV per full-context request (${ctx} · ${esc(p.kv_dtype || "bf16")})`,
-        p.kv_per_request_gb == null ? "?" : p.kv_per_request_gb.toFixed(2), src[p.kv_source] || "unknown"),
+        nfix(p.kv_per_request_gb, 2, "?"), src[p.kv_source] || "unknown"),
     p.pin_supported
-      ? row(`KV pin = ${p.slots} slots × ${(p.kv_per_request_gb || 0).toFixed(2)} × 1.2`, gb1(p.kv_pin_gb),
-            p.kv_pin_bytes ? `<code>--kv-cache-memory ${p.kv_pin_bytes}</code>` : "")
-      : row(`KV pool (context ${ctx} shared by ${p.slots} slots → ${(p.per_slot_context || 0).toLocaleString()} each)`, gb1(p.kv_gb), ""),
+      ? row(`KV pin = ${num(p.slots, "?")} slots × ${nfix(p.kv_per_request_gb || 0, 2)} × 1.2`, gb1(p.kv_pin_gb),
+            p.kv_pin_bytes ? `<code>--kv-cache-memory ${num(p.kv_pin_bytes, "?")}</code>` : "")
+      : row(`KV pool (context ${ctx} shared by ${num(p.slots, "?")} slots → ${nloc(p.per_slot_context || 0)} each)`, gb1(p.kv_gb), ""),
     row("RAM this model needs", gb1(p.ram_needed_gb), "", "sum"),
     row("machine", gb1(p.total_gb), `− ${gb1(p.os_reserve_gb)} GB OS reserve = <b>${gb1(p.usable_gb)}</b> usable`),
     ...(p.others || []).map(o => row(`other model running: ${esc(o.slug)}`, gb1(o.gb), "")),
@@ -4338,8 +4353,8 @@ function fitTableHtml(p) {
     row("left after everything", p.ram_after_gb == null ? "?" : (p.ram_after_gb < 0 ? `<span style="color:var(--bad)">${gb1(p.ram_after_gb)}</span>` : gb1(p.ram_after_gb)), "", "sum"),
   ].filter(Boolean).join("");
   const util = p.pin_supported && p.gpu_util_equivalent
-    ? `<div class="dim">gpu-util is not used for KV once the pin is set — Fit writes <b>${p.gpu_util_equivalent.toFixed(2)}</b> only so vLLM's start-up check (free ≥ gpu-util × whole machine) passes on a machine that already runs something else</div>` : "";
-  const notes = (p.notes || []).length ? `<div class="dim">${esc(p.notes.join(" · "))}</div>` : "";
+    ? `<div class="dim">gpu-util is not used for KV once the pin is set — Fit writes <b>${nfix(p.gpu_util_equivalent, 2)}</b> only so vLLM's start-up check (free ≥ gpu-util × whole machine) passes on a machine that already runs something else</div>` : "";
+  const notes = Array.isArray(p.notes) && p.notes.length ? `<div class="dim">${esc(p.notes.join(" · "))}</div>` : "";
   return `<div class="fit-table">${rows}</div>${fitStackHtml(p)}${fitVerdictHtml(p)}${util}${notes}`;
 }
 
@@ -4501,7 +4516,7 @@ function nodeCard(node) {
         <div class="name">${esc(node.name)}${node.site
           ? ` <span class="nsite" title="Site this machine lives at — set with: lmds node set ${esc(node.name)} --site">${esc(node.site)}</span>`
           : ""}<span class="nip"></span></div>
-        <div class="muted">${esc(node.user)}@${esc(node.host)}:${node.port}${node.note ? " · " + esc(node.note) : ""}</div>
+        <div class="muted">${esc(node.user)}@${esc(node.host)}:${esc(node.port)}${node.note ? " · " + esc(node.note) : ""}</div>
       </div>
       <span class="nsum"></span>
       <span class="mono muted nver"></span>
@@ -4562,8 +4577,8 @@ function systemCard(host) {
   // ทั้งเครื่อง ไม่ใช่การ์ดใบแรก — เกจ VRAM ของเครื่องที่มีหลายใบเคยบอกความจุของใบเดียว
   const gpu = gpuTotals(host.gpus);
   const unified = host.memory_model === "unified";
-  const used = host.ram_used_gb, total = host.ram_total_gb;
-  const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
+  const used = numOrNull(host.ram_used_gb), total = numOrNull(host.ram_total_gb);
+  const free = numOrNull(host.disk_free_gb), diskTotal = numOrNull(host.disk_total_gb);
   const fabric = host.fabric || {};
 
   const memPct = used != null && total ? Math.round(used / total * 100) : null;
@@ -4576,9 +4591,9 @@ function systemCard(host) {
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
 
   const tags = [
-    cpu.cores ? `<span class="tag">${cpu.cores} cores</span>` : "",
-    cpu.load1 != null ? `<span class="tag">load ${cpu.load1}</span>` : "",
-    fabric.best_gbps ? `<span class="tag">${fabric.best_gbps}G${fabric.tier === "rdma" ? " RDMA" : ""}</span>` : "",
+    cpu.cores ? `<span class="tag">${num(cpu.cores, "?")} cores</span>` : "",
+    cpu.load1 != null ? `<span class="tag">load ${num(cpu.load1, "?")}</span>` : "",
+    fabric.best_gbps ? `<span class="tag">${num(fabric.best_gbps, "?")}G${fabric.tier === "rdma" ? " RDMA" : ""}</span>` : "",
   ].join("");
 
   return `<div class="gpu">
@@ -4589,8 +4604,8 @@ function systemCard(host) {
         used != null ? Math.round(used) : "—"}/${gb(total)}</span>
     </div>
     <div class="gauges">
-      ${gauge(cpu.percent == null ? null : Math.min(cpu.percent, 100), 100, "CPU", "%",
-              loadColour(cpu.percent), cpu.cores ? `${cpu.cores} cores` : "")}
+      ${gauge(numOrNull(cpu.percent) == null ? null : Math.min(numOrNull(cpu.percent), 100), 100, "CPU", "%",
+              loadColour(numOrNull(cpu.percent)), cpu.cores ? `${num(cpu.cores, "?")} cores` : "")}
       ${gauge(memPct, 100, unified ? "Unified" : "RAM", "%", loadColour(memPct),
               used != null ? `${Math.round(used)} / ${gb(total)}` : "")}
       ${vramPct == null ? "" : gauge(vramPct, 100, "VRAM", "%", loadColour(vramPct),
@@ -4643,9 +4658,9 @@ function stackedWorkerRow(name, m) {
     <div class="field">
       <span class="dot ${state}"></span>
       <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
-        <span class="muted"> ${esc(m.engine || "")}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}</span>
+        <span class="muted"> ${esc(m.engine || "")}${m.context ? " · " + nloc(m.context) + " tok" : ""}</span>
         <span class="tag" title="This machine is a tensor-parallel worker — the bundle, the buttons and the API live on the head">stacked worker of ${esc(m.stacked_head || "?")}</span></span>
-      <span class="mono muted">:${m.port || "—"}</span>
+      <span class="mono muted">:${num(m.port)}</span>
       <span class="muted">${m.running ? (m.healthy ? "running" : "loading") : "stopped"} · controlled from ${esc(m.stacked_head || "the head")}</span>
     </div>
   </div>`;
@@ -4734,16 +4749,16 @@ function nodeModelsMarkup(name, data) {
         <div class="field">
           <span class="dot ${state}"></span>
           <span class="grow"><b style="font-weight:500">${esc(m.slug)}</b>
-            <span class="muted"> ${esc(m.engine)}${m.context ? " · " + m.context.toLocaleString() + " tok" : ""}${
+            <span class="muted"> ${esc(m.engine)}${m.context ? " · " + nloc(m.context) + " tok" : ""}${
               m.context_per_request && m.context && m.context_per_request < m.context
-                ? ` <span class="tag" title="llama.cpp splits --ctx-size ${m.context.toLocaleString()} evenly across ${m.slots} slots — each request gets ${m.context_per_request.toLocaleString()} tokens. Want the full amount per request? set context = per-request × slots, or slots 1">${m.context_per_request.toLocaleString()}/request</span>` : ""}</span>
+                ? ` <span class="tag" title="llama.cpp splits --ctx-size ${nloc(m.context)} evenly across ${num(m.slots, "?")} slots — each request gets ${nloc(m.context_per_request)} tokens. Want the full amount per request? set context = per-request × slots, or slots 1">${nloc(m.context_per_request)}/request</span>` : ""}</span>
             ${m.running && m.context_configured && m.context !== m.context_configured
-              ? `<span class="tag" title="The bundle value is ${m.context_configured.toLocaleString()} — the running instance uses what you set at start">custom</span>` : ""}
+              ? `<span class="tag" title="The bundle value is ${nloc(m.context_configured)} — the running instance uses what you set at start">custom</span>` : ""}
             ${modelTags(m).join(" ")}
             ${autoOn ? `<span class="tag">autostart</span>` : ""}
             ${rival ? `<span class="tag bad" title="${esc(T("Tests would hit {slug}, not this model", { slug: rival.slug }))}">
               ${esc(T("port clash with {slug}", { slug: rival.slug }))}</span>` : ""}</span>
-          <span class="mono muted">:${m.port || "—"}</span>
+          <span class="mono muted">:${num(m.port)}</span>
           <span class="muted">${label}</span>
           ${m.job && m.job.running
             ? `<span class="tag warn">${esc(m.job.command)}…</span>`
@@ -4916,7 +4931,7 @@ function nodeModelsMarkup(name, data) {
             ${ctl("parsers", "Active tool-call and reasoning parsers")}
             ${m.running ? "" : `<span class="dim">Not running — most tests need a start first</span>`}
             ${rival ? `<div class="warn-line" style="color:var(--bad);width:100%">
-              Port ${m.port} is serving <b>${esc(rival.slug)}</b> — test results would be for that model, not this one
+              Port ${num(m.port)} is serving <b>${esc(rival.slug)}</b> — test results would be for that model, not this one
               · set a different port above before starting</div>` : ""}
           </div>
           ${m.topology === "stacked" ? `<div class="sec" style="width:100%;margin:6px 0 2px"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-stacked"/></svg><span class="sec-title">Stacked</span></div>
@@ -5770,13 +5785,13 @@ function groupHeader(g, index) {
         : `<span class="dim" title="No cluster name — grouped by the shared subnet">auto-grouped</span>`}
       <span style="color:${g.ready ? "var(--ok)" : "var(--fg2)"}">${g.ready ? "ready for stacked" : "not ready"}</span>
     </div>
-    <div class="dim gsub">${esc(g.gpu)} ×${g.gpus_per_node} per machine · world size ${g.world_size}${
+    <div class="dim gsub">${esc(g.gpu)} ×${num(g.gpus_per_node, "?")} per machine · world size ${num(g.world_size, "?")}${
       g.usable_world_size !== undefined && g.usable_world_size !== g.world_size
-        ? ` (${g.usable_world_size} with cluster IP set)` : ""} ·
-      ${g.link_gbps}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
+        ? ` (${num(g.usable_world_size, "?")} with cluster IP set)` : ""} ·
+      ${num(g.link_gbps, "?")}G ${g.rdma ? "RDMA" : "ethernet"}${g.fabric_network ? " · " + esc(g.fabric_network) : ""}</div>
     ${g.parallelism && g.parallelism.kind === "pipeline-parallel"
-      ? `<div class="warn-line">${g.world_size} GPUs do not divide the attention-head count of most models —
-         use tensor-parallel ${g.parallelism.largest_tp} + pipeline stages instead of TP ${g.world_size}</div>` : ""}
+      ? `<div class="warn-line">${num(g.world_size, "?")} GPUs do not divide the attention-head count of most models —
+         use tensor-parallel ${num(g.parallelism.largest_tp, "?")} + pipeline stages instead of TP ${num(g.world_size, "?")}</div>` : ""}
     ${blockers}${warnings}${excluded}
     ${g.members.length >= 2 ? `<div class="gsub">
       <button data-cact="doctor" data-head="${esc(g.members[0].name)}" data-worker="${esc(g.members[1].name)}"
@@ -6166,7 +6181,7 @@ function cnwNormPort(p) {
   const cabled = p.carrier !== undefined ? !!p.carrier : ifaces.some((i, k) => (p.interfaces || [])[k]?.carrier);
   const speed = p.speed_gbps || Math.max(0, ...(p.interfaces || []).map(i => i.speed_gbps || 0));
   const managed = p.netplan_managed !== undefined ? p.netplan_managed : (p.interfaces || []).some(i => i.netplan_managed);
-  return { port: Number(p.port ?? p.qsfp_port), cabled, speed: speed || 0, ifaces, managed };
+  return { port: Number(p.port ?? p.qsfp_port), cabled, speed: numOrNull(speed) || 0, ifaces, managed };
 }
 // สองพอร์ตของเครื่องนี้ (เติมพอร์ตที่ไม่มีข้อมูลเป็น "ว่าง" เพื่อให้แผนภาพครบสองช่องเสมอ)
 function cnwPortsOf(node) {
@@ -6791,7 +6806,7 @@ async function loadScan() {
         <span class="npill">${esc(m.kind)}</span>
         <span class="grow">${esc(m.name)}${m.layout === "root"
           ? ' <span class="dim">(legacy cache layout — HF_HUB_CACHE is set for you)</span>' : ""}</span>
-        <span class="mono muted">${m.size_gb} GB${m.shards ? " · " + m.shards + " shards" : ""}</span>
+        <span class="mono muted">${num(m.size_gb, "?")} GB${m.shards ? " · " + num(m.shards, "?") + " shards" : ""}</span>
       </div>`).join("")}</div>`;
   });
   box.innerHTML = `<div class="pad">${blocks.join("")}</div>`;
@@ -6812,7 +6827,7 @@ async function loadRecipes() {
   const { recipes, source, default_repo } = await fetchRecipes();
   // ที่มาของสูตร: ต้องเห็นว่าชุดนี้ดึงมาจากรีโปไหน commit ไหน ไม่งั้นไม่มีทางรู้ว่าอันไหนเก่า
   const origin = source && source.repo
-    ? `${recipes.length} recipes · ${source.count} from ${esc(source.repo)} @ ${esc(source.commit || "?")}
+    ? `${recipes.length} recipes · ${num(source.count, "?")} from ${esc(source.repo)} @ ${esc(source.commit || "?")}
        ${source.synced_at ? "· synced " + esc(source.synced_at) : ""}`
     : `${recipes.length} recipes bundled with LMDS · never synced from the team's controller repo
        <span class="dim">(${esc(default_repo || "")})</span>`;
@@ -6893,7 +6908,7 @@ api("/api/version?check_repo=true").then(r => r.json()).then(d => {
     foot.querySelector(".cred-name").textContent = d.product || "LMDS";
     const link = foot.querySelector("a");
     link.textContent = d.author;
-    if (d.author_url) link.href = d.author_url;
+    if (/^https?:\/\//i.test(String(d.author_url || ""))) link.href = d.author_url;
     document.getElementById("cred-lic").textContent =
       [d.license, d.version ? "v" + d.version : ""].filter(Boolean).join(" · ");
   }
@@ -7309,8 +7324,8 @@ const chipIcon = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/><
 
 function summaryMarkup(host, sum) {
   if (!host) return "";
-  const cpu = (host.cpu || {}).percent;
-  const used = host.ram_used_gb, total = host.ram_total_gb;
+  const cpu = numOrNull((host.cpu || {}).percent);
+  const used = numOrNull(host.ram_used_gb), total = numOrNull(host.ram_total_gb);
   const mem = used != null && total ? Math.round(used / total * 100) : null;
   const gpu = gpuTotals(host.gpus);
   const cards = (host.gpus || []).filter(Boolean);
@@ -7319,7 +7334,7 @@ function summaryMarkup(host, sum) {
     ? Math.round(gpu.vram_used_gb / gpu.vram_gb * 100) : null;
   // โหลดและอุณหภูมิบวกกันไม่ได้ (ไม่ใช่ปริมาณ) — เอาใบที่หนักสุด ซึ่งคือใบที่จะเป็นคอขวดก่อน
   // ใบที่ไม่รายงานถูกข้าม · ไม่มีใบไหนรายงานเลย = ไม่ต้องโชว์ชิป ไม่ใช่โชว์ 0
-  const peak = key => { const v = cards.map(c => c[key]).filter(x => x != null); return v.length ? Math.max(...v) : null; };
+  const peak = key => { const v = cards.map(c => numOrNull(c[key])).filter(x => x != null); return v.length ? Math.max(...v) : null; };
   const busy = peak("utilization_pct");
   // สีเดียวกับเกจข้างใน — ตัวเลขชุดเดียวกันต้องอ่านได้เหมือนกันทั้งย่อและกาง
   const chip = (icon, label, pct, extra = "") => pct == null ? "" :
@@ -7328,11 +7343,11 @@ function summaryMarkup(host, sum) {
   // จำนวนโมเดลที่รันมาก่อนตัวเลขทรัพยากร — เป็นคำถามแรกที่คนถามกับเครื่องที่ย่ออยู่
   const run = sum && sum.running != null
     ? `<span class="chip ${sum.running ? "run" : "idle"}" title="models running / deployed">
-         ${chipIcon("i-server")}<b>${sum.running}</b><span class="dim">/${sum.total ?? "?"}</span></span>`
+         ${chipIcon("i-server")}<b>${num(sum.running, "?")}</b><span class="dim">/${num(sum.total, "?")}</span></span>`
     : "";
   // ดิสก์นับเป็น "เหลือเท่าไร" เหมือนเกจข้างใน — คำถามจริงตอนจะโหลดโมเดล 150 GB คือเหลือพอไหม
   // สีจึงต้องกลับด้าน: เหลือน้อย = แดง (ตรงข้ามกับ CPU/RAM ที่ใช้มาก = แดง)
-  const free = host.disk_free_gb, diskTotal = host.disk_total_gb;
+  const free = numOrNull(host.disk_free_gb), diskTotal = numOrNull(host.disk_total_gb);
   const diskPct = free != null && diskTotal ? Math.round(free / diskTotal * 100) : null;
   const diskChip = diskPct == null ? "" :
     `<span class="chip" title="free disk" style="--c:${diskPct <= 5 ? "var(--bad)" : diskPct <= 15 ? "var(--warn)" : "var(--fg3)"}">
@@ -7614,7 +7629,7 @@ function renderRail() {
   const order = [...sites.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b, "th"));
   const ic = id => `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
   const item = (href, icon, label, count, on) =>
-    `<a href="${href}" class="${on ? "on" : ""}">${ic(icon)}${esc(label)}${count != null ? `<span class="rcount">${count}</span>` : ""}</a>`;
+    `<a href="${href}" class="${on ? "on" : ""}">${ic(icon)}${esc(label)}${count != null ? `<span class="rcount">${num(count, "?")}</span>` : ""}</a>`;
   const localRunning = (lastLocalModels || []).filter(m => m.running).length;
   let h = item("#/overview", "i-network", T("Overview"), null, route.kind === "overview");
   h += item("#/hub", "i-server", T("This machine (hub)"), HOST_ROLE.control_plane ? null : localRunning || null, route.kind === "hub");
@@ -7760,14 +7775,14 @@ async function fillLicense(force) {
 
   const lines = [];
   if (d.license) {
-    const limit = d.unlimited ? "ไม่จำกัด" : `${d.license.machines} เครื่อง`;
+    const limit = d.unlimited ? "ไม่จำกัด" : `${num(d.license.machines, "?")} เครื่อง`;
     lines.push(`${esc(d.license.licensed_to)} · ${esc(d.license.tier)} · ${limit}` +
                ` · id ${esc(d.license.id)}`);
     lines.push(`ออก ${esc(d.license.issued)} · หมดอายุ ` +
                (d.license.expires ? esc(d.license.expires) : "ไม่มีวันหมดอายุ"));
   }
   const c = d.counted || {};
-  lines.push(`นับได้ <b>${c.serving ?? "?"}</b> จากที่ครอบคลุม <b>` +
+  lines.push(`นับได้ <b>${num(c.serving, "?")}</b> จากที่ครอบคลุม <b>` +
              `${d.unlimited ? "ไม่จำกัด" : esc(String(d.machines_allowed))}</b> — ${esc(c.explain || "")}`);
   if (d.read_only) {
     lines.push("<b>อ่านอย่างเดียว</b> — ของที่รันอยู่ทุกเครื่องไม่ถูกแตะ · " +
@@ -8123,7 +8138,7 @@ function renderAllModels() {
       <td class="mono" title="${esc(m.slug)}">${esc(m.slug.length > 40 ? m.slug.slice(0, 40) + "…" : m.slug)}</td>
       <td>${esc(where)}${node ? `<span class="dim"> · ${esc(siteLabel(siteOfNode(node)))}</span>` : ""}</td>
       <td><span class="tag">${esc(m.engine === "llamacpp" ? "llama.cpp" : m.engine === "vllm" ? "vLLM" : m.engine || "?")}</span></td>
-      <td class="mono">${m.port ?? ""}</td><td class="r"${ctxSplit(m) ? ` title="llama.cpp: pool ${Number(m.context).toLocaleString()} ÷ ${m.slots} slots"` : ""}>${m.context ? Number(m.context_per_request || m.context).toLocaleString() + (ctxSplit(m) ? ` <span class="dim">×${m.slots}</span>` : "") : "—"}</td>
+      <td class="mono">${num(m.port, "")}</td><td class="r"${ctxSplit(m) ? ` title="llama.cpp: pool ${Number(m.context).toLocaleString()} ÷ ${num(m.slots, "?")} slots"` : ""}>${m.context ? Number(m.context_per_request || m.context).toLocaleString() + (ctxSplit(m) ? ` <span class="dim">×${num(m.slots, "?")}</span>` : "") : "—"}</td>
       <td>${esc(m.features || "")}</td></tr>`).join("");
   el.innerHTML = `<div class="vhead"><h2>${esc(T("Fleet models"))}</h2><span class="tag">${esc(T("{n} bundle", { n: all.length }))}</span><span class="tag ok">${esc(T("{n} running", { n: all.filter(x => x.m.running).length }))}</span></div>
     <div class="card"><div style="overflow-x:auto"><table class="ov-table"><tr><th>${esc(T("Status"))}</th><th>${esc(T("bundle"))}</th><th>${esc(T("Machine"))}</th><th>${esc(T("engine"))}</th><th>${esc(T("port"))}</th><th class="r">${esc(T("context / request"))}</th><th>${esc(T("Capabilities"))}</th></tr>${rows || `<tr><td colspan="7" class="empty">${esc(T("No data yet"))}</td></tr>`}</table></div></div>`;
@@ -8617,7 +8632,7 @@ function chatCapsHtml() {
   const groups = (chatCaps.groups || []).map(g =>
     `<div class="grp">${esc(g.group)}</div><div class="chat-chips">${
       (g.examples || []).map(x => chatChip(chatFillExample(x, ctx))).join("")}</div>`).join("");
-  return `<div class="chat-caps" id="chat-caps-card"><b>What the assistant can do — ${chatCaps.probes} checks · ${chatCaps.actions} actions, every change goes through ${esc((chatCaps.modes || []).join(" / "))}</b>
+  return `<div class="chat-caps" id="chat-caps-card"><b>What the assistant can do — ${num(chatCaps.probes, "?")} checks · ${num(chatCaps.actions, "?")} actions, every change goes through ${esc((chatCaps.modes || []).join(" / "))}</b>
     <span class="dim">Click an example to fill it in, then edit and send</span>${groups}</div>`;
 }
 

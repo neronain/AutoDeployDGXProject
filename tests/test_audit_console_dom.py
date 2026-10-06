@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tests.test_console_shell import run_scenario
 
 MODEL = """const model = (o) => Object.assign({ slug: "qwen", model_id: "Q/q", engine: "llamacpp", port: 8080, context: 32768,
@@ -123,6 +125,34 @@ def test_a_throttled_ip_does_not_throw_a_signed_in_page_back_to_the_login_screen
     """)
     assert out["loginShown"] is False and out["cards"] == 1
     assert "รออีก 8 วินาที" in out["toast"], "เหตุผลจาก server ต้องขึ้นให้เห็น"
+
+
+# ───────────────────── ข้อ 4 — JSON จาก node ไปถึง innerHTML โดยไม่ถูก escape ─────────────────────
+
+def test_no_payload_field_can_create_markup(tmp_path):
+    """แทน *ทุกใบ* ของ payload ตัวอย่าง (node · model · bench · scan · job · error · cluster · fit · แผน deploy …)
+    ด้วย markup ทีละใบ แล้ววาดด้วยทางที่หน้าเว็บใช้จริง — ต้องไม่มี element/attribute ไหนเกิดจากค่านั้นเลย
+
+    scenario (tests/console_xss_walk.js) เดิน object เอง ไม่ได้ไล่ชื่อฟิลด์: ฟิลด์ที่เพิ่มเข้า payload ตัวอย่างทีหลัง
+    ถูกตรวจโดยปริยาย · บนหน้าเดิม (6e2b474) เทสนี้เจอ 88 จาก 686 ใบที่สร้าง <img> ได้ และอีก 20 ใบที่ทำให้การ์ดพัง —
+    port · slots · cores · pcie_gen ·
+    score · size_gb … ฟิลด์ที่ template เชื่อว่าเป็นตัวเลขจึงแปะลงไปตรง ๆ (`x.toLocaleString()` ของสตริงคืนตัวมันเอง)
+    """
+    prelude, body = (Path(__file__).with_name("console_xss_walk.js").read_text(encoding="utf-8")
+                     .split("\n// ---- boot ----\n"))
+    (out,) = run_scenario(tmp_path, prelude, body)
+    assert out["control"] >= 4, "ตัวตรวจต้องจับ marker ที่แปะลง markup ตรง ๆ ได้ทั้ง 4 บริบท — ไม่งั้นเทสนี้ผ่านเพราะตาบอด"
+    report = out["report"]
+    for surface in ("node card + fleet models + overview", "hub host + local models", "benchmarks list",
+                    "benchmark details", "weights scan", "job on a node", "job on this machine", "error responses"):
+        assert report[surface]["leaves"] > 0, f"{surface}: ไม่มีใบให้เดิน — payload ตัวอย่างหาย?"
+    assert sum(r["leaves"] for r in report.values()) > 600
+    found = {surface: r["found"] for surface, r in report.items() if r["found"]}
+    assert found == {}, f"ค่าจาก payload สร้าง markup ได้: {found}"
+    # ค่าที่ผิดชนิดต้องไม่ทำให้ทั้งการ์ดพัง (เดิม `.toFixed` ของสตริงโยน แล้วการ์ดของเครื่องนั้นไม่ถูกวาดเลย) ·
+    # จอ error ที่ยังอ่าน body ที่ไม่ใช่ JSON ไม่ได้ เป็นเรื่องของข้อ 9 — คุมแยกที่เทสของข้อนั้น
+    threw = {surface: r["threw"] for surface, r in report.items() if r["threw"] and surface != "error responses"}
+    assert threw == {}, f"payload ผิดชนิดทำให้การวาดโยน: {threw}"
 
 
 # ───────────────────── ข้อ 5 — ตัวตาม job ตายเพราะ poll หลุดรอบเดียว ─────────────────────
