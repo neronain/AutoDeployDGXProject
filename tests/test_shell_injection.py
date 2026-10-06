@@ -18,6 +18,7 @@ controller เป็น bash ที่ render จาก template แล้วร
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -432,3 +433,264 @@ def test_the_gate_steps_aside_for_bundles_it_cannot_rebuild(tmp_path):
     (directory / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump({"generated_by": "lmds adopt"}), encoding="utf-8")
     result = gate_value_expansion(directory)
     assert result.passed and result.detail.startswith("n/a")
+
+
+# ═════════════════════ ทุกบรรทัดที่มีค่า: ด่านต้องเฝ้า · และ bash ต้องเห็นบริบทตรงกับที่ renderer คิด ═════════════════════
+# เคสจริง 2026-10-06 (หลัง merge งาน template อีกสองสาย): ด่าน value-expansion รุ่นแรกไล่นับ quote ของทั้งไฟล์ พอมีบรรทัด
+#   API_IDS="$(printf '%s' "$body" | … | grep -o '"id":"[^"]*"' | sed 's/^"id":"//; s/"$//' || true)"
+# ตัวนับก็ค้างอยู่ใน "single quote" ไปจนจบไฟล์ — ค่าที่แทรกหลังบรรทัดนั้นไม่ถูกตรวจเลยและด่านรายงานว่าผ่าน
+# เทสเดิมแทรกค่าแค่ 3 บรรทัดของ template เดียว จึงจับไม่ได้จนกว่าบรรทัดนั้นจะมาอยู่เหนือมันพอดี → เทสชุดนี้ไล่ทุกบรรทัด
+VARIANTS = (*KINDS, "vllm-rerank")
+_TOKEN = re.compile("LMDS(?:CANARY|DFLTCNRY|EITHCNRY|WORDSCNRY|NUMBCNRY)")
+_KIND_OF = {"LMDSCANARY": "dq", "LMDSDFLTCNRY": "default", "LMDSEITHCNRY": "either",
+            "LMDSWORDSCNRY": "words", "LMDSNUMBCNRY": "number"}
+
+
+def _rich(tmp_path: Path, variant: str):
+    """bundle ที่เปิดทางแยกของ template ให้มากที่สุด (parser · asset · mmproj/MTP · pin · flag/env) + canary render ของแผนเดียวกัน"""
+    kind = variant.split("-")[0]
+    if variant == "vllm-rerank":
+        report = ModelReport(
+            repo_id="Qwen/Qwen3-Reranker-4B", revision_sha="sha-rerank", task="rerank",
+            artifact_type=ArtifactType.SAFETENSORS, weight_bytes=8 * GIB, architecture="Qwen3ForCausalLM",
+            context_length=40960, kv_dims=KvDims(layers=36, kv_heads=8, head_dim=128),
+            tokenizer_files=["tokenizer.json"], safetensor_shards=[ShardFile(filename=n, size_bytes=s) for n, s in SHARDS])
+    elif kind == "llamacpp":
+        report = _report(kind, gated=True, gguf_variants=[
+            GgufVariant(filename="Qwen3-8B-Q4_K_M.gguf", size_bytes=12, sha256=None),
+            GgufVariant(filename="mmproj-F16.gguf", size_bytes=5, sha256="b" * 64, is_mmproj=True),
+            GgufVariant(filename="mtp-draft.gguf", size_bytes=3, sha256=None, is_mtp=True)])
+    else:
+        report = _report(kind, gated=True, tokenizer_files=["tokenizer.json", "tokenizer_config.json"])
+    fit = analyze(report, PRESETS["dgx-spark-stacked" if kind == "stacked" else "dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None, engine=Engine.SGLANG if kind == "sglang" else None)
+    if plan.task == "generate":
+        plan.tool_calling.enabled, plan.tool_calling.parser = True, "hermes"
+        plan.reasoning.enabled, plan.reasoning.parser = True, "qwen3"
+        plan.tool_calling.chat_template_override = "tool_chat_template.jinja"
+    plan.serving.kv_cache_dtype = "fp8"
+    plan.serving.extra_flags = [*plan.serving.extra_flags, "--seed 7", '--chat-template-kwargs {"a":"b c"}']
+    plan.serving.extra_env = {"LMDS_TEST": "a b"}
+    plan.runtime.image_pin = "sha256:" + "a" * 64
+    if kind == "llamacpp":
+        plan.multimodal.modalities = ["image", "text"]
+        plan.multimodal.projector_files = ["mmproj-F16.gguf"]
+        plan.speculative.draft_files = ["mtp-draft.gguf"]
+        plan.runtime.native_dir = "/opt/llama builds/b1"
+    else:
+        plan.runtime_assets = [RuntimeAsset(filename="parser.py", url="https://example.com/p.py?a=1&b=2", sha256="c" * 64)]
+    bundle = render_bundle(plan, report, fit, tmp_path / "bundles")
+    canary = renderer.render_canary_controller(plan, report, fit, slug=bundle.directory.name)
+    return bundle, canary
+
+
+# ค่าที่ "กลายเป็นโค้ด" สามแบบต่อชนิดของตำแหน่ง: $(…) · backtick · หลุดออกนอก quote ของบริบทนั้น
+_INJECTIONS = {
+    "dq": ["$(touch PWNED)", "`touch PWNED`", '"; touch PWNED; "'],
+    "default": ["$(touch PWNED)", "`touch PWNED`", '"; touch PWNED; "'],
+    "either": ["$(touch PWNED)", "`touch PWNED`", "'; touch PWNED; '"],
+    "words": ["$(touch PWNED) ", "`touch PWNED` ", "; touch PWNED; "],
+    # ตัวเลขอยู่ใน "…" เกือบทุกที่ (ค่าตั้งต้น · ตารางขนาดไฟล์) — หลุดได้ด้วย " เหมือนค่าข้อความ
+    "number": ["$(touch PWNED)", "`touch PWNED`", '1"; touch PWNED; "'],
+}
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_the_gate_catches_a_value_that_became_code_on_every_value_bearing_line(tmp_path, variant):
+    """ไล่ทุกบรรทัดที่ canary render บอกว่ามีค่า แทรกค่าร้ายทีละบรรทัด ทีละแบบ — ด่านต้องไม่ผ่าน และต้องชี้บรรทัดนั้น"""
+    bundle, canary = _rich(tmp_path, variant)
+    original = bundle.controller.read_text(encoding="utf-8")
+    lines, canary_lines = original.split("\n"), canary.split("\n")
+    assert len(lines) == len(canary_lines)
+    sites = [(n, found) for n, line in enumerate(canary_lines) if (found := _TOKEN.search(line))]
+    assert len(sites) >= 30, f"canary render ของ {variant} มีบรรทัดที่มีค่าแค่ {len(sites)} — ตัวตั้งของเทสผิด"
+
+    clean = gate_value_expansion(bundle.directory)
+    assert clean.passed and f"แล้ว {len(sites)} บรรทัด" in clean.detail, (
+        f"bundle ที่ไม่ได้แตะต้องผ่าน และด่านต้องตรวจครบทุกบรรทัดที่มีค่า ({len(sites)}): {clean.detail}")
+
+    missed: list[str] = []
+    try:
+        for n, first in sites:
+            head = canary_lines[n][: first.start()]            # ข้อความของ template ก่อนค่าแรกของบรรทัด — เหมือนกันทั้งสองไฟล์
+            assert lines[n].startswith(head)
+            for payload in _INJECTIONS[_KIND_OF[first.group(0)]]:
+                mutated = list(lines)
+                mutated[n] = head + payload + lines[n][len(head):]
+                bundle.controller.write_text("\n".join(mutated), encoding="utf-8")
+                result = gate_value_expansion(bundle.directory)
+                if result.passed or f"{bundle.controller.name}:{n + 1}:" not in result.detail:
+                    missed.append(f"บรรทัด {n + 1} + {payload!r} → {result.detail[:100]!r}\n      {lines[n][:100]}")
+    finally:
+        bundle.controller.write_text(original, encoding="utf-8")
+    assert not missed, f"ด่านไม่เห็น {len(missed)} จาก {3 * len(sites)} การแทรก:\n" + "\n".join(missed[:12])
+
+
+# อักขระที่ encoder ชนิดนั้น "ปล่อยไว้ดิบ ๆ" — ในบริบทจริงของตำแหน่ง ต้องไม่มีตัวไหนมีความหมายต่อ parser ของ bash
+_LEFT_RAW = {
+    "dq": "a ' ; & | ) ( < > # } b",
+    "default": "a ; & | ) ( < > # b",
+    "either": "a ; & | ) ( < > # } b",
+    "words": "'a ) ; & | ( b' c",
+}
+
+
+def _parses(script: Path, text: str) -> tuple[bool, str]:
+    script.write_text(text, encoding="utf-8")
+    done = subprocess.run([BASH, "-n", str(script)], capture_output=True, text=True, timeout=60)
+    return done.returncode == 0, done.stderr.strip()[:160]
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_bash_parses_every_value_site_the_way_the_renderer_assumed(tmp_path, variant):
+    """renderer เดาบริบทของแต่ละตำแหน่งจากบรรทัดเดียวของ template — คนตัดสินว่าเดาถูกไหมคือ bash ไม่ใช่ตัวนับ quote ของเรา
+
+    ทีละตำแหน่ง: ใส่อักขระทุกตัวที่ encoder ของตำแหน่งนั้นปล่อยไว้ไม่ escape แล้วให้ `bash -n` อ่านทั้งไฟล์ · ถ้าตำแหน่งนั้นอยู่ใน
+    บริบทอื่นจริง ๆ (ค่าที่ escape แบบ "…" แต่อยู่ใน '…' หรือนอก quote หรือใน $( )) อักขระพวกนี้จะเปลี่ยนโครงของสคริปต์ → parse ไม่ผ่าน
+    (heredoc ถูกอ่านเป็นตัวหนังสือตอน parse จึงผ่านเสมอ — ถูกต้อง: ใน heredoc/คอมเมนต์ อักขระชุดนี้ไม่มีความหมายจริง ๆ)
+    """
+    _, canary = _rich(tmp_path, variant)
+    script = tmp_path / "probe.sh"
+    ok, error = _parses(script, canary)
+    assert ok, f"canary render ต้องเป็น bash ที่ parse ได้ก่อน: {error}"
+
+    wrong: list[str] = []
+    probed = 0
+    for found in _TOKEN.finditer(canary):
+        kind = _KIND_OF[found.group(0)]
+        if kind == "number":
+            continue
+        ok, error = _parses(script, canary[: found.start()] + _LEFT_RAW[kind] + canary[found.end():])
+        probed += 1
+        if not ok:
+            line_no = canary.count("\n", 0, found.start()) + 1
+            shown = canary.split("\n")[line_no - 1][:110]
+            wrong.append(f"บรรทัด {line_no} (renderer ใช้ encoding แบบ {kind}): {shown}\n      bash: {error}")
+    assert probed >= 30
+    assert not wrong, ("ตำแหน่งแทรกค่าที่บริบทจริงไม่ตรงกับ encoding ที่ renderer เลือก — ค่าที่มีอักขระพวกนี้จะเปลี่ยนโครงของสคริปต์:\n"
+                       + "\n".join(wrong[:10]))
+
+
+def test_the_bash_probe_itself_notices_a_double_quote_escape_inside_single_quotes(tmp_path):
+    """ยืนยันว่าเทสข้างบนจับของจริงได้: บรรทัด `printf ' … lmds set <slug> %s …'` ของ _knob_fix อยู่ใน single quote —
+    ถ้า renderer escape ค่าตรงนั้นแบบ "…" (สิ่งที่เกิดก่อนแก้) อักขระ ' ที่ dq() ปล่อยผ่านจะปิด quote แล้ว bash ต้อง parse ไม่ผ่าน"""
+    _, canary = _rich(tmp_path, "vllm")
+    knob = next(m for m in _TOKEN.finditer(canary) if m.group(0) == "LMDSEITHCNRY")
+    line = canary[canary.rfind("\n", 0, knob.start()) + 1: canary.find("\n", knob.start())]
+    assert line.lstrip().startswith("printf '") and "lmds set" in line, line
+    ok, _ = _parses(tmp_path / "probe.sh", canary[: knob.start()] + _LEFT_RAW["dq"] + canary[knob.end():])
+    assert not ok
+
+
+@pytest.mark.parametrize("line,expected", [
+    ('MODEL_ID="', "dq"),
+    ('SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-', "default"),
+    ('API_KEY_STORE="${LMDS_KEY_ROOT:-${HOME:-}/.lmds/keys}/', "dq"),
+    ('SCORE_TEMPLATE="${SCORE_TEMPLATE-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/', "default"),
+    ("  printf ' — แก้ค่าที่บันทึกไว้: lmds set ", "either"),
+    ("# it's a comment about ", "dq"),
+    ("  echo 'closed' ", "dq"),
+    ("     (ถ้าตั้งค่าไว้ให้ถาวร: lmds set ", "dq"),
+    # รูปของบรรทัดที่ทำให้ตัวนับ quote ของด่านรุ่นแรกเพี้ยน — quote ใน $( ) เริ่มนับใหม่ และ '…' ข้างในมี " จำนวนคี่
+    ('  API_IDS="$(printf \'%s\' "$body" | grep -o \'"id":"[^"]*"\' | sed \'s/^"id":"//; s/"$//\' || true)/', "dq"),
+    ('  LMDS_REQUIRED_FILES="$(printf \'%s\\n\' ', "dq"),
+])
+def test_the_renderer_reads_the_quoting_context_from_the_template_line(line, expected):
+    assert renderer._site_context(line) == expected
+
+
+@pytest.mark.parametrize("kind", ["vllm", "sglang", "llamacpp"])
+def test_a_hostile_slug_in_the_single_quoted_knob_message_runs_nothing(tmp_path, kind, monkeypatch):
+    """ตำแหน่งใหม่จากสาย single: `printf ' … lmds set {{ slug }} %s …'` — รันทางที่พิมพ์ข้อความนั้นจริง (knob ผิดตอน start)"""
+    monkeypatch.setattr(renderer, "_check_values", lambda plan, context: None)
+    monkeypatch.setattr(renderer, "check_slug_name", lambda slug, allow_long=False: slug)
+    slug = "x$(touch PWNED_slug)`touch PWNED_slug2`"
+    report = _report(kind)
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, provider=None, engine=Engine.SGLANG if kind == "sglang" else None)
+    bundle = render_bundle(plan, report, fit, tmp_path / "bundles", slug=slug)
+    cwd = tmp_path / "cwd"
+
+    done = _run(bundle.controller, "start", cwd=cwd, extra_env={"DRY_RUN": "1", "API_PORT": "not-a-port"})
+
+    assert done.returncode != 0 and "lmds set" in done.stderr and "PWNED_slug" in done.stderr, done.stdout + done.stderr
+    assert _created(cwd) == [], f"ข้อความแนะนำวิธีแก้ knob รันค่าที่แทรกมา: {_created(cwd)}"
+
+
+def test_a_newline_in_a_flag_or_env_value_is_refused_like_everywhere_else(tmp_path):
+    """ขึ้นบรรทัดใหม่ใน '…' ถูกต้องตาม bash แต่ทำให้ controller มีบรรทัดเกินจาก template — ด่านเทียบไม่ได้ และไม่มีค่าไหนควรมี"""
+    def tweak(plan):
+        plan.serving.extra_env = {"LMDS_TEST": "a\nb"}
+
+    with pytest.raises(UnsafeValueError):
+        _bundle(tmp_path, "stacked", tweak=tweak)
+
+
+# ───── ตรวจไม่ได้ต้องพูด ไม่ใช่ผ่านเงียบ ๆ ─────
+@pytest.mark.parametrize("before,value", [
+    # คอมเมนต์หัวไฟล์: ค่าอยู่ท้ายบรรทัด — บรรทัดที่งอกต่อจากมันคือคำสั่งระดับบนสุดของสคริปต์
+    ("# Origin:   ", None),
+    # ค่ากลางบรรทัด: ข้อความของ template ที่ต้องปิดท้าย (`}"`) ไปโผล่บรรทัดอื่น
+    ('SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3-32b}"', 'SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen\ntouch PWNED\n3-32b}"'),
+    # heredoc ของ server.meta: บรรทัดที่งอกคือคีย์ปลอมที่ lmds อ่านกลับ
+    ("slug=qwen3-32b", "slug=qwen3-32b\ncontroller=/tmp/evil.sh"),
+])
+def test_a_value_that_brought_its_own_newline_fails_the_gate_instead_of_being_skipped(tmp_path, before, value):
+    """ค่าที่มีขึ้นบรรทัดใหม่ทำให้จำนวนบรรทัดไม่เท่า canary — รุ่นแรกตอบ "n/a (ไม่ได้ render จาก template ชุดนี้)" = ผ่าน"""
+    bundle = _bundle(tmp_path, "vllm")
+    lines = bundle.controller.read_text(encoding="utf-8").split("\n")
+    at = next(i for i, ln in enumerate(lines) if ln.startswith(before))
+    lines[at] = value if value is not None else lines[at] + "\ntouch PWNED"
+    bundle.controller.write_text("\n".join(lines), encoding="utf-8")
+
+    result = gate_value_expansion(bundle.directory)
+
+    assert not result.passed, result.detail
+    assert f"{bundle.controller.name}:{at + 1}:" in result.detail, result.detail
+
+
+def test_hand_edits_outside_value_lines_do_not_stop_the_gate_from_checking_the_values(tmp_path):
+    """`lmds validate` ใช้กับ bundle ที่แก้มือได้ — เพิ่ม/แก้บรรทัดที่ไม่มีค่า ต้องไม่ทำให้ด่านตีตก และต้องไม่ทำให้ด่านเลิกตรวจค่า"""
+    bundle = _bundle(tmp_path, "vllm")
+    lines = bundle.controller.read_text(encoding="utf-8").split("\n")
+    at = next(i for i, ln in enumerate(lines) if ln.startswith('API_PORT="${API_PORT:-'))
+    lines[at] = 'API_PORT="${API_PORT:-8011}"   # แก้มือ: เครื่องนี้ 8000 ไม่ว่าง'
+    lines.insert(at, "# บรรทัดที่ผู้ดูแลเพิ่มเอง")
+    lines.insert(at + 40, 'echo "debug: $(date)" >/dev/null')
+    bundle.controller.write_text("\n".join(lines), encoding="utf-8")
+
+    edited = gate_value_expansion(bundle.directory)
+    assert edited.passed and "n/a" not in edited.detail, edited.detail
+
+    text = "\n".join(lines).replace('  "model-00002-of-00002.safetensors"', '  "model-00002$(touch PWNED).safetensors"', 1)
+    bundle.controller.write_text(text, encoding="utf-8")
+    caught = gate_value_expansion(bundle.directory)
+    assert not caught.passed and "$(" in caught.detail, caught.detail
+
+
+def _as_older_template(bundle) -> None:
+    """ทำให้ bundle อ้าง template_hash อื่น (= render จาก template รุ่นก่อน) และโครงต่างจากชุดปัจจุบันจริง ๆ"""
+    profile_path = bundle.directory / "MODEL_PROFILE.yaml"
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    current = profile["template_hash"]
+    profile["template_hash"] = "0123456789ab"
+    profile_path.write_text(yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    text = bundle.controller.read_text(encoding="utf-8").replace(current, "0123456789ab")
+    # template รุ่นเก่า: บรรทัด RUN_DIR คนละรูปกับปัจจุบัน และมีฟังก์ชันที่รุ่นใหม่ไม่มี
+    text = re.sub(r'(?m)^RUN_DIR="\$\{RUN_DIR:-[^\n]*\n', 'RUN_DIR="$HOME/.lmds/run/legacy-layout"\n', text, count=1)
+    bundle.controller.write_text(text + "\nlegacy_helper() {\n  :\n}\n", encoding="utf-8")
+
+
+def test_a_bundle_from_another_template_set_is_checked_where_lines_still_correspond(tmp_path):
+    """bundle เก่าบน node (render ก่อนมี escape) คือที่ที่ค่าร้ายอยู่จริง — เดิมด่านข้ามทั้งใบ ("n/a") เพราะจำนวนบรรทัดไม่เท่า"""
+    bundle = _bundle(tmp_path, "vllm")
+    _as_older_template(bundle)
+    aside = gate_value_expansion(bundle.directory)
+    assert aside.passed and aside.detail.startswith("n/a") and "ตรวจไม่ได้" in aside.detail, aside.detail
+
+    text = bundle.controller.read_text(encoding="utf-8")
+    before = 'SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3-32b}"'
+    assert text.count(before) == 1
+    bundle.controller.write_text(text.replace(before, before.replace("qwen3-32b", "qwen$(touch PWNED_served_name)")), encoding="utf-8")
+    result = gate_value_expansion(bundle.directory)
+    assert not result.passed and "$(" in result.detail, result.detail

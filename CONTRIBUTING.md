@@ -125,8 +125,11 @@ quality gates ทั้ง 14 ด่านโดยอัตโนมัติ (
 - **ค่าที่แทรกต้องไม่กลายเป็นโค้ด** — renderer escape `{{ … }}` ทุกตัวใน `*.sh.j2` ให้เองตามบริบท (`_ShellEscape` ใน
   `generator/renderer.py` · กติกาอยู่ที่ `lmds/shellsafe.py`) template จึงเขียน `"{{ ค่า }}"` ตามปกติ **ไม่ต้องใส่ filter** ·
   ที่ต้องรู้: วางค่าใน `"…"` หรือ `"${VAR:-…}"` เท่านั้น · ค่าที่ต้องวาง *นอก quote* (`for f in …`, `args+=(…)`) ให้ renderer
-  ส่งมาเป็น `shellsafe.words(...)` · ห้ามวางค่าใน `'…'` หรือใน `$( … )` · gate `value-expansion` เทียบผลลัพธ์กับตัวที่ render
-  ด้วย canary ทุกครั้ง และ `tests/test_shell_injection.py` รัน payload จริงใต้ bash กับทั้ง 4 template
+  ส่งมาเป็น `shellsafe.words(...)` · เลี่ยงการวางค่าใน `'…'` (renderer รับได้เมื่อ `'` เปิดอยู่บนบรรทัดเดียวกัน แต่ค่าที่มี `$`
+  จะมี `\` ติดมา) และห้ามวางค่าข้อความใน `$( … )` นอก quote · **ห้ามต่อค่าเข้าไปในซอร์สของภาษาอื่น** (Python ใน `python3 -c "…"` /
+  heredoc · YAML · JSON ที่ถูก parse) ไม่ว่าจะด้วย `{{ … }}` หรือ `${VAR}` — escape ของ bash ไม่รู้จัก quote ของภาษานั้น ส่งทาง
+  env แล้วอ่าน `os.environ[...]` แทน · gate `value-expansion` ตรวจว่าค่าทุกตัวในไฟล์ถูก encode มาครบ (เทียบกับ canary render) และ
+  `tests/test_shell_injection.py` ถาม `bash -n` ทีละตำแหน่งว่าบริบทจริงตรงกับที่ renderer เดา + รัน payload จริงกับทั้ง 4 template
 
 และกติกาที่เทสคุมนอก gate: **ทุกคำสั่งในบล็อก COMMANDS ของ `usage()` ต้องถูก dispatch จริง** (และกลับกัน) ในทั้ง 6 รูปแบบ
 controller (`tests/test_stacked_test_commands.py` ฯลฯ) · secret ห้ามขึ้น argv (API key → `--api-key-file`/env · HF token → stdin)

@@ -226,7 +226,9 @@ def plan_from_profile(profile: dict, controller_text: str = ""):
     names, urls, shas = (_bash_array(controller_text, "ASSET_FILES"), _bash_array(controller_text, "ASSET_URLS"),
                          _bash_array(controller_text, "ASSET_SHAS"))
     for i, name in enumerate(names or []):
-        assets.append(RuntimeAsset(filename=name, url=(urls or [""] * len(names))[i],
+        # ตารางสามตัวยาวไม่เท่ากันได้เมื่อไฟล์ถูกแก้ (หรือค่าหลุด quote) — ห้ามล้มด้วย IndexError: gate value-expansion
+        # สร้างแผนกลับผ่านฟังก์ชันนี้ และต้องไปถึงขั้นเทียบบรรทัดเพื่อชี้ได้ว่าบรรทัดไหนผิด
+        assets.append(RuntimeAsset(filename=name, url=(urls[i] if urls and i < len(urls) else ""),
                                    sha256=((shas or [])[i] if shas and i < len(shas) and shas[i] else None)))
     plan = DeploymentPlan(
         model_id=model["id"], revision=str(model["revision"]), served_model_name=model["served_name"],

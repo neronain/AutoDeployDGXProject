@@ -378,6 +378,7 @@ class _ValueFrame:
     pattern: re.Pattern
     kinds: list[str]
     literal: str            # ข้อความของ template ทั้งบรรทัด (ไม่รวมค่า) — ใช้ตัดสินว่าบรรทัดนี้ "ชี้ตัวได้" แค่ไหน
+    open_ended: bool        # ค่าตัวสุดท้ายอยู่ท้ายบรรทัด ไม่มีข้อความของ template ปิด (`# Origin: …` · `slug=…` ใน heredoc)
 
     @property
     def distinctive(self) -> bool:
@@ -408,28 +409,36 @@ def _value_frame(canary_line: str) -> _ValueFrame | None:
         kinds.append(kind)
         merged.append(after)
     pattern = re.compile("(.*?)".join(re.escape(part) for part in merged), re.S)
-    return _ValueFrame(pattern, kinds, "".join(merged))
+    return _ValueFrame(pattern, kinds, "".join(merged), merged[-1] == "")
 
 
-def _pair_lines(canary_lines: list[str], actual_lines: list[str], wanted: list[int]) -> dict[int, int]:
-    """บรรทัดของ canary → บรรทัดของ controller จริงที่เป็นคู่กัน (เฉพาะบรรทัดใน `wanted`)
+def _pair_lines(
+    canary_lines: list[str], actual_lines: list[str], frames: dict[int, _ValueFrame],
+) -> tuple[dict[int, int], set[int]]:
+    """(บรรทัดของ canary → บรรทัดคู่กันของ controller จริง, บรรทัดของ canary ที่ฝั่งจริงมีบรรทัด "งอก" ต่อจากมัน)
 
-    render จาก template ชุดเดียวกัน = จำนวนบรรทัดเท่ากัน จับคู่ตามตำแหน่งได้เลย · ไม่เท่า (แก้มือ · template รุ่นอื่น · ค่าที่พา
-    ขึ้นบรรทัดใหม่มา · ค่าที่ทำให้ตารางไฟล์ที่สร้างกลับมามีสมาชิกเกิน) ใช้ difflib หาช่วงที่ข้อความของ template ตรงกัน แล้วจับคู่
-    ช่วงที่ต่างกันตามลำดับจากต้นช่วง — บรรทัดที่เกินมาฝั่งใดฝั่งหนึ่งไม่มีคู่ และคู่ที่โครงไม่ตรงผู้เรียกจะเห็นเอง
-    (ทั้งสองแบบผู้เรียกต้องรายงาน ไม่ใช่ข้าม)
+    render จาก template ชุดเดียวกันและไม่มีใครแตะ = จำนวนบรรทัดเท่ากันและทุกบรรทัดมีค่าตรงโครง → จับคู่ตามตำแหน่ง ·
+    นอกนั้น (แก้มือ · template รุ่นอื่น · ค่าที่พาขึ้นบรรทัดใหม่มา · ค่าที่ทำให้ตารางไฟล์ที่สร้างกลับมีสมาชิกเกิน) ใช้ difflib หาช่วงที่
+    ข้อความของ template ตรงกัน แล้วจับคู่ช่วงที่ต่างกันตามลำดับจากต้นช่วง — บรรทัดที่เกินมาไม่มีคู่ และคู่ที่โครงไม่ตรงผู้เรียก
+    จะเห็นเอง (ทั้งสองแบบผู้เรียกต้องรายงาน ไม่ใช่ข้าม)
     """
-    if len(canary_lines) == len(actual_lines):
-        return {i: i for i in wanted}
+    wanted = sorted(frames)
+    if len(canary_lines) == len(actual_lines) and all(frames[i].pattern.fullmatch(actual_lines[i]) for i in wanted):
+        return {i: i for i in wanted}, set()
     import difflib
 
     pairs: dict[int, int] = {}
-    matcher = difflib.SequenceMatcher(None, canary_lines, actual_lines)
+    grown: set[int] = set()
+    matcher = difflib.SequenceMatcher(None, canary_lines, actual_lines, autojunk=False)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "replace":
             for offset in range(min(i2 - i1, j2 - j1)):
                 pairs[i1 + offset] = j1 + offset
-    return {i: pairs[i] for i in wanted if i in pairs}
+            if j2 - j1 > i2 - i1:
+                grown.add(i2 - 1)
+        elif tag == "insert" and i1 > 0:
+            grown.add(i1 - 1)
+    return {i: pairs[i] for i in wanted if i in pairs}, grown
 
 
 def gate_value_expansion(bundle_dir: Path) -> GateResult:
@@ -473,6 +482,9 @@ def gate_value_expansion(bundle_dir: Path) -> GateResult:
     skipped: list[str] = []
     for script in scripts:
         actual = script.read_text(encoding="utf-8")
+        # bundle นี้อ้างว่า render จาก template + renderer ชุดที่แพ็กเกจถืออยู่ไหม — ถ้าใช่ ทุกบรรทัดมีค่าต้องตรวจได้
+        claimed = str(profile.get("template_hash") or controller_header(script)["template_hash"] or "")
+        current = claimed == template_hash()
         try:
             try:
                 plan, report, fit = plan_from_profile(profile, actual)
@@ -481,20 +493,25 @@ def gate_value_expansion(bundle_dir: Path) -> GateResult:
                 # สำหรับการเทียบโครง "ไม่มีตาราง" = "ตารางว่าง" พอดี (template ข้ามบล็อกนั้นเหมือนกัน) จึงยังเทียบได้
                 plan, report, fit = plan_from_profile(profile, actual + "\nSHARD_FILES=(\n)\n")
             canary = render_canary_controller(plan, report, fit, slug=bundle_dir.name)
-        except Exception as exc:  # noqa: BLE001 — bundle ที่สร้างแผนกลับไม่ได้ (adopt · profile รุ่นเก่า) เทียบไม่ได้ ไม่ใช่ไม่ผ่าน
-            return GateResult(name, True, f"n/a (สร้างแผนกลับจาก bundle ไม่ได้: {str(exc)[:80]})")
+        except Exception as exc:  # noqa: BLE001 — สร้างแผนกลับไม่ได้ = เทียบไม่ได้ · นับว่าผ่านไหมขึ้นกับว่า bundle อ้างอะไร
+            if current:
+                # bundle ที่ render จาก template ชุดนี้สร้างแผนกลับได้เสมอ — ไม่ได้ แปลว่า profile/ตารางในหัว controller ถูกเปลี่ยน
+                return GateResult(
+                    name, False,
+                    f"{script.name}: สร้างแผนกลับจาก bundle ไม่ได้ ({type(exc).__name__}: {str(exc)[:80]}) ทั้งที่อ้าง template "
+                    "ชุดปัจจุบัน — ตรวจไม่ได้ว่าค่าเป็นตัวหนังสือ · regenerate: lmds bundles refresh")
+            return GateResult(name, True, f"n/a (สร้างแผนกลับจาก bundle ไม่ได้ — adopt/profile รุ่นเก่า: {str(exc)[:80]})")
 
-        # bundle นี้อ้างว่า render จาก template + renderer ชุดที่แพ็กเกจถืออยู่ไหม — ถ้าใช่ ทุกบรรทัดมีค่าต้องตรวจได้
-        claimed = str(profile.get("template_hash") or controller_header(script)["template_hash"] or "")
-        current = claimed == template_hash()
         canary_lines, actual_lines = canary.split("\n"), actual.split("\n")
         frames = {i: frame for i, line in enumerate(canary_lines) if (frame := _value_frame(line)) is not None}
-        pairs = _pair_lines(canary_lines, actual_lines, sorted(frames))
+        pairs, grown = _pair_lines(canary_lines, actual_lines, frames)
         unverified: list[int] = [i for i in frames if i not in pairs]
         for i, j in sorted(pairs.items()):
             frame = frames[i]
             found = frame.pattern.fullmatch(actual_lines[j])
-            if found is None:
+            if found is None or (frame.open_ended and i in grown):
+                # โครงไม่ตรง · หรือค่าอยู่ท้ายบรรทัดแล้วมีบรรทัดงอกต่อจากมัน — ค่าที่พาขึ้นบรรทัดใหม่มาหน้าตาแบบนี้พอดี
+                # (ในคอมเมนต์/heredoc บรรทัดที่งอกคือคำสั่ง) แยกจากบรรทัดที่คนเพิ่มเองไม่ได้ จึงไม่รับรอง
                 unverified.append(i)
                 continue
             if not current and not frame.distinctive:
