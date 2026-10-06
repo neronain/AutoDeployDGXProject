@@ -108,6 +108,7 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     if plan.model_id != report.repo_id:
         plan.warnings.append(f"แก้ model_id จาก {plan.model_id!r} เป็น {report.repo_id}")
         plan.model_id = report.repo_id
+    _harden_shell_values(plan, report)
     # โมเดลที่รู้อยู่แล้วว่า image ทุกตัวยังรันไม่ผ่าน (เคสจริง GLM-5.3-Flash 2026-09-05) — เตือนตั้งแต่วางแผน
     from lmds.brain.rulebased import known_broken
 
@@ -401,6 +402,35 @@ _SGLANG_REASONING_PARSERS = {
     "interns1", "kimi", "kimi_k2", "mimo", "minimax", "minimax-append-think", "minimax-m3",
     "mistral", "nemotron_3", "poolside_v1", "qwen3", "qwen3-thinking", "step3", "step3p5",
 }
+
+
+def _harden_shell_values(plan: DeploymentPlan, report: ModelReport) -> None:
+    """ค่าข้อความอิสระที่ LLM ตั้งได้และไปจบใน controller (bash) — ตัวที่มีอักขระแปลกถูกดึงกลับเป็นค่าที่รู้ว่าปลอดภัย
+
+    เคสจริง (audit 2026-10-06): แผนที่ `served_model_name` เป็น `qwen$(touch PWNED_served_name)` ผ่าน harden มา
+    ทั้งดุ้น (ชื่อ parser ถูกตรวจกับรายชื่อจริง แต่ชื่อที่เสิร์ฟไม่มีใครดู) แล้ว template วางลงใน `"${VAR:-…}"` →
+    `controller help` รันคำสั่งนั้นบน node · renderer escape และปฏิเสธซ้ำอีกสองชั้น (lmds/shellsafe.py) แต่ที่นี่คือ
+    จุดที่ควรรู้ก่อน: ผู้ใช้ได้ bundle ที่ใช้ได้พร้อมคำเตือน แทนที่จะได้ error ตอน render
+
+    ผู้ใช้ที่ต้องการชื่ออื่น (มีช่องว่าง ฯลฯ) ตั้งเองได้ด้วย `lmds set --served-name` ซึ่งมีกติกาของมันเอง
+    """
+    from lmds.shellsafe import is_plain_served_name, unsafe_chars
+
+    from .rulebased import slugify
+
+    if not is_plain_served_name(plan.served_model_name or ""):
+        fallback = slugify(report.repo_id)
+        plan.warnings.append(
+            f"แก้ served_model_name จาก {plan.served_model_name!r} เป็น {fallback} — ชื่อที่แผนเสนอมีอักขระนอก "
+            "A-Z a-z 0-9 . _ : / - (ตั้งชื่ออื่นเองได้ภายหลัง: lmds set <slug> --served-name)")
+        plan.served_model_name = fallback
+    override = plan.tool_calling.chat_template_override
+    if override and unsafe_chars(override):
+        plan.warnings.append(f"ตัด chat template {override!r} ออก — มีอักขระที่เชลล์ตีความ")
+        plan.tool_calling.chat_template_override = None
+    if unsafe_chars(plan.serving.kv_cache_dtype or "", allow_space=False):
+        plan.warnings.append(f"แก้ kv_cache_dtype จาก {plan.serving.kv_cache_dtype!r} เป็น auto — มีอักขระที่เชลล์ตีความ")
+        plan.serving.kv_cache_dtype = "auto"
 
 
 def _harden_parsers(plan: DeploymentPlan) -> None:

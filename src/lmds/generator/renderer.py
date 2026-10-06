@@ -6,12 +6,13 @@ LLM ไม่มีสิทธิ์แตะขั้นนี้: ทุก�
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, Undefined
+from jinja2.ext import Extension
+from jinja2.lexer import Token
 
 import lmds
 from lmds.brain.allowlists import image_repo
@@ -19,6 +20,17 @@ from lmds.brain.plan_schema import DeploymentPlan, Engine, Topology
 from lmds.fit import FitReport
 from lmds.fit.targets import PRESETS
 from lmds.inspector.report import ModelReport
+from lmds.shellsafe import (
+    CANARY,
+    CANARY_WORDS,
+    ShellWords,
+    UnsafeValueError,
+    dq,
+    dq_default,
+    repo_filename_problem,
+    unsafe_chars,
+    words,
+)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -75,14 +87,116 @@ class Bundle:
     files: list[Path] = field(default_factory=list)
 
 
-def _environment() -> Environment:
-    env = Environment(
-        loader=FileSystemLoader(TEMPLATES_DIR),
-        undefined=StrictUndefined,
-        keep_trailing_newline=True,
-        trim_blocks=False,
-        lstrip_blocks=False,
-    )
+def _open_expansions(line: str) -> int:
+    """จำนวน `${` ที่ยังไม่ปิดในข้อความของบรรทัดนี้ — > 0 = ค่าที่จะแทรกต่อจากนี้อยู่ในค่าตั้งต้นของ `${VAR:-…}`"""
+    depth, i = 0, 0
+    while i < len(line):
+        char = line[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == "$" and line[i + 1:i + 2] == "{":
+            depth += 1
+            i += 2
+            continue
+        if char == "}" and depth:
+            depth -= 1
+        i += 1
+    return depth
+
+
+class _ShellEscape(Extension):
+    """ทุก `{{ … }}` ใน template ของ controller (`*.sh.j2`) ถูก escape ตามบริบทของ bash โดย template ไม่ต้องเขียนอะไรเพิ่ม
+
+    ทำที่ token stream ก่อน parse: `{{ expr }}` → `{{ (expr) | _lmds_sh("บริบท") }}`
+
+    - `{{ 'ข้อความ' }}` ล้วน ๆ (`{{ '{' }}`, `{{ '${#SHARD_FILES[@]}' }}`) เป็นข้อความของ template เอง ไม่ใช่ค่า — ไม่แตะ
+    - บริบทอ่านจากข้อความของบรรทัดเดียวกันที่ template เขียนมาก่อนถึงจุดแทรก: อยู่ใน `${VAR:-` ที่ยังไม่ปิด = "default"
+      (มี `}` กับ `'` ที่ escape ไม่ได้ → ปฏิเสธ) · นอกนั้น = "dq" (ใน `"…"` · คอมเมนต์ · heredoc)
+    - ค่าที่ renderer quote เป็นคำของ bash มาแล้ว (`ShellWords`) และตัวเลข ผ่านไปตามเดิม
+
+    ทำเป็นของ renderer ไม่ใช่ filter ที่ต้องจำใส่ทีละจุด เพราะจุดที่ลืมคือจุดที่โดนเจาะ — audit 2026-10-06 เจอค่าดิบใน
+    ทั้ง 4 template ตรงที่ไม่มีใครคิดว่าเป็น "ค่าจากข้างนอก" (ชื่อไฟล์จาก Hub · ชื่อที่ LLM ตั้งให้)
+    """
+
+    def filter_stream(self, stream):
+        if not str(stream.name or "").endswith(".sh.j2"):
+            return stream          # README/SPECIAL_FILES เป็นเอกสาร ไม่ถูกรัน — escape แบบ bash มีแต่ทำให้อ่านเพี้ยน
+        return self._escaped(stream)
+
+    @staticmethod
+    def _escaped(stream):
+        line = ""    # ข้อความของบรรทัดปัจจุบันเท่าที่ template เขียนเอง — ค่าที่แทรกไม่นับ (มันถูก escape อยู่แล้ว)
+        for token in stream:
+            if token.type == "data":
+                line = (line + token.value).rsplit("\n", 1)[-1]
+                yield token
+                continue
+            if token.type != "variable_begin":
+                yield token
+                continue
+            expression, end = [], None
+            for inner in stream:
+                if inner.type == "variable_end":
+                    end = inner
+                    break
+                expression.append(inner)
+            yield token
+            if len(expression) == 1 and expression[0].type == "string":
+                line = (line + expression[0].value).rsplit("\n", 1)[-1]
+                yield expression[0]
+            elif expression:
+                at = expression[-1].lineno
+                yield Token(token.lineno, "lparen", "(")
+                yield from expression
+                yield Token(at, "rparen", ")")
+                yield Token(at, "pipe", "|")
+                yield Token(at, "name", "_lmds_sh")
+                yield Token(at, "lparen", "(")
+                yield Token(at, "string", "default" if _open_expansions(line) else "dq")
+                yield Token(at, "rparen", ")")
+            if end is not None:
+                yield end
+
+
+def _passes_untouched(value: object) -> bool:
+    # ตัวเลข/None/Undefined ไม่มีอะไรให้เชลล์ตีความ · None ยังพิมพ์เป็น "None" และ Undefined ยังโยน error เหมือนเดิม
+    return value is None or isinstance(value, (bool, int, float, Undefined))
+
+
+def _sh(value: object, context: str = "dq") -> object:
+    if isinstance(value, ShellWords) or _passes_untouched(value):
+        return value
+    return dq_default(value) if context == "default" else dq(value)
+
+
+def _sh_canary(value: object, context: str = "dq") -> object:
+    # render แบบ canary: ทุกค่าที่เป็นข้อความถูกแทนด้วยคำเดียวกันที่ไม่มีอักขระของเชลล์ — สิ่งที่เหลือในผลลัพธ์
+    # คือ "ของที่ template ใส่เอง" ล้วน ๆ ให้ gate_value_expansion ใช้เทียบ
+    if _passes_untouched(value):
+        return value
+    return CANARY_WORDS if isinstance(value, ShellWords) else CANARY
+
+
+_ENVIRONMENTS: dict[tuple[str, bool], Environment] = {}
+
+
+def _environment(canary: bool = False) -> Environment:
+    # เก็บ Environment ไว้ใช้ซ้ำ — compile template 3,000 บรรทัดทุกครั้งแพง และ gate ต้อง render อีกรอบ ·
+    # คีย์ด้วย TEMPLATES_DIR เพราะเทสชี้ไปโฟลเดอร์อื่นได้ · Jinja เช็ค mtime ของไฟล์เองเมื่อ template ถูกแก้
+    key = (str(TEMPLATES_DIR), canary)
+    env = _ENVIRONMENTS.get(key)
+    if env is None:
+        env = Environment(
+            loader=FileSystemLoader(TEMPLATES_DIR),
+            undefined=StrictUndefined,
+            keep_trailing_newline=True,
+            trim_blocks=False,
+            lstrip_blocks=False,
+            extensions=[_ShellEscape],
+        )
+        env.filters["_lmds_sh"] = _sh_canary if canary else _sh
+        _ENVIRONMENTS[key] = env
     return env
 
 
@@ -145,7 +259,7 @@ def _rerank_profile(plan: DeploymentPlan, report: ModelReport) -> dict:
     }
 
 
-def _quote_flag(flag: str) -> str:
+def _quote_flag(flag: str) -> ShellWords:
     """'--kv-cache-dtype=fp8' → "--kv-cache-dtype fp8" (quoted ปลอดภัยสำหรับ bash array)
 
     แยก `=` เฉพาะที่อยู่ใน token แรกซึ่งเป็นชื่อ flag (ขึ้นต้นด้วย -) เท่านั้น — เดิม replace `=`
@@ -154,15 +268,15 @@ def _quote_flag(flag: str) -> str:
     """
     parts = flag.split(None, 1)
     if not parts:
-        return ""
+        return words()
     head = parts[0]
     rest = parts[1] if len(parts) > 1 else None
     if head.startswith("-") and "=" in head:
         head, value = head.split("=", 1)
         rest = value if rest is None else f"{value} {rest}"
     if rest is None:
-        return shlex.quote(head)
-    return f"{shlex.quote(head)} {shlex.quote(rest)}"
+        return words(head)
+    return words(head, rest)
 
 
 def bundle_model_id(directory: Path) -> str:
@@ -400,7 +514,10 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
         "node_count": node_count,
         "shard_count": report.shard_count or 0,
         "total_size_gb": int(round(weights_gb)) if weights_gb else 0,
-        "required_files": " ".join(shlex.quote(f) for f in dict.fromkeys(required)),
+        # ค่าที่ template วางโดยไม่มี quote ล้อม (`for f in …` · `args+=(…)`) ต้องเป็น ShellWords = quote เป็นคำมาแล้ว —
+        # ค่าอื่นทั้งหมด renderer escape ให้เองตามบริบท (ดู _ShellEscape) ไม่ต้องทำอะไรที่นี่
+        "required_files": words(*dict.fromkeys(required)),
+        "required_names": list(dict.fromkeys(required)),
         # shard + ขนาดจาก Hub — ให้ verify-files จับ download ที่ไม่ครบได้เหมือนฝั่ง GGUF
         "shard_files": [
             {"filename": s.filename, "size": s.size_bytes or ""}
@@ -408,7 +525,7 @@ def _context(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: st
         ],
         # quote ทั้งก้อน KEY=VALUE — _quote_flag แยกช่องว่างเป็นคนละ token ซึ่งผิดสำหรับ env
         "extra_env_pairs": [
-            shlex.quote(f"{key}={value}") for key, value in (plan.serving.extra_env or {}).items()
+            words(f"{key}={value}") for key, value in (plan.serving.extra_env or {}).items()
         ],
         "runtime_assets": [
             {"filename": a.filename, "url": a.url, "sha256": a.sha256 or ""}
@@ -599,6 +716,84 @@ def _atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
         tmp.chmod(mode)
     os.replace(tmp, path)
 
+def _check_values(plan: DeploymentPlan, context: dict) -> None:
+    """ค่าที่ไม่มีเหตุผลจะมี metacharacter ของเชลล์ ต้องไม่มี — ปฏิเสธก่อนเขียนไฟล์ใด ๆ
+
+    renderer escape ทุกค่าอยู่แล้ว (_ShellEscape) ด่านนี้เป็นชั้นที่สองโดยเจตนา: ค่าพวกนี้ถูกส่งต่อไปยังที่ที่การ escape
+    ตอน render คุมไม่ถึง — เชลล์ของ worker ผ่าน ssh, URL ของ curl/aria2c, argv ของ docker — และค่าที่ "ถูกต้อง" ไม่เคย
+    มีอักขระพวกนี้เลย · เคสจริง (audit 2026-10-06): ไฟล์ใน repo ชื่อ `Q4_K_M$(touch PWNED).gguf` ลงไปอยู่ใน MODEL_FILES
+    """
+    def scalar(label: str, value: object, *, space: bool = True, extra_ok: str = "") -> None:
+        if value is None or value == "":
+            return
+        bad = unsafe_chars(str(value), allow_space=space, extra_ok=extra_ok)
+        if bad:
+            raise UnsafeValueError(
+                f"{label} มีอักขระที่ใส่ลง controller ไม่ได้ ({' '.join(repr(c) for c in bad)}): {str(value)!r}"
+            )
+
+    def repo_file(label: str, name: object) -> None:
+        problem = repo_filename_problem(str(name or ""))
+        if problem:
+            raise UnsafeValueError(
+                f"{label} {str(name)!r} ใช้กับ controller ไม่ได้ — {problem} · "
+                "รองรับตัวอักษรและตัวเลขทุกภาษา กับ . _ - + = @ , / และช่องว่าง"
+            )
+
+    scalar("model id", plan.model_id, space=False)
+    scalar("revision", plan.revision, space=False)
+    scalar("ชื่อที่เสิร์ฟ (served_model_name)", plan.served_model_name)
+    scalar("image", plan.runtime.image_ref, space=False)
+    scalar("image digest", plan.runtime.image_pin, space=False)
+    scalar("โฟลเดอร์ build llama.cpp (native_dir)", plan.runtime.native_dir)
+    if plan.tool_calling.enabled:
+        scalar("tool-call parser", plan.tool_calling.parser, space=False)
+    if plan.reasoning.enabled:
+        scalar("reasoning parser", plan.reasoning.parser, space=False)
+    scalar("chat template", plan.tool_calling.chat_template_override)
+    scalar("kv_cache_dtype", plan.serving.kv_cache_dtype, space=False)
+    for modality in plan.multimodal.modalities:
+        scalar("modality", modality, space=False)
+
+    if plan.selected_gguf:
+        repo_file("ไฟล์ GGUF", plan.selected_gguf)
+    for part in context["gguf_parts"]:
+        repo_file("ไฟล์ GGUF", part["filename"])
+    for shard in context["shard_files"]:
+        repo_file("ไฟล์ shard", shard["filename"])
+    for name in context["required_names"]:
+        repo_file("ไฟล์ที่ต้องมีใน repo", name)
+    for asset in context["runtime_assets"]:
+        repo_file("ไฟล์ runtime", asset["filename"])
+        if "/" in asset["filename"]:
+            raise UnsafeValueError(f"ไฟล์ runtime {asset['filename']!r} ต้องเป็นชื่อไฟล์เปล่า ๆ ไม่มี path")
+        # URL มี & ? = % ได้ตามปกติ — ถูกวางใน "…" เสมอ และ renderer escape ให้แล้ว
+        scalar("URL ของไฟล์ runtime", asset["url"], space=False, extra_ok="&")
+        if asset["sha256"] and not re.fullmatch(r"[0-9a-fA-F]{64}", asset["sha256"]):
+            raise UnsafeValueError(f"sha256 ของไฟล์ runtime {asset['filename']!r} ไม่ใช่ hex 64 ตัว: {asset['sha256']!r}")
+
+
+def controller_template_name(plan: DeploymentPlan) -> str:
+    """template ของ controller สำหรับแผนนี้ — จุดเดียว ใช้ทั้งตอน render จริงและตอน gate render แบบ canary"""
+    if plan.topology is Topology.STACKED:
+        return "stacked-vllm-controller.sh.j2"
+    if plan.runtime.engine is Engine.LLAMACPP:
+        return "single-llamacpp-controller.sh.j2"
+    if plan.runtime.engine is Engine.SGLANG:
+        return "single-sglang-controller.sh.j2"
+    return "single-vllm-controller.sh.j2"
+
+
+def render_canary_controller(plan: DeploymentPlan, report: ModelReport, fit: FitReport, slug: str) -> str:
+    """controller ของแผนนี้ โดยทุกค่าที่เป็นข้อความถูกแทนด้วย `shellsafe.CANARY` — ไม่เขียนไฟล์ ไม่ตรวจค่า
+
+    โครงเดียวกับ controller จริงทุกบรรทัด (เงื่อนไข/ลูปใช้ค่าจริง) ต่างกันแค่ตรงที่ค่าถูกแทรก — `$(` `${` backtick
+    ที่เหลืออยู่ในผลลัพธ์จึงเป็นของที่ template ใส่เองทั้งหมด · gate_value_expansion เทียบ controller จริงกับตัวนี้
+    """
+    context = _context(plan, report, fit, slug=slug)
+    return _environment(canary=True).get_template(controller_template_name(plan)).render(context)
+
+
 def render_bundle(
     plan: DeploymentPlan,
     report: ModelReport,
@@ -659,6 +854,8 @@ def render_bundle(
         )
         plan.served_model_name = slug
     context = _context(plan, report, fit, slug=slug)
+    # ก่อนสร้างโฟลเดอร์/เปลี่ยนชื่อไฟล์ใด ๆ — ค่าที่ใช้ไม่ได้ต้องไม่ทิ้ง bundle ไว้ครึ่ง ๆ
+    _check_values(plan, context)
 
     directory = output_root / slug
     directory.mkdir(parents=True, exist_ok=True)
@@ -677,14 +874,9 @@ def render_bundle(
                 f"ทางออกตอนนี้: ใช้ vLLM ถ้าโมเดลรองรับ · "
                 f"หรือรันเครื่องเดียวด้วย --target dgx-spark-single"
             )
-        template_name = "stacked-vllm-controller.sh.j2"
-    elif plan.runtime.engine is Engine.LLAMACPP:
-        template_name = "single-llamacpp-controller.sh.j2"
-    elif plan.runtime.engine is Engine.SGLANG:
-        template_name = "single-sglang-controller.sh.j2"
-    else:
-        template_name = "single-vllm-controller.sh.j2"
     controller_path = directory / context["controller_name"]
+    # render ก่อนแตะไฟล์เดิม — ค่าที่ escape ไม่ได้ (shellsafe.UnsafeValueError) ต้องล้มตรงนี้ ไม่ใช่หลังเปลี่ยนชื่อ controller เก่าไปแล้ว
+    controller_text = env.get_template(controller_template_name(plan)).render(context)
     # โมเดลเดียว topology เดียว: เปลี่ยน single ↔ stacked แล้ว controller เก่าต้องไม่ค้างให้ discover หยิบผิด
     # (fleet เลือก *-single.sh ก่อน *-stacked.sh — เคสจริง 2026-09-05 download ไปตัวหนึ่ง start ไปอีกตัว)
     import time as _time
@@ -695,7 +887,7 @@ def render_bundle(
     # เขียนลงไฟล์ชั่วคราวแล้ว rename ทับ (inode ใหม่) — เคสจริง 2026-09-07 dgx-veerasiam: `bundles refresh` ตอน Update
     # เขียนทับ controller ที่ `download` กำลังรันอยู่ → bash อ่านไฟล์ใหม่ต่อจาก offset เดิม → "syntax error near
     # unexpected token" rc=2 กลางทาง · rename ทับทำให้ process เก่าอ่าน inode เดิมต่อจนจบ
-    _atomic_write_text(controller_path, env.get_template(template_name).render(context), mode=0o755)
+    _atomic_write_text(controller_path, controller_text, mode=0o755)
 
     files = [controller_path]
 

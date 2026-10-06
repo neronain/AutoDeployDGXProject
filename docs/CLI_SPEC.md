@@ -14,7 +14,7 @@ lmds deploy <MODEL> --smoke                # รัน smoke test ต่อท�
 lmds inspect <MODEL> [--target …] [--context N] [--kv-dtype bf16|fp8] [--json]
 lmds plan <MODEL> [--no-llm] [--target] [--engine] [--json]     # Deployment Plan อย่างเดียว
 lmds generate <MODEL> [--gguf] [--engine] …                      # เหมือน deploy --yes แต่ไม่ต่อรอง flag
-lmds validate <BUNDLE_DIR> [--fix]         # quality gates 13 ด่าน — exit 0 ผ่าน, 2 ไม่ผ่าน
+lmds validate <BUNDLE_DIR> [--fix]         # quality gates 14 ด่าน — exit 0 ผ่าน, 2 ไม่ผ่าน
 lmds smoke <SLUG> [--on NODE] [--keep] [--skip-download]        # download → verify → start → test-text → stop (ตัวเดียวกับ deploy --smoke)
 lmds rebuild <SLUG> [--output DIR]         # สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน in-place ไม่เรียก LLM
 lmds adopt [CONTAINER] | --port N | --pid N [--slug] [--take-over]   # รับโมเดลที่รันอยู่ก่อน LMDS
@@ -550,7 +550,8 @@ GET  /api/cluster · POST /api/cluster/write · POST /api/cluster/pair · GET /a
 
 ## `lmds validate`
 
-รัน quality gates 13 ด่านกับ bundle ใด ๆ (รวม bundle ที่แก้มือ): `bash -n` · template rendered (ไม่มี tag เหลือ) · numeric
+รัน quality gates 14 ด่านกับ bundle ใด ๆ (รวม bundle ที่แก้มือ): `bash -n` · template rendered (ไม่มี tag เหลือ) · **value
+expansion** (เทียบ controller กับตัวที่ render ด้วยค่า canary — ค่าจาก repo/แผนต้องไม่กลายเป็น `$(…)` หรือหลุดนอก quote) · numeric
 underscore · pipefail-safe · line continuation · controller contract v3.0.0 · stacked contract · multimodal assets · profile
 schema (+ pinned revision) · serving consistent · secret scan · **origin stamp** · checksums (`--fix` regenerate `PACKAGE_SHA256SUMS`)
 
@@ -591,7 +592,7 @@ src/lmds/
 ├── licensing/           # ed25519.py (verify/sign) · model.py (รูปแบบไฟล์) · store.py (อ่าน+ตรวจ)
 │                        #   seats.py (นับเครื่องตาม LICENSE §1.1) · enforce.py (จุดบังคับใช้ที่เดียว)
 │                        #   stamp.py (ตราประทับบน bundle) · keys.py (public key ที่ฝังมา)
-├── validator/           # gates.py — quality gates 13 ด่าน
+├── validator/           # gates.py — quality gates 14 ด่าน
 ├── packager/            # bundle.py (PACKAGE_SHA256SUMS + zip)
 ├── doctor/              # checks.py — role/controller/hf-token/weights/…/architecture/grammar/port/server
 ├── bench/               # runner.py, workloads.py, capability.py, score.py, store.py

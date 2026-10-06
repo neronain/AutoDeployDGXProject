@@ -115,13 +115,18 @@ CI (`.github/workflows/ci.yml`) รันให้ทุก push/PR: pytest บ�
 ### แก้ template ของ controller
 
 `src/lmds/generator/templates/*.j2` (single-vllm · single-llamacpp · single-sglang · stacked-vllm) — หลังแก้ต้องผ่าน
-quality gates ทั้ง 13 ด่านโดยอัตโนมัติ (เทสใน `tests/test_generator.py` เรียก `run_gates` ให้อยู่แล้ว) · ข้อควรระวังที่ gate จับ:
+quality gates ทั้ง 14 ด่านโดยอัตโนมัติ (เทสใน `tests/test_generator.py` เรียก `run_gates` ให้อยู่แล้ว) · ข้อควรระวังที่ gate จับ:
 
 - ห้าม numeric underscore literal ใน arithmetic (`(( 65_536 ))`)
 - ห้าม pipefail-unsafe (`... | grep -q`)
 - ต้องมี flag/env ครบตาม controller contract v3.0.0
 - แยก bind / advertise / cluster address ออกจากกัน
 - ห้ามมี template tag เหลือในไฟล์ผลลัพธ์ (heredoc ใน `{% raw %}` เคยพิมพ์ `{{ slug }}` ดิบ)
+- **ค่าที่แทรกต้องไม่กลายเป็นโค้ด** — renderer escape `{{ … }}` ทุกตัวใน `*.sh.j2` ให้เองตามบริบท (`_ShellEscape` ใน
+  `generator/renderer.py` · กติกาอยู่ที่ `lmds/shellsafe.py`) template จึงเขียน `"{{ ค่า }}"` ตามปกติ **ไม่ต้องใส่ filter** ·
+  ที่ต้องรู้: วางค่าใน `"…"` หรือ `"${VAR:-…}"` เท่านั้น · ค่าที่ต้องวาง *นอก quote* (`for f in …`, `args+=(…)`) ให้ renderer
+  ส่งมาเป็น `shellsafe.words(...)` · ห้ามวางค่าใน `'…'` หรือใน `$( … )` · gate `value-expansion` เทียบผลลัพธ์กับตัวที่ render
+  ด้วย canary ทุกครั้ง และ `tests/test_shell_injection.py` รัน payload จริงใต้ bash กับทั้ง 4 template
 
 และกติกาที่เทสคุมนอก gate: **ทุกคำสั่งในบล็อก COMMANDS ของ `usage()` ต้องถูก dispatch จริง** (และกลับกัน) ในทั้ง 6 รูปแบบ
 controller (`tests/test_stacked_test_commands.py` ฯลฯ) · secret ห้ามขึ้น argv (API key → `--api-key-file`/env · HF token → stdin)

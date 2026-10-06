@@ -92,7 +92,8 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     info = client.model_info(source.repo_id, source.revision)
     revision_sha = info.get("sha") or (source.revision or "main")
 
-    files = _sibling_files(info)
+    skipped: list[str] = []
+    files = _sibling_files(info, skipped)
     safetensor_files = [(n, s) for n, s, _ in files if n.endswith(".safetensors")]
     gguf_files = [(n, s, sha) for n, s, sha in files if n.endswith(".gguf")]
 
@@ -124,6 +125,13 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
             "repo มีไฟล์ Python (trust_remote_code) — ต้อง review ก่อน deploy: "
             + ", ".join(report.trust_remote_code_files)
         )
+    if skipped:
+        # repr() โดยเจตนา — ชื่อพวกนี้คือสิ่งที่เราไม่ไว้ใจ ห้ามพิมพ์ดิบลงที่ที่อาจถูก copy ไปวางในเชลล์
+        report.warnings.append(
+            f"ข้ามไฟล์ใน repo {len(skipped)} ไฟล์ที่ชื่อมีอักขระนอกชุดที่รองรับ (ตัวอักษร ตัวเลข . _ - + = @ , / ช่องว่าง) — "
+            "LMDS จะไม่ดาวน์โหลด/ตรวจ/เสิร์ฟไฟล์เหล่านี้: "
+            + ", ".join(repr(name[:80]) for name in skipped[:5]) + (" …" if len(skipped) > 5 else "")
+        )
 
     if artifact in (ArtifactType.SAFETENSORS, ArtifactType.MIXED):
         _inspect_safetensors(report, source, client, revision_sha, safetensor_files)
@@ -132,11 +140,26 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     return report
 
 
-def _sibling_files(info: dict[str, Any]) -> list[tuple[str, int | None, str | None]]:
+def _sibling_files(
+    info: dict[str, Any], skipped: list[str] | None = None,
+) -> list[tuple[str, int | None, str | None]]:
+    """(ชื่อ, ขนาด, sha256) ของไฟล์ใน repo — ชื่อที่มีอักขระนอกชุดที่รองรับถูกข้าม (เก็บชื่อไว้ใน `skipped`)
+
+    ชื่อไฟล์มาจาก Hub API ตรง ๆ และใครก็ตั้ง repo ได้ · ชื่อพวกนี้ไปจบใน controller (MODEL_FILES, MODEL_URLS,
+    SHARD_FILES) ซึ่งเป็น bash ที่รันบนเครื่องลูกค้า — audit 2026-10-06: ไฟล์ชื่อ `Q4_K_M$(touch PWNED).gguf`
+    รันคำสั่งบน node ทันทีที่เรียก controller · ข้ามตั้งแต่ตรงนี้ ไฟล์นั้นจึงไม่เคยเป็นตัวเลือก ไม่เคยถูกนับเป็น shard
+    (renderer ปฏิเสธซ้ำอีกชั้น และ escape ทุกค่า — ดู lmds/shellsafe.py)
+    """
+    from lmds.shellsafe import is_safe_repo_filename
+
     out: list[tuple[str, int | None, str | None]] = []
     for sibling in info.get("siblings", []) or []:
         name = sibling.get("rfilename")
         if not name:
+            continue
+        if not isinstance(name, str) or not is_safe_repo_filename(name):
+            if skipped is not None:
+                skipped.append(str(name))
             continue
         size = sibling.get("size")
         lfs = sibling.get("lfs") or {}

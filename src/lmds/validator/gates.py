@@ -317,6 +317,162 @@ def gate_template_rendered(bundle_dir: Path) -> GateResult:
     return GateResult("template-rendered", True)
 
 
+@dataclass
+class _LineShape:
+    """สิ่งที่เชลล์ "เห็นเป็นโครง" ของหนึ่งบรรทัด — เครื่องหมาย quote ตัวคั่นคำสั่ง และ expansion · เนื้อใน quote กับตัวคำถูกทิ้ง"""
+
+    skeleton: str
+    end_state: str          # out | dq | sq — สถานะ quote ที่ค้างไปบรรทัดถัดไป
+    words: bool = False     # บรรทัดนี้มีค่าแบบ ShellWords (หลายคำที่ quote มาแล้ว) — จำนวนคำ/quote ต่างจาก canary ได้โดยชอบ
+
+
+# ตัวอักษรของ "คำ" ที่ไม่มีความหมายพิเศษต่อเชลล์ (ชุดเดียวกับที่ shlex.quote ปล่อยไว้ไม่ quote + ตัวอักษรทุกภาษา)
+_WORD_PUNCTUATION = frozenset("_.-/:@%+=,")
+
+
+def _line_shapes(text: str) -> list[_LineShape]:
+    """โครงของทุกบรรทัดตามที่เชลล์จะอ่าน — ไม่ใช่ parser ของ bash และไม่ต้องเป็น
+
+    ใช้ *เทียบ* controller จริงกับตัวที่ render ด้วย canary ซึ่งข้อความของ template เหมือนกันทุกตัวอักษร ส่วนที่อ่านผิด
+    (heredoc ของ python · quote ซ้อนใน `$( )`) จึงผิดเหมือนกันทั้งสองฝั่ง · ผลต่างที่เหลือมาจาก "ค่า" เท่านั้น
+
+    สิ่งที่เก็บไว้ในโครง: นอก quote — ทุกอย่างที่ไม่ใช่ตัวอักษรของคำ (ช่องว่าง `; & | < > ( )` quote `$` backtick …) ·
+    ใน double quote — ตัวปิด กับ `$`/backtick ที่ไม่ได้ escape (= expansion) · ใน single quote — ตัวปิดอย่างเดียว ·
+    ในคอมเมนต์ — `$`/backtick (บรรทัด `#` ใน heredoc ไม่ใช่คอมเมนต์ของ bash และถูก expand จริง)
+    """
+    from lmds.shellsafe import CANARY_WORDS
+
+    shapes: list[_LineShape] = []
+    state = "out"
+    for line in text.split("\n"):
+        kept: list[str] = []
+        words = comment = False
+        i, n = 0, len(line)
+        while i < n:
+            char = line[i]
+            if line.startswith(CANARY_WORDS, i):
+                words = True
+                i += len(CANARY_WORDS)
+                continue
+            if comment:
+                if char == "\\":
+                    i += 2
+                    continue
+                if char in "$`":
+                    kept.append(char + (line[i + 1] if char == "$" and line[i + 1:i + 2] in ("(", "{") else ""))
+                i += 1
+                continue
+            if state == "sq":
+                if char == "'":
+                    kept.append(char)
+                    state = "out"
+                i += 1
+                continue
+            if char == "\\":
+                if state == "out":
+                    kept.append(char)
+                i += 2
+                continue
+            if state == "dq":
+                if char == '"':
+                    kept.append(char)
+                    state = "out"
+                elif char in "$`":
+                    kept.append(char + (line[i + 1] if char == "$" and line[i + 1:i + 2] in ("(", "{") else ""))
+                i += 1
+                continue
+            # นอก quote
+            if char == "'":
+                state = "sq"
+            elif char == '"':
+                state = "dq"
+            elif char == "#" and (i == 0 or line[i - 1] in " \t;"):
+                comment = True      # quote ในคอมเมนต์ไม่มีผล (ชื่อผู้ถือไลเซนส์มี ' ได้)
+            elif char.isalnum() or char in _WORD_PUNCTUATION or ord(char) > 0x7F:
+                i += 1
+                continue
+            kept.append(char)
+            i += 1
+        shapes.append(_LineShape("".join(kept), state, words))
+    return shapes
+
+
+_QUOTES_AND_BLANKS = str.maketrans("", "", "'\" \t")
+
+
+def _value_became_code(got: _LineShape, want: _LineShape) -> str:
+    """เหตุผลที่บรรทัดของ controller จริงไม่ตรงโครงกับ canary — สตริงว่าง = ตรง"""
+    mine, theirs = got.skeleton, want.skeleton
+    if want.words:
+        # ค่าที่ renderer quote เป็นคำมาแล้ว: จำนวนคำ/คู่ quote ต่างได้ แต่ของที่อยู่นอก quote ต้องเท่าเดิม
+        mine, theirs = mine.translate(_QUOTES_AND_BLANKS), theirs.translate(_QUOTES_AND_BLANKS)
+    if mine == theirs and got.end_state == want.end_state:
+        return ""
+    for mark in ("$(", "${", "`"):
+        if mine.count(mark) > theirs.count(mark):
+            return f"มี {mark} ที่ template ไม่ได้ใส่"
+    if mine.count("$") > theirs.count("$"):
+        return "มี $ (expansion) ที่ template ไม่ได้ใส่"
+    return "quote/ตัวคั่นคำสั่งไม่ตรงกับที่ template เขียน — มีค่าหลุดออกนอก quote"
+
+
+def gate_value_expansion(bundle_dir: Path) -> GateResult:
+    """ค่าที่ renderer แทรกลง controller ต้องไม่กลายเป็นคำสั่ง — `$(` `${` backtick และ quote ต้องมีเท่าที่ template ใส่เอง
+
+    วิธี: สร้างแผนกลับจาก bundle (MODEL_PROFILE.yaml + หัว controller — ทางเดียวกับ `lmds bundles refresh`) แล้ว render
+    template เดิมอีกรอบโดยแทน *ทุกค่า* ด้วยคำ canary ที่ไม่มีอักขระของเชลล์ · ผลลัพธ์นั้นคือ "สิ่งที่ template ใส่เอง"
+    บรรทัดต่อบรรทัด — controller จริงที่โครงไม่ตรง (มี expansion เกิน · quote เปิดปิดไม่เท่า · มี `;` นอก quote เพิ่ม)
+    แปลว่ามีค่าหลุดออกมาเป็นโค้ด · ไม่ต้องเดาด้วย regex ว่า `$(` ตัวไหนเป็นของ template (`$(cd "$(dirname …)")`)
+
+    เคสจริง (audit 2026-10-06): ไฟล์ใน repo ชื่อ `…$(touch PWNED_gguf).gguf` และ served_model_name
+    `qwen$(touch PWNED_served_name)` ผ่านครบทุกด่านที่มีตอนนั้น แล้ว `controller help` สร้างไฟล์ PWNED บนเครื่อง
+    """
+    name = "value-expansion"
+    profile_path = bundle_dir / "MODEL_PROFILE.yaml"
+    scripts = [s for s in _controllers(bundle_dir) if s.name.endswith(("-single.sh", "-stacked.sh"))]
+    if not profile_path.exists() or not scripts:
+        return GateResult(name, True, "n/a (ไม่มี profile หรือไม่ใช่ controller ที่ LMDS render)")
+    try:
+        profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return GateResult(name, True, "n/a (profile อ่านไม่ได้ — ปล่อยให้ gate อื่นจับ)")
+    if not isinstance(profile, dict):
+        return GateResult(name, True, "n/a")
+
+    from lmds.fleet.refresh import RefreshError, plan_from_profile
+    from lmds.generator.renderer import render_canary_controller
+
+    compared = 0
+    for script in scripts:
+        actual = script.read_text(encoding="utf-8")
+        try:
+            try:
+                plan, report, fit = plan_from_profile(profile, actual)
+            except RefreshError:
+                # repo ที่ Hub ไม่รายงาน shard: template ไม่พิมพ์ตาราง SHARD_FILES เลย และ refresh ถือว่า "ต้องออนไลน์" ·
+                # สำหรับการเทียบโครง "ไม่มีตาราง" = "ตารางว่าง" พอดี (template ข้ามบล็อกนั้นเหมือนกัน) จึงยังเทียบได้
+                plan, report, fit = plan_from_profile(profile, actual + "\nSHARD_FILES=(\n)\n")
+            canary = render_canary_controller(plan, report, fit, slug=bundle_dir.name)
+        except Exception as exc:  # noqa: BLE001 — bundle ที่สร้างแผนกลับไม่ได้ (adopt · profile รุ่นเก่า) เทียบไม่ได้ ไม่ใช่ไม่ผ่าน
+            return GateResult(name, True, f"n/a (สร้างแผนกลับจาก bundle ไม่ได้: {str(exc)[:80]})")
+        mine, theirs = _line_shapes(actual), _line_shapes(canary)
+        if len(mine) != len(theirs):
+            # controller จาก template รุ่นอื่น (หรือแก้มือ) — โครงไม่ตรงจึงเทียบบรรทัดต่อบรรทัดไม่ได้ ·
+            # bundle แบบนี้ถูกนับเป็น controller-stale อยู่แล้ว และตอน regenerate ค่าทุกตัวจะผ่าน renderer + ด่านนี้ใหม่
+            return GateResult(
+                name, True,
+                f"n/a ({script.name} ไม่ได้ render จาก template ชุดนี้ — {len(mine):,} บรรทัด เทียบกับ {len(theirs):,} · "
+                "regenerate ก่อนแล้วตรวจใหม่: lmds bundles refresh)")
+        for number, (got, want) in enumerate(zip(mine, theirs, strict=True), start=1):
+            reason = _value_became_code(got, want)
+            if reason:
+                return GateResult(
+                    name, False,
+                    f"{script.name}:{number}: {reason} — ค่าจาก repo/แผนจะถูกเชลล์ตีความบนเครื่องที่รัน")
+        compared += 1
+    return GateResult(name, True, f"เทียบกับ canary แล้ว {compared} สคริปต์")
+
+
 def gate_serving_consistent(bundle_dir: Path) -> GateResult:
     """context / slots / max_output_tokens ต้องเป็นค่าที่เป็นไปได้จริงพร้อมกัน
 
@@ -379,6 +535,7 @@ ALL_GATES = [
     gate_serving_consistent,
     gate_bash_syntax,
     gate_template_rendered,
+    gate_value_expansion,
     gate_numeric_underscore,
     gate_pipefail_safe,
     gate_line_continuation,
