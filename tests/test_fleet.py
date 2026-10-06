@@ -18,6 +18,22 @@ def no_orphan_scan(monkeypatch):
     monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
 
 
+@pytest.fixture(autouse=True)
+def a_machine_that_serves(monkeypatch):
+    """ไฟล์นี้เทส start/repair ของเครื่องที่รันโมเดลเอง — บอกบทบาทไว้ตรงนี้ ไม่พึ่งว่าเทสไฟล์ไหนรันก่อน
+
+    `serving._detect` เป็น lru_cache ทั้ง process · เครื่อง dev (ไม่มี GPU ไม่มี llama-server) ถูกตรวจเป็น control plane
+    แล้ว repair/start ปฏิเสธก่อนถึงโค้ดที่เทสดู — เคสจริง 2026-10-06: รันไฟล์นี้เดี่ยว ๆ ล้ม 5 ข้อ (บน main ก็ล้ม)
+    ทั้งที่รันทั้งชุดผ่าน เพราะเทสไฟล์อื่นที่รันก่อนทิ้งผล LMDS_ROLE=serving ค้างไว้ในแคช
+    """
+    from lmds.hardware import serving
+
+    monkeypatch.setenv("LMDS_ROLE", "serving")
+    serving.reset_cache()
+    yield
+    serving.reset_cache()
+
+
 def make_meta(root: Path, slug: str, mode: str = "native", pid: int | None = None,
               port: int = 8000, controller: str = "") -> Path:
     run_dir = root / slug
