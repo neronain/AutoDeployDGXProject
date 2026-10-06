@@ -845,7 +845,7 @@ def discover() -> list[ServerInfo]:
             port=int(meta.get("port") or 0),
             container=meta.get("container", ""),
             pid_file=meta.get("pid_file", ""),
-            controller=meta.get("controller", ""),
+            controller=_resolve_controller(meta.get("controller", "")),
             started_at=meta.get("started_at", ""),
             run_dir=meta_path.parent,
         )
@@ -881,8 +881,20 @@ def discover() -> list[ServerInfo]:
         servers.append(orphan)
 
     # bundle ที่อยู่บนดิสก์แต่ยังไม่เคย start — ต้องเห็นด้วย ไม่งั้น deploy เสร็จแล้วไปต่อไม่ถูก
-    known = {s.slug for s in servers}
+    #
+    # container ที่ adopt ไว้แล้วแต่ทะเบียนหาย (ถูกเก็บกวาดไปก่อน 2026-10-06 · ~/.lmds/run ถูกล้าง) และยังรันอยู่:
+    # ตัวเก็บตกข้างบนเห็นมันเป็น "ของนอกที่ไม่มี controller" ทั้งที่ bundle อยู่ใน ~/bundles — ไม่กันชื่อมันไว้
+    # เพื่อให้ตัวสแกนหา bundle เจอ แล้วเอา controller ไปแปะให้ตัวที่รันอยู่ (สถานะ/พอร์ตยังเป็นของจริงจาก docker)
+    strays = {s.slug: s for s in servers if not s.registered and not s.controller and s.container}
+    known = {s.slug for s in servers} - set(strays)
     for bundle in _scan_bundles(known):
+        stray = strays.get(bundle.slug)
+        if stray is not None:
+            if bundle.controller.endswith("-adopted.sh") and bundle.container == stray.container:
+                stray.controller = bundle.controller
+                stray.model = stray.model or bundle.model
+                stray.model_id = bundle.model_id or stray.model_id
+            continue      # ไม่ใช่ของตัวนี้ = คงพฤติกรรมเดิม: ชื่อซ้ำกับตัวที่รันอยู่ ไม่โชว์สองแถว
         bundle.healthy = False
         servers.append(bundle)
     return servers
@@ -920,7 +932,32 @@ def _pick_controller(directory: Path, profile_path: Path) -> Path | None:
         except Exception:  # noqa: BLE001
             topology = ""
         return stacked[0] if topology == "stacked" else singles[0]
-    return next(iter(singles + stacked), None)
+    generated = next(iter(singles + stacked), None)
+    if generated is not None:
+        return generated
+    # bundle จาก `lmds adopt` — ชื่อลงท้าย -adopted.sh · มองแค่สองแบบข้างบน = bundle ที่ทะเบียนหายไปแล้ว
+    # (หรือ copy มาจากเครื่องอื่น) กลับเข้าระบบเองไม่ได้อีกเลย ทั้งที่ไฟล์อยู่ครบ (audit 2026-10-06) ·
+    # อยู่ท้ายสุดเสมอ: โฟลเดอร์ที่มี controller ที่ LMDS สร้างเอง ใช้ตัวนั้นเหมือนเดิม
+    return next(iter(sorted(directory.glob("*-adopted.sh"))), None)
+
+
+def _resolve_controller(controller: str) -> str:
+    """controller ที่ทะเบียนจดไว้เป็น path สัมพัทธ์ → path เต็มของไฟล์จริง (หาไม่เจอคืนค่าเดิม)
+
+    `lmds adopt` รุ่นก่อน 2026-10-06 จด `bundles/<slug>/<slug>-adopted.sh` ตาม `--output ./bundles` ของ CLI —
+    ใช้ได้เฉพาะจากโฟลเดอร์ที่พิมพ์คำสั่ง · ทะเบียนแบบนั้นยังอยู่บนเครื่องลูกค้า (TKC สามตัว) จึงต้องอ่านให้ออก
+    โดยไม่ต้องให้ใครไป adopt ซ้ำ: ลองจาก cwd ก่อน (ความหมายเดิม) แล้วหาใน bundle roots ที่ fleet สแกนอยู่แล้ว
+    """
+    if not controller or os.path.isabs(controller):
+        return controller
+    here = Path(controller)
+    if here.is_file():
+        return str(here.absolute())
+    for root in bundle_roots():
+        candidate = root / here.parent.name / here.name
+        if candidate.is_file():
+            return str(candidate)
+    return controller
 
 
 def profile_context(profile: dict | None) -> int | None:
@@ -1364,17 +1401,27 @@ def _scan_bundles(known_slugs: set[str]) -> list[ServerInfo]:
                 profile = bundle_profile(str(controller)) or {}
                 model = profile.get("model") or {}
                 runtime = profile.get("runtime") or {}
+                # bundle จาก `lmds adopt` ไม่ได้ใช้ธรรมเนียม `lmds-<slug>`: container ชื่อเดิมของเจ้าของ
+                # (จดไว้ใน source_container) หรือเป็น process ตรง ๆ ที่ไม่มี container เลย (source_process)
+                adopted = bool(profile.get("adopted")) and controller.name.endswith("-adopted.sh")
+                native = adopted and isinstance(profile.get("source_process"), dict)
+                container = f"lmds-{slug}"
+                if native:
+                    container = ""
+                elif adopted and profile.get("source_container"):
+                    container = str(profile["source_container"])
                 found.append(ServerInfo(
                     slug=slug,
                     model=model.get("served_name", slug),
                     default_model=model.get("served_name", slug),
                     model_id=model.get("id", ""),
                     engine=runtime.get("engine", ""),
-                    mode="docker",
+                    mode="native" if native else "docker",
                     # bundle.env ชนะ profile — เป็นค่าที่ start จะใช้จริง
                     port=int(bundle_settings.read(controller.parent).get("port")
                              or (profile.get("serving") or {}).get("port") or 8000),
-                    container=f"lmds-{slug}",
+                    container=container,
+                    pid_file=str(run_root() / slug / "server.pid") if native else "",
                     controller=str(controller),
                     registered=False,
                 ))

@@ -425,6 +425,10 @@ def ctl_script(slug: str, node_name: str, argv: str, env_prefix: str = "") -> st
         "ctl=\"\"; if grep -qsE '^topology: *stacked' MODEL_PROFILE.yaml; then "
         "ctl=\"$(ls ./*-stacked.sh 2>/dev/null | head -1)\"; fi; "
         "[ -n \"$ctl\" ] || ctl=\"$(ls ./*-single.sh ./*-stacked.sh 2>/dev/null | head -1)\"; "
+        # bundle จาก `lmds adopt` (ลงท้าย -adopted.sh) — ท้ายสุดเสมอ ตัวที่ LMDS สร้างเองยังมาก่อน ·
+        # ไม่มีบรรทัดนี้ hub ตาม log ของโมเดลที่ adopt ไว้บนเครื่องอื่นไม่ได้ ("ไม่พบ controller" ทั้งที่มี) ·
+        # คำสั่งที่มันไม่มี (prepare-runtime) controller ที่ adopt รุ่น 2026-10-06 ขึ้นไปตอบด้วย exit ≠ 0
+        "[ -n \"$ctl\" ] || ctl=\"$(ls ./*-adopted.sh 2>/dev/null | head -1)\"; "
         f"[ -n \"$ctl\" ] || {{ echo 'ไม่พบ controller' >&2; exit 1; }}; "
         f"{env_prefix}\"$ctl\" {argv}"
     )

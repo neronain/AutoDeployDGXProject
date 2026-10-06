@@ -7,6 +7,38 @@
 
 ### แก้
 
+- **`lmds adopt` ทิ้งของที่ container ถูกสั่งรันมาไปเงียบ ๆ** (audit 2026-10-06 · ฟลีต TKC มี container
+  ของลูกค้าที่ adopt ไว้ 3 ตัว) · controller ที่ adopt เขียน `stop` ด้วย `docker rm -f` แล้ว `start` ด้วย
+  `docker run` ที่ประกอบใหม่ — อะไรที่ไม่ได้ยกมาจึงหายในวันแรกที่มีคนกด restart · หลักใหม่:
+  **คำสั่งที่สร้างต้องเท่ากับของเดิม หรือ adopt ต้องบอกว่าตรงไหนไม่เท่า** (เทส: `tests/test_adopt_*.py` ชุดใหม่
+  รันสคริปต์จริงใต้ bash แล้วอ่าน argv ที่ docker ได้รับ)
+  - ยกมาครบ: `HostConfig.Mounts` (`--mount` · volume แบบ long syntax ของ compose) · GPU ที่เจาะจง
+    (`--gpus device=1` เคยกลายเป็น `all`) · `--runtime` · `--ulimit` `--cap-add/--cap-drop` `--device`
+    `--user` `--workdir` `--add-host` `--memory*` `--cpus/--cpuset-*` `--security-opt` `--tmpfs` `--group-add`
+    `--sysctl` `--pid/--uts/--userns` `--privileged` `--read-only` `--init` `--log-driver/--log-opt` label ·
+    alias/IP บน network · restart policy เดิม (เคยถูกบังคับเป็น `unless-stopped`) · host binding ทุกตัวและ `/udp`
+  - **env**: เลิกเดาจาก prefix ของชื่อ — ถาม image (`docker image inspect`) แล้วเอา env ของ container
+    ลบด้วยของ image · `NVIDIA_VISIBLE_DEVICES` `OMP_NUM_THREADS` `PYTORCH_CUDA_ALLOC_CONF` `HTTPS_PROXY`
+    `TRANSFORMERS_OFFLINE` และ `LLAMA_ARG_*` ทั้งชุดไม่หายแล้ว (llama.cpp ที่ตั้งค่าผ่าน env เคยได้คำสั่งที่ไม่มีโมเดล
+    และ `model: '' context: 0`) · ถาม image ไม่ได้ = ใช้รายการ prefix เดิมและ **บอกชื่อ** ตัวที่ไม่ได้ใส่
+  - image ที่ไม่มี ENTRYPOINT (`docker run img vllm serve …`): ตัว executable (`Path`) เคยหายจากคำสั่ง
+  - **พอร์ตที่จดคือพอร์ตฝั่งเครื่อง** · `-p 8001:8000` เคยถูกจดเป็น 8000 ลง `API_PORT`/profile/`server.meta`
+    แล้ว health/status/watchdog ไปเคาะ 127.0.0.1:8000 ซึ่งอาจเป็นบริการอื่น
+  - **ความลับบน argv** (`--api-key sk-…` `--hf-token …` · ทั้ง container และ process · รวมที่อยู่ในสตริงของ
+    `bash -c`) ไม่ลงสคริปต์ 0755/`MODEL_PROFILE.yaml`/zip ที่ `node push` ส่งอีก · API key ที่ของเดิมใช้อยู่ถูกเก็บลง
+    `~/.lmds/keys/<slug>` (0600) ตอน adopt แล้วเติมกลับตอน start · ไม่มี key = **ไม่ start** (ไม่ขึ้นแบบเปิดโล่ง)
+  - ชื่อโมเดล/ค่าจาก argv ที่มี `"` หรือ `$(…)` ไม่ถูกรันเป็นคำสั่งในสคริปต์อีก (ทั้งสองแบบของ controller)
+  - **รายการ "ต่างจาก container เดิม"** (network ที่สอง · container ของ compose · `--rm` · HEALTHCHECK ที่ถูกปิด ·
+    HostConfig ที่ LMDS ไม่รู้จัก ฯลฯ) ขึ้นสามที่: หน้าจอของ `lmds adopt` · `not_reproduced` ใน
+    `MODEL_PROFILE.yaml` · หัว controller
+  - สั่ง `lmds adopt` ทับของเดิมที่ต่างกัน: ของเดิมถูกเก็บเป็น `<ชื่อ>.replaced-<เวลา>` (0600 · ถอดค่าความลับ) และบอกบนหน้าจอ
+  - controller ที่ adopt มา: คำสั่งที่ไม่มี (`download` `prepare-runtime`) คืน exit ≠ 0 แทนการพิมพ์วิธีใช้แล้วคืน 0
+- **bundle ที่ adopt มาหายจาก `lmds list` เมื่อ container หยุด** · `lmds adopt` จด controller เป็น path สัมพัทธ์
+  (`--output ./bundles`) — จาก cwd อื่น "ไม่พบ controller" และ `discover()` ลบทะเบียนทิ้ง โดยตัวสแกน bundle
+  มองหาแค่ `*-single.sh`/`*-stacked.sh` จึงกลับมาเองไม่ได้ · ตอนนี้จด path เต็ม · ทะเบียนเก่าที่เป็น path สัมพัทธ์
+  ถูกอ่านออก · `*-adopted.sh` ถูกสแกนเจอ (ด้วยชื่อ container เดิม ไม่ใช่ `lmds-<slug>`) · hub ตาม log ของ bundle
+  ที่ adopt ไว้บนเครื่องอื่นได้ · `lmds clone` ของ bundle ที่ adopt มาบอกเหตุผลแทน "ไม่พบ controller"
+
 - **context ต่อคำขอ · slot · ก้อนรวม ของ llama.cpp ถูกเอามาปนกัน** (ตรวจ 2026-10-05) ·
   `serving.context` ของ llama.cpp คือ `--ctx-size` = ก้อนรวมที่หารให้ทุก slot ส่วนเพดานของ
   โมเดล (native) เป็นเพดานต่อคำขอ · planner รู้ (ตั้งก้อนรวม = ต่อคำขอ × slot) แต่ที่เหลือไม่รู้:

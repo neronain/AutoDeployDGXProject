@@ -96,6 +96,11 @@ _FIND_BUNDLE = (
 )
 
 
+# บรรทัดที่สคริปต์ฝั่งต้นทางพิมพ์เมื่อ bundle เป็นของ `lmds adopt` — ข้อความถึงคนประกอบที่ฝั่ง Python
+# เดิมได้ "ไม่พบ controller ใน <dir>" ซึ่งพาคนไปไล่หาไฟล์ที่ไม่ได้หาย (audit 2026-10-06)
+_ADOPTED_MARK = "LMDS_CLONE_ADOPTED_BUNDLE=1"
+
+
 def inspect_source(plan: ClonePlan) -> ClonePlan:
     """อ่านว่าไฟล์อยู่ที่ไหนและใหญ่แค่ไหนบนต้นทาง — เอาไว้บอกคนสั่งก่อนเริ่มลาก"""
     from lmds.nodes import NodeError, find, run
@@ -103,6 +108,8 @@ def inspect_source(plan: ClonePlan) -> ClonePlan:
     source = find(plan.source)
     script = _FIND_BUNDLE.format(slug=shlex.quote(plan.slug)) + (
         'ctl="$(ls "$dir"/*-single.sh "$dir"/*-stacked.sh 2>/dev/null | head -1)"; '
+        # bundle จาก `lmds adopt` มีแต่ *-adopted.sh — ไม่ใช่ "controller หาย" (ดูข้อความที่ _ADOPTED_MARK ข้างล่าง)
+        '[ -n "$ctl" ] || ! ls "$dir"/*-adopted.sh >/dev/null 2>&1 || { echo "' + _ADOPTED_MARK + '"; exit 3; }; '
         '[ -n "$ctl" ] || { echo "ไม่พบ controller ใน $dir" >&2; exit 1; }; '
         # MODEL_DIR ประกาศไว้ในตัว controller เอง — ถามมันดีกว่าเดา path
         'md="$(grep -m1 "^MODEL_DIR=" "$ctl" | sed "s/^MODEL_DIR=//")"; '
@@ -131,6 +138,13 @@ def inspect_source(plan: ClonePlan) -> ClonePlan:
         result = run(source, script, timeout=120)
     except NodeError as exc:
         raise CloneError(str(exc)) from exc
+    if _ADOPTED_MARK in (result.stdout or ""):
+        raise CloneError(
+            f"{plan.slug} บน {plan.source} เป็น bundle ที่รับเข้ามาด้วย lmds adopt — clone ไม่ได้: "
+            "controller ของมันคือคำสั่งเดิมของเจ้าของเครื่องนั้น (image · path ที่ mount · พอร์ต · GPU ของเครื่องต้นทาง) "
+            "และ weight อยู่ในที่ที่เจ้าของจัดการเอง ไม่มี MODEL_DIR/HF cache ให้ clone อ่าน · "
+            f"อยากได้โมเดลเดียวกันบน {plan.target}: deploy ใหม่ที่นั่นด้วย lmds deploy <model-id> "
+            "(หรือคัดลอก weight เองแล้ว lmds adopt ตัวที่รันบนเครื่องนั้น)")
     if not result.ok:
         raise CloneError((result.stderr or result.stdout).strip()[:400])
 
