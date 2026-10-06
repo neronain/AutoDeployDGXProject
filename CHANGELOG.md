@@ -132,6 +132,26 @@
   llama.cpp ไม่ถูกจำกัดที่ native อีก และบอกว่าเป็นก้อนรวม
 - **vLLM/SGLang: `--concurrency N` เกิน 4 ได้ context ที่หาร N แต่เสิร์ฟแค่ 4** ·
   `max_num_seqs` ตอนนี้เป็น `max(4, N)`
+- **audit หน้าคอนโซล (2026-10) — จอที่พูดไม่ตรงกับสิ่งที่เกิด** · เทสทั้งหมดอยู่ที่
+  `tests/test_audit_console_dom.py` (รันสคริปต์จริงของหน้า · ล้มก่อนแก้ทุกข้อ)
+  - **เปลี่ยน token ที่ hub แล้วแท็บเก่าล็อกทั้ง IP** — หน้า login ถูกวาดทับทุก 5 วิ และวง poll ยื่น token เก่าซ้ำ ๆ
+    จน token ที่ถูกต้องได้ 429 · หน้าเว็บหยุดทุกวงรอบที่ 401 แรก · hub นับ "การเดา" (ค่าที่ยังไม่เคยเห็น) ไม่ใช่
+    คำขอที่ถูกปฏิเสธ — `POST /api/auth` ยังนับทุกครั้ง
+  - **XSS จาก payload ของ node** — ฟิลด์ที่ template เชื่อว่าเป็นตัวเลข (port · slots · cores · score · size_gb …)
+    ถูกแปะลง `innerHTML` ตรง ๆ ~89 จุด · กติกาเดียว: `esc()` หรือ `num()/nloc()/nfix()` · เทสแทนทุกใบของ
+    payload ตัวอย่างด้วย markup (`tests/console_xss_walk.js`)
+  - **การ์ดแช่แข็งเพราะคีย์ "เมนูเปิดอยู่" ที่ค้าง** — เครื่องที่ดับแล้วยังขึ้น running บนการ์ด/rail/ภาพรวม ·
+    ตอนนี้ rail กับภาพรวมตามทุก frame และป้าย paused นับจากเวลาที่การ์ดถูกวาด
+  - **ตัวตาม job / wizard เครือข่าย: poll หลุดรอบเดียว** = เลิกตามเงียบ ๆ หรือขึ้น "failed — rolled back" ทั้งที่งาน
+    ยังเดิน · ตอนนี้ถอยแล้วถามใหม่ บอกว่าติดต่อ hub ไม่ได้ และอ้าง rollback เฉพาะที่ hub รายงาน
+  - **wizard deploy ยิง `/api/recipes` ~176 ครั้ง/วินาที** เมื่อคำตอบไม่มีสูตร · ถามครั้งเดียวต่อการเปิด
+  - **โมเดล stacked ตัวเดียวถูกนับเป็นสอง** บนภาพรวม · ตาราง Fleet models · ไทล์ Models running
+  - **"Deploy stacked to this group" ที่ hub เป็น head** ไม่เคยเขียน cluster.env หรือจับคู่ SSH · ตอนนี้ทำครบ
+    (`/api/cluster/pair` และ `/api/deploy/analyze` รับ hub เป็น head)
+  - **JSON ของ error ถูกอ่านเป็นข้อมูล** (500 → "served open" · "No stackable pair yet" · `[object Object]` ·
+    การ์ด Unreachable) · ผล Rename host/setup ถูกลบโดย frame ถัดไป · "Rebuilds started" ทั้งที่ไม่มีอะไรเริ่ม ·
+    token ของ repo ที่ต้องขอสิทธิ์ส่งไม่ถึง · session หมดอายุถูกโทษโมเดล · ยอดลบรวม weight ทั้งที่ติ๊กเก็บไว้ ·
+    wizard เครือข่ายบอก 2–8 เครื่องแต่ให้แค่ 4
 
 ## 0.10.0 — 2026-09-21
 
