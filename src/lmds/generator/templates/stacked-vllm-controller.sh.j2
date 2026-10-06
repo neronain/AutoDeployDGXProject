@@ -1642,7 +1642,7 @@ _force_own_tree_remote() {
 clear_fi_cache() {
   _require_non_root
   log "หยุด deployment ก่อนล้าง FlashInfer cache …"
-  stop
+  stop || die "clear-fi-cache หยุดที่ขั้น stop (รายการด้านบน) — ไม่ล้าง cache ขณะที่ container บางตัวอาจยังใช้มันอยู่"
   _ensure_local_owned_dir "$FLASHINFER_CACHE"
   _force_own_tree_local "$FLASHINFER_CACHE"
   log "ล้าง FlashInfer cache บน head: ${FLASHINFER_CACHE}"
@@ -2201,32 +2201,151 @@ EOF
 }
 
 # ─────────────────────────── stop ───────────────────────────
+# รายงานตามที่ **เห็น** บนแต่ละ node — ไม่ใช่ตามที่สั่งไป
+#
+# เดิมทุก ssh ปิดท้ายด้วย `|| true` แล้ว stop พิมพ์ "stopped <head> + <worker>" คืน 0 เสมอ · worker ที่ ssh ไปไม่ถึง
+# (ssh คืน 255) จึงถูกรายงานว่าหยุดแล้ว ทั้งที่ container ของมันยังรันและถือ GPU memory อยู่ทั้งก้อน — hub กับคน
+# เชื่อ exit code แล้วไป start โมเดลอื่นทับ (audit 2026-10: "ssh: connect to host … Connection timed out" ตามด้วย
+# "stopped …-head + …-worker" rc 0) · ฝั่ง single แก้เรื่องเดียวกันไปแล้ว ("เดิมพิมพ์ stopped เสมอ…")
+#
+# สคริปต์ข้างล่างรันได้ทั้งในเครื่อง (bash -c) และผ่าน ssh บน worker (ท่าเดียวกับ _links_probe_script) · เป็น POSIX sh
+# เพราะ login shell ของ worker ไม่จำเป็นต้องเป็น bash · พิมพ์ผลบรรทัดเดียว:
+#   stopped <สถานะเดิม>   เดิมรันอยู่ → ลบแล้ว และ docker ps ไม่เห็นแล้ว
+#   removed <สถานะเดิม>   เดิมหยุดอยู่ก่อนแล้ว (Exited/Created) → ลบซากแล้ว
+#   absent                ไม่มี container ชื่อนี้ตั้งแต่ต้น
+#   kept <สถานะ>          โหมด running เท่านั้น: หยุดไปเองแล้ว → ไม่แตะ (log ของมันคือหลักฐานว่าตายเพราะอะไร)
+#   stuck <สถานะ>         สั่ง rm -f แล้ว docker ps ยังเห็นอยู่
+#   docker-error <ข้อความ> ถาม docker บนเครื่องนั้นไม่ได้ = ไม่รู้สถานะ
+# สคริปต์คืน 0 เสมอ — exit code ที่ไม่ใช่ 0 จึงเหลือความหมายเดียวคือ "คำสั่งไปไม่ถึงเครื่องนั้น" (ssh เองคืน 255)
+# $1 = ชื่อ container · $2 = rm (stop: ลบทุกอย่างที่ชื่อนี้) | running (rollback ของ start: หยุดเฉพาะตัวที่ยังรัน)
+_stop_probe_script() {
+  printf 'C=%q; MODE=%q\n' "$1" "${2:-rm}"
+  cat <<'STOPPROBE'
+q() { docker ps -a --filter "name=^${C}\$" --format '{{.Status}}' 2>&1; }
+before="$(q)" || { echo "docker-error $(printf '%s\n' "$before" | tail -n 1)"; exit 0; }
+before="$(printf '%s\n' "$before" | head -n 1)"
+case "$before" in
+  "") was=absent ;;
+  Up*|Restarting*) was=running ;;
+  *) was=exited ;;
+esac
+if [ "$MODE" = running ] && [ "$was" = exited ]; then echo "kept $before"; exit 0; fi
+# rm -f แม้ ps ไม่เห็น — ไม่มีก็ไม่เสียหาย และไม่ต้องเชื่อตัวกรองชื่อเพียงทางเดียว
+docker rm -f "$C" >/dev/null 2>&1
+after="$(q)" || { echo "docker-error $(printf '%s\n' "$after" | tail -n 1)"; exit 0; }
+after="$(printf '%s\n' "$after" | head -n 1)"
+if [ -n "$after" ]; then echo "stuck $after"; exit 0; fi
+# mp backend ทิ้ง shared memory ไว้ — ไม่เก็บกวาด start รอบหน้าจะชนของเก่า
+sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null
+case "$was" in
+  running) echo "stopped $before" ;;
+  exited)  echo "removed $before" ;;
+  *)       echo "absent" ;;
+esac
+exit 0
+STOPPROBE
+}
+
+# ผลสะสมของรอบหยุดหนึ่งรอบ — _stop_node เติม ผู้เรียกอ่าน (ตัวแปร global เพราะฟังก์ชันพิมพ์รายงานทาง stdout อยู่แล้ว)
+STOP_STATE=""; STOP_DETAIL=""
+STOP_UNSURE=""     # node ที่ยืนยันไม่ได้ว่าหยุดแล้ว (ขึ้นบรรทัดใหม่คั่น): "<ป้าย>|<คำสั่งที่รันบนเครื่องนั้นเองได้>"
+STOP_STOPPED=0     # จำนวน node ที่เดิมรันอยู่แล้วถูกหยุด
+STOP_REMOVED=0     # จำนวน node ที่มีแต่ซาก (Exited) แล้วถูกลบ
+
+# หยุด container บน node เดียว แล้วพิมพ์หนึ่งบรรทัดว่าเห็นอะไร · ไม่ die และไม่คืนค่าไม่เป็นศูนย์ — ผู้เรียกต้องไปต่อ
+# ให้ครบทุก node ก่อนค่อยสรุป (ตัวแรกไปไม่ถึงไม่ใช่เหตุผลที่จะไม่หยุดตัวที่เหลือ)
+# $1 = ป้าย (head | worker <ip>) · $2 = host สำหรับ ssh (ว่าง = เครื่องนี้) · $3 = container · $4 = rm | running
+_stop_node() {
+  local label="$1" host="$2" name="$3" mode="${4:-rm}" out="" rc=0 verdict noise by_hand
+  local shapes='^(stopped|removed|absent|kept|stuck|docker-error)( |$)'
+  if [[ -n "$host" ]]; then
+    out="$(ssh_at "$host" "$(_stop_probe_script "$name" "$mode")" 2>&1)" || rc=$?
+    by_hand="ssh ${SSH_USER}@${host} docker rm -f ${name}"
+  else
+    out="$(bash -c "$(_stop_probe_script "$name" "$mode")" 2>&1)" || rc=$?
+    by_hand="docker rm -f ${name}"
+  fi
+  # บรรทัดผลของสคริปต์ = บรรทัดสุดท้ายที่ขึ้นต้นด้วยคำที่รู้จัก · ที่เหลือคือข้อความของ ssh/เชลล์ปลายทาง (.bashrc ที่ echo ก็มี)
+  verdict="$(printf '%s\n' "$out" | grep -E "$shapes" | tail -n 1 || true)"
+  noise="$(printf '%s\n' "$out" | grep -vE "$shapes" | grep -v '^[[:space:]]*$' | tail -n 1 || true)"
+  if (( rc == 255 )) && [[ -n "$host" ]]; then
+    # ssh คืน 255 เฉพาะเมื่อตัวมันเองล้ม (ต่อไม่ได้ · timeout · key) — คำสั่งปลายทางไม่ได้รันเลย
+    STOP_STATE="unreachable"; STOP_DETAIL="$noise"
+  elif [[ -z "$verdict" ]]; then
+    STOP_STATE="error"; STOP_DETAIL="exit ${rc}${noise:+ · ${noise}}"
+  else
+    STOP_STATE="${verdict%% *}"; STOP_DETAIL=""
+    [[ "$verdict" == *" "* ]] && STOP_DETAIL="${verdict#* }"
+  fi
+  case "$STOP_STATE" in
+    stopped) STOP_STOPPED=$(( STOP_STOPPED + 1 ))
+             echo "  ${label}: หยุด ${name} แล้ว — ตรวจซ้ำแล้วไม่เหลือ container (เดิม: ${STOP_DETAIL})" ;;
+    removed) STOP_REMOVED=$(( STOP_REMOVED + 1 ))
+             echo "  ${label}: ${name} หยุดอยู่ก่อนแล้ว (${STOP_DETAIL}) — ลบซาก container แล้ว" ;;
+    absent)  echo "  ${label}: ไม่มี container ${name} — ไม่มีอะไรรันอยู่" ;;
+    kept)    echo "  ${label}: ${name} หยุดไปเองแล้ว (${STOP_DETAIL}) — เก็บ container ไว้ให้ดู log" ;;
+    unreachable)
+      STOP_UNSURE="${STOP_UNSURE:+$STOP_UNSURE$'\n'}${label}|${by_hand}"
+      echo "  ${label}: ssh ไปไม่ถึง (${STOP_DETAIL:-ไม่มีข้อความจาก ssh}) — ไม่ได้สั่งหยุด · ${name} อาจยังรันอยู่และถือ GPU memory" >&2 ;;
+    stuck)
+      STOP_UNSURE="${STOP_UNSURE:+$STOP_UNSURE$'\n'}${label}|${by_hand}"
+      echo "  ${label}: สั่ง docker rm -f ${name} แล้ว แต่ container ยังอยู่ (${STOP_DETAIL}) — ยังถือ GPU memory" >&2 ;;
+    *)
+      STOP_UNSURE="${STOP_UNSURE:+$STOP_UNSURE$'\n'}${label}|${by_hand}"
+      echo "  ${label}: ถาม docker บนเครื่องนั้นไม่ได้ (${STOP_DETAIL:-ไม่มีข้อความ}) — ไม่รู้ว่า ${name} ยังรันอยู่ไหม (อาจยังถือ GPU memory)" >&2 ;;
+  esac
+  return 0
+}
+
+# $1 = rm | running · $2 = รายการ IP (ไม่ส่ง = worker ทุกตัวของคลัสเตอร์)
 _stop_workers() {
-  local wip
-  for wip in $WORKER_IPS; do
-    ssh_at "$wip" "docker rm -f '${WORKER_CONTAINER}' >/dev/null 2>&1 || true" || true
-  done
-  # mp backend ทิ้ง shared memory ไว้ — ไม่เก็บกวาด start รอบหน้าจะชนของเก่า
-  for wip in $WORKER_IPS; do
-    ssh_at "$wip" "sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true" || true
+  local mode="${1:-rm}" wip
+  for wip in ${2:-$WORKER_IPS}; do
+    _stop_node "worker ${wip}" "$wip" "$WORKER_CONTAINER" "$mode"
   done
 }
 
+# สรุป node ที่ยืนยันไม่ได้ — ชื่อทุกตัว + คำสั่งที่รันบนเครื่องนั้นเองได้ · $1 = บรรทัดนำ
+_stop_unsure_report() {
+  local entry
+  echo "$1" >&2
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    echo "    ${entry%%|*}  →  ${entry#*|}" >&2
+  done <<< "$STOP_UNSURE"
+  echo "  container บนเครื่องข้างบนอาจยังรันอยู่และถือ GPU memory — เครื่องกลับมาแล้วสั่งซ้ำ: $0 stop" >&2
+}
+
 stop() {
+  STOP_UNSURE=""; STOP_STOPPED=0; STOP_REMOVED=0
+  local skipped=""
   log "Stopping head …"
-  docker rm -f "$MASTER_CONTAINER" >/dev/null 2>&1 || true
-  sudo -n sh -c 'rm -f /dev/shm/psm_* /dev/shm/sem.mp-*' 2>/dev/null || true
+  _stop_node "head" "" "$MASTER_CONTAINER" rm
   # ยังไม่ตั้งค่าคลัสเตอร์ = IP ที่ถืออยู่เป็นตัวอย่าง 10.100.152.x — เดิม ssh ไปหาอยู่ดี (ค้าง ConnectTimeout 10 วิ × 2
   # ต่อ worker และถ้ามีเครื่องนั้นอยู่จริงก็ไปสั่ง docker rm บนเครื่องคนอื่น) · start ไม่เคยผ่านโดยไม่ตั้งค่า จึงไม่มี
   # container ของ bundle นี้บนเครื่องตัวอย่างให้หยุดอยู่แล้ว
   if _cluster_config_is_placeholder; then
     log "ยังไม่ตั้งค่าคลัสเตอร์ (ไม่มี ${CLUSTER_ENV}) — ข้าม worker ตัวอย่าง ${WORKER_IPS}"
+    skipped=1
   else
     # worker มีได้มากกว่าหนึ่ง (dgx-spark-stacked-4) — ข้อความต้องพูดถึงทุกตัว ไม่ใช่แค่ WORKER_IP ตัวแรก
     log "Stopping worker(s) on ${WORKER_IPS} …"
-    _stop_workers
+    _stop_workers rm
   fi
-  echo "stopped ${MASTER_CONTAINER} + ${WORKER_CONTAINER}"
+  if [[ -n "$STOP_UNSURE" ]]; then
+    _stop_unsure_report "ERROR: stop ไม่ครบ — node ที่ไปถึงหยุดให้แล้ว (รายการด้านบน) แต่ยืนยันไม่ได้ว่าหยุดแล้วบน:"
+    return 1
+  fi
+  # สรุปบรรทัดเดียว — พูดถึง worker เฉพาะเมื่อได้ไปดูมันจริง
+  local also=" + ${WORKER_CONTAINER}" nor=" และ ${WORKER_CONTAINER} บน worker ทุกตัว"
+  if [[ -n "$skipped" ]]; then also=""; nor=""; fi
+  if (( STOP_STOPPED > 0 )); then
+    echo "stopped ${MASTER_CONTAINER}${also}"
+  elif (( STOP_REMOVED > 0 )); then
+    echo "ไม่มีอะไรรันอยู่ — ลบซาก container ที่หยุดไปก่อนแล้ว (${STOP_REMOVED} node)"
+  else
+    echo "ไม่มีอะไรให้หยุด (ไม่พบ container ${MASTER_CONTAINER}${nor})"
+  fi
 }
 
 # ─────────────────────────── status ───────────────────────────
@@ -3218,7 +3337,8 @@ case "${1:-help}" in
   doctor)          doctor ;;
   start)           start ;;
   stop)            stop ;;
-  restart)         stop; start ;;
+  restart)         stop || die "restart หยุดที่ขั้น stop (รายการด้านบน) — ยังไม่ได้ start ใหม่ · แก้แล้วสั่งซ้ำ: $0 restart"
+                   start ;;
   status)          status ;;
   logs)            shift; logs "$@" ;;
   client-config)   client_config ;;

@@ -195,6 +195,87 @@ def _left(tmp_path: Path, bundle) -> set[str]:
     return out
 
 
+# ═════════════════════ 1. stop: รายงานตามที่เห็นบนแต่ละ node ═════════════════════
+def test_stop_names_the_worker_it_could_not_reach_and_still_stops_the_rest(tmp_path):
+    """worker ตัวกลางต่อ ssh ไม่ถึง (255) → เดิมกลืนด้วย `|| true` แล้วพิมพ์ "stopped …-head + …-worker" rc 0 ทั้งที่
+    container บนเครื่องนั้นยังรันและถือ GPU memory · ต้อง: หยุด node อื่นให้ครบ (ไม่หยุดที่ตัวแรกที่ล้ม) · บอกชื่อเครื่องที่
+    ไปไม่ถึง · บอกว่าอาจยังรันอยู่ · exit ไม่เป็นศูนย์ · ไม่พิมพ์บรรทัดสรุปว่าหยุดครบ"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    workers = f"{W1} {W2} {W3}"
+    _up(tmp_path, bundle, "head", W1, W2, W3)
+    head, worker = _names(bundle)
+
+    done = _run(bundle, ["stop"], tmp_path, workers=workers, env={"FAKE_SSH_DOWN": W2})
+
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert _left(tmp_path, bundle) == {W2}, "ตัวที่ไปถึงต้องถูกหยุดทั้งหมด — รวมตัวที่อยู่ **หลัง** ตัวที่ล้ม"
+    said_bad = [ln for ln in done.stderr.splitlines() if W2 in ln]
+    assert said_bad and any("GPU" in ln for ln in said_bad), done.stderr
+    assert "Connection timed out" in done.stderr, "ข้อความของ ssh เองต้องถึงผู้ใช้"
+    assert not any(W1 in ln or W3 in ln for ln in done.stderr.splitlines() if "GPU" in ln), \
+        "เครื่องที่หยุดสำเร็จต้องไม่ถูกเหมารวมว่าอาจยังรัน"
+    assert f"stopped {head} + {worker}" not in done.stdout + done.stderr
+    # ต่อ node ที่หยุดได้ ต้องพูดถึงเครื่องนั้น
+    for node in (W1, W3):
+        assert any(node in ln and worker in ln for ln in done.stdout.splitlines()), done.stdout
+
+
+def test_stop_reports_success_only_after_seeing_every_container_gone(tmp_path):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    _up(tmp_path, bundle, "head", W1, W2)
+    head, worker = _names(bundle)
+
+    done = _run(bundle, ["stop"], tmp_path, workers=f"{W1} {W2}")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _left(tmp_path, bundle) == set()
+    assert f"stopped {head} + {worker}" in done.stdout
+
+    # หลังสั่งลบแล้วต้อง "ดู" อีกครั้งบนเครื่องนั้น — ลำดับคือสาระ: ps → rm -f → ps
+    for node in ("head", W1, W2):
+        seq = [ln.split()[1] for ln in _calls(tmp_path).splitlines() if ln.startswith(f"docker[{node}] ")]
+        assert seq.index("rm") < len(seq) - 1 - seq[::-1].index("ps"), f"{node}: ไม่ได้ตรวจซ้ำหลัง rm -f ({seq})"
+
+
+def test_stop_says_nothing_was_running_instead_of_stopped(tmp_path):
+    """ไม่มี container สักตัว → เดิมก็พิมพ์ "stopped …" · ชื่อ container ที่เพี้ยนจึงดูเหมือนหยุดสำเร็จ"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    done = _run(bundle, ["stop"], tmp_path, workers=f"{W1} {W2}")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "stopped " not in done.stdout, done.stdout
+    assert "ไม่มีอะไรให้หยุด" in done.stdout
+
+
+@pytest.mark.parametrize("fault", ["FAKE_RM_STUCK", "FAKE_DOCKER_DOWN"])
+def test_stop_does_not_claim_a_node_it_could_not_confirm(tmp_path, fault):
+    """ssh ถึง แต่ container ไม่หายหลัง rm -f (daemon ค้าง) หรือถาม docker บนเครื่องนั้นไม่ได้เลย = ยังไม่รู้ว่าหยุด"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    _up(tmp_path, bundle, "head", W1, W2)
+    done = _run(bundle, ["stop"], tmp_path, workers=f"{W1} {W2}", env={fault: W1})
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert _left(tmp_path, bundle) == {W1}
+    assert any(W1 in ln and "GPU" in ln for ln in done.stderr.splitlines()), done.stderr
+    assert not any(W2 in ln for ln in done.stderr.splitlines() if "GPU" in ln), done.stderr
+    assert "stopped lmds-" not in done.stdout
+
+
+def test_restart_does_not_start_on_top_of_a_worker_it_could_not_stop(tmp_path):
+    """restart = stop แล้ว start · stop ที่หยุดไม่ครบต้องจบตรงนั้น ไม่ใช่เปิด worker ชุดใหม่ทับตัวที่ยังถือ GPU"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 0\n")
+    _seed_head_cache(tmp_path / "home")
+    _up(tmp_path, bundle, "head", W1, W2)
+    done = _run(bundle, ["restart"], tmp_path, workers=f"{W1} {W2}", env={"FAKE_SSH_DOWN": W2})
+    assert done.returncode != 0
+    assert "run -d" not in _calls(tmp_path), "ห้าม start ต่อหลัง stop ไม่ครบ"
+    assert any(W2 in ln and "GPU" in ln for ln in done.stderr.splitlines()), done.stderr
+    assert "restart" in done.stderr.split("ERROR:")[-1]
+    assert _left(tmp_path, bundle) == {W2}, "ตัวที่ไปถึงยังต้องถูกหยุด"
+
+
 # ═════════════════════ 5. knob ที่บันทึกผิด ต้องไม่ทำให้หยุด/ดูสถานะไม่ได้ ═════════════════════
 def _bad_knob(bundle) -> None:
     # สิ่งที่ `lmds set --gpu-util 0.99` เขียน (hub รับ 0–1 · controller รับ 0.3–0.98)
