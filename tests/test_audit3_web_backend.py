@@ -775,3 +775,88 @@ def test_cancelling_a_finished_job_says_so_and_cancelling_a_remote_job_says_what
 
     after = client.post(f"/api/jobs/{job.id}/cancel").json()
     assert after["cancelled"] is False and after["signalled"] is False and after["still_running"] is False
+
+
+# ══ 5. ลบโมเดลในเครื่อง — ยืนยันที่ server ไม่ใช่ที่ JS ═══════════════════════════════
+
+def _bundle_and_weights(tmp_path: Path, slug: str) -> tuple[Path, Path]:
+    return tmp_path / "bundles" / slug, tmp_path / "models" / slug / "demo-Q8.gguf"
+
+
+def test_local_remove_without_a_matching_confirm_deletes_nothing(fleet, tmp_path, monkeypatch):
+    """ผู้ตรวจ: `POST /api/models/{slug}/remove` body ว่าง → ลบ bundle **และ weight** ทันที
+
+    SECURITY.md บอกว่าหน้าเว็บต้องสองขั้น (ดูแผน แล้วยืนยันด้วย slug) และทางของ node บังคับอยู่แล้ว —
+    ทางของเครื่องนี้พึ่ง JS ของหน้าเว็บอย่างเดียว
+    """
+    import lmds.fleet
+
+    monkeypatch.chdir(tmp_path)                       # bundle_roots มองหา ./bundles
+    bundle, weights = _bundle_and_weights(tmp_path, fleet)
+    calls: list = []
+    real = lmds.fleet.remove_server
+    monkeypatch.setattr(lmds.fleet, "remove_server",
+                        lambda server, include_weights=True: calls.append(include_weights) or real(server, include_weights))
+    client = TestClient(create_app())
+
+    attempts = [client.post(f"/api/models/{fleet}/remove")] + [
+        client.post(f"/api/models/{fleet}/remove", json=body)
+        for body in ({}, {"keep_weights": False}, {"confirm": "another-model"}, {"confirm": [fleet]},
+                     {"confirm": True}, {"confirm": fleet.upper()})]
+
+    assert [r.status_code for r in attempts] == [400] * 7, [r.text for r in attempts]
+    assert calls == [], "ตัวลบถูกเรียกทั้งที่ไม่มีการยืนยัน"
+    assert bundle.is_dir() and weights.is_file()
+
+
+def test_local_remove_keeps_the_weights_unless_asked_otherwise(fleet, tmp_path, monkeypatch):
+    """ค่าตั้งต้นตามช่องติ๊กบนหน้าเว็บ ("Keep the weights" ติ๊กไว้ก่อน) — ลบ weight ต้องขอเองตรง ๆ"""
+    import lmds.fleet
+
+    monkeypatch.chdir(tmp_path)
+    asked: list = []
+    monkeypatch.setattr(lmds.fleet, "remove_server",
+                        lambda server, include_weights=True: asked.append(include_weights) or [])
+    client = TestClient(create_app())
+
+    assert client.post(f"/api/models/{fleet}/remove", json={"confirm": fleet}).status_code == 200
+    assert client.post(f"/api/models/{fleet}/remove", json={"confirm": fleet, "keep_weights": True}).status_code == 200
+    assert client.post(f"/api/models/{fleet}/remove", json={"confirm": fleet, "keep_weights": False}).status_code == 200
+    assert asked == [False, False, True]                     # include_weights
+    # ชนิดผิดต้องไม่ถูกเดาเป็น "ลบ weight": "no" · 0 · null
+    for odd in ("no", 0, None):
+        r = client.post(f"/api/models/{fleet}/remove", json={"confirm": fleet, "keep_weights": odd})
+        assert r.status_code == 400, (odd, r.text)
+    assert asked == [False, False, True]
+
+
+def test_the_remove_button_on_the_page_still_works_against_the_real_endpoint(fleet, tmp_path, monkeypatch):
+    """ครบวง: กด Remove → Confirm removal บนหน้าเว็บจริง (JS ใน node) → body ที่ได้ยิงเข้า endpoint จริง
+
+    ช่อง "Keep the weights" ติ๊กมาแต่แรก: bundle หาย weight อยู่
+    """
+    from tests.test_console_shell import run_scenario
+
+    prelude = """const fx = { nodes: [], localModels: [{ slug: "%s", running: false, healthy: false,
+      controller_exists: true, downloaded: true, engine: "llamacpp", port: 8000, topology: "single", context: 8192 }] };
+H.sent = [];
+H.routes = H.defaultRoutes(fx);
+H.routes.unshift(["/api/models/%s/removal-plan", () => ({ slug: "%s", items: [], total_bytes: 0 })]);
+H.routes.unshift(["/api/models/%s/remove", (url, opts) => { H.sent.push(opts.body); return { slug: "%s", done: [], failed: [] }; }]);
+""" % ((fleet,) * 5)
+    (sent,) = run_scenario(tmp_path, prelude, f"""
+        document.querySelector('button[data-act="opts"][data-slug="{fleet}"]').click(); await H.tick();
+        document.querySelector('button[data-act="removeask"][data-slug="{fleet}"]').click(); await H.tick();
+        H.assert(document.getElementById("keep-{fleet}").checked === true, "ช่อง Keep the weights ต้องติ๊กมาแต่แรก");
+        document.querySelector('button[data-act="removego"][data-slug="{fleet}"]').click(); await H.tick();
+        console.log(JSON.stringify(H.sent));""")
+    assert len(sent) == 1, sent
+
+    monkeypatch.chdir(tmp_path)
+    bundle, weights = _bundle_and_weights(tmp_path, fleet)
+    r = TestClient(create_app()).post(f"/api/models/{fleet}/remove", content=sent[0],
+                                      headers={"content-type": "application/json"})
+    assert r.status_code == 200, r.text
+    assert r.json()["failed"] == []
+    assert not bundle.exists(), "bundle ต้องถูกลบ"
+    assert weights.is_file(), "ช่อง Keep the weights ติ๊กอยู่ — weight ต้องยังอยู่"

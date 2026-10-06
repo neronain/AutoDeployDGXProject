@@ -1706,12 +1706,30 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.post("/api/models/{slug}/remove", dependencies=guarded)
     def remove(slug: str, body: dict | None = None) -> dict:
+        """ลบ bundle ของโมเดลในเครื่องนี้ — สองขั้นเหมือนทางของ node: ดู removal-plan แล้วส่ง confirm = slug
+
+        body: {"confirm": "<slug>", "keep_weights"?: bool (ไม่ส่ง = **เก็บ** weight)}
+
+        เดิม handler รับแค่ `keep_weights` และ body ว่าง = ลบ weight หลายสิบ GB ทันที · การยืนยันอยู่ใน JS ของ
+        หน้าเว็บอย่างเดียว ทั้งที่ SECURITY.md เขียนว่าหน้าเว็บต้องผ่านสองขั้น และ endpoint ของ node บังคับ
+        confirm == slug อยู่แล้ว (audit 2026-10) · ค่าตั้งต้นของ weight ตามช่องติ๊กบนหน้าเว็บ ("Keep the weights"
+        ติ๊กไว้ก่อน): จะลบ weight ต้องส่ง `keep_weights: false` มาเอง ไม่ใช่ได้มาเพราะลืมใส่ฟิลด์
+        """
         from lmds.fleet import FleetError, find, remove_server
 
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
-        keep = bool((body or {}).get("keep_weights"))
+        body = _obj(body)
+        if body.get("confirm") != slug:
+            raise HTTPException(
+                status_code=400,
+                detail="ชื่อยืนยันไม่ตรงกับโมเดลที่จะลบ — ดูรายการที่จะถูกลบที่ "
+                       f"GET /api/models/{slug}/removal-plan แล้วส่ง {{\"confirm\": \"{slug}\"}} · ยังไม่ได้ลบอะไร",
+            )
+        keep = body.get("keep_weights", True)
+        if not isinstance(keep, bool):
+            raise _bad_field("keep_weights", " true หรือ false")
         from lmds.fleet import removal_failed
 
         try:

@@ -44,7 +44,11 @@ stdin และถูกกรองออกจากผลงานสดต�
    รับเฉพาะ HTTPS จาก huggingface.co / hf.co / raw.githubusercontent.com / github.com / gitlab.com,
    ชื่อไฟล์ต้องเป็น basename ล้วน, และ**ต้องอนุมัติรายตัวเสมอ**แม้ LLM จะเสนอมาเอง
 3. **ลบไฟล์** — `lmds remove` แสดงรายการ + ขนาดทั้งหมดก่อน แล้วถามยืนยัน (default = ไม่ลบ) · หน้าเว็บต้องผ่านสองขั้น
-   (`--dry-run` ก่อน แล้วส่ง confirm ที่ตรงกับ slug เป๊ะ) · ไฟล์ที่ container เขียนเป็น root ถูกลบผ่าน
+   (`--dry-run` ก่อน แล้วส่ง confirm ที่ตรงกับ slug เป๊ะ) — **บังคับที่ server ทั้งสองทาง**: โมเดลบนเครื่องอื่น
+   (`POST /api/nodes/{name}/models/{slug}/remove`) และโมเดลในเครื่อง hub เอง (`POST /api/models/{slug}/remove`
+   ซึ่งเดิมพึ่ง JS ของหน้าเว็บอย่างเดียว — body ว่างลบ weight ทันที) · ไม่มี `confirm` ที่ตรง = 400 ไม่ลบอะไร ·
+   ทางของ hub **เก็บ weight ไว้เป็นค่าตั้งต้น** (ตามช่อง "Keep the weights" ที่ติ๊กมาแต่แรก) จะลบ weight ต้องส่ง
+   `keep_weights: false` มาเอง · ไฟล์ที่ container เขียนเป็น root ถูกลบผ่าน
    `docker run --rm -v <parent>:/x <image> rm -rf /x/<ชื่อ>` **ใต้รั้ว**: เฉพาะ path ใต้ `$HOME` หรือ `HF_HOME` เท่านั้น ·
    ใช้ image ที่มีอยู่ในเครื่อง (เล็กสุดก่อน) ไม่ pull ใหม่ · ไม่ทำถ้าไม่อยู่ในกลุ่ม docker
 4. **งานที่ผู้ช่วยเสนอให้แก้เครื่อง** — restart, เปลี่ยน context/port/bind/gpu-util, ล้างแคช

@@ -3974,7 +3974,8 @@ document.addEventListener("click", async e => {
     try {
     const r = await api(`/api/models/${encodeURIComponent(slug)}/remove`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ keep_weights: keep }),
+      // hub บังคับสองขั้นเอง: confirm ต้องเท่ากับ slug (เหมือนทางของ node) · keep_weights ไม่ส่ง = เก็บ
+      body: JSON.stringify({ keep_weights: keep !== false, confirm: slug }),
     });
     // ลบไม่สำเร็จแล้วยังลบแถวทิ้ง = หน้าเว็บบอกว่าสำเร็จทั้งที่โมเดลยังอยู่ · ผู้ใช้เพิ่ง
     // เจอจริง: กดลบแล้วรายการหายหมด กด refresh แล้วกลับมาเหมือนเดิม เพราะไม่เคยถูกลบ

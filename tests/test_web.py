@@ -565,7 +565,7 @@ def test_removal_plan_respects_keep_weights(runnable):
 
 def test_remove_deletes_and_model_disappears(runnable, tmp_path):
     client = TestClient(create_app())
-    assert client.post(f"/api/models/{runnable}/remove", json={"keep_weights": True}).status_code == 200
+    assert client.post(f"/api/models/{runnable}/remove", json={"keep_weights": True, "confirm": runnable}).status_code == 200
     assert [m["slug"] for m in client.get("/api/models").json()["models"]] == []
 
 

@@ -546,6 +546,8 @@ GET  /api/cluster · POST /api/cluster/write · POST /api/cluster/pair · GET /a
   `served_name` `engine_env` `extra_args`) ผ่าน `jobs.clean_options()` ชุดเดียวกันทั้งโมเดลในเครื่องและบนเครื่องอื่น (400) แล้วแปลงเป็น
   env ของ controller · slug ถูกตรวจรูปแบบทุก route (400) · งานยาว (prepare-runtime · sync-worker · verify-* · bench · stress ·
   download) เป็น job ที่ยกเลิกได้ · ผลงานสดถูกกรอง secret ตั้งแต่ตอนรับแต่ละบรรทัด · `remove` ต้องสองขั้น (`--dry-run` → `{"confirm": "<slug>"}`)
+  ทั้งบน node และบน hub เอง: `POST /api/models/{slug}/remove {"confirm": "<slug>", "keep_weights"?: bool}` — ไม่มี confirm ที่ตรง = 400 ·
+  ไม่ส่ง `keep_weights` = **เก็บ** weight (ลบ weight ต้องส่ง `false`)
 - ต้องมี extra `web` (`fastapi` + `uvicorn` — `install.sh` ลงให้) · รายละเอียดการใช้งาน: [USAGE.md §5](USAGE.md)
 
 ## `lmds validate`
