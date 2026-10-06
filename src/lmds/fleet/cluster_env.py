@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import re
+import shlex
 from dataclasses import dataclass
 
 # ── cluster.env schema v2 (multi-link) ──
@@ -105,6 +107,100 @@ def build_cluster_env(groups, head_name: str, worker_name: str | None = None):
     }
 
 
+# ── ค่าที่ลง cluster.env: ตรวจว่าเป็นของที่มันควรเป็น แล้วค่อย quote ──
+#
+# ไฟล์นี้ถูก controller `source` (`set -a; . "$CLUSTER_ENV"`) ทุกครั้งที่ start · ชื่อ interface, IP และชื่อ
+# HCA มาจาก inventory ที่ **แต่ละ node รายงานตัวเอง** (`host.fabric.links[].iface`) ซึ่ง threat model ถือเป็น
+# ข้อมูลที่ไม่น่าเชื่อถือ · audit 2026-10: node ที่ตอบชื่อ interface เป็น `x$(…)` ทำให้ hub เขียน
+# `NCCL_SOCKET_IFNAME=x$(…)` ลงบน head แล้วคำสั่งข้างในรันตอน controller อ่านไฟล์
+# สองชั้น ไม่ใช่ชั้นเดียว: (1) ทุกค่าต้องตรงรูปของสิ่งที่มันเป็นได้จริง ไม่ตรง = ปฏิเสธพร้อมบอกว่าฟิลด์ไหนของ
+# เครื่องไหน (2) ตัวเขียนบรรทัด (_assign) quote ทุกค่าที่มีอักขระนอกชุดปลอดภัย — ชั้นแรกหลุดชั้นสองยังกันไว้
+_IFACE_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,14}")   # ชื่อ interface ของ kernel (IFNAMSIZ 15) · ไม่มี `:` — ตัวคั่นของ LINKS_<rank>
+_HCA_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")     # ชื่ออุปกรณ์ RDMA: mlx5_0 · rocep1s0f1
+_USER_OK = re.compile(r"[A-Za-z_][A-Za-z0-9._-]{0,31}\$?")   # user ของ Linux
+_KIND_OK = re.compile(r"direct-2|ring-3|switch-[0-9]{1,3}")
+_SLUG_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")    # รูปเดียวกับ web/api._check_slug
+_BARE_OK = re.compile(r"[A-Za-z0-9._,:/*@%+=-]*")            # bash อ่านตรงตัวโดยไม่ต้อง quote
+_DQ_OK = re.compile(r"[A-Za-z0-9._,:/*@%+= -]*")             # ปลอดภัยใน "…" (ไม่มี $ ` \ ")
+
+
+def _assign(key: str, value, quoted: bool = False) -> str:
+    """บรรทัด `KEY=VALUE` ที่ bash อ่านกลับได้ค่าเดิมตรงตัว — ไม่ว่าในค่าจะมีอะไร
+
+    ค่าที่ถูกรูปออกมาหน้าตาเดิมทุกตัวอักษร (ไฟล์ที่ 0.6.0 เขียนกับไฟล์วันนี้เหมือนกัน) · ค่าที่มีอักขระนอก
+    ชุดปลอดภัยถูกห่อด้วย shlex.quote ซึ่ง bash ไม่ขยายอะไรข้างใน
+    """
+    text = str(value)
+    if quoted and _DQ_OK.fullmatch(text):
+        return f'{key}="{text}"'
+    if not quoted and _BARE_OK.fullmatch(text):
+        return f"{key}={text}"
+    return f"{key}={shlex.quote(text)}"
+
+
+def _prefix(value):
+    """prefix จากทะเบียน/inventory เป็นอะไรก็ได้ ("24" · 24 · ขยะ) — เป็นเลขถ้าทำได้ ที่เหลือให้ด่านตรวจรายงาน"""
+    try:
+        return int(value or 24)
+    except (TypeError, ValueError):
+        return value
+
+
+def _shown(value) -> str:
+    text = str(value)
+    return repr(text if len(text) <= 60 else text[:57] + "…")
+
+
+def _check_ip(value, what: str, problems: list[str]) -> None:
+    if value in ("", None):
+        return
+    try:
+        if not isinstance(value, str) or ipaddress.ip_address(value).version != 4:
+            raise ValueError
+    except ValueError:
+        problems.append(f"{what} {_shown(value)} ไม่ใช่ที่อยู่ IPv4")
+
+
+def _validate_topology(topology: dict, ssh_user: str) -> None:
+    """ทุกค่าที่กำลังจะถูกเขียนต้องเป็นของที่มันควรเป็น — ไม่ผ่าน = ClusterEnvError บอกฟิลด์และเครื่อง"""
+    from lmds.nodes.registry import name_ok
+
+    problems: list[str] = []
+    if not _KIND_OK.fullmatch(str(topology.get("kind") or "")):
+        problems.append(f"topology {_shown(topology.get('kind'))}")
+    if ssh_user and not (isinstance(ssh_user, str) and _USER_OK.fullmatch(ssh_user)):
+        problems.append(f"SSH user {_shown(ssh_user)} ไม่ใช่ชื่อ user ของ Linux")
+    count = len(topology["nodes"])
+    for node in topology["nodes"]:
+        name = node.get("name")
+        where = f"เครื่อง {_shown(name)}:"
+        if not (isinstance(name, str) and name_ok(name)):
+            problems.append(f"{where} ชื่อเครื่องใช้ใน cluster.env ไม่ได้ (ตัวอักษร ตัวเลข . _ - เท่านั้น)")
+        for link in node["links"]:
+            iface, hca = link.get("iface"), link.get("hca")
+            if iface and not (isinstance(iface, str) and _IFACE_OK.fullmatch(iface)):
+                problems.append(f"{where} interface {_shown(iface)} ไม่ใช่ชื่อ interface ของ Linux "
+                                "(ตัวอักษร ตัวเลข . _ - ยาวไม่เกิน 15)")
+            if hca and not (isinstance(hca, str) and _HCA_OK.fullmatch(hca)):
+                problems.append(f"{where} RDMA device {_shown(hca)} ไม่ใช่ชื่ออุปกรณ์")
+            _check_ip(link.get("ip"), f"{where} IP ของสาย", problems)
+            _check_ip(link.get("peer_ip"), f"{where} IP ของปลายสาย", problems)
+            prefix = link.get("prefix")
+            if isinstance(prefix, bool) or not isinstance(prefix, int) or not 0 <= prefix <= 32:
+                problems.append(f"{where} prefix {_shown(prefix)} ต้องเป็นจำนวนเต็ม 0-32")
+            peer = link.get("peer_rank")
+            if peer != LINK_SWITCH_PEER and (isinstance(peer, bool) or not isinstance(peer, int)
+                                             or not 0 <= peer < count):
+                problems.append(f"{where} peer rank {_shown(peer)} ไม่ใช่ลำดับเครื่องในกลุ่ม")
+    if problems:
+        more = f" · และอีก {len(problems) - 6} จุด" if len(problems) > 6 else ""
+        raise ClusterEnvError(
+            "ไม่เขียน cluster.env — ค่าที่ได้มาไม่ใช่ของที่ควรอยู่ในไฟล์นี้ (controller source ไฟล์นี้ตอน start): "
+            + " · ".join(problems[:6]) + more
+            + " — ค่าพวกนี้มาจากที่เครื่องนั้นรายงานตัวเอง ตรวจเครื่องนั้นก่อนเขียนใหม่"
+        )
+
+
 # ─────────────────────────── topology ───────────────────────────
 def _normalise_link(link: dict, rank_of: dict[str, int]) -> dict:
     """ลิงก์จากทะเบียน (`cluster_links`) → รูปที่ renderer ใช้ · peer ที่ไม่รู้จัก = สายเข้า switch"""
@@ -113,7 +209,7 @@ def _normalise_link(link: dict, rank_of: dict[str, int]) -> dict:
     return {
         "iface": link.get("iface") or "",
         "ip": link.get("ip") or "",
-        "prefix": int(link.get("prefix") or 24),
+        "prefix": _prefix(link.get("prefix")),
         "peer_rank": LINK_SWITCH_PEER if peer_rank is None else peer_rank,
         "peer_ip": (link.get("peer_ip") or "") if peer_rank is not None else "",
         "link_id": link.get("link_id") or "",
@@ -235,26 +331,31 @@ def render_cluster_env(topology: dict, ssh_user: str = "") -> str:
     nodes = topology["nodes"]
     if len(nodes) < 2:
         raise ClusterEnvError("กลุ่มนี้ไม่มี worker")
+    for node in nodes:
+        for link in node["links"]:
+            link["prefix"] = _prefix(link.get("prefix"))
+    # ตรวจก่อนประกอบบรรทัดแรก — ค่าที่ไม่ใช่ของที่ควรอยู่ในไฟล์นี้ต้องไม่ถูกเขียนเลย ไม่ใช่เขียนแบบ quote ไว้
+    _validate_topology(topology, ssh_user)
     head = nodes[0]
     worker_ranks = [n["rank"] for n in nodes[1:]]
     worker_ips = [_head_to_worker_ip(topology, r) for r in worker_ranks]
     master_ip = _head_ip_legacy(topology)
     lines = [
         "# สร้างโดย lmds (node cluster --write / หน้าเว็บ) — แก้มือได้ ค่า env ภายนอกยังชนะไฟล์นี้",
-        f"MASTER_IP={master_ip}",
-        f"WORKER_IP={worker_ips[0]}",
+        _assign("MASTER_IP", master_ip),
+        _assign("WORKER_IP", worker_ips[0]),
         # worker ทุกตัวเรียงตาม node-rank 1..N-1 — controller วนจากตัวแปรนี้
-        f'WORKER_IPS="{" ".join(worker_ips)}"',
-        f"NNODES={len(nodes)}",
-        f"TENSOR_PARALLEL_SIZE={len(nodes)}",
-        f"SSH_USER={ssh_user}",
-        f"TRANSPORT_IP_MASTER={master_ip}",
-        f"TRANSPORT_IP_WORKER={worker_ips[0]}",
+        _assign("WORKER_IPS", " ".join(worker_ips), quoted=True),
+        _assign("NNODES", len(nodes)),
+        _assign("TENSOR_PARALLEL_SIZE", len(nodes)),
+        _assign("SSH_USER", ssh_user),
+        _assign("TRANSPORT_IP_MASTER", master_ip),
+        _assign("TRANSPORT_IP_WORKER", worker_ips[0]),
     ]
     head_ifnames = _ifnames(head)
     if head_ifnames:
         # NCCL เลือก interface เองแล้วมักได้เส้นบริหารจัดการที่ช้ากว่า — ระบุให้ชัด
-        lines.append(f"NCCL_SOCKET_IFNAME={','.join(head_ifnames)}")
+        lines.append(_assign("NCCL_SOCKET_IFNAME", ",".join(head_ifnames)))
     if not _is_multilink(topology):
         return "\n".join(lines) + "\n"
 
@@ -263,19 +364,19 @@ def render_cluster_env(topology: dict, ssh_user: str = "") -> str:
         "",
         "# schema v2 — สายต่อ rank (iface:ip/prefix:peer_rank:peer_ip · peer_rank * = สายเข้า switch)",
         "CLUSTER_ENV_SCHEMA=2",
-        f"CLUSTER_TOPOLOGY={topology['kind']}",
-        f'CLUSTER_NODES="{" ".join(n["name"] for n in nodes)}"',
+        _assign("CLUSTER_TOPOLOGY", topology["kind"]),
+        _assign("CLUSTER_NODES", " ".join(n["name"] for n in nodes), quoted=True),
         # worker ทุกตัวใช้ transport IP ตามสายที่ head มองเห็น (rank order) — controller เก่าอ่านตัวนี้
-        f'TRANSPORT_IPS_WORKER="{" ".join(worker_ips)}"',
+        _assign("TRANSPORT_IPS_WORKER", " ".join(worker_ips), quoted=True),
     ]
     for node in nodes:
-        rank = node["rank"]
-        lines.append(f'LINKS_{rank}="{_links_field(node)}"')
-        lines.append(f"NCCL_SOCKET_IFNAMES_{rank}={','.join(_ifnames(node))}")
-        lines.append(f"NCCL_IB_HCAS_{rank}={','.join(_hcas(node))}")
+        rank = int(node["rank"])
+        lines.append(_assign(f"LINKS_{rank}", _links_field(node), quoted=True))
+        lines.append(_assign(f"NCCL_SOCKET_IFNAMES_{rank}", ",".join(_ifnames(node))))
+        lines.append(_assign(f"NCCL_IB_HCAS_{rank}", ",".join(_hcas(node))))
         if rank > 0:
-            lines.append(f"HEAD_TO_WORKER_IP_{rank}={_head_to_worker_ip(topology, rank)}")
-            lines.append(f"WORKER_HEAD_IP_{rank}={_worker_head_ip(topology, rank)}")
+            lines.append(_assign(f"HEAD_TO_WORKER_IP_{rank}", _head_to_worker_ip(topology, rank)))
+            lines.append(_assign(f"WORKER_HEAD_IP_{rank}", _worker_head_ip(topology, rank)))
     if topology["kind"] == "ring-3":
         # แต่ละคู่คุยกันคนละสาย — ต้องอนุญาตให้ NCCL ใช้ NIC คนละตัวในแต่ละคู่ ไม่งั้นบังคับ NIC เดียว
         # แล้วหาทางไป rank ที่อยู่อีกสายไม่เจอ
@@ -329,6 +430,12 @@ def write_cluster_env(slug: str, groups, head_name: str,
     """เขียนไฟล์จริง — บนเครื่องนี้ หรือข้าม SSH ไปยังเครื่องที่ถือ bundle อยู่"""
     from lmds.fleet import bundle_roots
 
+    # slug ถูกต่อเป็นคำสั่ง shell บนเครื่องปลายทาง (ls -d ~/bundles/<slug>) และเป็น path บนเครื่องนี้ —
+    # หน้าเว็บตรวจที่ปากทางแล้ว แต่ CLI (`node cluster --write`) เรียกตรงมาที่นี่ จึงตรวจที่ sink ด้วย
+    if not isinstance(slug, str) or not _SLUG_OK.fullmatch(slug):
+        raise ClusterEnvError(
+            f"ชื่อโมเดล (slug) ไม่ถูกต้อง: {_shown(slug)} — ใช้ได้เฉพาะ a-z A-Z 0-9 . _ - "
+            "ขึ้นต้นด้วยตัวอักษร/ตัวเลข ยาวไม่เกิน 64")
     built = build_cluster_env(groups, head_name, worker_name)
     body = built["body"]
 

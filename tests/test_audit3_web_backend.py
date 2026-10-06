@@ -7,6 +7,7 @@
 ลำดับตามรายงาน:
   1. POST /api/recipes/sync เชื่อ repo/ref จาก body → ลบ config dir · รันคำสั่งผ่าน option ของ git
   2. token ที่ไม่ใช่ ASCII → ทุกคำขอ 500 · การเดาด้วยค่าที่ไม่ใช่ ASCII ไม่ถูกนับเข้า lockout
+  3. ชื่อ interface ที่ node รายงานเองลง cluster.env ดิบ ๆ → รันตอน controller source ไฟล์
 """
 
 from __future__ import annotations
@@ -490,3 +491,152 @@ def test_the_login_box_can_submit_a_thai_token(tmp_path):
         H.assert(localStorage.getItem("lmds:token") === {THAI_TOKEN!r}, "token ที่ผ่านแล้วต้องถูกจำไว้");""")
     assert [name for name, _codes in seen] == ["/api/auth"]
     _assert_the_hub_accepts_what_the_page_sends(seen)
+
+
+# ══ 3. cluster.env — ค่าที่ node รายงานเองถูก source เป็น shell ══════════════════════
+
+def _link(iface: str, ip: str, peer_rank, peer_ip: str, hca: str = "rocep1s0f1") -> dict:
+    return {"iface": iface, "ip": ip, "prefix": 24, "peer_rank": peer_rank, "peer_ip": peer_ip,
+            "link_id": "", "hca": hca}
+
+
+def _two_node_topology() -> dict:
+    return {"kind": "direct-2", "nodes": [
+        {"name": "spark-head", "rank": 0, "legacy": False,
+         "links": [_link("enp1s0f1np1", "10.100.152.1", 1, "10.100.152.2")]},
+        {"name": "spark-worker", "rank": 1, "legacy": False,
+         "links": [_link("enp1s0f1np1", "10.100.152.2", 0, "10.100.152.1")]},
+    ]}
+
+
+def _source_under_bash(tmp_path: Path, body: str, names: list[str]) -> dict[str, str]:
+    """อ่านไฟล์แบบเดียวกับ controller (`set -a; . "$CLUSTER_ENV"`) แล้วคืนค่าที่ bash เห็นจริง"""
+    env_file = tmp_path / "cluster.env"
+    env_file.write_text(body, encoding="utf-8")
+    script = 'set -a; . "$1"; set +a; shift; for name in "$@"; do printf "%s\\0" "${!name-<unset>}"; done'
+    done = subprocess.run(["bash", "-c", script, "bash", str(env_file), *names], capture_output=True,
+                          cwd=tmp_path, timeout=30)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    return dict(zip(names, done.stdout.decode("utf-8").split("\0"), strict=False))
+
+
+def test_an_interface_name_reported_by_a_node_cannot_reach_cluster_env(tmp_path, monkeypatch):
+    """ผู้ตรวจ: `host.fabric.links[].iface` = `x$(touch${IFS}<marker>)` → hub เขียนลง cluster.env บน head
+    → คำสั่งรันตอน controller source ไฟล์ · ตอนนี้ endpoint ต้องปฏิเสธ และไม่มีอะไรถูกเขียนข้ามเครื่อง"""
+    import lmds.fleet
+    import lmds.nodes
+    from tests.test_audit_stacked_orchestration import FakeSSH, register, spark, stacked_bundle
+
+    monkeypatch.setattr("lmds.inventory.host_payload", lambda: {
+        "hostname": "hub", "gpus": [], "arch": "x86_64", "profile": "generic",
+        "fabric": {"links": [], "best_gbps": 10, "tier": "basic"}, "role": {"control_plane": True, "engines": []}})
+    marker = tmp_path / "RAN_ON_HEAD"
+    evil = f"x$(touch${{IFS}}{marker})"
+    head, worker = spark("10.100.152.1", "10.2.2.1"), spark("10.100.152.2", "10.2.2.2")
+    for link in head["fabric"]["links"]:
+        link["iface"] = evil
+    register("n1", "10.2.2.1", "10.100.152.1", head, site="TKC")
+    register("n2", "10.2.2.2", "10.100.152.2", worker, site="TKC")
+    monkeypatch.setattr(lmds.fleet, "bundle_roots", lambda: [tmp_path / "bundles"])
+    stacked_bundle(tmp_path, "two", 2)
+    ssh = FakeSSH(lambda node, command: (0, "/home/nvidia/bundles/two/cluster.env", ""))
+    monkeypatch.setattr(lmds.nodes, "run", ssh)
+
+    r = TestClient(create_app()).post("/api/cluster/write", json={"slug": "two", "head": "n1", "worker": "n2", "on": "n1"})
+
+    assert r.status_code == 400, r.text
+    assert "n1" in r.json()["detail"]                       # บอกว่าเครื่องไหนรายงานค่าแปลก
+    assert not any("base64 -d" in command for _node, command in ssh.calls), "ไฟล์ถูกเขียนไปแล้ว"
+    assert not marker.exists()
+
+
+HOSTILE = "x$(touch${IFS}%s)`touch${IFS}%s`\";touch %s;\"';touch %s;'\ntouch %s\n"
+
+
+@pytest.mark.parametrize("field", ["iface", "hca", "ip", "peer_ip", "prefix", "peer_rank", "name", "kind", "ssh_user"])
+def test_every_field_is_checked_against_what_it_can_legitimately_be(field, tmp_path):
+    """ด่านที่ sink: ค่าที่ไม่ใช่ชื่อ interface / IP / อุปกรณ์ / จำนวนเต็ม ถูกปฏิเสธพร้อมบอกฟิลด์ — ไม่ใช่เขียนแบบ quote ไว้"""
+    from lmds.fleet.cluster_env import ClusterEnvError, render_cluster_env
+
+    topology, ssh_user = _two_node_topology(), "nvidia"
+    evil = "x$(touch /tmp/never)"
+    if field in ("iface", "hca", "ip", "peer_ip", "prefix", "peer_rank"):
+        topology["nodes"][1]["links"][0][field] = evil
+    elif field == "name":
+        topology["nodes"][1]["name"] = evil
+    elif field == "kind":
+        topology["kind"] = evil
+    else:
+        ssh_user = evil
+
+    with pytest.raises(ClusterEnvError):
+        render_cluster_env(topology, ssh_user=ssh_user)
+
+
+def test_hostile_values_in_every_field_run_nothing_when_the_file_is_sourced(tmp_path, monkeypatch):
+    """ชั้นที่สอง: ถอดด่านตรวจออก (จำลองว่ามีทางหลุด) แล้วใส่ค่าร้ายทุกฟิลด์พร้อมกัน — bash ต้องอ่านเป็นข้อความ
+
+    รันใต้ bash จริงแบบที่ controller ทำ: ไม่มี marker สักไฟล์ และตัวแปรได้ค่าตรงตัวอักษร
+    """
+    from lmds.fleet import cluster_env
+
+    monkeypatch.setattr(cluster_env, "_validate_topology", lambda *args, **kwargs: None, raising=False)
+    markers = iter(tmp_path / f"MARK{i}" for i in range(400))
+
+    def evil() -> str:
+        return HOSTILE % tuple(next(markers) for _ in range(5))
+
+    topology = _two_node_topology()
+    topology["kind"] = evil()
+    values = {"ssh_user": evil()}
+    for node in topology["nodes"]:
+        node["name"] = evil()
+        for link in node["links"]:
+            for key in ("iface", "hca", "ip", "peer_ip", "prefix"):
+                link[key] = evil()
+    values["iface0"] = topology["nodes"][0]["links"][0]["iface"]
+    values["hca1"] = topology["nodes"][1]["links"][0]["hca"]
+
+    body = cluster_env.render_cluster_env(topology, ssh_user=values["ssh_user"])
+    seen = _source_under_bash(tmp_path, body, [
+        "NCCL_SOCKET_IFNAME", "SSH_USER", "NCCL_IB_HCAS_1", "CLUSTER_TOPOLOGY", "LINKS_0", "CLUSTER_NODES",
+        "MASTER_IP", "WORKER_IPS", "HEAD_TO_WORKER_IP_1", "WORKER_HEAD_IP_1", "NNODES"])
+
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("MARK")) == []
+    assert seen["NCCL_SOCKET_IFNAME"] == values["iface0"]
+    assert seen["SSH_USER"] == values["ssh_user"]
+    assert seen["NCCL_IB_HCAS_1"] == values["hca1"]
+    assert seen["CLUSTER_TOPOLOGY"] == topology["kind"]
+    assert seen["NNODES"] == "2"
+
+
+def test_a_legitimate_cluster_env_is_unchanged_and_thai_machine_names_survive(tmp_path):
+    """ค่าที่ถูกรูปต้องออกมาหน้าตาเดิม (controller เก่าและเทสอื่นอ่านรูปนี้) · ชื่อเครื่องภาษาไทยที่ทะเบียนรับ
+    ต้องผ่านด่านและ bash ต้องอ่านกลับได้ตรงตัว"""
+    from lmds.fleet.cluster_env import render_cluster_env
+
+    topology = _two_node_topology()
+    body = render_cluster_env(topology, ssh_user="nvidia")
+    for line in ("MASTER_IP=10.100.152.1", 'WORKER_IPS="10.100.152.2"', "SSH_USER=nvidia",
+                 "NCCL_SOCKET_IFNAME=enp1s0f1np1", 'CLUSTER_NODES="spark-head spark-worker"',
+                 'LINKS_0="enp1s0f1np1:10.100.152.1/24:1:10.100.152.2"', "NCCL_IB_HCAS_1=rocep1s0f1"):
+        assert line in body.splitlines(), line
+
+    topology["nodes"][1]["name"] = "เครื่องสอง"
+    seen = _source_under_bash(tmp_path, render_cluster_env(topology, ssh_user="nvidia"), ["CLUSTER_NODES", "WORKER_IP"])
+    assert seen == {"CLUSTER_NODES": "spark-head เครื่องสอง", "WORKER_IP": "10.100.152.2"}
+
+
+@pytest.mark.parametrize("slug", ["x';touch /tmp/never;'", "../../etc", "a b", "$(id)", ""])
+def test_the_cluster_env_writer_checks_the_slug_itself(slug, monkeypatch):
+    """slug ถูกต่อเป็นคำสั่งบนเครื่องปลายทาง — CLI เรียก sink ตรง ๆ โดยไม่ผ่านด่านของ endpoint"""
+    import lmds.nodes
+    from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
+    from tests.test_audit_stacked_orchestration import FakeSSH, group_of
+
+    lmds.nodes.add(lmds.nodes.Node(name="n1", host="10.2.2.1", user="nvidia"))
+    ssh = FakeSSH()
+    monkeypatch.setattr(lmds.nodes, "run", ssh)
+    with pytest.raises(ClusterEnvError):
+        write_cluster_env(slug, [group_of("n1", "n2")], "n1", None, "n1")
+    assert ssh.calls == []
