@@ -1362,6 +1362,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "head = this machine ({hub}) · worker = {worker} — cluster.env is written here and SSH is paired at the end":
+      "head = เครื่องนี้ ({hub}) · worker = {worker} — cluster.env เขียนลงเครื่องนี้ และจับคู่ SSH ให้ตอนท้าย",
     "Could not read the proven recipes — {why}": "อ่านสูตรที่รันผ่านแล้วไม่ได้ — {why}",
     "Try again": "ลองใหม่",
     "No proven recipes on this hub yet — paste a Hugging Face link above, or sync the team's recipes on the Verified recipes page":
@@ -2958,6 +2960,21 @@ let targetPinned = false;
 // ที่เป็น multi-node จริง ๆ ไม่งั้นคนที่ deploy เครื่องเดียวจะเจอช่องที่ไม่เกี่ยวกับตัวเอง
 function isStackedTarget(name) { return /stacked/.test(name || ""); }
 
+// hub เองเป็น head ของกลุ่ม stacked ได้ (hub ที่เป็น Spark) — หน้า Cluster จัดมันเป็น head อันดับแรกด้วยซ้ำ · แต่ hub
+// ไม่มีแถวในทะเบียน ช่อง "Run on" จึงไม่มีตัวเลือกของมัน: "This machine" (ค่าว่าง) คือ hub
+// audit หน้าเว็บ 2026-10 ข้อ 6: ปุ่ม "Deploy stacked to this group" ตั้ง draft.machine = ชื่อ hub → <select> ไม่มี
+// <option> นั้นจึงอ่านกลับเป็น "" → ทางของ stacked (เขียน cluster.env · จับคู่ ssh) ผูกอยู่กับ `if (draft.machine)`
+// เลยถูกข้ามทั้งก้อนเงียบ ๆ และ analyse ก็ไม่ถูกตรวจคู่ ทั้งที่ปุ่มสัญญาว่าทำให้
+// คืนชื่อของ hub เมื่อ hub อยู่กลุ่มที่พร้อมเดียวกับ worker ที่เลือก · "" = hub ไม่ใช่ head ของคู่นี้ (VM ควบคุม / คนละกลุ่ม)
+function hubHeadFor(worker) {
+  const machines = (clusterData && clusterData.machines) || [];
+  const self = machines.find(m => m.self);
+  if (!self || !worker || self.candidate === false || lastNodeRegistry.has(self.name)) return "";
+  const together = ((clusterData && clusterData.groups) || []).some(g => g.ready
+    && (g.members || []).some(m => m.name === self.name) && (g.members || []).some(m => m.name === worker));
+  return together ? self.name : "";
+}
+
 function syncStackedFields() {
   const target = document.getElementById("w-target");
   const label = document.getElementById("w-worker-label");
@@ -2968,8 +2985,10 @@ function syncStackedFields() {
   worker.hidden = !on;
   const hint = document.getElementById("w-machine-hint");
   if (on && hint) {
+    const hubHead = draft.machine ? "" : hubHeadFor(draft.worker);
     hint.textContent = draft.machine
       ? `head = ${draft.machine}${draft.worker ? " · worker = " + draft.worker : " · no worker chosen yet"}`
+      : hubHead ? T("head = this machine ({hub}) · worker = {worker} — cluster.env is written here and SSH is paired at the end", { hub: hubHead, worker: draft.worker })
       : "Pick the head machine in Run on too — the bundle is sent to that machine";
   }
 }
@@ -3057,14 +3076,15 @@ function wizForm(msg = "", extra = "") {
     sel.value = draft.machine;
     if (wsel) {
       wsel.value = draft.worker;
-      wsel.onchange = () => { draft.worker = wsel.value; };
+      wsel.onchange = () => { draft.worker = wsel.value; syncStackedFields(); };
     }
     syncStackedFields();
     sel.onchange = () => {
       draft.machine = sel.value;
       const hint = document.getElementById("w-machine-hint");
       const target = document.getElementById("w-target");
-      if (!sel.value) { if (hint) hint.textContent = ""; return; }
+      // "This machine" + target stacked: บรรทัดนี้ยังต้องบอกว่าใครเป็น head (hub เองก็เป็นได้) — ไม่ใช่ล้างทิ้งเฉย ๆ
+      if (!sel.value) { if (hint) hint.textContent = ""; syncStackedFields(); return; }
       const suggested = nodeTargets.get(sel.value);
       // ปักธงไว้แล้ว (เช่นกด Deploy มาจากหน้า Cluster) = อย่าทับ · เดิมทับเสมอ ทำให้
       // stacked กลายเป็น single ทันทีที่เลือกเครื่อง โดยไม่มีอะไรบอก
@@ -3160,18 +3180,58 @@ function startDeployWithRecipe(match) {
 // stacked: bundle เปล่า ๆ ยังไม่รู้ IP ของคู่ตัวเอง — controller จะไปค้างที่ NCCL init
 // โดยไม่มีข้อความบอกสาเหตุ · เขียน cluster.env ต่อให้เลยตรงนี้ เพราะข้อมูลครบอยู่แล้ว
 // (เดิมต้องไปรัน `lmds node cluster --write` เองที่เทอร์มินัล ซึ่งคนที่ใช้หน้าเว็บล้วน ๆ ไม่รู้)
-async function writeClusterEnv(slug, head, worker) {
+// `on` = เครื่องที่ถือ bundle: ปกติคือ head (เขียนข้าม ssh) · "" = bundle อยู่บน hub เอง (hub เป็น head)
+async function writeClusterEnv(slug, head, worker, on = head) {
   const r = await api("/api/cluster/write", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ slug, head, worker, on: head }),
+    body: JSON.stringify({ slug, head, worker, on }),
   });
-  const d = await r.json();
+  const d = await r.json().catch(() => ({}));
   // workers = รายชื่อจริงที่ลง cluster.env (target 4 เครื่อง: hub เติมที่เหลือจากกลุ่ม) — pair ต้องใช้ชุดนี้
   return r.ok
     ? { ok: true, workers: d.workers || (worker ? [worker] : []),
         text: `cluster.env: head ${d.head_ip} · worker ${(d.worker_ips || []).join(" ")}`
         + ` (${(d.workers || []).join(", ")}) · ${d.nnodes} machines (TP=${d.nnodes})${d.iface ? " · NCCL " + d.iface : ""}` }
-    : { ok: false, workers: [], text: d.detail || "could not write cluster.env" };
+    : { ok: false, workers: [], text: detailText(d, r.status, "could not write cluster.env") };
+}
+
+// stacked ที่ hub เป็น head: bundle ที่เพิ่งสร้างอยู่บนเครื่องนี้แล้ว จึงไม่มีขั้น push — แต่ขั้นที่เหลือของ stacked
+// ต้องครบเหมือนกัน: cluster.env ลง bundle บน hub · กุญแจ hub → worker · แล้วจอผลต้องบอกว่าเป็น stacked
+async function finishStackedOnHub(built, head) {
+  const slug = built.slug || (built.bundle || "").split("/").pop();
+  sess = null;
+  wizBusy(`Built ${slug} on this machine — writing cluster.env…`);
+  let cluster, paired = null;
+  try {
+    cluster = await writeClusterEnv(slug, head, draft.worker || "", "");
+    if (cluster.ok && cluster.workers.length) {
+      wizBusy(`cluster.env written — pairing ssh ${head} → ${cluster.workers.join(", ")}…`);
+      paired = await pairClusterSsh(head, cluster.workers);
+    }
+  } catch (err) {
+    cluster = cluster || { ok: false, workers: [], text: unreachableText(err) };
+    if (cluster.ok) paired = { ok: false, text: unreachableText(err), steps: [] };
+  }
+  const ready = cluster.ok && paired && paired.ok;
+  wiz.innerHTML = `<div class="pad" data-stacked-result="${ready ? "ready" : "incomplete"}">
+    <div class="name">${esc(slug)} <span class="tag ${ready ? "ok" : "warn"}">stacked · head ${esc(head)} (this machine)${
+      cluster.workers.length ? " · worker " + esc(cluster.workers.join(", ")) : ""}</span></div>
+    <div class="muted">${esc(built.zip || "")} · passed ${Array.isArray(built.gates) ? built.gates.length : "?"} gates · context ${nloc(built.context)} tok</div>
+    <div class="warn-line" style="color:var(--${cluster.ok ? "ok" : "bad"})">${esc(cluster.text)}</div>
+    ${cluster.ok ? "" : `<div class="dim">The bundle is built but does not know its worker yet — start would hang at NCCL init. From a terminal:
+      <code>lmds cluster write ${esc(slug)} --head ${esc(head)} --worker ${esc(draft.worker || "<worker>")}</code>
+      · reasons: <code>lmds cluster doctor ${esc(head)} ${esc(draft.worker || "<worker>")}</code></div>`}
+    ${paired ? `<div class="warn-line" style="color:var(--${paired.ok ? "ok" : "bad"})">${esc(paired.text)}</div>
+      ${paired.ok ? "" : (paired.steps || []).map(s => `<div class="dim">${esc(s)}</div>`).join("")}
+      ${paired.ok ? "" : `<div class="dim">sync-worker / start would die with Permission denied until this is fixed — press <b style="font-weight:500">Pair SSH</b> on the group header to try again</div>`}` : ""}
+    ${built.api_key ? `<div class="warn-line" style="margin-top:10px">
+      <b>API key for this model — copy it now.</b> Stored on this machine
+      (<span class="mono">~/.lmds/keys/${esc(slug)}</span>, mode 0600), never inside the bundle.
+      <div class="mono" style="margin-top:6px;word-break:break-all;user-select:all">${esc(built.api_key)}</div></div>` : ""}
+    <div class="dim" style="margin-top:8px">Next: press download on the row below — for stacked it downloads on the head, syncs to the worker and verifies both in one job; then start</div>
+    <div class="field" style="margin-top:12px"><button id="w-close">Close</button></div>
+  </div>`;
+  refresh();
 }
 
 async function pushAfterBuild(built, machine, stacked = false) {
@@ -3492,7 +3552,9 @@ async function analyzeNow(overrides = {}) {
                              // (ไม่ส่ง = วางแผนจาก "เครื่องว่าง" ทุกครั้ง ซึ่งคือบั๊กเดิม)
                              // worker มีความหมายเฉพาะ stacked — draft จำ worker ไว้ข้ามการเปลี่ยน target
                              // แล้ว single ก็ถูกหักหน่วยความจำของ worker ที่ไม่เกี่ยว
-                             machine: draft.machine || "", worker: isStackedTarget(target) ? (draft.worker || "") : "", ...overrides }),
+                             // hub เป็น head: ส่งชื่อของ hub ไปให้ server ตรวจคู่ (เดิมส่ง "" แล้วการตรวจถูกข้าม)
+                             machine: draft.machine || (isStackedTarget(target) ? hubHeadFor(draft.worker) : "") || "",
+                             worker: isStackedTarget(target) ? (draft.worker || "") : "", ...overrides }),
     });
     const d = await r.json();
     if (r.ok) { planView(d); return; }
@@ -3939,9 +4001,14 @@ document.addEventListener("click", async e => {
   // พิมพ์คำสั่ง CLI ให้ไปก็อป ซึ่งแปลว่า "deploy แบบ stacked" ไม่มีอยู่ในหน้าเว็บเลย
   const stackBtn = e.target.closest("button.deploy-stack");
   if (stackBtn) {
+    // head ที่ปุ่มเสนอคือ hub เอง = "This machine" (ค่าว่าง) — ช่อง Run on ไม่มีตัวเลือกชื่อ hub ให้ชี้
+    // (ทางของ hub-เป็น-head เดินต่อจาก hubHeadFor ตอน analyse / build)
+    const self = ((clusterData && clusterData.machines) || []).find(m => m.self);
+    const head = stackBtn.dataset.head || "";
+    const headIsHub = !!self && self.name === head && !lastNodeRegistry.has(head);
     Object.assign(draft, {
       target: "dgx-spark-stacked",
-      machine: stackBtn.dataset.head || "",
+      machine: headIsHub ? "" : head,
       worker: stackBtn.dataset.worker || "",
     });
     targetPinned = true;
@@ -3974,6 +4041,10 @@ document.addEventListener("click", async e => {
     if (r.ok) {
       // เลือกเครื่องปลายทางไว้ตั้งแต่ต้น = ส่งให้เลย ผู้ใช้จะได้ไม่ต้องไปหาปุ่ม push เอง
       if (draft.machine) { await pushAfterBuild(d, draft.machine, isStackedTarget(draft.target)); return; }
+      // ไม่ได้เลือกเครื่องอื่น + target stacked + hub อยู่กลุ่มเดียวกับ worker = hub เป็น head: ไม่มีอะไรให้ push
+      // แต่ cluster.env กับการจับคู่ ssh ยังต้องทำ — เดิมตกมาที่ resultView เฉย ๆ ทั้งที่ปุ่มสัญญาไว้
+      const hubHead = isStackedTarget(draft.target) ? hubHeadFor(draft.worker) : "";
+      if (hubHead) { await finishStackedOnHub(d, hubHead); return; }
       resultView(d);
     } else {
       const det = d.detail || {};

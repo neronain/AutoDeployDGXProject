@@ -591,6 +591,100 @@ def test_one_stacked_model_is_one_model_everywhere_on_the_overview(tmp_path):
     assert models["workerCard"] is True, "การ์ดของ worker ยังต้องเห็นว่าเครื่องนี้ถูกใช้อยู่ — ซ่อนจากการนับ ไม่ได้ซ่อนจากการ์ด"
 
 
+# ───────────────────── ข้อ 6 — "Deploy stacked to this group" เมื่อ hub เป็น head ─────────────────────
+
+HUB_HEAD = """const fx = { nodes: [{ name: "spark-worker", site: "HQ" }],
+  host: { hostname: "spark-head", gpus: [{ name: "NVIDIA GB10", vram_gb: 128 }], role: { control_plane: false, engines: ["vllm"] } },
+  cluster: { machines: [
+      { name: "spark-head", self: true, reachable: true, ready: true, has_gpu: true, candidate: true, cluster_ip: "10.100.152.1", fabric: { best_gbps: 200, tier: "rdma" } },
+      { name: "spark-worker", self: false, reachable: true, ready: true, has_gpu: true, cluster_ip: "10.100.152.2", fabric: { best_gbps: 200, tier: "rdma" } }],
+    groups: [{ members: [{ name: "spark-worker" }, { name: "spark-head" }], ready: true, gpu: "NVIDIA GB10", gpus_per_node: 1, world_size: 2, link_gbps: 200, rdma: true }] } };
+H.fx = fx; H.posts = []; H.pairOk = true;
+const plan = { model_id: "Q/q", engine: "vllm", image: "img", revision: "abc", generator: "rules", context: 32768,
+  fit: { target: "dgx-spark-stacked", verdict: "fits", budget_gb: 200, capacity_gb: 256, weights_gb: 80, max_safe_context: 131072, kv_at_context_gb: 3, notes: [] },
+  capabilities: {}, warnings: [], flags_needing_approval: [] };
+const note = (url, opts) => H.posts.push({ url, body: JSON.parse(opts.body || "{}") });
+H.routes = [
+  ["/api/deploy/analyze", (u, o) => { note(u, o); return { id: "s1", notes: [], plan }; }],
+  [/^\\/api\\/deploy\\/s1\\/context/, () => ({ available: false })],
+  ["/api/deploy/s1/generate", (u, o) => { note(u, o); return { slug: "q-stacked", gates: [1, 2], context: 32768, zip: "/x/q-stacked.zip" }; }],
+  ["/api/cluster/write", (u, o) => { note(u, o); return { target: "/bundles/q-stacked/cluster.env", head_ip: "10.100.152.1",
+      worker_ips: ["10.100.152.2"], workers: ["spark-worker"], nnodes: 2, iface: "enp1s0f1np1" }; }],
+  ["/api/cluster/pair", (u, o) => { note(u, o); return H.pairOk
+      ? { ok: true, steps: [{ step: "cluster key on spark-head", ok: true }] }
+      : { ok: false, steps: [{ step: "authorize spark-head on spark-worker", ok: false, detail: "Permission denied (publickey)" }] }; }],
+  [/\\/push\\//, (u, o) => { note(u, o); return { status: 404, body: { detail: "ไม่รู้จักเครื่อง" } }; }],
+  ["/api/targets", () => ({ targets: [{ name: "dgx-spark-single", tested: true }, { name: "dgx-spark-stacked", tested: true }] })],
+  ["/api/recipes", () => ({ recipes: [{ match: "Q/q", label: "Q", engine: "vllm" }] })],
+  ...H.defaultRoutes(fx),
+];
+"""
+HUB_HEAD_FLOW = """
+        location.hash = "#/nodes"; await H.tick(30);
+        const btn = document.querySelector("button.deploy-stack");
+        const offered = { head: btn.dataset.head, worker: btn.dataset.worker };
+        btn.click(); await H.tick(20);
+        const wizard = { runOn: document.getElementById("w-machine").value, target: document.getElementById("w-target").value,
+          worker: document.getElementById("w-worker").value, hint: document.getElementById("w-machine-hint").textContent };
+        document.getElementById("w-model").value = "Q/q"; document.getElementById("w-go").click(); await H.tick(20);
+        document.getElementById("w-make").click(); await H.tick(30);
+        const sent = url => H.posts.filter(p => p.url === url).map(p => p.body);
+        console.log(JSON.stringify({ offered, wizard, analyze: sent("/api/deploy/analyze"), write: sent("/api/cluster/write"),
+          pair: sent("/api/cluster/pair"), pushes: H.posts.filter(p => p.url.includes("/push/")).length,
+          result: (document.querySelector("#wiz [data-stacked-result]") || { dataset: {} }).dataset.stackedResult || null,
+          screen: document.getElementById("wiz").textContent.replace(/\\s+/g, " ").trim() }));
+        H.errors.length = 0;
+"""
+
+
+def test_stacked_deploy_with_the_hub_as_head_writes_cluster_env_and_pairs_ssh(tmp_path):
+    """ปุ่มสัญญาว่า "writes cluster.env itself at the end" — เดิมเมื่อ head คือ hub: draft.machine ถูกล้างเป็น ""
+    (ช่อง Run on ไม่มีตัวเลือกของ hub) แล้วทั้ง cluster.env · จับคู่ ssh · การตรวจคู่ตอน analyse ถูกข้ามเงียบ ๆ"""
+    (out,) = run_scenario(tmp_path, HUB_HEAD, HUB_HEAD_FLOW)
+    assert out["offered"] == {"head": "spark-head", "worker": "spark-worker"}
+    assert out["wizard"]["runOn"] == "" and out["wizard"]["target"] == "dgx-spark-stacked" and out["wizard"]["worker"] == "spark-worker"
+    assert "head = this machine (spark-head) · worker = spark-worker" in out["wizard"]["hint"], out["wizard"]["hint"]
+    # server ได้ชื่อของ hub มาตรวจคู่ (เดิมได้ machine:"" แล้วข้ามการตรวจ)
+    assert [(a["machine"], a["worker"], a["target"]) for a in out["analyze"]] == [("spark-head", "spark-worker", "dgx-spark-stacked")]
+    # bundle อยู่บน hub เอง → เขียน cluster.env ลงเครื่องนี้ (on: "") · ไม่มีการ push ไปหาเครื่องที่ไม่มีในทะเบียน
+    assert out["write"] == [{"slug": "q-stacked", "head": "spark-head", "worker": "spark-worker", "on": ""}]
+    assert out["pair"] == [{"head": "spark-head", "workers": ["spark-worker"]}] and out["pushes"] == 0
+    assert out["result"] == "ready"
+    for text in ("stacked · head spark-head (this machine) · worker spark-worker", "cluster.env: head 10.100.152.1",
+                 "ssh spark-head → spark-worker: paired", "syncs to the worker"):
+        assert text in out["screen"], (text, out["screen"])
+
+
+def test_stacked_on_the_hub_says_so_when_pairing_did_not_work(tmp_path):
+    (out,) = run_scenario(tmp_path, HUB_HEAD + "H.pairOk = false;", HUB_HEAD_FLOW)
+    assert out["result"] == "incomplete"
+    assert "not paired" in out["screen"] and "Permission denied (publickey)" in out["screen"]
+    assert "Pair SSH" in out["screen"], "ต้องบอกทางไปต่อที่กดได้"
+
+
+def test_a_control_plane_hub_is_never_treated_as_the_head(tmp_path):
+    """hub ที่เป็น VM ควบคุม (ไม่มี GPU ไม่อยู่ในกลุ่ม): target stacked + "This machine" = แค่สร้าง bundle ไว้ที่นี่ตามเดิม"""
+    (out,) = run_scenario(tmp_path, HUB_HEAD + """
+        fx.host = { hostname: "hub", gpus: [], role: { control_plane: true, engines: [] } };
+        fx.nodes = [{ name: "spark-head", site: "HQ" }, { name: "spark-worker", site: "HQ" }];
+        fx.cluster.machines = [{ name: "hub", self: true, reachable: true, ready: false, has_gpu: false, candidate: false },
+                               ...fx.cluster.machines.map(m => ({ ...m, self: false }))];
+    """, """
+        location.hash = "#/nodes"; await H.tick(30);
+        document.getElementById("new").click(); await H.tick(20);
+        const set = (id, v) => { const el = document.getElementById(id); el.value = v; if (el.onchange) el.onchange(); };
+        set("w-target", "dgx-spark-stacked"); set("w-worker", "spark-worker");
+        document.getElementById("w-model").value = "Q/q"; document.getElementById("w-go").click(); await H.tick(20);
+        document.getElementById("w-make").click(); await H.tick(30);
+        console.log(JSON.stringify({ analyzeMachine: H.posts.find(p => p.url === "/api/deploy/analyze").body.machine,
+          clusterCalls: H.posts.filter(p => p.url.startsWith("/api/cluster/")).length,
+          stackedScreen: !!document.querySelector("#wiz [data-stacked-result]"),
+          screen: document.getElementById("wiz").textContent.replace(/\\s+/g, " ").trim().slice(0, 24) }));
+        H.errors.length = 0;
+    """)
+    assert out == {"analyzeMachine": "", "clusterCalls": 0, "stackedScreen": False, "screen": "q-stacked passed 2 gates"}
+
+
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
     (out,) = run_scenario(tmp_path, """
         const fx = { nodes: [] }; H.fx = fx;

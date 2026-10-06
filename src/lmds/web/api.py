@@ -293,6 +293,25 @@ def _mapping(body: dict, key: str) -> dict:
     return value
 
 
+def _run_on_hub(script: str, timeout: int = 60):
+    """รันสคริปต์ฝั่ง head ของ cluster_ssh บน hub เอง — hub ไม่มีแถวในทะเบียนให้ ssh ไปหา
+
+    สคริปต์มาจาก nodes/cluster_ssh ล้วน ๆ (ssh-keygen · stanza ใน ~/.ssh/config · ssh ทดสอบ) — ไม่มีส่วนไหน
+    มาจากผู้เรียก · ห่อด้วย `bash -lc` เหมือน nodes.ssh.run เพื่อให้ผลเท่ากับรันบน node
+    """
+    import subprocess
+
+    from lmds.nodes.ssh import Result
+
+    try:
+        done = subprocess.run(["bash", "-lc", script], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return Result(124, "", f"หมดเวลา {timeout} วินาที")
+    except OSError as exc:
+        return Result(127, "", str(exc))
+    return Result(done.returncode, done.stdout, done.stderr)
+
+
 # start/stop ของโมเดลในเครื่องนี้ส่ง option ให้ controller ผ่าน os.environ (ทางเดียวกับที่ CLI ใช้)
 # ซึ่งเป็นของทั้ง process · สอง start ที่ซ้อนกันจะ save/restore ค่าของกันและกัน — ตัวที่จบทีหลัง
 # คืนค่าที่ตัวแรกตั้งไว้กลับเข้าไป API_PORT จึงค้างอยู่ใน env ถาวร และ subprocess ทุกตัวที่เกิด
@@ -1259,6 +1278,11 @@ def create_app(token: str = "") -> FastAPI:
         worker = (body.get("worker") or "").strip()
         if target and not _is_stacked_target(target):
             worker = ""
+        # hub เองเป็น head ของกลุ่ม stacked ได้ (hub ที่เป็น Spark) — หน้า Cluster เสนอมันเป็น head อันดับแรกด้วยซ้ำ
+        # แต่ hub ไม่มีแถวในทะเบียน: หน้าเว็บจึงเคยส่ง machine="" ซึ่งข้ามการตรวจคู่ข้างล่างทั้งก้อน (audit หน้าเว็บ
+        # 2026-10 ข้อ 6) · ตอนนี้หน้าเว็บส่งชื่อของ hub มา → ตรวจคู่ด้วยชื่อนั้น (ชื่อเดียวกับในกลุ่ม) แล้ววิเคราะห์
+        # แบบ "เครื่องนี้" (analyze ใช้ machine หาแคชของ *node* ซึ่ง hub ไม่มี)
+        head_is_hub = bool(machine) and _is_hub_name(machine)
         if _is_stacked_target(target) and machine:
             # ตรวจคู่ก่อนไปดึง metadata — เดิมรับอะไรก็ได้ แล้วไปตายที่ push/cluster.env ทีหลังโดยไม่มีเหตุผล
             problem = _stacked_pair_problem(machine, worker, _target_node_count(target))
@@ -1274,7 +1298,7 @@ def create_app(token: str = "") -> FastAPI:
                 selected_gguf=body.get("selected_gguf") or "",
                 engine=body.get("engine") or "",
                 # เครื่องปลายทางในฟลีต — fit ต้องหักหน่วยความจำที่เครื่องนั้นใช้อยู่แล้ว
-                machine=machine,
+                machine="" if head_is_hub else machine,
                 worker=worker,
             )
         except DeployError as exc:
@@ -1282,6 +1306,18 @@ def create_app(token: str = "") -> FastAPI:
 
     def _is_stacked_target(target: str) -> bool:
         return _target_node_count(target) > 1
+
+    def _hub_cluster_name() -> str:
+        """ชื่อที่ hub ใช้ในมุมมองคลัสเตอร์ (cluster_view) — ชื่อเดียวกับที่ปรากฏเป็นสมาชิกกลุ่ม"""
+        from lmds.inventory import host_payload
+
+        return host_payload().get("hostname") or "this machine"
+
+    def _is_hub_name(name: str) -> bool:
+        """`name` หมายถึง hub เองหรือเปล่า — เครื่องในทะเบียนที่ชื่อเดียวกันชนะ (ssh ไปหามันได้ตามปกติ)"""
+        from lmds.nodes import find
+
+        return bool(name) and find(name) is None and name == _hub_cluster_name()
 
     def _target_node_count(target: str) -> int:
         """จำนวนเครื่องของ preset — ชื่อที่ไม่รู้จักถือเป็นเครื่องเดียว"""
@@ -2660,6 +2696,16 @@ def create_app(token: str = "") -> FastAPI:
 
         head_name, worker_names = _pair_names(body)
         head = find(head_name)
+        runner = run
+        if head is None and _is_hub_name(head_name):
+            # hub เป็น head: กุญแจเกิดบน hub เอง (ไม่ ssh ไปหาตัวเอง) · ขั้นของ worker ยังไปทาง ssh ตามเดิม
+            # · เดิมตอบ 404 "ไม่รู้จักเครื่อง" ทั้งที่หน้า Cluster เสนอ hub เป็น head และปุ่มสัญญาว่าจะจับคู่ ssh ให้
+            from types import SimpleNamespace
+
+            head = SimpleNamespace(name=head_name)
+
+            def runner(node, script, timeout=60):  # noqa: ANN001 — รูปเดียวกับ nodes.run
+                return _run_on_hub(script, timeout) if node is head else run(node, script, timeout=timeout)
         if head is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {head_name}")
         workers = []
@@ -2673,7 +2719,7 @@ def create_app(token: str = "") -> FastAPI:
                                            "the worker over that address")
             workers.append((worker, worker.cluster_ip))
         try:
-            steps = pair_workers(head, workers, runner=run)
+            steps = pair_workers(head, workers, runner=runner)
         except NodeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"head": head_name, "workers": worker_names, "steps": steps,

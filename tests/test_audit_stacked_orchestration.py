@@ -410,6 +410,73 @@ def test_cluster_pair_endpoint_runs_the_pairing_and_reports_each_step(pair, monk
     assert r.status_code == 404
 
 
+# ── hub เองเป็น head (hub ที่เป็น Spark) — audit หน้าเว็บ 2026-10 ข้อ 6 ─────────────────────────────
+# หน้า Cluster จัด hub เป็น head อันดับแรก และปุ่ม "Deploy stacked to this group" สัญญาว่าจะเขียน cluster.env +
+# จับคู่ ssh ให้ — แต่ hub ไม่มีแถวในทะเบียน: /api/cluster/pair ตอบ 404 และ analyse ไม่เคยได้ตรวจคู่
+
+@pytest.fixture
+def hub_is_a_spark(monkeypatch):
+    """hub = Spark ตัวที่สามบนสายเดียวกัน อยู่กลุ่มพร้อมเดียวกับ spark-worker (ไม่จัดไซต์ทั้งคู่)"""
+    hub = {**spark("10.100.152.9", "10.2.1.199"), "hostname": "spark-hub",
+           "role": {"control_plane": False, "engines": ["vllm"]}}
+    monkeypatch.setattr("lmds.inventory.host_payload", lambda: hub)
+    worker = register("spark-worker", "10.2.1.194", "10.100.152.2", spark("10.100.152.2", "10.2.1.194"), site="")
+    group = next(g for g in client().get("/api/cluster").json()["groups"] if g["ready"])
+    assert sorted(m["name"] for m in group["members"]) == ["spark-hub", "spark-worker"], "ตั้งต้น: hub ต้องอยู่กลุ่มพร้อมกับ worker"
+    return worker
+
+
+def test_pairing_with_the_hub_as_head_makes_the_key_on_the_hub_itself(hub_is_a_spark, monkeypatch):
+    from lmds.nodes.ssh import Result
+
+    local = []
+
+    def on_hub(script, timeout=60):
+        local.append(script)
+        return Result(0, PUB + "\n" if "ssh-keygen" in script else "", "")
+
+    monkeypatch.setattr("lmds.web.api._run_on_hub", on_hub)
+    remote = FakeSSH(lambda node, cmd: (0, "", ""))
+    monkeypatch.setattr("lmds.nodes.run", remote)
+
+    r = client().post("/api/cluster/pair", json={"head": "spark-hub", "workers": ["spark-worker"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and [s["ok"] for s in body["steps"]] == [True] * 4
+    assert body["steps"][-1]["step"] == "spark-hub → nvidia@10.100.152.2 without a password"
+    # ฝั่ง head รันบน hub เอง (กุญแจ · ~/.ssh/config · ทดสอบ) — ไม่มีการ ssh ไปหาเครื่องที่ไม่มีในทะเบียน
+    assert len(local) == 3 and "ssh-keygen" in local[0] and "ssh -o BatchMode=yes" in local[2]
+    assert [n for n, _ in remote.calls] == ["spark-worker"] and "authorized_keys" in remote.calls[0][1]
+
+
+def test_a_name_that_is_neither_a_node_nor_the_hub_is_still_unknown(hub_is_a_spark, monkeypatch):
+    monkeypatch.setattr("lmds.web.api._run_on_hub", lambda script, timeout=60: pytest.fail("ต้องไม่รันอะไรบน hub"))
+    r = client().post("/api/cluster/pair", json={"head": "somebody-else", "worker": "spark-worker"})
+    assert r.status_code == 404
+
+
+def test_analyse_with_the_hub_as_head_checks_the_pair_and_plans_for_this_machine(hub_is_a_spark, monkeypatch):
+    seen = {}
+
+    def fake_analyze(model, **kwargs):
+        seen.update(kwargs)
+        return {"id": "s1", "notes": [], "plan": {}}
+
+    monkeypatch.setattr("lmds.web.deploy.analyze", fake_analyze)
+    api = client()
+    ok = api.post("/api/deploy/analyze", json={"model": "org/model", "target": "dgx-spark-stacked",
+                                               "machine": "spark-hub", "worker": "spark-worker"})
+    assert ok.status_code == 200, ok.text
+    # analyze() หาแคชของ *node* ด้วย machine — hub ไม่มี จึงต้องได้ "" (= เครื่องนี้) ไม่ใช่ชื่อที่มันจะตอบว่าไม่มีในทะเบียน
+    assert seen["machine"] == "" and seen["worker"] == "spark-worker" and seen["target"] == "dgx-spark-stacked"
+
+    seen.clear()
+    bad = api.post("/api/deploy/analyze", json={"model": "org/model", "target": "dgx-spark-stacked",
+                                                "machine": "spark-hub", "worker": "not-in-the-group"})
+    assert bad.status_code == 422 and bad.json()["detail"]["kind"] == "cluster", bad.text
+    assert "not-in-the-group" in bad.json()["detail"]["message"] and seen == {}, "คู่ที่จับกันไม่ได้ต้องถูกปฏิเสธก่อนไปดึง metadata"
+
+
 def test_cluster_doctor_endpoint_returns_english_findings_with_fixes(pair, monkeypatch):
     monkeypatch.setattr("lmds.nodes.run", FakeSSH(
         lambda node, cmd: (255, "", "Permission denied (publickey)") if cmd.startswith("ssh ") else (0, "", "")))
