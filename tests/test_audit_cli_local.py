@@ -308,7 +308,8 @@ def _snapshot(directory) -> dict:
 
 def _deploy(tmp_path, monkeypatch, report, *extra: str, output=None):
     _patch_inspect(monkeypatch, report)
-    return _run(["deploy", report.repo_id, "--no-llm", "--target", "dgx-spark-single", "--yes",
+    target = [] if "--target" in extra else ["--target", "dgx-spark-single"]
+    return _run(["deploy", report.repo_id, "--no-llm", *target, "--yes",
                  "--output", str(output or tmp_path / "bundles"), *extra])
 
 
@@ -382,3 +383,267 @@ def test_the_renderer_itself_refuses_a_named_folder_owned_by_another_repo(tmp_pa
         render(safetensors_report(repo_id="OtherOrg/Totally-Different-70B", weight_bytes=30 * GIB), "chat")
     assert _snapshot(owner.directory) == before
     assert render(safetensors_report(weight_bytes=20 * GIB), "chat").directory == owner.directory   # เจ้าของเดิมเขียนทับได้
+
+
+# ═════════════════════ 1. `rebuild` สร้าง *ใบที่สั่ง* ใหม่ ที่เดิม ด้วยค่าที่ profile จดไว้ ═════════════════════
+STALE = "#!/bin/bash\n# stale — controller ของรุ่นเก่า\n"
+
+
+def _bundle_state(directory) -> dict:
+    """สิ่งที่ผู้ใช้ถือว่าเป็น "bundle ใบนี้": ทุกไฟล์ในโฟลเดอร์ ยกเว้นของที่เปลี่ยนทุกครั้งที่ generate โดยนิยาม
+
+    (ตราเวลา origin.stamped_at ใน profile · checksum/zip ที่ครอบ profile นั้น) — controller · README · bundle.env ·
+    score template · SPECIAL_FILES ต้องเหมือนเดิมทุกไบต์ และ profile ต้องเหมือนเดิมทุกคีย์
+    """
+    import yaml
+
+    state = {}
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.name == "PACKAGE_SHA256SUMS" or path.suffix == ".zip":
+            continue
+        if path.name == "MODEL_PROFILE.yaml":
+            profile = yaml.safe_load(path.read_text(encoding="utf-8"))
+            (profile.get("origin") or {}).pop("stamped_at", None)
+            state[path.name] = profile
+        else:
+            state[path.name] = path.read_text(encoding="utf-8")
+    return state
+
+
+def _all_bundles(root) -> dict:
+    return {d.name: _bundle_state(d) for d in sorted(root.iterdir()) if d.is_dir()}
+
+
+def _controller(directory):
+    found = [p for p in directory.iterdir() if p.name.endswith(("-single.sh", "-stacked.sh"))]
+    assert len(found) == 1, sorted(p.name for p in directory.iterdir())
+    return found[0]
+
+
+def _st(**overrides) -> ModelReport:
+    return safetensors_report(weight_bytes=20 * GIB, **overrides)
+
+
+def _rerank_report() -> ModelReport:
+    return ModelReport(
+        repo_id="Qwen/Qwen3-Reranker-4B", revision_sha="sha", task="rerank",
+        artifact_type=ArtifactType.SAFETENSORS, weight_bytes=int(8 * GIB),
+        architecture="Qwen3ForCausalLM", context_length=40960,
+        kv_dims=KvDims(layers=36, kv_heads=8, head_dim=128),
+    )
+
+
+# (ชื่อเคส, report ตอน deploy, option ของ deploy, slug ที่จะ rebuild, report ที่ inspector คืนตอน rebuild)
+REBUILD_CASES = [
+    ("vllm", _st, [], "qwen3-32b", _st),
+    # เคส audit: `rebuild` ของ bundle --engine sglang → engine กลายเป็น vllm
+    ("sglang", _st, ["--engine", "sglang"], "qwen3-32b", _st),
+    # เคส audit: `rebuild prod-chat` (deploy --name) → งอก bundles/qwen3-32b ใหม่ · ของ prod-chat ไม่ถูกเขียน
+    ("name", _st, ["--name", "prod-chat"], "prod-chat", _st),
+    # เคส audit: `rebuild qwen3-32b-stacked` → เขียนทับใบ single `qwen3-32b` เป็น stacked · ใบที่สั่งไม่ถูกแตะ
+    ("stacked-companion", _st, ["--also-stacked"], "qwen3-32b-stacked", _st),
+    ("single-next-to-its-companion", _st, ["--also-stacked"], "qwen3-32b", _st),
+    # เคส audit: bundle --task embed → task กลับเป็น generate (`--runner pooling --convert embed` หาย เสิร์ฟ chat แทน)
+    # inspector รอบ rebuild ยังเดาว่า generate เหมือนตอน deploy — สิ่งที่รู้ว่าเป็น embed มีแต่ profile
+    ("task-embed", _st, ["--task", "embed"], "qwen3-32b", _st),
+    ("embed", _embed_report, [], "qwen3-embedding-4b", _embed_report),
+    ("rerank", _rerank_report, [], "qwen3-reranker-4b", _rerank_report),
+    ("stacked-target", _st, ["--target", "dgx-spark-stacked"], "qwen3-32b", _st),
+    ("concurrency-8", _st, ["--concurrency", "8"], "qwen3-32b", _st),
+    ("gguf", "gguf", [], "qwen3-8b-gguf", "gguf"),
+    # llama.cpp: context = ก้อนรวมของทุก slot — fit ของ rebuild ต้องคิดที่จำนวน slot เดิม ไม่งั้น context ถูกบีบเหลือ 1/4
+    ("gguf-4-slots", "gguf", ["--concurrency", "4"], "qwen3-8b-gguf", "gguf"),
+    ("rtx", lambda: safetensors_report(weight_bytes=10 * GIB), ["--target", "rtx-5090"], "qwen3-32b",
+     lambda: safetensors_report(weight_bytes=10 * GIB)),
+]
+
+
+def _make(report):
+    from tests.test_generator import gguf_report
+
+    return gguf_report() if report == "gguf" else report()
+
+
+@pytest.mark.parametrize("case", REBUILD_CASES, ids=[c[0] for c in REBUILD_CASES])
+def test_rebuild_regenerates_exactly_the_named_bundle_in_place(tmp_path, monkeypatch, case):
+    """rebuild ของ bundle ที่เพิ่ง deploy ด้วย lmds รุ่นเดียวกัน = ได้ bundle เดิมกลับมาทุกไฟล์ และไม่มีใบไหนอื่นถูกแตะ
+
+    ทำ controller ของใบที่สั่งให้เก่าก่อน (เขียนขยะทับ) แล้ว rebuild: ถ้ามัน regenerate ใบอื่น/ที่อื่น ขยะจะยังอยู่ ·
+    ถ้ามันไม่พกค่าของ profile (engine · task · topology · slots · ชื่อ) controller ที่ได้จะไม่ตรงของเดิม
+    """
+    from lmds.fleet.bundle_settings import write as write_settings
+
+    _, at_deploy, options, slug, at_rebuild = case
+    root = tmp_path / "bundles"
+    made = _deploy(tmp_path, monkeypatch, _make(at_deploy), *options)
+    assert made.exit_code == 0, made.output
+    write_settings(root / slug, {"port": 8123, "served_name": "my-alias"})   # `lmds set --port/--model-id` ของผู้ใช้
+    before = _all_bundles(root)
+    assert slug in before
+    controller = _controller(root / slug)
+    controller.write_text(STALE, encoding="utf-8")
+
+    _patch_inspect(monkeypatch, lambda s, c: _make(at_rebuild))
+    result = _run(["rebuild", slug])
+    assert result.exit_code == 0, result.output
+    after = _all_bundles(root)
+    assert sorted(after) == sorted(before), "rebuild ต้องไม่สร้างหรือลบโฟลเดอร์ bundle ใด"
+    for name in before:
+        assert after[name].keys() == before[name].keys(), (name, sorted(after[name]), sorted(before[name]))
+        for filename in before[name]:
+            assert after[name][filename] == before[name][filename], f"{name}/{filename} ไม่ตรงของเดิมหลัง rebuild {slug}"
+    assert f"lmdsnodepush<เครื่อง>{slug}" in _flat(result.stdout)
+
+
+def test_rebuild_keeps_the_flag_and_runtime_file_the_user_approved(tmp_path, monkeypatch):
+    """flag นอก allowlist กับไฟล์ runtime ภายนอกเข้า bundle ได้ทางเดียวคือผู้ใช้อนุมัติตอน deploy — harden ของ rebuild ย้ายทั้งคู่
+    กลับไป "รออนุมัติ" แล้ว render โดยไม่มีมัน: โมเดลที่ต้อง --trust-remote-code หรือ parser plugin start ไม่ขึ้นหลัง rebuild"""
+    from lmds.brain import RuntimeAsset, apply_asset_approvals, apply_flag_approvals, build_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.fleet import register_bundle
+    from lmds.generator import render_bundle
+
+    report = _st()
+    fit = analyze(report, PRESETS["dgx-spark-single"])
+    plan = build_plan(report, fit, None)
+    plan.flags_needing_approval.append("--trust-remote-code")          # ทางเดียวกับขั้นยืนยันของ deploy
+    apply_flag_approvals(plan, ["--trust-remote-code"])
+    plan.assets_needing_approval.append(RuntimeAsset(
+        filename="super_parser.py", url="https://raw.githubusercontent.com/acme/parsers/main/super_parser.py",
+        purpose="reasoning parser"))
+    apply_asset_approvals(plan, ["super_parser.py"])
+    bundle = render_bundle(plan, report, fit, tmp_path / "bundles")
+    register_bundle(bundle.controller)
+    original = bundle.controller.read_text(encoding="utf-8")
+    assert "--trust-remote-code" in original and "super_parser.py" in original   # ของตั้งต้นมีจริง ไม่ใช่เทียบว่างกับว่าง
+    # ไฟล์ runtime ที่อนุมัติไว้ถูกจดอยู่ในตาราง ASSET_* ของ controller ที่เดียว (profile ไม่ได้จด) — ทำให้เก่าด้วยการต่อท้าย
+    # ไม่ใช่เขียนทับทั้งไฟล์ ไม่งั้นคือลบหลักฐานการอนุมัติทิ้งเองก่อน rebuild
+    bundle.controller.write_text(original + "\n# stale — แก้มือค้างไว้\n", encoding="utf-8")
+
+    _patch_inspect(monkeypatch, lambda s, c: _st())
+    result = _run(["rebuild", "qwen3-32b"])
+    assert result.exit_code == 0, result.output
+    assert bundle.controller.read_text(encoding="utf-8") == original
+    profile = _profile(bundle.directory)
+    assert "--trust-remote-code" in profile["serving"]["extra_flags"] and profile["flags_needing_approval"] == []
+
+
+def test_rebuild_does_not_drop_a_parser_the_current_rules_know_nothing_about(tmp_path, monkeypatch):
+    """parser ที่ LLM หาให้ตอน deploy (โมเดลที่กฎตระกูล/สูตรไม่รู้จัก): rebuild วางแผนใหม่แบบ rule-based — ไม่พกของเดิมมา
+    tool calling ที่เคยใช้ได้ดับเงียบ ๆ"""
+    from lmds.brain import build_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.fleet import register_bundle
+    from lmds.generator import render_bundle
+
+    def report():
+        return _st(repo_id="Acme/Wombat-7B")
+
+    fit = analyze(report(), PRESETS["dgx-spark-single"])
+    plan = build_plan(report(), fit, None)
+    assert plan.tool_calling.parser is None, "เคสนี้ต้องเป็นโมเดลที่ตรรกะปัจจุบันไม่มี parser ให้"
+    plan.tool_calling.enabled, plan.tool_calling.parser = True, "hermes"
+    plan.reasoning.enabled, plan.reasoning.parser = True, "deepseek_r1"
+    bundle = render_bundle(plan, report(), fit, tmp_path / "bundles")
+    register_bundle(bundle.controller)
+    original = bundle.controller.read_text(encoding="utf-8")
+    bundle.controller.write_text(STALE, encoding="utf-8")
+
+    _patch_inspect(monkeypatch, lambda s, c: report())
+    result = _run(["rebuild", "wombat-7b"])
+    assert result.exit_code == 0, result.output
+    assert bundle.controller.read_text(encoding="utf-8") == original
+    features = _profile(bundle.directory)["features"]
+    assert (features["tool_calling"]["parser"], features["reasoning"]["parser"]) == ("hermes", "deepseek_r1")
+
+
+def _edit_profile(directory, edit) -> None:
+    import yaml
+
+    path = directory / "MODEL_PROFILE.yaml"
+    profile = yaml.safe_load(path.read_text(encoding="utf-8"))
+    edit(profile)
+    path.write_text(yaml.safe_dump(profile, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _refused_without_writing(tmp_path, result, slug: str, before: dict, *needles: str) -> None:
+    _clean_refusal(result, *needles)
+    assert _snapshot(tmp_path / "bundles" / slug) == before, "ปฏิเสธแล้วต้องไม่มีไฟล์ไหนใน bundle ถูกเขียน"
+    assert sorted(p.name for p in (tmp_path / "bundles").iterdir() if p.is_dir()) == [slug]
+
+
+def test_rebuild_refuses_when_the_profile_does_not_say_which_engine(tmp_path, monkeypatch):
+    """safetensors เสิร์ฟได้ทั้ง vLLM และ SGLang — profile ที่ไม่ได้จด engine ไม่มีทาง rebuild ให้ตรงของเดิม: ปฏิเสธ ไม่เดา"""
+    assert _deploy(tmp_path, monkeypatch, _st(), "--engine", "sglang").exit_code == 0
+    bundle = tmp_path / "bundles" / "qwen3-32b"
+    _edit_profile(bundle, lambda p: p["runtime"].pop("engine"))
+    before = _snapshot(bundle)
+    _refused_without_writing(tmp_path, _run(["rebuild", "qwen3-32b"]), "qwen3-32b", before, "runtime.engine", "ไม่มีไฟล์ไหนถูกเขียน")
+
+
+def test_rebuild_refuses_when_the_fallback_target_would_change_the_topology(tmp_path, monkeypatch):
+    """target เดิมไม่ใช่ preset แล้ว → ถอยไป auto-detect ได้ (ของเดิม) แต่ถ้าผลคือ single ทั้งที่ bundle เป็น stacked
+    นั่นคือ bundle อีกใบ — controller คนละตัว คนละจำนวนเครื่อง"""
+    made = _deploy(tmp_path, monkeypatch, _st(), "--target", "dgx-spark-stacked")
+    assert made.exit_code == 0, made.output
+    bundle = tmp_path / "bundles" / "qwen3-32b"
+    _edit_profile(bundle, lambda p: p["target"].update(name="dgx-spark-cluster-of-old"))
+    before = _snapshot(bundle)
+    _refused_without_writing(tmp_path, _run(["rebuild", "qwen3-32b"]), "qwen3-32b", before, "stacked", "single")
+
+
+def test_rebuild_refuses_when_the_result_would_be_a_different_engine(tmp_path, monkeypatch):
+    """profile บอก vLLM แต่ repo ที่ inspect ได้ตอนนี้เป็น GGUF (→ llama.cpp เสมอ): harden แก้ engine ให้ตามข้อเท็จจริง
+    ซึ่งถูกสำหรับ deploy ใหม่ — สำหรับ rebuild แปลว่ากำลังจะเขียน bundle llama.cpp ทับ bundle vLLM"""
+    from tests.test_generator import gguf_report
+
+    assert _deploy(tmp_path, monkeypatch, _st()).exit_code == 0
+    bundle = tmp_path / "bundles" / "qwen3-32b"
+    before = _snapshot(bundle)
+    _patch_inspect(monkeypatch, lambda s, c: gguf_report(repo_id="Qwen/Qwen3-32B"))
+    _refused_without_writing(tmp_path, _run(["rebuild", "qwen3-32b"]), "qwen3-32b", before, "engine: vllm → llamacpp")
+
+
+def test_rebuild_of_an_impossible_recorded_plan_is_a_message_not_a_traceback(tmp_path, monkeypatch):
+    """ขา rebuild ของข้อ 4: profile (แก้มือ/รุ่นเก่า) ที่จด SGLang บน stacked — planner ปฏิเสธด้วย PlanError ซึ่ง rebuild
+    ไม่มียามเลย จึงหลุดเป็น traceback"""
+    made = _deploy(tmp_path, monkeypatch, _st(), "--target", "dgx-spark-stacked")
+    assert made.exit_code == 0, made.output
+    bundle = tmp_path / "bundles" / "qwen3-32b"
+    _edit_profile(bundle, lambda p: p["runtime"].update(engine="sglang"))
+    before = _snapshot(bundle)
+    _refused_without_writing(tmp_path, _run(["rebuild", "qwen3-32b"]), "qwen3-32b", before,
+                             "SGLang ยังไม่มี controller แบบ stacked")
+
+
+def test_rebuild_leaves_an_adopted_bundle_alone(tmp_path, monkeypatch):
+    """bundle จาก `lmds adopt` (container ที่ลูกค้าตั้งเองก่อน LMDS เข้าไป) ไม่มี template — rebuild เคย inspect model.id จาก HF
+    แล้ววาง <slug>-single.sh ของ LMDS ลงข้าง -adopted.sh พร้อมเขียนทับ profile (ที่อยู่ weight / container ต้นทางหาย)"""
+    import yaml
+
+    from lmds.fleet import run_root
+
+    bundle = tmp_path / "bundles" / "coder-next"
+    bundle.mkdir(parents=True)
+    controller = bundle / "coder-next-adopted.sh"
+    controller.write_text("#!/bin/bash\necho adopted \"$1\"\n", encoding="utf-8")
+    controller.chmod(0o755)
+    (bundle / "MODEL_PROFILE.yaml").write_text(yaml.safe_dump({
+        "profile_version": 1, "generated_by": "lmds adopt", "adopted": True,
+        "model": {"id": "Qwen/Qwen3-32B", "artifact_type": "unknown"},
+        "runtime": {"engine": "vllm", "image": "vllm/vllm-openai:latest"},
+        "serving": {"context": 32768, "port": 8000}, "source_container": "coder-next",
+        "weights": {"path": "/data/models/coder-next"},
+    }), encoding="utf-8")
+    run_dir = run_root() / "coder-next"
+    run_dir.mkdir(parents=True)
+    (run_dir / "server.meta").write_text(
+        f"slug=coder-next\nmodel=coder-next\nmodel_id=Qwen/Qwen3-32B\nengine=vllm\nmode=docker\nport=8000\n"
+        f"container=coder-next\ncontroller={controller}\nstarted_at=\n", encoding="utf-8")
+    monkeypatch.setattr("lmds.fleet.manager._container_running", lambda c: False)
+    inspected = []
+    _patch_inspect(monkeypatch, lambda s, c: inspected.append(s) or _st())
+    before = _snapshot(bundle)
+    result = _run(["rebuild", "coder-next"])
+    _clean_refusal(result, "lmds adopt")
+    assert _snapshot(bundle) == before and inspected == []

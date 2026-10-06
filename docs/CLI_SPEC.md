@@ -231,6 +231,31 @@ lmds remove <slug> [--keep-weights] [-y] [--dry-run]
 - **คำสั่งหลัง start อ่านสถานะจริงจาก `server.meta`** เฉพาะตอนเซิร์ฟเวอร์ยังรันอยู่ · flag ที่ระบุเองชนะ · `start`/`restart` ไม่สืบทอด
 - **container ที่ไม่ได้มาจาก lmds**: `discover()` รับเฉพาะ image ที่ตรง engine ที่รู้จัก (vLLM/llama.cpp/Ollama/TGI) `external=True` ·
   `stop` ใช้ `docker stop` · `enable` สร้าง unit `docker start <container>`
+- **rebuild**: สร้าง *ใบที่สั่ง* ใหม่ที่เดิม — ชื่อโฟลเดอร์ของ bundle ถูกส่งให้ renderer ตรง ๆ (ไม่คิด slug ใหม่จาก repo id: ใบ `--name`
+  และใบ `-stacked` ถูกเขียนทับที่ตัวเอง) · inspect ซ้ำจาก Hub ที่ revision เดิม ไม่เรียก LLM · ต่อคีย์ของ `MODEL_PROFILE.yaml`:
+
+  | คีย์ใน profile | rebuild | เหตุผล |
+  |---|---|---|
+  | `model.id` · `model.revision` | ใช้ตามเดิม | ตัวตนของโมเดล — inspect ซ้ำที่ revision ที่ pin ไว้ |
+  | `model.served_name` | คงไว้ | ชื่อที่ client เรียกอยู่ |
+  | `model.selected_gguf` | คงไว้ (inspect ซ้ำด้วยไฟล์นั้น) | ผู้ใช้เลือก variant เอง |
+  | `model.task` | คงไว้ (ไม่มีคีย์ = `generate`) | `--task` ที่ใส่เพราะ inspector เดาผิดอยู่ใน profile ที่เดียว |
+  | `runtime.engine` | คงไว้ · safetensors ที่ไม่ได้จด = ปฏิเสธ | vLLM/SGLang เลือกแทนกันไม่ได้ |
+  | `target.name` · `topology` · `target.memory_model` | คงไว้ · target ที่ไม่ใช่ preset → auto-detect ได้เฉพาะเมื่อ topology และ memory model ออกมาเท่าเดิม ไม่งั้นปฏิเสธ | single↔stacked / unified↔discrete คือ controller คนละตัว |
+  | `serving.context` · `max_num_seqs` · `max_output_tokens` · `gpu_memory_utilization` · `kv_cache_dtype` · `extra_flags` · `extra_env` | คงไว้ (ผ่าน schema + harden ซ้ำ — ค่าที่ถูกบีบพิมพ์ใน `ต่างจากของเดิม:`) · llama.cpp คิด fit ที่จำนวน slot เดิม · env ใหม่ที่ตรรกะปัจจุบันเพิ่มถูกรวมเข้า ของเดิมชนะคีย์ที่ซ้ำ | ค่าที่ตัดสินใจ/อนุมัติแล้ว รวม KV pin ใน `extra_flags` |
+  | `flags_needing_approval` | คงไว้ (ยังรออนุมัติ) | ไม่อนุมัติแทนผู้ใช้ |
+  | flag นอก allowlist ใน `serving.extra_flags` · ไฟล์ runtime ในตาราง `ASSET_*` ของ controller เดิม | อนุมัติคืนให้ (เฉพาะที่อยู่ใน bundle เดิมจริง · ไฟล์ต้อง URL เดิม) | การอนุมัติผูกกับ bundle — profile ไม่ได้จด runtime assets จึงอ่านจาก controller |
+  | `features.tool_calling` · `features.reasoning` | ตรรกะปัจจุบัน (สูตร > กฎตระกูล) ชนะเมื่อมี parser ให้ · ไม่มี = ใช้ของเดิม | เหตุผลที่สั่ง rebuild คือเอาความรู้ใหม่ แต่ parser ที่เคยใช้ได้ต้องไม่หาย |
+  | `features.multimodal` | projector/modalities เดิมถูกเสนอกลับ harden เก็บไว้ถ้าไฟล์ยังมีใน repo | projector ที่เลือกเป็นของใบนี้ |
+  | `features.moe` · `speculative` · `embedding` · `rerank` · `model.gated/license/architecture/gguf_architecture/params_total/weight_bytes/native_context/kv_bytes_per_token` · `facts` | คำนวณใหม่จาก inspect | ข้อเท็จจริงของ repo ไม่ใช่การตัดสินใจ |
+  | `runtime.image` · `image_pin` · `native_build` · `min_llamacpp` · `target.budget_gb/verdict/max_safe_context/fit_notes` · `memory.sizing` | คำนวณใหม่ (image ที่เปลี่ยนพิมพ์ `image เปลี่ยน:`) | ระบบเป็นเจ้าของ — image ที่ tag หายคือเหตุผลหลักของ rebuild · image ที่ผู้ใช้ตั้งเองอยู่ใน `bundle.env` |
+  | `target.llamacpp_dir` | คงไว้ | build ของ llama.cpp ผูกกับโมเดล |
+  | `warnings` | คงไว้ + ต่อท้ายด้วยของรอบนี้ (พิมพ์เฉพาะของใหม่) | เดิมถูกล้างเป็น `[]` |
+  | `generated_by` · `template_hash` · `generator` · `origin` · `validation` · `profile_version` | เขียนใหม่ (`generator` = rule-based) | ตราของการ generate รอบนี้ |
+
+  `bundle.env` (port · image · ชื่อ ของ `lmds set`) · `bundle.args` · `cluster.env` · API key · `server.meta` ไม่ถูกแตะ · bundle จาก
+  `lmds adopt` = ปฏิเสธ · ผลที่จะออกมาเป็นคนละ engine/topology/task/GGUF/ชื่อที่เสิร์ฟ = ปฏิเสธ · ปฏิเสธทุกแบบ exit `1` ไม่เขียนไฟล์
+  · exit `2` ไม่ผ่าน gates · `4`/`5` เหมือน inspect
 - **remove**: หยุด → disable → ลบ bundle+ZIP, `~/.lmds/run/<slug>`, `~/.lmds/plugins/<slug>`, weight (vLLM → HF cache ·
   llama.cpp → `~/models/<slug>` เสมอ ไม่อ่าน `MODEL_DIR` จาก environ · adopt → `MODEL_PROFILE["weights"]`) · หาไม่เจอ = ไม่เดา ·
   ไฟล์ที่ root เป็นเจ้าของ (EACCES) ลบผ่าน `docker run --rm -v <parent>:/x <image> rm -rf` ใต้รั้ว home/HF_HOME ไม่ pull image

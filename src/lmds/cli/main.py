@@ -3169,6 +3169,98 @@ def _take_over_unit(unit: str) -> None:
         f"สั่งเองได้: sudo systemctl disable --now {unit}"
     )
 
+def _rebuild_refused(slug: str, why: str, redeploy: bool = True) -> None:
+    """rebuild ที่ทำให้ตรงของเดิมไม่ได้ต้อง *ไม่ทำ* — เดาแล้วเขียนทับคือได้ bundle อีกใบในชื่อเดิม"""
+    from rich.markup import escape
+
+    err_console.print(f"[red]rebuild {slug} ไม่ได้:[/red] {escape(why)}")
+    err_console.print("[dim]ไม่มีไฟล์ไหนถูกเขียน"
+                      + (f" · ตั้งใจเปลี่ยนจริง: lmds deploy <โมเดล> --name {slug} พร้อม --target/--engine/--task ที่ต้องการ"
+                         if redeploy else "") + "[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _recorded_assets(controller_text: str) -> list:
+    """ไฟล์ runtime ภายนอกที่ผู้ใช้อนุมัติไว้กับ bundle นี้ — profile ไม่ได้จด อยู่ในตาราง ASSET_* ของ controller เดิม"""
+    from lmds.brain import RuntimeAsset
+    from lmds.fleet.refresh import _bash_array
+
+    names = _bash_array(controller_text, "ASSET_FILES") or []
+    urls = _bash_array(controller_text, "ASSET_URLS") or []
+    shas = _bash_array(controller_text, "ASSET_SHAS") or []
+    return [
+        RuntimeAsset(filename=name, url=urls[i] if i < len(urls) else "",
+                     sha256=(shas[i] if i < len(shas) and shas[i] not in ("", "None") else None))
+        for i, name in enumerate(names)
+    ]
+
+
+def _carry_recorded_plan(plan, profile: dict, old_assets: list) -> None:
+    """เอาสิ่งที่ profile จดไว้และเป็น *การตัดสินใจของผู้ใช้* หรือ *ข้อเท็จจริงของ bundle ใบนี้* กลับเข้าแผน (ก่อน harden)
+
+    harden ยังเป็นด่านสุดท้ายเหมือนทุกทาง — ค่าที่เอากลับมาถูกบีบตาม fit/allowlist ปัจจุบันได้ ผู้เรียกจึงเทียบผลหลัง harden
+    กับของเดิมแล้วบอกผู้ใช้ทุกค่าที่ไม่ตรง (ดู `rebuild`)
+    """
+    from lmds.brain.plan_schema import Multimodal, Serving
+
+    model = profile.get("model") or {}
+    serving = profile.get("serving") or {}
+    features = profile.get("features") or {}
+
+    if model.get("served_name"):
+        plan.served_model_name = str(model["served_name"])
+    recorded = {k: serving[k] for k in ("context", "max_output_tokens", "gpu_memory_utilization", "kv_cache_dtype",
+                                        "max_num_seqs", "extra_flags") if serving.get(k) is not None}
+    if isinstance(serving.get("extra_env"), dict):
+        # ของเดิมชนะค่าที่ตรรกะปัจจุบันเสนอในคีย์เดียวกัน · คีย์ใหม่ที่ตรรกะปัจจุบันเพิ่ม (เช่น env ของ NVFP4 บน GB10) ยังได้มา
+        recorded["extra_env"] = {**plan.serving.extra_env, **{str(k): str(v) for k, v in serving["extra_env"].items()}}
+    # ผ่าน schema เดียวกับแผนทั่วไป — profile ที่แก้มือเป็นค่าที่เป็นไปไม่ได้ (context 0 · gpu-util 7) ต้องไม่ไหลลง controller
+    plan.serving = Serving.model_validate({**plan.serving.model_dump(), **recorded})
+
+    # parser: ตรรกะปัจจุบัน (สูตรที่รันผ่านจริง > กฎตระกูล) ชนะเมื่อมีคำตอบ — นั่นคือเหตุผลที่คนสั่ง rebuild · แต่ parser ที่ bundle
+    # เดิมมี (LLM หาให้ตอน deploy) และตรรกะปัจจุบันไม่รู้จัก ต้องไม่หาย: tool calling ที่เคยใช้ได้จะดับเงียบ ๆ หลัง rebuild
+    for key, cfg in (("tool_calling", plan.tool_calling), ("reasoning", plan.reasoning)):
+        old = features.get(key) or {}
+        if old.get("enabled") and old.get("parser") and not cfg.parser:
+            cfg.enabled, cfg.parser = True, str(old["parser"])
+            if key == "tool_calling" and old.get("chat_template_override"):
+                cfg.chat_template_override = str(old["chat_template_override"])
+    # projector ที่เลือกไว้เป็นของ bundle ใบนี้ — harden เก็บไว้ถ้าไฟล์ยังมีจริงใน repo ไม่มีแล้วถึงเลือกใหม่
+    old_mm = features.get("multimodal") or {}
+    if old_mm.get("projector_files") or old_mm.get("modalities"):
+        plan.multimodal = Multimodal(modalities=list(old_mm.get("modalities") or []),
+                                     projector_files=list(old_mm.get("projector_files") or []))
+    native_dir = (profile.get("target") or {}).get("llamacpp_dir")
+    if native_dir:
+        plan.runtime.native_dir = str(native_dir)
+    # ที่ยังรออนุมัติก็ยังรออยู่ · ไฟล์ runtime ที่ controller เดิมใช้ถูกเสนอกลับเข้าคิว ให้ harden ตรวจ URL/ชื่อไฟล์ซ้ำก่อน
+    plan.flags_needing_approval = [str(f) for f in (profile.get("flags_needing_approval") or [])]
+    known = {a.filename for a in [*plan.runtime_assets, *plan.assets_needing_approval]}
+    plan.assets_needing_approval = [*plan.assets_needing_approval, *[a for a in old_assets if a.filename not in known]]
+
+
+def _replay_recorded_approvals(plan, recorded_flags: list, old_assets: list) -> list[str]:
+    """การอนุมัติที่ผู้ใช้ให้ไว้ตอน deploy ผูกกับ bundle ใบนี้ — harden รอบใหม่ย้ายทุกตัวกลับไปรออนุมัติ ต้องคืนให้
+
+    คืนเฉพาะของที่ *อยู่ใน bundle เดิมจริง*: flag ที่ profile จดไว้ใน serving.extra_flags (ของนอก allowlist เข้าไปอยู่ตรงนั้นได้
+    ทางเดียวคือผู้ใช้อนุมัติ) และไฟล์ที่ controller เดิมมีในตาราง ASSET_* ด้วย URL เดียวกัน · ของใหม่ที่ตรรกะปัจจุบันเสนอ
+    (สูตรเพิ่มไฟล์) ไม่ถูกอนุมัติแทนผู้ใช้
+    """
+    from lmds.brain import apply_asset_approvals, apply_flag_approvals
+
+    kept: list[str] = []
+    flags = [f for f in recorded_flags if f in plan.flags_needing_approval]
+    if flags:
+        apply_flag_approvals(plan, flags)
+        kept += flags
+    urls = {a.filename: a.url for a in old_assets}
+    names = [a.filename for a in plan.assets_needing_approval if urls.get(a.filename) == a.url]
+    if names:
+        apply_asset_approvals(plan, names)
+        kept += names
+    return kept
+
+
 @app.command()
 def rebuild(
     slug: str = typer.Argument(..., help="ชื่อ bundle ที่จะสร้างใหม่", autocompletion=_complete_slug),
@@ -3176,51 +3268,85 @@ def rebuild(
         None, "--output",
         help="ปลายทาง (ว่าง = ที่เดิมของ bundle · in-place — controller ที่ start/publish อ่านจะได้ตัวใหม่)"),
 ) -> None:
-    """สร้าง bundle เดิมใหม่ด้วยตรรกะปัจจุบัน — เก็บค่าที่เคยตัดสินใจไว้ ไม่ต้องเดินผ่าน wizard อีก
+    """สร้าง bundle *ใบที่สั่ง* ใหม่ด้วยตรรกะปัจจุบัน ที่เดิม ชื่อเดิม — เก็บค่าที่เคยตัดสินใจไว้ ไม่ต้องเดินผ่าน wizard อีก
 
     ใช้เมื่อ bundle เก่าใช้ไม่ได้เพราะสิ่งที่อยู่นอกเหนือค่าที่ตั้ง เช่น image ที่ tag หายไป
     หรือ template รุ่นใหม่มีคำสั่ง/ตัวกันพลาดที่ของเก่าไม่มี
 
-    ค่าที่เก็บไว้ (context, flags, ฟีเจอร์, target) ถูกนำกลับมาใช้ · ส่วนที่ระบบเลือกเอง
-    (image, ตัวกันพลาดในสคริปต์) คำนวณใหม่ตามตรรกะปัจจุบัน — ไม่เรียก LLM ซ้ำ
+    คงไว้ตาม MODEL_PROFILE.yaml: ชื่อ/โฟลเดอร์ · target + topology · engine · task · ไฟล์ GGUF ที่เลือก · ชื่อที่เสิร์ฟ ·
+    context / slots / max output / gpu-util / kv dtype / extra flags / env · flag และไฟล์ runtime ที่อนุมัติไว้ · projector ·
+    parser ที่ bundle เดิมมีและตรรกะปัจจุบันไม่มีคำตอบ · `bundle.env` / `bundle.args` / `cluster.env` / API key ไม่ถูกแตะ
+    (port และ image ที่ตั้งด้วย `lmds set` อยู่ในนั้น)
 
-    ค่าเริ่มต้นเขียนทับ **ที่เดิม** ของ bundle · ก่อนหน้านี้ default `./bundles` (relative CWD)
-    ทำให้ bundle ที่อยู่นอก ~/bundles ถูก rebuild เป็นสำเนาใหม่ที่อื่น ส่วนตัวจริงที่
-    start/publish อ่าน (จาก server.meta) ยังเป็นของเก่า — regenerate แล้วเหมือนไม่มีอะไรเปลี่ยน
+    คำนวณใหม่ตามตรรกะปัจจุบัน (ไม่เรียก LLM ซ้ำ): image + digest · parser เมื่อสูตร/กฎตระกูลมีคำตอบ · MoE/MTP จากไฟล์จริง ·
+    ตัวกันพลาดในสคริปต์ · ทุกค่าที่ออกมาไม่ตรงของเดิมถูกพิมพ์บอก
+
+    ทำให้ตรงของเดิมไม่ได้ (profile ไม่ได้จด engine · target เดิมหายแล้วเครื่องนี้ให้ topology/หน่วยความจำคนละแบบ · bundle จาก
+    `lmds adopt`) = ปฏิเสธ exit 1 ไม่เขียนอะไร — ไม่เดา
+
+    Exit codes: 0 สำเร็จ · 1 ไม่พบ bundle / rebuild ให้ตรงของเดิมไม่ได้ / input ที่วางแผนไม่ได้ · 2 ไม่ผ่าน gates ·
+    4 ต้องการ token · 5 เครือข่าย/Hub
     """
     from pathlib import Path as _Path
 
+    from pydantic import ValidationError
+
+    from lmds.brain import PlanError
+    from lmds.brain.orchestrator import harden_plan
+    from lmds.brain.plan_schema import Engine
+    from lmds.brain.rulebased import topology_for_target
     from lmds.fleet import bundle_profile, find
+    from lmds.fleet.consistency import controller_state
+    from lmds.inspector.report import ArtifactType
 
     server = find(slug)
     if server is None or not server.controller:
         err_console.print(f"[red]ไม่พบ bundle: {slug}[/red] — ดูรายชื่อ: lmds list")
         raise typer.Exit(code=1)
+    controller = _Path(server.controller)
+    # ตัวตนของ bundle คือ *โฟลเดอร์* ของมัน ไม่ใช่ slug ที่คิดจากชื่อ repo — เดิมไม่ส่งชื่อให้ renderer ชื่อจึงถูกคิดใหม่จาก
+    # repo id: `rebuild qwen3-32b-stacked` ไปเขียนทับ `qwen3-32b` (ใบ single) เป็น stacked และ `rebuild prod-chat` (deploy ด้วย
+    # --name) ไปงอกโฟลเดอร์ `qwen3-32b` ใหม่ ทั้งคู่รายงานสำเร็จโดยใบที่สั่งไม่ถูกแตะเลย (audit 2026-10-06)
+    folder = controller.parent.name
     # in-place: controller = <output>/<slug>/<slug>-single.sh → output คือ parent ของโฟลเดอร์ slug
-    output = output or str(_Path(server.controller).parent.parent)
+    output = output or str(controller.parent.parent)
     profile = bundle_profile(server.controller)
     if not profile:
         err_console.print(f"[red]อ่าน MODEL_PROFILE.yaml ของ {slug} ไม่ได้[/red] — สร้างใหม่ด้วย lmds deploy")
         raise typer.Exit(code=1)
+    if controller_state(profile, controller)["state"] == "adopted":
+        # bundle ที่รับช่วงมาไม่มี template — rebuild เคยวาง <slug>-single.sh ของ LMDS ลงข้าง -adopted.sh แล้วเขียนทับ profile
+        # (ที่อยู่ weight / container ต้นทางหาย) = เปลี่ยนของที่เจ้าของเดิมตั้งไว้ให้ "เข้ารูป" โดยไม่มีใครสั่ง
+        _rebuild_refused(slug, "bundle นี้มาจาก lmds adopt (รับช่วง container/process ที่มีอยู่เดิม) — ไม่มี template ให้ regenerate · "
+                               "เขียน controller ของมันใหม่ด้วย lmds adopt", redeploy=False)
 
     model = (profile.get("model") or {})
+    runtime = profile.get("runtime") or {}
+    serving = profile.get("serving") or {}
+    recorded_target = profile.get("target") or {}
     model_id, revision = model.get("id") or "", model.get("revision") or None
-    target = (profile.get("target") or {}).get("name") or ""
+    target = recorded_target.get("name") or ""
     if not model_id:
         err_console.print("[red]profile ไม่มี model.id — สร้างใหม่ด้วย lmds deploy[/red]")
         raise typer.Exit(code=1)
 
-    # target เดิมอาจเป็นค่าที่เลิกใช้แล้ว (เจอจริง: "this-machine" จาก bundle รุ่นเก่า) —
-    # เมื่อก่อน _compute_fits จะโยน error แล้ว rebuild ตายทั้งคำสั่ง แปลว่า bundle เก่า
-    # อัปเดตด้วย rebuild ไม่ได้เลย · ถอยไป auto-detect แทนดีกว่าปฏิเสธทั้งใบ
+    # target เดิมอาจไม่ใช่ preset — "this-machine" (deploy โดยไม่ใส่ --target บนเครื่องที่มี GPU) หรือชื่อที่เลิกใช้แล้ว ·
+    # เมื่อก่อน _compute_fits จะโยน error แล้ว rebuild ตายทั้งคำสั่ง แปลว่า bundle พวกนั้นอัปเดตด้วย rebuild ไม่ได้เลย ·
+    # ถอยไป auto-detect ได้ แต่ผลต้องให้ topology/หน่วยความจำแบบเดิม (ตรวจข้างล่าง) ไม่งั้นคือ bundle อีกใบ
     from lmds.fit import PRESETS
     if target and target not in PRESETS:
         console.print(f"[yellow]target เดิม '{target}' ไม่ใช่ preset ที่รู้จักแล้ว[/yellow] — "
                       f"ใช้ auto-detect ตามฮาร์ดแวร์เครื่องนี้แทน")
         target = ""
 
-    old_image = (profile.get("runtime") or {}).get("image") or ""
-    console.print(f"สร้าง [bold]{slug}[/bold] ใหม่จากค่าเดิม — {model_id} · target {target or 'อัตโนมัติ'}")
+    old_image = runtime.get("image") or ""
+    recorded_engine = str(runtime.get("engine") or "").strip().lower()
+    recorded_topology = str(profile.get("topology") or "").strip().lower()
+    # profile รุ่นก่อนมี embed/rerank ไม่ได้จด task — bundle พวกนั้นเป็น chat เสมอ จึงไม่ใช่การเดา
+    recorded_task = model.get("task") if model.get("task") in ("generate", "embed", "rerank") else "generate"
+    console.print(f"สร้าง [bold]{folder}[/bold] ใหม่ที่เดิมจากค่าเดิม — {model_id} · target {target or 'อัตโนมัติ'}"
+                  + (f" · {recorded_engine}" if recorded_engine else "")
+                  + (f" · {recorded_task}" if recorded_task != "generate" else ""))
 
     source, report = _resolve_and_inspect(model_id, revision, interactive_ok=True)
     _refuse_unsupported(report)
@@ -3243,41 +3369,100 @@ def rebuild(
                               f"ใช้ค่าที่ profile เก็บไว้แทน[/yellow]")
         report.selected_gguf = model["selected_gguf"]
     report = _ensure_gguf_selected(source, report, interactive=False)
-    fit = _compute_fits(report, [target] if target else [], 1)[0]
+
+    # งานของโมเดล (generate/embed/rerank) ถูกตัดสินตอน deploy — `--task embed` ที่ผู้ใช้ใส่เพราะ inspector เดาผิดอยู่ใน profile
+    # ไม่ได้อยู่ใน repo · เดิม rebuild เชื่อ inspector รอบใหม่ → bundle embedding กลับไปเสิร์ฟ chat (`--runner pooling` หาย)
+    if report.task != recorded_task:
+        console.print(f"[dim]· งานของ bundle นี้คือ {recorded_task} (inspector รอบนี้อ่านได้ {report.task}) — คงตามที่ bundle "
+                      f"ถูกสร้างไว้ · จะเปลี่ยน: lmds deploy {model_id} --task {report.task} --name {folder}[/dim]")
+        report.task = recorded_task
+
+    # engine: safetensors เสิร์ฟได้ทั้ง vLLM และ SGLang — เดิมไม่ส่งต่อ engine ที่ profile จด bundle SGLang จึงกลายเป็น vLLM
+    engine = None
+    if report.artifact_type is not ArtifactType.GGUF:
+        if not recorded_engine:
+            _rebuild_refused(slug, "MODEL_PROFILE.yaml ไม่ได้จด runtime.engine — safetensors เสิร์ฟได้ทั้ง vLLM และ SGLang "
+                                   "เลือกแทนให้ไม่ได้")
+        try:
+            engine = Engine(recorded_engine)
+        except ValueError:
+            _rebuild_refused(slug, f"runtime.engine ใน MODEL_PROFILE.yaml คือ '{recorded_engine}' ซึ่งไม่ใช่ engine ที่รู้จัก")
+
+    # llama.cpp: --ctx-size คือก้อนรวมของทุก slot และเพดานของ harden = ค่าต่อ slot × concurrency ของ fit — คิด fit ที่จำนวน
+    # slot เดิม ไม่งั้น bundle ที่ deploy ด้วย --concurrency 4 ถูกบีบ context เหลือหนึ่งในสี่โดย slot ยังเป็นสี่
+    slots = serving.get("max_num_seqs")
+    concurrency = slots if (recorded_engine == "llamacpp" and isinstance(slots, int) and not isinstance(slots, bool)
+                            and slots >= 1) else 1
+    fit = _compute_fits(report, [target] if target else [], concurrency)[0]
+
+    now_topology = topology_for_target(fit.target_name).value
+    if recorded_topology and now_topology != recorded_topology:
+        _rebuild_refused(slug, f"bundle นี้เป็น {recorded_topology} แต่ target ที่ใช้ได้ตอนนี้ ({fit.target_name}) ให้ {now_topology} "
+                               f"— target เดิม '{recorded_target.get('name') or '?'}' ไม่ใช่ preset ที่รู้จักแล้ว")
+    recorded_memory = str(recorded_target.get("memory_model") or "")
+    if recorded_memory and fit.memory_model.value != recorded_memory:
+        _rebuild_refused(slug, f"bundle นี้สร้างให้เครื่องแบบ {recorded_memory} memory แต่ target ที่ใช้ได้ตอนนี้ ({fit.target_name}) "
+                               f"เป็น {fit.memory_model.value} — image และวิธีรัน engine คนละชุดกัน · rebuild บนเครื่องที่ bundle นี้ใช้จริง")
 
     # ไม่เรียก LLM ซ้ำ — แผนเดิมถูกตรวจและอนุมัติไปแล้ว เอาค่ากลับมาแล้วให้ harden จัดการ
-    # ส่วนที่ระบบเป็นเจ้าของ (image, topology, ตัวกันพลาด) ตามตรรกะปัจจุบัน
-    from lmds.brain import PlanError
-    from lmds.brain.orchestrator import harden_plan
-
-    plan = _build_plan_safe(report, fit, None)
-    serving = profile.get("serving") or {}
-    if serving.get("context"):
-        plan.serving.context = int(serving["context"])
-    if serving.get("max_num_seqs"):
-        plan.serving.max_num_seqs = int(serving["max_num_seqs"])
-    if serving.get("extra_flags"):
-        plan.serving.extra_flags = list(serving["extra_flags"])
+    # ส่วนที่ระบบเป็นเจ้าของ (image, ตัวกันพลาด) ตามตรรกะปัจจุบัน
+    plan = _build_plan_safe(report, fit, None, engine=engine)
+    old_assets = _recorded_assets(controller.read_text(encoding="utf-8", errors="replace"))
+    try:
+        _carry_recorded_plan(plan, profile, old_assets)
+    except (ValidationError, TypeError, ValueError) as exc:
+        _rebuild_refused(slug, f"ค่าใน MODEL_PROFILE.yaml ใช้ไม่ได้ ({str(exc).splitlines()[0][:160]}) — แก้ profile หรือ deploy ใหม่")
     # build_plan harden ไปรอบหนึ่งแล้วด้วยค่าที่มันคิดเอง — warning จากรอบนั้นพูดถึงตัวเลข
-    # ที่เราเพิ่งเขียนทับไป การแสดงมันต่อคือเล่าการตัดสินใจที่ไม่ได้เกิดขึ้นจริง
-    plan.warnings = []
+    # ที่เราเพิ่งเขียนทับไป การแสดงมันต่อคือเล่าการตัดสินใจที่ไม่ได้เกิดขึ้นจริง · ที่ถูกคือคำเตือนที่ bundle เดิมจดไว้
+    # (มันพูดถึงค่าที่เราเพิ่งเอากลับมา) — เดิมล้างเป็น [] แล้ว profile/README หลัง rebuild ไม่เหลือแม้แต่ "โมเดล embedding —
+    # ไม่มี chat" หรือที่มาของสูตร · ของใหม่จาก harden รอบนี้ต่อท้าย และเป็นชุดเดียวที่พิมพ์ให้ดู
+    recorded_warnings = [str(w) for w in (profile.get("warnings") or [])]
+    plan.warnings = list(recorded_warnings)
     try:
         plan = harden_plan(plan, report, fit)
     except PlanError as exc:
         _plan_refused(exc)
+    recorded_flags = [str(f) for f in (serving.get("extra_flags") or [])]
+    kept = _replay_recorded_approvals(plan, recorded_flags, old_assets)
+    if kept:
+        console.print("[dim]· คงการอนุมัติที่ให้ไว้กับ bundle นี้: " + ", ".join(kept) + "[/dim]")
+    plan.warnings = list(dict.fromkeys(plan.warnings))
+
+    # ด่านสุดท้ายก่อนเขียน: ตัวตนของ bundle ต้องออกมาเหมือนเดิม — harden แก้ engine/topology ตามข้อเท็จจริงได้ (repo เปลี่ยนชนิดไฟล์
+    # · profile แก้มือ) ซึ่งถูกต้องสำหรับ deploy ใหม่ แต่สำหรับ rebuild แปลว่ากำลังจะเขียน bundle อีกใบทับใบนี้
+    identity = [
+        ("engine", recorded_engine, plan.runtime.engine.value),
+        ("topology", recorded_topology, plan.topology.value),
+        ("task", recorded_task, plan.task),
+        ("ไฟล์ GGUF", str(model.get("selected_gguf") or ""), str(plan.selected_gguf or "")),
+        ("ชื่อที่เสิร์ฟ", str(model.get("served_name") or ""), plan.served_model_name),
+    ]
+    broken = [f"{what}: {was} → {now}" for what, was, now in identity if was and was != now]
+    if broken:
+        _rebuild_refused(slug, "ผลที่ได้จะไม่ใช่ bundle ใบเดิม (" + " · ".join(broken) + ")")
 
     if plan.runtime.image_ref != old_image:
         console.print(f"[yellow]image เปลี่ยน:[/yellow] {old_image or '(ไม่มี)'} → "
                       f"[bold]{plan.runtime.image_ref}[/bold]")
+    drift = [f"{label} {serving[key]} → {getattr(plan.serving, key)}"
+             for key, label in (("context", "context"), ("max_num_seqs", "slots"), ("max_output_tokens", "max output"),
+                                ("gpu_memory_utilization", "gpu-util"), ("kv_cache_dtype", "kv dtype"))
+             if serving.get(key) is not None and serving[key] != getattr(plan.serving, key)]
+    lost = [f for f in recorded_flags if f not in plan.serving.extra_flags]
+    if lost:
+        drift.append("flag ที่ไม่ได้ตามมา: " + " ".join(lost))
+    if drift:
+        console.print("[yellow]ต่างจากของเดิม:[/yellow] " + " · ".join(drift) + " — เหตุผลอยู่ในรายการข้างล่าง", highlight=False)
     for warning in plan.warnings:
-        console.print(f"[dim]· {warning}[/dim]")
+        if warning not in recorded_warnings:
+            console.print(f"[dim]· {warning}[/dim]", highlight=False)
 
-    bundle, results, delivered = _render_and_package(plan, report, fit, output)
+    bundle, results, delivered = _render_and_package(plan, report, fit, output, slug=folder)
     _render_gates(results)
     _render_delivery(bundle, delivered, native_prepare=_is_native_prepare(plan, fit),
                      stacked=plan.topology.value == "stacked",
                      assets=bool(plan.runtime_assets))
-    console.print(f"\n[dim]ส่งไปเครื่องอื่น: [bold]lmds node push <เครื่อง> {slug}[/bold][/dim]")
+    console.print(f"\n[dim]ส่งไปเครื่องอื่น: [bold]lmds node push <เครื่อง> {bundle.directory.name}[/bold][/dim]")
 
 
 # ขั้นของ smoke test — เรียงตามที่ต้องเป็นจริง ล้มขั้นไหนก็หยุดตรงนั้น
