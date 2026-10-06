@@ -1414,9 +1414,23 @@ start() {
     #
     # --network host: healthcheck ในคอนเทนเนอร์ใช้ network stack ของ host — "localhost:8080" คือ
     # 8080 ของเครื่อง ไม่ใช่ของ container · ต่อให้ map พอร์ตก็ยังแก้ไม่ตรงจุด
+    # env ของ engine (`lmds set <slug> --engine-env "KEY=VALUE …"`) ต้องเข้าไปในคอนเทนเนอร์ด้วย
+    #
+    # เดิม ENGINE_ENV ถูก export เข้าเชลล์ของ controller อย่างเดียว — โหมด native ได้ไปเพราะ llama-server เป็นลูกของ
+    # เชลล์นี้ แต่ `docker run` ไม่มี -e สักตัว ค่าจึงหายเงียบ ๆ ในโหมดที่เครื่อง RTX/x86 ได้ (audit 2026-10-06
+    # repro_argv_and_env.sh (b): LLAMA_ARG_NO_KV_OFFLOAD=1 ไม่ถึง container · ฝั่ง vLLM/SGLang ส่ง -e มาตลอด)
+    # ส่งแค่ *ชื่อ* (`-e NAME`) แล้วให้ docker หยิบค่าจาก env ของเชลล์นี้ — ค่าไม่ขึ้น argv ของ docker run
+    # (หลักเดียวกับ HF_TOKEN / VLLM_API_KEY) · export ซ้ำตรงนี้เองเพื่อไม่พึ่งว่าส่วน config ด้านบน export ไว้แล้ว
+    local engine_env_args=() engine_kv
+    for engine_kv in ${ENGINE_ENV:-}; do
+      [[ "$engine_kv" == [A-Za-z_]*=* ]] || continue
+      export "$engine_kv"
+      engine_env_args+=(-e "${engine_kv%%=*}")
+    done
     docker run -d --name "$CONTAINER_NAME" \
       --no-healthcheck \
       --network host --gpus all \
+      ${engine_env_args[@]+"${engine_env_args[@]}"} \
       ${API_KEY:+-v} ${API_KEY:+"${API_KEY_FILE}:/run/lmds-api-key:ro"} \
       -v "${MODEL_DIR}:/models:ro" \
       "$LLAMACPP_IMAGE" \
