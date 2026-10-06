@@ -3124,9 +3124,10 @@ def adopt(
     อ่าน image/env/mount/port/args จาก container ที่รันอยู่ แล้วเขียนเป็นสคริปต์ที่
     **รันคำสั่งเดิมซ้ำได้เป๊ะ** · ของที่รันอยู่ตอนนี้ไม่ถูกแตะต้อง
     """
+    from rich.markup import escape
+
     from lmds.fleet import FleetError
-    from lmds.fleet.adopt import adopt as adopt_container
-    from lmds.fleet.adopt import adopt_process, inspect_container
+    from lmds.fleet.adopt import adopt_process, adopt_with_report
 
     if not container and not port and not pid:
         err_console.print(
@@ -3150,6 +3151,8 @@ def adopt(
         console.print(f"[dim]weights: {proc.model_path or '(ไม่ระบุใน argv)'}[/dim]")
         console.print(f"[dim]port:    {proc.port} · context: {proc.context or 'ไม่ระบุ'}[/dim]")
         console.print(f"[dim]สคริปต์: {path}[/dim]")
+        for note in proc.notes:
+            console.print(f"[yellow]  · {escape(note)}[/yellow]", soft_wrap=True)
         if proc.unit:
             console.print(f"\n[yellow]process นี้เป็นของ {proc.unit}[/yellow]")
             if take_over:
@@ -3169,20 +3172,36 @@ def adopt(
         return
 
     try:
-        info = inspect_container(container)
-        path = adopt_container(container, slug=slug, output=Path(output))
+        report = adopt_with_report(container, slug=slug, output=Path(output))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None
+    info, path = report.adopted, report.controller
 
-    name = slug or info.container.replace("_", "-").lower()
+    name = report.slug
     console.print(f"[green]รับ {info.container} เข้าระบบแล้ว[/green] → [bold]{name}[/bold]")
     console.print(f"[dim]image:   {info.image}[/dim]")
     console.print(f"[dim]model:   {info.model or '(อ่านจาก env/argv ไม่ได้)'}[/dim]")
     # ไม่มี "ชื่อเดิม" ให้เทียบเหมือนสาขา process: container ไม่ได้จดชื่อที่เสิร์ฟไว้ที่ไหน
     # ชื่อที่เปลี่ยนแล้วแสดงอยู่ในบรรทัด "รับ … เข้าระบบแล้ว → <slug>" ข้างบนอยู่แล้ว
-    console.print(f"[dim]port:    {info.port} · context: {info.context or 'ไม่ระบุ'}[/dim]")
+    # port = ฝั่งเครื่อง (ตัวที่ health/gateway ใช้) · ข้างใน container ต่างเลขก็บอกด้วย จะได้ไม่งงกับ --port บน argv
+    inside = f" (ใน container: {info.container_port})" if info.container_port not in (0, info.port) else ""
+    console.print(f"[dim]port:    {info.port}{inside} · context: {info.context or 'ไม่ระบุ'}[/dim]")
     console.print(f"[dim]สคริปต์: {path}[/dim]")
+    for note in report.notes:
+        console.print(f"[dim]  · {escape(note)}[/dim]", soft_wrap=True)
+    if report.replaced:
+        # generator ของ adopt เปลี่ยนไปเรื่อย ๆ และสคริปต์เดิมอาจถูกแก้มือ — ต้อง diff ก่อนเชื่อ ไม่ใช่เขียนทับเงียบ ๆ
+        console.print(f"\n[yellow]controller เดิมต่างจากตัวที่สร้างใหม่[/yellow] — เก็บของเดิมไว้ที่ "
+                      f"{escape(report.replaced)}", soft_wrap=True)
+        console.print(f"[dim]ดูว่าต่างตรงไหนก่อน restart: diff {escape(report.replaced)} {escape(str(path))}[/dim]",
+                      soft_wrap=True)
+    if report.not_reproduced:
+        # ทุกข้อที่ docker run ในสคริปต์ไม่เหมือนของเดิม — stop ของสคริปต์ลบ container เดิมทิ้ง จึงต้องรู้ก่อนกด
+        console.print(f"\n[yellow]⚠ ต่างจาก container เดิม {len(report.not_reproduced)} ข้อ[/yellow] "
+                      f"[dim](จดไว้ที่หัวสคริปต์และใน MODEL_PROFILE.yaml ด้วย)[/dim]")
+        for line in report.not_reproduced:
+            console.print(f"[yellow]  · {escape(line)}[/yellow]", soft_wrap=True)
     console.print("\n[dim]ทำได้: start · stop · restart · status · logs · test-text · client-config[/dim]")
     console.print("[dim]ไม่มี download/verify-files — weight ของ container นี้เป็น path ที่คุณจัดการเอง[/dim]")
 

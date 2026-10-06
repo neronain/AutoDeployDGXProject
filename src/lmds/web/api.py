@@ -663,8 +663,7 @@ def create_app(token: str = "") -> FastAPI:
         ไป ssh แล้วพิมพ์ `lmds adopt` เอง ซึ่งเป็นขั้นที่คนส่วนใหญ่ไม่รู้ว่ามี
         """
         from lmds.fleet import FleetError, find
-        from lmds.fleet.adopt import adopt as adopt_container
-        from lmds.fleet.adopt import adopt_process
+        from lmds.fleet.adopt import adopt_process, adopt_with_report
 
         body = body or {}
         server = find(slug)
@@ -682,8 +681,12 @@ def create_app(token: str = "") -> FastAPI:
         output = _Path.home() / "bundles"
         try:
             if server.mode == "docker" and server.container:
-                path = adopt_container(server.container, slug=body.get("slug") or "", output=output)
-                info = {"kind": "container", "source": server.container}
+                report = adopt_with_report(server.container, slug=body.get("slug") or "", output=output)
+                path = report.controller
+                # ต่างจาก container เดิมตรงไหน — หน้าเว็บต้องบอกก่อนคนกด restart (stop ของ controller ลบ container เดิม)
+                info = {"kind": "container", "source": server.container,
+                        "not_reproduced": report.not_reproduced, "notes": report.notes,
+                        "replaced": report.replaced}
             else:
                 target_pid = server.pid or 0
                 if not target_pid and not server.port:
@@ -697,6 +700,7 @@ def create_app(token: str = "") -> FastAPI:
                     "weights": proc.model_path, "context": proc.context,
                     # unit ที่ Restart=always จะแย่ง port กลับ — หน้าเว็บต้องเตือนต่อ
                     "owning_unit": proc.unit,
+                    "notes": proc.notes,
                 }
         except FleetError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
