@@ -787,6 +787,52 @@ def test_an_expired_analysis_is_not_presented_as_a_limit_of_the_model(tmp_path):
     assert "does not expose KV dimensions" not in broken["advice"]
 
 
+def test_a_form_or_its_result_on_a_card_survives_live_frames_until_the_user_closes_it(tmp_path):
+    """Rename host / setup / fix docker วาดฟอร์ม *และผล* ลงตัวการ์ด ซึ่ง SSE วาดทับทุก frame เว้นแต่โฟกัสอยู่ในการ์ด —
+    คลิกพื้นหลังหรือสลับไปหารหัสผ่าน แล้ว "Rolled back — the machine is still 'msi'" กับช่องรหัส sudo ก็หายไปใน 1 วิ"""
+    (rename, closed, docker, refreshed) = run_scenario(tmp_path, MODEL + """
+        const fx = { nodes: [{ name: "msi-3", site: "TKC", models: [model({ slug: "a", running: true, healthy: true })] }] }; H.fx = fx;
+        H.routes = [
+          ["/api/nodes/msi-3/rename-host", (u, o) => o.method === "POST"
+             ? { ok: false, changed: false, rolled_back: true, old: "msi", new: "msi-3",
+                 steps: [{ step: "hostnamectl set-hostname", ok: true }, { step: "update /etc/hosts", ok: false, detail: "sudo: unable to resolve host" }, { step: "roll back", ok: true }] }
+             : { current: "msi", blockers: [], warnings: [], sudo_needed: true, backup_dir: "/root/lmds-hostname" }],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        location.hash = "#/nodes"; await H.tick(30);
+        const row = nodeRows.get("msi-3");
+        const frames = async n => { for (let i = 0; i < n; i++) { H.sse(H.snapshot(H.fx)); await H.tick(3); } };
+        const railDot = () => [...document.querySelectorAll("#rail-nav a")].find(a => a.getAttribute("href") === "#/node/msi-3").querySelector(".rdot").className;
+        // ── Rename host: ผลที่ถอยกลับ ──
+        row.block.querySelector('button[data-nact="rename-host"]').click(); await H.tick(10);
+        row.body.querySelector("#rh-name").value = "msi-3"; row.body.querySelector("#rh-pw").value = "pw";
+        row.body.querySelector('button[data-nact="rename-host-go"]').click(); await H.tick(10);
+        document.activeElement.blur();                               // คลิกพื้นหลัง / สลับหน้าต่าง
+        H.fx.nodes[0].models[0].running = false;                     // ระหว่างนั้นโมเดลบนเครื่องนี้ดับ
+        await frames(3);
+        console.log(JSON.stringify({ result: (row.body.querySelector("#rh-out") || { textContent: "" }).textContent.replace(/\\s+/g, " ").trim(),
+          held: (row.version.querySelector("[data-held]") || {}).textContent || "", railDot: railDot() }));
+        row.body.querySelector('button[data-nact="close-output"]').click(); await H.tick(5);
+        console.log(JSON.stringify({ formGone: !row.body.querySelector("[data-node-form]"), body: row.body.textContent.replace(/\\s+/g, " ").includes("stopped"),
+          held: !!row.version.querySelector("[data-held]") }));
+        // ── Fix docker access: ฟอร์มรหัสผ่านระหว่างที่ผู้ใช้ไปหารหัส ──
+        row.block.querySelector('button[data-nact="fix-docker"]').click(); await H.tick(10);
+        row.body.querySelector("#setup-pw").value = "half-typed";
+        document.activeElement.blur(); await frames(3);
+        console.log(JSON.stringify({ field: (row.body.querySelector("#setup-pw") || {}).value || null }));
+        // Refresh = ผู้ใช้สั่งวาดใหม่ทั้งใบ — ปิดฟอร์มได้
+        row.block.querySelector('button[data-nact="refresh"]').click(); await H.tick(20);
+        console.log(JSON.stringify({ formGone: !row.body.querySelector("[data-node-form]") }));
+        H.errors.length = 0;
+    """)
+    assert "Rolled back — the machine is still “msi”" in rename["result"] and "unable to resolve host" in rename["result"]
+    assert rename["held"].startswith("paused") and rename["railDot"] == "rdot ", "ถือการ์ดไว้ต้องบอก และ rail ยังตามความจริง"
+    assert closed == {"formGone": True, "body": True, "held": False}, "ปิดแล้วการ์ดกลับมาเป็นรายการโมเดลล่าสุดทันที"
+    assert docker == {"field": "half-typed"}
+    assert refreshed == {"formGone": True}
+
+
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
     (out,) = run_scenario(tmp_path, """
         const fx = { nodes: [] }; H.fx = fx;

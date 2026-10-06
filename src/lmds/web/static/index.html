@@ -1391,8 +1391,8 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "hub ไม่รู้จักงานนี้แล้ว ({why}) — น่าจะถูก restart ระหว่างที่งานรัน · ไม่มีอะไรบอกว่าเครื่องถูกถอยกลับแล้ว: ตรวจเครื่องก่อน (Back → Cabling check อ่านทุกพอร์ตใหม่) แล้วค่อย apply อีกครั้ง",
     "Lost contact with the hub — the job may still be running ({why}). Retrying in {s}s; nothing was rolled back as far as this page knows.":
       "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่ ({why}) · ลองใหม่ในอีก {s} วิ · เท่าที่หน้านี้รู้ ยังไม่มีอะไรถูกถอยกลับ",
-    "The model list on this card is not being redrawn while its ⋯ menu is open or a field in it has focus — the header, the left rail and the overview keep following the hub. Close the menu to resume.":
-      "รายการโมเดลบนการ์ดนี้หยุดวาดใหม่ชั่วคราว ระหว่างที่เมนู ⋯ เปิดอยู่หรือเคอร์เซอร์อยู่ในช่องกรอกของการ์ด — หัวการ์ด รางซ้าย และภาพรวมยังตาม hub ต่อ · ปิดเมนูเพื่อให้วาดต่อ",
+    "The model list on this card is not being redrawn while a ⋯ menu or a form is open on it, or a field in it has focus — the header, the left rail and the overview keep following the hub. Close it to resume.":
+      "รายการโมเดลบนการ์ดนี้หยุดวาดใหม่ชั่วคราว ระหว่างที่เมนู ⋯ หรือฟอร์มเปิดอยู่บนการ์ด หรือเคอร์เซอร์อยู่ในช่องกรอกของการ์ด — หัวการ์ด รางซ้าย และภาพรวมยังตาม hub ต่อ · ปิดมันเพื่อให้วาดต่อ",
     "Lost contact with the hub — the job may still be running · retrying in {s}s ({why})":
       "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่ · ลองใหม่ในอีก {s} วิ ({why})",
     "the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})":
@@ -5217,14 +5217,18 @@ function versionChips(d) {
 async function loadNode(name) {
   const row = nodeRows.get(name);
   if (!row) return;
-  row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><span class="muted">Contacting ${esc(name)}…</span></div>`;
+  // ฟอร์ม/ผลที่ผู้ใช้ยังอ่านอยู่ในตัวการ์ดไม่ถูกวาดทับ — งานเบื้องหลังที่จบแล้วเรียก loadNode มาที่นี่ได้ทุกเมื่อ
+  // (ปุ่ม Refresh ปิดฟอร์มก่อนเรียก จึงยังเป็น "วาดใหม่ทั้งใบ" ตามที่กด)
+  const formOpen = () => !!row.body.querySelector("[data-node-form]");
+  if (!formOpen())
+    row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><span class="muted">Contacting ${esc(name)}…</span></div>`;
   const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`)).json();
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   paintNodeVersion(row, d, name);
   lastNodeData.set(name, d);
   pruneModelMenus(name, d);
   paintSummary(name, d.host, d.summary);
-  paintNodeBody(row, name, d);
+  if (formOpen()) markStale(row); else paintNodeBody(row, name, d);
   // แผงที่เปิดค้างอยู่ต้องได้บรรทัดคำนวณกลับมาด้วย (ค่า "ว่างตอนนี้" เปลี่ยนตามการ์ดที่เพิ่ง refresh)
   for (const key of openModelMenus) {
     if (key.startsWith(name + "/")) hydrateMemoryLine(name, key.slice(name.length + 1));
@@ -5409,7 +5413,7 @@ document.addEventListener("click", async e => {
     const row = nodeRows.get(node);
     if (!row) return;
     const user = (lastNodeRegistry.get(node) || {}).user || "the user on that machine";
-    row.body.innerHTML = `<div class="pad">
+    row.body.innerHTML = `<div class="pad" data-node-form>
       <div class="name">${dockr ? `Let ${esc(user)} use docker on ${esc(node)}`
                                 : perms ? `Give the model cache back to the user on ${esc(node)}`
                                  : `Root-level setup on ${esc(node)}`}</div>
@@ -5487,7 +5491,7 @@ document.addEventListener("click", async e => {
     showNodeOutput(node, `Site · ${node}`, "");
     const row = nodeRows.get(node);
     if (!row) return;
-    row.body.innerHTML = `<div class="pad">
+    row.body.innerHTML = `<div class="pad" data-node-form>
       <div class="name">Group ${esc(node)} by site</div>
       <div class="dim" style="margin:6px 0 12px">A label for where the machine lives (site / customer) — only groups
         and filters the screen, <b>no effect on clusters</b> · empty = remove the label</div>
@@ -5529,7 +5533,7 @@ document.addEventListener("click", async e => {
         body: JSON.stringify({ site: val }),
       });
       if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).detail) || r.status);
-      pinnedOutput.delete(node);
+      clearNodeOutput(node);   // บันทึกแล้ว = ปิดฟอร์ม คืนรายการโมเดล
       refreshNodes();       // badge/กลุ่มอัปเดตทันที
     } catch (e) { if (out) out.textContent = "Save failed: " + e.message; }
     return;
@@ -5553,7 +5557,7 @@ document.addEventListener("click", async e => {
     const lines = (items, colour) => items.map(t =>
       `<div class="warn-line" style="color:var(--${colour})">${esc(t)}</div>`).join("");
     const stopped = (d.blockers || []).length > 0;
-    row.body.innerHTML = `<div class="pad">
+    row.body.innerHTML = `<div class="pad" data-node-form>
       <div class="name">${esc(T("Change the hostname of {node}", { node }))}</div>
       <div class="dim" style="margin:6px 0 12px">${esc(T(
         "This is the name the machine calls itself (hostnamectl) — not its name in this registry, "
@@ -5646,7 +5650,7 @@ document.addEventListener("click", async e => {
   }
   if (nact === "close-output") { clearNodeOutput(node); return; }
   if (nact === "follow") { openNodeFollow(node, slug); return; }
-  if (nact === "refresh") { pinnedOutput.delete(node); loadNode(node); return; }
+  if (nact === "refresh") { pinnedOutput.delete(node); closeNodeForm(node); loadNode(node); return; }
   if (nact === "forget") {
     if (!confirm(`Remove ${node} from the registry?\n\nNothing on that machine is changed.`)) return;
     await api(`/api/nodes/${encodeURIComponent(node)}`, { method: "DELETE" });
@@ -7491,6 +7495,13 @@ function clearNodeOutput(node) {
   row.out.innerHTML = "";
   row.out.hidden = true;
   pinnedOutput.delete(node);
+  closeNodeForm(node);
+}
+
+// ปิดฟอร์มที่วาดอยู่ในตัวการ์ด — คืนรายการโมเดลทันทีจากข้อมูลล่าสุด ไม่ต้องรอ frame ถัดไป
+function closeNodeForm(node) {
+  const row = nodeRows.get(node);
+  if (row && row.body.querySelector("[data-node-form]")) paintNodeBody(row, node, lastNodeData.get(node) || {});
 }
 
 // งานยาวบนเครื่องอื่น (download/start/remove) — สตรีมผลให้เห็นความคืบหน้า
@@ -7664,7 +7675,13 @@ function paintSummary(name, host, sum) {
 function nodeIsInUse(name) {
   for (const key of openModelMenus) if (key.startsWith(name + "/")) return true;
   const row = nodeRows.get(name);
-  return !!(row && row.body.contains(document.activeElement) && document.activeElement !== document.body);
+  if (!row) return false;
+  // ฟอร์มที่เปิดอยู่ในตัวการ์ด (setup / fix docker / Site / Rename host) และ *ผลของมัน* ต้องรอดจนผู้ใช้ปิดเอง
+  // audit หน้าเว็บ 2026-10 ข้อ 9: เดิมสิ่งเดียวที่กันการวาดทับคือ "โฟกัสอยู่ในการ์ด" — คลิกพื้นหลัง / สลับไปหารหัสใน
+  // password manager แล้ว frame ถัดไปลบทั้งฟอร์มและผล ("Rolled back — the machine is still 'msi'" หายใน 1 วิ)
+  // ถามจาก DOM ไม่ใช่จากชุดที่จำไว้: ฟอร์มหายจากจอเมื่อไร (การ์ดถูกสร้างใหม่) การถือก็หมดเอง ไม่มีคีย์ค้างแบบข้อ 3
+  if (row.body.querySelector("[data-node-form]")) return true;
+  return !!(row.body.contains(document.activeElement) && document.activeElement !== document.body);
 }
 
 // หยุดวาดทับแล้วต้องบอกด้วยว่าตัวเลขที่เห็นเริ่มเก่า — เงียบ ๆ ไปเฉย ๆ คือโกหกผู้ใช้
@@ -7682,7 +7699,7 @@ function markStale(row) {
     row.version.prepend(tag, " ");
   }
   tag.textContent = T("paused · {age}s ago", { age });
-  tag.title = T("The model list on this card is not being redrawn while its ⋯ menu is open or a field in it has focus — the header, the left rail and the overview keep following the hub. Close the menu to resume.");
+  tag.title = T("The model list on this card is not being redrawn while a ⋯ menu or a form is open on it, or a field in it has focus — the header, the left rail and the overview keep following the hub. Close it to resume.");
 }
 
 function applySnapshot(snap) {
