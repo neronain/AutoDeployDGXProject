@@ -46,7 +46,52 @@ def capability_score(probes: list[dict]) -> dict:
         # 85/100 ที่ตก tool calling ใช้กับ agent ไม่ได้ ส่วน 85 ที่ตก vision อาจไม่สำคัญเลย
         "passed": [p.get("key") for p in probes if p.get("passed") and not p.get("skipped")],
         "failed": [p.get("key") for p in probes if not p.get("passed") and not p.get("skipped")],
-        "skipped": [p.get("key") for p in probes if p.get("skipped")],
+        # "ข้าม" = ข้อนี้ไม่เกี่ยวกับโมเดลนี้ (ไม่มี mmproj) · "ไม่ได้วัด" = คำขอไปไม่ถึงโมเดล
+        # สองอย่างนี้ไม่ถูกนับในตัวหารเหมือนกัน แต่คนอ่านต้องแยกออก: อย่างหลังคือให้ไปวัดใหม่
+        "skipped": [p.get("key") for p in probes if p.get("skipped") and not p.get("unmeasured")],
+        "unmeasured": [p.get("key") for p in probes if p.get("unmeasured")],
+    }
+
+
+_CAUSES = {
+    "auth": "เซิร์ฟเวอร์ปฏิเสธ API key (HTTP 401/403)",
+    "unreachable": "ต่อเซิร์ฟเวอร์ไม่ได้",
+    "timeout": "เซิร์ฟเวอร์ไม่ตอบจนหมดเวลา",
+    "not-ready": "เซิร์ฟเวอร์ยังไม่พร้อมรับงาน (HTTP 502/503/504)",
+    "not-found": "เซิร์ฟเวอร์ไม่มีปลายทางนี้ หรือไม่รู้จักชื่อโมเดลที่ส่งไป (HTTP 404)",
+}
+
+
+def cause_text(kind: str) -> str:
+    return _CAUSES.get(kind, kind or "ไม่ทราบสาเหตุ")
+
+
+def unmeasured_summary(workloads: list[dict], probes: list[dict]) -> dict:
+    """รอบนี้มีอะไรที่ *ไม่ได้วัด* บ้าง — และทั้งรอบไม่ได้วัดอะไรเลยหรือเปล่า
+
+    `nothing_measured` = ทุกคำขอที่ส่งออกไปล้มก่อนถึงโมเดล (401/403/ต่อไม่ติด/หมดเวลา…)
+    รอบแบบนั้นไม่มีข้อมูลของโมเดลอยู่เลย จึงต้องไม่ถูกเก็บเป็นผลวัด — เก็บไปคือให้ตารางคะแนน
+    แทนที่รอบดี ๆ ก่อนหน้าด้วยศูนย์ทั้งแถว
+
+    ข้อที่ถูกข้ามเพราะไม่เกี่ยว (vision บนโมเดลไม่มี mmproj) ไม่ได้ส่งคำขอ จึงไม่อยู่ในการนับนี้
+    """
+    attempted = list(workloads) + [p for p in probes if not p.get("skipped") or p.get("unmeasured")]
+    missed = [row for row in attempted if row.get("unmeasured")]
+    kinds: dict[str, int] = {}
+    for row in missed:
+        kinds[row["unmeasured"]] = kinds.get(row["unmeasured"], 0) + 1
+    main = max(kinds, key=lambda k: kinds[k]) if kinds else ""
+    return {
+        "attempted": len(attempted),
+        "unmeasured": len(missed),
+        "nothing_measured": bool(attempted) and len(missed) == len(attempted),
+        "kinds": kinds,
+        "cause": main,
+        "cause_text": cause_text(main) if main else "",
+        "workloads": [w.get("key") for w in workloads if w.get("unmeasured")],
+        "probes": [p.get("key") for p in probes if p.get("unmeasured")],
+        # ข้อความดิบจากคำขอแรกที่ล้ม — ให้คนอ่านเห็นสิ่งที่เซิร์ฟเวอร์พูดเอง ไม่ใช่แค่คำวินิจฉัยของเรา
+        "sample": next((str(row.get("error") or row.get("detail") or "") for row in missed), ""),
     }
 
 

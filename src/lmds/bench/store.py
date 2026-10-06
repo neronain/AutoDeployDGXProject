@@ -160,18 +160,29 @@ def latest_merged(slug: str) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     for field, stamp_key in (("workloads", "speed_from"), ("probes", "probes_from")):
-        if merged.get(field):
+        if _has_result(merged.get(field)):
             continue
         for path in paths[1:]:
             try:
                 older = load(path)
             except (OSError, json.JSONDecodeError):
                 continue
-            if older.get(field):
+            if _has_result(older.get(field)):
                 merged[field] = older[field]
                 merged[stamp_key] = older.get("stamped_at", "")
                 break
     return merged
+
+
+def _has_result(rows) -> bool:
+    """ด้านนี้ของรอบนั้น "วัดได้จริง" อย่างน้อยหนึ่งแถวไหม
+
+    แถวที่ไม่ได้วัด (`unmeasured` — คำขอไปไม่ถึงโมเดล) กับข้อที่ถูกข้ามไม่ใช่ผลวัด · ด้านที่มีแต่
+    แถวแบบนั้นต้องถูกเติมจากรอบก่อนเหมือนด้านที่ว่าง ไม่งั้นรอบที่เซิร์ฟเวอร์ตอบ 401 ครึ่งทาง
+    จะเอาขีดกลางไปทับคะแนนที่วัดได้จริงเมื่อวาน
+    """
+    return any(isinstance(row, dict) and not row.get("unmeasured") and not row.get("skipped")
+               for row in rows or [])
 
 
 def remove(slug: str, keep_last: int = 0) -> int:

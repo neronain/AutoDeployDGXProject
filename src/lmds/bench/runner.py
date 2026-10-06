@@ -24,7 +24,55 @@ from .workloads import Workload
 
 
 class BenchError(Exception):
-    pass
+    """คำขอวัดล้ม — `status` คือรหัส HTTP ถ้าเซิร์ฟเวอร์ตอบมา (0 = ล้มด้วยเหตุอื่น)"""
+
+    def __init__(self, message: str, status: int = 0):
+        super().__init__(message)
+        self.status = status
+
+
+# "ไม่ได้วัด" กับ "วัดแล้วทำไม่ได้" เป็นคนละเรื่อง และต้องไม่ถูกบันทึกเป็นเลขเดียวกัน
+#
+# เคสจริง (audit 2026-10-06): `lmds bench run` ไม่เคยส่ง API key ของ bundle · ทุก bundle ใหม่ได้
+# key ตอน deploy และ controller บังคับใช้ → ทุกคำขอได้ 401 → ตัววัดบันทึก "ความสามารถ 0/100"
+# exit 0 แล้วตารางคะแนนก็โชว์ว่าโมเดลทำอะไรไม่ได้เลย ทั้งที่ไม่มีคำขอไหนไปถึงโมเดลสักคำขอ
+#
+# รหัสที่นับว่า "ไม่ได้คุยกับโมเดล": เซิร์ฟเวอร์ปฏิเสธตัวเรา (401/403) · ไม่มีปลายทางนี้/ไม่รู้จักชื่อ
+# โมเดล (404) · ยังไม่พร้อมรับงาน (502/503/504) — 400/422/500 ไม่นับ เพราะนั่นคือเซิร์ฟเวอร์ตอบ
+# เรื่อง *คำขอนั้น* (เช่น llama.cpp ที่ไม่ได้เปิด --jinja ตอบ 500 กับ tools ซึ่งเป็นผลวัดจริง)
+_UNMEASURED_STATUS = {401: "auth", 403: "auth", 404: "not-found",
+                      502: "not-ready", 503: "not-ready", 504: "not-ready"}
+
+
+def _status_of(exc: BaseException) -> int:
+    status = getattr(exc, "status", 0)                      # BenchError
+    if not status:
+        status = getattr(getattr(exc, "response", None), "status_code", 0)   # httpx.HTTPStatusError
+    return int(status or 0)
+
+
+def unmeasured_kind(exc: BaseException) -> str:
+    """ทำไมคำขอนี้ถึงไม่ได้วัดอะไรเลย — ว่าง = เซิร์ฟเวอร์ตอบเรื่องคำขอจริง (นับเป็นผลวัดได้)
+
+    auth · not-found · not-ready · timeout · unreachable
+    """
+    kind = _UNMEASURED_STATUS.get(_status_of(exc), "")
+    if kind:
+        return kind
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "unreachable"
+    return ""
+
+
+def describe_failure(exc: BaseException) -> str:
+    """ข้อความสั้นบรรทัดเดียวของคำขอที่ล้ม — ข้อความเต็มของ httpx มี URL ของ MDN ต่อท้ายยาวเหยียด"""
+    status = _status_of(exc)
+    if status:
+        return f"HTTP {status}"
+    first = (str(exc).strip().splitlines() or [""])[0]
+    return f"{type(exc).__name__}: {first}"[:120] if first else type(exc).__name__
 
 
 @dataclass
@@ -58,6 +106,8 @@ class WorkloadResult:
     target_input: int
     samples: list[Sample] = field(default_factory=list)
     error: str = ""
+    # ไม่ว่าง = คำขอไปไม่ถึงโมเดล (ดู unmeasured_kind) — "ไม่ได้วัด" ไม่ใช่ "ช้า" หรือ "พัง"
+    unmeasured: str = ""
 
     @property
     def cache_hits(self) -> int:
@@ -74,6 +124,7 @@ class WorkloadResult:
             "target_input": self.target_input,
             "runs": len(self.samples),
             "error": self.error,
+            "unmeasured": self.unmeasured,
             # median ไม่ใช่ mean — ยิงครั้งแรกมักช้ากว่าเพราะ cache ยังไม่อุ่น
             # ค่าเฉลี่ยจะถูกครั้งเดียวนั้นดึงลงทั้งชุด
             "ttft_s": self._median("ttft_s"),
@@ -108,7 +159,8 @@ def _stream_once(client: httpx.Client, endpoint: str, model: str,
     with client.stream("POST", f"{endpoint}/chat/completions", json=body, timeout=timeout) as response:
         if response.status_code != 200:
             response.read()
-            raise BenchError(f"HTTP {response.status_code}: {response.text[:200]}")
+            raise BenchError(f"HTTP {response.status_code}: {response.text[:200]}",
+                             status=response.status_code)
         for line in response.iter_lines():
             if not line.startswith("data:"):
                 continue
@@ -174,6 +226,7 @@ def measure(endpoint: str, model: str, workloads, runs: int = 3,
                     result.samples.append(_stream_once(
                         client, endpoint, model, workload, timeout, f"{workload.key}-{index}"))
             except (BenchError, httpx.HTTPError) as exc:
-                result.error = str(exc)[:300]
+                result.error = str(exc)[:300] or type(exc).__name__
+                result.unmeasured = unmeasured_kind(exc)
             results.append(result)
     return results

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from .runner import describe_failure, unmeasured_kind
+
 
 def _solid_png(size: int, rgb: tuple[int, int, int]) -> bytes:
     """สร้าง PNG สีเดียวล้วนขนาด size×size โดยไม่พึ่งไลบรารีภาพ
@@ -64,6 +66,24 @@ class Probe:
     passed: bool
     detail: str = ""
     skipped: bool = False
+    # ไม่ว่าง = คำขอไปไม่ถึงโมเดล (auth/unreachable/timeout/not-ready/not-found) — ข้อนี้ **ไม่ได้วัด**
+    # ไม่ใช่ "โมเดลทำไม่ได้" · มาคู่กับ skipped=True เสมอ เพื่อให้ทุกที่ที่อ่านผลเก่า (ตารางคะแนน,
+    # หน้าเว็บ) ไม่นับข้อนี้เป็นศูนย์ไปด้วยโดยไม่ต้องรู้จักฟิลด์ใหม่
+    unmeasured: str = ""
+
+
+def _errored(key: str, label: str, exc: BaseException) -> Probe:
+    """คำขอของข้อนี้ล้ม — แยก "โมเดลทำไม่ได้" ออกจาก "ไม่ได้คุยกับโมเดลเลย"
+
+    เคสจริง (audit 2026-10-06): เซิร์ฟเวอร์ตอบ 401 ทุกคำขอเพราะตัววัดไม่ส่ง key · ทุกข้อจบที่
+    `except Exception → passed=False` แล้วถูกนับเป็น "สอบตก" — ได้คะแนนความสามารถ 0/100
+    ของโมเดลที่ไม่เคยได้รับคำถามสักข้อ
+    """
+    kind = unmeasured_kind(exc)
+    if kind:
+        return Probe(key, label, False, f"ไม่ได้วัด — {describe_failure(exc)}",
+                     skipped=True, unmeasured=kind)
+    return Probe(key, label, False, str(exc)[:120])
 
 
 # งบ token ต่อหนึ่งข้อ — ใหญ่โดยตั้งใจ
@@ -141,7 +161,7 @@ def _probe_instructions(client, endpoint, model) -> Probe:
         ok = "paris" in text.lower() or "ปารีส" in text
         return Probe("instructions", "ทำตามคำสั่ง", ok, text[:80])
     except Exception as exc:
-        return Probe("instructions", "ทำตามคำสั่ง", False, str(exc)[:120])
+        return _errored("instructions", "ทำตามคำสั่ง", exc)
 
 
 def _probe_thai(client, endpoint, model) -> Probe:
@@ -157,7 +177,7 @@ def _probe_thai(client, endpoint, model) -> Probe:
         ok = thai_chars >= 30
         return Probe("thai", "ตอบภาษาไทย", ok, f"อักษรไทย {thai_chars} ตัว")
     except Exception as exc:
-        return Probe("thai", "ตอบภาษาไทย", False, str(exc)[:120])
+        return _errored("thai", "ตอบภาษาไทย", exc)
 
 
 def _probe_json(client, endpoint, model) -> Probe:
@@ -181,7 +201,7 @@ def _probe_json(client, endpoint, model) -> Probe:
         ok = isinstance(parsed, dict) and "city" in parsed
         return Probe("json", "JSON structured output", ok, text[:80])
     except Exception as exc:
-        return Probe("json", "JSON structured output", False, str(exc)[:120])
+        return _errored("json", "JSON structured output", exc)
 
 
 def _probe_tools(client, endpoint, model) -> Probe:
@@ -204,7 +224,7 @@ def _probe_tools(client, endpoint, model) -> Probe:
         return Probe("tools", "Tool calling", ok,
                      f"{function.get('name')}({arguments})"[:80])
     except Exception as exc:
-        return Probe("tools", "Tool calling", False, str(exc)[:120])
+        return _errored("tools", "Tool calling", exc)
 
 
 def _probe_reasoning(client, endpoint, model) -> Probe:
@@ -223,7 +243,7 @@ def _probe_reasoning(client, endpoint, model) -> Probe:
         return Probe("reasoning", "แยก reasoning", ok,
                      f"คิด {len(thinking)} ตัวอักษร · ตอบ {len(answer)} ตัวอักษร")
     except Exception as exc:
-        return Probe("reasoning", "แยก reasoning", False, str(exc)[:120])
+        return _errored("reasoning", "แยก reasoning", exc)
 
 
 def _probe_vision(client, endpoint, model, has_projector: bool) -> Probe:
@@ -244,7 +264,7 @@ def _probe_vision(client, endpoint, model, has_projector: bool) -> Probe:
         ok = "red" in lowered or "แดง" in text
         return Probe("vision", "รับภาพ", ok, text[:80])
     except Exception as exc:
-        return Probe("vision", "รับภาพ", False, str(exc)[:120])
+        return _errored("vision", "รับภาพ", exc)
 
 
 def _probe_recall(client, endpoint, model, context_limit: int) -> Probe:
@@ -268,7 +288,7 @@ def _probe_recall(client, endpoint, model, context_limit: int) -> Probe:
         ok = "QUAIL-7742" in text.upper()
         return Probe("recall", "จำ context ยาว", ok, text[:60])
     except Exception as exc:
-        return Probe("recall", "จำ context ยาว", False, str(exc)[:120])
+        return _errored("recall", "จำ context ยาว", exc)
 
 
 def run_probes(endpoint: str, model: str, has_projector: bool = False,

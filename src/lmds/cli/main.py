@@ -4804,7 +4804,7 @@ def _quant_from_filename(filename: str) -> str:
     return match.group(1).upper() if match else ""
 
 
-def _bench_environment(server, profile: dict) -> dict:
+def _bench_environment(server, profile: dict, api_key: str = "") -> dict:
     """สภาพแวดล้อมที่ทำให้ตัวเลขความเร็วมีความหมาย — ขาดอันไหนไปก็เทียบข้ามรอบไม่ได้"""
     import httpx
 
@@ -4821,7 +4821,10 @@ def _bench_environment(server, profile: dict) -> dict:
     }
     # build ของ engine อ่านจากเซิร์ฟเวอร์ที่รันอยู่จริง ไม่ใช่จากที่จดไว้ตอน deploy
     try:
-        response = httpx.get(f"http://127.0.0.1:{server.port}/props", timeout=5.0)
+        # llama-server ที่ตั้ง --api-key ปิด /props ไว้หลัง key ด้วย — ไม่ส่งไปคือได้ 401 แล้วเก็บ
+        # build ว่างกับ context จาก profile แทนของที่รันอยู่จริง โดยไม่มีอะไรบอก
+        response = httpx.get(f"http://127.0.0.1:{server.port}/props", timeout=5.0,
+                             headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
         if response.status_code == 200:
             props = response.json()
             environment["engine_build"] = str(props.get("build_info") or "")
@@ -4881,7 +4884,7 @@ def bench_run(
     ไม่ได้อยู่ตรงนี้ตอนมันเตือน
     """
     from lmds import bench
-    from lmds.fleet import bundle_profile, find
+    from lmds.fleet import apikey, bundle_profile, find
 
     server = find(slug)
     if server is None:
@@ -4891,8 +4894,13 @@ def bench_run(
         err_console.print(f"[red]{slug} ยังไม่ได้รัน[/red] — วัดได้เฉพาะโมเดลที่รันอยู่: lmds start {slug}")
         raise typer.Exit(code=1)
 
+    # key ของ bundle — ลำดับเดียวกับที่ controller ใช้ตอน start: env `API_KEY` ชนะที่เก็บ `lmds key`
+    # เดิมไม่ส่งเลย: ทุก bundle ใหม่ได้ key ตอน deploy และ controller บังคับใช้ → ทุกคำขอ 401 →
+    # บันทึก "ความสามารถ 0/100" exit 0 (audit 2026-10-06) · ไม่พิมพ์ค่า key ออกจอไม่ว่ากรณีใด
+    api_key = (os.environ.get("API_KEY") or "").strip() or apikey.read(slug)
+
     profile = bundle_profile(server.controller) or {}
-    environment = _bench_environment(server, profile)
+    environment = _bench_environment(server, profile, api_key)
     served = server.model or ((profile.get("model") or {}).get("served_name")) or slug
     endpoint = server.endpoint
     features = profile.get("features") or {}
@@ -4915,22 +4923,73 @@ def bench_run(
         def progress(workload, index, total):
             console.print(f"  {workload.label} ({workload.input_tokens} tok) — รอบ {index}/{total}")
 
-        results = bench.measure(endpoint, served, chosen, runs=runs, on_progress=progress)
+        results = bench.measure(endpoint, served, chosen, runs=runs, api_key=api_key,
+                                on_progress=progress)
         workload_rows = [r.as_dict() for r in results]
 
     probe_rows: list[dict] = []
     if not speed_only:
         console.print("ตรวจความสามารถ…")
-        probes = bench.run_probes(endpoint, served, has_projector, context_limit,
+        probes = bench.run_probes(endpoint, served, has_projector, context_limit, api_key=api_key,
                                   on_progress=lambda name: console.print(f"  {name}…"))
         probe_rows = [{"key": p.key, "label": p.label, "passed": p.passed,
-                       "detail": p.detail, "skipped": p.skipped} for p in probes]
+                       "detail": p.detail, "skipped": p.skipped,
+                       "unmeasured": p.unmeasured} for p in probes]
+
+    missed = bench.unmeasured_summary(workload_rows, probe_rows)
+    if missed["nothing_measured"]:
+        # ไม่มีคำขอไหนไปถึงโมเดลเลย — ไม่มีอะไรให้เก็บ · เก็บไปคือเอาศูนย์ทั้งแถวไปทับรอบดี ๆ ก่อนหน้า
+        _bench_not_measured(slug, served, endpoint, missed, sent_key=bool(api_key))
+        raise typer.Exit(code=1)
 
     path = bench.record(slug, server.model_id or server.model, server.engine, served,
                         workload_rows, probe_rows, environment, bench.now_stamp())
     _print_bench(workload_rows, probe_rows)
+    if missed["unmeasured"]:
+        names = ", ".join(missed["workloads"] + missed["probes"])
+        console.print(f"[yellow]⚠ ไม่ได้วัด {missed['unmeasured']} จาก {missed['attempted']} รายการ "
+                      f"({names}) — {missed['cause_text']} · ไม่ถูกนับเป็นศูนย์ วัดซ้ำได้: "
+                      f"lmds bench run {slug}[/yellow]", highlight=False)
     console.print(f"\n[dim]เก็บผลไว้ที่ {path}[/dim]")
     console.print(f"[dim]เทียบกับรอบก่อน: lmds bench show {slug}[/dim]")
+
+
+def _bench_not_measured(slug: str, served: str, endpoint: str, missed: dict, *, sent_key: bool) -> None:
+    """บอกว่ารอบนี้ไม่ได้วัดอะไรเลยและเพราะอะไร — ข้อความนี้คือสิ่งเดียวที่ผู้ใช้ได้กลับไป
+
+    หน้าเว็บ (ปุ่ม Bench) เรียกคำสั่งเดียวกันเป็นงานเบื้องหลัง จึงเห็นข้อความกับ exit code ชุดนี้ด้วย
+    """
+    cause = missed["cause"]
+    err_console.print(f"[red]ไม่ได้วัด {slug}[/red] — {missed['cause_text']} · ทุกคำขอ "
+                      f"({missed['attempted']} รายการ) ล้มก่อนถึงโมเดล จึง[bold]ไม่เก็บผลรอบนี้[/bold]",
+                      highlight=False)
+    if missed["sample"]:
+        err_console.print(f"  เซิร์ฟเวอร์/การเชื่อมต่อบอกว่า: {missed['sample'][:200]}",
+                          highlight=False, markup=False)
+    if cause == "auth":
+        if sent_key:
+            err_console.print(
+                f"  key ที่ส่งไป (env API_KEY หรือที่เก็บของ lmds key) ไม่ตรงกับที่เซิร์ฟเวอร์ใช้อยู่ — "
+                f"ถ้าเพิ่งตั้ง key ใหม่หลัง start: lmds restart {slug} · ถ้า start ด้วย API_KEY ของตัวเอง: "
+                f"API_KEY=<key นั้น> lmds bench run {slug}", highlight=False, markup=False)
+        else:
+            err_console.print(
+                f"  เซิร์ฟเวอร์บังคับ key แต่ไม่มี key เก็บไว้ให้ {slug} (lmds key show {slug}) — "
+                f"เก็บ key ที่เซิร์ฟเวอร์ใช้: lmds key set {slug} · หรือส่งครั้งเดียว: "
+                f"API_KEY=<key> lmds bench run {slug}", highlight=False, markup=False)
+    elif cause == "unreachable":
+        err_console.print(f"  ต่อ {endpoint} ไม่ได้ — เซิร์ฟเวอร์ยังไม่ฟังที่พอร์ตนี้ หรือผูกกับ IP อื่น "
+                          f"(lmds doctor {slug})", highlight=False, markup=False)
+    elif cause == "not-ready":
+        err_console.print(f"  โมเดลอาจกำลังโหลดอยู่ — ดู: lmds logs {slug} -f แล้ววัดใหม่",
+                          highlight=False, markup=False)
+    elif cause == "not-found":
+        err_console.print(f"  ชื่อที่ส่งไปคือ {served!r} ที่ {endpoint}/chat/completions — โมเดล embedding/"
+                          f"rerank ไม่มีปลายทางนี้ และชื่อที่เสิร์ฟต้องตรงกับ lmds ps",
+                          highlight=False, markup=False)
+    elif cause == "timeout":
+        err_console.print(f"  เซิร์ฟเวอร์รับคำขอแต่ไม่ตอบ — ดู: lmds logs {slug} -f",
+                          highlight=False, markup=False)
 
 
 @bench_app.command("remove")
@@ -5001,13 +5060,19 @@ def _print_bench(workloads: list[dict], probes: list[dict]) -> None:
         table.add_column("ข้อ")
         table.add_column("ที่ได้")
         for probe in probes:
-            mark = "[dim]—[/dim]" if probe["skipped"] else ("✅" if probe["passed"] else "❌")
+            # "ไม่ได้วัด" (คำขอไปไม่ถึงโมเดล) ต้องดูต่างจาก "ข้าม" (ไม่เกี่ยวกับโมเดลนี้) และจาก ❌
+            mark = ("[yellow]?[/yellow]" if probe.get("unmeasured")
+                    else "[dim]—[/dim]" if probe["skipped"] else ("✅" if probe["passed"] else "❌"))
             table.add_row(mark, probe["label"], probe["detail"][:60])
         console.print(table)
         score = capability_score(probes)
+        unmeasured = len(score.get("unmeasured") or [])
+        tail = f" · ไม่ได้วัด {unmeasured} ข้อ" if unmeasured else ""
         if score["score"] is not None:
             console.print(f"[dim]คะแนนความสามารถ {score['score']}/100 "
-                          f"(นับ {score['counted']} ข้อที่วัดได้)[/dim]")
+                          f"(นับ {score['counted']} ข้อที่วัดได้{tail})[/dim]")
+        elif unmeasured:
+            console.print(f"[yellow]ไม่มีคะแนนความสามารถ — ไม่ได้วัดทั้ง {unmeasured} ข้อ[/yellow]")
 
 
 @bench_app.command("list")

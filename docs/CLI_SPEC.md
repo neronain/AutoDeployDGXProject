@@ -309,6 +309,8 @@ lmds agent bench          # JSON ให้ hub รวมเป็นตารา
 
 วัดโมเดล chat ที่รันอยู่ผ่าน OpenAI API — ความเร็ว (TTFT/decode/prefill) + ความสามารถ 7 ข้อ · โมเดล embedding ใช้
 `test-embed` ของ controller · `bench`/`stress` ของ controller (vLLM เดี่ยว/stacked) เป็นคนละอย่าง (ดู [BENCH.md](BENCH.md))
+· `run` ส่ง key ของ bundle (env `API_KEY` > `lmds key`) · exit 1 = ไม่พบ/ไม่ได้รัน **หรือทุกคำขอล้มก่อนถึงโมเดล
+(401/403/ต่อไม่ติด/หมดเวลา — ไม่เก็บผล)** · `show`/`remove`/`agent bench --slug` exit 2 เมื่อ slug ไม่ใช่ชื่อโมเดล (มี `/`, `..`)
 
 ## `lmds prune` · `lmds recipes` · `lmds scan`
 
