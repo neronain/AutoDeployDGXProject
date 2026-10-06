@@ -54,7 +54,7 @@ def _rotate(path: Path) -> None:
 
 
 def record(method: str, path: str, *, ip: str = "", status: int = 0, ms: int = 0,
-           actor: str = "") -> None:
+           actor: str = "", error: str = "") -> None:
     """เขียนหนึ่งบรรทัด — เงียบเสมอเมื่อเขียนไม่ได้
 
     ดิสก์เต็มหรือสิทธิ์ผิดไม่ควรทำให้คำสั่งที่ผู้ใช้สั่งล้มตาม: audit ที่หายไปหนึ่งบรรทัด
@@ -72,6 +72,9 @@ def record(method: str, path: str, *, ip: str = "", status: int = 0, ms: int = 0
     }
     if actor:
         entry["actor"] = actor
+    if error:
+        # ชื่อชนิดของ exception เท่านั้น — ข้อความของมันอาจพก body/ค่าที่ผู้ใช้ส่งมา ซึ่งไฟล์นี้ไม่เก็บ
+        entry["error"] = error
     _write(entry)
 
 

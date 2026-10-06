@@ -172,6 +172,9 @@ def save(nodes: list[Node]) -> Path:
 
 def validate_cluster_ip(value: str) -> str:
     """cluster IP ต้องเป็น IPv4 ที่ใช้ได้จริง — พิมพ์ผิดตรงนี้ทำให้ stacked ค้างตอน NCCL init"""
+    if value is not None and not isinstance(value, str):
+        # ตัวเลข/list จาก JSON เคยระเบิดที่ .strip() เป็น AttributeError → 500 เปล่า ๆ (audit 2026-10)
+        raise NodeError(f"cluster IP ต้องเป็นข้อความรูป IPv4 (ได้ {type(value).__name__})")
     value = (value or "").strip()
     if not value:
         return ""

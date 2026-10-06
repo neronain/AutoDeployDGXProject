@@ -1039,3 +1039,92 @@ def test_the_saved_key_still_reaches_the_address_it_was_saved_with(listener, mon
     assert at_official == [f"Bearer {REAL_KEY}"]
     assert client.post("/api/provider/models", json={"name": "openai", "base_url": other_url}).json()["key_sent"] == "none"
     assert at_other == [None, None]
+
+
+# ══ 8. route ที่เปลี่ยนสถานะ: body ผิดชนิดต้องเป็น 4xx · route ที่ระเบิดต้องมีร่องรอย ═══════════
+
+WRONG_SHAPES = [
+    ("PUT", "/api/provider", {"name": 5}),
+    ("PUT", "/api/provider", {"name": "openai", "model": ["gpt"], "api_key": {"a": 1}}),
+    ("PUT", "/api/provider", {"name": "openai", "base_url": 7}),
+    ("POST", "/api/provider/models", {"name": "openai", "base_url": ["x"]}),
+    ("POST", "/api/secrets/hf", {"token": 5}),
+    ("POST", "/api/secrets/hf", {"token": ["hf_x"]}),
+    ("POST", "/api/cluster/write", {"slug": 9, "head": 3}),
+    ("POST", "/api/cluster/write", {"slug": "two", "head": "gpu-node", "workers": 5}),
+    ("POST", "/api/cluster/write", {"slug": "two", "head": "gpu-node", "worker": {"a": 1}}),
+    ("POST", "/api/cluster/write", {"slug": "two", "head": "gpu-node", "workers": ["a"], "nnodes": "x"}),
+    ("POST", "/api/cluster/write", {"slug": "two", "head": "gpu-node", "workers": ["a"], "on": 4}),
+    ("POST", "/api/cluster/pair", {"head": 3, "workers": ["a"]}),
+    ("POST", "/api/cluster/pair", {"head": "gpu-node", "workers": "ab"}),
+    ("POST", "/api/cluster/pair", {"head": "gpu-node", "worker": {"a": 1}}),
+    ("POST", "/api/cluster/apply", {"plan": {"nodes": {"a": 1}, "order": ["a"]}, "passwords": [1]}),
+    ("POST", "/api/cluster/apply", {"plan": {"nodes": {"a": 1}, "order": ["a"]}, "passwords": {"a": 5}}),
+    ("POST", "/api/cluster/apply", {"plan": {"nodes": {"a": 1}, "order": "ab"}}),
+    ("POST", "/api/cluster/apply", {"plan": "p"}),
+    ("POST", "/api/nodes/gpu-node/models/demo/clone", {"to": 4}),
+    ("PATCH", "/api/nodes/gpu-node", {"cluster_ip": 5}),
+    ("PATCH", "/api/nodes/gpu-node", {"site": 5}),
+    ("PATCH", "/api/nodes/gpu-node", {"cluster_name": ["x"]}),
+    ("PATCH", "/api/nodes/gpu-node", {"note": {"a": 1}}),
+    ("PATCH", "/api/nodes/gpu-node", {"stack": "x"}),
+    ("POST", "/api/recipes/sync", {"repo": 5}),
+    ("POST", "/api/models/demo-gguf/remove", {"confirm": ["demo-gguf"]}),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), WRONG_SHAPES,
+                         ids=[f"{m} {p} {json.dumps(b)[:40]}" for m, p, b in WRONG_SHAPES])
+def test_a_wrong_shaped_body_is_a_4xx_with_a_message_not_a_crash(method, path, body, fleet, tmp_path, monkeypatch, audit_log):
+    """ผู้ตรวจ (fuzz_routes): JSON ที่ถูกไวยากรณ์แต่ชนิดของฟิลด์ผิด → AttributeError/ValueError → 500 เปล่า ๆ
+    บน route ที่เปลี่ยนสถานะ · ต้องเป็น 400/422 ที่มีข้อความ และไม่มีอะไรถูกเปลี่ยน"""
+    import lmds.nodes
+
+    monkeypatch.chdir(tmp_path)
+    lmds.nodes.add(lmds.nodes.Node(name="gpu-node", host="192.0.2.10", user="u"))
+    registry_before = lmds.nodes.find("gpu-node")
+
+    r = TestClient(create_app(), raise_server_exceptions=False).request(method, path, json=body)
+
+    assert r.status_code in (400, 422), (r.status_code, r.text)
+    assert r.json().get("detail"), r.text
+    assert lmds.nodes.find("gpu-node") == registry_before
+    (row,) = _audit_rows(audit_log)
+    assert row["status"] == r.status_code and "error" not in row
+
+
+def test_a_state_changing_request_that_crashes_still_leaves_an_audit_record(monkeypatch, audit_log):
+    """ผู้ตรวจ: `_audit` บันทึกหลัง call_next คืนค่าเท่านั้น — route ที่ระเบิดไม่เหลือร่องรอยเลย
+
+    เคสที่เกิดได้จริง: ดิสก์เต็มตอนเขียน credentials · คำสั่งถูกสั่งแล้วและอาจทำไปครึ่งหนึ่ง ต้องย้อนดูได้
+    """
+    import lmds.secrets
+
+    def disk_full(name, value):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(lmds.secrets, "set_secret", disk_full)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    r = client.post("/api/secrets/hf", json={"token": "hf_abcdefghijklmnopqrstu"})
+
+    assert r.status_code == 500
+    (row,) = _audit_rows(audit_log)
+    assert (row["method"], row["path"], row["status"], row["error"]) == ("POST", "/api/secrets/hf", 500, "OSError")
+    assert "hf_abcdefghijklmnopqrstu" not in audit_log.read_text(encoding="utf-8")     # ไม่เก็บ body/ข้อความของ error
+
+
+def test_the_rename_preflight_answers_when_the_hub_cannot_ask_the_node(monkeypatch):
+    """fuzz: GET …/rename-host ระเบิดเป็น 500 เมื่อ hub ถามเครื่องนั้นไม่ได้ (ไม่มี ssh · เครื่องไม่ตอบ)
+    — หน้าเว็บต้องได้คำตอบว่า "ยังไม่รู้ ถือว่าต้องใส่รหัส sudo" ไม่ใช่ Internal Server Error"""
+    import lmds.nodes
+    from lmds.nodes import NodeError
+
+    def no_ssh(*_args, **_kwargs):
+        raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน")
+
+    lmds.nodes.add(lmds.nodes.Node(name="gpu-node", host="192.0.2.10", user="u"))
+    monkeypatch.setattr(lmds.nodes, "run", no_ssh)
+    r = TestClient(create_app(), raise_server_exceptions=False).get("/api/nodes/gpu-node/rename-host")
+    assert r.status_code == 200, r.text
+    assert r.json()["sudo_needed"] is True

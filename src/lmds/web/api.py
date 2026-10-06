@@ -303,8 +303,17 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.web import audit
 
         timer = audit.Timer().__enter__()
-        response = await call_next(request)
         mutating = request.method in {"POST", "PUT", "DELETE", "PATCH"}
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # route ที่ระเบิดก็คือคำสั่งที่ถูกสั่ง — เดิมบันทึกหลัง call_next คืนค่าเท่านั้น คำสั่งเปลี่ยนสถานะที่ตาย
+            # กลางทาง (อาจทำไปแล้วครึ่งหนึ่ง) จึงไม่เหลือร่องรอยเลย ทั้งที่เป็นตัวที่ต้องย้อนดูมากที่สุด (audit 2026-10)
+            # เก็บเป็น 500 พร้อมชื่อชนิดของ exception แล้วปล่อยให้ระเบิดต่อตามเดิม
+            if mutating:
+                audit.record(request.method, request.url.path, ip=_client_ip(request),
+                             status=500, ms=timer.ms, error=type(exc).__name__)
+            raise
         # 401/429 ต้องเก็บทุก method: การไล่เดา token คือสิ่งที่ audit มีไว้ให้เห็น
         if mutating or response.status_code in {401, 403, 429}:
             audit.record(request.method, request.url.path, ip=_client_ip(request),
@@ -2115,12 +2124,15 @@ def create_app(token: str = "") -> FastAPI:
         `?hostname=` ว่าง = ยังไม่ได้พิมพ์ (ตรวจเฉพาะข้อห้ามที่ไม่ขึ้นกับชื่อใหม่) · ตรวจที่นี่เป็นการ
         บอกล่วงหน้าเท่านั้น POST ตรวจซ้ำทุกข้อกับเครื่องจริงอีกครั้ง
         """
-        from lmds.nodes import run
+        from lmds.nodes import NodeError, run
         from lmds.nodes.hostname import preflight
         from lmds.nodes.netplan import sudo_needs_password
 
         node, nodes, hosts, models, hub = _rename_context(name)
-        needed = sudo_needs_password(node, runner=run)
+        try:
+            needed = sudo_needs_password(node, runner=run)
+        except NodeError:
+            needed = None      # ถามไม่ได้ (hub ไม่มี ssh · เครื่องไม่ตอบ) = ไม่รู้ → ถือว่าต้องใส่รหัส ไม่ใช่ 500
         return preflight(node, hostname, nodes=nodes, hosts=hosts, models=models,
                          hub_hostname=hub, sudo_needed=True if needed is None else needed)
 
@@ -2442,7 +2454,7 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.web import jobs
 
         _check_slug(slug)
-        target_name = (body.get("to") or "").strip()
+        target_name = _text(_obj(body), "to")
         if not target_name:
             raise HTTPException(status_code=400, detail="ต้องระบุเครื่องปลายทาง (to)")
 
@@ -2505,20 +2517,24 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.fleet.cluster_env import ClusterEnvError, write_cluster_env
         from lmds.nodes.stacked import StackedError, select_members
 
-        slug = (body.get("slug") or "").strip()
-        head = (body.get("head") or "").strip()
+        body = _obj(body)
+        slug, head = _text(body, "slug"), _text(body, "head")
         if not slug or not head:
             raise HTTPException(status_code=400, detail="ต้องระบุ slug และ head")
         _check_slug(slug)
-        workers = [str(w).strip() for w in (body.get("workers") or []) if str(w).strip()]
-        if body.get("worker"):
-            workers = [str(body["worker"]).strip(), *[w for w in workers if w != str(body["worker"]).strip()]]
+        workers = _worker_names(body)
+        nnodes_asked = body.get("nnodes")
+        if nnodes_asked is not None and (isinstance(nnodes_asked, bool) or not isinstance(nnodes_asked, int)
+                                         or not 2 <= nnodes_asked <= 64):
+            raise _bad_field("nnodes", "จำนวนเต็ม 2-64")
+        if body.get("on") is not None and not isinstance(body.get("on"), str):
+            raise _bad_field("on", "ข้อความ (ชื่อเครื่อง)")
 
         groups = (cluster_view() or {}).get("groups") or []
         try:
             # จำนวนเครื่องตาม bundle ที่ render ไว้บน hub — ไม่ใช่ตามขนาดกลุ่ม (กลุ่ม 4 เครื่องกับ
             # bundle 2 เครื่องเคยได้ NNODES=4 ทับแผน) และไม่ใช่ตามจำนวน worker ที่ส่งมา
-            nnodes = body.get("nnodes") or _local_bundle_node_count(slug)
+            nnodes = nnodes_asked or _local_bundle_node_count(slug)
             trimmed = select_members(groups, head, workers=workers, nnodes=nnodes)
             # bundle ที่รันจริงอยู่บน head เสมอ — ไม่ส่ง `on` = head · ส่ง "" = สำเนาบน hub (ไม่มีวันถูกรัน แต่ขอได้)
             on = body.get("on")
@@ -2564,11 +2580,16 @@ def create_app(token: str = "") -> FastAPI:
             for name, needed in zip(names, pool.map(lambda n: sudo_needs_password(nodes[n], runner=run), names), strict=True):
                 summary[name]["sudo_needed"] = True if needed is None else needed
 
+    def _worker_names(body: dict) -> list[str]:
+        """`workers` (รายชื่อ) + `worker` (ตัวเดียว · มาก่อน) → รายชื่อไม่ซ้ำ · ชนิดผิด = 400"""
+        workers = _names(body, "workers")
+        first = _text(body, "worker")
+        return [first, *[w for w in workers if w != first]] if first else workers
+
     def _pair_names(body: dict) -> tuple[str, list[str]]:
-        head = (body.get("head") or "").strip()
-        workers = [str(w).strip() for w in (body.get("workers") or []) if str(w).strip()]
-        if body.get("worker"):
-            workers = [str(body["worker"]).strip(), *[w for w in workers if w != str(body["worker"]).strip()]]
+        body = _obj(body)
+        head = _text(body, "head")
+        workers = _worker_names(body)
         if not head or not workers:
             raise HTTPException(status_code=400, detail="ต้องระบุ head และ worker")
         return head, workers
@@ -2734,11 +2755,17 @@ def create_app(token: str = "") -> FastAPI:
         from lmds.nodes.netplan import apply_plan
         from lmds.web import jobs
 
+        body = _obj(body)
         plan = body.get("plan") or {}
-        passwords = {str(k): str(v) for k, v in (body.get("passwords") or {}).items()}
+        # รหัส sudo ต่อเครื่อง: {ชื่อเครื่อง: รหัส} — list/ข้อความ เคยระเบิดที่ .items() เป็น 500
+        passwords = _mapping(body, "passwords")
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in passwords.items()):
+            raise _bad_field("passwords", " object ของ {ชื่อเครื่อง: รหัสผ่าน}")
         if not isinstance(plan, dict) or not plan.get("nodes"):
             raise HTTPException(status_code=400, detail="ต้องส่ง plan จาก /api/cluster/plan")
-        order = [str(n) for n in plan.get("order") or []]
+        order = plan.get("order") or []
+        if not isinstance(order, list) or not all(isinstance(n, str) for n in order):
+            raise HTTPException(status_code=400, detail="plan.order ต้องเป็นรายชื่อเครื่อง — ส่ง plan จาก /api/cluster/plan")
         # ไม่มีรหัสของเครื่องไหน = apply_plan ตรวจ `sudo -n` ให้ (NOPASSWD ผ่าน · ไม่งั้นล้มก่อนแตะอะไร)
         nodes = {n: find(n) for n in order}
         if any(v is None for v in nodes.values()):
@@ -2907,10 +2934,21 @@ def create_app(token: str = "") -> FastAPI:
 
         if find(name) is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จักเครื่อง {name}")
+        body = _obj(body)
         changes = {k: body[k] for k in ("cluster_ip", "cluster_iface", "note", "site",
                                         "cluster_name", "stack")
                    if k in body}
-        if "site" in changes and isinstance(changes["site"], str):
+        # ชนิดต้องตรงก่อนถึงทะเบียน — `{"cluster_ip": 5}` เคยระเบิดใน validate_cluster_ip เป็น 500 และค่าที่
+        # ไม่ใช่ข้อความ (list/object) จะถูกเขียนลง nodes.yaml ทั้งอย่างนั้นแล้วพังตอนอ่านกลับ
+        for key, value in changes.items():
+            if key == "stack":
+                if not isinstance(value, bool):
+                    raise _bad_field(key, " true หรือ false")
+            elif value is None:
+                changes[key] = ""                       # null = ล้างค่า เหมือนส่งข้อความว่าง
+            elif not isinstance(value, str):
+                raise _bad_field(key, "ข้อความ")
+        if "site" in changes:
             changes["site"] = changes["site"].strip()   # ว่าง = เอาป้ายออก
         if not changes:
             raise HTTPException(status_code=400, detail="ไม่มีฟิลด์ที่แก้ได้ในคำขอนี้")
