@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -447,29 +448,126 @@ def _check_hf_token(profile: dict) -> list[Finding]:
 
 
 def _weight_paths(profile: dict, slug: str) -> tuple[Path, list[str]]:
-    """คืน (โฟลเดอร์ที่ควรมี weight, ไฟล์ที่**ขาดไม่ได้**) — projector อยู่ใน _projectors()"""
+    """คืน (โฟลเดอร์ที่ควรมี weight, ไฟล์ที่**ขาดไม่ได้**) — projector อยู่ใน _projectors()
+
+    safetensors: โฟลเดอร์คือ snapshot **ตัวที่ controller ของ bundle นี้จะใช้จริง** (ดู _hf_snapshot)
+    """
     model = profile.get("model") or {}
     engine = (profile.get("runtime") or {}).get("engine")
     if engine == "llamacpp":
         wanted = [n.rsplit("/", 1)[-1] for n in [model.get("selected_gguf")] if n]
         return _model_dir(slug), wanted
-    repo = (model.get("id") or "").replace("/", "--")
-    revision = model.get("revision") or "main"
-    # HF cache มีสองเลย์เอาต์: $HF_HOME/hub/models--X (ปัจจุบัน) และ $HF_HOME/models--X (เก่า)
-    # controller รองรับทั้งคู่แล้ว แต่ตรงนี้เคยดูแค่ hub/ — โมเดลที่โหลดด้วย HF รุ่นเก่าจึงขึ้นว่า
-    # "ยังไม่ download" ทั้งที่ไฟล์ครบทุกไฟล์ (เจอจริงกับ DeepSeek V4 บน spark-head)
+    return _hf_snapshot(profile)[0], []
+
+
+def _hf_repo_dir(profile: dict) -> Path:
+    """โฟลเดอร์ `models--<org>--<name>` ของ bundle นี้ในแคช HF — รูปเดียวกับ `_model_cache_dir` ของ controller
+
+    HF cache มีสองเลย์เอาต์: $HF_HOME/hub/models--X (ปัจจุบัน) และ $HF_HOME/models--X (เก่า) ·
+    เคยดูแค่ hub/ — โมเดลที่โหลดด้วย HF รุ่นเก่าจึงขึ้นว่า "ยังไม่ download" ทั้งที่ไฟล์ครบทุกไฟล์
+    (เจอจริงกับ DeepSeek V4 บน spark-head)
+    """
+    repo = ((profile.get("model") or {}).get("id") or "").replace("/", "--")
     home = _hf_home()
     for base in (home / "hub", home):
-        candidate = base / f"models--{repo}" / "snapshots" / revision
-        if candidate.is_dir():
-            return candidate, []
-        # revision อาจถูกเก็บเป็น ref ไม่ใช่ชื่อโฟลเดอร์ — ยอมรับ snapshot ที่มีอยู่จริงตัวใดก็ได้
-        snapshots = base / f"models--{repo}" / "snapshots"
-        if snapshots.is_dir():
-            existing = sorted(p for p in snapshots.iterdir() if p.is_dir())
-            if existing:
-                return existing[-1], []
-    return home / "hub" / f"models--{repo}" / "snapshots" / revision, []
+        if (base / f"models--{repo}" / "snapshots").is_dir():
+            return base / f"models--{repo}"
+    return home / "hub" / f"models--{repo}"
+
+
+def _hf_snapshot(profile: dict) -> tuple[Path, bool]:
+    """(snapshot ที่ controller ของ bundle นี้จะใช้, เป็นของ revision ที่ pin ไว้ไหม)
+
+    เดิมตรงนี้ "ยอมรับ snapshot ที่มีอยู่จริงตัวใดก็ได้" เมื่อไม่เจอ revision ที่ pin — ซึ่งไม่ตรงกับ
+    controller แบบ single เลย: `snapshot_dir()` ของมันคือ `snapshots/$MODEL_REVISION` ตรง ๆ และ
+    `verify-files`/`start` ตายด้วย "ยังไม่ได้ download" ถ้าไม่มี · doctor จึงขึ้น ✅ weights ให้
+    เครื่องที่ controller ตัวเดียวกันปฏิเสธ (audit 2026-10-06: snapshot เดียวที่มีเป็นของ revision
+    อื่น มี config.json กับ blob .incomplete ทั้งที่ profile บอก 21 GB)
+
+    controller แบบ stacked (`_snapshot_path`) ถอยจริง: revision ที่ pin → refs/<revision> →
+    snapshot ตัวแรกที่เจอ · เดินตามลำดับเดียวกันเฉพาะ topology นั้น แล้วบอกผู้เรียกว่าไม่ใช่ตัวที่ pin
+    """
+    declared = str((profile.get("model") or {}).get("revision") or "")
+    revision = declared or "main"
+    repo_dir = _hf_repo_dir(profile)
+    pinned = repo_dir / "snapshots" / revision
+    if pinned.is_dir():
+        return pinned, True
+    if not declared:
+        # profile ไม่ได้ pin revision ไว้เลย (profile เก่า/เขียนมือ) — ไม่มี revision ให้ยึด จึงใช้ตัวที่มี
+        # อยู่ตามเดิม · inventory.hf_config พึ่งทางนี้อ่าน config.json ของโมเดลที่ไม่มี revision ใน profile
+        try:
+            existing = sorted(p for p in (repo_dir / "snapshots").iterdir() if p.is_dir())
+        except OSError:
+            existing = []
+        return (existing[-1], True) if existing else (pinned, True)
+    if profile.get("topology") != "stacked":
+        return pinned, True
+    try:
+        commit = (repo_dir / "refs" / revision).read_text(encoding="utf-8").strip()
+    except OSError:
+        commit = ""
+    if commit and (repo_dir / "snapshots" / commit).is_dir():
+        return repo_dir / "snapshots" / commit, True      # ref ชี้มาที่ commit นี้ = revision เดียวกัน
+    try:
+        others = sorted(p for p in (repo_dir / "snapshots").iterdir() if p.is_dir())
+    except OSError:
+        others = []
+    return (others[0], False) if others else (pinned, True)
+
+
+# รายการ shard + ขนาดจาก Hub ที่ renderer ฝังไว้ในหัว controller (vLLM/SGLang ทั้ง single และ stacked):
+#
+#     SHARD_FILES=(
+#       "model-00001-of-00009.safetensors"
+#     )
+#     SHARD_SIZES=(
+#       "4976698672"
+#     )
+#
+# อ่านจาก controller ไม่ใช่จาก MODEL_PROFILE เพราะมันคือชุดเดียวกับที่ `verify-files` ใช้ตัดสิน —
+# doctor ที่ตัดสินด้วยข้อมูลอีกชุดจะกลับมาเห็นต่างจาก controller อีกรอบ
+_SHARD_ARRAY = re.compile(r'^SHARD_(FILES|SIZES)=\(\n((?:[ \t]*"[^"\n]*"[ \t]*\n)*)\)', re.MULTILINE)
+
+
+def _controller_shards(controller: str) -> list[tuple[str, int | None]]:
+    """[(ชื่อไฟล์, ขนาดเป็นไบต์ หรือ None เมื่อ Hub ไม่รายงาน)] — ว่าง = controller ไม่มีรายการ"""
+    try:
+        text = Path(controller).read_text(encoding="utf-8", errors="replace") if controller else ""
+    except OSError:
+        return []
+    arrays = {kind: re.findall(r'"([^"\n]*)"', body) for kind, body in _SHARD_ARRAY.findall(text)}
+    names = arrays.get("FILES") or []
+    sizes = arrays.get("SIZES") or []
+    return [(name, int(sizes[i]) if i < len(sizes) and sizes[i].isdigit() else None)
+            for i, name in enumerate(names) if name]
+
+
+def _incomplete_blobs(repo_dir: Path) -> tuple[int, int]:
+    """(จำนวน, ไบต์รวม) ของ blob `.incomplete` — ร่องรอยของ download ที่ถูกขัดกลางทาง"""
+    count = total = 0
+    try:
+        for blob in (repo_dir / "blobs").glob("*.incomplete"):
+            try:
+                total += blob.stat().st_size
+                count += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return count, total
+
+
+def _gb(num_bytes: int) -> str:
+    return f"{num_bytes / 1024**3:.1f} GB" if num_bytes >= 1024**3 else f"{num_bytes / 1024**2:.1f} MB"
+
+
+def _size_on_disk(path: Path) -> int | None:
+    """ขนาดของไฟล์จริงหลังตาม symlink (snapshot ของ HF เป็น symlink ไป blobs/) · None = ไม่มี/ลิงก์ขาด"""
+    try:
+        return path.stat().st_size if path.is_file() else None
+    except OSError:
+        return None
 
 
 def _projectors(profile: dict) -> list[str]:
@@ -505,13 +603,102 @@ def _check_adopted_weights(profile: dict) -> list[Finding]:
         "หาไฟล์กลับมาไว้ที่เดิม หรือ deploy ใหม่จากรุ่นบน Hugging Face",
     )]
 
-def _check_weights(profile: dict, slug: str) -> list[Finding]:
+def _check_hf_weights(profile: dict, slug: str, controller: str) -> list[Finding]:
+    """weight ในแคช Hugging Face (vLLM/SGLang) — ครบตามที่ controller จะตรวจตอน start ไหม
+
+    ✅ ได้ต่อเมื่อ: มี snapshot ที่ controller จะใช้ · shard ครบทุกไฟล์และขนาดตรงกับที่ Hub รายงาน
+    (รายการเดียวกับ `verify-files`) หรือถ้า bundle ไม่มีรายการ ขนาดรวมบนดิสก์ต้องไม่น้อยกว่า
+    `weight_bytes` ใน profile · `.incomplete` ที่ค้างอยู่ถูกรายงานเสมอ
+    """
+    model = profile.get("model") or {}
+    revision = str(model.get("revision") or "main")
+    directory, is_pinned = _hf_snapshot(profile)
+    repo_dir = _hf_repo_dir(profile)
+    partial_count, partial_bytes = _incomplete_blobs(repo_dir)
+    partial = (f".incomplete ค้าง {partial_count} ไฟล์ ({_gb(partial_bytes)}) ใน {repo_dir / 'blobs'}"
+               if partial_count else "")
+    repair = f"lmds repair {slug}  (โหลด resume ได้ แล้วตรวจไฟล์ให้)"
+
+    if not directory.is_dir():
+        try:
+            others = sorted(p.name for p in (repo_dir / "snapshots").iterdir() if p.is_dir())
+        except OSError:
+            others = []
+        if not others and not partial:
+            # ยังไม่เคยโหลดอะไรเลย — ข้อความเดิม · บอกคำสั่งระดับ lmds ก่อนเสมอ: ใช้ได้จากที่ไหนก็ได้
+            # และเป็นปุ่มเดียวกับบนหน้าเว็บ (เดิมบอกให้ cd เข้า bundle ซึ่งผู้ใช้หน้าเว็บทำตามไม่ได้)
+            return [Finding("weights", Status.FAIL, f"ยังไม่มีไฟล์โมเดลที่ {directory}", repair)]
+        detail = f"ยังไม่มี snapshot ของ revision ที่ pin ไว้ ({revision}) ที่ {directory}"
+        if others:
+            shown = ", ".join(name[:14] for name in others[:3])
+            detail += (f" — ที่มีอยู่เป็นของ revision อื่น ({shown}) ซึ่ง controller ไม่ใช้ "
+                       f"(start จะตอบว่า \"ยังไม่ได้ download\")")
+        if partial:
+            detail += f" · download ถูกขัดกลางทาง: {partial}"
+        return [Finding("weights", Status.FAIL, detail, repair)]
+
+    shards = _controller_shards(controller)
+    problems: list[str] = []
+    if shards:
+        missing = [name for name, _ in shards if _size_on_disk(directory / name) is None]
+        if missing:
+            problems.append(f"shard ขาด {len(missing)} จาก {len(shards)} ไฟล์: {', '.join(missing[:3])}"
+                            + (" …" if len(missing) > 3 else ""))
+        wrong = [(name, got, want) for name, want in shards
+                 if want is not None and (got := _size_on_disk(directory / name)) is not None and got != want]
+        if wrong:
+            name, got, want = wrong[0]
+            problems.append(f"ขนาดไม่ตรงกับที่ Hub รายงาน {len(wrong)} ไฟล์ — {name}: ได้ {got:,} ต้องการ {want:,} ไบต์")
+        verified = f"shard ครบ {len(shards)} ไฟล์ ขนาดตรง"
+    else:
+        # bundle นี้ไม่มีรายการ shard (Hub ไม่ได้ให้มา/ไฟล์เดียว) — เทียบขนาดรวมกับที่ profile จดไว้
+        weights = [size for path in directory.rglob("*")
+                   if path.suffix in (".safetensors", ".bin", ".gguf", ".pt")
+                   and (size := _size_on_disk(path)) is not None]
+        on_disk = sum(weights)
+        expected = model.get("weight_bytes")
+        expected = expected if isinstance(expected, int) and expected > 0 else 0
+        if not weights:
+            problems.append("snapshot นี้ไม่มีไฟล์ weight เลย (มีแต่ config) — download ไม่ครบ")
+        elif expected and on_disk < expected:
+            problems.append(f"download ไม่ครบ: บนดิสก์ {_gb(on_disk)} จากที่ profile บันทึกไว้ {_gb(expected)}")
+        verified = (f"weight {len(weights)} ไฟล์ {_gb(on_disk)}"
+                    + ("" if expected else " (bundle นี้ไม่มีรายการ shard/ขนาดให้เทียบ — ตรวจได้แค่ว่ามีไฟล์)"))
+
+    # ไฟล์ขนาด 0 ไบต์ในชั้นบนของ snapshot (config/tokenizer ที่โหลดขาด) — กติกาเดิม
+    empty = [p.name for p in directory.glob("*") if _size_on_disk(p) == 0]
+    if empty:
+        problems.append(f"มีไฟล์ขนาด 0 ไบต์: {', '.join(empty[:3])}")
+
+    if problems:
+        if partial:
+            problems.append(f"download ถูกขัดกลางทาง: {partial}")
+        return [Finding("weights", Status.FAIL, " · ".join(problems) + f" ({directory})",
+                        f"lmds repair {slug}  (โหลดเฉพาะส่วนที่ขาด)")]
+
+    notes: list[str] = []
+    if not is_pinned:
+        notes.append(f"controller (stacked) จะใช้ snapshot ของ revision {directory.name[:14]} "
+                     f"เพราะไม่มีของ revision ที่ pin ไว้ ({revision}) — คนละ commit กับที่วางแผนไว้")
+    if partial:
+        notes.append(f"{partial} — เศษของ download ที่ถูกขัด ไฟล์ที่ต้องใช้ครบแล้ว แต่ยังกินดิสก์อยู่")
+    if notes:
+        fix = (repair if not is_pinned else
+               f"ถ้าไม่มี download ของ repo นี้กำลังรันอยู่ ลบได้: rm {repo_dir / 'blobs'}/*.incomplete")
+        return [Finding("weights", Status.WARN, f"{directory} · {verified} · " + " · ".join(notes), fix)]
+    return [Finding("weights", Status.OK, f"{directory} · {verified}")]
+
+
+def _check_weights(profile: dict, slug: str, controller: str = "") -> list[Finding]:
     # bundle ที่มาจาก `lmds adopt` ชี้ weight ไปที่ path เดิมของเจ้าของ ไม่ใช่ ~/models/<slug>
     # ตามธรรมเนียม LMDS · ตรวจด้วยกติกาปกติจะขึ้น "ยังไม่มีไฟล์โมเดล" ตลอดกาลทั้งที่เซิร์ฟเวอร์
     # กำลังเสิร์ฟไฟล์นั้นอยู่ แล้วยังแนะ `lmds repair` ซึ่ง controller ของ adopt ไม่มีคำสั่งนั้น
     # — คำแนะนำที่ทำตามแล้วล้มแน่นอนแย่กว่าไม่แนะอะไรเลย
     if self_managed_weights(profile):
         return _check_adopted_weights(profile)
+
+    if (profile.get("runtime") or {}).get("engine") != "llamacpp":
+        return _check_hf_weights(profile, slug, controller)
 
     directory, wanted = _weight_paths(profile, slug)
     if not directory.is_dir():
@@ -617,17 +804,24 @@ def _check_disk(profile: dict, slug: str) -> list[Finding]:
     return [Finding("disk", Status.OK, f"เหลือ {free:.0f} GB")]
 
 
-def _listening_on(port: int) -> str:
+def _listening_on(port: int) -> str | None:
+    """บรรทัดของ ss/netstat ที่ฟัง port นี้ · "" = ตรวจแล้วไม่มีใครฟัง · **None = ไม่ได้ตรวจ**
+
+    เดิมคืน "" ทั้งสองกรณี — เครื่องที่ไม่มีทั้ง ss และ netstat (หรือมีแต่รันไม่ผ่าน เช่น netstat
+    ของ macOS ที่ไม่รู้จัก -tlnp) จึงได้ "✅ port 8000 ว่าง" ทั้งที่ไม่มีใครได้ดูเลย (audit 2026-10-06)
+    """
+    checked = False
     for cmd in (["ss", "-tlnp"], ["netstat", "-tlnp"]):
         if shutil.which(cmd[0]) is None:
             continue
         code, out = _run(cmd)
         if code != 0:
             continue
+        checked = True
         for line in out.splitlines():
             if f":{port} " in line:
                 return line.strip()
-    return ""
+    return "" if checked else None
 
 
 def _free_port(start: int) -> int:
@@ -652,6 +846,11 @@ def _check_port(server: ServerInfo) -> list[Finding]:
         return []
     server = replace(server, port=port)
     holder = _listening_on(server.port)
+    if holder is None:
+        # ไม่ได้ตรวจ ≠ ว่าง — ขึ้นเขียวตรงนี้คือบอกผู้ใช้ว่า start ได้ ทั้งที่ไม่มีใครดูว่ามีอะไรยึดพอร์ตอยู่ไหม
+        return [Finding("port", Status.WARN,
+                        f"ตรวจไม่ได้ว่ามีใครฟัง port {server.port} อยู่ไหม — เครื่องนี้ไม่มี ss/netstat ที่ใช้ได้",
+                        "ติดตั้งแล้วตรวจใหม่: sudo apt install iproute2   (ให้คำสั่ง ss)")]
     if server.running:
         if holder:
             return [Finding("port", Status.OK, f"{server.port} — เซิร์ฟเวอร์ตัวนี้ฟังอยู่")]
@@ -778,6 +977,50 @@ def _reads_key_store(controller: str) -> bool:
         return False
 
 
+def _probe_host(bind: str) -> str:
+    """ที่อยู่ที่จะยิงไปหาเซิร์ฟเวอร์ของ bundle นี้ จากเครื่องเดียวกัน
+
+    ผูกทุก interface (0.0.0.0 / ว่าง / ::) → loopback · ผูก IP เจาะจง → IP นั้น เพราะเซิร์ฟเวอร์ที่ผูก
+    IP เดียวไม่ฟังที่ 127.0.0.1 — ยิง loopback แล้วสรุปว่า "ต่อไม่ติด" คือวินิจฉัยผิดตัว
+    """
+    host = (bind or "").strip().strip("[]")
+    if host in ("", "0.0.0.0", "*"):
+        return "127.0.0.1"
+    if host == "::":
+        return "[::1]"
+    return f"[{host}]" if ":" in host else host
+
+
+def _answers_without_key(host: str, port: int) -> tuple[str, str]:
+    """ยิงเซิร์ฟเวอร์ที่รันอยู่หนึ่งรอบ **โดยไม่ส่ง key** — ("enforced" | "open" | "unknown", สิ่งที่เห็น)
+
+    อ่านอย่างเดียว ไม่มีคำขอไหนไปถึงโมเดล (GET ล้วน) · สองขั้นเพราะ engine วาง key ไว้คนละที่:
+
+      vLLM / SGLang  ทุก path ใต้ /v1 อยู่หลัง key → `/v1/models` ตอบ 401 ถ้าบังคับ
+      llama.cpp      `/v1/models` กับ `/health` **เปิดสาธารณะเสมอ** แม้ตั้ง --api-key ·
+                     ตัวที่อยู่หลัง key คือ `/props` (และทุก endpoint ที่ทำงานจริง)
+
+    ดู 200 จาก `/v1/models` อย่างเดียวจึงกล่าวหา llama-server ที่ป้องกันถูกต้องแล้วทุกตัวว่าเปิดโล่ง
+    """
+    import httpx
+
+    base = f"http://{host}:{port}"
+    try:
+        # trust_env=False: ห้ามให้ HTTP_PROXY ของเครื่องพาคำขอ loopback ออกไปหา proxy
+        with httpx.Client(timeout=3.0, trust_env=False) as client:
+            models = client.get(f"{base}/v1/models").status_code
+            if models in (401, 403):
+                return "enforced", f"GET /v1/models ไม่มี key → {models}"
+            if models != 200:
+                return "unknown", f"GET /v1/models → {models}"
+            props = client.get(f"{base}/props").status_code
+            if props in (401, 403):
+                return "enforced", f"GET /props ไม่มี key → {props}"
+            return "open", "GET /v1/models ไม่มี key → 200"
+    except httpx.HTTPError as exc:
+        return "unknown", f"ยิง {base} ไม่ติด ({type(exc).__name__})"
+
+
 def _check_open_endpoint(server: ServerInfo) -> list[Finding]:
     """เปิดให้ทั้งวง network โดยไม่ต้องยืนยันตัวตนไหม
 
@@ -786,30 +1029,80 @@ def _check_open_endpoint(server: ServerInfo) -> list[Finding]:
 
     controller เตือนเรื่องนี้ตอน start อยู่แล้ว แต่ข้อความนั้นเลื่อนหายไปกับ log ของการ
     บูตเครื่อง · doctor คือที่ที่คนมาดูตอนสงสัย จึงต้องบอกซ้ำตรงนี้ด้วย
+
+    **✅ ได้ทางเดียว: เห็นเซิร์ฟเวอร์ที่รันอยู่ปฏิเสธคำขอที่ไม่มี key** · เดิมเขียวเพราะ *มีไฟล์ key*
+    ซึ่งเป็นสถานะของดิสก์ ไม่ใช่ของเซิร์ฟเวอร์: หลัง `lmds key new` บนเซิร์ฟเวอร์ที่เปิดอยู่ มันยัง
+    ตอบทุกคนจนกว่าจะ restart ขณะที่ doctor บอกว่า "มี API key เก็บไว้" (audit 2026-10-06) ·
+    ไม่ได้รัน = ไม่มีเซิร์ฟเวอร์ให้ถาม จึงบอกสิ่งที่รู้จากไฟล์ แต่ไม่ขึ้นเขียวให้ข้ออ้างที่ไม่ได้ตรวจ
     """
     from lmds.fleet import apikey
     from lmds.fleet.manager import _bundle_env_value
 
+    slug = server.slug
     bind = _bundle_env_value(Path(server.controller).parent, "API_HOST") or "0.0.0.0"
     if bind in _LOCAL_BINDS:
         return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} — เข้าถึงได้เฉพาะในเครื่องนี้")]
-    if apikey.read(server.slug):
-        # มีไฟล์ key ไม่ได้แปลว่า controller หยิบไปใช้ได้ · controller ที่ render ก่อนรุ่นนี้
-        # และ bundle ที่ adopt มาจาก container ซึ่งไม่มีตัวแปรชื่อ *API_KEY* ให้เติม
-        # ยังเสิร์ฟแบบเปิดอยู่ทั้งที่ `lmds key show` บอกว่ามี — เขียวตรงนี้คือคำโกหก
-        if _reads_key_store(server.controller):
-            return [Finding("endpoint", Status.OK, f"ผูกกับ {bind} และมี API key เก็บไว้")]
-        return [Finding(
-            "endpoint", Status.WARN,
-            f"ผูกกับ {bind} · มี API key เก็บไว้แต่ controller ตัวนี้หยิบไปใช้ไม่ได้ — ยังเสิร์ฟแบบเปิดอยู่",
-            f"regenerate ให้รู้จักที่เก็บ: lmds bundles refresh {server.slug} · "
-            "bundle ที่ adopt มาแล้วไม่มีตัวแปรชื่อ *API_KEY* ต้องตั้ง auth ที่คำสั่งของ engine เอง",
-        )]
-    return [Finding(
+
+    has_key = bool(apikey.read(slug))
+    # มีไฟล์ key ไม่ได้แปลว่า controller หยิบไปใช้ได้ · controller ที่ render ก่อนรุ่นนี้
+    # และ bundle ที่ adopt มาจาก container ซึ่งไม่มีตัวแปรชื่อ *API_KEY* ให้เติม
+    # ยังเสิร์ฟแบบเปิดอยู่ทั้งที่ `lmds key show` บอกว่ามี
+    usable = has_key and _reads_key_store(server.controller)
+    unusable = Finding(
+        "endpoint", Status.WARN,
+        f"ผูกกับ {bind} · มี API key เก็บไว้แต่ controller ตัวนี้หยิบไปใช้ไม่ได้ — ยังเสิร์ฟแบบเปิดอยู่",
+        f"regenerate ให้รู้จักที่เก็บ: lmds bundles refresh {slug} · "
+        "bundle ที่ adopt มาแล้วไม่มีตัวแปรชื่อ *API_KEY* ต้องตั้ง auth ที่คำสั่งของ engine เอง",
+    )
+    no_key = Finding(
         "endpoint", Status.WARN,
         f"ผูกกับ {bind} โดยไม่มี API key — ใครก็ตามที่ถึงเครื่องนี้ใช้โมเดลได้โดยไม่ต้องยืนยันตัวตน",
-        f"ตั้ง key: lmds key new {server.slug} แล้ว lmds restart {server.slug} · "
-        f"หรือถ้าตั้งใจให้ใช้เฉพาะในเครื่อง: lmds set {server.slug} --bind 127.0.0.1",
+        f"ตั้ง key: lmds key new {slug} แล้ว lmds restart {slug} · "
+        f"หรือถ้าตั้งใจให้ใช้เฉพาะในเครื่อง: lmds set {slug} --bind 127.0.0.1",
+    )
+
+    if not server.running or not server.port:
+        if not has_key:
+            return [no_key]
+        if not usable:
+            return [unusable]
+        return [Finding(
+            "endpoint", Status.WARN,
+            f"ผูกกับ {bind} · มี API key เก็บไว้และ controller จะใช้ตอน start — แต่ยังไม่ได้รัน "
+            "จึงยังไม่ได้ยืนยันกับเซิร์ฟเวอร์จริงว่าบังคับ key",
+            f"lmds start {slug} แล้วรัน lmds doctor {slug} อีกครั้ง",
+        )]
+
+    verdict, seen = _answers_without_key(_probe_host(bind), server.port)
+    if verdict == "enforced":
+        if has_key:
+            return [Finding("endpoint", Status.OK,
+                            f"ผูกกับ {bind} · เซิร์ฟเวอร์ปฏิเสธคำขอที่ไม่มี key ({seen})")]
+        # ถูก start ด้วย API_KEY= ของผู้ใช้เอง — วันนี้ปลอดภัย แต่ systemd ตอน autostart เรียก
+        # controller เปล่า ๆ: reboot แล้วกลับมาเปิดโล่งโดยไม่มีอะไรบอก (เหตุผลที่มี fleet/apikey.py)
+        return [Finding(
+            "endpoint", Status.WARN,
+            f"ผูกกับ {bind} · เซิร์ฟเวอร์บังคับ key อยู่ ({seen}) แต่ไม่มี key เก็บไว้กับเครื่อง — "
+            "autostart หลัง reboot จะกลับมาเสิร์ฟแบบเปิด",
+            f"เก็บ key ตัวที่ใช้อยู่: lmds key set {slug}",
+        )]
+    if verdict == "open":
+        if not has_key:
+            return [no_key]
+        if not usable:
+            return [unusable]
+        return [Finding(
+            "endpoint", Status.WARN,
+            f"ผูกกับ {bind} · มี API key เก็บไว้ แต่เซิร์ฟเวอร์ที่รันอยู่ยังไม่บังคับ ({seen}) — "
+            "key ถูกตั้งหลัง start จึงยังไม่มีผล ตอนนี้ใครถึงเครื่องนี้ก็ใช้โมเดลได้",
+            f"lmds restart {slug}   (restart เพื่อให้ key มีผล)",
+        )]
+    state = ("มี API key เก็บไว้" if usable else
+             "มี API key เก็บไว้แต่ controller ตัวนี้หยิบไปใช้ไม่ได้" if has_key else "ไม่มี API key เก็บไว้")
+    return [Finding(
+        "endpoint", Status.WARN,
+        f"ผูกกับ {bind} · {state} · ตรวจไม่ได้ว่าเซิร์ฟเวอร์ที่รันอยู่บังคับ key ไหม — {seen}",
+        f"โมเดลอาจกำลังโหลดอยู่: lmds logs {slug} -f แล้วรัน lmds doctor {slug} อีกครั้ง",
     )]
 
 
@@ -835,7 +1128,7 @@ def diagnose(slug: str) -> Diagnosis:
     else:
         result.findings.extend(_check_controller_age(profile, server))
         result.findings.extend(_check_hf_token(profile))
-        result.findings.extend(_check_weights(profile, slug))
+        result.findings.extend(_check_weights(profile, slug, server.controller))
         result.findings.extend(_check_permissions(profile, slug))
         result.findings.extend(_check_disk(profile, slug))
         result.findings.extend(_check_docker(profile, server))

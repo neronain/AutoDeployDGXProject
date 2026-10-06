@@ -260,16 +260,35 @@ def test_weights_found_in_the_legacy_cache_layout(tmp_path, monkeypatch):
     assert directory == legacy
 
 
-def test_weights_accept_a_snapshot_under_another_revision(tmp_path, monkeypatch):
-    """revision ที่ pin ไว้อาจถูกเก็บเป็น ref — snapshot ที่มีอยู่จริงยังใช้ได้"""
+def test_weights_look_where_the_bundles_own_controller_will_look(tmp_path, monkeypatch):
+    """snapshot ของ revision อื่น "ใช้ได้" เฉพาะกับ controller ที่ถอยไปใช้มันจริง
+
+    เดิมเทสนี้ยืนยันว่ายอมรับ snapshot ตัวไหนก็ได้เสมอ — ซึ่งตรงกับ controller แบบ stacked
+    (`_snapshot_path`: revision ที่ pin → refs/<revision> → ตัวแรกที่เจอ) แต่ **ไม่ตรง** กับแบบ single
+    ที่ดู `snapshots/$MODEL_REVISION` ตรง ๆ แล้วตายด้วย "ยังไม่ได้ download" · doctor จึงขึ้น ✅
+    ให้เครื่องที่ controller ตัวเดียวกันปฏิเสธ (audit 2026-10-06 · tests/test_audit3_doctor.py)
+    """
     from lmds.doctor.checks import _weight_paths
 
     monkeypatch.setenv("HF_HOME", str(tmp_path))
+    repo = tmp_path / "hub" / "models--org--model"
+    other = repo / "snapshots" / "realsha"
+    other.mkdir(parents=True)
     profile = {"model": {"id": "org/model", "revision": "wanted"}, "runtime": {"engine": "vllm"}}
-    actual = tmp_path / "hub" / "models--org--model" / "snapshots" / "realsha"
-    actual.mkdir(parents=True)
-    directory, _ = _weight_paths(profile, "m")
-    assert directory == actual
+
+    directory, _ = _weight_paths({**profile, "topology": "single"}, "m")
+    assert directory == repo / "snapshots" / "wanted" and not directory.exists()
+
+    directory, _ = _weight_paths({**profile, "topology": "stacked"}, "m")
+    assert directory == other
+
+    # revision ที่เก็บเป็น ref (stacked): refs/<revision> ชี้ commit ไหน ใช้ snapshot ของ commit นั้น
+    named = repo / "snapshots" / "zz-the-commit-the-ref-names"
+    named.mkdir()
+    (repo / "refs").mkdir()
+    (repo / "refs" / "wanted").write_text("zz-the-commit-the-ref-names\n", encoding="utf-8")
+    directory, _ = _weight_paths({**profile, "topology": "stacked"}, "m")
+    assert directory == named
 
 
 def test_an_image_tag_that_does_not_exist_is_a_hard_fail(tmp_path, monkeypatch):
@@ -351,7 +370,13 @@ def test_binding_the_whole_network_without_a_key_is_called_out(tmp_path, monkeyp
     assert f"lmds key new {slug}" in endpoint.fix and "--bind 127.0.0.1" in endpoint.fix
 
 
-def test_a_stored_key_clears_the_open_endpoint_warning(tmp_path, monkeypatch):
+def test_a_stored_key_on_a_stopped_model_is_reported_but_not_as_proof(tmp_path, monkeypatch):
+    """มีไฟล์ key + controller อ่านที่เก็บเอง = ตั้งค่าถูกแล้ว — แต่โมเดลไม่ได้รัน จึงไม่มีเซิร์ฟเวอร์ให้ยืนยัน
+
+    เดิมเทสนี้คาดหวัง ✅ จากการมีไฟล์ key อย่างเดียว ซึ่งคือบั๊กของ audit 2026-10-06: หลัง
+    `lmds key new` บนเซิร์ฟเวอร์ที่เปิดอยู่ doctor ขึ้นเขียวทั้งที่เซิร์ฟเวอร์ยังตอบทุกคน · เขียวได้ต่อเมื่อ
+    เห็นเซิร์ฟเวอร์ที่รันอยู่ปฏิเสธคำขอที่ไม่มี key (tests/test_audit3_doctor.py)
+    """
     slug = _setup(tmp_path, monkeypatch)
     monkeypatch.setenv("LMDS_KEY_ROOT", str(tmp_path / "keys"))
     from lmds.fleet import apikey
@@ -362,7 +387,9 @@ def test_a_stored_key_clears_the_open_endpoint_warning(tmp_path, monkeypatch):
 
     apikey.write(slug, apikey.mint())
     endpoint = next(f for f in diagnose(slug).findings if f.name == "endpoint")
-    assert endpoint.status is Status.OK and "มี API key" in endpoint.detail
+    assert endpoint.status is Status.WARN and "มี API key เก็บไว้" in endpoint.detail
+    assert "ยังไม่ได้รัน" in endpoint.detail and "ไม่มี API key" not in endpoint.detail
+    assert f"lmds start {slug}" in endpoint.fix
 
 
 def test_a_key_that_the_controller_cannot_use_is_not_counted_as_protection(tmp_path, monkeypatch):

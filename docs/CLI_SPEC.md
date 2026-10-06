@@ -334,6 +334,17 @@ image รู้จัก `model_type` · llama.cpp native: `libllama.so` ขอ�
 (llama.cpp มี `cd0fa6051` ไหม — WARN) · `port` (ใครยึด) · `server` · บน control plane ข้อที่แปลว่า "รันไม่ได้" ไม่นับเป็นตัวบล็อก ·
 `multimodal` เป็น WARN
 
+**เขียวเฉพาะสิ่งที่ตรวจได้จริง** (audit 2026-10-06):
+
+- `weights` (vLLM/SGLang) ดู snapshot **ตัวที่ controller จะใช้**: single = `snapshots/<revision ที่ pin>` เท่านั้น — มีแต่ของ
+  revision อื่น = FAIL · stacked เดินตาม `_snapshot_path` (pin → `refs/` → ตัวที่มี) แล้ว WARN ว่าเป็นคนละ revision ·
+  shard ต้องครบและขนาดตรงกับ `SHARD_FILES`/`SHARD_SIZES` ในหัว controller (ชุดเดียวกับ `verify-files`) · bundle ที่ไม่มีรายการ
+  เทียบขนาดรวมกับ `weight_bytes` ใน profile · blob `.incomplete` ที่ค้าง: ไฟล์ไม่ครบ = FAIL · ครบแล้ว = WARN
+- `endpoint` ✅ ได้ทางเดียวคือ **เห็นเซิร์ฟเวอร์ที่รันอยู่ปฏิเสธคำขอที่ไม่มี key** (GET `/v1/models` แล้ว `/props` — llama.cpp เปิด
+  `/v1/models` สาธารณะเสมอ) ที่ที่อยู่ที่ bundle ผูกไว้ · มี key แต่เซิร์ฟเวอร์ยังตอบ = WARN "restart เพื่อให้ key มีผล" ·
+  ไม่ได้รัน/ยิงไม่ติด = WARN "ยังไม่ได้ยืนยัน" ไม่ใช่ ✅
+- `port` เครื่องที่ไม่มี `ss`/`netstat` ที่ใช้ได้ = WARN "ตรวจไม่ได้" ไม่ใช่ "ว่าง"
+
 ## `lmds audit`
 
 | ตัวเลือก | ค่าเริ่มต้น | ความหมาย |
