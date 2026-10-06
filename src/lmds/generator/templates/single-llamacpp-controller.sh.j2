@@ -494,9 +494,12 @@ download() {
       # ซึ่งบนเครื่องลูกค้าที่ไม่มีใครกล้าแตะ = งานค้างเฉย ๆ · fuser/lsof บอก pid ที่ถือ fd นี้อยู่จริง
       local holder="" who=""
       if command -v fuser >/dev/null 2>&1; then
-        holder="$(fuser "${MODEL_DIR}/.download.lock" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | head -3 | tr '\n' ' ')"
+        # `|| true` ทั้งสองทาง: fuser/lsof ที่มองไม่เห็นเจ้าของล็อก (process ของ user อื่น · เพิ่งจบไปพอดี) ไม่พิมพ์เลขสักตัว →
+        # grep คืน 1 (lsof เองก็คืน 1) → ใต้ set -e + pipefail การกำหนดค่านี้ฆ่าสคริปต์ **ก่อน die ข้างล่างได้พิมพ์อะไรเลย**
+        # download ตัวที่สองจึงจบ exit 1 เงียบสนิท — บั๊กเดียวกับบรรทัด ps ข้างล่างที่แก้ไปก่อน (audit 2026-10-06)
+        holder="$(fuser "${MODEL_DIR}/.download.lock" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | head -3 | tr '\n' ' ' || true)"
       elif command -v lsof >/dev/null 2>&1; then
-        holder="$(lsof -t "${MODEL_DIR}/.download.lock" 2>/dev/null | head -3 | tr '\n' ' ')"
+        holder="$(lsof -t "${MODEL_DIR}/.download.lock" 2>/dev/null | head -3 | tr '\n' ' ' || true)"
       fi
       if [[ -n "$holder" ]]; then
         # `|| true` สำคัญ: สคริปต์รันใต้ `set -Eeuo pipefail` · ถ้า PID ที่ fuser เพิ่งบอกมา
@@ -510,7 +513,7 @@ ${who}
 รอให้จบแล้วสั่งซ้ำ (ไฟล์ที่โหลดไว้แล้วจะต่อจากเดิม) · จะยกเลิกตัวนั้นก็ได้: kill ${holder}"
       fi
       die "download ของ bundle นี้กำลังรันอยู่แล้ว (อีก process ถือ ${MODEL_DIR}/.download.lock)
-หาเจ้าของล็อกไม่ได้ (ไม่มี fuser/lsof บนเครื่องนี้) — ดูเอง: ps -ef | grep -E 'curl|aria2c|$(basename "$0")'
+หาเจ้าของล็อกไม่ได้ (ไม่มี fuser/lsof บนเครื่องนี้ หรือมองไม่เห็น process นั้น) — ดูเอง: ps -ef | grep -E 'curl|aria2c|$(basename "$0")'
 (ถ้าตัวแม่ตายไปแล้วแต่ curl ยังโหลดค้าง ปล่อยให้มันโหลดจบ แล้วสั่ง download ซ้ำเพื่อต่อไฟล์ให้ครบ)"
     fi
   fi
@@ -669,6 +672,7 @@ fetch_parallel() {
 fetch_one() {
   local url="$1" out="$2" want="${3:-}"
   local attempt=0 rc have prev=-1 parts_have prev_parts=-1
+  local aria2_off="" aria2_failures=0 size_before=0 probe=""
   # token ต้องไม่อยู่บน argv — `ps` ให้ทุก user บนเครื่องอ่าน argv ของกันได้ (เจอจริงบน spark-head
   # กับ `docker run -e HF_TOKEN="$HF_TOKEN"` ฝั่ง vLLM ซึ่งแก้ไปแล้ว) · เส้นทาง GGUF เคยส่ง Bearer
   # ผ่าน --header ของ curl/aria2c ตรง ๆ ซึ่งเป็นรูเดียวกัน · curl อ่าน config จาก stdin (-K -) ได้
@@ -691,8 +695,9 @@ fetch_one() {
   while :; do
     attempt=$(( attempt + 1 ))
     rc=1
-    if command -v aria2c >/dev/null 2>&1; then
+    if [[ -z "$aria2_off" ]] && command -v aria2c >/dev/null 2>&1; then
       rc=0
+      size_before="$(file_size "$out")"
       aria2_auth="$(mktemp "${TMPDIR:-/tmp}/lmds-aria2.XXXXXX")"
       chmod 600 "$aria2_auth"
       [[ -z "${HF_TOKEN:-}" ]] || printf 'header=Authorization: Bearer %s\n' "$HF_TOKEN" > "$aria2_auth"
@@ -702,7 +707,31 @@ fetch_one() {
         --conf-path="$aria2_auth" \
         -d "$(dirname "$out")" -o "$(basename "$out")" "$url" || rc=$?
       rm -f "$aria2_auth"
-      (( rc == 0 )) || echo "  aria2c ล้ม (exit ${rc}) — ถอยไป curl"
+      if (( rc != 0 )); then
+        # aria2c ที่ล้มต้องไม่ถูกนับเป็นสำเร็จ — และของที่มันทิ้งไว้ **ต่อด้วย curl ไม่ได้**
+        #
+        # -x16 -s16 เขียนไฟล์ไม่เรียงลำดับ (16 ท่อนพร้อมกัน): ท่อนท้ายมาถึงก่อน ไฟล์ก็ยาวเท่าขนาดจริงทั้งที่ข้างในเป็นรู
+        # เดิมหลัง aria2c ล้มเช็คแค่ "ขนาดถึงหรือยัง" — ถึงแล้วก็ข้าม curl แล้วรายงาน download complete · ยังไม่ถึงก็
+        # `curl -C -` ต่อจากท้ายไฟล์ ทิ้งรูไว้ข้างใน · ทั้งสองทางได้ไฟล์ขนาดถูกเนื้อผิด ซึ่ง verify-files จับได้เฉพาะเมื่อ
+        # Hub ให้ sha256 มา (audit 2026-10-06 repro_aria2_holes.sh: aria2c exit 2 → "download complete" → verify OK)
+        #
+        # มี .aria2 (สมุดจดของ aria2c ว่าท่อนไหนได้แล้ว) = ให้ aria2c ต่อเองได้ถูกต้อง ลองอีกสองรอบ · หมดรอบหรือไม่มีสมุดจด:
+        # ทิ้งไฟล์ที่มันแตะ แล้วโหลดใหม่ด้วย curl (เรียงลำดับ — ขนาดครบแปลว่าเนื้อครบ) · aria2c ที่ล้มโดยไม่แตะไฟล์เลย
+        # (ขนาดเท่าเดิม ไม่มีสมุดจด) ของเดิมจาก curl รอบก่อนยังต่อได้ จึงเก็บไว้
+        if [[ -f "${out}.aria2" ]] && (( aria2_failures < 2 )) && (( attempt < FETCH_MAX_ATTEMPTS )); then
+          aria2_failures=$(( aria2_failures + 1 ))
+          echo "  aria2c ล้ม (exit ${rc}) — ให้ aria2c ต่อจากส่วนที่ได้แล้ว (รอบที่ $(( attempt + 1 )))"
+          sleep 5
+          continue
+        fi
+        if [[ -f "${out}.aria2" || "$(file_size "$out")" != "$size_before" ]]; then
+          echo "  aria2c ล้ม (exit ${rc}) — ทิ้งไฟล์บางส่วนของมัน (เขียนไม่เรียงลำดับ: ขนาดครบไม่ได้แปลว่าเนื้อครบ) แล้วโหลดใหม่ด้วย curl"
+          rm -f "$out" "${out}.aria2"
+        else
+          echo "  aria2c ล้ม (exit ${rc}) — ถอยไป curl"
+        fi
+        aria2_off=1       # รอบถัดไปของไฟล์นี้ใช้ curl อย่างเดียว ไม่สลับเครื่องมือกลางไฟล์
+      fi
     fi
     if (( rc != 0 )) && [[ -n "$want" ]] && (( want >= 268435456 )) && (( ${FETCH_PARTS:-8} >= 2 )) \
         && parallel_fits_on_disk "$out" "$want"; then
@@ -741,6 +770,16 @@ fetch_one() {
     # ไม่รู้ขนาดที่ควรได้ (HF ไม่บอก) → เชื่อ exit code อย่างเดียวเท่าที่ทำได้
     if [[ -z "$want" ]]; then
       (( rc == 0 )) && return 0
+      # สั่ง download ซ้ำกับไฟล์ที่ครบอยู่แล้ว: `curl -C -` ขอ range ที่เริ่มหลังไบต์สุดท้าย เซิร์ฟเวอร์ตอบ 416 แล้ว curl
+      # รุ่นเก่า (-f) จบ exit 22 → เดิม die ทั้งที่ไม่มีอะไรผิด · ถามตรง ๆ ว่ามีไบต์ถัดจากที่เรามีไหม (ขอ 1 ไบต์ที่ตำแหน่ง
+      # ท้ายไฟล์ ไม่ใช่โหลดซ้ำ): 416 = ไม่มีแล้ว ไฟล์ครบ · อย่างอื่น = ล้มจริง
+      if (( have > 0 )); then
+        probe="$(curl -sL -o /dev/null -w '%{http_code}' -m 60 -r "${have}-${have}" -K - "$url" <<< "$curl_auth" 2>/dev/null || true)"
+        if [[ "$probe" == "416" ]]; then
+          echo "  $(basename "$out"): ครบอยู่แล้ว (${have} ไบต์ — เซิร์ฟเวอร์ไม่มีไบต์ถัดไปให้)"
+          return 0
+        fi
+      fi
       die "ดึงไฟล์ไม่สำเร็จ (exit ${rc}): ${url}"
     fi
 
