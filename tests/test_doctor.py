@@ -28,6 +28,14 @@ def no_host_scan(monkeypatch):
     monkeypatch.setattr("lmds.doctor.checks._run", lambda args, timeout=10: (0, ""))
     monkeypatch.setattr("lmds.doctor.checks._listening_on", lambda port: "")
     monkeypatch.setattr("lmds.doctor.checks.shutil.which", lambda name: "/usr/bin/" + name)
+    # บทบาทของเครื่อง (serving / control plane) เป็น lru_cache ทั้ง process — ล้างก่อนและหลังทุกเทส ไม่งั้นผลที่เทสไฟล์อื่น
+    # ทิ้งไว้ตัดสินแทน: test_zero_byte_file_is_caught ได้ WARN แทน FAIL เมื่อไฟล์ที่รันก่อนทิ้ง "control plane" ไว้
+    # (ล้มหนึ่งครั้งตอนรันชุดเต็มแบบแบ่งไฟล์ 2026-10-06 · รันไฟล์เดี่ยวผ่าน)
+    from lmds.hardware import serving
+
+    serving.reset_cache()
+    yield
+    serving.reset_cache()
 
 
 def _bundle(tmp_path: Path, slug: str, profile: dict) -> Path:
