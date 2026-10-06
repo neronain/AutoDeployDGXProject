@@ -7,13 +7,13 @@
 from .capability import Probe, run_probes
 from .runner import BenchError, Sample, WorkloadResult, measure
 from .score import capability_score, speed_summary, summarize
-from .store import (all_runs, bench_root, latest_merged, load, now_stamp,
-                    record, remove, runs_for)
+from .store import (BenchStoreError, all_runs, bench_root, check_slug, latest_merged,
+                    load, now_stamp, record, remove, runs_for)
 from .workloads import FULL, QUICK, Workload, select
 
 __all__ = [
-    "BenchError", "FULL", "Probe", "QUICK", "Sample", "Workload", "WorkloadResult",
-    "all_runs", "bench_root", "capability_score", "latest_merged", "load", "measure",
+    "BenchError", "BenchStoreError", "FULL", "Probe", "QUICK", "Sample", "Workload", "WorkloadResult",
+    "all_runs", "bench_root", "capability_score", "check_slug", "latest_merged", "load", "measure",
     "now_stamp", "remove",
     "record", "run_probes", "runs_for", "select", "speed_summary", "summarize",
 ]

@@ -151,6 +151,7 @@ def agent_bench(
     from lmds.bench import all_runs, latest_merged, runs_for, summarize
 
     if slug:
+        _bench_slug_or_exit(slug)
         # หน้ารายละเอียดต้องการตัวเลขต่องานทุกงาน ไม่ใช่แค่บทสรุป — ส่งทั้งก้อนไปเลย
         merged = latest_merged(slug)
         print(json_module.dumps(
@@ -4778,6 +4779,22 @@ bench_app = typer.Typer(help="วัดความเร็วและคว�
 app.add_typer(bench_app, name="bench")
 
 
+def _bench_slug_or_exit(slug: str) -> str:
+    """slug ที่จะกลายเป็น path ใต้ ~/.lmds/bench ต้องเป็นชื่อโฟลเดอร์ชั้นเดียว — ไม่ใช่ = exit 2
+
+    เคสจริง (audit 2026-10-06): `lmds bench remove ../../myproject` ลบ package.json กับ
+    tsconfig.json ของโฟลเดอร์นั้น · ตัวที่เก็บ (bench/store.py) ปฏิเสธเองอยู่แล้ว ตรงนี้แค่แปลง
+    ข้อยกเว้นเป็นข้อความที่อ่านได้แทน traceback
+    """
+    from lmds.bench import BenchStoreError, check_slug
+
+    try:
+        return check_slug(slug)
+    except BenchStoreError as exc:
+        err_console.print(f"[red]{exc}[/red]", highlight=False)
+        raise typer.Exit(code=2) from None
+
+
 def _quant_from_filename(filename: str) -> str:
     """ดึงชื่อ quant ออกจากชื่อไฟล์ GGUF — Qwen3.8-27B-Uncensored-Q4_K_M.gguf → Q4_K_M"""
     import re as _re
@@ -4926,13 +4943,19 @@ def bench_remove(
     ผลสะสมเร็วกว่าที่คิด เพราะการวัดซ้ำเป็นเรื่องปกติ (ก่อน/หลังเปลี่ยน flag,
     ก่อน/หลังอัปเกรด engine) แล้วไม่มีใครกลับมาลบเอง
     """
-    from lmds.bench import remove, runs_for
+    from lmds.bench import BenchStoreError, remove, runs_for
 
-    before = len(runs_for(slug))
-    if not before:
-        console.print(f"[dim]{slug} ไม่มีผลวัดเก็บไว้[/dim]")
-        return
-    removed = remove(slug, keep_last=max(0, keep_last))
+    _bench_slug_or_exit(slug)
+    try:
+        before = len(runs_for(slug))
+        if not before:
+            console.print(f"[dim]{slug} ไม่มีผลวัดเก็บไว้[/dim]")
+            return
+        removed = remove(slug, keep_last=max(0, keep_last))
+    except BenchStoreError as exc:
+        # ชื่อถูกรูปแบบแต่โฟลเดอร์เป็น symlink ชี้ออกนอกที่เก็บ — ไม่ลบอะไรทั้งนั้น
+        err_console.print(f"[red]{exc}[/red]", highlight=False)
+        raise typer.Exit(code=2) from None
     kept = before - removed
     console.print(f"ลบผลวัดของ [bold]{slug}[/bold] ไป {removed} รอบ"
                   + (f" · เหลือไว้ {kept} รอบล่าสุด" if kept else ""))
@@ -5027,9 +5050,14 @@ def bench_show(
     history: bool = typer.Option(False, "--history", help="ทุกรอบที่เคยวัด ไม่ใช่แค่ล่าสุด"),
 ) -> None:
     """ผลละเอียดของรอบล่าสุด (หรือทั้งประวัติด้วย --history)"""
-    from lmds.bench import load, runs_for, speed_summary
+    from lmds.bench import BenchStoreError, load, runs_for, speed_summary
 
-    paths = runs_for(slug)
+    _bench_slug_or_exit(slug)
+    try:
+        paths = runs_for(slug)
+    except BenchStoreError as exc:
+        err_console.print(f"[red]{exc}[/red]", highlight=False)
+        raise typer.Exit(code=2) from None
     if not paths:
         err_console.print(f"[red]ยังไม่เคยวัด {slug}[/red] — วัดเลย: lmds bench run {slug}")
         raise typer.Exit(code=1)

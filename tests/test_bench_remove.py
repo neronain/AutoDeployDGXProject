@@ -45,7 +45,9 @@ def test_empty_folder_is_cleaned_up(tmp_path, monkeypatch):
 
 def test_removing_what_is_not_there_is_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "bench_root", lambda: tmp_path)
-    assert store.remove("ไม่มีอยู่") == 0
+    # ชื่อที่ถูกรูปแบบแต่ไม่เคยวัด — ชื่อที่ไม่ใช่ slug เลย (เดิมเทสนี้ใช้ชื่อภาษาไทย) เป็นอีกเรื่อง:
+    # ตัวเก็บปฏิเสธด้วย BenchStoreError เพราะมันกลายเป็น path (tests/test_audit3_bench.py)
+    assert store.remove("never-measured") == 0
 
 
 def test_console_labels_stay_english_like_the_rest_of_the_page():

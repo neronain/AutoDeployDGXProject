@@ -1425,9 +1425,13 @@ def create_app(token: str = "") -> FastAPI:
 
     @app.get("/api/bench/{slug}", dependencies=guarded)
     def bench_detail(slug: str) -> dict:
-        from lmds.bench import load, runs_for
+        from lmds.bench import BenchStoreError, load, runs_for
 
-        paths = runs_for(slug)
+        _check_slug(slug)   # กลายเป็น path ใต้ ~/.lmds/bench — เดิมรับ slug ดิบจาก URL
+        try:
+            paths = runs_for(slug)
+        except BenchStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not paths:
             return {"run": None, "history": []}
         history = []
@@ -1445,9 +1449,15 @@ def create_app(token: str = "") -> FastAPI:
     @app.delete("/api/bench/{slug}", dependencies=guarded)
     def bench_delete(slug: str, keep_last: int = 0) -> dict:
         """ลบผลวัดของโมเดลหนึ่งบนเครื่องนี้ — ผลสะสมจนตารางอ่านไม่ไหวถ้าไม่มีทางลบ"""
-        from lmds.bench import remove
+        from lmds.bench import BenchStoreError, remove
 
-        return {"slug": slug, "removed": remove(slug, keep_last=max(0, keep_last))}
+        # เดิมไม่ตรวจ slug เลย ทั้งที่ทางเดียวกันของ node (node_bench_delete) ตรวจ — และ remove()
+        # ลบทุก *.json ใน path ที่ต่อได้ (audit 2026-10-06: `bench remove ../../myproject`)
+        _check_slug(slug)
+        try:
+            return {"slug": slug, "removed": remove(slug, keep_last=max(0, keep_last))}
+        except BenchStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/bench/{slug}/run", dependencies=guarded)
     def bench_start(slug: str, body: dict | None = None) -> dict:
@@ -1458,6 +1468,7 @@ def create_app(token: str = "") -> FastAPI:
 
         from . import jobs
 
+        _check_slug(slug)
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")

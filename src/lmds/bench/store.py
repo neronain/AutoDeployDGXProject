@@ -12,12 +12,66 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 from datetime import datetime
 from pathlib import Path
+
+# slug มาจาก argv (`lmds bench remove <slug>`) และจาก URL ของหน้าเว็บ (`DELETE /api/bench/{slug}`)
+# แล้วถูกต่อเป็น path ใต้ ~/.lmds/bench ตรง ๆ — ตรวจที่นี่จุดเดียว ทุกฟังก์ชันที่รับ slug ผ่านด่านนี้
+#
+# เคสจริง (audit 2026-10-06): `lmds bench remove ../../myproject` ลบ package.json กับ
+# tsconfig.json ในโฟลเดอร์นั้นทิ้ง แล้วรายงานว่า "ลบผลวัด … ไป 2 รอบ" — เพราะ remove()
+# ต่อ path ดิบแล้วกวาด *.json ทุกไฟล์ที่เจอ
+#
+# อักขระชุดเดียวกับ slug ที่อื่นของ LMDS (fleet/apikey._SLUG · web/api._check_slug ·
+# generator.check_slug_name) · ความยาวปล่อยถึงเพดานชื่อไฟล์ ไม่ใช่ 64 เพราะ bundle ที่สร้างก่อนมี
+# กติกาความยาวยังมีผลวัดเก็บอยู่จริง (check_slug_name(allow_long=True) ยอมด้วยเหตุผลเดียวกัน)
+_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}")
+# ชื่อไฟล์ที่ record() เขียนเองเท่านั้น (ตราเวลา YYYYMMDDTHHMMSS) — remove() ลบเฉพาะรูปนี้
+# ไฟล์ .json อื่นที่บังเอิญอยู่ในโฟลเดอร์ไม่ใช่ของเรา ไม่อ่าน ไม่นับ ไม่ลบ
+_RUN_FILE = re.compile(r"\d{8}T\d{6}\.json")
+
+
+class BenchStoreError(ValueError):
+    """slug หรือชื่อไฟล์ที่จะพาออกนอกที่เก็บผลวัด — ปฏิเสธก่อนแตะดิสก์"""
 
 
 def bench_root() -> Path:
     return Path.home() / ".lmds" / "bench"
+
+
+def check_slug(slug: str) -> str:
+    """slug ต้องเป็นชื่อโฟลเดอร์ชั้นเดียว — ไม่ผ่าน = BenchStoreError (ไม่ใช่คืนค่าว่างเงียบ ๆ)"""
+    if not isinstance(slug, str) or not _SLUG.fullmatch(slug):
+        raise BenchStoreError(
+            f"ชื่อโมเดล (slug) ไม่ถูกต้อง: {str(slug)[:80]!r} — ใช้ได้เฉพาะ a-z A-Z 0-9 . _ - "
+            f"และขึ้นต้นด้วยตัวอักษร/ตัวเลข (ดูชื่อที่มีผลวัด: lmds bench list)")
+    return slug
+
+
+def slug_dir(slug: str) -> Path:
+    """โฟลเดอร์ผลวัดของ slug นี้ — รับประกันว่าอยู่ใต้ bench_root() ชั้นเดียวพอดี
+
+    ตรวจสองชั้นโดยตั้งใจ: รูปแบบชื่อ (กัน `..` กับ `/`) และ path ที่ resolve แล้ว (กัน symlink
+    ที่ชื่อถูกแต่ชี้ออกไปข้างนอก — โฟลเดอร์นี้ถูกก๊อปข้ามเครื่องได้ จึงไม่ใช่ของที่เราสร้างเองเสมอ)
+    """
+    check_slug(slug)
+    root = bench_root()
+    directory = root / slug
+    try:
+        inside = directory.resolve().parent == root.resolve()
+    except OSError as exc:
+        raise BenchStoreError(f"อ่านที่เก็บผลวัดของ {slug} ไม่ได้: {exc}") from exc
+    if not inside:
+        raise BenchStoreError(
+            f"ที่เก็บผลวัดของ {slug} ชี้ออกนอก {root} (symlink?) — ไม่แตะ")
+    return directory
+
+
+def _run_files(directory: Path) -> list[Path]:
+    """ไฟล์ผลวัดที่ record() เขียนเอง ใหม่สุดก่อน — ไฟล์อื่นในโฟลเดอร์ไม่นับ"""
+    return sorted((p for p in directory.iterdir()
+                   if _RUN_FILE.fullmatch(p.name) and p.is_file()), reverse=True)
 
 
 def _machine_facts() -> dict:
@@ -49,9 +103,13 @@ def record(slug: str, model_id: str, engine: str, served_name: str,
     `stamped_at` รับมาจากผู้เรียกแทนที่จะเรียก datetime เอง — ให้เทสต์กำหนดเวลาได้
     และให้ผลที่วัดพร้อมกันหลายเครื่องใช้ตราเวลาเดียวกัน
     """
-    directory = bench_root() / slug
+    directory = slug_dir(slug)
+    name = f"{stamped_at.replace(':', '').replace('-', '')}.json"
+    if not _RUN_FILE.fullmatch(name):
+        # ตราเวลาที่ไม่ใช่รูป YYYY-MM-DDTHH:MM:SS จะได้ไฟล์ที่ runs_for()/remove() มองไม่เห็น
+        raise BenchStoreError(f"ตราเวลาของผลวัดไม่ถูกรูปแบบ: {stamped_at!r} (ต้องเป็น YYYY-MM-DDTHH:MM:SS)")
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{stamped_at.replace(':', '').replace('-', '')}.json"
+    path = directory / name
     payload = {
         "version": 1,
         "slug": slug,
@@ -78,11 +136,11 @@ def load(path: Path) -> dict:
 
 
 def runs_for(slug: str) -> list[Path]:
-    """ผลทุกรอบของ slug นี้ ใหม่สุดก่อน"""
-    directory = bench_root() / slug
+    """ผลทุกรอบของ slug นี้ ใหม่สุดก่อน — slug ที่ไม่ใช่ชื่อโฟลเดอร์ชั้นเดียว = BenchStoreError"""
+    directory = slug_dir(slug)
     if not directory.is_dir():
         return []
-    return sorted(directory.glob("*.json"), reverse=True)
+    return _run_files(directory)
 
 
 def latest_merged(slug: str) -> dict | None:
@@ -122,10 +180,11 @@ def remove(slug: str, keep_last: int = 0) -> int:
     `keep_last` > 0 = เก็บรอบล่าสุดไว้เท่านั้น · ผลสะสมเร็วกว่าที่คิดเพราะการวัดซ้ำเป็น
     เรื่องปกติ (ก่อน/หลังเปลี่ยน flag, ก่อน/หลังอัปเกรด engine) แล้วไม่มีใครกลับมาลบเอง
     """
-    directory = bench_root() / slug
+    directory = slug_dir(slug)
     if not directory.is_dir():
         return 0
-    runs = sorted(directory.glob("*.json"), reverse=True)
+    # เฉพาะไฟล์ที่ record() เขียนเอง — ไม่ใช่ทุก *.json ที่เจอ (ดูหัวไฟล์: เคส package.json)
+    runs = _run_files(directory)
     doomed = runs[keep_last:] if keep_last > 0 else runs
     removed = 0
     for path in doomed:
@@ -153,7 +212,11 @@ def all_runs() -> list[dict]:
     for directory in sorted(root.iterdir()):
         if not directory.is_dir():
             continue
-        merged = latest_merged(directory.name)
+        try:
+            merged = latest_merged(directory.name)
+        except BenchStoreError:
+            # โฟลเดอร์ที่ชื่อไม่ใช่ slug หรือเป็น symlink ชี้ออกนอก — ไม่ใช่ของเรา ข้ามไป
+            continue
         if merged:
             latest.append(merged)
     return latest
