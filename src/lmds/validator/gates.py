@@ -303,16 +303,62 @@ def gate_checksums(bundle_dir: Path) -> GateResult:
 # Jinja ที่หลุดออกมาเป็น bash ที่ syntax ถูกต้อง — `bash -n` ผ่าน แล้วไปตายตอนรันจริง
 # เคสจริง: {% if shard_files %} ถูกวางไว้ใน {% raw %} จึงไม่เคยถูกแปลง และหลุดไปกับ bundle
 _TEMPLATE_LEFTOVER = re.compile(r"(?m)^\s*\{%|\{%\s*(if|for|endif|endfor|raw|endraw)\b")
+# `{{ ชื่อ … }}` / `{{ 'ข้อความ' }}` — หัวของ expression เท่านั้น ตัดสินว่าเป็นของ Jinja ไหมที่ _jinja_names()
+_VARIABLE_TAG = re.compile(r"""\{\{-?\s*(?:(?P<name>[A-Za-z_][A-Za-z0-9_]*)|(?P<quote>['"]))""")
+# ใช้เมื่ออ่าน template ของแพ็กเกจไม่ได้ (ไม่ควรเกิด) — ชื่อที่ controller template ใช้จริง ณ 2026-10-06
+_JINJA_NAMES_FALLBACK = frozenset({
+    "slug", "plan", "report", "fit", "lmds_version", "origin_label", "controller_version", "template_hash",
+    "model_label", "runtime_label", "model_features", "shard", "part", "asset", "flag", "pair", "loop",
+})
+_jinja_names_cache: frozenset[str] | None = None
+
+
+def _jinja_names() -> frozenset[str]:
+    """ชื่อตัวแปรที่ template ของ controller อ้างถึงจริง (ตัวแปรของ renderer + ตัวแปรลูป) — อ่านจาก template เองด้วย Jinja
+
+    ทำไมไม่จับ `{{` ทุกตัว: controller มี `{{` ที่ตั้งใจใส่ — Go template ของ docker (`--format '{{.Names}}'`,
+    `{{.State.Running}}`, `{{.Repository}}:{{.Tag}}`) · และ `}}` ก็เป็นตัวปิดปกติของ `${a:-${b}}` กับ JSON
+    สิ่งที่แยก Jinja ที่หลุดออกจากของพวกนั้นได้แน่นอนคือ "หัวของ expression เป็นชื่อที่ renderer รู้จัก" (`{{ slug }}`)
+    Go template ขึ้นต้นด้วย `.` หรือคำสั่งของมันเอง (`index`, `json`, `range`) ซึ่งไม่ใช่ตัวแปรของเรา
+    """
+    global _jinja_names_cache
+    if _jinja_names_cache is not None:
+        return _jinja_names_cache
+    names: set[str] = {"loop"}
+    try:
+        from jinja2 import Environment, meta, nodes
+
+        from lmds.generator.renderer import TEMPLATES_DIR
+
+        env = Environment()
+        for path in sorted(Path(TEMPLATES_DIR).glob("*.sh.j2")):
+            tree = env.parse(path.read_text(encoding="utf-8"))
+            names |= meta.find_undeclared_variables(tree)
+            for loop in tree.find_all(nodes.For):
+                targets = [loop.target] if isinstance(loop.target, nodes.Name) else loop.target.find_all(nodes.Name)
+                names |= {target.name for target in targets}
+    except Exception:  # noqa: BLE001 — gate ต้องตัดสินได้เสมอ แม้อ่าน template ไม่ได้
+        names |= _JINJA_NAMES_FALLBACK
+    _jinja_names_cache = frozenset(names)
+    return _jinja_names_cache
 
 
 def gate_template_rendered(bundle_dir: Path) -> GateResult:
     for script in _controllers(bundle_dir):
-        match = _TEMPLATE_LEFTOVER.search(script.read_text(encoding="utf-8"))
+        text = script.read_text(encoding="utf-8")
+        match = _TEMPLATE_LEFTOVER.search(text)
+        if match is None:
+            # `{{ slug }}` ที่อยู่ใน {% raw %} หลุดออกมาเป็นตัวหนังสือ — เคสจริง (audit 2026-10-06): controller stacked พิมพ์
+            # "lmds set {{ slug }} --port <PORT>" ให้ผู้ใช้ตอน port ชน และด่านนี้ผ่าน เพราะเดิมมองหาแต่ `{%`
+            names = _jinja_names()
+            match = next(
+                (m for m in _VARIABLE_TAG.finditer(text) if m.group("quote") or m.group("name") in names), None)
         if match:
-            line = script.read_text(encoding="utf-8")[: match.start()].count("\n") + 1
+            line = text[: match.start()].count("\n") + 1
+            shown = text[match.start(): text.find("\n", match.start())][:40].strip()
             return GateResult(
                 "template-rendered", False,
-                f"{script.name}:{line}: มี Jinja tag เหลืออยู่ในไฟล์ผลลัพธ์ ({match.group(0).strip()})",
+                f"{script.name}:{line}: มี Jinja tag เหลืออยู่ในไฟล์ผลลัพธ์ ({shown})",
             )
     return GateResult("template-rendered", True)
 
