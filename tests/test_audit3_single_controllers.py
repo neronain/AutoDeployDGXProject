@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import time
 
 import pytest
 
-from tests.single_controller_harness import KINDS, Box, free_port, render, specific_ip, write_exe
+from tests.single_controller_harness import KINDS, Box, free_port, pid_alive, render, specific_ip, write_exe
 
 
 @pytest.fixture
@@ -109,3 +111,113 @@ def test_the_default_bind_still_probes_loopback(box, kind):
     for bind in ("0.0.0.0", "127.0.0.1", ""):
         status = box.run("status", "--port", str(port), *(["--bind", bind] if bind else []))
         assert "API: healthy" in status.stdout, bind + status.stdout + status.stderr
+
+
+# ═════════════════════ 1. llama.cpp native: server.pid ค้าง ต้องไม่กลายเป็นใบสั่งฆ่า process อื่น ═════════════════════
+def _native_run_dir(box):
+    box.run_dir.mkdir(parents=True, exist_ok=True)
+    return box.run_dir
+
+
+@pytest.mark.parametrize("kind", ["llamacpp"])
+def test_a_stale_pid_file_never_gets_an_unrelated_process_killed(box, kind):
+    """server.pid อยู่ใต้ ~/.lmds/run/<slug>/ จึงรอดข้าม reboot/ไฟดับ/OOM-kill · หลัง reboot เลข PID เริ่มนับใหม่ และ unit
+    autostart รัน `stop` ก่อน `start` ทุกครั้ง (ExecStartPre) — PID เก่าตกเป็นของ process อื่นได้จริง · เดิม status บอก
+    "process: running" แล้ว stop ส่ง SIGTERM/SIGKILL ใส่มันพร้อมพิมพ์ "stopped" rc 0"""
+    victim = subprocess.Popen(["sleep", "300"])          # process ของ user เดียวกันที่ได้เลข PID นั้นไปใช้
+    try:
+        run_dir = _native_run_dir(box)
+        (run_dir / "server.pid").write_text(f"{victim.pid}\n", encoding="utf-8")
+        (run_dir / "server.meta").write_text(f"model={box.model}\nport=8000\n", encoding="utf-8")
+
+        status = box.run("status")
+        assert "process: stopped" in status.stdout and "process: running" not in status.stdout, status.stdout
+        assert str(victim.pid) in status.stderr and "server.pid" in status.stderr, "ต้องบอกว่า pid file ค้างและเป็นของใคร"
+        assert not (run_dir / "server.pid").exists(), "pid file ค้างต้องถูกลบ — hub อ่านไฟล์นี้ตัดสินว่ารันอยู่"
+
+        (run_dir / "server.pid").write_text(f"{victim.pid}\n", encoding="utf-8")
+        stopped = box.run("stop")
+        assert stopped.returncode == 0, stopped.stdout + stopped.stderr
+        assert "ไม่มีอะไรให้หยุด" in stopped.stdout and "stopped " not in stopped.stdout, stopped.stdout
+        time.sleep(0.5)
+        assert victim.poll() is None, "stop ฆ่า process ที่ไม่ใช่ llama-server ของ bundle นี้"
+        assert not (run_dir / "server.pid").exists()
+    finally:
+        victim.kill()
+        victim.wait(timeout=10)
+
+
+@pytest.mark.parametrize("kind", ["llamacpp"])
+def test_a_stale_pid_that_now_belongs_to_another_bundles_llama_server_is_left_alone(box, kind):
+    """ตัวที่น่าจะชนที่สุดหลัง reboot: llama-server ของ bundle ข้าง ๆ ที่ autostart ขึ้นก่อน — ไบนารีเดียวกันเป๊ะ
+    ต่างกันแค่ port/ชื่อที่ถูกสั่ง · "เป็น llama-server" อย่างเดียวจึงยังไม่พอ"""
+    other = box.serve(free_port(), model="some-other-model", ours=False)
+    run_dir = _native_run_dir(box)
+    (run_dir / "server.pid").write_text(f"{other.pid}\n", encoding="utf-8")
+    (run_dir / "server.meta").write_text(f"model={box.model}\nport=8000\n", encoding="utf-8")
+    assert "process: stopped" in box.run("status").stdout
+    (run_dir / "server.pid").write_text(f"{other.pid}\n", encoding="utf-8")
+    stopped = box.run("stop")
+    assert stopped.returncode == 0 and "ไม่มีอะไรให้หยุด" in stopped.stdout, stopped.stdout + stopped.stderr
+    time.sleep(0.5)
+    assert other.poll() is None, "stop ฆ่า llama-server ของ bundle อื่น"
+
+
+@pytest.mark.parametrize("kind", ["llamacpp"])
+def test_start_is_not_refused_by_a_stale_pid_file(box, kind):
+    """เดิม: PID ค้างที่ยังมี process อื่นใช้อยู่ → "เซิร์ฟเวอร์รันอยู่แล้ว — stop ก่อน" แล้ว stop ก็ไปฆ่าตัวนั้น"""
+    victim = subprocess.Popen(["sleep", "300"])
+    try:
+        run_dir = _native_run_dir(box)
+        (run_dir / "server.pid").write_text(f"{victim.pid}\n", encoding="utf-8")
+        port = free_port()
+        started = box.run("start", "--port", str(port))
+        assert started.returncode == 0, started.stdout + started.stderr
+        assert "รันอยู่แล้ว" not in started.stderr
+        new_pid = int((run_dir / "server.pid").read_text().strip())
+        assert new_pid != victim.pid and pid_alive(new_pid)
+        assert victim.poll() is None
+    finally:
+        victim.kill()
+        victim.wait(timeout=10)
+
+
+@pytest.mark.parametrize("kind", ["llamacpp"])
+def test_the_real_server_is_still_recognised_and_stopped(box, kind):
+    """ด่านใหม่ต้องไม่ทำให้ของจริงหยุดไม่ได้: start (port/ชื่อไม่ใช่ค่าตั้งต้น) → status เห็น → stop เปล่า ๆ ฆ่าตัวนั้นจริง"""
+    port = free_port()
+    started = box.run("start", "--port", str(port), "--name", "renamed-model")
+    assert started.returncode == 0, started.stdout + started.stderr
+    pid = int((box.run_dir / "server.pid").read_text().strip())
+    status = box.run("status")
+    assert f"process: running (PID {pid})" in status.stdout, status.stdout + status.stderr
+    stopped = box.run("stop")
+    assert stopped.returncode == 0 and "stopped renamed-model" in stopped.stdout, stopped.stdout + stopped.stderr
+    deadline = time.monotonic() + 10
+    while pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not pid_alive(pid), "llama-server ของ bundle นี้ยังอยู่หลัง stop"
+    assert not (box.run_dir / "server.pid").exists()
+
+
+@pytest.mark.parametrize("kind", ["llamacpp"])
+def test_a_server_started_by_an_older_controller_can_still_be_stopped(box, kind):
+    """rollout: controller ถูกเขียนทับขณะเซิร์ฟเวอร์ยังรัน — server.pid/server.meta เป็นของรุ่นก่อน (ไม่มีอะไรใหม่ให้เทียบ)
+    ต้องยังจำตัวเองได้จาก argv ที่รุ่นเก่าก็ส่งเหมือนกัน (--alias/--port) ไม่งั้นทั้งฟลีต stop ไม่ได้หลังอัปเดต"""
+    port = free_port()
+    server = box.serve(port)              # เขียน server.pid + server.meta แบบที่ start รุ่นก่อนเขียน
+    assert f"process: running (PID {server.pid})" in box.run("status").stdout
+    stopped = box.run("stop")
+    assert stopped.returncode == 0 and "stopped " in stopped.stdout, stopped.stdout + stopped.stderr
+    assert server.wait(timeout=10) is not None
+
+
+@pytest.mark.parametrize("kind", ["llamacpp"])
+def test_a_pid_file_of_a_dead_process_is_cleaned_up_quietly(box, kind):
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    run_dir = _native_run_dir(box)
+    (run_dir / "server.pid").write_text(f"{dead.pid}\n", encoding="utf-8")
+    status = box.run("status")
+    assert "process: stopped" in status.stdout and "server.pid" not in status.stderr, status.stdout + status.stderr
+    assert not (run_dir / "server.pid").exists()

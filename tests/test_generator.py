@@ -1263,11 +1263,24 @@ def test_stop_waits_for_the_process_to_actually_die(tmp_path):
     pid_file = run_dir / "server.pid"
 
     # process ที่เมิน SIGTERM — จำลอง llama-server ที่กำลังคืนหน่วยความจำก้อนใหญ่
-    victim = subprocess.Popen(["bash", "-c", "trap '' TERM; sleep 60"])
+    # ต้องหน้าตาเป็น llama-server ของ bundle นี้จริง (ชื่อไบนารี + --alias/--port ที่ถูกสั่ง): stop ไม่ส่งสัญญาณให้ PID
+    # ที่ยืนยันไม่ได้ว่าเป็นของตัวเองอีกแล้ว (server.pid ค้างข้าม reboot เคยทำให้ฆ่า process อื่น — audit 2026-10-06)
+    fake_server = tmp_path / "llama-server"
+    ready = tmp_path / "trap-installed"
+    fake_server.write_text(f"#!/bin/bash\ntrap '' TERM\n: > '{ready}'\nwhile :; do sleep 1; done\n", encoding="utf-8")
+    fake_server.chmod(0o755)
+    victim = subprocess.Popen([str(fake_server), "--alias", "victim-model", "--port", "8000"])
     pid_file.write_text(str(victim.pid), encoding="utf-8")
+    # รอจน trap ถูกติดตั้งจริง — stop ที่มาถึงก่อนบรรทัด trap จะฆ่ามันได้ด้วย SIGTERM ธรรมดา แล้วเทสวัดผิดเรื่อง
+    for _ in range(100):
+        if ready.exists():
+            break
+        time.sleep(0.05)
+    assert ready.exists(), "เซิร์ฟเวอร์ปลอมไม่ขึ้น"
 
     env = {**os.environ, "RUNTIME_MODE": "native", "RUN_DIR": str(run_dir),
-           "PID_FILE": str(pid_file), "STOP_TIMEOUT": "2"}
+           "PID_FILE": str(pid_file), "STOP_TIMEOUT": "2", "LLAMA_SERVER": str(fake_server),
+           "SERVED_MODEL_NAME": "victim-model", "API_PORT": "8000"}
     try:
         t0 = time.monotonic()
         done = subprocess.run(["bash", str(script), "stop"], env=env,

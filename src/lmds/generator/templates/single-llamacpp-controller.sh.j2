@@ -1242,9 +1242,11 @@ start() {
       echo "ยังไม่มี llama-server ที่ ${LLAMA_SERVER} — build ให้ก่อน (เท่ากับรัน: $0 prepare-runtime)"
       prepare_runtime
     fi
-    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      die "เซิร์ฟเวอร์รันอยู่แล้ว (PID $(cat "$PID_FILE")) — รัน: $0 stop ก่อน"
-    fi
+    # "รันอยู่แล้ว" ต้องเป็น llama-server ของ bundle นี้จริง — PID ค้างที่ตอนนี้เป็น process อื่นไม่ใช่เหตุให้ปฏิเสธ
+    # (เดิมบอกให้ไป stop ก่อน ซึ่งก็คือบอกให้ไปฆ่า process นั้น · ดู _pid_is_our_server)
+    local running_pid=""
+    running_pid="$(_our_server_pid)" || running_pid=""
+    [[ -z "$running_pid" ]] || die "เซิร์ฟเวอร์รันอยู่แล้ว (PID ${running_pid}) — รัน: $0 stop ก่อน"
     # build รู้จัก arch ของไฟล์นี้ไหม — ถามก่อน ไม่ใช่รอให้ llama-server ตายเงียบ ๆ แล้วเห็นแค่ "exit 1"
     check_architecture
     check_gpu >/dev/null
@@ -1306,6 +1308,9 @@ start() {
   fi
 
   write_meta
+  # (native) รอให้ process ที่เพิ่ง fork กลายเป็น llama-server ก่อนเริ่มถามว่า "ตัวของเรายังอยู่ไหม" — ต้องมาหลัง
+  # write_meta เพราะการยืนยันตัวเทียบ argv กับ port/ชื่อที่ meta ของรอบนี้จดไว้
+  if [[ "$RUNTIME_MODE" == "native" ]]; then _await_server_exec; fi
   wait_health
   record_runtime
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
@@ -1321,9 +1326,91 @@ warn_open_endpoint() {
   echo "         หรือบังคับ token:  API_KEY=\$(openssl rand -hex 24) $0 restart" >&2
 }
 
+# ── PID ใน server.pid เป็น llama-server ของ bundle นี้จริงไหม (native) ─────────────────────────
+#
+# server.pid อยู่ใต้ ~/.lmds/run/<slug>/ จึงรอดข้าม reboot / ไฟดับ / OOM-kill ทั้งที่ process ตายไปแล้ว · เดิม "ยังรันอยู่"
+# คือ `kill -0 $(cat server.pid)` เฉย ๆ ซึ่งถามแค่ว่า "มี process เลขนี้ไหม" ไม่ใช่ "เป็นตัวที่เรา start ไหม" · หลัง reboot
+# เลข PID เริ่มนับใหม่จากน้อย ๆ และ unit autostart ของทุก bundle รัน `stop` ก่อน `start` เสมอ (ExecStartPre) — PID เก่า
+# ของ bundle นี้จึงตกเป็นของ process อื่นได้จริง (llama-server ของ bundle ข้าง ๆ ที่ขึ้นก่อนคือตัวที่น่าจะชนที่สุด) แล้ว stop
+# ก็ส่ง SIGTERM ตามด้วย SIGKILL ใส่มันพร้อมพิมพ์ "stopped" (audit 2026-10-06: ใส่ PID ของ `sleep 300` ลง server.pid →
+# status บอก "process: running" · stop ฆ่า sleep แล้วจบ rc 0)
+#
+# ยืนยันจาก argv ของ process เอง เทียบกับสิ่งที่ start จดไว้ใน server.meta คู่กับ server.pid (port= · model=):
+# ต้องเป็น llama-server ที่ถูกสั่ง `--port <port นั้น>` และ `--alias <ชื่อนั้น>` · ใช้ค่าจาก meta ไม่ใช่ค่าปัจจุบัน เพราะ
+# `start --port 8020 --name foo` แล้ว `stop` เปล่า ๆ เป็นคนละ process คนละค่า · "เป็น llama-server" อย่างเดียวไม่พอ —
+# ตัวที่ชนอาจเป็น llama-server ของ bundle อื่นจากไบนารีเดียวกัน · เซิร์ฟเวอร์ที่ controller รุ่นก่อน start ไว้ก็ผ่านด่านนี้
+# (รุ่นก่อนส่ง --alias/--port และเขียน meta เหมือนกัน) — อัปเดต controller ทั้งฟลีตแล้วยัง stop ได้
+# อ่านจาก /proc/<pid>/cmdline (argv คั่นด้วย NUL) · ไม่มี /proc (macOS/BSD) ถอยไป `ps -o command=`
+_pid_cmdline() {
+  local pid="$1"
+  if [[ -r "/proc/${pid}/cmdline" ]]; then
+    tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true
+  else
+    ps -ww -o command= -p "$pid" 2>/dev/null || true
+  fi
+}
+
+_meta_value() {   # ค่าของ key ใน server.meta (ว่าง = ไม่มีไฟล์ หรือไม่มีบรรทัดนั้น)
+  [[ -f "${RUN_DIR}/server.meta" ]] || return 0
+  sed -n "s/^${1}=//p" "${RUN_DIR}/server.meta" 2>/dev/null | tail -1 || true
+}
+
+_pid_is_our_server() {
+  local pid="$1" cmd port served
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  cmd=" $(_pid_cmdline "$pid") "
+  port="$(_meta_value port)";    port="${port:-$API_PORT}"
+  served="$(_meta_value model)"; served="${served:-$SERVED_MODEL_NAME}"
+  # ค่าจากตัวแปรอยู่ในเครื่องหมายคำพูดทั้งหมด = เทียบตามตัวอักษร ไม่ถูกตีความเป็น glob
+  case "$cmd" in
+    *"${LLAMA_SERVER}"*|*"$(basename "$LLAMA_SERVER")"*|*"llama-server"*) ;;
+    *) return 1 ;;
+  esac
+  case "$cmd" in *" --port ${port} "*) ;; *) return 1 ;; esac
+  case "$cmd" in *" --alias ${served} "*) ;; *) return 1 ;; esac
+  return 0
+}
+
+# PID ของเซิร์ฟเวอร์ native ของ bundle นี้ — พิมพ์ออกมาเมื่อยืนยันได้ว่าเป็นตัวนั้น
+# ยืนยันไม่ได้ = server.pid ค้าง: ลบทิ้ง (hub อ่านไฟล์นี้ตัดสินว่ารันอยู่) บอกทาง stderr ถ้าเลขนั้นมี process อื่นใช้อยู่ แล้วคืน 1
+# ทุกที่ที่เคยอ่าน server.pid ตรง ๆ (start · stop · status · server_alive) ต้องผ่านตรงนี้ — ห้ามส่งสัญญาณจากเลขในไฟล์เปล่า ๆ
+_our_server_pid() {
+  local pid=""
+  [[ -f "$PID_FILE" ]] || return 1
+  pid="$(tr -d '[:space:]' < "$PID_FILE" 2>/dev/null || true)"
+  if _pid_is_our_server "$pid"; then printf '%s' "$pid"; return 0; fi
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "server.pid ค้างจากรอบก่อน: PID ${pid} ตอนนี้เป็น process อื่น ($(_pid_cmdline "$pid" | cut -c1-80)) ไม่ใช่ llama-server ของ bundle นี้ — ไม่แตะมัน · ลบ ${PID_FILE}" >&2
+  fi
+  rm -f "$PID_FILE" 2>/dev/null || true
+  return 1
+}
+
+# หลัง `nohup llama-server … &` ชั่วขณะหนึ่ง PID นั้นยังเป็นสำเนาของสคริปต์นี้ (ยังไม่ exec) — argv จึงยังไม่ใช่ของ
+# llama-server · ถ้าถามเร็วไปจะสรุปผิดว่า "ไม่ใช่ของเรา" แล้วรายงานว่าเซิร์ฟเวอร์ตายทั้งที่เพิ่งเกิด · รอได้สูงสุด 5 วิ
+# ตายไปก่อน = ปล่อยให้ wait_health รายงานพร้อมสาเหตุจาก log ตามเดิม · ยังอยู่แต่ argv ไม่มี --port/--alias ที่เราสั่ง
+# (LLAMA_SERVER เป็น wrapper ที่ไม่ส่ง argv ต่อ) = stop/status รอบหน้าจะจำมันไม่ได้ → หยุดมันตอนนี้ที่ยังรู้แน่ว่าเป็น
+# ลูกของเรา แล้วบอกตรง ๆ ดีกว่าทิ้ง process ที่ controller ตามไม่เจอไว้ถือ GPU
+_await_server_exec() {
+  local pid tries=0
+  pid="$(tr -d '[:space:]' < "$PID_FILE" 2>/dev/null || true)"
+  while (( tries < 50 )); do
+    if _pid_is_our_server "$pid"; then return 0; fi
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+    tries=$(( tries + 1 ))
+  done
+  kill "$pid" 2>/dev/null || true
+  rm -f "$PID_FILE" 2>/dev/null || true
+  die "process ที่เพิ่ง start (PID ${pid}) ไม่มี --port ${API_PORT} / --alias ${SERVED_MODEL_NAME} ใน argv: $(_pid_cmdline "$pid" | cut -c1-120)
+     controller ยืนยันภายหลังไม่ได้ว่าเป็นเซิร์ฟเวอร์ของ bundle นี้ (stop/status จะจำมันไม่ได้) จึงหยุดมันไว้
+     ถ้า LLAMA_SERVER (${LLAMA_SERVER}) เป็น wrapper ให้มันส่ง argv ต่อด้วย \"\$@\""
+}
+
 server_alive() {
   if [[ "$RUNTIME_MODE" == "native" ]]; then
-    [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+    _our_server_pid >/dev/null
   else
     local running
     running="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
@@ -1386,9 +1473,15 @@ wait_health() {
 pid_alive() {
   # `kill -0` สำเร็จกับ zombie ด้วย — process ที่ตายแล้วแต่ parent ยังไม่ได้เก็บศพ
   # ตัวนั้นคืนหน่วยความจำไปหมดแล้ว ถือว่าหยุดสำเร็จ ไม่ใช่เหตุให้ยิง SIGKILL ซ้ำหรือ die
-  local pid="$1" state
+  # สถานะคือช่องถัดจากชื่อในวงเล็บ — ตัดถึง ")" ตัวสุดท้ายก่อน เพราะชื่อ process มีช่องว่างได้ (awk '$3' จะหยิบผิดช่อง)
+  # ไม่มี /proc (macOS/BSD) ถาม ps แทน — เดิมถือว่า "ยังอยู่" เสมอ zombie จึงกลายเป็น "หยุดไม่สำเร็จหลัง SIGKILL"
+  local pid="$1" state=""
   kill -0 "$pid" 2>/dev/null || return 1
-  state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)" || return 0
+  if [[ -r "/proc/${pid}/stat" ]]; then
+    state="$(sed 's/^.*) //' "/proc/${pid}/stat" 2>/dev/null | cut -c1 || true)"
+  else
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' | cut -c1 || true)"
+  fi
   [[ "$state" != "Z" ]]
 }
 
@@ -1403,14 +1496,18 @@ stop() {
     # โมเดลอยู่ทั้งก้อน · เคสจริง spark-02 (2026-09-03): Q8 39 GB สองชุดค้างพร้อมกัน
     # RAM เหลือ 25 GB จาก 121 · llama-server ตั้ง SO_REUSEADDR ตัวใหม่จึง bind ได้
     # ตามปกติ ไม่มี error ให้เห็น และ `lmds ps` ก็เขียวเพราะดูจาก pid file ตัวใหม่
+    #
+    # ส่งสัญญาณเฉพาะเมื่อยืนยันได้ว่า PID ในไฟล์คือ llama-server ของ bundle นี้ (_our_server_pid) — เลขในไฟล์ที่รอด
+    # ข้าม reboot มาอาจเป็น process อื่นไปแล้ว · ไม่ใช่ของเรา = ลบไฟล์ค้าง แล้วรายงานว่าไม่มีอะไรให้หยุด
     local pid=""
-    [[ -f "$PID_FILE" ]] && pid="$(cat "$PID_FILE" 2>/dev/null)"
+    pid="$(_our_server_pid)" || pid=""
     if [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; then
       local waited=0
       while pid_alive "$pid" && (( waited < STOP_TIMEOUT )); do
         sleep 1; waited=$(( waited + 1 ))
       done
-      if pid_alive "$pid"; then
+      # ก่อน SIGKILL ยืนยันซ้ำว่าเลขนี้ยังเป็นตัวเดิม — ตัวเดิมที่จบไปแล้วระหว่างรอ เลขอาจถูกใช้ซ้ำ
+      if pid_alive "$pid" && _pid_is_our_server "$pid"; then
         echo "PID ${pid} ไม่จบใน ${STOP_TIMEOUT}s — ส่ง SIGKILL"
         kill -9 "$pid" 2>/dev/null || true
         waited=0
@@ -1418,7 +1515,7 @@ stop() {
           sleep 1; waited=$(( waited + 1 ))
         done
       fi
-      if pid_alive "$pid"; then
+      if pid_alive "$pid" && _pid_is_our_server "$pid"; then
         # บอกตรง ๆ ดีกว่าปล่อยให้ start ตัวที่สองไปกินแรมซ้อน
         die "หยุดไม่สำเร็จ: PID ${pid} ยังอยู่หลัง SIGKILL — อย่าเพิ่ง start ทับ"
       fi
@@ -1440,7 +1537,9 @@ status() {
   echo "model:     ${SERVED_MODEL_NAME}$([[ "$SERVED_MODEL_NAME" != "$DEFAULT_SERVED_MODEL_NAME" ]] \
         && echo "   (ชื่อเดิม: ${DEFAULT_SERVED_MODEL_NAME})")"
   if [[ "$RUNTIME_MODE" == "native" ]]; then
-    if server_alive; then echo "process: running (PID $(cat "$PID_FILE"))"; else echo "process: stopped"; fi
+    local pid=""
+    pid="$(_our_server_pid)" || pid=""
+    if [[ -n "$pid" ]]; then echo "process: running (PID ${pid})"; else echo "process: stopped"; fi
   else
     docker ps -a --filter "name=^${CONTAINER_NAME}$"
   fi
