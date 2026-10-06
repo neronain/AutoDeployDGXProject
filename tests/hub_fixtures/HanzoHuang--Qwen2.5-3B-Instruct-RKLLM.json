@@ -1,0 +1,40 @@
+{
+ "repo": "HanzoHuang/Qwen2.5-3B-Instruct-RKLLM",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "HanzoHuang/Qwen2.5-3B-Instruct-RKLLM",
+  "sha": "ab9bf337166d8b591a9ecbb75edf4bc46a599787",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "rkllm",
+  "tags": [
+   "rkllm",
+   "rockchip",
+   "rk3576",
+   "rk3588",
+   "qwen",
+   "qwen2.5",
+   "text-generation",
+   "base_model:Qwen/Qwen2.5-3B-Instruct",
+   "base_model:finetune:Qwen/Qwen2.5-3B-Instruct",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "rkllm",
+   "license": "apache-2.0",
+   "base_model": "Qwen/Qwen2.5-3B-Instruct",
+   "pipeline_tag": "text-generation"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 7388},
+   {"rfilename": "Qwen2.5-3B-Instruct_data_quant.json", "size": 19409},
+   {"rfilename": "RK3576/Qwen2.5-3B-Instruct_RK3576_w4a16.rkllm", "size": 2389038316},
+   {"rfilename": "RK3576/Qwen2.5-3B-Instruct_RK3576_w8a8.rkllm", "size": 3773568364},
+   {"rfilename": "RK3588/Qwen2.5-3B-Instruct_RK3588_w8a8.rkllm", "size": 3755461260}
+  ]
+ },
+ "files": {}
+}

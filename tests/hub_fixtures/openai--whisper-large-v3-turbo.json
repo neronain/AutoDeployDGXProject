@@ -1,0 +1,107 @@
+{
+ "repo": "openai/whisper-large-v3-turbo",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "openai/whisper-large-v3-turbo",
+  "sha": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "automatic-speech-recognition",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "whisper",
+   "automatic-speech-recognition",
+   "audio",
+   "haw",
+   "base_model:openai/whisper-large-v3",
+   "base_model:finetune:openai/whisper-large-v3",
+   "license:mit",
+   "eval-results",
+   "endpoints_compatible",
+   "deploy:sagemaker",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "mit",
+   "base_model": [
+    "openai/whisper-large-v3"
+   ],
+   "pipeline_tag": "automatic-speech-recognition"
+  },
+  "siblings": [
+   {"rfilename": "added_tokens.json", "size": 34648},
+   {"rfilename": "config.json", "size": 1256},
+   {"rfilename": "generation_config.json", "size": 3772},
+   {"rfilename": "model.safetensors", "size": 1617824864},
+   {"rfilename": "normalizer.json", "size": 52666},
+   {"rfilename": "preprocessor_config.json", "size": 340},
+   {"rfilename": "special_tokens_map.json", "size": 2186},
+   {"rfilename": "tokenizer.json", "size": 2710337},
+   {"rfilename": "tokenizer_config.json", "size": 282843},
+   {"rfilename": "vocab.json", "size": 1036558}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F16": 808878080
+   },
+   "total": 808878080
+  }
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "/raid/yoach/tmp_whisper_turbo",
+   "activation_dropout": 0.0,
+   "activation_function": "gelu",
+   "apply_spec_augment": false,
+   "architectures": [
+    "WhisperForConditionalGeneration"
+   ],
+   "attention_dropout": 0.0,
+   "begin_suppress_tokens": [
+    220,
+    50256
+   ],
+   "classifier_proj_size": 256,
+   "d_model": 1280,
+   "decoder_attention_heads": 20,
+   "decoder_ffn_dim": 5120,
+   "decoder_layerdrop": 0.0,
+   "decoder_layers": 4,
+   "decoder_start_token_id": 50258,
+   "dropout": 0.0,
+   "encoder_attention_heads": 20,
+   "encoder_ffn_dim": 5120,
+   "encoder_layerdrop": 0.0,
+   "encoder_layers": 32,
+   "init_std": 0.02,
+   "is_encoder_decoder": true,
+   "mask_feature_length": 10,
+   "mask_feature_min_masks": 0,
+   "mask_feature_prob": 0.0,
+   "mask_time_length": 10,
+   "mask_time_min_masks": 2,
+   "mask_time_prob": 0.05,
+   "max_source_positions": 1500,
+   "max_target_positions": 448,
+   "median_filter_width": 7,
+   "model_type": "whisper",
+   "num_hidden_layers": 32,
+   "num_mel_bins": 128,
+   "scale_embedding": false,
+   "torch_dtype": "float16",
+   "transformers_version": "4.46.0.dev0",
+   "use_cache": true,
+   "use_weighted_layer_sum": false,
+   "vocab_size": 51866
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 1000000000000000019884624838656,
+   "tokenizer_class": "WhisperTokenizer"
+  }
+ }
+}

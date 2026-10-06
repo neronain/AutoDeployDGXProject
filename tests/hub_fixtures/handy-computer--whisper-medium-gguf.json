@@ -1,0 +1,112 @@
+{
+ "repo": "handy-computer/whisper-medium-gguf",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "handy-computer/whisper-medium-gguf",
+  "sha": "835ad19fff976143d650e35113a6544980cbd983",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "automatic-speech-recognition",
+  "library_name": "transcribe.cpp",
+  "tags": [
+   "transcribe.cpp",
+   "gguf",
+   "asr",
+   "speech-to-text",
+   "whisper",
+   "openai",
+   "automatic-speech-recognition",
+   "haw",
+   "base_model:openai/whisper-medium",
+   "base_model:quantized:openai/whisper-medium",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transcribe.cpp",
+   "license": "apache-2.0",
+   "base_model": "openai/whisper-medium",
+   "base_model_relation": "quantized",
+   "pipeline_tag": "automatic-speech-recognition"
+  },
+  "siblings": [
+   {"rfilename": "whisper-medium-F16.gguf", "size": 1541931424, "lfs": { "sha256": "62338e5194cb9ccc6734adf6f42694805a98a158028b2022e39ec060559bd517", "size": 1541931424 }},
+   {"rfilename": "whisper-medium-F32.gguf", "size": 3057437088, "lfs": { "sha256": "d716aa436e8d1d3164898d1fd6f4bde0f7cbbb7059b8c276b18f78cbca2faf6b", "size": 3057437088 }},
+   {"rfilename": "whisper-medium-Q4_K_M.gguf", "size": 504102848, "lfs": { "sha256": "6c9cad9c41d1fa0fcc624898f7ee3485b66127627878081a5655c6f6f3ce20ab", "size": 504102848 }},
+   {"rfilename": "whisper-medium-Q5_K_M.gguf", "size": 582746048, "lfs": { "sha256": "4e2a8904a866b3aa7ef70d7640ec6abc5f0a05524cd950ea4b66ace12122bf53", "size": 582746048 }},
+   {"rfilename": "whisper-medium-Q6_K.gguf", "size": 648019904, "lfs": { "sha256": "8718bafef4f595b5cacd9d9409fb7e19ce99b1afe4c6a450198d692fa58bd380", "size": 648019904 }},
+   {"rfilename": "whisper-medium-Q8_0.gguf", "size": 831538144, "lfs": { "sha256": "09e6a65e7de377aa5b10bae24608bc6f8ca2ed04b3993ef10d4a02bcd9a82adf", "size": 831538144 }}
+  ]
+ },
+ "files": {},
+ "gguf": {
+  "whisper-medium-Q4_K_M.gguf": {
+   "tensor_count": 949,
+   "metadata": {
+    "general.architecture": "whisper",
+    "general.name": "Whisper Medium",
+    "general.basename": "whisper",
+    "general.size_label": "764M",
+    "general.author": "OpenAI",
+    "general.organization": "openai",
+    "general.license": "apache-2.0",
+    "general.license.name": "Apache License 2.0",
+    "general.license.link": "https://www.apache.org/licenses/LICENSE-2.0",
+    "general.repo_url": "https://huggingface.co/openai/whisper-medium",
+    "stt.variant": "whisper-medium",
+    "stt.capability.lang_detect": true,
+    "stt.capability.translate": true,
+    "stt.capability.timestamps": true,
+    "stt.translation.target_languages": [
+     "en"
+    ],
+    "stt.whisper.encoder.n_layers": 24,
+    "stt.whisper.encoder.d_model": 1024,
+    "stt.whisper.encoder.n_heads": 16,
+    "stt.whisper.encoder.ffn_dim": 4096,
+    "stt.whisper.encoder.num_mel_bins": 80,
+    "stt.whisper.encoder.max_source_positions": 1500,
+    "stt.whisper.encoder.activation": "gelu",
+    "stt.whisper.decoder.n_layers": 24,
+    "stt.whisper.decoder.d_model": 1024,
+    "stt.whisper.decoder.n_heads": 16,
+    "stt.whisper.decoder.ffn_dim": 4096,
+    "stt.whisper.decoder.max_target_positions": 448,
+    "stt.whisper.decoder.vocab_size": 51865,
+    "stt.whisper.decoder.activation": "gelu",
+    "stt.whisper.decoder.tie_word_embeddings": true,
+    "stt.whisper.decoder.scale_embedding": false,
+    "stt.whisper.decoder_start_token_id": 50258,
+    "stt.whisper.no_timestamps_token_id": 50363,
+    "stt.whisper.sot_token_id": 50258,
+    "stt.whisper.transcribe_token_id": 50359,
+    "stt.whisper.translate_token_id": 50358,
+    "stt.whisper.prev_sot_token_id": 50361,
+    "stt.whisper.begin_suppress_tokens": [
+     220,
+     50257
+    ],
+    "stt.frontend.type": "mel",
+    "stt.frontend.num_mels": 80,
+    "stt.frontend.sample_rate": 16000,
+    "stt.frontend.n_fft": 400,
+    "stt.frontend.win_length": 400,
+    "stt.frontend.hop_length": 160,
+    "stt.frontend.window": "hann_periodic",
+    "stt.frontend.normalize": "whisper_logmel",
+    "stt.frontend.dither": 0.0,
+    "stt.frontend.pre_emphasis": 0.0,
+    "stt.frontend.f_min": 0.0,
+    "stt.frontend.f_max": 8000.0,
+    "stt.frontend.pad_mode": "reflect",
+    "stt.frontend.center": true,
+    "stt.frontend.mel_norm": "slaney",
+    "stt.frontend.chunk_length": 30,
+    "stt.frontend.n_samples": 480000,
+    "stt.frontend.nb_max_frames": 3000,
+    "general.file_type": 15
+   }
+  }
+ }
+}

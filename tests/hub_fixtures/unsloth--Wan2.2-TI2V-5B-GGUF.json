@@ -1,0 +1,49 @@
+{
+ "repo": "unsloth/Wan2.2-TI2V-5B-GGUF",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "unsloth/Wan2.2-TI2V-5B-GGUF",
+  "sha": "b5c2a3816e7056e57e200f6be726fb36ce523b49",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-to-video",
+  "library_name": "gguf",
+  "tags": [
+   "gguf",
+   "ti2v",
+   "text-to-video",
+   "base_model:Wan-AI/Wan2.2-TI2V-5B",
+   "base_model:quantized:Wan-AI/Wan2.2-TI2V-5B",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "gguf",
+   "license": "apache-2.0",
+   "base_model": [
+    "Wan-AI/Wan2.2-TI2V-5B"
+   ],
+   "pipeline_tag": "text-to-video"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 11357},
+   {"rfilename": "NOTICE", "size": 1215},
+   {"rfilename": "VAE/Wan2.2_VAE.safetensors", "size": 1409400960},
+   {"rfilename": "Wan2.2-TI2V-5B-Q2_K.gguf", "size": 1853862240, "lfs": { "sha256": "bebb995b18adf2357366e2a62ecc8a020f759418c0d62987df88bb58aed135e2", "size": 1853862240 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q3_K_M.gguf", "size": 2547790176, "lfs": { "sha256": "93cab80a36db70e9f2152915870d6cb9bdc7fdbf61811153222b5251b92839e6", "size": 2547790176 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q3_K_S.gguf", "size": 2294755680, "lfs": { "sha256": "2cc11c77652b47de2c5e47a3631fa09963404772879fdc006903abf6b2460e21", "size": 2294755680 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q4_0.gguf", "size": 3029086560, "lfs": { "sha256": "fcf40dd62cb5e15556eef5f975700ab0b071aacd1939607689276e88f81ba463", "size": 3029086560 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q4_1.gguf", "size": 3253219680, "lfs": { "sha256": "dac5c36bf2ae51d5423f6daf7067c185ffe72881f4c0615600b323746770df18", "size": 3253219680 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q4_K_M.gguf", "size": 3433116000, "lfs": { "sha256": "95b19697b7f98e65b0a543640e9ca7b4dfec32e2a6e3731e8e10708be52655e2", "size": 3433116000 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q4_K_S.gguf", "size": 3116380512, "lfs": { "sha256": "ab4195ecd022e57455672771d8ec14c2589efc9ddd6b96c3578fbb326797bdbb", "size": 3116380512 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q5_0.gguf", "size": 3642503520, "lfs": { "sha256": "ce3fe1bcc8e2298d68101a0278d268c0fb27c8a29e55d4caf58ff0e3d83223b9", "size": 3642503520 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q5_1.gguf", "size": 3866636640, "lfs": { "sha256": "5c92f4f14c537d8b5e228ed014e79a22d2e54d190c0f2c0b2a4ab9da148365b5", "size": 3866636640 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q5_K_M.gguf", "size": 3810603360, "lfs": { "sha256": "4424633a876511b9be58a41119f7c9d762ea92b3cb74649cdb43cac850e42dba", "size": 3810603360 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q5_K_S.gguf", "size": 3559928160, "lfs": { "sha256": "47a4960ac7ed08b5cf4408e7e945ce64ce93019e152247f32205631c58085cf6", "size": 3559928160 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q6_K.gguf", "size": 4211683680, "lfs": { "sha256": "355f6bee35c4c6cbd0f275112619fe8ac6f7b9b067b885723667b3bde29497c3", "size": 4211683680 }},
+   {"rfilename": "Wan2.2-TI2V-5B-Q8_0.gguf", "size": 5400179040, "lfs": { "sha256": "57bece983817ab2f957546683bb670f13be7d99022d45674840cd999a050ea8f", "size": 5400179040 }}
+  ]
+ },
+ "files": {}
+}

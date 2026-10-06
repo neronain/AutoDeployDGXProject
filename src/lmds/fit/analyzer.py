@@ -354,9 +354,18 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
             capacity_gb=round(target.total_gpu_memory_gb, 1),
             concurrency=concurrency,
             verdict=Verdict.UNSUPPORTED,
-            notes=[f"checkpoint รูปแบบ {unsupported_label(report.unsupported_format)} — ไม่มี engine ที่โหลดได้ "
+            notes=[f"{unsupported_label(report.unsupported_format)} — ไม่มี engine ของ LMDS ที่เสิร์ฟได้ "
                    "จึงไม่ประเมินหน่วยความจำ"],
             alternatives=unsupported_alternatives(report),
+        )
+    if report.artifact_type is ArtifactType.UNKNOWN:
+        # ไม่รู้ว่าเป็นไฟล์ชนิดไหน = ไม่รู้ว่า engine ไหนจะเสิร์ฟ — เดิมเดาเป็น vllm แล้วตารางขึ้น "(vllm) unknown"
+        # ซึ่งอ่านเหมือน "vLLM เสิร์ฟได้ แค่ยังไม่รู้ขนาด" (HanzoHuang/…-RKLLM · facebook/opt-125m ที่มีแต่ .bin)
+        return FitReport(
+            target_name=target.name, memory_model=target.memory_model, engine_assumed="none",
+            node_count=target.node_count, capacity_gb=round(target.total_gpu_memory_gb, 1),
+            concurrency=concurrency, verdict=Verdict.UNKNOWN,
+            notes=["ไม่พบไฟล์ weight ในรูปแบบที่ LMDS เสิร์ฟ (.safetensors / .gguf) — ไม่มี engine ให้ประเมิน"],
         )
     engine = _engine_for(report)
     budget, notes = _budget_gb(target, engine, reserved_gb)

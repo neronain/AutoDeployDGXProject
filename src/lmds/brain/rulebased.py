@@ -424,6 +424,11 @@ def gguf_choice_needed(report: ModelReport) -> str:
 def rule_based_plan(report: ModelReport, fit: FitReport,
                     engine: Engine | None = None) -> DeploymentPlan:
     refuse_unsupported(report)
+    if report.artifact_type is ArtifactType.UNKNOWN:
+        # ไม่มี .safetensors/.gguf ให้เสิร์ฟ — เดิมตกไปที่ "ไม่ใช่ GGUF ก็ vLLM" แล้วได้ bundle ที่ผ่าน gate ทุกด่าน
+        raise PlanError(
+            f"{report.repo_id}: ไม่พบไฟล์ weight ในรูปแบบที่ LMDS เสิร์ฟ (.safetensors → vLLM/SGLang · .gguf → llama.cpp) "
+            "— ไม่มีอะไรให้วางแผน")
     # engine ที่ผู้ใช้เลือกมาชนะการเดา แต่ GGUF ยังบังคับ llama.cpp เสมอ —
     # vLLM กับ SGLang อ่านไฟล์ GGUF ไม่ได้ ยอมตามคำขอคือส่ง bundle ที่ start ไม่ขึ้นให้
     if report.artifact_type is ArtifactType.GGUF:

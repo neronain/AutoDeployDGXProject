@@ -1,0 +1,78 @@
+{
+ "repo": "BAAI/bge-reranker-v2-m3",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "BAAI/bge-reranker-v2-m3",
+  "sha": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-classification",
+  "library_name": "sentence-transformers",
+  "tags": [
+   "sentence-transformers",
+   "safetensors",
+   "xlm-roberta",
+   "text-classification",
+   "transformers",
+   "text-embeddings-inference",
+   "multilingual",
+   "license:apache-2.0",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "apache-2.0",
+   "pipeline_tag": "text-classification"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 795},
+   {"rfilename": "model.safetensors", "size": 2271071852},
+   {"rfilename": "sentencepiece.bpe.model", "size": 5069051},
+   {"rfilename": "special_tokens_map.json", "size": 964},
+   {"rfilename": "tokenizer.json", "size": 17098273},
+   {"rfilename": "tokenizer_config.json", "size": 1173}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 567755777
+   },
+   "total": 567755777
+  }
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "BAAI/bge-m3",
+   "architectures": [
+    "XLMRobertaForSequenceClassification"
+   ],
+   "attention_probs_dropout_prob": 0.1,
+   "classifier_dropout": null,
+   "hidden_act": "gelu",
+   "hidden_dropout_prob": 0.1,
+   "hidden_size": 1024,
+   "id2label": {
+    "0": "LABEL_0"
+   },
+   "initializer_range": 0.02,
+   "intermediate_size": 4096,
+   "layer_norm_eps": 1e-05,
+   "max_position_embeddings": 8194,
+   "model_type": "xlm-roberta",
+   "num_attention_heads": 16,
+   "num_hidden_layers": 24,
+   "output_past": true,
+   "position_embedding_type": "absolute",
+   "torch_dtype": "float32",
+   "transformers_version": "4.38.1",
+   "type_vocab_size": 1,
+   "use_cache": true,
+   "vocab_size": 250002
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 8192,
+   "tokenizer_class": "XLMRobertaTokenizer"
+  }
+ }
+}

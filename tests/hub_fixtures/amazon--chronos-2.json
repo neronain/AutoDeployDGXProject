@@ -1,0 +1,77 @@
+{
+ "repo": "amazon/chronos-2",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "amazon/chronos-2",
+  "sha": "29ec3766d36d6f73f0696f85560a422f50e8498c",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "time-series-forecasting",
+  "library_name": "chronos-forecasting",
+  "tags": [
+   "chronos-forecasting",
+   "safetensors",
+   "t5",
+   "time series",
+   "forecasting",
+   "foundation models",
+   "pretrained models",
+   "time-series-forecasting",
+   "license:apache-2.0",
+   "deploy:sagemaker",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "chronos-forecasting",
+   "license": "apache-2.0",
+   "pipeline_tag": "time-series-forecasting"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 1067},
+   {"rfilename": "model.safetensors", "size": 477930472}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 119477664
+   },
+   "total": 119477664
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Chronos2Model"
+   ],
+   "chronos_config": {
+    "context_length": 8192,
+    "input_patch_size": 16,
+    "input_patch_stride": 16,
+    "max_output_patches": 64,
+    "output_patch_size": 16,
+    "time_encoding_scale": 8192,
+    "use_arcsinh": true,
+    "use_reg_token": true
+   },
+   "chronos_pipeline_class": "Chronos2Pipeline",
+   "d_ff": 3072,
+   "d_kv": 64,
+   "d_model": 768,
+   "dense_act_fn": "relu",
+   "dropout_rate": 0.1,
+   "feed_forward_proj": "relu",
+   "initializer_factor": 0.05,
+   "is_gated_act": false,
+   "layer_norm_epsilon": 1e-06,
+   "model_type": "t5",
+   "num_heads": 12,
+   "num_layers": 12,
+   "reg_token_id": 1,
+   "rope_theta": 10000.0,
+   "torch_dtype": "float32",
+   "transformers_version": "4.49.0",
+   "use_cache": true,
+   "vocab_size": 2
+  }
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "repo": "city96/FLUX.1-dev-gguf",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "city96/FLUX.1-dev-gguf",
+  "sha": "3c60ac659f4b1f2ab3ca8bd4488272069b36a148",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-to-image",
+  "library_name": "gguf",
+  "tags": [
+   "gguf",
+   "text-to-image",
+   "image-generation",
+   "flux",
+   "base_model:black-forest-labs/FLUX.1-dev",
+   "base_model:quantized:black-forest-labs/FLUX.1-dev",
+   "license:other",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "gguf",
+   "license": "other",
+   "base_model": "black-forest-labs/FLUX.1-dev"
+  },
+  "siblings": [
+   {"rfilename": "flux1-dev-F16.gguf", "size": 23802870944, "lfs": { "sha256": "c0a28d5ed1d9b57d06778ebb4b16f0f12c5607ee02498411ba2cccd270cbb70a", "size": 23802870944 }},
+   {"rfilename": "flux1-dev-Q2_K.gguf", "size": 4032341280, "lfs": { "sha256": "b8c464bc0f10076ef8f00ba040d220d90c7993f7c4245ae80227d857f65df105", "size": 4032341280 }},
+   {"rfilename": "flux1-dev-Q3_K_S.gguf", "size": 5234255136, "lfs": { "sha256": "f65bb921fe637ba9588278f54981afc567be408e38ee038d2fe3acf3e11188bd", "size": 5234255136 }},
+   {"rfilename": "flux1-dev-Q4_0.gguf", "size": 6791167136, "lfs": { "sha256": "2867e9575640d80ccbcbf65010659a4d09e676a034637bc37eac7f2531c46e90", "size": 6791167136 }},
+   {"rfilename": "flux1-dev-Q4_1.gguf", "size": 7530806432, "lfs": { "sha256": "da04c47a9b717bf9a4dd545e46d89e4a62fb44b9497bf9a5d13d622d592fbcda", "size": 7530806432 }},
+   {"rfilename": "flux1-dev-Q4_K_S.gguf", "size": 6805988640, "lfs": { "sha256": "75bb19459b5240c9f373b5af527584af15b675867fa142efadf7478d6abbf62b", "size": 6805988640 }},
+   {"rfilename": "flux1-dev-Q5_0.gguf", "size": 8270445728, "lfs": { "sha256": "9712851188b107594f695d8069d2d9326cbc355441d1035dc390fda530555c3c", "size": 8270445728 }},
+   {"rfilename": "flux1-dev-Q5_1.gguf", "size": 9010085024, "lfs": { "sha256": "86c5643225ca76fa5b3573415a8deb55a1bde6d2e2e934458f6e65d015bb01ed", "size": 9010085024 }},
+   {"rfilename": "flux1-dev-Q5_K_S.gguf", "size": 8285267232, "lfs": { "sha256": "aa76146ca0f1b09c67e0c3fcef18be3a375837ecd5aaa021d3e9ebc558bd68f9", "size": 8285267232 }},
+   {"rfilename": "flux1-dev-Q6_K.gguf", "size": 9857000736, "lfs": { "sha256": "9566d56031d7f8de184bb5a0393073956ec4e28b32db3f860bd2b87edca04d13", "size": 9857000736 }},
+   {"rfilename": "flux1-dev-Q8_0.gguf", "size": 12708281504, "lfs": { "sha256": "129032f32224bf7138f16e18673d8008ba5f84c1ec74063bf4511a8bb4cf553d", "size": 12708281504 }}
+  ]
+ },
+ "files": {},
+ "gguf": {
+  "flux1-dev-Q4_K_S.gguf": {
+   "tensor_count": 780,
+   "metadata": {
+    "general.architecture": "flux",
+    "general.quantization_version": 2,
+    "general.file_type": 14
+   }
+  }
+ }
+}

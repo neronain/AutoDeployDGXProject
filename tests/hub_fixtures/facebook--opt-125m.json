@@ -1,0 +1,65 @@
+{
+ "repo": "facebook/opt-125m",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "facebook/opt-125m",
+  "sha": "27dcfa74d334bc871f3234de431e71c6eeba5dd6",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "jax",
+   "opt",
+   "text-generation",
+   "license:other",
+   "text-generation-inference",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "other"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 651},
+   {"rfilename": "flax_model.msgpack", "size": 250485441},
+   {"rfilename": "generation_config.json", "size": 137},
+   {"rfilename": "pytorch_model.bin", "size": 250540281},
+   {"rfilename": "special_tokens_map.json", "size": 441},
+   {"rfilename": "tf_model.h5", "size": 250709016},
+   {"rfilename": "tokenizer_config.json", "size": 685},
+   {"rfilename": "vocab.json", "size": 898822}
+  ]
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "facebook/opt-125m",
+   "activation_dropout": 0.0,
+   "activation_function": "relu",
+   "architectures": [
+    "OPTForCausalLM"
+   ],
+   "attention_dropout": 0.0,
+   "do_layer_norm_before": true,
+   "dropout": 0.1,
+   "ffn_dim": 3072,
+   "hidden_size": 768,
+   "init_std": 0.02,
+   "layerdrop": 0.0,
+   "max_position_embeddings": 2048,
+   "model_type": "opt",
+   "num_attention_heads": 12,
+   "num_hidden_layers": 12,
+   "prefix": "</s>",
+   "torch_dtype": "float16",
+   "transformers_version": "4.21.0.dev0",
+   "use_cache": true,
+   "vocab_size": 50272,
+   "word_embed_proj_dim": 768
+  },
+  "tokenizer_config.json": {}
+ }
+}

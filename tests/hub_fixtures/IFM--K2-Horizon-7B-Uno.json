@@ -1,0 +1,53 @@
+{
+ "repo": "IFM/K2-Horizon-7B-Uno",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "IFM/K2-Horizon-7B-Uno",
+  "sha": "669f041aab04fad836e757ede9a028058b064996",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "peft",
+  "tags": [
+   "peft",
+   "safetensors",
+   "lora",
+   "diffusion-language-model",
+   "conditional-lora",
+   "uno",
+   "text-generation",
+   "base_model:IFM/K2-Horizon-7B",
+   "base_model:adapter:IFM/K2-Horizon-7B",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "peft",
+   "license": "apache-2.0",
+   "base_model": "IFM/K2-Horizon-7B",
+   "pipeline_tag": "text-generation"
+  },
+  "siblings": [
+   {"rfilename": "CONVERSION_COMPLETE", "size": 3},
+   {"rfilename": "adapter_config.json", "size": 521},
+   {"rfilename": "adapter_model.safetensors", "size": 1396763616},
+   {"rfilename": "conversion_summary.json", "size": 2613},
+   {"rfilename": "source_info.json", "size": 2613}
+  ]
+ },
+ "files": {
+  "adapter_config.json": {
+   "base_model_name_or_path": "IFM/K2-Horizon-7B",
+   "bias": "none",
+   "fan_in_fan_out": false,
+   "inference_mode": true,
+   "init_lora_weights": true,
+   "lora_alpha": 8192.0,
+   "lora_dropout": 0.05,
+   "peft_type": "LORA",
+   "r": 128,
+   "task_type": "CAUSAL_LM"
+  }
+ }
+}

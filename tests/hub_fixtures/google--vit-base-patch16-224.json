@@ -1,0 +1,71 @@
+{
+ "repo": "google/vit-base-patch16-224",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "google/vit-base-patch16-224",
+  "sha": "3f49326eb077187dfe1c2a2bb15fbd74e6ab91e3",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "image-classification",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "jax",
+   "safetensors",
+   "vit",
+   "image-classification",
+   "vision",
+   "license:apache-2.0",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "apache-2.0"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 69665},
+   {"rfilename": "flax_model.msgpack", "size": 346277993},
+   {"rfilename": "model.safetensors", "size": 346293852},
+   {"rfilename": "preprocessor_config.json", "size": 160},
+   {"rfilename": "pytorch_model.bin", "size": 346351599},
+   {"rfilename": "tf_model.h5", "size": 346537664}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 86567656
+   },
+   "total": 86567656
+  }
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "google/vit-base-patch16-224",
+   "architectures": [
+    "ViTForImageClassification"
+   ],
+   "attention_probs_dropout_prob": 0.0,
+   "hidden_act": "gelu",
+   "hidden_dropout_prob": 0.0,
+   "hidden_size": 768,
+   "id2label": {
+    "0": "tench, Tinca tinca",
+    "1": "goldfish, Carassius auratus",
+    "2": "great white shark, white shark, man-eater, man-eating shark, Carcharodon carcharias"
+   },
+   "image_size": 224,
+   "initializer_range": 0.02,
+   "intermediate_size": 3072,
+   "layer_norm_eps": 1e-12,
+   "model_type": "vit",
+   "num_attention_heads": 12,
+   "num_channels": 3,
+   "num_hidden_layers": 12,
+   "patch_size": 16,
+   "qkv_bias": true,
+   "transformers_version": "4.13.0.dev0"
+  }
+ }
+}

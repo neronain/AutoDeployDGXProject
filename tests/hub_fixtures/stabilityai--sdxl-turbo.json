@@ -1,0 +1,108 @@
+{
+ "repo": "stabilityai/sdxl-turbo",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "stabilityai/sdxl-turbo",
+  "sha": "71153311d3dbb46851df1931d3ca6e939de83304",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-to-image",
+  "library_name": "diffusers",
+  "tags": [
+   "diffusers",
+   "onnx",
+   "safetensors",
+   "text-to-image",
+   "license:other",
+   "diffusers:StableDiffusionXLPipeline",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "other",
+   "pipeline_tag": "text-to-image"
+  },
+  "siblings": [
+   {"rfilename": "model_index.json", "size": 685},
+   {"rfilename": "scheduler/scheduler_config.json", "size": 459},
+   {"rfilename": "sd_xl_turbo_1.0.safetensors", "size": 13875761366},
+   {"rfilename": "sd_xl_turbo_1.0_fp16.safetensors", "size": 6938081905},
+   {"rfilename": "text_encoder/config.json", "size": 565},
+   {"rfilename": "text_encoder/model.fp16.safetensors", "size": 246144152},
+   {"rfilename": "text_encoder/model.onnx", "size": 492587458},
+   {"rfilename": "text_encoder/model.safetensors", "size": 492265168},
+   {"rfilename": "text_encoder_2/config.json", "size": 575},
+   {"rfilename": "text_encoder_2/model.fp16.safetensors", "size": 1389382176},
+   {"rfilename": "text_encoder_2/model.onnx", "size": 1042018},
+   {"rfilename": "text_encoder_2/model.onnx_data", "size": 2778639360},
+   {"rfilename": "text_encoder_2/model.safetensors", "size": 2778702264},
+   {"rfilename": "tokenizer/special_tokens_map.json", "size": 586},
+   {"rfilename": "tokenizer/tokenizer_config.json", "size": 704},
+   {"rfilename": "tokenizer/vocab.json", "size": 1059962},
+   {"rfilename": "tokenizer_2/special_tokens_map.json", "size": 460},
+   {"rfilename": "tokenizer_2/tokenizer_config.json", "size": 855},
+   {"rfilename": "tokenizer_2/vocab.json", "size": 1059962},
+   {"rfilename": "unet/config.json", "size": 1776},
+   {"rfilename": "unet/diffusion_pytorch_model.fp16.safetensors", "size": 5135149760},
+   {"rfilename": "unet/diffusion_pytorch_model.safetensors", "size": 10270077736},
+   {"rfilename": "unet/model.onnx", "size": 7291775},
+   {"rfilename": "unet/model.onnx_data", "size": 10269854720},
+   {"rfilename": "vae/config.json", "size": 607},
+   {"rfilename": "vae/diffusion_pytorch_model.fp16.safetensors", "size": 167335342},
+   {"rfilename": "vae/diffusion_pytorch_model.safetensors", "size": 334643268},
+   {"rfilename": "vae_decoder/config.json", "size": 607},
+   {"rfilename": "vae_decoder/model.onnx", "size": 198093688},
+   {"rfilename": "vae_encoder/config.json", "size": 607},
+   {"rfilename": "vae_encoder/model.onnx", "size": 136775724}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 2567463684
+   },
+   "total": 2567463684
+  }
+ },
+ "files": {
+  "model_index.json": {
+   "_class_name": "StableDiffusionXLPipeline",
+   "_diffusers_version": "0.24.0.dev0",
+   "feature_extractor": [
+    null,
+    null
+   ],
+   "force_zeros_for_empty_prompt": true,
+   "image_encoder": [
+    null,
+    null
+   ],
+   "scheduler": [
+    "diffusers",
+    "EulerAncestralDiscreteScheduler"
+   ],
+   "text_encoder": [
+    "transformers",
+    "CLIPTextModel"
+   ],
+   "text_encoder_2": [
+    "transformers",
+    "CLIPTextModelWithProjection"
+   ],
+   "tokenizer": [
+    "transformers",
+    "CLIPTokenizer"
+   ],
+   "tokenizer_2": [
+    "transformers",
+    "CLIPTokenizer"
+   ],
+   "unet": [
+    "diffusers",
+    "UNet2DConditionModel"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKL"
+   ]
+  }
+ }
+}

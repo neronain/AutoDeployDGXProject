@@ -1,0 +1,48 @@
+{
+ "repo": "unsloth/Z-Image-Turbo-GGUF",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "unsloth/Z-Image-Turbo-GGUF",
+  "sha": "6c80814333b7b6a70a2e5b469a7c6437ce65de0f",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-to-image",
+  "library_name": "ggml",
+  "tags": [
+   "ggml",
+   "gguf",
+   "quantized",
+   "unsloth",
+   "text-to-image",
+   "base_model:Tongyi-MAI/Z-Image-Turbo",
+   "base_model:quantized:Tongyi-MAI/Z-Image-Turbo",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "ggml",
+   "license": "apache-2.0",
+   "base_model": "Tongyi-MAI/Z-Image-Turbo",
+   "pipeline_tag": "text-to-image"
+  },
+  "siblings": [
+   {"rfilename": "z-image-turbo-BF16.gguf", "size": 12311939136, "lfs": { "sha256": "9ccc4fb8b84519b8aa201abcffd900d19ee146b409ae9897625d235b104ef9c5", "size": 12311939136 }},
+   {"rfilename": "z-image-turbo-F16.gguf", "size": 12311939136, "lfs": { "sha256": "996ed5b13fc124053edec41d3ad8fef3fe1dca0ef3f7aa24b4123d84367d3666", "size": 12311939136 }},
+   {"rfilename": "z-image-turbo-Q2_K.gguf", "size": 3639683136, "lfs": { "sha256": "b0c126881789f8c2cf3fd0d2a7dd25edcfe413f87dd51544d3c29e0713cd5e64", "size": 3639683136 }},
+   {"rfilename": "z-image-turbo-Q3_K_M.gguf", "size": 4186161216, "lfs": { "sha256": "7070b605165c372833c21c6bd45e73b242cf0db261b4d5436039363f3dbd4e0e", "size": 4186161216 }},
+   {"rfilename": "z-image-turbo-Q3_K_S.gguf", "size": 3951806016, "lfs": { "sha256": "918f233b1697b36f2906b86187c8514d60676eb3b7bcf29dd24b93ba33a19283", "size": 3951806016 }},
+   {"rfilename": "z-image-turbo-Q4_0.gguf", "size": 4585244736, "lfs": { "sha256": "302b9cf7e7ddbeffb472fde1a9e2ea436a5edf1f7119c617a18e5222c8078921", "size": 4585244736 }},
+   {"rfilename": "z-image-turbo-Q4_1.gguf", "size": 4850665536, "lfs": { "sha256": "63c9a92831a0adfdf3f06b7fef94f2e4faba2578ed2034d8bb04821683305b43", "size": 4850665536 }},
+   {"rfilename": "z-image-turbo-Q4_K_M.gguf", "size": 5017613376, "lfs": { "sha256": "e6494f87de6abaf6a561924f50317a5f271fc34bb4222aabbd801197df8f7daa", "size": 5017613376 }},
+   {"rfilename": "z-image-turbo-Q4_K_S.gguf", "size": 4710950976, "lfs": { "sha256": "d9a1e25e0751e0d889893ad6494e0f0f1c4245c8e1afe248ee93b5641ac69066", "size": 4710950976 }},
+   {"rfilename": "z-image-turbo-Q5_0.gguf", "size": 5263542336, "lfs": { "sha256": "6a83bb03ea9f9c0e8760ef25252a3364310a164608cfaca0d505cf4d7592d8c8", "size": 5263542336 }},
+   {"rfilename": "z-image-turbo-Q5_1.gguf", "size": 5528963136, "lfs": { "sha256": "e84236eaed78b1ff1f05db0dced5a9634c0ffcc2dc9feffcc6a8fb744b430e7b", "size": 5528963136 }},
+   {"rfilename": "z-image-turbo-Q5_K_M.gguf", "size": 5574444096, "lfs": { "sha256": "847e33003ae6e85121c62785d7f7213958d58287c932d0c2189a1c9a2d1f093a", "size": 5574444096 }},
+   {"rfilename": "z-image-turbo-Q5_K_S.gguf", "size": 5237860416, "lfs": { "sha256": "3d476eadb1a53cf27ef8503328f340428c86a48aec2927794073896b83a9f3d4", "size": 5237860416 }},
+   {"rfilename": "z-image-turbo-Q6_K.gguf", "size": 5910505536, "lfs": { "sha256": "fc137d87b49e06fdd5230d67d6c8cfa42a9e1fd38b65ccd355882450c3eb1c82", "size": 5910505536 }},
+   {"rfilename": "z-image-turbo-Q8_0.gguf", "size": 7224707136, "lfs": { "sha256": "f163d60b0eb427469510b8226243d196574a18139a2e40c017409cfbda95ecfe", "size": 7224707136 }}
+  ]
+ },
+ "files": {}
+}

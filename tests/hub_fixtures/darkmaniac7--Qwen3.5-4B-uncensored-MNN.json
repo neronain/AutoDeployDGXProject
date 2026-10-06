@@ -1,0 +1,58 @@
+{
+ "repo": "darkmaniac7/Qwen3.5-4B-uncensored-MNN",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "darkmaniac7/Qwen3.5-4B-uncensored-MNN",
+  "sha": "2db226ae744673e7478cae095e0170c63fab29a3",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": null,
+  "library_name": "mnn",
+  "tags": [
+   "mnn",
+   "abliterated",
+   "uncensored",
+   "qwen3.5",
+   "on-device",
+   "mobile",
+   "roleplay",
+   "base_model:huihui-ai/Huihui-Qwen3.5-4B-abliterated",
+   "base_model:quantized:huihui-ai/Huihui-Qwen3.5-4B-abliterated",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "mnn",
+   "license": "apache-2.0",
+   "base_model": "huihui-ai/Huihui-Qwen3.5-4B-abliterated",
+   "base_model_relation": "quantized"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 342},
+   {"rfilename": "export_args.json", "size": 1094},
+   {"rfilename": "llm.mnn", "size": 3651096},
+   {"rfilename": "llm.mnn.json", "size": 9171981},
+   {"rfilename": "llm.mnn.weight", "size": 2366588266},
+   {"rfilename": "llm_config.json", "size": 8330}
+  ]
+ },
+ "files": {
+  "config.json": {
+   "llm_model": "llm.mnn",
+   "llm_weight": "llm.mnn.weight",
+   "backend_type": "cpu",
+   "thread_num": 4,
+   "precision": "low",
+   "memory": "low",
+   "sampler_type": "penalty",
+   "penalty": 1.1,
+   "mllm": {
+    "backend_type": "cpu",
+    "thread_num": 4,
+    "precision": "normal",
+    "memory": "low"
+   }
+  }
+ }
+}

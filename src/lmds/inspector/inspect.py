@@ -9,7 +9,10 @@ from lmds.resolver import ModelSource
 
 import re
 
-from .formats import MLX, exl_evidence, mlx_evidence, mlx_quantization
+from .formats import (
+    ADAPTER, DIFFUSERS, MLX, NO_CONFIG, NO_ROOT_CHECKPOINT, NO_SERVING_MODE, NO_WEIGHTS, NON_LLM_GGUF,
+    exl_evidence, mlx_evidence, mlx_quantization, unsupported_label,
+)
 from .gguf import GgufInfo, GgufParseError, parse_gguf
 from .hf_api import INDEX_FILE_CAP, SMALL_FILE_CAP, BudgetExceeded, HfClient
 from .report import ArtifactType, GgufPart, GgufVariant, KvDims, ModelReport, ShardFile
@@ -53,22 +56,71 @@ _RERANK_TAGS = {"reranker", "rerank", "reranking", "cross-encoder", "text-rankin
 _RERANK_NAME_RE = re.compile(r"rerank", re.I)
 # llama.cpp: {arch}.pooling_type = 4 (LLAMA_POOLING_TYPE_RANK) = ไฟล์ GGUF ที่แปลงมาพร้อมหัว classifier ของ reranker
 GGUF_POOLING_RANK = 4
+# general.architecture ของไฟล์ GGUF ที่ไม่ใช่ LLM — llama-server ไม่มี loader ให้ · เก็บเฉพาะค่าที่อ่านได้จาก header
+# ของไฟล์จริงบน Hub (2026-10-06) ไม่เดาเพิ่ม: สถาปัตยกรรมที่ไม่รู้จักยังปล่อยผ่าน ให้ด่านตรวจตอนรันจัดการเหมือนเดิม
+#   ภาพ/วิดีโอ (ComfyUI-GGUF / stable-diffusion.cpp): flux (city96/FLUX.1-dev-gguf) · sd3 (city96/stable-diffusion-3.5-large-gguf)
+#   · qwen_image (city96/Qwen-Image-gguf) · hidream (city96/HiDream-I1-Dev-gguf) · aura (city96/AuraFlow-v0.3-gguf)
+#   · lumina2 (unsloth/Z-Image-Turbo-GGUF) · wan (unsloth/Wan2.2-TI2V-5B-GGUF) · hyvid (city96/HunyuanVideo-gguf)
+#   · ltxv (city96/LTX-Video-gguf)
+#   เสียง: whisper (handy-computer/whisper-medium-gguf) · asr (nvidia/parakeet-tdt-0.6b-v3)
+#   · qwen3-tts / qwen3-tts-tokenizer (Serveurperso/Qwen3-TTS-GGUF)
+NON_LLM_GGUF_ARCHITECTURES = frozenset({
+    "flux", "sd3", "qwen_image", "hidream", "aura", "lumina2", "wan", "hyvid", "ltxv",
+    "whisper", "asr", "qwen3-tts", "qwen3-tts-tokenizer",
+})
+
+
+# pipeline_tag ที่ LMDS ไม่มีโหมดเสิร์ฟ (มีแค่ chat · embedding · rerank) — แยกสองชั้นตามความแน่นอน:
+#
+# สร้างภาพ/วิดีโอ/3D: ไม่มี engine ไหนของเราทำได้ ไม่ว่าสถาปัตยกรรมข้างในจะเป็นอะไร → ปฏิเสธเสมอ
+PIPELINES_NEVER_SERVED = frozenset({
+    "text-to-image", "image-to-image", "image-text-to-image", "unconditional-image-generation",
+    "text-to-video", "image-to-video", "image-text-to-video", "video-to-video", "text-to-3d", "image-to-3d",
+})
+# เสียง · อนุกรมเวลา · vision classifier · งาน encoder: ปฏิเสธ **เว้นแต่** weight เป็น causal LM จริง (TTS ที่เป็น LLM พ่น
+# audio token อย่าง Orpheus / VieNeu-TTS — engine เสิร์ฟส่วน LM เป็น completions ได้) ซึ่งจะวางแผนต่อพร้อมคำเตือน
+PIPELINES_NOT_AN_LLM = frozenset({
+    "text-to-speech", "text-to-audio", "audio-to-audio", "automatic-speech-recognition", "audio-classification",
+    "voice-activity-detection", "time-series-forecasting", "image-classification", "zero-shot-image-classification",
+    "object-detection", "zero-shot-object-detection", "image-segmentation", "mask-generation", "depth-estimation",
+    "keypoint-detection", "video-classification", "image-feature-extraction", "token-classification", "fill-mask",
+    "tabular-classification", "tabular-regression", "reinforcement-learning", "robotics", "graph-ml",
+})
+# ที่เหลือ (translation · summarization · question-answering · text-classification · image-to-text …) **ไม่ปฏิเสธจาก
+# pipeline_tag**: LLM แบบ decoder-only ถูกติดป้ายพวกนี้อยู่จริง (tencent/Hunyuan-MT-7B = translation +
+# HunYuanDenseV1ForCausalLM) — ตัดสินจากสถาปัตยกรรมใน config.json แทน (refine_task)
+
+# หัวของ transformers ที่ไม่ใช่การ generate — แผน chat กับ weight แบบนี้ engine เสิร์ฟไม่ได้แน่นอน
+_NON_CHAT_HEADS = (
+    "ForSequenceClassification", "ForTokenClassification", "ForMaskedLM", "ForQuestionAnswering", "ForMultipleChoice",
+    "ForNextSentencePrediction", "ForImageClassification", "ForObjectDetection", "ForSemanticSegmentation",
+    "ForInstanceSegmentation", "ForUniversalSegmentation", "ForImageSegmentation", "ForDepthEstimation",
+    "ForVideoClassification", "ForCTC", "ForAudioClassification", "ForAudioFrameClassification", "ForXVector",
+    "ForSpeechSeq2Seq",
+)
+_CAUSAL_LM_HEADS = ("ForCausalLM", "LMHeadModel")
 
 
 def task_of(info: dict, repo_id: str) -> str:
-    """โมเดลนี้เอาไว้ทำอะไร — rerank · embedding · chat
+    """โมเดลนี้เอาไว้ทำอะไร — rerank · embed · generate (chat) · other (งานที่ LMDS ไม่มีโหมดเสิร์ฟ)
 
-    ดูจาก pipeline_tag ก่อน (Hub ติดให้จากไลบรารี) · ชื่อ repo · tags (GGUF ที่คนแปลงเอง
-    มักไม่มี tag อะไรเลย เช่น VesNFF/Qwen3-VL-Embedding-8B-GGUF) · เดาผิดแก้ได้ด้วย `--task`
+    pipeline_tag ที่เจาะจงชนะ tag ลอย ๆ: เดิม tag `feature-extraction` / `text-embeddings-inference` ทำให้
+    nvidia/parakeet-tdt-0.6b-v3 (pipeline_tag=automatic-speech-recognition) และ meta-llama/Prompt-Guard-86M
+    (text-classification) กลายเป็น task embed (audit 2026-10-06) · tag กลุ่ม embedding นับเฉพาะเมื่อ repo ไม่มี
+    pipeline_tag หรือ pipeline_tag เองก็เป็นงาน embedding · ชื่อ repo ยังใช้ได้ (GGUF ที่คนแปลงเองมักไม่มี tag อะไรเลย
+    เช่น VesNFF/Qwen3-VL-Embedding-8B-GGUF) · เดาผิดแก้ได้ด้วย `--task`
     """
     pipeline = info.get("pipeline_tag") or ""
     name = repo_id.split("/")[-1]
     tags = {t.lower() for t in info.get("tags", []) if isinstance(t, str)}
-    if pipeline in _RERANK_PIPELINES or _RERANK_NAME_RE.search(name) or tags & _RERANK_TAGS:
+    unserved = pipeline in PIPELINES_NEVER_SERVED or pipeline in PIPELINES_NOT_AN_LLM
+    if pipeline in _RERANK_PIPELINES or _RERANK_NAME_RE.search(name) or (tags & _RERANK_TAGS and not unserved):
         return "rerank"
+    if unserved:
+        return "other"
     if pipeline in _EMBED_PIPELINES:
         return "embed"
-    if tags & _EMBED_TAGS:
+    if tags & _EMBED_TAGS and not pipeline:
         return "embed"
     if _EMBED_NAME_RE.search(name):
         return "embed"
@@ -92,6 +144,28 @@ def task_from_config(config: dict) -> str | None:
     if isinstance(num_labels, int) and num_labels > 1:
         return None
     return "rerank"
+
+
+def refine_task(task: str, pipeline: str, config: dict) -> tuple[str, str]:
+    """ปรับ task ด้วยสถาปัตยกรรมจริงใน config.json — (task, คำเตือน)
+
+    - pipeline_tag บอกว่าไม่ใช่ LLM (TTS · ASR …) แต่ weight เป็น causal LM → เสิร์ฟเป็น completions ได้ จึงไม่ปฏิเสธ
+    - encoder-decoder (T5 · BART · Whisper · Parakeet: `is_encoder_decoder: true`) และหัว classifier/encoder
+      (`*ForTokenClassification` · `*ForMaskedLM` · `*ForImageClassification` · `*ForSequenceClassification` หลาย label …)
+      ที่กำลังจะถูกวางแผนเป็น chat → other: vLLM/SGLang ไม่มีทาง generate จาก weight แบบนี้
+    """
+    architectures = config.get("architectures")
+    arch = str(architectures[0]) if isinstance(architectures, list) and architectures else ""
+    if task == "other":
+        if pipeline in PIPELINES_NOT_AN_LLM and arch.endswith(_CAUSAL_LM_HEADS):
+            return "generate", (
+                f"pipeline_tag ของ repo คือ {pipeline} แต่ weight เป็น causal LM ({arch}) — วางแผนเป็น chat/completions "
+                "ตามสถาปัตยกรรม · ไม่ใช่โมเดล chat ทั่วไป: ผลลัพธ์อาจเป็น token เฉพาะงาน (เช่น audio token) ที่ต้องมีตัวถอดรหัสเอง"
+            )
+        return task, ""
+    if task == "generate" and (config.get("is_encoder_decoder") is True or arch.endswith(_NON_CHAT_HEADS)):
+        return "other", ""
+    return task, ""
 
 
 def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
@@ -145,18 +219,22 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     # ฝั่ง safetensors อ่านลงรายงานของมันเองก่อน แล้วค่อยตัดสินว่า repo นี้เสิร์ฟทางไหน — เดิมสองฝั่งเขียนทับ
     # รายงานเดียวกัน (architecture/context/kv_dims ของ config.json ชนะ header ของ GGUF เสมอ) และ repo ที่มี
     # .safetensors ไฟล์เดียวก็กลายเป็น "mixed" → vLLM ทั้งที่ของที่เสิร์ฟได้มีแต่ GGUF
+    pipeline = str(info.get("pipeline_tag") or "")
+    names = [name for name, _, _ in files]
     st: ModelReport | None = None
     st_problem = ""
+    config: dict[str, Any] | None = None
     if safetensor_files:
         st = base.model_copy(deep=True)
         st.artifact_type = ArtifactType.SAFETENSORS
-        has_config = _inspect_safetensors(st, source, client, revision_sha, safetensor_files)
-        st_problem = _safetensors_problem(st, has_config, safetensor_files)
+        config, origin = _inspect_safetensors(st, source, client, revision_sha, safetensor_files, pipeline)
+        st_problem = _mark_unservable_safetensors(st, config, origin, names, safetensor_files)
 
     if gguf_weights and (wants_gguf or st is None or st_problem):
         report = base.model_copy(deep=True)
         report.artifact_type = ArtifactType.GGUF
-        _inspect_gguf(report, source, client, revision_sha, gguf_files)
+        _inspect_gguf(report, source, client, revision_sha, gguf_files, pipeline)
+        config = None
         if st is not None:
             _note_format_choice(report, st, st_problem, gguf_weights, safetensor_files)
     elif st is not None:
@@ -165,33 +243,99 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         if gguf_weights:
             report.artifact_type = ArtifactType.MIXED
             _note_format_choice(report, st, "", gguf_weights, safetensor_files)
-    elif gguf_files:
-        report = base
-        report.artifact_type = ArtifactType.GGUF
-        _inspect_gguf(report, source, client, revision_sha, gguf_files)
     else:
+        # ไม่มีทั้ง safetensors และ GGUF ของตัวโมเดล — เดิมเป็นแค่ artifact "unknown" แล้วทุกชั้นถัดไปเดาเป็น vLLM:
+        # `lmds generate onnx-community/Qwen3-0.6B-ONNX` ได้ bundle vLLM ผ่านทุก gate เปิด tool calling ให้ด้วย
         report = base
+        report.gguf_variants = variants
+        if variants:
+            report.warnings.append("พบเฉพาะไฟล์ mmproj/mtp — ไม่มี GGUF ของตัวโมเดล")
+        report.unsupported_format = NO_WEIGHTS
+        report.unsupported_evidence = _repo_contents(files) or ["ไม่มีไฟล์ weight ใน repo"]
     _note_unused_weights(report, files)
+    _mark_unserved_task(report, pipeline, config)
     return report
 
 
-def _safetensors_problem(st: ModelReport, has_config: bool, safetensor_files: list[tuple[str, int | None]]) -> str:
-    """ทำไมไฟล์ .safetensors ของ repo นี้เสิร์ฟด้วย vLLM/SGLang ไม่ได้ — "" = เสิร์ฟได้
+def _repo_contents(files: list[tuple[str, int | None, str | None]]) -> list[str]:
+    """repo ที่ไม่มี safetensors/GGUF มีอะไรอยู่แทน — "ONNX 11 ไฟล์ 9.4 GB" · ให้ข้อความปฏิเสธบอกได้ว่าเจออะไร"""
+    kinds = (
+        ("ONNX", (".onnx", ".onnx_data")), ("RKLLM (Rockchip NPU)", (".rkllm",)), ("MNN", (".mnn", ".mnn.weight")),
+        ("PyTorch pickle (.bin/.pt/.pth/.ckpt)", (".bin", ".pt", ".pth", ".ckpt")), ("TensorFlow (.h5)", (".h5",)),
+        ("Flax (.msgpack)", (".msgpack",)), ("CoreML", (".mlmodel", ".mlpackage")), ("TFLite/LiteRT", (".tflite", ".litertlm", ".task")),
+        ("NeMo (.nemo)", (".nemo",)), ("mmproj/mtp GGUF", (".gguf",)),
+    )
+    out: list[str] = []
+    for label, exts in kinds:
+        hits = [size or 0 for name, size, _ in files if name.lower().endswith(exts)]
+        if hits:
+            out.append(f"{label} {len(hits)} ไฟล์ {sum(hits) / 1e9:.1f} GB")
+    return out
 
-    ใช้ตัดสิน repo ที่มี GGUF อยู่ด้วย: ฝั่ง safetensors ที่ใช้ไม่ได้ต้องไม่ลาก GGUF ที่ใช้ได้ลงไปด้วย
-    (เคสจริง 2026-10-06: LiquidAI/LFM2.5-2.6B-GGUF มี `qad/model.safetensors` ไฟล์เดียว ไม่มี config.json ที่ราก
-    → ถูกวางแผนเป็น vLLM · OBLITERATUS/Qwen3.8-27B-OBLITERATED มี GGUF 7 quant แต่ถูกปฏิเสธทั้ง repo เพราะ
-    safetensors ข้าง ๆ เป็น MLX)
+
+def _mark_unservable_safetensors(st: ModelReport, config: dict[str, Any] | None, origin: str, names: list[str],
+                                 safetensor_files: list[tuple[str, int | None]]) -> str:
+    """ไฟล์ .safetensors ของ repo นี้เสิร์ฟด้วย vLLM/SGLang ได้ไหม — หมายลง `st.unsupported_format` แล้วคืนเหตุผลสั้น ๆ ("" = ได้)
+
+    โครงสร้างของ repo บอกได้ก่อนโหลดสักไบต์ (audit 2026-10-06 · `lmds generate` เคยออก exit 0 + "static-validated ✅"):
+    - pipeline ของ diffusers (`model_index.json` · library_name=diffusers): stabilityai/sdxl-turbo → vLLM "weights 38.8 GiB"
+    - adapter ล้วน (`adapter_config.json` / `adapter_model.safetensors` · ไม่มี checkpoint ของ base): IFM/K2-Horizon-7B-Uno
+    - checkpoint อยู่แต่ในโฟลเดอร์ย่อย: engine ถูกชี้ไปที่ราก repo เสมอ
+    - ไม่มี config.json ที่ราก (และไม่ใช่รูปแบบ mistral ที่มี params.json): vLLM/SGLang อ่านสถาปัตยกรรมไม่ได้
+    เหตุผลที่คืนใช้ตัดสิน repo ที่มี GGUF อยู่ด้วย: ฝั่ง safetensors ที่ใช้ไม่ได้ต้องไม่ลาก GGUF ที่ใช้ได้ลงไปด้วย
+    (LiquidAI/LFM2.5-2.6B-GGUF · OBLITERATUS/Qwen3.8-27B-OBLITERATED)
     """
-    if st.unsupported_format:
-        return f"เป็นรูปแบบ {st.unsupported_format.upper()} ({' · '.join(st.unsupported_evidence) or 'metadata ของ repo'})"
-    if not st.safetensor_shards:
+    root = {name for name in names if "/" not in name}
+    tags = [t.lower() for t in st.tags]
+    library = (st.library_name or "").lower()
+    if not st.unsupported_format:
+        adapter = sorted(root & {"adapter_config.json", "adapter_model.safetensors", "adapter_model.bin", "adapters.safetensors"})
         folders = sorted({name.split("/", 1)[0] + "/" for name, _ in safetensor_files if "/" in name})
-        where = f"อยู่ใน {', '.join(folders[:3])}" if folders else "มีแต่ไฟล์ adapter"
-        return f"ไม่มี checkpoint ที่ราก repo ({where})"
-    if not has_config:
-        return "ไม่มี config.json ที่ราก repo"
-    return ""
+        if "model_index.json" in root or library == "diffusers":
+            st.unsupported_format = DIFFUSERS
+            st.unsupported_evidence = (["model_index.json"] if "model_index.json" in root else []) + (
+                [f"library_name={library}"] if library == "diffusers" else []) + sorted(
+                t for t in st.tags if t.startswith("diffusers:"))
+        elif not st.safetensor_shards and (adapter or library == "peft" or any(t.startswith("base_model:adapter:") for t in tags)):
+            st.unsupported_format = ADAPTER
+            st.unsupported_evidence = adapter + ([f"library_name={library}"] if library == "peft" else []) + sorted(
+                t for t in st.tags if t.startswith("base_model:adapter:"))
+        elif not st.safetensor_shards:
+            st.unsupported_format = NO_ROOT_CHECKPOINT
+            st.unsupported_evidence = [f"ไฟล์ .safetensors อยู่ใน {', '.join(folders[:4])}" if folders
+                                       else "ไม่มีไฟล์ .safetensors ของตัวโมเดลที่ราก repo"]
+        elif config is None and origin != "mistral":
+            st.unsupported_format = NO_CONFIG
+            st.unsupported_evidence = ["ไฟล์ที่ราก: " + ", ".join(s.filename for s in st.safetensor_shards[:3])]
+    if not st.unsupported_format:
+        return ""
+    return f"{unsupported_label(st.unsupported_format)} ({' · '.join(st.unsupported_evidence) or 'metadata ของ repo'})"
+
+
+def _mark_unserved_task(report: ModelReport, pipeline: str, config: dict[str, Any] | None) -> None:
+    """งานของโมเดลที่ LMDS ไม่มีโหมดเสิร์ฟ (task = other) → ปฏิเสธ พร้อมหลักฐานว่ารู้ได้จากอะไร
+
+    repo GGUF หลายไฟล์ที่ยังไม่เลือกไฟล์และ pipeline_tag อยู่กลุ่ม "ไม่ใช่ LLM" (TTS …): ยังตัดสินไม่ได้จนกว่าจะอ่าน
+    header ของไฟล์ที่เลือก (อาจเป็น LLM พ่น audio token ที่ llama.cpp เสิร์ฟได้) — ปล่อยให้เลือกก่อนพร้อมคำเตือน
+    """
+    if report.unsupported_format or report.task != "other":
+        return
+    if (report.artifact_type is ArtifactType.GGUF and report.selected_gguf is None
+            and pipeline in PIPELINES_NOT_AN_LLM):
+        report.task = "generate"
+        report.warnings.append(
+            f"pipeline_tag ของ repo คือ {pipeline} — ไม่ใช่งาน chat/embedding/rerank · จะตัดสินจาก header ของไฟล์ GGUF "
+            "ที่เลือก: ถ้าไม่ใช่สถาปัตยกรรม LLM จะถูกปฏิเสธ"
+        )
+        return
+    evidence = [f"pipeline_tag={pipeline}"] if pipeline else []
+    architectures = (config or {}).get("architectures")
+    if isinstance(architectures, list) and architectures:
+        evidence.append(f"config.json architectures={architectures[0]}")
+    if (config or {}).get("is_encoder_decoder") is True:
+        evidence.append("config.json is_encoder_decoder=true")
+    report.unsupported_format = NO_SERVING_MODE
+    report.unsupported_evidence = evidence
 
 
 def _note_format_choice(report: ModelReport, st: ModelReport, st_problem: str, gguf_weights: list[GgufVariant],
@@ -400,15 +544,18 @@ def _inspect_safetensors(
     client: HfClient,
     revision: str,
     safetensor_files: list[tuple[str, int | None]],
-) -> bool:
-    """อ่านฝั่ง safetensors ลง `report` · คืน True เมื่อเจอ config.json ที่ราก repo"""
+    pipeline: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    """อ่านฝั่ง safetensors ลง `report` · คืน (config.json ที่ราก repo หรือ None, ที่มาของชุด checkpoint)"""
     index = _fetch_json(client, source.repo_id, revision, _SAFETENSORS_INDEX, cap=INDEX_FILE_CAP)
     sizes_by_name = dict(safetensor_files)
     # รูปแบบ mistral (params.json + consolidated*.safetensors) — ถามเฉพาะเมื่อไม่มีชุดมาตรฐานให้ใช้
     names = list(sizes_by_name)
     chosen, missing, origin = checkpoint_files(names, index)
+    mistral_params: dict[str, Any] | None = None
     if origin in ("other", "none") and any(n.startswith("consolidated") and "/" not in n for n in names):
-        if _fetch_json(client, source.repo_id, revision, "params.json") is not None:
+        mistral_params = _fetch_json(client, source.repo_id, revision, "params.json")
+        if mistral_params is not None:
             chosen, missing, origin = checkpoint_files(names, index, mistral_native=True)
 
     report.safetensor_shards = [ShardFile(filename=name, size_bytes=sizes_by_name.get(name)) for name in chosen]
@@ -450,6 +597,9 @@ def _inspect_safetensors(
         # หัว classifier ในไฟล์คือหลักฐานตรงกว่า tag บน Hub — reranker ที่ Hub ติดป้าย text-classification
         # หรือไม่มีคำว่า rerank ในชื่อ ยังถูกจับได้จากตรงนี้
         report.task = task_from_config(config) or report.task
+        report.task, task_note = refine_task(report.task, pipeline, config)
+        if task_note:
+            report.warnings.append(task_note)
         # โมเดล multimodal แยก config ของส่วนข้อความไว้ใต้ text_config — ค่า context
         # อยู่ในนั้น ไม่ใช่ระดับบนสุด · มองแค่ชั้นบนแล้วได้ None ซึ่งไม่ error อะไรเลย
         # แต่ทำให้ fit ถอยไปใช้ค่าตั้งต้น และ bundle ออกมาเล็กกว่าที่โมเดลทำได้หลายเท่า
@@ -471,6 +621,18 @@ def _inspect_safetensors(
         report.kv_dims = _kv_dims_from_config(config)
         report.hybrid_attention = config_is_hybrid(config)
         report.moe_experts, report.moe_experts_active = _moe_from_config(config)
+    elif origin == "mistral" and mistral_params is not None:
+        # รูปแบบ mistral ล้วน (params.json + consolidated*.safetensors · ไม่มี config.json): vLLM อ่าน params.json เอง
+        # (config_format auto) — ไม่ปฏิเสธ แต่มิติ/context ต้องอ่านจาก params.json ไม่งั้น fit ถอยไปใช้ค่าเดา
+        report.model_type = report.model_type or "mistral"
+        derived = _config_from_mistral_params(mistral_params)
+        report.kv_dims = _kv_dims_from_config(derived)
+        report.context_length = derived.get("max_position_embeddings")
+        report.warnings.append(
+            "repo รูปแบบ mistral (params.json + consolidated*.safetensors · ไม่มี config.json) — vLLM อ่าน params.json เองได้ "
+            "แต่ LMDS ยังไม่เคยรันรูปแบบนี้ผ่านบนเครื่องจริง · ถ้า start ไม่ขึ้นให้เพิ่ม --config-format mistral "
+            "--load-format mistral --tokenizer-mode mistral หรือใช้ repo ที่มี config.json"
+        )
     else:
         report.warnings.append("ไม่พบ config.json — ระบุสถาปัตยกรรมไม่ได้")
     _mark_mlx(report, config)
@@ -511,7 +673,21 @@ def _inspect_safetensors(
         moe_experts=report.moe_experts,
         moe_experts_active=report.moe_experts_active,
     ).to_dict()
-    return config is not None
+    return config, origin
+
+
+def _config_from_mistral_params(params: dict[str, Any]) -> dict[str, Any]:
+    """params.json ของ mistral → คีย์แบบ config.json เท่าที่ fit ใช้ (มิติ KV + context)"""
+    context = next((params[k] for k in ("max_position_embeddings", "max_seq_len")
+                    if isinstance(params.get(k), int) and params[k] > 0), None)
+    return {
+        "num_hidden_layers": params.get("n_layers"),
+        "num_attention_heads": params.get("n_heads"),
+        "num_key_value_heads": params.get("n_kv_heads"),
+        "head_dim": params.get("head_dim"),
+        "hidden_size": params.get("dim"),
+        "max_position_embeddings": context,
+    }
 
 
 def _mark_mlx(report: ModelReport, config: dict[str, Any] | None) -> None:
@@ -827,6 +1003,7 @@ def _inspect_gguf(
     client: HfClient,
     revision: str,
     gguf_files: list[tuple[str, int | None, str | None]],
+    pipeline: str = "",
 ) -> None:
     report.gguf_variants = _group_gguf_variants(gguf_files)
     weight_variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
@@ -865,6 +1042,20 @@ def _inspect_gguf(
         return
     report.architecture = report.architecture or gguf.architecture
     report.gguf_architecture = gguf.architecture
+    if (gguf.architecture or "").lower() in NON_LLM_GGUF_ARCHITECTURES:
+        # ไฟล์ .gguf เป็นแค่ภาชนะเหมือน .safetensors — โมเดล diffusion/เสียงก็เก็บเป็น GGUF (ComfyUI-GGUF ·
+        # stable-diffusion.cpp · whisper.cpp) แต่ llama-server โหลดไม่ได้ · เคสจริง 2026-10-06:
+        # `lmds generate …/city96/FLUX.1-dev-gguf/blob/main/flux1-dev-Q4_K_S.gguf` ได้ bundle llama.cpp ผ่านทุก gate
+        report.unsupported_format = NON_LLM_GGUF
+        report.unsupported_evidence = [f"general.architecture={gguf.architecture}", f"ไฟล์ {selected.filename}"]
+        return
+    if report.task == "other" and pipeline in PIPELINES_NOT_AN_LLM:
+        # pipeline_tag บอกว่าเป็นงานเสียง ฯลฯ แต่ header เป็นสถาปัตยกรรม LLM ที่ llama.cpp โหลดได้ (VieNeu-TTS = qwen3)
+        report.task = "generate"
+        report.warnings.append(
+            f"pipeline_tag ของ repo คือ {pipeline} แต่ไฟล์ GGUF เป็นสถาปัตยกรรม LLM ({gguf.architecture}) — วางแผนเป็น "
+            "chat/completions · ไม่ใช่โมเดล chat ทั่วไป: ผลลัพธ์อาจเป็น token เฉพาะงานที่ต้องมีตัวถอดรหัสเอง"
+        )
     report.context_length = report.context_length or gguf.context_length
     report.kv_dims = report.kv_dims or _kv_dims_from_gguf(gguf)
     if isinstance(gguf.metadata, dict) and report.architecture:

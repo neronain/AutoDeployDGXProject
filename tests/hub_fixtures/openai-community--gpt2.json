@@ -1,0 +1,92 @@
+{
+ "repo": "openai-community/gpt2",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "openai-community/gpt2",
+  "sha": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "jax",
+   "tflite",
+   "rust",
+   "onnx",
+   "safetensors",
+   "gpt2",
+   "text-generation",
+   "exbert",
+   "doi:10.57967/hf/0039",
+   "license:mit",
+   "text-generation-inference",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "mit"
+  },
+  "siblings": [
+   {"rfilename": "64-8bits.tflite", "size": 125162496},
+   {"rfilename": "64-fp16.tflite", "size": 248269688},
+   {"rfilename": "64.tflite", "size": 495791932},
+   {"rfilename": "config.json", "size": 665},
+   {"rfilename": "flax_model.msgpack", "size": 497764120},
+   {"rfilename": "generation_config.json", "size": 124},
+   {"rfilename": "model.safetensors", "size": 548105171},
+   {"rfilename": "onnx/config.json", "size": 879},
+   {"rfilename": "onnx/decoder_model.onnx", "size": 653665842},
+   {"rfilename": "onnx/decoder_model_merged.onnx", "size": 655189339},
+   {"rfilename": "onnx/decoder_with_past_model.onnx", "size": 653672649},
+   {"rfilename": "onnx/generation_config.json", "size": 119},
+   {"rfilename": "onnx/special_tokens_map.json", "size": 99},
+   {"rfilename": "onnx/tokenizer.json", "size": 2107653},
+   {"rfilename": "onnx/tokenizer_config.json", "size": 234},
+   {"rfilename": "onnx/vocab.json", "size": 798156},
+   {"rfilename": "pytorch_model.bin", "size": 548118077},
+   {"rfilename": "rust_model.ot", "size": 702517648},
+   {"rfilename": "tf_model.h5", "size": 497933648},
+   {"rfilename": "tokenizer.json", "size": 1355256},
+   {"rfilename": "tokenizer_config.json", "size": 26},
+   {"rfilename": "vocab.json", "size": 1042301}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 137022720
+   },
+   "total": 137022720
+  }
+ },
+ "files": {
+  "config.json": {
+   "activation_function": "gelu_new",
+   "architectures": [
+    "GPT2LMHeadModel"
+   ],
+   "attn_pdrop": 0.1,
+   "embd_pdrop": 0.1,
+   "initializer_range": 0.02,
+   "layer_norm_epsilon": 1e-05,
+   "model_type": "gpt2",
+   "n_ctx": 1024,
+   "n_embd": 768,
+   "n_head": 12,
+   "n_layer": 12,
+   "n_positions": 1024,
+   "resid_pdrop": 0.1,
+   "summary_activation": null,
+   "summary_first_dropout": 0.1,
+   "summary_proj_to_labels": true,
+   "summary_type": "cls_index",
+   "summary_use_proj": true,
+   "vocab_size": 50257
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 1024
+  }
+ }
+}

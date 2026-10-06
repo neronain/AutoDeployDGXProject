@@ -1,0 +1,94 @@
+{
+ "repo": "sentence-transformers/all-mpnet-base-v2",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "sentence-transformers/all-mpnet-base-v2",
+  "sha": "e8c3b32edf5434bc2275fc9bab85f82640a19130",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "sentence-similarity",
+  "library_name": "sentence-transformers",
+  "tags": [
+   "sentence-transformers",
+   "pytorch",
+   "onnx",
+   "safetensors",
+   "openvino",
+   "mpnet",
+   "fill-mask",
+   "feature-extraction",
+   "sentence-similarity",
+   "transformers",
+   "text-embeddings-inference",
+   "license:apache-2.0",
+   "eval-results",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "sentence-transformers",
+   "license": "apache-2.0",
+   "pipeline_tag": "sentence-similarity"
+  },
+  "siblings": [
+   {"rfilename": "1_Pooling/config.json", "size": 190},
+   {"rfilename": "config.json", "size": 571},
+   {"rfilename": "config_sentence_transformers.json", "size": 116},
+   {"rfilename": "data_config.json", "size": 39265},
+   {"rfilename": "model.safetensors", "size": 437971872},
+   {"rfilename": "modules.json", "size": 349},
+   {"rfilename": "onnx/model.onnx", "size": 435826548},
+   {"rfilename": "onnx/model_O1.onnx", "size": 435730180},
+   {"rfilename": "onnx/model_O2.onnx", "size": 435666661},
+   {"rfilename": "onnx/model_O3.onnx", "size": 435666516},
+   {"rfilename": "onnx/model_O4.onnx", "size": 217894954},
+   {"rfilename": "onnx/model_qint8_arm64.onnx", "size": 110124379},
+   {"rfilename": "onnx/model_qint8_avx512.onnx", "size": 110124379},
+   {"rfilename": "onnx/model_qint8_avx512_vnni.onnx", "size": 110124379},
+   {"rfilename": "onnx/model_quint8_avx2.onnx", "size": 110207323},
+   {"rfilename": "openvino/openvino_model.bin", "size": 435583684},
+   {"rfilename": "openvino/openvino_model_qint8_quantized.bin", "size": 109974792},
+   {"rfilename": "pytorch_model.bin", "size": 438011953},
+   {"rfilename": "sentence_bert_config.json", "size": 53},
+   {"rfilename": "special_tokens_map.json", "size": 239},
+   {"rfilename": "tokenizer.json", "size": 466021},
+   {"rfilename": "tokenizer_config.json", "size": 363},
+   {"rfilename": "train_script.py", "size": 13123}
+  ],
+  "safetensors": {
+   "parameters": {
+    "I64": 514,
+    "F32": 109486464
+   },
+   "total": 109486978
+  }
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "microsoft/mpnet-base",
+   "architectures": [
+    "MPNetForMaskedLM"
+   ],
+   "attention_probs_dropout_prob": 0.1,
+   "hidden_act": "gelu",
+   "hidden_dropout_prob": 0.1,
+   "hidden_size": 768,
+   "initializer_range": 0.02,
+   "intermediate_size": 3072,
+   "layer_norm_eps": 1e-05,
+   "max_position_embeddings": 514,
+   "model_type": "mpnet",
+   "num_attention_heads": 12,
+   "num_hidden_layers": 12,
+   "relative_attention_num_buckets": 32,
+   "transformers_version": "4.8.2",
+   "vocab_size": 30527
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 512,
+   "tokenizer_class": "MPNetTokenizer"
+  }
+ }
+}

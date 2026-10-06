@@ -1,0 +1,97 @@
+{
+ "repo": "onnx-community/Qwen3-0.6B-ONNX",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "onnx-community/Qwen3-0.6B-ONNX",
+  "sha": "da1453100cf3ff33ef56d17983fc7a8648706db6",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers.js",
+  "tags": [
+   "transformers.js",
+   "onnx",
+   "qwen3",
+   "text-generation",
+   "conversational",
+   "base_model:Qwen/Qwen3-0.6B",
+   "base_model:quantized:Qwen/Qwen3-0.6B",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers.js",
+   "base_model": "Qwen/Qwen3-0.6B"
+  },
+  "siblings": [
+   {"rfilename": "added_tokens.json", "size": 707},
+   {"rfilename": "chat_template.jinja", "size": 4116},
+   {"rfilename": "config.json", "size": 912},
+   {"rfilename": "generation_config.json", "size": 219},
+   {"rfilename": "onnx/model.onnx", "size": 315088888},
+   {"rfilename": "onnx/model.onnx_data", "size": 2090336256},
+   {"rfilename": "onnx/model_bnb4.onnx", "size": 891573033},
+   {"rfilename": "onnx/model_fp16.onnx", "size": 1202829402},
+   {"rfilename": "onnx/model_int8.onnx", "size": 617687478},
+   {"rfilename": "onnx/model_q4.onnx", "size": 919096585},
+   {"rfilename": "onnx/model_q4f16.onnx", "size": 569789750},
+   {"rfilename": "onnx/model_quantized.onnx", "size": 617687575},
+   {"rfilename": "onnx/model_uint8.onnx", "size": 617687575},
+   {"rfilename": "onnxruntime/cpu_and_mobile/cpu-int4-kld-block-128/config.json", "size": 8957},
+   {"rfilename": "onnxruntime/cpu_and_mobile/cpu-int4-kld-block-128/genai_config.json", "size": 1520},
+   {"rfilename": "onnxruntime/cpu_and_mobile/cpu-int4-kld-block-128/model.onnx", "size": 524589133},
+   {"rfilename": "onnxruntime/cpu_and_mobile/cpu-int4-kld-block-128/tokenizer.json", "size": 11422648},
+   {"rfilename": "onnxruntime/cpu_and_mobile/cpu-int4-kld-block-128/tokenizer_config.json", "size": 663},
+   {"rfilename": "onnxruntime/cuda/cuda-int4-kld-block-128/config.json", "size": 8957},
+   {"rfilename": "onnxruntime/cuda/cuda-int4-kld-block-128/genai_config.json", "size": 1765},
+   {"rfilename": "onnxruntime/cuda/cuda-int4-kld-block-128/model.onnx", "size": 504660045},
+   {"rfilename": "onnxruntime/cuda/cuda-int4-kld-block-128/tokenizer.json", "size": 11422648},
+   {"rfilename": "onnxruntime/cuda/cuda-int4-kld-block-128/tokenizer_config.json", "size": 663},
+   {"rfilename": "onnxruntime/webgpu/webgpu-int4-kld-block-32/config.json", "size": 9033},
+   {"rfilename": "onnxruntime/webgpu/webgpu-int4-kld-block-32/genai_config.json", "size": 1752},
+   {"rfilename": "onnxruntime/webgpu/webgpu-int4-kld-block-32/model.onnx", "size": 543321042},
+   {"rfilename": "onnxruntime/webgpu/webgpu-int4-kld-block-32/tokenizer.json", "size": 11422648},
+   {"rfilename": "onnxruntime/webgpu/webgpu-int4-kld-block-32/tokenizer_config.json", "size": 663},
+   {"rfilename": "special_tokens_map.json", "size": 613},
+   {"rfilename": "tokenizer.json", "size": 9117040},
+   {"rfilename": "tokenizer_config.json", "size": 9705},
+   {"rfilename": "vocab.json", "size": 2776833}
+  ]
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 1024,
+   "initializer_range": 0.02,
+   "intermediate_size": 3072,
+   "max_position_embeddings": 40960,
+   "max_window_layers": 28,
+   "model_type": "qwen3",
+   "num_attention_heads": 16,
+   "num_hidden_layers": 28,
+   "num_key_value_heads": 8,
+   "rms_norm_eps": 1e-06,
+   "rope_scaling": null,
+   "rope_theta": 1000000,
+   "sliding_window": null,
+   "tie_word_embeddings": true,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.52.0.dev0",
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 151936,
+   "transformers.js_config": {}
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 131072,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "Qwen2Tokenizer"
+  }
+ }
+}

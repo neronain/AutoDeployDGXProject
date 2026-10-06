@@ -1,0 +1,75 @@
+{
+ "repo": "pnnbao-ump/VieNeu-TTS-0.3B-q4-gguf",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "pnnbao-ump/VieNeu-TTS-0.3B-q4-gguf",
+  "sha": "851e11d30150647e006c10a7f8d285653643ef9e",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-to-speech",
+  "library_name": null,
+  "tags": [
+   "gguf",
+   "realtime",
+   "tts",
+   "cpu",
+   "vietnamese",
+   "text-to-speech",
+   "base_model:pnnbao-ump/VieNeu-TTS-0.3B",
+   "base_model:quantized:pnnbao-ump/VieNeu-TTS-0.3B",
+   "license:cc-by-nc-4.0",
+   "endpoints_compatible",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "cc-by-nc-4.0",
+   "base_model": [
+    "pnnbao-ump/VieNeu-TTS-0.3B"
+   ],
+   "pipeline_tag": "text-to-speech"
+  },
+  "siblings": [
+   {"rfilename": "VieNeu-TTS-0_3B-Q4_0.gguf", "size": 202059392, "lfs": { "sha256": "d9c588db01565a9607fef7dcc3cce517f2e6c2d3e74e4ac8357d9e70de8ed897", "size": 202059392 }},
+   {"rfilename": "voices.json", "size": 28561}
+  ]
+ },
+ "files": {},
+ "gguf": {
+  "VieNeu-TTS-0_3B-Q4_0.gguf": {
+   "tensor_count": 190,
+   "metadata": {
+    "general.architecture": "qwen3",
+    "general.type": "model",
+    "general.name": "Dfa58Eba3B91253Cdae3Db974875D1Ad5D541082",
+    "general.size_label": "294M",
+    "general.license": "cc-by-nc-4.0",
+    "general.dataset.count": 2,
+    "general.dataset.0.name": "VieNeu TTS 1000h",
+    "general.dataset.0.organization": "Pnnbao Ump",
+    "general.dataset.0.repo_url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-1000h",
+    "general.dataset.1.name": "VieNeu TTS 140h",
+    "general.dataset.1.organization": "Pnnbao Ump",
+    "general.dataset.1.repo_url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-140h",
+    "general.tags": [
+     "text-to-speech"
+    ],
+    "general.languages": [
+     "vi"
+    ],
+    "qwen3.block_count": 17,
+    "qwen3.context_length": 4096,
+    "qwen3.embedding_length": 512,
+    "qwen3.feed_forward_length": 2304,
+    "qwen3.attention.head_count": 4,
+    "qwen3.attention.head_count_kv": 1,
+    "qwen3.rope.freq_base": 250000.0,
+    "qwen3.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+    "qwen3.attention.key_length": 128,
+    "qwen3.attention.value_length": 128,
+    "general.quantization_version": 2,
+    "general.file_type": 2
+   }
+  }
+ }
+}

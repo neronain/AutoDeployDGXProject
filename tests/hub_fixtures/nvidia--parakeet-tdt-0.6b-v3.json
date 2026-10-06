@@ -1,0 +1,173 @@
+{
+ "repo": "nvidia/parakeet-tdt-0.6b-v3",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "nvidia/parakeet-tdt-0.6b-v3",
+  "sha": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "automatic-speech-recognition",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "nemo",
+   "safetensors",
+   "gguf",
+   "parakeet_tdt",
+   "feature-extraction",
+   "automatic-speech-recognition",
+   "speech",
+   "audio",
+   "Transducer",
+   "Transformer",
+   "TDT",
+   "FastConformer",
+   "Conformer",
+   "pytorch",
+   "NeMo",
+   "hf-asr-leaderboard",
+   "Transformers",
+   "license:cc-by-4.0",
+   "model-index",
+   "eval-results",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "cc-by-4.0",
+   "pipeline_tag": "automatic-speech-recognition"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 1153},
+   {"rfilename": "generation_config.json", "size": 289},
+   {"rfilename": "model.safetensors", "size": 2508311120},
+   {"rfilename": "parakeet-tdt-0.6b-v3.nemo", "size": 2509332480},
+   {"rfilename": "parakeet-tdt-0.6b-v3.q8_0.gguf", "size": 713975456, "lfs": { "sha256": "e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e", "size": 713975456 }},
+   {"rfilename": "processor_config.json", "size": 392},
+   {"rfilename": "tokenizer.json", "size": 1159960},
+   {"rfilename": "tokenizer_config.json", "size": 290}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 627057286
+   },
+   "total": 627057286
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "ParakeetForTDT"
+   ],
+   "blank_token_id": 8192,
+   "decoder_hidden_size": 640,
+   "dtype": "float32",
+   "durations": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "encoder_config": {
+    "activation_dropout": 0.1,
+    "attention_bias": false,
+    "attention_dropout": 0.1,
+    "conv_kernel_size": 9,
+    "convolution_bias": false,
+    "dropout": 0.1,
+    "dropout_positions": 0.0,
+    "hidden_act": "silu",
+    "hidden_size": 1024,
+    "initializer_range": 0.02,
+    "intermediate_size": 4096,
+    "layerdrop": 0.1,
+    "max_position_embeddings": 5000,
+    "model_type": "parakeet_encoder",
+    "num_attention_heads": 8,
+    "num_hidden_layers": 24,
+    "num_key_value_heads": 8,
+    "num_mel_bins": 128,
+    "scale_input": false,
+    "subsampling_conv_channels": 256,
+    "subsampling_conv_kernel_size": 3,
+    "subsampling_conv_stride": 2,
+    "subsampling_factor": 8
+   },
+   "hidden_act": "relu",
+   "initializer_range": 0.02,
+   "is_encoder_decoder": true,
+   "max_symbols_per_step": 10,
+   "model_type": "parakeet_tdt",
+   "num_decoder_layers": 2,
+   "transformers_version": "5.6.0.dev0",
+   "vocab_size": 8193
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 1000000000000000019884624838656,
+   "tokenizer_class": "ParakeetTokenizer"
+  }
+ },
+ "gguf": {
+  "parakeet-tdt-0.6b-v3.q8_0.gguf": {
+   "tensor_count": 701,
+   "metadata": {
+    "general.architecture": "asr",
+    "general.name": "parakeet-tdt-0.6b-v3.oss-align.q8_0",
+    "asr.head_type": "tdt",
+    "general.file_type": 7,
+    "asr.encoder.d_model": 1024,
+    "asr.encoder.n_layers": 24,
+    "asr.encoder.n_heads": 8,
+    "asr.encoder.d_ff": 4096,
+    "asr.encoder.conv_kernel_size": 9,
+    "asr.encoder.subsampling_factor": 8,
+    "asr.encoder.subsampling_conv_channels": 256,
+    "asr.encoder.feat_in": 128,
+    "asr.encoder.xscaling": false,
+    "asr.encoder.use_bias": false,
+    "asr.encoder.q8_layout": "block_q8_0",
+    "asr.encoder.qkv_q8_layout": "block_q8_0",
+    "asr.encoder.pos_emb_max_len": 5000,
+    "asr.encoder.cache_supported": false,
+    "asr.encoder.train_left_ctx": 0,
+    "asr.encoder.train_right_ctx": 0,
+    "asr.encoder.offline_left_ctx": -1,
+    "asr.encoder.offline_right_ctx": -1,
+    "asr.encoder.conv_norm": "batch_norm",
+    "asr.encoder.conv_context": "None",
+    "asr.encoder.att_context_style": "regular",
+    "asr.preprocessor.sample_rate": 16000,
+    "asr.preprocessor.window_size": 0.02500000037252903,
+    "asr.preprocessor.window_stride": 0.009999999776482582,
+    "asr.preprocessor.n_fft": 512,
+    "asr.preprocessor.features": 128,
+    "asr.preprocessor.normalize": "per_feature",
+    "asr.preprocessor.preemph": 0.9700000286102295,
+    "asr.preprocessor.dither": 9.999999747378752e-06,
+    "asr.preprocessor.stft_center_window": true,
+    "asr.preprocessor.hann_periodic": false,
+    "asr.preprocessor.mask_invalid_frames": true,
+    "asr.rnnt.vocab_size": 8193,
+    "asr.rnnt.blank_id": 8192,
+    "asr.rnnt.pred_embed_dim": 640,
+    "asr.rnnt.pred_hidden": 640,
+    "asr.rnnt.pred_num_layers": 2,
+    "asr.rnnt.joint_dim": 640,
+    "asr.rnnt.max_symbols_per_step": 10,
+    "asr.rnnt.num_prompts": 0,
+    "asr.tdt.durations": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ],
+    "asr.tokenizer.type": "sentencepiece_bpe"
+   }
+  }
+ }
+}

@@ -1,0 +1,117 @@
+{
+ "repo": "tencent/Hunyuan-MT-7B",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "tencent/Hunyuan-MT-7B",
+  "sha": "9305c78383f0bcc94358e08667ee2c76107877e3",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "translation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "hunyuan_v1_dense",
+   "text-generation",
+   "translation",
+   "endpoints_compatible",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 1335},
+   {"rfilename": "generation_config.json", "size": 205},
+   {"rfilename": "model-0001-of-0004.safetensors", "size": 5272375984},
+   {"rfilename": "model-0002-of-0004.safetensors", "size": 5352150176},
+   {"rfilename": "model-0003-of-0004.safetensors", "size": 5360547624},
+   {"rfilename": "model-0004-of-0004.safetensors", "size": 75506472},
+   {"rfilename": "model.safetensors.index.json", "size": 27605},
+   {"rfilename": "tokenizer.json", "size": 16388221},
+   {"rfilename": "tokenizer_config.json", "size": 892}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 8030269440
+   },
+   "total": 8030269440
+  }
+ },
+ "files": {
+  "config.json": {
+   "add_classification_head": false,
+   "architectures": [
+    "HunYuanDenseV1ForCausalLM"
+   ],
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "attention_head_dim": 128,
+   "cla_share_factor": 2,
+   "class_num": 0,
+   "dense_list": [
+    4096,
+    0
+   ],
+   "eod_token_id": 3,
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 4096,
+   "im_end_id": 5,
+   "im_newline_id": 11,
+   "im_start_id": 4,
+   "initializer_range": 0.02,
+   "intermediate_size": 14336,
+   "mask_init_id": 12,
+   "max_position_embeddings": 32768,
+   "mlp_bias": false,
+   "model_type": "hunyuan_v1_dense",
+   "norm_type": "rms",
+   "num_attention_heads": 32,
+   "num_hidden_layers": 32,
+   "num_key_value_heads": 8,
+   "org_vocab_size": 290943,
+   "pad_id": 127961,
+   "pool_type": "last",
+   "pretraining_tp": 1,
+   "rms_norm_eps": 1e-05,
+   "rope_scaling": {
+    "alpha": 100000.0,
+    "beta_fast": 32,
+    "beta_slow": 1,
+    "factor": 1.0,
+    "mscale": 1.0,
+    "mscale_all_dim": 1.0,
+    "type": "dynamic"
+   },
+   "rope_theta": 10000.0,
+   "text_end_id": 7,
+   "text_start_id": 6,
+   "tie_word_embeddings": true,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.41.2",
+   "use_cache": true,
+   "use_cla": false,
+   "use_qk_norm": true,
+   "use_rotary_pos_emb": true,
+   "vocab_size": 128256
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 262144,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "PreTrainedTokenizerFast"
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_size": 16060538880
+   },
+   "weight_map": {
+    "lm_head.weight": "model-0001-of-0004.safetensors",
+    "model.layers.7.mlp.gate_proj.weight": "model-0002-of-0004.safetensors",
+    "model.layers.19.mlp.up_proj.weight": "model-0003-of-0004.safetensors",
+    "model.layers.31.self_attn.o_proj.weight": "model-0004-of-0004.safetensors"
+   }
+  }
+ }
+}

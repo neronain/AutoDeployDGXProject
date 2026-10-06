@@ -1,0 +1,86 @@
+{
+ "repo": "google-t5/t5-small",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "google-t5/t5-small",
+  "sha": "df1b051c49625cf57a3d0d8d3863ed4d13564fe4",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "translation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "jax",
+   "rust",
+   "onnx",
+   "safetensors",
+   "t5",
+   "text2text-generation",
+   "summarization",
+   "translation",
+   "multilingual",
+   "license:apache-2.0",
+   "text-generation-inference",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "apache-2.0"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 1206},
+   {"rfilename": "flax_model.msgpack", "size": 242032202},
+   {"rfilename": "generation_config.json", "size": 147},
+   {"rfilename": "model.safetensors", "size": 242043056},
+   {"rfilename": "onnx/decoder_model.onnx", "size": 232468834},
+   {"rfilename": "onnx/decoder_model_merged.onnx", "size": 232631325},
+   {"rfilename": "onnx/decoder_model_merged_quantized.onnx", "size": 58682273},
+   {"rfilename": "onnx/decoder_model_quantized.onnx", "size": 58405018},
+   {"rfilename": "onnx/decoder_with_past_model.onnx", "size": 219874970},
+   {"rfilename": "onnx/decoder_with_past_model_quantized.onnx", "size": 55233251},
+   {"rfilename": "onnx/encoder_model.onnx", "size": 141404302},
+   {"rfilename": "onnx/encoder_model_quantized.onnx", "size": 35501599},
+   {"rfilename": "pytorch_model.bin", "size": 242065649},
+   {"rfilename": "rust_model.ot", "size": 242133508},
+   {"rfilename": "spiece.model", "size": 791656},
+   {"rfilename": "tf_model.h5", "size": 242303832},
+   {"rfilename": "tokenizer.json", "size": 1389353},
+   {"rfilename": "tokenizer_config.json", "size": 2324}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 60506880
+   },
+   "total": 60506880
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "T5ForConditionalGeneration"
+   ],
+   "d_ff": 2048,
+   "d_kv": 64,
+   "d_model": 512,
+   "decoder_start_token_id": 0,
+   "dropout_rate": 0.1,
+   "initializer_factor": 1.0,
+   "is_encoder_decoder": true,
+   "layer_norm_epsilon": 1e-06,
+   "model_type": "t5",
+   "n_positions": 512,
+   "num_heads": 8,
+   "num_layers": 6,
+   "output_past": true,
+   "relative_attention_num_buckets": 32,
+   "vocab_size": 32128
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 512,
+   "tokenizer_class": "T5Tokenizer"
+  }
+ }
+}

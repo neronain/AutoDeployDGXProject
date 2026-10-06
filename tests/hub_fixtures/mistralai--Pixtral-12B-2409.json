@@ -1,0 +1,62 @@
+{
+ "repo": "mistralai/Pixtral-12B-2409",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "mistralai/Pixtral-12B-2409",
+  "sha": "a5ca2b7a9421a35ea24411c46e970758b8d3c6a7",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": null,
+  "library_name": "vllm",
+  "tags": [
+   "vllm",
+   "mistral-common",
+   "base_model:mistralai/Pixtral-12B-Base-2409",
+   "base_model:finetune:mistralai/Pixtral-12B-Base-2409",
+   "license:apache-2.0",
+   "deploy:sagemaker",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "vllm",
+   "license": "apache-2.0",
+   "base_model": [
+    "mistralai/Pixtral-12B-Base-2409"
+   ]
+  },
+  "siblings": [
+   {"rfilename": "consolidated.safetensors", "size": 25365548952},
+   {"rfilename": "params.json", "size": 552},
+   {"rfilename": "tekken.json", "size": 19280967}
+  ]
+ },
+ "files": {
+  "params.json": {
+   "dim": 5120,
+   "n_layers": 40,
+   "head_dim": 128,
+   "hidden_dim": 14336,
+   "n_heads": 32,
+   "n_kv_heads": 8,
+   "rope_theta": 1000000000.0,
+   "norm_eps": 1e-05,
+   "vocab_size": 131072,
+   "max_position_embeddings": 131072,
+   "vision_encoder": {
+    "hidden_size": 1024,
+    "num_channels": 3,
+    "image_size": 1024,
+    "patch_size": 16,
+    "rope_theta": 10000.0,
+    "intermediate_size": 4096,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "image_token_id": 10,
+    "image_break_token_id": 12,
+    "image_end_token_id": 13
+   }
+  }
+ }
+}

@@ -1,0 +1,79 @@
+{
+ "repo": "Tongyi-MAI/Z-Image-Turbo",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "Tongyi-MAI/Z-Image-Turbo",
+  "sha": "f332072aa78be7aecdf3ee76d5c247082da564a6",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-to-image",
+  "library_name": "diffusers",
+  "tags": [
+   "diffusers",
+   "safetensors",
+   "text-to-image",
+   "license:apache-2.0",
+   "diffusers:ZImagePipeline",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "diffusers",
+   "license": "apache-2.0",
+   "pipeline_tag": "text-to-image"
+  },
+  "siblings": [
+   {"rfilename": "model_index.json", "size": 467},
+   {"rfilename": "scheduler/scheduler_config.json", "size": 173},
+   {"rfilename": "text_encoder/config.json", "size": 726},
+   {"rfilename": "text_encoder/generation_config.json", "size": 239},
+   {"rfilename": "text_encoder/model-00001-of-00003.safetensors", "size": 3957900840},
+   {"rfilename": "text_encoder/model-00002-of-00003.safetensors", "size": 3987450520},
+   {"rfilename": "text_encoder/model-00003-of-00003.safetensors", "size": 99630640},
+   {"rfilename": "text_encoder/model.safetensors.index.json", "size": 32819},
+   {"rfilename": "tokenizer/tokenizer.json", "size": 11422654},
+   {"rfilename": "tokenizer/tokenizer_config.json", "size": 9732},
+   {"rfilename": "tokenizer/vocab.json", "size": 2776833},
+   {"rfilename": "transformer/config.json", "size": 473},
+   {"rfilename": "transformer/diffusion_pytorch_model-00001-of-00003.safetensors", "size": 9973693184},
+   {"rfilename": "transformer/diffusion_pytorch_model-00002-of-00003.safetensors", "size": 9973714824},
+   {"rfilename": "transformer/diffusion_pytorch_model-00003-of-00003.safetensors", "size": 4672282880},
+   {"rfilename": "transformer/diffusion_pytorch_model.safetensors.index.json", "size": 48969},
+   {"rfilename": "vae/config.json", "size": 805},
+   {"rfilename": "vae/diffusion_pytorch_model.safetensors", "size": 167666902}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 6154908736
+   },
+   "total": 6154908736
+  }
+ },
+ "files": {
+  "model_index.json": {
+   "_class_name": "ZImagePipeline",
+   "_diffusers_version": "0.36.0.dev0",
+   "scheduler": [
+    "diffusers",
+    "FlowMatchEulerDiscreteScheduler"
+   ],
+   "text_encoder": [
+    "transformers",
+    "Qwen3Model"
+   ],
+   "tokenizer": [
+    "transformers",
+    "Qwen2Tokenizer"
+   ],
+   "transformer": [
+    "diffusers",
+    "ZImageTransformer2DModel"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKL"
+   ]
+  }
+ }
+}

@@ -24,6 +24,15 @@ from typing import Any, Iterable
 MLX = "mlx"
 EXL2 = "exl2"
 EXL3 = "exl3"
+# repo ที่ไม่มีอะไรให้ engine ของเราเสิร์ฟ — รู้ได้จากโครงสร้างของ repo ก่อนโหลดสักไบต์ (audit 2026-10-06:
+# `lmds generate` เคยออก exit 0 + "Bundle (static-validated ✅)" ให้ทุกตัวในกลุ่มนี้)
+DIFFUSERS = "diffusers"                    # pipeline ของ diffusers (model_index.json) — stabilityai/sdxl-turbo
+ADAPTER = "adapter"                        # LoRA/PEFT ล้วน ไม่มี weight ของ base — IFM/K2-Horizon-7B-Uno
+NO_WEIGHTS = "no-weights"                  # ไม่มี .safetensors/.gguf ของตัวโมเดลเลย — onnx-community/Qwen3-0.6B-ONNX
+NO_ROOT_CHECKPOINT = "no-root-checkpoint"  # .safetensors อยู่แต่ในโฟลเดอร์ย่อย
+NO_CONFIG = "no-config"                    # มี weight ที่รากแต่ไม่มี config.json
+NON_LLM_GGUF = "non-llm-gguf"              # GGUF ที่ general.architecture ไม่ใช่ LLM — city96/FLUX.1-dev-gguf
+NO_SERVING_MODE = "no-serving-mode"        # งานที่ LMDS ไม่มีโหมดเสิร์ฟ (TTS · ASR · classifier …) — task == "other"
 
 # จับเป็น token คั่นด้วย - _ . หรือหัว/ท้ายชื่อ — ไม่จับกลางคำ
 _MLX_NAME_RE = re.compile(r"(?:^|[-_.])mlx(?:[-_.]|$)", re.IGNORECASE)
@@ -179,7 +188,15 @@ _LABELS = {
     MLX: "MLX (Apple Silicon)",
     EXL2: "EXL2 (ExLlamaV2)",
     EXL3: "EXL3 (ExLlamaV3)",
+    DIFFUSERS: "pipeline ของ diffusers",
+    ADAPTER: "adapter (LoRA/PEFT) ล้วน",
+    NO_WEIGHTS: "ไม่มีไฟล์ weight ที่เสิร์ฟได้",
+    NO_ROOT_CHECKPOINT: "ไม่มี checkpoint ที่ราก repo",
+    NO_CONFIG: "ไม่มี config.json ที่ราก repo",
+    NON_LLM_GGUF: "GGUF ที่ไม่ใช่ LLM",
+    NO_SERVING_MODE: "งานที่ LMDS ไม่มีโหมดเสิร์ฟ",
 }
+_SERVES = "LMDS เสิร์ฟ LLM แบบ chat · embedding · rerank (vLLM/SGLang จาก safetensors · llama.cpp จาก GGUF)"
 
 
 def unsupported_label(kind: str | None) -> str:
@@ -211,25 +228,111 @@ def _why_exl(report, evidence: str) -> str:
     )
 
 
-_REASONS = {MLX: _why_mlx, EXL2: _why_exl, EXL3: _why_exl}
+def _why_diffusers(report, evidence: str) -> str:
+    return (
+        f"{report.repo_id} เป็น pipeline ของ diffusers (โมเดลสร้างภาพ/วิดีโอ) — LMDS deploy ไม่ได้ · หลักฐาน: {evidence} · "
+        "ไฟล์ .safetensors ใน repo เป็นชิ้นส่วนของ pipeline (unet/transformer · vae · text encoder) ไม่ใช่ checkpoint ของ LLM "
+        f"vLLM และ SGLang โหลดไม่ได้ — {_wasted_download(report)}"
+    )
+
+
+def _why_adapter(report, evidence: str) -> str:
+    return (
+        f"{report.repo_id} เป็น adapter (LoRA/PEFT) ล้วน ไม่มี weight ของตัวโมเดล — LMDS deploy ไม่ได้ · หลักฐาน: {evidence} · "
+        "adapter ต้องโหลดซ้อนบน base model ซึ่ง repo นี้ไม่มี (ไม่มี checkpoint ที่ราก) — bundle ที่สร้างจาก repo นี้ "
+        "จะ start ไม่ขึ้น"
+    )
+
+
+def _why_no_weights(report, evidence: str) -> str:
+    return (
+        f"{report.repo_id} ไม่มีไฟล์ weight ในรูปแบบที่ LMDS เสิร์ฟ (.safetensors → vLLM/SGLang · .gguf → llama.cpp) — "
+        f"deploy ไม่ได้ · ใน repo มี: {evidence} · engine ทั้งสามตัวอ่านรูปแบบพวกนี้ไม่ได้ ถ้าปล่อยผ่านจะได้ bundle ที่ "
+        "start ไม่ขึ้นหลังดาวน์โหลดทั้ง repo"
+    )
+
+
+def _why_no_root_checkpoint(report, evidence: str) -> str:
+    return (
+        f"{report.repo_id} ไม่มี checkpoint ที่ราก repo — LMDS deploy ไม่ได้ · หลักฐาน: {evidence} · vLLM/SGLang ถูกชี้ไปที่ "
+        "ราก repo เสมอ (config.json + model*.safetensors) ไฟล์ในโฟลเดอร์ย่อยจึงไม่ถูกโหลด — bundle จะ start ไม่ขึ้น"
+    )
+
+
+def _why_no_config(report, evidence: str) -> str:
+    return (
+        f"{report.repo_id} มีไฟล์ .safetensors ที่รากแต่ไม่มี config.json — LMDS deploy ไม่ได้ · หลักฐาน: {evidence} · "
+        "vLLM/SGLang ต้องอ่านสถาปัตยกรรมจาก config.json (รูปแบบ mistral ใช้ params.json แทนได้ ซึ่ง repo นี้ก็ไม่มี) — "
+        f"{_wasted_download(report)}"
+    )
+
+
+def _why_non_llm_gguf(report, evidence: str) -> str:
+    return (
+        f"ไฟล์ GGUF ที่เลือกของ {report.repo_id} ไม่ใช่ LLM — LMDS deploy ไม่ได้ · หลักฐาน: {evidence} · "
+        ".gguf เป็นแค่ภาชนะ: โมเดลสร้างภาพ/วิดีโอและโมเดลเสียงก็เก็บเป็น GGUF ได้ แต่ llama.cpp (llama-server) "
+        f"ไม่มี loader ให้สถาปัตยกรรมนี้ — {_wasted_download(report)}"
+    )
+
+
+def _why_no_serving_mode(report, evidence: str) -> str:
+    return (
+        f"{report.repo_id} ไม่ใช่โมเดล chat / embedding / rerank — LMDS ไม่มีโหมดเสิร์ฟงานนี้ · หลักฐาน: {evidence} · "
+        "ถ้าปล่อยผ่านจะถูกวางแผนเป็น chat server ซึ่ง engine เสิร์ฟจาก weight แบบนี้ไม่ได้ — "
+        f"{_wasted_download(report)}"
+    )
+
+
+_REASONS = {
+    MLX: _why_mlx, EXL2: _why_exl, EXL3: _why_exl, DIFFUSERS: _why_diffusers, ADAPTER: _why_adapter,
+    NO_WEIGHTS: _why_no_weights, NO_ROOT_CHECKPOINT: _why_no_root_checkpoint, NO_CONFIG: _why_no_config,
+    NON_LLM_GGUF: _why_non_llm_gguf, NO_SERVING_MODE: _why_no_serving_mode,
+}
 # รูปแบบที่ "weight เป็นของโมเดลเดียวกันแต่คนละภาชนะ" — ทางออกคือรุ่นอื่นของโมเดลเดียวกัน
 _REQUANTIZED = (MLX, EXL2, EXL3)
 
 
 def unsupported_reason(report) -> str:
-    """ทำไม deploy repo นี้ไม่ได้ — "" = รองรับ · ทางออกอยู่ที่ `unsupported_alternatives`"""
+    """ทำไม deploy repo นี้ไม่ได้ — "" = รองรับ · ทางออกอยู่ที่ `unsupported_alternatives`
+
+    `no-serving-mode` มาจากการจัดประเภทงาน (task == "other") — ผู้ใช้ที่รู้ว่าเราจัดผิดทับได้ด้วย `--task`
+    (task ไม่ใช่ other แล้ว = ไม่ปฏิเสธ) · ข้ออื่นเป็นเรื่องของไฟล์ ทับไม่ได้
+    """
     kind = getattr(report, "unsupported_format", None)
     explain = _REASONS.get(kind)
     if explain is None:
+        return ""
+    if kind == NO_SERVING_MODE and getattr(report, "task", "other") != "other":
         return ""
     return explain(report, " · ".join(report.unsupported_evidence) or "metadata ของ repo")
 
 
 def unsupported_alternatives(report) -> list[str]:
-    """ของที่ใช้แทนได้ — รุ่นอื่นของ *โมเดลเดียวกัน* ที่ engine ของเราโหลดได้"""
-    if getattr(report, "unsupported_format", None) not in _REQUANTIZED:
+    """ของที่ใช้แทนได้ — รุ่นอื่นของ *โมเดลเดียวกัน* ที่ engine ของเราโหลดได้ หรือทางที่ถูกสำหรับงานนั้น"""
+    if not unsupported_reason(report):
         return []
+    kind = report.unsupported_format
     base = base_model_of(report.tags)
+    if kind == ADAPTER:
+        return [
+            (f"deploy ตัว base model แทน: {base}" if base else "deploy ตัว base model ที่ model card ระบุแทน")
+            + " — LMDS ยังไม่โหลด LoRA adapter ซ้อนให้",
+            "หรือใช้ repo ที่ merge adapter เข้ากับ base แล้ว (merged checkpoint หรือ GGUF ของรุ่น merged)",
+        ]
+    if kind in (DIFFUSERS, NON_LLM_GGUF):
+        return [f"{_SERVES} — โมเดลสร้างภาพ/วิดีโอ/เสียงใช้รันไทม์ของมันเอง (ComfyUI · diffusers · "
+                "stable-diffusion.cpp · whisper.cpp)"]
+    if kind == NO_SERVING_MODE:
+        return [
+            f"{_SERVES} — งานอื่นใช้รันไทม์ของมันเอง",
+            "ถ้าจัดประเภทผิด (โมเดลนี้ chat/embed/rerank ได้จริง): lmds deploy <repo> --task generate|embed|rerank",
+        ]
+    if kind in (NO_WEIGHTS, NO_ROOT_CHECKPOINT, NO_CONFIG):
+        out = ["ใช้ repo ของโมเดลเดียวกันที่มี checkpoint ที่ราก (config.json + model*.safetensors → vLLM/SGLang) "
+               "หรือไฟล์ .gguf (→ llama.cpp)" + (f" เช่นต้นฉบับ {base}" if base else "")]
+        if base:
+            out.append(f"รุ่นที่แปลงจากต้นฉบับเดียวกัน: https://huggingface.co/models?other=base_model:quantized:{base}")
+        return out
     out = [
         "ใช้รุ่นอื่นของโมเดลเดียวกันแทน: GGUF (→ llama.cpp) · NVFP4 (→ vLLM บน DGX Spark) · "
         "หรือ safetensors ต้นฉบับ" + (f" {base}" if base else " (ดู base model ใน model card)")

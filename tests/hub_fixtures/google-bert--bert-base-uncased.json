@@ -1,0 +1,81 @@
+{
+ "repo": "google-bert/bert-base-uncased",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "google-bert/bert-base-uncased",
+  "sha": "86b5e0934494bd15c9632b12f734a8a67f723594",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "fill-mask",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "jax",
+   "rust",
+   "coreml",
+   "onnx",
+   "safetensors",
+   "bert",
+   "fill-mask",
+   "exbert",
+   "license:apache-2.0",
+   "endpoints_compatible",
+   "deploy:sagemaker",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "apache-2.0"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 11356},
+   {"rfilename": "config.json", "size": 570},
+   {"rfilename": "coreml/fill-mask/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel", "size": 164911},
+   {"rfilename": "coreml/fill-mask/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin", "size": 531833856},
+   {"rfilename": "coreml/fill-mask/float32_model.mlpackage/Manifest.json", "size": 617},
+   {"rfilename": "flax_model.msgpack", "size": 438064459},
+   {"rfilename": "model.onnx", "size": 532091246},
+   {"rfilename": "model.safetensors", "size": 440449768},
+   {"rfilename": "pytorch_model.bin", "size": 440473133},
+   {"rfilename": "rust_model.ot", "size": 534240408},
+   {"rfilename": "tf_model.h5", "size": 536063208},
+   {"rfilename": "tokenizer.json", "size": 466062},
+   {"rfilename": "tokenizer_config.json", "size": 48}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 110106428
+   },
+   "total": 110106428
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "BertForMaskedLM"
+   ],
+   "attention_probs_dropout_prob": 0.1,
+   "gradient_checkpointing": false,
+   "hidden_act": "gelu",
+   "hidden_dropout_prob": 0.1,
+   "hidden_size": 768,
+   "initializer_range": 0.02,
+   "intermediate_size": 3072,
+   "layer_norm_eps": 1e-12,
+   "max_position_embeddings": 512,
+   "model_type": "bert",
+   "num_attention_heads": 12,
+   "num_hidden_layers": 12,
+   "position_embedding_type": "absolute",
+   "transformers_version": "4.6.0.dev0",
+   "type_vocab_size": 2,
+   "use_cache": true,
+   "vocab_size": 30522
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 512
+  }
+ }
+}

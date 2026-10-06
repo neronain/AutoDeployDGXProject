@@ -1,0 +1,80 @@
+{
+ "repo": "dslim/bert-base-NER",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "dslim/bert-base-NER",
+  "sha": "d1a3e8f13f8c3566299d95fcfc9a8d2382a9affc",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "token-classification",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "jax",
+   "onnx",
+   "safetensors",
+   "bert",
+   "token-classification",
+   "license:mit",
+   "model-index",
+   "endpoints_compatible",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "mit"
+  },
+  "siblings": [
+   {"rfilename": "added_tokens.json", "size": 2},
+   {"rfilename": "config.json", "size": 829},
+   {"rfilename": "flax_model.msgpack", "size": 430913546},
+   {"rfilename": "model.safetensors", "size": 433292294},
+   {"rfilename": "onnx/added_tokens.json", "size": 82},
+   {"rfilename": "onnx/config.json", "size": 999},
+   {"rfilename": "onnx/model.onnx", "size": 431172619},
+   {"rfilename": "onnx/special_tokens_map.json", "size": 125},
+   {"rfilename": "onnx/tokenizer.json", "size": 668923},
+   {"rfilename": "onnx/tokenizer_config.json", "size": 1296},
+   {"rfilename": "pytorch_model.bin", "size": 433316646},
+   {"rfilename": "special_tokens_map.json", "size": 112},
+   {"rfilename": "tf_model.h5", "size": 433538860},
+   {"rfilename": "tokenizer_config.json", "size": 59}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F32": 108317193
+   },
+   "total": 108317193
+  }
+ },
+ "files": {
+  "config.json": {
+   "_num_labels": 9,
+   "architectures": [
+    "BertForTokenClassification"
+   ],
+   "attention_probs_dropout_prob": 0.1,
+   "hidden_act": "gelu",
+   "hidden_dropout_prob": 0.1,
+   "hidden_size": 768,
+   "id2label": {
+    "0": "O",
+    "1": "B-MISC",
+    "2": "I-MISC"
+   },
+   "initializer_range": 0.02,
+   "intermediate_size": 3072,
+   "layer_norm_eps": 1e-12,
+   "max_position_embeddings": 512,
+   "model_type": "bert",
+   "num_attention_heads": 12,
+   "num_hidden_layers": 12,
+   "output_past": true,
+   "type_vocab_size": 2,
+   "vocab_size": 28996
+  },
+  "tokenizer_config.json": {}
+ }
+}
