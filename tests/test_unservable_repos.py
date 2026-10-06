@@ -212,13 +212,12 @@ SERVABLE = {
     # pipeline_tag=text-classification + XLMRobertaForSequenceClassification label เดียว — คู่ของ classifier
     "BAAI/bge-reranker-v2-m3": ("rerank", Engine.VLLM),
     # MPNetForMaskedLM แต่ pipeline_tag=sentence-similarity — คู่ของ bert-base-uncased (BertForMaskedLM + fill-mask)
+    # และมี pytorch_model.bin / onnx / openvino ข้าง model.safetensors — คู่ของ opt-125m ที่มีแต่ .bin
     "sentence-transformers/all-mpnet-base-v2": ("embed", Engine.VLLM),
     # pipeline_tag=text-to-speech แต่ไฟล์ GGUF เป็นสถาปัตยกรรม LLM (qwen3) — คู่ของ Qwen3-TTS-GGUF
     "pnnbao-ump/VieNeu-TTS-0.3B-q4-gguf": ("generate", Engine.LLAMACPP),
     # ไม่มี config.json แต่เป็นรูปแบบ mistral (params.json + consolidated.safetensors) — คู่ของ no-config
     "mistralai/Pixtral-12B-2409": ("generate", Engine.VLLM),
-    # มีทั้ง .bin/.h5/.msgpack ข้าง model.safetensors — คู่ของ opt-125m ที่มีแต่ .bin
-    "openai-community/gpt2": ("generate", Engine.VLLM),
     # GGUF สถาปัตยกรรมที่ไม่อยู่ในรายการ "ไม่ใช่ LLM" (lfm2) — คู่ของ flux/wan
     "LiquidAI/LFM2.5-2.6B-GGUF": ("generate", Engine.LLAMACPP),
 }

@@ -155,6 +155,7 @@ CONTEXT_STEPS = [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 104857
 # ไม่มี cap แบบตั้งเลขเอาเองอีกแล้ว — ดู _recommend_context()
 CLIENT_OUTPUT_DEFAULT = 8192
 TEMPLATE_OVERHEAD_TOKENS = 2048  # chat template + tool schema + system prompt
+MIN_CLIENT_OUTPUT = 512  # ค่าเดียวกับ _MIN_OUTPUT_TOKENS ของ brain/orchestrator.py
 
 
 class Verdict(str, Enum):
@@ -540,6 +541,17 @@ def _client_budget(fit: FitReport) -> None:
         output = max(1024, fit.recommended_context // 4)
         input_budget = fit.recommended_context - output - TEMPLATE_OVERHEAD_TOKENS
         fit.notes.append(f"context เล็ก — ลด client output default เหลือ {output:,}")
+    if input_budget <= 0:
+        # ยังติดลบ = context เล็กกว่า template overhead + คำตอบขั้นต่ำ — เดิมตัดเป็น 0 เงียบ ๆ แล้ว bundle ออกมา
+        # พร้อม `client-config` ที่ปฏิเสธตัวเอง (microsoft/phi-2 context 2,048 · audit 2026-10-06)
+        output = MIN_CLIENT_OUTPUT
+        input_budget = fit.recommended_context - output - TEMPLATE_OVERHEAD_TOKENS
+        fit.notes.append(
+            f"context {fit.recommended_context:,} เล็กกว่าที่ bundle chat ต้องใช้ (template overhead "
+            f"{TEMPLATE_OVERHEAD_TOKENS:,} + คำตอบขั้นต่ำ {MIN_CLIENT_OUTPUT:,}) — แผน chat จะถูกปฏิเสธ · "
+            "ใช้ได้เฉพาะเป็น embedding/rerank (--task)" if input_budget <= 0 else
+            f"context เล็กมาก — ลด client output default เหลือ {output:,} (เหลือให้คำถาม {input_budget:,} tokens)"
+        )
     fit.client_output_default = output
     fit.client_input_budget = max(input_budget, 0)
 

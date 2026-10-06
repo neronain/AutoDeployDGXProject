@@ -54,15 +54,47 @@ _MIN_OUTPUT_TOKENS = 512
 _MIN_INPUT_TOKENS = 1024
 
 
-def _fit_output_into_slots(plan: DeploymentPlan) -> None:
-    """ทำให้ context / slots / max_output_tokens สอดคล้องกันจริง
+def _too_small_for_chat(context: int, native: int = 0) -> str:
+    floor = _TEMPLATE_OVERHEAD_TOKENS + _MIN_OUTPUT_TOKENS + 1
+    return (
+        f"context {context:,} tokens เล็กเกินกว่าที่ bundle chat ของ LMDS ใช้ได้ — ต้องเหลือที่ให้ chat template/tool schema "
+        f"{_TEMPLATE_OVERHEAD_TOKENS:,} + คำตอบอย่างน้อย {_MIN_OUTPUT_TOKENS:,} + คำถาม = อย่างน้อย {floor:,} tokens ต่อคำขอ "
+        "ไม่งั้น `client-config` ของ bundle ปฏิเสธตัวเอง (\"context เล็กเกิน: input budget\" ติดลบ)"
+        + (f" · native context ของโมเดลนี้คือ {native:,} จึงเพิ่มไม่ได้" if native and native <= context else "")
+        + " · ถ้าเป็นโมเดล embedding/rerank ให้ระบุ --task embed|rerank (ไม่มี output token)"
+    )
+
+
+def _fit_output_into_slots(plan: DeploymentPlan, pooling: bool = False, native: int = 0) -> None:
+    """ทำให้ context / slots / max_output_tokens สอดคล้องกันจริง — ทุก engine
 
     เคสจริง: context 16,384 · slots 4 · output 8,192 — bundle ผ่าน gate ทุกด่าน แต่
     `client-config` ของตัวมันเองปฏิเสธทันทีว่า "context ต่อ slot เล็กเกิน (4096 = 16384/4)"
     เพราะ 4,096 - 8,192 ติดลบ · bundle ที่ขัดแย้งกับตัวเองไม่ควรออกจากโรงงานตั้งแต่แรก
+
+    เดิมข้าม vLLM/SGLang ไปทั้งหมด ("ไม่ได้หารตาม slot") แต่โมเดล native context เล็กก็ขัดกับตัวเองได้เหมือนกัน —
+    เคสจริง 2026-10-06: `lmds generate microsoft/phi-2` → context 2,048 · max output 1,024 · bundle ✅ แล้ว
+    `client-config` ของ bundle ตาย "context เล็กเกิน: input budget = -1024" (2,048 − 1,024 − 2,048)
     """
     if plan.runtime.engine is not Engine.LLAMACPP:
-        return          # vLLM แชร์ KV cache แบบ dynamic ไม่ได้หารตาม slot
+        if pooling:
+            return      # embedding/rerank ไม่มี output token — context คือความยาวเอกสาร
+        per_request = plan.serving.context          # vLLM/SGLang แชร์ KV แบบ dynamic ไม่ได้หารตาม slot
+        usable = per_request - _TEMPLATE_OVERHEAD_TOKENS - _MIN_INPUT_TOKENS
+        if usable >= plan.serving.max_output_tokens:
+            return
+        if usable < _MIN_OUTPUT_TOKENS:
+            # ไม่พอแม้ขั้นต่ำที่เผื่อคำถาม 1,024 — ยอมให้คำถามสั้นลงได้ แต่ต้องเหลือเป็นบวกจริง
+            usable = _MIN_OUTPUT_TOKENS
+            if per_request - _TEMPLATE_OVERHEAD_TOKENS - usable < 1:
+                raise PlanError(_too_small_for_chat(per_request, native))
+        left = per_request - _TEMPLATE_OVERHEAD_TOKENS - usable
+        plan.warnings.append(
+            f"ลด max_output_tokens จาก {plan.serving.max_output_tokens:,} เหลือ {usable:,} — context มีแค่ "
+            f"{per_request:,} หัก template overhead {_TEMPLATE_OVERHEAD_TOKENS:,} แล้วเหลือให้คำถาม {left:,} tokens"
+        )
+        plan.serving.max_output_tokens = usable
+        return
     slots = max(1, plan.serving.max_num_seqs)
     if slots > 1:
         # ไม่ไปแก้ค่าที่คนตั้งมาเอง แต่ต้องพูดราคาออกมาให้ชัด — README/profile/banner
@@ -98,6 +130,10 @@ def _fit_output_into_slots(plan: DeploymentPlan) -> None:
     plan.serving.max_output_tokens = max(
         _MIN_OUTPUT_TOKENS,
         plan.serving.context // fits - _TEMPLATE_OVERHEAD_TOKENS - _MIN_INPUT_TOKENS)
+    per_request = plan.serving.context // fits
+    if not pooling and per_request - _TEMPLATE_OVERHEAD_TOKENS - plan.serving.max_output_tokens < 1:
+        # ลด slot เหลือน้อยสุดแล้วยังไม่พอ = context ของโมเดลเองเล็กเกิน ไม่ใช่เรื่องจำนวน slot
+        raise PlanError(_too_small_for_chat(per_request, native))
 
 
 def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> DeploymentPlan:
@@ -212,7 +248,7 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
 
     # ต้องมา *หลัง* clamp — max_output_tokens ถูกจัดให้พอดี slot จาก context ที่ใช้จริง
     # เดิมจัดก่อนแล้วค่อยลด context → output ที่แผนสัญญาอาจโตกว่า slot (รีวิว 2026-09-04)
-    _fit_output_into_slots(plan)
+    _fit_output_into_slots(plan, pooling=is_pooling_task(getattr(report, "task", "generate")), native=native)
 
     # topology เป็นสมบัติของ target (กี่ node/GPU) — บังคับจาก target เสมอ ไม่ให้ LLM เลือกเอง
     from .rulebased import topology_for_target
