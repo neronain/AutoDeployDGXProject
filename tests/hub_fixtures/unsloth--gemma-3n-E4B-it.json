@@ -1,0 +1,222 @@
+{
+ "repo": "unsloth/gemma-3n-E4B-it",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "unsloth/gemma-3n-E4B-it",
+  "sha": "45e9fb1dd0e34db5ff9db1f43a49ac5d8e8b8778",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "gemma3n",
+   "image-text-to-text",
+   "gemma3",
+   "unsloth",
+   "gemma",
+   "google",
+   "conversational",
+   "base_model:google/gemma-3n-E4B-it",
+   "base_model:finetune:google/gemma-3n-E4B-it",
+   "license:gemma",
+   "endpoints_compatible",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "gemma",
+   "base_model": "google/gemma-3n-E4B-it",
+   "pipeline_tag": "image-text-to-text"
+  },
+  "siblings": [
+   {"rfilename": "chat_template.jinja", "size": 1626},
+   {"rfilename": "config.json", "size": 4581},
+   {"rfilename": "generation_config.json", "size": 210},
+   {"rfilename": "model-00001-of-00004.safetensors", "size": 3077103824},
+   {"rfilename": "model-00002-of-00004.safetensors", "size": 4966792808},
+   {"rfilename": "model-00003-of-00004.safetensors", "size": 4992870216},
+   {"rfilename": "model-00004-of-00004.safetensors", "size": 2663414864},
+   {"rfilename": "model.safetensors.index.json", "size": 171459},
+   {"rfilename": "preprocessor_config.json", "size": 1091},
+   {"rfilename": "processor_config.json", "size": 98},
+   {"rfilename": "special_tokens_map.json", "size": 777},
+   {"rfilename": "tokenizer.json", "size": 33442553},
+   {"rfilename": "tokenizer.model", "size": 4696020},
+   {"rfilename": "tokenizer_config.json", "size": 1204020}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 7849978192
+   },
+   "total": 8387373392
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Gemma3nForConditionalGeneration"
+   ],
+   "audio_config": {
+    "conf_attention_chunk_size": 12,
+    "conf_attention_context_left": 13,
+    "conf_attention_context_right": 0,
+    "conf_attention_logit_cap": 50.0,
+    "conf_conv_kernel_size": 5,
+    "conf_num_attention_heads": 8,
+    "conf_num_hidden_layers": 12,
+    "conf_reduction_factor": 4,
+    "conf_residual_weight": 0.5,
+    "gradient_clipping": 10000000000.0,
+    "hidden_size": 1536,
+    "input_feat_size": 128,
+    "model_type": "gemma3n_audio",
+    "rms_norm_eps": 1e-06,
+    "sscp_conv_channel_size": [
+     128,
+     32
+    ],
+    "sscp_conv_group_norm_eps": 0.001,
+    "sscp_conv_kernel_size": [
+     [
+      3,
+      3
+     ],
+     [
+      3,
+      3
+     ]
+    ],
+    "sscp_conv_stride_size": [
+     [
+      2,
+      2
+     ],
+     [
+      2,
+      2
+     ]
+    ],
+    "torch_dtype": "bfloat16",
+    "vocab_offset": 262272,
+    "vocab_size": 128
+   },
+   "audio_soft_tokens_per_image": 188,
+   "audio_token_id": 262273,
+   "boa_token_id": 256000,
+   "boi_token_id": 255999,
+   "eoa_token_id": 262272,
+   "eoi_token_id": 262144,
+   "image_token_id": 262145,
+   "initializer_range": 0.02,
+   "model_type": "gemma3n",
+   "text_config": {
+    "altup_active_idx": 0,
+    "altup_coef_clip": 120.0,
+    "altup_correct_scale": true,
+    "altup_num_inputs": 4,
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "final_logit_softcapping": 30.0,
+    "head_dim": 256,
+    "hidden_activation": "gelu_pytorch_tanh",
+    "hidden_size": 2048,
+    "hidden_size_per_layer_input": 256,
+    "initializer_range": 0.02,
+    "laurel_rank": 64,
+    "layer_types": [
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "sliding_attention",
+     "full_attention"
+    ],
+    "max_position_embeddings": 32768,
+    "model_type": "gemma3n_text",
+    "num_attention_heads": 8,
+    "num_hidden_layers": 35,
+    "num_key_value_heads": 2,
+    "num_kv_shared_layers": 15,
+    "rms_norm_eps": 1e-06,
+    "rope_local_base_freq": 10000.0,
+    "rope_scaling": null,
+    "rope_theta": 1000000.0,
+    "sliding_window": 512,
+    "torch_dtype": "bfloat16",
+    "use_cache": true,
+    "vocab_size": 262400,
+    "vocab_size_per_layer_input": 262144
+   },
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.53.1",
+   "unsloth_fixed": true,
+   "vision_config": {
+    "architecture": "mobilenetv5_300m_enc",
+    "do_pooling": false,
+    "hidden_size": 2048,
+    "initializer_range": 0.02,
+    "label_names": [
+     "LABEL_0",
+     "LABEL_1"
+    ],
+    "model_args": null,
+    "model_type": "gemma3n_vision",
+    "num_classes": 2,
+    "rms_norm_eps": 1e-06,
+    "torch_dtype": "bfloat16",
+    "vocab_offset": 262144,
+    "vocab_size": 128
+   },
+   "vision_soft_tokens_per_image": 256
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 32768,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "GemmaTokenizer"
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_parameters": 8387373392,
+    "total_size": 15699956384
+   },
+   "weight_map": {
+    "model.audio_tower.conformer.0.attention.attn.k_proj.weight": "model-00001-of-00004.safetensors",
+    "model.embed_audio.embedding_projection.weight": "model-00002-of-00004.safetensors",
+    "model.language_model.layers.0.input_layernorm.weight": "model-00003-of-00004.safetensors",
+    "model.language_model.layers.13.input_layernorm.weight": "model-00004-of-00004.safetensors"
+   }
+  }
+ }
+}

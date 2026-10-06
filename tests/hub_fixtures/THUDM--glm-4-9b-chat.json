@@ -1,0 +1,114 @@
+{
+ "repo": "THUDM/glm-4-9b-chat",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "zai-org/glm-4-9b-chat",
+  "sha": "bd8234fe5e0c09c48637a92abb0c797cb5fa0e73",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": null,
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "chatglm",
+   "glm",
+   "thudm",
+   "custom_code",
+   "license:other",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "other"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 6511},
+   {"rfilename": "config.json", "size": 1437},
+   {"rfilename": "configuration.json", "size": 36},
+   {"rfilename": "configuration_chatglm.py", "size": 2267},
+   {"rfilename": "generation_config.json", "size": 207},
+   {"rfilename": "model-00001-of-00010.safetensors", "size": 1945161760},
+   {"rfilename": "model-00002-of-00010.safetensors", "size": 1815217640},
+   {"rfilename": "model-00003-of-00010.safetensors", "size": 1968291912},
+   {"rfilename": "model-00004-of-00010.safetensors", "size": 1927406992},
+   {"rfilename": "model-00005-of-00010.safetensors", "size": 1815217672},
+   {"rfilename": "model-00006-of-00010.safetensors", "size": 1968291952},
+   {"rfilename": "model-00007-of-00010.safetensors", "size": 1927406992},
+   {"rfilename": "model-00008-of-00010.safetensors", "size": 1815217672},
+   {"rfilename": "model-00009-of-00010.safetensors", "size": 1968291952},
+   {"rfilename": "model-00010-of-00010.safetensors", "size": 1649436712},
+   {"rfilename": "model.safetensors.index.json", "size": 29054},
+   {"rfilename": "modeling_chatglm.py", "size": 47851},
+   {"rfilename": "tokenization_chatglm.py", "size": 8986},
+   {"rfilename": "tokenizer.model", "size": 2623634},
+   {"rfilename": "tokenizer_config.json", "size": 6153}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 9399951392
+   },
+   "total": 9399951392
+  }
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "THUDM/glm-4-9b-chat",
+   "model_type": "chatglm",
+   "architectures": [
+    "ChatGLMModel"
+   ],
+   "add_bias_linear": false,
+   "add_qkv_bias": true,
+   "apply_query_key_layer_scaling": true,
+   "apply_residual_connection_post_layernorm": false,
+   "attention_dropout": 0.0,
+   "attention_softmax_in_fp32": true,
+   "attn_implementation": "sdpa",
+   "bias_dropout_fusion": true,
+   "ffn_hidden_size": 13696,
+   "fp32_residual_connection": false,
+   "hidden_dropout": 0.0,
+   "hidden_size": 4096,
+   "kv_channels": 128,
+   "layernorm_epsilon": 1.5625e-07,
+   "multi_query_attention": true,
+   "multi_query_group_num": 2,
+   "num_attention_heads": 32,
+   "num_hidden_layers": 40,
+   "num_layers": 40,
+   "rope_ratio": 500,
+   "original_rope": true,
+   "padded_vocab_size": 151552,
+   "post_layer_norm": true,
+   "rmsnorm": true,
+   "seq_length": 131072,
+   "use_cache": true,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.44.0",
+   "tie_word_embeddings": false
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 128000,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "ChatGLM4Tokenizer"
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_size": 18799902784
+   },
+   "weight_map": {
+    "transformer.embedding.word_embeddings.weight": "model-00001-of-00010.safetensors",
+    "transformer.encoder.final_layernorm.weight": "model-00010-of-00010.safetensors",
+    "transformer.encoder.layers.1.mlp.dense_4h_to_h.weight": "model-00002-of-00010.safetensors",
+    "transformer.encoder.layers.10.input_layernorm.weight": "model-00003-of-00010.safetensors",
+    "transformer.encoder.layers.11.mlp.dense_4h_to_h.weight": "model-00004-of-00010.safetensors",
+    "transformer.encoder.layers.15.mlp.dense_4h_to_h.weight": "model-00005-of-00010.safetensors",
+    "transformer.encoder.layers.20.mlp.dense_4h_to_h.weight": "model-00006-of-00010.safetensors",
+    "transformer.encoder.layers.25.mlp.dense_4h_to_h.weight": "model-00007-of-00010.safetensors",
+    "transformer.encoder.layers.29.mlp.dense_4h_to_h.weight": "model-00008-of-00010.safetensors",
+    "transformer.encoder.layers.34.mlp.dense_4h_to_h.weight": "model-00009-of-00010.safetensors"
+   }
+  }
+ }
+}

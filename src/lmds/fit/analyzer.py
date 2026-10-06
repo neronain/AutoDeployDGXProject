@@ -57,6 +57,9 @@ UNIFIED_OS_RESERVE_GB = 12.0
 GPU_MEMORY_UTILIZATION = 0.85  # ตรงกับ default ของ controller v3.0.0
 UNTESTED_BUDGET_FACTOR = 0.95  # หักเพิ่ม 5% เมื่อ target ไม่อยู่ในรายการทดสอบแล้ว
 UNKNOWN_KV_RESERVE_FRAC = 0.20  # ไม่รู้มิติ KV → กัน budget 20%
+# ไม่รู้เพดาน context ของตัวโมเดล (config/tokenizer ไม่บอก) → เสนอได้ไม่เกินค่านี้ และบอกว่าเป็นค่าเดา
+# ค่าเดียวกับสาขา "ไม่รู้มิติ KV" · หน่วยความจำที่เหลือบอกได้แค่ว่าเครื่องรับไหว ไม่ได้บอกว่าโมเดลรับไหว
+UNKNOWN_NATIVE_CONTEXT_CAP = 16384
 RAM_OFFLOAD_FRAC = 0.70  # llama.cpp offload: ใช้ RAM ได้ไม่เกิน 70%
 MIN_PRACTICAL_CONTEXT = 4096
 # stacked (TP ข้ามเครื่อง): NCCL buffer + torch.distributed + CUDA graph pool ของ all-reduce
@@ -214,6 +217,8 @@ class FitReport(BaseModel):
     concurrency: int = 1
     max_safe_context: Optional[int] = None
     recommended_context: Optional[int] = None
+    # True = ไม่รู้เพดาน context ของตัวโมเดล · recommended_context เป็นค่าเดาแบบอนุรักษ์นิยม ไม่ใช่ขีดจำกัดของโมเดล
+    context_is_guess: bool = False
     client_input_budget: Optional[int] = None
     client_output_default: int = CLIENT_OUTPUT_DEFAULT
     variant_fits: list[VariantFit] = Field(default_factory=list)
@@ -447,7 +452,9 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
         fit.kv_estimated = True
         if weights_gb <= budget * (1 - UNKNOWN_KV_RESERVE_FRAC):
             fit.verdict = Verdict.FITS
-            fit.recommended_context = min(report.context_length or 16384, 16384)
+            fit.recommended_context = min(report.context_length or UNKNOWN_NATIVE_CONTEXT_CAP,
+                                          UNKNOWN_NATIVE_CONTEXT_CAP)
+            fit.context_is_guess = not report.context_length
             fit.notes.append("ไม่ทราบมิติ KV cache — กัน budget 20% และแนะนำ context อนุรักษ์นิยม")
         else:
             fit.verdict = Verdict.FITS_REDUCED_CONTEXT
@@ -472,6 +479,21 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
 
     limit = min(max_context_raw, native) if native else max_context_raw
     safe = _largest_step(limit)
+    if not native and safe is not None:
+        # ไม่รู้เพดานของตัวโมเดล — เดิมเสนอเท่าที่หน่วยความจำเหลือ แล้วเขียนว่า "ค่าสูงสุดที่หน่วยความจำและตัวโมเดลรับไหว":
+        # tiiuae/falcon-7b-instruct ได้ 131,072 (ของจริง 2,048) · google/vit-base-patch16-224 ได้ 1,048,576
+        # (audit 2026-10-06) · max_safe_context ยังเป็นเพดานของ *เครื่อง* ให้คนที่รู้ค่าจริงจาก model card ตั้งเองได้
+        fit.max_safe_context = safe
+        fit.recommended_context = min(safe, UNKNOWN_NATIVE_CONTEXT_CAP)
+        fit.context_is_guess = True
+        fit.verdict = Verdict.FITS
+        fit.notes.append(
+            f"ไม่ทราบ native context ของโมเดล (config.json / tokenizer_config.json / GGUF header ไม่ระบุ) — เสนอ "
+            f"{fit.recommended_context:,} เป็น**ค่าเดา**แบบอนุรักษ์นิยม ไม่ใช่ขีดจำกัดของโมเดล · หน่วยความจำของเครื่องรับได้ถึง "
+            f"{safe:,} — ถ้า model card ระบุ context ที่สูงกว่า ตั้งเองด้วย --context"
+        )
+        _client_budget(fit)
+        return fit
     if safe is None and native and native < MIN_PRACTICAL_CONTEXT and max_context_raw >= native:
         # โมเดลที่ native สั้นกว่าขั้นล่างสุดของบันได (embedding เล็ก ๆ อย่าง MiniLM 512) — หน่วยความจำพอ
         # เต็ม native อยู่แล้ว ไม่ใช่ "ไม่พอ" · เดิมหาขั้น ≤ 512 ไม่เจอแล้วตอบ needs-smaller-quant

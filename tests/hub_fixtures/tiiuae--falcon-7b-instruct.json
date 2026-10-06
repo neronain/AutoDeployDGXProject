@@ -1,0 +1,97 @@
+{
+ "repo": "tiiuae/falcon-7b-instruct",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "tiiuae/falcon-7b-instruct",
+  "sha": "8782b5c5d8c9290412416618f36a133653e85285",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "pytorch",
+   "coreml",
+   "safetensors",
+   "falcon",
+   "text-generation",
+   "conversational",
+   "custom_code",
+   "license:apache-2.0",
+   "eval-results",
+   "text-generation-inference",
+   "endpoints_compatible",
+   "deploy:sagemaker",
+   "deploy:azure",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "apache-2.0"
+  },
+  "siblings": [
+   {"rfilename": "config.json", "size": 1048},
+   {"rfilename": "configuration_falcon.py", "size": 7163},
+   {"rfilename": "coreml/text-generation/falcon-7b-64-float32.mlpackage/Data/com.apple.CoreML/model.mlmodel", "size": 396524},
+   {"rfilename": "coreml/text-generation/falcon-7b-64-float32.mlpackage/Data/com.apple.CoreML/weights/weight.bin", "size": 27693883200},
+   {"rfilename": "coreml/text-generation/falcon-7b-64-float32.mlpackage/Manifest.json", "size": 617},
+   {"rfilename": "generation_config.json", "size": 117},
+   {"rfilename": "handler.py", "size": 1154},
+   {"rfilename": "model-00001-of-00002.safetensors", "size": 9950994832},
+   {"rfilename": "model-00002-of-00002.safetensors", "size": 4483408144},
+   {"rfilename": "model.safetensors.index.json", "size": 17719},
+   {"rfilename": "modeling_falcon.py", "size": 56920},
+   {"rfilename": "pytorch_model-00001-of-00002.bin", "size": 9951028193},
+   {"rfilename": "pytorch_model-00002-of-00002.bin", "size": 4483421659},
+   {"rfilename": "pytorch_model.bin.index.json", "size": 16924},
+   {"rfilename": "special_tokens_map.json", "size": 281},
+   {"rfilename": "tokenizer.json", "size": 2734130},
+   {"rfilename": "tokenizer_config.json", "size": 1132}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 7217189760
+   },
+   "total": 7217189760
+  }
+ },
+ "files": {
+  "config.json": {
+   "alibi": false,
+   "apply_residual_connection_post_layernorm": false,
+   "architectures": [
+    "FalconForCausalLM"
+   ],
+   "attention_dropout": 0.0,
+   "bias": false,
+   "hidden_dropout": 0.0,
+   "hidden_size": 4544,
+   "initializer_range": 0.02,
+   "layer_norm_epsilon": 1e-05,
+   "model_type": "falcon",
+   "multi_query": true,
+   "new_decoder_architecture": false,
+   "num_attention_heads": 71,
+   "num_hidden_layers": 32,
+   "parallel_attn": true,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.27.4",
+   "use_cache": true,
+   "vocab_size": 65024
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 2048,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "PreTrainedTokenizerFast"
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_size": 14434379520
+   },
+   "weight_map": {
+    "lm_head.weight": "model-00002-of-00002.safetensors",
+    "transformer.h.0.input_layernorm.bias": "model-00001-of-00002.safetensors"
+   }
+  }
+ }
+}

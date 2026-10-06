@@ -608,11 +608,7 @@ def _inspect_safetensors(
         # การอ่าน config จะไปแทนที่ ModelSource เงียบ ๆ แล้วพังที่บรรทัดถัดไป
         candidates = [config, text_config] if isinstance(text_config, dict) else [config]
         for candidate in candidates:
-            for key in ("max_position_embeddings", "max_sequence_length", "n_positions"):
-                value = candidate.get(key)
-                if isinstance(value, int) and value > 0:
-                    report.context_length = value
-                    break
+            report.context_length = native_context_from_config(candidate)
             if report.context_length:
                 break
         quant = config.get("quantization_config")
@@ -649,6 +645,16 @@ def _inspect_safetensors(
         report.quantization = str(algo).lower() if algo else (report.quantization or "modelopt")
 
     tokenizer_config = _fetch_json(client, source.repo_id, revision, "tokenizer_config.json")
+    if not report.context_length and tokenizer_config is not None:
+        # config.json ไม่บอกเพดาน (Falcon · โมเดล custom code) — tokenizer_config.model_max_length คือแหล่งถัดไป
+        # แต่ค่านี้มักเป็น "ไม่จำกัด" (1e30) จึงต้องมีขอบเขตความสมเหตุสมผล
+        limit = tokenizer_config.get("model_max_length")
+        if isinstance(limit, int) and not isinstance(limit, bool) and 0 < limit <= MAX_SANE_CONTEXT:
+            report.context_length = limit
+            report.warnings.append(
+                f"native context {limit:,} อ่านจาก tokenizer_config.json (model_max_length) — config.json ไม่ระบุ · "
+                "ถ้า model card บอกค่าอื่นให้ตั้งด้วย --context"
+            )
     template_text = ""
     if tokenizer_config is not None and tokenizer_config.get("chat_template"):
         report.has_chat_template = True
@@ -674,6 +680,23 @@ def _inspect_safetensors(
         moe_experts_active=report.moe_experts_active,
     ).to_dict()
     return config, origin
+
+
+# คีย์ที่ config.json ใช้บอกเพดาน context — ชื่อต่างกันตามตระกูล: max_position_embeddings (ส่วนใหญ่) ·
+# n_positions (GPT-2/T5) · seq_length (ChatGLM/GLM-4: THUDM/glm-4-9b-chat) · n_ctx (GPT-2 รุ่นเก่า/CTRL) ·
+# max_seq_len (MPT · mistral params) · max_sequence_length
+_CONTEXT_KEYS = ("max_position_embeddings", "max_sequence_length", "n_positions", "seq_length", "n_ctx", "max_seq_len")
+# เกินนี้ไม่ใช่เพดานจริง — tokenizer_config.model_max_length ที่ไม่ได้ตั้งเป็น int(1e30)
+MAX_SANE_CONTEXT = 4 * 1024 * 1024
+
+
+def native_context_from_config(config: dict[str, Any]) -> int | None:
+    """เพดาน context ที่ config บอกเอง — None = ไม่บอก (ไม่เดา: "ไม่รู้" กับ "รู้ว่าเล็ก" เป็นคนละเรื่อง)"""
+    for key in _CONTEXT_KEYS:
+        value = config.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= MAX_SANE_CONTEXT:
+            return value
+    return None
 
 
 def _config_from_mistral_params(params: dict[str, Any]) -> dict[str, Any]:
