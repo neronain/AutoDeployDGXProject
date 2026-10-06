@@ -1362,6 +1362,17 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "Lost contact with the hub — the job may still be running · retrying in {s}s ({why})":
+      "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่ · ลองใหม่ในอีก {s} วิ ({why})",
+    "the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})":
+      "hub ไม่รู้จักงานนี้แล้ว (hub ถูก restart หรือเปล่า?) จึงไม่รู้ว่างานจบอย่างไร · ดู log ของโมเดล ({why})",
+    "job": "งาน",
+    "lost contact with the hub, retrying in {s}s": "ติดต่อ hub ไม่ได้ ลองใหม่ในอีก {s} วิ",
+    "Lost contact with the hub — the job may still be running on {node}.":
+      "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่บน {node}",
+    "the hub no longer knows this job": "hub ไม่รู้จักงานนี้แล้ว",
+    "the hub was probably restarted while it ran, so how it ended is unknown here · press Refresh on this machine to see the real state ({why})":
+      "hub น่าจะถูก restart ระหว่างที่งานรัน จึงไม่รู้ว่างานจบอย่างไร · กด Refresh ที่การ์ดเครื่องนี้เพื่อดูสถานะจริง ({why})",
     "Restart was issued but the console has not come back — refresh manually":
       "สั่งรีสตาร์ตไปแล้วแต่คอนโซลยังไม่กลับมา — รีเฟรชหน้าเอง",
 
@@ -3447,11 +3458,17 @@ async function analyzeNow(overrides = {}) {
 const watching = new Map();
 
 // ปุ่มยกเลิกของงานที่รันอยู่ — งานที่ ssh ค้างไม่มีทางจบเอง และล็อกโมเดลนั้นไว้จนกว่าจะ restart hub
+// id ของงานไปอยู่ใน data-* แล้วผูกด้วย listener ตัวเดียว ไม่ใช่ onclick ที่ประกอบจากสตริง —
+// esc() ไม่ได้กัน ' จึงใช้ไม่ได้ในบริบทของ JS ที่ฝังใน attribute (id มากับ payload ของ job)
 function cancelButton(jobId) {
   return `<div class="pad row" style="padding-bottom:0"><span class="grow"></span>
-    <button class="danger" onclick="cancelJob('${esc(jobId)}',this)"
+    <button class="danger" data-cancel-job="${esc(jobId)}"
             title="Kill the running command — nothing else on the machine is touched">Cancel</button></div>`;
 }
+document.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-cancel-job]");
+  if (btn) cancelJob(btn.dataset.cancelJob, btn);
+});
 
 async function cancelJob(jobId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Cancelling…"; }
@@ -3471,29 +3488,79 @@ async function cancelJob(jobId, btn) {
   }
 }
 
-async function followJob(slug, jobId) {
-  const tick = async () => {
-    const r = await api(`/api/jobs/${jobId}`);
-    // หยุดตามเงียบ ๆ = ผู้ใช้เห็นแผงค้างที่บรรทัดสุดท้ายโดยไม่รู้ว่าเลิกตามแล้ว (เช่น hub ถูก restart)
-    if (!r.ok) { watching.delete(slug); showError(`Lost track of job ${jobId} (HTTP ${r.status})`); return; }
-    const d = await r.json();
-    const el = document.getElementById("panel-" + slug);
-    if (el) {
-      el.innerHTML = `${d.running ? cancelButton(jobId) : ""}<pre id="jobout-${esc(slug)}">${esc(d.output || "starting…")}</pre>`;
-      const out = document.getElementById("jobout-" + slug);
-      if (out) out.scrollTop = out.scrollHeight;
+// ── ตัวตามงาน — ใช้ร่วมกันทั้งโมเดลในเครื่องนี้ (followJob) และบนเครื่องอื่น (followNodeJob) ──
+// audit หน้าเว็บ 2026-10 ข้อ 5: เดิม `await api(…)` ใน tick ไม่มี catch — คำขอเดียวที่หลุด (wifi สลับ AP ·
+// hub ยุ่ง) จบวงรอบทั้งที่คีย์ยังค้างอยู่ใน watching จึงไม่มีใครเริ่มตามใหม่: แผงค้างที่ "running…" พร้อมปุ่ม
+// Cancel ที่ยังกดได้ และ alert "failed (exit N)" ไม่มีวันขึ้น ทั้งที่ toast บอกว่า "หน้านี้ลองใหม่เอง"
+//
+// กติกา: poll ที่หลุด ≠ งานจบ → ถอยแล้วถามใหม่ (1.2 → 2.4 → … สูงสุด 15 วิ) และบอกในแผงว่ากำลังต่อใหม่ ·
+// หยุดถาวรได้ทางเดียวคือ hub ตอบว่าไม่รู้จักงานนี้แล้ว (404 — งานอยู่ในหน่วยความจำของ hub, restart แล้วหาย)
+// ซึ่งต้องปลดคีย์และบอกในแผง · 401 ไม่มาถึงตรงนี้ (api() หยุดทั้งหน้าไปหน้า login) · สถานะสุดท้ายของงาน
+// (สำเร็จ / exit code) จึงไปถึงแผงและ alert เสมอ · promise ที่คืน resolve ตอนงาน **จบ** (payload สุดท้าย)
+// หรือ null เมื่อ hub ลืมงานไปแล้ว — ผู้เรียกที่ต้องทำอะไรต่อหลังงานจบ (รีเฟรชตารางคะแนน) await ได้จริง
+const JOB_POLL_MS = 1200, JOB_POLL_MAX_MS = 15000;
+const jobFollowers = new Map();   // job id -> promise ของตัวตามที่ยังเดินอยู่ (ขอตามซ้ำ = ได้ตัวเดิม)
+
+async function pollJob(jobId, on) {
+  let wait = JOB_POLL_MS, misses = 0;
+  const tell = (fn, ...args) => { try { if (fn) fn(...args); } catch (err) { console.error(err); } };
+  for (;;) {
+    let d = null, why = "";
+    try {
+      const r = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+      if (r.status === 404) { tell(on.gone, await failureText(r)); return null; }
+      if (r.ok) d = await r.json(); else why = await failureText(r);
+    } catch (err) { why = unreachableText(err); }
+    if (d) {
+      misses = 0; wait = JOB_POLL_MS;
+      tell(on.update, d);
+      if (!d.running) return d;
+    } else {
+      misses += 1; wait = Math.min(wait * 2, JOB_POLL_MAX_MS);
+      tell(on.lost, why, Math.round(wait / 1000), misses);
     }
-    if (d.running) { setTimeout(tick, 1200); return; }
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+}
+
+function followJob(slug, jobId) {
+  if (watching.get(slug) === jobId && jobFollowers.has(jobId)) return jobFollowers.get(jobId);
+  watching.set(slug, jobId);
+  let last = null;
+  const paint = (d, note = "") => {
+    const el = document.getElementById("panel-" + slug);
+    if (!el) return;
+    el.innerHTML = `${d.running ? cancelButton(jobId) : ""}${note}<pre id="jobout-${esc(slug)}">${esc(d.output || "starting…")}</pre>`;
+    const out = document.getElementById("jobout-" + slug);
+    if (out) out.scrollTop = out.scrollHeight;
+  };
+  const note = (text, attr) => `<div class="pad warn-line" ${attr} style="padding-bottom:0">${esc(text)}</div>`;
+  const done = (async () => {
+    const d = await pollJob(jobId, {
+      update(d) { last = d; paint(d); },
+      // แผงยังบอกว่า "กำลังรัน" ไม่ได้ และบอกว่า "จบแล้ว" ก็ไม่ได้ — บอกสิ่งที่รู้จริง: ติดต่อ hub ไม่ได้ งานอาจยังเดินอยู่
+      lost(why, seconds) {
+        paint(last || { running: true, output: "" }, note(T(
+          "Lost contact with the hub — the job may still be running · retrying in {s}s ({why})", { s: seconds, why }), "data-job-lost"));
+      },
+      gone(why) {
+        paint({ running: false, output: (last || {}).output || "" }, note(
+          `Lost track of job ${jobId} — ` + T("the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})", { why }),
+          "data-job-gone"));
+      },
+    });
     watching.delete(slug);
-    if (d.exit_code !== 0) {
+    jobFollowers.delete(jobId);
+    if (d && d.exit_code !== 0) {
       // The controller already explained itself — show that instead of a bare exit code
       const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
       alert(`${d.command} ${slug} failed (exit ${d.exit_code})\n\n${reason || "no output from the controller"}`);
     }
     refresh();
-  };
-  watching.set(slug, jobId);
-  tick();
+    return d;
+  })();
+  jobFollowers.set(jobId, done);
+  return done;
 }
 
 // ── live logs (Follow) ────────────────────────────────────────────────────
@@ -7177,27 +7244,51 @@ function elapsedText(seconds) {
   return m ? `${m} min ${s} s` : `${s} s`;
 }
 
+// กติกาเดียวกับ followJob (ดู pollJob): poll หลุด = ถอยแล้วถามใหม่ ไม่ใช่เลิกตาม · คืน promise ที่ resolve ตอนงานจบ
 function followNodeJob(node, slug, jobId) {
   const key = node + "/" + slug;
-  if (watchingNodes.get(key) === jobId) return;
+  if (watchingNodes.get(key) === jobId && jobFollowers.has(jobId)) return jobFollowers.get(jobId);
   watchingNodes.set(key, jobId);
-  const tick = async () => {
-    const r = await api(`/api/jobs/${jobId}`);
-    if (!r.ok) { watchingNodes.delete(key); showError(`Lost track of job ${jobId} (HTTP ${r.status})`); return; }
-    const d = await r.json();
-    const running = d.running;
-    const since = elapsedText(d.elapsed);
-    showNodeOutput(node, `${d.command} · ${slug}${running ? ` — running… (${since})` : ""}`,
-                   d.output || `Started — no output yet (${since})\n`
-                     + "Steps that load large files stay quiet for a while. You can close this window; the job keeps running.",
-                   running ? `<span class="tag">${esc(d.command)}</span>
-                     <button class="danger" onclick="cancelJob('${esc(jobId)}',this)"
-                             title="Kill the running command on ${esc(node)} — nothing else is touched">Cancel</button>` : "");
+  let last = null;
+  const cancel = command => `<span class="tag">${esc(command)}</span>
+    <button class="danger" data-cancel-job="${esc(jobId)}"
+            title="Kill the running command on ${esc(node)} — nothing else is touched">Cancel</button>`;
+  const scroll = () => {
     const pre = (nodeRows.get(node)?.out || nodeRows.get(node)?.block)?.querySelector("pre");
     if (pre) pre.scrollTop = pre.scrollHeight;
-    if (running) { setTimeout(tick, 1200); return; }
+  };
+  const done = (async () => {
+    const d = await pollJob(jobId, {
+      update(d) {
+        last = d;
+        const since = elapsedText(d.elapsed);
+        showNodeOutput(node, `${d.command} · ${slug}${d.running ? ` — running… (${since})` : ""}`,
+                       d.output || `Started — no output yet (${since})\n`
+                         + "Steps that load large files stay quiet for a while. You can close this window; the job keeps running.",
+                       d.running ? cancel(d.command) : "");
+        scroll();
+      },
+      // หัวกล่องเลิกบอกว่า "running…" — สิ่งที่รู้จริงตอนนี้คือติดต่อ hub ไม่ได้ · ผลเดิมยังอยู่ให้อ่าน
+      lost(why, seconds) {
+        const command = (last || {}).command || T("job");
+        showNodeOutput(node, `${command} · ${slug} — ` + T("lost contact with the hub, retrying in {s}s", { s: seconds }),
+                       `⚠ ${T("Lost contact with the hub — the job may still be running on {node}.", { node })} (${why})\n\n`
+                         + ((last || {}).output || ""),
+                       cancel(command));
+        scroll();
+      },
+      gone(why) {
+        const command = (last || {}).command || T("job");
+        showNodeOutput(node, `${command} · ${slug} — ` + T("the hub no longer knows this job"),
+                       `Lost track of job ${jobId} — `
+                         + T("the hub was probably restarted while it ran, so how it ended is unknown here · press Refresh on this machine to see the real state ({why})", { why })
+                         + "\n\n" + ((last || {}).output || ""));
+      },
+    });
     watchingNodes.delete(key);
+    jobFollowers.delete(jobId);
     liveBootDone(key);
+    if (!d) return null;
     if (d.exit_code !== 0) {
       const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
       showNodeOutput(node, `${d.command} · ${slug} — failed (exit ${d.exit_code})`,
@@ -7206,8 +7297,10 @@ function followNodeJob(node, slug, jobId) {
       // สำเร็จแล้วก็ยังต้องเห็นผล (test-text ตอบว่าอะไร) — เดิมถูกล้างทิ้งทันที
       loadNode(node);
     }
-  };
-  tick();
+    return d;
+  })();
+  jobFollowers.set(jobId, done);
+  return done;
 }
 
 // สรุปทรัพยากรในหัวการ์ด — ย่อการ์ดไว้แล้วยังต้องรู้ว่าเครื่องนั้นว่างหรือเต็ม

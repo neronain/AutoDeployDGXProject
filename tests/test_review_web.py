@@ -329,8 +329,10 @@ def test_page_surfaces_errors_it_used_to_swallow():
     doctor = page.split("/doctor`);")[1][:400]
     assert "if (!r.ok)" in doctor and "(d.findings || []).filter" in doctor
     # ปุ่มยกเลิกงาน — ทั้งโมเดลในเครื่องนี้และบนเครื่องอื่น
+    # id ของงานอยู่ใน data-cancel-job + listener ตัวเดียว — เดิมเป็น onclick="cancelJob('<id>')" ที่ประกอบจากสตริง
+    # ซึ่ง esc() กัน ' ไม่ได้ (audit หน้าเว็บ 2026-10 ข้อ 4 · พฤติกรรมจริงคุมที่ tests/test_audit_console_dom.py)
     assert "async function cancelJob(" in page
-    assert page.count("cancelJob('") >= 2
+    assert page.count('data-cancel-job="') >= 2 and "cancelJob('" not in page
     assert "/cancel`" in page
 
 

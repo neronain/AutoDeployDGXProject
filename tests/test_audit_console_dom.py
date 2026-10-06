@@ -123,3 +123,146 @@ def test_a_throttled_ip_does_not_throw_a_signed_in_page_back_to_the_login_screen
     """)
     assert out["loginShown"] is False and out["cards"] == 1
     assert "รออีก 8 วินาที" in out["toast"], "เหตุผลจาก server ต้องขึ้นให้เห็น"
+
+
+# ───────────────────── ข้อ 5 — ตัวตาม job ตายเพราะ poll หลุดรอบเดียว ─────────────────────
+
+JOBS = MODEL + """H.fastTimers(50);
+H.job = { running: true, elapsed: 0, output: "downloading 1/9\\n", exit_code: null };
+H.drop = 0; H.gone = false; H.polls = 0; H.cancelled = [];
+const fx = { nodes: [{ name: "spark-01", site: "TKC", models: [model({ job: { id: "j1", command: "repair", running: true } })] }],
+             localModels: [model({ slug: "local-m", job: { id: "j2", command: "download" } })] };
+H.fx = fx;
+H.finish = (job) => { H.job = job; fx.nodes[0].models[0].job = null; fx.localModels[0].job = null; };
+H.routes = [
+  [/^\\/api\\/jobs\\/j[12]\\/cancel$/, url => { H.cancelled.push(url.split("/")[3]); return { cancelled: true }; }],
+  [/^\\/api\\/jobs\\/j[12]$/, url => {
+     H.polls++;
+     if (H.drop > 0) { H.drop--; throw new TypeError("Failed to fetch"); }
+     if (H.gone) return { status: 404, body: { detail: "ไม่พบงานนี้" } };
+     const id = url.split("/").pop();
+     return { ...H.job, id, command: id === "j1" ? "repair" : "download" }; }],
+  ...H.defaultRoutes(fx),
+];
+"""
+JOB_VIEW = """
+        const flat = el => (el ? el.textContent : "").replace(/\\s+/g, " ").trim();
+        const view = () => ({ node: flat(nodeRows.get("spark-01").out), local: flat(document.getElementById("panel-local-m")),
+          lostMarker: !!document.querySelector("#panel-local-m [data-job-lost]"), toast: flat(document.getElementById("toast")),
+          cancelButtons: document.querySelectorAll("button[data-cancel-job]").length,
+          watchingLocal: [...watching.keys()], watchingNode: [...watchingNodes.keys()], alerts: [...H.alerts] });
+"""
+
+
+def test_a_dropped_poll_does_not_end_a_job_follower_and_the_failure_still_reaches_the_screen(tmp_path):
+    """เดิม: คำขอเดียวที่หลุด → แผงค้างที่ "running…" พร้อมปุ่ม Cancel · งานล้มทีหลังก็ไม่มีใครบอก (ไม่มี alert)"""
+    (following, lost, back, failed) = run_scenario(tmp_path, JOBS, """
+        location.hash = "#/nodes"; await H.tick(20);""" + JOB_VIEW + """
+        console.log(JSON.stringify(view()));
+        H.drop = 6;                                    // wifi สะดุด: poll ถัดไปของตัวตามทั้งสองหลุดติดกัน
+        await H.sleep(150); await H.tick(10);
+        console.log(JSON.stringify({ ...view(), pollsDuringLoss: H.polls }));
+        // server กลับมา งานเดินต่อ
+        H.job = { running: true, elapsed: 600, output: "downloading 8/9\\n", exit_code: null };
+        await H.sleep(500); await H.tick(10);
+        console.log(JSON.stringify(view()));
+        // …แล้วงานล้ม
+        H.finish({ running: false, elapsed: 900, output: "sha256 mismatch on shard 9\\n", exit_code: 1 });
+        await H.sleep(200); await H.tick(10);
+        console.log(JSON.stringify(view()));
+        H.errors.length = 0;
+    """)
+    assert "running…" in following["node"] and "downloading 1/9" in following["local"]
+    assert following["cancelButtons"] == 2 and following["watchingLocal"] == ["local-m"]
+
+    # ระหว่างสายหลุด: ไม่อ้างว่ากำลังรัน ไม่อ้างว่าจบ — บอกว่าติดต่อไม่ได้และยังตามอยู่
+    assert "lost contact with the hub" in lost["node"] and "running…" not in lost["node"], lost["node"]
+    assert "may still be running on spark-01" in lost["node"] and "downloading 1/9" in lost["node"]
+    assert lost["lostMarker"] and "Lost contact with the hub" in lost["local"] and "downloading 1/9" in lost["local"]
+    assert lost["watchingLocal"] == ["local-m"] and lost["watchingNode"] == ["spark-01/qwen"]
+    assert "retries on its own" not in lost["toast"], "ข้อความ 'หน้านี้ลองใหม่เอง' เป็นจริงแล้ว จึงไม่ต้องมี toast จากตาข่ายรับท้าย"
+
+    assert "downloading 8/9" in back["node"] and "downloading 8/9" in back["local"], "ต่อกลับมาตามเองโดยไม่ต้อง reload"
+    assert not back["lostMarker"] and "lost contact" not in back["node"]
+
+    assert "failed (exit 1)" in failed["node"] and "sha256 mismatch on shard 9" in failed["node"]
+    assert any("download local-m failed (exit 1)" in a and "sha256 mismatch" in a for a in failed["alerts"]), failed["alerts"]
+    assert failed["watchingLocal"] == [] and failed["watchingNode"] == [] and failed["cancelButtons"] == 0
+
+
+def test_a_job_the_hub_no_longer_knows_stops_being_followed_and_says_so_in_the_panel(tmp_path):
+    """หยุดตามถาวรได้ทางเดียว: hub ตอบ 404 (งานอยู่ในหน่วยความจำ — restart แล้วหาย) · ต้องปลดคีย์และบอกในแผง
+    ไม่ใช่ toast ที่หายใน 6 วิ แล้วทิ้งแผง "running…" + ปุ่ม Cancel ไว้"""
+    (out,) = run_scenario(tmp_path, JOBS, """
+        location.hash = "#/nodes"; await H.tick(20);""" + JOB_VIEW + """
+        H.gone = true; H.fx.nodes[0].models[0].job = null; H.fx.localModels[0].job = null;
+        await H.sleep(150); await H.tick(10);
+        const polls = H.polls; await H.sleep(300);
+        console.log(JSON.stringify({ ...view(), pollsAfterGone: H.polls - polls }));
+        H.errors.length = 0;
+    """)
+    for panel in (out["node"], out["local"]):
+        assert "Lost track of job" in panel and "no longer knows" in panel, panel
+        assert "downloading 1/9" in panel, "ผลล่าสุดที่เคยได้ยังต้องอ่านได้"
+    assert out["cancelButtons"] == 0 and out["watchingLocal"] == [] and out["watchingNode"] == []
+    assert out["pollsAfterGone"] == 0, "รู้แล้วว่างานไม่มี — ไม่ถามซ้ำ"
+
+
+def test_the_cancel_button_of_a_followed_job_reaches_the_hub_without_inline_script(tmp_path):
+    """ปุ่ม Cancel เดิมเป็น onclick="cancelJob('<id>')" ที่ประกอบจากสตริง — ตอนนี้เป็น data-* + listener ตัวเดียว"""
+    (out,) = run_scenario(tmp_path, JOBS, """
+        location.hash = "#/nodes"; await H.tick(20);
+        const buttons = [...document.querySelectorAll("button[data-cancel-job]")];
+        for (const b of buttons) b.click();
+        await H.tick(10);
+        console.log(JSON.stringify({ cancelled: H.cancelled.sort(), inline: buttons.map(b => b.getAttribute("onclick")) }));
+        H.errors.length = 0;
+    """)
+    assert out == {"cancelled": ["j1", "j2"], "inline": [None, None]}
+
+
+def test_the_score_table_is_read_again_when_the_benchmark_ends_not_when_it_starts(tmp_path):
+    """ข้อ 9: `await followJob(…); loadBench()` — followJob เคย resolve ทันทีที่เริ่มตาม ตารางจึงถูกอ่านตอนงานเพิ่งเริ่ม
+    (ยังว่าง) แล้วไม่ถูกอ่านอีกเลย: วัดเสร็จหลายนาทีต่อมา หน้าจอยังขึ้น "Nothing measured yet\""""
+    out = run_scenario(tmp_path, MODEL + """H.fastTimers(50);
+        H.jobs = { nb: { id: "nb", command: "bench", running: true, elapsed: 1, output: "workload 1/6\\n", exit_code: null },
+                   lb: { id: "lb", command: "bench", running: true, elapsed: 1, output: "workload 1/6\\n", exit_code: null } };
+        H.runs = [];
+        const fx = { nodes: [{ name: "spark-01", site: "TKC", models: [model({ running: true, healthy: true, commands: ["status", "bench"] })] }],
+                     localModels: [model({ slug: "local-m", running: true, healthy: true })] };
+        H.fx = fx;
+        H.routes = [
+          [/^\\/api\\/jobs\\/(nb|lb)$/, url => H.jobs[url.split("/").pop()]],
+          ["/api/bench/fleet", () => ({ runs: H.runs, unreachable: [] })],
+          ["/api/nodes/spark-01/models/qwen/bench", () => ({ job: H.jobs.nb })],
+          ["/api/bench/local-m/run", () => ({ job: H.jobs.lb })],
+          [/\\/clone\\/targets$/, () => ({ targets: [] })], [/\\/fit$/, () => ({ status: 409, body: { detail: "n/a" } })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        const reads = () => H.calls.filter(c => c.url === "/api/bench/fleet").length;
+        const table = () => document.getElementById("bench").textContent.replace(/\\s+/g, " ").trim();
+        for (const which of ["node", "local"]) {
+          if (which === "node") {
+            location.hash = "#/nodes"; await H.tick(20);
+            jumpToNode("spark-01", "qwen"); await H.tick(10);
+            nodeRows.get("spark-01").body.querySelector('button[data-nact="nbench:full"]').click();
+          } else {
+            location.hash = "#/hub"; await H.tick(20);
+            document.querySelector('button[data-act="opts"][data-slug="local-m"]').click(); await H.tick(10);
+            document.querySelector('button[data-act="bench:full"][data-slug="local-m"]').click();
+          }
+          await H.tick(20); await H.sleep(100);
+          const id = which === "node" ? "nb" : "lb", whileRunning = reads();
+          // หลายนาทีต่อมา: วัดเสร็จ ผลอยู่บน server แล้ว
+          H.runs = [...H.runs, { slug: which === "node" ? "qwen" : "local-m", machine_name: which === "node" ? "spark-01" : "",
+                                 speed: { decode_tps_avg: 42 }, capability: { score: 90 } }];
+          H.jobs[id] = { ...H.jobs[id], running: false, exit_code: 0, output: "done\\n" };
+          await H.sleep(150); await H.tick(20);
+          console.log(JSON.stringify({ which, readsAfterFinish: reads() - whileRunning, table: table() }));
+        }
+        H.errors.length = 0;
+    """)
+    node, local = out
+    assert node["readsAfterFinish"] >= 1 and "qwen" in node["table"] and "90/100" in node["table"], node
+    assert local["readsAfterFinish"] >= 1 and "local-m" in local["table"], local
