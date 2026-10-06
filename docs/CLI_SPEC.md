@@ -70,6 +70,10 @@ Options:
   --task generate|embed|rerank   ชนิดงาน — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ · architectures ใน config.json · pooling_type ใน GGUF) ใส่เมื่อเดาผิด · LLM ตั้งเองไม่ได้
   --gguf FILE|QUANT       repo GGUF หลาย variant: ชื่อไฟล์เต็ม / ชื่อ quant (Q8_K_XL ไม่สนตัวพิมพ์) / ส่วนของชื่อที่ตรงไฟล์เดียว
                           — จำเป็นเมื่อไม่มี tty ให้เลือกหมายเลข (script/hub) · ตรงหลายไฟล์ = ปฏิเสธพร้อมรายการ
+  --name SLUG             ตั้งชื่อ bundle เอง (a-z A-Z 0-9 . _ - ไม่เกิน 64) — ว่าง = จากชื่อ repo · ชื่อที่เป็นของ repo *อื่น* อยู่แล้ว
+                          (โฟลเดอร์ปลายทางมี MODEL_PROFILE.yaml ที่ model.id ต่างกัน หรือเครื่องนี้ลงทะเบียนชื่อนั้นไว้ให้ bundle ของ
+                          repo อื่นที่ --output อื่น) = ปฏิเสธ exit 1 ก่อนวางแผน บอกว่าใครเป็นเจ้าของ + `lmds remove <ชื่อ>` ·
+                          repo เดิมในชื่อเดิม = เขียนทับที่เดิมได้ · ยามเดียวกันอยู่ใน render_bundle() จึงครอบทุกทางที่ส่งชื่อเอง
   --no-llm                rule-based mode (ใช้สูตรจาก lmds recipes)
   --yes / -y              ข้ามขั้นยืนยัน — flag ค้างอนุมัติจะไม่ถูกใส่
   --also-stacked          ทำ bundle ของ dgx-spark-stacked (2 เครื่อง) เพิ่มอีกใบจากการวิเคราะห์/ยืนยันรอบเดียวกัน

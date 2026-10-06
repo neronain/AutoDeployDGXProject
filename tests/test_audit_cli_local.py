@@ -292,3 +292,93 @@ def test_web_rejects_a_port_outside_the_tcp_range_before_starting_anything(monke
     result = _run(["web", "--port", value])
     _clean_refusal(result, "--port", "1 ถึง 65,535")
     assert touched == []
+
+
+# ═════════════════════ 2. `deploy --name` ต้องไม่ทับ bundle ของ repo อื่น ═════════════════════
+def _profile(directory) -> dict:
+    import yaml
+
+    return yaml.safe_load((directory / "MODEL_PROFILE.yaml").read_text(encoding="utf-8"))
+
+
+def _snapshot(directory) -> dict:
+    """ทุกไฟล์ในโฟลเดอร์ bundle → เนื้อหา — "ไม่ถูกแตะ" ต้องพิสูจน์ด้วยของบนดิสก์ ไม่ใช่ด้วยการไม่มี error"""
+    return {p.name: p.read_bytes() for p in sorted(directory.iterdir()) if p.is_file()}
+
+
+def _deploy(tmp_path, monkeypatch, report, *extra: str, output=None):
+    _patch_inspect(monkeypatch, report)
+    return _run(["deploy", report.repo_id, "--no-llm", "--target", "dgx-spark-single", "--yes",
+                 "--output", str(output or tmp_path / "bundles"), *extra])
+
+
+def test_deploy_name_refuses_a_folder_that_belongs_to_another_repo(tmp_path, monkeypatch):
+    """เคส audit: `deploy A --name chat` แล้ว `deploy B --name chat` → exit 0 ไม่มีคำเตือน · `chat` พลิกจาก Qwen/Qwen3-32B เป็น
+    OtherOrg/Totally-Different-70B โดย bundle.env · API key · server.meta ของตัวเดิมตกไปเป็นของโมเดลใหม่"""
+    from lmds.fleet import apikey
+    from lmds.fleet.bundle_settings import write as write_settings
+
+    first = safetensors_report(weight_bytes=20 * GIB)
+    other = safetensors_report(repo_id="OtherOrg/Totally-Different-70B", weight_bytes=30 * GIB)
+    made = _deploy(tmp_path, monkeypatch, first, "--name", "chat")
+    assert made.exit_code == 0, made.output
+    chat = tmp_path / "bundles" / "chat"
+    write_settings(chat, {"port": 8123})
+    before, key_before = _snapshot(chat), apikey.read("chat")
+    assert key_before
+
+    result = _deploy(tmp_path, monkeypatch, other, "--name", "chat")
+    _clean_refusal(result, "chat", "Qwen/Qwen3-32B", "lmds remove chat")
+    assert _snapshot(chat) == before, "โฟลเดอร์ของโมเดลเดิมต้องไม่ถูกแตะแม้แต่ไฟล์เดียว"
+    assert _profile(chat)["model"]["id"] == "Qwen/Qwen3-32B"
+    assert apikey.read("chat") == key_before
+    assert "DeploymentPlan" not in _flat(result.stdout), "ต้องปฏิเสธก่อนวางแผน/ถามยืนยัน ไม่ใช่หลังจากนั้น"
+    assert sorted(p.name for p in (tmp_path / "bundles").iterdir()) == ["chat", "chat.zip"]
+
+
+def test_deploying_the_same_repo_under_the_same_name_still_works(tmp_path, monkeypatch):
+    """ยามต้องไม่กันทางปกติ: deploy ซ้ำ (ปรับ target/engine) ของ repo เดิมในชื่อเดิม = เขียนทับที่เดิมได้ · ไม่สนตัวพิมพ์ของ repo id"""
+    first = safetensors_report(weight_bytes=20 * GIB)
+    assert _deploy(tmp_path, monkeypatch, first, "--name", "chat").exit_code == 0
+    again = _deploy(tmp_path, monkeypatch, safetensors_report(repo_id="qwen/qwen3-32b", weight_bytes=20 * GIB),
+                    "--name", "chat")
+    assert again.exit_code == 0, again.output
+    assert sorted(p.name for p in (tmp_path / "bundles").iterdir() if p.is_dir()) == ["chat"]
+
+
+def test_deploy_name_refuses_a_slug_this_machine_already_runs_for_another_repo(tmp_path, monkeypatch):
+    """ชื่อเดียวกันแต่คนละ --output: โฟลเดอร์ปลายทางว่าง แต่ทะเบียนของเครื่อง (~/.lmds/run/<slug>) กับ API key ผูกกับชื่อ
+    ไม่ใช่กับโฟลเดอร์ — bundle ใหม่จะได้ server.meta + key ของโมเดลเดิม และ `lmds start chat` ยังไปเปิดตัวเดิม"""
+    first = safetensors_report(weight_bytes=20 * GIB)
+    other = safetensors_report(repo_id="OtherOrg/Totally-Different-70B", weight_bytes=30 * GIB)
+    assert _deploy(tmp_path, monkeypatch, first, "--name", "chat").exit_code == 0
+    result = _deploy(tmp_path, monkeypatch, other, "--name", "chat", output=tmp_path / "elsewhere")
+    _clean_refusal(result, "chat", "Qwen/Qwen3-32B", "lmds remove chat")
+    assert not (tmp_path / "elsewhere").exists()
+
+
+def test_deploy_name_with_a_bad_slug_is_refused_before_planning(tmp_path, monkeypatch):
+    """`--name ../evil` เคยถูกจับตอน render — หลังวางแผน (และหลังถามยืนยันในโหมด interactive) ไปแล้ว"""
+    result = _deploy(tmp_path, monkeypatch, safetensors_report(weight_bytes=20 * GIB), "--name", "../evil")
+    _clean_refusal(result, "ชื่อ bundle ไม่ถูกต้อง")
+    assert "DeploymentPlan" not in _flat(result.stdout)
+    assert not (tmp_path / "bundles").exists() and not (tmp_path / "evil").exists()
+
+
+def test_the_renderer_itself_refuses_a_named_folder_owned_by_another_repo(tmp_path):
+    """ยามตัวจริงอยู่ที่ render_bundle — ทุกทางที่ส่ง slug เอง (deploy --name · ใบ stacked · rebuild · bundles refresh) ผ่านตรงนี้
+    เดิม slug ที่ส่งมาเองข้าม `resolve_slug()` ซึ่งเป็นตัวกันชนข้าม repo ตัวเดียวที่มี"""
+    from lmds.brain import build_plan
+    from lmds.fit import PRESETS, analyze
+    from lmds.generator import render_bundle
+
+    def render(report, slug):
+        fit = analyze(report, PRESETS["dgx-spark-single"])
+        return render_bundle(build_plan(report, fit, None), report, fit, tmp_path, slug=slug)
+
+    owner = render(safetensors_report(weight_bytes=20 * GIB), "chat")
+    before = _snapshot(owner.directory)
+    with pytest.raises(ValueError, match="Qwen/Qwen3-32B"):
+        render(safetensors_report(repo_id="OtherOrg/Totally-Different-70B", weight_bytes=30 * GIB), "chat")
+    assert _snapshot(owner.directory) == before
+    assert render(safetensors_report(weight_bytes=20 * GIB), "chat").directory == owner.directory   # เจ้าของเดิมเขียนทับได้

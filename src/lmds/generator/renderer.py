@@ -195,6 +195,24 @@ def check_slug_name(slug: str, allow_long: bool = False) -> str:
     return slug
 
 
+def foreign_owner(directory: Path, model_id: str) -> str:
+    """repo ที่เป็นเจ้าของโฟลเดอร์ bundle นี้อยู่ ถ้า *ไม่ใช่* `model_id` (ว่าง = โฟลเดอร์ว่าง/ไม่มี profile/เป็นของ repo เดียวกัน)
+
+    เทียบแบบไม่สนตัวพิมพ์ — Hub ถือ `Qwen/Qwen3-32B` กับ `qwen/qwen3-32b` เป็น repo เดียวกัน
+    """
+    existing = bundle_model_id(directory)
+    return existing if existing and existing.lower() != (model_id or "").lower() else ""
+
+
+def taken_slug_message(slug: str, owner: str, model_id: str, where: Path | str = "") -> str:
+    """ข้อความปฏิเสธเมื่อชื่อที่ตั้งเองชนกับ bundle ของ repo อื่น — ใช้ร่วมกันทั้ง renderer และ CLI ให้พูดเรื่องเดียวกัน"""
+    return (
+        f"ชื่อ {slug} เป็นของ {owner} อยู่แล้ว" + (f" ({where})" if where else "") + f" — ไม่เขียน {model_id} ทับให้: "
+        "bundle.env · API key · server.meta ของตัวเดิมจะตกไปเป็นของโมเดลใหม่ทั้งชุด\n"
+        f"ใช้ชื่ออื่น (--name) หรือลบตัวเดิมก่อนถ้าไม่ใช้แล้ว: lmds remove {slug}"
+    )
+
+
 def resolve_slug(output_root: Path, model_id: str) -> tuple[str, str]:
     """slug ของ bundle นี้ + คำเตือน (ว่าง = ไม่มี)
 
@@ -622,6 +640,12 @@ def render_bundle(
         # กติกาความยาวมีไว้กันชื่อ *ใหม่* ไม่ให้ push ไม่ได้ ไม่ใช่ทำให้ของเดิมซ่อมไม่ได้ (เคสจริง 2026-09-09)
         existing = (Path(output_root) / slug).is_dir()
         slug, slug_note = check_slug_name(slug, allow_long=existing), ""
+        # ชื่อที่ส่งมาเองข้าม `resolve_slug()` ซึ่งเป็นตัวกันชนข้าม repo ตัวเดียวที่มี — ไม่ตรวจตรงนี้ `deploy B --name chat`
+        # ทับ `chat` ของ A เงียบ ๆ (exit 0 ไม่มีคำเตือน) แล้ว bundle.env · API key · server.meta ของ A ตกเป็นของ B
+        # (audit 2026-10-06) · repo เดิมในชื่อเดิม = regenerate ที่เดิมได้ตามปกติ (rebuild / bundles refresh / deploy ซ้ำ)
+        owner = foreign_owner(Path(output_root) / slug, plan.model_id)
+        if owner:
+            raise ValueError(taken_slug_message(slug, owner, plan.model_id, Path(output_root) / slug))
     else:
         slug, slug_note = resolve_slug(Path(output_root), plan.model_id)
     if slug_note and slug_note not in plan.warnings:

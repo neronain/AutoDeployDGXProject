@@ -3534,6 +3534,35 @@ def _reject_impossible_companion(target: str | None, engine: str | None, report=
         raise typer.Exit(code=1)
 
 
+def _refuse_taken_name(output: str, name: str, model_id: str) -> None:
+    """`deploy --name` ที่ใช้ไม่ได้ต้องรู้ *ก่อน* วางแผนและถามยืนยัน — ไม่ใช่ตอน render หลังผู้ใช้ตอบคำถามไปครบแล้ว
+
+    ยามตัวจริงอยู่ใน `render_bundle()` (ทุกทางที่ส่ง slug เองผ่านที่นั่น) · ตรงนี้ถามคำถามเดียวกันให้เร็วขึ้น และเพิ่มอีกชั้น
+    ที่ renderer มองไม่เห็น: ชื่อเดียวกันแต่คนละ `--output` — ทะเบียนของเครื่อง (`~/.lmds/run/<slug>/server.meta`) กับ API key
+    ผูกกับ *ชื่อ* ไม่ใช่กับโฟลเดอร์ bundle ใหม่จึงได้ key + meta ของโมเดลเดิม และ `lmds start <ชื่อ>` ยังไปเปิดตัวเดิม
+    """
+    from rich.markup import escape
+
+    from lmds.fleet import find
+    from lmds.generator.renderer import check_slug_name, foreign_owner, taken_slug_message
+
+    target = Path(output) / name
+    try:
+        check_slug_name(name, allow_long=target.is_dir())
+    except ValueError as exc:
+        err_console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from None
+    owner, where = foreign_owner(target, model_id), target
+    if not owner:
+        server = find(name)
+        registered = Path(server.controller).parent if server is not None and server.controller else None
+        if registered is not None and registered.resolve() != target.resolve():
+            owner, where = foreign_owner(registered, model_id), registered
+    if owner:
+        err_console.print(f"[red]{escape(taken_slug_message(name, owner, model_id, where))}[/red]")
+        raise typer.Exit(code=1)
+
+
 def _companion_collides(output: str, slug: str, model_id: str) -> bool:
     """โฟลเดอร์ <slug>-stacked ถูกจองโดยโมเดล *คนละ repo* อยู่แล้วหรือเปล่า
 
@@ -3674,6 +3703,8 @@ def deploy(
         _reject_impossible_companion(target, engine)
     source, report = _resolve_and_inspect(model, revision, interactive_ok=not yes)
     _refuse_unsupported(report)
+    if name:
+        _refuse_taken_name(output, name, report.repo_id)
     report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
         # ค่าผ่าน `_one_of` มาแล้ว (ผิด = exit 1 ตั้งแต่ก่อน inspect — เดิมออก exit 2 ซึ่งเป็นช่องของ "ไม่ผ่าน gates")
