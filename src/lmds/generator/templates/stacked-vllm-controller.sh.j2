@@ -2203,6 +2203,12 @@ WSCRIPT
     START_LAUNCHED_WORKERS="${START_LAUNCHED_WORKERS:+$START_LAUNCHED_WORKERS }${wip}"
     START_ROLLBACK=1
     trap '_start_left_running' EXIT
+    # Ctrl-C ต้องจบ start เสมอ: ไม่มี trap INT แล้ว bash ที่รอ foreground child อยู่จะ *ทิ้ง* SIGINT เมื่อ child ตัวนั้น
+    # จบแบบปกติ (ssh/docker จับสัญญาณเองแล้ว exit ด้วยรหัสของตัวเอง หรือคำสั่งสั้น ๆ ที่กำลังจบพอดี) — วงรอ health
+    # วนต่อและผู้ใช้ต้องกดซ้ำ (วัดจริง 2026-10-06: 3 ใน 62 รอบตอนเครื่องโหลดหนัก) · trap ทำงานหลังคำสั่งที่รันอยู่จบ
+    # ไม่ว่าจะจบแบบไหน แล้ว exit 130 พา trap EXIT ข้างบนไปบอกว่าอะไรยังรันอยู่ — ยังไม่หยุด/ลบอะไรเหมือนเดิม
+    # TERM/HUP ไม่ trap โดยตั้งใจ: ไม่ trap = bash จบทันที · trap = ต้องรอคำสั่งที่รันอยู่ (ssh ที่ค้าง) จบก่อน
+    trap 'exit 130' INT
     ssh_at "$wip" "$(printf '%q ' "${wrun[@]}")" || die "start worker container บน ${wip} ไม่สำเร็จ (ข้อความของ docker/ssh ด้านบน) — ผลการหยุด worker ที่เปิดไปก่อนหน้าอยู่ด้านบน"
   done
   # head ใช้ COMMON_ARGS ของตัวเอง (--master-addr = TRANSPORT_IP_MASTER) — ลูปข้างบนเพิ่งประกอบของ worker
@@ -2282,7 +2288,7 @@ WSCRIPT
     _who_answers_port 5
     case "$PORT_ANSWER" in
       ours|unverified)
-        START_ROLLBACK=""; trap - EXIT
+        START_ROLLBACK=""; trap - EXIT INT
         log "Server พร้อม"
         [[ "$PORT_ANSWER" == ours ]] ||
           log "(อ่าน /v1/models ไม่ได้ จึงไม่ได้เทียบชื่อโมเดล — container ${MASTER_CONTAINER} รันอยู่และ /health ตอบ)"
@@ -2330,7 +2336,7 @@ WSCRIPT
   CONTAINER_NAME="$MASTER_CONTAINER" explain_crash || true
   (( stuck_hinted )) || _rendezvous_stuck_hint || true
   # หมดเวลารอ ≠ ล้ม: โมเดลใหญ่โหลดเกิน STARTUP_TIMEOUT ได้ จึงตั้งใจไม่หยุดอะไร — แต่ต้องบอกให้ครบว่าเครื่องไหนยังรัน
-  START_ROLLBACK=""; trap - EXIT
+  START_ROLLBACK=""; trap - EXIT INT
   die "ไม่ health ภายใน ${STARTUP_TIMEOUT}s — ไม่ได้หยุดอะไร: container ยังรันอยู่บน head (${MASTER_CONTAINER}) และ worker ${START_LAUNCHED_WORKERS} (${WORKER_CONTAINER}) และยังถือ GPU memory
   อาจแค่โหลดยังไม่จบ — ดู: $0 logs head 200 · $0 status   ·   เลิกรอแล้วคืน GPU ทุกเครื่อง: $0 stop"
 }
@@ -2346,7 +2352,7 @@ START_LAUNCHED_HEAD=""
 # หยุดเฉพาะตัวที่ **ยังรัน** (โหมด running ของ _stop_node): ตัวที่ตายเองคือหลักฐาน — `logs head|worker` ยังต้องอ่านมันได้
 _rollback_start() {
   local workers="$START_LAUNCHED_WORKERS" head="$START_LAUNCHED_HEAD"
-  START_ROLLBACK=""; trap - EXIT
+  START_ROLLBACK=""; trap - EXIT INT
   [[ -n "${workers}${head}" ]] || return 0
   STOP_UNSURE=""
   {

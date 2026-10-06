@@ -448,6 +448,55 @@ def test_a_cancelled_start_never_kills_the_cluster_that_is_still_loading(tmp_pat
     assert W1 in err and W2 in err and " stop" in err, f"ต้องบอกว่าอะไรยังรันอยู่และหยุดอย่างไร: {err!r}"
 
 
+# คำสั่งลูกที่ "จบแบบปกติ" ทั้งที่ SIGINT มาถึงระหว่างมันรัน — ของจริงคือ ssh/docker ที่จับสัญญาณเองแล้ว exit ด้วยรหัสของ
+# ตัวเอง หรือคำสั่งสั้น ๆ ที่สัญญาณมาถึงตอนมันกำลังจบพอดี · shim นี้ทำให้ `sleep 10` ของวงรอ health เป็นแบบนั้นเสมอ
+# (เฉพาะหลัง head ถูกสั่งรันแล้ว) และบอกเทสว่ากำลังอยู่ในคำสั่งนั้น
+_SLEEP_SURVIVES_INT = '''
+if [[ -n "${FAKE_SLEEP_SURVIVES_INT:-}" ]] && grep -q 'docker\\[head\\] run -d' "$FAKE_LOG" 2>/dev/null; then
+  trap '' INT
+  : > "$FAKE_STATE/sleep-in-flight"
+  /bin/sleep 2
+  exit 0
+fi
+exec /bin/sleep "$@"
+'''
+
+
+def test_ctrl_c_ends_start_even_when_it_lands_on_a_command_that_finishes_normally(tmp_path):
+    """Ctrl-C ระหว่างรอ health ต้องจบ start เสมอ — ไม่ใช่ "จบถ้าคำสั่งที่กำลังรันอยู่ตายด้วยสัญญาณ"
+
+    เคสจริง 2026-10-06: เทสข้างบน ([SIGINT]) ล้ม 3 ครั้งจาก 62 รอบตอนเครื่องโหลดหนัก · process ที่จับได้: controller
+    ยังอยู่และเปิด `sleep 10` รอบใหม่หลังได้ SIGINT แล้ว · start ไม่มี trap INT — bash ที่รอ foreground child อยู่จะ
+    *ทิ้ง* SIGINT ถ้า child ตัวนั้นจบแบบปกติ (ถือว่า child รับไปจัดการเองแล้ว) วงรอ health รันคำสั่งสั้น ๆ หลายสิบตัว
+    ต่อรอบ: Ctrl-C ที่ตกตรงจังหวะนั้นหายไป ผู้ใช้เห็น controller วนรอต่อและต้องกดซ้ำ
+    """
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl="exit 7\n", sleep=_SLEEP_SURVIVES_INT)
+    _seed_head_cache(tmp_path / "home")
+    marker = tmp_path / "state" / "sleep-in-flight"
+    proc = subprocess.Popen([BASH, str(bundle.controller), "start"],
+                            env=_env(tmp_path, {"FAKE_SLEEP_SURVIVES_INT": "1"}, workers=f"{W1} {W2}"),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        deadline = time.monotonic() + 60
+        while not marker.exists():                              # รอจนวงรอ health กำลังรันคำสั่งตัวนั้นอยู่จริง
+            assert proc.poll() is None and time.monotonic() < deadline, proc.communicate()
+            time.sleep(0.05)
+        os.killpg(proc.pid, signal.SIGINT)                      # Ctrl-C ที่ terminal ไปทั้ง process group
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            pytest.fail("Ctrl-C ถูกทิ้ง — controller ยังวนรอ health ต่อ (ต้องกดซ้ำถึงจะจบ)")
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+    assert proc.returncode == 130, (proc.returncode, err)
+    assert _left(tmp_path, bundle) == {"head", W1, W2}, err
+    assert "rm -f" not in _calls(tmp_path).split("docker[head] run -d")[-1], "ถูกขัดจังหวะ ≠ ล้ม — ห้ามลบอะไร"
+    assert W1 in err and W2 in err and " stop" in err, f"ต้องบอกว่าอะไรยังรันอยู่และหยุดอย่างไร: {err!r}"
+
+
 def test_a_successful_start_does_not_roll_anything_back(tmp_path):
     bundle = _bundle(tmp_path)
     _bin(tmp_path, curl="exit 0\n")
