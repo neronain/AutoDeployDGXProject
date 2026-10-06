@@ -127,13 +127,80 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 # shebang (#!…/venv.new/bin/python) ย้ายแล้วทุกคำสั่งพัง "required file not found" (เจอจริงบน hub ทันที)
 OLD_VENV="${INSTALL_DIR}/venv.old"
 NEW_VENV="${INSTALL_DIR}/venv"
-rm -rf "$OLD_VENV"
-[ -d "$NEW_VENV" ] && mv "$NEW_VENV" "$OLD_VENV"
+
+# lmds ใน venv นี้ "รันได้จริง" ไหม — พิมพ์บรรทัดเวอร์ชันเมื่อได้ · ไม่ใช่แค่ไฟล์มีอยู่: pip ที่ติดตั้งสำเร็จแต่ขาด
+# dependency ได้ไฟล์ bin/lmds ครบ แต่รันแล้วตายตอน import (audit 2026-10-06 เคส D)
+# ไม่ต่อ pipe ไป head: lmds ที่พิมพ์เกินหนึ่งบรรทัดจะโดน SIGPIPE แล้ว pipefail นับเป็นล้ม
+lmds_version_of() {
+  local bin="$1/bin/lmds" out
+  [ -x "$bin" ] || return 1
+  out="$(LMDS_NO_BANNER=1 LMDS_NO_KEYRING=1 "$bin" version 2>/dev/null)" || return 1
+  out="${out%%$'\n'*}"
+  case "$out" in *[0-9].[0-9]*) printf '%s' "$out" ;; *) return 1 ;; esac
+}
+
+# ประทับ commit ที่กำลังติดตั้งลงไปในแพ็กเกจ — ติดตั้งแบบปกติ (ไม่ใช่ editable) ทำให้โค้ดที่รัน
+# อยู่ไม่ได้อยู่ใน git checkout อีกต่อไป จึงถามภายหลังไม่ได้ว่านี่คือโค้ดรุ่นไหน · เลข version
+# ไม่ขยับทุกคอมมิต ฝั่ง hub เลยแยกไม่ออกว่า node ไหนตามหลัง (เจอจริงกับ msi-6)
+#
+# ประทับ *ที่อยู่ของ checkout* ไปด้วย — ปุ่มอัปเดตบนหน้าเว็บต้องรู้ว่าจะไป `git pull` ที่ไหน
+# เดาจากตำแหน่งโค้ดที่รันอยู่ไม่ได้ เพราะมันอยู่ใน site-packages ของ venv ไปแล้ว
+# --short=7 คงที่: ปล่อยให้ git เลือกเองจะได้ 7 บ้าง 8 บ้างตามจำนวน object ของแต่ละเครื่อง
+#
+# **ทำก่อนแตะ venv เดิม** — เดิมบรรทัดนี้อยู่หลังย้าย venv ไปแล้วและไม่มีอะไรย้ายกลับ: checkout ที่ root
+# เป็นเจ้าของ (จาก `sudo env HOME=… ./install.sh` รอบก่อน ซึ่ง chown คืนแค่ ~/.local กับ ~/.config)
+# ทำให้ "Permission denied" ตรงนี้ทิ้งเครื่องไว้แบบไม่มี lmds เลย (audit 2026-10-06 เคส A)
+BUILD_COMMIT="$(git -C "$REPO_DIR" rev-parse --short=7 HEAD 2>/dev/null || true)"
+BUILD_SOURCE=""
+[ -d "${REPO_DIR}/.git" ] && BUILD_SOURCE="$REPO_DIR"
+if ! printf '# สร้างโดย install.sh — commit และ checkout ที่ติดตั้งไว้ ณ ตอนนั้น\nCOMMIT = "%s"\nSOURCE = "%s"\n' \
+     "$BUILD_COMMIT" "$BUILD_SOURCE" > "${REPO_DIR}/src/lmds/_build.py"; then
+  die "เขียน ${REPO_DIR}/src/lmds/_build.py ไม่ได้ — checkout นี้มักเป็นของ root จากการติดตั้งผ่าน sudo รอบก่อน · แก้: sudo chown -R \"\$(id -un)\" '${REPO_DIR}' แล้วรัน ./install.sh ใหม่ (ยังไม่ได้แตะรุ่นที่ติดตั้งอยู่)"
+fi
+
+# สถานะของการสลับ venv: none → moved (ของเดิมอยู่ที่ venv.old · venv คือของใหม่ที่ยังไม่พิสูจน์) → committed
+# ทุกทางออกระหว่าง moved (set -e · die · Ctrl-C · ssh หลุด · timeout ของ `lmds node install`) ต้องได้ของเดิมกลับ —
+# เดิมผูก restore ไว้กับแค่สองคำสั่ง (make_venv · pip หลัก) คำสั่งอื่นในช่วงเดียวกันที่ล้มจึงทิ้ง venv ครึ่งตัวไว้
+swap_state=none
 restore_old_venv() {
+  [ "$swap_state" = moved ] || return 0     # เรียกซ้ำได้: รอบสองจะ rm ของเดิมที่เพิ่งย้ายกลับมาทิ้ง
+  swap_state=restored
   rm -rf "$NEW_VENV"
   [ -d "$OLD_VENV" ] && mv "$OLD_VENV" "$NEW_VENV"
   return 0
 }
+on_exit() {
+  local code=$?
+  if [ "$swap_state" = moved ]; then
+    restore_old_venv
+    local kept
+    if kept="$(lmds_version_of "$NEW_VENV")"; then
+      echo "ERROR: ติดตั้งไม่จบ (exit ${code}) — ย้ายรุ่นเดิมกลับให้แล้วและยังใช้ได้ตามปกติ: ${kept}" >&2
+    else
+      echo "ERROR: ติดตั้งไม่จบ (exit ${code}) — ไม่มีรุ่นเดิมที่ใช้ได้ให้ย้ายกลับ" >&2
+    fi
+  fi
+  exit "$code"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+# venv.old ที่ค้างจากรอบก่อนอาจเป็น **สำเนาสุดท้ายที่ใช้ได้** (รอบนั้นตายแบบย้ายกลับไม่ทัน: kill -9 · ไฟดับ) ·
+# เดิมบรรทัดแรกตรงนี้คือ `rm -rf venv.old` — รันซ้ำหลังรอบที่ล้มจึงลบตัวที่ใช้ได้ทิ้ง แล้วเก็บ venv ครึ่งตัวไว้แทน
+# กติกา: ลบ venv.old ได้ต่อเมื่อ venv ปัจจุบันมี lmds ที่รันได้จริงเท่านั้น
+if lmds_version_of "$NEW_VENV" >/dev/null; then
+  rm -rf "$OLD_VENV"
+  mv "$NEW_VENV" "$OLD_VENV"
+elif [ -d "$OLD_VENV" ]; then
+  echo "· พบ venv.old ค้างจากรอบก่อนและ venv ปัจจุบันรัน lmds ไม่ได้ — เก็บ venv.old ไว้เป็นตัวสำรอง"
+  rm -rf "$NEW_VENV"
+elif [ -d "$NEW_VENV" ]; then
+  mv "$NEW_VENV" "$OLD_VENV"
+fi
+swap_state=moved
+
 make_venv "$NEW_VENV" || {
   restore_old_venv
   die "สร้าง venv ที่ ${NEW_VENV} ไม่ได้ — ถ้าข้อความข้างบนพูดถึง ensurepip ให้ลง: sudo apt install python3-venv (รุ่นเดิมยังอยู่)"
@@ -165,25 +232,15 @@ if [ -z "${PIP_CACHE_DIR:-}" ] && ! pip_cache_is_writable_by_us; then
   export PIP_CACHE_DIR="${INSTALL_DIR}/pip-cache"
   echo "· ~/.cache/pip ใช้ไม่ได้ (เจ้าของคนละคน) — ใช้แคชที่ ${PIP_CACHE_DIR} แทน"
 fi
-"${NEW_VENV}/bin/pip" install --quiet --upgrade pip
-
-# ประทับ commit ที่กำลังติดตั้งลงไปในแพ็กเกจ — ติดตั้งแบบปกติ (ไม่ใช่ editable) ทำให้โค้ดที่รัน
-# อยู่ไม่ได้อยู่ใน git checkout อีกต่อไป จึงถามภายหลังไม่ได้ว่านี่คือโค้ดรุ่นไหน · เลข version
-# ไม่ขยับทุกคอมมิต ฝั่ง hub เลยแยกไม่ออกว่า node ไหนตามหลัง (เจอจริงกับ msi-6)
-#
-# ประทับ *ที่อยู่ของ checkout* ไปด้วย — ปุ่มอัปเดตบนหน้าเว็บต้องรู้ว่าจะไป `git pull` ที่ไหน
-# เดาจากตำแหน่งโค้ดที่รันอยู่ไม่ได้ เพราะมันอยู่ใน site-packages ของ venv ไปแล้ว
-# --short=7 คงที่: ปล่อยให้ git เลือกเองจะได้ 7 บ้าง 8 บ้างตามจำนวน object ของแต่ละเครื่อง
-BUILD_COMMIT="$(git -C "$REPO_DIR" rev-parse --short=7 HEAD 2>/dev/null || true)"
-BUILD_SOURCE=""
-[ -d "${REPO_DIR}/.git" ] && BUILD_SOURCE="$REPO_DIR"
-printf '# สร้างโดย install.sh — commit และ checkout ที่ติดตั้งไว้ ณ ตอนนั้น\nCOMMIT = "%s"\nSOURCE = "%s"\n' \
-  "$BUILD_COMMIT" "$BUILD_SOURCE" > "${REPO_DIR}/src/lmds/_build.py"
+# อัปเกรด pip ล้ม (เน็ตสะดุดพอดี) ไม่ใช่เหตุให้เลิกทั้งการติดตั้ง — pip ที่มากับ venv ยังติดตั้งได้ และถ้าเน็ตไม่มีจริง
+# ขั้น pip หลักข้างล่างจะล้มพร้อมข้อความที่ตรงกว่าและย้ายรุ่นเดิมกลับให้ · เดิมบรรทัดนี้อยู่ใต้ set -e เปล่า ๆ
+"${NEW_VENV}/bin/pip" install --quiet --upgrade pip ||
+  echo "⚠️  อัปเกรด pip ไม่สำเร็จ — ใช้ pip ที่มากับ venv ติดตั้งต่อ"
 
 if ! "${NEW_VENV}/bin/pip" install --quiet "$REPO_DIR"; then
   restore_old_venv
-  if [ -x "${NEW_VENV}/bin/lmds" ]; then
-    die "ติดตั้งรุ่นใหม่ไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · รุ่นเดิมยังอยู่และใช้ได้ตามปกติ: $(LMDS_NO_BANNER=1 "${NEW_VENV}/bin/lmds" version 2>/dev/null | head -1) · ลองใหม่: ./install.sh"
+  if kept_version="$(lmds_version_of "$NEW_VENV")"; then
+    die "ติดตั้งรุ่นใหม่ไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · รุ่นเดิมยังอยู่และใช้ได้ตามปกติ: ${kept_version} · ลองใหม่: ./install.sh"
   fi
   die "ติดตั้งไม่สำเร็จ (ดู error ของ pip ด้านบน — มักเป็นเน็ตถึง PyPI ช้า/ขาด) · ลองใหม่: PIP_TIMEOUT=120 ./install.sh"
 fi
@@ -203,12 +260,25 @@ else
   echo "ข้ามหน้าเว็บ (ติดตั้ง fastapi/uvicorn ไม่สำเร็จ) — CLI ใช้ได้ตามปกติ"
 fi
 
-# รุ่นใหม่พร้อมแล้ว — ของเดิมไม่ต้องเก็บ
+# "ติดตั้งเสร็จ" พูดได้ต่อเมื่อ lmds ตัวใหม่ **รันแล้วพิมพ์เวอร์ชันออกมาจริง** — pip exit 0 ไม่ใช่หลักฐาน
+# เดิมลบ venv.old ก่อนแล้วค่อยลองรัน: ของใหม่ที่รันไม่ขึ้นจึงได้ "ติดตั้งเสร็จ: " (เวอร์ชันว่าง) exit 0
+# โดยไม่มีของเดิมให้ถอยกลับแล้ว (audit 2026-10-06 เคส D)
+if ! new_version="$(lmds_version_of "$NEW_VENV")"; then
+  echo "ERROR: pip ติดตั้งผ่าน แต่ lmds ตัวใหม่รันไม่ขึ้น — สิ่งที่มันพูด:" >&2
+  { LMDS_NO_BANNER=1 LMDS_NO_KEYRING=1 "${NEW_VENV}/bin/lmds" version 2>&1 || true; } | tail -5 | sed 's/^/    /' >&2
+  restore_old_venv
+  if kept_version="$(lmds_version_of "$NEW_VENV")"; then
+    die "ไม่ได้ติดตั้งรุ่นใหม่ · รุ่นเดิมยังอยู่และใช้ได้ตามปกติ: ${kept_version} · ลองใหม่: ./install.sh"
+  fi
+  die "ติดตั้งไม่สำเร็จ — lmds รันไม่ขึ้นและไม่มีรุ่นเดิมให้ถอยกลับ · ลองใหม่: ./install.sh"
+fi
+# รุ่นใหม่พิสูจน์แล้วว่ารันได้ — ของเดิมไม่ต้องเก็บ
+swap_state=committed
 rm -rf "$OLD_VENV"
 ln -sf "${INSTALL_DIR}/venv/bin/lmds" "${BIN_DIR}/lmds"
 LMDS="${BIN_DIR}/lmds"
 
-echo "ติดตั้งเสร็จ: $(LMDS_NO_BANNER=1 "$LMDS" version | head -1)"
+echo "ติดตั้งเสร็จ: ${new_version}"
 
 # เติม BIN_DIR ลง PATH ให้อัตโนมัติ (เขียนลง shell rc ที่เหมาะกับ shell ปัจจุบัน)
 # หมายเหตุ: installer รันเป็น subprocess — shell ปัจจุบันจะเห็น PATH ใหม่ต่อเมื่อ source เอง
@@ -221,7 +291,16 @@ ensure_path() {
     *":${BIN_DIR}:"*) return 0 ;;  # อยู่ใน PATH ของ shell นี้แล้ว
   esac
 
-  local export_line='export PATH="${HOME}/.local/bin:${PATH}"'
+  # บรรทัดที่เขียนต้องเป็นโฟลเดอร์เดียวกับที่ประกาศ — เดิมเขียน ${HOME}/.local/bin ตายตัว: ติดตั้งด้วย
+  # LMDS_BIN_DIR=…/tools/bin แล้วได้ข้อความ "เพิ่ม …/tools/bin ลง PATH" แต่ shell ใหม่ยังหา lmds ไม่เจอ
+  # ที่ติดตั้งปริยายคงรูป ${HOME} ไว้ (ย้าย home แล้วยังถูก และตรงกับบรรทัดที่รุ่นก่อนเขียนไว้ จึงไม่เติมซ้ำ)
+  local export_line='export PATH="${HOME}/.local/bin:${PATH}"' escaped
+  if [ "$BIN_DIR" != "${HOME}/.local/bin" ]; then
+    escaped="$BIN_DIR"
+    escaped="${escaped//\\/\\\\}"; escaped="${escaped//\"/\\\"}"
+    escaped="${escaped//\$/\\\$}"; escaped="${escaped//\`/\\\`}"
+    export_line="export PATH=\"${escaped}:\${PATH}\""
+  fi
   if ! { [ -f "$rc_file" ] && grep -qF "$export_line" "$rc_file"; }; then
     {
       echo ""
