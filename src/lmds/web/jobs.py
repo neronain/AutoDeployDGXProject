@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import re
+import select
+import signal
 import subprocess
 import threading
 import time
@@ -53,6 +55,7 @@ _TAIL_LINES = 400
 # อยู่ครึ่งชั่วโมง แล้วผู้ใช้สรุปว่างานค้าง ทั้งที่ไฟล์กำลังไหลเข้าเครื่องอยู่
 _LINE_END = re.compile(r"\r\n|\r|\n")
 _READ_CHUNK = 8192
+_PUMP_POLL = 0.25         # ถี่แค่ไหนที่ _pump เงยหน้าดูว่างานถูกสั่งให้เลิกอ่านหรือยัง ระหว่างที่ท่อเงียบ
 
 
 def _pump(job: "Job", proc: subprocess.Popen, secrets: list[str] | None = None) -> None:
@@ -86,7 +89,23 @@ def _pump(job: "Job", proc: subprocess.Popen, secrets: list[str] | None = None) 
         else:
             job.lines.append(text)
 
+    # ท่อจริง (มี fd) รอด้วย select ทีละช่วงสั้น ๆ แทนการบล็อกใน read ไม่มีกำหนด — งานที่ถูกยกเลิกจน
+    # process ทั้งกลุ่มหายแล้ว แต่มีตัวที่หนีออกนอกกลุ่ม (setsid) ถือปลายท่อค้างไว้ จะได้เลิกอ่านและปล่อยล็อกได้
+    # · ของปลอมในเทสที่ไม่มี fd ใช้ทางเดิม
+    try:
+        fd = stream.fileno()
+    except Exception:  # noqa: BLE001 — ไม่มี fd (ของปลอม · BytesIO) ไม่ใช่ข้อผิดพลาด
+        fd = None
     while True:
+        if fd is not None:
+            try:
+                ready, _, _ = select.select([fd], [], [], _PUMP_POLL)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                if getattr(job, "abandon_output", False):
+                    break
+                continue
         try:
             data = read(_READ_CHUNK)
         except (OSError, ValueError):   # process ตายกลางคัน — ท่อปิดไปแล้ว
@@ -120,6 +139,10 @@ class Job:
     # งานที่เงียบสนิทกับงานที่ตายไปแล้ว หน้าตาเหมือนกันเป๊ะถ้าไม่บอกเวลา — และบางขั้น
     # (verify-files ของ shard 50 GB) เงียบจริง ๆ โดยไม่มีอะไรผิด
     started_at: float = field(default_factory=time.monotonic)
+    # ผู้ใช้กดยกเลิกแล้ว — งานหลายขั้น (download → verify-files) ต้องไม่เริ่มขั้นถัดไป
+    cancel_requested: bool = False
+    # process ของงานหายหมดแล้วแต่ยังมีคนนอกกลุ่มถือท่อ — _pump เลิกรออ่าน งานจบและล็อกหลุดได้
+    abandon_output: bool = False
 
     def __setattr__(self, name: str, value) -> None:
         """งานจบ = สถานะบนดิสก์เปลี่ยนแล้ว (weight โหลดเสร็จ, server ขึ้น) — ทิ้งแคชทันที
@@ -180,21 +203,142 @@ def get(job_id: str) -> Job | None:
     return _JOBS.get(job_id)
 
 
-def cancel(job: Job) -> bool:
-    """ฆ่า process ของงานที่ยังรันอยู่ — คืน True ถ้ามีอะไรให้ฆ่า
+# ── ยกเลิกงาน ──
+#
+# audit 2026-10: cancel เดิมเรียก proc.terminate() ตัวเดียว และงานถูกสตาร์ตโดยไม่มี session ของตัวเอง
+# จึงไม่มี process group ให้ส่งสัญญาณ · ที่ตายคือ bash ของ controller เท่านั้น ลูกของมัน (docker · curl ·
+# aria2c · python ที่กำลังโหลด 70 GB) รันต่อ และยังถือปลายท่อ stdout ไว้ — _pump จึงอ่านต่อ งานค้าง
+# `running` และล็อก (เครื่อง, โมเดล) ไม่หลุดจนกว่าตัวกำพร้าจะจบเอง ขณะที่ HTTP ตอบ `cancelled: true` ไปแล้ว
+# ตอนนี้: งานรันใน session/process group ของตัวเอง · cancel ส่ง TERM ทั้งกลุ่ม รอ แล้ว KILL · รอจนกลุ่ม
+# หายจริงก่อนจะตอบว่ายกเลิกแล้ว — หรือตอบตามจริงว่ายังมี process เหลือ (แบบเดียวกับ logstream.stop)
+# คำสั่งที่สั่ง docker สร้าง container — ตัว container เป็นลูกของ dockerd ไม่ใช่ของงาน ฆ่ากลุ่มของงานแล้ว
+# `docker run -d` ของ start (และ container โหลดที่ไม่รับ SIGTERM) ยังอยู่ได้ · ผลของ cancel ต้องบอกเรื่องนี้
+MAY_LEAVE_CONTAINERS = {"start", "restart", "download", "repair", "prepare-runtime", "update-runtime"}
+CANCEL_GRACE = 3.0       # รอหลัง TERM — docker CLI ต้องมีเวลาส่งสัญญาณต่อให้ container ก่อนโดน KILL
+CANCEL_KILL_WAIT = 5.0    # รอหลัง KILL ให้ kernel เก็บกวาดและ thread ของงานปล่อยล็อก
 
-    ไม่ตั้ง exit_code เอง: ท่อปิดแล้ว _pump จะจบและ thread ของงานเป็นคนตั้ง (ผ่าน wait())
-    ตั้งจากตรงนี้ซ้อนกันจะได้ค่าสองรอบและ invalidate แคชสองครั้งโดยไม่จำเป็น
+
+def _group_of(proc) -> int | None:
+    """pgid ของกลุ่มที่เราตั้งให้ process นี้เอง — None เมื่อไม่ใช่ (ssh ของ node · ของปลอมในเทส)
+
+    ไม่ใช่กลุ่มของเรา = ห้าม killpg: จะไปโดนกลุ่มของ hub เอง
     """
-    proc = job.process
-    if not job.running or proc is None:
-        return False
-    job.lines.append("\n── ผู้ใช้กดยกเลิก ──\n")
     try:
-        proc.terminate()
-    except (OSError, ProcessLookupError):
+        pid = int(proc.pid)
+        return pid if os.getpgid(pid) == pid else None
+    except (ProcessLookupError, OSError, AttributeError, TypeError, ValueError):
+        return None
+
+
+def _alive(proc, group: int | None) -> bool:
+    """ยังมี process ของงานนี้เหลืออยู่ไหม — ทั้งกลุ่ม ไม่ใช่แค่ตัวหัว"""
+    try:
+        exited = proc.poll() is not None      # เก็บศพตัวหัวด้วย — zombie ทำให้กลุ่มดูเหมือนยังอยู่
+    except Exception:  # noqa: BLE001 — ของปลอม/ท่อพัง: ถือว่าจบ
         return False
+    if group is None:
+        return not exited
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                           # มีลูกที่เป็นของ user อื่น (sudo) — ยังอยู่ แต่เราฆ่าไม่ได้
+    except OSError:
+        return not exited
     return True
+
+
+def _signal(proc, group: int | None, sig: int) -> None:
+    try:
+        if group is not None:
+            os.killpg(group, sig)
+        elif sig == signal.SIGKILL:
+            proc.kill()
+        else:
+            getattr(proc, "terminate", proc.kill)()
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def _adopt(job: "Job", proc) -> None:
+    """ผูก process ที่เพิ่ง spawn เข้ากับงาน — ถ้าผู้ใช้กดยกเลิกไปก่อนแล้ว ฆ่าทั้งกลุ่มทันที
+
+    ช่องว่างระหว่าง Popen กับการผูก: cancel ที่มาถึงตอนนั้นมองไม่เห็น process นี้ จึงไม่ได้ฆ่ามัน
+    """
+    job.process = proc
+    if job.cancel_requested:
+        _signal(proc, _group_of(proc), signal.SIGKILL)
+
+
+def _wait_gone(proc, group: int | None, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while _alive(proc, group):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def cancel(job: Job, grace: float | None = None) -> dict:
+    """หยุดงานที่ยังรันอยู่ทั้งกลุ่ม แล้วรายงานตามที่เกิดขึ้นจริง
+
+    คืน {"cancelled", "signalled", "still_running", "lock_released", "detail"}:
+      · `cancelled` = True เฉพาะเมื่อ process ของงาน **ทุกตัว** หายแล้ว (TERM → รอ → KILL → รอ)
+      · `signalled` = มีอะไรให้ฆ่า (False = งานจบไปก่อนแล้ว)
+      · `still_running` = ส่งสัญญาณแล้วแต่ยังมี process เหลือ — ล็อกยังไม่หลุด อย่าบอกผู้ใช้ว่ายกเลิกแล้ว
+      · `lock_released` = thread ของงานตั้ง exit_code แล้ว (ล็อก (เครื่อง, โมเดล) หลุด)
+
+    ไม่ตั้ง exit_code เอง: กลุ่มตาย → ท่อปิด → _pump จบ → thread ของงานเป็นคนตั้ง ซึ่งคือจังหวะที่ล็อกหลุด
+    ตั้งจากตรงนี้ซ้อนกันจะได้ค่าสองรอบและ invalidate แคชสองครั้ง
+    """
+    if not job.running:
+        return {"cancelled": False, "signalled": False, "still_running": False,
+                "lock_released": True, "detail": "the job had already finished"}
+    job.cancel_requested = True                 # ขั้นถัดไป (หรือขั้นแรกที่ยังไม่ทัน spawn) ต้องไม่เริ่ม
+    job.lines.append("\n── ผู้ใช้กดยกเลิก ──\n")
+    proc = job.process
+    if proc is None:
+        # กดเร็วกว่าที่ thread ของงานจะ spawn — ไม่มีอะไรให้ฆ่า · thread เห็นธงแล้วจบงานเองโดยไม่เริ่ม
+        deadline = time.monotonic() + 2.0
+        while job.running and job.process is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        proc = job.process
+        if proc is None:
+            return {"cancelled": not job.running, "signalled": False, "still_running": job.running,
+                    "lock_released": not job.running,
+                    "detail": "" if not job.running else
+                    "nothing to signal — this job runs inside the hub (or has not spawned its command yet) "
+                    "and is still running"}
+    group = _group_of(proc)
+    _signal(proc, group, signal.SIGTERM)
+    gone = _wait_gone(proc, group, CANCEL_GRACE if grace is None else grace)
+    if not gone:
+        _signal(proc, group, signal.SIGKILL)
+        gone = _wait_gone(proc, group, CANCEL_KILL_WAIT)
+    if not gone:
+        job.lines.append("ยกเลิกไม่สำเร็จ: ยังมี process ของงานนี้เหลืออยู่หลัง SIGKILL — ล็อกยังไม่หลุด\n")
+        return {"cancelled": False, "signalled": True, "still_running": True, "lock_released": False,
+                "detail": "processes of this job are still alive after SIGKILL — the job is still running "
+                          "and the model stays locked; check the machine before retrying"}
+    # กลุ่มหายแล้ว — thread ของงานจะตั้ง exit_code ทันทีที่ท่อปิด · รอช่วงสั้น ๆ ให้คำตอบตรงกับสถานะล็อก
+    def settled(seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while job.running and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return not job.running
+
+    detail = ""
+    if not settled(1.5):
+        # ท่อยังไม่ปิดทั้งที่กลุ่มของงานไม่เหลือใคร = มี process ที่หนีออกนอกกลุ่ม (setsid/daemonize) ถือปลายท่ออยู่
+        # เราฆ่ามันไม่ได้ (ไม่รู้ว่าเป็นใคร) แต่ไม่ควรให้มันถือล็อกของโมเดลไว้ด้วย — เลิกอ่านผลของมัน
+        job.abandon_output = True
+        job.lines.append("มี process นอกกลุ่มของงานยังถือท่อผลลัพธ์อยู่ — เลิกอ่านแล้ว (มันอาจยังรันอยู่บนเครื่องนี้)\n")
+        detail = ("the job's own processes are gone, but something that detached from it is still alive on this "
+                  "machine — its output is no longer followed")
+        settled(1.5)
+    return {"cancelled": True, "signalled": True, "still_running": False,
+            "lock_released": not job.running, "detail": detail}
 
 
 def controller_env(options: dict | None) -> dict:
@@ -411,19 +555,26 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
         # ท่อ (ไม่ใช่ tty) ถูก block-buffer ไว้ — progress ค้างอยู่ในบัฟเฟอร์จนงานจบ
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **extra_env}
         for index, step in enumerate(steps):
+            if job.cancel_requested:
+                # ยกเลิกตกในช่องว่างระหว่างสองขั้น — ไม่มี process ให้ฆ่า แต่ขั้นถัดไปต้องไม่เริ่ม
+                job.exit_code = 130
+                return
             job.step_index = index
             if len(steps) > 1:
                 job.lines.append(f"\n── {step} ({index + 1}/{len(steps)}) ──\n")
             try:
+                # session ใหม่ = process group ของงานนี้เอง — cancel ฆ่าได้ทั้งกลุ่ม (controller + docker/
+                # curl/aria2c/python ที่มันแตกออกมา) ไม่ใช่แค่ bash ตัวหัวแล้วทิ้งตัวโหลดไว้เป็นกำพร้า
                 proc = subprocess.Popen(
                     [str(path), step], cwd=str(path.parent), env=env,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    start_new_session=True,
                 )
             except OSError as exc:
                 job.lines.append(f"เรียก controller ไม่ได้: {exc}\n")
                 job.exit_code = 127
                 return
-            job.process = proc
+            _adopt(job, proc)
             assert proc.stdout is not None
             _pump(job, proc)
             code = proc.wait()
@@ -511,13 +662,16 @@ def start_remote(node_name: str, slug: str, command: str, remote_command: str,
     self_node = node_name
 
     def run() -> None:
+        if job.cancel_requested:
+            job.exit_code = 130
+            return
         try:
             proc = stream(node, remote_command, secret_env, stdin_text=stdin_text)
         except NodeError as exc:
             job.lines.append(f"{exc}\n")
             job.exit_code = 127
             return
-        job.process = proc
+        _adopt(job, proc)
         assert proc.stdout is not None
         # กรองตั้งแต่ตอนรับ (ดู _pump) · _scrub_secrets ยังอยู่เป็นด่านสุดท้ายเผื่อค่าที่คร่อมสอง chunk
         _pump(job, proc, list((secret_env or {}).values()))
@@ -567,17 +721,21 @@ def start_shell(slug: str, command: str, script: str, cwd: str = "") -> Job:
         _ACTIVE[slug] = job.id
 
     def run() -> None:
+        if job.cancel_requested:
+            job.exit_code = 130
+            return
         try:
             proc = subprocess.Popen(
                 ["bash", "-s"], cwd=cwd or None,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True,       # กลุ่มของงานเอง — cancel ฆ่า git/pip/install.sh ที่มันแตกออกมาได้ด้วย
             )
         except OSError as exc:
             job.lines.append(f"รันไม่ได้: {exc}\n")
             job.exit_code = 127
             return
-        job.process = proc
+        _adopt(job, proc)
         assert proc.stdin is not None and proc.stdout is not None
         proc.stdin.write(script.encode("utf-8"))
         proc.stdin.close()

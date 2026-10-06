@@ -132,7 +132,7 @@ def test_a_hung_remote_job_can_be_cancelled_and_releases_the_lock(registered, mo
     assert client.post("/api/nodes/spark2/models/demo/start").status_code == 409
 
     r = client.post(f"/api/jobs/{job['id']}/cancel")
-    assert r.status_code == 200 and r.json() == {"id": job["id"], "cancelled": True}
+    assert r.status_code == 200 and r.json()["id"] == job["id"] and r.json()["cancelled"] is True
     done = wait_for_job(client, job["id"], tries=200)
     assert done["running"] is False and done["exit_code"] != 0
     assert "ยกเลิก" in done["output"]

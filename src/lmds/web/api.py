@@ -1641,20 +1641,36 @@ def create_app(token: str = "") -> FastAPI:
         """ยกเลิกงานที่ค้าง — งานที่ ssh แฮงค์ไม่มีทางจบเอง และล็อก (เครื่อง, โมเดล) ไว้ตลอดกาล
 
         เดิมไม่มีปุ่มนี้: start ที่ค้างอยู่ทำให้สั่งอะไรกับโมเดลนั้นไม่ได้อีกเลย (409 "กำลังรัน…")
-        จนกว่าจะ restart ทั้ง hub · terminate ให้ process ตาย ท่อปิด _pump จบ แล้ว exit_code ถูกตั้ง
-        ซึ่งคือจังหวะที่ล็อกถูกปล่อย
+        จนกว่าจะ restart ทั้ง hub
+
+        `cancelled: true` แปลว่า process ของงาน **ทั้งกลุ่ม** หายแล้วจริง (TERM → รอ → KILL → รอ) ไม่ใช่แค่
+        "ส่งสัญญาณไปแล้ว" — เดิมตอบ true ทั้งที่ตัวโหลดยังรันเป็นกำพร้าและล็อกยังไม่หลุด (audit 2026-10) ·
+        ยังเหลือ = `cancelled: false` + `still_running: true` + `detail` · `notes` บอกสิ่งที่การฆ่า process
+        **ไม่ได้** หยุด: container ที่ controller สั่ง docker สร้างไว้ และคำสั่งที่รันอยู่บนเครื่องอื่น
         """
         from . import jobs
 
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="ไม่พบงานนี้")
-        cancelled = jobs.cancel(job)
-        # stacked: ที่ถูกฆ่าคือ ssh ไป head — container ของ worker ที่ head สั่งไว้ยังอยู่จนกว่าจะ stop
-        if cancelled and job.node and job.command in {"start", "restart"} and _is_stacked_model(job.node, job.slug):
-            job.lines.append("stacked: the worker container(s) may still be running — "
-                             f"press stop on {job.slug} (lmds node run {job.node} stop {job.slug}) before starting again\n")
-        return {"id": job.id, "cancelled": cancelled}
+        result = jobs.cancel(job)
+        notes: list[str] = []
+        if result["signalled"]:
+            if job.node:
+                # ที่ถูกฆ่าคือ ssh บน hub — คำสั่งปลายทางไม่มี tty จึงไม่ได้ SIGHUP และมักรันต่อบนเครื่องนั้น
+                notes.append(f"only the ssh session on the hub was closed — the command may still be running on {job.node}; "
+                             f"check before starting again (lmds node run {job.node} logs {job.slug})")
+                # stacked: container ของ worker ที่ head สั่งไว้ยังอยู่จนกว่าจะ stop
+                if job.command in {"start", "restart"} and _is_stacked_model(job.node, job.slug):
+                    notes.append("stacked: the worker container(s) may still be running — "
+                                 f"press stop on {job.slug} (lmds node run {job.node} stop {job.slug}) before starting again")
+            elif job.command in jobs.MAY_LEAVE_CONTAINERS:
+                # `docker run -d` ของ start และ container download ไม่ใช่ลูกของงาน — ฆ่ากลุ่มแล้วมันยังอยู่ได้
+                notes.append("containers this command already asked docker to start are not part of the job and were "
+                             f"not stopped — check the model card and press Stop on {job.slug} if one is still up")
+        for note in notes:
+            job.lines.append(note + "\n")
+        return {"id": job.id, **result, "notes": notes}
 
     def _cached_model(name: str, slug: str) -> dict | None:
         cached = state.STORE.snapshot()["nodes"].get(name) or {}

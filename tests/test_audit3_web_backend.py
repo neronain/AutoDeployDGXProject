@@ -8,13 +8,16 @@
   1. POST /api/recipes/sync เชื่อ repo/ref จาก body → ลบ config dir · รันคำสั่งผ่าน option ของ git
   2. token ที่ไม่ใช่ ASCII → ทุกคำขอ 500 · การเดาด้วยค่าที่ไม่ใช่ ASCII ไม่ถูกนับเข้า lockout
   3. ชื่อ interface ที่ node รายงานเองลง cluster.env ดิบ ๆ → รันตอน controller source ไฟล์
+  4. cancel ฆ่าแค่ bash ของ controller → ตัวโหลดเป็นกำพร้า งานยัง running ล็อกไม่หลุด แต่ตอบว่ายกเลิกแล้ว
 """
 
 from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -640,3 +643,135 @@ def test_the_cluster_env_writer_checks_the_slug_itself(slug, monkeypatch):
     with pytest.raises(ClusterEnvError):
         write_cluster_env(slug, [group_of("n1", "n2")], "n1", None, "n1")
     assert ssh.calls == []
+
+
+# ══ 4. ยกเลิกงาน — ฆ่าทั้งกลุ่ม รอจนหายจริง แล้วค่อยบอกว่ายกเลิกแล้ว ══════════════════
+
+def _pid_alive(pid: int) -> bool:
+    """process ยังรันอยู่จริงไหม — zombie ที่รอคนเก็บไม่นับ (มันไม่ได้ทำอะไรแล้ว)"""
+    done = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    state = done.stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def _wait_dead(pid: int, seconds: float = 3.0) -> bool:
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_alive(pid)
+
+
+@pytest.fixture
+def downloading(tmp_path, monkeypatch):
+    """controller ตัวแทนของ `download` จริง: bash ที่แตกตัวโหลด (docker/curl/python) เป็นลูกแล้วรอ
+
+    คืน start(child_command) → (job, pid ของตัวโหลด, path ของ controller)
+    """
+    from lmds.hardware import serving
+    from lmds.web import jobs
+
+    monkeypatch.setattr(serving, "guard", lambda *args, **kwargs: "")      # เครื่องเทสไม่มี GPU — ไม่เกี่ยวกับข้อนี้
+    pidfile = tmp_path / "child.pid"
+    ctl = tmp_path / "bundles" / "demo" / "demo-single.sh"
+    ctl.parent.mkdir(parents=True)
+    started: list[int] = []
+
+    def start(child: str = "sleep 300", trap: str = ""):
+        ctl.write_text(f"""#!/usr/bin/env bash
+{trap}
+case "$1" in
+  download) echo "downloading 70 GB"; {child} & echo $! > {pidfile}; wait $!; echo "download finished" ;;
+  verify-files) echo "verify ok" ;;
+  start) echo "started" ;;
+esac
+""", encoding="utf-8")
+        ctl.chmod(0o755)
+        job = jobs.start("demo", "download", str(ctl))
+        deadline = time.time() + 5
+        while not pidfile.exists() or not pidfile.read_text().strip():
+            assert time.time() < deadline, "controller ไม่ได้แตกตัวโหลด"
+            time.sleep(0.02)
+        started.append(int(pidfile.read_text()))
+        return job, started[-1], ctl
+
+    yield start
+    for pid in started:                                                   # เก็บกวาดของเทสเอง ไม่ว่าเทสจะผ่านไหม
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def test_cancel_stops_the_downloader_not_just_the_controller_shell(downloading):
+    """ผู้ตรวจ: cancel ตอบ `cancelled: true` แต่ตัวโหลดยังรันเป็นกำพร้า งานยัง running และล็อกโมเดลไม่หลุด"""
+    from lmds.web import jobs
+
+    job, child, ctl = downloading()
+    client = TestClient(create_app())
+
+    result = client.post(f"/api/jobs/{job.id}/cancel").json()
+
+    assert result["cancelled"] is True, result
+    assert _wait_dead(child, 1.0), "ตัวโหลดยังรันอยู่หลัง hub ตอบว่ายกเลิกแล้ว"
+    payload = client.get(f"/api/jobs/{job.id}").json()                     # ทันที — ไม่ใช่ "อีกสักพัก"
+    assert payload["running"] is False and payload["exit_code"] not in (0, None)
+    assert result["still_running"] is False and result["lock_released"] is True
+    assert "verify ok" not in payload["output"], "ขั้นถัดไปของ chain เริ่มทั้งที่ผู้ใช้กดยกเลิก"
+    assert result["notes"] and "Stop" in result["notes"][0]                # container ที่ docker ถืออยู่ไม่ได้ถูกหยุด — บอกตามจริง
+    again = jobs.start("demo", "start", str(ctl))                          # ล็อกหลุดจริง: งานใหม่เริ่มได้
+    assert again.id != job.id
+
+
+def test_cancel_escalates_to_kill_when_the_job_ignores_term(downloading, monkeypatch):
+    from lmds.web import jobs
+
+    monkeypatch.setattr(jobs, "CANCEL_GRACE", 0.4)
+    job, child, _ctl = downloading(child="""bash -c 'trap "" TERM; sleep 300'""", trap="trap '' TERM")
+    result = TestClient(create_app()).post(f"/api/jobs/{job.id}/cancel").json()
+
+    assert result["cancelled"] is True and result["lock_released"] is True, result
+    assert _wait_dead(child, 1.0)
+    assert job.running is False
+
+
+def test_a_process_that_left_the_group_cannot_keep_the_model_locked(downloading):
+    """ตัวที่ daemonize ตัวเอง (setsid) ไม่อยู่ในกลุ่มของงาน — ฆ่ากลุ่มแล้วมันยังถือท่ออยู่
+
+    ล็อกต้องหลุดเมื่อกลุ่มของงานหาย และผลต้องบอกว่ายังมีอะไรเหลือ ไม่ใช่เงียบ
+    """
+    import sys
+
+    from lmds.web import jobs
+
+    job, escapee, ctl = downloading(child=f"{sys.executable} -c 'import os, time; os.setsid(); time.sleep(300)'")
+    result = TestClient(create_app()).post(f"/api/jobs/{job.id}/cancel").json()
+
+    assert _pid_alive(escapee), "ตัวอย่างในเทสเปลี่ยนไป — ตัวที่หนีออกนอกกลุ่มควรรอดจาก killpg"
+    assert result["cancelled"] is True and result["lock_released"] is True, result
+    assert "detached" in result["detail"]
+    assert job.running is False
+    jobs.start("demo", "start", str(ctl))
+
+
+def test_cancelling_a_finished_job_says_so_and_cancelling_a_remote_job_says_what_survives(monkeypatch):
+    """งานบนเครื่องอื่น: ที่ถูกฆ่าคือ ssh บน hub — คำสั่งบนเครื่องนั้นอาจรันต่อ ผลต้องบอก ไม่ใช่ปล่อยให้เข้าใจว่าหยุดแล้ว"""
+    import lmds.nodes
+    from lmds.web import jobs
+
+    lmds.nodes.add(lmds.nodes.Node(name="spark2", host="10.2.2.2", user="nvidia"))
+    monkeypatch.setattr("lmds.nodes.stream", lambda node, command, *_, **__: subprocess.Popen(
+        ["sleep", "60"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
+    job = jobs.start_remote("spark2", "demo", "start", "true")
+    client = TestClient(create_app())
+    deadline = time.time() + 5
+    while job.process is None and time.time() < deadline:
+        time.sleep(0.02)
+
+    result = client.post(f"/api/jobs/{job.id}/cancel").json()
+    assert result["cancelled"] is True and result["lock_released"] is True, result
+    assert any("spark2" in note and "may still be running" in note for note in result["notes"])
+
+    after = client.post(f"/api/jobs/{job.id}/cancel").json()
+    assert after["cancelled"] is False and after["signalled"] is False and after["still_running"] is False

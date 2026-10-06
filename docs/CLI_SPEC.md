@@ -526,7 +526,7 @@ POST /api/deploy/analyze · GET /api/deploy/{sid}/context · POST /api/deploy/{s
 GET/PUT /api/provider · POST /api/provider/models · POST /api/secrets/hf
 GET  /api/recipes · POST /api/recipes/sync {} (ต้นทางจาก config recipes.sync_repo/sync_ref เท่านั้น — repo/ref ใน body ที่ไม่ตรง = 400) · GET /api/scan[?all_nodes=true]
 GET  /api/bench · /api/bench/fleet · /api/bench/{slug} · DELETE /api/bench/{slug} · POST /api/bench/{slug}/run
-GET  /api/jobs/{id} · POST /api/jobs/{id}/cancel
+GET  /api/jobs/{id} · POST /api/jobs/{id}/cancel      # → {cancelled, signalled, still_running, lock_released, detail, notes[]} — cancelled:true = process ทั้งกลุ่มของงานหายจริง (TERM→KILL) · notes = สิ่งที่ไม่ได้ถูกหยุด (container ของ docker · คำสั่งบนเครื่องอื่น)
 GET  /api/models/{slug}/key · GET …/key/reveal · POST …/key {key?,force?} (409 เมื่อมีอยู่แล้วและไม่ force) · DELETE …/key
 GET  /api/audit[?lines=100&failed_only=true]          # แผง "ใครสั่งอะไร" ในหน้า Hub settings
 

@@ -3415,7 +3415,8 @@ async function cancelJob(jobId, btn) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
     killed = Boolean(d.cancelled);
-    if (!killed) showError("Job had already finished", "warn");
+    // hub ตอบ cancelled:true เฉพาะเมื่อ process ทั้งกลุ่มหายจริง — ยังเหลือ (still_running) ต้องบอกตามนั้น ไม่ใช่ "จบไปแล้ว"
+    if (!killed) showError(d.still_running ? `Could not stop the job: ${d.detail || "processes are still alive"}` : "Job had already finished", "warn");
   } catch (e) {
     showError(`Could not cancel: ${e.message}`);
   } finally {
