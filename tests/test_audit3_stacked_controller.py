@@ -586,3 +586,46 @@ def test_start_does_not_report_success_because_another_server_answers_the_port(t
     assert "Server พร้อม" not in done.stdout and "started:" not in done.stdout
     assert f"port {env['API_PORT']} is answered by something else" in done.stdout + done.stderr
     assert "some-other-model" in done.stdout + done.stderr
+
+
+# ═════════════════════ 3. test-text: exit code คือคำตอบ ═════════════════════
+def _chat(content=None, **extra) -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": content, **extra}, "finish_reason": "stop"}]}
+
+
+@pytest.mark.parametrize("reply, passes", [
+    (_chat("4"), True),
+    (_chat("", reasoning_content="2+2 … still thinking"), True),          # คิดไม่จบ — ตามเดิม ไม่ใช่ความผิดพลาด
+    (_chat(None, reasoning="2+2 … still thinking"), True),                # vLLM รุ่นใหม่ใช้ชื่อ reasoning
+    (_chat(""), False),                                                   # เคส audit: คำตอบว่าง → เดิม rc 0
+    (_chat(None), False),
+    ({"data": [{"embedding": [0.1]}]}, False),                            # JSON ที่ไม่ใช่ chat completion
+    ({"error": {"message": "model is overloaded", "code": 503}}, False),  # error object ใน 200
+    ({"object": "error", "message": "boom"}, False),
+    (b"<html>portainer</html>", False),                                   # อ่านเป็น JSON ไม่ได้
+])
+def test_test_text_fails_unless_the_model_actually_said_something(tmp_path, api, reply, passes):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    port = api(["ours"], reply)
+    done = _run(bundle, ["test-text", "--port", port], tmp_path, env={"SERVED_MODEL_NAME": "ours"})
+    assert (done.returncode == 0) is passes, f"rc={done.returncode}\n{done.stdout}\n{done.stderr}"
+    if not passes:
+        assert "test-text: OK" not in done.stdout
+
+
+def test_test_text_fails_when_it_cannot_check_the_answer_at_all(tmp_path, api):
+    """ไม่มี python3 → เดิมข้ามการตรวจทั้งก้อน พิมพ์ JSON ดิบ แล้วคืน 0"""
+    bundle = _bundle(tmp_path)
+    bin_dir = _bin(tmp_path)
+    port = api(["ours"], _chat("4"))
+    # PATH ที่มีทุกอย่างที่ controller ใช้ ยกเว้น python3
+    for tool in ("bash", "curl", "cat", "date", "dirname", "basename", "tr", "grep", "sed", "awk", "head", "tail", "id",
+                 "env"):
+        found = next((Path(d) / tool for d in ("/usr/bin", "/bin") if (Path(d) / tool).exists()), None)
+        assert found, tool
+        (bin_dir / tool).symlink_to(found)
+    done = _run(bundle, ["test-text", "--port", port], tmp_path,
+                env={"SERVED_MODEL_NAME": "ours", "PATH": str(bin_dir)})
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "python3" in done.stderr

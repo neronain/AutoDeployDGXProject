@@ -2624,7 +2624,15 @@ EOF
 }
 
 # ─────────────────────────── test-text ───────────────────────────
+# exit code คือคำตอบ — `lmds smoke`/deploy --smoke และปุ่มบนหน้าเว็บตัดสินจาก return code อย่างเดียว ไม่อ่านข้อความ
+#
+# เดิมส่วนตรวจคำตอบปิดท้ายด้วย `|| true` และทุกทางออกของมันคือ exit 0: คำตอบว่างเปล่า ("เซิร์ฟเวอร์ตอบกลับแต่ไม่มี
+# ข้อความ") · JSON ที่ไม่ใช่ chat completion · และเครื่องที่ไม่มี python3 (ข้ามการตรวจทั้งก้อน) ล้วนคืน 0 = smoke "ผ่าน"
+# ทั้งที่โมเดลไม่ได้ตอบอะไรเลย (audit 2026-10) · ผ่านได้เฉพาะเมื่อมีข้อความคำตอบ หรืออย่างน้อยมี reasoning ที่ยังคิดไม่จบ
 test_text() {
+  # ไม่มี python3 = ตรวจคำตอบไม่ได้ = บอกไม่ได้ว่าผ่าน — ล้มก่อนยิงคำขอ ดีกว่าพิมพ์ JSON ดิบแล้วคืน 0
+  command -v python3 >/dev/null 2>&1 ||
+    die "test-text: ตรวจคำตอบไม่ได้ — ไม่มี python3 บนเครื่องนี้ (sudo apt-get install -y python3) · ยังไม่ได้ทดสอบอะไร"
   assert_our_server
   # 512 ไม่ใช่ 64: โมเดลสาย reasoning ใช้ budget ไปกับ <think> ก่อน ถ้าให้น้อยจะได้
   # finish_reason "length" โดยยังไม่ทันตอบ ซึ่งดูเหมือนโมเดลพัง
@@ -2641,24 +2649,45 @@ test_text() {
   echo "$response"
   echo ""
 
-  if command -v python3 >/dev/null 2>&1; then
-    printf "%s" "$response" | python3 -c '
-import json, os, re, sys
+  # ผลของ python คือผลของคำสั่ง — ไม่มี `|| true` (pipefail ส่ง exit code ออกไปเป็นของ test-text)
+  printf "%s" "$response" | python3 -c '
+import json, re, sys
+
+def fail(why):
+    print("test-text: FAIL — " + why)
+    sys.exit(1)
+
 try:
-    msg = json.load(sys.stdin)["choices"][0]["message"]
-except (ValueError, KeyError, IndexError):
-    sys.exit(0)
+    body = json.loads(sys.stdin.read())
+except ValueError:
+    fail("เซิร์ฟเวอร์ตอบ 200 แต่เนื้อหาไม่ใช่ JSON (ข้อความดิบอยู่ด้านบน) — พอร์ตนี้อาจไม่ใช่ OpenAI API")
+if not isinstance(body, dict):
+    fail("คำตอบไม่ใช่ chat completion (ไม่ใช่ JSON object)")
+# เซิร์ฟเวอร์บางตัวตอบ 200 พร้อม error object (proxy · engine ที่ห่อ error ไว้ใน body)
+err = body.get("error")
+if err or body.get("object") == "error":
+    detail = err.get("message") if isinstance(err, dict) else err
+    fail("เซิร์ฟเวอร์ตอบ error: " + str(detail or body.get("message") or body)[:300])
+try:
+    msg = body["choices"][0]["message"]
+except (KeyError, IndexError, TypeError):
+    fail("คำตอบไม่ใช่ chat completion — ไม่มี choices[0].message (ข้อความดิบอยู่ด้านบน)")
+if not isinstance(msg, dict):
+    fail("คำตอบไม่ใช่ chat completion — choices[0].message ไม่ใช่ object")
 raw = msg.get("content") or ""
+if not isinstance(raw, str):
+    raw = json.dumps(raw, ensure_ascii=False)
+# vLLM ใช้มาแล้วสองชื่อ: reasoning_content (เก่า) และ reasoning (ใหม่)
+think = msg.get("reasoning_content") or msg.get("reasoning") or ""
 answer = re.sub(r"(?s)^.*?</think>", "", raw).strip()
 if answer:
     print("test-text: OK — " + answer[:200])
-elif raw.strip() or (msg.get("reasoning_content") or "").strip():
+elif raw.strip() or str(think).strip():
     print("test-text: โมเดลตอบแต่ยังคิดไม่จบใน 512 tokens (reasoning model)")
     print("           ไม่ใช่ความผิดพลาด — เซิร์ฟเวอร์รับงานและตอบกลับได้ปกติ")
 else:
-    print("test-text: เซิร์ฟเวอร์ตอบกลับแต่ไม่มีข้อความ — ดู log: logs 200")
-' || true
-  fi
+    fail("เซิร์ฟเวอร์ตอบกลับแต่ไม่มีข้อความ (ทั้ง content และ reasoning ว่าง) — ดู log: logs 200")
+'
 }
 
 # ─────────────────────────── test-reasoning ───────────────────────────
