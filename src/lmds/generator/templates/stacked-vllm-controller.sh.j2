@@ -1305,7 +1305,11 @@ build_common_args() {
   fi
   if [[ -n "$EXTRA_SERVE_ARGS" ]]; then
     local extra_arg
+    # set -f: แตกคำด้วยช่องว่างอย่างเดียว ไม่ขยาย * ? [ ] เป็นชื่อไฟล์ในโฟลเดอร์ที่ยืนอยู่ —
+    # `--allowed-origins *` เคยไปถึง engine เป็น `--allowed-origins MODEL_PROFILE.yaml README.md bundle.args …`
+    set -f
     for extra_arg in $EXTRA_SERVE_ARGS; do COMMON_ARGS+=("$extra_arg"); done
+    set +f
   fi
   if (( ${#EXTRA_SERVE_FLAGS[@]} > 0 )); then
     COMMON_ARGS+=("${EXTRA_SERVE_FLAGS[@]}")
