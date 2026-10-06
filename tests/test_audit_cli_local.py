@@ -647,3 +647,216 @@ def test_rebuild_leaves_an_adopted_bundle_alone(tmp_path, monkeypatch):
     result = _run(["rebuild", "coder-next"])
     _clean_refusal(result, "lmds adopt")
     assert _snapshot(bundle) == before and inspected == []
+
+
+# ═════════════════════ 3. `smoke` ต้องไม่หยุดโมเดลที่เสิร์ฟอยู่ก่อนแล้ว ═════════════════════
+# controller ปลอมที่ทำตัวเหมือนของจริงตรงจุดที่เป็นบั๊ก: `start` ปฏิเสธเมื่อ server รันอยู่ (ข้อความเดียวกับ template) ·
+# `stop` ฆ่า process ของ server จริง ๆ — "ถูกหยุดไหม" จึงดูได้จาก process ไม่ใช่จากข้อความที่ lmds พิมพ์
+SERVING_CONTROLLER = """#!/bin/bash
+echo "$1" >> "{log}"
+pid="$(cat "{pidfile}" 2>/dev/null)"
+alive() {{ [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }}
+case "$1" in
+  start)
+    if alive; then echo "ERROR: container lmds-prod กำลังรันอยู่ — รัน: $0 stop ก่อน" >&2; exit 1; fi
+    [ -n "{fail_start}" ] && {{ echo "boom" >&2; exit 9; }}
+    nohup sleep 300 >/dev/null 2>&1 &
+    echo $! > "{pidfile}"; echo started ;;
+  stop) alive && kill "$pid"; echo stopped ;;
+  test-text) alive || {{ echo "no server" >&2; exit 1; }}; echo PASS ;;
+  download|verify-files) [ "$1" = "{fail_at}" ] && exit 3; echo ok ;;
+esac
+exit 0
+"""
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+@pytest.fixture
+def prod_bundle(tmp_path):
+    """bundle `prod` ที่ลงทะเบียนกับ fleet จริง (server.meta + pid file) — `find('prod').running` มาจาก process จริง"""
+    import os
+    import signal
+    import subprocess
+
+    from lmds.fleet import run_root
+
+    directory = tmp_path / "bundles" / "prod"
+    directory.mkdir(parents=True)
+    log, pidfile = tmp_path / "controller.log", run_root() / "prod" / "server.pid"
+    pidfile.parent.mkdir(parents=True)
+    controller = directory / "prod-single.sh"
+
+    def write(fail_at: str = "", fail_start: str = "") -> None:
+        controller.write_text(SERVING_CONTROLLER.format(log=log, pidfile=pidfile, fail_at=fail_at, fail_start=fail_start),
+                              encoding="utf-8")
+        controller.chmod(0o755)
+
+    write()
+    (directory / "MODEL_PROFILE.yaml").write_text(
+        "model: {id: org/prod, served_name: prod}\nruntime: {engine: vllm}\nserving: {port: 59998}\n", encoding="utf-8")
+    (pidfile.parent / "server.meta").write_text(
+        f"slug=prod\nmodel=prod\nmodel_id=org/prod\nengine=vllm\nmode=native\nport=59998\ncontainer=\n"
+        f"pid_file={pidfile}\ncontroller={controller}\nstarted_at=2026-10-06T10:00:00\n", encoding="utf-8")
+    started: list[subprocess.Popen] = []
+
+    def serve() -> subprocess.Popen:
+        proc = subprocess.Popen(["sleep", "300"])
+        started.append(proc)
+        pidfile.write_text(str(proc.pid), encoding="utf-8")
+        return proc
+
+    def calls() -> list[str]:
+        return log.read_text(encoding="utf-8").split() if log.exists() else []
+
+    yield type("Prod", (), {"serve": staticmethod(serve), "calls": staticmethod(calls), "write": staticmethod(write),
+                            "pidfile": pidfile, "controller": controller, "log": log})
+    for proc in started:
+        proc.kill()
+        proc.wait()
+    try:   # server ที่ controller ปลอม start เอง (ถ้า smoke ไม่ได้ stop ให้)
+        os.kill(int(pidfile.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+    except (OSError, ValueError):
+        pass
+
+
+def _still_serving(proc) -> bool:
+    """process ของ server ยังอยู่จริงไหม — poll() เก็บซากลูกที่ตายแล้วด้วย (kill -0 กับ zombie ยังตอบว่าอยู่)"""
+    import time
+
+    time.sleep(0.3)
+    return proc.poll() is None
+
+
+def test_smoke_tests_a_model_that_is_already_serving_without_stopping_it(prod_bundle):
+    """เคส audit: `lmds smoke prod` กับโมเดลที่เสิร์ฟอยู่ → controller ได้รับ ['start','stop'] · start ถูกปฏิเสธ ("กำลังรันอยู่")
+    smoke จดว่าล้ม แล้ว `stop` "คืนเครื่องให้อยู่สภาพเดิม" = ฆ่าโมเดลที่ลูกค้าใช้อยู่"""
+    from lmds.fleet import find
+
+    serving = prod_bundle.serve()
+    assert find("prod").running
+    result = _run(["smoke", "prod"])
+    assert _still_serving(serving), "smoke ต้องไม่หยุดโมเดลที่รันอยู่ก่อนมันเริ่ม"
+    assert find("prod").running
+    assert prod_bundle.calls() == ["test-text"], "รันอยู่แล้ว = ไม่ download/verify/start/stop — ทดสอบกับตัวที่เสิร์ฟอยู่"
+    assert result.exit_code == 0, result.output
+    said = _flat(result.stdout)
+    assert "รันอยู่ก่อนแล้ว" in said and "ไม่หยุด" in said
+    assert "ผ่านทุกขั้น" not in said, "download/verify/start ไม่ได้ถูกพิสูจน์รอบนี้ — ห้ามรายงานว่าผ่านทุกขั้น"
+
+
+def test_smoke_reports_a_failing_test_on_a_serving_model_and_still_leaves_it_running(prod_bundle):
+    serving = prod_bundle.serve()
+    prod_bundle.controller.write_text(
+        f'#!/bin/bash\necho "$1" >> "{prod_bundle.log}"\n'
+        f'[ "$1" = stop ] && kill {serving.pid}\n[ "$1" = test-text ] && {{ echo "HTTP 500" >&2; exit 1; }}\nexit 0\n',
+        encoding="utf-8")
+    result = _run(["smoke", "prod", "--skip-download"])
+    assert result.exit_code == 2, result.output
+    assert "ติดที่'test-text'" in _flat(result.stderr)
+    assert _still_serving(serving) and prod_bundle.calls() == ["test-text"]
+
+
+def test_smoke_still_starts_and_stops_a_model_that_was_not_running(prod_bundle):
+    """ทางเดิมต้องไม่หาย: ไม่ได้รันอยู่ = เดินครบ แล้วหยุดตัวที่ *รอบนี้* start เอง"""
+    result = _run(["smoke", "prod"])
+    assert result.exit_code == 0, result.output
+    assert prod_bundle.calls() == ["download", "verify-files", "start", "test-text", "stop"]
+    assert "ผ่านทุกขั้น" in _flat(result.stdout)
+    assert not _pid_alive(int(prod_bundle.pidfile.read_text(encoding="utf-8")))
+
+
+def test_smoke_does_not_call_stop_when_it_never_got_as_far_as_start(prod_bundle):
+    """download ล้ม (ใช้เวลาเป็นชั่วโมง — ระหว่างนั้นมีคน start โมเดลได้): smoke ยังไม่ได้ start อะไร จึงไม่มีอะไรของมันให้หยุด
+    เดิมเรียก `stop` อยู่ดี = หยุดของที่คนอื่นเพิ่งเปิด"""
+    prod_bundle.write(fail_at="download")
+    result = _run(["smoke", "prod"])
+    assert result.exit_code == 2, result.output
+    assert prod_bundle.calls() == ["download"]
+
+
+def test_smoke_cleans_up_after_its_own_failed_start(prod_bundle):
+    """start ที่ *รอบนี้* สั่งแล้วล้ม อาจทิ้ง container ครึ่งตัวไว้ — ยัง stop ให้เหมือนเดิม"""
+    prod_bundle.write(fail_start="1")
+    result = _run(["smoke", "prod", "--skip-download"])
+    assert result.exit_code == 2, result.output
+    assert prod_bundle.calls() == ["start", "stop"]
+
+
+def test_deploy_smoke_on_a_bundle_that_is_serving_does_not_stop_it(prod_bundle):
+    """`deploy --smoke` ใช้ตัวเดินเดียวกัน — deploy ซ้ำของโมเดลที่เสิร์ฟอยู่ต้องไม่ทำให้มันดับ"""
+    from lmds.cli import main as cli_main
+
+    serving = prod_bundle.serve()
+    cli_main._smoke_after_deploy("prod")
+    assert _still_serving(serving) and prod_bundle.calls() == ["test-text"]
+
+
+def test_smoke_on_another_node_leaves_a_serving_model_alone(tmp_path, monkeypatch):
+    """`smoke --on <node>`: ถามเครื่องนั้นก่อน (`lmds agent info` — ตัวเดียวกับที่ hub ใช้ดูสถานะ) · สคริปต์ที่จะส่งไปทาง SSH
+    ถูกรันจริงด้วย bash ใต้ HOME ปลอม controller ปลอมจึงจดได้ว่าเครื่องนั้นถูกสั่งอะไรบ้าง"""
+    import subprocess
+    import types
+
+    home = tmp_path / "node-home"
+    bundle = home / "bundles" / "prod"
+    bundle.mkdir(parents=True)
+    log = tmp_path / "remote.log"
+    controller = bundle / "prod-single.sh"
+    controller.write_text(f'#!/bin/bash\necho "$1" >> "{log}"\n[ "$1" = start ] && {{ echo "กำลังรันอยู่" >&2; exit 1; }}\n'
+                          'echo PASS\nexit 0\n', encoding="utf-8")
+    controller.chmod(0o755)
+    node = types.SimpleNamespace(name="spark-test", target="u@spark-test")
+    running = {"value": True}
+
+    def fake_run(target, script, timeout=60, stdin_text=""):
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              env={"HOME": str(home), "PATH": "/usr/bin:/bin"})
+        return types.SimpleNamespace(exit_code=done.returncode, stdout=done.stdout, stderr=done.stderr,
+                                     ok=done.returncode == 0)
+
+    monkeypatch.setattr("lmds.nodes.find", lambda name: node if name == "spark-test" else None)
+    monkeypatch.setattr("lmds.nodes.run", fake_run)
+    monkeypatch.setattr("lmds.nodes.probe", lambda target, timeout=30: {
+        "models": [{"slug": "other", "running": True}, {"slug": "prod", "running": running["value"]}]})
+
+    result = _run(["smoke", "prod", "--on", "spark-test"])
+    assert result.exit_code == 0, result.output
+    assert log.read_text(encoding="utf-8").split() == ["test-text"]
+    assert "รันอยู่ก่อนแล้ว" in _flat(result.stdout)
+
+    log.unlink()
+    running["value"] = False
+    controller.write_text(f'#!/bin/bash\necho "$1" >> "{log}"\necho ok\nexit 0\n', encoding="utf-8")
+    result = _run(["smoke", "prod", "--on", "spark-test", "--skip-download"])
+    assert result.exit_code == 0, result.output
+    assert log.read_text(encoding="utf-8").split() == ["start", "test-text", "stop"]
+
+
+def test_smoke_on_a_node_whose_state_cannot_be_read_does_nothing_to_it(monkeypatch):
+    """ถามไม่ได้ว่ารันอยู่ไหม = ไม่รู้ว่า `stop` ตอนจบจะฆ่าอะไร — ไม่เริ่ม ไม่สั่งอะไรไปที่เครื่องนั้นเลย"""
+    import types
+
+    from lmds.nodes import NodeError
+
+    sent = []
+    monkeypatch.setattr("lmds.nodes.find", lambda name: types.SimpleNamespace(name=name, target=f"u@{name}"))
+    monkeypatch.setattr("lmds.nodes.run", lambda *a, **k: sent.append(a) or types.SimpleNamespace(
+        exit_code=0, stdout="", stderr="", ok=True))
+
+    def unreachable(target, timeout=30):
+        raise NodeError("ต่อ u@spark-test ไม่ได้: timed out")
+
+    monkeypatch.setattr("lmds.nodes.probe", unreachable)
+    result = _run(["smoke", "prod", "--on", "spark-test"])
+    _no_crash(result)
+    assert result.exit_code == 2, result.output
+    assert sent == [] and "timedout" in _flat(result.stderr)

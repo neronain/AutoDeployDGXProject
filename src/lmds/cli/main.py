@@ -3473,6 +3473,8 @@ SMOKE_STEPS = [
     ("start", "สตาร์ต server"),
     ("test-text", "ถามจริงแล้วดูว่าตอบไหม"),
 ]
+# ขั้นที่แตะไฟล์ weight หรือวงจรชีวิตของ server — ข้ามทั้งหมดเมื่อโมเดลเสิร์ฟอยู่ก่อน smoke เริ่ม (ดู _run_smoke)
+_SMOKE_LIFECYCLE = ("download", "verify-files", "start")
 
 
 @app.command()
@@ -3489,10 +3491,37 @@ def smoke(
     ทุกบั๊กใหญ่ที่เจอในรอบนี้ (image ที่ tag ไม่มีอยู่, head container ไม่เคยขึ้น,
     ชุดทดสอบไปโดนโมเดลอื่น) ผ่าน gate หมดแล้วไปตายตอนรัน
 
-    exit 0 ผ่านทุกขั้น · 2 ล้มบางขั้น (บอกว่าขั้นไหนและ log ท้าย)
+    โมเดลที่ **รันอยู่ก่อนแล้ว** ไม่ถูก start ซ้ำและไม่ถูก stop: ข้าม download/verify-files/start แล้วรันเฉพาะ test-text
+    กับตัวที่เสิร์ฟอยู่ — smoke หยุดเฉพาะ server ที่รอบนี้ start เอง · อยากพิสูจน์ครบทั้งสาย: `lmds stop <slug>` ก่อน
+
+    exit 0 ผ่านทุกขั้นที่รัน · 2 ล้มบางขั้น (บอกว่าขั้นไหนและ log ท้าย) หรืออ่านสถานะของเครื่องปลายทางไม่ได้
     """
     if _run_smoke(slug, node=node, keep=keep, skip_download=skip_download):
         raise typer.Exit(code=2)
+
+
+def _smoke_was_running(slug: str, node: str) -> bool:
+    """โมเดลนี้เสิร์ฟอยู่ *ก่อน* smoke แตะอะไรไหม — ตัวตัดสินเดียวกับที่ `lmds ps` และ hub ใช้
+
+    เครื่องนี้: `fleet.find()` (pid/container จริง) · เครื่องอื่น: `lmds agent info` ของเครื่องนั้น · ถามไม่ได้ = NodeError
+    ขึ้นไปให้ผู้เรียกหยุด — เดาว่า "ไม่ได้รัน" คือทางที่จบด้วยการ stop โมเดลของคนอื่น
+    """
+    if node:
+        from lmds.nodes import find, probe
+
+        target = find(node)
+        if target is None:
+            err_console.print(f"[red]ไม่รู้จักเครื่อง '{node}'[/red]")
+            raise typer.Exit(code=1)
+        models = (probe(target) or {}).get("models") or []
+        return any(m.get("slug") == slug and m.get("running") for m in models if isinstance(m, dict))
+    from lmds.fleet import find
+
+    server = find(slug)
+    if server is None or not server.controller:
+        err_console.print(f"[red]ไม่พบ bundle: {slug}[/red]")
+        raise typer.Exit(code=1)
+    return bool(getattr(server, "running", False))
 
 
 def _run_smoke(slug: str, node: str = "", keep: bool = False, skip_download: bool = False) -> str:
@@ -3502,10 +3531,36 @@ def _run_smoke(slug: str, node: str = "", keep: bool = False, skip_download: boo
     เป็น exit code คนละชุด — ถ้า deploy ไปเรียกคำสั่ง `smoke()` ตรง ๆ typer.Exit(2) ของมัน
     จะโผล่ออกมาเป็น exit 2 ของ deploy ซึ่งสัญญาไว้ว่าแปลว่า "ไม่ผ่าน quality gates"
     คนละเรื่องกันคนละทางแก้ (ของ smoke คือรันแล้วพัง ของ gates คือสคริปต์ผิดตั้งแต่ยังไม่รัน)
+
+    กติกาของ stop: **หยุดเฉพาะ server ที่รอบนี้สั่ง start เอง** · เดิมเรียก `stop` เสมอ "คืนเครื่องให้อยู่สภาพเดิม" โดยไม่เคยดูว่า
+    สภาพเดิมคืออะไร — `lmds smoke <slug>` กับโมเดลที่เสิร์ฟอยู่: `start` ของ controller ปฏิเสธ ("กำลังรันอยู่ — รัน stop ก่อน")
+    smoke จดว่าล้มแล้ว stop มันทิ้ง (audit 2026-10-06) · controller ที่ start ซ้ำได้ยิ่งแย่: รายงาน "ผ่านทุกขั้น" แล้วฆ่าเหมือนกัน
     """
-    steps = [s for s in SMOKE_STEPS if not (skip_download and s[0] in ("download", "verify-files"))]
     where = node or "เครื่องนี้"
-    console.print(f"[bold]smoke test {slug}[/bold] บน {where} — {len(steps)} ขั้น")
+    try:
+        was_running = _smoke_was_running(slug, node)
+    except typer.Exit:
+        raise           # ไม่รู้จักเครื่อง / ไม่พบ bundle = input ผิด (exit 1) ตามเดิม
+    except Exception as exc:  # noqa: BLE001 — NodeError/SSH: อ่านสถานะไม่ได้ = ไม่รู้ว่า stop ตอนจบจะฆ่าอะไร
+        from rich.markup import escape
+
+        err_console.print(f"[red]smoke test ไม่ได้เริ่ม — อ่านสถานะของ {slug} บน {where} ไม่ได้:[/red] {escape(str(exc))}")
+        err_console.print("[dim]ไม่ได้สั่งอะไรไปที่เครื่องนั้น (ไม่รู้ว่าโมเดลรันอยู่ไหม จึงไม่เสี่ยง start/stop)[/dim]")
+        return "status"
+
+    steps = [s for s in SMOKE_STEPS if not (skip_download and s[0] in ("download", "verify-files"))]
+    if was_running:
+        # รันอยู่แล้ว = ไฟล์ครบพอให้ engine โหลดขึ้นมาเสิร์ฟ ซึ่งเป็นหลักฐานที่แรงกว่า verify-files · download/verify-files
+        # ถูกข้ามด้วย: download เขียนไฟล์ใต้ server ที่ mmap/เปิดไฟล์นั้นอยู่ได้ (ไฟล์ที่ไม่ครบจะถูกโหลดทับ) และ verify-files
+        # hash weight เป็นร้อย GB แย่ง page cache กับโมเดลบนเครื่อง unified memory — ไม่มีอะไรในสองขั้นนี้ที่คุ้มกับการ
+        # รบกวนของที่ลูกค้าใช้อยู่ · อยากตรวจไฟล์: `lmds repair <slug>` ตอนหยุดแล้ว
+        steps = [s for s in steps if s[0] not in _SMOKE_LIFECYCLE]
+        console.print(f"[bold]smoke test {slug}[/bold] บน {where} — [yellow]โมเดลนี้รันอยู่ก่อนแล้ว[/yellow]: "
+                      f"ทดสอบกับตัวที่เสิร์ฟอยู่ {len(steps)} ขั้น · ไม่ start ซ้ำ และไม่หยุดมันตอนจบ")
+        console.print("[dim]ข้าม download / verify-files / start (ไม่แตะไฟล์ weight ใต้ server ที่เสิร์ฟอยู่) — "
+                      f"พิสูจน์ครบทั้งสาย: lmds stop {slug} แล้วสั่ง smoke ใหม่[/dim]")
+    else:
+        console.print(f"[bold]smoke test {slug}[/bold] บน {where} — {len(steps)} ขั้น")
 
     def run_step(command: str) -> tuple[int, str]:
         if node:
@@ -3538,8 +3593,11 @@ def _run_smoke(slug: str, node: str = "", keep: bool = False, skip_download: boo
         return proc.returncode, proc.stdout + proc.stderr
 
     failed_at = ""
+    started_here = False        # รอบนี้สั่ง `start` ไปแล้วหรือยัง — สำเร็จหรือล้มก็นับ (ล้มกลางทางทิ้ง container ครึ่งตัวได้)
     for index, (command, what) in enumerate(steps, 1):
         console.print(f"\n[bold]{index}/{len(steps)}[/bold] {command} — [dim]{what}[/dim]")
+        if command == "start":
+            started_here = True
         code, output = run_step(command)
         tail = "\n".join(l for l in output.strip().splitlines() if l.strip())[-1200:]
         if code != 0:
@@ -3551,14 +3609,24 @@ def _run_smoke(slug: str, node: str = "", keep: bool = False, skip_download: boo
         last = tail.splitlines()[-1] if tail else ""
         console.print(f"[green]ผ่าน[/green] [dim]{last[:110]}[/dim]")
 
-    # หยุด server เสมอแม้ขั้นก่อนหน้าจะล้ม — ไม่งั้น smoke test ทิ้งของค้างไว้บนเครื่อง
-    if not keep and any(c == "start" for c, _ in steps):
-        console.print("\n[dim]stop — คืนเครื่องให้อยู่สภาพเดิม (ใช้ --keep ถ้าอยากให้รันต่อ)[/dim]")
+    # หยุด server ที่รอบนี้ start เองเสมอ แม้ขั้นหลังจากนั้นจะล้ม — ไม่งั้น smoke test ทิ้งของค้างไว้บนเครื่อง ·
+    # ไม่เคยไปถึง start (download/verify ล้ม) = ไม่มีอะไรของเราให้หยุด: download ใช้เวลาเป็นชั่วโมง ของที่รันอยู่ตอนนั้น
+    # คือของที่คนอื่นเปิดระหว่างรอ
+    if started_here and not keep:
+        console.print("\n[dim]stop — หยุดตัวที่ smoke รอบนี้ start เอง (ใช้ --keep ถ้าอยากให้รันต่อ)[/dim]")
         run_step("stop")
 
     if failed_at:
         err_console.print(f"\n[red]smoke test ไม่ผ่าน — ติดที่ '{failed_at}'[/red]")
+        if was_running:
+            err_console.print(f"[dim]{slug} ยังรันอยู่ตามเดิม — smoke ไม่ได้หยุดมัน[/dim]")
         return failed_at
+    if was_running:
+        ran = ", ".join(c for c, _ in steps) or "—"
+        console.print(f"\n[green]smoke test ผ่าน ({ran})[/green] — {slug} ที่รันอยู่บน {where} ตอบได้จริง · ไม่หยุดมัน")
+        console.print("[yellow]ที่พิสูจน์คือตัวที่รันอยู่ ซึ่งใช้ controller และค่าของรอบ start ก่อน[/yellow] — download / "
+                      "verify-files / start ของ bundle บนดิสก์ตอนนี้ยังไม่ได้ถูกพิสูจน์ (มีผลเมื่อ restart)")
+        return ""
     console.print(f"\n[green]smoke test ผ่านทุกขั้น[/green] — {slug} รันได้จริงบน {where}")
     return ""
 

@@ -121,7 +121,9 @@ Options:
    การเปิด `--topology` ที่นี่จะชวนให้พิมพ์ `--topology stacked` แล้วโดนปฏิเสธ
 9. **`--smoke`** — opt-in เสมอ ไม่มีโหมด opt-out: smoke โหลด weight จริงหลายสิบ GB · `deploy` เป็นทางเดินที่ hub/หน้าเว็บ/สคริปต์
    เรียกด้วย `--yes` อยู่แล้ว · และ deploy บน hub มักสร้าง bundle ให้ *เครื่องอื่น* (hub อาจไม่มี GPU) — เปิดเป็นค่าเริ่มต้น
-   คือทำให้ทางเดิน fleet ผิดทั้งเส้น · ใช้ตัวเดินขั้นเดียวกับ `lmds smoke` (หยุด server เสมอแม้ล้มกลางทาง) ·
+   คือทำให้ทางเดิน fleet ผิดทั้งเส้น · ใช้ตัวเดินขั้นเดียวกับ `lmds smoke` (หยุด server ที่รอบนี้ start เองเสมอแม้ล้มกลางทาง ·
+   โมเดลที่รันอยู่ก่อนแล้ว — deploy ซ้ำของตัวที่เสิร์ฟอยู่ — ไม่ถูก start ซ้ำ/ไม่ถูก stop: รันแค่ `test-text` กับตัวที่เสิร์ฟอยู่ แล้วเตือนว่า
+   bundle ที่เพิ่ง generate ยังไม่ถูกพิสูจน์จนกว่าจะ restart · exit ยังเป็น `0` เมื่อ test ผ่าน) ·
    คู่กับ `--also-stacked` จะ smoke เฉพาะใบ single แล้วบอกว่าข้ามใบ stacked เพราะอะไร (stacked ต้องตั้ง
    MASTER_IP/WORKER_IP + กุญแจ head→worker ก่อน — ยิงทันทีหลัง generate คือล้มที่ `sync-worker` ทุกครั้ง)
 
@@ -219,7 +221,7 @@ lmds enable <slug> [--now] [--timeout SEC] [--system]   # ค่าเริ่�
 lmds disable <slug>
 lmds repair <slug> [--force]  # download (resume) → verify-files · ปฏิเสธบน control plane
 lmds rebuild <slug> [--output DIR]   # in-place ตามค่าเดิม · ไม่เรียก LLM
-lmds smoke <slug> [--on NODE] [--keep] [--skip-download]   # exit 0/2 · หยุด server เสมอแม้ล้ม
+lmds smoke <slug> [--on NODE] [--keep] [--skip-download]   # exit 0/2 · หยุดเฉพาะ server ที่รอบนี้ start เอง (ดูข้อ smoke)
 lmds remove <slug> [--keep-weights] [-y] [--dry-run]
 ```
 
@@ -231,6 +233,12 @@ lmds remove <slug> [--keep-weights] [-y] [--dry-run]
 - **คำสั่งหลัง start อ่านสถานะจริงจาก `server.meta`** เฉพาะตอนเซิร์ฟเวอร์ยังรันอยู่ · flag ที่ระบุเองชนะ · `start`/`restart` ไม่สืบทอด
 - **container ที่ไม่ได้มาจาก lmds**: `discover()` รับเฉพาะ image ที่ตรง engine ที่รู้จัก (vLLM/llama.cpp/Ollama/TGI) `external=True` ·
   `stop` ใช้ `docker stop` · `enable` สร้าง unit `docker start <container>`
+- **smoke**: ดูก่อนว่าโมเดลรันอยู่ไหม (เครื่องนี้ `fleet.find().running` · `--on` ใช้ `lmds agent info` ของเครื่องนั้น) ·
+  **ไม่ได้รัน** → `download → verify-files → start → test-text → stop` · `stop` ถูกสั่งเฉพาะเมื่อรอบนี้ไปถึงขั้น `start` แล้ว
+  (สำเร็จหรือล้มก็ตาม · `--keep` = ไม่ stop) — ล้มที่ download/verify-files ไม่สั่ง stop · **รันอยู่ก่อนแล้ว** → ข้าม
+  download/verify-files/start ไม่ stop ไม่ว่ากรณีใด รันเฉพาะ `test-text` กับตัวที่เสิร์ฟอยู่ ผ่าน = exit `0` พร้อมบอกว่าพิสูจน์ได้แค่
+  ตัวที่รันอยู่ (ไม่ขึ้น "ผ่านทุกขั้น") · ล้ม = exit `2` โมเดลยังรันอยู่ · อ่านสถานะเครื่องปลายทางไม่ได้ = exit `2` ไม่สั่งอะไรไป ·
+  ไม่รู้จักเครื่อง / ไม่พบ bundle = exit `1`
 - **rebuild**: สร้าง *ใบที่สั่ง* ใหม่ที่เดิม — ชื่อโฟลเดอร์ของ bundle ถูกส่งให้ renderer ตรง ๆ (ไม่คิด slug ใหม่จาก repo id: ใบ `--name`
   และใบ `-stacked` ถูกเขียนทับที่ตัวเอง) · inspect ซ้ำจาก Hub ที่ revision เดิม ไม่เรียก LLM · ต่อคีย์ของ `MODEL_PROFILE.yaml`:
 
