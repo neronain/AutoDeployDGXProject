@@ -461,10 +461,19 @@ lmds watchdog arm <SLUG> · disarm <SLUG> · status · run <SLUG>
 service** ให้ถ้ามี (เครื่องใน LXC/Docker ที่ไม่มี init เต็มใช้ `run` ใต้ตัวคุม process อะไรก็ได้)
 
 - **opt-in ต่อ slug เท่านั้น ไม่มีอะไรเปิดเอง** — LMDS คุมเครื่องที่มีโมเดลของลูกค้ารันอยู่ก่อนแล้ว
-- **ปฏิเสธตอน arm**: container ที่ไม่ได้มาจาก LMDS (`external`/`adopt`) · ไม่มีทะเบียน · โมเดล embedding/rerank
+- **ปฏิเสธตอน arm**: container ที่ไม่ได้มาจาก LMDS (`external`) · bundle ที่ `lmds adopt` รับเข้ามา (`*-adopted.sh`) ·
+  ไม่มีทะเบียน · โมเดล embedding/rerank · bundle ที่ adopt เปิดได้ด้วย **`arm <SLUG> --allow-adopted`** เท่านั้น
+  (restart ของมันคือ `docker rm -f` + รันคำสั่งใหม่บน container ของลูกค้า) · ลูปที่เปิดไว้ก่อนมีกติกานี้ได้ `blocked` ไม่ restart
+- **คนสั่ง `lmds stop` = watchdog ของตัวนั้นพัก** (`paused: stopped by operator at <เวลา>`) จนกว่าจะ `lmds start`/`restart`
+  หรือเห็นว่าโมเดลกลับมารันเอง · โมเดลที่ตายเองยังถูก restart ตามเดิม
+- **probe ยิงที่อยู่ที่ bundle ผูกจริง** (`lmds set --bind <ip>` → IP นั้น · 0.0.0.0/ไม่ตั้ง → 127.0.0.1) เหมือน `lmds ps`
 - **เพดาน restart ต่อกรอบเวลาแล้ว `gave_up` ถาวร** (ยังตรวจ ยังรายงาน แต่ไม่ restart อีก) · backoff ระหว่างครั้ง ·
-  settle หลัง restart · **4xx = ยังไม่ตาย** (404/401 → `misconfigured` ไม่ restart)
-- ทุก restart ลง `lmds audit` พร้อมเหตุผล · ยังไม่มี REST — CLI อย่างเดียว
+  settle หลัง restart ที่สำเร็จ · restart ที่ controller ล้มถูกจดว่าล้ม · **4xx = ยังไม่ตาย** (404/401 → `misconfigured` ไม่ restart)
+- **`status` ไม่เชื่อไฟล์สถานะอย่างเดียว**: พิมพ์เวลา probe ล่าสุด/สำเร็จล่าสุด (`no probe has succeeded yet` เมื่อยังไม่เคย) ·
+  ถาม `systemctl --user is-active` ทุกครั้ง (ถามไม่ได้ = `unknown`) · เตือน linger · `--json` มีฟิลด์เดียวกัน
+  (`never_succeeded` · `probe_overdue` · `paused` · `blocked` · `restarts_failed` · `service`)
+- **`arm --service` ปฏิเสธเมื่อ linger ปิด** (service จะตายพร้อมสาย SSH) พร้อมคำสั่ง `sudo loginctl enable-linger <user>`
+- ทุก restart ลง `lmds audit` พร้อมเหตุผล (รวม `WATCHDOG-PAUSE`/`RESUME`/`SKIPPED`) · ยังไม่มี REST — CLI อย่างเดียว
 
 ## `lmds web`
 
