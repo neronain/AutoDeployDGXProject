@@ -44,6 +44,9 @@ class GgufVariant(BaseModel):
     # None = ยังไม่ได้อ่าน header ของไฟล์นี้
     is_standalone_draft: Optional[bool] = None
     parts: list[GgufPart] = []  # ว่าง = ไฟล์เดียว; split = ทุก part เรียงลำดับ
+    # split GGUF ที่ repo มีไม่ครบชุด: เลข part ที่ขาด (ชื่อไฟล์บอกเองว่าต้องมีกี่ part: -00001-of-00003)
+    # ไม่ว่าง = llama.cpp โหลดไม่ได้ — ห้ามเอาขนาดรวมของ part ที่เหลือไปตอบว่า "fits"
+    missing_parts: list[int] = []
 
     @property
     def all_parts(self) -> list[GgufPart]:

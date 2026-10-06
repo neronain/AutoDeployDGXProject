@@ -33,6 +33,7 @@ NO_ROOT_CHECKPOINT = "no-root-checkpoint"  # .safetensors อยู่แต่�
 NO_CONFIG = "no-config"                    # มี weight ที่รากแต่ไม่มี config.json
 NON_LLM_GGUF = "non-llm-gguf"              # GGUF ที่ general.architecture ไม่ใช่ LLM — city96/FLUX.1-dev-gguf
 NO_SERVING_MODE = "no-serving-mode"        # งานที่ LMDS ไม่มีโหมดเสิร์ฟ (TTS · ASR · classifier …) — task == "other"
+INCOMPLETE_GGUF = "incomplete-gguf"        # split GGUF ที่ repo มีไม่ครบทุก part
 
 # จับเป็น token คั่นด้วย - _ . หรือหัว/ท้ายชื่อ — ไม่จับกลางคำ
 _MLX_NAME_RE = re.compile(r"(?:^|[-_.])mlx(?:[-_.]|$)", re.IGNORECASE)
@@ -195,6 +196,7 @@ _LABELS = {
     NO_CONFIG: "ไม่มี config.json ที่ราก repo",
     NON_LLM_GGUF: "GGUF ที่ไม่ใช่ LLM",
     NO_SERVING_MODE: "งานที่ LMDS ไม่มีโหมดเสิร์ฟ",
+    INCOMPLETE_GGUF: "split GGUF ไม่ครบชุด",
 }
 _SERVES = "LMDS เสิร์ฟ LLM แบบ chat · embedding · rerank (vLLM/SGLang จาก safetensors · llama.cpp จาก GGUF)"
 
@@ -283,10 +285,18 @@ def _why_no_serving_mode(report, evidence: str) -> str:
     )
 
 
+def _why_incomplete_gguf(report, evidence: str) -> str:
+    return (
+        f"ไฟล์ GGUF ที่เลือกของ {report.repo_id} เป็น split ที่ repo มีไม่ครบชุด — LMDS deploy ไม่ได้ · หลักฐาน: {evidence} · "
+        "llama.cpp ต้องมีทุก part ของ split GGUF ถึงจะโหลดได้ (ชื่อไฟล์ -0000N-of-0000M บอกจำนวนที่ต้องมี) — "
+        f"{_wasted_download(report)}"
+    )
+
+
 _REASONS = {
     MLX: _why_mlx, EXL2: _why_exl, EXL3: _why_exl, DIFFUSERS: _why_diffusers, ADAPTER: _why_adapter,
     NO_WEIGHTS: _why_no_weights, NO_ROOT_CHECKPOINT: _why_no_root_checkpoint, NO_CONFIG: _why_no_config,
-    NON_LLM_GGUF: _why_non_llm_gguf, NO_SERVING_MODE: _why_no_serving_mode,
+    NON_LLM_GGUF: _why_non_llm_gguf, NO_SERVING_MODE: _why_no_serving_mode, INCOMPLETE_GGUF: _why_incomplete_gguf,
 }
 # รูปแบบที่ "weight เป็นของโมเดลเดียวกันแต่คนละภาชนะ" — ทางออกคือรุ่นอื่นของโมเดลเดียวกัน
 _REQUANTIZED = (MLX, EXL2, EXL3)
@@ -326,6 +336,14 @@ def unsupported_alternatives(report) -> list[str]:
         return [
             f"{_SERVES} — งานอื่นใช้รันไทม์ของมันเอง",
             "ถ้าจัดประเภทผิด (โมเดลนี้ chat/embed/rerank ได้จริง): lmds deploy <repo> --task generate|embed|rerank",
+        ]
+    if kind == INCOMPLETE_GGUF:
+        whole = [v.filename for v in getattr(report, "gguf_variants", [])
+                 if not v.is_mmproj and not v.is_mtp and not v.missing_parts]
+        return [
+            "เลือก quant อื่นของ repo นี้ที่ครบชุด: " + ", ".join(whole[:4]) if whole
+            else "repo นี้ไม่มี GGUF ที่ครบชุดเลย — หา repo อื่นของโมเดลเดียวกัน",
+            "หรือแจ้งเจ้าของ repo ว่า upload ไม่ครบ (part ที่ขาดอยู่ในหลักฐานข้างบน)",
         ]
     if kind in (NO_WEIGHTS, NO_ROOT_CHECKPOINT, NO_CONFIG):
         out = ["ใช้ repo ของโมเดลเดียวกันที่มี checkpoint ที่ราก (config.json + model*.safetensors → vLLM/SGLang) "

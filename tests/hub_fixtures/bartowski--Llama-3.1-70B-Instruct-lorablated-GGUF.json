@@ -1,0 +1,100 @@
+{
+ "repo": "bartowski/Llama-3.1-70B-Instruct-lorablated-GGUF",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "bartowski/Llama-3.1-70B-Instruct-lorablated-GGUF",
+  "sha": "607719dbe3a3abed9590169d9428e1c0fe1012ed",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "gguf",
+   "lorablated",
+   "uncensored",
+   "mergekit",
+   "text-generation",
+   "base_model:mlabonne/Llama-3.1-70B-Instruct-lorablated",
+   "base_model:quantized:mlabonne/Llama-3.1-70B-Instruct-lorablated",
+   "license:llama3.1",
+   "endpoints_compatible",
+   "region:us",
+   "imatrix",
+   "conversational"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "llama3.1",
+   "base_model": "mlabonne/Llama-3.1-70B-Instruct-lorablated",
+   "pipeline_tag": "text-generation"
+  },
+  "siblings": [
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-IQ2_M.gguf", "size": 24119298848, "lfs": { "sha256": "4745cd52cf566be8da2efbeb24f2a6f13221dedd04c932d2828bc1cf83a886d7", "size": 24119298848 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-IQ2_XS.gguf", "size": 21142113056, "lfs": { "sha256": "8c7517faa86329c097456993595697e0a14ef1d6bed1b253afa2f21cc6c9fcfa", "size": 21142113056 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-IQ2_XXS.gguf", "size": 19097389856, "lfs": { "sha256": "8f36f2d6aad9cd369328db0d56494b9fc2fa9f8c9918c997a2237f3206ca26a6", "size": 19097389856 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-IQ3_M.gguf", "size": 31937039136, "lfs": { "sha256": "175a32aa3534937ffd817a8d643214a9e352088b93225d67c4752f4ca2c7e17a", "size": 31937039136 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-IQ3_XXS.gguf", "size": 27469499168, "lfs": { "sha256": "6e5def15845005e00c14f721e382144916a3d375bbd696ff0f49022ac55bfdf8", "size": 27469499168 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-IQ4_XS.gguf", "size": 37902666528, "lfs": { "sha256": "f19f442a32a0ec91d426dc5a73af37945d4cad2f401b2a2859ee58306d8a1bab", "size": 37902666528 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q2_K.gguf", "size": 26375113504, "lfs": { "sha256": "f8fd4db44860d3ba08e584d180225b9fab324627984d4cbfb80a6756cbe00cff", "size": 26375113504 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q2_K_L.gguf", "size": 27401161504, "lfs": { "sha256": "98533fe3ef7657bb66cab178269b2c5903766b488587df99f00fc9482c26322c", "size": 27401161504 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q3_K_L.gguf", "size": 37140597536, "lfs": { "sha256": "e0bf0245fd3861d7697ec3e1561daeb6e978f6616462c1f1a29d41b3114829b3", "size": 37140597536 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q3_K_M.gguf", "size": 34267499296, "lfs": { "sha256": "441ffc2fb1037b585287a8193afa48481dc13e70e14767a21699406cbdf4b797", "size": 34267499296 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q3_K_XL.gguf", "size": 38059936544, "lfs": { "sha256": "2242355e1b2521fd804964e3cd4bce015e843b8afed0672ad06dd27e19861167", "size": 38059936544 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q4_K_L.gguf", "size": 43300195104, "lfs": { "sha256": "1a29eb96cce0be3cecd150a28d05dace5dbfc9b2033245353fd7f592c3bc7bdb", "size": 43300195104 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q4_K_M.gguf", "size": 42520398624, "lfs": { "sha256": "75eb8bc2c2ed847ec8cf37dd7548d3903b1034df73cdb226fa923d0fb1aa00d0", "size": 42520398624 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q5_K_M/Llama-3.1-70B-Instruct-lorablated-Q5_K_M-00001-of-00002.gguf", "size": 39882565696, "lfs": { "sha256": "86e8d6c2ed8cd2128781e74e6db48dff583ccef52a13ee12efb065de175e8c8d", "size": 39882565696 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q5_K_M/Llama-3.1-70B-Instruct-lorablated-Q5_K_M-00002-of-00002.gguf", "size": 10067256224, "lfs": { "sha256": "b459c9b4a631e065e58bc98177a4a358bdf71969fcebfb2d445c95496f7ca0fe", "size": 10067256224 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q6_K/Llama-3.1-70B-Instruct-lorablated-Q6_K-00001-of-00002.gguf", "size": 39829951776, "lfs": { "sha256": "91c03af7f98e82896f63d0fa861e8556aa329266aecc5e2363f388c399481a3a", "size": 39829951776 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q6_K/Llama-3.1-70B-Instruct-lorablated-Q6_K-00002-of-00002.gguf", "size": 18058196672, "lfs": { "sha256": "41a7396a5ced5827ca44b9a89882be90a33f6b3de0c287dcdc25d2fb5a392bc3", "size": 18058196672 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q8_0/Llama-3.1-70B-Instruct-lorablated-Q8_0-00001-of-00002.gguf", "size": 39766538720, "lfs": { "sha256": "5399123132a1aae2d8303c8ff3da52e34826967dca42072c4bb289395c9ac29d", "size": 39766538720 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated-Q8_0/Llama-3.1-70B-Instruct-lorablated-Q8_0-00002-of-00002.gguf", "size": 35208516096, "lfs": { "sha256": "9c428d7d4126b7880127b4b1fab7cb41cb9d1ab8e8c4b2bf61ae594b92fdedaa", "size": 35208516096 }},
+   {"rfilename": "Llama-3.1-70B-Instruct-lorablated.imatrix", "size": 24922298}
+  ]
+ },
+ "files": {},
+ "gguf": {
+  "Llama-3.1-70B-Instruct-lorablated-Q8_0/Llama-3.1-70B-Instruct-lorablated-Q8_0-00001-of-00002.gguf": {
+   "tensor_count": 374,
+   "metadata": {
+    "general.architecture": "llama",
+    "general.type": "model",
+    "general.name": "Llama 3.1 70B Instruct Abliterated",
+    "general.finetune": "Instruct-abliterated",
+    "general.basename": "Llama-3.1",
+    "general.size_label": "70B",
+    "general.license": "llama3.1",
+    "general.base_model.count": 1,
+    "general.base_model.0.name": "Meta Llama 3.1 70B Instruct",
+    "general.base_model.0.organization": "Meta Llama",
+    "general.base_model.0.repo_url": "https://huggingface.co/meta-llama/Meta-Llama-3.1-70B-Instruct",
+    "general.tags": [
+     "abliterated",
+     "uncensored",
+     "mergekit"
+    ],
+    "llama.block_count": 80,
+    "llama.context_length": 131072,
+    "llama.embedding_length": 8192,
+    "llama.feed_forward_length": 28672,
+    "llama.attention.head_count": 64,
+    "llama.attention.head_count_kv": 8,
+    "llama.rope.freq_base": 500000.0,
+    "llama.attention.layer_norm_rms_epsilon": 9.999999747378752e-06,
+    "general.file_type": 7,
+    "llama.vocab_size": 128256,
+    "llama.rope.dimension_count": 128,
+    "tokenizer.chat_template": "{{- bos_token }}\n{%- if custom_tools is defined %}\n    {%- set tools = custom_tools %}\n{%- endif %}\n{%- if not tools_in_user_message is defined %}\n    {%- set tools_in_user_message = true %}\n{%- endif %}\n{%- if not date_string is defined %}\n    {%- set date_string = \"26 Jul 2024\" %}\n{%- endif %}\n{%- if not tools is defined %}\n    {%- set tools = none %}\n{%- endif %}\n\n{#- This block extracts the sy",
+    "general.quantization_version": 2,
+    "quantize.imatrix.file": "/models_out/Llama-3.1-70B-Instruct-abliterated-GGUF/Llama-3.1-70B-Instruct-abliterated.imatrix",
+    "quantize.imatrix.dataset": "/training_dir/calibration_datav3.txt",
+    "quantize.imatrix.entries_count": 560,
+    "quantize.imatrix.chunks_count": 125,
+    "split.no": 0,
+    "split.count": 2,
+    "split.tensors.count": 724
+   }
+  }
+ }
+}

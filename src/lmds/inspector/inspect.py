@@ -10,7 +10,8 @@ from lmds.resolver import ModelSource
 import re
 
 from .formats import (
-    ADAPTER, DIFFUSERS, MLX, NO_CONFIG, NO_ROOT_CHECKPOINT, NO_SERVING_MODE, NO_WEIGHTS, NON_LLM_GGUF,
+    ADAPTER, DIFFUSERS, INCOMPLETE_GGUF, MLX, NO_CONFIG, NO_ROOT_CHECKPOINT, NO_SERVING_MODE, NO_WEIGHTS,
+    NON_LLM_GGUF,
     exl_evidence, mlx_evidence, mlx_quantization, unsupported_label,
 )
 from .gguf import GgufInfo, GgufParseError, parse_gguf
@@ -789,6 +790,7 @@ def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -
     """รวม split GGUF (-00001-of-N) เป็น variant เดียว — ขนาดรวมทุก part, download/verify ครบชุด"""
     singles: list[GgufVariant] = []
     groups: dict[str, list[tuple[int, GgufPart]]] = {}
+    totals: dict[str, int] = {}
 
     for name, size, sha in sorted(gguf_files):
         base = name.rsplit("/", 1)[-1]
@@ -797,6 +799,7 @@ def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -
         if match:
             key = name[: len(name) - len(base)] + match.group("base")
             groups.setdefault(key, []).append((int(match.group("idx")), part))
+            totals[key] = max(totals.get(key, 0), int(match.group("total")))
         else:
             singles.append(
                 GgufVariant(
@@ -808,16 +811,21 @@ def _group_gguf_variants(gguf_files: list[tuple[str, int | None, str | None]]) -
                 )
             )
 
-    for parts_list in groups.values():
+    for key, parts_list in groups.items():
         parts_list.sort(key=lambda item: item[0])
         parts = [p for _, p in parts_list]
         sizes = [p.size_bytes for p in parts if p.size_bytes is not None]
+        # ชื่อไฟล์บอกเองว่าชุดนี้ต้องมีกี่ part — เดิมไม่เคยเทียบ: part 1 กับ 3 จาก 3 กลายเป็น variant เดียว
+        # ไม่มีคำเตือน ขนาดรวมขาดไปหนึ่ง part แล้วตอบ "fits" (audit 2026-10-06)
+        have = {index for index, _ in parts_list}
+        total = max(totals[key], max(have))
         singles.append(
             GgufVariant(
                 filename=parts[0].filename,
                 size_bytes=sum(sizes) if len(sizes) == len(parts) else None,
                 sha256=parts[0].sha256,
                 parts=parts,
+                missing_parts=[n for n in range(1, total + 1) if n not in have],
             )
         )
     return sorted(singles, key=lambda v: v.filename)
@@ -1045,6 +1053,12 @@ def _inspect_gguf(
     pipeline: str = "",
 ) -> None:
     report.gguf_variants = _group_gguf_variants(gguf_files)
+    for variant in report.gguf_variants:
+        if variant.missing_parts:
+            report.warnings.append(
+                f"split GGUF ไม่ครบชุด: {variant.filename.rsplit('/', 1)[-1]} ขาด part "
+                f"{', '.join(str(n) for n in variant.missing_parts)} — เลือก variant นี้ไม่ได้"
+            )
     weight_variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
     if not weight_variants:
         report.warnings.append("พบเฉพาะไฟล์ mmproj/mtp — ไม่มี GGUF ของตัวโมเดล")
@@ -1073,6 +1087,14 @@ def _inspect_gguf(
         return
     report.selected_gguf = selected.filename
     report.weight_bytes = selected.size_bytes
+    if selected.missing_parts:
+        total = len(selected.parts) + len(selected.missing_parts)
+        report.unsupported_format = INCOMPLETE_GGUF
+        report.unsupported_evidence = [
+            f"ขาด part {', '.join(str(n) for n in selected.missing_parts)} จาก {total}",
+            f"มีในรายการไฟล์ {len(selected.parts)} ไฟล์: " + ", ".join(p.filename.rsplit('/', 1)[-1] for p in selected.parts[:3]),
+        ]
+        return
 
     try:
         gguf = parse_gguf(client.range_source(source.repo_id, revision, selected.filename))

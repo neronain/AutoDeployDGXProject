@@ -612,7 +612,8 @@ def _handle_no_headroom(
 
 def _fill_variant_fits(report: ModelReport, fit: FitReport, budget: float) -> None:
     for variant in report.gguf_variants:
-        if variant.is_mmproj or variant.size_bytes is None:
+        # split ที่ขาด part ไม่ใช่ตัวเลือก — ขนาดรวมของมันขาดไปและ llama.cpp โหลดไม่ได้
+        if variant.is_mmproj or variant.size_bytes is None or getattr(variant, "missing_parts", None):
             continue
         size_gb = variant.size_bytes / GIB
         fit.variant_fits.append(

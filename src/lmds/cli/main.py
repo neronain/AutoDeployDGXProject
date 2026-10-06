@@ -2645,6 +2645,17 @@ def _reinspect_gguf(source, report, chosen):
         return report
 
 
+def _refuse_unservable_choice(report):
+    """ไฟล์ GGUF ที่เพิ่งเลือกเสิร์ฟไม่ได้ (split ไม่ครบชุด · สถาปัตยกรรมที่ไม่ใช่ LLM) — รู้ได้หลังอ่าน header ของไฟล์นั้น
+
+    ด่าน `_refuse_unsupported` ของ plan/generate/deploy ผ่านไปแล้วตอน repo ยังไม่ได้เลือกไฟล์ จึงต้องตรวจซ้ำตรงนี้
+    ไม่งั้นไปล้มเป็น PlanError กลางทาง
+    """
+    if _print_unsupported(report):
+        raise typer.Exit(code=1)
+    return report
+
+
 def _ensure_gguf_selected(source, report, interactive: bool, wanted: str = ""):
     """repo GGUF หลาย variant ที่ยังไม่เลือกไฟล์ — ให้เลือกตั้งแต่ต้น flow ไม่ใช่ไปพังตอนท้าย
 
@@ -2682,7 +2693,7 @@ def _ensure_gguf_selected(source, report, interactive: bool, wanted: str = ""):
             raise typer.Exit(code=1)
         if report.selected_gguf == chosen.filename:
             return report
-        return _reinspect_gguf(source, report, chosen)
+        return _refuse_unservable_choice(_reinspect_gguf(source, report, chosen))
 
     if report.selected_gguf or len(weight_variants) <= 1:
         return report
@@ -2721,7 +2732,7 @@ def _ensure_gguf_selected(source, report, interactive: bool, wanted: str = ""):
     if not 1 <= choice <= len(variants):
         err_console.print("[red]หมายเลขไม่ถูกต้อง[/red]")
         raise typer.Exit(code=1)
-    return _reinspect_gguf(source, report, variants[choice - 1])
+    return _refuse_unservable_choice(_reinspect_gguf(source, report, variants[choice - 1]))
 
 
 # สำนวนไทยของรหัสคำแนะนำ — หน้าเว็บมีสำนวนอังกฤษของตัวเอง และผู้ช่วย LLM ได้รหัส
