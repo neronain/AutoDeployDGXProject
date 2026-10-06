@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 # ระดับที่ขายจริง — ตัวเลขคือ "เครื่องที่เสิร์ฟได้" ตาม LICENSE §1.1 · 0 = ไม่จำกัด
 #
@@ -112,34 +112,76 @@ def canonical(payload: dict) -> bytes:
 
 
 def _as_date(value, fieldname: str) -> date:
+    # datetime เป็นคลาสลูกของ date — YAML อ่าน `expires: 2027-09-20 00:00:00` เป็น datetime แล้ว
+    # isinstance(value, date) ปล่อยผ่าน · ไปตายทีหลังที่ `today > expires` ด้วย TypeError
+    # (เทียบ date กับ datetime ไม่ได้) กลางคำสั่งของผู้ใช้ · ใบที่เราออกเขียนเป็นวันที่ล้วนเสมอ
+    # ข้อความแบบ "2027-09-20T00:00:00" ก็ถูกปฏิเสธที่ fromisoformat ข้างล่างอยู่แล้ว — ให้ตรงกัน
+    if isinstance(value, datetime):
+        raise ValueError(f"{fieldname} ต้องเป็นวันที่แบบ YYYY-MM-DD ไม่มีเวลา — ได้ {value.isoformat()!r}")
     if isinstance(value, date):
         return value
     try:
-        return date.fromisoformat(str(value))
-    except ValueError as exc:
+        return date.fromisoformat(str(value).strip())
+    except (TypeError, ValueError) as exc:
         raise ValueError(f"{fieldname} ต้องเป็นวันที่แบบ YYYY-MM-DD — ได้ {value!r}") from exc
 
 
+def _as_machines(value) -> int:
+    """จำนวนเครื่องจากไฟล์ — เลขจำนวนเต็มเท่านั้น
+
+    เคสจริง (audit 2026-10-06): `machines: .inf` → int(inf) โยน OverflowError ซึ่งไม่ใช่
+    ValueError จึงหลุด `except ValueError` ของ store.verify_document ออกไปเป็น traceback ที่
+    `lmds license show` และที่ `lmds node install` (ซึ่งถามไลเซนส์ก่อนทุกครั้ง)
+    """
+    problem = ValueError(f"machines ต้องเป็นจำนวนเต็ม (0 = ไม่จำกัด) — ได้ {value!r}")
+    if isinstance(value, bool):                       # bool เป็นคลาสลูกของ int: `machines: yes` ไม่ใช่ 1 เครื่อง
+        raise problem
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            raise problem from None
+    raise problem                                     # float (.inf · .nan · 8.5) · list · mapping · None
+
+
+def _as_text(payload: dict, key: str) -> str:
+    """ฟิลด์ข้อความ — list/mapping ในช่องนี้คือไฟล์ผิดรูป ไม่ใช่ข้อความที่ต้องแปลงให้"""
+    value = payload.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple, set)):
+        raise ValueError(f"{key} ต้องเป็นข้อความ — ได้ {type(value).__name__}")
+    return str(value)
+
+
 def from_payload(payload: dict) -> License:
-    """สร้าง License จาก dict ที่อ่านมาจากไฟล์ — โยน ValueError เมื่อรูปแบบไม่ถูก"""
+    """สร้าง License จาก dict ที่อ่านมาจากไฟล์ — โยน ValueError เมื่อรูปแบบไม่ถูก
+
+    **ValueError เท่านั้น** — ผู้เรียก (store.verify_document) แปลงเป็นสถานะ `invalid` พร้อม
+    เหตุผลที่คนอ่านได้ · ข้อยกเว้นชนิดอื่นที่หลุดจากตรงนี้คือ traceback กลางงานของผู้ใช้
+    """
     if not isinstance(payload, dict):
         raise ValueError("บล็อก license ต้องเป็น mapping")
     missing = [k for k in ("id", "tier", "licensed_to", "machines", "issued") if k not in payload]
     if missing:
         raise ValueError(f"บล็อก license ขาดฟิลด์: {', '.join(missing)}")
-    try:
-        machines = int(payload["machines"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("machines ต้องเป็นจำนวนเต็ม (0 = ไม่จำกัด)") from exc
+    features = payload.get("features")
+    if features is None:
+        features = []
+    if not isinstance(features, (list, tuple)):
+        # `features: 5` → for f in 5 โยน TypeError (audit 2026-10-06: `lmds license install` ตาย)
+        raise ValueError(f"features ต้องเป็นรายการ (list) — ได้ {features!r}")
     expires = payload.get("expires")
     return License(
-        id=str(payload["id"]),
-        tier=str(payload["tier"]),
-        licensed_to=str(payload["licensed_to"]),
-        machines=machines,
+        id=_as_text(payload, "id"),
+        tier=_as_text(payload, "tier"),
+        licensed_to=_as_text(payload, "licensed_to"),
+        machines=_as_machines(payload["machines"]),
         issued=_as_date(payload["issued"], "issued"),
         expires=_as_date(expires, "expires") if expires else None,
-        contact=str(payload.get("contact") or ""),
-        note=str(payload.get("note") or ""),
-        features=[str(f) for f in (payload.get("features") or [])],
+        contact=_as_text(payload, "contact"),
+        note=_as_text(payload, "note"),
+        features=[str(f) for f in features],
     )

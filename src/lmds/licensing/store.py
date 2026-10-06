@@ -86,8 +86,24 @@ def _read_yaml(path: Path) -> dict:
 
 
 def verify_document(document: dict, *, today: date | None = None) -> Status:
-    """ตรวจเนื้อไฟล์ที่อ่านมาแล้ว — แยกจาก load() เพื่อให้เทสและตัวเซ็นเรียกใช้ซ้ำได้"""
+    """ตรวจเนื้อไฟล์ที่อ่านมาแล้ว — แยกจาก load() เพื่อให้เทสและตัวเซ็นเรียกใช้ซ้ำได้
+
+    **ไม่โยน exception** ไม่ว่าเนื้อไฟล์จะผิดรูปแบบไหน — load() และ install() สัญญากับทั้งโปรแกรมว่า
+    "ไฟล์พัง = สถานะ invalid ที่อธิบายตัวเองได้" · รูปที่รู้จักได้ข้อความเฉพาะจาก `_verify()`
+    รูปที่ยังไม่มีใครนึกถึงได้ข้อความกลางจากตาข่ายตรงนี้ แทนที่จะเป็น traceback กลาง
+    `lmds node install` (ซึ่งถามไลเซนส์ก่อนทุกครั้ง — ไฟล์พังจึงเคยบล็อกการติดตั้งทั้งฟลีต)
+    """
+    try:
+        return _verify(document, today=today)
+    except Exception as exc:  # noqa: BLE001 — สัญญาคือ "ไม่เคยโยน" ไม่ใช่ "ไม่โยนชนิดที่เรานึกออก"
+        return Status("invalid",
+                      reason=f"ไฟล์ไลเซนส์ผิดรูปแบบ ({type(exc).__name__}: {str(exc)[:160]})")
+
+
+def _verify(document: dict, *, today: date | None = None) -> Status:
     today = today or date.today()
+    if not isinstance(document, dict):
+        return Status("invalid", reason="ไฟล์ไลเซนส์ต้องเป็น mapping ที่มีบล็อก license: และ signature:")
     block = document.get("license")
     signature_block = document.get("signature") or {}
     if not isinstance(signature_block, dict):
@@ -193,11 +209,22 @@ def install(document_text: str, path: Path | None = None) -> Status:
 
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    # เขียนไฟล์ใหม่ด้วยสิทธิ์ 0600 ตั้งแต่ตอนสร้าง — เขียนก่อนแล้ว chmod ทีหลังจะมีช่วงสั้น ๆ
-    # ที่ไฟล์เปิดให้คนอื่นอ่านได้
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(document_text if document_text.endswith("\n") else document_text + "\n")
-    os.chmod(target, 0o600)
+    # เขียนลงไฟล์ชั่วคราวข้าง ๆ แล้ว replace — เขียนทับตรง ๆ (O_TRUNC) มีช่วงที่ใบเดิมถูกตัดเป็น
+    # ศูนย์ไบต์ไปแล้วแต่ใบใหม่ยังเขียนไม่จบ: ดิสก์เต็ม/ไฟดับตรงนั้น = ไม่เหลือใบไหนเลย ซึ่งคือเคส
+    # "วางใบต่ออายุแล้วเช้ามาทั้งฟลีตกลายเป็นโหมดฟรี" ที่ฟังก์ชันนี้มีไว้กัน
+    # สิทธิ์ 0600 ตั้งแต่ตอนสร้าง — เขียนก่อนแล้ว chmod ทีหลังจะมีช่วงที่คนอื่นอ่านได้
+    temporary = target.with_name(f".{target.name}.new")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(document_text if document_text.endswith("\n") else document_text + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     return Status(status.state, status.license, status.reason, target,
                   status.signature_key, status.signature_value)

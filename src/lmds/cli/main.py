@@ -5659,9 +5659,23 @@ def license_install(
     if not source.is_file():
         err_console.print(f"[red]ไม่พบไฟล์ {source}[/red]")
         raise typer.Exit(2)
-    status = licensing.install(source.read_text(encoding="utf-8"))
+    try:
+        text = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # ไฟล์ไบนารี/ก๊อปมาผิดไฟล์ — เดิมเป็น traceback ของ UnicodeDecodeError
+        err_console.print(f"[red]อ่านไฟล์ {source} ไม่ได้ — ไม่ได้เขียนทับของเดิม[/red]\n"
+                          f"{type(exc).__name__}: {exc}", highlight=False, markup=False)
+        raise typer.Exit(2) from None
+    try:
+        status = licensing.install(text)
+    except OSError as exc:
+        err_console.print(f"เขียนไฟล์ไลเซนส์ไม่ได้ ({licensing.license_path()}): {exc}",
+                          highlight=False, markup=False)
+        raise typer.Exit(1) from None
     if status.state == "invalid":
-        err_console.print(f"[red]ไลเซนส์ใช้ไม่ได้ — ไม่ได้เขียนทับของเดิม[/red]\n{status.reason}")
+        err_console.print("[red]ไลเซนส์ใช้ไม่ได้ — ไม่ได้เขียนทับของเดิม[/red]")
+        # reason มาจากเนื้อไฟล์ของผู้ใช้ — มี [ ] ได้ จึงไม่ให้ rich ตีความเป็น markup
+        err_console.print(status.reason, highlight=False, markup=False)
         raise typer.Exit(2)
     console.print(f"[green]ติดตั้งแล้ว[/green] → {status.path}")
     console.print(status.describe())
