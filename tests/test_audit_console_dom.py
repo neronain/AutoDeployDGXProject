@@ -220,6 +220,23 @@ def test_a_dropped_poll_does_not_end_a_job_follower_and_the_failure_still_reache
     assert failed["watchingLocal"] == [] and failed["watchingNode"] == [] and failed["cancelButtons"] == 0
 
 
+def test_a_finished_job_still_attached_by_a_stale_cache_is_not_followed_again(tmp_path):
+    """/api/models ตอบจากแคช: ชั่วครู่หลังงานจบ โมเดลยังพก job id เดิมมาได้ · ตัวตามที่จบแล้วเรียก refresh() → เห็น job →
+    ตามใหม่ → "จบแล้ว" → alert ซ้ำ → refresh … วนเท่าความเร็วเครือข่าย (scenario ของผู้ตรวจค้างที่จุดนี้พอดี)"""
+    (out,) = run_scenario(tmp_path, JOBS, """
+        location.hash = "#/nodes"; await H.tick(20);
+        // งานล้ม — แต่ payload ของโมเดล (แคช) ยังแปะ job เดิมอยู่ ทั้งเครื่องนี้และ node
+        H.job = { running: false, elapsed: 900, output: "sha256 mismatch on shard 9\\n", exit_code: 1 };
+        await H.sleep(150); await H.tick(10);
+        const polls = H.polls;
+        for (let i = 0; i < 3; i++) { await refresh(); H.sse(H.snapshot(H.fx)); await H.tick(5); }
+        console.log(JSON.stringify({ alerts: H.alerts.length, pollsAfterEnd: H.polls - polls,
+          watching: [...watching.keys(), ...watchingNodes.keys()] }));
+        H.errors.length = 0;
+    """)
+    assert out == {"alerts": 1, "pollsAfterEnd": 0, "watching": []}, "งานที่เห็นจบไปแล้วต้องไม่ถูกตามซ้ำ และ alert ครั้งเดียว"
+
+
 def test_a_job_the_hub_no_longer_knows_stops_being_followed_and_says_so_in_the_panel(tmp_path):
     """หยุดตามถาวรได้ทางเดียว: hub ตอบ 404 (งานอยู่ในหน่วยความจำ — restart แล้วหาย) · ต้องปลดคีย์และบอกในแผง
     ไม่ใช่ toast ที่หายใน 6 วิ แล้วทิ้งแผง "running…" + ปุ่ม Cancel ไว้"""

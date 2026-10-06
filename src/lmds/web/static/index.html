@@ -3661,6 +3661,11 @@ async function cancelJob(jobId, btn) {
 // หรือ null เมื่อ hub ลืมงานไปแล้ว — ผู้เรียกที่ต้องทำอะไรต่อหลังงานจบ (รีเฟรชตารางคะแนน) await ได้จริง
 const JOB_POLL_MS = 1200, JOB_POLL_MAX_MS = 15000;
 const jobFollowers = new Map();   // job id -> promise ของตัวตามที่ยังเดินอยู่ (ขอตามซ้ำ = ได้ตัวเดิม)
+// งานที่หน้านี้เห็นจบไปแล้ว (หรือ hub ลืมไปแล้ว) — ห้ามตามซ้ำ
+// /api/models ตอบจากแคชของ hub: ชั่วครู่หลังงานจบ payload ของโมเดลยังพก job id เดิมมาได้ · ทางที่ "ตามต่อเองหลังรีเฟรช"
+// (renderFleet / การ์ด node) จะหยิบมันมาตามใหม่ → ได้ผล "จบแล้ว" ทันที → alert ซ้ำ → refresh → ตามใหม่ … วนเท่าความเร็ว
+// ของเครือข่ายจนกว่าแคชจะสด (ทางนี้มีมาก่อนแล้ว — ตัวตามที่ไม่ตายกลางทางทำให้มันไปถึงตรงนี้ได้ทุกครั้ง)
+const endedJobs = new Set();
 
 async function pollJob(jobId, on) {
   let wait = JOB_POLL_MS, misses = 0;
@@ -3685,6 +3690,7 @@ async function pollJob(jobId, on) {
 }
 
 function followJob(slug, jobId) {
+  if (endedJobs.has(jobId)) return Promise.resolve(null);
   if (watching.get(slug) === jobId && jobFollowers.has(jobId)) return jobFollowers.get(jobId);
   watching.set(slug, jobId);
   let last = null;
@@ -3712,6 +3718,7 @@ function followJob(slug, jobId) {
     });
     watching.delete(slug);
     jobFollowers.delete(jobId);
+    endedJobs.add(jobId);
     if (d && d.exit_code !== 0) {
       // The controller already explained itself — show that instead of a bare exit code
       const reason = (d.output || "").trim().split("\n").filter(Boolean).slice(-4).join("\n");
@@ -7609,6 +7616,7 @@ function elapsedText(seconds) {
 // กติกาเดียวกับ followJob (ดู pollJob): poll หลุด = ถอยแล้วถามใหม่ ไม่ใช่เลิกตาม · คืน promise ที่ resolve ตอนงานจบ
 function followNodeJob(node, slug, jobId) {
   const key = node + "/" + slug;
+  if (endedJobs.has(jobId)) return Promise.resolve(null);
   if (watchingNodes.get(key) === jobId && jobFollowers.has(jobId)) return jobFollowers.get(jobId);
   watchingNodes.set(key, jobId);
   let last = null;
@@ -7651,6 +7659,7 @@ function followNodeJob(node, slug, jobId) {
     watchingNodes.delete(key);
     nodeJobCommand.delete(key);
     jobFollowers.delete(jobId);
+    endedJobs.add(jobId);
     liveBootDone(key);
     if (!d) return null;
     if (d.exit_code !== 0) {
