@@ -91,7 +91,10 @@ Options:
 2. **ขั้นยืนยันแผน** — ตารางสรุป (model/revision, runtime+image digest, topology, context, budget, feature, คำเตือน, facts `unverified`)
    ให้ ยืนยัน / แก้ context / ยกเลิก · flag นอก allowlist ถามทีละตัว default = ไม่อนุมัติ
 3. **Exit codes**: `0` สำเร็จ · `1` input ผิด/ยกเลิก/รูปแบบ weight ที่ไม่รองรับ (MLX — `inspect` ยังคืน `0` และบอกว่าไม่รองรับ) · `2` ไม่ผ่าน gates · `3` ไม่ fit · `4` ต้องการ token · `5` provider/network ·
-   `6` bundle ผ่าน gates แต่ `--smoke` รันจริงไม่ผ่าน (คนละอาการคนละทางแก้กับ `2` ซึ่งแปลว่าสคริปต์ผิดตั้งแต่ยังไม่รัน)
+   `6` bundle ผ่าน gates แต่ `--smoke` รันจริงไม่ผ่าน (คนละอาการคนละทางแก้กับ `2` ซึ่งแปลว่าสคริปต์ผิดตั้งแต่ยังไม่รัน) ·
+   ค่า option ที่ผิด (`--concurrency` < 1 · `--task`/`--engine`/`--target` ที่ไม่รู้จัก · `--name` ผิดรูป) = `1` พร้อมข้อความแดง
+   ตรวจตั้งแต่ตอน parse ก่อน inspect — ไม่ใช่ `2` (เดิม `--task bogus` ออก `2` ชนกับช่องของ gates และ `--concurrency 0` เป็น
+   ZeroDivisionError) · `2` ที่มาจาก typer เอง (option ที่ไม่มีอยู่ · ตัวเลขที่พิมพ์เป็นตัวอักษร) ยังเป็น usage error ของ click ตามเดิม
 4. **Topology มาจาก target** — `dgx-spark-stacked[-4]` → stacked (controller multi-node) · `rtx-*-dual` → multi-gpu · นอกนั้น single ·
    harden บังคับกลับเสมอ และตัด flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`
    `--distributed-executor-backend`) ที่หลุดมาจาก LLM · stacked ต้องใช้ vLLM + safetensors — GGUF / SGLang / embedding
@@ -121,9 +124,9 @@ Options:
 ## `lmds inspect`
 
 ```text
---revision · --target PRESET (ซ้ำได้ · ว่าง = เครื่องนี้ + dgx-spark-single) · --concurrency N
---context N       ถามว่าค่านี้ควรตั้งไหม — ตาราง context × KV ต่อคน × พร้อมกัน + ข้อควรระวัง (GQA และ MLA)
---kv-dtype bf16|fp8   ให้ทั้งตารางคิดที่ fp8
+--revision · --target PRESET (ซ้ำได้ · ว่าง = เครื่องนี้ + dgx-spark-single) · --concurrency N (≥ 1)
+--context N       ถามว่าค่านี้ควรตั้งไหม (≥ 1) — ตาราง context × KV ต่อคน × พร้อมกัน + ข้อควรระวัง (GQA และ MLA)
+--kv-dtype bf16|fp16|fp8   ให้ทั้งตารางคิดที่ dtype นั้น (ไม่สนตัวพิมพ์ · ค่าอื่น = exit 1)
 --json
 ```
 
@@ -131,7 +134,8 @@ Output: model/revision · artifact · fit ต่อ target (verdict `fits` / `fi
 `fits-with-offload`, stacked มี `per_node`) · runtime แนะนำ · ความสามารถ 6 อย่าง (Tool Calling · Vision · Reasoning ·
 System prompt · JSON mode · Streaming) พร้อมหลักฐาน · MoE/MTP จากไฟล์ · variant GGUF ทั้งหมด · task (generate/embed)
 
-Exit: `0` · `1` input ผิด · `4` ต้องการ token · `5` เครือข่าย/Hub (Xet: read timeout 120 วิ / connect 30 วิ)
+Exit: `0` · `1` input ผิด (รวม `--concurrency`/`--context` < 1 และ `--kv-dtype` ที่ไม่รู้จัก — stdout ว่างแม้ใช้ `--json`) ·
+`4` ต้องการ token · `5` เครือข่าย/Hub (Xet: read timeout 120 วิ / connect 30 วิ)
 
 ## `lmds set <SLUG>`
 
@@ -152,6 +156,9 @@ Exit: `0` · `1` input ผิด · `4` ต้องการ token · `5` เ�
 
 ตรวจก่อนเขียน (`SettingsError`): port 1–65535 · context/slots จำนวนเต็มบวก · gpu_util 0–1 · bind สองค่า ·
 `served_name`/`image` ห้ามมี `" ' \` $ \ { }` · engine env ต้องเป็น `KEY=VALUE` ห้าม `{}` — ไฟล์ถูก `source` ทุก start
+· ค่าที่ไม่ผ่าน = ข้อความแดง + exit `1` ทุกทาง รวมทาง `--fit` ที่ fit ปฏิเสธแล้วเขียนเฉพาะค่าที่ไม่เกี่ยวกับหน่วยความจำ
+(`--json`: `{plan, error, written: {}, not_written: "<เหตุผล>"}`) · `lmds fit`: `--slots`/`--context` ต้อง ≥ 1
+(เดิม `--slots 0` ถูกอ่านเป็น "ไม่ได้ระบุ" และ `--context -5` ตอบ "จะเขียน context=-5" ด้วย exit 0)
 
 ## `lmds config`
 

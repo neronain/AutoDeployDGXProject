@@ -117,6 +117,50 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+# ── ตรวจค่าของ option ตั้งแต่ตอน parse ───────────────────────────────────────────
+# ทำไมไม่ใช้ `min=`/`click.Choice` ของ typer ตรง ๆ: ค่าที่ไม่ผ่านจะออกด้วย exit 2 (usage error ของ click) ซึ่ง
+# docs/CLI_SPEC.md จองไว้ให้ "ไม่ผ่าน quality gates" ของ deploy/validate/smoke — สคริปต์ที่แยกสองอาการนี้ด้วย exit code
+# จะอ่าน `--concurrency 0` เป็น "bundle ไม่ผ่าน gate" · ค่าผิด = "input ผิด" = exit 1 เหมือน --target/--engine ที่ไม่รู้จัก
+def _bad_option(param, value, want: str) -> None:
+    name = (getattr(param, "opts", None) or [getattr(param, "name", "option")])[0]
+    err_console.print(f"[red]{name} {want} (ได้ '{value}')[/red]")
+    raise typer.Exit(code=1)
+
+
+def _at_least(minimum: int, maximum: int | None = None):
+    """callback ของ option ตัวเลข: ต่ำกว่า `minimum` (หรือเกิน `maximum`) = ข้อความแดง + exit 1 · None = ไม่ได้ระบุ ผ่าน"""
+    def check(ctx, param, value):
+        if value is None or getattr(ctx, "resilient_parsing", False):   # shell completion — ห้ามพังห้ามพิมพ์
+            return value
+        if value < minimum or (maximum is not None and value > maximum):
+            _bad_option(param, value, f"ต้องเป็นจำนวนเต็มตั้งแต่ {minimum:,} ขึ้นไป" if maximum is None
+                        else f"ต้องอยู่ระหว่าง {minimum:,} ถึง {maximum:,}")
+        return value
+    return check
+
+
+def _one_of(choices):
+    """callback ของ option ที่เป็นตัวเลือก: ตัดช่องว่าง + ตัวพิมพ์เล็ก แล้วต้องอยู่ในรายการ — ไม่อยู่ = exit 1 พร้อมรายการ
+
+    `choices` เป็น tuple หรือฟังก์ชันที่คืนรายการ (ให้รายการมาจากโมดูลที่เป็นเจ้าของค่าโดยไม่ต้อง import ตอนเปิด CLI)
+    """
+    def check(ctx, param, value):
+        if value is None or getattr(ctx, "resilient_parsing", False):
+            return value
+        allowed = tuple(choices() if callable(choices) else choices)
+        cleaned = str(value).strip().lower()
+        if cleaned not in allowed:
+            _bad_option(param, value, "ต้องเป็นค่าใดค่าหนึ่งใน: " + ", ".join(allowed))
+        return cleaned
+    return check
+
+
+def _kv_dtypes() -> tuple[str, ...]:
+    from lmds.fit.memory import KV_DTYPE_BYTES
+
+    return tuple(KV_DTYPE_BYTES)
+
+
 def _complete_node(incomplete: str) -> list[str]:
     try:
         from lmds.nodes import load
@@ -2139,14 +2183,26 @@ def set_defaults(
             # แม้แต่ port ที่สั่งไว้ชัด ๆ · คนสั่ง start ต่อจึงไปเปิดทับพอร์ตเดิมของอีกโมเดล
             memory_keys = {"slots", "context", "gpu_util", "extra_args"}
             keep = {k: v for k, v in given.items() if k not in memory_keys}
+            not_written = ""
             if keep:
-                write(bundle_dir, {**read(bundle_dir), **keep})
+                # `write()` ตรวจค่าเอง (port 1-65535 ฯลฯ) — เดิมบรรทัดนี้อยู่นอก try ของคำสั่ง ค่าผิดบนทางนี้จึงหลุดเป็น
+                # traceback ของ SettingsError (`set <slug> --fit --slots 100000 --port 99999999` · audit 2026-10-06)
+                # · จับแล้วยังเล่าต่อว่า fit ปฏิเสธเพราะอะไร — สองเรื่องนี้ผู้ใช้ต้องแก้ทั้งคู่
+                try:
+                    write(bundle_dir, {**read(bundle_dir), **keep})
+                except SettingsError as exc:
+                    not_written, keep = str(exc), {}
             if as_json:
-                print(json.dumps({"plan": fit_plan, "error": why, "written": keep}, ensure_ascii=False))
+                payload = {"plan": fit_plan, "error": why, "written": keep}
+                if not_written:
+                    payload["not_written"] = not_written
+                print(json.dumps(payload, ensure_ascii=False))
             else:
                 if keep:
                     console.print("เขียนเฉพาะค่าที่ไม่เกี่ยวกับหน่วยความจำให้แล้ว: "
                                   + " · ".join(f"{k}={v}" for k, v in keep.items()))
+                if not_written:
+                    err_console.print(f"[red]ไม่ได้เขียนค่าอื่นให้ — {not_written}[/red]")
                 err_console.print(f"[red]ไม่ได้ตั้ง slots/context/KV ให้ — {why}[/red]")
                 err_console.print("[dim]ดูตารางข้างบนแล้วสั่งใหม่ด้วย --slots/--context ที่พอ หรือหยุดโมเดลที่ระบุก่อน[/dim]")
             raise typer.Exit(code=1)
@@ -2266,8 +2322,10 @@ def _print_fit_table(plan: dict) -> None:
 @app.command("fit")
 def fit_cmd(
     slug: str = typer.Argument(..., help="ชื่อ bundle", autocompletion=_complete_slug),
-    slots: Optional[int] = typer.Option(None, "--slots", help="จำนวน request พร้อมกันที่ต้องการ (ไม่ใส่ = ค่าที่ตั้งอยู่)"),
-    context: Optional[int] = typer.Option(None, "--context", help="context ต่อคำขอ (ไม่ใส่ = ค่าที่ตั้งอยู่ / native)"),
+    slots: Optional[int] = typer.Option(None, "--slots", callback=_at_least(1),
+                                        help="จำนวน request พร้อมกันที่ต้องการ (ไม่ใส่ = ค่าที่ตั้งอยู่)"),
+    context: Optional[int] = typer.Option(None, "--context", callback=_at_least(1),
+                                          help="context ต่อคำขอ (ไม่ใส่ = ค่าที่ตั้งอยู่ / native)"),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์เป็น JSON"),
 ) -> None:
     """ดูว่า slots/context เท่านี้ต้องใช้ RAM เท่าไรบนเครื่องนี้ และควรปักหมุด KV เท่าไร — ไม่เขียนอะไร
@@ -2308,11 +2366,14 @@ def inspect(
         [], "--target", help="ประเมิน fit กับ target ที่ระบุ (ซ้ำได้) เช่น rtx-pro-4000 — ค่าว่าง = เครื่องนี้ + dgx-spark-single",
         autocompletion=_complete_target,
     ),
-    concurrency: int = typer.Option(1, "--concurrency", help="จำนวน request พร้อมกันที่ใช้คำนวณ KV cache"),
+    concurrency: int = typer.Option(1, "--concurrency", callback=_at_least(1),
+                                    help="จำนวน request พร้อมกันที่ใช้คำนวณ KV cache (≥ 1)"),
     context: Optional[int] = typer.Option(
-        None, "--context", help="ถามว่าค่านี้ควรตั้งไหม — บอกว่าได้กี่คนพร้อมกันและควรเลี่ยงอะไร"),
+        None, "--context", callback=_at_least(1),
+        help="ถามว่าค่านี้ควรตั้งไหม — บอกว่าได้กี่คนพร้อมกันและควรเลี่ยงอะไร (≥ 1)"),
     kv_dtype: str = typer.Option(
-        "bf16", "--kv-dtype", help="ชนิดของ KV cache ที่จะใช้ตอนรัน: bf16 | fp8"),
+        "bf16", "--kv-dtype", callback=_one_of(_kv_dtypes),
+        help="ชนิดของ KV cache ที่จะใช้ตอนรัน: bf16 | fp16 | fp8"),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON (สำหรับ scripting)"),
 ) -> None:
     """วิเคราะห์โมเดลจากลิงก์ — ดึงเฉพาะ metadata ไม่ดาวน์โหลด weight
@@ -2709,13 +2770,19 @@ def _compute_fits(report, target_names: list[str], concurrency: int) -> list:
         if not any(s.name.startswith("dgx-spark") for s in specs):
             specs.append(PRESETS["dgx-spark-single"])
 
-    return [
-        # หักเฉพาะกับสเปกที่ *ตรวจจากเครื่องนี้จริง* — preset เป็นเครื่องสมมติ การเอา
-        # ของที่รันบนเครื่องนี้ไปหักออกจากมันคือการปนคนละเครื่องเข้าด้วยกัน
-        analyze(report, spec, concurrency=concurrency,
-                reserved_gb=_memory_already_held_gb() if spec is detected_spec else 0.0)
-        for spec in specs
-    ]
+    try:
+        return [
+            # หักเฉพาะกับสเปกที่ *ตรวจจากเครื่องนี้จริง* — preset เป็นเครื่องสมมติ การเอา
+            # ของที่รันบนเครื่องนี้ไปหักออกจากมันคือการปนคนละเครื่องเข้าด้วยกัน
+            analyze(report, spec, concurrency=concurrency,
+                    reserved_gb=_memory_already_held_gb() if spec is detected_spec else 0.0)
+            for spec in specs
+        ]
+    except ValueError as exc:
+        # analyze() ปฏิเสธค่าที่คำนวณไม่ได้เอง (concurrency < 1) — option ถูกตรวจตอน parse แล้ว ตรงนี้คือชั้นกันพลาด
+        # ของผู้เรียกที่ไม่ได้มาทาง option (rebuild · ใบ stacked ของ --also-stacked)
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
 
 
 def _memory_already_held_gb() -> float:
@@ -2837,7 +2904,8 @@ def plan(
         autocompletion=_complete_target,
     ),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
-    concurrency: int = typer.Option(1, "--concurrency"),
+    concurrency: int = typer.Option(1, "--concurrency", callback=_at_least(1),
+                                    help="จำนวน request พร้อมกันที่จะรองรับ (≥ 1) — ใช้คิด KV/context ต่อคำขอ"),
     as_json: bool = typer.Option(False, "--json"),
     engine: Optional[str] = typer.Option(
         None, "--engine",
@@ -2945,7 +3013,8 @@ def generate(
     target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)", autocompletion=_complete_target),
     output: str = typer.Option("./bundles", "--output", help="โฟลเดอร์ output ของ bundle"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
-    concurrency: int = typer.Option(1, "--concurrency"),
+    concurrency: int = typer.Option(1, "--concurrency", callback=_at_least(1),
+                                    help="จำนวน request พร้อมกันที่จะรองรับ (≥ 1) — ใช้คิด KV/context ต่อคำขอ"),
     engine: Optional[str] = typer.Option(
         None, "--engine",
         help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
@@ -3558,12 +3627,14 @@ def deploy(
     target: Optional[str] = typer.Option(None, "--target", help="target preset — ว่าง = เครื่องนี้/dgx-spark-single · dgx-spark-stacked = multi-node (2 เครื่อง)", autocompletion=_complete_target),
     output: str = typer.Option("./bundles", "--output"),
     no_llm: bool = typer.Option(False, "--no-llm", help="rule-based mode: ไม่เรียก LLM"),
-    concurrency: int = typer.Option(1, "--concurrency"),
+    concurrency: int = typer.Option(1, "--concurrency", callback=_at_least(1),
+                                    help="จำนวน request พร้อมกันที่จะรองรับ (≥ 1) — ใช้คิด KV/context ต่อคำขอ"),
     engine: Optional[str] = typer.Option(
         None, "--engine",
         help="เลือกรันไทม์เอง: vllm | sglang — ว่าง = ตามชนิดไฟล์ (GGUF→llama.cpp, safetensors→vLLM)"),
     task: Optional[str] = typer.Option(
-        None, "--task", help="generate | embed | rerank — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ/config) · ใส่เมื่อเดาผิด"),
+        None, "--task", callback=_one_of(("generate", "embed", "rerank")),
+        help="generate | embed | rerank — ปกติเดาจาก repo (pipeline_tag/tags/ชื่อ/config) · ใส่เมื่อเดาผิด"),
     gguf: Optional[str] = typer.Option(
         None, "--gguf",
         help="repo GGUF หลาย variant: เลือกไฟล์ด้วยชื่อเต็ม หรือชื่อ quant เช่น Q8_K_XL / Q4_K_M "
@@ -3605,10 +3676,8 @@ def deploy(
     _refuse_unsupported(report)
     report = _ensure_gguf_selected(source, report, interactive=interactive, wanted=gguf or "")
     if task:
-        if task.strip().lower() not in {"generate", "embed", "rerank"}:
-            err_console.print(f"[red]--task ต้องเป็น generate, embed หรือ rerank (ได้ '{task}')[/red]")
-            raise typer.Exit(code=2)
-        report.task = task.strip().lower()
+        # ค่าผ่าน `_one_of` มาแล้ว (ผิด = exit 1 ตั้งแต่ก่อน inspect — เดิมออก exit 2 ซึ่งเป็นช่องของ "ไม่ผ่าน gates")
+        report.task = task
     if report.task == "embed":
         console.print("[cyan]โมเดล embedding[/cyan] — จะเสิร์ฟ /v1/embeddings ไม่มี chat · เดาผิด? --task generate")
     elif report.task == "rerank":
@@ -4299,7 +4368,7 @@ def remove(
 
 @app.command()
 def web(
-    port: int = typer.Option(8600, "--port", help="พอร์ตของหน้าเว็บ"),
+    port: int = typer.Option(8600, "--port", callback=_at_least(1, 65535), help="พอร์ตของหน้าเว็บ (1-65535)"),
     bind: str = typer.Option("127.0.0.1", "--bind", help="127.0.0.1 = เครื่องนี้เท่านั้น · 0.0.0.0 = ทั้งวง network"),
     token: str = typer.Option("", "--token", help="บังคับ token (ว่าง = สุ่มให้เมื่อ bind ออก network)"),
     background: bool = typer.Option(False, "--background", "-b", help="รันเบื้องหลัง — terminal ว่างใช้ CLI ต่อได้"),

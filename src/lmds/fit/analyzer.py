@@ -339,6 +339,10 @@ def analyze(report: ModelReport, target: TargetSpec, concurrency: int = 1,
     ผู้เรียกที่รู้ว่าเครื่องเป้าหมายคือเครื่องจริง (ไม่ใช่ preset สมมติ) ควรส่งค่านี้มา —
     ดู `_budget_gb` ว่าทำไมการไม่ส่งถึงทำให้เลือก quant ใหญ่เกินเครื่อง
     """
+    if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
+        # 0 = หารด้วยศูนย์ตอนคิด context สูงสุด · ค่าติดลบ = context ติดลบแล้วตอบว่า "ไม่ fit" ทั้งที่โมเดลใส่ได้
+        # (`lmds plan --concurrency 0` → ZeroDivisionError · `--concurrency -3` → exit 3 · audit 2026-10-06)
+        raise ValueError(f"concurrency ต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป (ได้ {concurrency!r})")
     if unsupported_reason(report):
         # "weights 105 / budget 113 GB ✅ fits (vllm)" กับ checkpoint ที่ vLLM โหลดไม่ได้ คือคำตอบที่ถูกทุกตัวเลข
         # แต่พาคนไปดาวน์โหลด 113 GB ฟรี (เคสจริง 2026-10-05 · ดู inspector/formats.py) — ไม่คำนวณต่อ
