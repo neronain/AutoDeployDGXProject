@@ -2375,17 +2375,43 @@ def _engine_choice(name):
         raise typer.Exit(code=1) from None
 
 
+def _plan_refused(exc) -> None:
+    """แผนที่วางไม่ได้เพราะ *สิ่งที่สั่งมา* (embedding บน stacked · SGLang บน stacked · รูปแบบที่ไม่มี engine โหลดได้)
+
+    ที่เดียวที่แปล `PlanError` เป็นสิ่งที่ผู้ใช้อ่านได้: ข้อความแดงบน stderr + exit 1 ("input ผิด" ตาม docs/CLI_SPEC.md)
+    — stdout ไม่ถูกแตะ `--json` จึงยังว่างให้สคริปต์เช็ค exit code ได้ตรง ๆ
+    """
+    from rich.markup import escape
+
+    err_console.print(f"[red]วางแผนไม่ได้:[/red] {escape(str(exc))}")
+    raise typer.Exit(code=1) from None
+
+
 def _build_plan_safe(report, fit, provider, engine=None):
-    """เรียก LLM วางแผน — ถ้า provider ล้ม (quota/เครือข่าย/schema) สลับเป็น rule-based พร้อมแจ้งชัด"""
-    from lmds.brain import PlanError, ProviderError, build_plan
+    """วางแผนให้ทุกคำสั่ง (plan/generate/deploy/ใบ stacked ของ --also-stacked/rebuild) — ไม่มี `PlanError` หลุดออกไป
+
+    - provider ล้ม (quota/เครือข่าย/schema) → สลับเป็น rule-based พร้อมแจ้งชัด (ทางเดิม)
+    - input ที่ไม่มีทางวางแผนได้ → `_plan_refused()` · ตรวจด้วย decision matrix ของ rule-based **ก่อน** เรียก LLM:
+      เดิม `plan <embedding> --target dgx-spark-stacked` เสียคำขอ LLM หนึ่งรอบ แล้วพิมพ์ "LLM ใช้ไม่ได้ … สลับเป็น
+      rule-based" ทั้งที่ LLM ไม่ได้ผิดอะไร จากนั้น rule-based โยน PlanError ตัวเดิมซ้ำออกมาเป็น traceback (audit 2026-10-06)
+    """
+    from lmds.brain import PlanError, ProviderError, build_plan, rule_based_plan
 
     if provider is not None:
+        try:
+            # ตารางตัดสินล้วน ๆ — ไม่แตะเครือข่าย ไม่เขียน session log · ผลถูกทิ้ง ใช้แค่ว่ามันปฏิเสธไหม
+            rule_based_plan(report, fit, engine)
+        except PlanError as exc:
+            _plan_refused(exc)
         try:
             return build_plan(report, fit, provider, engine=engine)
         except (PlanError, ProviderError) as exc:
             err_console.print(f"[yellow]LLM ใช้ไม่ได้: {exc}[/yellow]")
             err_console.print("[yellow]→ สลับเป็น rule-based mode อัตโนมัติ (plan จะไม่มีการวิเคราะห์เชิงลึก)[/yellow]")
-    return build_plan(report, fit, None, engine=engine)
+    try:
+        return build_plan(report, fit, None, engine=engine)
+    except PlanError as exc:
+        _plan_refused(exc)
 
 
 def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bool):
@@ -3152,10 +3178,10 @@ def rebuild(
 
     # ไม่เรียก LLM ซ้ำ — แผนเดิมถูกตรวจและอนุมัติไปแล้ว เอาค่ากลับมาแล้วให้ harden จัดการ
     # ส่วนที่ระบบเป็นเจ้าของ (image, topology, ตัวกันพลาด) ตามตรรกะปัจจุบัน
-    from lmds.brain import build_plan
+    from lmds.brain import PlanError
     from lmds.brain.orchestrator import harden_plan
 
-    plan = build_plan(report, fit, None)
+    plan = _build_plan_safe(report, fit, None)
     serving = profile.get("serving") or {}
     if serving.get("context"):
         plan.serving.context = int(serving["context"])
@@ -3166,7 +3192,10 @@ def rebuild(
     # build_plan harden ไปรอบหนึ่งแล้วด้วยค่าที่มันคิดเอง — warning จากรอบนั้นพูดถึงตัวเลข
     # ที่เราเพิ่งเขียนทับไป การแสดงมันต่อคือเล่าการตัดสินใจที่ไม่ได้เกิดขึ้นจริง
     plan.warnings = []
-    plan = harden_plan(plan, report, fit)
+    try:
+        plan = harden_plan(plan, report, fit)
+    except PlanError as exc:
+        _plan_refused(exc)
 
     if plan.runtime.image_ref != old_image:
         console.print(f"[yellow]image เปลี่ยน:[/yellow] {old_image or '(ไม่มี)'} → "

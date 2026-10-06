@@ -95,7 +95,8 @@ Options:
 4. **Topology มาจาก target** — `dgx-spark-stacked[-4]` → stacked (controller multi-node) · `rtx-*-dual` → multi-gpu · นอกนั้น single ·
    harden บังคับกลับเสมอ และตัด flag ที่ controller เป็นเจ้าของ (`--tensor-parallel-size` `--nnodes` `--node-rank`
    `--distributed-executor-backend`) ที่หลุดมาจาก LLM · stacked ต้องใช้ vLLM + safetensors — GGUF / SGLang / embedding
-   ถูกปฏิเสธ (CLI: PlanError · เว็บ: 422 `{kind}`)
+   ถูกปฏิเสธ (CLI: ข้อความแดง `วางแผนไม่ได้: …` บน stderr + exit `1` · stdout ว่างแม้ใช้ `--json` · ตรวจด้วยตาราง rule-based
+   *ก่อน* เรียก LLM จึงไม่เสียคำขอและไม่ขึ้น "LLM ใช้ไม่ได้" · `plan`/`generate`/`deploy`/`rebuild` ใช้ทางเดียวกัน · เว็บ: 422 `{kind}`)
 5. **task** — `embed`/`rerank` มาจาก repo เท่านั้น (harden บังคับ) · llama.cpp `--embedding --pooling <ตามตระกูล>` / `--reranking` · vLLM
    `--runner pooling --convert embed` / `--convert classify` (+ `--hf-overrides` ของ Qwen3-Reranker ที่ harden เติมให้ถ้าหาย · ซ้ำเก็บตัวแรก)
    · SGLang ที่ขอมาถอยเป็น vLLM · stacked ปฏิเสธ
