@@ -647,9 +647,12 @@ def run_privileged(node: Node, password: str, with_prereq: bool = False,
             # `~` ข้างใน bash -c ใต้ sudo คือ /root ไม่ใช่ home ของผู้ใช้ → "cd: no such directory"
             # ทุกครั้ง (รีวิว 2026-09-04) · ส่ง HOME ของผู้ใช้เข้าไปแทน และคืนเจ้าของไฟล์ที่ installer
             # สร้างใน home ให้ผู้ใช้ ไม่งั้น venv เป็นของ root แล้ว `lmds` ธรรมดาอัปเดตทับไม่ได้รอบถัดไป
+            # · รวม **checkout** ด้วย (audit 2026-10-06): install.sh เขียน src/lmds/_build.py ลง checkout (และ pip/git
+            # ทิ้งไฟล์ไว้ในนั้นได้) — ใต้ sudo ไฟล์พวกนั้นเป็นของ root แล้ว `lmds node install` รอบถัดไปที่ไม่ใช้ sudo
+            # ตายที่ "Permission denied" ตอนเขียนไฟล์เดิม
             "sudo -S -p '' env HOME=\"$HOME\" LMDS_ASSUME_YES=1 bash -c "
             "'cd \"$HOME/AutoDeployDGXProject\" && ./install.sh; rc=$?; "
-            "chown -R \"$SUDO_USER\": \"$HOME/.local/share/lmds\" \"$HOME/.local/bin\" "
+            "chown -R \"$SUDO_USER\": \"$HOME/AutoDeployDGXProject\" \"$HOME/.local/share/lmds\" \"$HOME/.local/bin\" "
             "\"$HOME/.config/lmds\" \"$HOME/.cache/pip\" 2>/dev/null; chown \"$SUDO_USER\": \"$HOME/.cache\" 2>/dev/null; exit $rc'",
             "ติดตั้ง Docker / NVIDIA container toolkit",
             "docker info >/dev/null 2>&1",

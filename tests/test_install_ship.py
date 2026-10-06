@@ -584,6 +584,56 @@ def test_the_github_path_regenerates_stale_controllers_like_the_bundle_path(tmp_
     assert "lmds bundles refresh --all --if-older" in calls.read_text(encoding="utf-8")
 
 
+def test_install_under_sudo_hands_the_checkout_back_to_the_user(tmp_path, monkeypatch):
+    """install.sh เขียน `src/lmds/_build.py` ลง **checkout** · รันใต้ `sudo env HOME=…` (ขั้น with_prereq) ไฟล์นั้นเป็นของ
+    root — ขั้นคืนเจ้าของเดิมคืน ~/.local/share/lmds, ~/.local/bin, ~/.config/lmds, ~/.cache/pip แต่ไม่คืน checkout
+    รอบถัดไปที่ไม่ใช้ sudo (`lmds node install` ปกติ) จึงตายที่ "Permission denied" ตอนเขียนไฟล์เดิม (audit 2026-10-06)
+
+    รันคำสั่งจริงของ run_privileged ผ่าน ssh ปลอมที่ exec ในเครื่อง · sudo/chown ปลอมบันทึกว่าถูกสั่งอะไร
+    (สร้างไฟล์ของ root จริงในเทสไม่ได้ — ดูว่า chown -R ครอบไฟล์ที่ install.sh เพิ่งเขียนไหม)
+    """
+    import os
+    import shlex
+
+    home = tmp_path / "node-home"
+    checkout = home / "AutoDeployDGXProject"
+    (checkout / "src" / "lmds").mkdir(parents=True)
+    installer = checkout / "install.sh"
+    installer.write_text("#!/bin/bash\necho 'BUILD=\"x\"' > \"$(dirname \"$0\")/src/lmds/_build.py\"\n"
+                         "touch \"$HOME/docker-installed\"\n", encoding="utf-8")
+    installer.chmod(0o755)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    chowned = tmp_path / "chown.log"
+    fakes = {
+        # ssh: รันคำสั่งปลายทางในเครื่อง — แกะ `bash -lc '<cmd>'` แล้วรันแบบไม่ login (login shell ของ macOS เรียงPATH ใหม่
+        # จน sudo จริงมาก่อนของปลอม)
+        "ssh": 'last="${@: -1}"; eval "set -- ${last#bash -lc }"; exec /bin/bash -c "$1"\n',
+        "sudo": 'while [ "$1" = -S ] || [ "$1" = -p ]; do [ "$1" = -p ] && shift; shift; done\n'
+                'SUDO_USER=tkc exec "$@"\n',
+        "chown": f'echo "$*" >> {shlex.quote(str(chowned))}\n',
+        "docker": '[ -e "$HOME/docker-installed" ]\n',
+    }
+    for name, body in fakes.items():
+        fake = bin_dir / name
+        fake.write_text("#!/bin/bash\n" + body, encoding="utf-8")
+        fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(home))
+
+    outcome = ssh.run_privileged(Node(name="msi-4", host="10.0.0.4", user="tkc"), "pw", with_prereq=True, steps=[])
+    assert [o["ok"] for o in outcome] == [True], outcome
+    written = checkout / "src" / "lmds" / "_build.py"
+    assert written.is_file(), "install.sh ต้องถูกรันจริง"
+
+    recursive = [line.split() for line in chowned.read_text(encoding="utf-8").splitlines() if line.startswith("-R ")]
+    handed_back = {Path(arg) for line in recursive for arg in line[2:]}
+    assert any(root == written or root in written.parents for root in handed_back), \
+        f"ไฟล์ที่ install.sh เขียนใต้ sudo ({written}) ไม่อยู่ในสิ่งที่ถูกคืนให้ผู้ใช้: {sorted(map(str, handed_back))}"
+    assert all(line[1] == "tkc:" for line in recursive), "คืนให้คนที่สั่ง sudo ไม่ใช่ root"
+
+
 def test_the_shipped_file_lands_in_the_users_home_not_in_shared_tmp(tmp_path, monkeypatch):
     """/tmp/lmds-src.bundle เป็นชื่อตายตัวในโฟลเดอร์ที่ทุก user บนเครื่องนั้นเขียนได้ แล้วถูก clone มาติดตั้ง:
     ไฟล์ค้างของ user อื่น (สคริปต์ตายก่อน rm) ทำให้ scp ล้มตลอดไป และไฟล์ที่วางรอไว้คือโค้ดที่จะถูกรัน
