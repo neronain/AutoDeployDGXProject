@@ -2132,8 +2132,8 @@ bundle จาก `lmds adopt` (ไม่มี template — ใช้ `lmds adop
 ## 6. คำสั่งอื่นที่ควรรู้
 
 ```bash
-lmds plan Qwen/Qwen3-32B --target dgx-spark-single   # ดูแผนอย่างเดียว ไม่สร้างไฟล์
-lmds plan Qwen/Qwen3-32B --json                      # แผนเป็น JSON (สำหรับ script)
+lmds plan Qwen/Qwen3-32B --target dgx-spark-single   # ดูแผนอย่างเดียว ไม่สร้างไฟล์ · บอก verdict ของ fit · ไม่ fit = exit 3 (เหมือน deploy)
+lmds plan Qwen/Qwen3-32B --json                      # แผนเป็น JSON (สำหรับ script) · ไม่ fit = stdout ว่าง + exit 3
 lmds inspect Qwen/Qwen3-32B --json                   # ผลวิเคราะห์เป็น JSON
 lmds generate ...                                    # เหมือน deploy แต่ไม่มีขั้นยืนยัน
 lmds validate bundles/qwen3-32b                      # ตรวจ bundle ย้อนหลัง (เช็คว่าไม่มีใครแก้ไฟล์)

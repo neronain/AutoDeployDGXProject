@@ -2913,15 +2913,25 @@ def plan(
 ) -> None:
     """สร้าง Deployment Plan (ขั้นวางแผนของ deploy) — ยังไม่ generate สคริปต์
 
-    Exit codes: 0 สำเร็จ, 1 input ผิด/รูปแบบ weight ที่ไม่รองรับ (MLX), 4 ต้องการ token, 5 ปัญหา provider/เครือข่าย
+    ตัวตัดสินเดียวกับ `generate`/`deploy`: โมเดลที่ไม่ fit กับ target ไม่มีแผนให้ — บอกเหตุผล + ทางเลือกบน stderr แล้ว exit 3
+    (`--json`: stdout ว่าง) · แผนที่ออกมาบอก verdict ของ fit กำกับไว้ · คำนวณ fit ไม่ได้ (ไม่รู้ขนาด weight) = แผนยังออก
+    พร้อมคำเตือนบน stderr ว่าตัวเลขไม่ได้มาจากการคำนวณ
+
+    Exit codes: 0 สำเร็จ, 1 input ผิด/รูปแบบ weight ที่ไม่รองรับ (MLX), 3 โมเดลไม่ fit, 4 ต้องการ token,
+    5 ปัญหา provider/เครือข่าย
     """
     from lmds.brain import MissingKey, make_provider
     from lmds.config import Settings
+    from lmds.fit import Verdict
 
     _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
     _refuse_unsupported(report)
     fits = _compute_fits(report, [target] if target else [], concurrency)
     fit = fits[0]
+    # ก่อนตั้ง provider/เรียก LLM — เดิม `plan` ไม่ดู verdict เลย: `lmds plan openai/gpt-oss-120b --target rtx-4090 --no-llm`
+    # พิมพ์แผน context 8,192 แล้ว exit 0 ทั้งที่ generate/deploy กับ input เดียวกันหยุดที่ exit 3 (audit 2026-10-06) —
+    # คนที่ใช้ plan เป็น dry-run ของ deploy ได้คำตอบตรงข้ามกับของจริง
+    _refuse_no_fit(fit)
 
     provider = None
     if not no_llm:
@@ -2938,10 +2948,42 @@ def plan(
 
     deployment_plan = _build_plan_safe(report, fit, provider, engine=_engine_choice(engine))
 
+    if fit.verdict is Verdict.UNKNOWN:
+        # แผนยังออก (deploy ก็ยอมเหมือนกัน) แต่ context/slots ในแผนเป็นค่าอนุรักษ์นิยมที่ตั้งเอา ไม่ใช่ผลคำนวณ — ต้องบอก
+        # stderr เสมอ: `--json` ต้องได้ JSON ของแผนล้วน ๆ บน stdout
+        err_console.print(f"[yellow]⚠ คำนวณ fit ไม่ได้ (verdict: unknown) กับ target {fit.target_name}[/yellow] — "
+                          "แผนนี้ไม่ได้ยืนยันว่าโมเดลใส่เครื่องได้ · context ในแผนเป็นค่าตั้งต้นแบบอนุรักษ์นิยม")
+        for note in fit.notes:
+            err_console.print(f"[dim]· {note}[/dim]", highlight=False)
     if as_json:
         print(deployment_plan.model_dump_json(indent=2))
         return
     _render_plan(deployment_plan, fit)
+    gb = lambda value: "?" if value is None else f"{value:.1f}"  # noqa: E731
+    console.print(
+        f"Fit: [bold]{fit.verdict.value}[/bold] · target {fit.target_name} · weights {gb(fit.weights_gb)} / "
+        f"budget {gb(fit.budget_gb)} GB"
+        + (f" · context สูงสุดที่ปลอดภัย {fit.max_safe_context:,}" if fit.max_safe_context else ""), highlight=False)
+
+
+def _refuse_no_fit(fit) -> None:
+    """โมเดลไม่ fit กับ target = ไม่มีแผน: เหตุผล + ทางเลือกบน stderr แล้ว exit 3 (ช่องเดียวกับ generate/deploy)
+
+    UNSUPPORTED (รูปแบบที่ไม่มี engine โหลดได้) ปกติถูก `_refuse_unsupported` หยุดก่อนด้วย exit 1 ตั้งแต่ยังไม่คิด fit —
+    อยู่ในรายการนี้เป็นชั้นกันพลาด เผื่อ fit ตอบ unsupported โดย report ไม่ได้บอก: ต้องไม่มีแผนหลุดออกไปเหมือนกัน
+    """
+    from rich.markup import escape
+
+    from lmds.fit import Verdict
+
+    if fit.verdict not in (Verdict.NO_FIT, Verdict.NEEDS_SMALLER_QUANT, Verdict.UNSUPPORTED):
+        return
+    err_console.print(f"[red]โมเดลไม่ fit กับ target {fit.target_name} ({fit.verdict.value})[/red] — ไม่มีแผนให้")
+    for note in fit.notes:
+        err_console.print(f"[dim]· {escape(str(note))}[/dim]", highlight=False)
+    for alt in fit.alternatives:
+        err_console.print(f"[yellow]→ {escape(str(alt))}[/yellow]", highlight=False)
+    raise typer.Exit(code=3)
 
 
 def _render_plan(deployment_plan, fit) -> None:

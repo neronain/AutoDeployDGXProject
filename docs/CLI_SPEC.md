@@ -88,6 +88,12 @@ Options:
 
 `generate` = deploy โดยไม่ถามยืนยัน (มี `--gguf` `--engine` แต่ไม่มี `--task`/`--yes`) · `plan` มี `--json` และไม่มี `--output`
 
+`plan` ใช้ตัวตัดสิน fit เดียวกับ `generate`/`deploy`: verdict `no-fit` / `needs-smaller-quant` = ไม่มีแผน — เหตุผล + ทางเลือกบน
+stderr แล้ว exit `3` ก่อนเรียก LLM (`--json`: stdout ว่าง · เดิมพิมพ์แผน context 8,192 แล้ว exit `0`) · แผนที่ออกมามีบรรทัด
+`Fit: <verdict> · target … · weights … / budget … GB` กำกับ · verdict `unknown` (ไม่รู้ขนาด weight) = แผนยังออก exit `0` พร้อม
+คำเตือน `คำนวณ fit ไม่ได้` บน stderr (stdout ของ `--json` ยังเป็น JSON ของแผนล้วน ๆ) · รูปแบบที่ไม่รองรับ (MLX) ยังเป็น exit `1`
+ตามข้อ 3 ข้างล่าง (ถูกปฏิเสธก่อนคิด fit)
+
 ### พฤติกรรมสำคัญ
 
 1. **HF token (optional)** — เจอ 401/403 ตอน inspect: มี token ใน credential store / `HF_TOKEN` → ใช้เลย · ไม่มี → prompt

@@ -860,3 +860,69 @@ def test_smoke_on_a_node_whose_state_cannot_be_read_does_nothing_to_it(monkeypat
     _no_crash(result)
     assert result.exit_code == 2, result.output
     assert sent == [] and "timedout" in _flat(result.stderr)
+
+
+# ═════════════════════ 6. `plan` ต้องบอก verdict ของ fit — ไม่ fit = exit 3 เหมือน generate/deploy ═════════════════════
+PLAN = ["plan", "Qwen/Qwen3-32B", "--no-llm"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--json"]])
+def test_plan_of_a_model_that_does_not_fit_exits_3_instead_of_printing_a_plan(monkeypatch, extra):
+    """เคส audit: `lmds plan openai/gpt-oss-120b --target rtx-4090 --no-llm` → แผนปกติ context 8,192 · rc 0 · ไม่มีคำไหนบอกว่า
+    ไม่ fit — ขณะที่ `generate`/`deploy` กับ input เดียวกันหยุดที่ exit 3 · คนที่ใช้ `plan` เป็น dry-run ได้คำตอบตรงข้ามกับของจริง"""
+    _patch_inspect(monkeypatch, safetensors_report())          # BF16 65 GB บนการ์ด 24 GB
+    result = _run([*PLAN, "--target", "rtx-4090", *extra])
+    _no_crash(result)
+    assert result.exit_code == 3, result.output
+    assert result.stdout.strip() == "", "ไม่ fit = ไม่มีแผน (และไม่มี JSON ของแผน) บน stdout"
+    said = _flat(result.stderr)
+    assert "ไม่fit" in said and "rtx-4090" in said and "needs-smaller-quant" in said
+    assert "→" in result.stderr, "ต้องมีทางเลือก (alternatives) ให้ไปต่อ"
+
+
+def test_plan_matches_what_generate_and_deploy_decide_for_the_same_input(tmp_path, monkeypatch):
+    """สามคำสั่ง ตัวตัดสินเดียว: input ที่ generate/deploy ปฏิเสธด้วย exit 3 `plan` ต้องปฏิเสธด้วย exit 3 เหมือนกัน"""
+    _patch_inspect(monkeypatch, safetensors_report())
+    codes = {
+        "plan": _run([*PLAN, "--target", "rtx-4090"]).exit_code,
+        "generate": _run(["generate", "Qwen/Qwen3-32B", "--no-llm", "--target", "rtx-4090",
+                          "--output", str(tmp_path / "g")]).exit_code,
+        "deploy": _run(["deploy", "Qwen/Qwen3-32B", "--no-llm", "--target", "rtx-4090", "--yes",
+                        "--output", str(tmp_path / "d")]).exit_code,
+    }
+    assert codes == {"plan": 3, "generate": 3, "deploy": 3}
+
+
+def test_plan_does_not_spend_an_llm_call_on_a_model_that_does_not_fit(monkeypatch):
+    provider = _CountingProvider("{}")
+    _with_provider(monkeypatch, provider)
+    _patch_inspect(monkeypatch, safetensors_report())
+    assert _run(["plan", "Qwen/Qwen3-32B", "--target", "rtx-4090"]).exit_code == 3
+    assert provider.calls == 0
+
+
+def test_plan_shows_the_fit_verdict_next_to_the_plan(monkeypatch):
+    """แผนที่ fit ต้องบอกด้วยว่า fit แบบไหน — `fits` กับ `fits-reduced-context` คือแผนคนละคุณภาพ"""
+    _patch_inspect(monkeypatch, _st())
+    result = _run([*PLAN, "--target", "dgx-spark-single"])
+    assert result.exit_code == 0, result.output
+    said = _flat(result.stdout)
+    assert "DeploymentPlan" in said and "Fit:fits" in said and "dgx-spark-single" in said
+
+
+def test_plan_says_so_when_the_fit_could_not_be_computed(monkeypatch):
+    """verdict `unknown` (ไม่รู้ขนาด weight) — แผนยังออก (exit 0) แต่ต้องบอกว่าตัวเลขในแผนไม่ได้มาจากการคำนวณ fit
+    · `--json` ได้ JSON ของแผนล้วน ๆ บน stdout คำเตือนไป stderr"""
+    from lmds.brain import DeploymentPlan
+
+    unknown = ModelReport(repo_id="Acme/Mystery-7B", revision_sha="sha", artifact_type=ArtifactType.SAFETENSORS,
+                          context_length=32768, has_chat_template=True)
+    _patch_inspect(monkeypatch, lambda s, c: unknown.model_copy(deep=True))
+    args = ["plan", "Acme/Mystery-7B", "--no-llm", "--target", "dgx-spark-single"]
+    result = _run(args)
+    assert result.exit_code == 0, result.output
+    assert "คำนวณfitไม่ได้" in _flat(result.stderr)
+    as_json = _run([*args, "--json"])
+    assert as_json.exit_code == 0, as_json.output
+    assert DeploymentPlan.model_validate(json.loads(as_json.stdout)).model_id == "Acme/Mystery-7B"
+    assert "คำนวณfitไม่ได้" in _flat(as_json.stderr)
