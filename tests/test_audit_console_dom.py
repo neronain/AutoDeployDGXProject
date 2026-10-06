@@ -405,3 +405,107 @@ def test_jumping_to_a_stacked_worker_shadow_row_does_not_pin_the_card(tmp_path):
     assert out["shadowKeys"] == [] and out["workerInUse"] is False
     assert out["keysNow"] == ["spark-head/qwopus"] and out["headMenu"] == 1, "แถวที่มีเมนูจริงยังกางได้ตามเดิม"
     assert out["workerBody"].startswith("Unreachable")
+
+
+# ───────────────────── ข้อ 1 — wizard เครือข่ายคลัสเตอร์: poll หลุด ≠ "ล้มแล้วถอยกลับแล้ว" ─────────────────────
+
+CNW = """H.fastTimers(50);
+const spark = n => ({ name: n, site: "HQ", gpu: { name: "NVIDIA GB10", vram_gb: 128 } });
+const fx = { nodes: [spark("spark-a"), spark("spark-b")] }; H.fx = fx;
+H.polls = 0; H.drop = 0; H.answer = null;
+const step = (node, s, ok = true, detail = "") => ({ node, step: s, ok, detail });
+H.step = step;
+H.running = { id: "n1", running: true, result: null,
+  steps: [step("spark-a", "sudo password accepted"), step("spark-a", "write /etc/netplan/60-lmds-cluster.yaml")] };
+H.routes = [
+  ["/api/cluster/apply", () => ({ id: "n1", running: true, steps: [] })],
+  ["/api/cluster/apply/n1", () => { H.polls++; if (H.drop > 0) { H.drop--; throw new TypeError("Failed to fetch"); }
+     return H.answer || H.running; }],
+  ...H.defaultRoutes(fx),
+];
+"""
+CNW_OPEN = """
+        location.hash = "#/nodes"; await H.tick(30);
+        openClusterNetWizard(["spark-a", "spark-b"]);
+        cnw.inspect = { nodes: { "spark-a": { sudo_needed: false }, "spark-b": { sudo_needed: false } } };
+        cnw.plan = { ok: true, topology: "direct-2", order: ["spark-a", "spark-b"], links: [],
+          nodes: { "spark-a": { netplan: "x", cluster_ip: "10.100.152.1" }, "spark-b": { netplan: "y", cluster_ip: "10.100.152.2" } } };
+        cnw.step = "apply"; cnwRender();
+        const says = () => document.getElementById("cnw-body").textContent.replace(/\\s+/g, " ").trim();
+        const foot = () => [...document.querySelectorAll("#cnw button")].filter(b => ["back", "close", "next"].includes(b.dataset.cnw))
+          .map(b => b.dataset.cnw + (b.disabled ? " (disabled)" : ""));
+        document.querySelector('#cnw button[data-cnw="apply"]').click();
+        await H.sleep(120); await H.tick(10);
+"""
+
+
+def test_a_lost_poll_of_the_apply_job_is_not_reported_as_failed_and_rolled_back(tmp_path):
+    """poll เดียวที่หลุด เคยกลายเป็น "failed — rolled back" + ปุ่ม Back ทั้งที่งาน sudo/netplan ยังเดินอยู่บนเครื่องจริง"""
+    (lost, back, ended) = run_scenario(tmp_path, CNW, CNW_OPEN + """
+        H.drop = 3;                                         // wifi สะดุด: สาม poll ติดกันหลุด
+        await H.sleep(250); await H.tick(10);
+        const pollsAtLoss = H.polls;
+        console.log(JSON.stringify({ says: says(), foot: foot(), result: cnw.result }));
+        await H.sleep(400); await H.tick(10);               // hub กลับมา งานยังเดินอยู่
+        console.log(JSON.stringify({ says: says(), foot: foot(), pollsAfterLoss: H.polls - pollsAtLoss }));
+        H.answer = { id: "n1", running: false, steps: H.running.steps,
+                     result: { ok: true, applied: true, steps: H.running.steps, pings: [], pairing: [], registry: {} } };
+        await H.sleep(200); await H.tick(10);
+        console.log(JSON.stringify({ step: cnw.step, result: !!(cnw.result && cnw.result.applied) }));
+        H.errors.length = 0;
+    """)
+    assert "lost contact with the hub — the job may still be running" in lost["says"], lost["says"]
+    assert "Failed to fetch" in lost["says"], "เหตุผลจริงของการติดต่อไม่ได้ต้องขึ้นบนจอ"
+    assert "rolled back" not in lost["says"].replace("nothing was rolled back", ""), "ห้ามอ้าง rollback ที่ hub ไม่ได้รายงาน"
+    assert lost["result"] is None, "poll ที่หลุดไม่ใช่ผลของงาน"
+    assert "back" not in " ".join(lost["foot"]) and "close (disabled)" in lost["foot"] and "next (disabled)" in lost["foot"]
+    assert back["pollsAfterLoss"] >= 2 and "running…" in back["says"] and "lost contact" not in back["says"]
+    assert ended == {"step": "verify", "result": True}, "ตามต่อจนจบ แล้วไปขั้น Verify เองเหมือนไม่เคยหลุด"
+
+
+def test_a_real_apply_failure_shows_the_hubs_reason_and_only_the_rollbacks_it_reported(tmp_path):
+    out = run_scenario(tmp_path, CNW, CNW_OPEN + """
+        const s = H.step;
+        const cases = {
+          "wrong password, nothing touched": { error: "", steps: [s("spark-a", "sudo password accepted"), s("spark-b", "sudo password rejected", false, "Sorry, try again.")] },
+          "netplan failed, rolled back": { error: "", steps: [s("spark-a", "write /etc/netplan/60-lmds-cluster.yaml"),
+              s("spark-a", "verify addresses", false, "10.100.152.1 not on enp1s0f0np0"), s("spark-a", "rollback to the previous netplan")] },
+          "rollback itself failed": { error: "", steps: [s("spark-a", "verify addresses", false, "no carrier"),
+              s("spark-a", "rollback to the previous netplan", false, "could not roll back")] },
+          "the hub job crashed": { error: "ssh: connect to host spark-b: timed out", steps: [] },
+        };
+        for (const [name, c] of Object.entries(cases)) {
+          cnw.job = "n1"; cnw.result = null; cnw.jobGone = ""; cnw.lost = "";
+          H.answer = { id: "n1", running: false, steps: c.steps, result: { ok: false, applied: false, steps: c.steps, error: c.error } };
+          await cnwFollowApply("n1"); cnwRender();
+          console.log(JSON.stringify({ name, status: document.getElementById("cnw-status").textContent,
+            warn: document.querySelector("#cnw-body .warn-line").textContent.replace(/\\s+/g, " ").trim(), foot: foot() }));
+        }
+        H.errors.length = 0;
+    """)
+    by = {o["name"]: o for o in out}
+    wrong = by["wrong password, nothing touched"]
+    assert wrong["status"] == "failed" and "sudo password rejected — Sorry, try again." in wrong["warn"]
+    assert "reported no rollback" in wrong["warn"] and "was rolled back on" not in wrong["warn"]
+    rolled = by["netplan failed, rolled back"]
+    assert rolled["status"] == "failed — rolled back"
+    assert "10.100.152.1 not on enp1s0f0np0" in rolled["warn"] and "The previous netplan was rolled back on: spark-a." in rolled["warn"]
+    broken = by["rollback itself failed"]
+    assert broken["status"] == "failed" and "Rollback FAILED on spark-a" in broken["warn"]
+    crashed = by["the hub job crashed"]
+    assert "ssh: connect to host spark-b: timed out" in crashed["warn"] and "was rolled back on" not in crashed["warn"]
+    assert all("back" in o["foot"] for o in out), "งานจบแล้ว (ล้มจริง) กลับไปแก้แผนได้"
+
+
+def test_an_apply_job_the_hub_forgot_is_unknown_not_failed(tmp_path):
+    (out,) = run_scenario(tmp_path, CNW, CNW_OPEN + """
+        H.answer = { status: 404, body: { detail: "ไม่รู้จักงานนี้" } };
+        await H.sleep(150); await H.tick(10);
+        const polls = H.polls; await H.sleep(200);
+        console.log(JSON.stringify({ says: says(), foot: foot(), result: cnw.result, pollsAfter: H.polls - polls }));
+        H.errors.length = 0;
+    """)
+    assert "unknown — the hub no longer knows this job" in out["says"] and "ไม่รู้จักงานนี้" in out["says"]
+    assert "Nothing here says the machines were rolled back" in out["says"]
+    assert out["result"] is None and out["pollsAfter"] == 0
+    assert "back" in out["foot"] and "next (disabled)" in out["foot"], "กลับไปตรวจสายใหม่ได้ แต่ไปขั้น Verify ไม่ได้"

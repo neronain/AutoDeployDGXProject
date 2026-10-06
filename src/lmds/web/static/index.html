@@ -1362,6 +1362,21 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "unknown — the hub no longer knows this job": "ไม่ทราบผล — hub ไม่รู้จักงานนี้แล้ว",
+    "lost contact with the hub — the job may still be running": "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่",
+    "failed": "ไม่สำเร็จ",
+    "Apply failed — {why}.": "apply ไม่สำเร็จ — {why}",
+    "Apply failed — the hub gave no reason.": "apply ไม่สำเร็จ — hub ไม่ได้บอกเหตุผล",
+    "The previous netplan was rolled back on: {names}.": "ถอยกลับไปใช้ netplan เดิมแล้วบน: {names}",
+    "The hub reported no rollback — check the lines above before assuming the machines are unchanged.":
+      "hub ไม่ได้รายงานว่ามีการถอยกลับ — ดูบรรทัดข้างบนก่อนสรุปว่าเครื่องยังเหมือนเดิม",
+    "Rollback FAILED on {names} — look at those machines before trying again.":
+      "ถอยกลับ *ไม่สำเร็จ* บน {names} — ไปดูเครื่องพวกนั้นก่อนลองใหม่",
+    "Fix the cause and go back to the plan.": "แก้ต้นเหตุแล้วกลับไปที่ขั้นวางแผน",
+    "The hub no longer knows this job ({why}) — it was probably restarted while the job ran. Nothing here says the machines were rolled back: inspect them (Back → Cabling check re-reads every port) before applying again.":
+      "hub ไม่รู้จักงานนี้แล้ว ({why}) — น่าจะถูก restart ระหว่างที่งานรัน · ไม่มีอะไรบอกว่าเครื่องถูกถอยกลับแล้ว: ตรวจเครื่องก่อน (Back → Cabling check อ่านทุกพอร์ตใหม่) แล้วค่อย apply อีกครั้ง",
+    "Lost contact with the hub — the job may still be running ({why}). Retrying in {s}s; nothing was rolled back as far as this page knows.":
+      "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่ ({why}) · ลองใหม่ในอีก {s} วิ · เท่าที่หน้านี้รู้ ยังไม่มีอะไรถูกถอยกลับ",
     "The model list on this card is not being redrawn while its ⋯ menu is open or a field in it has focus — the header, the left rail and the overview keep following the hub. Close the menu to resume.":
       "รายการโมเดลบนการ์ดนี้หยุดวาดใหม่ชั่วคราว ระหว่างที่เมนู ⋯ เปิดอยู่หรือเคอร์เซอร์อยู่ในช่องกรอกของการ์ด — หัวการ์ด รางซ้าย และภาพรวมยังตาม hub ต่อ · ปิดเมนูเพื่อให้วาดต่อ",
     "Lost contact with the hub — the job may still be running · retrying in {s}s ({why})":
@@ -6267,6 +6282,7 @@ function openClusterNetWizard(preselect = []) {
   cnw = { mode: "wizard", step: "devices", selected: new Set(preselect.filter(n => eligible.has(n))),
           inspect: null, inspectError: "", plan: null, planError: "", subnet: CNW_DEFAULT_SUBNET,
           yamlOpen: new Set(), samePw: true, job: null, jobSteps: {}, steps: [], result: null, applyError: "",
+          lost: "", retryIn: 0, jobGone: "",
           doctor: [], busy: "", removing: null, removeResult: {} };
   cnwRender();
 }
@@ -6481,12 +6497,59 @@ function cnwStepApply() {
       <div class="field" style="margin-top:8px"><button data-cnw="apply">Apply network plan</button></div>`;
   }
   const res = cnw.result;
-  const status = !res ? "running…" : res.ok ? "finished" : res.applied ? "applied, but a check failed" : "failed — rolled back";
-  return `<div class="dim" style="margin-bottom:6px">Job ${esc(cnw.job)} — ${status}</div>
+  return `<div class="dim" style="margin-bottom:6px">Job ${esc(cnw.job)} — <span id="cnw-status">${esc(cnwApplyStatus())}</span></div>
     <div id="cnw-prog-wrap">${cnwProgressMarkup()}</div>
     <pre id="cnw-log">${esc(cnw.steps.length ? (cnw.steps || []).map(cnwStepLine).join("\n") : "Started…")}</pre>
-    ${res && !res.applied ? `<div class="warn-line">Apply failed — machines that were touched were rolled back. Fix the cause and go back to the plan.</div>` : ""}
+    <div id="cnw-contact">${cnwContactMarkup()}</div>
+    ${res && !res.applied ? `<div class="warn-line">${esc(cnwFailureText())}</div>` : ""}
     ${res && res.applied && !res.ok ? `<div class="warn-line">netplan is in place but a ping or SSH-pairing step failed — continue to Verify to see which</div>` : ""}`;
+}
+
+// สิ่งที่ hub *รายงานจริง* เกี่ยวกับงาน apply — หน้านี้ห้ามพูดเกินกว่านั้น
+// audit หน้าเว็บ 2026-10 ข้อ 1: poll เดียวที่หลุดเคยถูกตั้งเป็น result {ok:false, applied:false} ซึ่งหน้าตาเหมือน
+// "ล้มแล้วถอยกลับแล้ว" ทุกประการ — ทั้งที่งาน sudo/netplan ยังเดินอยู่บนเครื่องจริง · ผู้ใช้เห็น "failed — rolled back"
+// + ปุ่ม Back แล้วกลับไปวางแผน/กด apply ซ้ำ ทับเครื่องที่ netplan เขียนไปครึ่งทาง
+function cnwRollback() {
+  const steps = (cnw.steps || []).filter(s => /rollback/i.test(s.step || ""));
+  return { done: steps.filter(s => s.ok).map(s => s.node), failed: steps.filter(s => !s.ok).map(s => s.node) };
+}
+function cnwApplyStatus() {
+  const res = cnw.result;
+  if (cnw.jobGone) return T("unknown — the hub no longer knows this job");
+  if (cnw.lost) return T("lost contact with the hub — the job may still be running");
+  if (!res) return "running…";
+  if (res.ok) return "finished";
+  if (res.applied) return "applied, but a check failed";
+  const back = cnwRollback();
+  // "rolled back" ต่อเมื่อ hub ส่ง step rollback ที่สำเร็จมาจริง และไม่มีเครื่องไหนถอยไม่สำเร็จ
+  return back.done.length && !back.failed.length ? "failed — rolled back" : T("failed");
+}
+// เหตุผลจริงจาก hub: ข้อผิดพลาดของงานทั้งก้อน (result.error) หรือ step แรกที่ล้ม · แล้วบอกเรื่อง rollback ตามที่รายงานมา
+function cnwFailureText() {
+  const res = cnw.result || {};
+  const first = (cnw.steps || []).find(s => !s.ok && !/rollback/i.test(s.step || ""));
+  const why = res.error || (first ? cnwStepLine(first).replace(/^✕\s*/, "") : "");
+  const back = cnwRollback();
+  return [
+    why ? T("Apply failed — {why}.", { why }) : T("Apply failed — the hub gave no reason."),
+    back.done.length ? T("The previous netplan was rolled back on: {names}.", { names: back.done.join(", ") })
+      : T("The hub reported no rollback — check the lines above before assuming the machines are unchanged."),
+    back.failed.length ? T("Rollback FAILED on {names} — look at those machines before trying again.", { names: back.failed.join(", ") }) : "",
+    T("Fix the cause and go back to the plan."),
+  ].filter(Boolean).join(" ");
+}
+function cnwContactMarkup() {
+  if (cnw.jobGone)
+    return `<div class="warn-line">${esc(T("The hub no longer knows this job ({why}) — it was probably restarted while the job ran. Nothing here says the machines were rolled back: inspect them (Back → Cabling check re-reads every port) before applying again.", { why: cnw.jobGone }))}</div>`;
+  if (cnw.lost)
+    return `<div class="warn-line">${esc(T("Lost contact with the hub — the job may still be running ({why}). Retrying in {s}s; nothing was rolled back as far as this page knows.", { why: cnw.lost, s: cnw.retryIn }))}</div>`;
+  return "";
+}
+// ระหว่าง poll ไม่วาดทั้งกล่อง (ผู้ใช้อาจกำลังเลื่อนดู log) — เปลี่ยนเฉพาะบรรทัดสถานะกับบรรทัดเตือน
+function cnwPaintContact() {
+  const status = document.getElementById("cnw-status"), box = document.getElementById("cnw-contact");
+  if (status) status.textContent = cnwApplyStatus();
+  if (box) box.innerHTML = cnwContactMarkup();
 }
 
 // ping ต่อลิงก์จาก result.pings — ตาราง from × to
@@ -6579,7 +6642,9 @@ function cnwRender() {
   const idx = CNW_STEPS.indexOf(cnw.step);
   const body = { devices: cnwStepDevices, cabling: cnwStepCabling, plan: cnwStepPlan, apply: cnwStepApply, verify: cnwStepVerify }[cnw.step]();
   const last = cnw.step === "verify";
-  const running = cnw.step === "apply" && cnw.job && !cnw.result;
+  // งานที่ยังไม่มีผลจาก hub = ยังไม่รู้ว่าเครื่องอยู่ในสภาพไหน — รวมตอนที่ติดต่อ hub ไม่ได้ (ยังตามอยู่) · ปุ่ม Back/Close
+  // ปิดไว้จนกว่าจะรู้ผล · hub ลืมงานไปแล้ว (jobGone) = ไม่มีอะไรให้รออีก ปล่อยให้ย้อนกลับไปตรวจสายใหม่ได้
+  const running = cnw.step === "apply" && cnw.job && !cnw.result && !cnw.jobGone;
   cnwBox.innerHTML = `<div class="card cnw-box"><div class="pad">
       <div class="field" style="margin:0 0 8px"><b class="grow">Set up cluster network</b>
         <span class="dim">${cnw.selected.size ? esc([...cnw.selected].join(" ⇄ ")) : ""}</span>
@@ -6599,7 +6664,7 @@ async function cnwEnter(step) {
   cnw.step = step;
   if (step === "cabling") await cnwInspect([...cnw.selected]);
   if (step === "plan") await cnwPlan();
-  if (step === "apply") { cnw.job = null; cnw.result = null; cnw.jobSteps = {}; cnw.steps = []; cnw.applyError = ""; }
+  if (step === "apply") { cnw.job = null; cnw.result = null; cnw.jobSteps = {}; cnw.steps = []; cnw.applyError = ""; cnw.lost = ""; cnw.jobGone = ""; }
   if (step === "verify") await cnwVerify();
   if (cnw) cnwRender();
 }
@@ -6659,7 +6724,7 @@ async function cnwApply(btn) {
   if (!cnw) return;
   const id = r.ok ? (r.data.id || (r.data.job || {}).id) : "";
   if (!id) { cnw.applyError = r.error || "apply did not return a job id"; cnwRender(); return; }
-  cnw.job = id; cnw.result = null; cnw.jobSteps = {}; cnw.steps = [];
+  cnw.job = id; cnw.result = null; cnw.jobSteps = {}; cnw.steps = []; cnw.lost = ""; cnw.jobGone = "";
   for (const n of names) cnw.jobSteps[n] = { sudo: "run" };
   // wait:true ตอบจบในคำขอเดียว — ไม่ต้องตาม
   if (r.data.running === false && r.data.result) { cnwTrackSteps(r.data.steps || []); cnw.result = r.data.result; }
@@ -6672,14 +6737,27 @@ async function cnwApply(btn) {
 // ตามงาน apply จนจบ — วาดติ๊ก/บันทึกใหม่ทุกรอบโดยไม่วาดทั้งกล่อง (ผู้ใช้อาจกำลังเลื่อนดู log)
 async function cnwFollowApply(id) {
   cnwRender();
+  let wait = JOB_POLL_MS;
   for (;;) {
-    let d;
+    // poll ที่หลุด (สายสะดุด · 5xx · 429) ไม่ใช่ผลของงาน: ถอยแล้วถามใหม่ และ **ไม่ตั้ง cnw.result** —
+    // result เป็นของที่ hub รายงานเท่านั้น · หยุดถาวรทางเดียวคือ 404 (hub ลืมงาน = ถูก restart กลางคัน)
+    let d = null, why = "", gone = false;
     try {
       const r = await api(`/api/cluster/apply/${encodeURIComponent(id)}`);
-      if (!r.ok) { cnw.applyError = `Lost track of job ${id} (HTTP ${r.status})`; cnw.result = { ok: false, applied: false }; return; }
-      d = await r.json();
-    } catch (err) { cnw.applyError = `Could not reach LMDS — ${String(err && err.message || err)}`; cnw.result = { ok: false, applied: false }; return; }
+      if (r.ok) d = await r.json();
+      else { why = await failureText(r); gone = r.status === 404; }
+    } catch (err) { why = unreachableText(err); }
     if (!cnw || cnw.job !== id) return;
+    if (gone) { cnw.lost = ""; cnw.jobGone = why || `Lost track of job ${id}`; cnwRender(); return; }
+    if (!d) {
+      wait = Math.min(wait * 2, JOB_POLL_MAX_MS);
+      cnw.lost = why; cnw.retryIn = Math.round(wait / 1000);
+      cnwPaintContact();
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    wait = JOB_POLL_MS;
+    if (cnw.lost) { cnw.lost = ""; cnwPaintContact(); }
     cnwTrackSteps(d.steps || []);
     const wrap = document.getElementById("cnw-prog-wrap");
     if (wrap) wrap.innerHTML = cnwProgressMarkup();
