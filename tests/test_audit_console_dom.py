@@ -1029,7 +1029,10 @@ def test_the_messages_added_in_this_round_speak_thai_when_the_page_does(tmp_path
     """, """
         location.hash = "#/nodes"; await H.tick(20);
         const flat = el => (el ? el.textContent : "").replace(/\\s+/g, " ").trim();
-        H.drop = 4; await H.sleep(150); await H.tick(10);
+        // หลุดตลอดช่วงที่เทสอ่านจอ (H.drop = 0 ข้างล่างคือ "เน็ตกลับมา") — เดิมหลุดแค่ 4 poll ที่ตัวตามสองตัวแบ่งกัน:
+        // วง poll ถูกเร่ง 50 เท่า เครื่องที่เร็วใช้ครบ 4 ครั้งแล้วกลับมา "running…" ก่อน 150 ms ที่เทสมาอ่าน
+        // (ล้ม 2 ใน 3 รอบเมื่อรันไฟล์เดี่ยว 2026-10-06)
+        H.drop = 1000; await H.sleep(150); await H.tick(10);
         const lost = { node: flat(nodeRows.get("spark-01").out), local: flat(document.getElementById("panel-local-m")) };
         H.drop = 0; H.gone = true; H.fx.nodes[0].models[0].job = null; H.fx.localModels[0].job = null;
         await H.sleep(400); await H.tick(10);

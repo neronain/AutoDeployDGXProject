@@ -368,7 +368,10 @@ def test_an_operator_start_or_restart_puts_the_watchdog_back_on_duty(box, verb):
     assert [a["method"] for a in audit() if a["method"].startswith("WATCHDOG-")] == [
         "WATCHDOG-ARM", "WATCHDOG-PAUSE", "WATCHDOG-RESUME"]
     # พ้น settle แล้วกลับมาเฝ้าจริง: พลาดครบสามรอบ → restart
-    box.sleep(601)
+    # เดินนาฬิกาของเทสให้พ้น settle_until ตัวจริง ไม่ใช่ "601 วิจากตอนสร้าง box": settle_until นับจากเวลาจริงตอน
+    # `lmds start` จบ ส่วนนาฬิกาของ box เริ่มตอนสร้าง fixture — stop+start ที่กินเวลาจริงเกิน 1 วิ (เครื่องกำลังรัน
+    # เทสอื่นอยู่) ทำให้รอบแรกยังเป็น "settling" (ล้มเป็นบางรอบ 2026-10-06 ทั้งรันชุดเต็มและรันไฟล์เดี่ยว)
+    box.sleep(max(0.0, state.settle_until - box.clock()) + 1)
     assert box.loop(rounds=3) == ["waiting", "waiting", "restart"]
     assert box.calls()[-1] == "restart"
 
