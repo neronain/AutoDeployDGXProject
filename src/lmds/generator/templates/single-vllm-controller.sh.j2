@@ -586,12 +586,15 @@ download() {
   # SHARD_FILES ของแผนเป๊ะ (รายการเดียวกับที่ verify-files ตรวจ) · ignore_patterns ของ huggingface_hub ทำ "ยกเว้นแต่ที่อยู่
   # ในแผน" ไม่ได้ (ignore ชนะ allow) จึงถามรายชื่อไฟล์ของ revision นั้นแล้วส่งรายชื่อที่จะเอาเป็น allow_patterns ตรง ๆ
   # รายชื่อเข้า container ทาง env (ชื่อเดียวบน argv) · แผนไม่มีรายการ shard (Hub ไม่รายงาน) = โหลดทั้ง repo ตามเดิมและบอกไว้
-  local LMDS_WEIGHT_FILES="" LMDS_REQUIRED_FILES=""
+  # repo/revision ก็เข้า container ทาง env — เดิมถูกต่อเข้าไปในซอร์ส Python (repo, rev = '${MODEL_ID}', '${MODEL_REVISION}'):
+  # bash ขยายตัวแปรก่อน Python เห็น ค่าที่มี ' จึงเป็นโค้ด Python ใน container ที่ mount HF cache แบบเขียนได้และถือ HF_TOKEN
+  # (audit 2026-10-06 · escape ตอน render คุมได้แค่ชั้น bash — ภาษาที่ฝังอยู่ต้องรับค่าเป็นข้อมูล ไม่ใช่เป็นซอร์ส)
+  local LMDS_WEIGHT_FILES="" LMDS_REQUIRED_FILES="" LMDS_MODEL_ID="$MODEL_ID" LMDS_MODEL_REVISION="$MODEL_REVISION"
   if declare -p SHARD_FILES >/dev/null 2>&1 && (( {{ '${#SHARD_FILES[@]}' }} > 0 )); then
     LMDS_WEIGHT_FILES="$(printf '%s\n' "${SHARD_FILES[@]}")"
   fi
   LMDS_REQUIRED_FILES="$(printf '%s\n' {{ required_files }})"
-  export LMDS_WEIGHT_FILES LMDS_REQUIRED_FILES
+  export LMDS_WEIGHT_FILES LMDS_REQUIRED_FILES LMDS_MODEL_ID LMDS_MODEL_REVISION
 
   _snapshot_download() {
     local disable_xet="$1"
@@ -612,12 +615,12 @@ download() {
       -e HF_HUB_DOWNLOAD_TIMEOUT=30 \
       ${HF_TOKEN:+-e HF_TOKEN} \
       ${disable_xet:+-e HF_HUB_DISABLE_XET=1} \
-      -e LMDS_WEIGHT_FILES -e LMDS_REQUIRED_FILES \
+      -e LMDS_WEIGHT_FILES -e LMDS_REQUIRED_FILES -e LMDS_MODEL_ID -e LMDS_MODEL_REVISION \
       -v "${HF_HOME}:/cache" \
       --entrypoint python3 "$VLLM_IMAGE" -u -c "
 import glob, os
 from huggingface_hub import HfApi, snapshot_download
-repo, rev = '${MODEL_ID}', '${MODEL_REVISION}'
+repo, rev = os.environ['LMDS_MODEL_ID'], os.environ['LMDS_MODEL_REVISION']
 planned = [f for f in os.environ.get('LMDS_WEIGHT_FILES', '').split('\n') if f]
 required = [f for f in os.environ.get('LMDS_REQUIRED_FILES', '').split('\n') if f]
 # นามสกุลของไฟล์น้ำหนักโมเดลทุกรูปแบบ — ตัวที่ไม่อยู่ในแผนคือ checkpoint ซ้ำ / quant อื่น / export รูปแบบอื่น

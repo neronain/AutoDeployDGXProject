@@ -694,3 +694,43 @@ def test_a_bundle_from_another_template_set_is_checked_where_lines_still_corresp
     bundle.controller.write_text(text.replace(before, before.replace("qwen3-32b", "qwen$(touch PWNED_served_name)")), encoding="utf-8")
     result = gate_value_expansion(bundle.directory)
     assert not result.passed and "$(" in result.detail, result.detail
+
+
+# ═════════════════════ ค่าที่เดินทางต่อจาก bash ไปถึง Python ที่ฝังอยู่ใน controller ═════════════════════
+@pytest.mark.parametrize("kind", ["vllm", "sglang"])
+def test_hostile_values_stay_data_inside_the_embedded_download_python(tmp_path, kind, monkeypatch):
+    """`download` ของ single vLLM/SGLang รัน Python ใน container (mount HF cache แบบเขียนได้ · ถือ HF_TOKEN) · ค่าที่ไปถึงมัน:
+    MODEL_ID · MODEL_REVISION · รายชื่อ shard · รายชื่อไฟล์ที่ต้องมี — ต้องไปเป็น *ข้อมูล* ทาง env ไม่ใช่ถูกต่อเข้าไปในซอร์ส Python
+
+    เดิม (มีมาก่อนรอบ audit): `repo, rev = '${MODEL_ID}', '${MODEL_REVISION}'` ใน `python3 -c "…"` — bash ขยายตัวแปรก่อน
+    Python เห็น revision ที่มี `'` จึงเป็นโค้ด Python · ชั้นเดียวที่กันอยู่คือการปฏิเสธค่าตอน render ซึ่งเทสนี้ปิดไว้เพื่อดูชั้นถัดไป
+    เทสรันทั้งเส้น: docker ปลอมรัน Python ที่ controller ฝังมาจริง กับ huggingface_hub ปลอมที่จดว่าถูกเรียกด้วยอะไร
+    """
+    import glob
+
+    from tests import test_audit3_single_download_filter as real_download
+    from tests.single_controller_harness import Box, render, st_report
+
+    monkeypatch.setattr(renderer, "_check_values", lambda plan, context: None)
+    monkeypatch.chdir(tmp_path)        # payload เขียนไฟล์ลง cwd ของ process ที่รันมัน — ต้องเป็นที่ที่เทสมองเห็นและเก็บกวาดเอง
+    model_id = "Qwen/Qwen3-32B"     # id ที่มี ' ไป render ไม่ผ่านอยู่แล้ว (MODEL_LABEL เป็นค่าตั้งต้นของ ${VAR:-…})
+    revision = "sha'+__import__('os').system('touch PWNED_python_rev')+'$(touch PWNED_shell_rev)"
+    shard = "model'+__import__('os').system('touch PWNED_python_file')+'`touch PWNED_shell_file`.safetensors"
+    required = "tok'$(touch PWNED_shell_required).json"
+    report = st_report(repo_id=model_id, revision_sha=revision, tokenizer_files=[required],
+                       safetensor_shards=[ShardFile(filename=shard, size_bytes=12)])
+    made = Box(tmp_path, kind, render(tmp_path, kind, report=report))
+    try:
+        env = real_download._prepare(made, [("config.json", 2), (shard, 12), (required, 3), ("other-Q8_0.gguf", 99 * real_download.GB)])
+        done = made.run("download", env=env)
+        calls = real_download._hub_calls(made)
+    finally:
+        made.close()
+
+    printed = done.stdout + done.stderr
+    assert sorted(p.name for p in tmp_path.rglob("PWNED*")) == [], f"ค่าถูกรันเป็นโค้ด:\n{printed}"
+    fetched = next((c for c in calls if c["call"] == "snapshot_download"), None)
+    assert fetched is not None, f"Python ที่ฝังมาไปไม่ถึง snapshot_download:\n{printed}"
+    assert (fetched["repo"], fetched["revision"]) == (model_id, revision)
+    assert {glob.escape(shard), glob.escape(required)} <= set(fetched["allow_patterns"])
+    assert glob.escape("other-Q8_0.gguf") not in fetched["allow_patterns"]
