@@ -1362,6 +1362,21 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "Lost track of job {id}": "ตามงาน {id} ต่อไม่ได้",
+    "Built {slug} on this machine — writing cluster.env…": "สร้าง {slug} บนเครื่องนี้แล้ว — กำลังเขียน cluster.env…",
+    "cluster.env written — pairing ssh {head} → {workers}…": "เขียน cluster.env แล้ว — กำลังจับคู่ ssh {head} → {workers}…",
+    "stacked · head {head} (this machine)": "stacked · head {head} (เครื่องนี้)",
+    " · worker {workers}": " · worker {workers}",
+    "passed {n} gates · context {context} tok": "ผ่าน {n} ด่าน · context {context} tok",
+    "The bundle is built but does not know its worker yet — start would hang at NCCL init. From a terminal:":
+      "สร้าง bundle แล้วแต่มันยังไม่รู้ว่า worker คือเครื่องไหน — start จะค้างที่ NCCL init · จากเทอร์มินัล:",
+    "reasons:": "ดูเหตุผล:",
+    "sync-worker / start would die with Permission denied until this is fixed — press Pair SSH on the group header to try again":
+      "sync-worker / start จะตายด้วย Permission denied จนกว่าจะแก้ — กด Pair SSH ที่หัวกลุ่มเพื่อลองใหม่",
+    "API key for this model — copy it now.": "API key ของโมเดลนี้ — คัดลอกไว้เดี๋ยวนี้",
+    "Stored on this machine, mode 0600, never inside the bundle:": "เก็บบนเครื่องนี้ (mode 0600) ไม่อยู่ใน bundle:",
+    "Next: press download on the row below — for stacked it downloads on the head, syncs to the worker and verifies both in one job; then start":
+      "ต่อไป: กด download ที่แถวข้างล่าง — stacked จะโหลดที่ head · sync ไป worker · ตรวจทั้งสองเครื่องในงานเดียว แล้วค่อย start",
     "working": "กำลังทำงาน",
     "Could not read what would be removed": "อ่านรายการที่จะถูกลบไม่ได้",
     "Deletes {gb} GB — the weights are kept · cannot be undone": "ลบ {gb} GB — เก็บ weight ไว้ · ย้อนกลับไม่ได้",
@@ -1407,15 +1422,15 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "รายการโมเดลบนการ์ดนี้หยุดวาดใหม่ชั่วคราว ระหว่างที่เมนู ⋯ หรือฟอร์มเปิดอยู่บนการ์ด หรือเคอร์เซอร์อยู่ในช่องกรอกของการ์ด — หัวการ์ด รางซ้าย และภาพรวมยังตาม hub ต่อ · ปิดมันเพื่อให้วาดต่อ",
     "Lost contact with the hub — the job may still be running · retrying in {s}s ({why})":
       "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่ · ลองใหม่ในอีก {s} วิ ({why})",
-    "the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})":
-      "hub ไม่รู้จักงานนี้แล้ว (hub ถูก restart หรือเปล่า?) จึงไม่รู้ว่างานจบอย่างไร · ดู log ของโมเดล ({why})",
+    "Lost track of job {id} — the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})":
+      "ตามงาน {id} ต่อไม่ได้ — hub ไม่รู้จักงานนี้แล้ว (hub ถูก restart หรือเปล่า?) จึงไม่รู้ว่างานจบอย่างไร · ดู log ของโมเดล ({why})",
     "job": "งาน",
     "lost contact with the hub, retrying in {s}s": "ติดต่อ hub ไม่ได้ ลองใหม่ในอีก {s} วิ",
     "Lost contact with the hub — the job may still be running on {node}.":
       "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่บน {node}",
     "the hub no longer knows this job": "hub ไม่รู้จักงานนี้แล้ว",
-    "the hub was probably restarted while it ran, so how it ended is unknown here · press Refresh on this machine to see the real state ({why})":
-      "hub น่าจะถูก restart ระหว่างที่งานรัน จึงไม่รู้ว่างานจบอย่างไร · กด Refresh ที่การ์ดเครื่องนี้เพื่อดูสถานะจริง ({why})",
+    "Lost track of job {id} — the hub was probably restarted while it ran, so how it ended is unknown here · press Refresh on this machine to see the real state ({why})":
+      "ตามงาน {id} ต่อไม่ได้ — hub น่าจะถูก restart ระหว่างที่งานรัน จึงไม่รู้ว่างานจบอย่างไร · กด Refresh ที่การ์ดเครื่องนี้เพื่อดูสถานะจริง ({why})",
     "Restart was issued but the console has not come back — refresh manually":
       "สั่งรีสตาร์ตไปแล้วแต่คอนโซลยังไม่กลับมา — รีเฟรชหน้าเอง",
 
@@ -3219,12 +3234,12 @@ async function writeClusterEnv(slug, head, worker, on = head) {
 async function finishStackedOnHub(built, head) {
   const slug = built.slug || (built.bundle || "").split("/").pop();
   sess = null;
-  wizBusy(`Built ${slug} on this machine — writing cluster.env…`);
+  wizBusy(T("Built {slug} on this machine — writing cluster.env…", { slug }));
   let cluster, paired = null;
   try {
     cluster = await writeClusterEnv(slug, head, draft.worker || "", "");
     if (cluster.ok && cluster.workers.length) {
-      wizBusy(`cluster.env written — pairing ssh ${head} → ${cluster.workers.join(", ")}…`);
+      wizBusy(T("cluster.env written — pairing ssh {head} → {workers}…", { head, workers: cluster.workers.join(", ") }));
       paired = await pairClusterSsh(head, cluster.workers);
     }
   } catch (err) {
@@ -3233,21 +3248,22 @@ async function finishStackedOnHub(built, head) {
   }
   const ready = cluster.ok && paired && paired.ok;
   wiz.innerHTML = `<div class="pad" data-stacked-result="${ready ? "ready" : "incomplete"}">
-    <div class="name">${esc(slug)} <span class="tag ${ready ? "ok" : "warn"}">stacked · head ${esc(head)} (this machine)${
-      cluster.workers.length ? " · worker " + esc(cluster.workers.join(", ")) : ""}</span></div>
-    <div class="muted">${esc(built.zip || "")} · passed ${Array.isArray(built.gates) ? built.gates.length : "?"} gates · context ${nloc(built.context)} tok</div>
+    <div class="name">${esc(slug)} <span class="tag ${ready ? "ok" : "warn"}">${esc(T("stacked · head {head} (this machine)", { head }))}${
+      cluster.workers.length ? esc(T(" · worker {workers}", { workers: cluster.workers.join(", ") })) : ""}</span></div>
+    <div class="muted">${esc(built.zip || "")} · ${esc(T("passed {n} gates · context {context} tok",
+      { n: Array.isArray(built.gates) ? built.gates.length : "?", context: nloc(built.context) }))}</div>
     <div class="warn-line" style="color:var(--${cluster.ok ? "ok" : "bad"})">${esc(cluster.text)}</div>
-    ${cluster.ok ? "" : `<div class="dim">The bundle is built but does not know its worker yet — start would hang at NCCL init. From a terminal:
+    ${cluster.ok ? "" : `<div class="dim">${esc(T("The bundle is built but does not know its worker yet — start would hang at NCCL init. From a terminal:"))}
       <code>lmds cluster write ${esc(slug)} --head ${esc(head)} --worker ${esc(draft.worker || "<worker>")}</code>
-      · reasons: <code>lmds cluster doctor ${esc(head)} ${esc(draft.worker || "<worker>")}</code></div>`}
+      · ${esc(T("reasons:"))} <code>lmds cluster doctor ${esc(head)} ${esc(draft.worker || "<worker>")}</code></div>`}
     ${paired ? `<div class="warn-line" style="color:var(--${paired.ok ? "ok" : "bad"})">${esc(paired.text)}</div>
       ${paired.ok ? "" : (paired.steps || []).map(s => `<div class="dim">${esc(s)}</div>`).join("")}
-      ${paired.ok ? "" : `<div class="dim">sync-worker / start would die with Permission denied until this is fixed — press <b style="font-weight:500">Pair SSH</b> on the group header to try again</div>`}` : ""}
+      ${paired.ok ? "" : `<div class="dim">${esc(T("sync-worker / start would die with Permission denied until this is fixed — press Pair SSH on the group header to try again"))}</div>`}` : ""}
     ${built.api_key ? `<div class="warn-line" style="margin-top:10px">
-      <b>API key for this model — copy it now.</b> Stored on this machine
-      (<span class="mono">~/.lmds/keys/${esc(slug)}</span>, mode 0600), never inside the bundle.
+      <b>${esc(T("API key for this model — copy it now."))}</b> ${esc(T("Stored on this machine, mode 0600, never inside the bundle:"))}
+      <span class="mono">~/.lmds/keys/${esc(slug)}</span>
       <div class="mono" style="margin-top:6px;word-break:break-all;user-select:all">${esc(built.api_key)}</div></div>` : ""}
-    <div class="dim" style="margin-top:8px">Next: press download on the row below — for stacked it downloads on the head, syncs to the worker and verifies both in one job; then start</div>
+    <div class="dim" style="margin-top:8px">${esc(T("Next: press download on the row below — for stacked it downloads on the head, syncs to the worker and verifies both in one job; then start"))}</div>
     <div class="field" style="margin-top:12px"><button id="w-close">Close</button></div>
   </div>`;
   refresh();
@@ -3712,7 +3728,7 @@ function followJob(slug, jobId) {
       },
       gone(why) {
         paint({ running: false, output: (last || {}).output || "" }, note(
-          `Lost track of job ${jobId} — ` + T("the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})", { why }),
+          T("Lost track of job {id} — the hub no longer knows it (was the hub restarted?), so how it ended is unknown here · check the logs ({why})", { id: jobId, why }),
           "data-job-gone"));
       },
     });
@@ -6967,7 +6983,7 @@ async function cnwFollowApply(id) {
       else { why = await failureText(r); gone = r.status === 404; }
     } catch (err) { why = unreachableText(err); }
     if (!cnw || cnw.job !== id) return;
-    if (gone) { cnw.lost = ""; cnw.jobGone = why || `Lost track of job ${id}`; cnwRender(); return; }
+    if (gone) { cnw.lost = ""; cnw.jobGone = why || T("Lost track of job {id}", { id }); cnwRender(); return; }
     if (!d) {
       wait = Math.min(wait * 2, JOB_POLL_MAX_MS);
       cnw.lost = why; cnw.retryIn = Math.round(wait / 1000);
@@ -7651,8 +7667,7 @@ function followNodeJob(node, slug, jobId) {
       gone(why) {
         const command = (last || {}).command || T("job");
         showNodeOutput(node, `${command} · ${slug} — ` + T("the hub no longer knows this job"),
-                       `Lost track of job ${jobId} — `
-                         + T("the hub was probably restarted while it ran, so how it ended is unknown here · press Refresh on this machine to see the real state ({why})", { why })
+                       T("Lost track of job {id} — the hub was probably restarted while it ran, so how it ended is unknown here · press Refresh on this machine to see the real state ({why})", { id: jobId, why })
                          + "\n\n" + ((last || {}).output || ""));
       },
     });

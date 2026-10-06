@@ -1022,6 +1022,27 @@ def test_the_cluster_wizard_lets_through_the_machine_counts_it_says_it_supports(
     assert says[5] == "5 selected" and says[9] == "9 selected — need 2 to 8" and says[1] == "1 selected — need 2 to 8"
 
 
+def test_the_messages_added_in_this_round_speak_thai_when_the_page_does(tmp_path):
+    """ข้อความใหม่ทุกตัวต้องผ่าน T() และมีคำแปล — ไม่งั้นหน้าไทยจะมีประโยคอังกฤษโผล่ตรงที่ผู้ใช้กำลังเจอปัญหาพอดี"""
+    (out,) = run_scenario(tmp_path, JOBS.replace("H.fastTimers(50);", 'H.fastTimers(50); localStorage.setItem("lmds-lang", "th");') + """
+        H.routes.unshift(["/api/recipes", () => ({ recipes: [] })], ["/api/targets", () => ({ targets: [] })]);
+    """, """
+        location.hash = "#/nodes"; await H.tick(20);
+        const flat = el => (el ? el.textContent : "").replace(/\\s+/g, " ").trim();
+        H.drop = 4; await H.sleep(150); await H.tick(10);
+        const lost = { node: flat(nodeRows.get("spark-01").out), local: flat(document.getElementById("panel-local-m")) };
+        H.drop = 0; H.gone = true; H.fx.nodes[0].models[0].job = null; H.fx.localModels[0].job = null;
+        await H.sleep(400); await H.tick(10);
+        const gone = flat(document.getElementById("panel-local-m"));
+        document.getElementById("new").click(); await H.tick(20);
+        console.log(JSON.stringify({ lost, gone, recipes: flat(document.getElementById("w-recipes")) }));
+        H.errors.length = 0;
+    """)
+    assert "ติดต่อ hub ไม่ได้" in out["lost"]["node"] and "งานอาจยังรันอยู่" in out["lost"]["local"], out["lost"]
+    assert "ตามงาน j2 ต่อไม่ได้" in out["gone"] and "hub ไม่รู้จักงานนี้แล้ว" in out["gone"]
+    assert out["recipes"].startswith("hub นี้ยังไม่มีสูตรที่รันผ่านแล้ว")
+
+
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
     (out,) = run_scenario(tmp_path, """
         const fx = { nodes: [] }; H.fx = fx;
