@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import pty
+import re
 import select
 import shutil
 import shlex
@@ -43,6 +44,19 @@ _SSH_BASE = [
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=4",
 ]
+_CONNECT_TIMEOUT = 10
+
+
+def _ssh_options(timeout: float | None = None) -> list[str]:
+    """_SSH_BASE · ผู้เรียกที่รอสั้นกว่า ConnectTimeout ได้ ConnectTimeout ที่สั้นลงตาม
+
+    timeout ของผู้เรียกไม่นับเป็น "ต่อไม่ถึง" แล้ว (ดู _never_connected) — ถ้ามันหมดก่อนที่ ssh จะยอมแพ้
+    เรื่องการต่อเอง เครื่องที่ LAN ดับจะไม่มีวันได้ลองทาง Tailscale · เผื่อ 2 วิให้ ssh ได้พูดก่อนถูกฆ่า
+    """
+    if timeout is None or timeout >= _CONNECT_TIMEOUT + 2:
+        return list(_SSH_BASE)
+    shorter = f"ConnectTimeout={max(1, int(timeout) - 2)}"
+    return [shorter if option.startswith("ConnectTimeout=") else option for option in _SSH_BASE]
 
 
 def key_path() -> str:
@@ -96,28 +110,67 @@ def run(node: Node, command: str, timeout: int = 60, stdin_text: str = "") -> Re
     # ลองทีละทางจนกว่าจะติด — ล้มเพราะ "ต่อไม่ถึง" เท่านั้นที่ถือว่าควรลองทางถัดไป
     hosts = getattr(node, "all_hosts", [node.host])
     last: Result | None = None
-    for index, host in enumerate(hosts):
+    for host in hosts:
         result = _run_ssh(f"{node.user}@{host}", node.port, wrapped, timeout, stdin_text)
-        if result.ok or not _looks_unreachable(result):
+        if result.exit_code != 255 or not _never_connected(result, host, node.user, node.port):
             return result
         last = result
-        if index + 1 < len(hosts):
-            continue
     return last if last is not None else Result(255, "", "ไม่มีที่อยู่ให้ต่อ")
 
 
-def _looks_unreachable(result: Result) -> bool:
-    """แยก "ต่อไม่ถึง" ออกจาก "ต่อได้แต่คำสั่งล้ม" — อย่างหลังไม่ควรไปลองทางอื่นซ้ำ"""
-    if result.exit_code not in (124, 255):
+# บรรทัดที่ ssh client พิมพ์เองเมื่อ **ยังต่อไม่ถึง** — รูปแบบตายตัวจาก sshconnect.c / ssh.c ทุกรุ่น ทุก OS:
+#   ssh: connect to host 10.2.1.11 port 22: Connection refused | No route to host | Network is unreachable
+#   ssh: connect to host 10.2.1.11 port 22: Connection timed out   (Linux · ConnectTimeout หมด)
+#   ssh: connect to host 10.2.1.11 port 22: Operation timed out    (macOS/BSD — ข้อความ errno ต่างกัน)
+#   ssh: Could not resolve hostname spark1: Name or service not known
+# จับที่หัวบรรทัด + ชื่อ host ไม่จับที่คำอธิบายท้ายบรรทัด (ต่างกันตาม OS/locale และไม่ต้องรู้ว่าล้มเพราะอะไร —
+# บรรทัดรูปนี้ออกมาได้เฉพาะก่อนมี connection ซึ่งแปลว่าคำสั่งยังไม่ถูกส่งไปไหนเลย)
+_CONNECT_FAILED = re.compile(
+    r"^ssh: (?:connect to host (?P<dialed>\S+) port \d+|Could not resolve hostname (?P<asked>[^\s:]+)): ", re.M)
+
+
+def _never_connected(result: Result, host: str, user: str = "", port: int = 22) -> bool:
+    """ssh ต่อ `host` ไม่ถึงเลย (คำสั่งยังไม่ถูกส่ง) — เงื่อนไขเดียวที่ลองที่อยู่ถัดไปได้โดยไม่เสี่ยงรันซ้ำ
+
+    ที่อยู่ใน `all_hosts` คือ **เครื่องเดียวกัน** · ของเดิม (`_looks_unreachable`) นับสามอย่างเป็นต่อไม่ถึง
+    ซึ่งสองอย่างไม่ใช่ (audit 2026-10-06):
+      · exit 124 = timeout ของ *ผู้เรียกเอง* — ต่อติดแล้ว คำสั่งแค่ช้า · เคสจริงที่ repro: `lmds start
+        qwen3-coder --port 8001` ถูกส่งไป 10.2.1.11 แล้วซ้ำที่ 100.64.0.11 ของ msi-1 ขณะที่ตัวแรกยังรันอยู่
+        (ไม่มี tty → ไม่มี SIGHUP) · install/remove และขั้น `sudo -S` ที่ถือรหัสผ่านโดนเหมือนกัน
+      · exit 255 ที่ stderr ว่าง — คำสั่งปลายทางออก 255 เองได้
+    และข้อความอย่าง "No route to host" ที่ไหนก็ได้ใน stderr ก็ไม่พอ: controller แบบ stacked ssh จาก head
+    ไป worker เอง · worker ดับ = stderr หน้าตาเดียวกัน exit 255 เหมือนกัน ทั้งที่คำสั่ง *รันแล้ว* บน head —
+    จึงต้องเป็นบรรทัดของ ssh ที่เอ่ยชื่อ host ที่ **เรา** ต่อ
+    """
+    named = {(m.group("dialed") or m.group("asked")).lower()
+             for m in _CONNECT_FAILED.finditer(result.stderr or "")}
+    if not named:
         return False
-    text = (result.stderr or "").lower()
-    markers = ("no route to host", "connection refused", "timed out", "หมดเวลา",
-               "could not resolve", "network is unreachable", "connection timed out")
-    return result.exit_code == 124 or any(m in text for m in markers) or not text
+    return host.lower() in named or bool(named & _dialed_names(host, user, port))
+
+
+def _dialed_names(host: str, user: str, port: int) -> set[str]:
+    """ชื่อที่ ssh จะพิมพ์แทน `host` — host ในทะเบียนเป็นชื่อใน ~/.ssh/config ได้ (`orb`, `spark1`)
+    แล้ว ssh รายงาน HostName ที่แมปไว้ ไม่ใช่ชื่อที่ส่งให้ · `ssh -G` อ่าน config อย่างเดียว ไม่ต่อไปไหน
+
+    เรียกเฉพาะตอนล้มและชื่อไม่ตรง (ทางปกติไม่เสียอะไร) · ถามไม่ได้ = ไม่รู้จักชื่ออื่น = ไม่ย้ายทาง
+    """
+    try:
+        done = subprocess.run(["ssh", "-G", "-p", str(port), f"{user}@{host}" if user else host],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    names = set()
+    for line in done.stdout.splitlines():
+        key, _, value = line.strip().partition(" ")
+        if key.lower() == "hostname" and value.strip():
+            names.add(value.strip().lower())
+    return names
 
 
 def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str = "") -> Result:
-    args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(port), target, wrapped]
+    args = ["ssh", *_ssh_options(timeout), "-i", key_path(), "-p", str(port), target, wrapped]
     try:
         proc = subprocess.run(
             # errors=replace: output ของเครื่องปลายทางที่ถูก cut/tail ตัดกลางอักขระไทย (UTF-8 หลายไบต์)
@@ -129,7 +182,9 @@ def _run_ssh(target: str, port: int, wrapped: str, timeout: int, stdin_text: str
     except FileNotFoundError as exc:
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
     except subprocess.TimeoutExpired:
-        return Result(124, "", f"หมดเวลา {timeout}s — เครื่องอาจปิดอยู่หรือเน็ตช้า")
+        # ไม่ใช่ "ต่อไม่ถึง": ssh ยอมแพ้เรื่องการต่อเองภายใน ConnectTimeout (สั้นกว่า timeout นี้เสมอ — ดู
+        # _ssh_options) แล้วรายงานเป็น 255 · มาถึงตรงนี้คือต่อติดแล้วคำสั่งยังไม่จบ และ **ยังรันอยู่ที่ปลายทาง**
+        return Result(124, "", f"หมดเวลา {timeout}s — เครื่องตอบช้าหรือคำสั่งยังไม่จบ (อาจยังรันอยู่บนเครื่องนั้น)")
     return Result(proc.returncode, proc.stdout, proc.stderr)
 
 
@@ -161,7 +216,7 @@ def stream(node: Node, command: str, secret_env: dict[str, str] | None = None,
         prelude += "".join(f"read -r {name}; export {name}; " for name in secret_env)
         prelude = f"# borrowed: {names}\n" + prelude
     wrapped = f"bash -lc {shlex.quote(prelude + command)}"
-    host = node.all_hosts[0]
+    host = _reachable_host(node)
     args = ["ssh", *_SSH_BASE, "-i", key_path(), "-p", str(node.port),
             f"{node.user}@{host}", wrapped]
     try:
@@ -187,6 +242,26 @@ def stream(node: Node, command: str, secret_env: dict[str, str] | None = None,
         raise NodeError("ไม่พบคำสั่ง ssh — ติดตั้ง openssh-client ก่อน") from exc
 
 
+def _reachable_host(node: Node) -> str:
+    """ที่อยู่แรกของ node ที่ ssh ต่อถึง — ให้ stream() ใช้ทางเดียวกับที่ run() จะไปจบ
+
+    stream() เดิมใช้ `all_hosts[0]` อย่างเดียว: เครื่องที่ตอนนี้เข้าได้ทาง Tailscale ทางเดียว `run` (probe ·
+    ปุ่มสั้น ๆ) ผ่านหมด แต่งานยาวทุกอย่าง (download · install · logs -f) ตายที่ "No route to host" ทันที
+    (audit 2026-10-06) · stream คืน Popen ไปแล้วจึงย้ายทางทีหลังไม่ได้ และส่งคำสั่งจริงไปลองทีละทางก็คือ
+    ความเสี่ยงรันซ้ำแบบเดียวกับที่เพิ่งแก้ใน run() → ถามทางก่อนด้วย `true` ซึ่งรันกี่รอบก็ไม่มีผล
+    · เครื่องที่มีทางเดียวไม่ถาม (ไม่เสีย handshake เพิ่ม) · ไม่มีทางไหนต่อถึง = คืนทางแรก ให้ stream
+    รายงาน error จริงของมันเอง
+    """
+    hosts = getattr(node, "all_hosts", None) or [node.host]
+    if len(hosts) < 2:
+        return hosts[0]
+    for host in hosts:
+        asked = _run_ssh(f"{node.user}@{host}", node.port, "true", _CONNECT_TIMEOUT + 5)
+        if asked.exit_code != 255 or not _never_connected(asked, host, node.user, node.port):
+            return host        # ต่อถึง — หรือล้มด้วยเรื่องที่เปลี่ยนทางแล้วไม่ช่วย (key ใช้ไม่ได้ ฯลฯ)
+    return hosts[0]
+
+
 def push_file(node: Node, local: str, remote: str, timeout: int = 1800) -> Result:
     """ส่งไฟล์ไปเครื่องปลายทางด้วย scp — ใช้ key เดียวกับ run()
 
@@ -198,7 +273,7 @@ def push_file(node: Node, local: str, remote: str, timeout: int = 1800) -> Resul
     if not source.is_file():
         raise NodeError(f"ไม่พบไฟล์ที่จะส่ง: {local}")
     for host in node.all_hosts:
-        args = ["scp", *_SSH_BASE, "-i", key_path(), "-P", str(node.port),
+        args = ["scp", *_ssh_options(timeout), "-i", key_path(), "-P", str(node.port),
                 str(source), f"{node.user}@{host}:{remote}"]
         try:
             proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -208,7 +283,9 @@ def push_file(node: Node, local: str, remote: str, timeout: int = 1800) -> Resul
         except subprocess.TimeoutExpired:
             return Result(124, "", f"หมดเวลา {timeout}s ระหว่างส่งไฟล์")
         result = Result(proc.returncode, proc.stdout, proc.stderr)
-        if result.ok or not _looks_unreachable(result):
+        # กติกาเดียวกับ run(): ย้ายทางเฉพาะเมื่อ ssh ข้างใต้ต่อ host นี้ไม่ถึง (scp พิมพ์บรรทัดของ ssh ออกมาเอง) ·
+        # ไม่ผูกกับ exit code เพราะ scp รุ่น sftp ออก 255 แต่รุ่นเก่าออก 1 ("lost connection")
+        if result.ok or not _never_connected(result, host, node.user, node.port):
             return result
     return result
 

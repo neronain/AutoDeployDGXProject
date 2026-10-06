@@ -325,7 +325,7 @@ def test_failover_only_happens_when_unreachable(monkeypatch):
     assert tried == ["ops@a"]
 
 
-def test_failover_happens_on_timeout(monkeypatch):
+def test_failover_happens_when_ssh_itself_could_not_connect(monkeypatch):
     from lmds.nodes import ssh
 
     tried = []
@@ -333,12 +333,29 @@ def test_failover_happens_on_timeout(monkeypatch):
     def fake(target, port, wrapped, timeout, stdin_text=""):
         tried.append(target)
         if target.endswith("@a"):
-            return ssh.Result(124, "", "หมดเวลา 60s")
+            return ssh.Result(255, "", "ssh: connect to host a port 22: Connection timed out\n")
         return ssh.Result(0, "ok", "")
 
     monkeypatch.setattr(ssh, "_run_ssh", fake)
     result = ssh.run(make(host="a", alt_hosts=["b"]), "true")
     assert tried == ["ops@a", "ops@b"] and result.stdout == "ok"
+
+
+def test_the_callers_own_timeout_is_not_a_reason_to_run_the_command_again(monkeypatch):
+    """เทสนี้เคยชื่อ test_failover_happens_on_timeout และยืนยันกลับด้าน — exit 124 คือ timeout ของผู้เรียกเอง
+    (ต่อติดแล้ว คำสั่งช้า) · ที่อยู่สำรองคือเครื่องเดียวกัน ยิงซ้ำ = `lmds start` สองรอบ (audit 2026-10-06 ·
+    เทสกับ ssh ปลอมจริงอยู่ใน test_ssh_failover.py) · ต่อไม่ถึงจริง ssh บอกเองด้วย 255 ภายใน ConnectTimeout"""
+    from lmds.nodes import ssh
+
+    tried = []
+
+    def fake(target, port, wrapped, timeout, stdin_text=""):
+        tried.append(target)
+        return ssh.Result(124, "", "หมดเวลา 60s")
+
+    monkeypatch.setattr(ssh, "_run_ssh", fake)
+    result = ssh.run(make(host="a", alt_hosts=["b"]), "true")
+    assert tried == ["ops@a"] and result.exit_code == 124
 
 
 def test_scanner_does_not_double_count_hf_symlinks(tmp_path, monkeypatch):
