@@ -2561,7 +2561,13 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
                 if not exc.had_token:
                     err_console.print("ตั้ง token ด้วย: lmds config set-hf-token หรือ env HF_TOKEN")
                 raise typer.Exit(code=4) from None
-            err_console.print(f"[yellow]{source.repo_id} เป็น gated repo[/yellow]")
+            if getattr(exc, "reason", "gated") == "unknown":
+                # 401 เปล่า ๆ = repo ไม่มีอยู่ หรือ private — ไม่อ้างว่า gated: คนที่พิมพ์ชื่อผิดต้องเห็นว่าอาจเป็นชื่อ
+                err_console.print(
+                    f"[yellow]ไม่พบ {source.repo_id} หรือเป็น repo private (Hub ตอบเหมือนกันเมื่อไม่มี token) — "
+                    "เช็คชื่อก่อน · ถ้าเป็น repo private ใส่ token ด้านล่าง[/yellow]")
+            else:
+                err_console.print(f"[yellow]{source.repo_id} เป็น gated repo[/yellow]")
             entered = typer.prompt("Hugging Face token (Enter เพื่อข้าม)", hide_input=True, default="").strip()
             if not entered:
                 err_console.print("ข้าม token — ไม่สามารถ inspect repo นี้ได้")

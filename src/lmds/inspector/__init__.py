@@ -1,5 +1,5 @@
 from .gguf import ByteSource, GgufInfo, GgufParseError, parse_gguf
-from .hf_api import AuthRequired, BudgetExceeded, HfClient, HfError, RepoNotFound
+from .hf_api import AuthRequired, BudgetExceeded, HfClient, HfError, RepoNotFound, RevisionNotFound
 from .inspect import inspect_model
 from .report import ArtifactType, GgufVariant, ModelReport
 
@@ -15,6 +15,7 @@ __all__ = [
     "HfError",
     "ModelReport",
     "RepoNotFound",
+    "RevisionNotFound",
     "inspect_model",
     "parse_gguf",
 ]

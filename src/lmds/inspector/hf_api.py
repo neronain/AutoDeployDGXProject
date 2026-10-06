@@ -1,13 +1,15 @@
 """HTTP client สำหรับ Hugging Face Hub API — ดึงเฉพาะ metadata และไฟล์เล็ก ไม่โหลด weight
 
 หลักการ (FR-1.5, FR-1.6):
-- 401/403 → AuthRequired ให้ชั้น CLI ตัดสินใจถาม token (optional)
+- 401/403 → AuthRequired ให้ชั้น CLI ตัดสินใจถาม token (optional) · แยก "gated" ออกจาก "ไม่พบหรือ private"
+  ด้วย header `x-error-code` ของ Hub (ดู _raise_for_access)
 - ไฟล์เล็กมีเพดานขนาด, ไฟล์ใหญ่ (GGUF header) อ่านผ่าน HTTP Range พร้อม budget
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -28,23 +30,46 @@ class HfError(Exception):
 
 
 class AuthRequired(HfError):
-    """repo เป็น gated/private — ต้องใช้ HF token (หรือ token ที่มียังไม่ได้รับสิทธิ์)"""
+    """เข้าไม่ถึง repo โดยไม่มี token ที่ใช้ได้ — `reason` บอกว่ารู้แค่ไหน
 
-    def __init__(self, repo_id: str, status: int, had_token: bool):
+    - "gated"   = Hub บอกเองว่า repo มีอยู่และถูกจำกัดสิทธิ์ (`x-error-code: GatedRepo` หรือ 403)
+    - "unknown" = 401 เปล่า ๆ: **repo ไม่มีอยู่ หรือเป็น private** — Hub ตอบเหมือนกันทั้งสองกรณีเมื่อไม่ได้ล็อกอิน
+      (วัดจริง 2026-10-06: `/api/models/Qwen/Qwen3-8B-typo-zz` → 401 "Invalid username or password." ไม่มี x-error-code)
+      เดิมทุก 401 ถูกรายงานว่า "repo นี้เป็น gated/private" — พิมพ์ชื่อผิดแล้วถูกถาม token
+    """
+
+    def __init__(self, repo_id: str, status: int, had_token: bool, reason: str = "gated"):
         self.repo_id = repo_id
         self.status = status
         self.had_token = had_token
-        detail = (
-            "token ที่ให้มายังเข้าถึงไม่ได้ (อาจต้องกดยอมรับเงื่อนไขบนเว็บ Hugging Face ก่อน)"
-            if had_token
-            else "repo นี้เป็น gated/private — ต้องใช้ Hugging Face token"
-        )
+        self.reason = reason
+        if reason == "unknown":
+            detail = (
+                "ไม่พบ repo นี้ หรือ token ที่ให้มาไม่มีสิทธิ์เข้าถึง — เช็คชื่อ org/model และสิทธิ์ของ token"
+                if had_token
+                else "ไม่พบ repo นี้ หรือเป็น repo private — Hub ตอบเหมือนกันทั้งสองกรณีเมื่อไม่มี token · "
+                     "เช็คชื่อ org/model ก่อน ถ้าเป็น repo private จึงใส่ Hugging Face token"
+            )
+        else:
+            detail = (
+                "token ที่ให้มายังเข้าถึงไม่ได้ (อาจต้องกดยอมรับเงื่อนไขบนเว็บ Hugging Face ก่อน)"
+                if had_token
+                else "repo นี้เป็น gated — ต้องใช้ Hugging Face token ของบัญชีที่ได้รับสิทธิ์แล้ว"
+            )
         super().__init__(f"{repo_id}: {detail} (HTTP {status})")
 
 
 class RepoNotFound(HfError):
     def __init__(self, repo_id: str):
         super().__init__(f"ไม่พบ model repo: {repo_id}")
+
+
+class RevisionNotFound(RepoNotFound):
+    """repo มีอยู่ แต่ไม่มี branch/tag/commit ที่ขอ — เป็น input ผิดแบบเดียวกับชื่อ repo ผิด (CLI exit 1)"""
+
+    def __init__(self, repo_id: str, revision: str | None):
+        HfError.__init__(self, f"ไม่พบ revision {revision!r} ใน {repo_id} — เช็คชื่อ branch/tag/commit "
+                               "(PR ใช้รูป refs/pr/<เลข>)")
 
 
 class BudgetExceeded(HfError):
@@ -81,9 +106,23 @@ class HfClient:
                 "เช็คอินเทอร์เน็ต/proxy ของเครื่องนี้ แล้วลองใหม่ · เครื่อง air-gapped ใช้ mirror ภายในผ่าน HF_ENDPOINT"
             ) from exc
 
-    def _raise_for_access(self, repo_id: str, status: int) -> None:
-        if status in (401, 403):
-            raise AuthRequired(repo_id, status, had_token=self.token is not None)
+    def _raise_for_access(self, repo_id: str, resp: httpx.Response, revision: str | None = None) -> None:
+        """แปล status + `x-error-code` ของ Hub เป็นสาเหตุที่ถูก — ไม่เดาจาก status อย่างเดียว
+
+        Hub ตอบ (วัดจริง 2026-10-06): repo ที่ไม่มีอยู่ + ไม่ล็อกอิน → 401 ไม่มี code · repo gated →
+        `/api/models` 200 แล้ว `resolve` 401 `GatedRepo` · revision ผิด → 404 `RevisionNotFound` · ล็อกอินแล้ว
+        repo ไม่มี → 404 `RepoNotFound`
+        """
+        status = resp.status_code
+        code = resp.headers.get("x-error-code", "")
+        if code == "RepoNotFound":
+            raise RepoNotFound(repo_id)
+        if code == "RevisionNotFound":
+            raise RevisionNotFound(repo_id, revision)
+        if code == "GatedRepo" or status == 403:
+            raise AuthRequired(repo_id, status, had_token=self.token is not None, reason="gated")
+        if status == 401:
+            raise AuthRequired(repo_id, status, had_token=self.token is not None, reason="unknown")
         if status == 404:
             raise RepoNotFound(repo_id)
 
@@ -91,9 +130,10 @@ class HfClient:
         """GET /api/models/... พร้อมขนาดไฟล์ (blobs=true) — คืน JSON ดิบของ Hub"""
         path = f"/api/models/{repo_id}"
         if revision:
-            path += f"/revision/{revision}"
+            # revision ที่มี / (refs/pr/1 · refs/convert/…) ต้อง encode เป็น segment เดียว — ไม่ encode Hub ตอบ 404
+            path += f"/revision/{quote(revision, safe='')}"
         resp = self._get(f"{HF_BASE}{path}", params={"blobs": "true"}, headers=self._headers())
-        self._raise_for_access(repo_id, resp.status_code)
+        self._raise_for_access(repo_id, resp, revision)
         if resp.status_code != 200:
             raise HfError(f"Hub API ตอบ HTTP {resp.status_code} สำหรับ {repo_id}")
         return resp.json()
@@ -106,7 +146,7 @@ class HfClient:
         resp = self._get(url, headers=self._headers())
         if resp.status_code == 404:
             return None
-        self._raise_for_access(repo_id, resp.status_code)
+        self._raise_for_access(repo_id, resp, revision)
         if resp.status_code != 200:
             raise HfError(f"ดึง {filename} ไม่สำเร็จ (HTTP {resp.status_code})")
         if len(resp.content) > cap:
@@ -124,7 +164,7 @@ class HfClient:
             resp = self._get(url, headers={**headers, "Range": f"bytes={start}-{end}"})
             if resp.status_code == 404:
                 raise RepoNotFound(repo_id)
-            self._raise_for_access(repo_id, resp.status_code)
+            self._raise_for_access(repo_id, resp, revision)
             if resp.status_code not in (200, 206):
                 raise HfError(f"Range request ล้มเหลว (HTTP {resp.status_code})")
             return resp.content
