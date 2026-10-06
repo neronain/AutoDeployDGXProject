@@ -297,18 +297,28 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"
 }
 
+# ── ค่า serving ถูกตรวจเฉพาะตอนจะสั่ง engine รัน (start / restart) ────────────────────────────
+# เดิม validate_numbers รันจาก parse_options ก่อน dispatch ของ *ทุก* คำสั่ง: ค่าที่บันทึกไว้ผิดช่วง (เช่น
+# GPU_MEMORY_UTILIZATION=0.99 ใน bundle.env ซึ่ง `lmds set` รับ) ทำให้ stop · status · logs จบ exit 1 ไปด้วย —
+# โมเดลที่รันอยู่หยุดผ่าน controller ของตัวเองไม่ได้ (audit 2026-10-06 repro_gpu_util.sh) · คำสั่งที่ไม่ได้สั่ง engine รัน
+# ไม่มีเหตุให้ล้มเพราะ knob · restart ตรวจ *ก่อน* stop — ไม่หยุดโมเดลที่ใช้งานอยู่เพื่อไปพบว่า start ไม่ขึ้น
+# ข้อความบอกทางแก้ทั้งสองแบบ: ค่าที่บันทึกไว้ (lmds set) และครั้งเดียว (flag)
+_knob_fix() {
+  printf ' — แก้ค่าที่บันทึกไว้: lmds set {{ slug }} %s <ค่า> · หรือครั้งเดียว: %s start %s <ค่า>' "$1" "$0" "$1"
+}
+
 validate_numbers() {
   [[ "$API_PORT" =~ ^[0-9]+$ ]] && (( API_PORT >= 1 && API_PORT <= 65535 )) ||
-    die "invalid API_PORT: $API_PORT"
+    die "invalid API_PORT: $API_PORT (ต้องเป็น 1–65535)$(_knob_fix --port)"
   [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( MAX_MODEL_LEN > 0 )) ||
-    die "invalid context: $MAX_MODEL_LEN"
+    die "invalid context: $MAX_MODEL_LEN (ต้องเป็นจำนวนเต็มมากกว่า 0)$(_knob_fix --context)"
   # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
   # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
   # 0.3 พอดีต้องผ่าน — fit/sizing ตั้งพื้นไว้ที่ 0.3 ให้โมเดลเล็ก แล้ว `> 0.3` เคยปฏิเสธ
   awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 >= 0.3 && v+0 <= 0.98)}' ||
-    die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)"
+    die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)$(_knob_fix --gpu-util)"
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
-    die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
+    die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT (ต้องเป็นจำนวนเต็มมากกว่า 0) — ตั้งใหม่: $0 start --client-output <ค่า> หรือแก้ CLIENT_OUTPUT ใน bundle.env"
 }
 
 detect_advertise_ip() {
@@ -361,7 +371,6 @@ parse_options() {
       *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
-  validate_numbers
   LOCAL_API_HOST="$(_local_api_host)"
   export LOCAL_API_HOST      # ชุดทดสอบ python (test-* · bench · stress) อ่านจาก env
 }
@@ -1008,6 +1017,9 @@ logs() {
 
 client_config() {
   local input_budget
+  # ค่าที่ใช้คำนวณต้องเป็นตัวเลข — validate_numbers ไม่ได้รันให้คำสั่งนี้แล้ว และ bash arithmetic บนข้อความพังด้วย error ที่อ่านไม่ออก
+  [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ && "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] ||
+    die "client-config: context (${MAX_MODEL_LEN}) และ client output (${CLIENT_OUTPUT}) ต้องเป็นจำนวนเต็ม$(_knob_fix --context)"
   if [[ "$CLIENT_INPUT" == "auto" ]]; then
     input_budget=$(( MAX_MODEL_LEN - CLIENT_OUTPUT - TEMPLATE_OVERHEAD_TOKENS ))
   else
@@ -1561,9 +1573,9 @@ case "${1:-help}" in
   verify-files) verify_files ;;
 {% if runtime_assets -%}
   prepare-runtime) prepare_runtime ;;
-{% endif %}  start)        start ;;
+{% endif %}  start)        validate_numbers; start ;;
   stop)         stop ;;
-  restart)      stop; start ;;
+  restart)      validate_numbers; stop; start ;;
   status)       status ;;
   logs)         shift; logs "$@" ;;
   test-reasoning)  test_reasoning ;;

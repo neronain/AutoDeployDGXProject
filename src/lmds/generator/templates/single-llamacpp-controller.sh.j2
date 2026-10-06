@@ -328,11 +328,21 @@ _unverified_note() {
 }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
+# ── ค่า serving ถูกตรวจเฉพาะตอนจะสั่ง engine รัน (start / restart) ────────────────────────────
+# เดิม validate_numbers รันจาก parse_options ก่อน dispatch ของ *ทุก* คำสั่ง: ค่าที่บันทึกไว้ผิดช่วง (เช่น
+# GPU_MEMORY_UTILIZATION=0.99 ใน bundle.env ซึ่ง `lmds set` รับ) ทำให้ stop · status · logs จบ exit 1 ไปด้วย —
+# โมเดลที่รันอยู่หยุดผ่าน controller ของตัวเองไม่ได้ (audit 2026-10-06 repro_gpu_util.sh) · คำสั่งที่ไม่ได้สั่ง engine รัน
+# ไม่มีเหตุให้ล้มเพราะ knob · restart ตรวจ *ก่อน* stop — ไม่หยุดโมเดลที่ใช้งานอยู่เพื่อไปพบว่า start ไม่ขึ้น
+# ข้อความบอกทางแก้ทั้งสองแบบ: ค่าที่บันทึกไว้ (lmds set) และครั้งเดียว (flag)
+_knob_fix() {
+  printf ' — แก้ค่าที่บันทึกไว้: lmds set {{ slug }} %s <ค่า> · หรือครั้งเดียว: %s start %s <ค่า>' "$1" "$0" "$1"
+}
+
 validate_numbers() {
   [[ "$API_PORT" =~ ^[0-9]+$ ]] && (( API_PORT >= 1 && API_PORT <= 65535 )) ||
-    die "invalid API_PORT: $API_PORT"
+    die "invalid API_PORT: $API_PORT (ต้องเป็น 1–65535)$(_knob_fix --port)"
   [[ "$CTX_SIZE" =~ ^[0-9]+$ ]] && (( CTX_SIZE > 0 )) ||
-    die "invalid context: $CTX_SIZE"
+    die "invalid context: $CTX_SIZE (ต้องเป็นจำนวนเต็มมากกว่า 0)$(_knob_fix --context)"
   # llama.cpp ยอมให้เกิน n_ctx_train (ยืด RoPE ให้) แต่คุณภาพตกเงียบ ๆ — เตือนพอ ไม่ปฏิเสธ
   # --ctx-size เป็นก้อนรวมที่หารให้ทุก slot · เพดานของโมเดลเป็นเพดานต่อคำขอ จึงเทียบค่า "ต่อ slot"
   # (4 slot × 131072 = 524288 ถูกต้อง ไม่ต้องเตือน — เดิมเตือนทุกครั้งที่ start)
@@ -346,7 +356,7 @@ validate_numbers() {
     fi
   fi
   [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
-    die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
+    die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT (ต้องเป็นจำนวนเต็มมากกว่า 0) — ตั้งใหม่: $0 start --client-output <ค่า> หรือแก้ CLIENT_OUTPUT ใน bundle.env"
 }
 
 detect_advertise_ip() {
@@ -434,7 +444,6 @@ parse_options() {
 {% endif %}      *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
-  validate_numbers
   LOCAL_API_HOST="$(_local_api_host)"
   export LOCAL_API_HOST      # ชุดทดสอบ python (test-* · bench · stress) อ่านจาก env
 }
@@ -1718,6 +1727,9 @@ logs() {
 client_config() {
   # llama.cpp แบ่ง --ctx-size เท่า ๆ กันให้ทุก slot (--parallel) — budget ต้องคิดจาก context ต่อ slot จริง
   local slot_context input_budget
+  # ค่าที่ใช้คำนวณต้องเป็นตัวเลข — validate_numbers ไม่ได้รันให้คำสั่งนี้แล้ว และ bash arithmetic บนข้อความพังด้วย error ที่อ่านไม่ออก
+  [[ "$CTX_SIZE" =~ ^[0-9]+$ && "$PARALLEL_SEQS" =~ ^[1-9][0-9]*$ && "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] ||
+    die "client-config: context (${CTX_SIZE}) · slot (${PARALLEL_SEQS}) · client output (${CLIENT_OUTPUT}) ต้องเป็นจำนวนเต็ม$(_knob_fix --context)"
   slot_context=$(( CTX_SIZE / PARALLEL_SEQS ))
 {% if is_pooling %}
   # embedding/rerank ไม่มี output token — งบอินพุตคือ context ต่อ slot ทั้งก้อน ไม่หัก CLIENT_OUTPUT/template
@@ -2351,9 +2363,9 @@ case "${1:-help}" in
   check-runtime) check_runtime ;;
   download)     download ;;
   verify-files) verify_files ;;
-  start)        start ;;
+  start)        validate_numbers; start ;;
   stop)         stop ;;
-  restart)      stop; start ;;
+  restart)      validate_numbers; stop; start ;;
   status)       status ;;
   logs)         shift; logs "$@" ;;
   client-config) client_config ;;
