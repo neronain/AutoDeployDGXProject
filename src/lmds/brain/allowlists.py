@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .plan_schema import Engine
 
 VLLM_FLAGS = {
@@ -207,6 +209,37 @@ def normalize_llamacpp_flags(flags: list[str]) -> list[str]:
     return out
 
 
+# token ที่หน้าตาเป็นชื่อ flag: ขีดหนึ่ง/สองตัวตามด้วยตัวอักษร — `-1` · `-0.5` (ค่าลบ) ไม่นับ
+_FLAG_TOKEN_RE = re.compile(r"^--?[A-Za-z]")
+
+
+def explode_flag_item(item: str) -> list[str]:
+    """item เดียวที่ซ่อนหลาย flag → flag ละ item: '--dtype float16 --trust-remote-code' → 2 item
+
+    allowlist เทียบแค่ token แรกของ item — item ที่อัดหลาย flag มาจึงผ่านทั้งก้อนตามชื่อตัวแรก ทั้งที่ controller
+    แยกคำ EXTRA_SERVE_ARGS ด้วยช่องว่างแล้วส่งทุกตัวเข้า engine: `["--dtype float16 --trust-remote-code"]` → allowed
+    ไม่มีอะไรถูกส่งไปขออนุมัติ (ผู้ตรวจยืนยัน 2026-10-06) — แผนจาก LLM เป็น input ที่ไม่น่าเชื่อถือ ช่องนี้คือทางลัด
+    ข้ามด่านอนุมัติของ --trust-remote-code
+
+    ตัดตรง token ที่ขึ้นต้นเป็นชื่อ flag ตามวิธีเดียวกับที่ controller แยกคำ (ช่องว่าง) · ค่าที่มีช่องว่างแต่ไม่มี token
+    หน้าตาเป็น flag (JSON · path) ยังเป็น item เดียวและไม่ถูกแตะสักตัวอักษร
+    """
+    tokens = item.split()
+    groups: list[list[str]] = []
+    for token in tokens:
+        if groups and not _FLAG_TOKEN_RE.match(token):
+            groups[-1].append(token)
+        else:
+            groups.append([token])
+    if len(groups) <= 1:
+        return [item.strip()] if item.strip() else []
+    return [" ".join(group) for group in groups]
+
+
+def explode_flag_items(flags: list[str]) -> list[str]:
+    return [part for flag in flags for part in explode_flag_item(flag)]
+
+
 def coalesce_flag_tokens(flags: list[str]) -> list[str]:
     """รวม '--flag' + ค่าที่ถูกแยกมาเป็นคนละ item → '--flag value'
 
@@ -215,6 +248,8 @@ def coalesce_flag_tokens(flags: list[str]) -> list[str]:
     เงื่อนไขรวม: item ปัจจุบันเป็น flag เดี่ยว (ขึ้นด้วย '-' ไม่มีค่าในตัว) และ item ถัดไป
     ไม่ใช่ flag (ไม่ขึ้นด้วย '-') → ถือเป็นค่าของ flag นั้น
     """
+    # แตก item ที่อัดหลาย flag ก่อน — ไม่งั้นตัวที่ซ่อนอยู่ข้างหลังไม่ถูกทั้ง allowlist และตัวตัด flag ของ controller เห็น
+    flags = explode_flag_items(flags)
     out: list[str] = []
     i = 0
     n = len(flags)
@@ -239,7 +274,8 @@ def split_flags(engine: Engine, flags: list[str]) -> tuple[list[str], list[str]]
     allowlist = _BY_ENGINE[engine]
     allowed: list[str] = []
     needs_approval: list[str] = []
-    for flag in flags:
+    # ทุก flag ใน item ถูกตรวจ ไม่ใช่แค่ตัวแรก (ดู explode_flag_item) — ผู้เรียกที่ไม่ผ่าน coalesce ก็ได้ผลเดียวกัน
+    for flag in explode_flag_items(flags):
         if not flag.strip():
             continue
         (allowed if flag_name(flag) in allowlist else needs_approval).append(flag.strip())
