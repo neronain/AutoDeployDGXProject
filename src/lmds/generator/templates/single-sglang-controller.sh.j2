@@ -7,6 +7,21 @@
 set -Eeuo pipefail
 
 # ============================ CONFIG (แก้ได้) ============================
+# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
+# ต้องอยู่ **เหนือ** default ทุกตัว เพราะทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ซึ่งไม่ทำอะไรเลย
+# ถ้าตัวแปรถูกตั้งไปแล้ว · เดิมบล็อกนี้อยู่ใต้ SERVED_MODEL_NAME/SGLANG_IMAGE/CONTAINER_NAME ค่าที่
+# `lmds set --served-name` / `--image` บันทึกไว้จึงถูกเมินเงียบ ๆ ทั้งที่ port/context (ประกาศใต้บล็อก)
+# ใช้ได้ปกติ จนดูเหมือนไฟล์ถูกอ่านแล้ว (audit 2026-10-06 · บั๊กเดียวกับที่แก้ใน vLLM และ llama.cpp
+# ไปเมื่อ 2026-09-03 — SGLang ตกสำรวจ) · ลำดับความสำคัญ: flag > env ภายนอก > ไฟล์นี้ > bundle
+#
+# มีไฟล์นี้เพราะค่าที่ตั้งบนหน้าเว็บเคยอยู่แค่ในเบราว์เซอร์: systemd ตอน autostart
+# และปุ่ม test-* เรียก controller เปล่า ๆ ทุกตัวจึงตกไปใช้ default — พอ reboot
+# โมเดลทุกตัวบนเครื่องเดียวกันก็ไปชนกันที่ port เดียว
+BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
+if [[ -f "$BUNDLE_ENV" ]]; then
+  set -a; . "$BUNDLE_ENV"; set +a
+fi
+
 SCRIPT_VERSION="${SCRIPT_VERSION:-{{ controller_version }}}"
 # ลายเซ็นของชุด template ที่ render ไฟล์นี้ (sha256 ของ generator/templates/*.j2) — hub เทียบกับของตัวเอง
 # เพื่อรู้ว่า controller นี้ "เก่ากว่า lmds" จริง ไม่ใช่แค่เลข version ต่างกัน (0.6.0 ↔ 0.6.1 ที่ template ไม่เปลี่ยน = ไม่ stale)
@@ -33,18 +48,6 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-{{ plan.served_model_name }}}"
 # fallback เดิมเหลือไว้ให้ render บรรทัดนี้เดี่ยว ๆ ด้วย plan อย่างเดียวได้ (เทส image pin)
 SGLANG_IMAGE="${{ '{' }}SGLANG_IMAGE:-{% if plan.runtime.image_pin %}{{ image_repo if image_repo is defined else plan.runtime.image_ref.split(':')[0] }}@{{ plan.runtime.image_pin }}{% else %}{{ plan.runtime.image_ref }}{% endif %}{{ '}' }}"
 CONTAINER_NAME="${CONTAINER_NAME:-lmds-{{ slug }}}"
-
-# ── ค่าที่บันทึกไว้กับ bundle นี้ (เขียนโดยหน้าเว็บ / `lmds set`) ──
-# อ่านก่อน default ทั้งหมดข้างล่าง และทุกบรรทัดในไฟล์เป็นรูป ${VAR:-value} ลำดับ
-# ความสำคัญจึงเป็น: flag บรรทัดคำสั่ง > env จากภายนอก > ไฟล์นี้ > ค่าของ bundle
-#
-# มีไฟล์นี้เพราะค่าที่ตั้งบนหน้าเว็บเคยอยู่แค่ในเบราว์เซอร์: systemd ตอน autostart
-# และปุ่ม test-* เรียก controller เปล่า ๆ ทุกตัวจึงตกไปใช้ default — พอ reboot
-# โมเดลทุกตัวบนเครื่องเดียวกันก็ไปชนกันที่ port เดียว
-BUNDLE_ENV="${BUNDLE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundle.env}"
-if [[ -f "$BUNDLE_ENV" ]]; then
-  set -a; . "$BUNDLE_ENV"; set +a
-fi
 
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-{{ plan.serving.context }}}"
 API_HOST="${API_HOST:-0.0.0.0}"
