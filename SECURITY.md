@@ -22,6 +22,10 @@ LMDS **ไม่มี telemetry** ไม่มีการเก็บสถิ
 - `lmds config show` mask ทุก key เสมอ (ปลอดภัยต่อการแคปหน้าจอส่งกัน)
 - ถ้าสิทธิ์ไฟล์ credentials หลวมกว่า 0600 ระบบจะเตือนตอน `config show`
 - keyring เป็น optional extra — เครื่อง server ที่ไม่มี desktop session จะ fallback ไปไฟล์ 0600 เอง
+- ไฟล์ credentials ถูกสร้างเป็น `0600` **ตั้งแต่ open** แล้วสลับเข้าที่แบบ atomic (ไม่ใช่เขียนก่อนแล้ว `chmod` ทีหลัง)
+- ค่า secret ต้องเป็นบรรทัดเดียว: `set_secret` ปฏิเสธตัวควบคุมทุกตัว (CR · LF · NUL · tab …) และชื่อที่ไม่ใช่ชื่อ
+  สำหรับทุกผู้เรียก (หน้าเว็บตอบ 400) — เดิม token ที่มีบรรทัดใหม่เขียนบรรทัดของ secret ตัวอื่นลงไฟล์ได้ ·
+  ตอนอ่าน บรรทัดที่ผิดรูปถูกข้าม ไม่ทำให้ทั้งไฟล์อ่านไม่ได้
 
 **HF token ไม่ถูกฝังใน bundle** — controller อ่านจาก env `HF_TOKEN` ตอน `download` เท่านั้น และ**ไม่ส่งต่อบน argv**
 (`ps` อ่าน argv ได้ทั้งเครื่อง): llama.cpp ส่ง header ให้ curl ทาง stdin (`-K -`) / aria2c ผ่านไฟล์ conf ชั่วคราว mode 600

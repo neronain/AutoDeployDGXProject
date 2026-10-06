@@ -7,6 +7,7 @@ from .store import (
     get_secret,
     secret_source,
     set_secret,
+    validate_secret,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "redact",
     "secret_source",
     "set_secret",
+    "validate_secret",
 ]

@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -70,27 +72,78 @@ def _kr_get(kr, name: str) -> Optional[str]:
     return None if worker.is_alive() else box.get("value")
 
 
+# ── รูปของสิ่งที่ลงไฟล์ credentials ได้ ──
+#
+# ไฟล์เป็น `KEY=VALUE` บรรทัดละค่า · audit 2026-10: `POST /api/secrets/hf` ด้วย token
+# "hf_…\nopenai=sk-attacker" เขียนบรรทัดที่สองลงไปด้วย — ตั้ง secret ตัวเดียวแต่ทับ/เพิ่ม key ของ provider
+# อีกตัวได้ (เครื่อง server ไม่มี keyring จึงลงไฟล์เสมอ) · ตรวจที่ set_secret ซึ่งเป็นทางเดียวที่ทุกผู้เรียก
+# (หน้าเว็บ · CLI) ผ่าน และตัวเขียนไฟล์ปฏิเสธซ้ำอีกชั้น — fleet/apikey.py ทำแบบเดียวกันกับ key ของโมเดล
+_NAME_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def validate_secret(name: str, value: str) -> str:
+    """ค่าที่เก็บเป็น secret ได้ — ไม่ผ่าน = ValueError พร้อมเหตุผล · คืนค่าเดิมเมื่อผ่าน
+
+    ปฏิเสธตัวควบคุมทั้งหมวด (CR · LF · NUL · TAB · ESC · DEL · C1): ไม่มี API key/token จริงตัวไหนมี และ
+    LF คือสิ่งที่แทรกบรรทัดใหม่ลงไฟล์ได้ · ปฏิเสธช่องว่างหัวท้ายเพราะตอนอ่านกลับจะถูกตัด — ค่าที่เก็บกับค่าที่
+    ได้คืนต้องเป็นตัวเดียวกัน
+    """
+    if not isinstance(name, str) or not _NAME_OK.fullmatch(name):
+        raise ValueError(f"ชื่อ secret ไม่ถูกต้อง: {name!r}")
+    if not isinstance(value, str) or not value:
+        raise ValueError("ค่า secret ว่างเปล่า")
+    if any(unicodedata.category(ch) == "Cc" for ch in value):
+        raise ValueError("ค่า secret มีตัวควบคุม (ขึ้นบรรทัดใหม่ · tab · NUL ฯลฯ) — วางเฉพาะตัว key/token บรรทัดเดียว")
+    if value != value.strip():
+        raise ValueError("ค่า secret ขึ้นต้นหรือลงท้ายด้วยช่องว่าง — ตัดออกก่อน")
+    return value
+
+
 def _read_credentials_file() -> dict[str, str]:
+    """อ่านไฟล์ credentials — บรรทัดที่ผิดรูปถูกข้าม ไม่ทำให้ทั้งไฟล์อ่านไม่ได้
+
+    ไฟล์นี้คนแก้มือได้ และรุ่นก่อนเคยเขียนบรรทัดแปลก ๆ ลงไปได้ · ไบต์ที่ไม่ใช่ UTF-8, บรรทัดไม่มี `=`,
+    ชื่อ key ผิดรูป, อ่านไฟล์ไม่ได้ = ข้าม/ถือว่าไม่มี — `lmds` ทั้งตัวต้องไม่ตายเพราะบรรทัดเดียว
+    """
     path = credentials_file()
-    if not path.exists():
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return {}
     out: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        out[key.strip()] = value.strip()
+        key, value = key.strip(), value.strip()
+        if not _NAME_OK.fullmatch(key) or not value or "�" in value \
+                or any(unicodedata.category(ch) == "Cc" for ch in value):
+            continue
+        out[key] = value
     return out
 
 
 def _write_credentials_file(values: dict[str, str]) -> None:
+    """เขียนทั้งไฟล์ใหม่แบบ atomic และเป็น 0600 **ตั้งแต่ open**
+
+    เดิม write_text() แล้ว chmod(0o600) ทีหลัง — ระหว่างสองขั้นนั้นไฟล์เกิดมาด้วย umask ปกติ (มักอ่านได้ทั้ง
+    เครื่อง) ใครอ่านจังหวะนั้นพอดีได้ key ไป · ทางเดียวกับ web-token และ license store
+    """
+    for key, value in values.items():
+        validate_secret(key, value)             # ชั้นสุดท้าย: บรรทัดที่ผิดรูปต้องไม่ถูกเขียนไม่ว่าใครเรียก
     ensure_config_dir()
     path = credentials_file()
     body = "# LMDS credentials — อย่า commit ไฟล์นี้\n"
     body += "".join(f"{k}={v}\n" for k, v in sorted(values.items()))
-    path.write_text(body, encoding="utf-8")
-    path.chmod(0o600)
+    temporary = path.with_name(f".{path.name}.new")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)                    # ไฟล์ชั่วคราวค้างจากรอบก่อนอาจมีสิทธิ์อื่น — O_CREAT ไม่แก้ให้
+        os.write(fd, body.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.replace(temporary, path)
 
 
 def check_credentials_permissions() -> Optional[str]:
@@ -151,9 +204,8 @@ def get_secret(name: str) -> Optional[str]:
 
 
 def set_secret(name: str, value: str) -> str:
-    """เก็บ secret; คืน backend ที่ใช้ ('keyring' หรือ 'file')"""
-    if not value:
-        raise ValueError("ค่า secret ว่างเปล่า")
+    """เก็บ secret; คืน backend ที่ใช้ ('keyring' หรือ 'file') · ค่าที่ผิดรูป = ValueError (ดู validate_secret)"""
+    validate_secret(name, value)
 
     kr = _keyring()
     if kr is not None:

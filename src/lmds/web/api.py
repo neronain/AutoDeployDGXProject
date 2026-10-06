@@ -888,21 +888,24 @@ def create_app(token: str = "") -> FastAPI:
         เดิมต้องกลับไป CLI ทุกครั้ง ทั้งที่หน้าเว็บคือที่ที่ผู้ใช้เห็นว่าแผนออกมาไม่ดี
         """
         from lmds.config import ProviderName, Settings
-        from lmds.secrets import set_secret
+        from lmds.secrets import set_secret, validate_secret
 
-        name = (body.get("name") or "").strip()
+        body = _obj(body)
+        name = _text(body, "name")
         try:
             provider_name = ProviderName(name)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"ไม่รู้จัก provider '{name}'") from None
+        key = _text(body, "api_key")
         settings = Settings.load()
         try:
-            settings.set_provider(provider_name, (body.get("model") or "").strip(),
-                                  (body.get("base_url") or "").strip() or None)
+            # ตรวจ key ก่อนบันทึกอะไร — key ที่ผิดรูป (ขึ้นบรรทัดใหม่ · ตัวควบคุม) ต้องไม่ทิ้ง provider ที่เปลี่ยนไปครึ่งเดียว
+            if key:
+                validate_secret(provider_name.value, key)
+            settings.set_provider(provider_name, _text(body, "model"), _text(body, "base_url") or None)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         settings.save()
-        key = (body.get("api_key") or "").strip()
         if key:
             set_secret(provider_name.value, key)
         return provider_get()
@@ -2015,11 +2018,12 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.secrets import set_secret
 
-        token = (body or {}).get("token") or ""
-        if not token.strip():
+        token = _text(_obj(body), "token")
+        if not token:
             raise HTTPException(status_code=400, detail="ต้องใส่ token ก่อน")
         try:
-            backend = set_secret("hf", token.strip())
+            # set_secret ปฏิเสธค่าที่มีตัวควบคุม — token ที่มีบรรทัดใหม่เคยเขียนบรรทัดของ secret ตัวอื่นลงไฟล์ได้
+            backend = set_secret("hf", token)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"saved": True, "backend": backend}

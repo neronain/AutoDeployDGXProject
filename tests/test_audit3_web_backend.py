@@ -860,3 +860,102 @@ H.routes.unshift(["/api/models/%s/remove", (url, opts) => { H.sent.push(opts.bod
     assert r.json()["failed"] == []
     assert not bundle.exists(), "bundle ต้องถูกลบ"
     assert weights.is_file(), "ช่อง Keep the weights ติ๊กอยู่ — weight ต้องยังอยู่"
+
+
+# ══ 6. secret ที่มีบรรทัดใหม่แทรกบรรทัดลงไฟล์ credentials ═══════════════════════════
+
+REAL_KEY = "sk-proj-REALBILLINGKEY-0123456789abcdef"
+
+
+def _credentials_text() -> str:
+    from lmds.config.paths import credentials_file
+
+    return credentials_file().read_text(encoding="utf-8") if credentials_file().exists() else ""
+
+
+def test_a_newline_in_the_hf_token_cannot_rewrite_another_secret():
+    """ผู้ตรวจ: `POST /api/secrets/hf` ด้วย "hf_…\\nopenai=sk-attacker" → key ของ openai ถูกทับ"""
+    client = TestClient(create_app())
+    assert client.put("/api/provider", json={"name": "openai", "model": "gpt-4o", "api_key": REAL_KEY}).status_code == 200
+    before = _credentials_text()
+
+    r = client.post("/api/secrets/hf", json={"token": "hf_abcdefghijklmnopqrstu\nopenai=sk-attacker-controlled"})
+
+    assert r.status_code == 400
+    assert _credentials_text() == before
+    assert client.get("/api/provider").json()["key_hint"] == f"…{REAL_KEY[-4:]}"
+    # token ปกติ (วางแล้วมีบรรทัดใหม่ติดท้าย) ยังเก็บได้
+    assert client.post("/api/secrets/hf", json={"token": "hf_abcdefghijklmnopqrstu\n"}).json()["saved"] is True
+
+
+def test_a_bad_provider_key_is_refused_before_anything_is_saved():
+    """key ผิดรูปต้องได้ 400 และต้องไม่ทิ้ง provider ที่เปลี่ยนไปครึ่งเดียว (config บันทึกแล้วแต่ key ไม่ได้เก็บ)"""
+    client = TestClient(create_app())
+    client.put("/api/provider", json={"name": "openai", "model": "gpt-4o", "api_key": REAL_KEY})
+
+    r = client.put("/api/provider", json={"name": "gemini", "model": "gemini-2.5-pro",
+                                          "api_key": "AIza-good\nopenai=sk-attacker-controlled"})
+
+    assert r.status_code == 400
+    now = client.get("/api/provider").json()
+    assert now["name"] == "openai" and now["key_hint"] == f"…{REAL_KEY[-4:]}"
+    assert "attacker" not in _credentials_text()
+
+
+@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\x00b", "a\tb", "a\x1bb", "a\x7fb", "a\x85b", " padded", "padded ", ""])
+def test_the_secret_store_refuses_values_that_cannot_be_one_line(value):
+    """ด่านที่ sink — CLI (`lmds config set-key`) เรียก set_secret ตรง ๆ"""
+    from lmds.secrets import get_secret, set_secret
+
+    set_secret("openai", REAL_KEY)
+    with pytest.raises(ValueError):
+        set_secret("hf", value)
+    assert get_secret("openai") == REAL_KEY and "hf" not in _credentials_text()
+
+
+@pytest.mark.parametrize("name", ["openai\nhf", "a=b", "", "../x", "has space"])
+def test_the_secret_store_refuses_names_that_are_not_names(name):
+    from lmds.secrets import set_secret
+
+    with pytest.raises(ValueError):
+        set_secret(name, "value-1234567890")
+    assert _credentials_text() == ""
+
+
+def test_a_damaged_credentials_file_is_read_around_not_crashed_on():
+    """ไฟล์ที่คนแก้มือ/รุ่นเก่าเขียนเพี้ยน: ไบต์ที่ไม่ใช่ UTF-8 · บรรทัดไม่มี = · ชื่อผิดรูป — ข้ามบรรทัดนั้น ที่เหลือยังอ่านได้"""
+    from lmds.config.paths import credentials_file
+    from lmds.secrets import get_secret, secret_source, set_secret
+
+    credentials_file().parent.mkdir(parents=True, exist_ok=True)
+    credentials_file().write_bytes(
+        b"# comment\njust some words\n=novalue\nbad name=x\n\xff\xfe\xfd garbage \xff\n"
+        b"gemini=\xff\xfebroken-bytes\nopenai=" + REAL_KEY.encode() + b"\nhf=\n")
+
+    assert get_secret("openai") == REAL_KEY
+    assert get_secret("gemini") is None and secret_source("gemini") is None
+    assert set_secret("hf", "hf_abcdefghijklmnop1234") == "file"            # เขียนทับไฟล์ที่เพี้ยนได้ ไม่ตาย
+    assert get_secret("openai") == REAL_KEY and get_secret("hf") == "hf_abcdefghijklmnop1234"
+    assert "garbage" not in _credentials_text()
+
+
+def test_the_credentials_file_is_never_wider_than_0600_not_even_briefly(monkeypatch):
+    """เดิม write_text() แล้ว chmod(0o600) — ไฟล์เกิดมาด้วย umask ปกติก่อน · พิสูจน์ด้วยการตัด chmod ทีหลังออก:
+    ถ้าสิทธิ์ถูกต้องเพราะ chmod ตามหลัง ไฟล์จะกว้างตาม umask ทันที"""
+    import stat
+
+    from lmds.config.paths import credentials_file
+    from lmds.secrets import set_secret
+
+    old = os.umask(0)
+    try:
+        monkeypatch.setattr(Path, "chmod", lambda self, mode, **kwargs: None)
+        set_secret("hf", "hf_abcdefghijklmnop1234")
+        assert stat.S_IMODE(credentials_file().stat().st_mode) == 0o600
+        os.chmod(credentials_file(), 0o644)                                # ไฟล์เดิมที่สิทธิ์หลวม — เขียนรอบถัดไปต้องกลับมาแคบ
+        set_secret("openai", REAL_KEY)
+        assert stat.S_IMODE(credentials_file().stat().st_mode) == 0o600
+        leftovers = [p.name for p in credentials_file().parent.iterdir() if p.name.startswith(".credentials")]
+        assert leftovers == []
+    finally:
+        os.umask(old)
