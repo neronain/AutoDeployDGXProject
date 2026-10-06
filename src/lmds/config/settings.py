@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .paths import config_file, ensure_config_dir, write_atomic
 
@@ -84,6 +84,14 @@ class Recipes(BaseModel):
 
     publish_repo: str = ""
     publish_ref: str = "main"
+    # ต้นทางที่ `lmds recipes --sync` และปุ่ม "Sync from GitHub" ดึงสูตรมา — ว่าง = รีโปของทีม
+    #
+    # อยู่ใน config ไม่ใช่ใน request: หน้าเว็บเคยรับ repo/ref จาก body ของ POST /api/recipes/sync
+    # ซึ่งเท่ากับให้ใครก็ตามที่ยิง endpoint ได้เลือกว่า hub จะ clone อะไรลงที่ไหน (audit 2026-10 —
+    # ลบ config dir ได้ทั้งโฟลเดอร์ และรันคำสั่งผ่าน option ของ git ได้) · ไซต์ที่มีรีโปสูตรของตัวเอง
+    # ตั้งที่นี่ครั้งเดียว ทั้ง CLI และปุ่มบนหน้าเว็บใช้ค่าเดียวกัน
+    sync_repo: str = ""
+    sync_ref: str = ""
 
 
 class Settings(BaseModel):
@@ -107,7 +115,18 @@ class Settings(BaseModel):
                 f"อ่าน {path} ไม่ได้ — ไฟล์เสีย: {exc}\n"
                 f"แก้ไฟล์นี้ให้ถูกต้อง หรือลบทิ้งเพื่อเริ่มจากค่าเริ่มต้น (จะเสียค่า provider ที่ตั้งไว้)"
             ) from exc
-        return cls.model_validate(data)
+        try:
+            return cls.model_validate(data)
+        except ValidationError as exc:
+            # YAML ถูกแต่รูปร่างผิด (ไฟล์ทั้งก้อนเป็นข้อความ · `recipes.sync_repo: 5`) — เดิมหลุดเป็น
+            # ValidationError ของ pydantic ที่ไม่มีใครจับ หน้าเว็บจึงได้ 500 เปล่า ๆ ทุก route ที่อ่าน config
+            # ทั้งที่ชั้นเว็บมีตัวจับ SettingsError รออยู่แล้ว (เจอตอนรัน repro ของ audit 2026-10)
+            where = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc']) or 'ทั้งไฟล์'}: {err['msg']}" for err in exc.errors()[:5])
+            raise SettingsError(
+                f"อ่าน {path} ไม่ได้ — ค่าในไฟล์ผิดรูป: {where}\n"
+                f"แก้ไฟล์นี้ให้ถูกต้อง หรือลบทิ้งเพื่อเริ่มจากค่าเริ่มต้น (จะเสียค่า provider ที่ตั้งไว้)"
+            ) from exc
 
     def save(self) -> None:
         ensure_config_dir()

@@ -24,7 +24,7 @@ import yaml
 
 from lmds.config.paths import config_dir
 
-from .sync import SyncError, _git, checkout_dir
+from .sync import SyncError, _git, checkout_dir, validate_ref, validate_repo
 
 
 def default_local_repo() -> Path:
@@ -232,14 +232,17 @@ def publish(slug: str, controller_path: Path, profile: dict, *,
 
     remote = bool(repo) and _is_remote(repo)
     if remote:
+        # ด่านเดียวกับ sync (รูปแบบ URL · ref ห้ามขึ้นต้นด้วย `-` · `--` ก่อน positional) — ค่าพวกนี้
+        # มาจาก config/flag ของ CLI วันนี้ แต่ sink ต้องไม่ขึ้นกับว่าใครเป็นคนเรียก
+        repo, ref = validate_repo(repo), validate_ref(ref)
         repo_dir = checkout_dir(repo)
         if (repo_dir / ".git").is_dir():
-            _git("remote", "set-url", "origin", repo, cwd=repo_dir)
-            _git("fetch", "--depth", "1", "origin", ref, cwd=repo_dir)
+            _git("remote", "set-url", "--", "origin", repo, cwd=repo_dir)
+            _git("fetch", "--depth", "1", "--", "origin", ref, cwd=repo_dir)
             _git("reset", "--hard", f"origin/{ref}", cwd=repo_dir)
         else:
             repo_dir.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _git("clone", "--depth", "1", "--branch", ref, repo, str(repo_dir), timeout=600)
+            _git("clone", "--depth", "1", "--branch", ref, "--", repo, str(repo_dir), timeout=600)
     else:
         repo_dir = Path(repo) if repo else default_local_repo()
         _ensure_local_git(repo_dir)
@@ -255,5 +258,5 @@ def publish(slug: str, controller_path: Path, profile: dict, *,
         return {**base, "committed": False}
     _git("commit", "-q", "-m", f"publish {slug} — validated {validated_on}", cwd=repo_dir)
     if remote and push:
-        _git("push", "origin", f"HEAD:{ref}", cwd=repo_dir, timeout=600)
+        _git("push", "--", "origin", f"HEAD:{ref}", cwd=repo_dir, timeout=600)
     return {**base, "committed": True}

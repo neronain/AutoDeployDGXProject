@@ -500,7 +500,7 @@ def list_recipes(
     แก้ที่รีโปแล้ว push จากนั้นสั่ง sync ที่ hub ทุกเครื่องก็ได้ชุดเดียวกัน
     """
     from lmds.recipes import find_recipe, load_catalog
-    from lmds.recipes.sync import DEFAULT_REF, DEFAULT_REPO, SyncError
+    from lmds.recipes.sync import DEFAULT_REPO, SyncError
     from lmds.recipes.sync import sync as sync_recipes
     from lmds.recipes.sync import synced_source
 
@@ -562,7 +562,12 @@ def list_recipes(
 
     if sync:
         try:
-            result = sync_recipes(repo or DEFAULT_REPO, ref or DEFAULT_REF, now=_now())
+            # ไม่ใส่ --repo/--ref = ค่าที่ hub ตั้งไว้ (recipes.sync_repo ใน config.yaml · ว่าง = รีโปของทีม)
+            # — ชุดเดียวกับที่ปุ่ม Sync บนหน้าเว็บใช้ ซึ่งรับค่าจาก request ไม่ได้
+            from lmds.recipes.sync import configured_source
+
+            set_repo, set_ref = configured_source()
+            result = sync_recipes(repo or set_repo, ref or set_ref, now=_now())
         except SyncError as exc:
             err_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from None

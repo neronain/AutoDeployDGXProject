@@ -1565,6 +1565,20 @@ lmds recipes --sync                              # ดึงจากรีโ�
 lmds recipes --sync --repo <git url> --ref main  # รีโปอื่น/branch อื่น
 ```
 
+ไซต์ที่มีรีโปสูตรของตัวเองตั้งครั้งเดียวใน `~/.config/lmds/config.yaml` แล้วทั้ง `lmds recipes --sync`
+(ไม่ใส่ flag) และปุ่มบนหน้าเว็บจะดึงจากที่นั่น:
+
+```yaml
+recipes:
+  sync_repo: git@git.example.com:team/controllers.git   # ว่าง = รีโปของทีม
+  sync_ref: main
+```
+
+รูปแบบที่รับ: `https://host/owner/repo` · `ssh://git@host/owner/repo` · `git@host:owner/repo.git` ·
+`file:///path/ของ/mirror` (air-gapped) — ไม่รับ URL ที่ฝังรหัสผ่าน (ใช้ SSH key หรือ credential helper ของ git)
+· **หน้าเว็บไม่รับรีโป/branch จากคำขอ** — `POST /api/recipes/sync` ใช้ค่าใน config เท่านั้น
+(เหตุผลใน [SECURITY.md](../SECURITY.md))
+
 **ในหน้าเว็บ**: *Library → Recipes* → ปุ่ม **Sync from GitHub** · แถวบนบอกว่าชุดนี้มาจากรีโปไหน
 commit ไหน ดึงเมื่อไหร่
 
@@ -1576,7 +1590,8 @@ commit ไหน ดึงเมื่อไหร่
 | single vs stacked | รุ่นเดียวกันที่มีทั้งสองแบบ ใช้ตัว single เพราะ LMDS เลือก topology เองจากเครื่องที่มี |
 | context | ไม่ดึงมาจาก controller เหมือนเดิม — ต้องมาจากเครื่องเป้าหมาย ไม่ใช่เครื่องที่เคยรัน |
 
-สำเนารีโปอยู่ที่ `~/.config/lmds/controllers/<ชื่อรีโป>` (เป็นแคช ลบทิ้งได้) · สูตรที่ดึงมาแล้ว
+สำเนารีโปอยู่ที่ `~/.config/lmds/controllers/repo-<hash ของ URL>` (เป็นแคช ลบทิ้งได้ — โฟลเดอร์ชื่อตามรีโป
+จากรุ่นก่อนไม่ถูกใช้แล้ว ลบได้เช่นกัน) · สูตรที่ดึงมาแล้ว
 อยู่ใน `~/.config/lmds/recipes-synced.yaml`
 
 ### ส่งสูตรที่รันผ่านแล้วขึ้นคลัง — `lmds recipes --publish`

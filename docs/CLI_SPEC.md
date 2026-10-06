@@ -524,7 +524,7 @@ PUT  /api/models/{slug}/settings                       # = lmds set (ผ่า�
 POST /api/models/{slug}/start | stop | restart | adopt | remove | autostart | run/{command} | push/{name}
 POST /api/deploy/analyze · GET /api/deploy/{sid}/context · POST /api/deploy/{sid}/generate   # 422 {kind: hub|input|cluster, message}
 GET/PUT /api/provider · POST /api/provider/models · POST /api/secrets/hf
-GET  /api/recipes · POST /api/recipes/sync · GET /api/scan[?all_nodes=true]
+GET  /api/recipes · POST /api/recipes/sync {} (ต้นทางจาก config recipes.sync_repo/sync_ref เท่านั้น — repo/ref ใน body ที่ไม่ตรง = 400) · GET /api/scan[?all_nodes=true]
 GET  /api/bench · /api/bench/fleet · /api/bench/{slug} · DELETE /api/bench/{slug} · POST /api/bench/{slug}/run
 GET  /api/jobs/{id} · POST /api/jobs/{id}/cancel
 GET  /api/models/{slug}/key · GET …/key/reveal · POST …/key {key?,force?} (409 เมื่อมีอยู่แล้วและไม่ force) · DELETE …/key
@@ -561,13 +561,13 @@ Output: ตาราง pass/fail ต่อ gate + exit `0/2`
 
 ```text
 ~/.config/lmds/
-├── config.yaml          # provider, default target, ui.node_order, cluster.stack_self, recipes.publish_repo
+├── config.yaml          # provider, default target, ui.node_order, cluster.stack_self, recipes.publish_repo, recipes.sync_repo/sync_ref
 ├── credentials          # 0600 — ใช้เมื่อไม่มี keyring
 ├── nodes.yaml           # 0600 — ทะเบียนเครื่องอื่น (ไม่มีรหัสผ่าน) + cluster IP/site/cluster_name/alt_hosts/stack/last_seen
 ├── .nodes.lock          # flock ของทะเบียน
 ├── id_lmds[.pub]        # SSH key ของ hub สำหรับเข้า node
 ├── web-token            # 0600 — token ของหน้าเว็บ
-├── recipes-synced.yaml  # สูตรที่ --sync มา · controllers/<repo> = แคช clone
+├── recipes-synced.yaml  # สูตรที่ --sync มา · controllers/repo-<hash ของ URL> = แคช clone
 └── sessions/            # audit log ต่อการ generate (prompt/response/decisions) — redacted
 ~/.lmds/run/<slug>/      # server.meta · log · runtime.lock · ไฟล์ API key (llama.cpp) · web.json
 ~/.lmds/bench/<slug>/    # ผล bench ต่อรอบ

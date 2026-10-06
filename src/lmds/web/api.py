@@ -135,6 +135,56 @@ def _check_slug(slug: str) -> str:
     return slug
 
 
+# ── รูปร่างของ body — ด่านเดียวสำหรับทุก route ที่เปลี่ยนสถานะ ──
+#
+# audit 2026-10: `{"name": 5}` ไปถึง `(body.get("name") or "").strip()` แล้วระเบิดเป็น AttributeError
+# → 500 เปล่า ๆ บน route ที่เปลี่ยนสถานะ 8 ตัว (PUT /api/provider · POST /api/secrets/hf ·
+# /api/cluster/write|pair|apply · …/clone · PATCH /api/nodes/{name}) · คนกรอกผิดชนิดควรได้ 400 ที่บอกว่า
+# ฟิลด์ไหนผิด ไม่ใช่ "Internal Server Error" · ใช้ตัวช่วยชุดนี้แทน try/except รายบรรทัด — route ใหม่ที่
+# อ่าน body ผ่านตัวช่วยจะไม่มีทางพังแบบเดียวกัน
+def _bad_field(key: str, expected: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"ฟิลด์ '{key}' ต้องเป็น{expected}")
+
+
+def _obj(body) -> dict:
+    """body ที่ไม่ส่งมา = {} · ส่งมาแล้วไม่ใช่ JSON object = 400"""
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body ต้องเป็น JSON object")
+    return body
+
+
+def _text(body: dict, key: str, default: str = "", *, strip: bool = True) -> str:
+    """ฟิลด์ข้อความ — ไม่ส่ง/null = default · ชนิดอื่น (ตัวเลข, list, object) = 400"""
+    value = body.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise _bad_field(key, "ข้อความ")
+    return value.strip() if strip else value
+
+
+def _names(body: dict, key: str) -> list[str]:
+    """ฟิลด์รายชื่อ — ต้องเป็น list ของข้อความ · ตัดช่องว่างและตัวว่างทิ้ง"""
+    value = body.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise _bad_field(key, "รายการของข้อความ")
+    return [item.strip() for item in value if item.strip()]
+
+
+def _mapping(body: dict, key: str) -> dict:
+    """ฟิลด์ที่เป็น object — ไม่ส่ง/null = {} · ชนิดอื่น = 400"""
+    value = body.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise _bad_field(key, " object")
+    return value
+
+
 # start/stop ของโมเดลในเครื่องนี้ส่ง option ให้ controller ผ่าน os.environ (ทางเดียวกับที่ CLI ใช้)
 # ซึ่งเป็นของทั้ง process · สอง start ที่ซ้อนกันจะ save/restore ค่าของกันและกัน — ตัวที่จบทีหลัง
 # คืนค่าที่ตัวแรกตั้งไว้กลับเข้าไป API_PORT จึงค้างอยู่ใน env ถาวร และ subprocess ทุกตัวที่เกิด
@@ -2091,8 +2141,9 @@ def create_app(token: str = "") -> FastAPI:
     def recipes_list() -> dict:
         """สูตรที่รันผ่านจริง — สิ่งที่ใช้แทน LLM เมื่อเครื่องไม่มี provider"""
         from lmds.recipes import load_catalog
-        from lmds.recipes.sync import DEFAULT_REPO, synced_source
+        from lmds.recipes.sync import configured_source, synced_source
 
+        configured_repo, _configured_ref = configured_source()
         return {"recipes": [
             {"match": r.match, "label": r.label, "engine": r.engine, "image": r.image,
              "serving": r.serving, "tools": r.tool_calling.get("parser"),
@@ -2101,18 +2152,35 @@ def create_app(token: str = "") -> FastAPI:
              # สูตรที่ดึงมาจากรีโป controller ของทีม — บอกที่มาให้เห็นว่าไม่ใช่ของที่ฝังมากับโปรแกรม
              "controller": r.controller, "topology": r.topology}
             for r in load_catalog()
-        ], "source": synced_source(), "default_repo": DEFAULT_REPO}
+            # รีโปที่ปุ่ม Sync จะดึง — ค่าจาก config.yaml (recipes.sync_repo) ว่าง = ของทีม
+        ], "source": synced_source(), "default_repo": configured_repo}
 
     @app.post("/api/recipes/sync", dependencies=guarded)
     def recipes_sync(body: dict | None = None) -> dict:
-        """ดึงสูตรใหม่จากรีโป controller ของทีม — อ่านไฟล์อย่างเดียว ไม่รันสคริปต์"""
-        from lmds.recipes.sync import DEFAULT_REF, DEFAULT_REPO, SyncError
+        """ดึงสูตรใหม่จากรีโป controller ของทีม — อ่านไฟล์อย่างเดียว ไม่รันสคริปต์
+
+        **ต้นทางเป็นค่าตั้งของ hub ไม่ใช่ของ request** (recipes.sync_repo / recipes.sync_ref ใน config.yaml
+        · ว่าง = รีโปของทีม) — เดิมรับ `repo`/`ref` จาก body แล้วส่งตรงให้ git: ใครก็ตามที่ยิง endpoint นี้ได้
+        (ทุกคนเมื่อเปิด `--no-auth`) เลือกได้ว่า hub จะ clone อะไรลงที่ไหน · audit 2026-10 พิสูจน์ในแซนด์บ็อกซ์
+        ว่า POST เดียวลบ config dir ทั้งโฟลเดอร์ และอีก POST รันคำสั่งบน hub · เหตุผลเดียวกับที่
+        web/selfupdate.py ไม่รับ remote จาก request · หน้าเว็บส่ง `{}` มาตลอดอยู่แล้ว
+        """
+        from lmds.recipes.sync import SyncError, configured_source
         from lmds.recipes.sync import sync as sync_recipes
 
-        body = body or {}
+        body = _obj(body)
+        repo, ref = configured_source()
+        for key, configured in (("repo", repo), ("ref", ref)):
+            asked = body.get(key)
+            if asked not in (None, "", configured):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"endpoint นี้ไม่รับ {key} จากคำขอ — ต้นทางของสูตรเป็นค่าตั้งของ hub ({repo} @ {ref}) · "
+                           "เปลี่ยนที่ recipes.sync_repo / recipes.sync_ref ใน config.yaml ของ hub "
+                           "หรือรันบน hub เอง: lmds recipes --sync --repo <url> --ref <branch>",
+                )
         try:
-            return sync_recipes(body.get("repo") or DEFAULT_REPO,
-                                body.get("ref") or DEFAULT_REF, now=_timestamp())
+            return sync_recipes(repo, ref, now=_timestamp())
         except SyncError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
