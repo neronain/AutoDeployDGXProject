@@ -173,7 +173,17 @@ key = ""
 if prog == "vllm":
     key = os.environ.get("VLLM_API_KEY", "")
 elif prog == "sglang":
+    # SGLang จริง: ธง --api-key หรือคีย์ api-key ในไฟล์ --config (YAML → argument ภายใน process) · **ไม่มี env ของ server**
+    # (SGLANG_API_KEY เป็นของ client ภายนอก) — ของปลอมจึงไม่อ่าน env เด็ดขาด: key ที่ไปผิดช่อง = เซิร์ฟเวอร์เปิดโล่ง
     key = flag("--api-key")
+    config = flag("--config")
+    if config and os.environ.get("FAKE_NO_CONFIG"):        # SGLang รุ่นก่อนมี --config: argparse ตาย
+        sys.stderr.write("usage: sglang serve [-h] --model-path MODEL_PATH ...\nsglang: error: unrecognized arguments: --config %s\n" % config)
+        sys.exit(2)
+    if config and not key and not os.environ.get("FAKE_IGNORE_CONFIG_KEY"):
+        for line in open(host_path(config), encoding="utf-8"):
+            if line.startswith("api-key:"):
+                key = json.loads(line.split(":", 1)[1].strip())
 elif prog == "llama-server":
     key_file = flag("--api-key-file")
     if key_file:
@@ -252,7 +262,8 @@ case "${1:-}" in
       case " $* " in *" --format "*) ;; *) echo "CONTAINER ID   NAMES   STATUS" ;; esac
     fi
     exit 0 ;;
-  image|pull|logs) exit 0 ;;
+  image|pull) exit 0 ;;
+  logs) name="${@: -1}"; [[ -f "$state/$name.out" ]] && cat "$state/$name.out"; exit 0 ;;
   info) echo /var/lib/docker; exit 0 ;;
   inspect|container)
     name="${@: -1}"; alive "$name" && { echo true; exit 0; }; exit 1 ;;

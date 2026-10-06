@@ -764,6 +764,29 @@ print((d[0].get("id") or "").strip() if d else "")' 2>/dev/null || true)"
      (ถ้าตั้งค่าไว้ให้ถาวร: lmds set {{ slug }} --port <PORT>)"
 }
 
+# ไฟล์ config ของ SGLang ที่มีแต่ API key — 0600 ใต้ RUN_DIR (ไม่ใช่ในโฟลเดอร์ bundle ซึ่งถูก zip แจกต่อ) · ลบตอน stop
+# ค่าเขียนเป็น YAML double-quoted (escape \ และ ") — key ที่มี # : หรือเป็นตัวเลขล้วนจึงไม่ถูก YAML ตีความเป็นอย่างอื่น
+_write_api_key_config() {
+  local path="$1" key="${API_KEY//\\/\\\\}"
+  mkdir -p "$(dirname "$path")"
+  ( umask 077; printf 'api-key: "%s"\n' "${key//\"/\\\"}" > "$path" )
+}
+
+# ตั้ง API key ไว้ = เซิร์ฟเวอร์ต้องปฏิเสธคำขอที่ไม่มี key — ถามจริงหลัง health ผ่าน ไม่เชื่อว่า "ส่ง key ไปแล้ว"
+# 200 จาก /v1/models โดยไม่ใส่ key = key ไม่ถึง server (image ที่อ่าน config ไม่เหมือนที่คาด) → หยุด แล้วบอกตรง ๆ
+# ดีกว่าปล่อยโมเดลเปิดโล่งบน 0.0.0.0 พร้อมรายงานว่า start สำเร็จ (เคส LLAMA_ARG_API_KEY ของ llama.cpp 2026-09-04)
+_assert_auth_enforced() {
+  [[ -n "$API_KEY" ]] || return 0
+  local code
+  code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" 2>/dev/null || true)"
+  [[ "$code" == "200" ]] || return 0
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  rm -f "${RUN_DIR}/api-key.yaml" 2>/dev/null || true
+  die "SGLang ขึ้นแล้วแต่ **ไม่บังคับ API key** (/v1/models ตอบ 200 โดยไม่ใส่ key) — หยุด container แล้ว ไม่ปล่อยให้เปิดโล่ง
+     image นี้ไม่ได้รับ key จากไฟล์ --config อย่างที่คาด · ทางเลือก: ใช้ image SGLang ที่ใหม่กว่า (lmds set {{ slug }} --image …)
+     หรือยอมให้ key อยู่บน argv (ps อ่านได้):  SGLANG_KEY_ON_ARGV=1 $0 start"
+}
+
 start() {
   check_port_free
   need docker
@@ -835,13 +858,39 @@ start() {
       serve_args+=(--chat-template "$tpl")
     fi
   fi
+  # API key ไม่ไปบน argv — `ps` ให้ทุก user บนเครื่องอ่าน argv ได้ ทั้งของ `docker run` และของ process ในคอนเทนเนอร์
+  # (เดิม `--api-key "$API_KEY"` อยู่ตรงนี้: key โผล่ใน `ps` และถูกพิมพ์ออกตอน DRY_RUN · audit 2026-10-06 ·
+  # vLLM ใช้ `-e VLLM_API_KEY` · llama.cpp ใช้ --api-key-file มาก่อนแล้ว)
+  #
+  # SGLang **ไม่มี env ของ server สำหรับ key** — ตรวจกับเอกสาร server arguments และซอร์ส `sglang serve` →
+  # prepare_server_args (2026-10-06): มีแต่ธง --api-key · `SGLANG_API_KEY` ที่ค้นเจอเป็นของ client ภายนอก (OpenClaw ฯลฯ)
+  # ไม่ใช่ของ server — เชื่อชื่อนั้นคือซ้ำรอย LLAMA_ARG_API_KEY (เซิร์ฟเวอร์รันแบบไม่มี auth ทั้งที่เทสผ่าน)
+  # ทางที่ SGLang รองรับเองคือ `--config <ไฟล์ YAML>`: คีย์ในไฟล์ถูกแปลงเป็น argument *ภายใน process* (ConfigArgumentMerger)
+  # → เขียน `api-key:` ลงไฟล์ 0600 ใต้ RUN_DIR mount แบบ ro แล้วส่งแค่ path · argv ทั้งสองชั้นเห็นแค่ชื่อไฟล์
+  #
+  # ยังไม่ได้ลองกับ SGLang จริงบนเครื่อง (ไม่มีสิทธิ์แตะฟลีตในรอบนี้) จึงมีด่านหลัง start: _assert_auth_enforced ยิงโดยไม่ใส่
+  # key — ได้ 200 = key ไม่ถึง server → หยุด container แล้ว die · ไม่มีทางจบที่ "ขึ้นแล้วแต่เปิดโล่ง" เงียบ ๆ
+  # image ที่ SGLang เก่ากว่า --config: argparse ตายเอง (explain_crash แปลให้) · ทางถอยที่ต้องเลือกเอง: SGLANG_KEY_ON_ARGV=1
+  local key_config="${RUN_DIR}/api-key.yaml" key_mount="/run/lmds/api-key.yaml"
   if [[ -n "$API_KEY" ]]; then
-    serve_args+=(--api-key "$API_KEY")
+    if [[ -n "${SGLANG_KEY_ON_ARGV:-}" ]]; then
+      serve_args+=(--api-key "$API_KEY")
+    else
+      serve_args+=(--config "$key_mount")
+    fi
   fi
 
   if [[ -n "${DRY_RUN:-}" ]]; then
     printf 'IMAGE=%s\n' "$SGLANG_IMAGE"
-    printf '%s\n' "${serve_args[@]}"
+    # ปิดค่า key เสมอ — ผลของ DRY_RUN ถูกแปะลง ticket/แชต
+    local shown prev=""
+    for shown in "${serve_args[@]}"; do
+      if [[ "$prev" == "--api-key" ]]; then printf '********\n'; else printf '%s\n' "$shown"; fi
+      prev="$shown"
+    done
+    if [[ -n "$API_KEY" && -z "${SGLANG_KEY_ON_ARGV:-}" ]]; then
+      echo "# api-key: ******** (ในไฟล์ ${key_config} โหมด 0600 — mount เป็น ${key_mount})"
+    fi
     return 0
   fi
 
@@ -867,7 +916,12 @@ start() {
     docker_args+=(--user "$(id -u):$(id -g)")
   fi
   if [[ -n "${HF_TOKEN:-}" ]]; then docker_args+=(-e HF_TOKEN); fi
-  # SGLang รับ key เป็นธงของ server ไม่ใช่ env — ใส่ที่ serve_args ข้างล่าง
+  if [[ -n "$API_KEY" && -z "${SGLANG_KEY_ON_ARGV:-}" ]]; then
+    _write_api_key_config "$key_config"
+    docker_args+=(-v "${key_config}:${key_mount}:ro")
+  elif [[ -n "$API_KEY" ]]; then
+    echo "คำเตือน: SGLANG_KEY_ON_ARGV=1 — API key อยู่บน argv ของ docker run และของ SGLang (ทุก user บนเครื่องอ่านได้ด้วย ps)" >&2
+  fi
 {% if runtime_assets -%}
   verify_assets
   docker_args+=(-v "${PLUGIN_DIR}:${PLUGIN_MOUNT}:ro")
@@ -889,6 +943,7 @@ start() {
 
   write_meta
   wait_health
+  _assert_auth_enforced
   echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
   warn_open_endpoint
   network_info
@@ -909,6 +964,15 @@ warn_open_endpoint() {
 # ของ log คือ RuntimeError "Engine core initialization failed. See root cause above"
 # hub เห็นแค่บรรทัดสุดท้าย คนจึงต้อง ssh ไป grep เอง · สาเหตุจริงอยู่สูงกว่านั้นเสมอ
 explain_crash() {
+  # SGLang รุ่นก่อนมี --config: ตายที่ argparse ทันที — ไม่ใช่ exception จึงไม่เข้ารูปแบบข้างล่าง
+  local old_cli
+  old_cli="$(docker logs --tail 200 "$CONTAINER_NAME" 2>&1 | grep -E 'unrecognized arguments:.*--config' | head -1 | cut -c1-200 || true)"
+  if [[ -n "$old_cli" ]]; then
+    echo "สาเหตุจาก log: ${old_cli}" >&2
+    echo "  SGLang ใน image นี้เก่ากว่าที่จะรับ API key ผ่านไฟล์ (--config) — controller ไม่ส่ง key ทาง argv เอง" >&2
+    echo "  แก้: ใช้ image ที่ใหม่กว่า (lmds set {{ slug }} --image <image>) · หรือยอมให้ key อยู่บน argv: SGLANG_KEY_ON_ARGV=1 $0 start" >&2
+    return 0
+  fi
   local errs='ValueError|RuntimeError|OutOfMemoryError|AssertionError|ImportError|ModuleNotFoundError|NotImplementedError|KeyError|TypeError|OSError'
   local cause
   # `|| true` ท้าย pipeline จำเป็น: grep ที่ไม่เจอบรรทัด Error คืน 1 → ใต้ set -e + pipefail การ assign
@@ -960,6 +1024,7 @@ wait_health() {
 }
 
 stop() {
+  rm -f "${RUN_DIR}/api-key.yaml" 2>/dev/null || true      # ไฟล์ key ของ --config (เขียนตอน start เมื่อมี API_KEY)
   # รายงานตามความจริง — เดิมพิมพ์ "stopped" เสมอแม้ไม่มี container อยู่เลย
   # ซึ่งอันตรายเงียบ ๆ: ถ้าชื่อ container เพี้ยน ผู้ใช้จะเชื่อว่าหยุดแล้วทั้งที่ยังรันอยู่
   if docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -1451,7 +1516,7 @@ OPTIONS  (can be placed after any command; equals form also works: --port=8001)
 
 API TOKEN (authentication)
   There is NO token by default: anyone who can reach ${API_HOST}:${API_PORT} can use the model.
-  Set one with the API_KEY environment variable — it is passed to SGLang as --api-key:
+  Set one with the API_KEY environment variable — the controller writes it to a 0600 file and passes --config (never on argv):
 
     API_KEY=my-secret-token $0 restart          # start the server with authentication on
     API_KEY=\$(openssl rand -hex 24) $0 restart  # or generate a random one
