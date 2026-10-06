@@ -103,15 +103,13 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     safetensor_files = [(n, s) for n, s, _ in files if n.endswith(".safetensors")]
     gguf_files = [(n, s, sha) for n, s, sha in files if n.endswith(".gguf")]
 
-    artifact = _classify(bool(safetensor_files), bool(gguf_files))
-    report = ModelReport(
+    base = ModelReport(
         repo_id=source.repo_id,
         revision_requested=source.revision,
         revision_sha=revision_sha,
         gated=bool(info.get("gated")),
         private=bool(info.get("private")),
         license=_license_of(info),
-        artifact_type=artifact,
         library_name=_library_of(info),
         params_total=_params_of(info),
         tags=[t for t in info.get("tags", []) if isinstance(t, str)],
@@ -126,10 +124,10 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
             if name in _TOKENIZER_FILES
         ),
     )
-    if report.trust_remote_code_files:
-        report.warnings.append(
+    if base.trust_remote_code_files:
+        base.warnings.append(
             "repo มีไฟล์ Python (trust_remote_code) — ต้อง review ก่อน deploy: "
-            + ", ".join(report.trust_remote_code_files)
+            + ", ".join(base.trust_remote_code_files)
         )
     if skipped:
         # repr() โดยเจตนา — ชื่อพวกนี้คือสิ่งที่เราไม่ไว้ใจ ห้ามพิมพ์ดิบลงที่ที่อาจถูก copy ไปวางในเชลล์
@@ -139,12 +137,88 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
             + ", ".join(repr(name[:80]) for name in skipped[:5]) + (" …" if len(skipped) > 5 else "")
         )
 
-    if artifact in (ArtifactType.SAFETENSORS, ArtifactType.MIXED):
-        _inspect_safetensors(report, source, client, revision_sha, safetensor_files)
-    if artifact in (ArtifactType.GGUF, ArtifactType.MIXED):
+    variants = _group_gguf_variants(gguf_files)
+    gguf_weights = [v for v in variants if not v.is_mmproj and not v.is_mtp]
+    # ผู้ใช้ชี้ไฟล์ .gguf มาเอง (ลิงก์ blob/resolve · --gguf · selected_gguf ของหน้าเว็บ) = เลือกทาง llama.cpp
+    wants_gguf = bool(source.filename and source.filename.lower().endswith(".gguf"))
+
+    # ฝั่ง safetensors อ่านลงรายงานของมันเองก่อน แล้วค่อยตัดสินว่า repo นี้เสิร์ฟทางไหน — เดิมสองฝั่งเขียนทับ
+    # รายงานเดียวกัน (architecture/context/kv_dims ของ config.json ชนะ header ของ GGUF เสมอ) และ repo ที่มี
+    # .safetensors ไฟล์เดียวก็กลายเป็น "mixed" → vLLM ทั้งที่ของที่เสิร์ฟได้มีแต่ GGUF
+    st: ModelReport | None = None
+    st_problem = ""
+    if safetensor_files:
+        st = base.model_copy(deep=True)
+        st.artifact_type = ArtifactType.SAFETENSORS
+        has_config = _inspect_safetensors(st, source, client, revision_sha, safetensor_files)
+        st_problem = _safetensors_problem(st, has_config, safetensor_files)
+
+    if gguf_weights and (wants_gguf or st is None or st_problem):
+        report = base.model_copy(deep=True)
+        report.artifact_type = ArtifactType.GGUF
         _inspect_gguf(report, source, client, revision_sha, gguf_files)
+        if st is not None:
+            _note_format_choice(report, st, st_problem, gguf_weights, safetensor_files)
+    elif st is not None:
+        report = st
+        report.gguf_variants = variants
+        if gguf_weights:
+            report.artifact_type = ArtifactType.MIXED
+            _note_format_choice(report, st, "", gguf_weights, safetensor_files)
+    elif gguf_files:
+        report = base
+        report.artifact_type = ArtifactType.GGUF
+        _inspect_gguf(report, source, client, revision_sha, gguf_files)
+    else:
+        report = base
     _note_unused_weights(report, files)
     return report
+
+
+def _safetensors_problem(st: ModelReport, has_config: bool, safetensor_files: list[tuple[str, int | None]]) -> str:
+    """ทำไมไฟล์ .safetensors ของ repo นี้เสิร์ฟด้วย vLLM/SGLang ไม่ได้ — "" = เสิร์ฟได้
+
+    ใช้ตัดสิน repo ที่มี GGUF อยู่ด้วย: ฝั่ง safetensors ที่ใช้ไม่ได้ต้องไม่ลาก GGUF ที่ใช้ได้ลงไปด้วย
+    (เคสจริง 2026-10-06: LiquidAI/LFM2.5-2.6B-GGUF มี `qad/model.safetensors` ไฟล์เดียว ไม่มี config.json ที่ราก
+    → ถูกวางแผนเป็น vLLM · OBLITERATUS/Qwen3.8-27B-OBLITERATED มี GGUF 7 quant แต่ถูกปฏิเสธทั้ง repo เพราะ
+    safetensors ข้าง ๆ เป็น MLX)
+    """
+    if st.unsupported_format:
+        return f"เป็นรูปแบบ {st.unsupported_format.upper()} ({' · '.join(st.unsupported_evidence) or 'metadata ของ repo'})"
+    if not st.safetensor_shards:
+        folders = sorted({name.split("/", 1)[0] + "/" for name, _ in safetensor_files if "/" in name})
+        where = f"อยู่ใน {', '.join(folders[:3])}" if folders else "มีแต่ไฟล์ adapter"
+        return f"ไม่มี checkpoint ที่ราก repo ({where})"
+    if not has_config:
+        return "ไม่มี config.json ที่ราก repo"
+    return ""
+
+
+def _note_format_choice(report: ModelReport, st: ModelReport, st_problem: str, gguf_weights: list[GgufVariant],
+                        safetensor_files: list[tuple[str, int | None]]) -> None:
+    """repo ที่มีทั้ง .safetensors และ .gguf — บอกว่าแผนนี้ใช้ฝั่งไหน อีกฝั่งคืออะไร และสลับอย่างไร"""
+    st_size = f"{st.weight_bytes / 1e9:.1f} GB" if st.weight_bytes else "ไม่ทราบขนาด"
+    if report.artifact_type is ArtifactType.MIXED:
+        example = min(gguf_weights, key=lambda v: abs((v.size_bytes or 0) - (st.weight_bytes or 0) / 4)).filename
+        note = (
+            f"repo มีทั้ง safetensors และ GGUF — ใช้ checkpoint safetensors {st_size} (→ vLLM/SGLang) · "
+            f"อีกทางคือ GGUF {len(gguf_weights)} ไฟล์ (→ llama.cpp): ระบุ --gguf <quant> หรือใส่ลิงก์ไฟล์ .gguf ตรง ๆ "
+            f"เช่น https://huggingface.co/{report.repo_id}/blob/main/{example}"
+        )
+    elif st_problem:
+        total = sum(size or 0 for _, size in safetensor_files)
+        note = (
+            f"ไฟล์ .safetensors ใน repo นี้ ({len(safetensor_files)} ไฟล์ {total / 1e9:.1f} GB) ไม่ได้ใช้ — {st_problem} · "
+            "vLLM/SGLang เสิร์ฟไม่ได้ · repo นี้เสิร์ฟทาง GGUF (→ llama.cpp)"
+        )
+    else:
+        using = report.selected_gguf or "ไฟล์ที่เลือก"
+        note = (
+            f"repo มีทั้ง safetensors และ GGUF — ใช้ GGUF {using} (→ llama.cpp) · "
+            f"อีกทางคือ checkpoint safetensors {st_size} (→ vLLM/SGLang): ใส่ชื่อ repo โดยไม่ระบุไฟล์ .gguf"
+        )
+    report.format_note = note
+    report.warnings.append(note)
 
 
 def _sibling_files(
@@ -185,16 +259,6 @@ def _sibling_files(
             sha if isinstance(sha, str) else None,
         ))
     return out
-
-
-def _classify(has_safetensors: bool, has_gguf: bool) -> ArtifactType:
-    if has_safetensors and has_gguf:
-        return ArtifactType.MIXED
-    if has_safetensors:
-        return ArtifactType.SAFETENSORS
-    if has_gguf:
-        return ArtifactType.GGUF
-    return ArtifactType.UNKNOWN
 
 
 def _library_of(info: dict[str, Any]) -> str | None:
@@ -336,7 +400,8 @@ def _inspect_safetensors(
     client: HfClient,
     revision: str,
     safetensor_files: list[tuple[str, int | None]],
-) -> None:
+) -> bool:
+    """อ่านฝั่ง safetensors ลง `report` · คืน True เมื่อเจอ config.json ที่ราก repo"""
     index = _fetch_json(client, source.repo_id, revision, _SAFETENSORS_INDEX, cap=INDEX_FILE_CAP)
     sizes_by_name = dict(safetensor_files)
     # รูปแบบ mistral (params.json + consolidated*.safetensors) — ถามเฉพาะเมื่อไม่มีชุดมาตรฐานให้ใช้
@@ -444,6 +509,7 @@ def _inspect_safetensors(
         moe_experts=report.moe_experts,
         moe_experts_active=report.moe_experts_active,
     ).to_dict()
+    return config is not None
 
 
 def _mark_mlx(report: ModelReport, config: dict[str, Any] | None) -> None:
@@ -752,8 +818,7 @@ def _inspect_gguf(
     if selected is None:
         return
     report.selected_gguf = selected.filename
-    if report.artifact_type is ArtifactType.GGUF:
-        report.weight_bytes = selected.size_bytes
+    report.weight_bytes = selected.size_bytes
 
     try:
         gguf = parse_gguf(client.range_source(source.repo_id, revision, selected.filename))

@@ -12,6 +12,14 @@ from pydantic import BaseModel, Field
 
 
 class ArtifactType(str, Enum):
+    """ฝั่งของ repo ที่แผนจะใช้ — ไม่ใช่แค่ "มีนามสกุลอะไรอยู่บ้าง"
+
+    gguf = เสิร์ฟด้วย llama.cpp จากไฟล์ .gguf · safetensors = checkpoint ที่ราก repo → vLLM/SGLang ·
+    mixed = repo มีทั้ง checkpoint safetensors ที่เสิร์ฟได้ *และ* GGUF โดยยังไม่ได้เลือกไฟล์ GGUF → ใช้ safetensors
+    (เลือกไฟล์ .gguf เมื่อไร รายงานรอบนั้นเป็น gguf) · repo GGUF ที่มี .safetensors ติดมาแต่เสิร์ฟไม่ได้ (โฟลเดอร์ย่อย ·
+    ไม่มี config.json · MLX) เป็น gguf ไม่ใช่ mixed
+    """
+
     SAFETENSORS = "safetensors"
     GGUF = "gguf"
     MIXED = "mixed"
@@ -130,6 +138,10 @@ class ModelReport(BaseModel):
 
     gguf_variants: list[GgufVariant] = Field(default_factory=list)
     selected_gguf: Optional[str] = None
+    # repo ที่มีทั้ง .safetensors และ .gguf: แผนนี้ใช้ฝั่งไหน อีกฝั่งคืออะไร สลับอย่างไร ("" = repo มีรูปแบบเดียว)
+    # artifact_type บอกฝั่งที่ใช้: gguf = ไฟล์ GGUF ที่เลือก (หรือ safetensors ข้าง ๆ เสิร์ฟไม่ได้) · mixed = มีทั้งคู่
+    # และยังไม่ได้เลือกไฟล์ GGUF จึงใช้ checkpoint safetensors
+    format_note: str = ""
     tags: list[str] = Field(default_factory=list)
     file_count: int = 0
     warnings: list[str] = Field(default_factory=list)

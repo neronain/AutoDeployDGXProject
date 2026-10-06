@@ -409,6 +409,18 @@ def refuse_unsupported(report: ModelReport) -> None:
         raise PlanError(" · ".join([why, *unsupported_alternatives(report)]))
 
 
+def gguf_choice_needed(report: ModelReport) -> str:
+    """repo มีทั้ง safetensors และ GGUF แล้วผู้ใช้ขอ llama.cpp โดยยังไม่บอกว่าไฟล์ไหน — บอกวิธีเลือก"""
+    weights = sorted((v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp),
+                     key=lambda v: v.size_bytes or 0)
+    names = ", ".join(v.filename for v in weights[:6]) + (f" … (รวม {len(weights)} ไฟล์)" if len(weights) > 6 else "")
+    return (
+        f"{report.repo_id} มีทั้ง checkpoint safetensors และ GGUF — จะใช้ llama.cpp ต้องเลือกไฟล์ GGUF ก่อน: "
+        f"ใส่ --gguf <ชื่อไฟล์หรือ quant> (generate/deploy) หรือใส่ลิงก์ไฟล์ .gguf ตรง ๆ แทนชื่อ repo · ไฟล์ที่มี: {names} · "
+        "ไม่ระบุ engine = ใช้ checkpoint safetensors กับ vLLM"
+    )
+
+
 def rule_based_plan(report: ModelReport, fit: FitReport,
                     engine: Engine | None = None) -> DeploymentPlan:
     refuse_unsupported(report)
@@ -416,6 +428,10 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     # vLLM กับ SGLang อ่านไฟล์ GGUF ไม่ได้ ยอมตามคำขอคือส่ง bundle ที่ start ไม่ขึ้นให้
     if report.artifact_type is ArtifactType.GGUF:
         engine = Engine.LLAMACPP
+    elif engine is Engine.LLAMACPP and report.artifact_type is ArtifactType.MIXED:
+        # repo มีทั้งสองรูปแบบแต่ยังไม่ได้เลือกไฟล์ GGUF — fit ที่ส่งมาคิดจาก checkpoint safetensors (ขนาด/KV คนละชุด)
+        # จะเอามาเป็นแผน llama.cpp ไม่ได้ · เดิม harden แก้กลับเป็น vllm เงียบ ๆ ผู้ใช้ที่ตั้งใจเลือก llama.cpp ได้ vLLM
+        raise PlanError(gguf_choice_needed(report))
     elif engine is None:
         engine = Engine.VLLM
     topology = topology_for_target(fit.target_name)

@@ -547,10 +547,19 @@ def analyze(
     if blocked:
         raise DeployError("unsupported", blocked, {"alternatives": unsupported_alternatives(report)})
 
-    if spec.node_count > 1 and (
-        report.artifact_type is ArtifactType.GGUF
-        or (report.artifact_type is ArtifactType.MIXED and (selected_gguf or report.selected_gguf))
-    ):
+    # repo ที่มีทั้ง checkpoint safetensors และ GGUF (mixed): ไม่เลือกไฟล์ = ใช้ safetensors กับ vLLM/SGLang ·
+    # เลือกไฟล์ GGUF (หรือขอ engine llamacpp) = llama.cpp ด้วยไฟล์นั้น — เดิมบังคับให้เลือกไฟล์ GGUF ก่อนเสมอ
+    # แล้ววางแผน vLLM อยู่ดี ("แก้ engine จาก llamacpp เป็น vllm ตาม artifact จริง")
+    mixed = report.artifact_type is ArtifactType.MIXED
+    wants_gguf = bool(selected_gguf) or chosen is Engine.LLAMACPP
+    if mixed and selected_gguf and chosen in (Engine.VLLM, Engine.SGLANG):
+        raise DeployError(
+            "input",
+            f"เลือกไฟล์ GGUF ({selected_gguf}) พร้อมกับ engine {chosen.value} — {chosen.value} อ่านไฟล์ GGUF ไม่ได้ · "
+            "เอาไฟล์ GGUF ออกเพื่อใช้ checkpoint safetensors หรือเปลี่ยน engine เป็น Auto เพื่อใช้ llama.cpp",
+        )
+
+    if spec.node_count > 1 and (report.artifact_type is ArtifactType.GGUF or (mixed and wants_gguf)):
         # เดิมผ่าน analyze (200) แล้วไปตาย ValueError ตอน generate — llama.cpp ไม่ทำ tensor parallel
         # ข้ามเครื่อง (ไม่มี reference ที่รันผ่าน) · บอกตั้งแต่ตรงนี้พร้อมทางออก
         raise DeployError(
@@ -562,9 +571,13 @@ def analyze(
 
     # repo GGUF หลาย variant ต้องเลือกไฟล์ก่อน ไม่งั้นไปพังตอนท้าย
     weights = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
-    if weights and not (selected_gguf or report.selected_gguf):
+    if weights and not (selected_gguf or report.selected_gguf) and (not mixed or wants_gguf):
         if len(weights) == 1:
-            report.selected_gguf = weights[0].filename
+            # mixed: ต้อง inspect ซ้ำด้วยไฟล์นี้ (ข้างล่าง) ให้รายงานกลายเป็นฝั่ง GGUF ทั้งชุด ไม่ใช่แค่ตั้งชื่อไฟล์
+            if mixed:
+                selected_gguf = weights[0].filename
+            else:
+                report.selected_gguf = weights[0].filename
         else:
             raise DeployError(
                 "choose-gguf", "repo นี้มี GGUF หลายไฟล์ — เลือกก่อนหนึ่งไฟล์",
@@ -588,6 +601,7 @@ def analyze(
                 dc_replace(source, filename=selected_gguf), HfClient(token=token or None)
             )
         except HfError:
+            report.artifact_type = ArtifactType.GGUF
             report.selected_gguf = selected_gguf
             if variant is not None:
                 report.weight_bytes = variant.size_bytes

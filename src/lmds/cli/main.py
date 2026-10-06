@@ -2626,7 +2626,11 @@ def _reinspect_gguf(source, report, chosen):
     try:
         return inspect_model(dc_replace(source, filename=chosen.filename), HfClient(token=get_secret("hf")))
     except HfError as exc:
+        from lmds.inspector import ArtifactType
+
         err_console.print(f"[yellow]อ่าน header ของไฟล์ที่เลือกไม่ได้ ({exc}) — ใช้ขนาดไฟล์อย่างเดียว[/yellow]")
+        # เลือกไฟล์ GGUF แล้ว = แผน llama.cpp แม้ repo จะมี safetensors อยู่ด้วย (mixed) — ชนิด/ขนาดต้องตามไฟล์ที่เลือก
+        report.artifact_type = ArtifactType.GGUF
         report.selected_gguf = chosen.filename
         report.weight_bytes = chosen.size_bytes
         return report
@@ -2642,10 +2646,14 @@ def _ensure_gguf_selected(source, report, interactive: bool, wanted: str = ""):
     from lmds.inspector import ArtifactType
 
     weight_variants = [v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp]
-    if report.artifact_type is not ArtifactType.GGUF:
+    if report.artifact_type not in (ArtifactType.GGUF, ArtifactType.MIXED) or not weight_variants:
         if wanted:
-            err_console.print(f"[red]{report.repo_id} ไม่ใช่ repo GGUF — --gguf ใช้กับ repo นี้ไม่ได้[/red]")
+            err_console.print(f"[red]{report.repo_id} ไม่มีไฟล์ GGUF ของตัวโมเดล — --gguf ใช้กับ repo นี้ไม่ได้[/red]")
             raise typer.Exit(code=1)
+        return report
+    if report.artifact_type is ArtifactType.MIXED and not wanted:
+        # repo มีทั้ง checkpoint safetensors และ GGUF: ไม่ระบุ --gguf = ใช้ safetensors กับ vLLM (ค่าตั้งต้นเดิม)
+        # ไม่ถามให้เลือกไฟล์ — เดิมหน้าเว็บบังคับเลือกไฟล์ GGUF แล้ววางแผน vLLM อยู่ดี (ดู ModelReport.format_note)
         return report
 
     if wanted:

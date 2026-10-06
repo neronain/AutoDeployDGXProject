@@ -276,7 +276,16 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
         _harden_parsers(plan)
 
     plan.artifact_type = report.artifact_type
-    plan.selected_gguf = plan.selected_gguf or report.selected_gguf
+    # selected_gguf มีความหมายเฉพาะแผน llama.cpp — แผน vLLM ของ repo ที่มี GGUF ติดมาด้วย (mixed) ต้องไม่พกชื่อไฟล์
+    # GGUF ไปถึง renderer/MODEL_PROFILE (LLM ที่วางแผนชอบหยิบไฟล์จากรายการมาใส่)
+    if report.artifact_type is ArtifactType.GGUF:
+        plan.selected_gguf = plan.selected_gguf or report.selected_gguf
+    else:
+        plan.selected_gguf = None
+    # repo สองรูปแบบ: ให้แผนบอกเองว่าใช้ฝั่งไหน อีกฝั่งคืออะไร — ไม่ใช่ให้คนเดาจากชื่อ engine
+    note = getattr(report, "format_note", "")
+    if note and note not in plan.warnings:
+        plan.warnings.insert(0, note)
     # คำเตือน "ยังรันไม่ผ่าน" ประเมินกับ image สุดท้าย (สูตร/fallback อาจเปลี่ยน image ระหว่าง harden)
     from lmds.brain.rulebased import known_broken as _kb
 

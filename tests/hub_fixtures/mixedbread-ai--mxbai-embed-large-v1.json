@@ -1,0 +1,108 @@
+{
+ "repo": "mixedbread-ai/mxbai-embed-large-v1",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "mixedbread-ai/mxbai-embed-large-v1",
+  "sha": "b33106f585b9ce46904ad7443a3b52b7a63e231c",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "feature-extraction",
+  "library_name": "sentence-transformers",
+  "tags": [
+   "sentence-transformers",
+   "onnx",
+   "safetensors",
+   "openvino",
+   "gguf",
+   "bert",
+   "feature-extraction",
+   "mteb",
+   "transformers.js",
+   "transformers",
+   "license:apache-2.0",
+   "model-index",
+   "text-embeddings-inference",
+   "endpoints_compatible",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "sentence-transformers",
+   "license": "apache-2.0",
+   "pipeline_tag": "feature-extraction"
+  },
+  "siblings": [
+   {"rfilename": "1_Pooling/config.json", "size": 297},
+   {"rfilename": "LICENSE", "size": 10762},
+   {"rfilename": "config.json", "size": 677},
+   {"rfilename": "config_sentence_transformers.json", "size": 266},
+   {"rfilename": "gguf/mxbai-embed-large-v1-f16.gguf", "size": 669603712, "lfs": { "sha256": "819c2adf5ce6df2b6bd2ae4ca90d2a69f060afeb438d0c171db57daa02e39c3d", "size": 669603712 }},
+   {"rfilename": "model.safetensors", "size": 670328392},
+   {"rfilename": "modules.json", "size": 229},
+   {"rfilename": "onnx/model.onnx", "size": 1336854282},
+   {"rfilename": "onnx/model_fp16.onnx", "size": 668828772},
+   {"rfilename": "onnx/model_quantized.onnx", "size": 336983163},
+   {"rfilename": "openvino/openvino_model.bin", "size": 1336373408},
+   {"rfilename": "openvino/openvino_model_qint8_quantized.bin", "size": 336759312},
+   {"rfilename": "sentence_bert_config.json", "size": 53},
+   {"rfilename": "special_tokens_map.json", "size": 695},
+   {"rfilename": "tokenizer.json", "size": 711396},
+   {"rfilename": "tokenizer_config.json", "size": 1242}
+  ],
+  "safetensors": {
+   "parameters": {
+    "F16": 335141888
+   },
+   "total": 335141888
+  }
+ },
+ "files": {
+  "config.json": {
+   "_name_or_path": "mixedbread-ai/mxbai-embed-large-v1",
+   "architectures": [
+    "BertModel"
+   ],
+   "attention_probs_dropout_prob": 0.1,
+   "classifier_dropout": null,
+   "gradient_checkpointing": false,
+   "hidden_act": "gelu",
+   "hidden_dropout_prob": 0.1,
+   "hidden_size": 1024,
+   "initializer_range": 0.02,
+   "intermediate_size": 4096,
+   "layer_norm_eps": 1e-12,
+   "max_position_embeddings": 512,
+   "model_type": "bert",
+   "num_attention_heads": 16,
+   "num_hidden_layers": 24,
+   "position_embedding_type": "absolute",
+   "torch_dtype": "float16",
+   "transformers_version": "4.38.2",
+   "type_vocab_size": 2,
+   "use_cache": false,
+   "vocab_size": 30522
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 512,
+   "tokenizer_class": "BertTokenizer"
+  }
+ },
+ "gguf": {
+  "gguf/mxbai-embed-large-v1-f16.gguf": {
+   "tensor_count": 389,
+   "metadata": {
+    "general.architecture": "bert",
+    "general.name": "mxbai-embed-large-v1",
+    "bert.block_count": 24,
+    "bert.context_length": 512,
+    "bert.embedding_length": 1024,
+    "bert.feed_forward_length": 4096,
+    "bert.attention.head_count": 16,
+    "bert.attention.layer_norm_epsilon": 9.999999960041972e-13,
+    "general.file_type": 1,
+    "bert.attention.causal": false,
+    "bert.pooling_type": 2
+   }
+  }
+ }
+}

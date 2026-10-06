@@ -1,0 +1,121 @@
+{
+ "repo": "CMSManhattan/JiRackUltra_1b",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "CMSManhattan/JiRackUltra_1b",
+  "sha": "78b791bb744834a1d19bbf0cc30673099b1f63e5",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "text-generation",
+  "library_name": null,
+  "tags": [
+   "safetensors",
+   "gguf",
+   "qwen2",
+   "text-generation",
+   "ternary",
+   "bitnet",
+   "1.58bit",
+   "qwen2.5",
+   "deepseek",
+   "efficient",
+   "low-memory",
+   "jirack",
+   "web-ui",
+   "routing",
+   "tool-call",
+   "robotics",
+   "conversational",
+   "license:mit",
+   "endpoints_compatible",
+   "region:us"
+  ],
+  "cardData": {
+   "license": "mit"
+  },
+  "siblings": [
+   {"rfilename": "JiRackTernaryUltra_1b.py", "size": 20321},
+   {"rfilename": "JiRackTernaryUltra_1b_old.py", "size": 20321},
+   {"rfilename": "JiRackUltra_1b.Q6_K.gguf", "size": 1464178592, "lfs": { "sha256": "8a7a9a4052ded2800d95b37a0bfc8b00630dc417b0e3410785203bab58238463", "size": 1464178592 }},
+   {"rfilename": "JiRackUltra_1b.Q8_0.gguf", "size": 1894532000, "lfs": { "sha256": "f56b2061f0f3bdae6de28da27cf0abebf13f36554fb1c0ba18414e08d88a25dd", "size": 1894532000 }},
+   {"rfilename": "JiRackUltra_1b.gguf", "size": 3560416160, "lfs": { "sha256": "19bb919b2deb433fba4b1116d857678def467b49ca881b5f9e6dc6ad27664744", "size": 3560416160 }},
+   {"rfilename": "JiRackUltra_1b_Q3_K_M.gguf", "size": 924455840, "lfs": { "sha256": "73cc639081a63a3793448991c1c1ca05ea82e5a9f65736b9e571f32aca10f31d", "size": 924455840 }},
+   {"rfilename": "JiRackUltra_1b_Q4_K_M.gguf", "size": 1117320608, "lfs": { "sha256": "8db8cb25c578442e4a05a664e02c5ec90dda393671b9ef2ca02d37170bb0335f", "size": 1117320608 }},
+   {"rfilename": "chat_jirack_1b.py", "size": 7468},
+   {"rfilename": "chat_template.jinja", "size": 2260},
+   {"rfilename": "chat_template.jinja.bak", "size": 2246},
+   {"rfilename": "chat_template.jinja_with_thinking", "size": 2246},
+   {"rfilename": "config.json", "size": 481},
+   {"rfilename": "generation_config.json", "size": 114},
+   {"rfilename": "get_tool_call.py", "size": 7885},
+   {"rfilename": "gguf_chat.sh", "size": 159},
+   {"rfilename": "jirack_to_gguf_1p5b.py", "size": 14972},
+   {"rfilename": "materialize_ternary_1b.py", "size": 6375},
+   {"rfilename": "model.pt", "size": 3554344056},
+   {"rfilename": "model.safetensors", "size": 3554214752},
+   {"rfilename": "qat_ultra_1b_for_TQ_2.py", "size": 16644},
+   {"rfilename": "quant.sh", "size": 261},
+   {"rfilename": "tokenizer.json", "size": 11443518},
+   {"rfilename": "tokenizer_config.json", "size": 2802},
+   {"rfilename": "tokenizer_config.json_with_thinking", "size": 2802},
+   {"rfilename": "train_jirack_1b_lambda_warmup.py", "size": 18681},
+   {"rfilename": "train_toolace_toolcalling_lora_ultra.py", "size": 20416}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 1777088000
+   },
+   "total": 1777088000
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Qwen2ForCausalLM"
+   ],
+   "model_type": "qwen2",
+   "vocab_size": 151936,
+   "hidden_size": 1536,
+   "intermediate_size": 8960,
+   "num_hidden_layers": 28,
+   "num_attention_heads": 12,
+   "num_key_value_heads": 2,
+   "hidden_act": "silu",
+   "max_position_embeddings": 131072,
+   "rms_norm_eps": 1e-06,
+   "rope_theta": 10000.0,
+   "tie_word_embeddings": false,
+   "torch_dtype": "bfloat16",
+   "use_cache": true
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 16384,
+   "tokenizer_class": "Qwen2Tokenizer"
+  }
+ },
+ "gguf": {
+  "JiRackUltra_1b_Q4_K_M.gguf": {
+   "tensor_count": 339,
+   "metadata": {
+    "general.architecture": "qwen2",
+    "general.type": "model",
+    "general.sampling.top_p": 0.949999988079071,
+    "general.sampling.temp": 0.6000000238418579,
+    "general.name": "JiRackUlrta_1",
+    "general.size_label": "1.8B",
+    "qwen2.block_count": 28,
+    "qwen2.context_length": 131072,
+    "qwen2.embedding_length": 1536,
+    "qwen2.feed_forward_length": 8960,
+    "qwen2.attention.head_count": 12,
+    "qwen2.attention.head_count_kv": 2,
+    "qwen2.rope.freq_base": 10000.0,
+    "qwen2.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+    "tokenizer.chat_template": "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% set ns = namespace(is_first=false, is_tool=false, is_output_first=true, system_prompt='') %}{%- for message in messages %}{%- if message['role'] == 'system' %}{% set ns.system_prompt = message['content'] %}{%- endif %}{%- endfor %}{{bos_token}}{{ns.system_prompt}}{%- for message in messages %}{%- if m",
+    "general.quantization_version": 2,
+    "general.file_type": 15
+   }
+  }
+ }
+}
