@@ -959,3 +959,83 @@ def test_the_credentials_file_is_never_wider_than_0600_not_even_briefly(monkeypa
         assert leftovers == []
     finally:
         os.umask(old)
+
+
+# ══ 7. key ที่บันทึกไว้ถูกส่งไปยัง base_url ที่คำขอระบุ ═══════════════════════════════
+
+@pytest.fixture
+def listener():
+    """เซิร์ฟเวอร์ HTTP จริงบน 127.0.0.1 ที่จด header Authorization ของทุกคำขอ — ตัวแทนของ "ปลายทางที่คำขอชี้ไป" """
+    import http.server
+    import threading
+
+    def start():
+        seen: list = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 — ชื่อตาม http.server
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"data":[{"id":"local-model"}]}')
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_port}/v1", seen
+
+    servers: list = []
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_saved_provider_key_is_not_sent_to_a_url_named_by_the_request(listener):
+    """ผู้ตรวจ: บันทึก key ของ openai แล้ว `POST /api/provider/models {"name":"openai","base_url":"<เครื่องฉัน>"}`
+    → เครื่องนั้นได้ `Authorization: Bearer <key จริง>`"""
+    elsewhere, seen = listener()
+    client = TestClient(create_app())
+    client.put("/api/provider", json={"name": "openai", "model": "gpt-4o", "api_key": REAL_KEY})
+
+    r = client.post("/api/provider/models", json={"name": "openai", "base_url": elsewhere})
+
+    assert r.status_code == 200, r.text
+    assert seen == [None], "key ที่บันทึกไว้ถูกส่งไปยังที่อยู่ที่คำขอระบุ"
+    assert r.json() == {"models": ["local-model"], "key_sent": "none"}
+
+    # ปลายทางอื่นใช้ key ได้เมื่อมากับคำขอเดียวกัน — และ key นั้นไม่ถูกบันทึกทับของเดิม
+    r = client.post("/api/provider/models", json={"name": "openai", "base_url": elsewhere, "api_key": "sk-typed-now"})
+    assert seen[-1] == "Bearer sk-typed-now" and r.json()["key_sent"] == "request"
+    assert client.get("/api/provider").json()["key_hint"] == f"…{REAL_KEY[-4:]}"
+
+
+def test_the_saved_key_still_reaches_the_address_it_was_saved_with(listener, monkeypatch):
+    """ปุ่ม "List models" ของ provider ที่ตั้งไว้ต้องยังใช้ได้โดยไม่ต้องกรอก key ซ้ำ — ไปที่อยู่ที่บันทึกคู่กัน ไม่ไปที่อื่น"""
+    from lmds.brain import providers
+
+    saved_url, at_saved = listener()
+    other_url, at_other = listener()
+    client = TestClient(create_app())
+    client.put("/api/provider", json={"name": "openai-compat", "model": "m", "base_url": saved_url, "api_key": "sk-lan-key-1234"})
+
+    for spelling in (saved_url, saved_url + "/", saved_url.replace("http://", "HTTP://")):
+        r = client.post("/api/provider/models", json={"name": "openai-compat", "base_url": spelling})
+        assert r.status_code == 200 and r.json()["key_sent"] == "saved", (spelling, r.text)
+    assert at_saved == ["Bearer sk-lan-key-1234"] * 3
+
+    assert client.post("/api/provider/models", json={"name": "openai-compat", "base_url": other_url}).json()["key_sent"] == "none"
+    assert at_other == [None]
+
+    # provider ที่ไม่ได้ตั้ง base URL: key ที่บันทึกไว้ไปที่อยู่ทางการของ provider นั้นเท่านั้น
+    official, at_official = listener()
+    monkeypatch.setattr(providers, "OPENAI_BASE", official)
+    client.put("/api/provider", json={"name": "openai", "model": "gpt-4o", "api_key": REAL_KEY})
+    assert client.post("/api/provider/models", json={"name": "openai"}).json()["key_sent"] == "saved"
+    assert at_official == [f"Bearer {REAL_KEY}"]
+    assert client.post("/api/provider/models", json={"name": "openai", "base_url": other_url}).json()["key_sent"] == "none"
+    assert at_other == [None, None]

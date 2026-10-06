@@ -582,6 +582,54 @@ def make_provider(config: ProviderConfig, api_key: str | None,
 _LIST_TIMEOUT = 15.0
 
 
+def list_destination(name: ProviderName, base_url: str | None = None) -> str:
+    """ที่อยู่ที่ list_models จะส่งคำขอ — และ key — ไปจริง · ว่าง = ไม่มีปลายทาง (openai-compat ที่ไม่ระบุ URL)
+
+    gemini/anthropic ไปที่อยู่ทางการเสมอ (base_url ไม่ถูกใช้) · ที่เหลือใช้ base_url ถ้ามี ไม่งั้นที่อยู่ทางการ
+    """
+    name = ProviderName(name)
+    if name is ProviderName.GEMINI:
+        return GEMINI_BASE
+    if name is ProviderName.ANTHROPIC:
+        return ANTHROPIC_BASE
+    base = (base_url or "").strip().rstrip("/")
+    return base or {ProviderName.OPENAI: OPENAI_BASE, ProviderName.MINIMAX: MINIMAX_BASE}.get(name, "")
+
+
+def _same_place(url: str) -> tuple:
+    """รูปเทียบของ URL — scheme/host ไม่สนตัวพิมพ์ · พอร์ตปริยายเท่ากับไม่ใส่ · ไม่สน `/` ท้าย"""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return ("invalid", url)
+    scheme = (parts.scheme or "").lower()
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    return (scheme, (parts.hostname or "").lower(), port, parts.path.rstrip("/"), parts.query)
+
+
+def stored_key_may_go_to(name: ProviderName, base_url: str | None, saved: ProviderConfig | None) -> bool:
+    """key ที่ **บันทึกไว้** ของ provider นี้ ส่งไปยังปลายทางของคำขอนี้ได้ไหม
+
+    audit 2026-10: `POST /api/provider/models` ส่ง `Authorization: Bearer <key ที่บันทึกไว้>` ไปยัง `base_url`
+    ที่ **คำขอ** ระบุ — ใครยิง endpoint นี้ได้ก็ชี้ไปเครื่องตัวเองแล้วได้ key ที่เสียเงินจริงไป · key ที่บันทึกไว้
+    ไปได้ที่เดียว: ที่อยู่ที่บันทึกคู่กับมัน (base URL ของ provider ที่ตั้งไว้ · ไม่ได้ตั้ง = ที่อยู่ทางการของ provider
+    นั้น) · ปลายทางอื่นต้องได้ key มากับคำขอเดียวกัน
+    """
+    name = ProviderName(name)
+    destination = list_destination(name, base_url)
+    if not destination:
+        return False
+    if saved is not None and saved.name is name and saved.base_url:
+        trusted = saved.base_url
+    else:
+        trusted = list_destination(name, None)       # ที่อยู่ทางการ · openai-compat ไม่มี = ไม่มีที่ไหนไว้ใจได้
+    return bool(trusted) and _same_place(destination) == _same_place(trusted)
+
+
 def list_models(name: ProviderName, api_key: str, base_url: str | None = None) -> list[str]:
     """ถาม provider ว่า key นี้ใช้โมเดลอะไรได้บ้าง — คืนรายชื่อเรียงแล้ว
 
@@ -589,7 +637,6 @@ def list_models(name: ProviderName, api_key: str, base_url: str | None = None) -
     (ว่างเปล่าดีกว่ารายชื่อที่เดาขึ้นมาเอง — ผู้ใช้จะเลือกตัวที่ไม่มีอยู่จริง)
     """
     name = ProviderName(name)
-    base = (base_url or "").rstrip("/")
     try:
         with httpx.Client(timeout=_LIST_TIMEOUT) as client:
             if name is ProviderName.GEMINI:
@@ -607,8 +654,7 @@ def list_models(name: ProviderName, api_key: str, base_url: str | None = None) -
                 return sorted(m["id"] for m in resp.json().get("data", []))
 
             # ที่เหลือพูด /v1/models แบบ OpenAI — รวม vLLM, Ollama, LocalAI, Bifrost
-            root = base or {ProviderName.OPENAI: OPENAI_BASE,
-                            ProviderName.MINIMAX: MINIMAX_BASE}.get(name, "")
+            root = list_destination(name, base_url)
             if not root:
                 return []
             resp = client.get(f"{root}/models",

@@ -917,21 +917,36 @@ def create_app(token: str = "") -> FastAPI:
         ผู้ใช้ที่ไม่ได้อยู่กับ provider นั้นทุกวันไม่มีทางรู้ชื่อโมเดล — พิมพ์ผิดตัวเดียว
         แล้วรู้ตอน deploy ล้มกลางทาง · key ที่ยังไม่ได้บันทึกก็ลองได้ (ส่งมากับ request)
         """
-        from lmds.brain.providers import ProviderError, list_models
-        from lmds.config import ProviderName
+        from lmds.brain.providers import ProviderError, list_models, stored_key_may_go_to
+        from lmds.config import ProviderName, Settings
         from lmds.secrets import get_secret
 
+        body = _obj(body)
         try:
-            name = ProviderName((body.get("name") or "").strip())
+            name = ProviderName(_text(body, "name"))
         except ValueError:
             raise HTTPException(status_code=400, detail="ไม่รู้จัก provider นี้") from None
-        # ยังไม่กรอก key ใหม่ = ใช้ตัวที่บันทึกไว้ · ไม่มีเลยก็ยังลองได้ (endpoint ในวงมักไม่ต้องใช้)
-        key = (body.get("api_key") or "").strip() or get_secret(name.value)
+        base_url = _text(body, "base_url") or None
+        # ยังไม่กรอก key ใหม่ = ใช้ตัวที่บันทึกไว้ — **เฉพาะเมื่อปลายทางคือที่อยู่ที่บันทึกคู่กับ key นั้น**
+        # (base URL ของ provider ที่ตั้งไว้ หรือที่อยู่ทางการ) · เดิม key ที่บันทึกไว้ถูกส่งไปยัง base_url อะไรก็ตามที่
+        # คำขอระบุ: ชี้มาที่เครื่องตัวเองก็ได้ key จริงไป · ปลายทางอื่นต้องส่ง key มากับคำขอนี้เอง (ไม่ถูกบันทึก)
+        # · ไม่มี key เลยก็ยังลองได้ (endpoint ในวงมักไม่ต้องใช้)
+        key, key_from = _text(body, "api_key"), "request"
+        if not key:
+            key, key_from = "", "none"
+            if stored_key_may_go_to(name, base_url, Settings.load().provider):
+                stored = get_secret(name.value) or ""
+                key, key_from = stored, ("saved" if stored else "none")
         try:
-            models = list_models(name, key, (body.get("base_url") or "").strip() or None)
+            models = list_models(name, key, base_url)
         except ProviderError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"models": models}
+            detail = str(exc)
+            if key_from == "none" and get_secret(name.value):
+                detail += (" · key ที่บันทึกไว้ไม่ถูกส่งไปยังที่อยู่นี้ (ไม่ใช่ base URL ที่บันทึกคู่กับมัน) — "
+                           "ถ้าปลายทางนี้ต้องใช้ key ให้กรอกในช่อง API key ด้วย")
+            raise HTTPException(status_code=422, detail=detail) from exc
+        # key_sent: หน้าเว็บ/ผู้ตรวจเห็นได้ว่าคำขอนี้ใช้ key จากไหน — "none" = ไม่ได้ส่ง key ไปเลย
+        return {"models": models, "key_sent": key_from}
 
     @app.get("/api/assistant", dependencies=guarded)
     def assistant_status() -> dict:
