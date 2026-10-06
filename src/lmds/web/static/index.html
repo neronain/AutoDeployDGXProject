@@ -3892,7 +3892,9 @@ document.addEventListener("click", async e => {
     if (!clearing) {
       for (const [k, v] of Object.entries(opts)) {
         if (k === "api_key") continue;          // สัญญากับผู้ใช้: key ไม่ถูกเขียนลง bundle
-        if (v !== null && v !== "") body[k] = v;
+        // ช่องที่ว่าง = "เอาค่านั้นออก" ต้องส่งเป็นค่าว่าง — เซิร์ฟเวอร์แก้เฉพาะคีย์ที่ส่งไป (ไม่ส่ง = ไม่แตะ) ·
+        // เดิมไม่ส่งช่องว่างแล้วพึ่งการเขียนทับทั้งไฟล์ให้มันหาย ซึ่งลบ parser/engine env/bundle.args ที่ฟอร์มนี้ไม่มีไปด้วย
+        body[k] = (v === null || v === undefined) ? "" : v;
       }
     }
     const label = btn.textContent;

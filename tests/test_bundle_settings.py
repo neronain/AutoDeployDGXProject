@@ -66,9 +66,15 @@ def test_an_api_key_is_never_written(tmp_path):
 
 
 def test_clearing_removes_the_file(tmp_path):
+    """ล้างด้วย clear() — dict ว่างไม่ใช่คำสั่งล้างอีกแล้ว (write แก้เฉพาะคีย์ที่ส่งมา · audit 2026-10-06:
+    `write(dir, {…ที่กรองแล้วว่าง…})` ลบทั้ง bundle.env และ bundle.args โดยไม่มีใครตั้งใจ)"""
+    from lmds.fleet.bundle_settings import clear
+
     write(tmp_path, {"port": 8001})
     assert (tmp_path / FILENAME).exists()
     write(tmp_path, {})
+    assert read(tmp_path) == {"port": "8001"}
+    clear(tmp_path)
     assert not (tmp_path / FILENAME).exists()
     assert read(tmp_path) == {}
 

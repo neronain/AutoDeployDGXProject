@@ -140,8 +140,44 @@ def path_for(bundle_dir: Path) -> Path:
     return Path(bundle_dir) / FILENAME
 
 
+# บรรทัดกำหนดค่าหนึ่งบรรทัดของ bundle.env — `NAME=…` หรือ `export NAME=…` (ย่อหน้าได้)
+_ASSIGN_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+# env ทุกตัวที่ `lmds set` เป็นเจ้าของ → field ของมัน · บรรทัดของชื่ออื่นทั้งหมดเป็นของผู้ดูแล ห้ามแตะ
+_FIELD_OF: dict[str, str] = {name: field for field, names in FIELDS.items() for name in names}
+
+
+def _assigned_name(line: str) -> str:
+    """ชื่อ env ที่บรรทัดนี้กำหนดค่า — "" ถ้าไม่ใช่บรรทัดกำหนดค่า (คอมเมนต์ · บรรทัดว่าง · คำสั่งอื่น)"""
+    match = _ASSIGN_RE.match(line)
+    return match.group(1) if match else ""
+
+
+def _assigned_value(name: str, raw: str) -> tuple[str, bool] | None:
+    """(ค่า, เป็นรูป default ไหม) ของด้านขวาเครื่องหมาย = · None = อ่านเป็นค่าคงที่ไม่ได้ (มี $… / คำสั่ง / quote ไม่ปิด)
+
+    รูปที่ LMDS เขียนเองคือ `"${NAME:-value}"` (default — env จากภายนอกชนะ) · ผู้ดูแลที่แก้ไฟล์ด้วยมือเขียน `NAME=value` /
+    `NAME="value"` ธรรมดา ซึ่ง bash ให้ผลเท่ากันตอน start · ค่าที่ต้องให้เชลล์คิด (`$(…)`, `$OTHER`) ไม่เดา — ถือว่าอ่านไม่ได้
+    """
+    raw = raw.strip()
+    for pattern in (r'"\$\{%s:-(.*)\}"', r"\$\{%s:-(.*)\}"):
+        match = re.fullmatch(pattern % re.escape(name), raw)
+        if match:
+            return match.group(1), True
+    match = (re.fullmatch(r'"([^"]*)"(?:\s+#.*)?', raw) or re.fullmatch(r"'([^']*)'(?:\s+#.*)?", raw)
+             or re.fullmatch(r"([^\s#\"']*)(?:\s+#.*)?", raw))
+    if match is None or any(ch in match.group(1) for ch in "$`\\"):
+        return None
+    return match.group(1), False
+
+
 def read(bundle_dir: Path) -> dict[str, str]:
-    """ค่าที่บันทึกไว้ — คืน dict ว่างเมื่อยังไม่เคยบันทึก"""
+    """ค่าที่บันทึกไว้ — คืน dict ว่างเมื่อยังไม่เคยบันทึก
+
+    อ่านทั้งรูปที่ `lmds set` เขียน (`NAME="${NAME:-v}"`) และรูปที่คนเขียนเอง (`NAME=v`): หัวไฟล์บอกว่าแก้ด้วยมือได้ และค่าที่
+    เขียนด้วยมือมีผลจริงตอน start — เดิมมองไม่เห็นรูปหลัง จึงโชว์ว่า "ไม่ได้ตั้ง" ทั้งที่ controller ได้ค่านั้น (audit 2026-10-06) ·
+    หลายบรรทัดของชื่อเดียวกันตัดสินแบบ bash: รูป default ไม่ทับค่าที่ตั้งไปแล้ว · รูปธรรมดาทับเสมอ · ค่าที่ไม่ผ่าน `_clean`
+    (เช่น port ที่ไม่ใช่ตัวเลข) ไม่ถูกรายงาน — ผู้เรียกหลายตัวเอาค่าไป `int()` ตรง ๆ
+    """
     target = path_for(bundle_dir)
     if not target.is_file():
         args_file = Path(bundle_dir) / ARGS_FILENAME
@@ -149,11 +185,17 @@ def read(bundle_dir: Path) -> dict[str, str]:
             return {"extra_args": args_file.read_text(encoding="utf-8").strip()}
         return {}
     env: dict[str, str] = {}
-    for line in target.read_text(encoding="utf-8").splitlines():
-        # รูปที่เราเขียนเองคือ NAME="${NAME:-value}"
-        m = re.match(r'^([A-Z_][A-Z0-9_]*)="\$\{\1:-(.*)\}"$', line.strip())
-        if m:
-            env[m.group(1)] = m.group(2)
+    for line in target.read_text(encoding="utf-8", errors="replace").splitlines():
+        name = _assigned_name(line)
+        if name not in _FIELD_OF:
+            continue
+        parsed = _assigned_value(name, _ASSIGN_RE.match(line).group(2))
+        if parsed is None:
+            continue
+        value, is_default = parsed
+        if is_default and env.get(name):
+            continue        # `${NAME:-v}` หลังจากที่ NAME มีค่าแล้ว = ไม่มีผล
+        env[name] = value
     out: dict[str, str] = {}
     for field, names in FIELDS.items():
         for name in names:
@@ -161,6 +203,12 @@ def read(bundle_dir: Path) -> dict[str, str]:
                 value = env[name]
                 if field == "image_min_tokens" and value == "":
                     value = "auto"  # ค่าว่างในไฟล์ = auto — ให้ round-trip ผ่าน write() ได้โดยไม่หาย
+                else:
+                    try:
+                        if value == "" or _clean(field, value) != value:
+                            continue
+                    except SettingsError:
+                        continue
                 out[field] = value
                 break
     args_file = Path(bundle_dir) / ARGS_FILENAME
@@ -283,56 +331,115 @@ def _check_image_applies(bundle_dir: Path) -> None:
         )
 
 
-def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
-    """บันทึกค่าลง bundle.env — ค่าที่เป็นค่าว่างคือ "เอาออก ใช้ default ของ bundle"
+_HEADER = [
+    "# สร้างโดย LMDS — ค่าที่ตั้งไว้สำหรับ bundle นี้",
+    "# controller อ่านไฟล์นี้ก่อนตั้ง default ทุกตัว ทุกบรรทัดเป็นรูป ${VAR:-value}",
+    "# env จากภายนอกและ flag บรรทัดคำสั่งจึงยังชนะไฟล์นี้เสมอ",
+    "#",
+    "# แก้ด้วยมือได้ · ลบไฟล์ = กลับไปใช้ค่าของ bundle",
+    "",
+]
 
-    เขียนไฟล์ใหม่ทั้งไฟล์เสมอ ไม่ต่อท้าย เพราะการต่อท้ายจะทำให้ค่าเก่ากับใหม่อยู่
-    ปนกันแล้วอ่านยากว่าตัวไหนมีผล
+
+def write(bundle_dir: Path, values: dict[str, object]) -> dict[str, str]:
+    """ตั้ง/เอาออกเฉพาะคีย์ที่อยู่ใน `values` — คืนค่าที่บันทึกไว้ทั้งหมดหลังเขียน (เท่ากับ `read()`)
+
+    * คีย์ที่มีค่า = ตั้ง · คีย์ที่ค่าว่าง/None = เอา knob นั้นออก (กลับไปใช้ค่าของ bundle) · **คีย์ที่ไม่ได้ส่งมา = ไม่แตะ**
+    * บรรทัดอื่นทุกบรรทัดของ bundle.env — env ที่ `lmds set` ไม่รู้จัก · รูป `NAME=value` ธรรมดา · คอมเมนต์ · บรรทัดว่าง —
+      อยู่ที่เดิมไบต์ต่อไบต์ · ค่าที่ตั้งทับของเดิมถูกแทน **ที่บรรทัดเดิม** ไม่ว่าเดิมเขียนรูปไหน (ต่อท้ายเป็นรูป default
+      หลังบรรทัด `NAME=เก่า` = ค่าใหม่ไม่มีผล) · ของใหม่ต่อท้ายไฟล์
+    * `bundle.args` ถูกแตะเมื่อ `values` มีคีย์ `extra_args` เท่านั้น — ค่าว่างที่ส่งมาตรง ๆ คือทางเดียวที่ลบมัน
+
+    เดิมฟังก์ชันนี้ "เขียนไฟล์ใหม่ทั้งไฟล์เสมอ" จากสิ่งที่ `read()` อ่านกลับได้ ซึ่งคือเฉพาะบรรทัดรูป `NAME="${NAME:-v}"` ของ
+    knob ที่รู้จัก — ทั้งที่หัวไฟล์บอกว่าแก้ด้วยมือได้ และ manager.py เองอ่าน `STARTUP_TIMEOUT` / `HF_HOME` /
+    `WORKER_HF_HOME` จากไฟล์นี้ · เคสจริงจาก audit 2026-10-06: หลัง `lmds set --port 8001` บน bundle stacked
+    STARTUP_TIMEOUT 6906 → 1800 (โมเดล 122B โหลดไม่ทัน watchdog) · HF_HOME /data/hf → ว่าง · บรรทัด `API_HOST=…` /
+    `WORKER_HF_HOME=…` หาย · และ `write(dir, {"port": …})` ตรง ๆ (PUT /settings ที่ body ไม่ครบ · web/deploy.py)
+    ลบ `bundle.args` ที่ผู้ดูแลเก็บ flag ของ tokenizer/engine ไว้
+
+    ล้างทุก knob ของ LMDS ใช้ `clear()` — dict ว่างไม่ใช่คำสั่งล้าง (เดิมเป็น · `keep = {…ที่กรองแล้วว่าง…}` จึงล้างทั้งไฟล์ได้)
     """
     bundle_dir = Path(bundle_dir)
     if not bundle_dir.is_dir():
         raise SettingsError(f"ไม่พบโฟลเดอร์ bundle: {bundle_dir}")
 
     cleaned: dict[str, str] = {}
+    removed: set[str] = set()
     for field, raw in values.items():
         if field not in FIELDS:
             continue  # ไม่รู้จักก็ไม่เขียน — รวมถึง api_key ที่ตั้งใจไม่เก็บ
         if raw is None or str(raw).strip() == "":
+            removed.add(field)
             continue
         cleaned[field] = _clean(field, raw)  # image_min_tokens=auto → "" โดยตั้งใจ (ดู FIELDS)
+    # ตรวจให้ครบก่อนแตะไฟล์ใดไฟล์หนึ่ง — ค่าที่ถูกปฏิเสธต้องไม่ทิ้ง bundle.args ที่เขียนไปแล้วครึ่งทาง
     _check_context_cap(bundle_dir, values, cleaned)
     if "image" in cleaned:
         _check_image_applies(bundle_dir)
 
     args_file = bundle_dir / ARGS_FILENAME
-    extra = cleaned.pop("extra_args", None)
-    if extra:
-        args_file.write_text(extra + "\n", encoding="utf-8")
-    else:
+    if "extra_args" in cleaned:
+        args_file.write_text(cleaned.pop("extra_args") + "\n", encoding="utf-8")
+    elif "extra_args" in removed:
         args_file.unlink(missing_ok=True)
 
-    target = path_for(bundle_dir)
-    if not cleaned:
-        target.unlink(missing_ok=True)
-        return {"extra_args": extra} if extra else {}
+    wanted = {name: value for field, value in cleaned.items() for name in FIELDS[field]}
+    dropped = {name for field in removed for name in FIELDS[field]}
+    if not wanted and not dropped:
+        return read(bundle_dir)
 
-    lines = [
-        "# สร้างโดย LMDS — ค่าที่ตั้งไว้สำหรับ bundle นี้",
-        "# controller อ่านไฟล์นี้ก่อนตั้ง default ทุกตัว ทุกบรรทัดเป็นรูป ${VAR:-value}",
-        "# env จากภายนอกและ flag บรรทัดคำสั่งจึงยังชนะไฟล์นี้เสมอ",
-        "#",
-        "# แก้ด้วยมือได้ · ลบไฟล์ = กลับไปใช้ค่าของ bundle",
-        "",
-    ]
-    for field, value in cleaned.items():
-        for name in FIELDS[field]:
-            # ค่าผ่าน _clean มาแล้ว (ไม่มี " ' ` $ \ { } หรือขึ้นบรรทัดใหม่) จึงวางตรง ๆ ได้ —
-            # shlex.quote แล้ว strip quote ทิ้ง ไม่ได้ป้องกันอะไร แค่ทำให้ดูเหมือนปลอดภัย
-            lines.append(f'{name}="${{{name}:-{value}}}"')
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    if extra:
-        cleaned["extra_args"] = extra
-    return cleaned
+    target = path_for(bundle_dir)
+    existed = target.is_file()
+    lines = target.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if existed else []
+    out: list[str] = []
+    placed: set[str] = set()
+    for line in lines:
+        name = _assigned_name(line)
+        if name in wanted:
+            if name not in placed:
+                # ค่าผ่าน _clean มาแล้ว (ไม่มี " ' ` $ \ { } หรือขึ้นบรรทัดใหม่) จึงวางตรง ๆ ได้ —
+                # shlex.quote แล้ว strip quote ทิ้ง ไม่ได้ป้องกันอะไร แค่ทำให้ดูเหมือนปลอดภัย
+                out.append(f'{name}="${{{name}:-{wanted[name]}}}"\n')
+                placed.add(name)
+            continue    # บรรทัดซ้ำของชื่อที่เพิ่งตั้ง — เหลือไว้จะกลับมาชนะ/สับสนว่าตัวไหนมีผล
+        if name in dropped:
+            continue
+        out.append(line)
+    missing = [name for name in wanted if name not in placed]
+    if missing:
+        if not existed:
+            out = [line + "\n" for line in _HEADER]
+        elif out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        out += [f'{name}="${{{name}:-{wanted[name]}}}"\n' for name in missing]
+
+    # เหลือแต่หัวไฟล์ของเราเอง/บรรทัดว่าง = ไม่มีอะไรให้ controller อ่าน — ลบไฟล์ ("ลบไฟล์ = กลับไปใช้ค่าของ bundle")
+    # มีบรรทัดของผู้ดูแลเหลือแม้แต่คอมเมนต์เดียว = เก็บไฟล์ไว้
+    if all(line.strip() == "" or line.rstrip("\n") in _HEADER for line in out):
+        target.unlink(missing_ok=True)
+    else:
+        staged = target.with_name(target.name + ".tmp")
+        staged.write_text("".join(out), encoding="utf-8")
+        staged.replace(target)      # ไฟล์นี้ถูก source ตอน start/autostart — เขียนครึ่งไฟล์แล้วล้มคือ start พัง
+    return read(bundle_dir)
+
+
+def clear(bundle_dir: Path) -> dict[str, str]:
+    """เอา knob ทุกตัวที่ `lmds set` ดูแลออกจาก bundle.env — คืนสิ่งที่ยังบันทึกอยู่ (เท่ากับ `read()`)
+
+    ไม่แตะบรรทัดที่ผู้ดูแลเพิ่มเอง (ดู `foreign_names`) และไม่แตะ `bundle.args`: flag ของ tokenizer/engine ในไฟล์นั้นลบได้
+    ทางเดียวคือสั่ง extra_args ว่างมาตรง ๆ · ไฟล์ที่เหลือแต่หัวของเราเองถูกลบ
+    """
+    return write(bundle_dir, {field: "" for field in FIELDS if field != "extra_args"})
+
+
+def foreign_names(bundle_dir: Path) -> list[str]:
+    """ชื่อ env ใน bundle.env ที่ไม่ใช่ knob ของ `lmds set` (ผู้ดูแลเพิ่มเอง) — ไว้บอกผู้ใช้ว่า --clear เหลืออะไรไว้"""
+    target = path_for(bundle_dir)
+    if not target.is_file():
+        return []
+    names = [_assigned_name(line) for line in target.read_text(encoding="utf-8", errors="replace").splitlines()]
+    return list(dict.fromkeys(name for name in names if name and name not in _FIELD_OF))
 
 
 # บล็อกเดียวกับที่ template ใส่ให้ bundle ใหม่ — เก็บไว้ที่นี่ด้วยเพื่อเติมให้ bundle

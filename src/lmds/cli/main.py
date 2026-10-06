@@ -2170,7 +2170,9 @@ def set_defaults(
     from lmds.fleet import find
     from lmds.fleet.bundle_settings import (
         SettingsError,
+        clear as clear_settings,
         ensure_controller_reads,
+        foreign_names,
         read,
         write,
     )
@@ -2185,8 +2187,15 @@ def set_defaults(
         console.print("[dim]เติมบรรทัดอ่าน bundle.env ให้ controller ตัวนี้แล้ว (สำรองไฟล์เดิมไว้)[/dim]")
 
     if clear:
-        write(bundle_dir, {})
-        console.print(f"ลบค่าที่บันทึกไว้ของ [bold]{slug}[/bold] แล้ว — กลับไปใช้ค่าของ bundle")
+        left = clear_settings(bundle_dir)
+        console.print(f"ลบค่าที่ `lmds set` บันทึกไว้ของ [bold]{slug}[/bold] แล้ว — กลับไปใช้ค่าของ bundle")
+        # --clear ไม่ใช่เจ้าของของสองอย่างนี้ — บอกว่ายังอยู่ ไม่ใช่ปล่อยให้เข้าใจว่า "ลบทั้งหมดแล้ว" (audit 2026-10-06:
+        # เดิมลบทั้ง bundle.env และ bundle.args รวมบรรทัดที่ผู้ดูแลเพิ่มเอง เช่น STARTUP_TIMEOUT / HF_HOME)
+        kept = foreign_names(bundle_dir)
+        if kept:
+            console.print(f"[dim]บรรทัดที่เพิ่มเองใน bundle.env ยังอยู่: {', '.join(kept)} (แก้/ลบในไฟล์เอง)[/dim]")
+        if left.get("extra_args"):
+            console.print(f"[dim]bundle.args ยังอยู่: {left['extra_args']} — ล้างด้วย: lmds set {slug} --extra-args \"\"[/dim]")
         return
 
     incoming = {
@@ -2226,7 +2235,7 @@ def set_defaults(
                 # traceback ของ SettingsError (`set <slug> --fit --slots 100000 --port 99999999` · audit 2026-10-06)
                 # · จับแล้วยังเล่าต่อว่า fit ปฏิเสธเพราะอะไร — สองเรื่องนี้ผู้ใช้ต้องแก้ทั้งคู่
                 try:
-                    write(bundle_dir, {**read(bundle_dir), **keep})
+                    write(bundle_dir, keep)
                 except SettingsError as exc:
                     not_written, keep = str(exc), {}
             if as_json:
@@ -2280,10 +2289,10 @@ def set_defaults(
         console.print(table)
         return
 
-    # เขียนทับทั้งไฟล์ — รวมของเดิมเข้ากับที่เพิ่งสั่ง เพื่อให้แก้ทีละค่าได้
-    merged = {**read(bundle_dir), **{k: str(v) for k, v in given.items()}}
+    # ส่งเฉพาะค่าที่เพิ่งสั่ง — write() แก้เฉพาะบรรทัดของค่านั้น ที่เหลือในไฟล์ (รวมของที่ผู้ดูแลเขียนเอง) อยู่ตามเดิม
+    # และคืนค่าที่บันทึกไว้ทั้งหมดหลังเขียน · เดิม merge กับ read() แล้วเขียนทั้งไฟล์ใหม่ = บรรทัดที่ read() ไม่รู้จักหายหมด
     try:
-        saved = write(bundle_dir, merged)
+        saved = write(bundle_dir, {k: str(v) for k, v in given.items()})
     except SettingsError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

@@ -961,7 +961,9 @@ flag ตอน `lmds start --port …` มีผลครั้งเดีย�
 | `--extra-args '…'` | `bundle.args` — แฟล็กเพิ่มต่อท้าย argv (JSON เขียนติดกัน · ใช้รูป `--flag=value` ได้) | ทุก engine |
 | `--auto` | เติม parser / image / env จากสูตรที่รันผ่านจริง > กฎตระกูล · flag ที่ระบุเองชนะ | — |
 | `--fit [--slots N] [--context C]` | คิดให้ว่าค่านี้ต้องใช้ RAM เท่าไรบน *เครื่องนี้* แล้วเขียน slots · context · gpu-util เทียบเท่า · `--kv-cache-memory` — ไม่พอ = ไม่เขียน (ดู 4.2e) | vLLM (llama.cpp: slots/context) |
-| `--clear` | ลบค่าที่บันทึกไว้ทั้งหมด (หน้าเว็บ: ปุ่ม **Reset to bundle**) | — |
+| `--clear` | เอา knob ที่ `lmds set` ดูแลออกทั้งหมด (หน้าเว็บ: ปุ่ม **Reset to bundle**) · **ไม่แตะ** `bundle.args` และบรรทัดที่เพิ่มเองใน `bundle.env` — ล้าง `bundle.args` ด้วย `--extra-args ""` | — |
+
+> **`lmds set` / ปุ่ม Save แก้เฉพาะค่าที่สั่ง** — บรรทัดอื่นของ `bundle.env` (env ที่ `lmds set` ไม่รู้จัก เช่น `STARTUP_TIMEOUT` `HF_HOME` `WORKER_HF_HOME` · รูป `NAME=value` ธรรมดา · คอมเมนต์) อยู่ที่เดิมไบต์ต่อไบต์ · ค่าที่ตั้งทับถูกแทนที่บรรทัดเดิม · `bundle.args` ถูกแตะเมื่อสั่ง `--extra-args` เท่านั้น · `lmds set <ชื่อ>` เปล่า ๆ แสดงค่าที่เขียนด้วยมือ (`API_HOST=…`) ด้วย เพราะมีผลจริงตอน start
 
 ค่าถูกตรวจก่อนเขียน: `port` 1–65535 · `context`/`slots` จำนวนเต็มบวก · `gpu_util` 0–1 · `bind` เฉพาะ `0.0.0.0`/`127.0.0.1` ·
 `served_name`/`image` ห้ามมี `" ' \` $ \ { }` และ engine env ห้ามมี `{}` — เพราะไฟล์นี้ถูก `source` ทุกครั้งที่ start

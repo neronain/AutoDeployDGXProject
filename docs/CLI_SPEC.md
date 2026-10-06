@@ -163,7 +163,8 @@ Exit: `0` · `1` input ผิด (รวม `--concurrency`/`--context` < 1 แ�
 --image-min-tokens N|auto  llama.cpp vision (Qwen-VL ~1024 · Gemma-4 ต้อง auto)
 --extra-args '…'          แฟล็กเพิ่มต่อท้าย argv (JSON เขียนติดกัน · --flag=value ได้)
 --auto                    เติม parser/image/env จากสูตรที่รันผ่านจริง > กฎตระกูล · flag ที่ระบุเองชนะ
---clear                   ลบค่าที่บันทึกไว้ทั้งหมด (หน้าเว็บ: Reset to bundle)
+--clear                   เอา knob ของ lmds set ออกทั้งหมด (หน้าเว็บ: Reset to bundle) · ไม่แตะ bundle.args และบรรทัดที่เพิ่มเองใน bundle.env
+                          (ทุกการเขียนแก้เฉพาะคีย์ที่สั่ง — บรรทัดอื่นของ bundle.env คงเดิม · bundle.args แตะเมื่อสั่ง --extra-args เท่านั้น)
 ```
 
 ตรวจก่อนเขียน (`SettingsError`): port 1–65535 · context/slots จำนวนเต็มบวก · gpu_util 0–1 · bind สองค่า ·

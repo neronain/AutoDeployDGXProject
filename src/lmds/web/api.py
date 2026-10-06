@@ -622,17 +622,22 @@ def create_app(token: str = "") -> FastAPI:
 
         ค่าว่าง = เอาออก กลับไปใช้ค่าของ bundle · API key ไม่ถูกบันทึก ตามที่หน้าเว็บ
         บอกผู้ใช้ไว้ (โฟลเดอร์นี้ถูก zip แจกต่อได้)
+
+        แก้เฉพาะคีย์ที่อยู่ใน body — คีย์ที่ไม่ส่งมาไม่ถูกแตะ (เดิม body ที่ไม่ครบลบทุกค่าที่ไม่ได้ส่ง รวมทั้ง bundle.args ·
+        audit 2026-10-06) · body ว่าง = ปุ่ม Clear: เอา knob ของ `lmds set` ออกทั้งหมด (ไม่แตะ bundle.args และบรรทัดที่
+        ผู้ดูแลเพิ่มเองใน bundle.env) · `saved` ที่ตอบคือค่าที่บันทึกไว้ทั้งหมดหลังเขียน
         """
         from pathlib import Path as _Path
 
         from lmds.fleet import find
-        from lmds.fleet.bundle_settings import SettingsError, write
+        from lmds.fleet.bundle_settings import SettingsError, clear, write
 
         server = find(slug)
         if server is None or not server.controller:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
         try:
-            saved = write(_Path(server.controller).parent, body or {})
+            bundle_dir = _Path(server.controller).parent
+            saved = write(bundle_dir, body) if body else clear(bundle_dir)
         except SettingsError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         state.STORE.invalidate_local()

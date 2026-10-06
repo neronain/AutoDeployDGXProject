@@ -230,15 +230,16 @@ def refusal(plan: dict) -> str | None:
 
 def apply(server, plan: dict, extra: dict | None = None) -> dict[str, str]:
     """เขียน slots/context (+ gpu_util + --kv-cache-memory สำหรับ vLLM) ลง bundle เหมือน `lmds set`"""
-    from lmds.fleet.bundle_settings import SettingsError, ensure_controller_reads, read, write
+    from lmds.fleet.bundle_settings import SettingsError, ensure_controller_reads, write
 
     why = refusal(plan)
     if why:
         raise FitError(why)
     bundle_dir = Path(server.controller).parent
     ensure_controller_reads(Path(server.controller))
-    merged = {**read(bundle_dir), **{k: str(v) for k, v in (extra or {}).items() if v is not None}, **plan["settings"]}
+    # เฉพาะคีย์ที่ fit ตั้ง (+ ที่ผู้เรียกส่งมาด้วย) — write() ไม่แตะค่าอื่นและคืนค่าที่บันทึกไว้ทั้งหมด
+    changes = {**{k: str(v) for k, v in (extra or {}).items() if v is not None}, **plan["settings"]}
     try:
-        return write(bundle_dir, merged)
+        return write(bundle_dir, changes)
     except SettingsError as exc:
         raise FitError(str(exc)) from exc

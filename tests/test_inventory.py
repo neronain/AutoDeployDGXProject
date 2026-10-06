@@ -344,7 +344,11 @@ def test_pending_restart_compares_saved_settings_with_the_running_argv(tmp_path)
     with_extra = running + ["--speculative-config", '{"method":"mtp"}']
     assert inventory.pending_restart(server, argv=with_extra) == {"pending": False, "changes": []}
     # flag ที่ argv ไม่มี (controller เก่าไม่ส่ง --max-num-seqs) = ไม่นับว่าค้าง · flag=value ก็อ่านได้
-    write(tmp_path, {"slots": 8, "context": 65536})
+    # write() แก้เฉพาะคีย์ที่ส่งมา (audit 2026-10-06) — ค่ารอบก่อนต้องเอาออกเองก่อน: clear() + extra_args ว่าง
+    from lmds.fleet.bundle_settings import clear
+
+    clear(tmp_path)
+    write(tmp_path, {"slots": 8, "context": 65536, "extra_args": ""})
     assert inventory.pending_restart(server, argv=["serve", "x", "--max-model-len=65536"])["pending"] is False
     assert inventory.pending_restart(server, argv=["serve", "x", "--max-model-len=32768"])["changes"][0]["field"] == "context"
     # llama.cpp: --alias / --ctx-size / --parallel

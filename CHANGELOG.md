@@ -100,6 +100,14 @@
   scalar คีย์เดียวกับไฟล์อื่น และ netplan ให้ไฟล์ที่ชื่อเรียงหลังทับ (netplan-generate(8)) — ไฟล์ `99-…` ของเราจึงเปลี่ยน backend
   ของทั้งเครื่องจาก NetworkManager (DGX OS) เป็น networkd · ผลต่อพอร์ตคลัสเตอร์เท่าเดิม · เครื่องที่ apply ไปแล้วได้ไฟล์รูปใหม่
   เมื่อ `lmds cluster apply` รอบถัดไป
+- **`lmds set` / บันทึกจากหน้าเว็บลบทุกอย่างใน `bundle.env` ที่มันไม่รู้จัก และการเขียนไม่ครบลบ `bundle.args`** (audit 2026-10-06) ·
+  `write()` เขียนไฟล์ใหม่ทั้งไฟล์จากสิ่งที่ `read()` อ่านกลับได้ (เฉพาะ `NAME="${NAME:-v}"` ของ knob ที่รู้จัก) ทั้งที่หัวไฟล์บอกว่าแก้
+  ด้วยมือได้และ `manager.py` อ่าน `STARTUP_TIMEOUT`/`HF_HOME`/`WORKER_HF_HOME` จากไฟล์นี้ — หลัง `lmds set --port 8001`:
+  STARTUP_TIMEOUT 6906 → 1800 · HF_HOME ว่าง · บรรทัด `API_HOST=…` หาย · `PUT /api/models/<slug>/settings` ที่ body ไม่ครบและ
+  deploy จากหน้าเว็บลบ `bundle.args` (flag ของ tokenizer/engine) · ตอนนี้การเขียนแก้ **เฉพาะคีย์ที่สั่ง**: บรรทัดอื่นคงเดิมไบต์ต่อไบต์ ·
+  ตั้งทับแทนที่บรรทัดเดิมไม่ว่าเดิมเขียนรูปไหน · `bundle.args` แตะเมื่อสั่ง `extra_args` เท่านั้น (ค่าว่างตรง ๆ = ลบ) · `read()` เห็นรูป
+  `NAME=value` ที่เขียนด้วยมือ · `--clear` / ปุ่ม Reset เอาเฉพาะ knob ของ `lmds set` ออก (ไม่ลบ `bundle.args` และบรรทัดของผู้ดูแล —
+  บอกว่าเหลืออะไร) · ฟอร์ม Manage ส่งช่องว่างเป็น "เอาออก" · เทส: `tests/test_bundle_settings_preserve.py`
 - **context ต่อคำขอ · slot · ก้อนรวม ของ llama.cpp ถูกเอามาปนกัน** (ตรวจ 2026-10-05) ·
   `serving.context` ของ llama.cpp คือ `--ctx-size` = ก้อนรวมที่หารให้ทุก slot ส่วนเพดานของ
   โมเดล (native) เป็นเพดานต่อคำขอ · planner รู้ (ตั้งก้อนรวม = ต่อคำขอ × slot) แต่ที่เหลือไม่รู้:
