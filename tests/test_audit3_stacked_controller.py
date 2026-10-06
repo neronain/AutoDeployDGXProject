@@ -12,9 +12,12 @@ start ที่ล้มกลางทางแล้วทิ้ง worker ถ
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -322,3 +325,133 @@ def test_start_and_restart_still_refuse_the_bad_knob_and_say_how_to_fix_it(tmp_p
     # ค่าที่ใช้ได้ผ่านทาง flag = ไปต่อได้ (ไม่ใช่ปฏิเสธเหมา)
     ok = _run(bundle, ["restart", "--gpu-util", "0.9"], tmp_path)
     assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+# ═════════════════════ 2. info / รอ health: 200 ที่พอร์ต ≠ โมเดลของเรา ═════════════════════
+class _Api(BaseHTTPRequestHandler):
+    """เซิร์ฟเวอร์ปลอมบนพอร์ตของโมเดล — ตั้งต่อคลาสย่อย: `models` = ชื่อที่ /v1/models ประกาศ · int = ตอบ status นั้น
+    (401 = มี API key) · None = ไม่ใช่ OpenAI API (ตอบหน้าเว็บ 200 ทุก path แบบ portainer) · `reply` = body ของ chat"""
+    models: list[str] | int | None = []
+    reply: bytes = b"{}"
+
+    def log_message(self, *_):
+        pass
+
+    def _send(self, body: bytes, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            return self._send(b"")
+        if self.models is None:
+            return self._send(b"<html><body>portainer</body></html>")
+        if isinstance(self.models, int):
+            return self._send(b'{"error": "Unauthorized"}', self.models)
+        self._send(json.dumps({"object": "list", "data": [
+            {"id": m, "object": "model", "permission": [{"id": "modelperm-1"}]} for m in self.models]}).encode())
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self._send(self.reply)
+
+
+@pytest.fixture
+def api():
+    started = []
+
+    def start(models, reply: bytes | dict = b"{}") -> str:
+        body = json.dumps(reply).encode() if isinstance(reply, dict) else reply
+        handler = type("Handler", (_Api,), {"models": models, "reply": body})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        started.append(server)
+        return str(server.server_address[1])
+
+    yield start
+    for server in started:
+        server.shutdown()
+        server.server_close()
+
+
+def _state_line(stdout: str) -> str:
+    return next(ln for ln in stdout.splitlines() if ln.strip().startswith("State"))
+
+
+def test_info_does_not_call_another_model_on_the_same_port_running(tmp_path, api):
+    """เคส audit: ไม่มี container ของ bundle นี้เลย แต่โมเดลอื่นตอบ 200 ที่พอร์ตเดียวกัน → เดิม "State : RUNNING" """
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)                       # ไม่มี curl ปลอม — ใช้ curl จริงกับเซิร์ฟเวอร์ปลอม
+    port = api(["some-other-model"])
+    done = _run(bundle, ["info", "--port", port], tmp_path, env={"SERVED_MODEL_NAME": "ours"})
+    assert done.returncode == 0, done.stderr
+    assert "RUNNING" not in _state_line(done.stdout), done.stdout
+    assert f"port {port} is answered by something else" in done.stdout and "some-other-model" in done.stdout
+
+
+def test_info_says_running_only_for_our_container_and_our_served_name(tmp_path, api):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    env = {"SERVED_MODEL_NAME": "ours"}
+
+    # (ก) container ของเรารัน + พอร์ตประกาศชื่อเรา (มากับชื่ออื่นก็ได้ — vLLM ประกาศ LoRA/alias ร่วมกัน)
+    _up(tmp_path, bundle, "head")
+    port = api(["an-alias", "ours"])
+    ours = _run(bundle, ["info", "--port", port], tmp_path, env=env)
+    assert "RUNNING" in _state_line(ours.stdout) and "something else" not in ours.stdout, ours.stdout
+
+    # (ข) container ของเรารัน แต่พอร์ตประกาศชื่อคนอื่น = ยังไม่ใช่ของเรา
+    port = api(["some-other-model"])
+    other = _run(bundle, ["info", "--port", port], tmp_path, env=env)
+    assert "RUNNING" not in _state_line(other.stdout) and "something else" in other.stdout, other.stdout
+
+    # (ข2) container ของเรารัน แต่ตัวที่ตอบไม่ใช่ OpenAI API เลย (หน้าเว็บ 200 ทุก path) = ไม่ใช่ของเรา
+    port = api(None)
+    web = _run(bundle, ["info", "--port", port], tmp_path, env=env)
+    assert "RUNNING" not in _state_line(web.stdout) and "something else" in web.stdout, web.stdout
+
+    # (ข3) container ของเรารัน + /health ตอบ แต่ /v1/models ขอ key ที่คำสั่งนี้ไม่มี = ของเรา แต่ต้องบอกว่ายังไม่ได้เทียบชื่อ
+    port = api(401)
+    locked = _run(bundle, ["info", "--port", port], tmp_path, env=env)
+    assert "RUNNING" in _state_line(locked.stdout) and "something else" not in locked.stdout, locked.stdout
+    assert "API_KEY" in locked.stdout, "ต้องบอกว่ายืนยันชื่อโมเดลไม่ได้เพราะอะไร"
+
+    # (ค) ไม่มีอะไรตอบเลย + container ของเรารัน = กำลังโหลด ไม่ใช่ stopped
+    loading = _run(bundle, ["info", "--port", "1"], tmp_path, env=env)
+    assert "stopped" not in _state_line(loading.stdout) and "RUNNING" not in _state_line(loading.stdout), loading.stdout
+
+    # (ง) ไม่มีอะไรตอบ + ไม่มี container = stopped
+    _container(tmp_path, "head", _names(bundle)[0]).unlink()
+    down = _run(bundle, ["info", "--port", "1"], tmp_path, env=env)
+    assert "stopped" in _state_line(down.stdout) and "something else" not in down.stdout, down.stdout
+
+
+# curl ปลอม: "เซิร์ฟเวอร์อื่น" ที่ตอบ /health 200 และประกาศโมเดลชื่ออื่นที่พอร์ตของเรา (โผล่หลังด่านพอร์ตของ start —
+# เซิร์ฟเวอร์จริงบนพอร์ตนั้นจะถูก check_port_free ขวางตั้งแต่ต้น ซึ่งเป็นคนละด่านกับที่เทสนี้ตรวจ)
+_CURL_FOREIGN = '''
+case "$*" in
+  *"/v1/models"*) echo '{"object":"list","data":[{"id":"some-other-model","object":"model"}]}' ;;
+esac
+exit 0
+'''
+
+
+@pytest.mark.parametrize("head_alive", [False, True])
+def test_start_does_not_report_success_because_another_server_answers_the_port(tmp_path, head_alive):
+    """รอ health ของ start ใช้กติกาเดียวกับ info · เดิมเชื่อ /health 200 เปล่า ๆ → "Server พร้อม" rc 0 ทั้งที่
+    (ก) head ของเราตายไปแล้ว (เช่น bind พอร์ตไม่ได้) หรือ (ข) head ยังโหลดอยู่ แต่ตัวที่ตอบคือโมเดลของคนอื่น"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, curl=_CURL_FOREIGN, sleep="exit 0\n")
+    _seed_head_cache(tmp_path / "home")
+    env = {"SERVED_MODEL_NAME": "ours", "STARTUP_TIMEOUT": "1", "STUCK_HINT_AFTER": "9999", "API_PORT": _free_port()}
+    if not head_alive:
+        env["FAKE_RUN_DIES"] = "head"
+    done = _run(bundle, ["start"], tmp_path, env=env)
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert "Server พร้อม" not in done.stdout and "started:" not in done.stdout
+    assert f"port {env['API_PORT']} is answered by something else" in done.stdout + done.stderr
+    assert "some-other-model" in done.stdout + done.stderr

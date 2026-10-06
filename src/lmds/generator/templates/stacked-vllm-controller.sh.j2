@@ -240,20 +240,18 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
 # ยึดพอร์ตนี้อยู่ ชุดทดสอบจะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
 # (เจอจริง: test-text ของ gemma-4-31b ได้คำตอบจาก Qwen3-Coder-30B ที่รันอยู่ก่อน)
+# อ่านชื่อด้วย _served_model_ids (grep/sed) — เดิมใช้ python3 และถ้าไม่มี python3 ก็ `|| cat` เอา JSON ดิบทั้งก้อนมาเทียบ
+# กับชื่อโมเดล ซึ่งไม่มีวันเท่ากัน → เครื่องที่ไม่มี python3 ได้ "พอร์ตตอบมาเป็นโมเดล '{"object":"list",…}'" ทุกครั้ง
+# และเทียบทุกชื่อที่พอร์ตประกาศ ไม่ใช่แค่ตัวแรก (vLLM ประกาศ alias/LoRA ร่วมรายการเดียวกัน)
 assert_our_server() {
-  local seen
-  seen="$(curl -fsS -m 10 "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" \
-    ${API_KEY:+-H "Authorization: Bearer $API_KEY"} 2>/dev/null \
-    | { command -v python3 >/dev/null 2>&1 && python3 -c '
-import json, os, sys
-try:
-    data = json.load(sys.stdin)["data"]
-except Exception:
-    sys.exit(0)
-print((data[0].get("id") or "").strip() if data else "")
-' || cat; })" || return 0
+  local ids id seen=""
+  ids="$(_served_model_ids 10)"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    [[ "$id" == "$SERVED_MODEL_NAME" ]] && return 0
+    [[ -n "$seen" ]] || seen="$id"
+  done <<< "$ids"
   [ -n "$seen" ] || return 0                       # อ่านไม่ได้ = ไม่ฟันธง ปล่อยผ่าน
-  [ "$seen" = "$SERVED_MODEL_NAME" ] && return 0
   die "พอร์ต ${API_PORT} ตอบมาเป็นโมเดล '${seen}' ไม่ใช่ '${SERVED_MODEL_NAME}'
      มีเซิร์ฟเวอร์อื่นยึดพอร์ตนี้อยู่ — ผลทดสอบที่ได้จะเป็นของโมเดลนั้น ไม่ใช่ตัวนี้
      แก้: หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต  $0 restart --port 8001"
@@ -656,6 +654,58 @@ _local_api_host() {
     ""|0.0.0.0|127.0.0.1|localhost|::|\[::\]) printf '127.0.0.1' ;;
     *) printf '%s' "$API_HOST" ;;
   esac
+}
+
+# ── ใครตอบที่พอร์ตนี้ — กติกาเดียวสำหรับ info และการรอ health ของ start ──
+#
+# `/health` ตอบ 200 ไม่ได้แปลว่าเป็นโมเดลของ bundle นี้: ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน และ --network host ทำให้
+# อะไรก็ตามบนเครื่องที่ฟังพอร์ตนั้นตอบแทนได้ · เดิม info เชื่อ 200 เปล่า ๆ → พิมพ์ "State : RUNNING" ทั้งที่ไม่มี
+# container ของเราสักตัว (audit 2026-10 · เรื่องเดียวกับ status บน spark-head 2026-09-04 และ portainer ที่ยึด 8000
+# บน AI-Local-ISIT) · "ขึ้นแล้ว" ต้องครบสองอย่าง: head container ของเรารันอยู่ **และ** /v1/models ประกาศชื่อของเรา
+_head_container_running() {
+  [[ "$(docker inspect -f '{{.State.Running}}' "$MASTER_CONTAINER" 2>/dev/null || true)" == "true" ]]
+}
+
+# id ทุกตัวที่ /v1/models ของพอร์ตนี้ประกาศ (บรรทัดละตัว) · อ่านไม่ได้ (ไม่ตอบ · 401 · ไม่ใช่ JSON) = ว่าง
+# grep/sed ล้วน ไม่พึ่ง python3 — คำสั่งที่บอกสถานะต้องตอบได้บนเครื่องที่ไม่มี python3 ด้วย
+_served_model_ids() {
+  curl -fsS -m "${1:-5}" ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
+    "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" 2>/dev/null \
+    | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | sed -E 's/^"id"[[:space:]]*:[[:space:]]*"//; s/"$//' || true
+}
+
+# ตั้ง PORT_ANSWER · PORT_SEEN (ชื่อโมเดลตัวแรกที่พอร์ตประกาศ) · PORT_HEAD_ALIVE (1 = head container ของเรารันอยู่)
+#   ours        head container ของเรารัน + /v1/models มีชื่อ SERVED_MODEL_NAME
+#   unverified  head container ของเรารัน + /health ตอบ แต่ถาม /v1/models ไม่ได้คำตอบ (401/403 เพราะคำสั่งนี้ไม่มี API key ·
+#               5xx · หมดเวลา) — ไม่ฟันธงว่าเป็นของคนอื่น (หลักเดียวกับ assert_our_server) แต่ก็ไม่อ้างว่ายืนยันแล้ว
+#   foreign     มีอะไรตอบที่พอร์ต แต่ไม่ใช่ของเรา: container เราไม่ได้รัน · พอร์ตประกาศแต่ชื่อโมเดลอื่น · หรือ /v1/models
+#               ตอบ 200/404 โดยไม่มีรายการโมเดล (หน้าเว็บของโปรแกรมอื่น เช่น portainer — ไม่ใช่ OpenAI API)
+#   down        ไม่มีอะไรตอบ /health
+# $1 = timeout ต่อคำขอ (วินาที)
+PORT_ANSWER=""; PORT_SEEN=""; PORT_HEAD_ALIVE=0
+_who_answers_port() {
+  local wait="${1:-5}" raw code body ids id listed=0
+  PORT_ANSWER="down"; PORT_SEEN=""; PORT_HEAD_ALIVE=0
+  if _head_container_running; then PORT_HEAD_ALIVE=1; fi
+  curl -fsS -m "$wait" "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1 || return 0
+  # body + บรรทัดสุดท้ายเป็น HTTP code — ต้องแยก "ถามไม่ได้คำตอบ" ออกจาก "ตอบมาแล้วแต่ไม่ใช่รายการโมเดล"
+  raw="$(curl -sS -m "$wait" ${API_KEY:+-H "Authorization: Bearer $API_KEY"} -w '\n%{http_code}' \
+    "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" 2>/dev/null || true)"
+  code="${raw##*$'\n'}"; body="${raw%$'\n'*}"
+  if [[ ! "$code" =~ ^[0-9][0-9][0-9]$ ]]; then code=""; body="$raw"; fi
+  ids="$(grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' <<< "$body" \
+    | sed -E 's/^"id"[[:space:]]*:[[:space:]]*"//; s/"$//' || true)"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    [[ -n "$PORT_SEEN" ]] || PORT_SEEN="$id"
+    if [[ "$id" == "$SERVED_MODEL_NAME" ]]; then listed=1; fi
+  done <<< "$ids"
+  if (( PORT_HEAD_ALIVE == 0 )); then PORT_ANSWER="foreign"
+  elif (( listed )); then PORT_ANSWER="ours"
+  elif [[ -n "$PORT_SEEN" || "$code" == 200 || "$code" == 404 ]]; then PORT_ANSWER="foreign"
+  else PORT_ANSWER="unverified"; fi
+  return 0
 }
 
 # ─────────────────── snapshot path resolution ───────────────────
@@ -2051,17 +2101,31 @@ WSCRIPT
   log "รอ /health (สูงสุด ${STARTUP_TIMEOUT}s — โหลดโมเดลใหญ่ + warm-up ข้าม node ใช้เวลานาน)…"
   local deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
   local next_worker_check=$(( $(date +%s) + WORKER_CHECK_INTERVAL ))
-  local started_at=$(( $(date +%s) )) stuck_hinted=0
+  local started_at=$(( $(date +%s) )) stuck_hinted=0 foreign_noted=0
   while (( $(date +%s) < deadline )); do
-    if curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
-      log "Server พร้อม"
-      echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
-      warn_open_endpoint
-      network_info
-      return 0
-    fi
-    if [[ "$(docker inspect -f '{{.State.Running}}' "$MASTER_CONTAINER" 2>/dev/null || true)" != "true" ]]; then
+    # "พร้อม" = head container ของเรารัน และพอร์ตประกาศชื่อโมเดลของเรา — ไม่ใช่แค่มีอะไรตอบ /health (ดู _who_answers_port)
+    # เดิมเชื่อ 200 เปล่า ๆ: เซิร์ฟเวอร์อื่นที่ฟังพอร์ตนี้อยู่ทำให้ start รายงานสำเร็จทั้งที่ head ของเรายังไม่ทันขึ้น/กำลังจะตาย
+    _who_answers_port 5
+    case "$PORT_ANSWER" in
+      ours|unverified)
+        log "Server พร้อม"
+        [[ "$PORT_ANSWER" == ours ]] ||
+          log "(อ่าน /v1/models ไม่ได้ จึงไม่ได้เทียบชื่อโมเดล — container ${MASTER_CONTAINER} รันอยู่และ /health ตอบ)"
+        echo "started: $(detect_advertise_ip):${API_PORT} (${SERVED_MODEL_NAME})"
+        warn_open_endpoint
+        network_info
+        return 0 ;;
+      foreign)
+        if (( PORT_HEAD_ALIVE == 1 && foreign_noted == 0 )); then
+          log "port ${API_PORT} is answered by something else${PORT_SEEN:+ (โมเดล '${PORT_SEEN}')} — ยังไม่นับว่า bundle นี้ขึ้น · รอ head ของเราต่อ"
+          foreign_noted=1
+        fi ;;
+    esac
+    if (( PORT_HEAD_ALIVE == 0 )); then
       CONTAINER_NAME="$MASTER_CONTAINER" explain_crash
+      if [[ "$PORT_ANSWER" == foreign ]]; then
+        echo "port ${API_PORT} is answered by something else${PORT_SEEN:+ (โมเดล '${PORT_SEEN}')} — ไม่ใช่ head ของ bundle นี้ · ถ้า head ตายเพราะ bind พอร์ตไม่ได้: $0 start --port <พอร์ตอื่น>" >&2
+      fi
       die "head container หยุดก่อน health ผ่าน — ดู: $0 logs head 200"
     fi
     # worker ตายระหว่างรอ head — เดิมดู worker แค่หลัง WORKER_INIT_WAIT แล้วเฝ้าแต่ head
@@ -3296,17 +3360,37 @@ info() {
   local ip url state
   ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
   url="http://${ip}:${API_PORT}/v1"
-  state="stopped"
-  if curl -fsS -m 2 "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
-    state="RUNNING"
-  fi
+  # RUNNING เฉพาะเมื่อเป็นของเราจริง (ดู _who_answers_port) — เดิมเชื่อ 200 ที่พอร์ต แล้วบอก RUNNING แทนโมเดลของคนอื่น
+  local note=""
+  _who_answers_port 2
+  case "$PORT_ANSWER" in
+    ours) state="RUNNING" ;;
+    unverified)
+      state="RUNNING"
+      note="ยังไม่ได้เทียบชื่อโมเดล — อ่าน /v1/models ไม่ได้ (ตั้ง API key ไว้ให้ส่ง API_KEY=… มาด้วย) · container ${MASTER_CONTAINER} รันอยู่และ /health ตอบ" ;;
+    foreign)
+      state="stopped"
+      note="port ${API_PORT} is answered by something else${PORT_SEEN:+ (โมเดล '${PORT_SEEN}')} — ไม่ใช่ bundle นี้: container ${MASTER_CONTAINER} ไม่ได้รัน"
+      if (( PORT_HEAD_ALIVE == 1 )); then
+        state="starting"
+        note="port ${API_PORT} is answered by something else${PORT_SEEN:+ (โมเดล '${PORT_SEEN}')} — container ${MASTER_CONTAINER} รันอยู่แต่พอร์ตยังไม่ใช่ของมัน (ชนพอร์ต? ดู: $0 logs head 100)"
+      fi ;;
+    *)
+      state="stopped"
+      if (( PORT_HEAD_ALIVE == 1 )); then
+        state="starting"
+        note="container ${MASTER_CONTAINER} รันอยู่ แต่ API ยังไม่ตอบ — กำลังโหลดโมเดล หรือค้าง: $0 logs head 100"
+      fi ;;
+  esac
   printf '  Model     : %s\n'            "${MODEL_LABEL}"
   printf '  Model ID  : %s\n'            "${MODEL_ID}"
   printf '  Runtime   : %s\n'            "${RUNTIME_LABEL}"
   printf '  Features  : %s\n'            "${MODEL_FEATURES}"
   printf '  Context   : %s tokens\n'     "${MAX_MODEL_LEN:-${CTX_SIZE:-n/a}}"
   printf '  API (v1)  : %s\n'            "${url}"
-  printf '  State     : %s  (port %s)\n\n' "${state}" "${API_PORT}"
+  printf '  State     : %s  (port %s)\n' "${state}" "${API_PORT}"
+  [[ -z "$note" ]] || printf '  ⚠ %s\n' "$note"
+  printf '\n'
 }
 
 # knob ของ engine ตรวจเฉพาะคำสั่งที่ใช้มันจริง (เหตุผลอยู่ที่ validate_numbers) · stop/status/logs/info/
