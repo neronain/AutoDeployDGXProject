@@ -16,7 +16,6 @@ from pydantic import ValidationError
 from lmds.config.paths import sessions_dir
 from lmds.fit import FitReport
 from lmds.inspector.report import ArtifactType, ModelReport
-from lmds.recipes import find_recipe
 from lmds.secrets import redact
 
 from .allowlists import image_repo, is_known_image, split_flags
@@ -24,7 +23,8 @@ from .plan_schema import DeploymentPlan, Engine, PlanError, Topology
 from .prompts import build_system_prompt, build_user_prompt
 from .providers import LlmProvider
 from .rulebased import (
-    TASK_LABELS, apply_recipe, is_pooling_task, qwen3_reranker_overrides, refuse_unsupported, rule_based_plan,
+    TASK_LABELS, apply_recipe, is_pooling_task, qwen3_reranker_overrides, recipe_for, refuse_unsupported,
+    rule_based_plan,
 )
 
 MAX_ATTEMPTS = 3
@@ -175,7 +175,7 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     from lmds.brain.rulebased import needs_nightly
 
     fallback = default_image(plan.runtime.engine, fit.memory_model, nvfp4=is_nvfp4(report), nightly=needs_nightly(report))
-    recipe = find_recipe(report.repo_id)
+    recipe = recipe_for(report)
     # image ของสูตร = หลักฐานว่ารันผ่านจริงบนเครื่อง (อาจเป็น build ในเครื่อง / digest ที่ registry
     # สาธารณะไม่ตอบ) · registry ตอบ "ไม่มี" จึงไม่ใช่เหตุผลที่จะลดรุ่นเงียบ ๆ — คงไว้แล้วเตือน
     from_recipe = bool(
@@ -322,6 +322,13 @@ def harden_plan(plan: DeploymentPlan, report: ModelReport, fit: FitReport) -> De
     note = getattr(report, "format_note", "")
     if note and note not in plan.warnings:
         plan.warnings.insert(0, note)
+    # repo ที่ Hub ย้ายไปชื่อใหม่: แผนยังใช้ชื่อที่ผู้ใช้ให้มา (ดู inspector.inspect._resolve_repo_name) แต่ต้องบอก
+    if getattr(report, "canonical_repo_id", None):
+        from lmds.inspector.inspect import renamed_note
+
+        moved = renamed_note(report.repo_id, report.canonical_repo_id)
+        if moved not in plan.warnings:
+            plan.warnings.insert(0, moved)
     # คำเตือน "ยังรันไม่ผ่าน" ประเมินกับ image สุดท้าย (สูตร/fallback อาจเปลี่ยน image ระหว่าง harden)
     from lmds.brain.rulebased import known_broken as _kb
 
@@ -825,7 +832,7 @@ def build_plan(
         # สูตรที่รันผ่านบนฮาร์ดแวร์แล้ว ชนะสิ่งที่ LLM ค้นมาเสมอในส่วนที่ทับกัน —
         # อย่างหนึ่งคือหลักฐาน อีกอย่างคือการอนุมาน · ส่วนที่สูตรไม่ครอบคลุม LLM ยังคุมเหมือนเดิม
         # (ถ้าไม่ทำตรงนี้ ลูกค้าที่ "มี" API key จะได้ผลแย่กว่าคนที่ไม่มี ซึ่งกลับหัวกลับหาง)
-        recipe = find_recipe(report.repo_id)
+        recipe = recipe_for(report)
         if recipe is not None:
             plan = apply_recipe(plan, recipe, fit.memory_model.value)
         plan = _finish(harden_plan(plan, report, fit), fit)

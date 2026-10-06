@@ -85,6 +85,9 @@ class ShardFile(BaseModel):
 
 class ModelReport(BaseModel):
     repo_id: str
+    # ชื่อปัจจุบันของ repo บน Hub เมื่อ *ต่างจาก* ชื่อที่ผู้ใช้ให้มา (repo ถูกย้าย/เปลี่ยนชื่อ · ชื่อเดิมทำงานผ่าน redirect)
+    # None = ชื่อตรงกัน · repo_id ยังเป็นชื่อที่ผู้ใช้ให้มา — ดู inspector.inspect.renamed_note ว่าทำไมไม่สลับให้เอง
+    canonical_repo_id: Optional[str] = None
     revision_requested: Optional[str] = None
     revision_sha: str  # pin จริง — commit SHA ณ เวลา inspect
     gated: bool = False

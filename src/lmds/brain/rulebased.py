@@ -418,6 +418,18 @@ def refuse_unsupported(report: ModelReport) -> None:
         raise PlanError(" · ".join([why, *unsupported_alternatives(report)]))
 
 
+def recipe_for(report: ModelReport):
+    """สูตรของโมเดลนี้ — หาด้วยชื่อที่ผู้ใช้ให้มาก่อน แล้วจึงชื่อปัจจุบันบน Hub (repo ที่ถูกย้าย org)
+
+    สูตรใน catalog ผูกกับ `org/name` เต็ม: ผู้ใช้ที่พิมพ์ชื่อเก่าของ repo ที่ย้ายแล้ว (THUDM/… → zai-org/…) ไม่เคยได้สูตร
+    ของชื่อใหม่ ทั้งที่เป็น repo เดียวกัน · ชื่อที่พิมพ์มายังมาก่อน — สูตรที่เขียนไว้กับชื่อเดิมต้องไม่หาย
+    """
+    found = find_recipe(report.repo_id)
+    if found is None and getattr(report, "canonical_repo_id", None):
+        found = find_recipe(report.canonical_repo_id)
+    return found
+
+
 def gguf_choice_needed(report: ModelReport) -> str:
     """repo มีทั้ง safetensors และ GGUF แล้วผู้ใช้ขอ llama.cpp โดยยังไม่บอกว่าไฟล์ไหน — บอกวิธีเลือก"""
     weights = sorted((v for v in report.gguf_variants if not v.is_mmproj and not v.is_mtp),
@@ -539,7 +551,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
                 "โมเดล embedding — เสิร์ฟ /v1/embeddings ("
                 + ("llama.cpp --embedding" if engine is Engine.LLAMACPP else "vLLM --runner pooling")
                 + ") · ไม่มี chat/tool calling · ทดสอบด้วยคำสั่ง test-embed · เดาผิด? --task generate")
-        recipe = find_recipe(report.repo_id)
+        recipe = recipe_for(report)
         if recipe is not None:
             plan = apply_recipe(plan, recipe, fit.memory_model.value)
         return plan
@@ -571,7 +583,7 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
         plan.reasoning.enabled = True
         plan.reasoning.parser = choice.reasoning
     # สูตรที่รันผ่านจริงมาก่อนค่าตั้งต้นเสมอ — นี่คือสิ่งที่ทดแทน LLM ให้เครื่องที่ไม่มี provider
-    recipe = find_recipe(report.repo_id)
+    recipe = recipe_for(report)
     if recipe is not None:
         plan = apply_recipe(plan, recipe, fit.memory_model.value)
     apply_nvfp4_defaults(plan, report, fit.memory_model, recipe)

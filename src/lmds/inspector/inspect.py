@@ -147,6 +147,36 @@ def task_from_config(config: dict) -> str | None:
     return "rerank"
 
 
+_HUB_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*$")
+
+
+def _resolve_repo_name(requested: str, hub_id: Any) -> tuple[str, str | None]:
+    """(ชื่อที่ใช้ในรายงาน/แผน, ชื่อปัจจุบันบน Hub ถ้า repo ถูกย้าย)
+
+    Hub redirect ชื่อเก่าไปชื่อใหม่เงียบ ๆ (วัดจริง 2026-10-06: `THUDM/glm-4-9b-chat` → `id: zai-org/glm-4-9b-chat` ·
+    `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` → `TensorFold/…`) และ redirect ตัวพิมพ์ด้วย (`qwen/qwen3-8b` → `Qwen/Qwen3-8B`)
+    - ต่างกันแค่ตัวพิมพ์ → ใช้ตัวสะกดของ Hub ไปเลย: ไม่มีอะไรเทียบชื่อแบบสนตัวพิมพ์ (slug · สูตร · การชนของโฟลเดอร์
+      bundle เทียบ lower ทั้งหมด) และ HF cache จะได้ไม่แตกเป็นสองโฟลเดอร์ตามตัวสะกด
+    - ชื่อต่างจริง (ย้าย org / เปลี่ยนชื่อ) → **คงชื่อที่ผู้ใช้ให้มา** แล้วเตือน: สลับเป็นชื่อใหม่ให้เองจะทำให้
+      (1) deploy ซ้ำลงโฟลเดอร์ใหม่ `<slug>-<org ใหม่>` แทนที่จะทับ bundle เดิม เพราะ resolve_slug เห็นเป็น "คนละ repo ชื่อซ้ำ"
+      (2) สูตรใน catalog ที่ผูกกับชื่อเดิมไม่ถูกเจอ (3) `rebuild` ของ bundle เดิมได้ model id คนละค่ากับที่เครื่องปลายทาง
+      โหลด weight ไว้ (HF cache ผูกกับชื่อ) — ทั้งสามข้อเปลี่ยนของที่ลูกค้ามีอยู่แล้วโดยไม่มีใครสั่ง
+    """
+    if not isinstance(hub_id, str) or hub_id == requested or not _HUB_ID_RE.match(hub_id):
+        return requested, None
+    if hub_id.lower() == requested.lower():
+        return hub_id, None
+    return requested, hub_id
+
+
+def renamed_note(requested: str, canonical: str) -> str:
+    return (
+        f"Hub ย้าย repo นี้ไปที่ {canonical} แล้ว — ชื่อ {requested} ที่ใช้อยู่ทำงานผ่าน redirect ของ Hub เท่านั้น: "
+        f"แผน/bundle นี้ยังใช้ชื่อ {requested} (HF cache และ bundle เดิมผูกกับชื่อนี้) · ถ้าวันหนึ่งมี repo ใหม่ถูกสร้างทับ "
+        f"ชื่อเดิม redirect จะหายและ download จะล้ม — งาน deploy ใหม่ให้ใช้ชื่อ {canonical}"
+    )
+
+
 def refine_task(task: str, pipeline: str, config: dict) -> tuple[str, str]:
     """ปรับ task ด้วยสถาปัตยกรรมจริงใน config.json — (task, คำเตือน)
 
@@ -178,8 +208,10 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
     safetensor_files = [(n, s) for n, s, _ in files if n.endswith(".safetensors")]
     gguf_files = [(n, s, sha) for n, s, sha in files if n.endswith(".gguf")]
 
+    repo_id, canonical = _resolve_repo_name(source.repo_id, info.get("id"))
     base = ModelReport(
-        repo_id=source.repo_id,
+        repo_id=repo_id,
+        canonical_repo_id=canonical,
         revision_requested=source.revision,
         revision_sha=revision_sha,
         gated=bool(info.get("gated")),
@@ -188,7 +220,7 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         library_name=_library_of(info),
         params_total=_params_of(info),
         tags=[t for t in info.get("tags", []) if isinstance(t, str)],
-        task=task_of(info, source.repo_id),
+        task=task_of(info, repo_id),
         file_count=len(files),
         trust_remote_code_files=sorted(
             name for name, _, _ in files
@@ -199,6 +231,8 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
             if name in _TOKENIZER_FILES
         ),
     )
+    if canonical:
+        base.warnings.append(renamed_note(repo_id, canonical))
     if base.trust_remote_code_files:
         base.warnings.append(
             "repo มีไฟล์ Python (trust_remote_code) — ต้อง review ก่อน deploy: "
