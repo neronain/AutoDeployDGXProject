@@ -1362,6 +1362,10 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "Could not read the proven recipes — {why}": "อ่านสูตรที่รันผ่านแล้วไม่ได้ — {why}",
+    "Try again": "ลองใหม่",
+    "No proven recipes on this hub yet — paste a Hugging Face link above, or sync the team's recipes on the Verified recipes page":
+      "hub นี้ยังไม่มีสูตรที่รันผ่านแล้ว — วางลิงก์ Hugging Face ข้างบน หรือ sync สูตรของทีมที่หน้า Verified recipes",
     "unknown — the hub no longer knows this job": "ไม่ทราบผล — hub ไม่รู้จักงานนี้แล้ว",
     "lost contact with the hub — the job may still be running": "ติดต่อ hub ไม่ได้ — งานอาจยังรันอยู่",
     "failed": "ไม่สำเร็จ",
@@ -3026,7 +3030,7 @@ function wizForm(msg = "", extra = "") {
   </div>`;
   document.getElementById("w-model").value = draft.model;
   document.getElementById("w-nollm").checked = draft.no_llm;
-  renderRecipePicker();
+  openRecipePicker();
   api("/api/targets").then(r => r.json()).then(d => {
     const eng = document.getElementById("w-engine");
     if (eng && draft.engine) eng.value = draft.engine;
@@ -3079,13 +3083,41 @@ function wizForm(msg = "", extra = "") {
 // ── เลือกจากสูตรที่รันผ่านแล้ว ────────────────────────────────────────────
 // คนที่ยังไม่ได้ตั้ง LLM คือกลุ่มที่ต้องพึ่งสูตรมากที่สุด แต่เดิมกล่องนี้มีแค่ช่องพิมพ์ลิงก์ HF
 // เปล่า ๆ — ของที่ทีมรันผ่านมาแล้วถูกซ่อนอยู่ในแผงล่างสุดของหน้าที่ต้องกด Show ก่อน
+//
+// audit หน้าเว็บ 2026-10 ข้อ 7: ตัววาดเคยเป็นคนยิงเอง — "ลิสต์ว่าง → fetch → วาด → ลิสต์ยังว่าง → fetch …" ·
+// JSON ที่ไม่มี `recipes` (401/429/500 {detail}) หรือคลังที่ว่างจริง ๆ ล้วนกลายเป็น [] จึงวนไม่มีวันจบ: ~176
+// คำขอ/วินาทีตลอดเวลาที่ wizard เปิดอยู่ (และใต้ 401 คือการยื่น token เก่ารัว ๆ) · ตอนนี้แยกขาด:
+// openRecipePicker() ถาม *ครั้งเดียวต่อการเปิด wizard* แล้วจำผล · renderRecipePicker() วาดจากผลอย่างเดียว ไม่ยิงอะไร
+// · ล้ม = โชว์ข้อความของ server พร้อมปุ่มให้ผู้ใช้กดลองเอง · ว่าง = บอกว่าไม่มีสูตร
+let recipePick = { phase: "idle", error: "" };      // idle → loading → ok | error
+function openRecipePicker() {
+  // มีลิสต์อยู่แล้ว (เพิ่งโหลดจากหน้า Verified recipes) หรือเคยถามไปแล้วในการเปิดครั้งนี้ = วาดจากของที่มี
+  if (recipePick.phase === "idle" && recipeList.length) recipePick = { phase: "ok", error: "" };
+  if (recipePick.phase !== "idle") { renderRecipePicker(); return; }
+  recipePick = { phase: "loading", error: "" };
+  renderRecipePicker();
+  fetchRecipes().then(
+    () => { recipePick = { phase: "ok", error: "" }; },
+    err => { recipePick = { phase: "error", error: String((err && err.message) || err) }; },
+  ).then(renderRecipePicker);
+}
+
 function renderRecipePicker() {
   const box = document.getElementById("w-recipes");
   if (!box) return;
   const noLlm = !(providerState && providerState.configured && providerState.has_key);
-  if (!recipeList.length) {
+  if (recipePick.phase === "loading") {
     box.innerHTML = `<div class="dim" style="margin-top:6px">Reading proven recipes…</div>`;
-    fetchRecipes().then(renderRecipePicker).catch(() => { box.innerHTML = ""; });
+    return;
+  }
+  if (recipePick.phase === "error") {
+    box.innerHTML = `<div class="warn-line" style="margin-top:6px">${esc(T("Could not read the proven recipes — {why}", { why: recipePick.error }))}
+      <button id="w-recipes-retry" class="mini">${esc(T("Try again"))}</button></div>`;
+    return;
+  }
+  if (!recipeList.length) {
+    box.innerHTML = `<div class="dim" style="margin-top:6px">${esc(T(
+      "No proven recipes on this hub yet — paste a Hugging Face link above, or sync the team's recipes on the Verified recipes page"))}</div>`;
     return;
   }
   box.innerHTML = `<details style="margin-top:8px"${noLlm ? " open" : ""}>
@@ -3896,8 +3928,10 @@ async function fillCloneTargets(node, slug) {
 document.addEventListener("click", async e => {
   const id = e.target.id;
   if (id === "new") { wizForm(); return; }
+  if (id === "w-recipes-retry") { recipePick = { phase: "idle", error: "" }; openRecipePicker(); return; }
   if (id === "w-close" || id === "w-cancel") {
     wiz.hidden = true; wiz.innerHTML = ""; sess = null;
+    recipePick = { phase: "idle", error: "" };          // เปิดครั้งหน้า = ถามใหม่หนึ่งครั้ง
     Object.assign(draft, { model: "", target: "", no_llm: false });
     return;
   }
@@ -6920,16 +6954,27 @@ async function loadScan() {
 // สูตรล่าสุดที่โหลดมา — ใช้ทั้งในแผงด้านล่างและในตัวเลือกของกล่อง Deploy
 let recipeList = [];
 
+// โยนเมื่ออ่านไม่ได้ (พร้อมข้อความของ server) — คำตอบที่ล้มไม่ใช่ "คลังว่าง" · ผู้เรียกเป็นคนตัดสินว่าจะบอกผู้ใช้ยังไง
 async function fetchRecipes() {
-  const data = await (await api("/api/recipes")).json();
-  recipeList = data.recipes || [];
+  let r;
+  try { r = await api("/api/recipes"); } catch (err) { throw new Error(unreachableText(err)); }
+  if (!r.ok) throw new Error(await failureText(r));
+  const data = await r.json();
+  recipeList = Array.isArray(data.recipes) ? data.recipes : [];
   return data;
 }
 
 async function loadRecipes() {
   const box = document.getElementById("recipes");
   box.innerHTML = `<div class="empty">Loading…</div>`;
-  const { recipes, source, default_repo } = await fetchRecipes();
+  let loaded;
+  try { loaded = await fetchRecipes(); }
+  catch (err) {
+    box.innerHTML = `<div class="empty">${esc(T("Could not read the proven recipes — {why}", { why: String((err && err.message) || err) }))}</div>`;
+    return;
+  }
+  const { source, default_repo } = loaded;
+  const recipes = recipeList;
   // ที่มาของสูตร: ต้องเห็นว่าชุดนี้ดึงมาจากรีโปไหน commit ไหน ไม่งั้นไม่มีทางรู้ว่าอันไหนเก่า
   const origin = source && source.repo
     ? `${recipes.length} recipes · ${num(source.count, "?")} from ${esc(source.repo)} @ ${esc(source.commit || "?")}

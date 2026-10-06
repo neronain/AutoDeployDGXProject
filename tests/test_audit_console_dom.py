@@ -509,3 +509,64 @@ def test_an_apply_job_the_hub_forgot_is_unknown_not_failed(tmp_path):
     assert "Nothing here says the machines were rolled back" in out["says"]
     assert out["result"] is None and out["pollsAfter"] == 0
     assert "back" in out["foot"] and "next (disabled)" in out["foot"], "กลับไปตรวจสายใหม่ได้ แต่ไปขั้น Verify ไม่ได้"
+
+
+# ───────────────────── ข้อ 7 — wizard deploy ยิง /api/recipes ไม่หยุดเมื่อคำตอบไม่มีสูตร ─────────────────────
+
+def test_the_deploy_wizard_asks_for_recipes_once_per_open_and_says_what_came_back(tmp_path):
+    """เดิม: คำตอบที่ไม่มีสูตร (500/502 · คลังว่าง) → วาด → ลิสต์ว่าง → ถามใหม่ → … ~176 คำขอ/วินาทีตลอดที่ wizard เปิด"""
+    out = run_scenario(tmp_path, """
+        const fx = { nodes: [] }; H.fx = fx; H.mode = "500";
+        const later = (v, ms) => new Promise(r => setTimeout(() => r(v), ms));      // "เครือข่าย" 5 ms
+        H.routes = [
+          ["/api/recipes", () => later({
+              "500": { status: 500, body: { detail: "config.yaml อ่านไม่ได้ (บรรทัด 12)" } },
+              "502": { status: 502, body: "<html><body><h1>502 Bad Gateway</h1></body></html>" },
+              "empty": { recipes: [], source: null, default_repo: "x" },
+              "ok": { recipes: [{ match: "Q/q", label: "Q recipe", engine: "vllm" }] } }[H.mode], 5)],
+          ["/api/targets", () => ({ targets: [] })],
+          ...H.defaultRoutes(fx),
+        ];
+    """, """
+        await H.tick(20);
+        const asked = () => H.calls.filter(c => c.url === "/api/recipes").length;
+        const shown = () => document.getElementById("w-recipes").textContent.replace(/\\s+/g, " ").trim();
+        for (const mode of ["500", "502", "empty"]) {
+          H.mode = mode;
+          const before = asked();
+          document.getElementById("new").click();
+          await H.sleep(300);
+          const whileOpen = asked() - before, says = shown();
+          // ฟอร์มถูกวาดใหม่ระหว่างที่ยังเปิดอยู่ (ถามต่อเรื่อง GGUF / token) — ไม่ใช่การเปิดครั้งใหม่
+          wizForm("pick a file"); await H.sleep(100);
+          const afterRedraw = asked() - before;
+          document.getElementById("w-close").click(); await H.sleep(100);
+          console.log(JSON.stringify({ mode, whileOpen, afterRedraw, afterClose: asked() - before - afterRedraw, says }));
+        }
+        // ผู้ใช้กดลองใหม่เอง — ได้หนึ่งคำขอ และคราวนี้ server ตอบดี
+        H.mode = "500"; document.getElementById("new").click(); await H.sleep(100);
+        H.mode = "ok"; const before = asked();
+        document.getElementById("w-recipes-retry").click(); await H.sleep(100);
+        console.log(JSON.stringify({ mode: "retry", whileOpen: asked() - before, says: shown(),
+                                     chips: document.querySelectorAll("#w-recipes button[data-recipe]").length }));
+        H.errors.length = 0;
+    """)
+    by = {o["mode"]: o for o in out}
+    for mode in ("500", "502", "empty"):
+        assert by[mode]["whileOpen"] == 1 and by[mode]["afterRedraw"] == 1 and by[mode]["afterClose"] == 0, by[mode]
+    assert "config.yaml อ่านไม่ได้ (บรรทัด 12)" in by["500"]["says"] and "Try again" in by["500"]["says"]
+    assert "HTTP 502" in by["502"]["says"] and "502 Bad Gateway" in by["502"]["says"] and "<" not in by["502"]["says"]
+    assert by["empty"]["says"].startswith("No proven recipes on this hub yet")
+    assert by["retry"]["whileOpen"] == 1 and by["retry"]["chips"] == 1 and "Proven recipes (1)" in by["retry"]["says"]
+
+
+def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
+    (out,) = run_scenario(tmp_path, """
+        const fx = { nodes: [] }; H.fx = fx;
+        H.routes = [["/api/recipes", () => ({ status: 500, body: { detail: "config.yaml อ่านไม่ได้ (บรรทัด 12)" } })], ...H.defaultRoutes(fx)];
+    """, """
+        await H.tick(20); await loadRecipes(); await H.tick(5);
+        console.log(JSON.stringify({ says: document.getElementById("recipes").textContent.replace(/\\s+/g, " ").trim(), alerts: H.alerts }));
+        H.errors.length = 0;
+    """)
+    assert "config.yaml อ่านไม่ได้ (บรรทัด 12)" in out["says"] and out["alerts"] == []
