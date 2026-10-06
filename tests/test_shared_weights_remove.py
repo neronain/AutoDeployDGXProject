@@ -328,7 +328,8 @@ def test_web_removal_preview_marks_shared_weights_as_kept_and_remove_leaves_them
     assert data["total_bytes"] == sum(item["bytes"] for item in data["items"] if not item["kept"])
     assert data["total_bytes"] < 8192
 
-    done = client.post("/api/models/qwen36-test/remove", json={"keep_weights": False}).json()
+    done = client.post("/api/models/qwen36-test/remove",
+                       json={"confirm": "qwen36-test", "keep_weights": False}).json()
     assert done["failed"] == [], done
     assert any("qwen36-prod" in line and line.startswith("เก็บ ") for line in done["done"]), done
     assert (cache / "blobs" / "weights.safetensors").is_file() and not test_dir.exists()

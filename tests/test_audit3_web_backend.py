@@ -374,11 +374,13 @@ def test_guesses_of_any_shape_count_towards_the_lockout(audit_log):
     from lmds.web import api
 
     client = TestClient(create_app("s3cret-token"), raise_server_exceptions=False)
-    guesses = [client.get("/api/version", params={"token": "ก" * 8}).status_code for _ in range(4)]
-    guesses += [client.get("/api/version", headers={"x-lmds-token": b"\xff\xfe\xfd-not-utf8"}).status_code
-                for _ in range(4)]
-    guesses += [client.get("/api/version", headers={"x-lmds-token": "ข้อความ".encode()}).status_code
-                for _ in range(4)]
+    # ค่าที่เดาต่างกันทุกครั้ง — กติกาของตัวนับ (ดู _Attempts): คำขอที่ไม่ใช่การกด Sign in นับ "ค่าที่ยังไม่เคยเห็น"
+    # ไม่นับคำขอซ้ำค่าเดิมของแท็บเก่า · สิ่งที่ต้องพิสูจน์ตรงนี้คือค่ารูปแปลก ๆ ไม่หลุดจากตัวนับ
+    guesses = [client.get("/api/version", params={"token": "ก" * 8 + str(i)}).status_code for i in range(4)]
+    guesses += [client.get("/api/version", headers={"x-lmds-token": b"\xff\xfe\xfd-not-utf8-%d" % i}).status_code
+                for i in range(4)]
+    guesses += [client.get("/api/version", headers={"x-lmds-token": f"ข้อความ{i}".encode()}).status_code
+                for i in range(4)]
 
     assert guesses[: api._FAIL_FREE + 1] == [401] * (api._FAIL_FREE + 1), guesses
     assert set(guesses[api._FAIL_FREE + 1:]) == {429}, guesses
@@ -486,7 +488,8 @@ def test_the_page_sends_a_thai_token_in_a_form_the_browser_allows_and_the_hub_ac
     """ครบวง: หน้าเว็บจริง (JS จริงใน node) → header ที่ได้ → guard ตัวจริง · ทั้งตอนบูตและทุกคำขอผ่าน api()"""
     seen = _page_token_headers(tmp_path, f'localStorage.setItem("lmds:token", {THAI_TOKEN!r});', "await H.tick();")
     names = {name for name, _codes in seen}
-    assert "/api/auth" in names and len(names) > 1, names     # ตอนบูต + คำขอปกติของหน้า
+    # ตอนบูตหน้าเว็บถามด้วย GET ธรรมดาที่ต้องใช้ token (ไม่ใช่ POST /api/auth ซึ่ง hub นับเป็นการกดลองกรอก)
+    assert "/api/version" in names and len(names) > 1, names  # ตอนบูต + คำขอปกติของหน้า
     _assert_the_hub_accepts_what_the_page_sends(seen)
 
 
