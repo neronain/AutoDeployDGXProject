@@ -1105,16 +1105,29 @@ def create_app(token: str = "") -> FastAPI:
         """
         from lmds.assistant import policy
 
-        mode = str(body.get("mode") or "").strip()
+        body = _obj(body)
+        mode = _text(body, "mode")
         try:
             # งานลบถาวรต้องส่ง confirm:true มากับ "แก้เลย" — หน้าเว็บถามซ้ำก่อน
-            ticket = policy.choose(ticket_id, mode, confirm=bool(body.get("confirm")))
+            ticket, first = policy.choose_once(ticket_id, mode, confirm=bool(body.get("confirm")))
         except policy.PolicyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if mode == policy.HOLD:
             return ticket.payload()
+        if not first:
+            # เลือกไปแล้ว (กดปุ่มซ้ำ · คำขอส่งซ้ำ) — คำขอนี้ต้องไม่เริ่มงานเอง: การเลือกคือสิ่งที่ปล่อยขั้นแรก
+            # และเกิดได้ครั้งเดียว · ขั้นถัดไปของโหมด "ทีละขั้น" ไปทาง …/advance ซึ่งเป็นการกดของคนอีกครั้ง
+            if ticket.busy:
+                raise HTTPException(status_code=409, detail="ตั๋วนี้เลือกไปแล้วและกำลังทำงานอยู่ — รอให้ขั้นที่รันอยู่จบก่อน")
+            return ticket.payload()
+        return _advance_ticket(policy, ticket_id)
+
+    def _advance_ticket(policy, ticket_id: str) -> dict:
+        """เดินตั๋วหนึ่งครั้ง — กำลังทำอยู่/ขั้นก่อนล้ม = 409 (สถานะของตั๋วไม่ให้ทำต่อ ไม่ใช่คำขอผิดรูป)"""
         try:
             ticket, _ = policy.advance(ticket_id)
+        except (policy.PolicyBusy, policy.PolicyHalted) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except policy.PolicyError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return ticket.payload()
@@ -1124,11 +1137,7 @@ def create_app(token: str = "") -> FastAPI:
         """ทำขั้นถัดไป — ใช้กับโหมด 'ทีละขั้น' ที่ผู้ใช้กดต่อเองทุกครั้ง"""
         from lmds.assistant import policy
 
-        try:
-            ticket, _ = policy.advance(ticket_id)
-        except policy.PolicyError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return ticket.payload()
+        return _advance_ticket(policy, ticket_id)
 
     @app.get("/api/models/{slug}/script", dependencies=guarded)
     def script_read(slug: str, node: str = "") -> dict:

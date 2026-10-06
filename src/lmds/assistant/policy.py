@@ -41,6 +41,14 @@ class PolicyError(Exception):
     pass
 
 
+class PolicyBusy(PolicyError):
+    """ตั๋วนี้มีขั้นที่กำลังทำงานอยู่ — คำขอที่มาซ้อนต้องรอ ไม่ใช่เริ่มขั้นถัดไป"""
+
+
+class PolicyHalted(PolicyError):
+    """ขั้นก่อนหน้าล้ม — ตั๋วนี้เดินต่อไม่ได้ ต้องให้ผู้ช่วยดูผลแล้วเสนอใหม่"""
+
+
 @dataclass
 class PlanStep:
     action: str
@@ -68,6 +76,8 @@ class Ticket:
     steps: list[PlanStep]
     created: float = field(default_factory=time.time)
     mode: str = ""                # ว่าง = ผู้ใช้ยังไม่ได้เลือกจากเมนู
+    # มีคำขอหนึ่งกำลังเดินตั๋วนี้อยู่ — ถือได้ทีละคำขอ (ดู advance)
+    busy: bool = False
 
     @property
     def expired(self) -> bool:
@@ -95,6 +105,13 @@ class Ticket:
                 return index
         return -1
 
+    def failed_index(self) -> int:
+        """ขั้นแรกที่เริ่มไปแล้วแต่ไม่สำเร็จ (ล้ม หรือระเบิดจนไม่มีผล) — -1 = ไม่มี · ใช้ตอนไม่มีขั้นไหนกำลังรัน"""
+        for index, step in enumerate(self.steps):
+            if step.done and not (step.result or {}).get("ok"):
+                return index
+        return -1
+
     def payload(self) -> dict:
         return {
             "ticket": self.id,
@@ -102,6 +119,9 @@ class Ticket:
             "mode": self.mode,
             "expired": self.expired,
             "finished": self.finished,
+            # busy = มีขั้นกำลังทำงาน (ปุ่ม "ขั้นถัดไป" ต้องรอ) · halted = ขั้นก่อนหน้าล้ม ตั๋วเดินต่อไม่ได้
+            "busy": self.busy,
+            "halted": (not self.busy) and self.failed_index() >= 0,
             "destructive": self.destructive,
             "default_mode": self.default_mode,
             "next_index": self.next_index(),
@@ -178,8 +198,11 @@ def get(ticket_id: str) -> Ticket:
     return ticket
 
 
-def choose(ticket_id: str, mode: str, confirm: bool = False) -> Ticket:
-    """ผู้ใช้เลือกจากเมนู — เลือกได้ครั้งเดียวต่อตั๋ว
+def choose_once(ticket_id: str, mode: str, confirm: bool = False) -> tuple[Ticket, bool]:
+    """ผู้ใช้เลือกจากเมนู — คืน (ตั๋ว, คำขอนี้เป็นคนเลือกหรือเปล่า)
+
+    การเลือกเกิดได้ **ครั้งเดียว** ต่อตั๋ว และตัดสินใต้ล็อก: สองคำขอที่มาเกือบพร้อมกัน (กดปุ่มซ้ำ) มีคำขอเดียวที่ได้
+    True · คำขอที่ได้ False ต้องไม่ไปเริ่มงาน — เดิมทั้งคู่เรียก advance ต่อ ขั้นที่ 1 กับขั้นที่ 2 จึงรันซ้อนกัน
 
     งานลบถาวร (destructive) รับ "แก้เลย" ต่อเมื่อยืนยันซ้ำ (`confirm`) — หน้าเว็บถามอีกชั้นก่อนส่ง ·
     "ทีละขั้น" ไม่ต้อง เพราะแต่ละขั้นต้องกดอยู่แล้ว
@@ -192,8 +215,14 @@ def choose(ticket_id: str, mode: str, confirm: bool = False) -> Ticket:
     with _LOCK:
         if ticket.mode and ticket.mode != mode:
             raise PolicyError(f"ตั๋วนี้เลือกไปแล้วว่า '{ticket.mode}'")
+        first = not ticket.mode
         ticket.mode = mode
-    return ticket
+    return ticket, first
+
+
+def choose(ticket_id: str, mode: str, confirm: bool = False) -> Ticket:
+    """เลือกโหมด — คืนตั๋ว (ผู้เรียกที่ต้องรู้ว่าตัวเองเป็นคนเลือกหรือเปล่าใช้ choose_once)"""
+    return choose_once(ticket_id, mode, confirm)[0]
 
 
 def explain_failure(step: PlanStep) -> str:
@@ -226,28 +255,52 @@ def advance(ticket_id: str) -> tuple[Ticket, list[Outcome]]:
         raise PolicyError("ยังไม่ได้เลือกจากเมนูว่าจะให้ทำแบบไหน")
     if ticket.mode == HOLD:
         return ticket, []
-    if ticket.finished:
-        return ticket, []
+
+    # การเดินตั๋วเป็นของคำขอเดียวในแต่ละขณะ — จองใต้ล็อกก่อนแตะขั้นไหนทั้งนั้น
+    #
+    # audit 2026-10: เดิมแต่ละขั้นถูก "ทำเครื่องหมายว่าเสร็จ" ก่อนรัน เพื่อกันรันซ้ำ แต่นั่นทำให้คำขอที่มาซ้อน
+    # มองว่าขั้นที่ 1 เสร็จแล้ว จึงหยิบขั้นที่ 2 ไปรันทันที · ตั๋ว "stop แล้ว remove" ที่กดปุ่มซ้ำ: remove เริ่มขณะที่
+    # stop ยังไม่จบ และก่อนจะรู้ด้วยซ้ำว่า stop ล้ม · ตอนนี้ (1) มีขั้นกำลังรัน = PolicyBusy (2) ขั้นก่อนหน้าไม่สำเร็จ
+    # = PolicyHalted ไม่ว่าจะโหมดไหน — ขั้นถัดไปเริ่มได้ต่อเมื่อขั้นก่อนหน้า **จบและสำเร็จ** เท่านั้น
+    with _LOCK:
+        if ticket.busy:
+            running = next((s for s in ticket.steps if s.done and s.result is None), None)
+            raise PolicyBusy("กำลังทำ" + (f" '{running.title}'" if running else "ขั้นก่อนหน้า")
+                             + " อยู่ — รอให้จบก่อน แล้วดูผลก่อนไปขั้นถัดไป")
+        failed = ticket.failed_index()
+        if failed >= 0:
+            raise PolicyHalted(
+                f"ขั้นที่ {failed + 1} ('{ticket.steps[failed].title}') ไม่สำเร็จ — ขั้นถัดไปตั้งอยู่บนผลของมัน จึงไม่ทำต่อ · "
+                "ดูผลของขั้นนั้นแล้วถามผู้ช่วยใหม่เพื่อวางแผนต่อ")
+        if ticket.finished:
+            return ticket, []
+        ticket.busy = True
 
     outcomes: list[Outcome] = []
-    while True:
-        with _LOCK:
-            index = ticket.next_index()
-            if index < 0:
+    try:
+        while True:
+            with _LOCK:
+                index = ticket.next_index()
+                if index < 0:
+                    break
+                step = ticket.steps[index]
+                # ทำเครื่องหมายว่าขั้นนี้ถูกหยิบไปแล้ว (ใช้ได้ครั้งเดียว) — ผลยังเป็น None จนกว่าจะรันจบ
+                step.done = True
+            outcome = run_action(step.action, step.target, step.params)
+            result = outcome.payload()
+            if not outcome.ok:
+                result["explain"] = explain_failure(step)
+            step.result = result
+            outcomes.append(outcome)
+            if ticket.mode == STEP:
                 break
-            step = ticket.steps[index]
-            # ทำเครื่องหมายก่อนรัน — คนกดปุ่มซ้ำระหว่างที่ขั้นนี้ยังทำงานอยู่จะได้ไม่รันซ้ำ
-            step.done = True
-        outcome = run_action(step.action, step.target, step.params)
-        step.result = outcome.payload()
-        if not outcome.ok:
-            step.result["explain"] = explain_failure(step)
-        outcomes.append(outcome)
-        if ticket.mode == STEP:
-            break
-        if not outcome.ok:
-            # ขั้นถัดไปมักตั้งอยู่บนสมมติฐานว่าขั้นก่อนหน้าสำเร็จ — หยุดแล้วให้คนดู
-            break
+            if not outcome.ok:
+                # ขั้นถัดไปมักตั้งอยู่บนสมมติฐานว่าขั้นก่อนหน้าสำเร็จ — หยุดแล้วให้คนดู
+                break
+    finally:
+        # ปล่อยเสมอ แม้ขั้นจะระเบิด — ขั้นที่ระเบิดไม่มีผล (result None) จึงนับเป็นไม่สำเร็จและตั๋วหยุดที่นั่น
+        with _LOCK:
+            ticket.busy = False
     return ticket, outcomes
 
 

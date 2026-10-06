@@ -9,6 +9,11 @@
   2. token ที่ไม่ใช่ ASCII → ทุกคำขอ 500 · การเดาด้วยค่าที่ไม่ใช่ ASCII ไม่ถูกนับเข้า lockout
   3. ชื่อ interface ที่ node รายงานเองลง cluster.env ดิบ ๆ → รันตอน controller source ไฟล์
   4. cancel ฆ่าแค่ bash ของ controller → ตัวโหลดเป็นกำพร้า งานยัง running ล็อกไม่หลุด แต่ตอบว่ายกเลิกแล้ว
+  5. POST /api/models/{slug}/remove body ว่าง → ลบ bundle และ weight โดยไม่มีการยืนยันฝั่ง server
+  6. บรรทัดใหม่ในค่า secret แทรกบรรทัดลงไฟล์ credentials (ทับ key ของ provider อื่น)
+  7. POST /api/provider/models ส่ง key ที่บันทึกไว้ไปยัง base_url ที่คำขอระบุ
+  8. body ผิดชนิดบน route ที่เปลี่ยนสถานะ → 500 · exception ที่ไม่มีใครจับไม่ถูกบันทึกลง audit
+  9. ตั๋วของผู้ช่วย: สอง choose ซ้อนกันรันขั้นที่ 1 กับ 2 พร้อมกัน (remove เริ่มก่อน stop จบ)
 """
 
 from __future__ import annotations
@@ -1128,3 +1133,148 @@ def test_the_rename_preflight_answers_when_the_hub_cannot_ask_the_node(monkeypat
     r = TestClient(create_app(), raise_server_exceptions=False).get("/api/nodes/gpu-node/rename-host")
     assert r.status_code == 200, r.text
     assert r.json()["sudo_needed"] is True
+
+
+# ══ 9. ตั๋วของผู้ช่วย — เดินได้ทีละคำขอ และขั้นถัดไปเริ่มหลังขั้นก่อนสำเร็จเท่านั้น ═════════════
+
+@pytest.fixture
+def slow_actions(monkeypatch):
+    """แทนตัวรัน action ด้วยตัวที่ช้า (ของจริง stop/remove กินเป็นวินาทีถึงนาที) และจดลำดับ START/END
+
+    คืน (log, fail) — ใส่ชื่อ action ลง `fail` เพื่อให้ขั้นนั้นจบด้วย exit 1
+    """
+    import threading
+
+    from lmds.assistant import policy
+    from lmds.assistant.runner import Outcome
+
+    log: list[tuple[str, str]] = []
+    fail: set[str] = set()
+    guard = threading.Lock()
+
+    def run_action(name, target="this", params=None):
+        with guard:
+            log.append(("START", name))
+        time.sleep(0.6)
+        failed = name in fail
+        with guard:
+            log.append(("END", name))
+        return Outcome(name=name, title=name, target=target, params=params or {},
+                       exit_code=1 if failed else 0, output="container busy" if failed else "ok")
+
+    policy.reset()
+    monkeypatch.setattr(policy, "run_action", run_action)
+    monkeypatch.setattr(policy, "explain_failure", lambda step: "")
+    yield log, fail
+    policy.reset()
+
+
+def _stop_then_remove():
+    from lmds.assistant import policy
+
+    return policy.propose([{"action": "model_stop", "target": "this", "params": {"slug": "qwen"}},
+                           {"action": "remove_model", "target": "this", "params": {"slug": "qwen", "keep_weights": "0"}}],
+                          why="free the disk")
+
+
+def _post_together(client, paths: list[tuple[str, dict | None]], gap: float = 0.15) -> list[int]:
+    import threading
+
+    codes: list[int] = [0] * len(paths)
+
+    def post(index: int, path: str, body: dict | None) -> None:
+        codes[index] = client.post(path, json=body or {}).status_code
+
+    threads = [threading.Thread(target=post, args=(i, path, body)) for i, (path, body) in enumerate(paths)]
+    for thread in threads:
+        thread.start()
+        time.sleep(gap)
+    for thread in threads:
+        thread.join()
+    return codes
+
+
+def test_a_double_click_on_step_by_step_never_starts_the_destructive_step_early(slow_actions):
+    """ผู้ตรวจ: สอง `choose` เกือบพร้อมกันบนตั๋ว "stop แล้ว remove" → ทั้งคู่ตอบ 200 และ remove เริ่มขณะที่ stop
+    ยังไม่จบ — ก่อนจะรู้ด้วยซ้ำว่า stop ล้ม"""
+    log, fail = slow_actions
+    fail.add("model_stop")
+    ticket = _stop_then_remove()
+    client = TestClient(create_app())
+    choose = f"/api/assistant/ticket/{ticket.id}/choose"
+
+    codes = _post_together(client, [(choose, {"mode": "step"}), (choose, {"mode": "step"})])
+
+    assert log == [("START", "model_stop"), ("END", "model_stop")], log        # remove ไม่เคยเริ่ม
+    assert sorted(codes) == [200, 409], codes                                   # คำขอที่ซ้อน = "กำลังทำอยู่"
+    payload = client.get(f"/api/assistant/ticket/{ticket.id}").json()
+    assert payload["busy"] is False and payload["halted"] is True
+    assert payload["steps"][0]["result"]["ok"] is False and payload["steps"][1]["result"] is None
+    # stop ล้ม → remove ต้องไม่เริ่มแม้ผู้ใช้กด "ขั้นถัดไป" ต่อ
+    r = client.post(f"/api/assistant/ticket/{ticket.id}/advance")
+    assert r.status_code == 409 and payload["steps"][0]["title"] in r.json()["detail"]   # บอกว่าขั้นไหนที่ล้ม
+    assert log == [("START", "model_stop"), ("END", "model_stop")], log
+
+
+def test_a_second_advance_while_a_step_runs_is_told_to_wait(slow_actions):
+    """ทางของปุ่ม "ขั้นถัดไป": กดซ้ำระหว่างที่ขั้นกำลังรัน → คำขอที่ซ้อนได้คำตอบชัด ๆ ไม่ใช่ไปหยิบขั้นถัดไปมารัน"""
+    log, _fail = slow_actions
+    ticket = _stop_then_remove()
+    client = TestClient(create_app())
+    assert client.post(f"/api/assistant/ticket/{ticket.id}/choose", json={"mode": "step"}).status_code == 200
+    assert log == [("START", "model_stop"), ("END", "model_stop")]
+
+    advance = f"/api/assistant/ticket/{ticket.id}/advance"
+    codes = _post_together(client, [(advance, None), (advance, None)])
+
+    assert sorted(codes) == [200, 409], codes
+    assert log == [("START", "model_stop"), ("END", "model_stop"), ("START", "remove_model"), ("END", "remove_model")], log
+    assert client.get(f"/api/assistant/ticket/{ticket.id}").json()["finished"] is True
+
+
+def test_choosing_twice_in_a_row_does_not_advance_twice(slow_actions):
+    """กดซ้ำช้ากว่าเดิมหน่อย (ขั้นแรกจบแล้ว): `choose` ครั้งที่สองต้องไม่ทำตัวเป็น "ขั้นถัดไป" — การเลือกเกิดครั้งเดียว"""
+    log, _fail = slow_actions
+    ticket = _stop_then_remove()
+    client = TestClient(create_app())
+    choose = f"/api/assistant/ticket/{ticket.id}/choose"
+
+    assert client.post(choose, json={"mode": "step"}).status_code == 200
+    again = client.post(choose, json={"mode": "step"})
+
+    assert again.status_code == 200 and again.json()["next_index"] == 1
+    assert log == [("START", "model_stop"), ("END", "model_stop")], log
+
+
+def test_apply_all_stops_at_a_failed_step_and_stays_stopped(slow_actions):
+    """โหมด "แก้เลย": ขั้นที่ล้มหยุดทั้งตั๋ว — เดิมเรียก advance ซ้ำแล้วขั้นที่เหลือถูกรันต่อจากขั้นที่ล้ม"""
+    from lmds.assistant import policy
+
+    log, fail = slow_actions
+    fail.add("model_stop")
+    ticket = _stop_then_remove()
+    policy.choose(ticket.id, policy.APPLY, confirm=True)
+    policy.advance(ticket.id)
+    with pytest.raises(policy.PolicyHalted):
+        policy.advance(ticket.id)
+    assert log == [("START", "model_stop"), ("END", "model_stop")], log
+
+
+def test_a_step_that_crashes_releases_the_ticket_and_blocks_the_next_step(slow_actions, monkeypatch):
+    from lmds.assistant import policy
+
+    log, _fail = slow_actions
+
+    def boom(name, target="this", params=None):
+        log.append(("START", name))
+        raise RuntimeError("ssh died")
+
+    monkeypatch.setattr(policy, "run_action", boom)
+    ticket = _stop_then_remove()
+    policy.choose(ticket.id, policy.STEP)
+    with pytest.raises(RuntimeError):
+        policy.advance(ticket.id)
+    assert ticket.busy is False                                   # ไม่ค้าง "กำลังทำอยู่" ตลอดกาล
+    with pytest.raises(policy.PolicyHalted):                      # ขั้นที่ระเบิดไม่มีผล = ไม่สำเร็จ
+        policy.advance(ticket.id)
+    assert log == [("START", "model_stop")]
