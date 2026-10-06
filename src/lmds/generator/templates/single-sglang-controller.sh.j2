@@ -146,12 +146,32 @@ _sglang_kv_cache_dtype() {
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# ที่อยู่ที่ controller ใช้คุยกับเซิร์ฟเวอร์ของตัวเอง (health · status · info · wait-health · test-* · bench · stress)
+#
+# engine ได้ `--host $API_HOST` ตรง ๆ — ผูก IP เฉพาะ (`--bind 10.2.1.195` ให้ฟังแค่สาย management หรือค่าที่
+# `lmds set --bind` บันทึกไว้) แล้วไม่มีใครฟัง 127.0.0.1 เลย · เดิมทุกจุดยิง 127.0.0.1 ตายตัว: start รอ /health จนครบ
+# HEALTH_TIMEOUT (600–7200 วิ) แล้วจบ exit 1 ทั้งที่เซิร์ฟเวอร์ขึ้นแล้ว · status/info/test-* บอกว่า down (audit 2026-10-06 ·
+# stacked แก้ไปก่อนแล้วด้วยตรรกะเดียวกัน)
+#   ว่าง / 0.0.0.0 / :: (ฟังทุกการ์ด — Linux เปิด dual-stack ให้ :: รับ IPv4 ด้วย) / 127.0.0.1 → 127.0.0.1
+#   localhost → localhost (engine กับ curl/python resolve ชื่อเดียวกัน และฝั่ง client ลองทุก address ที่ได้ — ไม่เดาว่าเป็น v4)
+#   IPv6 เฉพาะ → ใส่วงเล็บ [..] เพราะเอาไปประกอบ URL · IPv4 เฉพาะ → ตามนั้น
+_local_api_host() {
+  case "${API_HOST:-}" in
+    ""|0.0.0.0|127.0.0.1|::|\[::\]) printf '127.0.0.1' ;;
+    \[*\]) printf '%s' "$API_HOST" ;;
+    *:*) printf '[%s]' "$API_HOST" ;;
+    *) printf '%s' "$API_HOST" ;;
+  esac
+}
+# ค่าตั้งต้นสำหรับโค้ดที่วิ่งก่อน parse_options (ซึ่งเป็นคนคำนวณค่าจริงจาก --bind / API_HOST)
+LOCAL_API_HOST="${LOCAL_API_HOST:-127.0.0.1}"
+
 # พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
 # ยึดพอร์ตนี้อยู่ ชุดทดสอบจะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
 # (เจอจริง: test-text ของ gemma-4-31b ได้คำตอบจาก Qwen3-Coder-30B ที่รันอยู่ก่อน)
 assert_our_server() {
   local seen
-  seen="$(curl -fsS -m 10 "http://127.0.0.1:${API_PORT}/v1/models" \
+  seen="$(curl -fsS -m 10 "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} 2>/dev/null \
     | { command -v python3 >/dev/null 2>&1 && python3 -c '
 import json, sys
@@ -195,6 +215,13 @@ detect_advertise_ip() {
       awk 'NR == 1 { split($4, a, "/"); print a[1] }'
     return
   fi
+  # ผูก IP เฉพาะ = ที่อยู่เดียวที่ client ต่อได้คือ IP นั้น — IP ที่เดาจาก default route อาจเป็นการ์ดอื่นที่ไม่มีใครฟัง
+  # (`--bind 127.0.0.1` แล้วพิมพ์ Endpoint เป็น IP ของ LAN คือบอกทางไปประตูที่ล็อกอยู่) · ผู้ใช้สั่ง --advertise-ip /
+  # --interface เองยังชนะเสมอ (อยู่หลัง NAT) · ฟังทุกการ์ด (0.0.0.0 / ::) จึงค่อยหาเองตามเดิม
+  case "${API_HOST:-}" in
+    ""|0.0.0.0|::|\[::\]) ;;
+    *) _local_api_host; return ;;
+  esac
   local route_src
   route_src="$(ip -4 route get "$ROUTE_PROBE_IP" 2>/dev/null |
     awk '{ for (i=1; i<=NF; i++) if ($i=="src") { print $(i+1); exit } }')"
@@ -232,6 +259,8 @@ parse_options() {
     esac
   done
   validate_numbers
+  LOCAL_API_HOST="$(_local_api_host)"
+  export LOCAL_API_HOST      # ชุดทดสอบ python (test-* · bench · stress) อ่านจาก env
 }
 
 network_info() {
@@ -604,12 +633,15 @@ check_port_free() {
   # (llama.cpp controller มีด่านนี้มาตั้งแต่ 2026-08-13 · ฝั่ง vLLM/SGLang เพิ่งมี)
   [[ -n "${DRY_RUN:-}" ]] && return 0
   local holder=""
-  if ! (exec 3<>"/dev/tcp/127.0.0.1/${API_PORT}") 2>/dev/null; then
+  # ถามที่อยู่เดียวกับที่ engine จะผูก (--bind IP เฉพาะ: คนที่ฟัง 127.0.0.1 อยู่ไม่ได้ชนกับเรา และกลับกัน) ·
+  # ค่าตั้งต้นตรงนี้จำเป็น: ตัวแปรที่ไม่ถูกตั้งใน subshell ข้างล่างจะกลายเป็น "ต่อไม่ติด = port ว่าง" เงียบ ๆ
+  local probe_host="${LOCAL_API_HOST:-127.0.0.1}"
+  if ! (exec 3<>"/dev/tcp/${probe_host//[][]/}/${API_PORT}") 2>/dev/null; then
     return 0
   fi
   holder="$(ss -ltnp 2>/dev/null | grep ":${API_PORT} " | head -1 || true)"
   local seen=""
-  seen="$(curl -fsS -m 5 "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null \
+  seen="$(curl -fsS -m 5 "http://${probe_host}:${API_PORT}/v1/models" 2>/dev/null \
     | python3 -c 'import json,sys
 try: d=json.load(sys.stdin)["data"]
 except Exception: sys.exit(0)
@@ -790,7 +822,7 @@ explain_crash() {
 wait_health() {
   local waited=0
   echo "รอ /health (สูงสุด ${HEALTH_TIMEOUT}s — โหลดโมเดลใหญ่ใช้เวลานาน)..."
-  until curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; do
+  until curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; do
     local running
     running="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true)"
     [[ -n "$running" ]] || { explain_crash; die "container หยุดก่อน health ผ่าน — ดู: $0 logs"; }
@@ -818,10 +850,10 @@ stop() {
 
 status() {
   docker ps -a --filter "name=^${CONTAINER_NAME}$"
-  if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  if curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
     echo "API: healthy"
     curl -fsS ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
-      "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null || true
+      "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" 2>/dev/null || true
     echo ""
   else
     echo "API: not responding"
@@ -883,7 +915,7 @@ test_text() {
   # 512 ไม่ใช่ 64: โมเดลสาย reasoning (Qwen3, DeepSeek-R1 ฯลฯ) ใช้ budget ไปกับ <think> ก่อน
   # ถ้าให้น้อยจะได้ finish_reason "length" โดยยังไม่ทันตอบ ซึ่งดูเหมือนโมเดลพัง
   local response
-  response="$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/chat/completions" \
+  response="$(curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/v1/chat/completions" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
     -H "Content-Type: application/json" \
     -d "{
@@ -1336,7 +1368,7 @@ info() {
   ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
   url="http://${ip}:${API_PORT}/v1"
   state="stopped"
-  if curl -fsS -m 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  if curl -fsS -m 2 "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
     state="RUNNING"
   fi
   printf '  Model     : %s\n'            "${MODEL_LABEL}"

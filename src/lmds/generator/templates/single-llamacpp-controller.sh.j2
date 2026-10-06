@@ -178,12 +178,32 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-{{ health_timeout }}}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# ที่อยู่ที่ controller ใช้คุยกับเซิร์ฟเวอร์ของตัวเอง (health · status · info · wait-health · test-* · bench · stress)
+#
+# engine ได้ `--host $API_HOST` ตรง ๆ — ผูก IP เฉพาะ (`--bind 10.2.1.195` ให้ฟังแค่สาย management หรือค่าที่
+# `lmds set --bind` บันทึกไว้) แล้วไม่มีใครฟัง 127.0.0.1 เลย · เดิมทุกจุดยิง 127.0.0.1 ตายตัว: start รอ /health จนครบ
+# HEALTH_TIMEOUT (600–7200 วิ) แล้วจบ exit 1 ทั้งที่เซิร์ฟเวอร์ขึ้นแล้ว · status/info/test-* บอกว่า down (audit 2026-10-06 ·
+# stacked แก้ไปก่อนแล้วด้วยตรรกะเดียวกัน)
+#   ว่าง / 0.0.0.0 / :: (ฟังทุกการ์ด — Linux เปิด dual-stack ให้ :: รับ IPv4 ด้วย) / 127.0.0.1 → 127.0.0.1
+#   localhost → localhost (engine กับ curl/python resolve ชื่อเดียวกัน และฝั่ง client ลองทุก address ที่ได้ — ไม่เดาว่าเป็น v4)
+#   IPv6 เฉพาะ → ใส่วงเล็บ [..] เพราะเอาไปประกอบ URL · IPv4 เฉพาะ → ตามนั้น
+_local_api_host() {
+  case "${API_HOST:-}" in
+    ""|0.0.0.0|127.0.0.1|::|\[::\]) printf '127.0.0.1' ;;
+    \[*\]) printf '%s' "$API_HOST" ;;
+    *:*) printf '[%s]' "$API_HOST" ;;
+    *) printf '%s' "$API_HOST" ;;
+  esac
+}
+# ค่าตั้งต้นสำหรับโค้ดที่วิ่งก่อน parse_options (ซึ่งเป็นคนคำนวณค่าจริงจาก --bind / API_HOST)
+LOCAL_API_HOST="${LOCAL_API_HOST:-127.0.0.1}"
+
 # พอร์ตเดียวกันรับได้ทีละเซิร์ฟเวอร์ และทุก bundle ตั้งต้นที่พอร์ตเดียวกัน — ถ้าโมเดลอื่น
 # ยึดพอร์ตนี้อยู่ ชุดทดสอบจะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
 # (เจอจริง: test-text ของ gemma-4-31b ได้คำตอบจาก Qwen3-Coder-30B ที่รันอยู่ก่อน)
 assert_our_server() {
   local seen
-  seen="$(curl -fsS -m 10 "http://127.0.0.1:${API_PORT}/v1/models" \
+  seen="$(curl -fsS -m 10 "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} 2>/dev/null \
     | { command -v python3 >/dev/null 2>&1 && python3 -c '
 import json, sys
@@ -229,6 +249,13 @@ detect_advertise_ip() {
       awk 'NR == 1 { split($4, a, "/"); print a[1] }'
     return
   fi
+  # ผูก IP เฉพาะ = ที่อยู่เดียวที่ client ต่อได้คือ IP นั้น — IP ที่เดาจาก default route อาจเป็นการ์ดอื่นที่ไม่มีใครฟัง
+  # (`--bind 127.0.0.1` แล้วพิมพ์ Endpoint เป็น IP ของ LAN คือบอกทางไปประตูที่ล็อกอยู่) · ผู้ใช้สั่ง --advertise-ip /
+  # --interface เองยังชนะเสมอ (อยู่หลัง NAT) · ฟังทุกการ์ด (0.0.0.0 / ::) จึงค่อยหาเองตามเดิม
+  case "${API_HOST:-}" in
+    ""|0.0.0.0|::|\[::\]) ;;
+    *) _local_api_host; return ;;
+  esac
   local route_src
   route_src="$(ip -4 route get "$ROUTE_PROBE_IP" 2>/dev/null |
     awk '{ for (i=1; i<=NF; i++) if ($i=="src") { print $(i+1); exit } }')"
@@ -253,6 +280,15 @@ adopt_running_state() {
     value="$(sed -n 's/^model=//p' "$meta" | tail -1)"
     [[ -n "$value" ]] && SERVED_MODEL_NAME="$value"
   fi
+  # ที่อยู่ที่เซิร์ฟเวอร์ผูกไว้ก็เป็นค่าของ "ตัวที่รันอยู่" เหมือน port — `start --bind 10.2.1.195` แล้ว status
+  # (คนละ process ไม่มี flag) ไปถาม 127.0.0.1 ที่ไม่มีใครฟัง · meta รุ่นเก่าไม่มีบรรทัด bind= ก็ใช้ค่าปัจจุบันตามเดิม
+  if [[ -z "${BIND_EXPLICIT:-}" ]]; then
+    value="$(sed -n 's/^bind=//p' "$meta" | tail -1)"
+    if [[ -n "$value" ]]; then
+      API_HOST="$value"
+      LOCAL_API_HOST="$(_local_api_host)"; export LOCAL_API_HOST
+    fi
+  fi
   return 0
 }
 
@@ -268,8 +304,8 @@ parse_options() {
       --name=*)         SERVED_MODEL_NAME="${1#*=}"; NAME_EXPLICIT=1; shift ;;
       --port)           API_PORT="$2"; PORT_EXPLICIT=1; shift 2 ;;
       --port=*)         API_PORT="${1#*=}"; PORT_EXPLICIT=1; shift ;;
-      --bind)           API_HOST="$2"; shift 2 ;;
-      --bind=*)         API_HOST="${1#*=}"; shift ;;
+      --bind)           API_HOST="$2"; BIND_EXPLICIT=1; shift 2 ;;
+      --bind=*)         API_HOST="${1#*=}"; BIND_EXPLICIT=1; shift ;;
       --advertise-ip)   ADVERTISE_IP="$2"; shift 2 ;;
       --advertise-ip=*) ADVERTISE_IP="${1#*=}"; shift ;;
       --interface)      ADVERTISE_INTERFACE="$2"; shift 2 ;;
@@ -292,6 +328,8 @@ parse_options() {
     esac
   done
   validate_numbers
+  LOCAL_API_HOST="$(_local_api_host)"
+  export LOCAL_API_HOST      # ชุดทดสอบ python (test-* · bench · stress) อ่านจาก env
 }
 
 network_info() {
@@ -1123,6 +1161,7 @@ model_id=${MODEL_ID}
 engine=llamacpp
 mode=${RUNTIME_MODE}
 port=${API_PORT}
+bind=${API_HOST}
 container=${CONTAINER_NAME}
 pid_file=${PID_FILE}
 controller=${script_path}
@@ -1172,7 +1211,10 @@ check_port_free() {
   # set -u จึงตายที่ "unbound variable" ตอนผู้ใช้กด start (bash -n ไม่จับให้ เพราะ
   # เป็นเรื่องตอนรัน ไม่ใช่ syntax)
   local holder=""
-  if ! (exec 3<>"/dev/tcp/127.0.0.1/${API_PORT}") 2>/dev/null; then
+  # ถามที่อยู่เดียวกับที่ engine จะผูก (--bind IP เฉพาะ: คนที่ฟัง 127.0.0.1 อยู่ไม่ได้ชนกับเรา และกลับกัน) ·
+  # ค่าตั้งต้นตรงนี้จำเป็น: ตัวแปรที่ไม่ถูกตั้งใน subshell ข้างล่างจะกลายเป็น "ต่อไม่ติด = port ว่าง" เงียบ ๆ
+  local probe_host="${LOCAL_API_HOST:-127.0.0.1}"
+  if ! (exec 3<>"/dev/tcp/${probe_host//[][]/}/${API_PORT}") 2>/dev/null; then
     return 0
   fi
   # มีคนฟังอยู่จริง — พยายามบอกว่าใคร ถ้าบอกไม่ได้ก็ยังต้องหยุดอยู่ดี
@@ -1327,7 +1369,7 @@ explain_crash() {
 wait_health() {
   local waited=0
   echo "รอ /health (สูงสุด ${HEALTH_TIMEOUT}s — โมเดลใหญ่โหลดหลายนาที)..."
-  until curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; do
+  until curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; do
     server_alive || { explain_crash; die "เซิร์ฟเวอร์หยุดก่อน health ผ่าน — ดู: $0 logs"; }
     if (( waited >= HEALTH_TIMEOUT )); then
       echo "ยังไม่ health ภายใน ${HEALTH_TIMEOUT}s — เซิร์ฟเวอร์ยังโหลดต่ออยู่ ไม่ได้ถูกหยุด" >&2
@@ -1402,7 +1444,7 @@ status() {
   else
     docker ps -a --filter "name=^${CONTAINER_NAME}$"
   fi
-  if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  if curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
     echo "API: healthy"
   else
     echo "API: not responding"
@@ -1510,8 +1552,10 @@ test_vision() {
   command -v python3 >/dev/null 2>&1 || die "ต้องมี python3 เพื่อสร้างภาพทดสอบ"
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
 import base64, json, struct, sys, urllib.error, urllib.request, zlib
+import os
 
 port, model, api_key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 
 def png(width, height, rgb):
     raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
@@ -1535,7 +1579,7 @@ if api_key:
 
 try:
     with urllib.request.urlopen(urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers),
+            f"http://{host}:{port}/v1/chat/completions", data=payload, headers=headers),
             timeout=300) as response:
         body = json.load(response)
 except urllib.error.HTTPError as exc:
@@ -1567,13 +1611,15 @@ test_embed() {
   command -v python3 >/dev/null 2>&1 || die "ต้องมี python3"
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" "${POOLING:-engine-default}" <<'PYEOF'
 import json, math, sys, urllib.error, urllib.request
+import os
 
 port, model, key, pooling = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 texts = ["แมวนอนอยู่บนโซฟา", "A cat is sleeping on the sofa", "รายงานงบการเงินไตรมาสที่สาม"]
 headers = {"Content-Type": "application/json"}
 if key:
     headers["Authorization"] = "Bearer " + key
-req = urllib.request.Request("http://127.0.0.1:%d/v1/embeddings" % port,
+req = urllib.request.Request("http://%s:%d/v1/embeddings" % (host, port),
                              data=json.dumps({"model": model, "input": texts}).encode(), headers=headers)
 try:
     with urllib.request.urlopen(req, timeout=180) as r:
@@ -1614,8 +1660,10 @@ test_rerank() {
   command -v python3 >/dev/null 2>&1 || die "ต้องมี python3"
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${API_KEY:-}" <<'PYEOF'
 import json, sys, urllib.error, urllib.request
+import os
 
 port, model, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 query = "วิธีเปลี่ยนรหัสผ่านของบัญชีผู้ใช้"
 docs = [
     "รายงานยอดขายไตรมาสที่สามเติบโต 12% จากปีก่อน",
@@ -1626,7 +1674,7 @@ RELEVANT = 1
 headers = {"Content-Type": "application/json"}
 if key:
     headers["Authorization"] = "Bearer " + key
-req = urllib.request.Request("http://127.0.0.1:%d/v1/rerank" % port,
+req = urllib.request.Request("http://%s:%d/v1/rerank" % (host, port),
                              data=json.dumps({"model": model, "query": query, "documents": docs}).encode(), headers=headers)
 try:
     with urllib.request.urlopen(req, timeout=180) as r:
@@ -1664,7 +1712,7 @@ test_text() {
   # reasoning_content ก่อน ถ้าให้น้อยจะได้ content ว่างเปล่า + finish_reason "length"
   # ซึ่งดูเหมือนโมเดลพัง ทั้งที่จริงแค่พื้นที่ตอบไม่พอ
   local response
-  response="$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/chat/completions" \
+  response="$(curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/v1/chat/completions" \
     ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
     -H "Content-Type: application/json" \
     -d "{
@@ -1702,8 +1750,10 @@ test_tools() {
   command -v python3 >/dev/null 2>&1 || die "ต้องมี python3 เพื่อยิงคำขอทดสอบ"
   python3 - "$API_PORT" "$SERVED_MODEL_NAME" "${1:-both}" "$0" "${API_KEY:-}" <<'PYEOF'
 import json, re, sys, urllib.error, urllib.request
+import os
 
 port, model, mode, prog, api_key = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+host = os.environ.get("LOCAL_API_HOST", "127.0.0.1")
 headers = {"Content-Type": "application/json"}
 if api_key:
     headers["Authorization"] = "Bearer " + api_key
@@ -1714,7 +1764,7 @@ if api_key:
 def props():
     try:
         with urllib.request.urlopen(urllib.request.Request(
-                f"http://127.0.0.1:{port}/props", headers=headers), timeout=30) as response:
+                f"http://{host}:{port}/props", headers=headers), timeout=30) as response:
             return json.load(response)
     except Exception:
         return {}
@@ -1752,7 +1802,7 @@ def ask(choice_mode, budget, no_think=False):
     if no_think:
         # ปิด chain-of-thought ผ่าน chat template (Qwen3/GLM รู้จัก enable_thinking) — template ที่ไม่รู้จักเมินเฉย ๆ
         body["chat_template_kwargs"] = {"enable_thinking": False}
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+    req = urllib.request.Request(f"http://{host}:{port}/v1/chat/completions",
                                  data=json.dumps(body).encode(), headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=300) as response:
@@ -1848,7 +1898,7 @@ if auto_think.strip():
     print(f"  reasoning     : {head(auto_think)}")
 if auto_text.strip():
     print(f"  content       : {head(auto_text)}")
-print(f"  ดู caps ของ template: curl -s http://127.0.0.1:{port}/props | python3 -m json.tool | grep -A12 chat_template_caps")
+print(f"  ดู caps ของ template: curl -s http://{host}:{port}/props | python3 -m json.tool | grep -A12 chat_template_caps")
 sys.exit(1)
 PYEOF
 }
@@ -2000,7 +2050,7 @@ info() {
   ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
   url="http://${ip}:${API_PORT}/v1"
   state="stopped"
-  if curl -fsS -m 2 "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  if curl -fsS -m 2 "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
     state="RUNNING"
   fi
   printf '  Model     : %s\n'            "${MODEL_LABEL}"
