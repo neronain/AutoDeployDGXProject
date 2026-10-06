@@ -1362,6 +1362,12 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
       "token ของหน้านี้ใช้ไม่ได้แล้ว — ถูกเปลี่ยนที่ hub · เข้าใหม่ด้วย token ปัจจุบัน",
     "Wrong token": "token ไม่ถูกต้อง",
     "Could not sign in": "เข้าใช้งานไม่ได้",
+    "Could not add the machine": "เพิ่มเครื่องไม่ได้",
+    "Could not read the cluster state — {why}": "อ่านสถานะคลัสเตอร์ไม่ได้ — {why}",
+    "The hub could not report its own state — {why}": "hub รายงานสถานะของตัวเองไม่ได้ — {why}",
+    "Could not read the LLM settings — {why}": "อ่านการตั้งค่า LLM ไม่ได้ — {why}",
+    "Could not list machines — {why}": "อ่านรายชื่อเครื่องไม่ได้ — {why}",
+    "The hub could not report this machine — {why}": "hub รายงานเครื่องนี้ไม่ได้ — {why}",
     "the hub did not start a job": "hub ไม่ได้เริ่มงาน",
     "{started} rebuild(s) started, {refused} not started": "เริ่ม rebuild {started} ตัว · ไม่ได้เริ่ม {refused} ตัว",
     "No rebuild was started": "ไม่มี rebuild ตัวไหนเริ่ม",
@@ -1954,12 +1960,11 @@ async function withButton(button, busyLabel, call) {
   if (button) { button.disabled = true; if (busyLabel) button.textContent = busyLabel; }
   try {
     const r = await call();
-    const d = await r.json().catch(() => ({}));
     if (!r.ok) {
-      alert(typeof d.detail === "string" ? d.detail : T("The command failed (HTTP {status})", { status: r.status }));
+      alert(await failureText(r));
       return null;
     }
-    return d;
+    return await r.json().catch(() => ({}));
   } catch (err) {
     alert(T("Could not reach LMDS — {error}", { error: String(err && err.message || err) }));
     return null;
@@ -2927,7 +2932,7 @@ async function load(slug, kind) {
   if (kind === "logs") {
     stopLiveLog("local/" + slug);
     const r = await api(`/api/models/${encodeURIComponent(slug)}/logs?lines=300`);
-    const d = await r.json();
+    const d = r.ok ? await r.json() : { detail: await failureText(r) };
     panel.innerHTML = `<div class="pad row" style="padding-bottom:0">
         <span class="dim">Last 300 lines — one-shot</span><span class="grow"></span>
         <button class="ll-once" title="Fetch the last 300 lines again">Refresh</button>
@@ -2938,9 +2943,9 @@ async function load(slug, kind) {
     return;
   }
   const r = await api(`/api/models/${encodeURIComponent(slug)}/doctor`);
-  const d = await r.json();
   // 404/500 ไม่มี findings — เดิม .filter ของ undefined ระเบิดเงียบ ๆ แผงค้างว่างเปล่า
-  if (!r.ok) { panel.innerHTML = `<pre>${esc(d.detail || String(r.status))}</pre>`; return; }
+  if (!r.ok) { panel.innerHTML = `<pre>${esc(await failureText(r))}</pre>`; return; }
+  const d = await r.json();
   const fixes = (d.findings || []).filter(f => f.fix && f.status !== "ok");
   panel.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)">
     ${(d.findings || []).map(findRow).join("")}
@@ -3058,12 +3063,12 @@ function wizForm(msg = "", extra = "") {
   document.getElementById("w-model").value = draft.model;
   document.getElementById("w-nollm").checked = draft.no_llm;
   openRecipePicker();
-  api("/api/targets").then(r => r.json()).then(d => {
+  api("/api/targets").then(r => r.ok ? r.json() : {}).then(d => {
     const eng = document.getElementById("w-engine");
     if (eng && draft.engine) eng.value = draft.engine;
     const sel = document.getElementById("w-target");
     if (!sel) return;
-    d.targets.forEach(t => sel.insertAdjacentHTML("beforeend",
+    (d.targets || []).forEach(t => sel.insertAdjacentHTML("beforeend",
       `<option value="${esc(t.name)}">${esc(t.name)}${t.tested ? "" : " (untested)"}</option>`));
     sel.value = draft.target;
     sel.onchange = () => { draft.target = sel.value; targetPinned = !!sel.value; syncStackedFields(); };
@@ -3071,7 +3076,7 @@ function wizForm(msg = "", extra = "") {
   });
   // เครื่องปลายทาง — เลือกได้ตั้งแต่ต้น แล้วระบบตั้ง target ให้ตรงกับฮาร์ดแวร์ของเครื่องนั้น
   // เดิมต้อง deploy ที่นี่ก่อนแล้วค่อย push ซึ่งอ้อม และต้องรู้เองว่าเครื่องนั้นคือ preset ไหน
-  api("/api/nodes").then(r => r.json()).then(d => {
+  api("/api/nodes").then(r => r.ok ? r.json() : {}).then(d => {
     const sel = document.getElementById("w-machine");
     if (!sel) return;
     nodeTargets.clear();
@@ -3247,7 +3252,7 @@ async function pushAfterBuild(built, machine, stacked = false) {
   wizBusy(`Built ${slug} — sending to ${machine}…`);
   const r = await api(`/api/models/${encodeURIComponent(slug)}/push/${encodeURIComponent(machine)}`,
                       { method: "POST" });
-  const d = await r.json();
+  const d = r.ok ? await r.json().catch(() => ({})) : { detail: await failureText(r) };
   if (r.ok) {
     let cluster = null, paired = null;
     if (stacked) {
@@ -3582,7 +3587,7 @@ async function analyzeNow(overrides = {}) {
                              machine: draft.machine || (isStackedTarget(target) ? hubHeadFor(draft.worker) : "") || "",
                              worker: isStackedTarget(target) ? (draft.worker || "") : "", ...overrides }),
     });
-    const d = await r.json();
+    const d = await r.json().catch(() => ({}));
     if (r.ok) { planView(d); return; }
     const det = d.detail || {};
     if (det.kind === "choose-gguf") {
@@ -3879,7 +3884,14 @@ async function loadKeyState(slug) {
   const box = document.querySelector(`#panel-${CSS.escape(slug)} .key-state`);
   if (!box) return;
   try {
-    const d = await (await api(`/api/models/${encodeURIComponent(slug)}/key`)).json();
+    const r = await api(`/api/models/${encodeURIComponent(slug)}/key`);
+    // คำตอบที่ล้มไม่ใช่ "ไม่มี key" — เดิม JSON ของ error (has_key ไม่มี) ถูกอ่านเป็นข้อมูล แล้วแผงประกาศว่าโมเดล
+    // "served open — anything that can reach this port can use the model" ทั้งที่ hub แค่อ่านสถานะไม่ได้
+    if (!r.ok) {
+      box.innerHTML = `<span class="warn-line">${esc(T("Could not read the key state"))} — ${esc(await failureText(r))}</span>`;
+      return;
+    }
+    const d = await r.json();
     const pill = d.has_key
       ? `<span class="pill" style="border-color:var(--ok);color:var(--ok)">${esc(T("key set"))}</span>`
       : `<span class="pill" style="border-color:var(--warn);color:var(--warn)">${esc(T("served open"))}</span>`;
@@ -4063,7 +4075,7 @@ document.addEventListener("click", async e => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ context: ctx || null, approved_flags: flags }),
     });
-    const d = await r.json();
+    const d = await r.json().catch(() => ({}));
     if (r.ok) {
       // เลือกเครื่องปลายทางไว้ตั้งแต่ต้น = ส่งให้เลย ผู้ใช้จะได้ไม่ต้องไปหาปุ่ม push เอง
       if (draft.machine) { await pushAfterBuild(d, draft.machine, isStackedTarget(draft.target)); return; }
@@ -4092,8 +4104,9 @@ document.addEventListener("click", async e => {
     if (togglePanel(slug, "opts", () => manageMarkup(model))) hydrateLocalFit(slug);
     // เครื่องปลายทางมาจากทะเบียนจริง ไม่ใช่ให้พิมพ์ชื่อเอง — พิมพ์ผิดแล้วรู้ตอนกดส่ง
     const sel = document.querySelector(`#panel-${CSS.escape(slug)} .o-node`);
-    if (sel) api("/api/nodes").then(r => r.json()).then(d => {
-      const nodes = d.nodes || [];
+    if (sel) api("/api/nodes").then(async r => {
+      if (!r.ok) { sel.innerHTML = `<option value="">${esc(T("Could not list machines — {why}", { why: await failureText(r) }))}</option>`; return; }
+      const nodes = (await r.json()).nodes || [];
       sel.innerHTML = nodes.length
         ? nodes.map(n => `<option value="${esc(n.name)}">${esc(n.name)}</option>`).join("")
         : `<option value="">No other machines registered yet</option>`;
@@ -4295,8 +4308,8 @@ document.addEventListener("click", async e => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (!r.ok) { showError(await failureText(r, "Could not start the benchmark")); btn.disabled = false; return; }
     const d = await r.json();
-    if (!r.ok) { showError(d.detail || "Could not start the benchmark"); btn.disabled = false; return; }
     // วัดเต็มชุดกินเวลาหลายนาที — ตามผลแบบสตรีม แล้วรีเฟรชตารางคะแนนตอนจบ
     await followJob(slug, d.job.id);
     loadBench();
@@ -4323,8 +4336,8 @@ document.addEventListener("click", async e => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(opts(slug)),
     });
+    if (!r.ok) { alert(await failureText(r, "Could not start the job")); btn.disabled = false; return; }
     const d = await r.json();
-    if (!r.ok) { alert(d.detail || "Could not start the job"); btn.disabled = false; return; }
     followJob(slug, d.id);
     return;
   }
@@ -5222,7 +5235,17 @@ async function loadNode(name) {
   const formOpen = () => !!row.body.querySelector("[data-node-form]");
   if (!formOpen())
     row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><span class="muted">Contacting ${esc(name)}…</span></div>`;
-  const d = await (await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`)).json();
+  const r = await api(`/api/nodes/${encodeURIComponent(name)}/inventory?refresh=true`);
+  if (!r.ok) {
+    // hub ตอบไม่ได้ ≠ เครื่องนั้นต่อไม่ได้ — เดิม {detail} ถูกเก็บเป็นข้อมูลของเครื่อง: การ์ดขึ้น "Unreachable —" เปล่า ๆ
+    // และ rail/ภาพรวมนับเครื่องนั้นเป็น down · บอกว่า hub ตอบอะไร แล้วปล่อยข้อมูลเดิม (และ frame ถัดไป) ไว้ตามจริง
+    const why = await failureText(r);
+    if (!formOpen())
+      row.body.innerHTML = `<div class="pad" style="border-top:1px solid var(--line)"><div class="warn-line">${
+        esc(T("The hub could not report this machine — {why}", { why }))}</div></div>`;
+    return;
+  }
+  const d = await r.json();
   row.dot.className = "dot " + (d.reachable ? "on" : "");
   paintNodeVersion(row, d, name);
   lastNodeData.set(name, d);
@@ -5334,22 +5357,25 @@ document.addEventListener("click", async e => {
     const msg = document.getElementById("n-msg");
     e.target.disabled = true;
     msg.innerHTML = `<div class="muted">Installing the key and contacting the machine…</div>`;
-    let r, d;
+    let r, failure = "";
     try {
       r = await api("/api/nodes", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ host: val("n-host"), user: val("n-user"), name: val("n-name"),
                                port: +val("n-port") || 22, password: val("n-pass") }),
       });
-      d = await r.json().catch(() => ({}));
+      // เดิม `det.message || det || …` — body ที่ไม่ใช่ JSON (500 เปล่า ๆ · หน้า 502/504 ของ proxy) กลายเป็น {} แล้วขึ้น
+      // "[object Object]" บนจอ · failureText รับได้ทุกรูป
+      if (!r.ok) failure = await failureText(r, T("Could not add the machine"));
+    } catch (err) {
+      failure = unreachableText(err);
     } finally {
       // เครื่องที่ต่อไม่ติดทำให้ api() โยนออกมา — ถ้าไม่คืนปุ่มตรงนี้ ผู้ใช้จะกดเพิ่ม
       // เครื่องอีกไม่ได้เลยจนกว่าจะรีโหลดหน้า
       e.target.disabled = false;
     }
-    if (!r.ok) {
-      const det = d.detail || {};
-      msg.innerHTML = `<div class="warn-line" style="color:var(--bad)">${esc(det.message || det || "Could not add the machine")}</div>`;
+    if (failure) {
+      msg.innerHTML = `<div class="warn-line" style="color:var(--bad)">${esc(failure)}</div>`;
       return;
     }
     nodeRows.clear();
@@ -5532,7 +5558,7 @@ document.addEventListener("click", async e => {
         method: "PATCH", headers: { "content-type": "application/json" },
         body: JSON.stringify({ site: val }),
       });
-      if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).detail) || r.status);
+      if (!r.ok) throw new Error(await failureText(r));
       clearNodeOutput(node);   // บันทึกแล้ว = ปิดฟอร์ม คืนรายการโมเดล
       refreshNodes();       // badge/กลุ่มอัปเดตทันที
     } catch (e) { if (out) out.textContent = "Save failed: " + e.message; }
@@ -6148,15 +6174,30 @@ function layoutSiteGroups() {
 async function loadCluster(live = false) {
   const button = document.getElementById("cluster-check");
   if (live && button) { button.disabled = true; button.textContent = "Checking…"; }
+  let failure = "";
   try {
-    clusterData = await (await api("/api/cluster" + (live ? "?refresh=true" : ""))).json();
-  } catch {
+    const r = await api("/api/cluster" + (live ? "?refresh=true" : ""));
+    // คำตอบที่ล้มไม่ใช่ "ไม่มีคู่ที่ stacked ได้" — เดิม JSON ของ error (groups ไม่มี) ถูกเก็บเป็น clusterData แล้วหน้า
+    // บอกให้ไปหาเครื่องที่ GPU ตรงกัน ทั้งที่ hub แค่อ่าน config ไม่ได้ · ของเดิมที่ยังแสดงอยู่ไม่ถูกทิ้ง (เหมือนตอนสายหลุด)
+    if (r.ok) clusterData = await r.json();
+    else failure = await failureText(r);
+  } catch (err) {
     // อ่านจากแคชล้ม = อย่าทิ้งของเดิมที่ยังแสดงอยู่ ไม่งั้นรั้วกลุ่มจะกะพริบหายทุกครั้งที่เน็ตสะดุด
     if (live) clusterData = null;
+    if (live) failure = unreachableText(err);
   }
   if (live && button) { button.disabled = false; button.textContent = T("Check cluster"); }
   layoutClusterGroups();   // จบด้วย applyRouteFilter() ในตัว — ซ่อน/โชว์ตาม route เดิม
-  if (clusterData && !(clusterData.groups || []).length) {
+  const nodesBox = document.getElementById("nodes");
+  if (nodesBox) nodesBox.querySelector(".gerr")?.remove();
+  if (failure && nodesBox) {
+    const note = document.createElement("div");
+    note.className = "gerr warn-line";
+    note.style.margin = "0 0 10px";
+    note.textContent = T("Could not read the cluster state — {why}", { why: failure });
+    nodesBox.prepend(note);
+  }
+  if (!failure && clusterData && !(clusterData.groups || []).length) {
     const box = document.getElementById("nodes");
     if (box && !box.querySelector(".gnone")) {
       const note = document.createElement("div");
@@ -7032,8 +7073,8 @@ async function loadScan() {
   let d;
   try {
     const r = await api("/api/scan?all_nodes=true");
+    if (!r.ok) throw new Error(await failureText(r));
     d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
   } catch (e) {
     // เดิมไม่มี catch — request พังแล้วแผงค้างที่ "Scanning…" ตลอดกาลโดยไม่บอกอะไร
     box.innerHTML = `<div class="empty">Scan failed: ${esc(e.message)}</div>`;
@@ -7135,12 +7176,18 @@ async function refresh() {
       showError(await failureText(h.status === 429 ? h : m), "warn");
       return;
     }
-    const models = (await m.json()).models;
+    // คำตอบที่ล้มไม่ใช่ข้อมูลของเครื่อง: เดิม {detail} ของ 500 ถูกส่งเข้า renderHost → การ์ดขึ้น "GPU not found ·
+    // Docker not ready" ทั้งที่ hub แค่อ่าน config ไม่ได้ · ของที่วาดไว้แล้วอยู่ต่อ และบอกเหตุผลจริง
+    if (!h.ok || !m.ok) {
+      showError(T("The hub could not report its own state — {why}", { why: await failureText(h.ok ? m : h) }));
+      return;
+    }
+    const models = (await m.json()).models || [];
     renderHost(await h.json(), models);
     renderFleet(models);
     // Isolated + non-blocking: the fleet strip reads cached data, and a hiccup
     // here must never take down the main render.
-    api("/api/fleet/summary").then(r => r.json()).then(renderFleetSummary).catch(() => {});
+    api("/api/fleet/summary").then(r => r.ok ? r.json() : null).then(renderFleetSummary).catch(() => {});
     loadFleetConsistency();
   } catch {
     document.getElementById("fleet").innerHTML = `<div class="empty">${esc(T("Cannot reach LMDS — is the server still running?"))}</div>`;
@@ -7298,7 +7345,7 @@ async function updateEverything() {
            ? `${before || "?"} → ${now.commit}`
            : `already at ${now.commit || "?"}`);
 
-  const names = (await (await api("/api/nodes")).json()).nodes.map(n => n.name);
+  const names = ((await (await api("/api/nodes")).json().catch(() => ({}))).nodes || []).map(n => n.name);
   for (const name of names) upStep("n:" + name, name, "wait", "queued");
   for (const name of names) {
     upStep("n:" + name, name, "run", "Installing…");
@@ -8487,7 +8534,10 @@ async function loadProvider() {
   const btn = document.getElementById("brain");
   if (!btn) return;
   try {
-    providerState = await (await api("/api/provider")).json();
+    const r = await api("/api/provider");
+    // อ่านไม่ได้ ≠ "ยังไม่ได้ตั้ง LLM" — ปุ่มคงสถานะเดิมไว้ ไม่ประกาศว่าเป็น rule-based จาก JSON ของ error
+    if (!r.ok) { btn.title = T("Could not read the LLM settings — {why}", { why: await failureText(r) }); return; }
+    providerState = await r.json();
   } catch { return; }
   const p = providerState;
   btn.classList.toggle("off", !p.configured || !p.has_key);

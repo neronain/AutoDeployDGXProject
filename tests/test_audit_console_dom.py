@@ -150,8 +150,8 @@ def test_no_payload_field_can_create_markup(tmp_path):
     found = {surface: r["found"] for surface, r in report.items() if r["found"]}
     assert found == {}, f"ค่าจาก payload สร้าง markup ได้: {found}"
     # ค่าที่ผิดชนิดต้องไม่ทำให้ทั้งการ์ดพัง (เดิม `.toFixed` ของสตริงโยน แล้วการ์ดของเครื่องนั้นไม่ถูกวาดเลย) ·
-    # จอ error ที่ยังอ่าน body ที่ไม่ใช่ JSON ไม่ได้ เป็นเรื่องของข้อ 9 — คุมแยกที่เทสของข้อนั้น
-    threw = {surface: r["threw"] for surface, r in report.items() if r["threw"] and surface != "error responses"}
+    # และจอ error ต้องอ่านได้ทุกรูปของคำตอบที่ล้ม รวม body ที่ไม่ใช่ JSON (ข้อ 9: เดิม `await r.json()` โยนที่ doctor/analyse)
+    threw = {surface: r["threw"] for surface, r in report.items() if r["threw"]}
     assert threw == {}, f"payload ผิดชนิดทำให้การวาดโยน: {threw}"
 
 
@@ -831,6 +831,71 @@ def test_a_form_or_its_result_on_a_card_survives_live_frames_until_the_user_clos
     assert closed == {"formGone": True, "body": True, "held": False}, "ปิดแล้วการ์ดกลับมาเป็นรายการโมเดลล่าสุดทันที"
     assert docker == {"field": "half-typed"}
     assert refreshed == {"formGone": True}
+
+
+def test_a_failed_response_is_never_read_as_data(tmp_path):
+    """JSON ของ error ถูกอ่านเป็น *ข้อมูล*: 500 {detail} ที่แผง key → "served open — ใครก็ใช้โมเดลได้" · 500 ของ
+    /api/cluster → "No stackable pair yet — needs at least two machines…" · 500 ที่ไม่ใช่ JSON ตอนเพิ่มเครื่อง →
+    "[object Object]" · hub ตอบ 500 ให้ inventory → การ์ดขึ้นว่าเครื่อง Unreachable · /api/host 500 → การ์ด "GPU not found\""""
+    (key, add, cluster, node, host, llm) = run_scenario(tmp_path, MODEL + """
+        const fx = { nodes: [{ name: "spark-01", site: "TKC", models: [model({ running: true, healthy: true })] }],
+                     localModels: [model({ running: true, healthy: true })] };
+        H.fx = fx; H.broken = new Set();
+        const CONFIG = { status: 500, body: { detail: "config.yaml อ่านไม่ได้ (บรรทัด 12)" } };
+        const or = (key, fine) => (url, opts) => H.broken.has(key) ? CONFIG : fine(url, opts);
+        const base = H.defaultRoutes(fx);
+        const fine = pat => base.find(r => String(r[0]) === String(pat))[1];
+        H.routes = [
+          ["/api/models/qwen/key", or("key", () => ({ slug: "qwen", has_key: true, path: "/k/qwen", hint: "abcd…wxyz" }))],
+          ["/api/nodes", (u, o) => o.method === "POST" ? { status: 502, body: "<html><body><h1>502 Bad Gateway</h1></body></html>" } : fine("/api/nodes")(u, o)],
+          ["/api/cluster", or("cluster", () => ({ machines: [], groups: [] }))],
+          [/^\\/api\\/nodes\\/[^/]+\\/inventory/, or("inventory", base.find(r => r[0] instanceof RegExp)[1])],
+          ["/api/host", or("host", fine("/api/host"))],
+          ["/api/provider", or("provider", () => ({ configured: true, has_key: true, name: "openai", model: "gpt", choices: ["openai"], defaults: {} }))],
+          ...base,
+        ];
+    """, """
+        location.hash = "#/hub"; await H.tick(30);
+        const txt = el => (el ? el.textContent : "").replace(/\\s+/g, " ").trim();
+        // 1) แผง key
+        document.querySelector('button[data-act="key"][data-slug="qwen"]').click(); await H.tick(10);
+        const fineKey = txt(document.querySelector("#panel-qwen .key-state"));
+        H.broken.add("key"); await loadKeyState("qwen"); await H.tick(5);
+        console.log(JSON.stringify({ fine: fineKey, says: txt(document.querySelector("#panel-qwen .key-state")) }));
+        // 2) เพิ่มเครื่อง — proxy ตอบหน้า 502
+        location.hash = "#/nodes"; await H.tick(10);
+        document.getElementById("node-new").click(); await H.tick(5);
+        document.getElementById("n-host").value = "10.0.0.9"; document.getElementById("n-user").value = "u";
+        document.getElementById("n-save").click(); await H.tick(10);
+        console.log(JSON.stringify({ says: txt(document.getElementById("n-msg")), buttonBack: !document.getElementById("n-save").disabled }));
+        document.getElementById("n-cancel").click(); await H.tick(10);
+        // 3) สถานะคลัสเตอร์
+        await loadCluster(); await H.tick(5);
+        const fineCluster = txt(document.querySelector("#nodes .gnone"));
+        H.broken.add("cluster"); await loadCluster(); await H.tick(5);
+        console.log(JSON.stringify({ fine: fineCluster, none: txt(document.querySelector("#nodes .gnone")), says: txt(document.querySelector("#nodes .gerr")) }));
+        // 4) hub ตอบ 500 ให้ inventory ของเครื่องที่ยังดีอยู่
+        H.broken.add("inventory"); await loadNode("spark-01"); await H.tick(5);
+        console.log(JSON.stringify({ body: txt(nodeRows.get("spark-01").body), stillReachable: lastNodeData.get("spark-01").reachable }));
+        // 5) hub รายงานตัวเองไม่ได้
+        const hostCard = txt(document.getElementById("stats"));
+        H.broken.add("host"); await refresh(); await H.tick(5);
+        console.log(JSON.stringify({ unchanged: txt(document.getElementById("stats")) === hostCard, toast: txt(document.getElementById("toast")) }));
+        // 6) การตั้งค่า LLM
+        const brain = txt(document.getElementById("brain"));
+        H.broken.add("provider"); await loadProvider(); await H.tick(5);
+        console.log(JSON.stringify({ before: brain, after: txt(document.getElementById("brain")), title: document.getElementById("brain").title }));
+        H.errors.length = 0;
+    """)
+    assert key["fine"].startswith("key set")
+    assert "served open" not in key["says"] and "config.yaml อ่านไม่ได้ (บรรทัด 12)" in key["says"], key["says"]
+    assert "[object Object]" not in add["says"] and add["buttonBack"]
+    assert add["says"].startswith("Could not add the machine (HTTP 502)") and "502 Bad Gateway" in add["says"] and "<" not in add["says"]
+    assert cluster["fine"].startswith("No stackable pair yet"), "คลัสเตอร์ที่ว่างจริงยังบอกแบบเดิม"
+    assert cluster["none"] == "" and "config.yaml อ่านไม่ได้ (บรรทัด 12)" in cluster["says"]
+    assert "Unreachable" not in node["body"] and "config.yaml อ่านไม่ได้" in node["body"] and node["stillReachable"] is True
+    assert host["unchanged"] and "config.yaml อ่านไม่ได้" in host["toast"]
+    assert "openai" in llm["before"] and llm["after"] == llm["before"] and "config.yaml อ่านไม่ได้" in llm["title"]
 
 
 def test_the_recipes_page_shows_the_servers_reason_when_it_cannot_be_read(tmp_path):
