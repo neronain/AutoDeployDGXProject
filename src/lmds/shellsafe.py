@@ -17,14 +17,18 @@ controller ถูก render จาก template แล้ว *รันบนเ�
 
 from __future__ import annotations
 
+import re
 import shlex
 import unicodedata
 
-# ค่าที่ renderer ใส่แทน *ทุกค่า* ตอน render แบบ canary — ไม่มีอักขระที่เชลล์ตีความ อยู่ได้ทุกบริบท
-CANARY = "LMDSCANARY"
-# canary ของค่าชนิด ShellWords (หลายคำที่ quote มาแล้ว วางนอก quote) — gate ต้องรู้ว่าบรรทัดไหนเป็นแบบนี้
-# เพราะของจริงมีได้หลายคำ/หลายคู่ quote ต่างจาก canary คำเดียวโดยชอบ · ห้ามมี CANARY เป็นส่วนหนึ่งของชื่อ
-CANARY_WORDS = "LMDSWORDSCNRY"
+# คำที่ renderer ใส่แทน *ทุกค่า* ตอน render แบบ canary — ไม่มีอักขระที่เชลล์ตีความ อยู่ได้ทุกบริบท
+# แยกตามชนิดของ encoding ที่ renderer เลือกให้ตำแหน่งนั้น: gate ใช้รู้ว่าค่าจริงตรงนั้นต้องมีหน้าตาแบบไหน
+# (ห้ามมีคำไหนเป็นส่วนต้นของอีกคำ — gate แยกด้วย regex เดียว)
+CANARY = "LMDSCANARY"              # ใน "…" · คอมเมนต์ · heredoc           → dq()
+CANARY_DEFAULT = "LMDSDFLTCNRY"    # ค่าตั้งต้นใน "${VAR:-…}"              → dq_default()
+CANARY_EITHER = "LMDSEITHCNRY"     # บรรทัดมี ' เปิดค้าง ('…' หรือข้อความ)   → quoted_either()
+CANARY_WORDS = "LMDSWORDSCNRY"     # หลายคำที่ quote มาแล้ว วางนอก quote    → words()
+CANARY_NUMBER = "LMDSNUMBCNRY"     # ตัวเลข — ไม่ถูก encode แต่ต้องเป็นตัวเลขจริง
 
 
 class UnsafeValueError(ValueError):
@@ -39,7 +43,13 @@ class ShellWords(str):
 
 
 def words(*values: str) -> ShellWords:
-    """`shlex.quote` ทีละคำ คั่นด้วยช่องว่าง — สำหรับ `for f in …` / `args+=(…)` ที่ template วางโดยไม่มี quote"""
+    """`shlex.quote` ทีละคำ คั่นด้วยช่องว่าง — สำหรับ `for f in …` / `args+=(…)` ที่ template วางโดยไม่มี quote
+
+    อักขระควบคุมปฏิเสธเหมือน encoder ตัวอื่น: ขึ้นบรรทัดใหม่ใน `'…'` ถูกต้องตาม bash ก็จริง แต่ทำให้ controller มีบรรทัดเกิน
+    จากที่ template เขียน — gate เทียบโครงบรรทัดต่อบรรทัดไม่ได้อีก และไม่มี flag/env ไหนที่ควรมีขึ้นบรรทัดใหม่อยู่แล้ว
+    """
+    for value in values:
+        _reject_control(str(value))
     return ShellWords(" ".join(shlex.quote(str(v)) for v in values))
 
 
@@ -94,6 +104,91 @@ def dq_default(value: object) -> str:
                 "(ไม่มีวิธี escape ที่ bash ทุกรุ่นตีความตรงกัน)"
             )
     return dq(text)
+
+
+def quoted_either(value: object) -> str:
+    """escape สำหรับตำแหน่งที่บรรทัดของ template มี `'` เปิดค้างอยู่ก่อนถึงค่า — ปลอดภัยทั้งใน `'…'` และใน `"…"`/heredoc
+
+    = dq() แล้วแทน `'` ด้วย `'\\''` · ทำไมไม่ escape แบบ single quote ล้วน ๆ: renderer รู้บริบทจากบรรทัดเดียว และ `'` บนบรรทัด
+    อาจเป็น quote ของ bash จริง (`printf ' … lmds set <slug> %s …'` ของ _knob_fix — ตำแหน่งแรกที่มี 2026-10-06) หรือเป็นแค่
+    เครื่องหมายในข้อความของ heredoc/สตริงหลายบรรทัด · เดาผิดทางไหนก็ต้องไม่กลายเป็นคำสั่ง:
+      - ใน `'…'` จริง: `'\\''` ถูกต้อง · `\\$` กลายเป็นตัวหนังสือสองตัว (ค่าที่มี $ เพี้ยนหน้าตา แต่ไม่ถูกรัน)
+      - ใน `"…"`/heredoc จริง: `\\$` ถูกต้อง · `'\\''` กลายเป็นตัวหนังสือสี่ตัว (เพี้ยนหน้าตา แต่ไม่หลุด quote)
+    ค่าปกติ (ไม่มี `\\ " $ \\` '`) ออกมาเหมือนเดิมทุกไบต์ทั้งสองทาง
+    """
+    return dq(value).replace("'", "'\\''")
+
+
+_NUMBER = re.compile(r"[-+]?[0-9]*\.?[0-9]*(?:[eE][-+]?[0-9]+)?|True|False")
+# อักขระที่ shlex.quote ปล่อยไว้นอก quote (ชุดเดียวกับ `shlex._find_unsafe`)
+_BARE_WORD = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-")
+
+
+def _expansion_named(text: str, at: int) -> str:
+    if text[at] == "`":
+        return "มี ` (command substitution) ที่ template ไม่ได้ใส่"
+    follower = text[at + 1:at + 2]
+    if follower == "(":
+        return "มี $( ที่ template ไม่ได้ใส่"
+    if follower == "{":
+        return "มี ${ ที่ template ไม่ได้ใส่"
+    return "มี $ (expansion) ที่ template ไม่ได้ใส่"
+
+
+def encoding_problem(kind: str, text: str) -> str:
+    """เหตุผลที่ `text` (ค่าตามที่เขียนอยู่ใน controller) ไม่ใช่ผลของ encoder ชนิด `kind` — สตริงว่าง = ใช่
+
+    คู่ตรวจของ dq / dq_default / quoted_either / words: gate ใช้ยืนยันว่าค่าทุกตัวในไฟล์ถูก encode มาครบ โดยไม่ต้องอ่าน quote ของทั้งไฟล์
+    `kind`: "dq" · "default" · "either" · "words" · "number"
+    """
+    if _control_chars(text):
+        return "มีอักขระควบคุม (ขึ้นบรรทัดใหม่ ฯลฯ) ในค่า"
+    if kind == "number":
+        return "" if _NUMBER.fullmatch(text) else "ตำแหน่งของตัวเลขมีอย่างอื่น — quote/คำสั่งหลุดเข้ามา"
+    if kind == "either":
+        text = text.replace("'\\''", "")
+        if "'" in text:
+            return "quote: มี ' ที่ไม่ได้ escape — ค่าหลุดออกนอก single quote"
+    if kind == "words":
+        state = "out"
+        for at, char in enumerate(text):
+            if state == "sq":
+                if char == "'":
+                    state = "out"
+            elif state == "dq":
+                # shlex.quote เขียน double quote แบบเดียว: "'" (ตัว ' ที่อยู่ในค่า)
+                if char == '"':
+                    state = "out"
+                elif char in "$`":
+                    return _expansion_named(text, at)
+                elif char != "'":
+                    return 'quote: ใน "…" ของคำที่ quote มามีอย่างอื่นนอกจาก \''
+            elif char == "'":
+                state = "sq"
+            elif char == '"':
+                state = "dq"
+            elif char in "$`":
+                return _expansion_named(text, at)
+            elif char != " " and char not in _BARE_WORD:
+                return f"quote: มี {char!r} อยู่นอก quote — ค่าหลุดออกมาเป็นไวยากรณ์ของเชลล์"
+        return "" if state == "out" else "quote: quote ของคำที่ quote มาปิดไม่ครบ"
+    # dq / default: ทุก \ " $ ` ต้องมี backslash นำ — และ backslash นำได้แค่สี่ตัวนี้
+    at, size = 0, len(text)
+    while at < size:
+        char = text[at]
+        if char == "\\":
+            if text[at + 1:at + 2] in ("\\", '"', "$", "`") and at + 1 < size:
+                at += 2
+                continue
+            return "quote: มี \\ ที่ไม่ได้ escape ในค่า"
+        if char == '"':
+            return 'quote: มี " ที่ไม่ได้ escape — ค่าหลุดออกนอก quote'
+        if char in "$`":
+            return _expansion_named(text, at)
+        if kind == "default" and char in "}'":
+            return f"quote: มี {char} ในค่าตั้งต้นของ ${{VAR:-…}} — ปิด expansion/เปิด quote กลางคัน"
+        at += 1
+    return ""
 
 
 # ────────────────────────── กติกาของค่าแต่ละชนิด ──────────────────────────

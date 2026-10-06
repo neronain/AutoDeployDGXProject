@@ -363,112 +363,91 @@ def gate_template_rendered(bundle_dir: Path) -> GateResult:
     return GateResult("template-rendered", True)
 
 
+_CANARY_TOKEN = re.compile("LMDS(?:CANARY|DFLTCNRY|EITHCNRY|WORDSCNRY|NUMBCNRY)")
+_CANARY_KIND = {
+    "LMDSCANARY": "dq", "LMDSDFLTCNRY": "default", "LMDSEITHCNRY": "either",
+    "LMDSWORDSCNRY": "words", "LMDSNUMBCNRY": "number",
+}
+_ADJACENT_WORDS = re.compile(r"LMDSWORDSCNRY(?: +LMDSWORDSCNRY)+")
+
+
 @dataclass
-class _LineShape:
-    """สิ่งที่เชลล์ "เห็นเป็นโครง" ของหนึ่งบรรทัด — เครื่องหมาย quote ตัวคั่นคำสั่ง และ expansion · เนื้อใน quote กับตัวคำถูกทิ้ง"""
+class _ValueFrame:
+    """บรรทัดหนึ่งของ canary render ที่มีค่าแทรก — ข้อความของ template รอบ ๆ ค่า และชนิดของ encoding ที่แต่ละค่าต้องเป็น"""
 
-    skeleton: str
-    end_state: str          # out | dq | sq — สถานะ quote ที่ค้างไปบรรทัดถัดไป
-    words: bool = False     # บรรทัดนี้มีค่าแบบ ShellWords (หลายคำที่ quote มาแล้ว) — จำนวนคำ/quote ต่างจาก canary ได้โดยชอบ
+    pattern: re.Pattern
+    kinds: list[str]
+    literal: str            # ข้อความของ template ทั้งบรรทัด (ไม่รวมค่า) — ใช้ตัดสินว่าบรรทัดนี้ "ชี้ตัวได้" แค่ไหน
+
+    @property
+    def distinctive(self) -> bool:
+        # `  "…"` (สมาชิกของ array) ตรงกับบรรทัดไหนก็ได้ · `SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-…}"` ตรงได้บรรทัดเดียว
+        return sum(1 for c in self.literal if c.isalnum()) >= 4
 
 
-# ตัวอักษรของ "คำ" ที่ไม่มีความหมายพิเศษต่อเชลล์ (ชุดเดียวกับที่ shlex.quote ปล่อยไว้ไม่ quote + ตัวอักษรทุกภาษา)
-_WORD_PUNCTUATION = frozenset("_.-/:@%+=,")
+def _value_frame(canary_line: str) -> _ValueFrame | None:
+    """แยกบรรทัดของ canary render เป็น "ข้อความของ template" กับ "ช่องของค่า" — None = บรรทัดนี้ไม่มีค่าแทรก"""
+    if "LMDS" not in canary_line:
+        return None
+    # flag หลายตัวที่คั่นด้วยช่องว่าง (`ARGS=(W W W )`) คือรายการคำก้อนเดียว — แยกทีละช่องไม่ได้ เพราะคำที่ quote มีช่องว่างข้างในได้
+    line = _ADJACENT_WORDS.sub("LMDSWORDSCNRY", canary_line)
+    tokens = [m.group(0) for m in _CANARY_TOKEN.finditer(line)]
+    if not tokens:
+        return None
+    literals = _CANARY_TOKEN.split(line)
+    kinds: list[str] = []
+    merged: list[str] = [literals[0]]
+    for token, after in zip(tokens, literals[1:], strict=True):
+        kind = _CANARY_KIND[token]
+        if kinds and merged[-1] == "" and len(merged) > 1:
+            # สองค่าติดกันโดยไม่มีข้อความคั่น (`{{ a }}{{ b }}`) แยกเขตกันไม่ได้ — ตรวจรวมเป็นช่องเดียวด้วยกติกาของตัวที่ไม่ใช่ตัวเลข
+            if kinds[-1] == "number" or (kinds[-1] == "dq" and kind == "default"):
+                kinds[-1] = kind
+            merged[-1] = after
+            continue
+        kinds.append(kind)
+        merged.append(after)
+    pattern = re.compile("(.*?)".join(re.escape(part) for part in merged), re.S)
+    return _ValueFrame(pattern, kinds, "".join(merged))
 
 
-def _line_shapes(text: str) -> list[_LineShape]:
-    """โครงของทุกบรรทัดตามที่เชลล์จะอ่าน — ไม่ใช่ parser ของ bash และไม่ต้องเป็น
+def _pair_lines(canary_lines: list[str], actual_lines: list[str], wanted: list[int]) -> dict[int, int]:
+    """บรรทัดของ canary → บรรทัดของ controller จริงที่เป็นคู่กัน (เฉพาะบรรทัดใน `wanted`)
 
-    ใช้ *เทียบ* controller จริงกับตัวที่ render ด้วย canary ซึ่งข้อความของ template เหมือนกันทุกตัวอักษร ส่วนที่อ่านผิด
-    (heredoc ของ python · quote ซ้อนใน `$( )`) จึงผิดเหมือนกันทั้งสองฝั่ง · ผลต่างที่เหลือมาจาก "ค่า" เท่านั้น
-
-    สิ่งที่เก็บไว้ในโครง: นอก quote — ทุกอย่างที่ไม่ใช่ตัวอักษรของคำ (ช่องว่าง `; & | < > ( )` quote `$` backtick …) ·
-    ใน double quote — ตัวปิด กับ `$`/backtick ที่ไม่ได้ escape (= expansion) · ใน single quote — ตัวปิดอย่างเดียว ·
-    ในคอมเมนต์ — `$`/backtick (บรรทัด `#` ใน heredoc ไม่ใช่คอมเมนต์ของ bash และถูก expand จริง)
+    render จาก template ชุดเดียวกัน = จำนวนบรรทัดเท่ากัน จับคู่ตามตำแหน่งได้เลย · ไม่เท่า (แก้มือ · template รุ่นอื่น · ค่าที่พา
+    ขึ้นบรรทัดใหม่มา · ค่าที่ทำให้ตารางไฟล์ที่สร้างกลับมามีสมาชิกเกิน) ใช้ difflib หาช่วงที่ข้อความของ template ตรงกัน แล้วจับคู่
+    ช่วงที่ต่างกันตามลำดับจากต้นช่วง — บรรทัดที่เกินมาฝั่งใดฝั่งหนึ่งไม่มีคู่ และคู่ที่โครงไม่ตรงผู้เรียกจะเห็นเอง
+    (ทั้งสองแบบผู้เรียกต้องรายงาน ไม่ใช่ข้าม)
     """
-    from lmds.shellsafe import CANARY_WORDS
+    if len(canary_lines) == len(actual_lines):
+        return {i: i for i in wanted}
+    import difflib
 
-    shapes: list[_LineShape] = []
-    state = "out"
-    for line in text.split("\n"):
-        kept: list[str] = []
-        words = comment = False
-        i, n = 0, len(line)
-        while i < n:
-            char = line[i]
-            if line.startswith(CANARY_WORDS, i):
-                words = True
-                i += len(CANARY_WORDS)
-                continue
-            if comment:
-                if char == "\\":
-                    i += 2
-                    continue
-                if char in "$`":
-                    kept.append(char + (line[i + 1] if char == "$" and line[i + 1:i + 2] in ("(", "{") else ""))
-                i += 1
-                continue
-            if state == "sq":
-                if char == "'":
-                    kept.append(char)
-                    state = "out"
-                i += 1
-                continue
-            if char == "\\":
-                if state == "out":
-                    kept.append(char)
-                i += 2
-                continue
-            if state == "dq":
-                if char == '"':
-                    kept.append(char)
-                    state = "out"
-                elif char in "$`":
-                    kept.append(char + (line[i + 1] if char == "$" and line[i + 1:i + 2] in ("(", "{") else ""))
-                i += 1
-                continue
-            # นอก quote
-            if char == "'":
-                state = "sq"
-            elif char == '"':
-                state = "dq"
-            elif char == "#" and (i == 0 or line[i - 1] in " \t;"):
-                comment = True      # quote ในคอมเมนต์ไม่มีผล (ชื่อผู้ถือไลเซนส์มี ' ได้)
-            elif char.isalnum() or char in _WORD_PUNCTUATION or ord(char) > 0x7F:
-                i += 1
-                continue
-            kept.append(char)
-            i += 1
-        shapes.append(_LineShape("".join(kept), state, words))
-    return shapes
-
-
-_QUOTES_AND_BLANKS = str.maketrans("", "", "'\" \t")
-
-
-def _value_became_code(got: _LineShape, want: _LineShape) -> str:
-    """เหตุผลที่บรรทัดของ controller จริงไม่ตรงโครงกับ canary — สตริงว่าง = ตรง"""
-    mine, theirs = got.skeleton, want.skeleton
-    if want.words:
-        # ค่าที่ renderer quote เป็นคำมาแล้ว: จำนวนคำ/คู่ quote ต่างได้ แต่ของที่อยู่นอก quote ต้องเท่าเดิม
-        mine, theirs = mine.translate(_QUOTES_AND_BLANKS), theirs.translate(_QUOTES_AND_BLANKS)
-    if mine == theirs and got.end_state == want.end_state:
-        return ""
-    for mark in ("$(", "${", "`"):
-        if mine.count(mark) > theirs.count(mark):
-            return f"มี {mark} ที่ template ไม่ได้ใส่"
-    if mine.count("$") > theirs.count("$"):
-        return "มี $ (expansion) ที่ template ไม่ได้ใส่"
-    return "quote/ตัวคั่นคำสั่งไม่ตรงกับที่ template เขียน — มีค่าหลุดออกนอก quote"
+    pairs: dict[int, int] = {}
+    matcher = difflib.SequenceMatcher(None, canary_lines, actual_lines)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "replace":
+            for offset in range(min(i2 - i1, j2 - j1)):
+                pairs[i1 + offset] = j1 + offset
+    return {i: pairs[i] for i in wanted if i in pairs}
 
 
 def gate_value_expansion(bundle_dir: Path) -> GateResult:
-    """ค่าที่ renderer แทรกลง controller ต้องไม่กลายเป็นคำสั่ง — `$(` `${` backtick และ quote ต้องมีเท่าที่ template ใส่เอง
+    """ค่าที่ renderer แทรกลง controller ต้องเป็น "ตัวหนังสือ" เสมอ — ไม่มี `$(` `${` backtick หรือ quote ที่ค่าพามาเอง
 
     วิธี: สร้างแผนกลับจาก bundle (MODEL_PROFILE.yaml + หัว controller — ทางเดียวกับ `lmds bundles refresh`) แล้ว render
-    template เดิมอีกรอบโดยแทน *ทุกค่า* ด้วยคำ canary ที่ไม่มีอักขระของเชลล์ · ผลลัพธ์นั้นคือ "สิ่งที่ template ใส่เอง"
-    บรรทัดต่อบรรทัด — controller จริงที่โครงไม่ตรง (มี expansion เกิน · quote เปิดปิดไม่เท่า · มี `;` นอก quote เพิ่ม)
-    แปลว่ามีค่าหลุดออกมาเป็นโค้ด · ไม่ต้องเดาด้วย regex ว่า `$(` ตัวไหนเป็นของ template (`$(cd "$(dirname …)")`)
+    template เดิมอีกรอบโดยแทน *ทุกค่า* ด้วยคำ canary · บรรทัดที่มี canary คือบรรทัดที่มีค่าแทรก และส่วนที่เหลือของบรรทัดนั้น
+    คือข้อความของ template → ตัดข้อความของ template ออกจากบรรทัดคู่กันใน controller จริง ที่เหลือคือ "ค่าตามที่ถูกเขียนลงไฟล์"
+    ซึ่งต้องเป็นผลของ encoder ชนิดที่ renderer เลือกให้ตำแหน่งนั้นพอดี (`shellsafe.encoding_problem`)
+
+    **ไม่มีการอ่าน quote ของทั้งไฟล์** — รุ่นแรกของด่านนี้ไล่นับ quote ตั้งแต่บรรทัดแรก พอ template มี
+    `"$(… | grep -o '"id":"[^"]*"' …)"` (quote ใน `$( )` เริ่มนับใหม่ และ `'…'` ข้างในมี `"` จำนวนคี่) สถานะก็เพี้ยน
+    ไปทั้งไฟล์: ค่าที่อยู่ในช่วงที่มัน "คิดว่าอยู่ใน single quote" ไม่ถูกตรวจเลยและด่านรายงานว่าผ่าน (2026-10-06 หลัง merge)
+    บริบทของแต่ละตำแหน่งเป็นเรื่องของ template ไม่ใช่ของ bundle — พิสูจน์ด้วยการถาม bash เองในเทส
+    (tests/test_shell_injection.py) ส่วนด่านนี้ตรวจสิ่งเดียวที่ขึ้นกับ bundle: ค่าถูก encode มาครบไหม
+
+    ตรวจไม่ได้ต้องพูด: บรรทัดมีค่าที่หาคู่ไม่ได้/โครงไม่ตรง ใน bundle ที่อ้าง template_hash ชุดนี้ = ไม่ผ่าน
+    (ค่าพาขึ้นบรรทัดใหม่มา หรือไฟล์ถูกแก้) · bundle จาก template รุ่นอื่น = n/a พร้อมจำนวนบรรทัดที่ตรวจได้
 
     เคสจริง (audit 2026-10-06): ไฟล์ใน repo ชื่อ `…$(touch PWNED_gguf).gguf` และ served_model_name
     `qwen$(touch PWNED_served_name)` ผ่านครบทุกด่านที่มีตอนนั้น แล้ว `controller help` สร้างไฟล์ PWNED บนเครื่อง
@@ -485,10 +464,13 @@ def gate_value_expansion(bundle_dir: Path) -> GateResult:
     if not isinstance(profile, dict):
         return GateResult(name, True, "n/a")
 
+    from lmds.fleet.consistency import controller_header
     from lmds.fleet.refresh import RefreshError, plan_from_profile
-    from lmds.generator.renderer import render_canary_controller
+    from lmds.generator.renderer import render_canary_controller, template_hash
+    from lmds.shellsafe import encoding_problem
 
-    compared = 0
+    checked = 0
+    skipped: list[str] = []
     for script in scripts:
         actual = script.read_text(encoding="utf-8")
         try:
@@ -501,22 +483,47 @@ def gate_value_expansion(bundle_dir: Path) -> GateResult:
             canary = render_canary_controller(plan, report, fit, slug=bundle_dir.name)
         except Exception as exc:  # noqa: BLE001 — bundle ที่สร้างแผนกลับไม่ได้ (adopt · profile รุ่นเก่า) เทียบไม่ได้ ไม่ใช่ไม่ผ่าน
             return GateResult(name, True, f"n/a (สร้างแผนกลับจาก bundle ไม่ได้: {str(exc)[:80]})")
-        mine, theirs = _line_shapes(actual), _line_shapes(canary)
-        if len(mine) != len(theirs):
-            # controller จาก template รุ่นอื่น (หรือแก้มือ) — โครงไม่ตรงจึงเทียบบรรทัดต่อบรรทัดไม่ได้ ·
-            # bundle แบบนี้ถูกนับเป็น controller-stale อยู่แล้ว และตอน regenerate ค่าทุกตัวจะผ่าน renderer + ด่านนี้ใหม่
+
+        # bundle นี้อ้างว่า render จาก template + renderer ชุดที่แพ็กเกจถืออยู่ไหม — ถ้าใช่ ทุกบรรทัดมีค่าต้องตรวจได้
+        claimed = str(profile.get("template_hash") or controller_header(script)["template_hash"] or "")
+        current = claimed == template_hash()
+        canary_lines, actual_lines = canary.split("\n"), actual.split("\n")
+        frames = {i: frame for i, line in enumerate(canary_lines) if (frame := _value_frame(line)) is not None}
+        pairs = _pair_lines(canary_lines, actual_lines, sorted(frames))
+        unverified: list[int] = [i for i in frames if i not in pairs]
+        for i, j in sorted(pairs.items()):
+            frame = frames[i]
+            found = frame.pattern.fullmatch(actual_lines[j])
+            if found is None:
+                unverified.append(i)
+                continue
+            if not current and not frame.distinctive:
+                # template รุ่นอื่น: บรรทัดรูป `  "…"` จับคู่ตามตำแหน่งแล้วอาจเป็นคนละบรรทัดกัน — ไม่ตัดสินจากคู่ที่ไม่แน่ใจ
+                unverified.append(i)
+                continue
+            for kind, text in zip(frame.kinds, found.groups(), strict=True):
+                problem = encoding_problem(kind, text)
+                if problem:
+                    return GateResult(
+                        name, False,
+                        f"{script.name}:{j + 1}: {problem} — ค่าจาก repo/แผนจะถูกเชลล์ตีความบนเครื่องที่รัน")
+            checked += 1
+        if unverified and current:
+            first = min(unverified)
+            where = pairs.get(first)
             return GateResult(
-                name, True,
-                f"n/a ({script.name} ไม่ได้ render จาก template ชุดนี้ — {len(mine):,} บรรทัด เทียบกับ {len(theirs):,} · "
-                "regenerate ก่อนแล้วตรวจใหม่: lmds bundles refresh)")
-        for number, (got, want) in enumerate(zip(mine, theirs, strict=True), start=1):
-            reason = _value_became_code(got, want)
-            if reason:
-                return GateResult(
-                    name, False,
-                    f"{script.name}:{number}: {reason} — ค่าจาก repo/แผนจะถูกเชลล์ตีความบนเครื่องที่รัน")
-        compared += 1
-    return GateResult(name, True, f"เทียบกับ canary แล้ว {compared} สคริปต์")
+                name, False,
+                f"{script.name}:{(where if where is not None else first) + 1}: บรรทัดที่มีค่าแทรกไม่ตรงโครงของ template ที่ bundle "
+                f"อ้างว่า render มา ({len(unverified)} บรรทัด) — ตรวจไม่ได้ว่าค่าเป็นตัวหนังสือ: ค่าพาขึ้นบรรทัดใหม่มา "
+                "หรือไฟล์ถูกแก้มือ · regenerate: lmds bundles refresh")
+        if unverified:
+            skipped.append(f"{script.name}: ตรวจไม่ได้ {len(unverified)} จาก {len(frames)} บรรทัดที่มีค่าแทรก")
+    if skipped:
+        return GateResult(
+            name, True,
+            "n/a (controller จาก template รุ่นอื่น — " + "; ".join(skipped) + f" · ตรวจได้ {checked} บรรทัด ไม่พบค่าที่เป็นโค้ด · "
+            "regenerate แล้วตรวจใหม่: lmds bundles refresh)")
+    return GateResult(name, True, f"เทียบกับ canary แล้ว {checked} บรรทัดที่มีค่าแทรก")
 
 
 def gate_serving_consistent(bundle_dir: Path) -> GateResult:

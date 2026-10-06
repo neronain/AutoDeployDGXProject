@@ -22,11 +22,15 @@ from lmds.fit.targets import PRESETS
 from lmds.inspector.report import ModelReport
 from lmds.shellsafe import (
     CANARY,
+    CANARY_DEFAULT,
+    CANARY_EITHER,
+    CANARY_NUMBER,
     CANARY_WORDS,
     ShellWords,
     UnsafeValueError,
     dq,
     dq_default,
+    quoted_either,
     repo_filename_problem,
     unsafe_chars,
     words,
@@ -96,22 +100,53 @@ class Bundle:
     files: list[Path] = field(default_factory=list)
 
 
-def _open_expansions(line: str) -> int:
-    """จำนวน `${` ที่ยังไม่ปิดในข้อความของบรรทัดนี้ — > 0 = ค่าที่จะแทรกต่อจากนี้อยู่ในค่าตั้งต้นของ `${VAR:-…}`"""
-    depth, i = 0, 0
-    while i < len(line):
+def _site_context(line: str) -> str:
+    """บริบทของตำแหน่งแทรกค่า อ่านจากข้อความของ template บนบรรทัดเดียวกันก่อนถึงตำแหน่งนั้น
+
+    "default" = อยู่ในค่าตั้งต้นของ `${VAR:-…}` ที่ยังไม่ปิด · "either" = มี `'` เปิดค้างอยู่ (single quote ของ bash หรือแค่
+    เครื่องหมายในข้อความ — แยกไม่ได้จากบรรทัดเดียว จึงใช้ encoding ที่ปลอดภัยทั้งสองทาง) · "dq" = นอกนั้นทั้งหมด
+
+    อ่านได้แค่บรรทัดเดียวโดยเจตนา: ค่าที่อยู่กลางสตริงหลายบรรทัด/heredoc ไม่มีทางรู้บริบทจาก template โดยไม่ parse bash ทั้งไฟล์
+    — เทส `test_bash_parses_every_value_site_the_way_the_renderer_assumed` ถาม bash เองทีละตำแหน่งแทน
+    """
+    if line.lstrip().startswith("#"):
+        return "dq"         # คอมเมนต์: ' ในข้อความไม่ใช่ quote (และไม่ทำให้ชื่ออย่าง O'Brien ในบรรทัดถัดไปเพี้ยน)
+    stack: list[str] = []
+    i, size = 0, len(line)
+    while i < size:
         char = line[i]
+        top = stack[-1] if stack else ""
+        if top == "sq":
+            if char == "'":
+                stack.pop()
+            i += 1
+            continue
         if char == "\\":
             i += 2
             continue
-        if char == "$" and line[i + 1:i + 2] == "{":
-            depth += 1
+        if char == "$" and line[i + 1:i + 2] in ("(", "{"):
+            stack.append("cmd" if line[i + 1] == "(" else "brace")
             i += 2
             continue
-        if char == "}" and depth:
-            depth -= 1
+        if top == "dq":
+            if char == '"':
+                stack.pop()
+        elif top == "brace":
+            if char == "}":
+                stack.pop()
+            elif char == '"':
+                stack.append("dq")
+        elif char == "'":
+            stack.append("sq")
+        elif char == '"':
+            stack.append("dq")
+        elif char == "(" and top in ("cmd", "paren"):
+            stack.append("paren")
+        elif char == ")" and top in ("cmd", "paren"):
+            stack.pop()
         i += 1
-    return depth
+    top = stack[-1] if stack else ""
+    return {"sq": "either", "brace": "default"}.get(top, "dq")
 
 
 class _ShellEscape(Extension):
@@ -162,7 +197,7 @@ class _ShellEscape(Extension):
                 yield Token(at, "pipe", "|")
                 yield Token(at, "name", "_lmds_sh")
                 yield Token(at, "lparen", "(")
-                yield Token(at, "string", "default" if _open_expansions(line) else "dq")
+                yield Token(at, "string", _site_context(line))
                 yield Token(at, "rparen", ")")
             if end is not None:
                 yield end
@@ -176,15 +211,22 @@ def _passes_untouched(value: object) -> bool:
 def _sh(value: object, context: str = "dq") -> object:
     if isinstance(value, ShellWords) or _passes_untouched(value):
         return value
-    return dq_default(value) if context == "default" else dq(value)
+    if context == "default":
+        return dq_default(value)
+    return quoted_either(value) if context == "either" else dq(value)
 
 
 def _sh_canary(value: object, context: str = "dq") -> object:
-    # render แบบ canary: ทุกค่าที่เป็นข้อความถูกแทนด้วยคำเดียวกันที่ไม่มีอักขระของเชลล์ — สิ่งที่เหลือในผลลัพธ์
-    # คือ "ของที่ template ใส่เอง" ล้วน ๆ ให้ gate_value_expansion ใช้เทียบ
-    if _passes_untouched(value):
+    # render แบบ canary: ทุกค่าถูกแทนด้วยคำที่ไม่มีอักขระของเชลล์ — สิ่งที่เหลือในผลลัพธ์คือ "ของที่ template ใส่เอง" ล้วน ๆ
+    # คำที่ใช้บอกชนิดของ encoding ที่ _sh เลือกให้ตำแหน่งนั้น: gate_value_expansion ใช้ตรวจว่าค่าจริงถูก encode แบบนั้นมาครบ
+    # ตัวเลขก็แทน (แผนที่สร้างกลับจาก bundle อาจได้เลขต่างจากตอน render — ข้อความของ template รอบ ๆ ต้องยังตรงกัน)
+    if value is None or isinstance(value, Undefined):
         return value
-    return CANARY_WORDS if isinstance(value, ShellWords) else CANARY
+    if isinstance(value, ShellWords):
+        return CANARY_WORDS
+    if isinstance(value, (bool, int, float)):
+        return CANARY_NUMBER
+    return {"default": CANARY_DEFAULT, "either": CANARY_EITHER}.get(context, CANARY)
 
 
 _ENVIRONMENTS: dict[tuple[str, bool], Environment] = {}
