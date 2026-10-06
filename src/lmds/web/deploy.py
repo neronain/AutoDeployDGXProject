@@ -486,7 +486,8 @@ def analyze(
 
     # เลือก target/เครื่องปลายทางให้จบก่อนแตะเครือข่าย — คู่ stacked ที่จับกันไม่ได้ (ไม่มี worker ·
     # คนละไซต์ · ไม่มี cluster IP) รู้ได้ทันทีจากทะเบียน ไม่ต้องรอดึง metadata ก่อน
-    target_notes: list[str] = []
+    # เริ่มจากสิ่งที่ parser ตีความเองจากลิงก์ที่กำกวม — ผู้ใช้ต้องเห็นว่าเราเลือกอะไรให้
+    target_notes: list[str] = list(getattr(source, "notes", ()))
     guessed_target = False
     if not target and machine:
         # เครื่องปลายทางคือเครื่องอื่น — ฮาร์ดแวร์ของ hub ไม่เกี่ยว ต้องคิดจากของเครื่องนั้น

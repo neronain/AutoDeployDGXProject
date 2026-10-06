@@ -2545,6 +2545,9 @@ def _resolve_and_inspect(model: str, revision: Optional[str], interactive_ok: bo
     except SourceError as exc:
         err_console.print(f"[red]ผิดพลาด:[/red] {exc}")
         raise typer.Exit(code=1) from None
+    # ลิงก์ที่กำกวม (branch ที่มี / · ลิงก์ชี้ไฟล์ที่ไม่ใช่ .gguf): บอกว่าตีความเป็นอะไร ไม่ใช่เลือกให้เงียบ ๆ
+    for note in getattr(source, "notes", ()):
+        err_console.print(f"[yellow]{note}[/yellow]")
     if revision:
         from dataclasses import replace
 
