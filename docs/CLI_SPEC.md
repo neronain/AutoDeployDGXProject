@@ -155,7 +155,7 @@ Exit: `0` · `1` input ผิด (รวม `--concurrency`/`--context` < 1 แ�
 อ่านก่อนตั้ง default ทุกตัว · env ภายนอกและ flag บรรทัดคำสั่งชนะไฟล์นี้เสมอ · **ไม่เก็บ API key**
 
 ```text
---port INT · --context INT · --slots INT · --bind 0.0.0.0|127.0.0.1 · --gpu-util FLOAT (0–1, vLLM/SGLang)
+--port INT · --context INT · --slots INT · --bind 0.0.0.0|127.0.0.1 · --gpu-util FLOAT (0.3–0.98, vLLM/SGLang)
 --model-id NAME           ชื่อที่ API เสิร์ฟออกไป
 --image IMAGE             image ที่ใช้แทนของ bundle (digest ได้ · stacked ถึง worker)
 --engine-env "K=V K2=V2"  env ของ engine เอง — docker แตกเป็น -e · llama.cpp export · stacked ถึง worker

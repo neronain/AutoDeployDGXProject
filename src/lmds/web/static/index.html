@@ -4654,9 +4654,9 @@ function nodeModelsMarkup(name, data) {
                    placeholder="${esc(m.max_num_seqs ?? 4)}" style="flex:none;width:80px"
                    title="Concurrent requests — llama.cpp splits the context evenly across slots">
             ${m.engine === "vllm" ? `<label style="flex:none">gpu-util</label>
-            <input type="number" step="0.01" min="0.1" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
+            <input type="number" step="0.01" min="0.3" max="0.98" class="n-gpu" value="${esc(o.gpu_util ?? "")}"
                    placeholder="0.85" style="flex:none;width:90px"
-                   title="Share of the whole GPU memory vLLM reserves at start (0.1–0.98) — lower it on a machine already running something else">` : ""}
+                   title="Share of the whole GPU memory vLLM reserves at start (0.3–0.98 — the controller refuses anything outside that range) — lower it on a machine already running something else">` : ""}
           </div>
           <!-- ต้องใช้แรมเท่าไรตามค่าที่กรอก — เห็นก่อนกด start ไม่ใช่รู้ตอนพัง (ผู้ใช้ 2026-09-04) · ตาราง Fit + แถบทั้งเครื่อง
                มาจาก hub (fit/sizing.py) · ปุ่ม Fit เขียน slots/context/pin ลง bundle บนเครื่องนั้น = lmds set --fit (เจ้าของ 2026-09-07) -->

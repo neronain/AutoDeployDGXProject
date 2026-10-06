@@ -2122,7 +2122,7 @@ def set_defaults(
     context: Optional[int] = typer.Option(None, "--context", help="context (tokens)"),
     slots: Optional[int] = typer.Option(None, "--slots", help="จำนวน request พร้อมกัน"),
     bind: Optional[str] = typer.Option(None, "--bind", help="ที่อยู่ที่ผูก (0.0.0.0 / 127.0.0.1)"),
-    gpu_util: Optional[float] = typer.Option(None, "--gpu-util", help="สัดส่วนหน่วยความจำของ vLLM"),
+    gpu_util: Optional[float] = typer.Option(None, "--gpu-util", help="สัดส่วนหน่วยความจำของ vLLM (0.3–0.98)"),
     model_id: Optional[str] = typer.Option(None, "--model-id", help="ชื่อที่ API เสิร์ฟออกไป"),
     image: Optional[str] = typer.Option(None, "--image", help="image ที่จะใช้แทนของ bundle"),
     engine_env: Optional[str] = typer.Option(

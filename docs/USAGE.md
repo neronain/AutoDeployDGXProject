@@ -952,9 +952,9 @@ flag ตอน `lmds start --port …` มีผลครั้งเดีย�
 | flag | เขียนอะไร | ใช้กับ |
 |---|---|---|
 | `--port` `--context` `--slots` `--bind` | `API_PORT` `MAX_MODEL_LEN`/`CTX_SIZE` `MAX_NUM_SEQS`/`PARALLEL_SEQS` `API_HOST` | ทุก engine |
-| `--gpu-util` | `GPU_MEMORY_UTILIZATION` (0–1) | vLLM / SGLang |
+| `--gpu-util` | `GPU_MEMORY_UTILIZATION` (**0.3–0.98** — ช่วงเดียวกับที่ controller รับ · นอกช่วงถูกปฏิเสธตอนบันทึก) | vLLM / SGLang |
 | `--model-id` | ชื่อที่ API เสิร์ฟออกไป | ทุก engine |
-| `--image` | image ที่ใช้แทนของ bundle (ตรึง digest ได้) — stacked ส่งถึง worker | vLLM / SGLang / stacked |
+| `--image` | image ที่ใช้แทนของ bundle (ตรึง digest ได้) — stacked ส่งถึง worker · เขียน `VLLM_IMAGE` `LLAMACPP_IMAGE` `SGLANG_IMAGE` | vLLM / SGLang / stacked |
 | `--engine-env "A=1 B=2"` | env ของ engine เอง — docker แตกเป็น `-e` · llama.cpp export ตรง · stacked ถึง worker | ทุก engine |
 | `--tool-parser` `--reasoning-parser` | `TOOL_CALL_PARSER` `REASONING_PARSER` | vLLM / SGLang / stacked |
 | `--image-min-tokens N\|auto` | `IMAGE_MIN_TOKENS` — Qwen-VL ~1024 · Gemma-4 ต้อง `auto` (เพดานแค่ 280) | llama.cpp vision |

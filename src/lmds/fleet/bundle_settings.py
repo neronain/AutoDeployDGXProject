@@ -35,7 +35,9 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "slots": ("PARALLEL_SEQS", "MAX_NUM_SEQS"),
     "gpu_util": ("GPU_MEMORY_UTILIZATION",),
     "served_name": ("SERVED_MODEL_NAME",),
-    "image": ("VLLM_IMAGE", "LLAMACPP_IMAGE"),
+    # ทุก engine ที่รันจาก docker image — ตกชื่อไหน `lmds set --image` ของ engine นั้นคือ no-op เงียบ: บันทึกสำเร็จ โชว์ในหน้าจอ
+    # แต่ controller ไม่เคยเห็น (SGLANG_IMAGE ตกไปจน audit 2026-10-06 · stacked ใช้ VLLM_IMAGE)
+    "image": ("VLLM_IMAGE", "LLAMACPP_IMAGE", "SGLANG_IMAGE"),
     # env ของ engine เอง — knob ที่ vLLM/SGLang อ่านจาก environment ล้วน ๆ
     # ไม่มีทางส่งเข้าไปได้เลยถ้าไม่มีช่องนี้ (ดู _clean)
     "engine_env": ("ENGINE_ENV",),
@@ -57,6 +59,12 @@ FIELDS: dict[str, tuple[str, ...]] = {
 ARGS_FILENAME = "bundle.args"
 
 
+# ช่วงของ gpu-util ที่ controller ของ vLLM / SGLang / stacked รับ — ช่วงเดียวกับ `awk … >= 0.3 && … <= 0.98` ใน template
+# และกับที่ fit/sizing.py เขียน (min(0.98, max(0.3, …))) · tests/test_bundle_settings_engine_contract.py รันบรรทัด awk ของ
+# controller จริงเทียบกับค่านี้ — แก้ช่วงใน template แล้วไม่แก้ที่นี่ เทสนั้นแดง
+GPU_UTIL_MIN, GPU_UTIL_MAX = 0.3, 0.98
+
+
 class SettingsError(ValueError):
     """ค่าที่ส่งมาใช้ไม่ได้ — บอกไปตรง ๆ ดีกว่าเขียนลงไฟล์แล้วให้ start พังทีหลัง"""
 
@@ -76,8 +84,13 @@ def _clean(name: str, value: object) -> str:
             number = float(text)
         except ValueError as exc:
             raise SettingsError(f"gpu_util ต้องเป็นตัวเลข (ได้ {text!r})") from exc
-        if not 0 < number <= 1:
-            raise SettingsError(f"gpu_util ต้องอยู่ระหว่าง 0 ถึง 1 (ได้ {text!r})")
+        # เดิมรับ (0, 1] ขณะที่ controller รับ 0.3–0.98 และตรวจค่านี้ในทุกคำสั่ง — หลัง `lmds set --gpu-util 0.99` (หรือ
+        # 0.1–0.29 จากช่องบนหน้าเว็บ) `stop` / `status` / `logs` ออกด้วย "invalid --gpu-util" โมเดลที่รันอยู่หยุดผ่าน
+        # controller ไม่ได้ (audit 2026-10-06) · `not (a <= n <= b)` ปฏิเสธ nan ด้วย
+        if not (GPU_UTIL_MIN <= number <= GPU_UTIL_MAX):
+            raise SettingsError(
+                f"gpu_util ต้องอยู่ระหว่าง {GPU_UTIL_MIN} ถึง {GPU_UTIL_MAX} (ได้ {text!r}) — controller ปฏิเสธค่านอกช่วงนี้ "
+                "และเมื่อค่านี้อยู่ใน bundle.env แม้แต่ stop/status ก็รันไม่ได้")
         return text
     if name == "bind":
         if not re.fullmatch(r"[0-9a-zA-Z_.:\[\]-]+", text):
@@ -175,8 +188,9 @@ def read(bundle_dir: Path) -> dict[str, str]:
 
     อ่านทั้งรูปที่ `lmds set` เขียน (`NAME="${NAME:-v}"`) และรูปที่คนเขียนเอง (`NAME=v`): หัวไฟล์บอกว่าแก้ด้วยมือได้ และค่าที่
     เขียนด้วยมือมีผลจริงตอน start — เดิมมองไม่เห็นรูปหลัง จึงโชว์ว่า "ไม่ได้ตั้ง" ทั้งที่ controller ได้ค่านั้น (audit 2026-10-06) ·
-    หลายบรรทัดของชื่อเดียวกันตัดสินแบบ bash: รูป default ไม่ทับค่าที่ตั้งไปแล้ว · รูปธรรมดาทับเสมอ · ค่าที่ไม่ผ่าน `_clean`
-    (เช่น port ที่ไม่ใช่ตัวเลข) ไม่ถูกรายงาน — ผู้เรียกหลายตัวเอาค่าไป `int()` ตรง ๆ
+    หลายบรรทัดของชื่อเดียวกันตัดสินแบบ bash: รูป default ไม่ทับค่าที่ตั้งไปแล้ว · รูปธรรมดาทับเสมอ · port/context/slots
+    ที่ไม่ใช่ตัวเลขไม่ถูกรายงาน (ผู้เรียกหลายตัวเอาค่าไป `int()` ตรง ๆ) · ค่าอื่นรายงานตามที่อยู่ในไฟล์แม้ `_clean` รุ่นนี้จะไม่รับ
+    (เช่น gpu_util 0.99 ที่บันทึกไว้ก่อนมีการบังคับช่วง) — ซ่อนไว้ = ผู้ใช้หาไม่เจอว่าทำไม controller ปฏิเสธ
     """
     target = path_for(bundle_dir)
     if not target.is_file():
@@ -203,12 +217,8 @@ def read(bundle_dir: Path) -> dict[str, str]:
                 value = env[name]
                 if field == "image_min_tokens" and value == "":
                     value = "auto"  # ค่าว่างในไฟล์ = auto — ให้ round-trip ผ่าน write() ได้โดยไม่หาย
-                else:
-                    try:
-                        if value == "" or _clean(field, value) != value:
-                            continue
-                    except SettingsError:
-                        continue
+                elif value == "" or (field in {"port", "context", "slots"} and not value.isdigit()):
+                    continue
                 out[field] = value
                 break
     args_file = Path(bundle_dir) / ARGS_FILENAME

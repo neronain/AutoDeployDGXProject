@@ -108,6 +108,11 @@
   ตั้งทับแทนที่บรรทัดเดิมไม่ว่าเดิมเขียนรูปไหน · `bundle.args` แตะเมื่อสั่ง `extra_args` เท่านั้น (ค่าว่างตรง ๆ = ลบ) · `read()` เห็นรูป
   `NAME=value` ที่เขียนด้วยมือ · `--clear` / ปุ่ม Reset เอาเฉพาะ knob ของ `lmds set` ออก (ไม่ลบ `bundle.args` และบรรทัดของผู้ดูแล —
   บอกว่าเหลืออะไร) · ฟอร์ม Manage ส่งช่องว่างเป็น "เอาออก" · เทส: `tests/test_bundle_settings_preserve.py`
+- **`lmds set --gpu-util` รับค่าที่ controller ปฏิเสธ — แล้ว `stop`/`status`/`logs` ก็รันไม่ได้** (audit 2026-10-06) · `_clean` รับ
+  (0, 1] และช่องบนหน้าเว็บรับ 0.1–0.98 แต่ controller ของ vLLM/SGLang/stacked รับ 0.3–0.98 และตรวจในทุกคำสั่ง · ตอนนี้ช่วงเดียว
+  **0.3–0.98** ทั้ง `lmds set`, API และช่อง gpu-util บนการ์ด node (ปฏิเสธพร้อมบอกช่วง · ไม่เขียนอะไร) · ค่าที่ค้างอยู่จากรุ่นก่อนยังโชว์
+  ใน `lmds set <slug>` เพื่อให้แก้ได้ · เทส `tests/test_bundle_settings_engine_contract.py` รันบรรทัด awk ของ controller จริงเทียบ
+- **`lmds set --image` บน bundle SGLang ไม่มีผล** · บันทึกแค่ `VLLM_IMAGE`/`LLAMACPP_IMAGE` — เพิ่ม `SGLANG_IMAGE`
 - **context ต่อคำขอ · slot · ก้อนรวม ของ llama.cpp ถูกเอามาปนกัน** (ตรวจ 2026-10-05) ·
   `serving.context` ของ llama.cpp คือ `--ctx-size` = ก้อนรวมที่หารให้ทุก slot ส่วนเพดานของ
   โมเดล (native) เป็นเพดานต่อคำขอ · planner รู้ (ตั้งก้อนรวม = ต่อคำขอ × slot) แต่ที่เหลือไม่รู้:
