@@ -1238,6 +1238,7 @@ body.rail-dragging { cursor: col-resize; user-select: none; }
     "Loading machines…": "กำลังโหลดรายชื่อเครื่อง…",
     "Send bundle there": "ส่ง bundle ไปเครื่องนั้น",
     "Remove from machine": "เอาออกจากเครื่อง",
+    "Kept — still used by {who}": "เก็บไว้ ไม่ลบ — {who} ยังใช้อยู่",
     "Calculating memory…": "กำลังคิดหน่วยความจำ…",
     "Could not calculate memory: {why}": "คิดหน่วยความจำไม่ได้: {why}",
     "fitting…": "กำลัง fit…",
@@ -3944,7 +3945,10 @@ document.addEventListener("click", async e => {
              จังหวะที่ของถูกลบไปแล้ว) จะได้ TypeError หลุดออกไปถึง unhandledrejection
              แล้วเด้ง "คำสั่งไม่สำเร็จ — Cannot read properties of undefined (reading 'map')"
              ซึ่งไม่ได้บอกอะไรผู้ใช้เลย และปุ่มค้างอยู่อย่างนั้น -->
-            ${(d.items || []).map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
+            ${(d.items || []).filter(i => !i.kept).map(i => `<div class="dim mono">${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
+      <!-- weight ที่ bundle อื่นยังใช้ (โมเดลเดียวกัน deploy สองใบ / --also-stacked) ไม่ถูกลบ — บอกว่าใครถืออยู่
+             ไม่งั้นผู้ใช้เห็นยอด "Deletes" เล็กกว่าที่คิดโดยไม่รู้เหตุผล (audit 2026-10-06) -->
+            ${(d.items || []).filter(i => i.kept).map(i => `<div class="mono" style="color:var(--warn)">${esc(T("Kept — still used by {who}", { who: (i.shared_with || []).join(", ") }))}: ${esc(i.label)} · ${esc(i.path)} · ${size(i.bytes)} GB</div>`).join("")}
       <div class="field" style="margin-top:10px">
         <label><input type="checkbox" id="keep-${esc(slug)}" style="min-width:auto;flex:none" checked> Keep the weights (re-deploy without downloading again)</label>
         <button data-act="removego" data-slug="${esc(slug)}" style="border-color:var(--bad);color:var(--bad)">Confirm removal</button>

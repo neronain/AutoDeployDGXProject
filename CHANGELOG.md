@@ -79,6 +79,14 @@
   - bundle ที่ส่งไป node วางที่ `~/.lmds-src.bundle` ของ user นั้น แทน `/tmp/lmds-src.bundle`
     (ชื่อตายตัวในโฟลเดอร์ที่ทุก user เขียนได้ แล้วถูก clone มารัน install.sh)
 
+- **`lmds remove` ลบ weight ที่ bundle อื่นกำลังเสิร์ฟอยู่ — ข้อมูลหาย** (audit 2026-10-06) · weight ถูกหาจากชื่อโมเดล
+  (`$HF_HOME/hub/models--org--name`) และไม่มีใครเช็คว่ามี bundle อื่นชี้โฟลเดอร์เดียวกันไหม (FlashInfer cache มียามนี้
+  weight ไม่มี) · `lmds deploy … --also-stacked` สร้าง `<slug>` + `<slug>-stacked` บน weight ก้อนเดียวเสมอ →
+  `remove qwen3-32b-stacked -y` ลบ weight ของ `qwen3-32b` ที่รันอยู่ · เช่นเดียวกับสองใบจาก `--name` และ weight บน worker
+  ของ stacked · ตอนนี้แผนลบ**เก็บ**ก้อนที่ bundle อื่น (มีทะเบียน / บนดิสก์ / adopt) ยังใช้ — path ทับกันก็นับ — บอกชื่อผู้ใช้
+  ในตาราง "เก็บไว้ ไม่ลบ" ของ `lmds remove [--dry-run]`, ในผลลัพธ์ (`เก็บ … ไว้ทั้งก้อน — ยังใช้โดย …`) และในกล่องยืนยัน
+  ของหน้าเว็บ (`/api/models/<slug>/removal-plan` มี `kept` + `shared_with` · `total_bytes` ไม่นับของที่เก็บ) · ใบสุดท้ายที่ใช้
+  ลบตามเดิม · เทส: `tests/test_shared_weights_remove.py`
 - **context ต่อคำขอ · slot · ก้อนรวม ของ llama.cpp ถูกเอามาปนกัน** (ตรวจ 2026-10-05) ·
   `serving.context` ของ llama.cpp คือ `--ctx-size` = ก้อนรวมที่หารให้ทุก slot ส่วนเพดานของ
   โมเดล (native) เป็นเพดานต่อคำขอ · planner รู้ (ตั้งก้อนรวม = ต่อคำขอ × slot) แต่ที่เหลือไม่รู้:

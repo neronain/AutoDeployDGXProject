@@ -1557,6 +1557,98 @@ class RemovalItem:
     kind: str = "path"
     # ssh ไป worker ไม่ผ่านตอนวางแผน — ขนาดไม่รู้ และตอนลบต้องรายงานว่ายังเหลือ ไม่ใช่ข้ามเงียบ
     reachable: bool = True
+    # bundle อื่นที่ยังใช้ path นี้อยู่ — ไม่ว่าง = "เก็บไว้ ไม่ลบ" · รายการยังอยู่ในแผนเพื่อให้ผู้ใช้เห็นว่า
+    # ทำไมดิสก์ไม่ลด และใครถือของก้อนนี้อยู่ (ดู weights_shared_with)
+    shared_with: list[str] = field(default_factory=list)
+
+    @property
+    def kept(self) -> bool:
+        return bool(self.shared_with)
+
+
+def is_kept(item: object) -> bool:
+    """รายการนี้ "เก็บไว้" ไหม — รับของที่ไม่ใช่ RemovalItem ได้ (ผู้เรียกบางตัวส่ง object รูปเดียวกันมาเอง)"""
+    return bool(getattr(item, "shared_with", None))
+
+
+def _known_bundles() -> list[ServerInfo]:
+    """bundle ทุกตัวที่เครื่องนี้รู้จัก: มีทะเบียน (server.meta — รวมตัวที่ `lmds adopt` รับเข้ามา) + อยู่บนดิสก์แต่ยังไม่มีทะเบียน
+
+    ไม่ถาม docker/health เลย — ใช้ตอบคำถามเดียวว่า "ใครอีกบ้างที่ชี้มาที่ไฟล์ก้อนนี้" ซึ่งไม่ขึ้นกับว่าตัวนั้น
+    กำลังรันอยู่ไหม: bundle ที่หยุดอยู่ก็ยังต้องมี weight ของมันตอน start ครั้งหน้า · ทะเบียนที่ controller
+    หายไปแล้วก็ยังนับ (container ของมันอาจยังรันอยู่) — ลบตัวนั้นก่อน แล้วตัวสุดท้ายจะเป็นคนลบ weight เอง
+    """
+    found: dict[str, ServerInfo] = {}
+    root = run_root()
+    for meta_path in (sorted(root.glob("*/server.meta")) if root.is_dir() else []):
+        try:
+            meta = _parse_meta(meta_path)
+        except OSError:
+            continue
+        slug = meta.get("slug", meta_path.parent.name)
+        found.setdefault(slug, ServerInfo(
+            slug=slug, model=meta.get("model", ""), model_id=meta.get("model_id", ""),
+            engine=meta.get("engine", ""), mode=meta.get("mode", ""),
+            controller=meta.get("controller", ""), run_dir=meta_path.parent))
+    for bundles in bundle_roots():
+        for pattern in ("*/MODEL_PROFILE.yaml", "*/*/MODEL_PROFILE.yaml"):
+            for profile_path in sorted(bundles.glob(pattern)):
+                directory = profile_path.parent
+                if directory.name in found:
+                    continue
+                # ตัวไหนก็ได้ — ที่ต้องการคือ MODEL_PROFILE.yaml ข้าง ๆ มัน (bundle ที่ adopt มาลงท้าย -adopted.sh)
+                controller = next((path for suffix in ("-single.sh", "-stacked.sh", "-adopted.sh")
+                                   for path in sorted(directory.glob(f"*{suffix}"))), None)
+                if controller is None:
+                    continue
+                profile = bundle_profile(str(controller)) or {}
+                found[directory.name] = ServerInfo(
+                    slug=directory.name, model_id=str((profile.get("model") or {}).get("id") or ""),
+                    engine=str((profile.get("runtime") or {}).get("engine") or ""),
+                    mode="docker", controller=str(controller), registered=False)
+    return list(found.values())
+
+
+def _paths_overlap(one: Path, other: Path) -> bool:
+    """path เดียวกัน หรือตัวหนึ่งอยู่ข้างในอีกตัว — ลบตัวไหนก็กระทบอีกตัวทั้งคู่"""
+    try:
+        a, b = Path(one).expanduser().resolve(), Path(other).expanduser().resolve()
+    except OSError:
+        return False
+    return a == b or a in b.parents or b in a.parents
+
+
+def weights_shared_with(info: ServerInfo, weights: Path | None = None) -> list[str]:
+    """slug ของ bundle อื่นบนเครื่องนี้ที่ weight ของมันทับกับของ bundle นี้ — ว่าง = bundle นี้ใช้อยู่คนเดียว
+
+    weight ถูกหาจาก **ชื่อโมเดล** (`$HF_HOME/hub/models--org--name`) ไม่ใช่จากชื่อ bundle · โมเดลเดียวกัน
+    ที่ deploy สองครั้งจึงชี้ไปโฟลเดอร์เดียวกันเสมอ แล้ว `lmds remove` ของตัวหนึ่งลบของอีกตัวไปด้วย
+    (audit 2026-10-06 — สองทางที่เจอจริง):
+
+      * `lmds deploy Qwen/Qwen3.6-35B-A3B --name qwen36-test` ข้าง `qwen36-prod` ที่เสิร์ฟอยู่ → `remove qwen36-test`
+        พิมพ์ "ลบ weight ของโมเดล: …/models--Qwen--Qwen3.6-35B-A3B" แล้ว prod รันต่อโดยไม่มี weight บนดิสก์
+      * `lmds deploy … --also-stacked` สร้าง `<slug>` กับ `<slug>-stacked` บน weight ก้อนเดียวเสมอ → ลบใบ stacked
+        ที่ไม่ได้ใช้ = ลบ weight ของใบ single ที่กำลังรัน
+
+    FlashInfer cache มียามแบบนี้มาตั้งแต่แรก (image เดียวกัน = ของร่วม ดู stacked_workers) — weight ซึ่งใหญ่กว่า
+    และโหลดใหม่นานกว่าหลายเท่ากลับไม่มี
+
+    "ทับกัน" ไม่ใช่แค่ path เท่ากัน: bundle ที่ `lmds adopt` รับมาจด path ที่อ่านได้จาก bind mount ซึ่งมักเป็น
+    `…/models--org--m/snapshots/<sha>` (อยู่ **ใน** โฟลเดอร์ที่ bundle ปกติของ repo เดียวกันจะลบทั้งก้อน) หรือไฟล์
+    `.gguf` ไฟล์เดียว · ไฟล์ต่างกันในโฟลเดอร์เดียวกัน (Q4_K_M.gguf กับ Q8_0.gguf) ไม่ทับกัน — ลบได้ทีละไฟล์ ·
+    แต่ถ้าทั้งสองตัวจดไว้ที่ระดับโฟลเดอร์ repo เราแยกไม่ออกว่าไฟล์ไหนของใคร จึงเก็บทั้งโฟลเดอร์
+    """
+    weights = weights if weights is not None else weights_path(info)
+    if weights is None:
+        return []
+    users: list[str] = []
+    for other in _known_bundles():
+        if other.slug == info.slug:
+            continue
+        theirs = weights_path(other)
+        if theirs is not None and _paths_overlap(weights, theirs):
+            users.append(other.slug)
+    return sorted(users)
 
 
 def _bundle_env_value(bundle_dir: Path, key: str) -> str:
@@ -1633,6 +1725,9 @@ def stacked_workers(info: ServerInfo) -> dict | None:
             paths.append(("FlashInfer cache ของ bundle", f"{worker_fi}/{fi_key}", False))
         worker["paths"] = paths
         worker["container"] = f"lmds-{info.slug}-worker"
+        # _remote_sizes ใช้ถาม worker ว่ามี bundle ของมันเองบนโมเดลเดียวกันไหม (ดู worker_removal_items)
+        worker["slug"] = info.slug
+        worker["model_id"] = model_id if cache_name else ""
     return {"workers": workers, "bundle_dir": bundle_dir, "image_lock": lock if lock.is_file() else None,
             "missing_cluster_env": False}
 
@@ -1643,21 +1738,47 @@ def _ssh_argv(user: str, ip: str, script: str) -> list[str]:
 
 
 def _remote_sizes(worker: dict) -> dict[str, int] | None:
-    """ขนาดของทุก path บน worker ด้วย ssh เดียว · None = ติดต่อไม่ได้ · path ที่ไม่มี = ไม่อยู่ใน dict"""
+    """ขนาดของทุก path บน worker ด้วย ssh เดียว · None = ติดต่อไม่ได้ · path ที่ไม่มี = ไม่อยู่ใน dict
+
+    ผลข้างเคียงที่ตั้งใจ: จด `worker["own_bundles"]` = slug ของ bundle ที่ลงทะเบียนอยู่บน worker เองและใช้โมเดลเดียวกัน
+    (ถามในรอบ ssh เดียวกัน ไม่ยิงเพิ่ม) — worker_removal_items ใช้ตัดสินว่า weight บนเครื่องนั้นลบได้ไหม
+    """
     # ตอบเป็น "<ลำดับ>\t<ไบต์>" ไม่ใช่ path — path ไม่ต้องเดินทางกลับมาให้เพี้ยน (quote/space/ชื่อไทย)
     lines = ["set -u"]
     for idx, (_label, path, _w) in enumerate(worker["paths"]):
         q = shlex.quote(path)
         lines.append(f"if [ -e {q} ]; then printf '{idx}\\t%s\\n' \"$(du -sb {q} 2>/dev/null | cut -f1)\"; fi")
     lines.append(f"docker inspect {shlex.quote(worker['container'])} >/dev/null 2>&1 && printf 'container\\t0\\n' || true")
+    # worker อาจมี bundle **ของมันเอง** บนโมเดลเดียวกัน (เช่น ใบ single ที่ push ไปทั้งสองเครื่องก่อนจะทำ stacked) ซึ่ง
+    # เสิร์ฟจาก HF cache โฟลเดอร์เดียวกับที่ sync-worker คัดลอกลงไป — head มองไม่เห็นทะเบียนของ worker จึงต้องถาม
+    # ในรอบ ssh เดียวกันนี้ · อ่าน server.meta ตรง ๆ ด้วย sh ล้วน (worker ไม่จำเป็นต้องมี lmds) · llama.cpp ไม่นับ
+    # เพราะเก็บ weight ที่ ~/models/<slug> ไม่ใช่ HF cache
+    if worker.get("model_id"):
+        lines += [
+            'for meta in "$HOME"/.lmds/run/*/server.meta; do',
+            '  [ -f "$meta" ] || continue',
+            '  mid=""; slug=""; eng=""',
+            '  while IFS="=" read -r key value; do',
+            '    case "$key" in model_id) mid="$value" ;; slug) slug="$value" ;; engine) eng="$value" ;; esac',
+            '  done < "$meta"',
+            f'  if [ "$mid" = {shlex.quote(worker["model_id"])} ] && [ -n "$slug" ]'
+            f' && [ "$slug" != {shlex.quote(worker["slug"])} ] && [ "$eng" != llamacpp ]; then',
+            "    printf 'user\\t%s\\n' \"$slug\"",
+            "  fi",
+            "done",
+        ]
     proc = _bounded(_ssh_argv(worker["ssh_user"], worker["ip"], "\n".join(lines)),
                     capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
         return None
     sizes: dict[str, int] = {}
+    worker["own_bundles"] = []
     for line in (proc.stdout or "").splitlines():
         key, _, size = line.partition("\t")
-        if key == "container":
+        if key == "user":
+            if size.strip():
+                worker["own_bundles"].append(size.strip())
+        elif key == "container":
             sizes["@container"] = 0
         elif key.isdigit() and int(key) < len(worker["paths"]):
             try:
@@ -1667,11 +1788,36 @@ def _remote_sizes(worker: dict) -> dict[str, int] | None:
     return sizes
 
 
+def _worker_weight_peers(info: ServerInfo) -> dict[tuple[str, str], list[str]]:
+    """(ip ของ worker, path) → slug ของ bundle stacked **ตัวอื่นบน head นี้** ที่วาง weight ไว้ที่เดียวกันบน worker ตัวเดียวกัน
+
+    โมเดลเดียวกัน deploy เป็น stacked สองใบ (เช่น ลอง context ยาวขึ้นด้วย --name) ชี้ WORKER_HF_HOME เดียวกันบน worker
+    ตัวเดียวกันเสมอ — ลบใบหนึ่งแล้ว `rm -rf` บน worker = อีกใบ start ไม่ขึ้นและต้อง sync 75–173 GB ใหม่
+    อ่านจาก cluster.env ของแต่ละ bundle บน head ล้วน ๆ ไม่ ssh
+    """
+    peers: dict[tuple[str, str], list[str]] = {}
+    for other in _known_bundles():
+        if other.slug == info.slug:
+            continue
+        cluster = stacked_workers(other)
+        for worker in (cluster or {}).get("workers") or []:
+            for _label, path, is_weights in worker.get("paths") or []:
+                if is_weights:
+                    peers.setdefault((worker["ip"], os.path.normpath(path)), []).append(other.slug)
+    return peers
+
+
 def worker_removal_items(info: ServerInfo, include_weights: bool = True) -> list[RemovalItem]:
-    """รายการบน worker ทุกตัว (ขนาดถามผ่าน ssh) — ต่อท้ายแผนของ head"""
+    """รายการบน worker ทุกตัว (ขนาดถามผ่าน ssh) — ต่อท้ายแผนของ head
+
+    weight (และ lock ของ HF cache) ที่ bundle อื่นยังใช้อยู่ถูกติด `shared_with` = เก็บไว้ ไม่ลบ: ทั้ง stacked ใบอื่นบน
+    head นี้ที่ชี้ worker/path เดียวกัน และ bundle ของ worker เองบนโมเดลเดียวกัน · container / สคริปต์ / FlashInfer
+    cache เป็นของ bundle นี้ใบเดียว ลบตามเดิม
+    """
     cluster = stacked_workers(info)
     if not cluster or not cluster["workers"]:
         return []
+    peers = _worker_weight_peers(info) if include_weights else {}
     items: list[RemovalItem] = []
     for worker in cluster["workers"]:
         ip, user = worker["ip"], worker["ssh_user"]
@@ -1691,8 +1837,13 @@ def worker_removal_items(info: ServerInfo, include_weights: bool = True) -> list
             if reachable and path not in sizes:
                 continue
             suffix = "" if reachable else " (ติดต่อไม่ได้ — ขนาดไม่รู้)"
+            users: list[str] = []
+            if is_weights:
+                users = sorted(set(peers.get((ip, os.path.normpath(path)), [])))
+                users += [f"{own} (bundle ของ {ip} เอง)" for own in sorted(set(worker.get("own_bundles") or []))]
             items.append(RemovalItem(f"{label} บน worker {ip}{suffix}", Path(path), sizes.get(path, 0),
-                                     is_weights=is_weights, node=ip, ssh_user=user, reachable=reachable))
+                                     is_weights=is_weights, node=ip, ssh_user=user, reachable=reachable,
+                                     shared_with=users))
     return items
 
 
@@ -1718,7 +1869,11 @@ def removal_plan(info: ServerInfo, include_weights: bool = True) -> list[Removal
     if include_weights:
         weights = weights_path(info)
         if weights is not None:
-            items.append(RemovalItem("weight ของโมเดล", weights, _dir_size_bytes(weights), is_weights=True))
+            # bundle อื่นยังชี้มาที่ก้อนนี้ = เก็บไว้ (shared_with ไม่ว่าง) · ตัวสุดท้ายที่ใช้ถึงจะลบจริง
+            # bundle ที่ adopt มาอาจจดไว้เป็นไฟล์ .gguf ไฟล์เดียว — rglob บนไฟล์ได้ 0 เสมอ
+            size = _dir_size_bytes(weights) if weights.is_dir() else weights.stat().st_size
+            items.append(RemovalItem("weight ของโมเดล", weights, size, is_weights=True,
+                                     shared_with=weights_shared_with(info, weights)))
     cluster = stacked_workers(info)
     if cluster:
         lock = cluster.get("image_lock")
@@ -1839,6 +1994,12 @@ def remove_server(info: ServerInfo, include_weights: bool = True) -> list[str]:
         done.append(f"bundle stacked แต่ไม่มี cluster.env — ไม่รู้ว่า worker คือเครื่องไหน · "
                     f"ของบน worker (weight/container lmds-{info.slug}-worker) ต้องลบเอง")
     items = removal_plan(info, include_weights=include_weights)
+    # ของที่ bundle อื่นยังใช้ — ไม่ลบ แต่ต้องพูดออกมา: ผู้ใช้สั่งลบแล้วดิสก์ไม่ลด ต้องรู้ว่าเพราะอะไรและใครถืออยู่
+    for item in items:
+        if is_kept(item):
+            where = f"{item.node}:" if getattr(item, "node", "") else ""
+            done.append(f"เก็บ {item.label} ไว้ทั้งก้อน — ยังใช้โดย {', '.join(item.shared_with)}: {where}{item.path}")
+    items = [item for item in items if not is_kept(item)]
     remote_items = [item for item in items if getattr(item, "node", "")]
     for item in items:
         if getattr(item, "node", ""):

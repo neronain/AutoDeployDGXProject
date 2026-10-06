@@ -4700,7 +4700,13 @@ def remove(
         err_console.print(f"[red]ไม่พบ: {slug}[/red] — ดูรายชื่อ: lmds list")
         raise typer.Exit(code=1)
 
-    items = removal_plan(server, include_weights=not keep_weights)
+    from lmds.fleet.manager import is_kept
+
+    plan = removal_plan(server, include_weights=not keep_weights)
+    # ของที่ bundle อื่นยังใช้ (weight ก้อนเดียวกัน) ไม่ถูกลบ — แยกตารางและบอกชื่อผู้ใช้ ไม่ปนกับ "จะลบทั้งหมดนี้"
+    # (audit 2026-10-06: `remove qwen3-32b-stacked -y` ลบ weight ของ `qwen3-32b` ที่กำลังรัน)
+    kept = [item for item in plan if is_kept(item)]
+    items = [item for item in plan if not is_kept(item)]
     if not items:
         console.print(f"ไม่พบไฟล์ของ {slug} ที่ต้องลบ")
     else:
@@ -4714,6 +4720,17 @@ def remove(
             table.add_row(item.label, str(item.path), _human_size(item.size_bytes))
         console.print(table)
         console.print(f"รวม [bold]{_human_size(total)}[/bold]")
+    if kept:
+        keep_table = Table(title="เก็บไว้ ไม่ลบ — bundle อื่นยังใช้อยู่")
+        keep_table.add_column("รายการ")
+        keep_table.add_column("path")
+        keep_table.add_column("ขนาด", justify="right")
+        keep_table.add_column("ยังใช้โดย")
+        for item in kept:
+            keep_table.add_row(item.label, str(item.path), _human_size(item.size_bytes),
+                               ", ".join(item.shared_with))
+        console.print(keep_table)
+        console.print("[dim]ของก้อนนี้จะถูกลบเมื่อลบ bundle ตัวสุดท้ายที่ใช้มัน[/dim]")
     if server.running:
         err_console.print("[yellow]โมเดลนี้กำลังรันอยู่ — จะถูกหยุดก่อนลบ[/yellow]")
     if keep_weights:

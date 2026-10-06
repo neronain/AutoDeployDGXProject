@@ -1546,12 +1546,17 @@ def create_app(token: str = "") -> FastAPI:
         server = find(slug)
         if server is None:
             raise HTTPException(status_code=404, detail=f"ไม่รู้จัก {slug}")
+        from lmds.fleet.manager import is_kept
+
         items = removal_plan(server, include_weights=not keep_weights)
         return {
             "slug": slug,
+            # kept = bundle อื่นยังใช้ของก้อนนี้ (weight ของโมเดลเดียวกัน) — จะไม่ถูกลบ · shared_with = ใครใช้
             "items": [{"label": i.label, "path": str(i.path), "bytes": i.size_bytes,
-                       "is_weights": i.is_weights} for i in items],
-            "total_bytes": sum(i.size_bytes for i in items),
+                       "is_weights": i.is_weights, "kept": is_kept(i),
+                       "shared_with": list(getattr(i, "shared_with", None) or [])} for i in items],
+            # ยอดที่ "จะหายไปจริง" — ไม่นับของที่เก็บไว้ ไม่งั้นกล่องยืนยันบอกว่าลบ 65 GB ทั้งที่ลบแค่ bundle
+            "total_bytes": sum(i.size_bytes for i in items if not is_kept(i)),
         }
 
     @app.post("/api/models/{slug}/remove", dependencies=guarded)
