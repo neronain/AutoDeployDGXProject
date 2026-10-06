@@ -98,11 +98,13 @@ _DOCKER = '''
 echo "docker $*" >> "$FAKE_LOG"
 case "$1" in
   image) exit 0 ;;
-  ps) exit 0 ;;
+  # container ที่ `run -d` ไปแล้วต้องโผล่ใน `docker ps` — เดิม ps ตอบว่างเสมอ ซึ่ง controller (ถูกแล้ว) อ่านว่า
+  # "container ของเราไม่ได้รัน แต่มีอย่างอื่นตอบ /health" แล้วไม่ยอมรายงานว่า start สำเร็จ
+  ps) [[ -e "${FAKE_LOG}.up" ]] && echo lmds-up; exit 0 ;;
   run)
     if [[ "$*" == *"--entrypoint sh"* ]]; then echo "${FAKE_DOCKER_ARCH_COUNT:-0}"; [[ "${FAKE_DOCKER_ARCH_COUNT:-0}" == "0" ]] && exit 1; exit 0; fi
     if [[ "$*" == *"--entrypoint nvidia-smi"* ]]; then echo "GPU 0: fake"; exit 0; fi
-    echo "cid-1234"; exit 0 ;;
+    echo "cid-1234"; : > "${FAKE_LOG}.up"; exit 0 ;;
   logs) printf '%s\\n' "${FAKE_LOGS:-}"; exit 0 ;;
   *) exit 0 ;;
 esac

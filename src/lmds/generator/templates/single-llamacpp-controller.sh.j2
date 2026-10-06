@@ -202,22 +202,129 @@ LOCAL_API_HOST="${LOCAL_API_HOST:-127.0.0.1}"
 # ยึดพอร์ตนี้อยู่ ชุดทดสอบจะยิงไปโดนตัวนั้นแล้ว "ผ่าน" ทั้งที่ทดสอบคนละโมเดล
 # (เจอจริง: test-text ของ gemma-4-31b ได้คำตอบจาก Qwen3-Coder-30B ที่รันอยู่ก่อน)
 assert_our_server() {
-  local seen
-  seen="$(curl -fsS -m 10 "http://${LOCAL_API_HOST}:${API_PORT}/v1/models" \
-    ${API_KEY:+-H "Authorization: Bearer $API_KEY"} 2>/dev/null \
-    | { command -v python3 >/dev/null 2>&1 && python3 -c '
+  # ชื่อทุกตัวที่พอร์ตแจ้ง (ไม่ใช่แค่ตัวแรก) ผ่าน _served_ids — เดิมเมื่อเครื่องไม่มี python3 ท่อถอยไป `cat` แล้วเอา JSON
+  # ทั้งก้อนมาเทียบกับ SERVED_MODEL_NAME จึงกล่าวหาเซิร์ฟเวอร์ของตัวเองว่าเป็น "โมเดลอื่น" ทุกครั้ง
+  local name
+  _served_ids
+  [[ -n "$API_IDS" ]] || return 0                  # อ่านไม่ได้ = ไม่ฟันธง ปล่อยผ่าน
+  while IFS= read -r name; do
+    [[ "$name" == "$SERVED_MODEL_NAME" ]] && return 0
+  done <<< "$API_IDS"
+  die "พอร์ต ${API_PORT} ตอบมาเป็นโมเดล '${API_IDS%%$'\n'*}' ไม่ใช่ '${SERVED_MODEL_NAME}'
+     มีเซิร์ฟเวอร์อื่นยึดพอร์ตนี้อยู่ — ผลทดสอบที่ได้จะเป็นของโมเดลนั้น ไม่ใช่ตัวนี้
+     แก้: หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต  $0 restart --port 8001"
+}
+# ── "รันอยู่ / healthy" ต้องเป็นเซิร์ฟเวอร์ของ bundle นี้ ไม่ใช่ใครก็ได้ที่ตอบบนพอร์ต ──────────────────
+#
+# เดิม info · status · wait-health เชื่อ `curl /health` ที่ได้ 200 จากอะไรก็ตามบนพอร์ตนั้น: ไม่มี container ของเราเลยแต่
+# โมเดลอื่นตอบอยู่ → info "State: RUNNING" · status "API: healthy" · wait-health rc 0 (audit 2026-10-06
+# repro_foreign_port.sh) · ทุก bundle ตั้งต้นที่พอร์ตเดียวกัน และบนเครื่องจริงเครื่องหนึ่งพอร์ต 8000 เป็นของ portainer
+# — "เขียว" ที่ได้จึงเป็นหลักฐานของคนอื่น
+#
+# ตัดสินจากสองอย่างพร้อมกัน: (1) เซิร์ฟเวอร์ของ bundle นี้ยังอยู่ และ (2) /v1/models บนพอร์ตนั้นมีชื่อที่เราเสิร์ฟ
+# ผลอยู่ใน API_VERDICT (+ API_SEEN = ชื่อที่พอร์ตตอบ · API_HTTP = รหัสของ /v1/models):
+#   ours        ของเรารันอยู่ และพอร์ตตอบด้วยชื่อของเรา
+#   unverified  ของเรารันอยู่ /health ตอบ แต่อ่าน /v1/models ไม่ได้ (401 = key ที่ controller ถืออยู่ไม่ตรงกับตอน start)
+#               — นับเป็น healthy พร้อมหมายเหตุ: รายงานว่า down แล้วมีคนไป restart โมเดลที่ใช้งานอยู่แย่กว่ามาก
+#   mismatch    ของเรารันอยู่ แต่พอร์ตตอบเป็นโมเดลอื่น
+#   foreign     ของเราไม่ได้รัน แต่มีอย่างอื่นฟัง/ตอบอยู่บนพอร์ต
+#   loading     ของเรารันอยู่ แต่ API ยังไม่ตอบ (กำลังโหลดโมเดล)
+#   down        ของเราไม่ได้รัน และไม่มีใครฟังพอร์ต
+# ชื่อที่นับว่า "ของเรา": SERVED_MODEL_NAME ตอนนี้ และ model= ที่ start จดไว้ใน server.meta (start ด้วยชื่อครั้งเดียวผ่าน env)
+_our_server_state() {   # yes | no | unknown (โหมด docker ที่ถาม docker ไม่ได้ — ไม่ใช่ "ไม่ได้รัน")
+  if [[ "$RUNTIME_MODE" == "native" ]]; then
+    if _our_server_pid >/dev/null; then printf 'yes'; else printf 'no'; fi
+    return 0
+  fi
+  local running
+  running="$(docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null)" || { printf 'unknown'; return 0; }
+  if [[ -n "$running" ]]; then printf 'yes'; else printf 'no'; fi
+}
+
+_api_get() {   # GET <path> ของเซิร์ฟเวอร์เรา → body · key ไปทาง stdin config ของ curl ไม่ใช่ argv (ps อ่าน argv ได้ทั้งเครื่อง)
+  local path="$1"; shift
+  if [[ -n "${API_KEY:-}" ]]; then
+    local key="${API_KEY//\\/\\\\}"
+    curl -sS "$@" -K - "http://${LOCAL_API_HOST}:${API_PORT}${path}" <<< "header = \"Authorization: Bearer ${key//\"/\\\"}\""
+  else
+    curl -sS "$@" "http://${LOCAL_API_HOST}:${API_PORT}${path}"
+  fi
+}
+
+# ทุก id ที่ /v1/models แจ้ง → API_IDS (บรรทัดละชื่อ · ว่าง = อ่านไม่ได้) และ API_HTTP = รหัส HTTP ที่ได้
+# ตั้งตัวแปรตรง ๆ ไม่พิมพ์ออก stdout: ผู้เรียกที่ใช้ $(…) จะได้ subshell แล้ว API_HTTP หายไปกับมัน
+_served_ids() {
+  local out body
+  API_IDS=""
+  out="$(_api_get /v1/models -m 10 -w '\n%{http_code}' 2>/dev/null || true)"
+  API_HTTP="${out##*$'\n'}"; body="${out%$'\n'*}"
+  [[ "$out" == *$'\n'* ]] || { API_HTTP="000"; return 0; }
+  [[ "$API_HTTP" == "200" && -n "$body" ]] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    API_IDS="$(printf '%s' "$body" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)["data"]
 except Exception:
     sys.exit(0)
-print((data[0].get("id") or "").strip() if data else "")
-' || cat; })" || return 0
-  [ -n "$seen" ] || return 0                       # อ่านไม่ได้ = ไม่ฟันธง ปล่อยผ่าน
-  [ "$seen" = "$SERVED_MODEL_NAME" ] && return 0
-  die "พอร์ต ${API_PORT} ตอบมาเป็นโมเดล '${seen}' ไม่ใช่ '${SERVED_MODEL_NAME}'
-     มีเซิร์ฟเวอร์อื่นยึดพอร์ตนี้อยู่ — ผลทดสอบที่ได้จะเป็นของโมเดลนั้น ไม่ใช่ตัวนี้
-     แก้: หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต  $0 restart --port 8001"
+for item in data or []:
+    name = (item.get("id") or "").strip() if isinstance(item, dict) else ""
+    if name:
+        print(name)
+' 2>/dev/null || true)"
+  else
+    # ไม่มี python3: แกะ "id":"…" แบบข้อความ — พอสำหรับเทียบชื่อ (ชื่อโมเดลไม่มีเครื่องหมายคำพูด)
+    API_IDS="$(printf '%s' "$body" | tr -d ' \n' | grep -o '"id":"[^"]*"' | sed 's/^"id":"//; s/"$//' || true)"
+  fi
+  return 0
+}
+
+_port_is_open() { (exec 3<>"/dev/tcp/${LOCAL_API_HOST//[][]/}/${API_PORT}") 2>/dev/null; }
+
+_api_verdict() {
+  local alive health="" name meta_name=""
+  API_VERDICT="down"; API_SEEN=""; API_HTTP=""; API_IDS=""
+  alive="$(_our_server_state)"
+  if curl -fsS -m 5 "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then health=1; fi
+  if [[ "$alive" == "no" ]]; then
+    if [[ -n "$health" ]] || _port_is_open; then
+      API_VERDICT="foreign"
+      _served_ids; API_SEEN="${API_IDS%%$'\n'*}"
+    fi
+    return 0
+  fi
+  if [[ -z "$health" ]]; then
+    [[ "$alive" == "yes" ]] && API_VERDICT="loading"
+    return 0
+  fi
+  _served_ids
+  if [[ -z "$API_IDS" ]]; then
+    API_VERDICT="unverified"
+    return 0
+  fi
+  if [[ -f "${RUN_DIR}/server.meta" ]]; then
+    meta_name="$(sed -n 's/^model=//p' "${RUN_DIR}/server.meta" 2>/dev/null | tail -1 || true)"
+  fi
+  while IFS= read -r name; do
+    if [[ "$name" == "$SERVED_MODEL_NAME" || ( -n "$meta_name" && "$name" == "$meta_name" ) ]]; then
+      API_VERDICT="ours"; API_SEEN="$name"
+      return 0
+    fi
+  done <<< "$API_IDS"
+  API_VERDICT="mismatch"; API_SEEN="${API_IDS%%$'\n'*}"
+  return 0
+}
+
+# ข้อความของ verdict ที่ไม่ใช่ของเรา — ใช้ร่วมกันใน status · info · wait-health
+_not_ours_reason() {
+  case "$API_VERDICT" in
+    foreign)  printf 'port %s is answered by something else%s — เซิร์ฟเวอร์ของ bundle นี้ไม่ได้รัน' "$API_PORT" "${API_SEEN:+ (โมเดล '${API_SEEN}')}" ;;
+    mismatch) printf "port %s ตอบเป็นโมเดล '%s' ไม่ใช่ '%s' — เซิร์ฟเวอร์อื่นยึดพอร์ตอยู่" "$API_PORT" "$API_SEEN" "$SERVED_MODEL_NAME" ;;
+  esac
+}
+_unverified_note() {
+  printf 'ยืนยันชื่อโมเดลไม่ได้: /v1/models ตอบ HTTP %s%s' "${API_HTTP:-?}" \
+    "$([[ "${API_HTTP:-}" == 40[13] ]] && printf ' — API key ที่ controller ถืออยู่ไม่ตรงกับที่เซิร์ฟเวอร์ถูก start ไว้ (ส่ง API_KEY=… หรือ lmds key)')"
 }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
@@ -1454,10 +1561,21 @@ explain_crash() {
 }
 
 wait_health() {
+  # "health ผ่าน" = เซิร์ฟเวอร์ของ bundle นี้ตอบ (ดู _api_verdict) — เดิมด่าน "ของเรายังอยู่ไหม" อยู่ในตัวลูป จึงไม่เคยถูกถาม
+  # เลยถ้า curl ครั้งแรกได้ 200 จากใครก็ตามที่ยึดพอร์ตอยู่
   local waited=0
   echo "รอ /health (สูงสุด ${HEALTH_TIMEOUT}s — โมเดลใหญ่โหลดหลายนาที)..."
-  until curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; do
-    server_alive || { explain_crash; die "เซิร์ฟเวอร์หยุดก่อน health ผ่าน — ดู: $0 logs"; }
+  while :; do
+    _api_verdict
+    case "$API_VERDICT" in
+      ours) return 0 ;;
+      unverified) echo "หมายเหตุ: $(_unverified_note)" >&2; return 0 ;;
+      mismatch) die "$(_not_ours_reason)
+     หยุดตัวที่ชน หรือรันตัวนี้คนละพอร์ต:  $0 restart --port <PORT>" ;;
+      foreign) explain_crash; die "$(_not_ours_reason)
+     เซิร์ฟเวอร์ของ bundle นี้หยุดไปแล้ว — ดู: $0 logs · หยุดตัวที่ยึดพอร์ต หรือรันตัวนี้คนละพอร์ต:  $0 start --port <PORT>" ;;
+      down) explain_crash; die "เซิร์ฟเวอร์หยุดก่อน health ผ่าน — ดู: $0 logs" ;;
+    esac
     if (( waited >= HEALTH_TIMEOUT )); then
       echo "ยังไม่ health ภายใน ${HEALTH_TIMEOUT}s — เซิร์ฟเวอร์ยังโหลดต่ออยู่ ไม่ได้ถูกหยุด" >&2
       echo "รอต่อ:      $0 wait-health" >&2
@@ -1541,13 +1659,17 @@ status() {
     pid="$(_our_server_pid)" || pid=""
     if [[ -n "$pid" ]]; then echo "process: running (PID ${pid})"; else echo "process: stopped"; fi
   else
-    docker ps -a --filter "name=^${CONTAINER_NAME}$"
+    # ถาม docker ไม่ได้ (user ต่อ socket ไม่ได้ / docker ไม่ได้รัน) ต้องไม่ทำให้ status ตายเงียบใต้ set -e — ยังรายงาน API ได้
+    docker ps -a --filter "name=^${CONTAINER_NAME}$" || echo "(ถาม docker ไม่ได้ — ดูข้อความด้านบน · สถานะ container จึงไม่ทราบ)"
   fi
-  if curl -fsS "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
-    echo "API: healthy"
-  else
-    echo "API: not responding"
-  fi
+  _api_verdict
+  case "$API_VERDICT" in
+    ours) echo "API: healthy" ;;
+    unverified) echo "API: healthy ($(_unverified_note))" ;;
+    foreign|mismatch) echo "API: $(_not_ours_reason)" ;;
+    loading) echo "API: not responding (เซิร์ฟเวอร์รันอยู่ — อาจยังโหลดโมเดล: $0 logs 50)" ;;
+    *) echo "API: not responding" ;;
+  esac
 }
 
 # logs [N] [-f|--follow|follow] — N บรรทัดล่าสุด (default 300) · -f ตามต่อแบบ realtime
@@ -1690,8 +1812,9 @@ except urllib.error.HTTPError as exc:
 message = body["choices"][0]["message"]
 answer = (message.get("content") or "").strip()
 if not answer and (message.get("reasoning_content") or "").strip():
-    print("WARN: โมเดลตอบแต่ยังคิดไม่จบใน 512 tokens")
-    sys.exit(0)
+    # คิดไม่จบ = ยังไม่ได้พิสูจน์ว่าเห็นภาพ — เดิมจบ 0 แล้วปุ่ม test-vision ขึ้น "ผ่าน" (รหัส 2 = WARN แบบ test-reasoning)
+    print("WARN: โมเดลตอบแต่ยังคิดไม่จบใน 512 tokens — ยังไม่ได้พิสูจน์ว่าเห็นภาพ (ไม่นับว่าผ่าน)")
+    sys.exit(2)
 if "red" in answer.lower() or "แดง" in answer:
     print(f"PASS: โมเดลเห็นภาพและตอบถูก — {answer[:120]}")
 else:
@@ -1823,24 +1946,46 @@ test_text() {
   echo "$response"
   echo ""
 
-  # สรุปให้อ่านออกโดยไม่ต้องเพ่ง JSON — และแยก "ตอบว่าง" ออกจาก "ตอบได้"
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$response" | python3 -c '
-import json, sys
+  # ตัดสินจาก *คำตอบ* ไม่ใช่จาก HTTP 200 — `lmds smoke` / `deploy --smoke` / ปุ่ม test-text ดูแค่ exit code
+  # เดิมบล็อกนี้ลงท้าย `|| true` และ sys.exit(0) ทุกทาง: คำตอบว่าง · error object ที่มากับ 200 · JSON ที่ไม่ใช่ chat
+  # completion (พอร์ตเป็นของบริการอื่น) · ไม่มี python3 ให้อ่านคำตอบ — จบ 0 หมด แล้ว smoke ขึ้น "ผ่าน" (audit 2026-10-06)
+  # ผ่านได้สองแบบเท่านั้น: มีข้อความคำตอบ หรือมี reasoning (โมเดลคิดไม่จบใน 512 tokens — เซิร์ฟเวอร์ทำงานจริง)
+  command -v python3 >/dev/null 2>&1 ||
+    die "test-text: ต้องมี python3 เพื่ออ่านคำตอบ — เซิร์ฟเวอร์ตอบ HTTP 200 แต่ยังไม่ได้พิสูจน์ว่าโมเดลตอบจริง (ติดตั้ง python3 แล้วรันใหม่)"
+  printf '%s' "$response" | python3 -c '
+import json, re, sys
 try:
-    msg = json.load(sys.stdin)["choices"][0]["message"]
-except (ValueError, KeyError, IndexError):
-    sys.exit(0)
-content = (msg.get("content") or "").strip()
-if content:
-    print(f"test-text: OK — {content[:200]}")
-elif (msg.get("reasoning_content") or "").strip():
+    body = json.load(sys.stdin)
+except ValueError:
+    print("test-text: FAIL — คำตอบไม่ใช่ JSON (พอร์ตนี้เป็นของบริการอื่น?)")
+    sys.exit(1)
+if isinstance(body, dict) and body.get("error"):
+    print("test-text: FAIL — เซิร์ฟเวอร์ตอบ error: " + json.dumps(body["error"], ensure_ascii=False)[:300])
+    sys.exit(1)
+try:
+    msg = body["choices"][0]["message"]
+    if not isinstance(msg, dict):
+        raise TypeError
+except (KeyError, IndexError, TypeError):
+    print("test-text: FAIL — คำตอบไม่ใช่รูป chat completion (ไม่มี choices[0].message) — ดู log: logs 200")
+    sys.exit(1)
+raw = msg.get("content") or ""
+if not isinstance(raw, str):
+    raw = json.dumps(raw, ensure_ascii=False)
+reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+# engine ที่ไม่มี reasoning parser ใส่ chain-of-thought ไว้ใน content ตรง ๆ (<think>…</think>)
+answer = re.sub(r"(?s)^.*?</think>", "", raw).strip()
+if "<think>" in answer:
+    answer = ""                                   # ถูกตัดกลาง think — ยังไม่มีคำตอบ
+if answer:
+    print("test-text: OK — " + answer[:200])
+elif raw.strip() or str(reasoning).strip():
     print("test-text: โมเดลตอบแต่ยังคิดไม่จบใน 512 tokens (reasoning model)")
-    print("           ไม่ใช่ความผิดพลาด — ลองถามคำถามที่ยาวขึ้นผ่าน /v1/chat/completions ได้เลย")
+    print("           ไม่ใช่ความผิดพลาด — เซิร์ฟเวอร์รับงานและตอบกลับได้ปกติ")
 else:
-    print("test-text: เซิร์ฟเวอร์ตอบกลับแต่ไม่มีข้อความ — ดู log: logs 200")
-' || true
-  fi
+    print("test-text: FAIL — เซิร์ฟเวอร์ตอบกลับแต่ไม่มีข้อความ (content และ reasoning ว่างทั้งคู่) — ดู log: logs 200")
+    sys.exit(1)
+'
 }
 
 test_tools() {
@@ -2183,10 +2328,15 @@ info() {
   local ip url state
   ip="$(detect_advertise_ip 2>/dev/null || true)"; [[ -n "$ip" ]] || ip="${API_HOST}"
   url="http://${ip}:${API_PORT}/v1"
-  state="stopped"
-  if curl -fsS -m 2 "http://${LOCAL_API_HOST}:${API_PORT}/health" >/dev/null 2>&1; then
-    state="RUNNING"
-  fi
+  # RUNNING = เซิร์ฟเวอร์ของ bundle นี้ตอบจริง ไม่ใช่ใครก็ได้บนพอร์ต (ดู _api_verdict)
+  _api_verdict
+  case "$API_VERDICT" in
+    ours) state="RUNNING" ;;
+    unverified) state="RUNNING ($(_unverified_note))" ;;
+    loading) state="LOADING — รันอยู่แต่ API ยังไม่ตอบ" ;;
+    foreign|mismatch) state="stopped — $(_not_ours_reason)" ;;
+    *) state="stopped" ;;
+  esac
   printf '  Model     : %s\n'            "${MODEL_LABEL}"
   printf '  Model ID  : %s\n'            "${MODEL_ID}"
   printf '  Runtime   : %s\n'            "${RUNTIME_LABEL}"
