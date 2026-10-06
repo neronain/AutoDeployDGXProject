@@ -569,25 +569,45 @@ detect_advertise_ip() {
   return 0
 }
 
+# ── ตรวจค่าตั้ง — แต่ละคำสั่งตรวจเฉพาะค่าที่มันใช้จริง ──
+#
+# เดิมทั้งก้อนนี้รันจาก parse_options ก่อน dispatch = ทุกคำสั่งโดนตรวจ knob ของ engine · ค่าที่บันทึกไว้แล้ว
+# ใช้ไม่ได้ (เช่น `lmds set --gpu-util 0.99` ซึ่งฝั่ง hub รับ แต่ที่นี่รับถึง 0.98) จึงทำให้ stop/status/logs
+# ตายด้วย "invalid --gpu-util" ไปด้วย — โมเดล stacked ที่รันอยู่หยุดผ่าน controller ของตัวเองไม่ได้ ทั้งที่
+# stop ไม่ได้ใช้ค่านั้นสักตัว (audit 2026-10) · คำสั่งที่ไม่ได้เปิด engine ต้องไม่ล้มเพราะ knob ของ engine
+#
+# $1 = ชื่อคำสั่ง (ไว้ใส่ในคำแนะนำ) · $2… = ตรวจเฉพาะค่าพวกนี้: port | context | client-output
+# ไม่ส่ง $2 = ครบทุกค่ารวม gpu-util และเพดาน context ของโมเดล — เฉพาะคำสั่งที่จะเปิด engine (start · restart)
 validate_numbers() {
-  [[ "$API_PORT" =~ ^[0-9]+$ ]] && (( API_PORT >= 1 && API_PORT <= 65535 )) ||
-    die "invalid API_PORT: $API_PORT"
-  [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( MAX_MODEL_LEN > 0 )) ||
-    die "invalid context: $MAX_MODEL_LEN"
-  # เพดานของโมเดล (max_position_embeddings จาก config.json) — vLLM ปฏิเสธ max-model-len ที่เกินอยู่แล้ว
-  # แต่ตายช้าตอนสร้าง ModelConfig (stacked = worker ตายก่อน head จะเริ่ม) และข้อความอ่านยาก
-  # · ปล่อยผ่านได้เฉพาะเมื่อผู้ใช้ตั้งใจ: ENGINE_ENV มี VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (RoPE เกินเพดาน = nan)
-  if (( NATIVE_CONTEXT > 0 && MAX_MODEL_LEN > NATIVE_CONTEXT )) &&
-     [[ " ${ENGINE_ENV:-} " != *" VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 "* ]]; then
-    die "context ${MAX_MODEL_LEN} เกินเพดานของโมเดลนี้ (${NATIVE_CONTEXT} = max_position_embeddings) — ใช้ --context ${NATIVE_CONTEXT} หรือต่ำกว่า · ต้องการเกินจริง ๆ ให้ตั้ง engine env VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (ผลลัพธ์อาจเป็น nan เมื่อเกิน)"
+  local verb="${1:-start}" only="${*:2}"
+  if [[ -z "$only" || " $only " == *" port "* ]]; then
+    [[ "$API_PORT" =~ ^[0-9]+$ ]] && (( API_PORT >= 1 && API_PORT <= 65535 )) ||
+      die "invalid API_PORT: $API_PORT (ต้องเป็นเลข 1–65535) — แก้ถาวร: lmds set ${SLUG} --port 8000 · ครั้งนี้: $0 ${verb} --port 8000"
   fi
-  # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
-  # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
-  # 0.3 พอดีต้องผ่าน — fit/sizing ตั้งพื้นไว้ที่ 0.3 ให้โมเดลเล็ก แล้ว `> 0.3` เคยปฏิเสธ
-  awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 >= 0.3 && v+0 <= 0.98)}' ||
-    die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98)"
-  [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
-    die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT"
+  if [[ -z "$only" || " $only " == *" context "* ]]; then
+    [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( MAX_MODEL_LEN > 0 )) ||
+      die "invalid context: $MAX_MODEL_LEN (ต้องเป็นจำนวนเต็มบวก) — แก้ถาวร: lmds set ${SLUG} --context <N> · ครั้งนี้: $0 ${verb} --context <N>"
+  fi
+  if [[ -z "$only" ]]; then
+    # เพดานของโมเดล (max_position_embeddings จาก config.json) — vLLM ปฏิเสธ max-model-len ที่เกินอยู่แล้ว
+    # แต่ตายช้าตอนสร้าง ModelConfig (stacked = worker ตายก่อน head จะเริ่ม) และข้อความอ่านยาก
+    # · ปล่อยผ่านได้เฉพาะเมื่อผู้ใช้ตั้งใจ: ENGINE_ENV มี VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (RoPE เกินเพดาน = nan)
+    if (( NATIVE_CONTEXT > 0 && MAX_MODEL_LEN > NATIVE_CONTEXT )) &&
+       [[ " ${ENGINE_ENV:-} " != *" VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 "* ]]; then
+      die "context ${MAX_MODEL_LEN} เกินเพดานของโมเดลนี้ (${NATIVE_CONTEXT} = max_position_embeddings) — ใช้ --context ${NATIVE_CONTEXT} หรือต่ำกว่า · ต้องการเกินจริง ๆ ให้ตั้ง engine env VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 (ผลลัพธ์อาจเป็น nan เมื่อเกิน)"
+    fi
+    # ต่ำเกิน = ไม่เหลือที่ให้ KV cache · สูงเกิน = ชน OOM ตอน warm-up (unified memory ยิ่งไวเพราะ
+    # CPU กับ GPU ใช้ pool เดียวกัน) · bash เทียบทศนิยมไม่ได้ จึงใช้ awk
+    # 0.3 พอดีต้องผ่าน — fit/sizing ตั้งพื้นไว้ที่ 0.3 ให้โมเดลเล็ก แล้ว `> 0.3` เคยปฏิเสธ
+    awk -v v="$GPU_MEMORY_UTILIZATION" 'BEGIN{exit !(v+0 >= 0.3 && v+0 <= 0.98)}' ||
+      die "invalid --gpu-util: $GPU_MEMORY_UTILIZATION (ต้องอยู่ระหว่าง 0.3 ถึง 0.98) — ยังไม่ได้แตะ container ไหน
+  แก้ถาวร (ค่าที่บันทึกไว้ใน ${BUNDLE_ENV:-bundle.env}): lmds set ${SLUG} --gpu-util 0.9
+  ครั้งนี้ครั้งเดียว: $0 ${verb} --gpu-util 0.9"
+  fi
+  if [[ -z "$only" || " $only " == *" client-output "* ]]; then
+    [[ "$CLIENT_OUTPUT" =~ ^[0-9]+$ ]] && (( CLIENT_OUTPUT > 0 )) ||
+      die "invalid CLIENT_OUTPUT: $CLIENT_OUTPUT (ต้องเป็นจำนวนเต็มบวก) — ครั้งนี้: $0 ${verb} --client-output <N>"
+  fi
 }
 
 parse_options() {
@@ -622,7 +642,7 @@ parse_options() {
       *) REMAINING_ARGS+=("$1"); shift ;;
     esac
   done
-  validate_numbers
+  # ไม่ตรวจ knob ตรงนี้ — ดูเหตุผลที่ validate_numbers · ตรวจต่อคำสั่งที่ตาราง dispatch ท้ายไฟล์
   LOCAL_API_HOST="$(_local_api_host)"
   export LOCAL_API_HOST      # ชุดทดสอบ python อ่านจาก env
 }
@@ -3169,6 +3189,15 @@ info() {
   printf '  API (v1)  : %s\n'            "${url}"
   printf '  State     : %s  (port %s)\n\n' "${state}" "${API_PORT}"
 }
+
+# knob ของ engine ตรวจเฉพาะคำสั่งที่ใช้มันจริง (เหตุผลอยู่ที่ validate_numbers) · stop/status/logs/info/
+# verify-*/sync-worker/remove ไม่อยู่ในรายการโดยเจตนา — มันต้องทำงานได้แม้ค่าที่บันทึกไว้จะ start ไม่ได้
+# restart ตรวจ **ก่อน** stop: ค่าที่ start ไม่ขึ้นต้องถูกปฏิเสธตอนที่โมเดลเดิมยังรันอยู่ ไม่ใช่หลังหยุดมันไปแล้ว
+case "${1:-}" in
+  start|restart)  validate_numbers "$1" ;;
+  client-config)  validate_numbers "$1" context client-output ;;
+  props|test-*|bench|stress)  validate_numbers "$1" port ;;
+esac
 
 # ทุกคำสั่งที่จะ ssh ไป worker: มี tty ถามยืนยัน IP (เหมือน start เดิม) · ไม่มี tty และยังเป็นค่า
 # ตัวอย่าง = หยุดพร้อมบอกทาง — stop/status/logs ปล่อยผ่าน (hub เรียกบ่อย และล้มไม่เสียหาย)
