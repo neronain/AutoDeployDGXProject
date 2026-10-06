@@ -92,10 +92,16 @@ class ModelReport(BaseModel):
 
     # ตัวเลขสำหรับ Fit Analyzer
     params_total: Optional[int] = None  # จาก Hub safetensors metadata
-    weight_bytes: Optional[int] = None  # safetensors: รวมทุก shard / gguf: ไฟล์ที่เลือก
+    weight_bytes: Optional[int] = None  # safetensors: รวม shard ของ checkpoint ที่ใช้ / gguf: ไฟล์ที่เลือก
     shard_count: Optional[int] = None
-    # ไฟล์ .safetensors ทุก shard พร้อมขนาดจาก Hub — ใช้ให้ controller ตรวจ download ครบจริง
+    # ไฟล์ .safetensors ของ *checkpoint ที่ engine โหลด* พร้อมขนาดจาก Hub (ชุดที่ index ที่ราก repo ชี้ — ดู
+    # inspector.inspect.checkpoint_files) · weight_bytes/shard_count นับจากชุดนี้เท่านั้น และ controller ใช้รายการนี้
+    # ตรวจว่า download ครบ — ไม่ใช่ทุกไฟล์ .safetensors ใน repo
     safetensor_shards: list["ShardFile"] = Field(default_factory=list)
+    # ไฟล์ weight อื่นใน repo ที่ไม่ได้ใช้ (สำเนาที่สองใน original/ · consolidated* · .bin · โฟลเดอร์ย่อย) —
+    # ไม่นับใน weight_bytes · มีไว้ให้คนอ่านเห็นว่าทำไมขนาด weight ไม่เท่าขนาด repo
+    other_weight_files: int = 0
+    other_weight_bytes: int = 0
     tokenizer_files: list[str] = Field(default_factory=list)
 
     # จาก config.json / GGUF metadata

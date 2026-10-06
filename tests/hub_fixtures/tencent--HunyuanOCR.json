@@ -1,0 +1,146 @@
+{
+ "repo": "tencent/HunyuanOCR",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "tencent/HunyuanOCR",
+  "sha": "47644ecc4fc854efa4f505155158831f36773ee4",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "hunyuan_vl",
+   "image-text-to-text",
+   "vision-language-model",
+   "document-parsing",
+   "text-spotting",
+   "information-extraction",
+   "text-image-translation",
+   "conversational",
+   "multilingual",
+   "license:other",
+   "eval-results",
+   "endpoints_compatible",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "other",
+   "pipeline_tag": "image-text-to-text"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 16277},
+   {"rfilename": "chat_template.jinja", "size": 994},
+   {"rfilename": "config.json", "size": 2233},
+   {"rfilename": "dflash/config.json", "size": 1086},
+   {"rfilename": "dflash/model.safetensors", "size": 362867640},
+   {"rfilename": "dflash/processor_config.json", "size": 1443},
+   {"rfilename": "dflash/tokenizer.json", "size": 9527297},
+   {"rfilename": "dflash/tokenizer_config.json", "size": 1165},
+   {"rfilename": "generation_config.json", "size": 139},
+   {"rfilename": "model.safetensors", "size": 2239932512},
+   {"rfilename": "preprocessor_config.json", "size": 579},
+   {"rfilename": "special_tokens_map.json", "size": 836},
+   {"rfilename": "tokenizer.json", "size": 9527297},
+   {"rfilename": "tokenizer_config.json", "size": 166592},
+   {"rfilename": "v1.0/config.json", "size": 1893},
+   {"rfilename": "v1.0/generation_config.json", "size": 205},
+   {"rfilename": "v1.0/model-00001-of-00004.safetensors", "size": 439600816},
+   {"rfilename": "v1.0/model-00002-of-00004.safetensors", "size": 453346288},
+   {"rfilename": "v1.0/model-00003-of-00004.safetensors", "size": 461590008},
+   {"rfilename": "v1.0/model-00004-of-00004.safetensors", "size": 637958736},
+   {"rfilename": "v1.0/model.safetensors.index.json", "size": 58249},
+   {"rfilename": "v1.0/preprocessor_config.json", "size": 370},
+   {"rfilename": "v1.0/special_tokens_map.json", "size": 146},
+   {"rfilename": "v1.0/tokenizer.json", "size": 6054315},
+   {"rfilename": "v1.0/tokenizer_config.json", "size": 167145},
+   {"rfilename": "video_preprocessor_config.json", "size": 916}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 1119925744
+   },
+   "total": 1119925744
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "HunYuanVLForConditionalGeneration"
+   ],
+   "dtype": "bfloat16",
+   "im_end_id": 120119,
+   "im_newline_id": 120121,
+   "im_start_id": 120118,
+   "image_token_id": 120120,
+   "model_type": "hunyuan_vl",
+   "text_config": {
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "bos_token_id": 120000,
+    "eod_token_id": 120020,
+    "eos_token_id": 120020,
+    "head_dim": 128,
+    "hidden_act": "silu",
+    "hidden_size": 1024,
+    "initializer_range": 0.02,
+    "intermediate_size": 3584,
+    "max_position_embeddings": 131072,
+    "model_type": "hunyuan_vl_text",
+    "num_attention_heads": 16,
+    "num_hidden_layers": 24,
+    "num_key_value_heads": 8,
+    "pad_token_id": 120002,
+    "pretraining_tp": 1,
+    "rms_norm_eps": 1e-05,
+    "sep_token_id": 0,
+    "tie_word_embeddings": true,
+    "use_cache": true,
+    "vocab_size": 120818,
+    "architectures": [
+     "HunYuanVLForConditionalGeneration"
+    ],
+    "use_qk_norm": true
+   },
+   "tie_word_embeddings": true,
+   "transformers_version": "5.15.0.dev0",
+   "vision_config": {
+    "attention_dropout": 0.0,
+    "hidden_act": "gelu",
+    "hidden_size": 1152,
+    "img_max_token_num": 16384,
+    "intermediate_size": 4304,
+    "interpolate_mode": "bilinear",
+    "max_image_size": 2048,
+    "max_vit_seq_len": 65536,
+    "min_image_size": 512,
+    "model_type": "hunyuan_vl_vision",
+    "num_attention_heads": 16,
+    "num_channels": 3,
+    "num_hidden_layers": 27,
+    "num_key_value_heads": 16,
+    "out_hidden_size": 1024,
+    "patch_size": 16,
+    "rms_norm_eps": 1e-05,
+    "spatial_merge_size": 2,
+    "temporal_patch_size": 1,
+    "text_hidden_size": 1024
+   },
+   "use_qk_norm": true,
+   "image_start_token_id": 120118,
+   "image_end_token_id": 120119,
+   "image_newline_token_id": 120121,
+   "video_start_token_id": 120122,
+   "video_end_token_id": 120123,
+   "video_start_id": 120122,
+   "video_end_id": 120123
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 1000000000000000019884624838656,
+   "tokenizer_class": "PreTrainedTokenizerFast"
+  }
+ }
+}

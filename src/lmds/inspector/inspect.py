@@ -30,6 +30,12 @@ def _is_mmproj(basename: str) -> bool:
 _SPLIT_GGUF_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 
 _SAFETENSORS_INDEX = "model.safetensors.index.json"
+_SHARD_NAME_RE = re.compile(r"^model-\d+-of-(\d+)\.safetensors$")
+# .safetensors ที่ราก repo แต่ไม่ใช่ตัวโมเดล — PEFT เขียน adapter_model.safetensors · mlx-lm เขียน adapters.safetensors
+_ADAPTER_WEIGHT_FILES = {"adapter_model.safetensors", "adapters.safetensors"}
+# นามสกุลที่ถือว่าเป็น "ไฟล์ weight" เวลารายงานของที่ไม่ได้ใช้ (GGUF แยกไปอยู่ใน gguf_variants)
+_WEIGHT_EXTS = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".onnx", ".onnx_data", ".h5", ".msgpack",
+                ".ot", ".mlmodel", ".tflite", ".rkllm", ".mnn", ".nemo")
 # ไฟล์ tokenizer ที่ vLLM ต้องใช้จริงตอน serve — ถ้า repo มี ต้องโหลดมาครบด้วย
 _TOKENIZER_FILES = {"tokenizer.json", "tokenizer_config.json", "tokenizer.model", "vocab.json", "merges.txt"}
 
@@ -137,6 +143,7 @@ def inspect_model(source: ModelSource, client: HfClient) -> ModelReport:
         _inspect_safetensors(report, source, client, revision_sha, safetensor_files)
     if artifact in (ArtifactType.GGUF, ArtifactType.MIXED):
         _inspect_gguf(report, source, client, revision_sha, gguf_files)
+    _note_unused_weights(report, files)
     return report
 
 
@@ -249,6 +256,80 @@ def _fetch_json(
     return data if isinstance(data, dict) else None
 
 
+def checkpoint_files(names: list[str], index: dict[str, Any] | None,
+                     mistral_native: bool = False) -> tuple[list[str], list[str], str]:
+    """ไฟล์ .safetensors ชุดไหนคือ *ตัวโมเดล* ที่ vLLM/SGLang จะโหลด — (ไฟล์, shard ที่ index อ้างแต่ไม่มี, ที่มา)
+
+    repo หนึ่งมี weight ได้หลายสำเนา แต่ engine โหลดชุดเดียว · เดิมรวมขนาดทุกไฟล์ .safetensors ทุกโฟลเดอร์:
+    เคสจริง 2026-10-06 `openai/gpt-oss-120b` (มี `original/` อีกสำเนา) รายงาน 130.5 GB ทั้งที่ของจริง 65.25 GB
+    → needs-smaller-quant บน dgx-spark-single (budget 113.5 GB) ทั้งที่ลงได้ · repo ของ mistralai 38 ตัววาง
+    `consolidated*.safetensors` คู่กับ `model-*` ก็โดนนับสองเท่าเหมือนกัน
+
+    ลำดับตรงกับ loader ของ vLLM เอง (`filter_duplicate_safetensors_files`: มี index ก็เชื่อ `weight_map`
+    ไม่มีก็ glob `*.safetensors` ที่ **ราก** repo — ไม่ลงโฟลเดอร์ย่อย):
+      1. `model.safetensors.index.json` ที่ราก → ไฟล์ที่ `weight_map` ชี้ (เฉพาะที่มีอยู่จริง)
+         · index ที่ไม่มี shard ของมันเหลือสักไฟล์ = index ค้างมาจากต้นฉบับ (icefog72/…-exl2) → ข้ามไปข้อถัดไป
+      2. `model.safetensors` ที่ราก (ไฟล์เดียว)
+      3. `model-NNNNN-of-MMMMM.safetensors` ที่ราก (ไม่มี index)
+      4. `consolidated*.safetensors` เมื่อ repo เป็นรูปแบบ mistral (มี `params.json`)
+      5. `.safetensors` อื่นที่ราก ยกเว้นไฟล์ adapter — vLLM glob ไฟล์พวกนี้ทั้งหมด
+    ไม่เข้าข้อไหนเลย = ไม่มี checkpoint ที่ราก (มีแต่ในโฟลเดอร์ย่อย / มีแต่ adapter) → คืนลิสต์ว่าง
+    """
+    present = set(names)
+    root = sorted(n for n in present if "/" not in n)
+    if index is not None:
+        shards = sorted({v for v in (index.get("weight_map") or {}).values() if isinstance(v, str)})
+        found = [s for s in shards if s in present]
+        if found:
+            return found, [s for s in shards if s not in present], "index"
+    if "model.safetensors" in present:
+        return ["model.safetensors"], [], "single"
+    shards = [n for n in root if _SHARD_NAME_RE.match(n)]
+    if shards:
+        # สองชุดที่รากโดยไม่มี index บอกว่าชุดไหน (…-of-00018 กับ …-of-00028) → เอาชุดที่ครบและใหญ่สุด
+        by_total: dict[int, list[str]] = {}
+        for name in shards:
+            by_total.setdefault(int(_SHARD_NAME_RE.match(name).group(1)), []).append(name)
+        complete = [total for total, group in by_total.items() if len(group) == total]
+        pick = max(complete) if complete else max(by_total, key=lambda total: len(by_total[total]))
+        return by_total[pick], [], "shards"
+    consolidated = [n for n in root if n.startswith("consolidated")]
+    if mistral_native and consolidated:
+        return consolidated, [], "mistral"
+    rest = [n for n in root if n not in _ADAPTER_WEIGHT_FILES]
+    return rest, [], "other" if rest else "none"
+
+
+def _describe_unused(files: list[tuple[str, int | None]]) -> str:
+    """สรุปไฟล์ weight ที่ไม่ได้ใช้เป็นกลุ่มตามโฟลเดอร์ — "original/ 7 ไฟล์ 65.2 GB · metal/model.bin 65.2 GB" """
+    groups: dict[str, list[int]] = {}
+    for name, size in files:
+        key = name.split("/", 1)[0] + "/" if "/" in name else name
+        groups.setdefault(key, []).append(size or 0)
+    ranked = sorted(groups.items(), key=lambda item: -sum(item[1]))
+    parts = [
+        f"{key} {len(sizes)} ไฟล์ {sum(sizes) / 1e9:.1f} GB" if key.endswith("/") else f"{key} {sum(sizes) / 1e9:.1f} GB"
+        for key, sizes in ranked[:4]
+    ]
+    if len(ranked) > 4:
+        parts.append(f"และอีก {len(ranked) - 4} รายการ")
+    return " · ".join(parts)
+
+
+def _note_unused_weights(report: ModelReport, files: list[tuple[str, int | None, str | None]]) -> None:
+    """ไฟล์ weight ใน repo ที่ไม่ใช่ชุดที่จะถูกโหลด — บอกจำนวน/ขนาด ให้เห็นว่าทำไม Weight size ไม่เท่าขนาด repo"""
+    used = {s.filename for s in report.safetensor_shards}
+    unused = [(name, size) for name, size, _ in files
+              if name.endswith(_WEIGHT_EXTS) and name not in used]
+    report.other_weight_files = len(unused)
+    report.other_weight_bytes = sum(size or 0 for _, size in unused)
+    if unused and report.safetensor_shards:
+        report.warnings.append(
+            f"repo มีไฟล์ weight อื่นอีก {len(unused)} ไฟล์ ({report.other_weight_bytes / 1e9:.1f} GB) ที่ไม่ใช่ "
+            f"checkpoint ที่ engine โหลด — ไม่นับในขนาด weight และไม่อยู่ในรายการ shard: {_describe_unused(unused)}"
+        )
+
+
 def _inspect_safetensors(
     report: ModelReport,
     source: ModelSource,
@@ -256,30 +337,44 @@ def _inspect_safetensors(
     revision: str,
     safetensor_files: list[tuple[str, int | None]],
 ) -> None:
-    report.safetensor_shards = [
-        ShardFile(filename=name, size_bytes=size) for name, size in sorted(safetensor_files)
-    ]
-    sizes = [size for _, size in safetensor_files if size is not None]
-    if len(sizes) == len(safetensor_files):
-        report.weight_bytes = sum(sizes)
-    else:
-        report.warnings.append("Hub ไม่รายงานขนาดไฟล์ครบ — weight_bytes อาจไม่ครบถ้วน")
-        report.weight_bytes = sum(sizes) if sizes else None
-
     index = _fetch_json(client, source.repo_id, revision, _SAFETENSORS_INDEX, cap=INDEX_FILE_CAP)
-    if index is not None:
-        weight_map = index.get("weight_map") or {}
-        shards = {v for v in weight_map.values() if isinstance(v, str)}
-        report.shard_count = len(shards) or None
-        listed = {name for name, _ in safetensor_files}
-        missing = sorted(shards - listed)
-        if missing:
-            report.warnings.append(f"index อ้าง shard ที่ไม่อยู่ใน repo: {', '.join(missing[:5])}")
-        total = (index.get("metadata") or {}).get("total_size")
-        if isinstance(total, int) and total > 0:
-            report.weight_bytes = report.weight_bytes or total
-    else:
-        report.shard_count = len(safetensor_files)
+    sizes_by_name = dict(safetensor_files)
+    # รูปแบบ mistral (params.json + consolidated*.safetensors) — ถามเฉพาะเมื่อไม่มีชุดมาตรฐานให้ใช้
+    names = list(sizes_by_name)
+    chosen, missing, origin = checkpoint_files(names, index)
+    if origin in ("other", "none") and any(n.startswith("consolidated") and "/" not in n for n in names):
+        if _fetch_json(client, source.repo_id, revision, "params.json") is not None:
+            chosen, missing, origin = checkpoint_files(names, index, mistral_native=True)
+
+    report.safetensor_shards = [ShardFile(filename=name, size_bytes=sizes_by_name.get(name)) for name in chosen]
+    report.shard_count = len(chosen) or None
+    sizes = [sizes_by_name[name] for name in chosen if sizes_by_name.get(name) is not None]
+    if chosen and len(sizes) == len(chosen):
+        report.weight_bytes = sum(sizes)
+    elif chosen:
+        report.warnings.append("Hub ไม่รายงานขนาดไฟล์ครบ — weight_bytes อาจไม่ครบถ้วน")
+        # ขนาดรวมที่ index จดไว้เองยังดีกว่าผลรวมที่ขาด
+        total = (index.get("metadata") or {}).get("total_size") if index is not None else None
+        report.weight_bytes = int(total) if isinstance(total, (int, float)) and total > 0 else (sum(sizes) or None)
+    if missing:
+        report.warnings.append(f"index อ้าง shard ที่ไม่อยู่ใน repo: {', '.join(missing[:5])}")
+    elif index is not None and origin != "index":
+        report.warnings.append(
+            "model.safetensors.index.json อ้าง shard ที่ไม่มีอยู่ใน repo เลย (index ค้างจากต้นฉบับ) — "
+            "ใช้ไฟล์ .safetensors ที่มีอยู่จริงแทน"
+        )
+    if origin == "shards":
+        report.warnings.append("มี shard model-*-of-* แต่ไม่มี model.safetensors.index.json — transformers โหลดไม่ได้ถ้าขาด index")
+    elif origin == "other":
+        report.warnings.append(
+            "ไฟล์ weight ไม่ได้ตั้งชื่อตามมาตรฐาน transformers (model.safetensors / model-N-of-M.safetensors): "
+            + ", ".join(chosen[:5])
+        )
+    elif origin == "none":
+        report.warnings.append(
+            "ไม่พบ checkpoint safetensors ที่ราก repo (มีแต่ในโฟลเดอร์ย่อยหรือเป็นไฟล์ adapter) — "
+            "vLLM/SGLang โหลดจากราก repo เท่านั้น"
+        )
 
     config = _fetch_json(client, source.repo_id, revision, "config.json")
     if config is not None:

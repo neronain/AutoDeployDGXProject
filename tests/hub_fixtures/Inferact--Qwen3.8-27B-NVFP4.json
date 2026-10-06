@@ -1,0 +1,258 @@
+{
+ "repo": "Inferact/Qwen3.8-27B-NVFP4",
+ "fetched": "2026-10-06",
+ "note": "metadata จริงจาก Hub ตัดเหลือส่วนที่ inspector อ่าน (index: tensor ละตัวต่อ shard · tokenizer/chat template ย่อ)",
+ "info": {
+  "id": "Inferact/Qwen3.8-27B-NVFP4",
+  "sha": "6128240ebaf4eaa7bad2b3d1c72c37d677c5f462",
+  "private": false,
+  "gated": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+   "transformers",
+   "safetensors",
+   "qwen3_5",
+   "image-text-to-text",
+   "conversational",
+   "base_model:Qwen/Qwen3.8-27B",
+   "base_model:quantized:Qwen/Qwen3.8-27B",
+   "license:apache-2.0",
+   "endpoints_compatible",
+   "8-bit",
+   "modelopt",
+   "region:us"
+  ],
+  "cardData": {
+   "library_name": "transformers",
+   "license": "apache-2.0",
+   "base_model": [
+    "Qwen/Qwen3.8-27B"
+   ],
+   "pipeline_tag": "image-text-to-text"
+  },
+  "siblings": [
+   {"rfilename": "LICENSE", "size": 11343},
+   {"rfilename": "chat_template.jinja", "size": 8952},
+   {"rfilename": "config.json", "size": 19252},
+   {"rfilename": "generation_config.json", "size": 214},
+   {"rfilename": "hf_quant_config.json", "size": 15113},
+   {"rfilename": "model-00001-of-00006.safetensors", "size": 4013662656},
+   {"rfilename": "model-00002-of-00006.safetensors", "size": 4104675536},
+   {"rfilename": "model-00003-of-00006.safetensors", "size": 4028901296},
+   {"rfilename": "model-00004-of-00006.safetensors", "size": 4003421984},
+   {"rfilename": "model-00005-of-00006.safetensors", "size": 4000515080},
+   {"rfilename": "model-00006-of-00006.safetensors", "size": 5380672368},
+   {"rfilename": "model.safetensors.index.json", "size": 205647},
+   {"rfilename": "nvfp4_experts_mtp.safetensors", "size": 849400392},
+   {"rfilename": "preprocessor_config.json", "size": 390},
+   {"rfilename": "tokenizer.json", "size": 12809320},
+   {"rfilename": "tokenizer_config.json", "size": 17927},
+   {"rfilename": "video_preprocessor_config.json", "size": 385},
+   {"rfilename": "vocab.json", "size": 6722759}
+  ],
+  "safetensors": {
+   "parameters": {
+    "BF16": 7480996592,
+    "U8": 10150215680
+   },
+   "total": 17631212272
+  }
+ },
+ "files": {
+  "config.json": {
+   "architectures": [
+    "Qwen3_5ForConditionalGeneration"
+   ],
+   "dtype": "bfloat16",
+   "experts_implementation": "eager",
+   "image_token_id": 248056,
+   "language_model_only": false,
+   "model_type": "qwen3_5",
+   "quantization_config": {
+    "config_groups": {
+     "group_0": {
+      "input_activations": {
+       "dynamic": false,
+       "group_size": 16,
+       "num_bits": 4,
+       "type": "float"
+      },
+      "targets": [
+       "Linear"
+      ],
+      "weights": {
+       "dynamic": false,
+       "group_size": 16,
+       "num_bits": 4,
+       "type": "float"
+      }
+     }
+    },
+    "ignore": [
+     "lm_head",
+     "model.language_model.embed_tokens"
+    ],
+    "producer": {
+     "name": "modelopt",
+     "version": "0.0.1.dev1+ga21173a4d"
+    },
+    "quant_algo": "NVFP4",
+    "quant_method": "modelopt"
+   },
+   "text_config": {
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "attn_output_gate": true,
+    "bos_token_id": 248044,
+    "dtype": "bfloat16",
+    "eos_token_id": 248044,
+    "experts_implementation": "eager",
+    "full_attention_interval": 4,
+    "head_dim": 256,
+    "hidden_act": "silu",
+    "hidden_size": 5120,
+    "initializer_range": 0.02,
+    "intermediate_size": 17408,
+    "layer_types": [
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention",
+     "linear_attention",
+     "linear_attention",
+     "linear_attention",
+     "full_attention"
+    ],
+    "linear_conv_kernel_dim": 4,
+    "linear_key_head_dim": 128,
+    "linear_num_key_heads": 16,
+    "linear_num_value_heads": 48,
+    "linear_value_head_dim": 128,
+    "mamba_ssm_dtype": "float32",
+    "max_position_embeddings": 262144,
+    "model_type": "qwen3_5_text",
+    "mtp_num_hidden_layers": 1,
+    "mtp_use_dedicated_embeddings": false,
+    "num_attention_heads": 24,
+    "num_hidden_layers": 64,
+    "num_key_value_heads": 4,
+    "output_gate_type": "swish",
+    "pad_token_id": null,
+    "partial_rotary_factor": 0.25,
+    "rms_norm_eps": 1e-06,
+    "tie_word_embeddings": false,
+    "use_cache": true,
+    "vocab_size": 248320
+   },
+   "tie_word_embeddings": false,
+   "transformers_version": "5.13.0",
+   "video_token_id": 248057,
+   "vision_config": {
+    "deepstack_visual_indexes": [],
+    "depth": 27,
+    "dtype": "bfloat16",
+    "hidden_act": "gelu_pytorch_tanh",
+    "hidden_size": 1152,
+    "in_channels": 3,
+    "initializer_range": 0.02,
+    "intermediate_size": 4304,
+    "model_type": "qwen3_5_vision",
+    "num_heads": 16,
+    "num_position_embeddings": 2304,
+    "out_hidden_size": 5120,
+    "patch_size": 16,
+    "spatial_merge_size": 2,
+    "temporal_patch_size": 2
+   },
+   "vision_end_token_id": 248054,
+   "vision_start_token_id": 248053
+  },
+  "tokenizer_config.json": {
+   "model_max_length": 131072,
+   "chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+   "tokenizer_class": "Qwen2Tokenizer"
+  },
+  "hf_quant_config.json": {
+   "producer": {
+    "name": "modelopt",
+    "version": "0.0.1.dev1+ga21173a4d"
+   },
+   "quantization": {
+    "group_size": 16,
+    "kv_cache_quant_algo": null,
+    "quant_algo": "NVFP4"
+   }
+  },
+  "model.safetensors.index.json": {
+   "metadata": {
+    "total_size": 26381249312
+   },
+   "weight_map": {
+    "lm_head.weight": "model-00006-of-00006.safetensors",
+    "model.language_model.layers.0.input_layernorm.weight": "model-00001-of-00006.safetensors",
+    "model.language_model.layers.13.input_layernorm.weight": "model-00002-of-00006.safetensors",
+    "model.language_model.layers.26.input_layernorm.weight": "model-00003-of-00006.safetensors",
+    "model.language_model.layers.39.input_layernorm.weight": "model-00004-of-00006.safetensors",
+    "model.language_model.layers.52.input_layernorm.weight": "model-00005-of-00006.safetensors",
+    "mtp.fc.weight": "nvfp4_experts_mtp.safetensors"
+   }
+  }
+ }
+}
