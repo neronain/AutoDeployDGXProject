@@ -1093,13 +1093,17 @@ def _controller_checked(info: ServerInfo, command: str, extra: list[str] | None 
     try:
         code = proc.wait()
     finally:
+        # ปกติท่อปิดพร้อม controller · แต่ process ลูกที่มันปล่อยไว้เบื้องหลังโดยไม่ redirect ผลลัพธ์
+        # ยังถือปลายท่ออยู่ได้ — รอเก็บของที่ค้างแค่ชั่วครู่ ไม่รอจนมันจบ (thread เป็น daemon และ
+        # ยังส่งผลลัพธ์ของมันออกจอต่อเหมือนตอนที่มันได้ fd ของเราไปตรง ๆ)
         for reader in readers:
-            reader.join(timeout=5)
-        for pipe in (proc.stdout, proc.stderr):
-            try:
-                pipe.close()
-            except OSError:
-                pass
+            reader.join(timeout=2)
+        if not any(reader.is_alive() for reader in readers):
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
     if code == 0:
         return
     tail.extend(rest.strip() for rest in pending.values() if rest.strip())
@@ -1152,12 +1156,45 @@ def _confirm_stopped(info: ServerInfo, pid: int, how: str) -> None:
         time.sleep(0.2)
 
 
-def stop_server(info: ServerInfo) -> str:
+def _tell_watchdog(slug: str, event: str, ok: bool = True) -> None:
+    """บอก watchdog ของโมเดลนี้ว่า **คน** สั่ง stop/start — ไม่ทำให้คำสั่งหลักล้มไม่ว่ากรณีใด
+
+    ดู `watchdog.operator_event` · เรียกจากที่นี่ (ไม่ใช่จาก CLI) เพื่อให้ `lmds stop`, ปุ่มบนเว็บ และ
+    `lmds node run <เครื่อง> stop` ได้พฤติกรรมเดียวกันโดยไม่มีใครต้องจำว่าต้องเรียก
+    """
+    try:
+        from . import watchdog
+
+        watchdog.operator_event(slug, event, ok=ok)
+    except Exception:  # noqa: BLE001 — สถานะ watchdog เขียนไม่ได้ ไม่ใช่เหตุให้ stop/start ล้ม
+        pass
+
+
+def stop_server(info: ServerInfo, *, operator: bool = True) -> str:
     """หยุดผ่าน controller; ถ้า controller หาย/ไม่ลงทะเบียน ใช้ fallback (kill pid / docker rm)
 
     คืนวิธีที่ใช้ **เมื่อหยุดได้จริงเท่านั้น** — controller ล้ม · docker ปฏิเสธ · หรือสั่งแล้วของยังรันอยู่
     ล้วนเป็น `FleetError` (ดู `_controller_checked` กับ `_confirm_stopped`)
+
+    `operator=True` (ค่าปริยาย — ทุกทางที่คนสั่ง): พัก watchdog ของโมเดลนี้ **ก่อน** เริ่มหยุด
+    ไม่งั้นมันเห็น probe พลาดแล้วปลุกโมเดลที่เพิ่งถูกสั่งหยุดขึ้นมาใหม่ (audit 2026-10-06:
+    หลัง `lmds stop` → `waiting, waiting, restart`) · บนเครื่อง unified-memory นั่นคือการเอา
+    หน่วยความจำที่เพิ่งเคลียร์ให้โมเดลถัดไปกลับไปให้ตัวเดิม
     """
+    if operator:
+        _tell_watchdog(info.slug, "stop-begin")
+    try:
+        method = _stop(info)
+    except BaseException:
+        if operator:
+            _tell_watchdog(info.slug, "stop-end", ok=False)   # ไม่ได้หยุดจริง — ไม่มีเหตุให้พัก
+        raise
+    if operator:
+        _tell_watchdog(info.slug, "stop-end")
+    return method
+
+
+def _stop(info: ServerInfo) -> str:
     pid = _server_pid(info) if info.mode == "native" else 0
     if info.controller_exists:
         _controller_checked(info, "stop")
@@ -1189,11 +1226,25 @@ def stop_server(info: ServerInfo) -> str:
     return "docker-stop" if info.external else "docker-rm"
 
 
-def restart_server(info: ServerInfo, options: list[str] | None = None) -> str:
+def restart_server(info: ServerInfo, options: list[str] | None = None, *,
+                   operator: bool = True) -> str:
     """restart — controller ถ้ามี, ไม่งั้น docker restart (ใช้ได้กับ container ภายนอกด้วย)
 
     controller ที่จบด้วย exit ≠ 0 คือ restart ที่ล้ม — โยน `FleetError` พร้อมสิ่งที่มันพูด ไม่คืน "controller"
+
+    `operator=True`: คนสั่ง — watchdog ที่พักอยู่ (เพราะคนสั่ง stop ไว้) กลับมาเฝ้าต่อเมื่อ restart สำเร็จ
+    และเว้นช่วงให้โมเดลโหลด · watchdog เรียกด้วย `operator=False` เพราะ restart ของมันเอง
+    ไม่ใช่การตัดสินใจของคน
     """
+    if operator:
+        _tell_watchdog(info.slug, "start-begin")
+    method = _restart(info, options)
+    if operator:
+        _tell_watchdog(info.slug, "start-end")
+    return method
+
+
+def _restart(info: ServerInfo, options: list[str] | None = None) -> str:
     if info.controller_exists:
         _controller_checked(info, "restart", options)
         return "controller"
@@ -1217,7 +1268,11 @@ def start_server(info: ServerInfo, options: list[str] | None = None,
     รู้จักทุกตัว แค่ส่งต่อและปล่อยให้ controller ตรวจค่าเอง — มันตรวจอยู่แล้ว
     """
     _guard_serving(info, "start", force)
-    return _run_controller(info, "start", options)
+    _tell_watchdog(info.slug, "start-begin")
+    code = _run_controller(info, "start", options)
+    # start ที่ล้มไม่ปลุก watchdog ที่พักอยู่ — โมเดลยังไม่ได้รัน และคนที่สั่งเห็น error อยู่ตรงหน้าแล้ว
+    _tell_watchdog(info.slug, "start-end", ok=code == 0)
+    return code
 
 
 def controller_follows(controller: str | Path) -> bool:

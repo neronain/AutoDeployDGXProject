@@ -356,6 +356,16 @@ def _node_hint() -> str:
         return ""
 
 
+def _tell_watchdog(slug: str, event: str, ok: bool = True) -> None:
+    """ส่งต่อให้ `watchdog.operator_event` — ไม่ทำให้งานล้มไม่ว่ากรณีใด"""
+    try:
+        from lmds.fleet import watchdog
+
+        watchdog.operator_event(slug, event, ok=ok)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def start(slug: str, command: str, controller: str, options: dict | None = None) -> Job:
     if command not in ALLOWED:
         raise JobError(f"คำสั่ง '{command}' ไม่อยู่ในรายการที่อนุญาต")
@@ -384,6 +394,19 @@ def start(slug: str, command: str, controller: str, options: dict | None = None)
         _ACTIVE[slug] = job.id
 
     def run() -> None:
+        # ปุ่ม stop/start/restart ของหน้าเว็บเรียก controller ตรง ๆ ไม่ผ่าน `manager.stop_server` —
+        # ต้องบอก watchdog เองว่า **คน** สั่ง ไม่งั้นมันปลุกโมเดลที่เพิ่งกดหยุดขึ้นมาใหม่ (audit 2026-10-06)
+        note = {"stop": "stop", "start": "start", "restart": "start"}.get(command)
+        if note is None:
+            steps_run()
+            return
+        _tell_watchdog(slug, f"{note}-begin")
+        try:
+            steps_run()
+        finally:
+            _tell_watchdog(slug, f"{note}-end", ok=job.exit_code == 0)
+
+    def steps_run() -> None:
         # PYTHONUNBUFFERED: ขั้น download เรียก python ในคอนเทนเนอร์ ซึ่ง stdout ที่ปลาย
         # ท่อ (ไม่ใช่ tty) ถูก block-buffer ไว้ — progress ค้างอยู่ในบัฟเฟอร์จนงานจบ
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **extra_env}

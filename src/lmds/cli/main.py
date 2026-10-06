@@ -5798,14 +5798,20 @@ def watchdog_arm(
     window_hours: int = typer.Option(0, "--window-hours", help="กรอบเวลาของเพดาน (ว่าง = 6 ชั่วโมง)"),
     settle: int = typer.Option(0, "--settle", help="หลัง restart หยุดยิงกี่วินาทีให้โมเดลโหลดจบ (ว่าง = จาก controller)"),
     service: bool = typer.Option(False, "--service", help="ติดตั้ง systemd user service ให้รันเองเลย"),
+    allow_adopted: bool = typer.Option(
+        False, "--allow-adopted",
+        help="ยอมให้เฝ้า bundle ที่ `lmds adopt` รับเข้ามา — restart ของมันคือ docker rm -f + รันคำสั่งใหม่"
+             "บน container ของลูกค้า · ใส่เมื่อเจ้าของโมเดลนั้นตกลงแล้วเท่านั้น"),
 ) -> None:
     """เปิด watchdog ของโมเดลตัวหนึ่ง — **ไม่มีอะไรเปิดเอง ต้องสั่งทีละตัว**
 
     เหตุผลที่ต้องสั่งเอง: LMDS คุมเครื่องที่มีโมเดลของลูกค้ารันอยู่ก่อนได้ (`lmds adopt`) ·
     ของที่ restart โมเดลของคนอื่นได้เองโดยไม่มีใครสั่ง เป็นเรื่องใหญ่กว่าการปล่อยให้ค้าง
 
-    ปฏิเสธตั้งแต่ตรงนี้: container ที่ LMDS ไม่ได้สร้าง · ตัวที่ไม่มีทะเบียน ·
-    โมเดล embedding/rerank (ยิง generate ใส่มันไม่มีความหมาย ผลคือ restart เพราะเราถามผิด)
+    ปฏิเสธตั้งแต่ตรงนี้: container ที่ LMDS ไม่ได้สร้าง · bundle ที่ adopt มา (เว้นแต่ใส่ `--allow-adopted`) ·
+    ตัวที่ไม่มีทะเบียน · โมเดล embedding/rerank (ยิง generate ใส่มันไม่มีความหมาย ผลคือ restart เพราะเราถามผิด)
+
+    คนสั่ง `lmds stop <slug>` = watchdog ของตัวนั้นพักจนกว่าจะ `lmds start`/`restart` — ไม่ปลุกของที่ตั้งใจหยุด
     """
     from lmds.fleet import FleetError, watchdog as wd
 
@@ -5826,13 +5832,16 @@ def watchdog_arm(
     for line in wd.warnings_for(server):
         console.print(f"[yellow]⚠ {line}[/yellow]")
     try:
-        state = wd.arm(server, policy=policy)
+        state = wd.arm(server, policy=policy, allow_adopted=allow_adopted)
     except FleetError as exc:
         err_console.print(f"[red]เปิด watchdog ของ {slug} ไม่ได้:[/red]\n{exc}")
         raise typer.Exit(code=1) from None
 
     console.print(f"[green]เปิด watchdog ของ {slug} แล้ว[/green]")
-    for line in wd.describe(state):
+    if state.allow_adopted:
+        console.print("[yellow]⚠ bundle นี้ adopt มาจากโมเดลที่รันอยู่ก่อน LMDS — เปิดตามที่สั่ง "
+                      "(--allow-adopted) · restart อัตโนมัติจะลบและสร้าง container ของมันใหม่[/yellow]")
+    for line in wd.describe(state, info=server):
         console.print(f"  {line}")
     if service:
         try:
@@ -5841,6 +5850,9 @@ def watchdog_arm(
             err_console.print(f"[yellow]{exc}[/yellow]")
             raise typer.Exit(code=1) from None
         console.print(f"[green]ติดตั้ง {name} แล้ว[/green] — เช็ก: systemctl --user status {name}")
+        # "enable --now คืน 0" ไม่ใช่หลักฐานว่าลูปรันอยู่ — ถาม systemd อีกครั้งแล้วพิมพ์สิ่งที่มันตอบ
+        for line in wd.service_lines(wd.service_state(slug), "th"):
+            console.print(f"  {line}", markup=False, highlight=False)
     else:
         console.print("[yellow]สถานะถูกบันทึกแล้ว แต่ยังไม่มีอะไรรันลูปให้[/yellow] — เลือกทางใดทางหนึ่ง:")
         console.print(f"  systemd:       lmds watchdog arm {slug} --service")
@@ -5864,26 +5876,29 @@ def watchdog_status(
     slug: str = typer.Argument("", help="ว่าง = ทุกตัวที่เปิดไว้", autocompletion=_complete_slug),
     as_json: bool = typer.Option(False, "--json", help="พิมพ์เป็น JSON"),
 ) -> None:
-    """watchdog ของเครื่องนี้เปิดไว้กี่ตัว · restart ไปแล้วกี่ครั้ง · เพราะอะไร
+    """watchdog ของเครื่องนี้เปิดไว้กี่ตัว · ยิงครั้งล่าสุดเมื่อไร · สำเร็จล่าสุดเมื่อไร · systemd ว่าอย่างไร
+
+    "เปิดอยู่" มาจากไฟล์สถานะ — บอกแค่ว่าเคยสั่งเปิด · ที่บอกว่ามีใครเฝ้าจริงคือเวลาของ probe ล่าสุด
+    กับคำตอบของ `systemctl --user is-active` ซึ่งคำสั่งนี้ถามให้ทุกครั้ง (ถามไม่ได้ = `unknown`)
 
     ประวัติการ restart แบบเต็ม (พร้อมเวลาและเหตุผล) อยู่ใน `lmds audit` ที่เดียวกับคำสั่งของคน
     """
-    from dataclasses import asdict
-
-    from lmds.fleet import watchdog as wd
+    from lmds.fleet import discover, watchdog as wd
 
     slugs = [slug] if slug else wd.armed_slugs()
     if not slugs:
         console.print("ยังไม่มี watchdog ที่เปิดไว้บนเครื่องนี้ — เปิด: lmds watchdog arm <slug>")
         return
-    states = [wd.load(s) for s in slugs]
+    servers = {s.slug: s for s in discover()}
+    rows = [(wd.load(s), servers.get(s), wd.service_state(s)) for s in slugs]
     if as_json:
-        print(json.dumps([asdict(s) for s in states], ensure_ascii=False))
+        print(json.dumps([wd.report(state, info=info, service=service) for state, info, service in rows],
+                         ensure_ascii=False))
         return
-    for state in states:
-        console.print(f"[bold]{state.slug}[/bold]")
-        for line in wd.describe(state):
-            console.print(f"  {line}")
+    for state, info, service in rows:
+        console.print(f"[bold]{state.slug}[/bold]", markup=False, highlight=False)
+        for line in wd.describe(state, info=info, service=service):
+            console.print(f"  {line}", markup=False, highlight=False)
 
 
 @watchdog_app.command("run")
@@ -5902,10 +5917,13 @@ def watchdog_run(
     def show(report: dict) -> None:
         probe = report.get("probe")
         detail = report.get("reason") or (getattr(probe, "detail", "") if probe else "")
-        colour = {"ok": "green", "restart": "red", "gave-up": "red",
-                  "misconfigured": "yellow"}.get(report["action"], "dim")
+        colour = {"ok": "green", "restart": "red", "gave-up": "red", "misconfigured": "yellow",
+                  "blocked": "yellow", "paused": "yellow", "resumed": "green"}.get(report["action"], "dim")
+        # restart ที่ล้มต้องเห็นในบรรทัดเดียวกับที่บอกว่า restart — ไม่ใช่ไปเจอทีหลังใน audit
+        if report["action"] == "restart" and report.get("restart_ok") is False:
+            detail = f"{detail} · RESTART FAILED: {report.get('error', '')}"
         console.print(f"[dim]{_now()}[/dim] [{colour}]{report['action']}[/{colour}]"
-                      + (f" — {detail}" if detail else ""))
+                      + (f" — {detail}" if detail else ""), highlight=False)
 
     try:
         wd.loop(slug, rounds=1 if once else rounds, on_tick=show)
