@@ -77,6 +77,12 @@ class Node:
     # None = ยังไม่เคย probe ด้วย lmds ที่รายงานฟิลด์นี้ (ไม่ใช่ 0) — `lmds node list`/`lmds fleet check` โชว์ได้โดยไม่ SSH
     controllers_stale: Optional[int] = None
     runtime_stale: Optional[int] = None
+    # กี่ใบที่ probe ล่าสุด **ตรวจไม่ได้** (controller: โปรไฟล์อ่านไม่ได้/ไม่มี generated_by · runtime: ยังไม่ได้ build,
+    # อ่าน arch ไม่ได้) — เดิมทะเบียนจำแค่ตัวนับ stale ข้างบน ของที่ตรวจไม่ได้จึงนับเป็น 0 แล้ว 0 ถูกอ่านว่า "ตรง hub ✓"
+    # ทั้งที่ probe ก้อนเดียวกันบอกว่า "ตรวจไม่ได้" (audit 2026-10-06) · None = ทะเบียนเขียนโดยรุ่นก่อนมีฟิลด์นี้
+    # → ยังไม่รู้ ไม่ใช่ 0 (ดู consistency.verdict_from_registry)
+    controllers_unknown: Optional[int] = None
+    runtime_unknown: Optional[int] = None
     # bundle ที่ตั้งค่า (lmds set/หน้าเว็บ) แล้วยังไม่ restart — argv ที่รันอยู่ต่างจาก bundle.env (audit 2026-09-08 msi-6)
     restart_pending: Optional[int] = None
     llamacpp_build: str = ""
@@ -276,13 +282,33 @@ def status_from_probe(info: dict) -> dict:
         "local_ip": host.get("ip") or "",
     }
     # ตัวนับของอีกสองมิติ — เก็บเฉพาะเมื่อ node รายงานฟิลด์ที่ใช้นับจริง (0 มีความหมาย ต้องไม่ถูกตัดทิ้ง)
+    #
+    # นับสองอย่างต่อมิติ: ที่ **รู้ว่าค้าง** (stale) กับที่ **ไม่รู้ว่าผ่าน** (unknown) · อย่างหลังคือทุกอย่างที่
+    # ไม่ใช่ "ผ่าน" และไม่ใช่ "ค้าง" — ไล่จากฝั่งที่รู้ว่าผ่าน ไม่ใช่ไล่ชื่อ state ที่แย่ เพราะของเดิมนับเฉพาะ
+    # `stale` / `supported is False` แล้วที่เหลือทั้งหมด (unknown · None · ahead · state ที่จะเพิ่มวันหน้า) กลายเป็น
+    # 0 = "ตรง hub ✓" (audit 2026-10-06) · เลือกใบที่นับด้วยกติกาเดียวกับ consistency.controllers_axis /
+    # runtimes_axis: ข้ามเงาของ worker และ container ที่ค้นพบเอง · control plane ไม่มี runtime ให้ตรวจ
     models = info.get("models")
-    if isinstance(models, list) and any(isinstance(m, dict) and "controller" in m for m in models):
-        fields["controllers_stale"] = sum(
-            1 for m in models if isinstance(m, dict) and ((m.get("controller") or {}).get("state")) == "stale")
-    if isinstance(models, list) and any(isinstance(m, dict) and "runtime_arch" in m for m in models):
-        fields["runtime_stale"] = sum(
-            1 for m in models if isinstance(m, dict) and ((m.get("runtime_arch") or {}).get("supported")) is False)
+    listed = [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
+    own = [m for m in listed if m.get("stacked_role") != "worker"]
+    # เครื่องที่ยังไม่มี bundle สักใบ: ไม่มีโมเดลให้ดูว่ารายงานฟิลด์ไหม — ดูที่ host แทน (`template_hash` มาพร้อม
+    # รุ่นที่เริ่มรายงานทั้งสามมิติ) · ไม่งั้นเครื่องใหม่ขึ้น "ตรวจไม่ได้" ตลอด และเครื่องที่เพิ่งลบ bundle ที่ค้าง
+    # ใบสุดท้ายจะจำเลขเก่าไว้ตลอดไป
+    reports_axes = isinstance(models, list) and not models and "template_hash" in host
+    if reports_axes or any("controller" in m for m in listed):
+        bundles = [m for m in own if not m.get("external") and m.get("controller_exists", True)]
+        states = [(m.get("controller") or {}).get("state") if isinstance(m.get("controller"), dict) else None
+                  for m in bundles]
+        fields["controllers_stale"] = sum(1 for state in states if state == "stale")
+        fields["controllers_unknown"] = sum(1 for state in states if state not in ("ok", "adopted", "stale"))
+    if reports_axes or any("runtime_arch" in m for m in listed):
+        role = host.get("role")
+        llama = [] if isinstance(role, dict) and role.get("control_plane") else \
+            [m for m in own if (m.get("engine") or "") == "llamacpp"]
+        known = [(m.get("runtime_arch") or {}).get("supported") if isinstance(m.get("runtime_arch"), dict) else None
+                 for m in llama]
+        fields["runtime_stale"] = sum(1 for supported in known if supported is False)
+        fields["runtime_unknown"] = sum(1 for supported in known if supported is None)
     if isinstance(models, list) and any(isinstance(m, dict) and "pending_restart" in m for m in models):
         fields["restart_pending"] = sum(
             1 for m in models if isinstance(m, dict) and ((m.get("pending_restart") or {}).get("pending")))

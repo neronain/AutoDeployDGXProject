@@ -14,6 +14,10 @@
               · supported == null = "ตรวจไม่ได้" ไม่ใช่ผ่าน
 
 สีต่อเครื่อง: เขียว = ok ทั้งสาม · เหลือง = unknown มิติใด ๆ · แดง = stale/behind/dirty มิติใด ๆ
+
+"ตรง hub" เป็นคำยืนยันของ **ตอนนี้** (audit 2026-10-06): คำตัดสินจากทะเบียน (`verdict_from_registry`) ต้องเหมือน
+`node_verdict` ของ probe ก้อนที่ตัวนับมาจาก — ทะเบียนจำ "ตรวจไม่ได้กี่ใบ" แยกจาก "ค้างกี่ใบ" · และของที่จำไว้เกิน
+FRESH_SECONDS หรือของเครื่องที่ต่อไม่ได้ ติด `Verdict.unverified` (เหลือง · ไม่นับว่าตรง hub · บอกอายุข้อมูล)
 """
 
 from __future__ import annotations
@@ -138,25 +142,30 @@ class Verdict:
     runtimes: Axis
     version: str = ""
     commit: str = ""
+    # ไม่ว่าง = สามมิติข้างบนคือสิ่งที่ **จำไว้** ไม่ใช่สิ่งที่ตรวจตอนนี้ (ต่อเครื่องไม่ได้ / ข้อมูลเก่า) พร้อมบอกว่าเก่าแค่ไหน
+    # "ตรง hub" เป็นคำยืนยันของตอนนี้ — เครื่องที่ดับไปสามชั่วโมงเคยถูกนับเข้า "ตรง hub N" จากตัวเลขที่จำไว้
+    # (audit 2026-10-06) · มิติยังโชว์ตามที่จำ (ข้อมูลยังมีค่า) แค่ไม่นับว่ายืนยันแล้ว
+    unverified: str = ""
 
     @property
     def consistent(self) -> bool:
-        """"ตรง hub" — ok ครบสามมิติเท่านั้น · unknown ไม่นับว่าผ่าน"""
-        return self.code.ok and self.controllers.ok and self.runtimes.ok
+        """"ตรง hub" — ok ครบสามมิติ **และตรวจตอนนี้** เท่านั้น · unknown / ของที่จำไว้ ไม่นับว่าผ่าน"""
+        return not self.unverified and self.code.ok and self.controllers.ok and self.runtimes.ok
 
     @property
     def level(self) -> str:
         axes = (self.code, self.controllers, self.runtimes)
         if any(not a.ok and a.known for a in axes):
             return "bad"
-        if any(not a.known for a in axes):
+        if self.unverified or any(not a.known for a in axes):
             return "warn"
         return "ok"
 
     def payload(self) -> dict:
         return {"code": self.code.payload(), "controllers": self.controllers.payload(),
                 "runtimes": self.runtimes.payload(), "consistent": self.consistent, "level": self.level,
-                "version": self.version, "commit": self.commit}
+                "version": self.version, "commit": self.commit,
+                "verified": not self.unverified, "unverified": self.unverified}
 
 
 def hub_facts() -> dict:
@@ -307,31 +316,95 @@ def node_verdict(info: dict | None, hub: dict | None = None) -> Verdict:
                    version=str(host.get("lmds_version") or ""), commit=str(host.get("lmds_commit") or ""))
 
 
-def verdict_from_registry(node, hub: dict | None = None) -> Verdict:
-    """ตัดสินจากที่ทะเบียนจำไว้ (`status_from_probe`) — ใช้เมื่อไม่มี snapshot เต็ม เช่น `lmds fleet check` จาก CLI
+# ข้อมูลในทะเบียนอายุไม่เกินนี้ถือว่า "ตรวจตอนนี้" — refresher ของหน้าเว็บ probe ทุก 15 วิ (ถอยได้ถึง 120 วิ) และ
+# last_seen ละเอียดแค่นาที · เกินนี้คือไม่มีใคร probe เครื่องนั้นแล้ว: ตัวเลขยังอ่านได้ แต่ไม่ใช่คำยืนยันของตอนนี้
+FRESH_SECONDS = 300
+_NOT_REMEMBERED = "ทะเบียนเขียนโดย lmds รุ่นก่อนที่ยังไม่จำว่าตรวจไม่ได้กี่ใบ — probe ใหม่: lmds fleet check --check"
 
-    ทะเบียนเก็บแค่ตัวนับ (controllers_stale / runtime_stale / llamacpp_build) จึงบอกได้ว่าค้างกี่ใบ แต่ไม่รู้ชื่อ
+
+def age_seconds(last_seen: str | None, now=None) -> float | None:
+    """ข้อมูลที่ประทับเวลา `last_seen` ("2026-10-06 19:20" จาก CLI/refresher หรือ ISO) เก่ากี่วินาที — None = อ่านเวลาไม่ออก"""
+    from datetime import datetime
+
+    try:
+        then = datetime.fromisoformat((last_seen or "").strip())
+    except ValueError:
+        return None
+    current = now or datetime.now(then.tzinfo)
+    return max(0.0, (current - then).total_seconds())
+
+
+def age_text(seconds: float | None) -> str:
+    """"เมื่อครู่" / "25 นาทีก่อน" / "3 ชม.ก่อน" / "4 วันก่อน" — เกณฑ์เดียวกับคอลัมน์ "ข้อมูลเมื่อ" ของ `lmds fleet check`"""
+    if seconds is None:
+        return "ไม่ทราบเวลา"
+    minutes = int(seconds // 60)
+    if minutes < 2:
+        return "เมื่อครู่"
+    if minutes < 90:
+        return f"{minutes} นาทีก่อน"
+    hours = minutes // 60
+    return f"{hours} ชม.ก่อน" if hours < 48 else f"{hours // 24} วันก่อน"
+
+
+def remembered_only(last_seen: str | None, last_error: str | None = "", now=None) -> str:
+    """ทำไมข้อมูลของเครื่องนี้ในทะเบียนถึงไม่ใช่ "ตรวจตอนนี้" — "" เมื่อเพิ่ง probe สำเร็จ
+
+    ทะเบียนเขียน last_error เมื่อ probe ล้ม และล้าง + ประทับ last_seen เมื่อสำเร็จ: last_error ไม่ว่าง = รอบล่าสุด
+    ต่อไม่ได้ ไม่ว่า last_seen จะใหม่แค่ไหน
+    """
+    if not (last_seen or "").strip():
+        return "ยังไม่เคย probe เครื่องนี้"
+    seconds = age_seconds(last_seen, now)
+    when = f"ข้อมูลล่าสุด {age_text(seconds)} ({str(last_seen)[:16]})"
+    if (last_error or "").strip():
+        return f"ต่อเครื่องไม่ได้ตอนนี้ · {when} · {' '.join(str(last_error).split())[:120]}"
+    if seconds is None or seconds > FRESH_SECONDS:
+        return f"{when} — ยังไม่มี probe รอบใหม่"
+    return ""
+
+
+def _remembered_axis(stale, unknown, *, what: str, ok: str, none: str) -> Axis:
+    """มิติหนึ่งจากตัวนับในทะเบียน — None ทุกตัวแปลว่า "ไม่รู้" ไม่ใช่ 0 · ทะเบียนไม่รู้ชื่อ bundle จึงไม่มี items
+
+    `what` = ข้อความของกรณีค้าง มี `{n}` ให้แทนจำนวน
+    """
+    if stale is None:
+        return Axis("unknown", none)
+    if stale > 0:
+        return Axis("stale", what.replace("{n}", str(stale)) + (f" · ตรวจไม่ได้อีก {unknown} ใบ" if unknown else ""))
+    if unknown is None:
+        # ไฟล์ทะเบียนจากรุ่นก่อน 2026-10-06: จำแค่ว่า "ไม่มีใบที่ค้าง" ซึ่งไม่ได้บอกว่าไม่มีใบที่ตรวจไม่ได้
+        return Axis("unknown", f"ตรวจไม่ได้ ({_NOT_REMEMBERED})")
+    if unknown > 0:
+        return Axis("unknown", f"ตรวจไม่ได้ {unknown} ใบ (ดูว่าใบไหน: lmds fleet check --check)")
+    return Axis("ok", ok)
+
+
+def verdict_from_registry(node, hub: dict | None = None, now=None) -> Verdict:
+    """ตัดสินจากที่ทะเบียนจำไว้ (`status_from_probe`) — ใช้เมื่อไม่มี snapshot เต็ม เช่น `lmds fleet check` จาก CLI
+    หรือเครื่องที่แคชของหน้าเว็บไม่มีข้อมูล (ต่อไม่ได้)
+
+    ทะเบียนเก็บแค่ตัวนับ (controllers_stale/unknown · runtime_stale/unknown · llamacpp_build) จึงบอกได้ว่ากี่ใบ แต่ไม่รู้ชื่อ
+    · ต้องตัดสินเหมือน node_verdict ของ probe ก้อนที่ตัวนับมาจาก — เดิม "ตรวจไม่ได้" ถูกนับเป็น 0 แล้วได้ "ตรง hub ✓"
+    · ของที่จำไว้เกิน FRESH_SECONDS หรือของเครื่องที่ต่อไม่ได้ ติด `unverified` — ไม่นับว่าตรง hub
     """
     hub = hub or hub_facts()
     host = {"lmds_version": node.lmds_version, "lmds_commit": node.lmds_commit}
     code = code_axis(host, hub)
-    stale = getattr(node, "controllers_stale", None)
-    if stale is None:
-        controllers = Axis("unknown", "ตรวจไม่ได้ (ทะเบียนยังไม่มีข้อมูล controller — probe เครื่องนั้นก่อน)")
-    elif stale > 0:
-        controllers = Axis("stale", f"เก่ากว่า lmds {stale} ใบ")
-    else:
-        controllers = Axis("ok", "ตรง template ของ hub")
-    runtime_stale = getattr(node, "runtime_stale", None)
+    controllers = _remembered_axis(
+        getattr(node, "controllers_stale", None), getattr(node, "controllers_unknown", None),
+        what="เก่ากว่า lmds {n} ใบ", ok="ตรง template ของ hub",
+        none="ตรวจไม่ได้ (ทะเบียนยังไม่มีข้อมูล controller — probe เครื่องนั้นก่อน)")
     build = getattr(node, "llamacpp_build", "") or ""
-    if runtime_stale is None:
-        runtimes = Axis("unknown", "ตรวจไม่ได้ (ทะเบียนยังไม่มีข้อมูล runtime)")
-    elif runtime_stale > 0:
-        runtimes = Axis("stale", (f"llama.cpp {build} · " if build else "") + f"runtime ค้าง {runtime_stale}")
-    else:
-        runtimes = Axis("ok", f"llama.cpp {build}" if build else "ไม่มี bundle llama.cpp ที่ค้าง")
+    runtimes = _remembered_axis(
+        getattr(node, "runtime_stale", None), getattr(node, "runtime_unknown", None),
+        what=(f"llama.cpp {build} · " if build else "") + "runtime ค้าง {n}",
+        ok=f"llama.cpp {build}" if build else "ไม่มี bundle llama.cpp ที่ค้าง",
+        none="ตรวจไม่ได้ (ทะเบียนยังไม่มีข้อมูล runtime)")
     return Verdict(code=code, controllers=controllers, runtimes=runtimes,
-                   version=node.lmds_version, commit=node.lmds_commit)
+                   version=node.lmds_version, commit=node.lmds_commit,
+                   unverified=remembered_only(getattr(node, "last_seen", ""), getattr(node, "last_error", ""), now))
 
 
 # ────────────────────────── ข้อความ ──────────────────────────
@@ -344,6 +417,9 @@ def summary_line(verdict: Verdict) -> str:
     marks = f"code {_mark(verdict.code)} · controller {_mark(verdict.controllers)} · runtime {_mark(verdict.runtimes)}"
     if verdict.consistent:
         return f"ตรง hub ✓ ({marks})"
+    if verdict.unverified and verdict.level != "bad":
+        # ไม่มีอะไรที่รู้ว่าผิด — แต่ที่เห็นคือของที่จำไว้ จึงไม่พูดว่า "ตรง" และไม่พูดว่า "ไม่ตรง"
+        return f"ยังไม่ได้ตรวจตอนนี้ — {verdict.unverified} · ที่จำไว้: {marks}"
     problems = []
     for name, axis in (("code", verdict.code), ("controller", verdict.controllers), ("runtime", verdict.runtimes)):
         if axis.ok:
@@ -353,7 +429,8 @@ def summary_line(verdict: Verdict) -> str:
         else:
             what = {"stale": "ค้าง", "behind": "ยังไม่ตรง", "dirty": "hub มีของแก้ค้าง", "ahead": "ใหม่กว่า hub"}.get(axis.state, axis.state)
             problems.append(f"{name} {what}" + (f" {len(axis.items)} ({', '.join(axis.items)})" if axis.items else f" ({axis.detail})"))
-    return f"ยังไม่ตรง hub — {' · '.join(problems)} ({marks})"
+    return (f"ยังไม่ตรง hub — {' · '.join(problems)} ({marks})"
+            + (f" · จากที่จำไว้: {verdict.unverified}" if verdict.unverified else ""))
 
 
 def verdict_lines(verdict: Verdict) -> list[str]:
@@ -373,13 +450,17 @@ def fleet_summary_line(verdicts: dict[str, Verdict]) -> str:
     ctl = [n for n, v in verdicts.items() if v.controllers.state in ("stale", "ahead")]
     rt = [n for n, v in verdicts.items() if v.runtimes.state == "stale"]
     code = [n for n, v in verdicts.items() if v.code.state in ("behind", "dirty")]
-    unknown = [n for n, v in verdicts.items() if not v.consistent and v.level == "warn"]
+    # "ตรวจไม่ได้" = probe แล้วแต่บางมิติตอบไม่ได้ · "ยังไม่ได้ตรวจตอนนี้" = ไม่มี probe รอบนี้เลย (ต่อไม่ได้/ข้อมูลเก่า)
+    # แยกกันเพราะทางแก้ต่างกัน: อย่างแรกแก้ที่ bundle อย่างหลังแก้ที่การต่อเครื่อง
+    unknown = [n for n, v in verdicts.items() if not v.unverified and v.level == "warn"]
+    unverified = [n for n, v in verdicts.items() if v.unverified]
 
     def group(label: str, names: list[str]) -> str:
         return f"{label} {len(names)}" + (f" ({', '.join(names)})" if names else "")
 
     return (f"อัปเดตครบ {total} เครื่อง · ตรง hub {len(good)} · {group('code ไม่ตรง', code)} · "
-            f"{group('controller ค้าง', ctl)} · {group('runtime ค้าง', rt)} · {group('ตรวจไม่ได้', unknown)}")
+            f"{group('controller ค้าง', ctl)} · {group('runtime ค้าง', rt)} · {group('ตรวจไม่ได้', unknown)}"
+            + (f" · {group('ยังไม่ได้ตรวจตอนนี้', unverified)}" if unverified else ""))
 
 
 def fleet_report(snapshot_nodes: dict, registry_nodes: list, local_info: dict | None, hub: dict | None = None) -> dict:
@@ -398,7 +479,14 @@ def fleet_report(snapshot_nodes: dict, registry_nodes: list, local_info: dict | 
         if data:
             verdict = node_verdict(data, hub)
             source = "cache"
+            # แคชของหน้าเว็บถูกเติมทุก 15 วิ และถูกล้างเมื่อ probe ล้ม — มี data = เพิ่งตรวจ · เว้นแต่ refresher เอง
+            # หยุดเดิน (thread ตาย) แล้วแคชค้างของเก่า: นับอายุด้วยเกณฑ์เดียวกับทะเบียน
+            age = cached.get("age_seconds")
+            if isinstance(age, (int, float)) and age > FRESH_SECONDS:
+                verdict.unverified = f"ข้อมูลล่าสุด {age_text(age)} — ยังไม่มี probe รอบใหม่"
         else:
+            # ไม่มี probe ในมือ (CLI ไม่ใส่ --check · เครื่องที่ต่อไม่ได้) → ของที่ทะเบียนจำไว้ ซึ่งนับว่า "ตรวจตอนนี้"
+            # เฉพาะเมื่อเพิ่งถูกเขียนและรอบล่าสุดต่อได้ (ดู remembered_only)
             verdict = verdict_from_registry(node, hub)
             source = "registry"
         verdicts[node.name] = verdict
@@ -415,7 +503,8 @@ def fleet_report(snapshot_nodes: dict, registry_nodes: list, local_info: dict | 
         "controllers_stale": sum(len(v.controllers.items) for v in verdicts.values() if v.controllers.state in ("stale", "ahead")),
         "runtime_stale": sum(len(v.runtimes.items) for v in verdicts.values() if v.runtimes.state == "stale"),
         "code_behind": sum(1 for v in verdicts.values() if v.code.state in ("behind", "dirty")),
-        "unknown": sum(1 for v in verdicts.values() if not v.consistent and v.level == "warn"),
+        "unknown": sum(1 for v in verdicts.values() if not v.unverified and v.level == "warn"),
+        "unverified": sum(1 for v in verdicts.values() if v.unverified),
         "line": fleet_summary_line(verdicts),
     }
     return out

@@ -358,6 +358,9 @@ def node_list(
         # host ในทะเบียนคือ "ที่อยู่ที่ hub ใช้ SSH" ซึ่งเป็นชื่อได้ (`orb`, ชื่อบน Tailscale)
         # และเครื่องหลัง NAT มองจาก hub เป็นคนละที่อยู่กับที่เครื่องในวงเดียวกันใช้เรียกมัน
         local_ip = node.local_ip
+        # คอลัมน์ bundles/llama.cpp ต้องมาจากรอบเดียวกับคอลัมน์สถานะ — เดิม --check probe แล้วเขียนทะเบียน แต่สองคอลัมน์นี้
+        # ยังอ่านจาก Node ที่โหลดไว้ก่อน probe: "ต่อได้" คู่กับตัวเลข bundle ของรอบก่อน (หรือ "ตรง hub" คู่กับ "ต่อไม่ได้")
+        shown = node
         if check:
             try:
                 info = probe(node)
@@ -366,7 +369,7 @@ def node_list(
                                          fields.get("lmds_commit", node.lmds_commit))
                 node_commit = fields.get("lmds_commit", node.lmds_commit)
                 local_ip = fields.get("local_ip", local_ip)
-                update(node.name, last_seen=_now(), last_error="", **fields)
+                shown = update(node.name, last_seen=_now(), last_error="", **fields)
                 status = f"[green]ต่อได้[/green] · โมเดล {len(info.get('models', []))} ตัว"
                 # "0 ตัว" บนเครื่องที่มี inference server รันอยู่จริงคือคำตอบที่ผิด —
                 # node รุ่นเก่าไม่ส่งคีย์นี้มา (ไม่มี = ไม่รู้ ไม่ใช่ไม่มี) จึงเงียบไว้
@@ -374,7 +377,7 @@ def node_list(
                 if outside:
                     status += f" · [yellow]นอกระบบอีก {outside}[/yellow]"
             except NodeError as exc:
-                update(node.name, last_error=str(exc)[:200])
+                shown = update(node.name, last_error=str(exc)[:200])
                 version = _version_label(node.lmds_version, node.lmds_commit)
                 node_commit = node.lmds_commit
                 status = f"[red]ต่อไม่ได้[/red] {str(exc)[:60]}"
@@ -385,7 +388,7 @@ def node_list(
         if version and hub_commit and node_commit and not _same_commit(node_commit, hub_commit):
             version += " [yellow]≠ hub[/yellow]"
         return (node.name, f"{node.target}:{node.port}", local_ip or "—",
-                version or "—", _bundles_cell(node), node.llamacpp_build or "—", status, node.note)
+                version or "—", _bundles_cell(shown), shown.llamacpp_build or "—", status, node.note)
 
     # จัดกลุ่มตาม site — เครื่องเยอะจากหลายไซต์จะได้ไม่กองรวมเป็นลิสต์ยาวจนหาไม่เจอ
     # เรียงให้ site ที่ยังไม่จัดกลุ่ม ("—") อยู่ท้ายสุด ที่เหลือเรียงตามชื่อไซต์
@@ -422,14 +425,29 @@ def _bundles_cell(node) -> str:
     stale, rt, pend = node.controllers_stale, node.runtime_stale, node.restart_pending
     if stale is None and rt is None and pend is None:
         return "—"
+    # "ตรวจไม่ได้" ต้องมีที่ของมันเอง — เดิมมีแต่ตัวนับ "ค้าง" ของที่ตรวจไม่ได้จึงเป็น 0 แล้วขึ้น "ตรง hub" เขียว
+    # (audit 2026-10-06) · None = ทะเบียนจากรุ่นก่อนที่ยังไม่นับ → ยังไม่รู้ ไม่ใช่ไม่มี
+    ctl_unknown = getattr(node, "controllers_unknown", None)
+    rt_unknown = getattr(node, "runtime_unknown", None)
     parts = []
     if stale:
         parts.append(f"[yellow]controller ค้าง {stale}[/yellow]")
     if rt:
         parts.append(f"[red]runtime ค้าง {rt}[/red]")
+    if ctl_unknown:
+        parts.append(f"[yellow]controller ตรวจไม่ได้ {ctl_unknown}[/yellow]")
+    if rt_unknown:
+        parts.append(f"[yellow]runtime ตรวจไม่ได้ {rt_unknown}[/yellow]")
     if pend:
         parts.append(f"[yellow]รอ restart {pend}[/yellow]")
-    return " · ".join(parts) if parts else "[green]ตรง hub[/green]"
+    if parts:
+        return " · ".join(parts)
+    if (stale is not None and ctl_unknown is None) or (rt is not None and rt_unknown is None):
+        return "[yellow]ยังไม่รู้ — ใส่ --check[/yellow]"
+    if node.last_error:
+        # ต่อไม่ได้รอบล่าสุด: เลขศูนย์ที่จำไว้ไม่ใช่คำยืนยันของตอนนี้ — ไม่ขึ้นเขียว
+        return "[dim]ไม่ค้าง (ที่จำไว้ · ต่อไม่ได้)[/dim]"
+    return "[green]ตรง hub[/green]"
 
 
 @node_app.command("remove")
@@ -5210,6 +5228,9 @@ def fleet_check(
         if not json_out and nodes:
             console.print(f"[dim]ต่อเข้า {len(nodes)} เครื่องเพื่อดูสภาพตอนนี้…[/dim]")
         snapshot = _probe_fleet(nodes)
+        # อ่านทะเบียนใหม่: _probe_fleet เพิ่งเขียน last_error ของเครื่องที่ต่อไม่ได้ลงไป · ใช้ Node ชุดเดิมที่โหลดก่อน
+        # probe เครื่องที่เพิ่งดับจะยัง last_error ว่าง แล้วถูกนับเป็น "ตรง hub" จากตัวเลขที่จำไว้ (audit 2026-10-06)
+        nodes = load()
     report = fleet_report(snapshot, nodes, local)
     if json_out:
         print(json.dumps(report, ensure_ascii=False))
@@ -5230,15 +5251,23 @@ def fleet_check(
             for axis in ("code", "controllers", "runtimes"):
                 a = n[axis]
                 cells.append(f"{mark.get(a['state'], '[red]✗[/red]')} {a['detail'][:70]}")
-            verdict = "[green]ตรง hub[/green]" if n["consistent"] else ("[yellow]ตรวจไม่ได้[/yellow]" if n["level"] == "warn" else "[red]ยังไม่ตรง[/red]")
+            # สี่คำตอบ ไม่ใช่สาม: "ยังไม่ได้ตรวจตอนนี้" = ที่เห็นคือของที่ทะเบียนจำไว้ (ต่อไม่ได้/ข้อมูลเก่า) — อายุอยู่คอลัมน์ถัดไป
+            verdict = ("[green]ตรง hub[/green]" if n["consistent"]
+                       else "[red]ยังไม่ตรง[/red]" if n["level"] == "bad"
+                       else "[yellow]ยังไม่ได้ตรวจตอนนี้[/yellow]" if n.get("unverified")
+                       else "[yellow]ตรวจไม่ได้[/yellow]")
             table.add_row(n["name"], *cells, verdict, _freshness(n["source"], seen_at.get(n["name"], ""), check))
         console.print(table)
         # ตัวเลขที่เก่าอ่านเหมือนตัวเลขที่ใหม่ทุกประการ — ป้ายเล็ก ๆ ท้ายแถวไม่พอ
         # (เคสจริง: node install เสร็จแล้วแต่ fleet check ยังบอกเวอร์ชันเก่า คนอ่านคิดว่า install ไม่ติด)
         if not check and any(n["source"] == "registry" for n in report["nodes"]):
             console.print("[yellow]ตัวเลขข้างบนมาจากทะเบียน ไม่ได้ต่อเข้าเครื่องจริง[/yellow] — "
-                          "เพิ่งติดตั้ง/อัปเดตไปแล้วเห็นของเก่าคือเรื่องปกติ · ดูสภาพตอนนี้: "
-                          "[bold]lmds fleet check --check[/bold]")
+                          "เพิ่งติดตั้ง/อัปเดตไปแล้วเห็นของเก่าคือเรื่องปกติ · ของที่จำไว้เกิน 5 นาทีหรือของเครื่องที่ต่อไม่ได้ "
+                          "ไม่นับว่า \"ตรง hub\" · ดูสภาพตอนนี้: [bold]lmds fleet check --check[/bold]")
+        for n in report["nodes"]:
+            # เครื่องที่ต่อไม่ได้: ตารางตัดข้อความ error ไม่พอดี — บอกเหตุผลเต็มบรรทัด (ของที่แค่เก่า คอลัมน์อายุบอกแล้ว)
+            if n.get("unverified") and n.get("error"):
+                console.print(f"[yellow]{n['name']}[/yellow]: ยังไม่ได้ตรวจตอนนี้ — {n['unverified']}", highlight=False)
         console.print(report["summary"]["line"])
         console.print("[dim]แก้: controller ค้าง → lmds node run <เครื่อง> bundles refresh --all · runtime ค้าง → ปุ่ม update runtime / "
                       "lmds node ctl <เครื่อง> <slug> prepare-runtime (LLAMA_CPP_UPDATE=1) · หรือ lmds node install --all ทำให้ทั้งหมด[/dim]")
