@@ -160,11 +160,20 @@ def arch_requirements(repo_id: str) -> dict:
 # กับดักที่ไม่ใช่ "ค่าที่ต้องตั้ง" แต่ควรเตือนก่อน deploy — สกัดจากการรันจริงบน DGX Spark
 # (งานวิจัย Qwen3.5-122B บน SM121 + เคสของทีม) · rule-based ไม่มี LLM ไปค้นให้ จึงเขียนไว้ตรง ๆ
 def arch_notes(repo_id: str, quantization: str = "",
-               hybrid_attention: bool = False) -> list[str]:
+               hybrid_attention: bool = False, memory_model: str = "") -> list[str]:
+    """คำเตือนเฉพาะตระกูล — แต่ละข้อผูกกับตระกูลที่มันพูดถึงจริง ๆ
+
+    `memory_model` = ชนิดเครื่องเป้าหมาย ("unified" = DGX Spark · "discrete" = การ์ดแยก · "" = ไม่รู้ → ไม่ตัดอะไรออก)
+    เคสจริง 2026-10-06: `lmds plan openai/gpt-oss-120b --target rtx-4090` พิมพ์โน้ต NVFP4/SM121/Marlin ทั้งที่เครื่องเป็น
+    RTX และ quant เป็น **mxfp4** (เดิมเทียบ `"fp4" in quant` ซึ่งกิน mxfp4 ด้วย ทั้งที่ families.looks_nvfp4 บอกอยู่ว่า
+    MXFP4 ไม่ใช่ NVFP4 · kernel คนละชุด)
+    """
+    from .families import looks_nvfp4
+
     key = repo_id.lower().replace("_", "-")
-    quant = (quantization or "").lower()
     notes: list[str] = []
-    if "nvfp4" in key or "nvfp4" in quant or "fp4" in quant:
+    # โน้ต FP4 kernel ของ sm_121 เป็นเรื่องของ GB10 เท่านั้น — การ์ดแยก (RTX) ไม่มีปัญหานี้
+    if looks_nvfp4(repo_id, quantization) and memory_model != "discrete":
         notes.append(
             "NVFP4/FP4 บน SM121 (GB10) รันได้เมื่อ image มี FP4 kernel ของ sm_121 และบังคับ Marlin — "
             "พิสูจน์แล้ว 2026-09-03 บน spark-head: Qwen3-Coder-Next-NVFP4-GB10 (MoE 512 expert) บน "
@@ -539,7 +548,8 @@ def rule_based_plan(report: ModelReport, fit: FitReport,
     if report.trust_remote_code_files:
         plan.warnings.append("repo มีไฟล์ remote code — review ก่อนเปิด --trust-remote-code (ต้องอนุมัติเอง)")
     for note in arch_notes(report.repo_id, report.quantization or "",
-                           hybrid_attention=report.hybrid_attention):
+                           hybrid_attention=report.hybrid_attention,
+                           memory_model=getattr(fit.memory_model, "value", str(fit.memory_model or ""))):
         if note not in plan.warnings:
             plan.warnings.append(note)
 

@@ -856,7 +856,11 @@ def _moe_from_config(config: dict) -> tuple[int | None, int | None]:
 
 
 def _hybrid_attention_layers(scope: dict[str, Any], layers: int | None) -> int | None:
-    """จำนวน layer ที่ KV โตตาม context สำหรับ arch แบบ hybrid linear-attention
+    """จำนวน layer ที่ KV โตตาม context เมื่อ config บอกว่ามีบาง layer ที่ไม่ใช่ full attention
+
+    ใช้กับ **การประเมิน KV เท่านั้น** — ทั้ง linear/SSM (Qwen3.5) และ sliding-window (gpt-oss · Gemma 3n/4) มี state
+    ที่ไม่โตตาม context จึงนับเฉพาะ `full_attention` เหมือนกัน (gpt-oss-120b: 36 layer → 18 · ตรงกับที่ทาง GGUF ทำใน
+    `_scaling_layers_only`) · ว่าโมเดลเป็น "hybrid linear attention" ไหมเป็นคนละคำถาม — ดู `config_is_hybrid`
 
     คืน None เมื่ออ่านรูปแบบไม่ออก — ให้ผู้เรียกตกไปทางปกติ ดีกว่าเดาแล้วได้ 0 layer
     """
@@ -876,11 +880,23 @@ def _hybrid_attention_layers(scope: dict[str, Any], layers: int | None) -> int |
 
 
 def config_is_hybrid(config: dict[str, Any]) -> bool:
-    """arch นี้สลับ full attention กับ linear/SSM ไหม — ดูจาก config ไม่ใช่จากชื่อรุ่น"""
+    """arch นี้สลับ full attention กับ **linear/SSM** ไหม — ดูจาก config ไม่ใช่จากชื่อรุ่น
+
+    sliding-window ไม่นับ: มันยังเป็น attention ปกติที่มองย้อนได้จำกัด ไม่ใช่ DeltaNet/SSM · เดิม `layer_types` ที่ปน
+    `full_attention` กับอะไรก็ตามถูกนับเป็น hybrid → openai/gpt-oss-120b · gpt-oss-20b · unsloth/gemma-3n-E4B-it
+    (`sliding_attention`) ได้คำเตือน "Qwen3.5 (DeltaNet hybrid attention): อย่าเปิด --enable-prefix-caching" กับ
+    "Qwen3.5/3.6 มี MTP head … --speculative-config" ซึ่งไม่ใช่เรื่องของโมเดลพวกนี้เลย (audit 2026-10-06)
+    """
     scope = config
     if not config.get("num_hidden_layers") and isinstance(config.get("text_config"), dict):
         scope = config["text_config"]
-    return _hybrid_attention_layers(scope, scope.get("num_hidden_layers")) is not None
+    kinds = scope.get("layer_types")
+    if isinstance(kinds, list) and kinds:
+        names = [k for k in kinds if isinstance(k, str)]
+        return "full_attention" in names and any(
+            k != "full_attention" and "sliding" not in k for k in names)
+    interval = scope.get("full_attention_interval")
+    return isinstance(interval, int) and interval > 1
 
 
 def _kv_dims_from_config(config: dict[str, Any]) -> KvDims | None:
