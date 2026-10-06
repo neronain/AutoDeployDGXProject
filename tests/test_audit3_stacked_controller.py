@@ -629,3 +629,74 @@ def test_test_text_fails_when_it_cannot_check_the_answer_at_all(tmp_path, api):
                 env={"SERVED_MODEL_NAME": "ours", "PATH": str(bin_dir)})
     assert done.returncode != 0, done.stdout + done.stderr
     assert "python3" in done.stderr
+
+
+# ═════════════════════ 4. verify-files / verify-worker: revision ที่ตรึงไว้เท่านั้น ═════════════════════
+def test_verify_files_refuses_a_snapshot_of_another_revision(tmp_path):
+    """เคส audit: cache มีแต่ snapshots/OLD-REVISION-0000 (ไฟล์ครบ ขนาดตรง) → เดิม "verify-files: OK (2 shards @
+    …/OLD-REVISION-0000)" rc 0 แล้ว start ไปรัน `vllm serve --revision rev-ds4` แบบ offline ซึ่งหาไม่เจอ"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    _seed_head_cache(tmp_path / "home", rev="OLD-REVISION-0000")
+    done = _run(bundle, ["verify-files"], tmp_path)
+    assert done.returncode != 0, done.stdout
+    assert "verify-files: OK" not in done.stdout
+    assert "rev-ds4" in done.stderr and "OLD-REVISION-0000" in done.stderr and "download" in done.stderr
+
+    # start ก็ต้องหยุดก่อนเปิด container ไหน
+    _shim(tmp_path / "bin", "curl", "exit 0\n")
+    started = _run(bundle, ["start"], tmp_path)
+    assert started.returncode != 0 and "run -d" not in _calls(tmp_path)
+
+    # revision ที่ตรึงมาอยู่ข้าง ๆ ของเก่า = ผ่าน และชี้ไปที่ตัวที่ตรึง
+    _seed_head_cache(tmp_path / "home")
+    ok = _run(bundle, ["verify-files"], tmp_path)
+    assert ok.returncode == 0 and "snapshots/rev-ds4" in ok.stdout, ok.stdout + ok.stderr
+
+
+def test_verify_files_still_follows_a_branch_ref_to_its_commit(tmp_path):
+    """สิ่งที่ต้องไม่พัง: MODEL_REVISION เป็นชื่อ branch → refs/<branch> ชี้ commit → ใช้ snapshot ของ commit นั้น"""
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path)
+    snap = _seed_head_cache(tmp_path / "home", rev="c0ffee")
+    refs = snap.parent.parent / "refs"
+    refs.mkdir()
+    (refs / "rev-ds4").write_text("c0ffee\n", encoding="utf-8")
+    done = _run(bundle, ["verify-files"], tmp_path)
+    assert done.returncode == 0 and "snapshots/c0ffee" in done.stdout, done.stdout + done.stderr
+
+
+# docker ปลอมสำหรับ verify-worker: รันสคริปต์ python ที่ controller ส่งมาทาง stdin จริง ๆ โดยเบี่ยง /cache ไปที่ -v
+_DOCKER_VERIFY = _DOCKER.replace('''  run)
+''', '''  run)
+    if [[ "$*" == *"--entrypoint python3"* && "$last" == "-" ]]; then
+      shift; vol=""
+      while (( $# )); do
+        case "$1" in
+          -v) vol="${2%%:*}"; shift 2 ;;
+          -e) export "$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      sed "s#/cache#${vol}#g" | python3 -
+      exit $?
+    fi
+''')
+
+
+def test_verify_worker_refuses_a_snapshot_of_another_revision_on_every_worker(tmp_path):
+    bundle = _bundle(tmp_path)
+    _bin(tmp_path, docker=_DOCKER_VERIFY)
+    good, stale = tmp_path / "w-good", tmp_path / "w-stale"
+    _seed_head_cache(good)
+    _seed_head_cache(stale, rev="OLD-REVISION-0000")
+
+    # worker เดียว ของครบ revision ตรง = ผ่าน (ยืนยันว่า shim รันสคริปต์จริง)
+    ok = _run(bundle, ["verify-worker"], tmp_path, env={"WORKER_HF_HOME": str(good / ".cache/huggingface")})
+    assert ok.returncode == 0 and "verify-worker: PASS" in ok.stdout, ok.stdout + ok.stderr
+
+    done = _run(bundle, ["verify-worker"], tmp_path, env={"WORKER_HF_HOME": str(stale / ".cache/huggingface")})
+    assert done.returncode != 0, done.stdout
+    assert "verify-worker: PASS" not in done.stdout
+    out = done.stdout + done.stderr
+    assert "OLD-REVISION-0000" in out and "rev-ds4" in out and W1 in out, out

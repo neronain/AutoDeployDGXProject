@@ -737,8 +737,14 @@ _container_hub_cache() {
   fi
 }
 
+# snapshot ของ **revision ที่ bundle นี้ตรึงไว้** เท่านั้น (ชื่อโฟลเดอร์ตรง หรือผ่าน refs/<ชื่อ branch>) · ไม่มี = คืน path
+# ที่ควรจะมี ให้ผู้เรียกบอกว่า "ยังไม่ได้ download"
+#
+# เดิมมีทางสำรอง "ไม่เจอก็หยิบ snapshot ตัวแรกที่เจอ" → cache ที่มีแต่ revision เก่าผ่าน verify-files ("OK (2 shards @
+# …/OLD-REVISION-0000)" rc 0) แล้ว start ไปรัน `vllm serve … --revision <ที่ตรึง>` ด้วย HF_HUB_OFFLINE=1 ซึ่งหาไม่เจอ
+# และตายบนทั้งคลัสเตอร์หลังปล่อย worker ไปแล้ว (audit 2026-10) · single-vLLM ปฏิเสธเคสนี้มาแต่แรก (snapshot_dir)
 _snapshot_path() {
-  local hf_root="${1:-$HF_HOME}" model_dir ref_file commit snap
+  local hf_root="${1:-$HF_HOME}" model_dir ref_file commit
   model_dir="$(_model_cache_dir "$hf_root")"
   if [[ -d "${model_dir}/snapshots/${MODEL_REVISION}" ]]; then
     printf '%s' "${model_dir}/snapshots/${MODEL_REVISION}"; return 0
@@ -750,9 +756,19 @@ _snapshot_path() {
       printf '%s' "${model_dir}/snapshots/${commit}"; return 0
     fi
   fi
-  snap="$(find "${model_dir}/snapshots" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)"
-  if [[ -n "$snap" ]]; then printf '%s' "$snap"; return 0; fi
   printf '%s' "${model_dir}/snapshots/${MODEL_REVISION}"
+}
+
+# ชื่อ snapshot ของ revision **อื่น** ที่อยู่ใน cache ของโมเดลนี้ (คั่นช่องว่าง) — ไว้อธิบายว่าทำไม "ยังไม่ได้ download"
+# ทั้งที่มีไฟล์อยู่: ของที่มีเป็นคนละ revision กับที่ bundle ตรึง
+_other_snapshots() {
+  local dir="$(_model_cache_dir "${1:-$HF_HOME}")/snapshots" d out=""
+  for d in "$dir"/*/; do
+    [[ -d "$d" ]] || continue
+    d="${d%/}"; d="${d##*/}"
+    [[ "$d" == "$MODEL_REVISION" ]] || out="${out:+$out }${d}"
+  done
+  printf '%s' "$out"
 }
 
 # ─────────────────────── runtime image lock ───────────────────────
@@ -1123,9 +1139,15 @@ warn_open_endpoint() {
 }
 
 verify_files() {
-  local snap; snap="$(_snapshot_path "$HF_HOME")"
-  [[ -d "$snap" ]] || die "ยังไม่ได้ download (ไม่พบ $snap) — รัน: $0 download
+  local snap others; snap="$(_snapshot_path "$HF_HOME")"
+  if [[ ! -d "$snap" ]]; then
+    others="$(_other_snapshots "$HF_HOME")"
+    [[ -z "$others" ]] || die "cache มีแต่ revision อื่นของ ${MODEL_ID} (${others}) — ไม่มี revision ที่ bundle นี้ตรึงไว้: ${MODEL_REVISION}
+  start จะรัน vllm serve --revision ${MODEL_REVISION} แบบ offline ซึ่งใช้ snapshot อื่นแทนไม่ได้ (ไม่พบ $snap)
+  โหลด revision ที่ตรึง (blob ที่ซ้ำกับของเดิมไม่โหลดใหม่): $0 download"
+    die "ยังไม่ได้ download (ไม่พบ $snap) — รัน: $0 download
   (controller นี้เป็นของ ${MODEL_ID} @ ${MODEL_REVISION:0:12} — ถ้าเพิ่ง download ผ่านสคริปต์อื่นในโฟลเดอร์เดียวกัน อาจเป็นโมเดลชื่อเดียวกันคนละ repo)"
+  fi
   [[ -f "${snap}/config.json" ]] || die "ไฟล์จำเป็นหายไป: config.json"
   local broken
   broken="$(find -L "$snap" -type l 2>/dev/null || true)"
@@ -1265,9 +1287,10 @@ ref = model_dir/'refs'/rev
 if not snap.exists() and ref.exists():
     snap = model_dir/'snapshots'/ref.read_text().strip()
 if not snap.exists():
-    snaps = sorted((model_dir/'snapshots').glob('*')) if (model_dir/'snapshots').exists() else []
-    if snaps: snap = snaps[-1]
-if not snap.exists():
+    # ห้ามหยิบ snapshot ของ revision อื่นมาแทน — worker รัน vllm serve --revision <ที่ตรึง> แบบ offline เหมือน head
+    others = sorted(p.name for p in (model_dir/'snapshots').glob('*') if p.is_dir()) if (model_dir/'snapshots').exists() else []
+    if others:
+        sys.exit('worker has only other revision(s) of this model: '+', '.join(others)+' -- pinned revision '+rev+' is missing: '+str(snap)+'  (run sync-worker)')
     sys.exit('worker snapshot missing: '+str(snap)+'  (run sync-worker)')
 shards = sorted(snap.glob('*.safetensors'))
 if not shards:
