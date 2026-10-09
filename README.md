@@ -328,6 +328,25 @@ EC ของ GB10 ล็อก GPU ไว้ต่ำกว่า 1 GHz ได�
   ใช้ **systemd user service** ถ้ามี เครื่องที่อยู่ใน LXC/Docker ที่ไม่มี init system เต็มก็ใช้ได้
   (บอกคำสั่ง `lmds watchdog run <ชื่อ>` ให้ไปรันใต้ตัวคุม process อะไรก็ได้)
 
+### `lmds mcp` — ให้ผู้ช่วย AI ถาม hub ได้ โดยไม่ต้องแกะตาราง
+
+คนที่คุม LMDS ผ่านผู้ช่วยเขียนโค้ด (Claude Code, Claude Desktop, Cursor, Codex …) เจอเรื่องเดียวกันหมด: ผู้ช่วยรัน
+`lmds node list` แล้วแกะตารางที่ถูกตัดตามความกว้างจอ ชื่อเครื่องหายครึ่ง · `lmds mcp` เป็น
+[MCP](https://modelcontextprotocol.io) server ที่ให้มันถามผ่านเครื่องมือ 10 ตัวซึ่งคืน **JSON ก้อนเดียวกับ `--json`** ของ
+คำสั่งนั้น — เวอร์ชันของ hub · ทะเบียนเครื่อง · โมเดลบน hub/บนเครื่องอื่น · inspect · plan (rule-based) · fit · fleet check ·
+watchdog · ท้าย log · doctor
+
+```bash
+claude mcp add lmds -- lmds mcp          # รันบนเครื่อง hub ครั้งเดียว — client อื่นและ hub ใน OrbStack VM: docs/MCP_SERVER.md
+```
+
+**อ่านอย่างเดียว และเป็นโครงสร้าง ไม่ใช่คำสัญญา** — ผู้ช่วยทำตามสิ่งที่มันอ่าน (model card, README, log) ซึ่งสั่งให้มันเรียก
+เครื่องมือได้ · LMDS คุมเครื่องที่มีโมเดลของลูกค้ารันอยู่ จึงไม่มีเครื่องมือไหน start/stop/ลบ/ตั้งค่าได้ และ process ของ server
+ถูกผนึก (audit hook ของ Python): เขียนไฟล์ไม่ได้ · spawn ได้เฉพาะคำสั่งอ่านตามรายการ · `ssh` ออกได้เฉพาะคำสั่งอ่านของ `lmds`
+ตามรายการตายตัว · เหตุที่ต้องผนึกทั้ง process: ฟังก์ชัน "อ่าน" ของเราเองเขียนเงียบ ๆ อยู่หลายที่ (ตารางใน
+[docs/MCP_SERVER.md](docs/MCP_SERVER.md)) · ชื่อเครื่อง/slug จากผู้ช่วยถูกตรวจกับทะเบียนก่อนมีคำสั่งถูกประกอบ ·
+API key/token ถูกปิดก่อนคำตอบออก
+
 ## คลังสูตร — เรียนรู้ครั้งเดียว ใช้ได้ทั้งกอง
 
 เครื่องที่ไม่มี API key ของ LLM จะ deploy แบบ rule-based ซึ่งรู้แค่ "GGUF → llama.cpp" ไม่รู้เรื่อง
@@ -414,6 +433,7 @@ promote ขึ้น canonical → ทุกเครื่องในฟลี
 | [INSTALL.md](docs/INSTALL.md) | ติดตั้งทีละขั้น — prerequisites, ดิสก์, proxy/air-gapped, ตั้ง provider, ถอนการติดตั้ง |
 | [USAGE.md](docs/USAGE.md) | คู่มือใช้งานเต็ม — deploy, คำสั่ง controller ทุกตัว + env, fleet, หน้าเว็บ, troubleshooting |
 | [SECURITY.md](SECURITY.md) | ข้อมูลอะไรออกนอกเครื่อง, secret เก็บที่ไหน, auth/audit, แจ้งช่องโหว่ |
+| [MCP_SERVER.md](docs/MCP_SERVER.md) | `lmds mcp` — ต่อผู้ช่วย AI เข้ากับ hub แบบอ่านอย่างเดียว: วิธีเพิ่ม, เครื่องมือ + ราคา, สิ่งที่มันจะไม่ทำและทำไม |
 | [BENCH.md](docs/BENCH.md) | ให้คะแนนโมเดลที่รันอยู่ — ความเร็ว + ความสามารถ 7 ข้อ วัดจากเซิร์ฟเวอร์จริง |
 | [PREFLIGHT.md](docs/PREFLIGHT.md) | สิ่งที่ระบบตรวจให้ก่อน deploy และทำไม — ทุกข้อมาจากของที่พังจริง |
 | [NETWORK.md](docs/NETWORK.md) | พอร์ตและโปรโตคอลทุกตัวที่ระบบใช้ ใครคุยกับใคร |

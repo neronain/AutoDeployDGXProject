@@ -5,6 +5,31 @@
 
 ## ยังไม่ปล่อย
 
+### เพิ่ม
+
+- **`lmds mcp` — MCP server แบบอ่านอย่างเดียว ให้ผู้ช่วย AI ถาม hub ผ่านเครื่องมือที่คืน JSON** (2026-10-09 · แนวคิดจาก
+  `tools/strata_mcp.py` ของโปรเจกต์ Strata) · เจ้าของคุม LMDS ผ่านผู้ช่วยเขียนโค้ดซึ่งรัน `lmds …` แล้วแกะตารางของ rich ที่ถูกตัด
+  ตามความกว้างจอ (โน้ตเก่า: "`lmds node list` ตัดชื่อจนอ่านไม่ออก อย่า parse") · `claude mcp add lmds -- lmds mcp` บน hub ·
+  JSON-RPC 2.0 ทาง stdio ด้วย standard library ล้วน ไม่มี dependency ใหม่ · เอกสาร: `docs/MCP_SERVER.md`
+  - เครื่องมือ 10 ตัว คืนก้อนเดียวกับ `--json` ของ CLI (ฟังก์ชันเดียวกัน): `lmds_version` · `lmds_nodes` · `lmds_models` ·
+    `lmds_inspect` · `lmds_plan` (rule-based เสมอ) · `lmds_fit` (dry run เสมอ) · `lmds_fleet_check` · `lmds_watchdog_status` ·
+    `lmds_logs` (≤ 500 บรรทัด) · `lmds_doctor` · ถามเครื่องอื่นผ่าน SSH ทางเดิม timeout เดิม · เครื่องที่ต่อไม่ได้ = error ของเครื่องนั้น
+  - **อ่านอย่างเดียวเป็นโครงสร้าง**: ทะเบียนเครื่องมือผูกได้เฉพาะฟังก์ชันใน `reads.READ_ALLOWLIST` · process ถูกผนึกด้วย audit hook
+    (`mcp/seal.py`) — เขียนไฟล์/ลบ/ย้ายไม่ได้ · spawn ได้เฉพาะคำสั่งอ่านตามรายการ (controller ของ bundle ไม่ถูกรันเลย) ·
+    `ssh` ออกได้เฉพาะคำสั่งอ่านของ `lmds` ตามรายการตายตัว · เทสเรียกทุกเครื่องมือบนฟลีตจำลองแล้วเทียบทุกไฟล์ของ hub
+  - **ทางเขียนที่ซ่อนในคำสั่ง "อ่าน" ซึ่งเจอระหว่างทำ** (CLI/หน้าเว็บยังทำเหมือนเดิม — เครื่องมือ MCP ไม่ทำ): `fleet.discover()`
+    ลบทะเบียนที่ตายแล้ว · `agent info` เขียน `usage.samples` · `plan --no-llm` เขียน session log · `doctor` รัน container ถาม
+    image แล้วจดผล · `fleet check --check` เขียนทะเบียนเครื่อง · `<controller> logs` ของ llama.cpp native ลบ `server.pid` ที่ค้าง
+  - **`LMDS_READ_ONLY=1`** — `lmds` ทุกคำสั่งที่เห็นตัวแปรนี้ผนึก process ของตัวเองแบบเดียวกัน · hub ใช้กับคำสั่งที่ส่งไปเครื่องอื่นแทน
+    เครื่องมือ MCP · เครื่องที่ `lmds` เก่ากว่ารุ่นนี้ไม่รู้จักตัวแปรและทำ bookkeeping ของ `agent info`/`logs` ตามเดิม (อัปเดตด้วย
+    `lmds node install`)
+  - argument จากผู้ช่วยถูกตรวจก่อนประกอบคำสั่ง (ชื่อเครื่องต้องอยู่ในทะเบียน · slug ตาม `shellsafe.BUNDLE_SLUG` ซึ่งย้ายมาจาก
+    `web/api` ให้ใช้ร่วมกัน) · คำตอบผ่านตัวปิดความลับ (`secrets.redact` + ค่าที่ hub รู้ + ค่าที่ตามหลังชื่อลับใน log ของเครื่องอื่น)
+  - **ยังไม่มีและรอการตัดสินใจ**: เครื่องมือที่เปลี่ยนสถานะ (ถ้าจะมี ต้องเป็น server คนละตัว มีการยืนยันของคน และลง `lmds audit`) ·
+    transport แบบ HTTP/SSE · auth ของตัวเอง (ตอนนี้ = ใครรัน `lmds mcp` บน hub ได้) · `lmds scan` ยังไม่เป็นเครื่องมือ
+- **`lmds doctor --json`** และ **`--no-probe`** — เดิม doctor มีแต่ตาราง · `--json` พิมพ์ก้อนเดียวกับ `GET /api/models/{slug}/doctor`
+  (exit code ชุดเดิม) · `--no-probe` ไม่รัน container ชั่วคราวไปถาม image และไม่จดผลลงดิสก์ ข้อที่ข้ามอยู่ใน `skipped`
+
 ### แก้
 
 - **controller ที่ adopt มารายงาน `api: ยังไม่ตอบ` กับ server ที่บังคับ API key ทั้งที่มันตอบอยู่** (AI-Local-ISIT 2026-10-10 ·
@@ -14,6 +39,10 @@
   - ทุกคำถามที่สคริปต์ถาม server ของตัวเองแนบ key จาก `~/.lmds/keys/<slug>` (ทั้งทาง container และ native)
   - `status` แยก "ยังไม่ตอบ" ออกจาก "ตอบอยู่ แต่ไม่รับ key ที่ LMDS เก็บไว้ (HTTP 401)" — แก้กันคนละที่
   - **bundle ที่ adopt ไว้ก่อนหน้านี้ยังเป็นสคริปต์เดิม** — สั่ง `lmds adopt <container> --slug <ชื่อเดิม>` ซ้ำเพื่อสร้างใหม่ (ของที่รันอยู่ไม่ถูกแตะ)
+- **`lmds watchdog status --json` พิมพ์ประโยคภาษาคนเมื่อไม่มีตัวไหนเปิด** — ผู้เรียกที่ parse JSON (hub ผ่าน SSH) พังบนเครื่องที่
+  ปกติดีทุกอย่าง · ตอนนี้พิมพ์ `[]` (แบบไม่ใส่ `--json` ยังบอกเป็นภาษาคนเหมือนเดิม)
+- **log ที่หน้าเว็บ/สคริปต์ขอผ่าน `fleet.logs_text` รับ stdin ต่อจากผู้เรียก** — ลูก (`docker logs`/controller) ที่อ่าน stdin กินข้อมูลของ
+  ผู้เรียกได้ · ปิด stdin ของลูก · ไบต์ที่ถูกตัดกลางอักขระไม่ทำให้ทั้งคำขอล้ม (`errors=replace`)
 - **ปุ่ม Update บนหน้าเว็บล้ม `There is no tracking information for the current branch`** (ลูกค้า 2026-10-09 · บางเครื่อง)
   ดึงโค้ดมาได้แล้วแต่ exit 1 · เครื่องที่ติดตั้งครั้งแรกจากโค้ดที่ hub ส่งมา (git bundle) ได้ branch `main` ที่ไม่มี upstream
   (`git checkout -B main HEAD`) แล้ว `git pull --ff-only` เปล่า ๆ ไม่รู้ว่าจะตาม branch ไหน — เครื่องที่ clone จาก GitHub ตรง ๆ ไม่เป็น

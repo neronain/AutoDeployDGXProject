@@ -23,7 +23,7 @@ lmds set <SLUG> [--port --context --slots --bind --gpu-util --model-id --image -
                  --tool-parser --reasoning-parser --image-min-tokens --extra-args --auto --clear]
 lmds repair <SLUG> [--force]               # download (resume) → verify-files · ถูกปฏิเสธบน control plane
 lmds remove <SLUG> [--keep-weights] [-y] [--dry-run]
-lmds doctor <SLUG>                         # ทำไม download/start ไม่ผ่าน — exit 0/2
+lmds doctor <SLUG> [--json] [--no-probe]   # ทำไม download/start ไม่ผ่าน — exit 0/2
 lmds hardware                              # ตรวจเครื่องนี้ + target profile
 lmds scan [--root DIR]… [--all] [--json]   # weight ที่มีอยู่แล้ว (อ่านอย่างเดียว)
 lmds recipes [MODEL] [--sync] [--repo] [--ref] [--publish SLUG --features … --no-push]
@@ -43,6 +43,7 @@ lmds burn [--node|--all] [--force] [--seconds N] [--json]   # GB10: คล็อ
 lmds watchdog arm|disarm|status|run <SLUG> # เฝ้าด้วย generate จริง แล้ว restart เมื่อไม่ตอบ — opt-in ต่อ slug
 lmds config set-provider|set-key|set-hf-token|show|defaults
 lmds agent info|bench                      # JSON ให้ hub เรียกผ่าน SSH
+lmds mcp                                   # MCP server (stdio) ให้ผู้ช่วย AI ถาม hub — อ่านอย่างเดียว (ดู MCP_SERVER.md)
 lmds version                               # เวอร์ชัน + commit ที่รันอยู่ + template standard
 lmds --install-completion | --show-completion
 
@@ -423,6 +424,11 @@ image รู้จัก `model_type` · llama.cpp native: `libllama.so` ขอ�
   ไม่ได้รัน/ยิงไม่ติด = WARN "ยังไม่ได้ยืนยัน" ไม่ใช่ ✅
 - `port` เครื่องที่ไม่มี `ss`/`netstat` ที่ใช้ได้ = WARN "ตรวจไม่ได้" ไม่ใช่ "ว่าง"
 
+`--json` (2026-10-09) พิมพ์ `{slug, healthy, findings: [{name, status, detail, fix}], skipped?}` — ก้อนเดียวกับ
+`GET /api/models/{slug}/doctor` · exit code ชุดเดิม (2 เมื่อมีข้อที่ต้องแก้) · `--no-probe` ไม่รัน container ชั่วคราวไปถาม image
+ว่ารู้จักสถาปัตยกรรมของโมเดลไหม และไม่จดผลลง `run/<slug>/runtime-arch.json` — ข้อที่ไม่ได้ตรวจอยู่ใน `skipped` (vLLM/SGLang)
+หรือเป็น WARN "ยังไม่ได้ถาม" (llama.cpp แบบ docker ที่ยังไม่มีผลจดไว้) · hub เรียกแบบนี้ผ่าน SSH ให้เครื่องมือ MCP
+
 ## `lmds audit`
 
 | ตัวเลือก | ค่าเริ่มต้น | ความหมาย |
@@ -498,9 +504,34 @@ service** ให้ถ้ามี (เครื่องใน LXC/Docker ท�
   settle หลัง restart ที่สำเร็จ · restart ที่ controller ล้มถูกจดว่าล้ม · **4xx = ยังไม่ตาย** (404/401 → `misconfigured` ไม่ restart)
 - **`status` ไม่เชื่อไฟล์สถานะอย่างเดียว**: พิมพ์เวลา probe ล่าสุด/สำเร็จล่าสุด (`no probe has succeeded yet` เมื่อยังไม่เคย) ·
   ถาม `systemctl --user is-active` ทุกครั้ง (ถามไม่ได้ = `unknown`) · เตือน linger · `--json` มีฟิลด์เดียวกัน
-  (`never_succeeded` · `probe_overdue` · `paused` · `blocked` · `restarts_failed` · `service`)
+  (`never_succeeded` · `probe_overdue` · `paused` · `blocked` · `restarts_failed` · `service`) · ไม่มีตัวไหนเปิด = `[]`
+  (ก่อน 2026-10-09 พิมพ์ประโยคภาษาคนออก stdout ทั้งที่ขอ `--json`)
 - **`arm --service` ปฏิเสธเมื่อ linger ปิด** (service จะตายพร้อมสาย SSH) พร้อมคำสั่ง `sudo loginctl enable-linger <user>`
 - ทุก restart ลง `lmds audit` พร้อมเหตุผล (รวม `WATCHDOG-PAUSE`/`RESUME`/`SKIPPED`) · ยังไม่มี REST — CLI อย่างเดียว
+
+## `lmds mcp`
+
+```text
+lmds mcp            # ไม่มี option · คุย JSON-RPC 2.0 ทาง stdin/stdout (หนึ่งข้อความต่อบรรทัด) จน stdin ปิด
+```
+
+MCP server ให้ผู้ช่วย AI (Claude Code · Claude Desktop · Cursor · Codex) ถาม hub ผ่านเครื่องมือที่คืน JSON ก้อนเดียวกับ
+`--json` ของคำสั่ง · เพิ่มด้วย `claude mcp add lmds -- lmds mcp` บนเครื่อง hub · เอกสารเต็ม: [MCP_SERVER.md](MCP_SERVER.md)
+
+- **เครื่องมือ 10 ตัว อ่านอย่างเดียวทั้งหมด**: `lmds_version` · `lmds_nodes` · `lmds_models [node]` · `lmds_inspect model` ·
+  `lmds_plan model` (= `plan --no-llm --json` — ไม่เรียก LLM) · `lmds_fit slug [node]` (dry run เสมอ) ·
+  `lmds_fleet_check [check]` (`check` = SSH ทุกเครื่อง · ไม่เขียนทะเบียน) · `lmds_watchdog_status [slug] [node]` ·
+  `lmds_logs slug [node] [lines ≤ 500]` · `lmds_doctor slug [node]` (= `doctor --json --no-probe`)
+- **process ถูกผนึก** (`lmds/mcp/seal.py` · audit hook): เขียนไฟล์/ลบ/ย้ายไม่ได้ · spawn ได้เฉพาะคำสั่งอ่านตามรายการ ·
+  controller ของ bundle ไม่ถูกรันเลย · `ssh` ออกได้เฉพาะ `LMDS_READ_ONLY=1 lmds agent info | fit … --json | logs … -n N |
+  doctor … --json --no-probe | watchdog status … --json`
+- **`LMDS_READ_ONLY=1`** (ตัวแปรแวดล้อมของ `lmds` ทุกคำสั่ง): ผนึก process นั้นแบบเดียวกันก่อนเข้าคำสั่ง — hub ใช้กับคำสั่งที่ส่ง
+  ไปเครื่องอื่นแทนเครื่องมือ MCP · คำสั่งอ่านทำงานตามปกติ (`lmds logs` อ่านจาก `docker logs`/`server.log` ตรง ๆ ไม่รัน
+  controller) · คำสั่งที่ต้องเขียนล้มพร้อมเหตุผล
+- stdout มีแต่ JSON-RPC (fd 1 ของ process ถูกย้ายไป stderr · stdin ของลูกชี้ /dev/null) · log ของ server อยู่บน stderr
+  ขึ้นต้นด้วย `lmds-mcp:`
+- argument ถูกตรวจก่อนประกอบคำสั่ง (ชื่อเครื่องต้องอยู่ในทะเบียน · slug ตาม `shellsafe.BUNDLE_SLUG`) · คำตอบผ่านตัวปิดความลับ
+- error ของ protocol: `-32700` / `-32600` / `-32601` / `-32602` · เครื่องมือล้ม = `isError: true`
 
 ## `lmds web`
 
@@ -630,6 +661,9 @@ src/lmds/
 ├── nodes/               # registry.py (nodes.yaml + lock), ssh.py (key/probe/run/ship git bundle/install script), cluster.py (จับคู่ stacked),
 │                        #   cluster_ssh.py (pair), doctor.py (cluster doctor), stacked.py (NNODES ของ bundle),
 │                        #   hostname.py (rename-host ผ่าน SSH+sudo), netplan.py (cluster inspect/plan/apply)
+├── mcp/                 # `lmds mcp`: server.py (JSON-RPC ทาง stdio · stdlib ล้วน), tools.py (ทะเบียนเครื่องมือ + ตรวจ argument),
+│                        #   reads.py (ฟังก์ชันอ่านที่ผูกได้ — READ_ALLOWLIST), seal.py (ผนึก process: audit hook ·
+│                        #   REMOTE_READS · LMDS_READ_ONLY), redaction.py (ปิดความลับในคำตอบ)
 ├── inventory.py         # payload ชุดเดียวที่หน้าเว็บและ `lmds agent info` ใช้ร่วมกัน (+ read_cluster_env)
 ├── scanner.py           # lmds scan
 ├── secrets/             # store.py (env/keyring/file), redact.py

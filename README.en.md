@@ -370,6 +370,26 @@ bigger deal than leaving one hung until a person notices. Hence:
   machines in LXC/Docker without a full init system work too (it prints `lmds watchdog run <name>`
   to put under any process supervisor)
 
+### `lmds mcp` — let an AI assistant ask the hub, without scraping tables
+
+Anyone driving LMDS through a coding assistant (Claude Code, Claude Desktop, Cursor, Codex …) hits the same
+wall: the assistant runs `lmds node list` and parses a table that was cut to the terminal width, with half of
+every machine name gone. `lmds mcp` is an [MCP](https://modelcontextprotocol.io) server that lets it ask through
+10 tools returning **the same JSON as the command's `--json`** — hub version, node registry, models on the hub or
+on a node, inspect, plan (rule-based), fit, fleet check, watchdog, log tail, doctor.
+
+```bash
+claude mcp add lmds -- lmds mcp          # once, on the hub — other clients and a hub inside an OrbStack VM: docs/MCP_SERVER.md
+```
+
+**Read-only by construction, not by promise.** An assistant acts on what it reads (model cards, READMEs, logs),
+and that text can tell it to call tools. LMDS manages machines that serve customers' models, so no tool can
+start, stop, remove or configure anything, and the server process is sealed with a Python audit hook: it cannot
+write a file, can spawn only listed read commands, and `ssh` only carries `lmds` read commands from a fixed
+list. Sealing the whole process matters because several of our own "read" functions write quietly (table in
+[docs/MCP_SERVER.md](docs/MCP_SERVER.md)). Node names and slugs from the assistant are checked against the
+registry before any command is built, and API keys/tokens are redacted from every result.
+
 ## Recipes — learn once, reuse across the fleet
 
 A machine with no LLM API key deploys rule-based, which only knows "GGUF → llama.cpp"; it does not
