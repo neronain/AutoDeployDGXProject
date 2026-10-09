@@ -329,10 +329,6 @@ def build(tmp_path: Path, monkeypatch) -> Fleet:
     for key, value in fleet.env.items():
         if key not in ("PATH", "PYTHONPATH", "HF_TOKEN"):
             monkeypatch.setenv(key, value)
-    from lmds.hardware import serving
-
-    serving.reset_cache()
-
     python = sys.executable
     _fake(fleet.bin / "ssh", _FAKE_SSH.format(python=python, box=str(fleet.box)))
     _fake(fleet.bin / "docker", _FAKE_DOCKER.format(python=python, box=str(fleet.box)))

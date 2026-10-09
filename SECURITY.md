@@ -9,8 +9,10 @@
 | **LLM provider ที่คุณตั้งไว้** | model card, `config.json`, รายชื่อไฟล์ + ขนาด, ผลคำนวณ fit | ตอน `plan` / `deploy` / `generate` | ได้ — `--no-llm` หรือใช้ Local AI เป็นสมอง ([INSTALL §3.2.1](docs/INSTALL.md)) |
 | **huggingface.co** | request metadata + ดาวน์โหลด weight | ตอน `inspect` และตอน controller `download` | ไม่ได้ (เป็นแหล่งโมเดล) · ใช้ mirror ภายในได้ด้วย `HF_ENDPOINT` |
 | **Docker registry** | pull runtime image | ตอน controller `start`/`download` ครั้งแรก | pre-pull ล่วงหน้าได้ / air-gapped ใช้ `docker save` |
+| **ผู้ช่วย AI ที่คุณต่อ `lmds mcp` เข้าไป** (และ LLM provider ของผู้ช่วยนั้น) | คำตอบของเครื่องมือที่ผู้ช่วยเรียก: ทะเบียนเครื่อง (ชื่อ · host/IP · user ของ SSH) · สถานะและค่าตั้งของโมเดล · ท้าย log · ผล doctor/fit/fleet check — API key/token ถูกปิดก่อนออก | เฉพาะเมื่อคุณลงทะเบียน MCP server เอง (`claude mcp add lmds -- lmds mcp`) และผู้ช่วยเรียกเครื่องมือ | ได้ — ไม่ลงทะเบียน · `lmds mcp` ไม่รันเอง ไม่เปิดพอร์ต ([MCP_SERVER.md](docs/MCP_SERVER.md)) |
 
-**ไม่เคยส่งออก**: API key ทุกชนิด, HF token, weight ของโมเดล, ชื่อผู้ใช้/hostname, เนื้อหา prompt ของผู้ใช้ปลายทาง
+**ไม่เคยส่งออก**: API key ทุกชนิด, HF token, weight ของโมเดล, เนื้อหา prompt ของผู้ใช้ปลายทาง ·
+ชื่อผู้ใช้/hostname/IP ไม่ออกทางไหนเลย **ยกเว้นทาง `lmds mcp` ที่คุณต่อเอง** (แถวสุดท้ายของตาราง — เป็นข้อมูลที่เครื่องมือมีไว้ตอบ)
 
 LMDS **ไม่มี telemetry** ไม่มีการเก็บสถิติกลับมาที่ผู้พัฒนา
 
@@ -138,6 +140,12 @@ repo เดินทางเข้าไปใน prompt ของผู้ช�
 
 ผลจาก probe ถูก redact ก่อนส่งออกไปหา LLM provider (ทางเดียวกับ audit log) เพราะ log จริง
 มี API key และ endpoint ภายในปนมาได้
+
+**ผู้ช่วยภายนอกที่ต่อผ่าน `lmds mcp`** (Claude Code ฯลฯ) อ่านของชุดเดียวกัน — log, model card, ข้อความ error — และ
+ทำตามสิ่งที่อ่านได้เหมือนกัน · ด่านของทางนี้คือ **ไม่มีเครื่องมือที่เปลี่ยนสถานะให้เลือกเลย**: process ของ server ถูกผนึกให้
+อ่านอย่างเดียว (เขียนไฟล์ไม่ได้ · spawn/ssh ได้เฉพาะคำสั่งอ่านตามรายการตายตัว) ชื่อเครื่องต้องอยู่ในทะเบียนและ slug ต้องผ่าน
+`shellsafe.BUNDLE_SLUG` ก่อนมีคำสั่งถูกประกอบ · สิ่งที่แย่ที่สุดที่ injection ทำได้ทางนี้คือ "ทำให้มันอ่านอย่างอื่นที่ hub อ่านได้อยู่แล้ว"
+— และผลนั้นออกไปหา provider ของผู้ช่วย จึงมีตัวปิดความลับคั่นอีกชั้น ([docs/MCP_SERVER.md](docs/MCP_SERVER.md))
 
 ## ค่าที่ผู้ใช้กรอกไปถึง shell ของเครื่องอื่น — ด่านที่กันไว้
 

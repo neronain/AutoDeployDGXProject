@@ -47,7 +47,7 @@ def _claim_stdio():
     """(ท่ออ่านคำขอ, ท่อเขียนคำตอบ) ส่วนตัวของ protocol — หลังจากนี้ fd 0 = /dev/null และ fd 1 = stderr ทั้ง process"""
     sys.stdout.flush()
     wire_in = os.fdopen(os.dup(0), "rb")               # buffered: readline ของท่อดิบอ่านทีละไบต์
-    wire_out = os.fdopen(os.dup(1), "wb", buffering=0)
+    wire_out = os.fdopen(os.dup(1), "wb")              # buffered + flush ต่อข้อความ: write() ดิบเขียนไม่ครบได้กับคำตอบก้อนใหญ่
     null = os.open(os.devnull, os.O_RDONLY)
     os.dup2(null, 0)
     os.close(null)
@@ -70,6 +70,7 @@ class Server:
         data = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         with self._write_lock:
             self._out.write(data)
+            self._out.flush()
 
     @staticmethod
     def _ok(request_id, result: dict) -> dict:

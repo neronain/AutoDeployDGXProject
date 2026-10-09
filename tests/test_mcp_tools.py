@@ -75,7 +75,7 @@ def test_version_is_what_the_cli_and_the_fleet_report_say(fleet, client):
     assert payload["version"] == lmds.__version__ and payload["template_standard"] == lmds.TEMPLATE_STANDARD
     said = fleet.lmds("version").stdout
     assert payload["version"] in said and payload["template_standard"] in said
-    assert payload["commit"] and payload["commit"] in said
+    assert payload["commit"] in said, "commit ว่างได้เมื่อรันจากแพ็กเกจที่ไม่ใช่ git checkout — แต่ต้องตรงกับที่ CLI พิมพ์"
     assert fleet.calls("ssh") == []
 
 
@@ -98,6 +98,23 @@ def test_nodes_are_the_registry_in_full_with_untruncated_names(fleet, client):
 def test_node_order_follows_what_the_owner_arranged(fleet, client):
     (fleet.config / "config.yaml").write_text(f"ui:\n  node_order: [{NODE_DOWN}, '{NODE_OK}']\n", encoding="utf-8")
     assert [node["name"] for node in client.call("lmds_nodes")["payload"]["nodes"]] == [NODE_DOWN, NODE_OK]
+
+
+def test_a_hub_file_that_cannot_be_read_is_reported_with_its_own_message(fleet, client):
+    """config.yaml ที่คนแก้มือแล้วพัง — ผู้ช่วยต้องได้ข้อความที่บอกไฟล์และวิธีแก้ ไม่ใช่ "internal error" เปล่า ๆ"""
+    (fleet.config / "config.yaml").write_text("ui: [unclosed\n", encoding="utf-8")
+    answer = client.call("lmds_nodes")
+    assert answer["error"] is True
+    assert "config.yaml" in answer["payload"]["error"] and "internal error" not in answer["payload"]["error"]
+    # เครื่องมือที่ไม่ได้อ่านไฟล์นั้นยังตอบ
+    assert client.call("lmds_version")["error"] is False
+
+    (fleet.config / "config.yaml").unlink()
+    (fleet.config / "nodes.yaml").write_text("nodes: [unclosed\n", encoding="utf-8")
+    for name, arguments in (("lmds_nodes", {}), ("lmds_fleet_check", {}), ("lmds_models", {"node": NODE_OK})):
+        broken = client.call(name, arguments)
+        assert broken["error"] is True and "nodes.yaml" in broken["payload"]["error"], (name, broken["payload"])
+        assert "internal error" not in broken["payload"]["error"]
 
 
 # ── โมเดลบน hub / บนเครื่องอื่น ───────────────────────────────────────────────────────────────────
@@ -372,7 +389,15 @@ def test_logs_of_an_unknown_bundle_are_an_error(fleet, client):
 def test_doctor_on_the_hub_equals_the_cli_json(fleet, client, slug):
     answer = client.call("lmds_doctor", {"slug": slug})
     cli = cli_json(fleet, "doctor", slug, "--json", "--no-probe", ok=(0, 2))
-    assert answer["error"] is False and answer["payload"] == cli
+
+    def steady(payload: dict) -> dict:
+        # ข้อ `port` ถาม ss/netstat ว่าใครฟังพอร์ต 8000 ของเครื่องที่รันเทส — เทสไฟล์อื่นที่รันขนานกันเปิด/ปิดพอร์ตนั้นได้
+        # ระหว่างสองคำถาม (ล้มหนึ่งครั้งตอนรันชุดเต็ม 5 กองพร้อมกัน 2026-10-10) · เทียบว่ามีข้อนี้ทั้งคู่ ไม่เทียบคำตอบของมัน
+        findings = [f if f["name"] != "port" else {"name": "port"} for f in payload["findings"]]
+        return {**payload, "findings": findings,
+                "healthy": not any(f.get("status") == "fail" for f in findings)}
+
+    assert answer["error"] is False and steady(answer["payload"]) == steady(cli)
     assert {"slug", "healthy", "findings"} <= set(cli)
     assert all(set(finding) == {"name", "status", "detail", "fix"} for finding in cli["findings"])
     assert not any(call[:1] == ["run"] for call in fleet.calls("docker")), "--no-probe: ไม่รัน container ไปถาม image"

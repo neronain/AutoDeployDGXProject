@@ -337,8 +337,20 @@ def call(name: str, arguments) -> dict:
         return as_result({"error": str(exc), **exc.details}, error=True, notes=_blocked())
     except seal.ReadOnlyViolation as exc:
         return as_result({"error": str(exc), "read_only": True}, error=True)
+    except _hub_file_errors() as exc:
+        # ไฟล์ของ hub เองอ่านไม่ได้ (config.yaml / nodes.yaml ที่แก้มือแล้วพัง) — ข้อความของมันบอกไฟล์และวิธีแก้อยู่แล้ว
+        # ส่งต่อให้ผู้ถามตรง ๆ ไม่ใช่ "internal error" พร้อม traceback บน stderr ที่ผู้ช่วยมองไม่เห็น
+        return as_result({"error": str(exc)}, error=True, notes=_blocked())
     notes = list(getattr(payload, "notes", []) or []) + _blocked()
     return as_result(dict(payload) if isinstance(payload, dict) else payload, error=False, notes=notes)
+
+
+def _hub_file_errors() -> tuple:
+    from lmds.config import SettingsError
+    from lmds.fleet import FleetError
+    from lmds.nodes import NodeError
+
+    return (SettingsError, NodeError, FleetError)
 
 
 def _blocked() -> list[str]:
