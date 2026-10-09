@@ -432,6 +432,27 @@ REPO_URL = os.environ.get("LMDS_REPO_URL") or "https://github.com/neronain/AutoD
 # ของ hub ไม่จำเป็นต้องเป็น ref ที่ปักไว้ — ส่งไปก็เท่ากับลบล้างคำสั่งเงียบ ๆ
 # แลกมาด้วยการที่เครื่องนั้นต้องเข้าถึง repo เองได้ (deploy key หรือ mirror ภายใน)
 REPO_REF = (os.environ.get("LMDS_REPO_REF") or "").strip()
+
+# ตาม remote แบบ fast-forward โดย **ระบุ remote กับ branch เองทุกครั้ง** — ไม่พึ่ง upstream ใน .git/config
+#
+# เคสจริง 2026-10-09 (ลูกค้ากดปุ่ม Update บนหน้าเว็บ บางเครื่องล้ม exit 1): `git pull --ff-only` เปล่า ๆ ดึงโค้ดมา
+# ได้ (6e2b474..45cb59c main -> origin/main) แล้วตายที่ "There is no tracking information for the current branch"
+# เครื่องพวกนั้นติดตั้งครั้งแรกจากโค้ดที่ hub ส่งมา (git bundle): bundle มี ref เดียวคือ HEAD · clone แล้วได้
+# detached HEAD · `git checkout -B main HEAD` สร้าง branch main ที่ **ไม่มี upstream** — origin ชี้ GitHub ถูกแล้ว
+# แต่ git ไม่รู้ว่า main ตาม branch ไหน · เครื่องที่ clone จาก GitHub ตรง ๆ ไม่เป็น (ทั้งฟลีตของเราจึงไม่เคยเจอ)
+#
+# detached HEAD (ปักหมุดเวอร์ชันด้วย $LMDS_REPO_REF แล้ว checkout ค้างไว้) ไม่มี branch ให้ตาม — บอกเป็นภาษาคน
+# แทนข้อความ "You are not currently on a branch" ของ git · ไม่ย้ายให้เอง: เครื่องที่ปักหมุดไว้ต้องอยู่ที่เดิม
+# ท้ายสุดตั้ง upstream ให้ด้วย — `git status` / `git pull` ที่คนพิมพ์เองบนเครื่องนั้นจะได้ทำงานตามปกติ
+FF_PULL = """branch=$(git symbolic-ref -q --short HEAD || true)
+if [ -z "$branch" ]; then
+  echo "checkout นี้ไม่ได้อยู่บน branch ไหน (detached HEAD ที่ $(git rev-parse --short HEAD)) — ไม่มี branch ให้ตาม {remote}" >&2
+  echo "ตั้งใจปักหมุดเวอร์ชันไว้ = ไม่ต้องทำอะไร · จะกลับไปตามรุ่นล่าสุด: cd $(pwd) && git checkout main แล้วอัปเดตอีกครั้ง" >&2
+  exit 1
+fi
+git pull --ff-only {remote} "$branch"
+git branch -q --set-upstream-to="{remote}/$branch" "$branch" >/dev/null 2>&1 || true"""
+
 _INSTALL_SCRIPT = """
 set -e
 {notice}
@@ -445,7 +466,7 @@ if [ -d AutoDeployDGXProject/.git ]; then
     git fetch -q --depth 1 origin "$ref"
     git checkout -q --detach FETCH_HEAD
   else
-    git pull --ff-only
+    {pull}
   fi
 elif [ -n "$ref" ]; then
   git clone -q --depth 1 --branch "$ref" {repo} AutoDeployDGXProject && cd AutoDeployDGXProject
@@ -488,6 +509,10 @@ if [ -d AutoDeployDGXProject/.git ]; then
     git stash push -q -u -m "lmds node install $stamp" >/dev/null 2>&1 || true
     git checkout -q -B main FETCH_HEAD
   fi
+  # เครื่องที่ติดตั้งไว้ก่อนสคริปต์นี้จะตั้ง upstream ให้ (ดู FF_PULL) — ซ่อมให้ตรงนี้ ทุกครั้งที่ hub อัปเดตเครื่องนั้น
+  if git remote get-url origin >/dev/null 2>&1 && ! git config --get branch.main.remote >/dev/null 2>&1; then
+    git config branch.main.remote origin && git config branch.main.merge refs/heads/main
+  fi
 else
   if [ -e AutoDeployDGXProject ]; then
     echo "AutoDeployDGXProject เดิมไม่ใช่ git checkout (ติดตั้งแบบ copy) — ย้ายไป AutoDeployDGXProject.bak-$stamp"
@@ -496,8 +521,11 @@ else
   # bundle มี ref เดียวคือ HEAD = commit ที่ hub รันอยู่จริง (ไม่ใช่ปลาย main ของ hub —
   # hub ที่ checkout tag ไว้เคยส่ง main ไปให้ทั้งฟลีตโดยไม่มีใครรู้) · clone แล้วได้
   # detached HEAD จึงตั้ง branch main ให้เองเพื่อให้ pull/status ของ node ต่อไปตามปกติ
+  # branch ที่สร้างจาก HEAD เปล่า ๆ ไม่มี upstream — ตั้งเองด้วย git config (ไม่ต้องต่อเน็ต · origin/main ยังไม่มีในเครื่อง
+  # จึงใช้ --set-upstream-to ไม่ได้) ไม่งั้น `git pull` บนเครื่องนี้ตายที่ "no tracking information" (ดู FF_PULL)
   git clone -q {bundle} AutoDeployDGXProject && cd AutoDeployDGXProject \
-    && git checkout -q -B main HEAD && git remote set-url origin {repo}
+    && git checkout -q -B main HEAD && git remote set-url origin {repo} \
+    && git config branch.main.remote origin && git config branch.main.merge refs/heads/main
 fi
 rm -f {bundle}
 LMDS_ASSUME_YES=1 {skip}./install.sh
@@ -702,7 +730,8 @@ def install_script(with_prereq: bool = False, bundle: str = "", fallback_reason:
             repo=REPO_URL, skip=skip, bundle=_remote_path(bundle), refresh=_REFRESH_BUNDLES)
     notice = f"echo {shlex.quote(_fallback_notice(fallback_reason))}" if fallback_reason else ""
     return _INSTALL_SCRIPT.format(repo=REPO_URL, skip=skip, ref=shlex.quote(REPO_REF),
-                                  notice=notice, refresh=_REFRESH_BUNDLES)
+                                  notice=notice, refresh=_REFRESH_BUNDLES,
+                                  pull=FF_PULL.format(remote="origin").replace("\n", "\n    "))
 
 
 def _own_file(path: Path) -> bool:

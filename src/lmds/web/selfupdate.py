@@ -16,6 +16,7 @@ terminal เอง ผลคือลำดับที่เกิดขึ้�
     ได้ก็สั่งให้เครื่องติดตั้งโค้ดจากที่ไหนก็ได้
   - `git pull --ff-only` ล้วน ๆ · ไม่ merge ไม่ reset — เครื่องที่มีของแก้ค้างอยู่ต้องล้มแล้ว
     บอกให้คนไปดู ดีกว่าเงียบ ๆ กลืนงานที่ยังไม่ได้ commit ของใครสักคน
+  - pull ต้องระบุ remote กับ branch เอง — ไม่พึ่ง upstream ใน .git/config ของเครื่องนั้น (nodes.ssh.FF_PULL)
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def dirty_files(root: Path) -> list[str]:
 _SCRIPT = """
 set -e
 echo "── ดึงโค้ดใหม่จาก {remote} ──"
-git pull --ff-only
+{pull}
 echo ""
 echo "── ติดตั้ง ──"
 LMDS_ASSUME_YES=1 LMDS_SKIP_PREREQ=1 ./install.sh
@@ -92,9 +93,13 @@ def update_script(restart: bool = True, unit: str = "") -> str:
     `unit` = ชื่อ unit ที่ process นี้รันอยู่จริง (api._running_unit) · เดิมใช้ค่า default เสมอ
     เครื่องที่ติดตั้งด้วยชื่ออื่นจึงอัปเดตแล้ว restart ผิดตัว — ของใหม่ไม่เคยถูกโหลด
     """
+    from lmds.nodes.ssh import FF_PULL
+
     from .daemon import UNIT_NAME
 
+    # ระบุ remote + branch เอง ไม่ใช้ `git pull` เปล่า ๆ — checkout ที่ไม่มี upstream ล้มทั้งที่ดึงโค้ดมาได้แล้ว (ดู FF_PULL)
     return _SCRIPT.format(
         remote="origin",
+        pull=FF_PULL.format(remote="origin"),
         restart=_RESTART.format(unit=unit or UNIT_NAME) if restart else "",
     )

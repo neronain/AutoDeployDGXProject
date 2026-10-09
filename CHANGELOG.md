@@ -7,6 +7,14 @@
 
 ### แก้
 
+- **ปุ่ม Update บนหน้าเว็บล้ม `There is no tracking information for the current branch`** (ลูกค้า 2026-10-09 · บางเครื่อง)
+  ดึงโค้ดมาได้แล้วแต่ exit 1 · เครื่องที่ติดตั้งครั้งแรกจากโค้ดที่ hub ส่งมา (git bundle) ได้ branch `main` ที่ไม่มี upstream
+  (`git checkout -B main HEAD`) แล้ว `git pull --ff-only` เปล่า ๆ ไม่รู้ว่าจะตาม branch ไหน — เครื่องที่ clone จาก GitHub ตรง ๆ ไม่เป็น
+  - ปุ่ม Update และทาง GitHub ของ `lmds node install` ระบุ `origin` + branch เอง แล้วตั้ง upstream ให้เครื่องนั้น
+  - สคริปต์ติดตั้งจาก bundle ตั้ง upstream ตั้งแต่สร้าง checkout และซ่อมเครื่องเดิมทุกครั้งที่ hub อัปเดตให้
+  - checkout ที่อยู่ detached HEAD (ปักหมุดเวอร์ชัน) ได้ข้อความบอกสาเหตุและทางออก แทน `You are not currently on a branch` · ไม่ถูกย้ายให้เอง
+  - **เครื่องที่ค้างอยู่รุ่นเก่าปลดเองไม่ได้จากหน้าเว็บ** — ครั้งเดียวบนเครื่องนั้น: `git branch --set-upstream-to=origin/main main`
+    ใน `~/AutoDeployDGXProject` แล้วกด Update อีกครั้ง (ตาราง "ปัญหาตอนติดตั้ง / อัปเดต" ใน `docs/INSTALL.md`)
 - **`lmds adopt` ทิ้งของที่ container ถูกสั่งรันมาไปเงียบ ๆ** (audit 2026-10-06 · ฟลีต TKC มี container
   ของลูกค้าที่ adopt ไว้ 3 ตัว) · controller ที่ adopt เขียน `stop` ด้วย `docker rm -f` แล้ว `start` ด้วย
   `docker run` ที่ประกอบใหม่ — อะไรที่ไม่ได้ยกมาจึงหายในวันแรกที่มีคนกด restart · หลักใหม่:
