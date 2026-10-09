@@ -239,3 +239,14 @@ def is_safe_repo_filename(name: str) -> bool:
 # ชื่อที่ API เสิร์ฟ เมื่อมาจาก *แผน* (LLM เป็นคนเสนอได้) — แคบกว่าที่ `lmds set --served-name` ยอมให้คนพิมพ์เอง
 def is_plain_served_name(name: str) -> bool:
     return bool(name) and all(c.isascii() and (c.isalnum() or c in "._:/-") for c in name)
+
+
+# ชื่อ bundle (slug) ที่มาจากข้างนอก — URL ของหน้าเว็บ · argument ของเครื่องมือ MCP (`lmds mcp`) ที่ผู้ช่วย AI ส่งมา
+# ตามที่หน้าเว็บ/เอกสารที่มันอ่านบอก · ค่านี้ถูกต่อเป็นคำสั่งที่รันบนเครื่องอื่นและเป็นชื่อไฟล์ จึงตรวจรูปตั้งแต่ปากทาง:
+# slug ที่ LMDS สร้างเองมีแค่ตัวอักษรชุดนี้ (ดูที่มาใน web/api.py · review 2026-09-04) · อยู่ที่นี่เพื่อให้ปากทางทุกบาน
+# ใช้ตัวเดียวกัน — MCP import ของหน้าเว็บไม่ได้ (fastapi เป็น optional extra)
+BUNDLE_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def is_bundle_slug(slug: object) -> bool:
+    return isinstance(slug, str) and bool(BUNDLE_SLUG.fullmatch(slug))

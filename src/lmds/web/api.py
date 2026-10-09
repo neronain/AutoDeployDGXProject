@@ -14,7 +14,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import secrets
 import shlex
 import threading
@@ -28,6 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 
 import lmds
 from lmds.config import SettingsError
+from lmds.shellsafe import BUNDLE_SLUG
 from lmds.web import logstream, state
 
 STATIC = Path(__file__).parent / "static"
@@ -225,7 +225,8 @@ def _running_unit() -> str:
 # echo 'ไม่พบ bundle <slug>') และเป็นชื่อไฟล์ (<slug>.zip) · shlex.quote ครอบไว้บางจุดแต่ไม่ทุกจุด —
 # review 2026-09-04 พบ echo ที่ใส่ slug ดิบ ๆ ใน single quote ซึ่ง `x';id;'` ทะลุออกมาได้
 # ตรวจรูปแบบตั้งแต่ปากทางแทนที่จะไล่ quote ทีละบรรทัด: slug ของ bundle ที่ LMDS สร้างมีแค่ตัวพวกนี้
-_SLUG_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# ตัว regex อยู่ที่ shellsafe.BUNDLE_SLUG — ปากทางของ MCP (`lmds mcp`) ใช้ตัวเดียวกัน
+_SLUG_OK = BUNDLE_SLUG
 
 
 def _check_slug(slug: str) -> str:
@@ -602,15 +603,7 @@ def create_app(token: str = "") -> FastAPI:
     def doctor(slug: str) -> dict:
         from lmds.doctor import diagnose
 
-        result = diagnose(slug)
-        return {
-            "slug": result.slug,
-            "healthy": result.healthy,
-            "findings": [
-                {"name": f.name, "status": f.status.value, "detail": f.detail, "fix": f.fix}
-                for f in result.findings
-            ],
-        }
+        return diagnose(slug).payload()
 
     @app.get("/api/models/{slug}/logs", dependencies=guarded)
     def logs(slug: str, lines: int = Query(200, ge=1, le=2000)) -> dict:

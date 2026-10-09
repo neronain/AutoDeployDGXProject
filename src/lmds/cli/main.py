@@ -74,6 +74,13 @@ def _entry() -> None:
     """Local Model Deploy Studio — โดย neronain (fb.com/neronain.minidev)"""
     from .banner import show_banner
 
+    # hub ที่ถามแทนเครื่องมือ MCP ส่งคำสั่งอ่านมาเป็น `LMDS_READ_ONLY=1 lmds agent info` (และ fit/logs/doctor/watchdog
+    # status) — ผนึก process นี้แบบเดียวกับ `lmds mcp` ก่อนเข้าคำสั่ง: เขียนไฟล์ไม่ได้ สั่งคำสั่งที่เปลี่ยนสถานะไม่ได้ ·
+    # คำสั่งที่ต้องเขียน (start/set/remove …) ใต้ตัวแปรนี้จึงล้มพร้อมข้อความที่บอกว่าทำไม ซึ่งคือสิ่งที่ตั้งใจ
+    if os.environ.get("LMDS_READ_ONLY") == "1":
+        from lmds.mcp import seal
+
+        seal.seal()
     show_banner(err_console)
 
 
@@ -2432,26 +2439,35 @@ def inspect(
     ถ้าเป็น gated repo และยังไม่มี token จะถาม (กด Enter เพื่อข้ามได้)
     Exit codes: 0 สำเร็จ, 1 input ผิด, 4 ต้องการ token, 5 ปัญหาเครือข่าย/Hub
     """
-    _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
-    fit_reports = _compute_fits(report, targets, concurrency)
-
     if as_json:
-        import json as json_module
-
-        payload = {
-            "model": report.model_dump(mode="json"),
-            "fit": [f.model_dump(mode="json") for f in fit_reports],
-            "context_advice": _context_payload(report, fit_reports, context, kv_dtype),
-        }
-        print(json_module.dumps(payload, indent=2, ensure_ascii=False))
+        print(json.dumps(inspect_json(model, revision=revision, targets=targets, concurrency=concurrency,
+                                      context=context, kv_dtype=kv_dtype), indent=2, ensure_ascii=False))
         return
 
+    _, report = _resolve_and_inspect(model, revision, interactive_ok=True)
+    fit_reports = _compute_fits(report, targets, concurrency)
     _render_report(report)
     if _print_unsupported(report):
         # ตาราง fit/context ของ checkpoint ที่ไม่มี engine โหลดได้ คือตัวเลขที่ถูกแต่พาไปผิดทาง — ไม่แสดง
         return
     _render_fits(fit_reports)
     _render_context(report, fit_reports, context, kv_dtype)
+
+
+def inspect_json(model: str, *, revision: Optional[str] = None, targets=(), concurrency: int = 1,
+                 context: Optional[int] = None, kv_dtype: str = "bf16") -> dict:
+    """ก้อนของ `lmds inspect --json` — ที่เดียว · CLI พิมพ์ก้อนนี้ และเครื่องมือ MCP `lmds_inspect` คืนก้อนนี้
+
+    ไม่ถามอะไรทางคีย์บอร์ด (gated repo ที่ไม่มี token = exit 4 พร้อมเหตุผลบน stderr) · รูปแบบที่ไม่มี engine โหลดได้
+    ไม่ใช่ error ของคำสั่งนี้: อยู่ใน `model.unsupported_format` และ verdict `unsupported` ของ fit
+    """
+    _, report = _resolve_and_inspect(model, revision, interactive_ok=False)
+    fit_reports = _compute_fits(report, list(targets), concurrency)
+    return {
+        "model": report.model_dump(mode="json"),
+        "fit": [f.model_dump(mode="json") for f in fit_reports],
+        "context_advice": _context_payload(report, fit_reports, context, kv_dtype),
+    }
 
 
 def _print_unsupported(report) -> bool:
@@ -3000,11 +3016,30 @@ def plan(
     Exit codes: 0 สำเร็จ, 1 input ผิด/รูปแบบ weight ที่ไม่รองรับ (MLX), 3 โมเดลไม่ fit, 4 ต้องการ token,
     5 ปัญหา provider/เครือข่าย
     """
+    deployment_plan, fit = _plan_and_fit(model, revision=revision, target=target, no_llm=no_llm,
+                                         concurrency=concurrency, engine=engine, interactive_ok=not as_json)
+    if as_json:
+        print(deployment_plan.model_dump_json(indent=2))
+        return
+    _render_plan(deployment_plan, fit)
+    gb = lambda value: "?" if value is None else f"{value:.1f}"  # noqa: E731
+    console.print(
+        f"Fit: [bold]{fit.verdict.value}[/bold] · target {fit.target_name} · weights {gb(fit.weights_gb)} / "
+        f"budget {gb(fit.budget_gb)} GB"
+        + (f" · context สูงสุดที่ปลอดภัย {fit.max_safe_context:,}" if fit.max_safe_context else ""), highlight=False)
+
+
+def _plan_and_fit(model: str, *, revision: Optional[str] = None, target: Optional[str] = None, no_llm: bool = False,
+                  concurrency: int = 1, engine: Optional[str] = None, interactive_ok: bool = False):
+    """ทั้งเส้นของ `lmds plan` จนได้ (แผน, fit) — CLI เรียกตรงนี้ และเครื่องมือ MCP `lmds_plan` เรียกด้วย no_llm=True เสมอ
+
+    ทุกเหตุที่ไม่มีแผนให้ออกทางเดิม: ข้อความบน stderr + `typer.Exit` (1 input ผิด/ไม่รองรับ · 3 ไม่ fit · 4 token · 5 เครือข่าย)
+    """
     from lmds.brain import MissingKey, make_provider
     from lmds.config import Settings
     from lmds.fit import Verdict
 
-    _, report = _resolve_and_inspect(model, revision, interactive_ok=not as_json)
+    _, report = _resolve_and_inspect(model, revision, interactive_ok=interactive_ok)
     _refuse_unsupported(report)
     fits = _compute_fits(report, [target] if target else [], concurrency)
     fit = fits[0]
@@ -3035,15 +3070,7 @@ def plan(
                           "แผนนี้ไม่ได้ยืนยันว่าโมเดลใส่เครื่องได้ · context ในแผนเป็นค่าตั้งต้นแบบอนุรักษ์นิยม")
         for note in fit.notes:
             err_console.print(f"[dim]· {note}[/dim]", highlight=False)
-    if as_json:
-        print(deployment_plan.model_dump_json(indent=2))
-        return
-    _render_plan(deployment_plan, fit)
-    gb = lambda value: "?" if value is None else f"{value:.1f}"  # noqa: E731
-    console.print(
-        f"Fit: [bold]{fit.verdict.value}[/bold] · target {fit.target_name} · weights {gb(fit.weights_gb)} / "
-        f"budget {gb(fit.budget_gb)} GB"
-        + (f" · context สูงสุดที่ปลอดภัย {fit.max_safe_context:,}" if fit.max_safe_context else ""), highlight=False)
+    return deployment_plan, fit
 
 
 def _refuse_no_fit(fit) -> None:
@@ -4500,6 +4527,14 @@ def logs(
         err_console.print(f"[dim]เริ่มด้วย: [bold]lmds start {slug}[/bold] แล้วค่อยดู log[/dim]")
         raise typer.Exit(code=1)
     try:
+        from lmds.mcp import seal
+
+        if seal.is_sealed() and not follow:
+            # อ่านอย่างเดียว (LMDS_READ_ONLY=1): ไม่รัน controller — อ่านจากแหล่งของ log ตรง ๆ (ดู fleet.logs_text)
+            from lmds.fleet import logs_text
+
+            sys.stdout.write(logs_text(server, lines, timeout=60, direct=True))
+            raise typer.Exit(code=0)
         raise typer.Exit(code=logs_server(server, lines, follow=follow))
     except FleetError as exc:
         err_console.print(f"[red]{exc}[/red]")
@@ -5113,14 +5148,25 @@ def web(
 @app.command()
 def doctor(
     slug: str = typer.Argument(..., help="ชื่อ (slug) จาก lmds list", autocompletion=_complete_slug),
+    as_json: bool = typer.Option(False, "--json", help="พิมพ์ผลเป็น JSON (โครงเดียวกับ GET /api/models/{slug}/doctor)"),
+    no_probe: bool = typer.Option(
+        False, "--no-probe",
+        help="ไม่รัน container ชั่วคราวไปถาม image ว่ารู้จักสถาปัตยกรรมของโมเดลไหม และไม่จดผลลงดิสก์ — "
+             "ข้อที่ข้ามอยู่ใน skipped ของ --json"),
 ) -> None:
     """ตรวจว่าทำไมโมเดลนี้ยัง download/start ไม่ผ่าน — บอกสาเหตุพร้อมคำสั่งแก้
 
-    ตรวจด้วยข้อเท็จจริงบนเครื่องล้วน ไม่ใช้ LLM · exit 0 ผ่าน, 2 มีข้อที่ต้องแก้
+    ตรวจด้วยข้อเท็จจริงบนเครื่องล้วน ไม่ใช้ LLM · exit 0 ผ่าน, 2 มีข้อที่ต้องแก้ (`--json` ใช้ exit code ชุดเดียวกัน)
     """
     from lmds.doctor import Status, diagnose
 
-    result = diagnose(slug)
+    result = diagnose(slug, probe=not no_probe)
+    if as_json:
+        # hub เรียกแบบนี้ผ่าน SSH ให้เครื่องมือ MCP (`lmds mcp`) — เดิม doctor มีแต่ตารางของ rich ที่ตัดคำตามความกว้างจอ
+        print(json.dumps(result.payload(), ensure_ascii=False))
+        if result.failed:
+            raise typer.Exit(code=2)
+        return
     icon = {Status.OK: "[green]✅[/green]", Status.WARN: "[yellow]⚠️ [/yellow]", Status.FAIL: "[red]❌[/red]"}
 
     table = Table(title=f"Doctor: {slug}", show_header=True)
@@ -5138,6 +5184,8 @@ def doctor(
             if finding.fix:
                 console.print(f"  {finding.name}: [cyan]{finding.fix}[/cyan]")
 
+    if result.skipped:
+        console.print(f"\n[dim]ไม่ได้ตรวจ (--no-probe): {', '.join(result.skipped)}[/dim]")
     if result.failed:
         err_console.print(f"\n[red]พบ {len(result.failed)} ข้อที่ต้องแก้ก่อนถึงจะรันได้[/red]")
         raise typer.Exit(code=2)
@@ -5239,12 +5287,15 @@ def _freshness(source: str, last_seen: str, probed: bool) -> str:
     return f"[red]{hours // 24} วันก่อน[/red]"
 
 
-def _probe_fleet(nodes: list) -> dict:
+def _probe_fleet(nodes: list, *, remember: bool = True, seen: dict | None = None) -> dict:
     """probe ทุกเครื่องพร้อมกันแล้วคืนรูปเดียวกับ snapshot ของหน้าเว็บ ({ชื่อ: {"data": …}})
 
     หน้าเว็บมีตัว refresh เบื้องหลังคอยอุ่นแคชไว้ให้ · CLI เป็น process ครั้งเดียวจบ
     จึงไม่มีแคชอะไรเลยและตกไปใช้ตัวนับจากทะเบียนเสมอ — ซึ่งเป็นของรอบที่ probe ล่าสุด
     ไม่ใช่ของตอนนี้ · เขียนผลกลับทะเบียนด้วย ครั้งถัดไปที่ไม่ใส่ --check จะได้ไม่เก่าเท่าเดิม
+
+    remember=False (`lmds mcp` — สัญญาว่าอ่านอย่างเดียว): ไม่เขียนทะเบียน · สิ่งที่รอบนี้ *จะ* เขียนถูกใส่ลง `seen`
+    ({ชื่อ: ฟิลด์ที่เปลี่ยน}) ให้ผู้เรียกเอาไปประกอบ Node ในหน่วยความจำเอง (ดู fleet_check_report)
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -5252,12 +5303,20 @@ def _probe_fleet(nodes: list) -> dict:
 
     def one(node):
         try:
-            info = probe(node)
+            info = probe(node, read_only=True) if not remember else probe(node)
         except NodeError as exc:
-            update(node.name, last_error=str(exc)[:200])
+            changes = {"last_error": str(exc)[:200]}
+            if seen is not None:
+                seen[node.name] = changes
+            if remember:
+                update(node.name, **changes)
             return node.name, None
         try:
-            update(node.name, last_seen=_now(), last_error="", **status_from_probe(info))
+            changes = {"last_seen": _now(), "last_error": "", **status_from_probe(info)}
+            if seen is not None:
+                seen[node.name] = changes
+            if remember:
+                update(node.name, **changes)
         except Exception:  # noqa: BLE001 — เขียนทะเบียนไม่ได้ไม่ควรทำให้รายงานล้ม
             pass
         return node.name, info
@@ -5266,6 +5325,41 @@ def _probe_fleet(nodes: list) -> dict:
         return {}
     with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as pool:
         return {name: {"data": info} for name, info in pool.map(one, nodes) if info}
+
+
+def fleet_check_report(check: bool = False, *, remember: bool = True, announce=None) -> tuple[dict, list]:
+    """(รายงาน, ทะเบียนที่รายงานนี้ใช้) ของ `lmds fleet check [--check]` — ที่เดียว · CLI และเครื่องมือ MCP `lmds_fleet_check`
+
+    รายงานคือก้อนของ `--json` (โครงเดียวกับ GET /api/fleet/consistency) · `announce(จำนวนเครื่อง)` ถูกเรียกก่อนเริ่ม probe
+
+    remember=False: `--check` แบบไม่เขียนทะเบียน — ผลของรอบนี้ (last_seen · last_error · ตัวนับ) อยู่ใน Node ที่คืน
+    เท่านั้น ไม่ลงไฟล์ · รายงานเท่ากับของ `--check` ทุกฟิลด์ เพราะตัดสินจาก Node ชุดที่ "ถ้าเขียนก็จะได้แบบนี้"
+    """
+    from dataclasses import replace
+
+    from lmds.fleet import discover
+    from lmds.fleet.consistency import fleet_report
+    from lmds.inventory import host_payload, model_payload, with_runtimes
+    from lmds.nodes import load
+
+    models = [model_payload(s) for s in discover()]
+    local = {"host": with_runtimes(host_payload(), models), "models": models}
+    nodes = load()
+    snapshot = {}
+    if check:
+        if announce is not None and nodes:
+            announce(len(nodes))
+        seen: dict = {}
+        snapshot = _probe_fleet(nodes, remember=remember, seen=seen)
+        # อ่านทะเบียนใหม่: _probe_fleet เพิ่งเขียน last_error ของเครื่องที่ต่อไม่ได้ลงไป · ใช้ Node ชุดเดิมที่โหลดก่อน
+        # probe เครื่องที่เพิ่งดับจะยัง last_error ว่าง แล้วถูกนับเป็น "ตรง hub" จากตัวเลขที่จำไว้ (audit 2026-10-06)
+        if remember:
+            nodes = load()
+        else:
+            known = set(type(nodes[0]).__dataclass_fields__) if nodes else set()
+            nodes = [replace(node, **{k: v for k, v in seen.get(node.name, {}).items() if k in known})
+                     for node in nodes]
+    return fleet_report(snapshot, nodes, local), nodes
 
 
 @fleet_app.command("check")
@@ -5283,23 +5377,11 @@ def fleet_check(
 
     exit 1 เมื่อมีเครื่องไม่ตรง (แดง) · เหลือง = ตรวจไม่ได้
     """
-    from lmds.fleet import discover
-    from lmds.fleet.consistency import fleet_report
-    from lmds.inventory import host_payload, model_payload, with_runtimes
-    from lmds.nodes import load
+    def announce(count: int) -> None:
+        if not json_out:
+            console.print(f"[dim]ต่อเข้า {count} เครื่องเพื่อดูสภาพตอนนี้…[/dim]")
 
-    models = [model_payload(s) for s in discover()]
-    local = {"host": with_runtimes(host_payload(), models), "models": models}
-    nodes = load()
-    snapshot = {}
-    if check:
-        if not json_out and nodes:
-            console.print(f"[dim]ต่อเข้า {len(nodes)} เครื่องเพื่อดูสภาพตอนนี้…[/dim]")
-        snapshot = _probe_fleet(nodes)
-        # อ่านทะเบียนใหม่: _probe_fleet เพิ่งเขียน last_error ของเครื่องที่ต่อไม่ได้ลงไป · ใช้ Node ชุดเดิมที่โหลดก่อน
-        # probe เครื่องที่เพิ่งดับจะยัง last_error ว่าง แล้วถูกนับเป็น "ตรง hub" จากตัวเลขที่จำไว้ (audit 2026-10-06)
-        nodes = load()
-    report = fleet_report(snapshot, nodes, local)
+    report, nodes = fleet_check_report(check, announce=announce)
     if json_out:
         print(json.dumps(report, ensure_ascii=False))
     else:
@@ -6002,6 +6084,25 @@ def watchdog_disarm(
     console.print(f"[green]ปิด watchdog ของ {slug} แล้ว[/green] — โมเดลที่รันอยู่ไม่ถูกแตะ")
 
 
+def _watchdog_rows(slug: str = "") -> list[tuple]:
+    """(สถานะ, ServerInfo, คำตอบของ systemd) ของ watchdog ที่ถาม — ว่าง = ทุกตัวที่เปิดไว้บนเครื่องนี้ · อ่านอย่างเดียว"""
+    from lmds.fleet import discover, watchdog as wd
+
+    slugs = [slug] if slug else wd.armed_slugs()
+    if not slugs:
+        return []
+    servers = {s.slug: s for s in discover()}
+    return [(wd.load(s), servers.get(s), wd.service_state(s)) for s in slugs]
+
+
+def watchdog_status_json(slug: str = "", *, rows: list[tuple] | None = None) -> list[dict]:
+    """ก้อนของ `lmds watchdog status [slug] --json` — ที่เดียว · CLI พิมพ์ก้อนนี้ และเครื่องมือ MCP คืนก้อนนี้"""
+    from lmds.fleet import watchdog as wd
+
+    rows = _watchdog_rows(slug) if rows is None else rows
+    return [wd.report(state, info=info, service=service) for state, info, service in rows]
+
+
 @watchdog_app.command("status")
 def watchdog_status(
     slug: str = typer.Argument("", help="ว่าง = ทุกตัวที่เปิดไว้", autocompletion=_complete_slug),
@@ -6014,17 +6115,16 @@ def watchdog_status(
 
     ประวัติการ restart แบบเต็ม (พร้อมเวลาและเหตุผล) อยู่ใน `lmds audit` ที่เดียวกับคำสั่งของคน
     """
-    from lmds.fleet import discover, watchdog as wd
+    from lmds.fleet import watchdog as wd
 
-    slugs = [slug] if slug else wd.armed_slugs()
-    if not slugs:
-        console.print("ยังไม่มี watchdog ที่เปิดไว้บนเครื่องนี้ — เปิด: lmds watchdog arm <slug>")
-        return
-    servers = {s.slug: s for s in discover()}
-    rows = [(wd.load(s), servers.get(s), wd.service_state(s)) for s in slugs]
+    rows = _watchdog_rows(slug)
     if as_json:
-        print(json.dumps([wd.report(state, info=info, service=service) for state, info, service in rows],
-                         ensure_ascii=False))
+        # ไม่มีตัวไหนเปิด = `[]` — เดิมพิมพ์ประโยคภาษาคนออก stdout ทั้งที่ขอ --json ผู้เรียกที่ parse (hub ผ่าน SSH
+        # ให้เครื่องมือ MCP) ได้ JSONDecodeError จากเครื่องที่ปกติดีทุกอย่าง
+        print(json.dumps(watchdog_status_json(rows=rows), ensure_ascii=False))
+        return
+    if not rows:
+        console.print("ยังไม่มี watchdog ที่เปิดไว้บนเครื่องนี้ — เปิด: lmds watchdog arm <slug>")
         return
     for state, info, service in rows:
         console.print(f"[bold]{state.slug}[/bold]", markup=False, highlight=False)
@@ -6417,6 +6517,22 @@ def key_list() -> None:
     for slug, has in found.items():
         table.add_row(slug, "[green]มี[/green]" if has else "[red]ไฟล์ว่าง[/red]")
     console.print(table)
+
+
+@app.command("mcp")
+def mcp_server() -> None:
+    """MCP server (stdio) ให้ผู้ช่วย AI ถาม hub เรื่องโมเดลและเครื่อง — **อ่านอย่างเดียว** ไม่มีเครื่องมือไหนเปลี่ยนสถานะ
+
+    ไม่ได้รันเองในเทอร์มินัล: ผู้ช่วยเป็นคนเปิด process นี้แล้วคุยด้วย JSON-RPC ทาง stdin/stdout — ลงทะเบียนครั้งเดียว
+    บนเครื่อง hub:  claude mcp add lmds -- lmds mcp   (client อื่นและ hub ที่เป็น OrbStack VM: docs/MCP_SERVER.md)
+
+    คืน JSON ก้อนเดียวกับ `--json` ของคำสั่งนั้น ๆ (version · node list · agent info · inspect · plan --no-llm · fit ·
+    fleet check · watchdog status · logs · doctor) — ไม่ต้องแกะตารางที่ถูกตัดตามความกว้างจอ · process ถูกผนึกไม่ให้
+    เขียนไฟล์หรือสั่งคำสั่งที่เปลี่ยนสถานะ ทั้งบน hub และเครื่องอื่น (lmds/mcp/seal.py)
+    """
+    from lmds.mcp import serve
+
+    raise typer.Exit(code=serve())
 
 
 @app.command()

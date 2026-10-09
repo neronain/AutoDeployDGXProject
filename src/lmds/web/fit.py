@@ -66,19 +66,13 @@ def local_fit(slug: str, body: dict | None) -> dict:
     return out
 
 
-def node_fit(name: str, slug: str, body: dict | None) -> dict:
+def _run_on_node(name: str, argv: list[str]) -> dict:
+    """รัน `lmds fit/set --fit … --json` บนเครื่องนั้นแล้วคืน JSON ที่มันพิมพ์ — ไม่ตอบ/ไม่ใช่ JSON = FitUnavailable"""
     from lmds.nodes import NodeError, find, run
-    from lmds.web import state
 
-    slots, context, do_apply = _clean(body)
     node = find(name)
     if node is None:
         raise LookupError(f"ไม่รู้จักเครื่อง {name}")
-    argv = ["lmds", "set", slug, "--fit", "--json"] if do_apply else ["lmds", "fit", slug, "--json"]
-    if slots:
-        argv += ["--slots", str(slots)]
-    if context:
-        argv += ["--context", str(context)]
     try:
         result = run(node, " ".join(shlex.quote(a) for a in argv), timeout=180)
     except NodeError as exc:
@@ -99,12 +93,38 @@ def node_fit(name: str, slug: str, body: dict | None) -> dict:
     if payload.get("error"):
         # ไม่พอ / คำนวณไม่ได้ — ส่งตารางกลับไปด้วยถ้ามี ให้ผู้ใช้เห็นว่าทำไม
         raise FitUnavailable(payload["error"], payload.get("plan"))
+    return payload
+
+
+def _fit_flags(slots: int | None, context: int | None) -> list[str]:
+    return (["--slots", str(slots)] if slots else []) + (["--context", str(context)] if context else [])
+
+
+def node_preview(name: str, slug: str, slots: int | None = None, context: int | None = None,
+                 read_only: bool = False) -> dict:
+    """ตาราง Fit ของ bundle บนเครื่องอื่น — `lmds fit <slug> --json` บนเครื่องนั้นเท่านั้น · **ไม่มีทางเขียนอะไร**
+
+    แยกจาก node_fit โดยตั้งใจ: ผู้เรียกที่ต้องอ่านอย่างเดียว (เครื่องมือ MCP `lmds_fit`) ผูกกับฟังก์ชันนี้ ซึ่งประกอบ
+    ได้คำสั่งเดียวคือ `lmds fit` — ไม่มีพารามิเตอร์ไหนพาไปถึง `lmds set --fit` ได้ ต่างจาก node_fit ที่ body มี `apply`
+    read_only=True: นำหน้าด้วย `LMDS_READ_ONLY=1` ให้ `lmds` ปลายทางผนึกตัวเอง (ดู lmds/mcp/seal.py)
+    """
+    prefix = ["LMDS_READ_ONLY=1"] if read_only else []
+    payload = _run_on_node(name, [*prefix, "lmds", "fit", slug, "--json", *_fit_flags(slots, context)])
+    return payload.get("plan") if "plan" in payload else payload
+
+
+def node_fit(name: str, slug: str, body: dict | None) -> dict:
+    from lmds.web import state
+
+    slots, context, do_apply = _clean(body)
+    if not do_apply:
+        return {"node": name, "slug": slug, "plan": node_preview(name, slug, slots, context), "applied": False}
+    payload = _run_on_node(name, ["lmds", "set", slug, "--fit", "--json", *_fit_flags(slots, context)])
     plan = payload.get("plan") if "plan" in payload else payload
-    out = {"node": name, "slug": slug, "plan": plan, "applied": do_apply}
-    if do_apply:
-        out["saved"] = payload.get("saved") or {}
-        entry = (state.STORE.snapshot()["nodes"].get(name) or {}).get("data") or {}
-        running = next((m.get("running") for m in (entry.get("models") or []) if m.get("slug") == slug), None)
-        out["restart_needed"] = bool(running)
-        state.STORE.force(name)
+    out = {"node": name, "slug": slug, "plan": plan, "applied": True}
+    out["saved"] = payload.get("saved") or {}
+    entry = (state.STORE.snapshot()["nodes"].get(name) or {}).get("data") or {}
+    running = next((m.get("running") for m in (entry.get("models") or []) if m.get("slug") == slug), None)
+    out["restart_needed"] = bool(running)
+    state.STORE.force(name)
     return out

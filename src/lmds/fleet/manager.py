@@ -1472,22 +1472,31 @@ def register_bundle(controller: Path | str) -> Path:
     return meta
 
 
-def logs_text(info: ServerInfo, lines: int = 200) -> str:
+def logs_text(info: ServerInfo, lines: int = 200, timeout: float | None = None, direct: bool = False) -> str:
     """เหมือน logs_server แต่คืนข้อความแทนพิมพ์ออกจอ — ใช้กับ Web UI/สคริปต์
 
     controller พิมพ์ตรงไป stdout ของ terminal จึง capture ไม่ได้ผ่าน logs_server
+
+    timeout (วินาที · None = รอจนจบแบบเดิม): ผู้เรียกที่ไม่มีคนนั่งกด Ctrl-C ให้ (`lmds mcp` — ผู้ช่วย AI รอคำตอบ
+    อยู่ปลายท่อ) ต้องได้คำตอบเสมอ · `docker logs` ของ daemon ที่ค้างไม่มีวันจบเอง · stdin ปิดไว้ด้วยเหตุเดียวกัน:
+    ลูกที่รับ stdin ต่อจากเราจะกินข้อความ JSON-RPC ของ MCP ไป
+
+    direct=True: ไม่รัน controller — ไปที่แหล่งของ log ตรง ๆ (`docker logs --tail` / `server.log`) ซึ่งคือสิ่งที่
+    `<controller> logs N` ทำอยู่แล้ว · ผู้เรียกที่สัญญาว่าอ่านอย่างเดียวใช้ทางนี้ เพราะ controller เป็นสคริปต์ bash ที่ทำ
+    มากกว่าอ่าน: ตัวของ llama.cpp แบบ native ลบ `server.pid` ที่มันเห็นว่าค้างทุกครั้งที่ถูกเรียก ไม่ว่าด้วยคำสั่งไหน
     """
-    if info.controller_exists:
-        proc = subprocess.run(
-            [info.controller, "logs", str(lines)], capture_output=True, text=True
-        )
+    def run(argv: list[str]) -> str:
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                                  stdin=subprocess.DEVNULL, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise FleetError(f"อ่าน log ของ {info.slug} ไม่จบใน {timeout:g} วินาที ({argv[0]} ค้าง)") from None
         return (proc.stdout or "") + (proc.stderr or "")
+
+    if info.controller_exists and not direct:
+        return run([info.controller, "logs", str(lines)])
     if info.mode == "docker" and info.container:
-        proc = subprocess.run(
-            ["docker", "logs", "--tail", str(lines), info.container],
-            capture_output=True, text=True,
-        )
-        return (proc.stdout or "") + (proc.stderr or "")
+        return run(["docker", "logs", "--tail", str(lines), info.container])
     log_file = info.run_dir / "server.log" if info.run_dir else None
     if log_file and log_file.is_file():
         content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()

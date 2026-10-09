@@ -41,6 +41,7 @@ class Finding:
 class Diagnosis:
     slug: str
     findings: list[Finding] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
 
     @property
     def failed(self) -> list[Finding]:
@@ -53,6 +54,24 @@ class Diagnosis:
     @property
     def healthy(self) -> bool:
         return not self.failed
+
+    def payload(self) -> dict:
+        """ผลแบบเครื่องอ่าน — ก้อนเดียวกันทั้ง `lmds doctor --json` · GET /api/models/{slug}/doctor · เครื่องมือ MCP
+
+        `skipped` = ข้อที่รอบนี้ตั้งใจไม่ตรวจ (ดู `diagnose(probe=False)`) — ไม่มีคีย์นี้ = ตรวจครบทุกข้อ ·
+        ข้อที่ไม่ได้ตรวจต้องเห็นว่าไม่ได้ตรวจ ไม่ใช่หายไปเฉย ๆ แล้วถูกอ่านว่าผ่าน
+        """
+        out = {
+            "slug": self.slug,
+            "healthy": self.healthy,
+            "findings": [
+                {"name": f.name, "status": f.status.value, "detail": f.detail, "fix": f.fix}
+                for f in self.findings
+            ],
+        }
+        if self.skipped:
+            out["skipped"] = list(self.skipped)
+        return out
 
 
 def _run(args: list[str], timeout: int = 10) -> tuple[int, str]:
@@ -299,7 +318,8 @@ def llamacpp_arch_support(profile: dict, slug: str, server: ServerInfo | None = 
     }
 
 
-def _check_architecture_llamacpp(profile: dict, slug: str, server: ServerInfo | None = None) -> list[Finding]:
+def _check_architecture_llamacpp(profile: dict, slug: str, server: ServerInfo | None = None,
+                                 probe: bool = True) -> list[Finding]:
     """llama.cpp build/image ตัวที่โมเดลนี้ผูกไว้ รู้จักสถาปัตยกรรมของมันไหม
 
     เคสจริง 2026-08-13: Muse-Glimmer-30B ใช้ architecture `muse-glimmer` ซึ่ง
@@ -313,11 +333,18 @@ def _check_architecture_llamacpp(profile: dict, slug: str, server: ServerInfo | 
     2026-09-06 spark-worker (qwen4exp บน build 18 ส.ค.): คำแนะนำเดิม `git pull && cmake --build` ข้าม lock
     ของ controller — build ผ่านแล้ว prepare-runtime รอบถัดไปก็ย้อนกลับ · บอกทางที่ controller รู้จักแทน
     """
-    support = llamacpp_arch_support(profile, slug, server, probe_docker=True)
+    support = llamacpp_arch_support(profile, slug, server, probe_docker=probe)
     if support is None:
         return []
     architecture, runtime = support["arch"], support["runtime"]
     if support["supported"] is None:
+        if not probe and support["mode"] != "native":
+            # ไม่ได้ถาม image (ผู้เรียกขอแบบไม่รัน container) และยังไม่มีผลที่จดไว้ — ไม่ใช่ "ยังไม่ได้ pull"
+            return [Finding(
+                "architecture", Status.WARN,
+                f"ยังไม่ได้ถาม {runtime} ว่ารู้จักสถาปัตยกรรม '{architecture}' ไหม (รอบนี้ไม่รัน container)",
+                f"lmds doctor {slug}",
+            )]
         return [Finding(
             "architecture", Status.WARN,
             f"ตรวจไม่ได้ว่า {runtime} รู้จักสถาปัตยกรรม '{architecture}' ไหม"
@@ -397,14 +424,20 @@ def _check_llamacpp_grammar(profile: dict, slug: str) -> list[Finding]:
     )]
 
 
-def _check_architecture(profile: dict, server: ServerInfo, slug: str) -> list[Finding]:
-    """รันไทม์ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม"""
+def _check_architecture(profile: dict, server: ServerInfo, slug: str, probe: bool = True) -> list[Finding] | None:
+    """รันไทม์ตัวนี้รู้จักสถาปัตยกรรมของ checkpoint นี้ไหม
+
+    probe=False: ไม่ `docker run` (และไม่จดผลลงดิสก์) — llama.cpp ตอบจากไฟล์บนเครื่อง/ผลที่ doctor รอบก่อนจดไว้ ·
+    vLLM/SGLang ถามได้ทางเดียวคือรัน image จึงคืน None = "ข้อนี้ไม่ได้ตรวจ" ให้ผู้เรียกรายงานว่าข้าม
+    """
     if (profile.get("runtime") or {}).get("engine") == "llamacpp":
-        return _check_architecture_llamacpp(profile, slug, server)
+        return _check_architecture_llamacpp(profile, slug, server, probe)
     image = (profile.get("runtime") or {}).get("image") or ""
     model_type = _model_type(profile, slug)
     if server.mode == "native" or not image or not model_type or shutil.which("docker") is None:
         return []
+    if not probe:
+        return None
     # image ที่ยังไม่ได้ pull — _check_image บอกไปแล้ว ไม่ต้องดึง 20 GB มาเพื่อถาม
     if _run(["docker", "image", "inspect", image])[0] != 0:
         return []
@@ -1106,8 +1139,13 @@ def _check_open_endpoint(server: ServerInfo) -> list[Finding]:
     )]
 
 
-def diagnose(slug: str) -> Diagnosis:
-    """ตรวจทุกข้อของ slug เดียว — ไม่แก้อะไรให้เอง แค่บอกสาเหตุกับคำสั่ง"""
+def diagnose(slug: str, probe: bool = True) -> Diagnosis:
+    """ตรวจทุกข้อของ slug เดียว — ไม่แก้อะไรให้เอง แค่บอกสาเหตุกับคำสั่ง
+
+    probe=False (`lmds doctor --no-probe` · เครื่องมือ MCP): ข้อ "architecture" ไม่รัน container ชั่วคราวของ image
+    ไปถาม และไม่จดผลลง `run/<slug>/runtime-arch.json` — ที่เหลือตรวจเหมือนเดิมทุกข้อ · ข้อที่ข้ามอยู่ใน `skipped`
+    เหตุ: ผู้ถามที่สัญญาว่า "อ่านอย่างเดียว" ต้องไม่สร้าง container และไม่เขียนไฟล์ แม้จะเป็นของชั่วคราวก็ตาม
+    """
     server = find(slug)
     if server is None:
         return Diagnosis(slug, [Finding(
@@ -1133,7 +1171,11 @@ def diagnose(slug: str) -> Diagnosis:
         result.findings.extend(_check_disk(profile, slug))
         result.findings.extend(_check_docker(profile, server))
         result.findings.extend(_check_image(profile, server))
-        result.findings.extend(_check_architecture(profile, server, slug))
+        architecture = _check_architecture(profile, server, slug, probe)
+        if architecture is None:
+            result.skipped.append("architecture")
+        else:
+            result.findings.extend(architecture)
         result.findings.extend(_check_llamacpp_grammar(profile, slug))
 
     result.findings.extend(_check_port(server))

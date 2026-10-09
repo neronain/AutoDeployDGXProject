@@ -379,9 +379,13 @@ def _json_object(output: str) -> dict | None:
     return None
 
 
-def probe(node: Node, timeout: int = 30) -> dict:
-    """ดึงภาพรวมของ node ผ่าน `lmds agent info` — node ไม่ต้องรัน daemon อะไรเลย"""
-    result = run(node, "lmds agent info", timeout=timeout)
+def probe(node: Node, timeout: int = 30, read_only: bool = False) -> dict:
+    """ดึงภาพรวมของ node ผ่าน `lmds agent info` — node ไม่ต้องรัน daemon อะไรเลย
+
+    read_only=True (เครื่องมือ MCP ของ hub — `lmds mcp`): ส่งเป็น `LMDS_READ_ONLY=1 lmds agent info` · `lmds` บนเครื่องนั้น
+    ที่รู้จักตัวแปรนี้ผนึก process ของตัวเองก่อนตอบ (ไม่เขียน usage.samples ไม่เก็บกวาดทะเบียน) · รุ่นเก่ากว่าตอบตามเดิม
+    """
+    result = run(node, "LMDS_READ_ONLY=1 lmds agent info" if read_only else "lmds agent info", timeout=timeout)
     if not result.ok:
         stderr = (result.stderr or result.stdout).strip()
         # แยกสามอย่างที่ต่างกันคนละเรื่อง — บอกผิดแล้วผู้ใช้ไปแก้ผิดที่
