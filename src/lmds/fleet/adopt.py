@@ -1259,6 +1259,50 @@ def _load_key_block(slug: str, names: list[str]) -> str:
     ).format(slug=slug, loop=loop)
 
 
+def _ask_block(slug: str, names: list[str]) -> str:
+    """api_curl + api_state: ทุกคำถามที่สคริปต์ถาม server ของตัวเอง แนบ key ตัวเดียวกับที่ start ส่งให้
+
+    เคสจริง AI-Local-ISIT 2026-10-10: adopt container ของ Strata ที่รันด้วย `-e API_KEY=…` · server
+    ตอบ /health 200 และตอบคำขอที่มี key ปกติ แต่ `status` พิมพ์ "api: ยังไม่ตอบ" เพราะ status /
+    test-text / client-config ยิง /v1/models เปล่า ๆ ได้ 401 ทุกครั้ง ทั้งที่ load_api_key ของไฟล์
+    เดียวกันรู้จัก key ตัวนั้นอยู่แล้ว · test-text ล้มกับ server ที่ดีอยู่ และ client-config ตกไปใช้
+    slug เป็นชื่อโมเดล (client เอาไปเรียกได้ 404) · vLLM/SGLang ที่ตั้ง --api-key เป็นแบบเดียวกัน —
+    ที่ไม่เคยเห็นเพราะ llama.cpp เปิด /v1/models สาธารณะเสมอ (ดู doctor/checks.py)
+
+    names ว่าง = ไม่รู้ว่า engine อ่าน key จากไหน จึงไม่แนบอะไร (และไม่แนบของที่บังเอิญอยู่ในที่เก็บ)
+    """
+    if names:
+        loop = " ".join(shlex.quote(n) for n in names)
+        ask = (
+            "api_curl() {{\n"
+            "  load_api_key\n"
+            '  local name key=""\n'
+            '  for name in {loop}; do key="${{!name:-}}"; [[ -z "$key" ]] || break; done\n'
+            '  if [[ -n "$key" ]]; then curl -H "Authorization: Bearer ${{key}}" "$@"; else curl "$@"; fi\n'
+            "}}\n"
+        ).format(loop=loop)
+        refused = f"ไม่รับ key ที่ LMDS เก็บไว้ (HTTP ${{code}}) — ตั้งให้ตรงกับของ server: lmds key set {slug}"
+    else:
+        ask = 'api_curl() { curl "$@"; }\n'
+        refused = "ต้องใช้ key (HTTP ${code}) — LMDS ไม่รู้ว่า engine นี้อ่าน key จากไหน จึงถามแทนไม่ได้"
+    # "ไม่ตอบ" กับ "ตอบแต่ไม่รับ key" แก้กันคนละที่ (restart กับตั้ง key) — รวมเป็นคำเดียวคือส่งคนไปผิดทาง
+    return (
+        "# คำถามที่สคริปต์นี้ถาม server ของตัวเอง (status · test-text · client-config) แนบ key ตัวเดียวกับที่\n"
+        "# start ส่งให้ — ถามเปล่า ๆ กับ server ที่บังคับ key ได้ 401 แล้วรายงานว่า \"ยังไม่ตอบ\" ทั้งที่มันตอบอยู่\n"
+        + ask +
+        "api_state() {\n"
+        "  local code\n"
+        "  code=\"$(api_curl -s -o /dev/null -m 5 -w '%{http_code}' \"http://127.0.0.1:${API_PORT}/v1/models\" 2>/dev/null || true)\"\n"
+        '  case "$code" in\n'
+        '    200)     echo "api: ตอบปกติ" ;;\n'
+        f'    401|403) echo "api: ตอบอยู่ แต่{refused}" ;;\n'
+        '    ""|000)  echo "api: ยังไม่ตอบ" ;;\n'
+        '    *)       echo "api: ตอบ HTTP ${code} ที่ /v1/models" ;;\n'
+        "  esac\n"
+        "}\n"
+    )
+
+
 def _gpus_value(adopted: Adopted) -> tuple[str, list[str]]:
     """ค่าของ `--gpus` ("" = ไม่ใส่) + สิ่งที่แทนไม่ได้
 
@@ -1419,7 +1463,7 @@ def render_controller(adopted: Adopted, slug: str, notes: list[str] | None = Non
     arg_words, arg_secrets = render_args(list(adopted.args))
     key_names = [n for n in redacted if _API_KEY_ENV.search(n)]
     key_names += [s.var for s in arg_secrets if s.is_api_key and s.var not in key_names]
-    load_key = _load_key_block(slug, key_names)
+    load_key = _load_key_block(slug, key_names) + _ask_block(slug, key_names)
     secret_guard = _secret_guard(slug, arg_secrets)
     bind_lines = "".join(f'  --volume {shlex.quote(b)} \\\n' for b in adopted.binds)
     port_lines = _publish_lines(adopted.ports)
@@ -1489,7 +1533,7 @@ die() {{ echo "ERROR: $*" >&2; exit 1; }}
 # regex แบบ greedy จะคว้าตัวสุดท้ายมา แล้วขอ completion ด้วยชื่อที่ server ไม่รู้จัก → 404
 served_model() {{
   local body
-  body="$(curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models")" || return 1
+  body="$(api_curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models")" || return 1
   if command -v python3 >/dev/null 2>&1; then
     printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
   else
@@ -1549,8 +1593,7 @@ restart() {{ stop; start; }}
 
 status() {{
   docker ps -a --filter "name=^${{CONTAINER_NAME}}$" --format 'container: {{{{.Names}}}} · {{{{.Status}}}}'
-  curl -fsS -m 5 "http://127.0.0.1:${{API_PORT}}/v1/models" >/dev/null 2>&1 \\
-    && echo "api: ตอบปกติ" || echo "api: ยังไม่ตอบ"
+  api_state
   echo "weights: "{weights_label}"  (lmds remove {slug} ลบด้วย — ดู: $0 remove-plan)"
 }}
 
@@ -1559,7 +1602,7 @@ logs() {{ docker logs --tail "${{1:-300}}" "${{CONTAINER_NAME}}"; }}
 test_text() {{
   local served
   served="$(served_model)" || die "เรียก /v1/models ไม่ได้ — server ขึ้นหรือยัง? ดู: $0 logs"
-  curl -fsS "http://127.0.0.1:${{API_PORT}}/v1/chat/completions" \\
+  api_curl -fsS "http://127.0.0.1:${{API_PORT}}/v1/chat/completions" \\
     -H "Content-Type: application/json" \\
     -d "{{\\"model\\": \\"$served\\", \\"messages\\": [{{\\"role\\": \\"user\\", \\"content\\": \\"ตอบสั้น ๆ: 2+2 เท่ากับเท่าไร\\"}}], \\"max_tokens\\": 256}}" \\
     || die "เรียก /v1/chat/completions ไม่สำเร็จ — ดู: $0 logs"
@@ -1885,7 +1928,7 @@ def render_native_controller(proc: AdoptedProcess, slug: str) -> str:
     argv = " \\\n    ".join(arg_words)
     key_names = [s.var for s in arg_secrets if s.is_api_key]
     # ไม่มี key บน argv = สคริปต์เหมือนเดิมทุกบรรทัด (ไม่มี load_api_key ให้ doctor เข้าใจผิดว่า `lmds key` คุมอยู่)
-    load_key = (_load_key_block(slug, key_names) + "\n") if key_names else ""
+    load_key = (_load_key_block(slug, key_names) if key_names else "") + _ask_block(slug, key_names) + "\n"
     secret_guard = ("  load_api_key\n" if key_names else "") + _secret_guard(slug, arg_secrets)
     secret_note = (
         "# ค่าของ " + _one_line(" ".join(dict.fromkeys(s.label for s in arg_secrets)))
@@ -1941,7 +1984,7 @@ server_alive() {{ [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/nu
 
 served_model() {{
   local body
-  body="$(curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models")" || return 1
+  body="$(api_curl -fsS -m 10 "http://127.0.0.1:${{API_PORT}}/v1/models")" || return 1
   printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
 }}
 
@@ -2027,8 +2070,7 @@ status() {{
   echo "model:     {model_or_slug}"
   echo "weights:   "{weights_label}"  (lmds remove {slug} ลบด้วย — ดู: $0 remove-plan)"
   if server_alive; then echo "process: running (PID $(cat "$PID_FILE"))"; else echo "process: stopped"; fi
-  curl -fsS -m 5 "http://127.0.0.1:${{API_PORT}}/v1/models" >/dev/null 2>&1 \\
-    && echo "api: ตอบปกติ" || echo "api: ยังไม่ตอบ"
+  api_state
   if [[ -n "$OWNING_UNIT" ]] && systemctl is-active --quiet "$OWNING_UNIT" 2>/dev/null; then
     echo "หมายเหตุ: ${{OWNING_UNIT}} ยังรันอยู่ — ตัวที่ตอบอาจเป็นของ unit นั้น ไม่ใช่ของ LMDS"
   fi
@@ -2040,7 +2082,7 @@ logs() {{ tail -n "${{1:-300}}" "$LOG_FILE" 2>/dev/null || echo "ยังไม
 test_text() {{
   local served
   served="$(served_model)" || die "เรียก /v1/models ไม่ได้ — server ขึ้นหรือยัง? ดู: $0 logs"
-  curl -fsS "http://127.0.0.1:${{API_PORT}}/v1/chat/completions" \\
+  api_curl -fsS "http://127.0.0.1:${{API_PORT}}/v1/chat/completions" \\
     -H "Content-Type: application/json" \\
     -d "{{\\"model\\": \\"$served\\", \\"messages\\": [{{\\"role\\": \\"user\\", \\"content\\": \\"ตอบสั้น ๆ: 2+2 เท่ากับเท่าไร\\"}}], \\"max_tokens\\": 256}}" \\
     || die "เรียก /v1/chat/completions ไม่สำเร็จ — ดู: $0 logs"

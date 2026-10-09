@@ -7,6 +7,13 @@
 
 ### แก้
 
+- **controller ที่ adopt มารายงาน `api: ยังไม่ตอบ` กับ server ที่บังคับ API key ทั้งที่มันตอบอยู่** (AI-Local-ISIT 2026-10-10 ·
+  adopt container ของ Strata ที่รันด้วย `-e API_KEY=…`) · `status` / `test-text` / `client-config` ถาม `/v1/models` เปล่า ๆ
+  ได้ 401 ทุกครั้ง ทั้งที่ `start` ของไฟล์เดียวกันรู้จัก key ตัวนั้น — `test-text` ล้มกับ server ที่ดีอยู่ และ `client-config`
+  ตกไปใช้ slug เป็นชื่อโมเดล · vLLM/SGLang ที่ตั้ง `--api-key` เป็นแบบเดียวกัน (llama.cpp ไม่เป็นเพราะเปิด `/v1/models` สาธารณะ)
+  - ทุกคำถามที่สคริปต์ถาม server ของตัวเองแนบ key จาก `~/.lmds/keys/<slug>` (ทั้งทาง container และ native)
+  - `status` แยก "ยังไม่ตอบ" ออกจาก "ตอบอยู่ แต่ไม่รับ key ที่ LMDS เก็บไว้ (HTTP 401)" — แก้กันคนละที่
+  - **bundle ที่ adopt ไว้ก่อนหน้านี้ยังเป็นสคริปต์เดิม** — สั่ง `lmds adopt <container> --slug <ชื่อเดิม>` ซ้ำเพื่อสร้างใหม่ (ของที่รันอยู่ไม่ถูกแตะ)
 - **ปุ่ม Update บนหน้าเว็บล้ม `There is no tracking information for the current branch`** (ลูกค้า 2026-10-09 · บางเครื่อง)
   ดึงโค้ดมาได้แล้วแต่ exit 1 · เครื่องที่ติดตั้งครั้งแรกจากโค้ดที่ hub ส่งมา (git bundle) ได้ branch `main` ที่ไม่มี upstream
   (`git checkout -B main HEAD`) แล้ว `git pull --ff-only` เปล่า ๆ ไม่รู้ว่าจะตาม branch ไหน — เครื่องที่ clone จาก GitHub ตรง ๆ ไม่เป็น
