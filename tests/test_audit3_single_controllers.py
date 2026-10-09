@@ -90,6 +90,29 @@ def test_the_probe_url_is_built_from_the_bind_address(box, kind, bind, host):
     assert f"curl http://{host}:18123/health" in box.calls(), box.calls()
 
 
+_TIMEOUT_EXPIRES = 'echo "timeout $*" >> "$FAKE_LOG"; exit 124\n'
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_the_port_check_of_a_bind_address_has_a_deadline(box, kind):
+    """`/dev/tcp/<ip>/<port>` ของ bash ไม่มีเพดานเวลา: ที่อยู่ที่ทิ้ง SYN เงียบ ๆ ค้างจน kernel เลิกลอง (~2 นาที)
+
+    เคสจริง 2026-10-06 → 2026-10-09: CI บน main แดง 5 commit ติด เพราะเทสข้างบนข้อ `10.1.1.1` หมดเวลา
+    (subprocess.TimeoutExpired) บน runner ที่บังเอิญอยู่ในวง 10.1.x.x ซึ่งไม่ตอบ SYN ไป 10.1.1.1 — runner อื่นตอบ
+    "ไปไม่ถึง" ทันทีจึงผ่าน · เครื่องจริงเจอแบบเดียวกันเมื่อ `--bind` ชี้ IP ของการ์ดที่สายหลุด/ย้ายวง:
+    `status` เงียบไป 2 นาทีต่อการถามหนึ่งครั้ง · ที่นี่ `timeout` เป็นตัวปลอมที่ "หมดเวลา" ทันที —
+    ดูว่า controller ถามพอร์ตผ่านมันด้วยเพดานไม่กี่วินาที และ status ยังจบพร้อมคำตอบ
+    """
+    write_exe(box.bin / "curl", _LOG_CURL)
+    write_exe(box.bin / "timeout", _TIMEOUT_EXPIRES)
+    done = box.run("status", "--bind", "10.1.1.1", "--port", "18123")
+    asked = [line.split() for line in box.calls().splitlines()
+             if line.startswith("timeout ") and "/dev/tcp" in line and line.endswith("10.1.1.1 18123")]
+    assert asked, f"ถามพอร์ตโดยไม่มีเพดานเวลา:\n{box.calls()}\n{done.stdout}{done.stderr}"
+    assert all(0 < float(words[1]) <= 5 for words in asked), asked
+    assert "healthy" not in done.stdout, done.stdout
+
+
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_advertised_endpoint_follows_a_specific_bind(box, kind):
     """ผูก IP เฉพาะแล้ว Endpoint/base_url ที่พิมพ์ให้ client ต้องเป็น IP นั้น — IP ที่เดาจาก default route อาจเป็นการ์ดอื่น

@@ -106,6 +106,8 @@ def test_the_port_in_use_message_names_the_bundle_and_the_model_holding_the_port
         declared.group(0) if declared else "",
         f"API_PORT={held_port}",
         'die() { echo "ERROR: $*" >&2; exit 9; }',
+        # controller เดี่ยวถามพอร์ตผ่าน _tcp_open (เพดานเวลา) — stacked ถามแค่ 127.0.0.1 จึงไม่มีตัวนี้
+        _extract(text, "_tcp_open") if "_tcp_open() {" in text else "",
         _extract(text, "check_port_free"),
         "check_port_free",
         "echo GUARD_PASSED",

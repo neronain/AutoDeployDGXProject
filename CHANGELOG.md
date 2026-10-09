@@ -32,6 +32,10 @@
 
 ### แก้
 
+- **`status` / `start` ที่ `--bind <IP>` ค้าง ~2 นาทีเมื่อ IP นั้นไม่ตอบ** (CI บน main แดง 5 commit ติด 2026-10-06 → 10-09) ·
+  controller ของ vLLM / SGLang / llama.cpp ถามพอร์ตด้วย `/dev/tcp` ของ bash ซึ่งไม่มีเพดานเวลา — ที่อยู่ที่ทิ้ง SYN เงียบ ๆ
+  (การ์ดที่สายหลุด · IP ที่ย้ายวง · runner ของ CI ที่อยู่ในวง 10.1.x.x) ค้างจน kernel เลิกลอง · ตอนนี้ถามผ่าน `timeout 3`
+  (วัดบน hub: พอร์ตที่ฟังอยู่ตอบ 0 · พอร์ตปิดตอบ 1 ทันที · ที่อยู่ที่ไม่ตอบจบใน 3 วินาที จากเดิมค้างเกิน 20 วินาที)
 - **controller ที่ adopt มารายงาน `api: ยังไม่ตอบ` กับ server ที่บังคับ API key ทั้งที่มันตอบอยู่** (AI-Local-ISIT 2026-10-10 ·
   adopt container ของ Strata ที่รันด้วย `-e API_KEY=…`) · `status` / `test-text` / `client-config` ถาม `/v1/models` เปล่า ๆ
   ได้ 401 ทุกครั้ง ทั้งที่ `start` ของไฟล์เดียวกันรู้จัก key ตัวนั้น — `test-text` ล้มกับ server ที่ดีอยู่ และ `client-config`

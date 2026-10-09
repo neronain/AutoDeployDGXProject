@@ -54,7 +54,9 @@ def _extract(text: str, name: str) -> str:
 
 
 def _run_guard(tmp_path, port: int) -> subprocess.CompletedProcess:
-    body = _extract(_controller(tmp_path), "check_port_free")
+    # check_port_free ถามพอร์ตผ่าน _tcp_open (เพดานเวลา) — ตัดมาด้วย ไม่งั้น "command not found" ถูกอ่านเป็น "พอร์ตว่าง"
+    text = _controller(tmp_path)
+    body = _extract(text, "_tcp_open") + "\n" + _extract(text, "check_port_free")
     harness = textwrap.dedent(f"""
         set -euo pipefail
         API_PORT={port}
@@ -125,7 +127,8 @@ def test_vllm_start_refuses_a_port_another_server_already_owns(tmp_path):
     """เคสจริง 2026-09-09 dgx-spark03: start Nemotron ทับ embedding ที่ยึด :8000 อยู่ → wait_health ยิง /health
     แล้ว *ตัวที่ยึดอยู่* ตอบ 200 ให้ → controller รายงาน "started" ใน 17 วินาที ทั้งที่โมเดลไม่ได้ขึ้นเลย
     (ฝั่ง llama.cpp มีด่านนี้มาตั้งแต่ 2026-08-13 — vLLM/SGLang/stacked เพิ่งมี)"""
-    body = _extract(_vllm_controller(tmp_path), "check_port_free")
+    text = _vllm_controller(tmp_path)
+    body = _extract(text, "_tcp_open") + "\n" + _extract(text, "check_port_free")
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen(1)

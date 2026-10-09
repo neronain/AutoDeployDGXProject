@@ -243,7 +243,19 @@ for item in data or []:
   return 0
 }
 
-_port_is_open() { (exec 3<>"/dev/tcp/${LOCAL_API_HOST//[][]/}/${API_PORT}") 2>/dev/null; }
+# ถามว่ามีใครฟังพอร์ตนี้ไหม ด้วยเพดานเวลา — `/dev/tcp` ของ bash ไม่มีเพดานของตัวเอง: ที่อยู่ที่ทิ้ง SYN เงียบ ๆ
+# ค้างจน kernel เลิกลอง (~2 นาที) ต่อการถามหนึ่งครั้ง · เคสจริง 2026-10-06 → 10-09: CI บน main แดง 5 commit ติดเพราะ
+# `status --bind 10.1.1.1` ค้างบน runner ที่อยู่ในวง 10.1.x.x · เครื่องจริงเจอเมื่อ --bind ชี้ IP ของการ์ดที่สายหลุด
+# ไม่มี `timeout` (macOS ที่ไม่ได้ลง coreutils) = ถามแบบเดิม
+_tcp_open() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 3 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$1" "$2" 2>/dev/null
+  else
+    (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
+  fi
+}
+
+_port_is_open() { _tcp_open "${LOCAL_API_HOST//[][]/}" "${API_PORT}"; }
 
 _api_verdict() {
   local alive health="" name meta_name=""
@@ -799,7 +811,7 @@ check_port_free() {
   # ถามที่อยู่เดียวกับที่ engine จะผูก (--bind IP เฉพาะ: คนที่ฟัง 127.0.0.1 อยู่ไม่ได้ชนกับเรา และกลับกัน) ·
   # ค่าตั้งต้นตรงนี้จำเป็น: ตัวแปรที่ไม่ถูกตั้งใน subshell ข้างล่างจะกลายเป็น "ต่อไม่ติด = port ว่าง" เงียบ ๆ
   local probe_host="${LOCAL_API_HOST:-127.0.0.1}"
-  if ! (exec 3<>"/dev/tcp/${probe_host//[][]/}/${API_PORT}") 2>/dev/null; then
+  if ! _tcp_open "${probe_host//[][]/}" "${API_PORT}"; then
     return 0
   fi
   holder="$(ss -ltnp 2>/dev/null | grep ":${API_PORT} " | head -1 || true)"
