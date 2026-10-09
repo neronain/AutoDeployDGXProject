@@ -35,6 +35,23 @@ def fresh_jobs():
 
 
 @pytest.fixture(autouse=True)
+def a_machine_that_serves(monkeypatch):
+    """ไฟล์นี้เทสปุ่ม download/start ของเครื่องที่รันโมเดลเอง — บอกบทบาทไว้ตรงนี้ ไม่พึ่งเทสไฟล์อื่น
+
+    `serving._detect` เป็น lru_cache ทั้ง process · เครื่อง dev (ไม่มี GPU) ถูกตรวจเป็น control plane แล้ว
+    POST download ตอบ 409 "เครื่องนี้เป็น control plane" ก่อนถึงโค้ดที่เทสดู — เคสจริง 2026-10-10: รันไฟล์นี้เดี่ยว ๆ
+    ล้ม 5 ข้อ (ทั้งบน 6b0d220) ทั้งที่รันทั้งชุดเรียงตามชื่อผ่าน เพราะเทสไฟล์อื่นที่รันก่อนทิ้งผล LMDS_ROLE=serving
+    ไว้ในแคช · แบ่งกองรันขนานแบบอื่นแล้วล้ม · แบบเดียวกับ test_fleet (2026-10-06) และ test_doctor
+    """
+    from lmds.hardware import serving
+
+    monkeypatch.setenv("LMDS_ROLE", "serving")
+    serving.reset_cache()
+    yield
+    serving.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def no_host_scan(monkeypatch):
     monkeypatch.setattr("lmds.fleet.manager._pgrep_llama", lambda: [])
     monkeypatch.setattr("lmds.fleet.manager._orphan_docker", lambda known: [])
