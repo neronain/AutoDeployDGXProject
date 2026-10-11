@@ -224,6 +224,33 @@ def test_health_fleet_endpoint_covers_nodes_too(fleet):
     assert data["nodes"]["spark-worker"]["error"] == "ต่อไม่ได้"
 
 
+def test_usage_endpoint_reads_the_cached_models(fleet):
+    from lmds.web import state
+
+    state.STORE.set_local({"host": {}, "models": [
+        {"slug": "demo", "usage": {"requests_24h": 5, "prompt_tokens_24h": 100, "generated_tokens_24h": 40}},
+    ]})
+    data = TestClient(create_app()).get("/api/usage").json()
+    assert data["models"][0]["slug"] == "demo"
+    assert data["models"][0]["requests_24h"] == 5
+
+
+def test_usage_fleet_endpoint_sums_across_nodes(fleet):
+    from lmds.nodes import Node, add
+    from lmds.web import state
+
+    add(Node(name="spark-worker", host="10.0.0.9", user="ops"))
+    state.STORE.set_local({"host": {}, "models": [
+        {"slug": "a", "usage": {"requests_24h": 5, "prompt_tokens_24h": 100, "generated_tokens_24h": 40}},
+    ]})
+    state.STORE.set_node("spark-worker", {"host": {}, "models": [
+        {"slug": "b", "usage": {"requests_24h": 3, "prompt_tokens_24h": 60, "generated_tokens_24h": 20}},
+    ]})
+    data = TestClient(create_app()).get("/api/usage/fleet").json()
+    assert data["fleet_total"] == {"requests_24h": 8, "prompt_tokens_24h": 160,
+                                    "generated_tokens_24h": 60, "models_counted": 2}
+
+
 def test_metrics_endpoint_is_prometheus_text(fleet):
     from lmds.web import state
 
@@ -238,7 +265,7 @@ def test_token_guards_every_api_route(fleet):
     """หน้านี้สั่ง start/stop ได้ — ตั้ง token แล้วต้องกันได้ทุกเส้นทาง ไม่ใช่แค่บางอัน"""
     client = TestClient(create_app(token="s3cret"))
     for path in ("/api/host", "/api/models", f"/api/models/{fleet}/doctor", f"/api/models/{fleet}/logs",
-                 "/api/health", "/api/health/fleet", "/metrics"):
+                 "/api/health", "/api/health/fleet", "/api/usage", "/api/usage/fleet", "/metrics"):
         assert client.get(path).status_code == 401, path
     assert client.post(f"/api/models/{fleet}/start").status_code == 401
 

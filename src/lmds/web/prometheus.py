@@ -33,6 +33,11 @@ METRIC_FAMILIES: list[tuple[str, str, str]] = [
     ("lmds_model_running", "gauge", "1 ถ้าโมเดลนี้กำลังรันอยู่"),
     ("lmds_model_healthy", "gauge", "1 ถ้า health check ของโมเดลนี้ผ่าน"),
     ("lmds_health_finding", "gauge", "1 ต่อ health finding ที่กำลัง active (ดู /api/health/fleet)"),
+    # ค่าหน้าต่าง 24 ชม. จาก inventory.request_usage() — ไม่ใช่ counter สะสมตลอดชีพของ Prometheus
+    # (รีสตาร์ตโมเดล/วัดจาก docker log ใหม่ทุกครั้ง ค่าจึงไม่ใช่เส้นปีนขึ้นตลอด) · None = ยังไม่มีข้อมูล ไม่ใช่ 0
+    ("lmds_model_requests_24h", "gauge", "จำนวนคำขอใน 24 ชม.ที่ผ่านมา (ดู /api/usage)"),
+    ("lmds_model_prompt_tokens_24h", "gauge", "token ขาเข้าใน 24 ชม.ที่ผ่านมา"),
+    ("lmds_model_generated_tokens_24h", "gauge", "token ที่สร้างออกมาใน 24 ชม.ที่ผ่านมา"),
 ]
 
 
@@ -107,6 +112,10 @@ def _write_entry(w: _Writer, node: str, entry: dict) -> None:
         labels = {"node": node, "slug": model.get("slug") or ""}
         w.emit("lmds_model_running", bool(model.get("running")), labels)
         w.emit("lmds_model_healthy", bool(model.get("healthy")), labels)
+        usage = model.get("usage") or {}
+        w.emit("lmds_model_requests_24h", usage.get("requests_24h"), labels)
+        w.emit("lmds_model_prompt_tokens_24h", usage.get("prompt_tokens_24h"), labels)
+        w.emit("lmds_model_generated_tokens_24h", usage.get("generated_tokens_24h"), labels)
 
     from lmds.hardware.health import evaluate_host
 

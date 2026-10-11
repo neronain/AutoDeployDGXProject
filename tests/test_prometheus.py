@@ -30,7 +30,8 @@ def test_local_host_reports_gpu_ram_disk_in_bytes():
                 "ram_used_gb": 32.0, "ram_total_gb": 128.0,
                 "disk_free_gb": 100.0, "disk_total_gb": 500.0,
             },
-            "models": [{"slug": "demo", "running": True, "healthy": False}],
+            "models": [{"slug": "demo", "running": True, "healthy": False,
+                        "usage": {"requests_24h": 42, "prompt_tokens_24h": 9001, "generated_tokens_24h": 777}}],
         },
         "error": "", "age_seconds": 1.2, "stale": False,
     }
@@ -46,9 +47,24 @@ def test_local_host_reports_gpu_ram_disk_in_bytes():
     assert f'lmds_host_ram_total_bytes{{node="Autodeploy"}} {128.0 * 1024**3!r}' in text
     assert 'lmds_model_running{node="Autodeploy",slug="demo"} 1' in text
     assert 'lmds_model_healthy{node="Autodeploy",slug="demo"} 0' in text
+    assert 'lmds_model_requests_24h{node="Autodeploy",slug="demo"} 42' in text
+    assert 'lmds_model_prompt_tokens_24h{node="Autodeploy",slug="demo"} 9001' in text
+    assert 'lmds_model_generated_tokens_24h{node="Autodeploy",slug="demo"} 777' in text
     assert 'lmds_gpu_temperature_celsius{node="spark-worker",gpu="0",name="GB10"} 50' in text
     # มี HELP/TYPE ครั้งเดียวต่อ family แม้มีหลาย node ใช้ metric เดียวกัน
     assert text.count("# TYPE lmds_gpu_temperature_celsius") == 1
+
+
+def test_model_without_usage_data_omits_usage_series_entirely():
+    """โมเดลที่ไม่ได้รัน: usage เป็น None (ดู inventory.request_usage) — ต้องไม่โผล่เป็น 0"""
+    entry = {
+        "data": {"host": {}, "models": [{"slug": "idle", "running": False, "healthy": False, "usage": None}]},
+        "error": "", "age_seconds": 0.0, "stale": False,
+    }
+    text = render(_snapshot(host_entry=entry))
+    assert 'lmds_model_running{node="local",slug="idle"} 0' in text
+    assert "lmds_model_requests_24h" not in text
+    assert "lmds_model_prompt_tokens_24h" not in text
 
 
 def test_gpu_fields_the_card_does_not_report_are_omitted_not_zero():

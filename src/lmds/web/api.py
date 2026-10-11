@@ -580,6 +580,18 @@ def create_app(token: str = "") -> FastAPI:
 
         return health.fleet_findings()
 
+    @app.get("/api/usage", dependencies=guarded)
+    def usage_local() -> dict:
+        from lmds.web import usage
+
+        return usage.local_usage()
+
+    @app.get("/api/usage/fleet", dependencies=guarded)
+    def usage_fleet() -> dict:
+        from lmds.web import usage
+
+        return usage.fleet_usage()
+
     @app.get("/metrics", dependencies=guarded)
     def metrics() -> PlainTextResponse:
         from lmds.web import prometheus

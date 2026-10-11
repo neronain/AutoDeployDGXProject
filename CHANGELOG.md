@@ -7,6 +7,15 @@
 
 ### เพิ่ม
 
+- **`GET /api/usage` + `GET /api/usage/fleet` — token/request usage รวมทั้งฟลีต** (2026-10-12 · อีกไอเดียจาก
+  sparkDash's token ledger — แต่ของจริงมีอยู่แล้ว: `inventory.request_usage()` แปะ `usage` (requests/prompt/
+  generated tokens ใน 24 ชม.) ไว้ในทุก model dict อยู่แล้วทั้งเครื่องนี้และทุก node ผ่าน `lmds agent info` — งานนี้
+  แค่รวมยอดจากของที่แคชไว้แล้ว ไม่ได้เก็บอะไรใหม่เลย ไม่ยิง SSH เพิ่ม)
+  - `web/usage.py` — `fleet_usage()` รวมยอดทั้งฟลีตแยกฟิลด์ (โมเดลที่มีแต่ requests เพราะไม่มี `/metrics` ไม่ปนกับ
+    ตัวที่มี token ครบ) · โมเดลที่ไม่ได้รัน (`usage: None`) ไม่ถูกรวมเป็นศูนย์ — แค่ไม่ถูกนับ
+  - เพิ่ม `lmds_model_requests_24h` / `lmds_model_prompt_tokens_24h` / `lmds_model_generated_tokens_24h` ใน
+    `GET /metrics` — เป็น gauge ของค่าหน้าต่าง 24 ชม. ไม่ใช่ counter สะสมตลอดชีพแบบ Prometheus ปกติ (แหล่งข้อมูล
+    บางทาง เช่น docker-log ของ vLLM/SGLang คำนวณใหม่ทุกครั้ง ไม่ใช่เส้นปีนขึ้นตลอด)
 - **Health findings + `GET /metrics` (Prometheus)** (2026-10-11 · แนวคิดจาก sparkDash ของ MiaAI-Lab, Apache-2.0 — ดูที่
   เครื่องมาก่อนว่าเก็บ telemetry อะไรอยู่แล้ว ไม่ได้ก๊อปโค้ดมา) · ทั้งคู่อ่านจากแคชของ refresher เดิม (`web/state.py`)
   ไม่ยิง SSH เพิ่มแม้ Prometheus จะ scrape ถี่แค่ไหน
