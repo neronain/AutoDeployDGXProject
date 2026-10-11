@@ -204,10 +204,41 @@ def test_unknown_slug_is_404(fleet):
     assert client.post("/api/models/ไม่มีจริง/start").status_code == 404
 
 
+def test_health_endpoint_reads_the_cached_host(fleet):
+    from lmds.web import state
+
+    state.STORE.set_local({"host": {"gpus": [{"name": "RTX 4090", "temperature_c": 95}]}, "models": []})
+    data = TestClient(create_app()).get("/api/health").json()
+    assert [f["id"] for f in data["findings"]] == ["gpu-0-temperature"]
+
+
+def test_health_fleet_endpoint_covers_nodes_too(fleet):
+    from lmds.nodes import Node, add
+    from lmds.web import state
+
+    add(Node(name="spark-worker", host="10.0.0.9", user="ops"))
+    state.STORE.set_local({"host": {}, "models": []})
+    state.STORE.set_node("spark-worker", None, "ต่อไม่ได้")
+    data = TestClient(create_app()).get("/api/health/fleet").json()
+    assert data["host"]["findings"] == []
+    assert data["nodes"]["spark-worker"]["error"] == "ต่อไม่ได้"
+
+
+def test_metrics_endpoint_is_prometheus_text(fleet):
+    from lmds.web import state
+
+    state.STORE.set_local({"host": {"hostname": "devbox", "gpus": []}, "models": []})
+    resp = TestClient(create_app()).get("/metrics")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert 'lmds_up{node="devbox"} 1' in resp.text
+
+
 def test_token_guards_every_api_route(fleet):
     """หน้านี้สั่ง start/stop ได้ — ตั้ง token แล้วต้องกันได้ทุกเส้นทาง ไม่ใช่แค่บางอัน"""
     client = TestClient(create_app(token="s3cret"))
-    for path in ("/api/host", "/api/models", f"/api/models/{fleet}/doctor", f"/api/models/{fleet}/logs"):
+    for path in ("/api/host", "/api/models", f"/api/models/{fleet}/doctor", f"/api/models/{fleet}/logs",
+                 "/api/health", "/api/health/fleet", "/metrics"):
         assert client.get(path).status_code == 401, path
     assert client.post(f"/api/models/{fleet}/start").status_code == 401
 

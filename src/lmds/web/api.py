@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 import lmds
 from lmds.config import SettingsError
@@ -567,6 +567,25 @@ def create_app(token: str = "") -> FastAPI:
         if cached:
             return {"models": cached["models"]}
         return {"models": [_model_payload(s) for s in discover()]}
+
+    @app.get("/api/health", dependencies=guarded)
+    def health_local() -> dict:
+        from lmds.web import health
+
+        return health.local_findings()
+
+    @app.get("/api/health/fleet", dependencies=guarded)
+    def health_fleet() -> dict:
+        from lmds.web import health
+
+        return health.fleet_findings()
+
+    @app.get("/metrics", dependencies=guarded)
+    def metrics() -> PlainTextResponse:
+        from lmds.web import prometheus
+
+        body = prometheus.render(state.STORE.snapshot())
+        return PlainTextResponse(body, media_type=prometheus.PROMETHEUS_CONTENT_TYPE)
 
     @app.get("/api/events", dependencies=guarded)
     async def events(request: Request) -> StreamingResponse:

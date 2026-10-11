@@ -7,6 +7,19 @@
 
 ### เพิ่ม
 
+- **Health findings + `GET /metrics` (Prometheus)** (2026-10-11 · แนวคิดจาก sparkDash ของ MiaAI-Lab, Apache-2.0 — ดูที่
+  เครื่องมาก่อนว่าเก็บ telemetry อะไรอยู่แล้ว ไม่ได้ก๊อปโค้ดมา) · ทั้งคู่อ่านจากแคชของ refresher เดิม (`web/state.py`)
+  ไม่ยิง SSH เพิ่มแม้ Prometheus จะ scrape ถี่แค่ไหน
+  - `lmds.hardware.health.evaluate_host()` — ฟังก์ชัน pure เหนือ payload รูปเดียวกับ `host_payload()`: อุณหภูมิ GPU
+    (เตือน 85°C · วิกฤต 90°C), RAM ว่าง (เตือน 2GB · วิกฤต 1GB), ดิสก์ว่าง (เตือน 20GB · วิกฤต 5GB) — ค่าเริ่มต้นแบบ
+    อนุรักษ์นิยม **ยังไม่ผ่านการยืนยันกับฮาร์ดแวร์จริงสักเครื่อง** ต่างจากกฎใน `doctor/checks.py` ที่มาจาก failure ที่เจอจริง
+    ทุกข้อ · None (การ์ด/เครื่องไม่รายงานค่า เช่น GB10 หลายฟิลด์) ถูกข้าม ไม่ใช่ตีความเป็นปกติหรือศูนย์
+  - `GET /api/health` (เครื่องนี้) และ `GET /api/health/fleet` (เครื่องนี้ + ทุก node ที่ refresher สำรวจได้) — เครื่องที่
+    ต่อไม่ได้ตอนนี้ไม่มี findings เพราะไม่มีข้อมูลให้ประเมิน ไม่ใช่เพราะมันปกติ (เห็น `error`/`stale` แทน)
+  - `GET /metrics` — รูปแบบ text 0.0.4 มาตรฐาน node_exporter/DCGM-exporter: `lmds_up`, `lmds_gpu_temperature_celsius`,
+    `lmds_gpu_power_watts`, `lmds_gpu_utilization_ratio`, `lmds_gpu_vram_{used,total}_bytes`,
+    `lmds_host_{ram,disk}_*_bytes`, `lmds_model_{running,healthy}`, `lmds_health_finding` · ผ่าน `guarded` เหมือนทุก
+    endpoint อื่น (Prometheus ส่ง token ทาง `?token=` หรือ header `x-lmds-token` ได้)
 - **`lmds mcp` — MCP server แบบอ่านอย่างเดียว ให้ผู้ช่วย AI ถาม hub ผ่านเครื่องมือที่คืน JSON** (2026-10-09 · แนวคิดจาก
   `tools/strata_mcp.py` ของโปรเจกต์ Strata) · เจ้าของคุม LMDS ผ่านผู้ช่วยเขียนโค้ดซึ่งรัน `lmds …` แล้วแกะตารางของ rich ที่ถูกตัด
   ตามความกว้างจอ (โน้ตเก่า: "`lmds node list` ตัดชื่อจนอ่านไม่ออก อย่า parse") · `claude mcp add lmds -- lmds mcp` บน hub ·
