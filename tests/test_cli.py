@@ -495,6 +495,50 @@ def test_web_enable_writes_a_user_service_that_restarts_itself(tmp_path, monkeyp
     assert ["loginctl", "enable-linger"] in calls, "ไม่มี linger = ไม่ขึ้นตอนบูตจริง"
 
 
+def test_web_enable_prints_a_ready_prometheus_scrape_config(tmp_path, monkeypatch, isolated_config):
+    """ลูกค้าไม่ต้องไปเขียน YAML เอง — scrape hub เครื่องเดียวได้ข้อมูลทั้งฟลีต (ดู web/prometheus.py)"""
+    from lmds.hardware import profiler
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr(profiler, "primary_ip", lambda: "10.2.1.195")
+    monkeypatch.setattr("subprocess.run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""))
+
+    result = runner.invoke(app, ["web", "--enable", "--bind", "0.0.0.0", "--token", "tok-ยาวพอ"])
+    assert result.exit_code == 0, result.output
+    assert "scrape_configs:" in result.output
+    assert "10.2.1.195:8600" in result.output
+    assert "tok-ยาวพอ" in result.output.split("scrape_configs:")[1]
+
+
+def test_web_enable_scrape_config_uses_loopback_when_not_exposed(tmp_path, monkeypatch, isolated_config):
+    """bind 127.0.0.1 (ค่าเริ่มต้น) — Prometheus ต้องรันเครื่องเดียวกัน ไม่ใช่ IP ของวง LAN"""
+    from lmds.hardware import profiler
+    from lmds.web import daemon
+
+    monkeypatch.setenv("LMDS_RUN_ROOT", str(tmp_path / "run"))
+    monkeypatch.setenv("LMDS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(daemon, "running", lambda: None)
+
+    def _boom():
+        raise AssertionError("ไม่ควรถาม primary_ip เมื่อไม่ได้ bind ออก network")
+
+    monkeypatch.setattr(profiler, "primary_ip", _boom)
+    monkeypatch.setattr("subprocess.run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""))
+
+    result = runner.invoke(app, ["web", "--enable", "--token", "tok-ยาวพอ"])
+    assert result.exit_code == 0, result.output
+    assert "127.0.0.1:8600" in result.output
+
+
 def test_web_enable_unit_file_is_not_world_readable(tmp_path, monkeypatch, isolated_config):
     """unit มี token อยู่ข้างใน — ผู้ใช้อื่นบนเครื่องเดียวกันไม่ควรอ่านได้"""
     import stat

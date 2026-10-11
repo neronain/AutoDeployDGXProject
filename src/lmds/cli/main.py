@@ -4984,6 +4984,16 @@ def web(
                           f"[bold]sudo loginctl enable-linger {os.environ.get('USER', '$USER')}[/bold]")
         if token:
             console.print(f"\n  token: [bold]{token}[/bold]")
+        # ที่อยู่ให้ Prometheus scrape — ไม่ใช่ 0.0.0.0 (นั่นคือที่อยู่สำหรับ bind ไม่ใช่ที่อยู่ที่ต่อเข้ามา)
+        # bind ออก network แล้วค่อยให้ IP จริงของเครื่อง · ไม่ออกก็ใช้ 127.0.0.1 (Prometheus ต้องรันเครื่องเดียวกัน)
+        if bind not in {"127.0.0.1", "localhost", "::1"}:
+            from lmds.hardware.profiler import primary_ip
+
+            scrape_host = primary_ip() or "127.0.0.1"
+        else:
+            scrape_host = "127.0.0.1"
+        console.print("\n[dim]ต่อ Prometheus (scrape เครื่องนี้เครื่องเดียว ได้ข้อมูลทั้งฟลีต):[/dim]")
+        console.print(daemon.prometheus_scrape_config(scrape_host, port, token))
         console.print("[dim]ดูสถานะ: systemctl --user status lmds-web · เลิก: lmds web --disable[/dim]")
         return
 

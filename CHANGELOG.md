@@ -7,6 +7,10 @@
 
 ### เพิ่ม
 
+- **`lmds web --enable` พิมพ์ Prometheus scrape config ให้พร้อมใช้** (2026-10-12) · มี token จริงใส่ให้แล้ว copy
+  ไปวางได้เลย ไม่ต้องเขียน YAML เอง — scrape hub เครื่องเดียวได้ข้อมูลทั้งฟลีต (ดู `/metrics` ด้านบน) · bind ออก
+  network ได้ IP จริงของเครื่อง (`primary_ip()`) · bind 127.0.0.1 (ค่าเริ่มต้น) ได้ `127.0.0.1` เพราะ Prometheus
+  ต้องรันเครื่องเดียวกัน · `--no-auth` ไม่มี token ก็ไม่มีบรรทัด `params` ให้สับสน
 - **`GET /api/usage` + `GET /api/usage/fleet` — token/request usage รวมทั้งฟลีต** (2026-10-12 · อีกไอเดียจาก
   sparkDash's token ledger — แต่ของจริงมีอยู่แล้ว: `inventory.request_usage()` แปะ `usage` (requests/prompt/
   generated tokens ใน 24 ชม.) ไว้ในทุก model dict อยู่แล้วทั้งเครื่องนี้และทุก node ผ่าน `lmds agent info` — งานนี้

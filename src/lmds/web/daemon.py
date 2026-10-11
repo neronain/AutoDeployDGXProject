@@ -242,6 +242,19 @@ def url(state: dict, host: str = "") -> str:
     return f"http://{host or '127.0.0.1'}:{state.get('port', 8600)}/"
 
 
+def prometheus_scrape_config(host: str, port: int, token: str) -> str:
+    """scrape_configs เดียวที่ copy ไปวางได้ตรง — scrape hub เครื่องเดียวได้ข้อมูลทั้งฟลีต
+    (`GET /metrics` อ่านจากแคชของ refresher ที่รวมทุก node ไว้แล้ว ดู web/prometheus.py)
+
+    ไม่มี token (`--no-auth`) = ไม่มีบรรทัด params — ใส่ไว้จะเป็นพารามิเตอร์ที่ปลายทางไม่รู้จักเฉย ๆ
+    """
+    lines = ["scrape_configs:", "  - job_name: lmds", "    scrape_interval: 30s"]
+    if token:
+        lines += ["    params:", f"      token: ['{token}']"]
+    lines += ["    static_configs:", f"      - targets: ['{host}:{port}']"]
+    return "\n".join(lines)
+
+
 def log_tail(lines: int = 12) -> str:
     """ท้าย log — ใช้บอกสาเหตุตอนสตาร์ตไม่ขึ้น แทนที่จะให้ผู้ใช้ไปเปิดไฟล์เอง"""
     try:

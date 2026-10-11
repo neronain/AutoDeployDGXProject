@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lmds.web.daemon import prometheus_scrape_config
 from lmds.web.prometheus import render
 
 
@@ -105,3 +106,24 @@ def test_label_values_are_escaped():
     }
     text = render(_snapshot(host_entry=entry))
     assert 'name="Weird \\"GPU\\"\\\\x"' in text
+
+
+def test_scrape_config_includes_token_as_a_query_param():
+    text = prometheus_scrape_config("10.2.1.195", 8600, "s3cret")
+    assert "targets: ['10.2.1.195:8600']" in text
+    assert "token: ['s3cret']" in text
+    import yaml
+
+    parsed = yaml.safe_load(text)
+    assert parsed["scrape_configs"][0]["params"]["token"] == ["s3cret"]
+    assert parsed["scrape_configs"][0]["static_configs"][0]["targets"] == ["10.2.1.195:8600"]
+
+
+def test_scrape_config_omits_params_block_without_a_token():
+    """--no-auth: ไม่มี token ให้ส่ง — ใส่ params เปล่าไปจะเป็นพารามิเตอร์ที่ปลายทางไม่รู้จักเฉย ๆ"""
+    text = prometheus_scrape_config("127.0.0.1", 8600, "")
+    assert "params:" not in text
+    import yaml
+
+    parsed = yaml.safe_load(text)
+    assert "params" not in parsed["scrape_configs"][0]
